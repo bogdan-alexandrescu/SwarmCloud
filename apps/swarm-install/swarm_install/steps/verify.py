@@ -32,7 +32,12 @@ left names the repository; the code-intelligence read left the swarm-graph
 answer with at least one symbol and a `freshness.index_sha` that is the
 commit the graph's own index record names for the repository (`swarm
 graph-index`: swarm-api's graph-cache route, `index.commit_sha`, which only
-swarm-graph's promotion writes), so the agent cannot make the proof up. A finished
+swarm-graph's promotion writes), so the agent cannot make the proof up. On a
+new deployment nothing registers or indexes that repository (only the
+console's Repositories page, its "Index now" and the poll of registered
+repositories do), so the step registers it in the team and asks for its index
+run (`swarm repo-index`) before the launches, and starts the code-intelligence
+run only once `swarm graph-index` records a commit. A finished
 Job is deleted after its TTL, so a poll's sighting is kept in state.outputs
 (`verify_cluster_jobs`).
 
@@ -76,7 +81,8 @@ from typing import Any, Protocol
 from ..exitcodes import MET, UNMET, WAITING
 from ..record import PERSONAL, RECORD_SCHEMA_VERSION, VERIFY_RUNS, engine_document
 from ..state import SCHEMA_VERSION
-from ..swarm_context import Run, deployment_url, list_contexts, points_at, run_command, run_interactive, verify_env
+from ..swarm_context import (Run, deployment_url, list_contexts, points_at, run_command, run_interactive, swarm_cli,
+                             verify_env)
 from ..waits import WaitSpec
 from . import Observation, Plan
 from .cluster import Kube, account_email, kube_for
@@ -93,6 +99,10 @@ CHECK_SHAPES = ("gke", "browser", "code-intelligence")
 RUNS = (("plugin", "single"), ("plugin", "workflow"), *(("plugin", shape) for shape in CHECK_SHAPES),
         ("console", "single"), ("console", "workflow"))
 TOTAL = len(QUICK_CHECKS) + len(RUNS)
+#: The check run that reads the code graph: it starts only once the graph
+#: records an index of the verify repository, which verify asks for.
+INDEXED_SHAPE = "code-intelligence"
+INDEXED_KEY = f"plugin-{INDEXED_SHAPE}"
 
 #: Where each console run's id is in `verify_runs`: swarm-api writes these two
 #: keys into the console document when Admin › Setup starts them (INTERFACE
@@ -105,7 +115,9 @@ TARGETS_WAIT = WaitSpec(
     expected="at once, or up to 10 min while a new grant propagates",
     expected_s=60,
     bound_s=10 * 60,
-    look_at="the failing job's target service logs; swarm doctor --explain other.verify-scheduler-targets",
+    look_at="the job named above and its target's answer on the Cloud Scheduler page, "
+            "https://console.cloud.google.com/cloudscheduler?project=<project>; once fixed, "
+            "swarm install --repair other.verify-scheduler-targets checks it again",
     interval_s=30,
 )
 
@@ -647,6 +659,10 @@ class Runs(Protocol):
 
     def status(self, ctx: Any, shape: str, run_id: str) -> RunStatus: ...
 
+    def index(self, ctx: Any, repository: str) -> None: ...
+
+    def index_commit(self, ctx: Any) -> str: ...
+
 
 def workflow_spec(repository: str, label: str) -> str:
     """A two-step workflow: one agent writes, a second builds on it and opens
@@ -700,9 +716,17 @@ class SwarmCli:
 
     ask: Ask
     run: Run = run_command
-    swarm: str = "swarm"
+    #: The swarm CLI's path; None is `swarm_cli()`, the one running this
+    #: engine, which a bare "swarm" misses when its directory is not on PATH.
+    swarm: str | None = None
     #: The person's own steps: `swarm login` and `swarm sc setup` sign in in the browser.
     interactive: Run = run_interactive
+
+    @property
+    def cli(self) -> str:
+        if not self.swarm:
+            self.swarm = swarm_cli()
+        return self.swarm
 
     # -- the new deployment's own context ------------------------------------------
 
@@ -710,7 +734,7 @@ class SwarmCli:
         return verify_env(ctx.outputs.get("verify_tenant"))
 
     def _bare(self, ctx: Any, argv: Sequence[str], stdin: str | None = None) -> str:
-        code, out, err = self.run([self.swarm, *argv], stdin, self._env(ctx))
+        code, out, err = self.run([self.cli, *argv], stdin, self._env(ctx))
         if code != 0:
             raise RuntimeError(f"swarm {' '.join(argv[:2])} failed: {err.strip()[:300]}")
         return out
@@ -732,14 +756,14 @@ class SwarmCli:
         if not url or not name:
             raise LookupError("edge.desktop-client (stage 2) writes the swarm context for the new deployment, "
                               "with the Desktop client's secret, and records it as verify_context")
-        row = list_contexts(self.run, self.swarm, self._env(ctx)).get(name)
+        row = list_contexts(self.run, self.cli, self._env(ctx)).get(name)
         if row is None or not points_at(row, url):
             raise LookupError(f"swarm context {name} for {url} is not on this machine; edge.desktop-client "
                               f"writes it again, its secret typed at a hidden prompt: swarm install")
         if row.get("signed_in") is not True:
             ctx.events.emit("step_apply", step="verify.end-to-end",
                             message=f"sign in to {url} in the browser that opens (swarm --context {name} login)")
-            code, _, err = self.interactive([self.swarm, "--context", name, "login"], None, self._env(ctx))
+            code, _, err = self.interactive([self.cli, "--context", name, "login"], None, self._env(ctx))
             if code != 0:
                 raise RuntimeError(f"swarm --context {name} login failed: {err.strip()[:300]}")
         tenants = json.loads(self._bare(ctx, ["--context", name, "tenants", "--json"]) or "{}")
@@ -759,10 +783,10 @@ class SwarmCli:
         org = str(ctx.outputs.get("github_org") or "")
         if not org:
             raise LookupError("the GitHub organisation is recorded by preflight (github_org)")
-        argv = [self.swarm, "sc", "access", "repos", org, "--json", "--context", name]
+        argv = [self.cli, "sc", "access", "repos", org, "--json", "--context", name]
         code, out, err = self.run(argv, None, self._env(ctx))
         if code != 0 and _NOT_CONNECTED.search(err):
-            self.interactive([self.swarm, "sc", "setup", "--context", name], None, self._env(ctx))
+            self.interactive([self.cli, "sc", "setup", "--context", name], None, self._env(ctx))
             code, out, err = self.run(argv, None, self._env(ctx))
         found = next((str(row.get("repository") or "") for row in _rows(json.loads(out or "{}") if code == 0 else {},
                                                                           "repositories")
@@ -776,7 +800,7 @@ class SwarmCli:
 
     def _call(self, ctx: Any, argv: Sequence[str], stdin: str | None = None, *,
               ok: Sequence[int] = (0,)) -> str:
-        code, out, err = self.run([self.swarm, "--context", self._context(ctx), *argv], stdin, self._env(ctx))
+        code, out, err = self.run([self.cli, "--context", self._context(ctx), *argv], stdin, self._env(ctx))
         if code not in ok:
             raise RuntimeError(f"swarm {argv[0]} failed: {err.strip()[:300]}")
         return out
@@ -806,6 +830,13 @@ class SwarmCli:
         if not run_id:
             raise RuntimeError(f"swarm {'workflow' if shape == 'workflow' else 'dispatch'} returned no id")
         return run_id
+
+    def index(self, ctx: Any, repository: str) -> None:
+        """Register `repository` in the verify team when it is not yet, and
+        ask for its index run (`swarm repo-index`): on a new deployment
+        nothing else registers or indexes it, so the code graph would never
+        record the commit the code-intelligence check compares with."""
+        self._json(ctx, ["repo-index", repository, "--json"])
 
     def index_commit(self, ctx: Any) -> str:
         """The commit the new deployment's code graph records for
@@ -844,7 +875,7 @@ class SwarmCli:
         if check is not None:
             artifact = None
             if check.artifact:
-                code, out, _ = self.run([self.swarm, "--context", self._context(ctx), "artifact", run_id,
+                code, out, _ = self.run([self.cli, "--context", self._context(ctx), "artifact", run_id,
                                          check.artifact], None, self._env(ctx))
                 artifact = out if code == 0 else None
             index_commit = self.index_commit(ctx) if check.graph_record else ""
@@ -1052,10 +1083,29 @@ class EndToEndStep(_Base):
             remember(ctx, outputs={"verify_cluster_jobs": seen})
         return seen
 
+    def _indexed_launch(self, ctx: Any, launched: dict[str, str]) -> tuple[dict[str, str], str]:
+        """The code-intelligence run starts once the code graph records an
+        index of `verify_repository` (`apply` asked for it): before that its
+        check could only fail. `(launched, "")` once started, else
+        `(launched, what it waits for)`."""
+        if launched.get(INDEXED_KEY):
+            return launched, ""
+        repository = str(ctx.outputs.get("verify_repository") or "")
+        if not ctx.outputs.get("verify_index_requested") or not repository:
+            return launched, ""
+        if ctx.dry_run or not self.runs.index_commit(ctx):
+            return launched, (f"{INDEXED_KEY} (starts once the code graph has indexed {repository}; its index "
+                              "run was requested when verify started)")
+        launched = {**launched, INDEXED_KEY: self.runs.launch(ctx, "plugin", INDEXED_SHAPE, repository,
+                                                                f"swarm-install-verify-{INDEXED_KEY}")}
+        remember(ctx, outputs={"verify_runs": dict(launched)})
+        return launched, ""
+
     def _check(self, ctx: Any) -> Observation:
         launched: dict[str, str] = dict(ctx.outputs.get("verify_runs") or {})
+        launched, unindexed = self._indexed_launch(ctx, launched)
         plugin = [f"{surface}-{shape}" for surface, shape in RUNS if surface == "plugin"]
-        if not all(launched.get(key) for key in plugin):
+        if not all(launched.get(key) for key in plugin if not (unindexed and key == INDEXED_KEY)):
             return Observation(UNMET, "the plugin's verification runs have not all been started")
         launched = self._console_runs(ctx, launched)
         ids = {f"{surface}-{shape}": launched.get(CONSOLE_KEYS[shape] if surface == "console"
@@ -1069,6 +1119,9 @@ class EndToEndStep(_Base):
         for surface, shape in RUNS:
             key = f"{surface}-{shape}"
             run_id = ids[key]
+            if not run_id and key == INDEXED_KEY and unindexed:
+                waiting.append(unindexed)
+                continue
             if not run_id:
                 waiting.append(f"{key} (started in the console's Admin › Setup; its id is not recorded yet)")
                 continue
@@ -1133,9 +1186,15 @@ class EndToEndStep(_Base):
             repository = self.runs.repository(ctx)
             remember(ctx, outputs={"verify_repository": repository})
         launched: dict[str, str] = dict(ctx.outputs.get("verify_runs") or {})
+        indexed = bool(launched.get(INDEXED_KEY)) or bool(self.runs.index_commit(ctx))
+        if not indexed:
+            # Nothing else registers or indexes it on a new deployment: the
+            # code-intelligence run waits in `_check` until the graph has it.
+            self.runs.index(ctx, repository)
+            remember(ctx, outputs={"verify_index_requested": True})
         for surface, shape in RUNS:
             key = f"{surface}-{shape}"
-            if surface == "plugin" and key not in launched:
+            if surface == "plugin" and key not in launched and (indexed or key != INDEXED_KEY):
                 launched[key] = self.runs.launch(ctx, surface, shape, repository, f"swarm-install-verify-{key}")
                 remember(ctx, outputs={"verify_runs": dict(launched)})
         write_progress(ctx, self.check_name, len(QUICK_CHECKS))

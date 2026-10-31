@@ -15,8 +15,8 @@ from types import SimpleNamespace
 import pytest
 
 from swarm_install import cli
-from swarm_install.exitcodes import ExitCode
-from swarm_install.steps import preflight
+from swarm_install.exitcodes import MET, UNMET, ExitCode
+from swarm_install.steps import Observation, Plan, preflight
 from swarm_install.verbs import install
 
 from .test_install_asks import _terminal, world  # noqa: F401 - `world` is a fixture
@@ -70,3 +70,39 @@ def test_the_run_sends_budget_calls_with_its_project_as_quota_project(world, mon
     _terminal(monkeypatch, "", tty=False)
     cli.main(["install", "--project", "acme-swarm-1"])
     assert shared.quota_project == "acme-swarm-1"
+
+
+def test_a_run_that_moved_to_another_project_id_says_how_to_resume_it(world, tmp_path, monkeypatch,  # noqa: F811
+                                                                      capsys):
+    """Audit 4a F1: when foundations.project finds the id taken and the person
+    types another, the install is that project's; the run ends naming the new
+    id to resume with, and the state is in the new id's file."""
+    _, found = world
+
+    class Moves:
+        id, stage, satisfies, met = "foundations.project", 1, ("other.fake-project",), False
+
+        def check(self, ctx):
+            return Observation(MET if self.met else UNMET, "fake")
+
+        verify = check
+
+        def plan(self, ctx):
+            return Plan("create the project")
+
+        def apply(self, ctx, plan):
+            ctx.state = ctx.engine.store.rename("acme-swarm-2")
+            ctx.project = "acme-swarm-2"
+            self.met = True
+
+        def explain(self):
+            return "moves the install"
+
+    found.insert(1, Moves())
+    _terminal(monkeypatch, "", tty=False)
+    assert cli.main(["install", "--project", "acme-swarm-1"]) == ExitCode.OK
+    out = capsys.readouterr().out
+    assert "Project id acme-swarm-1 was taken" in out
+    assert "Resume it with: swarm install --project acme-swarm-2 --env prod" in out
+    local = tmp_path / ".config/swarmcloud/install"
+    assert (local / "acme-swarm-2.json").is_file() and not (local / "acme-swarm-1.json").exists()

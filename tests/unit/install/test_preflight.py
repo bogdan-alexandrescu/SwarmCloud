@@ -100,7 +100,8 @@ class FakeGcp:
                                                      "directoryCustomerId": "C0abc12"}}
         self.folder_tree: dict[str, dict[str, Any]] = {FOLDER: {"name": FOLDER, "displayName": "eng", "parent": ORG}}
         self.org_failure: ApiError | None = None
-        self.cpu_quota: int | None = 3000
+        self.cpu_quota: int | None = 3000  # the region's CPUS
+        self.cpu_quota_all_regions: int | None = 3000  # the project's CPUS_ALL_REGIONS
         self.cpu_quota_failure: ApiError | None = None
 
     def _call(self, name: str, *args: Any) -> None:
@@ -171,11 +172,11 @@ class FakeGcp:
         self._call("quota_metrics", project, service)
         return self.quotas.get(service, [])
 
-    def region_cpu_quota(self, project, region):
-        self._call("region_cpu_quota", project, region)
+    def cpu_quotas(self, project, region):
+        self._call("cpu_quotas", project, region)
         if self.cpu_quota_failure is not None:
             raise self.cpu_quota_failure
-        return self.cpu_quota
+        return preflight.CpuQuotas(self.cpu_quota, self.cpu_quota_all_regions)
 
     def enabled_services(self, project):
         self._call("enabled_services", project)
@@ -919,19 +920,31 @@ class Login:
     def __init__(self, *, account: str = "", adc: frozenset[str] | None = None, code: int = 0,
                  directory: str = "granted") -> None:
         """`directory` is what Google does with the Directory scopes: "granted",
-        "blocked" (the browser says the app is blocked, so gcloud exits 1) or
-        "dropped" (the sign-in finishes and the token comes back without them)."""
+        "blocked" (the browser says the app is blocked and never returns to
+        gcloud's localhost redirect, so gcloud waits until it is stopped, audit
+        4a F2: a login run with no timeout is refused, as it would hang; one
+        with a timeout comes back `TIMED_OUT`), "interrupted" (blocked, and the
+        person presses Ctrl-C), "refused" (gcloud exits 1) or "dropped" (the
+        sign-in finishes and the token comes back without them)."""
         self.account, self.adc, self.code, self.directory = account, adc, code, directory
         self.ran: list[list[str]] = []
+        self.timeouts: list[float | None] = []
 
-    def __call__(self, argv: list[str]) -> int:
+    def __call__(self, argv: list[str], *, timeout: float | None = None) -> int:
         self.ran.append(list(argv))
+        self.timeouts.append(timeout)
         if self.code == 0 and argv[1:] == ["auth", "login"]:
             self.account = "admin@example.com"
         if self.code == 0 and argv[1:4] == ["auth", "application-default", "login"]:
             flag = next((a for a in argv[4:] if a.startswith("--scopes=")), "--scopes=")
             scopes = frozenset(filter(None, flag.removeprefix("--scopes=").split(",")))
             if scopes & DIRECTORY_SCOPES and self.directory == "blocked":
+                if timeout is None:
+                    raise AssertionError("gcloud would wait forever on Google's 'This app is blocked' page")
+                return preflight.TIMED_OUT
+            if scopes & DIRECTORY_SCOPES and self.directory == "interrupted":
+                raise KeyboardInterrupt
+            if scopes & DIRECTORY_SCOPES and self.directory == "refused":
                 return 1
             if self.directory == "dropped":
                 scopes -= DIRECTORY_SCOPES
@@ -1021,7 +1034,7 @@ def test_directory_scopes_accepted_at_stage_0_are_recorded() -> None:
     assert observed.status == MET and observed.outputs.get("directory_scopes") is True
 
 
-@pytest.mark.parametrize("refusal", ["blocked", "dropped"])
+@pytest.mark.parametrize("refusal", ["blocked", "interrupted", "refused", "dropped"])
 def test_directory_scopes_refused_at_stage_0_signs_in_without_them(refusal: str) -> None:
     """Google blocks the sign-in that asks the Directory scopes (gcloud's own
     client may not ask them), or finishes it without them: the ADC sign-in
@@ -1042,6 +1055,48 @@ def test_directory_scopes_refused_at_stage_0_signs_in_without_them(refusal: str)
     gcloud.ran.clear()
     step.apply(ctx, step.plan(ctx))
     assert gcloud.ran == []
+
+
+@pytest.mark.parametrize("refusal", ["blocked", "interrupted"])
+def test_a_blocked_consent_page_never_hangs_the_sign_in(refusal: str) -> None:
+    """Audit 4a F2: Google's "This app is blocked" page never returns to gcloud.
+    The scoped sign-in waits at most CONSENT_WAIT_S (or until Ctrl-C, which
+    stops gcloud and not the run), says beforehand how to get past the page,
+    and records `directory_scopes` false before the Cloud-Platform-only
+    sign-in, so a run stopped during that one never asks the blocked scopes
+    again."""
+    gcloud = Login(account="admin@example.com", directory=refusal)
+    step = gcloud.step()
+    ctx = ctx_for()
+    seen: list[Any] = []
+    real = gcloud.__call__
+
+    def login(argv: list[str], *, timeout: float | None = None) -> int:
+        seen.append(ctx.outputs.get("directory_scopes"))
+        return real(argv, timeout=timeout)
+
+    step._login = login
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN], ["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]]
+    assert gcloud.timeouts[0] == preflight.CONSENT_WAIT_S and gcloud.timeouts[1] is None
+    assert seen == [None, False]  # recorded before the Cloud-Platform-only sign-in starts
+    hint = [e["message"] for e in ctx.events.of_kind("step_apply") if "Ctrl-C" in e.get("message", "")]
+    assert len(hint) == 1 and "blocked" in hint[0]
+    assert ctx.outputs["directory_scopes"] is False
+    assert step.check(ctx).status == MET
+
+
+def test_run_auth_stops_gcloud_at_its_timeout(tmp_path: Path) -> None:
+    """The real runner: a gcloud still waiting at `timeout` is stopped and
+    answers TIMED_OUT instead of raising or waiting on."""
+    waits = tmp_path / "gcloud"
+    waits.write_text("#!/bin/sh\nsleep 30\n")
+    waits.chmod(0o755)
+    assert preflight.run_auth([str(waits)], timeout=0.2) == preflight.TIMED_OUT
+    done = tmp_path / "done"
+    done.write_text("#!/bin/sh\nexit 3\n")
+    done.chmod(0o755)
+    assert preflight.run_auth([str(done)]) == 3
 
 
 def test_a_sign_in_that_fails_without_the_directory_scopes_too_still_stops() -> None:
@@ -1159,7 +1214,7 @@ def test_just_me_proposes_a_small_deployment_accepted_with_enter(pages: list[Any
     assert ctx.outputs["sizing"] == sizing.propose("individual", 1, region_cpu_quota=3000)
     assert ctx.outputs["sizing"]["mode"] == "individual" and ctx.outputs["sizing"]["members"] == 1
     assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 3000}
-    assert (PROJECT, "us-central1") in gcp.called("region_cpu_quota")
+    assert (PROJECT, "us-central1") in gcp.called("cpu_quotas")
     observed = step.check(ctx)
     assert observed.status == MET and observed.outputs["sizing"] == ctx.outputs["sizing"]
     assert pages == []
@@ -1230,13 +1285,13 @@ def test_the_region_cpu_quota_caps_the_proposal_and_opens_the_quotas_page(pages:
     gcp.cpu_quota = 48
     _, ask, ctx = _sized(gcp, "2", "5", "1", "11", "")
     assert ctx.outputs["sizing"]["pool_limits"]["global"] == 10
-    assert "above the 10 tasks the region's 48 CPUs can run" in ask.asked[4][1]
+    assert "above the 10 tasks the 48 usable CPUs can run" in ask.asked[4][1]
 
 
 def test_a_new_project_says_the_quota_is_checked_after_stage_1(pages: list[Any]) -> None:
     gcp = FakeGcp(exists=False)
     _, _, ctx = _sized(gcp, "1", "", outputs={"parent": ORG})
-    assert not gcp.called("region_cpu_quota")
+    assert not gcp.called("cpu_quotas")
     said = [e.get("message", "") for e in ctx.events.of_kind("step_apply")]
     assert any("checked against it again after stage 1" in m for m in said)
     assert ctx.outputs["sizing"] == sizing.propose("individual", 1)
@@ -1770,12 +1825,12 @@ def _cpus_after(gcp: FakeGcp, first: int, granted: int, *, polls: int) -> None:
     """The region's CPUS quota reads `first` for `polls` reads, then `granted`."""
     seen = {"n": 0}
 
-    def region_cpu_quota(project: str, region: str) -> int:
-        gcp._call("region_cpu_quota", project, region)
+    def cpu_quotas(project: str, region: str) -> preflight.CpuQuotas:
+        gcp._call("cpu_quotas", project, region)
         seen["n"] += 1
-        return granted if seen["n"] > polls else first
+        return preflight.CpuQuotas(granted if seen["n"] > polls else first, 3000)
 
-    gcp.region_cpu_quota = region_cpu_quota  # type: ignore[method-assign]
+    gcp.cpu_quotas = cpu_quotas  # type: ignore[method-assign]
 
 
 def test_enter_is_refused_while_the_sizing_breaks_a_rule(pages: list[Any]) -> None:
@@ -1799,7 +1854,7 @@ def test_a_quota_too_small_for_the_team_is_a_required_wait(pages: list[Any]) -> 
     assert [url for url, _ in pages] == [CPUS_PAGE]
     assert "required" in pages[0][1] and "optional" not in pages[0][1]
     assert "at least 28" in pages[0][1]
-    assert len(gcp.called("region_cpu_quota")) == 4  # polled, never "press Enter"
+    assert len(gcp.called("cpu_quotas")) == 4  # polled, never "press Enter"
     assert ctx.clock.sleeps and all(s <= preflight.QUOTA_WAIT.interval_s for s in ctx.clock.sleeps)
     assert ctx.outputs["sizing"] == sizing.propose("team", 5, region_cpu_quota=48)
     assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 48}
@@ -1862,3 +1917,129 @@ def test_the_cpus_floor_follows_the_recorded_sizing(recorded: Any, floor: int) -
     gcp.quotas["compute.googleapis.com"] = [_metric("compute.googleapis.com/cpus", floor - 1)]
     observed = step.check(ctx)
     assert observed.status == UNMET and f"{floor - 1} is below {floor}" in observed.detail
+
+
+# -- DAYONE-PREFLIGHT-4 (audit 4a F5): the project-wide CPU quota, and a Free Trial account ----------
+
+ALL_REGIONS_PAGE = preflight.quotas_page(PROJECT, metric="compute.googleapis.com/cpus_all_regions")
+UPGRADE_PAGE = f"https://console.cloud.google.com/billing/{ACCOUNT}?project={PROJECT}"
+
+
+class Compute(Session):
+    """Compute Engine, faked the way Google answers: `regions.get` holds the
+    region's CPUS limit and `projects.get` the project's CPUS_ALL_REGIONS,
+    each beside other metrics that are not the cluster's."""
+
+    def __init__(self, region: int, all_regions: int) -> None:
+        super().__init__()
+        self.answers = {
+            f"{preflight.COMPUTE}/projects/{PROJECT}/regions/us-central1": {"quotas": [
+                {"metric": "PREEMPTIBLE_CPUS", "limit": 0.0}, {"metric": "CPUS", "limit": float(region)}]},
+            f"{preflight.COMPUTE}/projects/{PROJECT}": {"quotas": [
+                {"metric": "GPUS_ALL_REGIONS", "limit": 0.0},
+                {"metric": "CPUS_ALL_REGIONS", "limit": float(all_regions)}]},
+        }
+
+    def request(self, method, url, *, json=None, params=None, timeout=None, headers=None):  # noqa: A002
+        self.requests.append({"method": method, "url": url})
+        return Response(200, self.answers[url])
+
+
+def test_the_cpu_quota_read_is_the_smaller_of_the_regional_and_project_wide() -> None:
+    """F5: GKE Autopilot nodes count against the region's CPUS and the
+    project's CPUS_ALL_REGIONS; a 200-CPU region in a project held to 12 can
+    run only 12, which no team of 5 fits."""
+    session = Compute(region=200, all_regions=12)
+    quotas = preflight.Gcp(session).cpu_quotas(PROJECT, "us-central1")
+    assert (quotas.region, quotas.all_regions, quotas.usable) == (200, 12, 12)
+    assert quotas.all_regions_binds
+    assert [r["url"] for r in session.requests] == [f"{preflight.COMPUTE}/projects/{PROJECT}/regions/us-central1",
+                                                    f"{preflight.COMPUTE}/projects/{PROJECT}"]
+    assert not sizing.fits_quota("team", 5, quotas.usable)
+
+
+def test_stage_1_never_passes_a_sizing_the_project_wide_quota_cannot_run(pages: list[Any]) -> None:
+    """F5: preflight.sizing-quota said "the sizing fits the us-central1 CPU
+    quota" for a region of 3000 in a project held to 16 CPUS_ALL_REGIONS; the
+    task pods then stayed Pending. The smaller quota is the one checked."""
+    gcp = FakeGcp()
+    gcp.cpu_quota_all_regions = 16
+    step = preflight.SizingQuotaStep(lambda: gcp, Answers(preflight_sizing_quota=[""]))
+    ctx = ctx_for(outputs={"sizing": sizing.propose("team", 5)})
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "16 usable CPUs" in observed.detail
+
+
+def test_a_project_wide_quota_too_small_opens_its_own_quotas_page(pages: list[Any]) -> None:
+    """F5: a paid account whose CPUS_ALL_REGIONS (16) binds, not the region's
+    CPUS (3000): the Quotas page opens on CPUS_ALL_REGIONS, not on CPUS."""
+    gcp = FakeGcp()
+    seen = {"n": 0}
+
+    def cpu_quotas(project: str, region: str) -> preflight.CpuQuotas:
+        gcp._call("cpu_quotas", project, region)
+        seen["n"] += 1
+        return preflight.CpuQuotas(3000, 28 if seen["n"] > 2 else 16)
+
+    gcp.cpu_quotas = cpu_quotas  # type: ignore[method-assign]
+    _, _, ctx = _sized(gcp, "2", "5", "", outputs={"billing_account": ACCOUNT})
+    assert [url for url, _ in pages] == [ALL_REGIONS_PAGE]
+    assert "CPUS_ALL_REGIONS" in pages[0][1] and "required" in pages[0][1] and "at least 28" in pages[0][1]
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 28}
+
+
+def test_a_free_trial_account_opens_its_upgrade_page_not_the_quotas_page(pages: list[Any]) -> None:
+    """F5: a Free Trial billing account holds the project to 8 CPUs across all
+    regions and Google grants it no increase, so the Quotas page was a dead
+    end. Its billing page opens to activate a paid account; once it is paid
+    and still short, the CPUS_ALL_REGIONS Quotas page opens; once that is
+    granted the step goes on by itself."""
+    gcp = FakeGcp()
+    reads = iter([8, 8, 10, 10, 24])  # the trial; upgraded to a paid default; granted
+
+    def cpu_quotas(project: str, region: str) -> preflight.CpuQuotas:
+        gcp._call("cpu_quotas", project, region)
+        return preflight.CpuQuotas(3000, next(reads))
+
+    gcp.cpu_quotas = cpu_quotas  # type: ignore[method-assign]
+    _, _, ctx = _sized(gcp, "1", "", outputs={"billing_account": ACCOUNT})
+    assert [url for url, _ in pages] == [UPGRADE_PAGE, ALL_REGIONS_PAGE]
+    assert "Free Trial" in pages[0][1] and "Activate full account" in pages[0][1]
+    assert "iam-admin/quotas" not in pages[0][0]
+    assert len(gcp.called("cpu_quotas")) == 5  # polled, never "press Enter"
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 24}
+
+
+def test_a_free_trial_wait_that_runs_out_says_to_upgrade_the_account(pages: list[Any]) -> None:
+    gcp = FakeGcp()
+    gcp.cpu_quota_all_regions = 8
+    step = preflight.SizingStep(lambda: gcp, Answers(preflight_sizing=["1"]))
+    ctx = ctx_for(outputs={"billing_account": ACCOUNT})
+    with pytest.raises(WaitGaveUp) as raised:
+        step.apply(ctx, step.plan(ctx))
+    assert "Activate full account" in str(raised.value)
+    assert [url for url, _ in pages] == [UPGRADE_PAGE]
+
+
+def test_the_quotas_step_reads_the_project_wide_cpus_beside_the_regional(pages: list[Any]) -> None:
+    """F5 in preflight.quotas: `cpus_all_regions` below the floor is UNMET
+    even when the region's `cpus` is ample; at a Free Trial's cap the page
+    that opens is the account's upgrade page."""
+    gcp = FakeGcp()
+    gcp.enabled.add("compute.googleapis.com")
+    gcp.quotas["compute.googleapis.com"] = [_cpus({None: 24, "us-central1": 200}),
+                                           _cpus({None: 8}, name="compute.googleapis.com/cpus_all_regions")]
+    step = preflight.QuotasStep(lambda: gcp, answers())
+    ctx = ctx_for(region="us-central1", outputs={"billing_account": ACCOUNT})
+    low = step.check(ctx)
+    assert low.status == UNMET and "quota.compute-regional-cpus: 8 is below 24" in low.detail
+    assert "CPUS_ALL_REGIONS" in low.detail and "Free Trial" in low.detail
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [UPGRADE_PAGE]
+
+    gcp.quotas["compute.googleapis.com"][1] = _cpus({None: 16}, name="compute.googleapis.com/cpus_all_regions")
+    pages.clear()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [ALL_REGIONS_PAGE]
+    gcp.quotas["compute.googleapis.com"][1] = _cpus({None: 3000}, name="compute.googleapis.com/cpus_all_regions")
+    assert step.check(ctx).status == MET

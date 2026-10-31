@@ -31,6 +31,7 @@ from swarm_api.forgeapp import HttpAnswer
 from swarm_api.groups import GroupLookupError, StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.routes import setup as setup_routes
 from swarm_api.setup_github import GitHubSetupApi
 from swarm_api.specsigning import SpecSignature
 from swarm_api.waker import NullWaker
@@ -232,10 +233,12 @@ class FakeRuns:
         self.workflows: list[dict[str, Any]] = []
         self.states: dict[str, str] = {}
 
-    def submit_task(self, *, tenant_id, group, repository, prompt, label):
+    def submit_task(self, *, tenant_id, group, repository, prompt, label,
+                    strategy=setup_routes.SMOKE_STRATEGY):
         task_id = f"task-{len(self.tasks) + 1}"
         self.tasks.append({"id": task_id, "tenant": tenant_id, "group": group,
-                           "repository": repository, "prompt": prompt, "label": label})
+                           "repository": repository, "prompt": prompt, "label": label,
+                           "strategy": strategy})
         self.states[task_id] = "running"
         return task_id
 
@@ -352,6 +355,9 @@ def setup_app(db, tokens, group_map, objects, directory, fake_secrets, github, p
         metrics=ApiMetrics(),
         objects=objects,
         forge_tokens=NoForgeTokens(),
+        # The real submission path signs each run's spec: a test that sends
+        # `TeamRuns` through it (`setup_runs = None`) needs the key.
+        signer=signer,
     )
     app = create_app(context)
     app.state.workspace_publisher = FakePublisher()
@@ -513,8 +519,10 @@ class PassingAppCheck:
 
 
 def install_app(db, github, repositories: tuple[str, ...] = (f"{ORG}/demo", f"{ORG}/api")):
-    """The App created and installed on ORG, covering `repositories`."""
-    db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 4242, "installed_on": ORG}
+    """The App created and installed on ORG, covering `repositories`, and its
+    self-check passed (infra pass 3 has landed)."""
+    db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 4242, "installed_on": ORG,
+                                                          "self_check": {"ok": True}}
     github.installations = [{"id": 77, "account": {"login": ORG, "type": "Organization"},
                              "repository_selection": "selected"}]
     github.repositories = list(repositories)
@@ -669,7 +677,7 @@ def test_smoke_runs_when_the_first_pool_account_lands(setup_client, db, github, 
     assert smoke["state"] == "running" and smoke["task_id"] == "task-1"
     assert runs.tasks == [{"id": "task-1", "tenant": team, "group": TEAM_GROUP,
                            "repository": f"{ORG}/api", "prompt": runs.tasks[0]["prompt"],
-                           "label": "swarm-install-smoke"}]
+                           "label": "swarm-install-smoke", "strategy": "collect"}]
     page_team(setup_client, team)
     assert len(runs.tasks) == 1, "a second read started a second smoke"
     runs.states["task-1"] = "succeeded"
@@ -829,52 +837,204 @@ def test_an_installation_with_no_repository_is_read_again_until_one_lands(
     assert runs.tasks[0]["repository"] == f"{ORG}/demo"
 
 
-class _Submitted:
-    def __init__(self, ident: str) -> None:
-        self.id = ident
-        self.workflow_id = ident
-
-
 class RecordingSubmissions:
-    """`SubmissionService`'s two submit calls, recorded."""
+    """`SubmissionService`'s two submit calls, recorded and then handed to
+    the REAL service, so a spec it refuses is refused here too (audit 4d,
+    F1/F2: a recorder that accepted any spec hid a workflow every real
+    submission answered 422)."""
 
-    def __init__(self) -> None:
+    def __init__(self, real: Any) -> None:
+        self.real = real
         self.calls: list[tuple[str, Any, Any]] = []
 
     def submit_tasks(self, auth, specs):
         self.calls.append(("task", auth, specs))
-        return type("Result", (), {"tasks": [_Submitted("t-1")]})()
+        return self.real.submit_tasks(auth, specs)
 
     def submit_workflow(self, auth, spec):
         self.calls.append(("workflow", auth, spec))
-        return type("Submission", (), {"workflow": _Submitted("w-1")})()
+        return self.real.submit_workflow(auth, spec)
 
 
-def test_team_runs_submit_as_the_team_never_as_a_person() -> None:
+def test_team_runs_submit_as_the_team_never_as_a_person(setup_app, setup_client, db,
+                                                        github) -> None:
     """Decision 3, lesson 43: the runs are submitted in the team's tenant as
     swarm-api's own service account, a service submitter, so the existing
     submission path runs them on the team's own slot and never on the
     admin's (or anyone's) GitHub connection."""
-    from swarm_api.routes import setup as setup_routes
     from swarm_api.validation import is_service_submitter
 
-    submissions = RecordingSubmissions()
-    ctx = type("Ctx", (), {"submissions": submissions,
-                           "settings": api_settings()})()
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    real = setup_app.state.ctx
+    submissions = RecordingSubmissions(real.submissions)
+    ctx = type("Ctx", (), {"submissions": submissions, "settings": real.settings})()
     team_runs = setup_routes.TeamRuns(ctx)
-    assert team_runs.submit_task(tenant_id="platform-team", group=TEAM_GROUP,
-                                 repository=f"{ORG}/demo", prompt="p", label="l") == "t-1"
-    assert team_runs.submit_workflow(tenant_id="platform-team", group=TEAM_GROUP,
-                                     repository=f"{ORG}/demo", label="l") == "w-1"
+    assert team_runs.submit_task(tenant_id=team, group=TEAM_GROUP,
+                                 repository=f"{ORG}/demo", prompt="p", label="l")
+    assert team_runs.submit_workflow(tenant_id=team, group=TEAM_GROUP,
+                                     repository=f"{ORG}/demo", label="l")
     for kind, auth, spec in submissions.calls:
         assert auth.email == f"swarm-api@{PROJECT}.iam.gserviceaccount.com"
         assert is_service_submitter(auth.email)
-        assert auth.tenant_id == "platform-team" and auth.tenant_principal == TEAM_GROUP
+        assert auth.tenant_id == team and auth.tenant_principal == TEAM_GROUP
         assert auth.is_admin is False
         found = spec[0] if kind == "task" else spec
         assert found.repository_url == f"https://github.com/{ORG}/demo"
     assert [kind for kind, _, _ in submissions.calls] == ["task", "workflow"]
     assert [s.step_id for s in submissions.calls[1][2].steps] == ["write", "open"]
+
+
+def _stored_dispatch(db, task_id: str) -> dict[str, Any]:
+    return dict((db.docs[f"tasks/{task_id}"].get("metadata") or {}).get("dispatch") or {})
+
+
+def test_the_console_verify_runs_are_admitted_by_the_real_submission_service(
+        setup_app, setup_client, db, github) -> None:
+    """Audit 4d, F1 and F2: `TeamRuns` through the real `SubmissionService`.
+    The workflow (whose `open` step builds on `write`'s branch) is admitted,
+    as `integrate` with `open` its integrator, and the task is stored as
+    `direct-pr`: each ends in the pull request verify requires. Before, the
+    workflow was refused 422 (`collect` pushes no branch) and the task was a
+    `collect` task whose git tools refuse every push."""
+    setup_app.state.setup_runs = None
+    install_app(db, github)
+    create_team(setup_client)
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    ids = answer.json()["verify_runs"]
+    assert set(ids) == {"console_task", "console_workflow"} and all(ids.values())
+    assert db.docs[VERIFY_DOC]["verify_runs"] == ids
+    assert _stored_dispatch(db, ids["console_task"])["strategy"] == "direct-pr"
+    steps = [d for k, d in db.docs.items() if k.count("/") == 1 and k.startswith("tasks/")
+             and d.get("workflow_id") == ids["console_workflow"]]
+    roles_ = {(d["metadata"]["dispatch"]["strategy"], d["metadata"]["dispatch"].get("role"))
+              for d in steps}
+    assert roles_ == {("integrate", "contributor"), ("integrate", "integrator")}
+
+
+def test_the_smoke_is_admitted_by_the_real_submission_service(setup_app, setup_client, db,
+                                                              github, pool) -> None:
+    """The first team's smoke through the real `SubmissionService`: admitted,
+    and stored `collect` (its prompt asks for no pull request)."""
+    setup_app.state.setup_runs = None
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    smoke = page_team(setup_client, team)["smoke"]
+    assert smoke["state"] == "running", smoke
+    assert _stored_dispatch(db, smoke["task_id"])["strategy"] == "collect"
+
+
+def _before_pass_3(db) -> None:
+    """The App installed, its self-check answering `app_id_not_configured`:
+    infra pass 3 has not rendered GITHUB_APP_ID yet."""
+    db.docs[f"swarm-install/{ENV}/console/github_app"]["self_check"] = {
+        "ok": False, "reason": "app_id_not_configured"}
+
+
+def test_the_smoke_waits_for_infra_pass_3(setup_client, db, github, pool, runs) -> None:
+    """Audit 4d, F4: before pass 3 no installation token can be minted, so a
+    smoke started then fails to clone. It reads `waiting_for_infra_pass_3`,
+    nothing is submitted or recorded, and it starts on the first read after
+    the self-check passes."""
+    install_app(db, github)
+    _before_pass_3(db)
+    team = create_team(setup_client).json()["team"]
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    smoke = page_team(setup_client, team)["smoke"]
+    assert smoke["state"] == "waiting_for_infra_pass_3", smoke
+    assert "infra pass 3" in smoke["message"]
+    assert runs.tasks == [] and team_doc(db, team).get("smoke") is None
+    restart = setup_client.post("/v1/admin/setup/smoke", headers=auth_header("root"))
+    assert restart.json()["smoke"]["state"] == "waiting_for_infra_pass_3"
+    assert runs.tasks == []
+    db.docs[f"swarm-install/{ENV}/console/github_app"]["self_check"] = {"ok": True}
+    assert page_team(setup_client, team)["smoke"]["state"] == "running"
+    assert len(runs.tasks) == 1
+
+
+def test_one_persons_smoke_waits_for_infra_pass_3(setup_client, db, github, pool,
+                                                  runs) -> None:
+    seed_sized_engine(db)
+    install_app(db, github)
+    _before_pass_3(db)
+    tenant = personal_tenant()
+    page(setup_client)
+    pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
+                          "label": "pool-1"})
+    assert page(setup_client)["personal"]["smoke"]["state"] == "waiting_for_infra_pass_3"
+    assert runs.tasks == []
+
+
+def test_the_verify_runs_wait_for_infra_pass_3(setup_client, db, github, runs) -> None:
+    """Audit 4d, F4: `start_verify_runs` starts nothing before pass 3 and
+    says so (409, `waiting_for_infra_pass_3`); nothing is recorded, so the
+    engine waits rather than reading a run doomed to fail."""
+    install_app(db, github)
+    _before_pass_3(db)
+    create_team(setup_client)
+    early = start_verify(setup_client)
+    assert early.status_code == 409, early.text
+    assert early.json()["detail"]["state"] == "waiting_for_infra_pass_3"
+    assert runs.tasks == [] and runs.workflows == [] and VERIFY_DOC not in db.docs
+    db.docs[f"swarm-install/{ENV}/console/github_app"]["self_check"] = {"ok": True}
+    assert start_verify(setup_client).status_code == 200
+    assert len(runs.tasks) == 1 and len(runs.workflows) == 1
+
+
+REDEEM = "/v1/setup/links/redeem"
+
+
+def _mint_pool_link(client: TestClient, owner: str = ALICE) -> str:
+    minted = client.post("/v1/admin/setup/links", headers=auth_header("root"), json={
+        "kind": "pool-account", "label": "pool-1", "owner": owner})
+    assert minted.status_code == 201, minted.text
+    return minted.json()["path"].rsplit("/", 1)[1]
+
+
+def _link_used(db) -> bool:
+    links = [d for k, d in db.docs.items() if k.startswith("setup_links/")]
+    assert len(links) == 1
+    return links[0].get("used_at") is not None
+
+
+def test_a_pool_link_is_not_spent_before_its_workspace_is_ready(setup_client, db) -> None:
+    """Audit 4d, F6: the sign-in a pool link leads to names its workspace in
+    X-Swarm-Tenant, refused until the workspace is `ready`. So the redeem
+    answers 409 (retry) WITHOUT consuming the link while it is `approved`,
+    and opens it once it is ready."""
+    team = create_team(setup_client).json()["team"]
+    assert db.docs[f"workspaces/{team}"]["state"] != "ready"
+    token = _mint_pool_link(setup_client)
+    early = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("alice"))
+    assert early.status_code == 409, early.text
+    assert early.json()["detail"] == {**early.json()["detail"], "workspace": team,
+                                      "retry": True}
+    assert "still unused" in early.json()["message"]
+    assert not _link_used(db)
+    db.docs[f"workspaces/{team}"]["state"] = "ready"
+    opened = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("alice"))
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["tenant"] == team and _link_used(db)
+
+
+def test_one_persons_pool_link_waits_for_the_personal_workspace(setup_client, db) -> None:
+    """F6 in one-person mode: the form shows straight after the hand-off,
+    while swarm-workspace-apply is still making the personal workspace."""
+    seed_sized_engine(db)
+    tenant = personal_tenant()
+    token = _mint_pool_link(setup_client, owner=ROOT)
+    early = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("root"))
+    assert early.status_code == 409, early.text
+    assert early.json()["detail"]["workspace"] == tenant
+    assert not _link_used(db)
+    db.docs.setdefault(f"workspaces/{tenant}", {})["state"] = "ready"
+    opened = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("root"))
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["tenant"] == tenant and _link_used(db)
 
 
 # --------------------------------------------------------------------------

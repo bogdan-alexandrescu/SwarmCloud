@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import urllib.error
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -61,10 +62,25 @@ class FakeApi:
 
 
 class FakeKube:
-    def __init__(self, objects: Mapping[str, Any]) -> None:
+    """The cluster's API server, reached the way the real network allows: off
+    Google's runtime the public endpoint answers only while the authorised
+    networks are off or hold the installer's entry; after the closing infra
+    pass a laptop's call times out, as `_call`'s does (audit 4c M2)."""
+
+    def __init__(self, objects: Mapping[str, Any], cluster: Mapping[str, Any] | None = None,
+                 *, on_google: bool = True) -> None:
         self.objects = objects
+        self.cluster = cluster or {}
+        self.on_google = on_google
+        self.calls = 0
 
     def get(self, path):
+        self.calls += 1
+        config = self.cluster.get("masterAuthorizedNetworksConfig") or {}
+        open_to_installer = not config.get("enabled") or any(
+            b.get("displayName") == "swarm-install" for b in config.get("cidrBlocks") or ())
+        if not self.on_google and not open_to_installer:
+            raise urllib.error.URLError(TimeoutError("timed out"))
         if path not in self.objects:
             raise doctor.NotFound(path)
         return self.objects[path]
@@ -254,25 +270,106 @@ def _rbac(namespace: str, users: list[str], verbs: list[str]) -> dict:
     }
 
 
-@pytest.mark.parametrize(("users", "verbs", "status"), [
-    (["swarm-reconciler@proj-doctor.iam.gserviceaccount.com", "1234567890"], ["get", "list"], MET),
-    (["swarm-reconciler@proj-doctor.iam.gserviceaccount.com"], ["get", "list"], UNMET),  # no uniqueId binding
-    (["swarm-reconciler@proj-doctor.iam.gserviceaccount.com", "1234567890"], ["get"], UNMET),
-])
-def test_reconciler_can_list_jobs(users, verbs, status):
-    entry = _entry("rbac.dispatcher-role", {"type": "kubernetes_can_i", "subject": "swarm-reconciler",
-                                            "verb": "list", "resource": "jobs.batch",
-                                            "namespace": "swarm-tenant-$T"})
-    gcp = FakeGcp({
+_RBAC_ENTRY = {"type": "kubernetes_can_i", "subject": "swarm-reconciler", "verb": "list",
+               "resource": "jobs.batch", "namespace": "swarm-tenant-$T"}
+_RECONCILER = "swarm-reconciler@proj-doctor.iam.gserviceaccount.com"
+_INSTALLER_BLOCK = {"displayName": "swarm-install", "cidrBlock": "198.51.100.7/32"}
+
+
+def _rbac_gcp(cluster: Mapping[str, Any]) -> FakeGcp:
+    return FakeGcp({
         f"https://container.googleapis.com/v1/projects/{PROJECT}/locations/{REGION}/clusters":
-            {"clusters": [_cluster()]},
+            {"clusters": [cluster]},
         f"https://iam.googleapis.com/v1/projects/{PROJECT}/serviceAccounts/": {"uniqueId": "1234567890"},
     })
+
+
+def _rbac_objects(users=(_RECONCILER, "1234567890"), verbs=("get", "list")) -> dict:
     objects = {"/api/v1/namespaces": {"items": [{"metadata": {"name": "swarm-tenant-eng"}},
                                                 {"metadata": {"name": "kube-system"}}]}}
-    objects.update(_rbac("swarm-tenant-eng", users, verbs))
-    finding = _one(entry, gcp, kube=lambda cluster: FakeKube(objects))
+    objects.update(_rbac("swarm-tenant-eng", list(users), list(verbs)))
+    return objects
+
+
+def _rbac_finding(cluster: Mapping[str, Any], *, on_google: bool, objects=None) -> tuple[doctor.Finding, list]:
+    built: list[FakeKube] = []
+
+    def kube(found):
+        built.append(FakeKube(objects if objects is not None else _rbac_objects(), found, on_google=on_google))
+        return built[-1]
+
+    entry = _entry("rbac.dispatcher-role", _RBAC_ENTRY, step="handoff.console")
+    entry = entry.model_copy(update={"expand": "per_tenant"})
+    return _one(entry, _rbac_gcp(cluster), kube=kube, on_google=on_google), built
+
+
+@pytest.mark.parametrize(("users", "verbs", "status"), [
+    ([_RECONCILER, "1234567890"], ["get", "list"], MET),
+    ([_RECONCILER], ["get", "list"], UNMET),  # no uniqueId binding
+    ([_RECONCILER, "1234567890"], ["get"], UNMET),
+])
+def test_reconciler_can_list_jobs(users, verbs, status):
+    # The hourly job: on Google's runtime, at the private endpoint, after the close.
+    finding, _ = _rbac_finding(_cluster(), on_google=True, objects=_rbac_objects(users, verbs))
     assert finding.status == status, finding.detail
+
+
+def test_a_laptop_after_the_close_skips_the_cluster_probe_and_stays_green():
+    # Audit 4c M2: infra-close took the installer's address out of the
+    # authorised networks; a laptop's call would time out (the fake refuses it
+    # as the network does), so the probe is not tried and the doctor is green.
+    closed = _cluster(blocks=[{"displayName": "office", "cidrBlock": "203.0.113.0/24"}])
+    finding, built = _rbac_finding(closed, on_google=False)
+    assert finding.status == doctor.SKIPPED, finding.detail
+    assert "closed after install" in finding.detail and "hourly doctor" in finding.detail
+    assert all(k.calls == 0 for k in built), "a closed control plane is never called from off Google"
+    met = _one(_entry("api.run", {"type": "service_enabled", "name": "run.googleapis.com"}),
+               FakeGcp({"https://serviceusage.googleapis.com/": {"state": "ENABLED"}}))
+    assert doctor.exit_code([met, finding]) == ExitCode.OK
+    assert doctor.exit_code([finding]) == ExitCode.TROUBLE, "all skipped is nothing checked, never 0"
+    said: list[str] = []
+    doctor.render([met, finding], 0, say=said.append)
+    assert not any("swarm install --repair" in line for line in said)
+    assert "1 met, 0 unmet, 0 unknown, 1 skipped of 2 probed entries" in said[-1]
+
+
+def test_a_laptop_while_the_installer_is_admitted_still_probes_the_cluster():
+    finding, built = _rbac_finding(_cluster(blocks=[_INSTALLER_BLOCK]), on_google=False)
+    assert finding.status == MET, finding.detail
+    assert built and built[0].calls > 0
+
+
+def test_the_fake_cluster_refuses_a_laptop_after_the_close():
+    # The fake refuses what the real network refuses, so a probe that called
+    # the closed control plane from off Google could not pass by accident.
+    kube = FakeKube(_rbac_objects(), _cluster(), on_google=False)
+    with pytest.raises(urllib.error.URLError):
+        kube.get("/api/v1/namespaces")
+
+
+def test_a_per_tenant_entry_prints_no_install_repair():
+    # Audit 4c M2: rbac.dispatcher-role's step is the console hand-off, which
+    # only sees Admin › Setup finished again; the platform's workspace-apply job
+    # writes the RBAC per team. So no `swarm install --repair` is printed.
+    finding, _ = _rbac_finding(_cluster(), on_google=True, objects=_rbac_objects(users=[_RECONCILER]))
+    assert finding.status == UNMET
+    assert finding.repair is None
+    assert finding.to_json()["repair"] is None
+    assert "swarm install --repair rbac.dispatcher-role" not in finding.fix
+    assert "swarm-workspace-apply" in finding.fix and "when the team is made" in finding.fix
+
+
+def test_the_real_manifest_dispatcher_entry_prints_no_install_repair():
+    entry = m.load().by_id()["rbac.dispatcher-role"]
+    assert entry.probe is not None and entry.probe.type == "kubernetes_can_i"
+    assert "swarm install --repair rbac.dispatcher-role" not in doctor.fix_words(entry)
+    assert "swarm-workspace-apply" in doctor.fix_words(entry)
+
+
+def test_installer_network_name_matches_the_tfvars_one():
+    from swarm_install import tfvars
+
+    assert doctor.INSTALLER_NETWORK == tfvars.CLUSTER_REACH_NAME
 
 
 def test_desktop_client_in_programmatic_allowlist():

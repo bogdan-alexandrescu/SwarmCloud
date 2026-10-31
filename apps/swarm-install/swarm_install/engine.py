@@ -13,7 +13,8 @@
    own what they make) is. If one is not, the stage refuses and names the
    entry and the step that satisfies it (lesson 8: infra applied before
    bootstrap fails on a missing custom role).
-5. `plan`, print it, renew the lease, `apply`; for a human step, open its
+5. `plan`, print it, renew the lease, `apply` (heartbeating the lease and the
+   install record every `HEARTBEAT_SECONDS` while it runs, see `_beating`); for a human step, open its
    page once (`steps.open_page`, before the first poll, never on every poll);
    for a human or wait step, poll the check with a countdown up to the step's bound (running the wait's
    triggered steps on every poll); else re-`check`. Then `verify`.
@@ -32,14 +33,16 @@ not run; 4 paused on a human step or a wait past its bound; 5 refused.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+import threading
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import exitcodes
 from .events import Events
 from .exitcodes import MET, UNKNOWN, ExitCode
-from .lease import Lease, LeaseHeld, LeaseLost, LeaseRefused
+from .lease import HEARTBEAT_SECONDS, Lease, LeaseHeld, LeaseLost, LeaseRefused
 from .manifest import Entry, Manifest
 from .record import InstallRecord, RecordConflict
 from .state import (
@@ -164,6 +167,11 @@ class Engine:
         self.record = record
         self.dry_run = dry_run
         self.confirm = confirm
+        #: How often, in wall-clock seconds, `_beating` wakes during an apply.
+        self.heartbeat_interval: float = HEARTBEAT_SECONDS
+        # The heartbeat thread and the step loop both renew the lease and write
+        # the install record; one at a time (re-entrant: save() mirrors).
+        self._beat_lock = threading.RLock()
         self.met: set[str] = set()
         # Step id -> whether this run found it met; a dependency whose manifest
         # entry names its owning step (`entry.step`) is met once that step is.
@@ -184,13 +192,15 @@ class Engine:
     def save(self, change: Callable[[InstallState], None]) -> None:
         """Apply `change` to the stored state (re-reading on a conflict) and mirror it."""
         assert self.ctx is not None
-        self.ctx.state = self.store.update(change)
-        self.mirror()
+        with self._beat_lock:
+            self.ctx.state = self.store.update(change)
+            self.mirror()
 
     def mirror(self) -> None:
         if self.record is None or self.ctx is None or self.dry_run:
             return
-        self.record.write(self.ctx.state, self._stage_of, lease=self.lease.as_record())
+        with self._beat_lock:
+            self.record.write(self.ctx.state, self._stage_of, lease=self.lease.as_record())
 
     def _record(self, step: Step, state: str, *, plan: Plan | None = None,
                 outputs: dict[str, Any] | None = None, detail: str | None = None) -> None:
@@ -214,12 +224,13 @@ class Engine:
 
     def attach_bucket(self, bucket: ObjectStore) -> None:
         assert self.ctx is not None
-        self.ctx.state = self.store.attach_bucket(bucket)
-        if self.dry_run:
-            return
-        moved = Lease(holder=self.holder, store=bucket, clock=self.clock.now)
-        moved.acquire(self.confirm)
-        self.lease = moved
+        with self._beat_lock:
+            self.ctx.state = self.store.attach_bucket(bucket)
+            if self.dry_run:
+                return
+            moved = Lease(holder=self.holder, store=bucket, clock=self.clock.now)
+            moved.acquire(self.confirm)
+            self.lease = moved
 
     # -- the loop ---------------------------------------------------------
 
@@ -297,11 +308,52 @@ class Engine:
         return _Stop("failed", step.id, message)
 
     def _heartbeat(self) -> None:
-        if self.dry_run or not self.lease.heartbeat_due():
+        with self._beat_lock:
+            if self.dry_run or not self.lease.heartbeat_due():
+                return
+            self.lease.renew()
+            self.events.emit("lease", holder=self.holder, expires=self.lease.expires)
+            self.mirror()
+
+    @contextmanager
+    def _beating(self) -> Iterator[None]:
+        """Heartbeat the lease and the install record while a step applies.
+
+        A step's apply can run for many minutes with no poll: pass 3 and
+        pass 4 are one Terraform apply each, run inside the hand-off's poll
+        (`_run_triggered`). Admin › Setup reads a `lease.heartbeat` older than
+        2 minutes as "swarm install is not running" and tells the person to run
+        it again, which would take this holder's lease, restart the pass
+        against Terraform's state lock and stop this run (audit 4d, F8). So a
+        thread beats every `heartbeat_interval` seconds until the apply
+        returns. A beat that fails (a network blip) is retried on the next
+        tick; a lease taken over (`LeaseLost`) ends the beating and is raised
+        here once the apply returns, so the step is not recorded done."""
+        if self.dry_run:
+            yield
             return
-        self.lease.renew()
-        self.events.emit("lease", holder=self.holder, expires=self.lease.expires)
-        self.mirror()
+        stop = threading.Event()
+        lost: list[LeaseLost] = []
+
+        def beat() -> None:
+            while not stop.wait(self.heartbeat_interval):
+                try:
+                    self._heartbeat()
+                except LeaseLost as exc:
+                    lost.append(exc)
+                    return
+                except Exception:  # noqa: BLE001 - a missed beat is retried on the next tick
+                    continue
+
+        thread = threading.Thread(target=beat, name="swarm-install-heartbeat", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join()
+        if lost:
+            raise lost[0]
 
     def _run_triggered(self, waiting: Step, done: set[str]) -> None:
         for triggered in triggered_of(waiting):
@@ -398,7 +450,8 @@ class Engine:
         self.lease.renew()
         self.events.emit("step_apply", step=step.id, stage=step.stage, explain=step.explain())
         try:
-            step.apply(self.ctx, plan)
+            with self._beating():
+                step.apply(self.ctx, plan)
         except _Stop:
             raise
         except WaitGaveUp as gave_up:

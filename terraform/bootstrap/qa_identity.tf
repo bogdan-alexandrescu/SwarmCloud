@@ -172,8 +172,9 @@ resource "google_service_account_iam_policy" "qa_identity" {
   service_account_id = google_service_account.qa_identity[0].name
   policy_data        = data.google_iam_policy.qa_identity.policy_data
 
-  # The binding names the role, so the role exists first.
-  depends_on = [google_project_iam_custom_role.qa_jwt_signer]
+  # The binding names the role, so the role exists first; and swarm-api by a
+  # string (qa_signer_member), so the account exists first too (audit 3 A10).
+  depends_on = [google_project_iam_custom_role.qa_jwt_signer, google_service_account.platform]
 }
 
 output "qa_identity" {

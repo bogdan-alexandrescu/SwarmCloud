@@ -6,7 +6,7 @@
 |---|---|---|
 | `cluster.bundle` | `other.release-kubernetes-bundle` | engine: the release's `kubernetes.tgz`, checked against its cosign-verified `SHA256SUMS` (`Release.fetch`) and unpacked; never a checkout |
 | `cluster.policies` | `cluster-policy.*` (9), `rbac.provisioner-clusterrole` | engine: `render.py policies` from the bundle, applied before anything a tenant runs |
-| `cluster.swarm-system` | `cluster.swarm-system-namespace` | engine: swarm-system's default-deny ingress, only once the policies are in |
+| `cluster.swarm-system` | `cluster.swarm-system-namespace` | engine: the swarm-system namespace and its default-deny ingress, only once the policies are in |
 | `cluster.workloads` | `workload.swarm-live`, `workload.swarm-graph` | engine: the live relay and the graph service, infra's renders, applied and rolled out in swarm-system |
 
 **swarm-system's two core workloads are Terraform's renders.** The live
@@ -25,6 +25,13 @@ shipped sizes the admission policy did not yet admit, and 54 dispatches
 failed. Stage 10 runs before stage 11 (the first team's namespace), and
 `cluster.swarm-system` refuses to apply while the policies differ from the
 render.
+
+**swarm-system is created here.** terraform/infra makes no Kubernetes
+objects, and each workload manifest declares its own copy of the Namespace,
+but `cluster.workloads` runs after this step's ingress policies, which need
+the namespace to exist. `cluster.swarm-system` applies the Namespace first,
+with the labels every `kubernetes/swarm-system/*.yaml` copy carries, so the
+later copies change nothing.
 
 **Subjects by uniqueId, read from IAM** (lesson 29): a RoleBinding whose
 subject is a Google service account's email is never matched by GKE, which
@@ -96,12 +103,28 @@ from . import Observation, Plan
 from .bootstrap import Release
 from .preflight import ASK, COMPUTE, TOOLS, Ask, Gcp, find_tool
 
-#: terraform/infra's cluster (`google_container_cluster.agents`); infra pass 1
-#: records the name it created as `gke_cluster_name`.
-DEFAULT_CLUSTER = "swarm-agents"
+#: terraform/infra's cluster (`google_container_cluster.agents`, named
+#: `${name_prefix}-autopilot`; the engine never renders name_prefix, so its
+#: default "swarm"). Each infra pass records Terraform's own `gke_cluster_name`
+#: output (`bootstrap.apply_pass`); this is the name before one has.
+DEFAULT_CLUSTER = "swarm-autopilot"
 BUNDLE = "kubernetes.tgz"
 RUN_API = "https://run.googleapis.com/v2"
 BUNDLE_MUST_HOLD = ("render.py", "policies/", "swarm-system/", "rbac/")
+
+#: The swarm-system Namespace, with the labels each
+#: kubernetes/swarm-system/*.yaml copy declares, so the workloads' own copies,
+#: applied later, change nothing on it.
+SWARM_SYSTEM_NAMESPACE = """\
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+"""
 
 #: The accounts the cluster-scoped RBAC names (kubernetes/render.py
 #: `policy_values`), each by email and by the uniqueId IAM assigned.
@@ -524,20 +547,19 @@ class SwarmSystemStep(_Base):
     satisfies = ("cluster.swarm-system-namespace",)
     _explain = (
         "swarm-system holds the platform's in-cluster services; its default-deny ingress admits only the "
-        "live relay's port from tenant pods and swarm-api's egress range. Terraform creates the namespace; "
-        "this applies its policies, after the admission policies (lesson 33)."
+        "live relay's port from tenant pods and swarm-api's egress range. This creates the namespace and "
+        "applies its policies, after the admission policies (lesson 33)."
     )
 
     def __init__(self, gcp: Callable[[], ClusterGcp], ask: Ask, *, policies: PoliciesStep, **kw: Any) -> None:
         super().__init__(gcp, ask, **kw)
         self._policies = policies
 
-    def egress_cidr(self, ctx: Any) -> str:
-        """swarm-api's Direct VPC egress range, read as kubernetes/apply.sh
-        --swarm-system reads it: the service's subnetwork, then its range."""
-        cidr = ctx.outputs.get("swarm_api_egress_cidr")
-        if cidr:
-            return str(cidr)
+    def egress(self, ctx: Any) -> tuple[str, str]:
+        """swarm-api's Direct VPC egress range and where it was read, as
+        kubernetes/apply.sh --swarm-system reads it: the service's subnetwork,
+        then its range. The source is render.py's documented form,
+        `run/<project>/<region>/<service>/<subnetwork>`."""
         region = str(ctx.state.region)
         service = self.gcp.run_service(ctx.project, region, "swarm-api") or {}
         interfaces = (service.get("template", {}).get("vpcAccess", {}) or {}).get("networkInterfaces") or []
@@ -549,32 +571,34 @@ class SwarmSystemStep(_Base):
         cidr = str((found or {}).get("ipCidrRange") or "")
         if not cidr:
             raise LookupError(f"subnetwork {name} has no ipCidrRange")
-        return cidr
+        return cidr, f"run/{ctx.project}/{region}/swarm-api/{name}"
 
     def rendered(self, ctx: Any) -> str:
-        cidr = self.egress_cidr(ctx)
+        cidr, source = self.egress(ctx)
         return self.render(ctx, "swarm-system", f"--swarm-api-egress-cidr={cidr}",
-                           f"--swarm-api-egress-source=install-state/{ctx.project}/swarm_api_egress_cidr")
+                           f"--swarm-api-egress-source={source}")
 
     def check(self, ctx: Any) -> Observation:
         code, _, _ = self.kube(ctx)("get", "namespace", "swarm-system", "-o", "name")
         if code != 0:
-            return Observation(UNMET, "namespace swarm-system does not exist (infra pass 1 creates it)")
+            return Observation(UNMET, "namespace swarm-system does not exist yet (this step creates it)")
+        problem = self.differs(ctx, SWARM_SYSTEM_NAMESPACE)
+        if problem:
+            return Observation(UNMET, f"namespace swarm-system's labels: {problem}")
         problem = self.differs(ctx, self.rendered(ctx))
         return Observation(UNMET, problem) if problem else Observation(MET, "swarm-system's ingress matches")
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan("apply swarm-system's ingress policies",
-                    tuple(f"{k}/{n}" for k, n in documents(self.rendered(ctx))))
+        return Plan("create the swarm-system namespace and apply its ingress policies",
+                    ("Namespace/swarm-system", *(f"{k}/{n}" for k, n in documents(self.rendered(ctx)))))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         problem = self._policies.differs(ctx, self._policies.rendered(ctx))
         if problem:
             raise RuntimeError(f"the admission policies go first (lesson 33): {problem}")
-        code, _, _ = self.kube(ctx)("get", "namespace", "swarm-system", "-o", "name")
-        if code != 0:
-            raise RuntimeError("namespace swarm-system does not exist; infra pass 1 creates it")
-        self.apply_render(ctx, self.rendered(ctx))
+        rendered = self.rendered(ctx)
+        self.apply_render(ctx, SWARM_SYSTEM_NAMESPACE)
+        self.apply_render(ctx, rendered)
 
 
 #: swarm-system's core workloads: (manifest entry, kind/name, Terraform output).

@@ -100,6 +100,20 @@ resource "google_service_account_iam_member" "deployer_admin" {
   role               = "roles/iam.serviceAccountAdmin"
   member             = "serviceAccount:${google_service_account.deployer[0].email}"
 
+  # service_account_id names each account by a string, which orders nothing:
+  # on a fresh project the first apply would grant before the account exists
+  # ("does not exist") and pass only on a re-run (audit 3 A10). Every
+  # resource that makes one of bootstrap_platform's accounts is listed.
+  depends_on = [
+    google_service_account.platform,
+    google_service_account.tick,
+    google_service_account.verify,
+    google_service_account.schedule_tick,
+    google_service_account.rollup_sweeper,
+    google_service_account.discovery,
+    google_service_account.doctor,
+  ]
+
   lifecycle {
     # Only when a file is named: an install names none (section 5.6 of
     # docs/design/day-one-install.md), and has no worker grants to drop.

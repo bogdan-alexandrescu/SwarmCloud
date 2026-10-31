@@ -18,7 +18,11 @@ import contextlib
 import dataclasses
 import io
 import json
+import os
 import secrets
+import shlex
+import shutil
+import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -303,10 +307,26 @@ def check_artifact(shape: str) -> str:
 
 
 class FakeRuns:
+    """As on a new deployment: the code graph records no index of the
+    repository until verify asks for one (`index`) and swarm-graph promotes
+    it (`promote`), so a code-intelligence run started before reads none."""
+
     def __init__(self) -> None:
         self.launched: list[tuple[str, str, str, str]] = []
         self.states: dict[str, verify.RunStatus] = {}
         self.targeted = 0
+        self.index_requests: list[str] = []
+        self.indexed = ""
+
+    def index(self, ctx: Any, repository: str) -> None:
+        self.index_requests.append(repository)
+
+    def promote(self) -> None:
+        assert self.index_requests, "swarm-graph indexes only a repository someone asked to index"
+        self.indexed = INDEX_SHA
+
+    def index_commit(self, ctx: Any) -> str:
+        return self.indexed
 
     def target(self, ctx: Any) -> None:
         self.targeted += 1
@@ -329,7 +349,7 @@ class FakeRuns:
         return self.states.get(run_id, verify.RunStatus("running"))
 
     def finish(self, run_id: str, *, pr: str | None = None, kind: str = "app_installation",
-               artifact: str | None = None, profile: str | None = None, index_commit: str = INDEX_SHA) -> None:
+               artifact: str | None = None, profile: str | None = None, index_commit: str | None = None) -> None:
         used = verify.credential_use(run_id, {"forge_credential": {"kind": kind, "source": TENANT_GIT}})
         shape = run_id.split("-", 2)[2]
         check = verify.CHECK_RUNS.get(shape)
@@ -337,7 +357,7 @@ class FakeRuns:
             self.states[run_id] = verify.RunStatus(
                 "succeeded", "", (used,), profile or check.profile,
                 artifact if artifact is not None else check_artifact(shape),
-                index_commit if check.graph_record else "")
+                (self.indexed if index_commit is None else index_commit) if check.graph_record else "")
             return
         url = pr if pr is not None else f"https://github.com/{REPO}/pull/{len(run_id)}"
         self.states[run_id] = verify.RunStatus("succeeded", url, (used,))
@@ -380,16 +400,24 @@ def test_four_end_to_end_runs_each_to_a_pr() -> None:
     runs = FakeRuns()
     step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=runs, kube=FakeKube())
     ctx = _ctx()
+    ctx.dry_run = False
+    ctx.engine = _Saves(ctx)
     assert step.check(ctx).status == UNMET  # nothing started yet
     step.apply(ctx, step.plan(ctx))
+    # The code-intelligence run waits for the index verify asked for (audit 4c, B2).
+    assert runs.index_requests == [REPO]
     assert [(s, k) for s, k, _, _ in runs.launched] == [("plugin", "single"), ("plugin", "workflow"),
-                                                        ("plugin", "gke"), ("plugin", "browser"),
-                                                        ("plugin", "code-intelligence")]
+                                                        ("plugin", "gke"), ("plugin", "browser")]
+    observed = step.check(ctx)
+    assert observed.status == WAITING and "code graph has indexed" in observed.detail
+    runs.promote()
+    assert step.check(ctx).status == WAITING
+    assert runs.launched[-1][:2] == ("plugin", "code-intelligence")
     assert {repo for _, _, repo, _ in runs.launched} == {REPO}
     assert ctx.outputs["verify_repository"] == REPO and set(ctx.outputs["verify_runs"]) == set(PLUGIN_KEYS)
 
-    step.apply(ctx, step.plan(ctx))  # a rerun launches nothing twice
-    assert len(runs.launched) == 5
+    step.apply(ctx, step.plan(ctx))  # a rerun launches nothing twice, and asks for no second index
+    assert len(runs.launched) == 5 and runs.index_requests == [REPO]
 
     for key in PLUGIN_KEYS:
         runs.finish(f"t-{key}")
@@ -421,6 +449,7 @@ TENANT_GIT = "swarm-tenant-acme-git"
 
 def _all_finished(kinds: dict[str, str] | None = None, *, kube: FakeKube | None = None) -> tuple[Any, Any]:
     runs = FakeRuns()
+    runs.index_requests, runs.indexed = [REPO], INDEX_SHA
     step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=runs, kube=kube or FakeKube())
     plugin = {key: f"t-{key}" for key in PLUGIN_KEYS}
     ctx = _ctx(verify_runs={**plugin, **CONSOLE}, verify_repository=REPO, verify_context=HOSTNAME,
@@ -517,6 +546,7 @@ def test_a_run_whose_task_recorded_no_credential_fails() -> None:
 
 def _console_rig(tenant: str, docs: dict[str, dict[str, Any]], **outputs: Any) -> tuple[Any, Any, list[str]]:
     runs = FakeRuns()
+    runs.index_requests, runs.indexed = [REPO], INDEX_SHA
     step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=runs, kube=FakeKube())
     ctx = _ctx(verify_runs={key: f"t-{key}" for key in PLUGIN_KEYS}, verify_repository=REPO,
                verify_context=HOSTNAME, verify_tenant=tenant, **outputs)
@@ -752,6 +782,36 @@ def test_only_a_known_kind_and_a_slot_name_are_repeated_from_a_summary() -> None
 # -- the swarm CLI as it really prints ------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def swarm_off_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Audit 4b, B4: install.sh put swarm in ~/.local/bin, which is not on the
+    PATH of the terminal it ran in, so the person typed `~/.local/bin/swarm
+    install`. Every fake below spawns as a subprocess would (`spawn`). The
+    tool's interpreter is a real one, as in uv's tool bin: stage 10 renders
+    the release bundle with `sys.executable`."""
+    path = tmp_path / "home" / ".local" / "bin" / "swarm"
+    path.parent.mkdir(parents=True)
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    interpreter = tmp_path / "tools" / "swarmcloud" / "bin" / "python3"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
+    interpreter.chmod(0o755)
+    monkeypatch.setattr(sys, "argv", [str(path), "install"])
+    monkeypatch.setattr(sys, "executable", str(interpreter))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    return str(path)
+
+
+def spawn(argv0: str) -> None:
+    """What `subprocess` does with argv[0]: a bare name is looked up on PATH
+    and a path must be an executable file, else FileNotFoundError. A fake that
+    took a bare "swarm" hid B4."""
+    found = argv0 if os.sep in argv0 else shutil.which(argv0)
+    if not found or not (os.path.isfile(found) and os.access(found, os.X_OK)):
+        raise FileNotFoundError(2, "No such file or directory", argv0)
+
+
 class FakeSwarmApi:
     """What the real `swarm` CLI's commands read through their client: tasks by
     id, the workflow route and the dispatch call; nothing else is answered."""
@@ -764,12 +824,22 @@ class FakeSwarmApi:
         self.posted: list[dict[str, Any]] = []
         self.dispatched: list[dict[str, Any]] = []
         self.artifacts: dict[tuple[str, str], str] = {}
-        #: The graph-cache route's `index`, by repo_id; None is "no index".
-        self.indexes: dict[str, dict[str, Any] | None] = {REPO_ID: {"commit_sha": INDEX_SHA,
-                                                                   "manifest_digest": "sha256:" + "0" * 64}}
+        #: As on a new deployment (audit 4c, B2): nothing is registered and the
+        #: code graph records no index until `swarm repo-index` registers the
+        #: repository, asks for its index run, and swarm-graph promotes it.
+        self.registered: dict[str, str] = {}
+        self.index_runs: list[str] = []
+        #: The graph-cache route's `index`, by repo_id; absent is "no index".
+        self.indexes: dict[str, dict[str, Any] | None] = {}
+
+    def promote(self) -> None:
+        """swarm-graph's promotion of the index run that was asked for."""
+        assert self.index_runs, "an index is promoted only after an index run was asked for"
+        self.indexes[self.index_runs[-1]] = {"commit_sha": INDEX_SHA, "manifest_digest": "sha256:" + "0" * 64}
 
     def registration(self, owner: str, repo: str) -> dict[str, Any] | None:
-        return {"repo_id": REPO_ID, "owner": owner, "repo": repo} if f"{owner}/{repo}" == REPO else None
+        repo_id = self.registered.get(f"{owner}/{repo}")
+        return {"repo_id": repo_id, "owner": owner, "repo": repo} if repo_id else None
 
     def task(self, task_id: str) -> dict[str, Any]:
         return self.tasks[task_id]
@@ -796,8 +866,21 @@ class FakeSwarmApi:
             return self.workflows["wf_1"]
         if method == "GET" and path.startswith("/v1/workflows/"):
             return self.workflows[path.rsplit("/", 1)[-1]]
-        if method == "GET" and path.startswith("/v1/repositories/") and path.endswith("/graph-cache"):
-            repo_id = path.split("/")[3]
+        if method == "POST" and path == "/v1/repositories":
+            # The route registers what the caller's GitHub connection reaches.
+            assert payload == {"repository": REPO}, payload
+            created = REPO not in self.registered
+            self.registered.setdefault(REPO, REPO_ID)
+            return {"repository": {"repo_id": REPO_ID, "repository": REPO}, "created": created}
+        repo_id = path.split("/")[3] if path.startswith("/v1/repositories/") else ""
+        if repo_id and repo_id not in self.registered.values():
+            raise AssertionError(f"{method} {path}: the API answers 404 for a repository not registered")
+        if method == "POST" and path == f"/v1/repositories/{repo_id}/index":
+            coalesced = bool(self.index_runs) and repo_id not in self.indexes
+            self.index_runs.append(repo_id)
+            return {"run": None if coalesced else {"task_id": "task_index", "state": "QUEUED"},
+                    "coalesced": coalesced, "skipped": None, "repo_id": repo_id}
+        if method == "GET" and path.endswith("/graph-cache"):
             return {"repo_id": repo_id, "index": self.indexes.get(repo_id), "facts": None, "replicas": []}
         raise AssertionError(f"the CLI made a call this test does not expect: {method} {path}")
 
@@ -809,7 +892,8 @@ def real_swarm(api: FakeSwarmApi, monkeypatch: pytest.MonkeyPatch) -> Any:
     from swarm_mcp.client import SwarmError
 
     def run(argv: Sequence[str], stdin: str | None, env: dict[str, str] | None) -> tuple[int, str, str]:
-        assert argv[0] == "swarm"
+        spawn(argv[0])
+        assert os.path.basename(argv[0]) == "swarm"
         args = swarm_cli.build_parser().parse_args(list(argv[1:]))
         monkeypatch.setattr("sys.stdin", io.StringIO(stdin or ""))
         out, err = io.StringIO(), io.StringIO()
@@ -895,7 +979,7 @@ def test_plugin_run_signs_in_with_desktop_client_not_gcloud_token(monkeypatch: p
     assert cli.launch(ctx, "plugin", "workflow", REPO, "v-2") == "wf_1"
     assert len(calls) == 2
     for argv, _, env in calls:
-        assert argv[0] == "swarm"
+        assert argv[0] == sys.argv[0]
         assert env is not None and env["HOME"] == "/home/person"
         assert not set(swarm_context.NOT_FOR_PLUGIN_RUNS) & set(env)
         for word in ("gcloud", "print-identity-token", "print-access-token", "--token", "--id-token"):
@@ -927,7 +1011,9 @@ class FakeSwarm:
         self.repos_error = ""
 
     def __call__(self, argv: Sequence[str], stdin: str | None, env: dict[str, str] | None) -> tuple[int, str, str]:
-        self.calls.append((list(argv), stdin, env))
+        spawn(argv[0])
+        assert argv[0] == sys.argv[0], "the swarm CLI running the engine, by its path"
+        self.calls.append((["swarm", *argv[1:]], stdin, env))
         args = list(argv[1:])
         if args[:2] == ["context", "list"]:
             rows = [{"name": n, **c, "current": n == self.current} for n, c in sorted(self.contexts.items())]
@@ -1105,6 +1191,11 @@ def test_check_runs_launch_and_finish_as_the_real_cli_prints(monkeypatch: pytest
     assert "code-intelligence.json" in api.dispatched[2]["prompt"]
 
     assert cli.status(ctx, "browser", browser) == verify.RunStatus("running", profile="claude-code-browser")
+    assert cli.index_commit(ctx) == ""  # not registered on a new deployment: no record
+    cli.index(ctx, REPO)  # `swarm repo-index`: registered, its index run asked for
+    assert api.registered == {REPO: REPO_ID} and api.index_runs == [REPO_ID]
+    assert cli.index_commit(ctx) == ""  # asked for, not yet promoted
+    api.promote()
     installation = {"kind": "app_installation", "source": TENANT_GIT}
     for task_id, shape in ((browser, "browser"), (graph, "code-intelligence")):
         api.tasks[task_id].update(state="SUCCEEDED", result_summary={"git": {}, "forge_credential": installation})
@@ -1203,3 +1294,115 @@ def test_steps_satisfy_every_stage_14_entry() -> None:
     assert {"other.verify-row", "other.verify-end-to-end", "other.verify-digests",
             "other.verify-scheduler-targets"} <= covered
     assert [s.stage for s in verify.STEPS] == [14] * len(verify.STEPS)
+
+
+# -- audit 4: the swarm CLI by its own path; the verify repository indexed ----------
+
+
+def _executable(path: Path, body: str = "") -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_the_swarm_cli_is_found_by_its_own_path(tmp_path: Path, swarm_off_path: str) -> None:
+    """B4: `~/.local/bin/swarm install` with that directory off PATH. The
+    engine spawns the CLI that is running it, by its path; then the one beside
+    its interpreter (uv's tool bin); then PATH; a bare name only when none is."""
+    assert swarm_context.swarm_cli() == swarm_off_path
+    tool_python = tmp_path / "tool" / "bin" / "python3"
+    beside = _executable(tool_python.parent / "swarm")
+    assert swarm_context.swarm_cli(argv0="/usr/lib/python3/pytest", executable=str(tool_python)) == beside
+    on_path = str(tmp_path / "elsewhere" / "swarm")
+    assert swarm_context.swarm_cli(argv0="", executable=str(tmp_path / "x" / "python3"),
+                                   which=lambda name: on_path) == on_path
+    assert swarm_context.swarm_cli(argv0="", executable=str(tmp_path / "x" / "python3"),
+                                   which=lambda name: None) == "swarm"
+    # A running `swarm` that is not an executable file is not spawned.
+    assert swarm_context.swarm_cli(argv0=str(tmp_path / "gone" / "swarm"), executable=str(tool_python)) == beside
+
+
+def test_the_desktop_secret_is_stored_through_the_running_cli_off_path(tmp_path: Path, swarm_off_path: str) -> None:
+    """B4, through a real subprocess: the default `run` and the default CLI
+    store the secret although PATH holds no swarm; on main the bare "swarm"
+    raised "swarm is not installed"."""
+    store = tmp_path / "stored"
+    _executable(Path(swarm_off_path), f"""if [ "$2" = list ]; then printf '{{"contexts": []}}\\n'; exit 0; fi
+read -r value
+printf '%s %s\\n' "$3" "$value" > '{store}'
+""")
+    ctx = _target_ctx()
+    secret = "GOCSPX-" + secrets.token_hex(12)
+    assert swarm_context.store_desktop_secret(ctx, secret.encode()) == HOSTNAME
+    assert store.read_text() == f"{HOSTNAME} {secret}\n"
+
+
+def test_a_cli_found_nowhere_is_named_not_called_uninstalled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+    monkeypatch.setattr(swarm_context.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="not found at swarm, beside this engine or on PATH"):
+        swarm_context.list_contexts(FakeSwarm({}, None))
+
+
+def test_verify_registers_and_indexes_its_repository_before_the_graph_check(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """B2: nothing on a new deployment registers or indexes the repository
+    verify picked, so the code graph never records the commit the check
+    compares with. Verify registers it and asks for its index run through the
+    real `swarm repo-index`, and starts the code-intelligence run only once
+    `swarm graph-index` records a commit."""
+    api = FakeSwarmApi()
+    cli = verify.SwarmCli(Answers(), run=real_swarm(api, monkeypatch))
+    cli.target = lambda ctx: None  # type: ignore[method-assign]
+    step = verify.EndToEndStep(lambda: VerifyFakeGcp(), Answers(), runs=cli, kube=FakeKube())
+    ctx = _ctx(verify_context=HOSTNAME, verify_tenant=TEAM, verify_repository=REPO)
+    ctx.dry_run = False
+    ctx.engine = _Saves(ctx)
+    step.apply(ctx, step.plan(ctx))
+    assert api.registered == {REPO: REPO_ID} and api.index_runs == [REPO_ID]
+    assert ctx.outputs["verify_index_requested"] is True
+    assert [d["runner_profile"] for d in api.dispatched] == ["claude-code", "claude-code", "claude-code-browser"]
+    assert "plugin-code-intelligence" not in ctx.outputs["verify_runs"]
+
+    observed = step.check(ctx)
+    assert observed.status == WAITING and f"the code graph has indexed {REPO}" in observed.detail
+    assert len(api.dispatched) == 3
+    ctx.dry_run = True
+    api.promote()
+    step.check(ctx)
+    assert len(api.dispatched) == 3  # a dry run starts nothing
+    ctx.dry_run = False
+    step.check(ctx)
+    assert len(api.dispatched) == 4 and "code-intelligence.json" in api.dispatched[3]["prompt"]
+    assert ctx.outputs["verify_runs"]["plugin-code-intelligence"]
+
+    # A rerun of apply (swarm install again) asks for no second index.
+    step.apply(ctx, step.plan(ctx))
+    assert api.index_runs == [REPO_ID] and len(api.dispatched) == 4
+
+
+def test_repo_index_registers_once_and_refuses_a_non_repository(monkeypatch: pytest.MonkeyPatch) -> None:
+    api = FakeSwarmApi()
+    swarm = real_swarm(api, monkeypatch)
+    code, out, _ = swarm([sys.argv[0], "repo-index", REPO, "--json"], None, None)
+    assert code == 0 and json.loads(out)["registered"] is True and json.loads(out)["task_id"] == "task_index"
+    code, out, _ = swarm([sys.argv[0], "repo-index", REPO, "--json"], None, None)
+    assert code == 0 and json.loads(out)["registered"] is False and json.loads(out)["coalesced"] is True
+    assert api.index_runs == [REPO_ID, REPO_ID]
+    code, _, err = swarm([sys.argv[0], "repo-index", "not a repository"], None, None)
+    assert code == 1 and "owner/repo" in err
+
+
+def test_verify_waits_point_only_at_what_exists() -> None:
+    """M3: a wait that gives up named `swarm doctor --explain`, which no
+    parser defines. What verify's waits point at must exist: no `--explain`,
+    no raw gcloud, and a `--repair` names an entry a verify step satisfies."""
+    import re
+
+    covered = {entry for step in verify.STEPS for entry in step.satisfies}
+    for spec in (verify.TARGETS_WAIT, verify.RUNS_WAIT):
+        assert "--explain" not in spec.look_at and "gcloud " not in spec.look_at
+        for entry in re.findall(r"--repair (\S+)", spec.look_at):
+            assert entry in covered
+    assert "swarm install --repair other.verify-scheduler-targets" in verify.TARGETS_WAIT.look_at

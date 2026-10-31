@@ -16,6 +16,7 @@ DAYONE-BOOT-1, so creating it here never collides with bootstrap pass 1.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -95,8 +96,81 @@ BUDGET_BY_HAND = WaitSpec(
     interval_s=10,
 )
 
+#: An API enabled minutes ago answers 403 SERVICE_DISABLED ("If you enabled
+#: this API recently, wait a few minutes") until the enablement reaches every
+#: Google system, which is later than `services.list` shows it (audit 4a F4).
+#: The call is retried, never taken as a refusal; past the bound the run
+#: pauses and `swarm install` resumes it.
+API_PROPAGATION = WaitSpec(
+    reason="an API enabled minutes ago answering",
+    expected="1 to 3 min",
+    expected_s=3 * 60,
+    bound_s=5 * 60,
+    look_at="gcloud services list --enabled: the API is listed, and Google says to wait a few minutes after "
+            "enabling it",
+    interval_s=15,
+)
+
+#: An account that never opened the Cloud console has not accepted the Google
+#: Cloud Terms of Service, and `projects.create` answers 400 FAILED_PRECONDITION
+#: "Callers must accept Terms of Service" (audit 4a F3). The console's first
+#: page asks for it; the engine opens it and tries the create again until
+#: Google takes it. Past the bound the run pauses.
+TERMS_ACCEPTED = WaitSpec(
+    reason="the Google Cloud Terms of Service accepted in the Cloud console",
+    expected="1 to 5 min",
+    expected_s=5 * 60,
+    bound_s=30 * 60,
+    look_at="https://console.cloud.google.com/, signed in as the installing account: accept the Terms of Service",
+    interval_s=10,
+)
+
 CONSOLE = "https://console.cloud.google.com"
+TERMS_PAGE = f"{CONSOLE}/"
 CREATE_PERMISSION = "resourcemanager.projects.create"
+
+#: Google's project id rule: 6-30 characters, lowercase letters, digits and
+#: hyphens, starting with a letter and not ending with a hyphen. The verb's
+#: `--project` and the question asked when an id is taken both use it.
+PROJECT_ID = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+
+
+def service_disabled(exc: ApiError) -> bool:
+    """Google's answer while an API is not enabled, or not enabled everywhere
+    yet: a 403 whose reason is SERVICE_DISABLED or whose message says the API
+    "has not been used in project ... before or it is disabled". `_call` takes
+    the reason from the error's `status`, which for this answer is
+    PERMISSION_DENIED, so the message is what tells it from an IAM refusal."""
+    if exc.status != 403:
+        return False
+    text = str(exc)
+    return (exc.reason == "SERVICE_DISABLED" or "SERVICE_DISABLED" in text
+            or "has not been used in project" in text or "or it is disabled" in text)
+
+
+def terms_not_accepted(exc: ApiError) -> bool:
+    """`projects.create`'s answer to an account that never accepted the Google
+    Cloud Terms of Service: 400 FAILED_PRECONDITION naming them."""
+    return exc.status == 400 and "terms of service" in str(exc).lower()
+
+
+def after_enabling(ctx: Any, step_id: str, call: Callable[[], Any]) -> Any:
+    """`call()`, tried again every API_PROPAGATION interval while Google says
+    its API is disabled (`service_disabled`); any other error is raised at
+    once. Past the bound `WaitGaveUp` pauses the run."""
+    done: dict[str, Any] = {}
+
+    def attempt() -> str:
+        try:
+            done["value"] = call()
+        except ApiError as exc:
+            if not service_disabled(exc):
+                raise
+            return "waiting"
+        return MET
+
+    wait_until(f"{step_id}:api-propagation", API_PROPAGATION, attempt, clock=ctx.clock, events=ctx.events)
+    return done["value"]
 
 
 def iam_page(parent: str) -> str:
@@ -349,18 +423,25 @@ class ProjectStep(_Base):
                                   "or linked")
         remember(ctx, outputs={"budget_amount": budget})
 
-        if create:
-            self._create(ctx, parent)
+        created = self._create(ctx, parent) if create else False
+        if create and not created:
+            # The id was taken and the person named a project that exists:
+            # it is used as found, refused if it cannot hold the install.
+            _, link = self._work(ctx)
         if link:
-            self._link(ctx, account, created=create)
+            self._link(ctx, account, created=created)
 
-    def _create(self, ctx: Any, parent: str) -> None:
+    def _create(self, ctx: Any, parent: str) -> bool:
+        """Create the project. False when its id was taken and the person
+        moved the install onto a project that exists already (`_another`)."""
         labels = {"managed-by": "swarm-install", "environment": ctx.environment}
         try:
             operation = self._start(ctx, parent, labels)
         except PermissionError as refused:
             self._until_creator(ctx, parent, refused)
             operation = self._start(ctx, parent, labels)
+        if operation is None:
+            return False
         waited = 0.0
         while not operation.get("done"):
             if waited >= OPERATION_BOUND_S:
@@ -372,18 +453,97 @@ class ProjectStep(_Base):
         if operation.get("error"):
             error = operation["error"]
             raise RuntimeError(f"creating project {ctx.project} failed: {error.get('message') or error}")
+        return True
 
-    def _start(self, ctx: Any, parent: str, labels: Mapping[str, str]) -> dict[str, Any]:
+    def _start(self, ctx: Any, parent: str, labels: Mapping[str, str]) -> dict[str, Any] | None:
+        """`projects.create`'s operation; None when the id was taken and the
+        person named a project that exists instead. Only `projects.create`
+        can say an id is taken: Resource Manager answers a read of another
+        owner's project and of an id nobody holds with the same 403."""
+        while True:
+            try:
+                return self._create_once(ctx, parent, labels)
+            except ApiError as exc:
+                if exc.status == 409:
+                    if self._another(ctx):
+                        return None
+                    continue
+                if exc.denied:
+                    raise PermissionError(f"you cannot create projects in {parent} (resourcemanager.projects.create; "
+                                          f"roles/resourcemanager.projectCreator on {parent}): {exc}") from None
+                raise
+
+    def _create_once(self, ctx: Any, parent: str, labels: Mapping[str, str]) -> dict[str, Any]:
+        """One `projects.create`. An account that never accepted the Google
+        Cloud Terms of Service is sent to the Cloud console, which asks for
+        them, and the create is tried again until Google takes it (audit 4a
+        F3); any other error is raised as it is."""
         try:
             return self.api.create_project(ctx.project, parent, labels)
         except ApiError as exc:
-            if exc.status == 409:
-                raise RuntimeError(f"project id {ctx.project} is taken (project ids are global, and one deleted "
-                                   "in the last 30 days stays taken); choose another") from None
-            if exc.denied:
-                raise PermissionError(f"you cannot create projects in {parent} (resourcemanager.projects.create; "
-                                      f"roles/resourcemanager.projectCreator on {parent}): {exc}") from None
-            raise
+            if not terms_not_accepted(exc):
+                raise
+        who = str(ctx.outputs.get("installer") or "the account you signed in with")
+        open_page(TERMS_PAGE, why=(
+            f"Google refuses to create projects for {who} until it accepts the Google Cloud Terms of Service. "
+            "Open the Cloud console signed in as that account and accept them there; the installer creates "
+            f"{ctx.project} by itself once Google takes them"))
+        done: dict[str, Any] = {}
+
+        def accepted() -> str:
+            try:
+                done["operation"] = self.api.create_project(ctx.project, parent, labels)
+            except ApiError as exc:
+                if terms_not_accepted(exc):
+                    return UNMET
+                raise
+            return MET
+
+        wait_until(f"{self.id}:terms-of-service", TERMS_ACCEPTED, accepted, clock=ctx.clock, events=ctx.events)
+        return done["operation"]
+
+    def _another(self, ctx: Any) -> bool:
+        """The project id is taken (a 409 on create): ask for another in this
+        run, and move the install, with every answer stage 0 recorded, onto
+        it (audit 4a F1). True when the id typed is a project that exists and
+        the caller can see: it is used rather than created."""
+        taken = ctx.project
+        said = (f"Project id {taken} is taken: project ids are global across Google Cloud, and one deleted in "
+                "the last 30 days stays taken.")
+        while True:
+            typed = self._ask(
+                ctx, self.id,
+                f"{said} Type another project id to create (6-30 characters: lowercase letters, digits and "
+                "hyphens, starting with a letter); every answer given so far is kept",
+            ).strip()
+            if not typed:
+                raise RuntimeError(f"project id {taken} is taken and no other id was typed; nothing was created. "
+                                   "Run swarm install again and type another id when it asks")
+            if not PROJECT_ID.match(typed):
+                said = f"{typed!r} is not a Google Cloud project id."
+                continue
+            if typed == taken:
+                said = f"Project id {taken} is the one that is taken."
+                continue
+            try:
+                self._move(ctx, typed)
+            except FileExistsError as exc:
+                said = (f"{exc}: resume that install with swarm install --project {typed}, or choose another "
+                        "id.")
+                continue
+            return self.gcp.project(typed) is not None
+
+    def _move(self, ctx: Any, project: str) -> None:
+        """The install is now `project`'s: its local state moves to that id
+        (`StateStore.rename`), the steps after this one see it, and the
+        billing-budget calls name it as their quota project."""
+        ctx.state = ctx.engine.store.rename(project)
+        ctx.project = project
+        use = getattr(self._gcp, "use_quota_project", None)
+        if callable(use):
+            use(project)
+        else:
+            self.gcp.quota_project = project
 
     def _until_creator(self, ctx: Any, parent: str, refused: PermissionError) -> None:
         """Open the parent's IAM page and poll testIamPermissions until the
@@ -407,7 +567,7 @@ class ProjectStep(_Base):
 
     def _link(self, ctx: Any, account: str, *, created: bool) -> None:
         try:
-            self.api.link_billing(ctx.project, account)
+            after_enabling(ctx, self.id, lambda: self.api.link_billing(ctx.project, account))
             return
         except ApiError as exc:
             if not exc.denied:
@@ -534,7 +694,9 @@ class BudgetStep(_Base):
             "thresholdRules": [{"thresholdPercent": p} for p in (0.5, 0.9, 1.0)],
         }
         try:
-            self.gcp.create_budget(self._account(ctx), body)
+            # Stage 1 enabled the Budgets API minutes ago: its SERVICE_DISABLED
+            # answer is waited out, never taken as a refusal (audit 4a F4).
+            after_enabling(ctx, self.id, lambda: self.gcp.create_budget(self._account(ctx), body))
             return
         except ApiError as exc:
             if not exc.denied:

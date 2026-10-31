@@ -46,7 +46,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import re
 import socket
 import sys
 from dataclasses import dataclass, field
@@ -74,6 +73,7 @@ from ..state import (
 )
 from ..steps import Step, triggered_of
 from ..steps import preflight
+from ..steps.foundations import PROJECT_ID
 from ..steps.preflight import DEFAULT_REGION, HOSTNAME, REGION
 from ..steps import discover as _discover_steps
 from ..waits import SystemClock
@@ -96,10 +96,17 @@ CHANNEL_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/channels/{chann
 #: The step whose apply creates Firestore: once it is done the install record exists.
 RECORD_STEP = "infra.pass-1"
 
-#: Google's project id rule: 6-30 characters, lowercase letters, digits and
-#: hyphens, starting with a letter and not ending with a hyphen.
-_PROJECT_ID = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
-_ENV = re.compile(r"^[a-z][a-z0-9-]{0,29}$")
+#: Google's project id rule (`foundations.PROJECT_ID`, which the question
+#: asked when an id is taken uses too).
+_PROJECT_ID = PROJECT_ID
+
+#: The environments terraform/infra accepts: its `environment` variable's
+#: validation is `contains(["dev", "staging", "prod"], ...)`, so any other name
+#: would pass stage 0 and fail at the registry pass after bootstrap pass 1 had
+#: made billable resources (audit 4f S3). Each is also within bootstrap's
+#: 20-character `spec_signing_environments` rule. A guard test reads the set
+#: from terraform/infra/variables.tf.
+ENVIRONMENTS = ("dev", "staging", "prod")
 
 #: The state fields a run's flags seed, with the words a refusal uses.
 _SEEDED = {
@@ -120,9 +127,9 @@ def _project(value: str) -> str:
 
 
 def _env(value: str) -> str:
-    if not _ENV.match(value):
+    if value not in ENVIRONMENTS:
         raise argparse.ArgumentTypeError(
-            f"{value!r} is not an environment name (lowercase letters, digits and hyphens)"
+            f"{value!r} is not an environment this release installs: choose {', '.join(ENVIRONMENTS)}"
         )
     return value
 
@@ -153,7 +160,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", default=None, type=_project,
                         help="the Google Cloud project to install into (asked when not given)")
     parser.add_argument("--env", default=DEFAULT_ENV, type=_env,
-                        help=f"the environment's name (default: {DEFAULT_ENV})")
+                        help=f"the environment: one of {', '.join(ENVIRONMENTS)} (default: {DEFAULT_ENV})")
     parser.add_argument("--version", dest="release", default=None,
                         help="the SwarmCloud release to install, e.g. 2026.10.1")
     parser.add_argument("--domain", dest="hostname", default=None,
@@ -451,7 +458,15 @@ def _install(args: argparse.Namespace, repair_check: str | None = None) -> int:
         # The one step the entry names, after its own typed confirmation
         # (swarm_install.repair); SWARM_ASSUME_YES is never read for it.
         return int(repair(repair_check, manifest=manifest, engine=engine, confirm=_typed))
-    return int(engine.run(stages=args.stage).exit_code)
+    code = int(engine.run(stages=args.stage).exit_code)
+    if store.project != args.project:
+        # foundations.project found the id taken and the person typed another:
+        # the install, its answers with it, is that project's now.
+        print(
+            f"Project id {args.project} was taken; this install is now {store.project}'s, its state at "
+            f"{store.local}. Resume it with: swarm install --project {store.project} --env {args.env}"
+        )
+    return code
 
 
 def channel_of(release: str | None) -> str:

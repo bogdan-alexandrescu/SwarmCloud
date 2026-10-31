@@ -79,16 +79,23 @@ CERTIFICATE = WaitSpec(
 )
 
 
+#: The verb that resumes a wait the install itself runs. A day-two verb
+#: (`swarm team add`, `swarm upgrade`) passes its own: running `swarm install`
+#: again resumes neither (audit 4e F13).
+RESUME = "swarm install"
+
+
 class WaitGaveUp(RuntimeError):
     exit_code = ExitCode.PAUSED
 
-    def __init__(self, step: str, spec: WaitSpec) -> None:
+    def __init__(self, step: str, spec: WaitSpec, resume: str = RESUME) -> None:
         super().__init__(
             f"{step}: gave up waiting for {spec.reason} after {spec.bound_s:.0f} s. "
-            f"Look at: {spec.look_at}. Run swarm install again to resume."
+            f"Look at: {spec.look_at}. Run {resume} again to resume."
         )
         self.step = step
         self.spec = spec
+        self.resume = resume
 
 
 def wait_until(
@@ -99,8 +106,10 @@ def wait_until(
     clock: Clock,
     events: Events,
     on_poll: Callable[[], None] | None = None,
+    resume: str = RESUME,
 ) -> None:
-    """Poll `check` (it returns a status) until it is `met` or the bound passes."""
+    """Poll `check` (it returns a status) until it is `met` or the bound passes;
+    past it, `WaitGaveUp` tells the person to run `resume` again."""
     started = clock.now()
     expected_end = started + spec.expected_s
     deadline = started + spec.bound_s
@@ -120,7 +129,7 @@ def wait_until(
                 look_at=spec.look_at,
                 state=status,
             )
-            raise WaitGaveUp(step, spec)
+            raise WaitGaveUp(step, spec, resume)
         events.emit(
             "wait_countdown",
             step=step,

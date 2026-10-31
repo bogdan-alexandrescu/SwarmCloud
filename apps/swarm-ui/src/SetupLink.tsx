@@ -20,6 +20,18 @@
  * NOT ON REDEEM BY ITSELF. Opening is a click, not a mount effect: a link is
  * single use, and a preview, a prefetch or a double effect must not spend it.
  *
+ * EXCEPT IN THE INSTALLER'S OWN TAB (audit 4d, F5). When the link's owner is
+ * the admin signed in on Admin › Setup, that page opens the link itself in a
+ * tab named OWN_SIGN_IN_WINDOW: the name is set by the console's own click,
+ * never by a mail preview or a prefetch, so that tab opens the link at once,
+ * once, and clears the name.
+ *
+ * A WORKSPACE NOT READY YET (audit 4d, F6). swarm-api answers 409 and leaves
+ * the link unused while its workspace is not `ready`; the page says so and
+ * opens it again by itself every REDEEM_RETRY_MS. An account sign-in refused
+ * with 403 just after (the membership answer swarm-api caches for 30 s) is
+ * started again by itself a few times before it asks.
+ *
  * A REDEEMED POOL LINK SURVIVES A RELOAD. The token is gone from the bar and
  * the link is spent, so the label and workspace it answered (neither a
  * secret) are kept in this tab's sessionStorage until the account is signed
@@ -36,6 +48,13 @@ import './styles/keys.css'
 export const REDEEM_ROUTE = '/v1/setup/links/redeem'
 /** This tab's redeemed pool link: `{label, tenant}`, never the token. */
 export const PENDING_KEY = 'swarm.setup-link.pool'
+/** The name of the tab Admin › Setup opens the installer's own link in: open it at once. */
+export const OWN_SIGN_IN_WINDOW = 'swarm-own-claude-sign-in'
+/** How often a link whose workspace is not ready yet (409) is opened again. */
+export const REDEEM_RETRY_MS = 10_000
+/** How often, and how many times, a sign-in refused while the workspace's membership settles (403) starts again. */
+export const SIGN_IN_RETRY_MS = 10_000
+export const SIGN_IN_RETRIES = 6
 
 interface PoolLink {
   label: string
@@ -124,6 +143,7 @@ export function SetupLinkScreen({ token }: { token: string | null }) {
     const pending = readPending()
     return pending === null ? null : { link: pending, startNow: false }
   })
+  const [auto] = useState(() => token !== null && token !== '' && globalThis.window?.name === OWN_SIGN_IN_WINDOW)
   return (
     <div className="pk-page">
       <PageHead title="Your setup link" />
@@ -142,30 +162,59 @@ export function SetupLinkScreen({ token }: { token: string | null }) {
           one.
         </Banner>
       ) : (
-        <OpenLink token={token} onPool={(link) => setPool({ link, startNow: true })} />
+        <OpenLink token={token} auto={auto} onPool={(link) => setPool({ link, startNow: true })} />
       )}
     </div>
   )
 }
 
-function OpenLink({ token, onPool }: { token: string; onPool: (link: PoolLink) => void }) {
+function OpenLink({ token, auto, onPool }: { token: string; auto: boolean; onPool: (link: PoolLink) => void }) {
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<{ line: string; retry: boolean } | null>(null)
   const [needs, setNeeds] = useState<'team-git' | 'addon-secret' | null>(null)
   const [written, setWritten] = useState<Opened | null>(null)
+  const [notReady, setNotReady] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const autoOpened = useRef(false)
+
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current)
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!auto || autoOpened.current) return
+    autoOpened.current = true
+    // Once: a reload of this tab is an ordinary visit again.
+    if (globalThis.window !== undefined) window.name = ''
+    void open()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto])
 
   async function open() {
     if (busy) return
+    if (timer.current !== null) clearTimeout(timer.current)
+    timer.current = null
     setBusy(true)
     setRefused(null)
     const r = await redeemSetupLink(token)
     setBusy(false)
     if (r.status === 'error') {
+      if (r.error.httpStatus === 409) {
+        // The workspace is not ready: swarm-api kept the link unused, so open it again shortly.
+        setNotReady(r.error.message)
+        timer.current = setTimeout(() => void open(), REDEEM_RETRY_MS)
+        return
+      }
+      setNotReady(null)
       const kind = valueKind(r.error)
       if (kind !== null) setNeeds(kind)
       else setRefused(linkRefusal(r.error))
       return
     }
+    setNotReady(null)
     const opened = r.status === 'ok' || r.status === 'stale' ? openedFrom(r.data) : null
     if (opened === null) {
       setRefused({ line: 'The platform opened the link but did not say what it is for: ask the admin who sent it for a new link.', retry: false })
@@ -192,8 +241,13 @@ function OpenLink({ token, onPool }: { token: string; onPool: (link: PoolLink) =
         subscription into the team&rsquo;s pool, or asks for the one value it was made for.
       </p>
       {refused !== null && <Banner tone="bad" title={refused.line} role="alert" />}
+      {notReady !== null && (
+        <Banner tone="info" title="Your workspace is still being set up." role="status">
+          The link is unused, and this page opens it by itself as soon as the workspace is ready ({notReady.replace(/[.\s]+$/, '')}).
+        </Banner>
+      )}
       <div className="pk-form-row">
-        <Button kind="primary" busy={busy ? 'Opening…' : false} onClick={() => void open()}>
+        <Button kind="primary" busy={busy ? 'Opening…' : notReady !== null ? 'Waiting for the workspace…' : false} onClick={() => void open()}>
           Open the link
         </Button>
       </div>
@@ -274,8 +328,20 @@ function PoolSignIn({ link, startNow }: { link: PoolLink; startNow: boolean }) {
   const id = useId()
   const [at, setAt] = useState<SignIn>({ kind: 'idle' })
   const started = useRef(false)
+  const retries = useRef(0)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  async function start() {
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current)
+    },
+    [],
+  )
+
+  async function start(again: boolean = false) {
+    if (timer.current !== null) clearTimeout(timer.current)
+    timer.current = null
+    if (!again) retries.current = 0
     setAt({ kind: 'starting' })
     // THE WORKSPACE IS THE LINK'S, sent as `X-Swarm-Tenant` by every request
     // this tab makes (fetch.ts `chooseTenant`): the sign-in files the account
@@ -283,7 +349,16 @@ function PoolSignIn({ link, startNow }: { link: PoolLink; startNow: boolean }) {
     chooseTenant(link.tenant)
     const r = await beginAccountSignIn({ label: link.label, lend_to: [] })
     if (r.status === 'ok' || r.status === 'stale') setAt({ kind: 'open', auth: r.data, code: '', sending: false, failed: null })
-    else if (r.status === 'error') setAt({ kind: 'start_failed', error: r.error })
+    else if (r.status === 'error') {
+      // A workspace just made ready: swarm-api may still hold "not a member" for a few seconds.
+      if (r.error.httpStatus === 403 && retries.current < SIGN_IN_RETRIES) {
+        retries.current += 1
+        timer.current = setTimeout(() => void start(true), SIGN_IN_RETRY_MS)
+        setAt({ kind: 'starting' })
+        return
+      }
+      setAt({ kind: 'start_failed', error: r.error })
+    }
   }
 
   useEffect(() => {
@@ -341,6 +416,11 @@ function PoolSignIn({ link, startNow }: { link: PoolLink; startNow: boolean }) {
           Your link is open. Sign in with the Claude subscription the admin asked you for; the account lands in the{' '}
           {link.tenant} workspace&rsquo;s pool under the name {link.label}.
         </p>
+        {at.kind === 'starting' && retries.current > 0 && (
+          <p className="pk-lead" role="status">
+            Your workspace is finishing its setup; the sign-in starts again by itself in a few seconds.
+          </p>
+        )}
         {at.kind === 'start_failed' && (
           <Banner tone="bad" title={`The sign-in did not start: ${at.error.message}`} role="alert">
             Your link is already used, and this page keeps what it opened: start the sign-in again.

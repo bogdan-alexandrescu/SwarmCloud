@@ -20,7 +20,7 @@ from swarm_install.exitcodes import MET, UNMET, ExitCode
 from swarm_install.manifest import Entry, Manifest
 from swarm_install.manifest import load as load_manifest
 from swarm_install.state import STATE_OBJECT, InstallState, StepRecord, state_bucket
-from swarm_install.steps import edge, foundations
+from swarm_install.steps import edge, foundations, preflight
 from swarm_install.steps.preflight import ApiError
 
 from .test_preflight import (ACCOUNT, ORG, NUMBER, PROJECT, Answers, FakeGcp, Rig, answers, ctx_for, stage0,
@@ -182,13 +182,23 @@ class FakeProjectApi:
     appears; `updateBillingInfo` links the account. Every write is a mutation."""
 
     def __init__(self, gcp: FakeGcp, *, link_error: ApiError | None = None,
-                 create_error: ApiError | None = None) -> None:
+                 create_error: ApiError | None = None, taken: tuple[str, ...] = (),
+                 terms_accepted_on_call: int | None = 1, link_failures: list[ApiError] | None = None) -> None:
         self.gcp = gcp
         self.link_error = link_error
         self.create_error = create_error
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.pending: dict[str, str] = {}
         self.granted_on_poll: int | None = None
+        #: Project ids are global: these belong to someone the caller cannot
+        #: see, so `projects:search` finds none of them and create answers 409.
+        self.taken = set(taken)
+        #: The account accepts the Google Cloud Terms of Service in the console
+        #: before this create call (never when None); until then Google
+        #: refuses every create with 400 FAILED_PRECONDITION, as it does.
+        self.terms_accepted_on_call = terms_accepted_on_call
+        #: Errors updateBillingInfo answers first, one per call.
+        self.link_failures = list(link_failures or [])
 
     def _write(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -200,8 +210,13 @@ class FakeProjectApi:
 
     def create_project(self, project, parent, labels):
         self._write("create_project", project, parent, tuple(sorted(labels.items())))
+        accepted_on = self.terms_accepted_on_call
+        if accepted_on is None or len(self.called("create_project")) < accepted_on:
+            raise ApiError(400, "FAILED_PRECONDITION", "Callers must accept Terms of Service")
         if self.create_error is not None:
             raise self.create_error
+        if project in self.taken:
+            raise ApiError(409, "ALREADY_EXISTS", "requested entity already exists")
         self.pending["operations/cp.1"] = project
         self.gcp.projects[project] = {"name": f"projects/{NUMBER}", "state": "ACTIVE", "parent": parent}
         return {"name": "operations/cp.1", "done": False}
@@ -221,6 +236,8 @@ class FakeProjectApi:
 
     def link_billing(self, project, account):
         self._write("link_billing", project, account)
+        if self.link_failures:
+            raise self.link_failures.pop(0)
         if self.link_error is not None:
             raise self.link_error
         self.gcp.billing = {"billingEnabled": True, "billingAccountName": f"billingAccounts/{account}"}
@@ -378,14 +395,230 @@ def test_billing_link_failure_leaves_the_project_and_the_rerun_links_it(tmp_path
 
 def test_project_id_taken_says_so(tmp_path: Path) -> None:
     """Project ids are global: a 409 on create is someone else's project, said
-    as that, and nothing is linked."""
+    as that, and another id is asked; when none is typed nothing is created or
+    linked, and the message says how to go on."""
     gcp = FakeGcp(exists=False, billed=False)
-    api = FakeProjectApi(gcp, create_error=ApiError(409, "ALREADY_EXISTS", "requested entity already exists"))
+    api = FakeProjectApi(gcp, taken=(PROJECT,))
     rig = _recorded(tmp_path)
-    result = rig.engine(_project_and_budget(gcp, Answers(foundations_project=["", PROJECT]), api)).run()
+    ask = Answers(foundations_project=["", PROJECT, ""])
+    result = rig.engine(_project_and_budget(gcp, ask, api)).run()
     assert result.exit_code == ExitCode.FAIL
     assert f"project id {PROJECT} is taken" in result.message
-    assert api.called("link_billing") == []
+    assert "type another id when it asks" in result.message
+    assert f"Project id {PROJECT} is taken" in ask.asked[2][1]
+    assert api.called("link_billing") == [] and gcp.projects == {}
+    assert rig.store.project == PROJECT
+
+
+# -- DAYONE-FOUNDATIONS-4: audit 4a F1, F3, F4 ------------------------------------
+
+
+def _stage0_answers(tmp_path: Path) -> Rig:
+    """`_recorded`, plus the answers stage 0 records that a new project id
+    must not lose (audit 4a F1: the organisation, inputs, region, rights,
+    org-domain and sizing)."""
+    rig = _recorded(tmp_path)
+    state = InstallState.from_bytes((tmp_path / "state.json").read_bytes())
+    state.hostname = "swarm.acme.example"
+    state.outputs.update({"github_org": "acme", "org_domain": "acme.example", "installer": "admin@acme.example",
+                          "sizing": {"mode": "individual", "members": 1, "budget_usd": 300}})
+    state.steps["preflight.inputs"] = StepRecord(state="done", at=1.0, by="admin@acme.example")
+    (tmp_path / "state.json").write_bytes(state.to_bytes())
+    return rig
+
+
+def test_taken_project_id_asks_another_in_the_same_run_and_keeps_every_answer(tmp_path: Path) -> None:
+    """Audit 4a F1: another owner's project id is invisible to projects:search,
+    so it is only found taken when projects.create answers 409. The engine
+    asks for another id in the same run (a malformed one is asked again),
+    moves the local state, with every stage-0 answer, to the new id's file,
+    and creates, links and budgets the new project; nothing is asked twice."""
+    gcp = FakeGcp(exists=False, billed=False)
+    api = FakeProjectApi(gcp, taken=(PROJECT,))
+    rig = _stage0_answers(tmp_path)
+    new = "p-test-two"
+    ask = Answers(foundations_project=["", PROJECT, "Not_An_Id", new])
+    result = rig.engine(_project_and_budget(gcp, ask, api)).run()
+    assert result.exit_code == ExitCode.OK, result.message
+
+    assert [step for step, _ in ask.asked] == ["foundations.project"] * 4
+    assert "'Not_An_Id' is not a Google Cloud project id" in ask.asked[3][1]
+    assert [args[0] for args in api.called("create_project")] == [PROJECT, new]
+    assert api.called("link_billing") == [(new, ACCOUNT)]
+    (budget,) = gcp.budget_list
+    assert budget["displayName"] == f"swarm-{new}"
+    assert budget["amount"]["specifiedAmount"]["units"] == "300"  # the sizing's budget, kept
+
+    assert rig.store.project == new
+    assert rig.store.local == tmp_path / f"{new}.json"
+    assert not (tmp_path / "state.json").exists()
+    moved = InstallState.from_bytes((tmp_path / f"{new}.json").read_bytes())
+    assert moved.project == new and moved.hostname == "swarm.acme.example"
+    for key in ("github_org", "org_domain", "installer", "sizing", "parent", "billing_account"):
+        assert key in moved.outputs, key
+    assert moved.steps["preflight.inputs"].state == "done"
+    assert moved.steps["foundations.project"].state == "done"
+    assert moved.steps["foundations.budget"].state == "done"
+    assert gcp.quota_project == new  # the billing-budget calls name the install's project
+
+
+def test_taken_project_id_replaced_by_an_existing_project_uses_it(tmp_path: Path) -> None:
+    """The id typed after a 409 may be a project the person already has: it is
+    used as found (its billing linked), never created; an id already holding
+    another install's local state is refused and asked again."""
+    gcp = FakeGcp(exists=False, billed=False)
+    mine, busy = "p-mine-one", "p-busy-one"
+    gcp.projects[mine] = {"name": f"projects/{NUMBER}", "state": "ACTIVE", "parent": ORG}
+    api = FakeProjectApi(gcp, taken=(PROJECT,))
+    rig = _stage0_answers(tmp_path)
+    (tmp_path / f"{busy}.json").write_bytes(InstallState(project=busy, environment="dev").to_bytes())
+    ask = Answers(foundations_project=["", PROJECT, busy, mine])
+    result = rig.engine(_project_and_budget(gcp, ask, api)).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert f"an install of {busy} is already recorded" in ask.asked[3][1]
+    assert [args[0] for args in api.called("create_project")] == [PROJECT]
+    assert api.called("link_billing") == [(mine, ACCOUNT)]
+    assert rig.store.project == mine
+    assert InstallState.from_bytes((tmp_path / f"{busy}.json").read_bytes()).project == busy  # untouched
+
+
+def test_terms_of_service_not_accepted_opens_the_console_and_creates_once_accepted(tmp_path: Path,
+                                                                                   monkeypatch) -> None:
+    """Audit 4a F3: an account that never accepted the Google Cloud Terms of
+    Service gets 400 FAILED_PRECONDITION from projects.create. The engine
+    opens the Cloud console, which asks for them, says why, and tries the
+    create again until Google takes it; it never re-raises the raw 400."""
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp(exists=False, billed=False)
+    api = FakeProjectApi(gcp, terms_accepted_on_call=4)
+    rig = _recorded(tmp_path)
+    result = rig.engine(_project_and_budget(gcp, Answers(foundations_project=["", PROJECT]), api)).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    ((url, why),) = opened
+    assert url == "https://console.cloud.google.com/"
+    assert "Terms of Service" in why
+    assert len(api.called("create_project")) == 4
+    assert rig.of_kind("wait_countdown", "foundations.project:terms-of-service")
+    assert PROJECT in gcp.projects and api.called("link_billing") == [(PROJECT, ACCOUNT)]
+
+
+def test_terms_of_service_never_accepted_pauses_the_run(tmp_path: Path, monkeypatch) -> None:
+    """Past the wait's bound the run pauses (exit 4) naming the Terms of
+    Service; `swarm install` resumes there. Nothing is created or linked."""
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp(exists=False, billed=False)
+    api = FakeProjectApi(gcp, terms_accepted_on_call=None)
+    rig = _recorded(tmp_path)
+    result = rig.engine(_project_and_budget(gcp, Answers(foundations_project=["", PROJECT]), api)).run()
+    assert result.exit_code == ExitCode.PAUSED, result.message
+    assert "Terms of Service" in result.message
+    assert [url for url, _ in opened] == [foundations.TERMS_PAGE]
+    assert gcp.projects == {} and api.called("link_billing") == []
+
+
+class _Answer:
+    """One HTTP answer, as `requests` gives it to `Gcp._call`."""
+
+    def __init__(self, status: int, body: dict[str, Any]) -> None:
+        self.status_code = status
+        self.reason = "Forbidden"
+        self._body = body
+        self.content = json.dumps(body).encode()
+
+    def json(self) -> dict[str, Any]:
+        return self._body
+
+
+def _google_says(status: int, error: dict[str, Any]) -> ApiError:
+    """The ApiError the real `Gcp._call` raises for Google's error body: the
+    fakes raise exactly what the REST client makes of the real answer."""
+    session = type("Session", (), {"request": lambda self, *a, **k: _Answer(status, {"error": error})})()
+    with pytest.raises(ApiError) as raised:
+        preflight.Gcp(session)._call("POST", "https://billingbudgets.googleapis.com/v1/billingAccounts/x/budgets")
+    return raised.value
+
+
+def _service_disabled(api: str = "Cloud Billing Budget API") -> ApiError:
+    """Google's answer for minutes after `services.batchEnable` (audit 4a F4):
+    a 403 whose status is PERMISSION_DENIED and whose ErrorInfo is SERVICE_DISABLED."""
+    return _google_says(403, {
+        "code": 403, "status": "PERMISSION_DENIED",
+        "message": f"{api} has not been used in project {NUMBER} before or it is disabled. Enable it by visiting "
+                   "https://console.developers.google.com/apis/api/billingbudgets.googleapis.com/overview then "
+                   "retry. If you enabled this API recently, wait a few minutes for the action to propagate to our "
+                   "systems and retry.",
+        "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SERVICE_DISABLED",
+                     "domain": "googleapis.com"}],
+    })
+
+
+def _iam_denied() -> ApiError:
+    return _google_says(403, {"code": 403, "status": "PERMISSION_DENIED",
+                              "message": "The caller does not have permission"})
+
+
+def test_service_disabled_is_told_apart_from_an_iam_refusal() -> None:
+    """Both are 403 PERMISSION_DENIED as `_call` builds them; only the
+    message tells the API still propagating from a missing right."""
+    assert foundations.service_disabled(_service_disabled())
+    assert not foundations.service_disabled(_iam_denied())
+    assert _iam_denied().denied and _service_disabled().denied  # why `denied` alone misroutes it
+    assert not foundations.service_disabled(ApiError(429, "RESOURCE_EXHAUSTED", "it is disabled"))
+
+
+def test_budget_api_still_propagating_is_waited_out_not_sent_to_the_budgets_page(tmp_path: Path,
+                                                                                monkeypatch) -> None:
+    """Audit 4a F4: right after stage 1 enables the Budgets API, budgets.create
+    answers SERVICE_DISABLED for minutes. That is a wait: the create is tried
+    again until it works, and the Budgets page is never opened."""
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp()
+    real = gcp.create_budget
+    tries = {"n": 0}
+
+    def create_budget(account, body):
+        tries["n"] += 1
+        if tries["n"] <= 3:
+            raise _service_disabled()
+        return real(account, body)
+
+    monkeypatch.setattr(gcp, "create_budget", create_budget)
+    rig = _recorded(tmp_path)
+    result = rig.engine([foundations.BudgetStep(lambda: gcp, Answers(foundations_budget=["900"]))]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert opened == []
+    assert tries["n"] == 4
+    (budget,) = gcp.budget_list
+    assert budget["amount"]["specifiedAmount"]["units"] == "900"
+    assert rig.of_kind("wait_countdown", "foundations.budget:api-propagation")
+
+
+def test_budget_api_never_propagating_pauses_without_opening_a_page(tmp_path: Path, monkeypatch) -> None:
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp()
+
+    def create_budget(account, body):
+        raise _service_disabled()
+
+    monkeypatch.setattr(gcp, "create_budget", create_budget)
+    rig = _recorded(tmp_path)
+    result = rig.engine([foundations.BudgetStep(lambda: gcp, Answers(foundations_budget=[""]))]).run()
+    assert result.exit_code == ExitCode.PAUSED, result.message
+    assert opened == [] and gcp.budget_list == []
+    assert rig.of_kind("wait_gave_up", "foundations.budget:api-propagation")
+
+
+def test_billing_link_while_the_api_propagates_is_waited_out(tmp_path: Path, monkeypatch) -> None:
+    """Audit 4a F4, item 4: the same distinction in the billing link. A
+    SERVICE_DISABLED answer is retried and the billing page is not opened."""
+    opened = _pages(monkeypatch)
+    gcp = FakeGcp(exists=False, billed=False)
+    api = FakeProjectApi(gcp, link_failures=[_service_disabled("Cloud Billing API")] * 2)
+    rig = _recorded(tmp_path)
+    result = rig.engine(_project_and_budget(gcp, Answers(foundations_project=["", PROJECT]), api)).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert opened == []
+    assert api.called("link_billing") == [(PROJECT, ACCOUNT)] * 3
 
 
 def test_containerscanning_disabled_through_service_usage(tmp_path: Path) -> None:

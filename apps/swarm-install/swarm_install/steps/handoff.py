@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..exitcodes import MET, UNMET, WAITING
-from ..waits import WaitSpec, wait_until
+from ..waits import WaitGaveUp, WaitSpec, wait_until
 from . import Observation, Plan, open_page
 from .bootstrap import DEPS, Deps
 from .github_switches import build_triggered
@@ -49,13 +49,22 @@ CONSOLE_ANSWERS = WaitSpec(
     expected="up to 10 min",
     expected_s=10 * 60,
     bound_s=60 * 60,
-    look_at="the managed certificate and the load balancer: gcloud compute ssl-certificates list",
+    look_at=("the project's SSL certificates page in the Google Cloud console (opened when this wait gives up): "
+             "the certificate's status and its domain's status say whether DNS or provisioning is behind; "
+             "swarm doctor checks the rest"),
     interval_s=15,
 )
 
 #: What an unauthenticated GET of an IAP-protected console answers: a redirect
 #: to sign in (or a 401/403 for a client IAP will not redirect).
 IAP_ANSWERS = (302, 401, 403)
+
+
+def certificates_page(project: str) -> str:
+    """The Google Cloud console's list of the project's classic SSL
+    certificates: the frontend's managed certificate and its domain status."""
+    return ("https://console.cloud.google.com/net-services/loadbalancing/advanced/sslCertificates/list"
+            f"?project={project}")
 
 
 def console_url(ctx: Any) -> str:
@@ -115,9 +124,18 @@ class HandoffStep:
     def apply(self, ctx: Any, plan: Plan) -> None:
         # The certificate can take longer than the lease: this wait renews it on
         # every poll, as the engine's own wait does (B05). Past its bound its
-        # WaitGaveUp is left to the engine, which pauses the run (exit 4).
-        wait_until(self.id + ":answers", CONSOLE_ANSWERS, lambda: MET if self.answers(ctx) else UNMET,
-                   clock=ctx.clock, events=ctx.events, on_poll=getattr(ctx.engine, "_heartbeat", None))
+        # WaitGaveUp is left to the engine, which pauses the run (exit 4), once
+        # the certificates page its look_at names is open.
+        try:
+            wait_until(self.id + ":answers", CONSOLE_ANSWERS, lambda: MET if self.answers(ctx) else UNMET,
+                       clock=ctx.clock, events=ctx.events, on_poll=getattr(ctx.engine, "_heartbeat", None))
+        except WaitGaveUp:
+            open_page(certificates_page(ctx.project), why=(
+                f"\nThe console at {ctx.state.hostname or ctx.outputs.get('hostname')} has not answered "
+                "behind IAP. Look at the managed certificate on this page (opening it now): a domain status other "
+                "than ACTIVE means the hostname's A record does not reach the load balancer yet. Run swarm install "
+                "again to resume."), say=self._say)
+            raise
         url = console_url(ctx)
         if ctx.state.hand_off_at is None:
             now = ctx.clock.now()

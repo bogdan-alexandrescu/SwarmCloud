@@ -98,3 +98,26 @@ def test_alerts_redo_applies_the_latest_pass_never_infra_2(monkeypatch: pytest.M
     step.apply(ctx, plan)
     assert applied == [expected]
     assert expected in plan.summary and "infra pass 2" not in plan.summary
+
+
+def test_descriptors_look_at_names_no_raw_gcloud() -> None:
+    """A wait past its bound sends the person to a page, never raw gcloud (DAYONE-WAIT-LOOK-AT)."""
+    assert "gcloud" not in alerts.DESCRIPTORS.look_at and "--explain" not in alerts.DESCRIPTORS.look_at
+
+
+def test_descriptors_that_never_appear_open_the_log_metrics_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the descriptors' bound the log-based metrics page of this project is
+    opened before the wait's WaitGaveUp pauses the run; nothing is applied."""
+    from swarm_install.waits import WaitGaveUp
+
+    clock = FakeClock()
+    ctx = FakeCtx(clock=clock)
+    gcp = FakeMonitoring(clock, appears_at=clock.now() + 10 * alerts.DESCRIPTORS.bound_s)
+    opened: list[str] = []
+    monkeypatch.setattr(alerts, "open_page", lambda url, *, why, **kw: opened.append(url))
+    monkeypatch.setattr(alerts, "apply_pass", lambda *a, **k: pytest.fail("nothing is applied"))
+    step = alerts.AlertsStep(Deps(gcp=lambda: gcp), expected_metrics=2)
+    with pytest.raises(WaitGaveUp):
+        step.apply(ctx, step.plan(ctx))
+    assert opened == [f"https://console.cloud.google.com/logs/metrics?project={ctx.project}"]
+    assert "metric_descriptors_ready" not in ctx.outputs
