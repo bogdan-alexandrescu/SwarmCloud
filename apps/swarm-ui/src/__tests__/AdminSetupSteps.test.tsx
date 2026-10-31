@@ -84,6 +84,23 @@ async function mountSteps(doc: Json) {
   return render(<mod.AdminSetupSteps state={normSetupState(doc)} now={NOW_MS} />)
 }
 
+/**
+ * `window.open`, as a browser answers it inside a click: a blank tab the page
+ * points at the members page later. `opens` holds the URL each call asked
+ * for ('' for a blank tab) and `tabs` each tab's address now.
+ */
+function fakeTabs(): { opens: string[]; tabs: { location: { href: string }; closed: boolean }[]; restore: () => void } {
+  const opens: string[] = []
+  const tabs: { location: { href: string }; closed: boolean; opener: unknown; close: () => void }[] = []
+  const spy = vi.spyOn(window, 'open').mockImplementation((url) => {
+    opens.push(String(url ?? ''))
+    const tab = { location: { href: String(url ?? '') }, closed: false, opener: window as unknown, close: () => (tab.closed = true) }
+    tabs.push(tab)
+    return tab as unknown as Window
+  })
+  return { opens, tabs, restore: () => spy.mockRestore() }
+}
+
 afterEach(() => {
   cleanup()
   vi.unstubAllEnvs()
@@ -180,6 +197,24 @@ describe('Admin › Setup step panels', () => {
     expect(within(row).getByText(/^Fix:/)).toBeTruthy()
     fireEvent.click(within(row).getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/teams')).toBe(true))
+  })
+
+  it('a failed workspace is retried by its id, never by asking for the team again (audit 5b, M6)', async () => {
+    const failed: Json = { teams: [{ ...((state().teams as Json[])[0]), workspace_id: 'w-0abc', progress: { workspace_state: 'failed', created_at: '2026-10-29T14:53:00Z' } }] }
+    const calls = serve((m, url) =>
+      m === 'POST' && url === '/v1/admin/workspaces/w-0abc/retry'
+        ? { status: 200, body: { workspace_id: 'w-0abc', state: 'approved' } }
+        : m === 'GET' && url === '/v1/admin/setup'
+          ? { status: 200, body: state() }
+          : null,
+    )
+    await mountSteps(state(failed))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    expect(row.className).toContain('is-failed')
+    fireEvent.click(within(row).getByRole('button', { name: 'Retry' }))
+    // MUTATION: re-post the team, which the route answers 409 WORKSPACE_FAILED.
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/workspaces/w-0abc/retry')).toBe(true))
+    expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/teams')).toBe(false)
   })
 
   it('the plugin line carries only the deployment URL', async () => {
@@ -324,21 +359,28 @@ describe('Admin › Setup says only what exists', () => {
     expect(text).toContain('a code-intelligence read')
   })
 
-  it('Run the console checks starts both runs and shows each one’s state, linked', async () => {
-    const calls = serve((m, url) => {
-      if (m === 'POST' && url === '/v1/admin/setup/verify-runs') {
-        return { status: 200, body: { verify_runs: { console_task: 'task_v1', console_workflow: 'wf_v1' }, repository: 'example-org/app', started: true } }
-      }
+  it('nobody is asked to start the console checks: the hand-over starts them (audit 5b, B1)', async () => {
+    await mountSteps(state({ finished: null, ...teamWith({ grant: GRANTED }) }))
+    const row = document.querySelector('[data-step="verify"]') as HTMLElement
+    // MUTATION: keep a "Run the console checks" button that nothing tells the person to press.
+    expect(within(row).queryByRole('button', { name: /Run the console checks/ })).toBeNull()
+    expect(visible(row)).toContain('start by themselves when you hand over')
+    cleanup()
+    await mountSteps(state(teamWith({ grant: GRANTED })))
+    const after = document.querySelector('[data-step="verify"]') as HTMLElement
+    // MUTATION: wait on a click once handed over; swarm-api starts them on its next read.
+    expect(within(after).queryByRole('button', { name: /Run the console checks/ })).toBeNull()
+    expect(visible(after)).toContain('swarm-api starts them on this page’s next read')
+  })
+
+  it('draws the runs the hand-over started, each with its state, linked', async () => {
+    serve((m, url) => {
       if (m === 'GET' && url.startsWith('/v1/tasks/task_v1')) return { status: 200, body: { task: { id: 'task_v1', tenant_id: 'engineering', state: 'RUNNING' } } }
       if (m === 'GET' && url.startsWith('/v1/workflows/wf_v1')) return { status: 200, body: { workflow: { id: 'wf_v1', state: 'SUCCEEDED' }, tasks: [] } }
       return null
     })
-    await mountSteps(state({ finished: null, ...teamWith({ grant: GRANTED }) }))
+    await mountSteps(state({ ...teamWith({ grant: GRANTED }), verify_runs: { verify_runs: { console_task: 'task_v1', console_workflow: 'wf_v1' }, repository: 'example-org/app' } }))
     const row = document.querySelector('[data-step="verify"]') as HTMLElement
-    // MUTATION: drop the button.
-    fireEvent.click(within(row).getByRole('button', { name: 'Run the console checks' }))
-    // MUTATION: post anything but SETUP-API-2's route.
-    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/verify-runs')).toBe(true))
     const task = await within(row).findByRole('link', { name: /task_v1/ })
     const wf = await within(row).findByRole('link', { name: /wf_v1/ })
     // MUTATION: link the runs anywhere but their own pages.
@@ -363,9 +405,9 @@ describe('Admin › Setup says only what exists', () => {
     // MUTATION: ignore the status route's `verify_runs`.
     expect(await within(row).findByRole('link', { name: /task_v2/ })).toBeTruthy()
     await waitFor(() => expect(visible(row)).toContain('failed'))
-    expect(within(row).queryByRole('button', { name: 'Run the console checks' })).toBeNull()
-    // A failed run is offered again (audit 3, A8): see the case below.
-    expect(within(row).getByRole('button', { name: 'Run the console checks again' })).toBeTruthy()
+    // A failed run starts again by itself (audit 5b, B1), with no button: see the case below.
+    expect(within(row).queryByRole('button', { name: /Run the console checks/ })).toBeNull()
+    expect(visible(row)).toContain('it starts again when you hand over: 2 of 2 fresh starts left')
   })
 
   it('the team row shows its repository grant', async () => {
@@ -384,11 +426,7 @@ describe('Admin › Setup says only what exists', () => {
   })
 
   it('the invite control opens the Google Admin members page and waits for them to join', async () => {
-    const opened: string[] = []
-    const open = vi.spyOn(window, 'open').mockImplementation((url) => {
-      opened.push(String(url))
-      return null
-    })
+    const tabs = fakeTabs()
     const calls = serve((m, url, body) =>
       m === 'POST' && url === '/v1/admin/setup/teams/engineering/invites'
         ? { status: 200, body: { team: 'engineering', email: (body as Json).email, group: 'engineering@example.com', add_members_url: MEMBERS_URL, member: false } }
@@ -405,14 +443,28 @@ describe('Admin › Setup says only what exists', () => {
     expect(visible(document.body)).not.toContain('sign-in link; nobody')
     fireEvent.change(within(row).getByLabelText('Invite someone'), { target: { value: 'kim@example.com' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Invite' }))
+    // MUTATION: open the tab after the fetch, outside the click, where popup blockers stop it (audit 5b, M5).
+    expect(tabs.opens).toEqual([''])
     await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/teams/engineering/invites')).toBe(true))
     expect(calls.find((c) => c.url === '/v1/admin/setup/teams/engineering/invites')?.body).toEqual({ email: 'kim@example.com' })
     // MUTATION: leave the person to find the page.
-    await waitFor(() => expect(opened).toEqual([MEMBERS_URL]))
+    await waitFor(() => expect(tabs.tabs[0]?.location.href).toBe(MEMBERS_URL))
     const link = await within(row).findByRole('link', { name: /Google Admin/ })
     expect(link.getAttribute('href')).toBe(MEMBERS_URL)
     expect(visible(row)).toContain('waiting for kim@example.com to join')
-    open.mockRestore()
+    tabs.restore()
+  })
+
+  it('the team row keeps the members page for the invites made with the team (audit 5b, M5)', async () => {
+    await mountSteps(state(teamWith({ add_members_url: MEMBERS_URL, members: [{ email: 'ravi@example.com', member: false }, { email: 'lea@example.com', member: true }] })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: build the link only from invites made in this session.
+    const link = within(row).getByRole('link', { name: 'Open the group in Google Admin' })
+    expect(link.getAttribute('href')).toBe(MEMBERS_URL)
+    cleanup()
+    await mountSteps(state(teamWith({ add_members_url: MEMBERS_URL, members: [{ email: 'lea@example.com', member: true }] })))
+    // MUTATION: keep the link once nobody is waiting to join.
+    expect(within(document.querySelector('[data-step="team"]') as HTMLElement).queryByRole('link', { name: 'Open the group in Google Admin' })).toBeNull()
   })
 
   it('the team form says what an invite does', async () => {
@@ -724,11 +776,7 @@ describe('the first team needs no typing the install already knows (#26, N20; DA
   })
 
   it('creating the team with invites opens the group’s members page, as the form’s hint says', async () => {
-    const opened: string[] = []
-    const open = vi.spyOn(window, 'open').mockImplementation((url) => {
-      opened.push(String(url))
-      return null
-    })
+    const tabs = fakeTabs()
     serve((m, url) =>
       m === 'POST' && url === '/v1/admin/setup/teams'
         ? { status: 201, body: { team: 'eng', invites: [{ email: 'kim@example.com', add_members_url: MEMBERS_URL, member: false }] } }
@@ -744,9 +792,12 @@ describe('the first team needs no typing the install already knows (#26, N20; DA
     fireEvent.change(within(row).getByLabelText('Workspace group'), { target: { value: 'eng@example.com' } })
     fireEvent.change(within(row).getByLabelText('Invite'), { target: { value: 'kim@example.com' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Create the team' }))
+    // MUTATION: open the tab after the fetch resolves, outside the click (audit 5b, M5).
+    expect(tabs.opens).toEqual([''])
     // MUTATION: drop the members page the route answered.
-    await waitFor(() => expect(opened).toEqual([MEMBERS_URL]))
-    open.mockRestore()
+    await waitFor(() => expect(tabs.tabs[0]?.location.href).toBe(MEMBERS_URL))
+    expect(tabs.opens).toEqual([''])
+    tabs.restore()
   })
 
   it('pre-fills the group field with the team group swarm install created', async () => {
@@ -832,28 +883,19 @@ describe('Admin › Setup follows the engine', () => {
     expect(visible(document.querySelector('[data-step="cloud"]'))).toContain(`finished ${new Date(at * 1000).toLocaleString()}`)
   })
 
-  it('a failed console run is offered again, with the fresh starts left', async () => {
-    let posted = false
+  it('a failed console run is started again by swarm-api, with the fresh starts left', async () => {
     const calls = serve((m, url) => {
-      if (m === 'POST' && url === '/v1/admin/setup/verify-runs') {
-        posted = true
-        return { status: 200, body: { verify_runs: { console_task: 'task_f2', console_workflow: 'wf_f1' }, retries: { console_task: 1, console_workflow: 0 }, repository: 'example-org/app', started: true } }
-      }
       if (m === 'GET' && url.startsWith('/v1/tasks/task_f1')) return { status: 200, body: { task: { id: 'task_f1', tenant_id: 'engineering', state: 'CANCELLED' } } }
-      if (m === 'GET' && url.startsWith('/v1/tasks/task_f2')) return { status: 200, body: { task: { id: 'task_f2', tenant_id: 'engineering', state: 'RUNNING' } } }
       if (m === 'GET' && url.startsWith('/v1/workflows/wf_f1')) return { status: 200, body: { workflow: { id: 'wf_f1', state: 'SUCCEEDED' }, tasks: [] } }
-      if (m === 'GET' && url === '/v1/admin/setup') return { status: 200, body: state(FAILED_RUNS()) }
       return null
     })
-    await mountSteps(state(FAILED_RUNS()))
+    await mountSteps(state({ ...FAILED_RUNS(), finished: { at: '2026-10-29T14:58:00Z', by: 'ana@example.com' } }))
     const row = document.querySelector('[data-step="verify"]') as HTMLElement
-    // MUTATION: offer the button only while no run ids exist.
-    const again = await within(row).findByRole('button', { name: 'Run the console checks again' })
     // MUTATION: drop the count, or count from anything but the route's `retries`.
-    expect(visible(row)).toContain('2 of 2 fresh starts left')
-    fireEvent.click(again)
-    await waitFor(() => expect(posted).toBe(true))
-    expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/verify-runs')).toBe(true)
+    await waitFor(() => expect(visible(row)).toContain('swarm-api starts it again on this page’s next read: 2 of 2 fresh starts left'))
+    // MUTATION: ask the person to press a button the status route's read makes needless.
+    expect(within(row).queryByRole('button', { name: /Run the console checks/ })).toBeNull()
+    expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/verify-runs')).toBe(false)
   })
 
   it('a console run that used its fresh starts is not offered again', async () => {
