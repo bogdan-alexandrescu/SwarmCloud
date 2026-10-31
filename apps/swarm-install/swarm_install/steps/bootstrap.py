@@ -317,6 +317,10 @@ def apply_pass(ctx: Any, deps: Deps, pass_name: str, *, targets: Sequence[str] =
         recorded["api_iap_audience"] = str(audiences[0])
     if outputs.get("quota_broker_url"):
         recorded["quota_broker_url"] = str(outputs["quota_broker_url"])
+    # The cluster terraform/infra created (`google_container_cluster.agents`),
+    # by its own name: stage 10, stage 14's reads and uninstall reach it by this.
+    if root == "infra" and outputs.get("gke_cluster_name"):
+        recorded["gke_cluster_name"] = str(outputs["gke_cluster_name"])
     remember(ctx, outputs=recorded)
     return outputs
 
