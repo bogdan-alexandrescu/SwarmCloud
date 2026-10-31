@@ -133,6 +133,43 @@ def test_the_record_states_where_jev_runs_its_key_its_egress_and_the_url_gap() -
     assert "SWARM_JUDGE_INTERNAL_URL" in gaps and "no_internal_url" in gaps
 
 
+LAUNCHER = REPO / "images" / "agent-runtime-base" / "jev-gates" / "bin" / "swarm-jev-gate.mjs"
+
+
+def test_the_record_states_what_the_lane_hooks_send_and_where_their_audit_lands() -> None:
+    """JEV-LANES: what each hook sends, the redaction, the audit and the gap.
+    Red when the section, a cited symbol or the launcher's named function goes."""
+    text = DOC.read_text(encoding="utf-8")
+    assert "\n## The lane hooks" in text
+    hooks = text.split("\n## The lane hooks", 1)[1].split("\n## ", 1)[0]
+    # What each hook sends.
+    for sent in ("the final reply", "edited file's written text", "the rule's text",
+                 "quality_gates.jev", "JEV_ENFORCE_MODE=end"):
+        assert sent in hooks, sent
+    # The redaction: the launcher's scrub of the registered secrets and the key.
+    assert "secret_env_names" in hooks and "<redacted>" in hooks
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    for name in ("guardedFetch", "scrub"):
+        assert f"`{name}`" in hooks, name
+        assert re.search(rf"export function {name}\(", launcher), name
+    assert 'export const REDACTED = "<redacted>"' in launcher
+    # Where the audit lands: counts in the summary and one RUNNING event.
+    assert "private/jev-gates.counts" in hooks and "`quality_gate`" in hooks
+    cites = _CITE.findall(hooks)
+    for path, name in (("apps/agent-worker/agent_worker/qualitygates.py", "prepare"),
+                       ("apps/agent-worker/agent_worker/qualitygates.py", "finish"),
+                       ("apps/agent-worker/agent_worker/lifecycle.py", "Worker._quality_gates_env"),
+                       ("apps/agent-worker/agent_worker/lifecycle.py", "Worker._record_quality_gates"),
+                       ("tests/unit/worker/test_jev_data_flow.py",
+                        "test_the_record_states_what_the_lane_hooks_send_and_where_their_audit_lands")):
+        assert (path, name) in cites, (path, name)
+    for path, name in cites:
+        assert _resolves(path, name), f"{path}::{name}"
+    # The gap is said, not hidden.
+    gaps = text.split("\n## Known gaps", 1)[1]
+    assert "lane hooks get only the registered-secret scrub" in gaps
+
+
 def test_context_quality_links_the_record() -> None:
     assert "](../jev-data-flow.md)" in DESIGN.read_text(encoding="utf-8")
 
