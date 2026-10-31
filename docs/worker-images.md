@@ -311,7 +311,7 @@ them). Bump when SwarmCloud needs a fix, not on Lightpanda's one-to-three-week
 cadence: iframes and the screenshot crash are the two to watch. Accept a bump
 on the self-test, the probe tests and a rerun of the design's `bench.py`.
 
-
+## Where an agent's caches go (CACHE-SCRATCH)
 
 **Why.** On 2026-10-15 three claude-code agents were evicted twice each with
 `Usage of EmptyDir volume "workspace" exceeds the limit "5Gi"` and were not
