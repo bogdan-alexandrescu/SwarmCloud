@@ -54,7 +54,7 @@ def _start(client) -> tuple[dict, str]:
 def _conversion_answer() -> dict:
     return {
         "id": 4242, "slug": "swarmcloud-test", "client_id": "Iv1.example",
-        "pem": secrets.token_hex(64), "client_secret": secrets.token_hex(20),
+        "name": "SwarmCloud test", "pem": secrets.token_hex(64), "client_secret": secrets.token_hex(20),
         "webhook_secret": secrets.token_hex(20), "owner": {"login": ORG},
     }
 
@@ -103,6 +103,8 @@ def test_exchange_writes_three_secrets_and_returns_no_value(setup_client, github
     doc = db.docs[GITHUB_APP_DOC]
     assert doc["id"] == 4242 and doc["slug"] == "swarmcloud-test"
     assert doc["client_id"] == "Iv1.example"
+    # E2E-1 (DAYONE-APP-NAME): infra pass 3 renders github_app_name from it.
+    assert doc["name"] == "SwarmCloud test"
     assert doc["secrets_written_at"] is not None
     assert doc["state_hash"] is None
     stored = _firestore_text(db)
