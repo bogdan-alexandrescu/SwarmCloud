@@ -5,7 +5,10 @@ The manifest's entries carry typed `probe:`s (DAYONE-MANIFEST-STEPS). This
 module runs each against the deployment the install state names and says, per
 entry, `met`, `unmet` or `unknown`, with the fix in words and the one command
 that repairs it: `swarm install --repair <id>`, which re-runs the entry's
-`step:` with that step's own approvals (`swarm_install.repair`).
+`step:` with that step's own approvals (`swarm_install.repair`). A per-tenant
+entry (`expand: per_tenant`) gets no such command: each team's namespace is
+written by the platform's swarm-workspace-apply job when the team is made, and
+re-running an install step remakes none of it (`PLATFORM_MADE`).
 
 **It never writes.** Every call is a GET, except two read-only POSTs: the
 Policy Troubleshooter (which explains a 403; it changes nothing) and swarm-api's
@@ -14,7 +17,14 @@ holds no Groups role). The repair lives in `install`, never here: this module
 imports no step, no engine and no Terraform runner, and a test holds that.
 
 **An unknown is never fine** (`exitcodes`): a probe that could not run is
-`unknown` and exits 3, the same as an unmet one. A 403 is asked of the Policy
+`unknown` and exits 3, the same as an unmet one. The one exception is
+`skipped`, which says WHY nothing was asked and who asks instead: off Google's
+runtime, after the closing infra pass took the installer's address out of the
+control plane's authorised networks (decision 2), the cluster admits only the
+platform, so a laptop's `kubernetes_can_i` is not tried (it would time out
+after 60 s, every run, on a healthy deployment). The hourly doctor runs the
+same probe on the platform, at the private endpoint, and posts it to Admin ›
+Setup › Health. A skipped finding counts toward neither green nor red. A 403 is asked of the Policy
 Troubleshooter: when the grant exists the finding says IAM is still
 propagating (45 s to 10 min, lesson 19) and to run the doctor again; when it
 does not, it names the missing grant (lesson 48). Neither is "fine".
@@ -73,6 +83,29 @@ MANAGED_BY = ("managed-by", "swarm-terraform")
 #: How long IAM may take to propagate a new grant (lesson 19, design H19).
 PROPAGATION = "45 s to 10 min"
 
+#: A finding the doctor deliberately did not ask from where it runs, with why
+#: and who asks instead; `exit_code` leaves it out (it is neither met nor not).
+SKIPPED = "skipped"
+
+#: The display name of the installer's entry in the control plane's authorised
+#: networks (`tfvars.CLUSTER_REACH_NAME`, decision 2; a test holds the two
+#: equal, since this module imports no install path). While it is there the
+#: installer's machine reaches the cluster; `infra-close` removes it.
+INSTALLER_NETWORK = "swarm-install"
+
+#: Why a laptop's doctor skips a cluster probe once the install has closed.
+CLOSED_CONTROL_PLANE = (
+    "skipped: the control plane admits only the platform (closed after install); "
+    "the hourly doctor checks this from inside and posts it to Admin › Setup › Health"
+)
+
+#: Per-tenant entries: the platform's swarm-workspace-apply job renders them
+#: (kubernetes/render.py TENANT_FILES) into each team's namespace when the team
+#: is made. No install step makes them, so no `swarm install --repair` is
+#: printed for them: re-running the manifest's `step:` (the console hand-off)
+#: only sees Admin › Setup finished again and changes nothing (audit 4c M2).
+PLATFORM_MADE = "per_tenant"
+
 
 # -- what the doctor reports ---------------------------------------------------
 
@@ -100,10 +133,13 @@ class Finding:
     #: Why a probe saw a 403: "propagating" (the grant exists) or
     #: "missing_grant"; empty otherwise.
     cause: str = ""
+    #: False where no install step makes the entry (`PLATFORM_MADE`), so
+    #: re-running its `step:` would repair nothing.
+    repairable: bool = True
 
     @property
     def repair(self) -> str | None:
-        return f"swarm install --repair {self.id}" if self.step else None
+        return f"swarm install --repair {self.id}" if self.step and self.repairable else None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -161,6 +197,13 @@ class Deps:
     kube: Callable[[Mapping[str, Any]], Kube] | None = None
     #: One read per run of what several entries share.
     cache: dict[str, Any] = field(default_factory=dict)
+    #: Whether the probes run on Google's runtime (the hourly job), where
+    #: `kube_for` reaches the cluster's private endpoint; None asks
+    #: `on_google_runtime()`. Off it, a closed control plane is skipped.
+    on_google: bool | None = None
+
+    def inside_google(self) -> bool:
+        return on_google_runtime() if self.on_google is None else self.on_google
 
 
 # -- substitution ----------------------------------------------------------------
@@ -387,6 +430,17 @@ def _gke_authorized_networks(args: Mapping[str, Any], t: Target, deps: Deps) -> 
     return MET, detail
 
 
+def _admits_installer(cluster: Mapping[str, Any]) -> bool:
+    """Whether the control plane can admit a machine off Google's network: its
+    authorised networks are off (open to all; `gke_authorized_networks` says so)
+    or still hold the installer's entry (the install, or `swarm team add`, has
+    it open)."""
+    config = cluster.get("masterAuthorizedNetworksConfig") or {}
+    if not config.get("enabled"):
+        return True
+    return any(b.get("displayName") == INSTALLER_NETWORK for b in config.get("cidrBlocks") or ())
+
+
 def _rule_allows(rule: Mapping[str, Any], verb: str, group: str, resource: str) -> bool:
     def has(values: Iterable[str] | None, wanted: str) -> bool:
         values = list(values or ())
@@ -429,6 +483,8 @@ def _kubernetes_can_i(args: Mapping[str, Any], t: Target, deps: Deps) -> Result:
     clusters = _our_clusters(t, t.region, deps)
     if not clusters:
         return UNMET, f"no cluster labelled managed-by=swarm-terraform in {t.region}"
+    if not deps.inside_google() and not _admits_installer(clusters[0]):
+        return SKIPPED, CLOSED_CONTROL_PLANE
     email = f"{subject}@{t.project}.iam.gserviceaccount.com"
     account = deps.gcp.get(
         f"https://iam.googleapis.com/v1/projects/{t.project}/serviceAccounts/{email}",
@@ -503,7 +559,13 @@ def fix_words(entry: Entry) -> str:
     why = (entry.explain or "").strip()
     if len(why) > 240:
         why = why[:237].rstrip() + "..."
-    if entry.step is None:
+    if entry.expand == PLATFORM_MADE:
+        how = (
+            "the platform's swarm-workspace-apply job writes it into each team's namespace when the "
+            "team is made (Admin › Setup's first team, or a team added later); no install step makes "
+            "it, so swarm install --repair has nothing to re-run"
+        )
+    elif entry.step is None:
         how = "no install step makes this; see the entry's check: " + (entry.check or entry.id)
     elif entry.provider == "engine":
         how = f"the install's step {entry.step} makes it: swarm install --repair {entry.id}"
@@ -520,9 +582,10 @@ def check_entry(entry: Entry, target: Target, deps: Deps) -> Finding:
     args = entry.probe.model_dump()
     probe = PROBES.get(entry.probe.type)
     fix = fix_words(entry)
+    repairable = entry.expand != PLATFORM_MADE
     if probe is None:
         return Finding(entry.id, UNKNOWN, f"this doctor has no probe of type {entry.probe.type!r}",
-                       entry.step, fix)
+                       entry.step, fix, repairable=repairable)
     try:
         status, detail = probe(args, target, deps)
     except Denied as denied:
@@ -532,20 +595,20 @@ def check_entry(entry: Entry, target: Target, deps: Deps) -> Finding:
                 entry.id, UNKNOWN,
                 f"{target.principal} holds {denied.permission} but was refused: IAM is still "
                 f"propagating the grant ({PROPAGATION}); run swarm doctor again",
-                entry.step, fix, cause="propagating",
+                entry.step, fix, repairable=repairable, cause="propagating",
             )
         if verdict == "not_granted":
             return Finding(
                 entry.id, UNKNOWN,
                 f"missing grant: {target.principal or 'this identity'} lacks {denied.permission} on "
                 f"{denied.resource}, so this could not be checked",
-                entry.step, fix, cause="missing_grant",
+                entry.step, fix, repairable=repairable, cause="missing_grant",
             )
         return Finding(entry.id, UNKNOWN, f"{denied} (the Policy Troubleshooter could not say why)",
-                       entry.step, fix)
+                       entry.step, fix, repairable=repairable)
     except Exception as exc:  # noqa: BLE001 - a probe that cannot run is unknown, never fine
-        return Finding(entry.id, UNKNOWN, f"{type(exc).__name__}: {exc}", entry.step, fix)
-    return Finding(entry.id, status, detail, entry.step, fix)
+        return Finding(entry.id, UNKNOWN, f"{type(exc).__name__}: {exc}", entry.step, fix, repairable=repairable)
+    return Finding(entry.id, status, detail, entry.step, fix, repairable=repairable)
 
 
 def probed(manifest: Manifest) -> list[Entry]:
@@ -558,8 +621,9 @@ def run(manifest: Manifest, target: Target, deps: Deps) -> list[Finding]:
 
 
 def exit_code(findings: Sequence[Finding]) -> ExitCode:
-    """0 only when there is at least one finding and every one is met."""
-    return for_statuses(f.status for f in findings)
+    """0 only when at least one finding was asked and every one asked is met;
+    a skipped finding (`SKIPPED`) is left out, and all-skipped is not 0."""
+    return for_statuses(f.status for f in findings if f.status != SKIPPED)
 
 
 def hourly_doctor(target: Target, deps: Deps) -> str:
@@ -587,12 +651,13 @@ def render(findings: Sequence[Finding], skipped: int, say: Callable[[str], None]
     width = max((len(f.id) for f in findings), default=0)
     for f in findings:
         say(f"  {f.status:<7}  {f.id:<{width}}  {f.detail}")
-        if f.status != MET:
+        if f.status not in (MET, SKIPPED):
             say(f"           {f.fix}")
     met = sum(1 for f in findings if f.status == MET)
     unmet = sum(1 for f in findings if f.status == UNMET)
     unknown = sum(1 for f in findings if f.status == UNKNOWN)
-    say(f"{met} met, {unmet} unmet, {unknown} unknown of {len(findings)} probed entries; "
+    skipped_here = sum(1 for f in findings if f.status == SKIPPED)
+    say(f"{met} met, {unmet} unmet, {unknown} unknown, {skipped_here} skipped of {len(findings)} probed entries; "
         f"{skipped} entries carry no probe and were verified by the install itself")
 
 
