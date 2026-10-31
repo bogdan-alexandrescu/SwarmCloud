@@ -376,15 +376,46 @@ def test_an_image_without_the_launcher_registers_nothing(tmp_path, monkeypatch):
 # --- the image ----------------------------------------------------------------
 
 
-def test_the_image_pins_both_tools_by_commit_and_installs_the_launcher():
+#: jev-belay v0.2.0's files at its tag's commit, ef719db7eaadc56aa4def86c4da4ffff5bcbca35,
+#: vendored because it is not on the npm registry and no Dockerfile fetches from GitHub.
+VENDORED_BELAY = {
+    "belay.mjs": "81e13e7f1b324cf89a29840ea5d99cd9af52fb017b27fd7fa0e4c3790610eb12",
+    "package.json": "2068ac2e8667eb515c733d59573ea96cfa09699bfdc67c0aa5fadb33a61ea66d",
+    "LICENSE": "c2686bf7578adaf9e8011544a578a308a70fa12cfa4720a008f9240d44f0b53f",
+}
+#: The npm registry's `dist.integrity` for jev-enforce 1.1.1, as hex; its gitHead is the
+#: v1.1.1 tag's commit ed9c7d79bad2bfdea474df5e414b8b601c0e92cd.
+JEV_ENFORCE_SHA512 = (
+    "9964c65068cb2e6b423d610c66b90b82f6fe391b3c3d85a9e8eac1e75fd1c160"
+    "b573720ca0dce47e8fa104a7ff234299e7aa6360cafe7afef7ce04a019ea2ddf"
+)
+
+
+def test_the_image_pins_both_tools_and_installs_the_launcher():
+    import hashlib
+
     text = DOCKERFILE.read_text()
-    assert "ARG JEV_BELAY_COMMIT=ef719db7eaadc56aa4def86c4da4ffff5bcbca35" in text  # v0.2.0
-    assert "ARG JEV_ENFORCE_COMMIT=ed9c7d79bad2bfdea474df5e414b8b601c0e92cd" in text  # v1.1.1
-    assert "https://github.com/valentynkit/jev-belay.git" in text
-    assert "https://github.com/erkamyaman/jev-enforce.git" in text
+    assert "ARG JEV_ENFORCE_VERSION=1.1.1" in text
+    assert f"ARG JEV_ENFORCE_SHA512={JEV_ENFORCE_SHA512}" in text
+    assert "https://registry.npmjs.org/jev-enforce/-/jev-enforce-${JEV_ENFORCE_VERSION}.tgz" in text
+    assert 'echo "${JEV_ENFORCE_SHA512}  ${JE_TGZ}" | sha512sum -c -' in text
+    assert "/tmp/jev-gates-build/vendor/jev-belay/belay.mjs" in text
     assert "/opt/swarm/jev-gates/bin/swarm-jev-gate.mjs" in text
-    assert '"version": "0.2.0"' in text and '"version": "1.1.1"' in text
+    vendored = LAUNCHER.parents[1] / "vendor" / "jev-belay"
+    assert sorted(p.name for p in vendored.iterdir()) == sorted(VENDORED_BELAY)
+    for name, digest in VENDORED_BELAY.items():
+        assert hashlib.sha256((vendored / name).read_bytes()).hexdigest() == digest, name
+    assert '"version": "0.2.0"' in (vendored / "package.json").read_text()
     assert os.access(LAUNCHER, os.X_OK)
+
+
+def test_the_launcher_names_the_files_the_image_installs():
+    launcher = LAUNCHER.read_text()
+    assert 'join(HERE, "..", "jev-belay", "belay.mjs")' in launcher
+    assert 'join(HERE, "..", "jev-enforce", "dist", "src", "cli.js")' in launcher
+    text = DOCKERFILE.read_text()
+    assert "/opt/swarm/jev-gates/jev-belay/" in text
+    assert "/opt/swarm/jev-gates/jev-enforce/dist/src/" in text
 
 
 # --- egress -------------------------------------------------------------------

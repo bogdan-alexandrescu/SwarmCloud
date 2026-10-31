@@ -1026,16 +1026,22 @@ RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
 
 # THE LANE QUALITY GATES (JEV-LANES, BGD 2026-10-31; #642: 25% of lane PRs were
 # red on their first CI run). Two Claude Code hooks checked by TypeSafe's Jev,
-# pinned to the commit each release tag names, MIT both:
-#   * jev-belay v0.2.0 (github.com/valentynkit/jev-belay), a Stop hook that
-#     blocks an unverified "done";
-#   * jev-enforce v1.1.1 (github.com/erkamyaman/jev-enforce), the final reply
-#     and every Edit/Write checked against the repository's CLAUDE.md rules.
-# Fetched by COMMIT, not by tag, and the checkout's HEAD compared with it: a
-# moved tag cannot change what is built. Each fetch retries like every
-# download here (1+2+4+8+16 s); one that never lands fails at the HEAD check. Neither has a runtime dependency, so
-# only their own files are kept (jev-enforce's committed dist/src, which is
-# what its plugin runs), root-owned and read-only, off PATH.
+# pinned, MIT both:
+#   * jev-belay v0.2.0 (valentynkit/jev-belay at commit
+#     ef719db7eaadc56aa4def86c4da4ffff5bcbca35, its v0.2.0 tag), a Stop hook
+#     that blocks an unverified "done". It is not on the npm registry, and no
+#     Dockerfile here fetches from GitHub (docs/runbooks/build-mirror.md), so
+#     its three files are VENDORED beside the launcher, jev-gates/vendor/
+#     jev-belay, byte for byte; tests/unit/worker/test_quality_gates.py holds
+#     each file to the commit's sha256.
+#   * jev-enforce v1.1.1 (erkamyaman/jev-enforce), the final reply and every
+#     Edit/Write checked against the repository's CLAUDE.md rules: the npm
+#     registry's tarball, checked against the sha512 below (the registry's
+#     own `dist.integrity`; its `gitHead` is the v1.1.1 tag's commit
+#     ed9c7d79bad2bfdea474df5e414b8b601c0e92cd, and its dist/src is that
+#     commit's, file for file). Retried like the npm tarballs above.
+# Neither has a runtime dependency, so only their own files are kept,
+# root-owned and read-only, off PATH.
 # They are NOT a plugin the CLI enables by itself: the claude-code runner
 # registers them in its `--settings` hooks (`claude_code.write_headless_settings`)
 # only when the worker handed it the gates' config, i.e. the workspace turned
@@ -1044,33 +1050,28 @@ RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
 # its own process, sends only to TypeSafe's API and scrubs the registered
 # secrets (docs/jev-data-flow.md, "The lane hooks"). Without that config, or
 # without TYPESAFE_API_KEY, both are inert. With INSTALL_AGENT_CLIS=0 nothing
-# is fetched, the launcher is still installed, and the runner, finding no
-# tool, registers nothing.
-ARG JEV_BELAY_COMMIT=ef719db7eaadc56aa4def86c4da4ffff5bcbca35
-ARG JEV_ENFORCE_COMMIT=ed9c7d79bad2bfdea474df5e414b8b601c0e92cd
+# is fetched or installed but the launcher, and the runner, finding no tool,
+# registers nothing.
+ARG JEV_ENFORCE_VERSION=1.1.1
+ARG JEV_ENFORCE_SHA512=9964c65068cb2e6b423d610c66b90b82f6fe391b3c3d85a9e8eac1e75fd1c160b573720ca0dce47e8fa104a7ff234299e7aa6360cafe7afef7ce04a019ea2ddf
 RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev-gates-build \
     install -d -m 0755 /opt/swarm/jev-gates /opt/swarm/jev-gates/bin \
  && install -o root -g root -m 0555 /tmp/jev-gates-build/bin/swarm-jev-gate.mjs /opt/swarm/jev-gates/bin/swarm-jev-gate.mjs \
  && if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
-      fetch_at() { \
-        git init -q "$1" \
-        && { for wait in 1 2 4 8 16; do \
-               git -C "$1" fetch -q --depth 1 "$2" "$3" && break; sleep "${wait}"; \
-             done; } \
-        && git -C "$1" checkout -q FETCH_HEAD \
-        && test "$(git -C "$1" rev-parse HEAD)" = "$3"; \
-      } \
-      && fetch_at /tmp/jev-belay-src https://github.com/valentynkit/jev-belay.git "${JEV_BELAY_COMMIT}" \
-      && fetch_at /tmp/jev-enforce-src https://github.com/erkamyaman/jev-enforce.git "${JEV_ENFORCE_COMMIT}" \
-      && grep -q '"version": "0.2.0"' /tmp/jev-belay-src/package.json \
-      && grep -q '"version": "1.1.1"' /tmp/jev-enforce-src/package.json \
-      && install -d -m 0755 /opt/swarm/jev-gates/jev-belay /opt/swarm/jev-gates/jev-enforce/dist/src \
-      && install -o root -g root -m 0444 /tmp/jev-belay-src/belay.mjs /tmp/jev-belay-src/package.json \
-           /tmp/jev-belay-src/LICENSE /opt/swarm/jev-gates/jev-belay/ \
+      JE_TGZ="/tmp/jev-enforce-${JEV_ENFORCE_VERSION}.tgz" \
+      && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${JE_TGZ}" \
+           "https://registry.npmjs.org/jev-enforce/-/jev-enforce-${JEV_ENFORCE_VERSION}.tgz" \
+      && echo "${JEV_ENFORCE_SHA512}  ${JE_TGZ}" | sha512sum -c - \
+      && install -d -m 0755 /tmp/jev-enforce-src /opt/swarm/jev-gates/jev-belay /opt/swarm/jev-gates/jev-enforce/dist/src \
+      && tar -xzf "${JE_TGZ}" -C /tmp/jev-enforce-src --strip-components=1 \
+      && grep -q "\"version\": \"${JEV_ENFORCE_VERSION}\"" /tmp/jev-enforce-src/package.json \
       && install -o root -g root -m 0444 /tmp/jev-enforce-src/package.json /tmp/jev-enforce-src/LICENSE \
            /opt/swarm/jev-gates/jev-enforce/ \
       && install -o root -g root -m 0444 /tmp/jev-enforce-src/dist/src/*.js /opt/swarm/jev-gates/jev-enforce/dist/src/ \
-      && rm -rf /tmp/jev-belay-src /tmp/jev-enforce-src ; \
+      && install -o root -g root -m 0444 /tmp/jev-gates-build/vendor/jev-belay/belay.mjs \
+           /tmp/jev-gates-build/vendor/jev-belay/package.json /tmp/jev-gates-build/vendor/jev-belay/LICENSE \
+           /opt/swarm/jev-gates/jev-belay/ \
+      && rm -rf /tmp/jev-enforce-src "${JE_TGZ}" ; \
     fi \
  && chmod -R a+rX,a-w /opt/swarm/jev-gates
 

@@ -168,7 +168,8 @@ Lane JEV-LANES (BGD, 2026-10-31; #642: 25% of lane PRs were red on their
 first CI run). A claude-code lane in a workspace whose owner or admin turned
 `workspace_settings/{tenant}.quality_gates.jev` on (`swarm_api.qualitygates`,
 audited like `code_intelligence.jev`, default off) runs two Claude Code
-hooks, pinned by commit in `images/agent-runtime-base/Dockerfile`:
+hooks, pinned in `images/agent-runtime-base/Dockerfile` (jev-belay vendored
+at its v0.2.0 commit, jev-enforce from the npm registry by sha512):
 **jev-belay** v0.2.0 (a Stop hook) and **jev-enforce** v1.1.1 (a Stop hook
 and an Edit/Write hook, `JEV_ENFORCE_MODE=end`). They do **not** go through
 `JudgeClient.decide`: they are third-party Node programs. Every hook command
