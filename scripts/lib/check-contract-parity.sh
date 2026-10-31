@@ -2228,6 +2228,167 @@ PY
   fi
 fi
 
+# -- 18. claude-code-lightpanda (docs/design/lightpanda-runtime.md §6.5) ----
+# The profile's promise is "never receives Chromium, never claims a live
+# view", and the five facts behind it live in five files no one import joins:
+# the frozen catalogue's entry (live_browser false, no `browser_tool` input),
+# its Terraform mirror (section 13 compares the fields of every entry that
+# exists; this asserts the entry exists), the runner's CDP port (the
+# live-browser pods own 9222, and a Lightpanda on it would be read as a live
+# view), the runner's denied `screenshot` (it crashes on heavy pages and its
+# picture is not a live view), and the image's amd64 pin, which the tool
+# mirror the build verifies against must carry too. The runner module is read
+# with ast, not imported: importing agent_worker needs the worker's
+# dependencies, and this script needs none of them.
+step "claude-code-lightpanda parity"
+
+if ! LIGHTPANDA_PARITY="$(python3 - "${REPO_ROOT}" 2>&1 <<'PY'
+import ast
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+NAME = "claude-code-lightpanda"
+REPORT = []
+
+
+def emit(status, item, detail):
+    REPORT.append("%s|%s|%s" % (status, item, detail.replace("\n", " ")))
+
+
+def read(rel):
+    path = root / rel
+    return path.read_text() if path.is_file() else None
+
+
+sys.path.insert(0, str(root / "apps" / "common"))
+from swarm_common import profiles as frozen_profiles
+
+profile = frozen_profiles.RUNNER_PROFILES.get(NAME)
+if profile is None:
+    emit("DRIFT", NAME, "the frozen catalogue has no %s profile, so nothing below "
+         "has a profile to describe" % NAME)
+else:
+    # 1. No live view and no browser-tool choice.
+    if profile.live_browser is not False:
+        emit("DRIFT", "live_browser", "%s declares live_browser=%r; it has no display "
+             "and must claim no live view" % (NAME, profile.live_browser))
+    else:
+        emit("OK", "live_browser", "%s declares live_browser false" % NAME)
+    if "browser_tool" in (profile.inputs or {}):
+        emit("DRIFT", "browser_tool", "%s declares a browser_tool input; its agents get "
+             "Lightpanda only, never a choice of Chromium tools" % NAME)
+    else:
+        emit("OK", "browser_tool", "%s declares no browser_tool input" % NAME)
+
+    # 2. The Terraform mirror has the entry, with the catalogue's image, class
+    # and backend.
+    locals_tf = read("terraform/infra/locals.tf") or ""
+    entry = re.search(r"^    \"" + re.escape(NAME) + r"\" = \{\n(.*?)^    \}", locals_tf, re.M | re.S)
+    if entry is None:
+        emit("DRIFT", "locals.tf", "terraform/infra/locals.tf runner_profiles has no "
+             "%s entry, so Terraform makes no Job for it" % NAME)
+    else:
+        def field(key):
+            found = re.search(r"^\s*" + key + r"\s*=\s*\"([^\"]*)\"", entry.group(1), re.M)
+            return found.group(1) if found else None
+
+        expected = (("image", profile.image), ("resource_class", profile.resource_class),
+                    ("backend", getattr(profile.backend, "value", profile.backend)))
+        wrong = ["%s is %r, the catalogue says %r" % (key, field(key), want)
+                 for key, want in expected if field(key) != want]
+        if wrong:
+            emit("DRIFT", "locals.tf", "the %s entry in terraform/infra/locals.tf: %s"
+                 % (NAME, "; ".join(wrong)))
+        else:
+            emit("OK", "locals.tf", "terraform/infra/locals.tf mirrors %s (%s, %s, %s)"
+                 % (NAME, expected[0][1], expected[1][1], expected[2][1]))
+
+# 3 and 4. The runner module's CDP_PORT and DISALLOWED_TOOLS.
+RUNNER = "apps/agent-worker/agent_worker/lightpanda.py"
+source = read(RUNNER)
+assigned = {}
+if source is not None:
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            assigned[node.targets[0].id] = node.value
+
+port = assigned.get("CDP_PORT")
+if not (isinstance(port, ast.Constant) and isinstance(port.value, int)):
+    emit("DRIFT", "CDP_PORT", "%s no longer assigns CDP_PORT an integer literal" % RUNNER)
+elif port.value == 9222:
+    emit("DRIFT", "CDP_PORT", "%s CDP_PORT is 9222, the live-browser pods' port; "
+         "Lightpanda would be taken for a live view" % RUNNER)
+else:
+    emit("OK", "CDP_PORT", "%s CDP_PORT is %d, not the live-browser 9222" % (RUNNER, port.value))
+
+
+def literal_tail(element):
+    # A tool is a plain string or an f-string ending in a literal, e.g.
+    # f"mcp__{MCP_SERVER_NAME}__screenshot"; the tool's own name is that tail.
+    if isinstance(element, ast.Constant) and isinstance(element.value, str):
+        return element.value
+    if isinstance(element, ast.JoinedStr) and element.values:
+        last = element.values[-1]
+        if isinstance(last, ast.Constant) and isinstance(last.value, str):
+            return last.value
+    return None
+
+
+denied = assigned.get("DISALLOWED_TOOLS")
+if not isinstance(denied, (ast.Tuple, ast.List)):
+    emit("DRIFT", "DISALLOWED_TOOLS", "%s no longer assigns DISALLOWED_TOOLS a tuple literal" % RUNNER)
+elif not any(re.search(r"(^|__)screenshot$", literal_tail(e) or "") for e in denied.elts):
+    emit("DRIFT", "DISALLOWED_TOOLS", "%s DISALLOWED_TOOLS does not deny screenshot" % RUNNER)
+else:
+    emit("OK", "DISALLOWED_TOOLS", "%s DISALLOWED_TOOLS denies screenshot" % RUNNER)
+
+# 5. The image pins the amd64 binary, and the tool mirror carries that hash.
+DOCKERFILE = "images/agent-runtime-lightpanda/Dockerfile"
+MIRROR = "images/agent-runtime-base/tool-mirror.sha256"
+pin = re.search(r"^ARG LIGHTPANDA_SHA256_AMD64=([0-9a-f]{64})\s*$", read(DOCKERFILE) or "", re.M)
+mirrored = re.findall(r"^([0-9a-f]{64})\s", read(MIRROR) or "", re.M)
+if pin is None:
+    emit("DRIFT", "LIGHTPANDA_SHA256_AMD64", "%s does not pin LIGHTPANDA_SHA256_AMD64 "
+         "to a sha256" % DOCKERFILE)
+elif pin.group(1) not in mirrored:
+    emit("DRIFT", "LIGHTPANDA_SHA256_AMD64", "%s pins %s, which tool-mirror.sha256 (%s) "
+         "does not carry" % (DOCKERFILE, pin.group(1), MIRROR))
+else:
+    emit("OK", "LIGHTPANDA_SHA256_AMD64", "%s pins %s, and %s carries it"
+         % (DOCKERFILE, pin.group(1)[:12], MIRROR))
+
+print("\n".join(REPORT))
+PY
+)"; then
+  err "the claude-code-lightpanda parity probe failed to run:"
+  printf '%s\n' "${LIGHTPANDA_PARITY}" | sed 's/^/     /' >&2
+  FAILED=1
+else
+  # Counted and printed, for the reason section 6 gives.
+  LIGHTPANDA_SEEN=0
+  while IFS='|' read -r L_STATUS L_NAME L_DETAIL; do
+    [[ -n "${L_STATUS}" ]] || continue
+    LIGHTPANDA_SEEN=$(( LIGHTPANDA_SEEN + 1 ))
+    case "${L_STATUS}" in
+      OK) ok "${L_NAME}: ${L_DETAIL}" ;;
+      DRIFT)
+        err "${L_NAME} has DRIFTED: ${L_DETAIL}"
+        FAILED=1
+        ;;
+      *)
+        err "unexpected claude-code-lightpanda parity output: ${L_STATUS}|${L_NAME}|${L_DETAIL}"
+        FAILED=1
+        ;;
+    esac
+  done <<<"${LIGHTPANDA_PARITY}"
+  if [[ "${LIGHTPANDA_SEEN}" -eq 0 ]]; then
+    err "the claude-code-lightpanda probe printed no assertions at all; nothing was checked"
+    FAILED=1
+  fi
+fi
+
 hr
 [[ "${FAILED}" -eq 0 ]] || die "a restatement of the frozen contract has drifted"
 ok "every restatement of the frozen contract still matches it"
