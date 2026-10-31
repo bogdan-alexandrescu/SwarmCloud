@@ -3296,7 +3296,7 @@ entries:
   check: gcloud container clusters describe ${name_prefix}-autopilot --project=$P --region=$R
   apply: 'module.gke_autopilot (count = var.enable_gke_autopilot ? 1 : 0) -> terraform/modules/gke_autopilot/main.tf:18 google_container_cluster.this'
   verify: gcloud container clusters describe ... shows autopilot.enabled=true, releaseChannel matches var.gke_release_channel, and a test pod schedules
-  explain: 'Backend for every GKE_AUTOPILOT runner_profile (most of the 13: generic, claude-code, claude-code-large, codex, browser, merge, indexer, claude-code-browser) plus swarm-live, swarm-graph, swarm-egress, swarm-typesafe-fwd, which run as GKE workloads, not Cloud Run.'
+  explain: 'Backend for every GKE_AUTOPILOT runner_profile (most of the 14: generic, claude-code, claude-code-large, claude-code-lightpanda, codex, browser, merge, indexer, claude-code-browser) plus swarm-live, swarm-graph, swarm-egress, swarm-typesafe-fwd, which run as GKE workloads, not Cloud Run.'
   guards: Spot is disabled platform-wide (invariant 6); Spot cannot coexist with Autopilot extended run time (docs note). master_authorized_cidrs guards the control plane; var.gke_allow_open_master_authorized_network opening it is recorded in tfvars, not as an edit to the guarding rule, so it shows in a diff.
   secret_entry: null
   depends_on:
