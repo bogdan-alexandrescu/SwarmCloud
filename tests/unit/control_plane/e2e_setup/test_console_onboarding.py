@@ -444,6 +444,18 @@ def team_walk(walk, setup_app, db, github, pool, directory, runs) -> Console:
     assert team and [i["email"] for i in made["invites"]] == [CAROL]
     assert made["invites"][0]["member"] is False
     assert made["invites"][0]["add_members_url"].startswith("https://admin.google.com/ac/groups/")
+    # The row keeps the members page for the invites made with the team (M5).
+    row = console.page()["teams"][0]
+    assert row["add_members_url"] == made["invites"][0]["add_members_url"]
+    # 4b. swarm-workspace-apply fails once. Asking for the team again is
+    #     refused; Retry re-runs the workspace by its `w-` id (audit 5b, M6).
+    db.docs[f"workspaces/{team}"]["state"] = "failed"
+    console.call(cv.TEAMS, body={"group": TEAM_GROUP, "first_admin": ALICE,
+                                 "invites": [CAROL]}, expect=409)
+    row = console.page()["teams"][0]
+    assert row["progress"]["workspace_state"] == "failed" and row["workspace_id"]
+    console.call(cv.RETRY, f"/v1/admin/workspaces/{row['workspace_id']}/retry")
+    assert console.page()["teams"][0]["progress"]["workspace_state"] == "approved"
     workspace_ready(db, team)
     view = console.page()
     row = view["teams"][0]
@@ -479,12 +491,8 @@ def team_walk(walk, setup_app, db, github, pool, directory, runs) -> Console:
     assert view["teams"][0]["smoke"]["state"] == "running"
     assert runs.tasks[0]["tenant"] == team and runs.tasks[0]["group"] == TEAM_GROUP
 
-    # 7. The console's verify runs, as the first team, on its granted repository.
-    started = cv.norm_verify_runs(console.call(cv.VERIFY_RUNS))
-    assert started["task"] and started["workflow"]
-    assert started["repository"] in REPOSITORIES
-    assert started["retries"] == {"task": 0, "workflow": 0}
-    assert console.page()["verify_runs"] == started
+    # 7. Nobody starts the console's verify runs by hand: `finish` does (B1).
+    assert console.page()["verify_runs"] is None
 
     # 8. The smoke fails once and is started again on request; finish waits.
     runs.states[runs.tasks[0]["id"]] = "failed"
@@ -509,10 +517,24 @@ def team_walk(walk, setup_app, db, github, pool, directory, runs) -> Console:
         "token": addon["path"].rsplit("/", 1)[1], "value": secrets.token_hex(20)}))
     assert opened["kind"] == "addon-secret" and opened["secret"]
 
-    # 10. Finish, and the engine reads it.
+    # 10. Finish starts the console's verify runs, as the first team, on its
+    #     granted repository (audit 5b, B1), and the engine reads both.
     done = cv.norm_finish(console.call(cv.FINISH))
     assert done["at"]
-    assert console.page()["finished"]["by"] == ROOT
+    view = console.page()
+    assert view["finished"]["by"] == ROOT
+    started = view["verify_runs"]
+    assert started["task"] and started["workflow"]
+    assert started["repository"] in REPOSITORIES
+    assert started["retries"] == {"task": 0, "workflow": 0}
+    assert runs.workflows[0]["tenant"] == team
+    # A failed run is started again on the page's next read; the route the
+    # page keeps for spent retries answers the same runs.
+    runs.states[started["workflow"]] = "failed"
+    again = console.page()["verify_runs"]
+    assert again["task"] == started["task"] and again["workflow"] != started["workflow"]
+    assert again["retries"] == {"task": 0, "workflow": 1}
+    assert cv.norm_verify_runs(console.call(cv.VERIFY_RUNS)) == again
     engine_sees_finished(console, tenant=team, one_person=False)
     return console
 
@@ -556,10 +578,8 @@ def individual_walk(walk, setup_app, db, github, pool, runs) -> Console:
     assert view["personal"]["smoke"]["state"] == "running"
     assert runs.tasks[0]["tenant"] == tenant and runs.tasks[0]["group"] == ROOT
 
-    # 5. The verify runs, in the personal workspace.
-    started = cv.norm_verify_runs(console.call(cv.VERIFY_RUNS))
-    assert started["task"] and started["workflow"] and started["repository"] in REPOSITORIES
-    assert runs.workflows[0]["tenant"] == tenant
+    # 5. No verify run before the hand-over: `finish` starts them (B1).
+    assert console.page()["verify_runs"] is None
 
     # 6. The smoke fails, starts again, passes.
     runs.states[runs.tasks[0]["id"]] = "failed"
@@ -578,6 +598,10 @@ def individual_walk(walk, setup_app, db, github, pool, runs) -> Console:
     assert opened["kind"] == "team-git" and opened["secret"]
     assert cv.norm_finish(console.call(cv.FINISH))["at"]
     assert not db.paths(f"swarm-install/{ENV}/teams/")
+    started = console.page()["verify_runs"]
+    assert started["task"] and started["workflow"] and started["repository"] in REPOSITORIES
+    assert runs.workflows[0]["tenant"] == tenant
+    assert cv.norm_verify_runs(console.call(cv.VERIFY_RUNS)) == started
     engine_sees_finished(console, tenant=tenant, one_person=True)
     return console
 
