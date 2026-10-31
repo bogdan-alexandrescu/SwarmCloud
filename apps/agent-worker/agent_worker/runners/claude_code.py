@@ -1454,6 +1454,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     git_spool = os.environ.get(GIT_SPOOL_ENV, "").strip()
     if git_spool:
         env[GIT_SPOOL_ENV] = git_spool
+    # The child path's spool, likewise: the worker sets it only for an attempt
+    # with the child path (`children.ChildPath.prepare`), never for a child,
+    # which may not submit children. Without it the agent's shell had no
+    # $SWARM_CHILDREN while the notes below named it (measured 2026-10-31).
+    children_spool = os.environ.get(CHILDREN_ENV, "").strip()
+    if children_spool:
+        env[CHILDREN_ENV] = children_spool
     # The search tool's spool, likewise: set only for an attempt offered it.
     search_spool = os.environ.get(SEARCH_SPOOL_ENV, "").strip()
     if search_spool:
@@ -1513,7 +1520,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         ctx.payload = {**ctx.payload, "prompt": prompt}
     # Where to explore first, naming only the tools this attempt has (LANE CAPS).
     explore = exploration_note(graph=bool(graph_snapshot or graph_served),
-                               children=os.environ.get(CHILDREN_ENV, "").strip())
+                               children=env.get(CHILDREN_ENV, ""))
     if explore and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{explore}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
