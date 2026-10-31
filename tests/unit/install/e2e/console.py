@@ -17,6 +17,7 @@ from typing import Any
 
 from swarm_api.install_record import INDIVIDUAL, InstallRecord, check_fields
 from swarm_api.routes import setup as setup_routes
+from swarm_common.identity import tenant_id_for_user
 from swarm_install import tfvars
 
 from .world import REPO, World
@@ -88,21 +89,23 @@ def _steps(world: World) -> None:
                 for n in range(1, int(sizing.get("pool_accounts") or 1) + 1)}
     write(record.console_path("accounts"), accounts)
     # The first workspace: one person's own, or the first team, granted the
-    # repository the App installation covers (decision 3).
+    # repository the App installation covers (decision 3). swarm-api keys a
+    # team by its workspace's tenant id and writes it as `workspace`.
     from .deployment import REPOSITORY
 
     grant = {"state": "granted", "repositories": [REPOSITORY]}
+    personal = tenant_id_for_user(world.installer)
     if sizing.get("mode") == INDIVIDUAL:
-        write(record.personal_path(), {"owner": world.installer, "workspace": "ws-personal",
+        write(record.personal_path(), {"owner": world.installer, "workspace": personal,
                                        "progress": {"created_at": now}, "grant": grant,
                                        "smoke": {"state": "SUCCEEDED"}})
     else:
-        write(record.team_path("team-1"), {"group": "swarm-team@" + world.installer.split("@")[1], "workspace": "ws-team-1",
+        write(record.team_path("team-1"), {"group": "swarm-team@" + world.installer.split("@")[1], "workspace": "team-1",
                                            "first_admin": world.installer, "invites": [],
                                            "progress": {"created_at": now}, "grant": grant,
                                            "smoke": {"state": "SUCCEEDED"}})
     # swarm-workspace-apply makes the workspace's tenant namespace.
-    tenant = "personal" if sizing.get("mode") == INDIVIDUAL else "team-1"
+    tenant = personal if sizing.get("mode") == INDIVIDUAL else "team-1"
     world.apply_in_cluster(tenant_render(world, tenant))  # type: ignore[attr-defined]
     # Hand-over: `finish` writes `console/finished`, then starts the console's
     # two verification runs through swarm-api's own `ensure_verify_runs` (audit
@@ -110,7 +113,11 @@ def _steps(world: World) -> None:
     # `console/verify_runs` itself, so a `finish` that started nothing would
     # leave the engine's verify waiting, as it would live.
     deployment = world.deployment  # type: ignore[attr-defined]
-    deployment.tenants.append(tenant)
+    # `GET /v1/tenants/mine` lists the installer's own READY personal
+    # workspace first, as the default and current one (owner decision
+    # 2026-10-12), then the team (audit 5b, M3).
+    deployment.tenants[:] = list(dict.fromkeys([personal, tenant]))
+    world.first_workspace = tenant  # type: ignore[attr-defined]
     write(record.console_path("finished"), {"at": now, "by": world.installer})
     path = record.personal_path() if sizing.get("mode") == INDIVIDUAL else record.team_path("team-1")
     doc = (world.documents.get(path) or ({}, 0))[0]

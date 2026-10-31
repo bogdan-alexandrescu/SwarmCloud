@@ -695,7 +695,46 @@ class WorkloadsStep(_Base):
                                           f"--timeout={ROLLOUT_TIMEOUT}")
             if code != 0:
                 raise RuntimeError(f"{name} did not roll out in swarm-system: {err.strip()[:300]}; "
-                                   f"kubectl -n swarm-system describe {name} says why")
+                                   f"{self.rollout_reason(ctx, name)}")
+
+    def rollout_reason(self, ctx: Any, name: str) -> str:
+        try:
+            return rollout_reason(self.kube(ctx), name)
+        except Exception as exc:  # noqa: BLE001 - the reason is a help; the rollout's failure is the error
+            return f"why could not be read ({type(exc).__name__}: {str(exc)[:200]})"
+
+
+#: How many of a workload's newest warning events a failed rollout names.
+ROLLOUT_EVENTS = 5
+
+
+def rollout_reason(kube: Callable[..., tuple[int, str, str]], name: str) -> str:
+    """Why `name` (kind/name) did not roll out, read through the engine's own
+    kubeconfig (`Kube`), never the person's current context (lesson 37): the
+    workload's own conditions and the newest warning events of it and its
+    pods (an image pull, a secret mount, an unschedulable pod). The person is
+    never told to run kubectl (audit 5b M8)."""
+    base = name.split("/", 1)[-1]
+    said: list[str] = []
+    code, out, err = kube("get", name, "--namespace=swarm-system", "-o", "json")
+    if code == 0:
+        conditions = (((yaml.safe_load(out or "{}") or {}).get("status") or {}).get("conditions")) or []
+        said += [f"{c.get('type')}={c.get('status')}: {c.get('message')}" for c in conditions
+                 if c.get("message") and str(c.get("status")) != "True"]
+    else:
+        said.append(f"its status could not be read: {err.strip()[:200]}")
+    code, out, err = kube("get", "events", "--namespace=swarm-system", "--field-selector=type=Warning", "-o", "json")
+    if code == 0:
+        events = [e for e in ((yaml.safe_load(out or "{}") or {}).get("items") or [])
+                  if str((e.get("involvedObject") or {}).get("name") or "").startswith(base)]
+        events.sort(key=lambda e: str(e.get("lastTimestamp") or e.get("eventTime") or ""))
+        said += [f"{(e.get('involvedObject') or {}).get('name')}: {e.get('reason')}: {e.get('message')}"
+                 for e in events[-ROLLOUT_EVENTS:]]
+    else:
+        said.append(f"its events could not be read: {err.strip()[:200]}")
+    if not said:
+        return "swarm-system shows no warning event and no failing condition for it"
+    return "swarm-system says: " + "; ".join(said)[:1200]
 
 
 def build_steps(gcp: Callable[[], ClusterGcp] = CLUSTER_GCP, ask: Ask = ASK, *,

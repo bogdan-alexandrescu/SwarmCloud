@@ -1063,3 +1063,46 @@ describe('no sign-in link is made before its workspace is ready (audit 4d, F6)',
     expect(visible(row)).toContain('Waiting for the workspace engineering (swarm-workspace-apply: pending)')
   })
 })
+
+// NO WORKSPACE BEFORE PUBLISHING (DAYONE-MANIFEST-STEPS-2; part of #2688).
+//
+// WHAT EACH CASE HOLDS: until swarm install's infra pass 3 turns workspace
+// publishing on, an approved workspace would only be logged workspace_stuck
+// (reason publishing_off), so the route says the first team waits and the
+// form offers no "Create the team"; for one person the route files no
+// personal workspace and the row says what it waits for.
+
+describe('the first workspace waits for workspace publishing', () => {
+  const WAITS = 'waiting for swarm install’s infra pass 3, which turns on workspace publishing'
+  const waiting = (): Json =>
+    state({ teams: [], accounts: {}, finished: null, steps: { first_team: { needed: true, state: 'waiting', reason: WAITS }, invites: { needed: true, state: 'to_do' } } })
+
+  it('offers no Create the team until the route says publishing is on', async () => {
+    const calls = serve(() => null)
+    await mountSteps(waiting())
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    fireEvent.change(within(row).getByLabelText('Workspace group'), { target: { value: 'eng@example.com' } })
+    const button = within(row).getByRole('button', { name: 'Create the team' }) as HTMLButtonElement
+    // MUTATION: approve a workspace infra pass 3 has not turned publishing on for.
+    expect(button.disabled).toBe(true)
+    fireEvent.click(button)
+    expect(calls.some((c) => c.method === 'POST' && c.url === '/v1/admin/setup/teams')).toBe(false)
+    expect(visible(row)).toContain('infra pass 3')
+    expect(row.className).not.toContain('is-done')
+    cleanup()
+    await mountSteps(state({ teams: [], accounts: {}, finished: null, steps: { first_team: { needed: true, state: 'to_do' }, invites: { needed: true, state: 'to_do' } } }))
+    const open = within(document.querySelector('[data-step="team"]') as HTMLElement)
+    fireEvent.change(open.getByLabelText('Workspace group'), { target: { value: 'eng@example.com' } })
+    // MUTATION: keep the form shut once publishing is on.
+    expect((open.getByRole('button', { name: 'Create the team' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('says a one-person install’s personal workspace waits for infra pass 3', async () => {
+    await mountSteps(onePerson({ workspace: null, workspace_state: null, grant: null, smoke: null, pool_accounts: [], reason: 'publishing_off' }))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    expect(row.className).not.toContain('is-done')
+    // MUTATION: show the bare code, leaving the person to guess what it waits for.
+    expect(visible(row)).toContain('infra pass 3')
+    expect(visible(row)).not.toContain('publishing_off')
+  })
+})

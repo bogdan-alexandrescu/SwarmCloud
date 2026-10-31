@@ -152,10 +152,12 @@ def test_a_midnight_that_does_not_exist_starts_the_day_after_the_gap():
 
 
 def test_an_ambiguous_midnight_is_its_first_occurrence():
-    """Havana's clocks go back from 01:00 to 00:00 on 1 Nov 2026."""
+    """Havana's clocks went back from 01:00 to 00:00 on 2 Nov 2025. A past
+    transition, not a future one: tzdata 2026f has no 1 Nov 2026 fall-back
+    for Cuba, and a past one does not move with a new tzdata release."""
     havana = ZoneInfo("America/Havana")
-    day = floor_boundary(datetime(2026, 11, 1, 12, tzinfo=UTC), "day", havana)
-    assert day.astimezone(havana).isoformat() == "2026-11-01T00:00:00-04:00"
+    day = floor_boundary(datetime(2025, 11, 2, 12, tzinfo=UTC), "day", havana)
+    assert day.astimezone(havana).isoformat() == "2025-11-02T00:00:00-04:00"
     assert next_boundary(day, "day", havana) - day == timedelta(hours=25)
 
 
