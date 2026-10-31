@@ -52,8 +52,10 @@ def test_the_changelog_names_both_merged_changes_under_the_version():
     assert _CHANGELOG.is_file(), "plugin/CHANGELOG.md is missing"
     text = _CHANGELOG.read_text()
     sections = re.split(r"^## ", text, flags=re.MULTILINE)
-    entry = next((s for s in sections if s.startswith(_version())), None)
-    assert entry is not None, f"no `## {_version()}` entry in plugin/CHANGELOG.md"
+    # The version that released them, 0.5.75: a later bump adds its own entry
+    # above this one and must not need these two fixes named again.
+    entry = next((s for s in sections if s.startswith("0.5.75 ")), None)
+    assert entry is not None, "no `## 0.5.75` entry in plugin/CHANGELOG.md"
     assert "#2860" in entry and "swarm_check" in entry
     assert "#2875" in entry and "swarm_workflow_launch" in entry
 

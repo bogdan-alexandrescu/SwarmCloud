@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "sc",
-  "version": "0.5.75",
+  "version": "0.5.76",
   "description": "SwarmCloud from inside a Claude Code session. Two skills: `sc` reads the cluster -- the account pool and its quota windows, which pool actually binds each runner profile, what is running, what is wrong -- and never writes. `delegate` owns the decision to run work remotely instead of locally, dispatches it by runner-profile NAME from the frozen catalogue, reports a failure as something actionable rather than a task id, and brings the result back into the working tree. It writes, so it says when it asks first. Seven agents and a workflow run a Claude Code workflow's steps in SwarmCloud while each still shows as a running row: `sc:remote` runs one step remotely, and `/sc:swarmcloud` runs a whole SwarmCloud workflow spec with an `sc:step` row per step, gives each single dispatched task an `sc:task` row -- or, with the `rows` setting at its default `summary`, follows a whole workflow or task batch with ONE `sc:summary` row --, and `sc:wait` spaces a row's retries while the bridge is down. `/sc check` reports this project's stuck or stale SwarmCloud work that THIS Claude Code session started (every submission is tagged with the session; other sessions' work in the same tenant is never a candidate) and attaches rows for its running workflows that have none, and `/sc watch` runs that check every 30 minutes (CronCreate), re-armed by the SessionStart hook and armed by itself whenever the session attaches to or starts SwarmCloud work, unless `/sc watch off` was saved for the project. With `/sc layout pane` (or the `layout` setting) a SwarmCloud pane beside the chat (`/sc-pane`, proposal B: stages on the left, a stage's agents and then one agent's details on the right) reads SwarmCloud with one direct MCP call per click and spends no model tokens, and each workflow keeps ONE quiet `sc:finish` row that writes a line only when its stage changes, so its finish is still noticed; with `/sc layout band` the same levels sit in a strip above the prompt with a summary line below it (`SC 6 running · 1 waits on you`), re-read once a minute while anything runs, with no /workflows row at all: a finished workflow or a step waiting on a person queues one `/sc status` chat turn. The pane and the band need Claude Code's function hooks. `delegate` works through the plugin's own MCP server, which fetches the swarm-mcp bridge from GitHub at the tag matching this version and needs only uv. The `sc` skill and /sc run the installed `sc` and `swarm` commands, so they need those two on PATH, where SwarmCloud's install puts them.",
   "author": {
     "name": "SwarmCloud"
@@ -72,7 +72,7 @@
         "tool",
         "run",
         "--from",
-        "${SWARM_MCP_FROM:-swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v0.5.75#subdirectory=apps/swarm-mcp}",
+        "${SWARM_MCP_FROM:-swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v0.5.76#subdirectory=apps/swarm-mcp}",
         "swarm-mcp"
       ],
       "env": {
