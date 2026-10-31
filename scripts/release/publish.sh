@@ -427,6 +427,19 @@ publish() {
     ok "SHA256SUMS's signature verifies with the release key the wheel pins"
   fi
 
+  # cosign pushes each image's signature through the registry's own API with
+  # docker's credentials, not the Google keychain gcrane copies with: on
+  # 2026-10-31 the second release candidate's publish copied agent-runtime-base
+  # into the release registry, then had its signature refused as an
+  # "Unauthenticated request". A docker config of this run's own names gcloud's
+  # credential helper for the registry's host, so cosign signs as the same
+  # account gcloud acts as, no token passes through this script, and the
+  # runner's ~/.docker/config.json is left alone.
+  export DOCKER_CONFIG="${WORK}/docker"
+  mkdir -p "${DOCKER_CONFIG}"
+  printf '{"credHelpers": {"%s": "gcloud"}}\n' "${REGISTRY%%/*}" >"${DOCKER_CONFIG}/config.json"
+  [[ "${DRY_RUN}" -eq 1 ]] || require_cmd docker-credential-gcloud
+
   local name digest source copied
   while IFS=$'\t' read -r name digest <&3; do
     source="$(jq -r --arg n "${name}" '[.images[] | select(.name == $n) | .ref][0]' "${SOURCE_IMAGES}")"
