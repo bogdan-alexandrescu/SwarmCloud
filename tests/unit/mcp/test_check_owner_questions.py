@@ -272,3 +272,79 @@ def test_the_tools_description_tells_the_session_to_ask_the_person():
     # it: a session reads the check and leaves the questions in its answer.
     for word in ("owner_questions", "AskUserQuestion", "swarm_task_answer", "NEVER a flag"):
         assert word in tool["description"], word
+
+
+# --------------------------------------------------------------------------
+# A task PARKED on its agent's blocking questions (#2860)
+# --------------------------------------------------------------------------
+#
+# MEASURED, 2026-10-30 18:02Z to 21:00Z: task_aaf56ef0026746928cdf was
+# PARKED on a blocking question (park_phase question_wait) and every
+# /sc check flagged it STUCK `parked` with the hand-off's sign-in text and
+# never listed its question: (g) read only finished tasks.
+
+
+def _parked_on_questions(db, task_id: str, sid: str, *, asked: int = 2, blocking=(0,),  # noqa: F811
+                         answered=(), minutes_ago: float = 90) -> None:
+    now = datetime.now(timezone.utc)
+    parked = now - timedelta(minutes=minutes_ago)
+    wait = {"questions": [_question(i) for i in range(asked)], "blocking": list(blocking),
+            "attempt_id": "att_parked_1", "asked_at": parked.isoformat()}
+    metadata = {"claude_session": sid, "title": "SC · CHECK-PARKED · 1 step", "unit": "check-parked"}
+    if answered:
+        # The answer route adopts the wait before it stores the answers.
+        metadata["question_wait"] = wait
+        metadata["owner_answers"] = [{"question_index": i, "choice": "wake", "text": None,
+                                      "by": "alice@example.com", "at": now, "history": []} for i in answered]
+    db.docs[f"tasks/{task_id}"] = {
+        "id": task_id, "tenant_id": "eng", "state": "PARKED", "park_reason": "HUMAN_REQUIRED",
+        "blocked_by": [{"reason": "HUMAN_REQUIRED", "park_phase": "question_wait", "question_wait": wait}],
+        "created_at": parked - timedelta(minutes=20), "updated_at": parked, "started_at": parked - timedelta(minutes=19),
+        "runner_profile": "mock", "resource_class": "standard", "input": {},
+        "metadata": metadata, "repository_url": _REPO, "submitted_by": "alice@example.com",
+    }
+
+
+def test_a_task_parked_on_a_blocking_question_is_listed_first_and_marked_blocking(swarm, db, sid, reads):  # noqa: F811
+    _finished(db, "task_open", sid, asked=1, days_ago=0.01)
+    _parked_on_questions(db, "task_parked", sid, asked=2, blocking=(0,))
+    result = _check(swarm)
+    # MUTATION: reading only finished tasks (the #2860 defect) lists task_open alone.
+    # MUTATION: sorting the parked task among the finished by its end lists it second.
+    assert [e["task_id"] for e in result["owner_questions"]] == ["task_parked", "task_open"], result["owner_questions"]
+    parked, finished = result["owner_questions"]
+    # MUTATION: not marking it: a session reads a step that waits like one that ended.
+    assert parked["blocking"] is True and parked["state"] == "PARKED", parked
+    assert finished["blocking"] is False, finished
+    assert parked["open"] == 2 and [q["index"] for q in parked["questions"]] == [0, 1]
+    assert [q["blocking"] for q in parked["questions"]] == [True, False]
+    assert parked["questions"][0]["question"] == _question(0)["question"]
+    assert "swarm_task_answer" in parked["answer_with"] and "task_parked" in parked["answer_with"]
+    # Its questions come from the park, never from a questions.json it has not uploaded.
+    assert "task_parked" not in reads, reads
+
+
+def test_the_parked_flag_points_at_the_question_not_a_sign_in(swarm, db, sid, reads):  # noqa: F811
+    _parked_on_questions(db, "task_parked", sid, asked=2, blocking=(0, 1))
+    result = _check(swarm)
+    (flag,) = [f for f in result["flagged"] if f.get("task_id") == "task_parked"]
+    assert flag["rule"] == "parked"
+    # MUTATION: the hand-off's sentence ("sign in on its console page") for a
+    # park that waits on the owner's answer.
+    assert "sign in" not in flag["reason"] and "take control" not in flag["reason"], flag["reason"]
+    assert "2 blocking question" in flag["reason"] and "owner_questions" in flag["reason"], flag["reason"]
+    assert flag["evidence"]["park_phase"] == "question_wait", flag["evidence"]
+    assert "swarm_task_answer" in flag.get("next", ""), flag
+
+
+def test_a_parked_task_whose_questions_are_answered_is_not_listed(swarm, db, sid, reads):  # noqa: F811
+    _parked_on_questions(db, "task_answered", sid, asked=2, blocking=(0,), answered=(0, 1))
+    result = _check(swarm)
+    # MUTATION: listing the park's questions without its stored answers.
+    assert result["owner_questions"] == [], result["owner_questions"]
+
+
+def test_another_sessions_parked_task_is_not_listed(swarm, db, sid, reads):  # noqa: F811
+    _parked_on_questions(db, "task_theirs", str(uuid.uuid4()))
+    result = _check(swarm)
+    assert result["owner_questions"] == [], result["owner_questions"]

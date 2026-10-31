@@ -264,7 +264,7 @@ export function SetupLead({ state, now }: { state: SetupState; now?: number }) {
       return lead(
         tone,
         `Claude accounts: ${step.line}`,
-        `Each subscription’s owner signs in once, through the one-time link this page sends; ${isOnePerson(state) ? 'your personal workspace’s' : 'the first team’s'} smoke agent runs on the first one. ${cli}`,
+        `Each subscription’s owner signs in once, through a one-time link this page makes (the page opens it for you when the account is your own); ${isOnePerson(state) ? 'your personal workspace’s' : 'the first team’s'} smoke agent runs on the first one. ${cli}`,
       )
     case 'verify': {
       const v = state.engine?.verify ?? null
