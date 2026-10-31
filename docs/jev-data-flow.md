@@ -162,8 +162,89 @@ holding it is dropped.
   in this repository, and this record does not establish which network path
   a deployed worker's traffic takes past the process.
 
+## The lane hooks
+
+Lane JEV-LANES (BGD, 2026-10-31; #642: 25% of lane PRs were red on their
+first CI run). A claude-code lane in a workspace whose owner or admin turned
+`workspace_settings/{tenant}.quality_gates.jev` on (`swarm_api.qualitygates`,
+audited like `code_intelligence.jev`, default off) runs two Claude Code
+hooks, pinned by commit in `images/agent-runtime-base/Dockerfile`:
+**jev-belay** v0.2.0 (a Stop hook) and **jev-enforce** v1.1.1 (a Stop hook
+and an Edit/Write hook, `JEV_ENFORCE_MODE=end`). They do **not** go through
+`JudgeClient.decide`: they are third-party Node programs. Every hook command
+is the image's launcher, `images/agent-runtime-base/jev-gates/bin/swarm-jev-gate.mjs`,
+which runs the pinned tool in its own process after replacing `fetch`.
+
+**Who decides, and where the key comes from.** The worker
+(`apps/agent-worker/agent_worker/qualitygates.py::prepare`, called from
+`apps/agent-worker/agent_worker/lifecycle.py::Worker._quality_gates_env` for
+the claude-code runner only) reads the switch; anything but `True` is off,
+and off means no key is read, no config is written, no hook is registered
+and nothing is sent. On, it resolves the **workspace's** TypeSafe key
+(`swarm-tenant-<tenant>-typesafe`, `jevkey.resolve` with no submitter, the
+secret the jev browser tools read), writes it to `private/jev-gates.key`
+(0600, never checkpointed), and hands the runner `SWARM_JEV_GATES_CONFIG`,
+the PATH of a 0600 config naming that file, the counts file, the hooks' data
+directory and the profile's registered secret NAMES. The key is in no
+environment variable the CLI, its Bash tool or the settings file sees, no
+event, no log line and no spec. With the TypeSafe forwarder on, no key is
+read at all: the config names the worker's loopback shim file.
+
+**What each hook sends** (one `POST https://api.typesafe.ai/v1/systemone`
+per Jev call, `{model, state, questions}`):
+
+| Hook | When it calls Jev | `state` | `questions` |
+|---|---|---|---|
+| jev-belay, Stop | only when the turn changed files and no test, build or lint run passed since: at most one call | the turn's task (the user's prompt), **the final reply**, the file-change count and the names of the checks run with passed/failed; no tool input, diff or file content | four fixed questions of its own |
+| jev-enforce, Stop (`end` mode) | when the final reply or a recorded edit is at least 20 characters and an applicable rule exists | **the final reply** (up to 60,000 characters), then **each edited file's written text** with its path | one per applicable rule: **the rule's text**, from the repository's CLAUDE.md, `.claude/CLAUDE.md` and `CLAUDE.local.md` files |
+| jev-enforce, first run in a checkout | once per rule set, cached in the data directory | the rule texts | what each rule constrains |
+| jev-enforce, Edit/Write | **never**: in `end` mode it only records the edit's text in the data directory (`private/jev-gates-data`) for the Stop hook | -- | -- |
+
+**The redaction applied.** Before any send, the launcher
+(`swarm-jev-gate.mjs` `guardedFetch` and `scrub`) parses the body and
+replaces, in every string and every key at every depth, the workspace key
+itself and the value of every secret the agent profile registered
+(`secret_env_names`, read from the hook's own environment) with
+`<redacted>`; a value shorter than 8 characters is not scrubbed, the same
+line the judge's sanitizer draws. That is the redaction: rules 1 to 3 and
+5 of the table above (path deny, credential scan, the redaction families,
+never-sent keys)
+are `JudgeClient`'s and do **not** apply to these hooks, see Known gaps.
+`guardedFetch` also refuses any URL but TypeSafe's, and sends to the URL
+the worker's config chose (TypeSafe, or the loopback shim) with the
+config's key, whatever `JEV_BASE_URL` or `CLAUDE_PLUGIN_OPTION_*` the
+environment holds; the launcher removes those and `JEV_BELAY_LOG`, so
+neither tool writes a text log.
+
+**Where the audit lands.** Each hook run appends one line of counts to
+`private/jev-gates.counts` -- which hook, how many Jev calls, whether it
+blocked, how many rules it flagged; never text. After the agent,
+`apps/agent-worker/agent_worker/qualitygates.py::finish` sums them, removes
+the key file, and `apps/agent-worker/agent_worker/lifecycle.py::Worker._record_quality_gates`
+puts them in the attempt's summary under `quality_gates` and records one
+RUNNING event, cause `quality_gate`, with the same counts when belay blocked
+a stop or enforce flagged a rule. There is no per-call ledger row like rule
+6's; TypeSafe's own records are the authority on what was sent.
+
+**Egress.** The same path the jev browser tools' direct calls take: no host
+allowlist exists for TypeSafe; `kubernetes/network-policies/allow-egress.yaml`
+rule 4 (the internet minus every private range, TCP 443) applies to every
+worker pod, and the forwarder's path (`allow-typesafe-fwd.yaml`) to a pod
+labelled `swarm-typesafe: inject`. No new rule was needed.
+
+Held by `tests/unit/worker/test_quality_gates.py` (switch, key, config,
+hooks, launcher redaction and URL pin, counts and event) and
+`tests/unit/worker/test_jev_data_flow.py::test_the_record_states_what_the_lane_hooks_send_and_where_their_audit_lands`.
+
 ## Known gaps
 
+* **The lane hooks get only the registered-secret scrub.** jev-enforce sends
+  an edited file's text whatever its path, so an edit to a `.env` or `*.pem`
+  file the agent writes reaches TypeSafe with only the profile's registered
+  secrets and the key replaced; rule 1a's path deny, rule 2's credential
+  scan and rule 3's redaction families are `JudgeClient`'s and do not run
+  in the launcher. Turning `quality_gates.jev` on accepts that; it is off
+  by default.
 * **Nothing sets `SWARM_JUDGE_INTERNAL_URL`** (context-quality.md §5.6). The
   scheduler sends `JEV_API_URL` to live-browser attempts only. So an
   opted-in workspace on the default Internal Jev backend reads
