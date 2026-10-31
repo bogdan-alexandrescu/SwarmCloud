@@ -900,15 +900,16 @@ def test_installer_cidr_asked_when_the_echoes_disagree() -> None:
         preflight.InstallerAddressStep(lambda: gcp, ask).apply(ctx_for(), step.plan(ctx_for()))
 
 
-#: The ADC sign-in preflight runs: Cloud Platform and the two Directory scopes.
-ADC_LOGIN = ["auth", "application-default", "login",
+#: The ADC sign-in preflight runs: Cloud Platform and the two Directory scopes,
+#: with no quota project copied from the laptop's gcloud (issue 2942).
+ADC_LOGIN = ["auth", "application-default", "login", "--disable-quota-project",
              "--scopes=https://www.googleapis.com/auth/cloud-platform,"
              "https://www.googleapis.com/auth/admin.directory.customer.readonly,"
              "https://www.googleapis.com/auth/admin.directory.rolemanagement"]
 CLOUD_PLATFORM_ONLY = frozenset({"https://www.googleapis.com/auth/cloud-platform", "openid"})
 DIRECTORY_SCOPES = frozenset({"https://www.googleapis.com/auth/admin.directory.customer.readonly",
                               "https://www.googleapis.com/auth/admin.directory.rolemanagement"})
-CLOUD_PLATFORM_LOGIN = ["auth", "application-default", "login",
+CLOUD_PLATFORM_LOGIN = ["auth", "application-default", "login", "--disable-quota-project",
                         "--scopes=https://www.googleapis.com/auth/cloud-platform"]
 
 
@@ -2043,3 +2044,90 @@ def test_the_quotas_step_reads_the_project_wide_cpus_beside_the_regional(pages: 
     assert [url for url, _ in pages] == [ALL_REGIONS_PAGE]
     gcp.quotas["compute.googleapis.com"][1] = _cpus({None: 3000}, name="compute.googleapis.com/cpus_all_regions")
     assert step.check(ctx).status == MET
+
+
+# -- ISSUE 2942: the quota project, and a confirmation asked again ------------
+
+
+class _Recorded:
+    """The transport under the real AuthorizedSession: every request kept
+    with its headers, answered 200 with `body`."""
+
+    def __init__(self, body: Any) -> None:
+        import requests.adapters
+
+        self.sent: list[dict[str, str]] = []
+        recorded = self.sent
+
+        class Adapter(requests.adapters.BaseAdapter):
+            def send(self, request, **kwargs):  # noqa: ANN001, ANN003
+                import requests
+
+                recorded.append(dict(request.headers))
+                response = requests.Response()
+                response.status_code, response.request, response.url = 200, request, request.url
+                response._content = json.dumps(body).encode()
+                return response
+
+            def close(self) -> None:
+                pass
+
+        self.adapter = Adapter()
+
+
+def test_stage_0_calls_never_send_the_laptops_quota_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue 2942: `gcloud auth application-default login` writes the laptop's
+    gcloud project into the credentials as their quota project, and google-auth
+    sends it as `x-goog-user-project` on every call. Stage 0's billing listing
+    and rights check must go without one; stage 1's budget calls still name the
+    install's project."""
+    import google.auth
+    import requests
+    from google.oauth2.credentials import Credentials
+
+    laptop = "laptop-default-" + secrets.token_hex(3)
+    credentials = Credentials(token=secrets.token_hex(16), quota_project_id=laptop)
+    monkeypatch.setattr(google.auth, "default", lambda scopes=None: (credentials, laptop))
+    recorded = _Recorded({"billingAccounts": [], "permissions": [], "budgets": []})
+    monkeypatch.setattr(requests.Session, "get_adapter", lambda self, url: recorded.adapter)
+    gcp = preflight.Gcp()
+    gcp.billing_accounts()
+    gcp.test_permissions(f"billingAccounts/{ACCOUNT}", ["billing.resourceAssociations.create"])
+    gcp.test_permissions(FOLDER, ["resourcemanager.projects.create"])
+    assert len(recorded.sent) == 3
+    assert [h.get("x-goog-user-project") for h in recorded.sent] == [None, None, None]
+
+    gcp.quota_project = PROJECT  # stage 1: the project exists
+    gcp.budgets(ACCOUNT)
+    assert recorded.sent[-1].get("x-goog-user-project") == PROJECT
+
+
+def test_adc_sign_in_writes_no_quota_project() -> None:
+    """Issue 2942: the installer's own application-default sign-in never lets
+    gcloud copy the laptop's project into the credentials as a quota project."""
+    assert "--disable-quota-project" in preflight.adc_login()
+    assert "--disable-quota-project" in preflight.adc_login((preflight.CLOUD_PLATFORM_SCOPE,))
+
+
+def test_an_empty_region_confirmation_is_asked_again() -> None:
+    """Issue 2942: an empty line at the region's confirmation is no answer;
+    it is asked again, saying what was expected, and the right answer then
+    confirms it."""
+    ask = Answers(preflight_region=["europe-west1", "", "europe-west1"])
+    ctx = ctx_for(region=None)
+    step = preflight.RegionStep(lambda: FakeGcp(), ask)
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.state.region == "europe-west1" and ctx.outputs["region_confirmed"] == "europe-west1"
+    assert len(ask.asked) == 3 and "europe-west1" in ask.asked[2][1] and "nothing was typed" in ask.asked[2][1]
+
+
+def test_a_confirmation_gives_up_after_its_tries_and_records_nothing() -> None:
+    wrong = ["europe-west2"] * preflight.CONFIRM_TRIES
+    ask = Answers(preflight_region=["europe-west1", "", *wrong[1:]])
+    ctx = ctx_for(region=None)
+    step = preflight.RegionStep(lambda: FakeGcp(), ask)
+    with pytest.raises(ValueError, match="nothing was recorded"):
+        step.apply(ctx, step.plan(ctx))
+    assert ctx.state.region is None and "region_confirmed" not in ctx.outputs
+    assert len(ask.asked) == 1 + preflight.CONFIRM_TRIES
+    assert "'europe-west2' is not europe-west1" in ask.asked[-1][1]

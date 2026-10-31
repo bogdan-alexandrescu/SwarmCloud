@@ -129,7 +129,14 @@ class Gcp:
     user credentials the Budgets API refuses a call that names none, and a
     fresh laptop's sign-in sets none (audit #8). It is the header
     `credentials.with_quota_project(project)` makes a session send. Every
-    stage-0 call goes without one: no project exists yet."""
+    stage-0 call goes without one: no project exists yet.
+
+    The session sends no other quota project. `gcloud auth application-default
+    login` writes the laptop's gcloud project into the credentials (and
+    GOOGLE_CLOUD_QUOTA_PROJECT can name one), and google-auth would send it on
+    every call: a project unrelated to the install, whose disabled Cloud
+    Billing API refused stage 0 (issue 2942). The session's credentials drop
+    it, so only `quota_project`, where a call names it, is ever sent."""
 
     def __init__(self, session: Any = None, *, quota_project: str | None = None) -> None:
         self._session = session
@@ -153,6 +160,8 @@ class Gcp:
             credentials, _ = google.auth.default(
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
+            if getattr(credentials, "quota_project_id", None):
+                credentials = credentials.with_quota_project(None)
             self._session = AuthorizedSession(credentials)
         return self._session
 
@@ -400,6 +409,29 @@ def remember(ctx: Any, *, outputs: Mapping[str, Any] | None = None, **fields: An
         change(ctx.state)
     else:
         ctx.engine.save(change)
+
+
+#: A typed confirmation that is empty or does not match is asked again, saying
+#: what it expected, up to this many answers in all before the step fails:
+#: enough for a slip of the finger or a stray Enter, not a loop that never ends
+#: on a terminal that keeps answering the same thing (issue 2942).
+CONFIRM_TRIES = 3
+
+
+def confirm(ask: Ask, ctx: Any, step_id: str, question: str, expected: str) -> None:
+    """Ask `question` until `expected` is typed, at most `CONFIRM_TRIES` times.
+    An empty line is never an answer. Raises ValueError, with nothing recorded
+    by the caller, when no answer matched."""
+    asked = question
+    again = ""
+    for _ in range(CONFIRM_TRIES):
+        again = ask(ctx, step_id, asked).strip()
+        if again == expected:
+            return
+        said = "nothing was typed" if not again else f"{again!r} is not {expected}"
+        asked = f"{said}; type {expected} exactly. {question}"
+    raise ValueError(f"the confirmation {again!r} does not match {expected!r} after {CONFIRM_TRIES} tries; "
+                     "nothing was recorded")
 
 
 def choose(ask: Ask, ctx: Any, step_id: str, what: str, options: Sequence[tuple[str, str]], *,
@@ -708,7 +740,12 @@ DIRECTORY_LATER = ("Google refused the Directory scopes to this sign-in, so it w
 
 
 def adc_login(scopes: Sequence[str] = ADC_SCOPES) -> list[str]:
-    return ["auth", "application-default", "login", "--scopes=" + ",".join(scopes)]
+    """The application-default sign-in. `--disable-quota-project`: gcloud would
+    otherwise copy the laptop's own gcloud project into the credentials as
+    their quota project, and terraform and every Google client would bill
+    their calls to it (issue 2942). The install names its own project where
+    a call needs one."""
+    return ["auth", "application-default", "login", "--disable-quota-project", "--scopes=" + ",".join(scopes)]
 
 
 def directory_declined(ctx: Any) -> bool:
@@ -1195,12 +1232,8 @@ class RegionStep(_Base):
             ctx, self.id, "Region for every regional resource", default=DEFAULT_REGION).strip()
         if not REGION.match(region):
             raise ValueError(f"{region!r} is not a region name like {DEFAULT_REGION}")
-        again = self._ask(
-            ctx, self.id,
-            f"The Firestore location can never change. Type the region again to confirm ({region})",
-        ).strip()
-        if again != region:
-            raise ValueError(f"the confirmation {again!r} does not match {region!r}; nothing was recorded")
+        confirm(self._ask, ctx, self.id,
+                f"The Firestore location can never change. Type the region again to confirm ({region})", region)
         remember(ctx, region=region, outputs={"region_confirmed": region})
 
 
