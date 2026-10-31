@@ -274,6 +274,12 @@ SMOKE_PROMPT = ("Add a file SMOKE.md saying this deployment's first team ran its
 VERIFY_TASK_PROMPT = ("Add a file VERIFY.md saying this deployment ran a single task from the "
                       "console, and open a pull request titled 'swarm install verify'.")
 RUN_PROFILE = "claude-code"
+#: The dispatch strategies of the runs this module submits: the smoke only
+#: has to finish, the console's verify task and workflow must each end in a
+#: pull request (`verify.end-to-end` reports a run without one as a problem).
+SMOKE_STRATEGY = "collect"
+VERIFY_TASK_STRATEGY = "direct-pr"
+VERIFY_WORKFLOW_STRATEGY = "integrate"
 SMOKE_LABEL = "swarm-install-smoke"
 VERIFY_LABEL = "swarm-install-verify"
 
@@ -317,12 +323,16 @@ class TeamRuns:
             tenant_id=tenant_id, is_admin=False, tenant_principal=group)
 
     def submit_task(self, *, tenant_id: str, group: str, repository: str, prompt: str,
-                    label: str) -> str:
+                    label: str, strategy: str = SMOKE_STRATEGY) -> str:
+        """One task. The smoke keeps `collect` (it opens nothing); the
+        console's verify task is `direct-pr`, because verify needs its pull
+        request and a `collect` task's git tools refuse every push (audit 4d,
+        F2)."""
         from ..schemas import TaskCreate
 
         spec = TaskCreate(runner_profile=RUN_PROFILE, input={"prompt": prompt},
                           repository_url=f"https://github.com/{repository}",
-                          metadata={"unit": label})
+                          metadata={"unit": label}, strategy=strategy)
         result = self._ctx.submissions.submit_tasks(self._auth(tenant_id, group), [spec])
         return str(result.tasks[0].id)
 
@@ -333,6 +343,10 @@ class TeamRuns:
         spec = WorkflowCreate.model_validate({
             "repository_url": f"https://github.com/{repository}",
             "metadata": {"unit": label},
+            # `open` builds on `write`'s branch, which only a strategy whose
+            # every step pushes allows; `integrate` has the final step open
+            # the one pull request verify reads (audit 4d, F1).
+            "strategy": VERIFY_WORKFLOW_STRATEGY,
             "steps": [
                 {"step_id": "write", "runner_profile": RUN_PROFILE,
                  "input": {"prompt": "Add a file VERIFY.md saying this deployment ran a "
@@ -558,6 +572,9 @@ def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], 
     repositories = list((team.get("grant") or {}).get("repositories") or [])
     if not pool_accounts or not repositories:
         return smoke or None
+    if not app_self_checked(record):
+        return {"state": SELF_CHECK_WAITING, "repository": repositories[0],
+                "message": PASS_3_WAIT}
     repository = repositories[0]
     try:
         task_id = runs.submit_task(tenant_id=tenant, group=group,
@@ -790,6 +807,22 @@ SELF_CHECK_FAILED = "failed"
 SELF_CHECK_WAITING = "waiting_for_infra_pass_3"
 #: The `check_app_key` reasons that mean pass 3 has not landed yet.
 BEFORE_PASS_3 = frozenset({"app_id_not_configured", "app_slug_not_configured"})
+
+
+#: What a run that waits for infra pass 3 says (audit 4d, F4).
+PASS_3_WAIT = ("waiting for swarm install's infra pass 3: until it gives swarm-api the "
+               "App's id, no installation token can be minted for the run to clone with")
+
+
+def app_self_checked(record: ir.InstallRecord) -> bool:
+    """Whether `console/github_app.self_check` passed: the pass-3 signal the
+    page already shows. The smoke and the console's verify runs clone with
+    the App installation token, which `forgeapp.signed_app_jwt` mints only
+    once pass 3 has rendered GITHUB_APP_ID into swarm-api; started before,
+    the broker refuses (`app_installation_unavailable`) and the run fails
+    (audit 4d, F4). So neither is submitted until this answers true."""
+    app = record.read(record.console_path(ir.GITHUB_APP)) or {}
+    return bool((app.get("self_check") or {}).get("ok"))
 
 
 def self_check_view(result: dict[str, Any]) -> dict[str, Any]:
@@ -1179,7 +1212,8 @@ def _verify_run_state(runs: Any, key: str, tenant: str, run_id: str) -> str:
 def _submit_verify_run(runs: Any, key: str, tenant: str, group: str, repository: str) -> str:
     if key == "console_task":
         return runs.submit_task(tenant_id=tenant, group=group, repository=repository,
-                                prompt=VERIFY_TASK_PROMPT, label=VERIFY_LABEL)
+                                prompt=VERIFY_TASK_PROMPT, label=VERIFY_LABEL,
+                                strategy=VERIFY_TASK_STRATEGY)
     return runs.submit_workflow(tenant_id=tenant, group=group, repository=repository,
                                 label=VERIFY_LABEL)
 
@@ -1229,6 +1263,9 @@ def start_verify_runs(
     if not missing:
         return {"verify_runs": started, "retries": retries,
                 "repository": done.get("repository"), "started": False}
+    if not app_self_checked(record):
+        raise Conflict(f"the console's verify runs are {PASS_3_WAIT}",
+                       detail={"state": SELF_CHECK_WAITING, "missing": missing})
     for key in missing:
         if started.get(key):
             retries[key] += 1
@@ -1353,13 +1390,16 @@ def redeem_link(
     auth: AuthContext = Depends(current_auth),
     links: sl.SetupLinks = Depends(links_service),
     secrets_: SetupSecrets = Depends(setup_secrets),
+    ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Open a link as the person it was minted for, once.
 
     `pool-account` answers the first team's workspace id and the label; the
     console then runs the existing sign-in (`POST /v1/accounts/authorize`,
     then `/exchange`) with that id as `X-Swarm-Tenant`, so the account lands
-    in the first team. `team-git` and `addon-secret` take the value in the same
+    in the first team. Until that workspace is `ready` the sign-in would be
+    refused, so a `pool-account` link is answered 409 (`retry: true`) and NOT
+    consumed; the page asks again. `team-git` and `addon-secret` take the value in the same
     request and write it straight into their one container; it is never
     returned or logged. Their link is consumed only AFTER the write, so a
     missing value or a failed write leaves it usable. A team's git container
@@ -1367,6 +1407,18 @@ def redeem_link(
     peeked = links.peek(body.token, email=auth.email)
     kind = peeked.get("kind")
     if kind == sl.POOL_ACCOUNT:
+        tenant_id = str(peeked.get("tenant_id") or "")
+        state = (ctx.submissions.workspaces.get(tenant_id) or {}).get("state")
+        if state != ws.READY:
+            # The sign-in that follows names this tenant in X-Swarm-Tenant,
+            # which is refused until the workspace is ready: consuming the
+            # link now would spend it on a 403 (audit 4d, F6). The page
+            # retries this route until it answers.
+            raise Conflict(
+                "this link's workspace is not ready yet, so its sign-in would be refused; "
+                "the link is still unused, open it again in a moment",
+                detail={"workspace": tenant_id, "workspace_state": state,
+                        "retry": True})
         link = links.redeem(body.token, email=auth.email)
         return {"kind": kind, "label": link.get("label"), "tenant": link.get("tenant_id"),
                 "sign_in": {"authorize": "/v1/accounts/authorize",
