@@ -22,6 +22,11 @@
 #   provider:<p>[:tenant:<t>]     every profile whose provider is p
 #   global, tenant:<t>            every profile
 #   anything else                 every class (the conservative answer)
+#
+# The units are swarm_common.models.pool_units_for's: the class's units, except
+# in a provider pool, where every task takes 1 -- one agent is one session
+# against the provider, however large its runner (contract request 128, #2950).
+# There the class is still the largest that reaches it; its units are 1.
 
 def classes_of_profiles(f): [ $profiles[] | select(f) | .resource_class ];
 
@@ -34,4 +39,7 @@ def classes_of_profiles(f): [ $profiles[] | select(f) | .resource_class ];
   else [ $classes | keys[] ]
   end ) as $reach
 | [ $reach[] | { class: ., units: ($classes[.].units // null) } | select(.units != null) ]
-| if length == 0 then null else max_by(.units) end
+| if length == 0 then null
+  else max_by(.units)
+       | if ($pool | startswith("provider:")) then .units = 1 else . end
+  end

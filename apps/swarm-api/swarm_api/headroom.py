@@ -38,8 +38,12 @@ calling `evaluate_capacity` -- the same function admission calls inside the
 transaction -- and reading its answer:
 
   * "can one task of this profile start?"    -> evaluate_capacity(..., units)
-  * "can n tasks start?"                     -> evaluate_capacity(..., n*units)
-  * "what stops the next one?"               -> evaluate_capacity(..., (n+1)*units)
+  * "can n tasks start?"                     -> evaluate_capacity(..., units, n)
+  * "what stops the next one?"               -> evaluate_capacity(..., units, n+1)
+
+`units` is never multiplied here: a task takes `pool_units_for(pool, units)`
+in each pool -- 1 in a provider pool (contract request 128, #2950) -- and
+`evaluate_capacity` applies that rule per pool, n times over.
 
 `has_capacity(u)` is `enabled and active + u <= effective_limit`, which is
 monotone in `u`: once a pool refuses `u` it refuses everything larger. So
@@ -54,7 +58,7 @@ from dataclasses import replace
 from typing import Any, Iterable, Sequence
 
 from swarm_common.admission import evaluate_capacity
-from swarm_common.models import SlotPool
+from swarm_common.models import SlotPool, pool_units_for
 from swarm_common.states import BlockedReason
 
 # --------------------------------------------------------------------------
@@ -142,28 +146,34 @@ BASIS_UNCAPPED = "uncapped"
 BASIS_UNKNOWN = "unknown"
 
 
-def _fits(pools: dict[str, SlotPool], required: Sequence[str], units: int) -> bool:
-    return not evaluate_capacity(pools, required, units)
+def _fits(
+    pools: dict[str, SlotPool], required: Sequence[str], units: int, tasks: int = 1
+) -> bool:
+    return not evaluate_capacity(pools, required, units, tasks)
 
 
 def _ceiling(pools: dict[str, SlotPool], required: Sequence[str], units: int) -> int | None:
     """An upper bound on how many tasks could ever fit. None means unbounded.
 
-    For any configured pool p, admission needs `active_p + n*units <=
-    effective_limit_p`, and `active_p >= 0`, so `n <= effective_limit_p //
-    units`. The tightest such bound over the configured pools bounds the search
+    For any configured pool p, admission needs `active_p + n*units_p <=
+    effective_limit_p`, where `units_p` is `pool_units_for(p, units)`, and
+    `active_p >= 0`, so `n <= effective_limit_p // units_p`. The tightest such bound over the configured pools bounds the search
     below. When no required pool is configured there is no bound, which is the
     None case -- `evaluate_capacity` skips an absent pool because an
     unconfigured pool is unlimited by construction.
     """
-    limits = [pools[name].effective_limit for name in required if name in pools]
+    limits = [
+        (pools[name].effective_limit, pool_units_for(name, units))
+        for name in required
+        if name in pools
+    ]
     if not limits:
         return None
     # A pool with no limit set (None, contract request 38) refuses at every n,
     # so nothing fits through it: a bound of 0, never "unbounded".
-    if any(limit is None for limit in limits):
+    if any(limit is None for limit, _ in limits):
         return 0
-    return min(limits) // max(1, units)
+    return min(limit // max(1, share) for limit, share in limits)
 
 
 def _headroom(pools: dict[str, SlotPool], required: Sequence[str], units: int) -> int | None:
@@ -191,7 +201,7 @@ def _headroom(pools: dict[str, SlotPool], required: Sequence[str], units: int) -
         if low >= high:
             break
         mid = (low + high + 1) // 2
-        if _fits(pools, required, mid * units):
+        if _fits(pools, required, units, mid):
             low = mid
         else:
             high = mid - 1
@@ -213,7 +223,7 @@ def _stopping(
     """
     if fitting is None:
         return []
-    return [_tag(b) for b in evaluate_capacity(pools, required, (fitting + 1) * units)]
+    return [_tag(b) for b in evaluate_capacity(pools, required, units, fitting + 1)]
 
 
 def _tag(blocker: dict[str, Any]) -> dict[str, Any]:

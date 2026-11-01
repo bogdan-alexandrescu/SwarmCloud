@@ -27,7 +27,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from .models import Lease, SlotPool, Task, new_id, pool_names_for, utcnow
+from .models import (
+    Lease,
+    SlotPool,
+    Task,
+    held_pool_units,
+    new_id,
+    pool_names_for,
+    pool_units_for,
+    reserved_pool_units,
+    utcnow,
+)
 from .states import BlockedReason, TaskState, assert_transition
 
 
@@ -90,8 +100,16 @@ def evaluate_capacity(
     pools: dict[str, SlotPool],
     required: list[str],
     units: int,
+    tasks: int = 1,
 ) -> list[dict[str, Any]]:
     """Pure capacity check. Returns the list of blockers; empty means admissible.
+
+    `units` is the task's resource units; each pool is checked for what the
+    task would take in it, `pool_units_for(name, units)` -- 1 in a provider
+    pool (contract request 128, #2950). `tasks` asks the same question for
+    that many such tasks at once, each pool needing `tasks` times its share:
+    a headroom search asks it, and must not multiply `units` itself, which
+    would charge a provider pool n x units instead of n.
 
     Kept free of any Firestore dependency so the concurrency invariant can be
     unit-tested exhaustively without an emulator.
@@ -119,7 +137,7 @@ def evaluate_capacity(
                  "limit": None, "active": pool.active}
             )
             continue
-        if not pool.has_capacity(units):
+        if not pool.has_capacity(tasks * pool_units_for(name, units)):
             blockers.append(
                 {"pool": name, "reason": _blocked_reason_for_pool(name).value,
                  "limit": pool.effective_limit, "active": pool.active}
@@ -175,6 +193,7 @@ def acquire_lease_in_transaction(
         backend=backend,
     )
 
+    taken = reserved_pool_units(required, units)
     pool_refs = {name: db.collection("pools").document(name) for name in required}
     pools: dict[str, SlotPool] = {}
     for name, ref in pool_refs.items():
@@ -206,6 +225,7 @@ def acquire_lease_in_transaction(
         generation=generation,
         pools=required,
         units=units,
+        pool_units=taken,
         state=TaskState.LEASED,
         created_at=now,
         dispatch_deadline=now + timedelta(seconds=config.dispatch_timeout_seconds),
@@ -213,12 +233,13 @@ def acquire_lease_in_transaction(
     )
 
     # Reserve every pool. Because this runs inside the transaction, either all of
-    # these increments land or none of them do.
+    # these increments land or none of them do. Each takes what `taken` says,
+    # and the lease records it, so release gives back exactly this.
     for name in required:
         pool = pools.get(name)
         if pool is None:
             continue
-        txn.update(pool_refs[name], {"active": pool.active + units, "updated_at": now})
+        txn.update(pool_refs[name], {"active": pool.active + taken[name], "updated_at": now})
 
     txn.set(
         db.collection("leases").document(lease.lease_id),
@@ -230,6 +251,7 @@ def acquire_lease_in_transaction(
             "generation": lease.generation,
             "pools": lease.pools,
             "units": lease.units,
+            "pool_units": lease.pool_units,
             "state": lease.state.value,
             "created_at": lease.created_at,
             "dispatch_deadline": lease.dispatch_deadline,
@@ -278,7 +300,9 @@ def release_lease_in_transaction(
     if d.get("released_at") is not None:
         return False                      # already released; do not double-decrement
 
-    units = int(d.get("units", 1))
+    # What the lease took in each pool: its record, or -- for a lease reserved
+    # before contract request 128, which has none -- `units` in every pool.
+    held = held_pool_units(list(d.get("pools", [])), int(d.get("units", 1)), d.get("pool_units"))
 
     # EVERY READ BEFORE ANY WRITE. Firestore forbids a read after a write inside
     # a transaction and raises ReadAfterWriteError. Reading each pool and
@@ -295,7 +319,7 @@ def release_lease_in_transaction(
             actives[name] = int((psnap.to_dict() or {}).get("active", 0))
 
     for name, active in actives.items():
-        txn.update(pool_refs[name], {"active": max(0, active - units), "updated_at": now})
+        txn.update(pool_refs[name], {"active": max(0, active - held[name]), "updated_at": now})
 
     txn.update(lease_ref, {"released_at": now, "release_reason": reason})
     return True
