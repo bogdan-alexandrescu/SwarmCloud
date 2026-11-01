@@ -1,7 +1,8 @@
-"""Stage 2's human pages (DAYONE-OPEN-PAGES): the brand, the DNS record and the
-Desktop client each open their exact page (the DNS one when no Cloud DNS zone
-holds the hostname) and the engine keeps polling where it waits; the
-Desktop client's secret is typed at a hidden prompt, never echoed.
+"""Stage 2's human pages (DAYONE-OPEN-PAGES): the DNS record opens its exact
+page (when no Cloud DNS zone holds the hostname) and the engine keeps polling
+where it waits. The brand and the Desktop client open nothing and ask
+nothing: the console's Admin › Setup step Sign-in client links their pages
+and takes the client (issue #2964).
 
 On a fake Google Cloud with no credentials; the browser is a fake `open_page`.
 """
@@ -45,51 +46,21 @@ BRANDING = f"https://console.cloud.google.com/auth/branding?project={PROJECT}"
 AUDIENCE = f"https://console.cloud.google.com/auth/audience?project={PROJECT}"
 
 
-def test_brand_opens_branding_then_audience_then_asks_the_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """DAYONE-EDGE-AUDIENCE: Branding first, then Audience with "choose
-    Internal", each opened for the person, and only then the Desktop client's
-    id, the brand's one proof (no API reads a brand)."""
-    log: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(engine_module, "open_page", lambda url, *, why, **_: log.append(("open", url, why)))
-    monkeypatch.setattr(edge, "open_page", lambda url, *, why, **_: log.append(("open", url, why)))
-    gcp = FakeGcp()
+def test_brand_opens_no_page_and_asks_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #2964: Branding, Audience (Internal) and Create client are linked
+    from the console's Admin › Setup step Sign-in client, so the brand, a
+    wait after the hand-off, opens nothing and asks nothing; its plan still
+    names Branding, then Audience with Internal."""
+    from .test_sign_in_client_wait import NeverAsk
+
+    log = _pages(monkeypatch, engine_module, edge)
     rig = _rig(tmp_path)
-    ask = Answers(log, edge_brand=[CLIENT_ID])
-
-    result = rig.engine([edge.BrandStep(lambda: gcp, ask, lambda: FakeEdge())]).run()
-    assert result.exit_code == ExitCode.OK, result.message
-    assert [entry[:2] for entry in log] == [("open", BRANDING), ("open", AUDIENCE), ("ask", "edge.brand")]
-    assert "choose Internal" in log[1][2], "the Audience page's instructions say to choose Internal"
-    assert "Internal" not in log[0][2], "the Branding page says only what to set on Branding"
-    assert rig.store.load().outputs["desktop_client_id"] == CLIENT_ID
-
-
-def test_brand_pages_honour_swarm_no_browser(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    """The real `open_page`: with SWARM_NO_BROWSER=1 and a display, neither
-    page reaches the browser, and both are still printed, Branding first."""
-    from swarm_install import steps
-
-    browsed: list[str] = []
-    monkeypatch.setattr(steps, "_browser", browsed.append)
-    monkeypatch.setattr(engine_module, "open_page", lambda url, *, why, **_: None)
-    monkeypatch.setenv("DISPLAY", ":0")
-    monkeypatch.setenv(steps.NO_BROWSER, "1")
-    rig = _rig(tmp_path)
-
-    result = rig.engine([edge.BrandStep(lambda: FakeGcp(), Answers(edge_brand=[CLIENT_ID]), lambda: FakeEdge())]).run()
-    assert result.exit_code == ExitCode.OK, result.message
-    assert browsed == []
-    out = capsys.readouterr().out
-    assert BRANDING in out and AUDIENCE in out
-    assert out.index(BRANDING) < out.index(AUDIENCE)
-
-    monkeypatch.delenv(steps.NO_BROWSER)
-    (tmp_path / "browser").mkdir()
-    rig = _rig(tmp_path / "browser")
-    result = rig.engine([edge.BrandStep(lambda: FakeGcp(), Answers(edge_brand=[CLIENT_ID]), lambda: FakeEdge())]).run()
-    assert result.exit_code == ExitCode.OK, result.message
-    assert browsed == [BRANDING, AUDIENCE]
+    step = edge.BrandStep(lambda: FakeGcp(), NeverAsk(), lambda: FakeEdge())
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.PAUSED, result.message
+    assert log == []
+    actions = " ".join(step.plan(ctx_for()).actions)
+    assert actions.index(BRANDING) < actions.index(AUDIENCE) and "(Internal)" in actions
 
 
 def test_dns_prints_record_opens_resolution_page_and_polls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,112 +85,37 @@ def _value() -> bytes:
     return ("GOCSPX-" + secrets.token_hex(12)).encode()  # built at run time: no literal credential
 
 
-class Terminal:
-    def __init__(self, value: bytes, log: list[str]) -> None:
-        self.value, self.log, self.written = value, log, []
+def test_desktop_client_opens_no_page_and_never_prompts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #2964: the recorded client's secret, missing from this machine's
+    credential store, is read from Secret Manager; no page and no prompt."""
+    from .test_sign_in_client_wait import ConsoleGcp, NeverAsk
 
-    def write(self, text: str) -> None:
-        self.written.append(text)
-
-    def read_line(self) -> str:
-        return CLIENT_ID
-
-    def read_hidden(self) -> bytearray:
-        self.log.append("hidden prompt")
-        return bytearray(self.value)
-
-    def close(self) -> None:
-        pass
-
-
-def test_desktop_client_opens_create_page_then_reads_secret_hidden(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    log: list[str] = []
-    monkeypatch.setattr(edge, "open_page", lambda url, *, why, **_: log.append(f"open {url}"))
+    log = _pages(monkeypatch, engine_module, edge)
     value = _value()
-    terminal = Terminal(value, log)
-    gcp = FakeGcp()
-    rig = _rig(tmp_path)
-    contexts = FakeContexts()
-    step = edge.DesktopClientStep(lambda: gcp, Answers(edge_desktop_client=[CLIENT_ID]), lambda: terminal, contexts)
-
-    result = rig.engine([step]).run()
-    assert result.exit_code == ExitCode.OK, result.message
-    assert log == [f"open https://console.cloud.google.com/auth/clients/create?project={PROJECT}", "hidden prompt"]
-    assert gcp.secrets[edge.DESKTOP_SECRET] == [value], "Secret Manager holds the secret"
-    assert contexts.stored == {HOST: value}, "and the new deployment's credential store, the same typed value"
-    text = value.decode()
-    captured = capsys.readouterr()
-    assert text not in captured.out + captured.err + "".join(terminal.written)
-    assert text not in json.dumps(rig.events.record) and text not in json.dumps(rig.store.load().outputs)
-
-
-def test_desktop_client_recorded_id_opens_its_own_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The id already recorded is not asked again; the page opened is that client's."""
-    log: list[str] = []
-    monkeypatch.setattr(edge, "open_page", lambda url, *, why, **_: log.append(f"open {url}"))
-    gcp = FakeGcp()
+    gcp = ConsoleGcp()
+    gcp.secrets[edge.DESKTOP_SECRET] = [value]
     rig = _rig(tmp_path)
     rig.store.update(lambda s: s.outputs.update({"desktop_client_id": CLIENT_ID}))
-    step = edge.DesktopClientStep(lambda: gcp, Answers(), lambda: Terminal(_value(), log), FakeContexts())
+    contexts = FakeContexts()
+    step = edge.DesktopClientStep(lambda: gcp, NeverAsk(), contexts)
 
     result = rig.engine([step]).run()
     assert result.exit_code == ExitCode.OK, result.message
-    assert log == [f"open https://console.cloud.google.com/auth/clients/{CLIENT_ID}?project={PROJECT}",
-                   "hidden prompt"]
-
-    log.clear()
-    assert rig.engine([step]).run().exit_code == ExitCode.OK
-    assert log == [], "a met step opens nothing"
+    assert log == [] and contexts.stored == {HOST: value}
+    text = value.decode()
+    assert text not in json.dumps(rig.events.record) and text not in json.dumps(rig.store.load().outputs)
 
 
 # -- DAYONE-EDGE-2 (part of #2688): audit findings N17, N18 and N19 -----------
 
 
-def test_brand_asks_the_secret_right_after_the_id_before_the_dns_wait(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """N18: Google shows a Desktop client's secret only in the dialog that
-    creates it, so the brand step asks it at the hidden prompt right after the
-    id, before edge.dns can wait up to 60 min; the client step is then met
-    with nothing asked."""
-    log: list[str] = []
-    monkeypatch.setattr(edge, "open_page", lambda url, *, why, **_: log.append(f"open {url}"))
-    value = _value()
-    gcp = FakeGcp()
-    rig = _rig(tmp_path)
-    contexts = FakeContexts()
-    ask = Answers(log, edge_brand=[CLIENT_ID])
-    steps = edge.build_steps(lambda: gcp, ask, lambda: Terminal(value, log), lambda: FakeEdge(), contexts)
-    ids = [step.id for step in steps]
-    assert ids.index("edge.brand") < ids.index("edge.dns")
-
-    result = rig.engine([steps[ids.index("edge.brand")]]).run()
-    assert result.exit_code == ExitCode.OK, result.message
-    assert [entry if isinstance(entry, str) else entry[:2] for entry in log] == [
-        f"open {BRANDING}", f"open {AUDIENCE}", ("ask", "edge.brand"), "hidden prompt"]
-    assert gcp.secrets[edge.DESKTOP_SECRET] == [value] and contexts.stored == {HOST: value}
-
-    log.clear()
-    client = steps[ids.index("edge.desktop-client")]
-    assert rig.engine([client]).run().exit_code == ExitCode.OK
-    assert log == [], "the client step finds the secret already kept and asks nothing"
-
-
-def test_desktop_client_re_asking_the_secret_says_add_secret_on_this_page(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """N18: a recorded client whose secret was never kept (a run that stopped
-    after the id) is sent to its own page with "Add secret on this page"; the
-    old secret is not shown there any more."""
-    whys: list[str] = []
-    monkeypatch.setattr(edge, "open_page", lambda url, *, why, **_: whys.append(why))
-    rig = _rig(tmp_path)
-    rig.store.update(lambda s: s.outputs.update({"desktop_client_id": CLIENT_ID}))
-    gcp = FakeGcp()
-    step = edge.DesktopClientStep(lambda: gcp, Answers(), lambda: Terminal(_value(), []), FakeContexts())
-
-    result = rig.engine([step]).run()
-    assert result.exit_code == ExitCode.OK, result.message
-    assert len(whys) == 1 and "Add secret on this page" in whys[0]
+def test_stage_2_holds_neither_the_brand_nor_the_client() -> None:
+    """N18 is moot (issue #2964): the console takes the secret in the dialog's
+    own moment, so stage 2 has no step that waits on it before edge.dns."""
+    ids = [step.id for step in edge.build_steps(lambda: FakeGcp(), Answers(), lambda: FakeEdge(),
+                                                 FakeContexts())]
+    assert "edge.brand" not in ids and "edge.desktop-client" not in ids
+    assert ids.index("edge.client-secret-container") < ids.index("edge.dns")
 
 
 class _PendingAddressGcp(FakeGcp):
@@ -368,26 +264,17 @@ def test_edge_api_http_status_is_none_on_a_tls_error() -> None:
     assert seen["allow_redirects"] is False
 
 
-def test_brand_support_email_is_the_persons_own_address_not_a_group(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Audit 5b M7: stage 2 sets the brand, but the install's groups exist
-    only from stage 8 (`identity.groups`), so on a new organisation "a group
-    you own" sends the person to Google Admin to make one. The Branding
-    page's dropdown offers the person's own address, which works: the plan,
-    the opened page's instructions and docs/install.md all say that."""
-    opened = _pages(monkeypatch, edge)
-    monkeypatch.setattr(engine_module, "open_page", lambda url, *, why, **_: None)
-    rig = _rig(tmp_path)
-    step = edge.BrandStep(lambda: FakeGcp(), Answers(edge_brand=[CLIENT_ID]), lambda: FakeEdge())
-
-    result = rig.engine([step]).run()
-    assert result.exit_code == ExitCode.OK, result.message
-    branding = [why for url, why in opened if url == BRANDING]
-    branding_action = [a for a in step.plan(ctx_for()).actions if a.startswith("Branding")]
+def test_brand_support_email_is_the_persons_own_address_not_a_group() -> None:
+    """Audit 5b M7: the install's groups exist only from stage 8
+    (`identity.groups`), so "a group you own" would send the person to Google
+    Admin to make one. The Branding page's dropdown offers the person's own
+    address, which works: the plan and docs/install.md say that."""
+    step = edge.BrandStep(lambda: FakeGcp(), Answers(), lambda: FakeEdge())
+    branding_action = [a for a in step.plan(ctx_for()).actions if BRANDING in a]
     docs = (Path(__file__).resolve().parents[3] / "docs" / "install.md").read_text()
     brand_doc = docs[docs.index("auth/branding?project="):docs.index("auth/audience?project=")]
-    for text in (*branding, *branding_action, brand_doc):
+    for text in (*branding_action, brand_doc):
         flat = " ".join(text.split())
         assert "your own address" in flat, flat
         assert "a group you own" not in flat, flat
-    assert branding and branding_action
+    assert branding_action

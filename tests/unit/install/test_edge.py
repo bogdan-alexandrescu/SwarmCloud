@@ -9,6 +9,7 @@ bounded at 60 min; the IAP service agent is created by the engine.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from swarm_install.exitcodes import ExitCode
 from swarm_install.steps import edge
@@ -21,28 +22,27 @@ HOST = "swarm.example.com"
 IP = "203.0.113.7"
 
 
-def _rig(tmp_path: Path) -> Rig:
+def _rig(tmp_path: Path, **outputs: object) -> Rig:
     rig = Rig(tmp_path)
     rig.store.update(lambda s: (setattr(s, "hostname", HOST),
-                                s.outputs.update({"project_number": NUMBER, "global_ip": IP})))
+                                s.outputs.update({"project_number": NUMBER, "global_ip": IP, **outputs})))
     return rig
 
 
 def test_brand_has_no_api_so_the_desktop_client_proves_it(tmp_path: Path) -> None:
     """B02: no API creates or reads the brand (the IAP OAuth Admin API is shut
-    down). The step makes no Google call that writes, asks the Desktop
-    client's id, and is met once it is recorded."""
+    down). The step makes no Google call that writes, asks nothing (the
+    console's Sign-in client step links Branding, issue #2964), waits for the
+    console's record, and is met once a Desktop client id is recorded."""
     gcp = FakeGcp()
-    rig = _rig(tmp_path)
-    step = edge.BrandStep(lambda: gcp, Answers(edge_brand=["123456789012-abc.apps.googleusercontent.com"]),
-                          lambda: FakeEdge())
-    assert step.kind == "engine" and not hasattr(step, "wait")
+    rig = _rig(tmp_path, desktop_client_id="123456789012-abc.apps.googleusercontent.com")
+    step = edge.BrandStep(lambda: gcp, Answers(), lambda: FakeEdge())
+    assert step.kind == "wait" and step.wait is edge.SIGN_IN_CLIENT
 
     result = rig.engine([step]).run()
     assert result.exit_code == ExitCode.OK, result.message
     assert gcp.mutations == []
-    plan = rig.of_kind("step_plan", "edge.brand")[0]
-    assert any("console.cloud.google.com/auth/branding" in a for a in plan["actions"])
+    assert step.deep_link(SimpleNamespace(project="p")) == "https://console.cloud.google.com/auth/branding?project=p"
 
 
 def test_dns_must_resolve_to_reserved_ip_before_cert_wait(tmp_path: Path) -> None:

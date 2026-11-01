@@ -121,36 +121,45 @@ def _pages(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
 
 def test_brand_never_calls_the_brands_api_and_is_met_by_the_desktop_client(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The brand is a wait met by the console's Sign-in client step (issue
+    #2964): the console links Branding and Audience, so this terminal opens
+    no page and asks nothing; the saved Desktop client is the brand's proof."""
+    from .test_sign_in_client_wait import Console, NeverAsk
+
     opened = _pages(monkeypatch)
     gcp = FakeGcp()
     gcp.iap_brands = lambda number: pytest.fail("the IAP brands API is shut down; it is never called")
     rig = _rig(tmp_path)
-    ask = Answers(edge_brand=[CLIENT_ID])
-    step = edge.BrandStep(lambda: gcp, ask, lambda: FakeEdge())
-
-    result = rig.engine([step]).run()
+    step = edge.BrandStep(lambda: gcp, NeverAsk(), lambda: FakeEdge())
+    engine = rig.engine([step])
+    engine.record = Console(sign_in_client={"client_id": CLIENT_ID, "saved_at": "2026-11-01T10:00:00Z",
+                                            "saved_by": "root@example.com"})
+    result = engine.run()
     assert result.exit_code == ExitCode.OK, result.message
-    assert [url for url, _ in opened] == [f"https://console.cloud.google.com/auth/branding?project={PROJECT}",
-                                          f"https://console.cloud.google.com/auth/audience?project={PROJECT}"]
-    assert "Internal" in opened[1][1], "the Audience page's instructions say to choose Internal"
-    assert rig.store.load().outputs["desktop_client_id"] == CLIENT_ID
-    plan = rig.of_kind("step_plan", "edge.brand")[0]
-    assert any("choose Internal" in a for a in plan["actions"]), "the plan says to choose Internal"
-    assert gcp.mutations == []
+    assert opened == [] and gcp.mutations == []
+    plan = step.plan(SimpleNamespace(project=PROJECT))
+    assert any("(Internal)" in a for a in plan.actions), "the plan says Audience is Internal"
+    assert any(f"auth/branding?project={PROJECT}" in a for a in plan.actions)
 
-    opened.clear()
-    again = rig.engine([edge.BrandStep(lambda: gcp, Answers(), lambda: FakeEdge())]).run()
-    assert again.exit_code == ExitCode.OK and opened == [], "a recorded Desktop client is the brand's proof"
+    again = rig.engine([edge.BrandStep(lambda: gcp, NeverAsk(), lambda: FakeEdge())])
+    again.record = Console()
+    assert rig.store.load().outputs.get("desktop_client_id") is None
+    rig.store.update(lambda s: s.outputs.update({"desktop_client_id": CLIENT_ID}))
+    assert again.run().exit_code == ExitCode.OK and opened == [], "a recorded Desktop client is the brand's proof"
 
 
 def test_brand_refuses_what_is_not_a_desktop_client_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A record that is not a Desktop client id meets nothing: the wait goes on."""
+    from .test_sign_in_client_wait import Console, NeverAsk
+
     _pages(monkeypatch)
-    rig = _rig(tmp_path)
-    step = edge.BrandStep(lambda: FakeGcp(), Answers(edge_brand=["not-a-client"]), lambda: FakeEdge())
-    result = rig.engine([step]).run()
-    assert result.exit_code == ExitCode.FAIL
-    assert "not a Desktop client id" in result.message
-    assert "desktop_client_id" not in rig.store.load().outputs
+    rig = _rig(tmp_path, desktop_client_id="not-a-client")
+    step = edge.BrandStep(lambda: FakeGcp(), NeverAsk(), lambda: FakeEdge())
+    engine = rig.engine([step])
+    engine.record = Console(sign_in_client={"client_id": "not-a-client", "saved_at": "x", "saved_by": "y"})
+    result = engine.run()
+    assert result.exit_code == ExitCode.PAUSED, result.message
+    assert rig.of_kind("wait_countdown", "edge.brand")
 
 
 def test_adopt_and_remains_never_name_the_brands_api() -> None:

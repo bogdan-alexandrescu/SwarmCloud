@@ -2,7 +2,7 @@
 DAYONE-SETUP-API-1, part of #2688).
 
     GET  /v1/admin/setup                          the page's whole state
-    POST /v1/admin/setup/sign-in-client           the Desktop sign-in client's id and secret
+    POST /v1/admin/setup/sign-in-client           the Desktop client: id to the record, secret to Secret Manager
     POST /v1/admin/setup/github-app/manifest      the App manifest and form target
     POST /v1/admin/setup/github-app/conversion    state check, code exchange, 3 secrets
     GET  /v1/admin/setup/github-app/installation  is the App on the org yet
@@ -909,6 +909,59 @@ def _accounts_view(doc: dict[str, Any] | None) -> dict[str, Any]:
             for label, value in (doc or {}).items()}
 
 
+# --------------------------------------------------------------------------
+# the Sign-in client (issue #2964)
+# --------------------------------------------------------------------------
+
+#: The Desktop client's secret: the engine made the container in stage 2
+#: (`edge.client-secret-container`), and infra grants swarm-api
+#: secretVersionAdder on it alone. swarm-api adds versions; it never reads one.
+SIGN_IN_CLIENT_SECRET = "swarm-iap-desktop-client-secret"
+#: A Desktop OAuth client's id: digits, a dash, then Google's suffix.
+SIGN_IN_CLIENT_ID = re.compile(r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
+WAITING_CLIENT = "waiting"
+SAVED_CLIENT = "saved"
+APPLIED_CLIENT = "applied"
+
+
+class ClientIdInvalid(ValidationFailed):
+    code = "client_id_invalid"
+
+
+def sign_in_links(project_id: str) -> dict[str, str | None]:
+    """The three Google Cloud console pages, in the order the step walks
+    them: no API makes the OAuth brand or a Desktop client (Google shut the
+    IAP OAuth Admin API down on 2026-03-19). Null without a project id."""
+    if not project_id:
+        return {"branding": None, "audience": None, "create_client": None}
+    base = "https://console.cloud.google.com/auth"
+    return {"branding": f"{base}/branding?project={project_id}",
+            "audience": f"{base}/audience?project={project_id}",
+            "create_client": f"{base}/clients/create?project={project_id}"}
+
+
+def sign_in_client_view(project_id: str, doc: dict[str, Any] | None,
+                        engine: dict[str, Any] | None) -> dict[str, Any]:
+    """`waiting` until the console saved a client; `saved` once its id and
+    secret are stored; `applied` once the engine's bootstrap pass put that id
+    in IAP's programmatic-clients list (the engine document's
+    `sign_in_client`). A client the terminal recorded before this step
+    existed has no console document and reads `applied` from the engine's."""
+    applied = str(((engine or {}).get("sign_in_client") or {}).get("client_id") or "")
+    saved = str((doc or {}).get("client_id") or "")
+    client = saved or applied
+    if not client:
+        state = WAITING_CLIENT
+    elif client == applied:
+        state = APPLIED_CLIENT
+    else:
+        state = SAVED_CLIENT
+    return {"state": state, "client_id": client or None,
+            "saved_at": (doc or {}).get("saved_at") if saved else None,
+            "saved_by": (doc or {}).get("saved_by") if saved else None,
+            "links": sign_in_links(project_id)}
+
+
 @router.get("", dependencies=[Depends(admin_auth)])
 def setup_state(
     request: Request,
@@ -961,9 +1014,9 @@ def setup_state(
         "steps": steps_view(mode, teams, publishing=bool(getattr(publisher, "enabled", False))),
         "personal": personal,
         "cli_running": _cli_running(engine, ctx.now()),
-        "sign_in_client": sign_in_client_view(
-            record.read(record.console_path(ir.SIGN_IN_CLIENT)), ctx.settings.project_id),
         "github_app": _github_view(record.read(record.console_path(ir.GITHUB_APP))),
+        "sign_in_client": sign_in_client_view(ctx.settings.project_id,
+                                              record.read(record.console_path(ir.SIGN_IN_CLIENT)), engine),
         "teams": [team_row(request, ctx, record, team_id, doc, directory=directory,
                            first=index == 0, runs=runs, flow=flow, github=github,
                            by=caller.email)
@@ -978,69 +1031,35 @@ def setup_state(
     }
 
 
-# --------------------------------------------------------------------------
-# the Desktop sign-in client (issue #2964)
-# --------------------------------------------------------------------------
-
-#: The Desktop OAuth client's secret container `sc` signs in with; the
-#: installer's `edge.desktop-client` step and swarm-discovery name the same one.
-SIGN_IN_CLIENT_SECRET = "swarm-iap-desktop-client-secret"
-#: A Desktop OAuth client's id, as `swarm_install.adopt.DESKTOP_CLIENT_ID` checks it.
-DESKTOP_CLIENT_ID = re.compile(r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
-
-
-class ClientIdInvalid(ValidationFailed):
-    code = "client_id_invalid"
-
-
-class SignInClientSave(StrictModel):
-    client_id: str = Field(min_length=1, max_length=256)
+class SignInClient(StrictModel):
+    client_id: str = Field(max_length=256)
     client_secret: str = Field(min_length=1, max_length=1024)
-
-
-def sign_in_client_links(project_id: str) -> dict[str, str | None]:
-    """The deployment's own console pages the step links: no API creates the
-    brand or the client since the IAP OAuth Admin API shut down on 2026-03-19."""
-    if not project_id:
-        return {"branding": None, "audience": None, "create_client": None}
-    base = "https://console.cloud.google.com/auth"
-    return {"branding": f"{base}/branding?project={project_id}",
-            "audience": f"{base}/audience?project={project_id}",
-            "create_client": f"{base}/clients/create?project={project_id}"}
-
-
-def sign_in_client_view(doc: dict[str, Any] | None, project_id: str) -> dict[str, Any]:
-    """`waiting` until an id and secret are saved, then `saved`. The secret is
-    never in the record, so it is never served."""
-    client_id = (doc or {}).get("client_id") or None
-    return {"state": "saved" if client_id else "waiting",
-            "client_id": client_id,
-            "saved_at": (doc or {}).get("saved_at"),
-            "saved_by": (doc or {}).get("saved_by"),
-            "links": sign_in_client_links(project_id)}
 
 
 @router.post("/sign-in-client", dependencies=[Depends(admin_auth)])
 def save_sign_in_client(
-    body: SignInClientSave,
+    body: SignInClient,
     caller: SetupCaller = Depends(admin_setup_caller),
     ctx: AppContext = Depends(get_context),
     record: ir.InstallRecord = Depends(install_record),
     secrets_: SetupSecrets = Depends(setup_secrets),
 ) -> dict:
-    """Store the Desktop client the person made in Google's console: the
-    secret as a new version of `swarm-iap-desktop-client-secret`, written
-    before the id is recorded so a failed write records nothing; the id in
-    `console/sign_in_client`. Neither the secret nor the request is logged."""
+    """The Desktop client's id to the install record and its secret, as a new
+    version, to Secret Manager; the secret is never answered, logged or
+    stored anywhere else. A second save replaces the id and adds a version.
+    The engine's hand-off wait sees the record and runs the passes that put
+    the id in IAP's programmatic-clients list (`applied`)."""
     client_id = body.client_id.strip()
-    if not DESKTOP_CLIENT_ID.match(client_id):
-        raise ClientIdInvalid(
-            "that is not a Desktop OAuth client id; it ends .apps.googleusercontent.com")
+    if not SIGN_IN_CLIENT_ID.match(client_id):
+        raise ClientIdInvalid("client_id must be a Desktop OAuth client id, ending .apps.googleusercontent.com")
     secrets_.add_version(SIGN_IN_CLIENT_SECRET, body.client_secret)
-    saved = {"client_id": client_id, "saved_at": ctx.now(), "saved_by": caller.email}
-    record.write(record.console_path(ir.SIGN_IN_CLIENT), saved)
-    log.info("the sign-in client was saved by the console by=%s", caller.email)
-    return sign_in_client_view(saved, ctx.settings.project_id)
+    doc = record.write(record.console_path(ir.SIGN_IN_CLIENT),
+                       {"client_id": client_id, "saved_at": ctx.now(), "saved_by": caller.email})
+    log.info("sign-in client saved by the console client_id=%s by=%s", client_id, caller.email)
+    # A save always answers `saved` (the route contract): even for the id the
+    # engine already applied, the new secret version is not taken in until
+    # the hand-off sees this record.
+    return {**sign_in_client_view(ctx.settings.project_id, doc, record.read_engine()), "state": SAVED_CLIENT}
 
 
 # --------------------------------------------------------------------------

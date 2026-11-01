@@ -106,7 +106,9 @@ API_GRANT_SWITCHES = (
     "enable_mcp_credentials",
     "enable_platform_secret_status",
 )
-#: The IAP Desktop client's secret (stage 2, `edge.desktop-client`).
+#: The IAP Desktop client's secret: made empty in stage 2
+#: (`edge.client-secret-container`), its versions added by the console's
+#: Sign-in client step (issue #2964).
 DESKTOP_SECRET = "swarm-iap-desktop-client-secret"
 #: The three secrets swarm-api writes from the console's App step (plan §5.5).
 APP_SECRETS = (
@@ -159,8 +161,17 @@ RECORDED_BY = {
     "github_org": "stage 0 (preflight)",
     "org_domain": "stage 0 (preflight)",
     "installer_cidr": "stage 0 (preflight)",
-    "desktop_client_id": "stage 2 (edge.desktop-client)",
 }
+
+
+def desktop_client(state: Any) -> str:
+    """The Desktop client's id, or "" until the console's Admin › Setup step
+    Sign-in client saved one and the hand-off took it in (stage 13,
+    `handoff.sign-in-client`; issue #2964). The passes before it run without
+    one: no discovery service and an empty programmatic-clients list, which
+    Terraform reads as "create neither"; the hand-off re-runs bootstrap-2 and
+    the latest infra pass with it."""
+    return str(state.outputs.get("desktop_client_id") or "")
 
 
 def _order(pass_name: str) -> int:
@@ -369,7 +380,8 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
         # The backends exist only after infra pass 1 (a data lookup on a missing
         # one fails the plan), so bootstrap pass 1 names none.
         "frontend_iap_backends": list(IAP_BACKENDS) if second else [],
-        "frontend_iap_programmatic_clients": [_required(state, "desktop_client_id")] if second else [],
+        # Empty until the console saved the Desktop client (issue #2964).
+        "frontend_iap_programmatic_clients": [desktop_client(state)] if second and desktop_client(state) else [],
     }
     digests = state.outputs.get("image_digests") or {}
     if "workspace-apply" in digests:
@@ -417,7 +429,9 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "discovery": {
             "name": DISCOVERY_NAME,
             "version": _required(state, "release"),
-            "oauth_client_id": _required(state, "desktop_client_id"),
+            # "" until the console saved the Desktop client: no discovery
+            # service until then (terraform/infra/discovery.tf, issue #2964).
+            "oauth_client_id": desktop_client(state),
             "plugin_min_version": PLUGIN_MIN_VERSION,
         },
         # Decision 2: reach for the cluster stages, removed by infra-close.

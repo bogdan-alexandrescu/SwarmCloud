@@ -1,21 +1,23 @@
-"""Admin › Setup's Sign-in client step, swarm-api's side (issue #2964).
+"""Admin › Setup's Sign-in client step (issue #2964): `GET /v1/admin/setup`
+serves `sign_in_client` and `POST /v1/admin/setup/sign-in-client` takes the
+Desktop client's id and secret.
 
-`POST /v1/admin/setup/sign-in-client` takes the Desktop OAuth client's id and
-secret: the secret becomes a new version of `swarm-iap-desktop-client-secret`
-and is never recorded or served; the id lands in `console/sign_in_client`,
-which `GET /v1/admin/setup` serves as `sign_in_client` with the deployment's
-own Google Cloud console links.
+The secret goes to Secret Manager (`swarm-iap-desktop-client-secret`) and
+nowhere else: never in the answer, the record, the audit line or any log line.
 """
 
 from __future__ import annotations
 
+import logging
 import secrets
 
-from swarm_api.routes import setup as setup_routes
+from swarm_api import install_record as ir
 
 from .conftest import PROJECT, auth_header
 from .test_setup_routes import (  # noqa: F401 - fixtures
+    ENGINE_DOC,
     ENV,
+    ROOT,
     db,
     directory,
     fake_secrets,
@@ -29,20 +31,25 @@ from .test_setup_routes import (  # noqa: F401 - fixtures
 )
 
 ROUTE = "/v1/admin/setup/sign-in-client"
+SECRET = "swarm-iap-desktop-client-secret"
 DOC = f"swarm-install/{ENV}/console/sign_in_client"
 
 
-def _client_id() -> str:
+def client_id() -> str:
     return f"{secrets.randbelow(10**12)}-{secrets.token_hex(8)}.apps.googleusercontent.com"
 
 
-def test_the_page_waits_for_the_client_and_links_this_projects_console(setup_client, db) -> None:
+def client_secret() -> str:
+    # Built at run time: nothing in the repository looks like a credential.
+    return "-".join(("GOCSPX", secrets.token_urlsafe(21)))
+
+
+def test_the_page_serves_a_waiting_step_with_the_projects_links(setup_client, db) -> None:
     seed_engine_document(db)
-    page = setup_client.get("/v1/admin/setup", headers=auth_header("root"))
-    assert page.status_code == 200, page.text
-    step = page.json()["sign_in_client"]
+    body = setup_client.get("/v1/admin/setup", headers=auth_header("root")).json()
+    step = body["sign_in_client"]
     assert step["state"] == "waiting"
-    assert step["client_id"] is None
+    assert step["client_id"] is None and step["saved_at"] is None and step["saved_by"] is None
     assert step["links"] == {
         "branding": f"https://console.cloud.google.com/auth/branding?project={PROJECT}",
         "audience": f"https://console.cloud.google.com/auth/audience?project={PROJECT}",
@@ -50,52 +57,111 @@ def test_the_page_waits_for_the_client_and_links_this_projects_console(setup_cli
     }
 
 
-def test_saving_writes_the_secret_and_records_only_the_id(setup_client, db, fake_secrets) -> None:
-    seed_engine_document(db)
-    client_id, client_secret = _client_id(), secrets.token_hex(12)
-    answer = setup_client.post(ROUTE, json={"client_id": client_id, "client_secret": client_secret},
+def test_a_non_admin_is_refused_and_nothing_is_stored(setup_client, db, fake_secrets) -> None:
+    for user in ("wadmin", "alice", "carol", "deployer", "doctor"):
+        answer = setup_client.post(ROUTE, json={"client_id": client_id(), "client_secret": client_secret()},
+                                   headers=auth_header(user))
+        assert answer.status_code == 403, (user, answer.text)
+    assert SECRET not in fake_secrets.versions
+    assert DOC not in db.docs
+
+
+def test_a_client_id_that_is_not_a_google_client_is_refused(setup_client, db, fake_secrets) -> None:
+    for bad in ("not-a-client", "123-abc.apps.example.com", f"{client_id()} x", ""):
+        answer = setup_client.post(ROUTE, json={"client_id": bad, "client_secret": client_secret()},
+                                   headers=auth_header("root"))
+        assert answer.status_code == 422, (bad, answer.text)
+        assert answer.json()["code"] in ("client_id_invalid", "validation_failed"), answer.text
+    answer = setup_client.post(ROUTE, json={"client_id": "x.apps.example.com", "client_secret": client_secret()},
                                headers=auth_header("root"))
+    assert answer.json()["code"] == "client_id_invalid"
+    assert SECRET not in fake_secrets.versions
+    assert DOC not in db.docs
+
+
+def test_a_saved_secret_never_appears_in_the_answer_the_record_or_a_log(setup_client, db, fake_secrets,
+                                                                         caplog) -> None:
+    seed_engine_document(db)
+    first_id, first_secret = client_id(), client_secret()
+    with caplog.at_level(logging.DEBUG):
+        answer = setup_client.post(ROUTE, json={"client_id": first_id, "client_secret": first_secret},
+                                   headers=auth_header("root"))
     assert answer.status_code == 200, answer.text
     body = answer.json()
     assert body["state"] == "saved"
-    assert body["client_id"] == client_id
-    assert body["saved_by"]
-    assert client_secret not in answer.text
-    assert fake_secrets.versions[setup_routes.SIGN_IN_CLIENT_SECRET] == [client_secret]
+    assert body["client_id"] == first_id
+    assert body["saved_by"] == ROOT and body["saved_at"]
+    assert first_secret not in answer.text
+    assert fake_secrets.versions[SECRET] == [first_secret]
     assert set(db.docs[DOC]) == {"client_id", "saved_at", "saved_by"}
-    assert client_secret not in repr(db.docs)
+    assert first_secret not in repr(db.docs)
+    assert first_secret not in caplog.text
+    # The audit line names the client and the person, never the secret.
+    assert any(first_id in record.getMessage() and ROOT in record.getMessage() for record in caplog.records)
 
-    page = setup_client.get("/v1/admin/setup", headers=auth_header("root")).json()
-    assert page["sign_in_client"]["state"] == "saved"
-    assert page["sign_in_client"]["client_id"] == client_id
-    assert client_secret not in repr(page)
+    page = setup_client.get("/v1/admin/setup", headers=auth_header("root"))
+    assert page.json()["sign_in_client"]["state"] == "saved"
+    assert first_secret not in page.text
 
-
-def test_an_id_that_is_not_a_desktop_client_is_refused_and_nothing_is_written(
-        setup_client, db, fake_secrets) -> None:
-    answer = setup_client.post(ROUTE, json={"client_id": "not-a-client",
-                                            "client_secret": secrets.token_hex(12)},
+    # A second save replaces the id and adds a new secret version.
+    second_id, second_secret = client_id(), client_secret()
+    answer = setup_client.post(ROUTE, json={"client_id": second_id, "client_secret": second_secret},
                                headers=auth_header("root"))
-    assert answer.status_code == 422, answer.text
-    assert answer.json()["code"] == "client_id_invalid"
-    assert fake_secrets.versions == {}
-    assert DOC not in db.docs
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["client_id"] == second_id
+    assert fake_secrets.versions[SECRET] == [first_secret, second_secret]
+    assert db.docs[DOC]["client_id"] == second_id
 
 
 def test_a_failed_secret_write_records_no_id(setup_client, db, fake_secrets) -> None:
     fake_secrets.fail = True
-    answer = setup_client.post(ROUTE, json={"client_id": _client_id(),
-                                            "client_secret": secrets.token_hex(12)},
+    answer = setup_client.post(ROUTE, json={"client_id": client_id(), "client_secret": client_secret()},
                                headers=auth_header("root"))
     assert answer.status_code == 503, answer.text
     assert DOC not in db.docs
 
 
-def test_only_a_platform_admin_saves_the_client(setup_client, db, fake_secrets) -> None:
-    for user in ("wadmin", "alice", "carol"):
-        answer = setup_client.post(ROUTE, json={"client_id": _client_id(),
-                                                "client_secret": secrets.token_hex(12)},
-                                   headers=auth_header(user))
-        assert answer.status_code == 403, (user, answer.text)
-    assert fake_secrets.versions == {}
-    assert DOC not in db.docs
+def test_applied_once_the_engine_reports_the_client_in_iaps_list(setup_client, db) -> None:
+    seed_engine_document(db)
+    saved = client_id()
+    setup_client.post(ROUTE, json={"client_id": saved, "client_secret": client_secret()},
+                      headers=auth_header("root"))
+    db.docs[ENGINE_DOC]["sign_in_client"] = {"client_id": saved}
+    step = setup_client.get("/v1/admin/setup", headers=auth_header("root")).json()["sign_in_client"]
+    assert step["state"] == "applied" and step["client_id"] == saved
+
+    # A newer save waits for the next pass.
+    newer = client_id()
+    setup_client.post(ROUTE, json={"client_id": newer, "client_secret": client_secret()},
+                      headers=auth_header("root"))
+    step = setup_client.get("/v1/admin/setup", headers=auth_header("root")).json()["sign_in_client"]
+    assert step["state"] == "saved" and step["client_id"] == newer
+
+
+def test_saving_the_applied_client_again_answers_saved(setup_client, db, fake_secrets) -> None:
+    """The contract: a save answers `saved`. A second save of the id the
+    engine already applied (a new secret for the same client) is no
+    exception: its new version is not taken in until the hand-off sees it."""
+    seed_engine_document(db)
+    saved = client_id()
+    db.docs[ENGINE_DOC]["sign_in_client"] = {"client_id": saved}
+    answer = setup_client.post(ROUTE, json={"client_id": saved, "client_secret": client_secret()},
+                               headers=auth_header("root"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["state"] == "saved" and answer.json()["client_id"] == saved
+
+
+def test_a_client_the_terminal_recorded_before_reads_applied(setup_client, db) -> None:
+    """An install whose Desktop client came from the old terminal prompt has
+    no console document; the engine's record still says it is applied."""
+    seed_engine_document(db)
+    recorded = client_id()
+    db.docs[ENGINE_DOC]["sign_in_client"] = {"client_id": recorded}
+    step = setup_client.get("/v1/admin/setup", headers=auth_header("root")).json()["sign_in_client"]
+    assert step["state"] == "applied" and step["client_id"] == recorded
+
+
+def test_the_record_row_names_the_three_fields() -> None:
+    assert ir.SWARM_API_DOCUMENTS["swarm-install/{env}/console/sign_in_client"] == frozenset(
+        {"client_id", "saved_at", "saved_by"})
+    assert "sign_in_client" in ir.ENGINE_FIELDS_READ

@@ -414,7 +414,11 @@ def test_desktop_client_in_programmatic_allowlist():
     assert unmet.status == UNMET and "swarm-api-backend" in unmet.detail
     assert unmet.repair == "swarm install --repair iap-setting.frontend-programmatic-clients"
     assert not any("their-backend" in url for _, url in missing.calls)
-    assert _one(entry, gcp([client])).status == UNKNOWN  # no client recorded: never fine
+    unknown = _one(entry, gcp([client]))
+    assert unknown.status == UNKNOWN  # no client recorded: never fine
+    # Issue #2964: the console's Admin › Setup step Sign-in client saves the
+    # client and the hand-off wait (stage 13) records it; stage 2 no longer does.
+    assert "Sign-in client" in unknown.detail and "stage 2" not in unknown.detail
 
 
 def test_every_manifest_probe_type_has_a_runner():
