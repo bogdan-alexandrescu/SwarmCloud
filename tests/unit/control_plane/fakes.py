@@ -64,6 +64,23 @@ def _field(data: dict[str, Any], path: str) -> Any:
     return current
 
 
+def _project(data: dict[str, Any], paths: tuple[str, ...] | None) -> dict[str, Any]:
+    """`data` cut to the `select()` field paths, or whole when none were named."""
+    if paths is None:
+        return data
+    out: dict[str, Any] = {}
+    for path in paths:
+        value = _field(data, path)
+        if value is _MISSING:
+            continue
+        parts = path.split(".")
+        here = out
+        for part in parts[:-1]:
+            here = here.setdefault(part, {})
+        here[parts[-1]] = value
+    return out
+
+
 def _sortable(value: Any) -> Any:
     if value is _MISSING or value is None:
         return BOTTOM
@@ -164,8 +181,10 @@ class FakeQuery:
         limit_n: int | None = None,
         after: tuple[Any, ...] | None = None,
         before: tuple[Any, ...] | None = None,
+        projection: tuple[str, ...] | None = None,
     ) -> None:
         self._db = db
+        self._projection = projection
         self._path = collection_path
         self._filters = filters
         self._orders = orders
@@ -184,6 +203,7 @@ class FakeQuery:
             limit_n=kwargs.get("limit_n", self._limit),
             after=kwargs.get("after", self._after),
             before=kwargs.get("before", self._before),
+            projection=kwargs.get("projection", self._projection),
         )
 
     def where(self, *args: Any, filter: Any = None, **kwargs: Any) -> "FakeQuery":
@@ -197,6 +217,12 @@ class FakeQuery:
 
     def order_by(self, field_path: str, direction: str = ASCENDING, **kwargs: Any) -> "FakeQuery":
         return self._with(orders=self._orders + ((field_path, direction),))
+
+    def select(self, field_paths: Iterable[str]) -> "FakeQuery":
+        # `Query.select`: each row carries only the named fields (dotted paths
+        # included); a named field the document lacks is absent, as Firestore
+        # returns it.
+        return self._with(projection=tuple(field_paths))
 
     def limit(self, count: int) -> "FakeQuery":
         return self._with(limit_n=count)
@@ -292,7 +318,7 @@ class FakeQuery:
             FakeSnapshot(
                 id=path.rsplit("/", 1)[1],
                 path=path,
-                _data=copy.deepcopy(data),
+                _data=copy.deepcopy(_project(data, self._projection)),
                 reference=FakeDocumentRef(self._db, path),
             )
             for path, data in matches
