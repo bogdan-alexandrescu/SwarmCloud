@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import secret_entry, sizing, tools
+from ..api_client import CLOUD_PLATFORM, application_default
 from ..exitcodes import MET, UNMET
 from ..secret_entry import DevTty, Terminal
 from ..waits import WaitSpec, wait_until
@@ -136,7 +137,8 @@ class Gcp:
     GOOGLE_CLOUD_QUOTA_PROJECT can name one), and google-auth would send it on
     every call: a project unrelated to the install, whose disabled Cloud
     Billing API refused stage 0 (issue 2942). The session's credentials drop
-    it, so only `quota_project`, where a call names it, is ever sent."""
+    it (`api_client.application_default`, the one place that rule lives), so
+    only `quota_project`, where a call names it, is ever sent."""
 
     def __init__(self, session: Any = None, *, quota_project: str | None = None) -> None:
         self._session = session
@@ -154,15 +156,9 @@ class Gcp:
     @property
     def session(self) -> Any:
         if self._session is None:
-            import google.auth  # lazy: no credentials needed to import the engine
-            from google.auth.transport.requests import AuthorizedSession
+            from google.auth.transport.requests import AuthorizedSession  # lazy, as application_default
 
-            credentials, _ = google.auth.default(
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-            if getattr(credentials, "quota_project_id", None):
-                credentials = credentials.with_quota_project(None)
-            self._session = AuthorizedSession(credentials)
+            self._session = AuthorizedSession(application_default([CLOUD_PLATFORM_SCOPE]))
         return self._session
 
     def _call(self, method: str, url: str, *, body: Any = None, params: Any = None,
@@ -418,20 +414,28 @@ def remember(ctx: Any, *, outputs: Mapping[str, Any] | None = None, **fields: An
 CONFIRM_TRIES = 3
 
 
-def confirm(ask: Ask, ctx: Any, step_id: str, question: str, expected: str) -> None:
-    """Ask `question` until `expected` is typed, at most `CONFIRM_TRIES` times.
-    An empty line is never an answer. Raises ValueError, with nothing recorded
-    by the caller, when no answer matched."""
+def confirm(ask: Ask, ctx: Any, step_id: str, question: str, expected: str, *,
+            also: Sequence[str] = (), nothing: str = "nothing was recorded") -> str:
+    """Ask `question` until `expected` is typed, at most `CONFIRM_TRIES` times,
+    and return the answer that matched. `also` names the other answers the
+    question takes, in any case (identity.groups-reader-role's `delegation`),
+    returned as written there. An empty line is never an answer. Raises
+    ValueError ending in `nothing` (what the caller left undone) when no
+    answer matched."""
+    others = {other.lower(): other for other in also}
+    wanted = expected + "".join(f" or {other}" for other in also)
     asked = question
     again = ""
     for _ in range(CONFIRM_TRIES):
         again = ask(ctx, step_id, asked).strip()
         if again == expected:
-            return
-        said = "nothing was typed" if not again else f"{again!r} is not {expected}"
-        asked = f"{said}; type {expected} exactly. {question}"
-    raise ValueError(f"the confirmation {again!r} does not match {expected!r} after {CONFIRM_TRIES} tries; "
-                     "nothing was recorded")
+            return expected
+        if again.lower() in others:
+            return others[again.lower()]
+        said = "nothing was typed" if not again else f"{again!r} is not {wanted}"
+        asked = f"{said}; type {wanted} exactly. {question}"
+    raise ValueError(f"the confirmation {again!r} does not match {wanted!r} after {CONFIRM_TRIES} tries; "
+                     + nothing)
 
 
 def choose(ask: Ask, ctx: Any, step_id: str, what: str, options: Sequence[tuple[str, str]], *,
@@ -726,7 +730,7 @@ def gcloud_account(gcloud: Callable[[], str | None] = find_gcloud) -> str:
 #: scopes stage 6 (IDENTITY-STAGE) reads the Workspace customer and its admin
 #: roles with (BGD, 2026-10-30, decision 8).
 ADC_SCOPES = (
-    "https://www.googleapis.com/auth/cloud-platform",
+    CLOUD_PLATFORM,
     "https://www.googleapis.com/auth/admin.directory.customer.readonly",
     "https://www.googleapis.com/auth/admin.directory.rolemanagement",
 )
@@ -764,14 +768,13 @@ def adc_scopes() -> frozenset[str] | None:
     invalid_scope after a Cloud-Platform-only sign-in and hide that grant
     behind an empty set. Only credentials that must be scoped (a service
     account) are scoped to `ADC_SCOPES`."""
-    import google.auth  # lazy: no credentials needed to import the engine
     import requests
     from google.auth.credentials import with_scopes_if_required
     from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
     from google.auth.transport.requests import Request
 
     try:
-        credentials, _ = google.auth.default()
+        credentials = application_default()
     except DefaultCredentialsError:
         return None
     credentials = with_scopes_if_required(credentials, list(ADC_SCOPES))

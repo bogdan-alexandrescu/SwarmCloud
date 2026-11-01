@@ -48,6 +48,28 @@ DELEGATION = "delegation"
 GROUPS_MODES = (ADMIN_ROLE, DELEGATION)
 
 
+CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
+
+
+def application_default(scopes: Sequence[str] | None = None) -> Any:
+    """The person's application-default credentials, carrying no quota project.
+
+    `gcloud auth application-default login` without `--disable-quota-project`
+    (every sign-in before issue 2942's fix) writes the laptop's gcloud project
+    into the credentials file as their quota project, and
+    GOOGLE_CLOUD_QUOTA_PROJECT can name one; google-auth then sends it as
+    `x-goog-user-project` on every call: a project unrelated to the install,
+    whose disabled APIs refuse it. Every place the installer builds its own
+    credentials loads them here, so none sends it; a call that bills to the
+    install's project names it itself, in its own header."""
+    import google.auth  # lazy: no credentials needed to import the engine
+
+    credentials, _ = google.auth.default(scopes=list(scopes) if scopes else None)
+    if getattr(credentials, "quota_project_id", None):
+        credentials = credentials.with_quota_project(None)
+    return credentials
+
+
 def deployer_email(project: str) -> str:
     return f"{DEPLOYER}@{project}.iam.gserviceaccount.com"
 
@@ -86,11 +108,9 @@ class IamCredentials:
     @property
     def session(self) -> Any:
         if self._session is None:
-            import google.auth  # lazy: no credentials needed to import the engine
-            from google.auth.transport.requests import AuthorizedSession
+            from google.auth.transport.requests import AuthorizedSession  # lazy, as application_default
 
-            credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-            self._session = AuthorizedSession(credentials)
+            self._session = AuthorizedSession(application_default([CLOUD_PLATFORM]))
         return self._session
 
     def generate_id_token(self, service_account: str, audience: str, *, include_email: bool) -> str:
