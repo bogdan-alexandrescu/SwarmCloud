@@ -4,8 +4,14 @@
 // WHAT EACH CASE HOLDS:
 //   * a first run, with swarm install's cloud stages done and nothing done
 //     on this page, draws the strip with the CLI's step done and every
-//     console step pending, in BGD's order (GitHub App, first team, Claude
-//     accounts, verify, Send to your team), and the lead names the next one;
+//     console step pending, in BGD's order (the sign-in client, GitHub App,
+//     first team, Claude accounts, verify, Send to your team), and the lead
+//     names the next one;
+//   * the sign-in client step (issue #2964, the owner's pick of 2026-11-01)
+//     sits after the CLI's cloud part and before the GitHub App, its state
+//     read only from the route's `sign_in_client`: waiting is next and the
+//     lead names it, saved is in progress, applied is done, and a route that
+//     serves none is not read yet, never done;
 //   * when no CLI holds the install lease (`cli_running` false, R8) the page
 //     says to run swarm install in a terminal to continue, and the console
 //     steps stay usable;
@@ -26,7 +32,20 @@ const T0 = Date.parse('2026-10-29T15:00:00Z')
 const HOST = 'swarm.example.com'
 const CLI_STAGES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 13]
 
-/** swarm install has handed over: its cloud stages are done and nothing on this page is. */
+/** The route's `sign_in_client` in a given state, with the deployment's three console pages. */
+function signInClient(state: 'waiting' | 'saved' | 'applied'): Json {
+  const page = (path: string) => `https://console.cloud.google.com/auth/${path}?project=example`
+  const saved = state !== 'waiting'
+  return {
+    state,
+    client_id: saved ? 'desktop-example.apps.googleusercontent.com' : null,
+    saved_at: saved ? '2026-10-29T14:47:00Z' : null,
+    saved_by: saved ? 'ana@example.com' : null,
+    links: { branding: page('branding'), audience: page('audience'), create_client: page('clients/create') },
+  }
+}
+
+/** swarm install has handed over: its cloud stages are done, the sign-in client is applied, and nothing else on this page is. */
 function firstRun(over: Json = {}): Json {
   return {
     env: 'prod',
@@ -40,6 +59,7 @@ function firstRun(over: Json = {}): Json {
       ready_at: null,
     },
     cli_running: true,
+    sign_in_client: signInClient('applied'),
     github_app: null,
     teams: [],
     accounts: {},
@@ -89,16 +109,18 @@ describe('Admin › Setup, the page', () => {
     await mountPage(firstRun())
     // The strip, in BGD's order: the CLI's part, then the console's.
     // MUTATION: draw the accounts before the first team (the P1-B frames' order) -> fails.
-    expect([...strip().querySelectorAll('[data-step]')].map((s) => s.getAttribute('data-step'))).toEqual(['cloud', 'github', 'team', 'accounts', 'verify', 'send'])
+    // MUTATION: leave the sign-in client out of the strip, or draw it after the GitHub App -> fails.
+    expect([...strip().querySelectorAll('[data-step]')].map((s) => s.getAttribute('data-step'))).toEqual(['cloud', 'sign-in-client', 'github', 'team', 'accounts', 'verify', 'send'])
     // MUTATION: read the cloud step off anything but the engine's stages -> fails.
     expect(stripStep('cloud').className).toContain('is-done')
     expect(visible(stripStep('cloud'))).toMatch(/swarm install.*11 of 11 stages/)
     for (const k of ['github', 'team', 'accounts', 'verify', 'send']) expect(stripStep(k).className).not.toContain('is-done')
     // The next step is the GitHub App's, and the strip and the lead say so.
     expect(stripStep('github').className).toContain('is-next')
-    expect(visible(strip())).toMatch(/1 of 6 done/)
+    expect(stripStep('sign-in-client').className).toContain('is-done')
+    expect(visible(strip())).toMatch(/2 of 7 done/)
     const lead = document.querySelector('.ws-lead') as HTMLElement
-    expect(visible(lead)).toMatch(/Step 2 of 6/)
+    expect(visible(lead)).toMatch(/Step 3 of 7/)
     expect(visible(lead)).toMatch(/GitHub App/)
     expect(visible(lead)).toMatch(/swarm install did the cloud part/)
     // The checklist SETUP-UI-1 built, composed here: the cloud row done, the console's to do.
@@ -236,5 +258,57 @@ describe('Admin › Setup, one person and the doctor', () => {
     // MUTATION: say the Health card shows what swarm doctor runs (it shows the hourly doctor's run).
     expect(card).not.toContain('The checks swarm doctor runs')
     expect(card).toContain('Admin › Setup › Health')
+  })
+})
+
+// SETUP-STRIP-SIGNIN (part of #2688; issue #2964, the owner's pick of
+// 2026-11-01): the checklist opens with the Sign-in client row, so the strip
+// and the lead carry the step too, after the CLI's cloud part and before the
+// GitHub App, from the same `sign_in_client` field.
+describe('Admin › Setup, the sign-in client step', () => {
+  const lead = () => visible(document.querySelector('.ws-lead'))
+
+  it('while the client waits, the strip and the lead name the sign-in client, not the GitHub App', async () => {
+    await mountPage(firstRun({ sign_in_client: signInClient('waiting') }))
+    // MUTATION: leave the step out of the strip -> the GitHub App is next and this fails.
+    expect(stripStep('sign-in-client').className).toContain('is-next')
+    expect(stripStep('sign-in-client').className).not.toContain('is-done')
+    expect(stripStep('github').className).not.toContain('is-next')
+    expect(visible(strip())).toMatch(/1 of 7 done/)
+    expect(visible(strip())).toMatch(/Next: Sign-in client/)
+    // MUTATION: draw the lead from the GitHub App while the client waits -> fails.
+    expect(lead()).toMatch(/Step 2 of 7/)
+    expect(lead()).toContain('Sign-in client')
+    expect(lead()).not.toMatch(/GitHub App/)
+    expect(lead()).toMatch(/Branding, Audience and Create client/)
+  })
+
+  it('a saved client is in progress until the infra pass applies it, then done, and the GitHub App is next', async () => {
+    await mountPage(firstRun({ sign_in_client: signInClient('saved') }))
+    // MUTATION: count a saved client done before IAP holds it -> fails.
+    expect(stripStep('sign-in-client').className).toContain('is-in_progress')
+    expect(stripStep('sign-in-client').className).toContain('is-next')
+    expect(visible(stripStep('sign-in-client'))).toContain('desktop-example.apps.googleusercontent.com')
+    expect(lead()).toContain('Sign-in client')
+    expect(lead()).toMatch(/infra pass/)
+    cleanup()
+    await mountPage(firstRun({ sign_in_client: signInClient('applied') }))
+    expect(stripStep('sign-in-client').className).toContain('is-done')
+    expect(visible(stripStep('sign-in-client'))).toContain('desktop-example.apps.googleusercontent.com')
+    expect(stripStep('github').className).toContain('is-next')
+  })
+
+  it('a route that serves no sign_in_client is not read yet, never done', async () => {
+    await mountPage(firstRun({ sign_in_client: undefined }))
+    // MUTATION: read an absent field as done -> fails.
+    expect(stripStep('sign-in-client').className).not.toContain('is-done')
+    expect(stripStep('sign-in-client').className).toContain('is-next')
+    expect(visible(stripStep('sign-in-client'))).toMatch(/not read yet/i)
+    expect(lead()).toMatch(/not read yet/i)
+    cleanup()
+    // A state the route never writes is the same.
+    await mountPage(firstRun({ sign_in_client: { ...signInClient('applied'), state: 'done' } }))
+    expect(stripStep('sign-in-client').className).not.toContain('is-done')
+    expect(visible(stripStep('sign-in-client'))).toMatch(/not read yet/i)
   })
 })
