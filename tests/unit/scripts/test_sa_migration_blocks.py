@@ -36,10 +36,13 @@ NEW_IN_BOOTSTRAP = ("discovery", "doctor")
 
 # Service accounts infra (or a module it calls) may still declare: the
 # per-tenant workers (no install has Terraform tenants; the live ones are not
-# platform accounts) and the addon:ci MCP test server (plan §8).
+# platform accounts) and the addon:ci MCP test server (plan §8), and Voice
+# it's swarm-voice, off until `voice_it` and made in mcp_test_server.tf's
+# three steps (terraform/infra/voice.tf says why).
 INFRA_ALLOWED = {
     ("modules/tenancy", "worker"),
     ("infra", "mcp_test_server"),
+    ("infra", "voice"),
 }
 
 _SA_HEADER = re.compile(r'^resource\s+"google_service_account"\s+"([A-Za-z0-9_]+)"', re.M)
