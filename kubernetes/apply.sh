@@ -43,6 +43,14 @@
 #                         # is applied (docs/design/workspace-secrets.md §3.5).
 #                         # scripts/roll-typesafe-fwd.sh drives it and waits
 #                         # for the rollout
+#   kubernetes/apply.sh --swarm-voice --confirm      # Voice it's swarm-voice:
+#                         # `terraform output -raw swarm_voice_manifest`
+#                         # (terraform/infra/voice.tf), alone, to the swarm's
+#                         # Autopilot cluster (GKE_CLUSTER, swarm-autopilot)
+#                         # and no other; null until voice_it = "on", and then
+#                         # nothing is applied (docs/design/voice-it.md §3.4,
+#                         # section 10 phase one). scripts/roll-voice.sh drives
+#                         # it and waits for the StatefulSet's rollout
 #   kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 #                         # ... with the step-spec public keys ConfigMap, from
 #                         # `terraform output -json spec_verify_keys_configmap`
@@ -234,6 +242,7 @@ while [[ $# -gt 0 ]]; do
     --swarm-system) MODE="swarm-system"; shift ;;
     --swarm-graph) MODE="swarm-graph"; shift ;;
     --swarm-typesafe-fwd) MODE="swarm-typesafe-fwd"; shift ;;
+    --swarm-voice) MODE="swarm-voice"; shift ;;
     --confirm|-y) CONFIRM=1; shift ;;
     --server-dry-run) SERVER_DRY_RUN=1; shift ;;
     --context)    CONTEXT="$2"; shift 2 ;;
@@ -341,6 +350,23 @@ if [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
   [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
   [[ -z "${RENDER_ARGS[*]+x}" ]] \
     || die "--swarm-typesafe-fwd takes no render arguments (got: ${RENDER_ARGS[*]}); terraform renders its manifest"
+  tf_initialised \
+    || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
+fi
+# --swarm-voice likewise, and to ONE cluster: voice.tf's output says "apply to
+# swarm-autopilot only". The swarm's Autopilot cluster is GKE_CLUSTER
+# (common.sh, default swarm-autopilot); any other `swarm-` cluster -- an old
+# one, a second one -- holds no swarm-voice KSA binding in its workload pool,
+# so a pod there could not act as swarm-voice@ and is refused here, before
+# anything is contacted. The deny-list refusals below still apply first-class.
+VOICE_CLUSTER="${GKE_CLUSTER:-swarm-autopilot}"
+if [[ "${MODE}" == "swarm-voice" ]]; then
+  [[ -z "${TENANT}" ]] || die "--swarm-voice applies swarm-system's swarm-voice, not a tenant's; drop --tenant"
+  [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
+  [[ -z "${RENDER_ARGS[*]+x}" ]] \
+    || die "--swarm-voice takes no render arguments (got: ${RENDER_ARGS[*]}); terraform renders its manifest"
+  [[ "${CLUSTER}" == "${VOICE_CLUSTER}" ]] \
+    || die "--swarm-voice applies to ${VOICE_CLUSTER} only, not cluster '${CLUSTER}'; nothing was applied."
   tf_initialised \
     || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
 fi
@@ -923,8 +949,70 @@ elif [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
   MANIFEST="$(cat "${TSF_WORK}/fwd.yaml")"
   rm -rf "${TSF_WORK}"
   info "rendering the TypeSafe forwarder  terraform output swarm_typesafe_fwd_manifest"
+elif [[ "${MODE}" == "swarm-voice" ]]; then
+  # --tenant, --spec-verify-keys, render arguments and any cluster but
+  # ${VOICE_CLUSTER} were refused at 0.
+
+  # VOICE IT'S swarm-voice, FROM TERRAFORM, ALONE (lane VOICE-ROLL, part of
+  # #2688; docs/design/voice-it.md §3.4, section 10 phase one). terraform/
+  # infra/voice.tf's `swarm_voice_manifest`: kubernetes/swarm-system/
+  # swarm-voice.yaml (its Namespace, KSA, two Services and the one-replica
+  # StatefulSet) followed by kubernetes/network-policies/
+  # swarm-system-voice.yaml, with the digest, the GSA, the internal address,
+  # the audience, the caller and swarm-api's range filled in. Its own mode,
+  # as --swarm-graph is: it needs neither the live relay's manifest nor
+  # anything --swarm-system applies.
+  #
+  # NULL UNTIL voice_it = "on" with an image (every environment today), and
+  # then nothing is applied and this exits 0 with a notice. Terraform leaves a
+  # null output OUT of state, so the named read fails 'Output "..." not found'
+  # exactly as an unreadable state does (PR 1402); one unnamed `output -json`
+  # tells them apart. Neither read asks gcloud or the cluster anything. Read
+  # here, AFTER the context checks above, so nothing below can send it to
+  # agents-staging. To files, not $(...): the status and the error are kept.
+  VOICE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-voice-apply.XXXXXX")"
+  trap 'rm -rf "${VOICE_WORK}"' EXIT
+  TF_DIR="$(tf_root)"
+  if ! tf -chdir="${TF_DIR}" output -raw swarm_voice_manifest >"${VOICE_WORK}/voice.yaml" 2>"${VOICE_WORK}/voice.err" \
+      || [[ ! -s "${VOICE_WORK}/voice.yaml" ]]; then
+    if tf -chdir="${TF_DIR}" output -json >"${VOICE_WORK}/outputs.json" 2>>"${VOICE_WORK}/voice.err" \
+        && jq -e --arg k swarm_voice_manifest \
+          'type == "object" and ((.[$k].value // null) == null or .[$k].value == "")' \
+          "${VOICE_WORK}/outputs.json" >/dev/null 2>&1; then
+      if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+        printf '::notice title=swarm-voice not applied::%s\n' "voice_it is not on for ${ENVIRONMENT}: terraform rendered no swarm_voice_manifest."
+      fi
+      info "no swarm-voice manifest (voice_it is not on, or no swarm-voice digest); swarm-voice is not served and nothing about it is applied"
+      exit 0
+    fi
+    redact <"${VOICE_WORK}/voice.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "could not read terraform's swarm_voice_manifest output (above); nothing was applied."
+  fi
+  # The graph service's checks: no placeholder left unfilled, no Kubernetes
+  # RBAC (swarm-voice calls no Kubernetes API and mounts no token), no Secret
+  # (the platform owner's OpenAI credential is read from Secret Manager by the
+  # pod's own identity and held in memory, never shipped in a manifest that is
+  # previewed and diffed), and nothing outside swarm-system.
+  if grep -Eo '__[A-Z0-9_]+__' "${VOICE_WORK}/voice.yaml" >"${VOICE_WORK}/voice-placeholders"; then
+    PLACEHOLDER="$(head -n 1 "${VOICE_WORK}/voice-placeholders")"
+    die "the swarm-voice manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
+  fi
+  if grep -Eq '^kind:[[:space:]]*(Cluster)?Role(Binding)?[[:space:]]*$' "${VOICE_WORK}/voice.yaml"; then
+    die "the swarm-voice manifest carries Kubernetes RBAC; swarm-voice holds none. Nothing was applied."
+  fi
+  if grep -Eq '^kind:[[:space:]]*Secret[[:space:]]*$' "${VOICE_WORK}/voice.yaml"; then
+    die "the swarm-voice manifest carries a Secret; the OpenAI credential is read from Secret Manager, never shipped in a manifest. Nothing was applied."
+  fi
+  if grep -E '^[[:space:]]+namespace:[[:space:]]' "${VOICE_WORK}/voice.yaml" \
+      | grep -Ev '^[[:space:]]+namespace:[[:space:]]+swarm-system[[:space:]]*$' >"${VOICE_WORK}/voice-foreign"; then
+    redact <"${VOICE_WORK}/voice-foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "the swarm-voice manifest names a namespace other than swarm-system (above); nothing was applied."
+  fi
+  MANIFEST="$(cat "${VOICE_WORK}/voice.yaml")"
+  rm -rf "${VOICE_WORK}"
+  info "rendering swarm-voice  terraform output swarm_voice_manifest"
 else
-  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system, --swarm-graph or --swarm-typesafe-fwd)"
+  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system, --swarm-graph, --swarm-typesafe-fwd or --swarm-voice)"
 
   # A WORKSPACE TENANT'S QUOTA IS ITS RECORD'S (QUOTA-ONE, #2039; BGD's
   # decision, 2026-10-23). The workspace job's A7 renders the namespace with
@@ -1277,6 +1365,10 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
   if [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
     dim "  --confirm applies it; scripts/roll-typesafe-fwd.sh --confirm also waits for deploy/swarm-typesafe-fwd"
     dim "    and checks its pods run the manifest's digest"
+  fi
+  if [[ "${MODE}" == "swarm-voice" ]]; then
+    dim "  --confirm applies it; scripts/roll-voice.sh --confirm also waits for statefulset/swarm-voice"
+    dim "    and checks its pod runs the manifest's digest"
   fi
   ok "dry run only. Re-run with --confirm to apply."
   exit 0
