@@ -330,7 +330,7 @@ prefix; another tenant's project is the same 404 as a missing one.
 
 | Collection or path | Holds | Notes |
 |---|---|---|
-| `voice_projects/{project}` | Tenant, person, title, subject (for Talk it through: the agent, workflow or inbox item), size, status (active, waiting, shipped, archived), the **brief** (goal, decisions, constraints, open questions; the planner keeps it at a few thousand tokens), references (repositories, issues, runs, workflows, tasks, schedules), the tag `voice:<project>` | The resumable memory |
+| `voice_projects/{project}` | Tenant, person, title, subject (for Talk it through: the agent, workflow or inbox item), size, status (active, waiting, shipped, archived), the **brief** (goal, decisions, constraints, open questions; the planner keeps it at a few thousand tokens), references (repositories, issues, runs, workflows, agents, schedules), the tag `voice:<project>` | The resumable memory |
 | `…/cards/{card}` | The card envelope and body (§4), versioned | Large bodies go to GCS |
 | `…/sessions/{session}` | State (starting, live, rolling over, ended), the GPT-Live session ids, the grant hash, talk seconds, planner usage, end cause | One live session per person |
 | `…/sessions/{session}/events/{seq}` | The stream's log | Sequence from a counter on the session document |
