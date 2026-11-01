@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, Protocol
@@ -186,13 +188,16 @@ class SecretManagerMetadata:
             raise ValueError("project_id is required")
         self._project_id = project_id
         self._client = client
+        # The rows are read concurrently (`platform_secret_status`): one client.
+        self._client_lock = threading.Lock()
 
     def _secret_client(self) -> Any:
-        if self._client is None:
-            from google.cloud import secretmanager
+        with self._client_lock:
+            if self._client is None:
+                from google.cloud import secretmanager
 
-            self._client = secretmanager.SecretManagerServiceClient()
-        return self._client
+                self._client = secretmanager.SecretManagerServiceClient()
+            return self._client
 
     def enabled_versions(self, secret_id: str) -> list[datetime | None]:
         from google.api_core import exceptions as gexc
@@ -295,12 +300,25 @@ def platform_secret_status(
 
     `accounts_unread` is true when the broker's documents could not be read;
     the catalogue rows are still served.
+
+    The rows are read CONCURRENTLY, at most `ROW_READERS` at once, and
+    served in this order: each is two metadata calls, and one after another
+    they were the admin feed's slowest part (lane LOAD-SPEED-NOTIFICATIONS).
+    The account documents are read beside the catalogue's rows.
     """
-    rows = [
-        _status_row(meta, entry.secret_id, managed_by=entry.managed_by,
-                    written_by=entry.written_by) | {"family": "platform"}
-        for entry in catalogue
-    ]
+    with ThreadPoolExecutor(max_workers=ROW_READERS,
+                            thread_name_prefix="platform-secrets") as pool:
+        return _status(meta, db, list(catalogue), now, pool)
+
+
+#: The most Secret Manager metadata rows read at once.
+ROW_READERS = 8
+
+
+def _status(meta: SecretMetadata, db: Any, catalogue: list[PlatformSecret],
+            now: Callable[[], datetime], pool: ThreadPoolExecutor) -> dict[str, Any]:
+    platform = [pool.submit(_status_row, meta, entry.secret_id, managed_by=entry.managed_by,
+                            written_by=entry.written_by) for entry in catalogue]
     accounts_unread = False
     refused = 0
     truncated = False
@@ -309,15 +327,18 @@ def platform_secret_status(
     except Exception as exc:  # noqa: BLE001 - the catalogue is served without them
         log.warning("platform secrets: account documents unread (%s)", type(exc).__name__)
         accounts, accounts_unread = [], True
-    for account in accounts:
+    halves = [
+        (account, half, pool.submit(_status_row, meta, secret_id, managed_by=BROKER,
+                                    written_by="the quota broker (Capacity › Accounts)"))
+        for account in accounts
         for secret_id, half in ((account["secret"], "access"),
-                                (account["secret"] + ACCOUNT_REFRESH_SUFFIX, "refresh")):
-            row = _status_row(meta, secret_id, managed_by=BROKER,
-                              written_by="the quota broker (Capacity › Accounts)")
-            row |= {"family": "account", "account_id": account["account_id"],
-                    "owner_tenant": account["owner_tenant"], "label": account["label"],
-                    "half": half}
-            rows.append(row)
+                                (account["secret"] + ACCOUNT_REFRESH_SUFFIX, "refresh"))
+    ]
+    rows = [future.result() | {"family": "platform"} for future in platform]
+    for account, half, future in halves:
+        rows.append(future.result() | {
+            "family": "account", "account_id": account["account_id"],
+            "owner_tenant": account["owner_tenant"], "label": account["label"], "half": half})
     return {
         "secrets": rows,
         "counts": summary(rows),

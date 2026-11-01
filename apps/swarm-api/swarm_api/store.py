@@ -1357,6 +1357,69 @@ class Store:
             )
         return page
 
+    def notification_tasks(
+        self,
+        tenant_id: str,
+        *,
+        state: TaskState | None = None,
+        submitted_by: str | None,
+        limit: int,
+        fields: Sequence[str] | None = None,
+    ) -> list[Task]:
+        """This tenant's newest `limit` tasks for the notification feed: ONE
+        query, never paged (lane LOAD-SPEED-NOTIFICATIONS, part of #2688).
+
+        The feed reads a window, not a history, so it has no cursor and none
+        of `_keyset_page`'s run reads. `submitted_by` is applied IN the query,
+        also beside `state`, so 200 rows are 200 of the person's, not 200 of
+        the tenant's filtered after: served by tasks-tenant-submitter-created
+        (no state) and tasks-tenant-submitter-state-created (with one), and
+        without a submitter by tasks-tenant-created / tasks-tenant-state-created.
+        `fields` projects the documents (`Query.select`) to what the feed's
+        items use; the decoder's required fields must be among them.
+
+        UNTIL THE FOUR-FIELD INDEX IS BUILT (the release applies it, and an
+        index builds for minutes after the apply) Firestore refuses the query
+        with FailedPrecondition; it is then read as it was before that index,
+        the tenant's newest `limit` in `state`, and narrowed to the submitter
+        after, so a deploy that lands first serves the bell, not a partial one.
+        """
+        try:
+            return self._notification_tasks(tenant_id, state=state, submitted_by=submitted_by,
+                                            limit=limit, fields=fields, owner_in_query=True)
+        except gexc.FailedPrecondition:
+            if state is None or submitted_by is None:
+                raise
+            log.warning("notification_tasks: tasks-tenant-submitter-state-created not ready; "
+                        "the submitter is filtered after the read")
+            return self._notification_tasks(tenant_id, state=state, submitted_by=submitted_by,
+                                            limit=limit, fields=fields, owner_in_query=False)
+
+    def _notification_tasks(self, tenant_id: str, *, state: TaskState | None,
+                            submitted_by: str | None, limit: int,
+                            fields: Sequence[str] | None, owner_in_query: bool) -> list[Task]:
+        query = self._db.collection(TASKS).where(
+            filter=FieldFilter("tenant_id", "==", tenant_id)
+        )
+        if submitted_by is not None and owner_in_query:
+            query = query.where(filter=FieldFilter("submitted_by", "==", submitted_by))
+        if state is not None:
+            query = query.where(filter=FieldFilter("state", "==", state.value))
+        query = query.order_by("created_at", direction=firestore.Query.DESCENDING).limit(limit)
+        # The unit tests' in-memory Firestore has no projection; Firestore's
+        # own query always has `select`, so production always projects.
+        select = getattr(query, "select", None) if fields else None
+        if select is not None:
+            query = select(list(fields))
+        tasks = []
+        for snap in query.stream():
+            task = task_from_dict(snap.to_dict() or {})
+            if task.tenant_id != tenant_id or (state is not None and task.state != state) \
+                    or (submitted_by is not None and task.submitted_by != submitted_by):
+                continue
+            tasks.append(task)
+        return tasks
+
     def list_failures(self, *, limit: int = 50, page_token: str | None = None) -> Page:
         """One page of FAILED tasks across EVERY tenant, newest first (U19).
 

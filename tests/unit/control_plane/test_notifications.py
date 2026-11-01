@@ -733,6 +733,10 @@ def test_platform_secrets_unset_is_read_once_per_period_not_per_feed(db, catalog
     assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 1
     assert meta.calls == calls
     clock[0] += notif.PLATFORM_SECRETS_TTL + timedelta(seconds=1)
+    # Past the period the last count is served while one background read
+    # refreshes it (LOAD-SPEED-NOTIFICATIONS); the next feed has the new one.
+    assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 1
+    assert notif.wait_platform_secrets_refresh(meta, timeout=10)
     assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 2
 
 
