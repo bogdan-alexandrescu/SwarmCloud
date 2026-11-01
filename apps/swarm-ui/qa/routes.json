@@ -232,6 +232,27 @@
         "path": "/admin/workspaces",
         "ready": "main h1",
         "persona": "platform-admin"
+      },
+      {
+        "id": "voice-talk",
+        "address": "voice/talk",
+        "path": "/voice/talk",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "voice-projects",
+        "address": "voice/projects",
+        "path": "/voice/projects",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "voice-preferences",
+        "address": "voice/preferences",
+        "path": "/voice/preferences",
+        "ready": "main h1",
+        "persona": "platform-admin"
       }
     ],
     "task": [
