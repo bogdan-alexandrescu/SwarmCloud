@@ -257,9 +257,14 @@ checkout carries `scripts/related-tests.sh` the prompt gains the standing rule
 (`RELATED_TESTS_NOTE`): run the related tests through that script, never
 vitest without file arguments, never pytest over a whole directory or with
 `-n auto` across the suite, never parallel shards or background batches
-polled with sleep, and `scripts/changed-guards.sh` once at the end. Keyed on
-the script being in the checkout, so another tenant's repository is never
-told to run a script it does not have.
+polled with sleep. Keyed on the script being in the checkout, so another
+tenant's repository is never told to run a script it does not have. The note
+once ended "run `scripts/changed-guards.sh` once at the end"; since the owner's
+decision of 2026-11-01 (#2981) it says the opposite: this runner has the
+pre-publish gate (`prepublish=True`), which runs that script after the turn
+and hands back what fails, and on a large patch the agent's own run hit its
+10-minute command limit (about ten minutes a step) only for the gate to run
+the same guards again.
 
 WHY A SCRATCH NOTE (issue #2436). task_73850f24085447368991 was evicted twice
 with `EmptyDir volume "tmp" exceeds 3Gi`: its agent wrote a Postgres data dir,
@@ -406,9 +411,10 @@ RELATED_TESTS_NOTE = (
     "file arguments, never run pytest over a whole directory or with `-n auto` "
     "across the suite, and never start parallel shards or background test "
     "batches polled with sleep: whole-suite runs cost lanes hours and parallel "
-    "shards are what ran containers out of memory. Run "
-    "scripts/changed-guards.sh once at the end and fix what it reports; CI "
-    "runs everything else."
+    "shards are what ran containers out of memory. Do not run "
+    "scripts/changed-guards.sh yourself: the worker's pre-publish gate runs it "
+    "after your turn and hands you back what fails, to fix in a further turn; "
+    "CI runs everything else."
 )
 
 #: Where to explore first (LANE CAPS, #2524 item 8), once, after the prompt;

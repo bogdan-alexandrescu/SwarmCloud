@@ -162,10 +162,12 @@ available ([why](docs/working-in-this-repository.md#workspace-storage)).
 
 **A SwarmCloud agent is not this machine.** An agent in a SwarmCloud container
 (image `agent-runtime-base`) runs the offline unit tests for what it touched
-before it finishes and fixes what they catch, then runs
-`scripts/changed-guards.sh` once as its one pre-finish command; CI is still the
-gate. A brief for a SwarmCloud step must not repeat "do not run tests"; a brief
-for a local lane still must; any brief names `scripts/changed-guards.sh` ([in
+before it finishes and fixes what they catch, then `scripts/publish-scan.sh`;
+CI is still the gate. Under the worker's pre-publish gate (claude-code) it does
+**not** run `scripts/changed-guards.sh`: the gate runs it after the turn and
+hands back what fails; without the gate (codex) it runs it once at the end. A
+brief for a SwarmCloud step must not repeat "do not run tests"; a brief for a
+local lane still must (#2981; [in
 full](docs/working-in-this-repository.md#swarmcloud-agent-tests)).
 
 **While it works, that agent runs only the tests related to its change**,
