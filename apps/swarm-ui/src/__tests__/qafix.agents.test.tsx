@@ -42,7 +42,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api, USE_FIXTURES: false }
 })
 
-import { AgentsScreen } from '../Agents'
+import { AgentsScreen, agentPanelShown } from '../Agents'
 
 const PHONE: CascadeEnv = { width: 390 }
 const NOW = Date.UTC(2026, 9, 20, 12, 0, 0)
@@ -89,6 +89,8 @@ const opener = (id: string) => (name: string) => !name.startsWith('Copy') && nam
 const flat = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 
 async function mount(taskId: string | null = null): Promise<void> {
+  // An open agent's list waits for its panel (`listMayStart`); none is drawn here.
+  if (taskId !== null) agentPanelShown(taskId)
   render(<AgentsScreen onOpen={() => {}} taskId={taskId} />)
   await waitFor(() => expect(document.querySelector('.row.is-compact')).not.toBeNull())
 }
