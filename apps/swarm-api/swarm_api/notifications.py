@@ -108,6 +108,7 @@ document of its own; no task, lease or slot is touched.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import weakref
@@ -1211,7 +1212,10 @@ class Notifications:
             return [(name, run(source)) for name, source in self._sources]
         with ThreadPoolExecutor(max_workers=len(self._sources),
                                 thread_name_prefix="notifications") as pool:
-            futures = [(name, pool.submit(run, source)) for name, source in self._sources]
+            # Each thread runs in a copy of this request's context, so what
+            # the request set (a log correlation, say) holds in every source.
+            futures = [(name, pool.submit(contextvars.copy_context().run, run, source))
+                       for name, source in self._sources]
             return [(name, future.result()) for name, future in futures]
 
     def _marks(self, viewer: Viewer) -> tuple[dict[str, datetime], datetime | None]:

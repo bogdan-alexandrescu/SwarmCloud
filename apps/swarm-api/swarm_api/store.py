@@ -1377,11 +1377,31 @@ class Store:
         without a submitter by tasks-tenant-created / tasks-tenant-state-created.
         `fields` projects the documents (`Query.select`) to what the feed's
         items use; the decoder's required fields must be among them.
+
+        UNTIL THE FOUR-FIELD INDEX IS BUILT (the release applies it, and an
+        index builds for minutes after the apply) Firestore refuses the query
+        with FailedPrecondition; it is then read as it was before that index,
+        the tenant's newest `limit` in `state`, and narrowed to the submitter
+        after, so a deploy that lands first serves the bell, not a partial one.
         """
+        try:
+            return self._notification_tasks(tenant_id, state=state, submitted_by=submitted_by,
+                                            limit=limit, fields=fields, owner_in_query=True)
+        except gexc.FailedPrecondition:
+            if state is None or submitted_by is None:
+                raise
+            log.warning("notification_tasks: tasks-tenant-submitter-state-created not ready; "
+                        "the submitter is filtered after the read")
+            return self._notification_tasks(tenant_id, state=state, submitted_by=submitted_by,
+                                            limit=limit, fields=fields, owner_in_query=False)
+
+    def _notification_tasks(self, tenant_id: str, *, state: TaskState | None,
+                            submitted_by: str | None, limit: int,
+                            fields: Sequence[str] | None, owner_in_query: bool) -> list[Task]:
         query = self._db.collection(TASKS).where(
             filter=FieldFilter("tenant_id", "==", tenant_id)
         )
-        if submitted_by is not None:
+        if submitted_by is not None and owner_in_query:
             query = query.where(filter=FieldFilter("submitted_by", "==", submitted_by))
         if state is not None:
             query = query.where(filter=FieldFilter("state", "==", state.value))
