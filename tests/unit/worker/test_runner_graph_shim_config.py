@@ -38,9 +38,9 @@ def _ctx(work: Path, repo: Path):
         payload={"prompt": "Implement it."}, repo_dir=repo)
 
 
-_CLEARED = ("SWARM_GIT", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH", "SWARM_CDP_ENDPOINT",
-            graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV,
-            graphstage.PIN_ENV, graphstage.TICKET_FILE_ENV, graphstage.URL_ENV)
+_CLEARED = ("SWARM_GIT", "SWARM_CHILDREN", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH",
+            "SWARM_CDP_ENDPOINT", graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV,
+            graphstage.UNSTAGED_ENV, graphstage.PIN_ENV, graphstage.TICKET_FILE_ENV, graphstage.URL_ENV)
 
 
 def _run(module: Any, monkeypatch: pytest.MonkeyPatch, work: Path,
