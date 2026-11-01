@@ -82,6 +82,9 @@ IMAGES = [
     # The public GitHub push receiver (GS-HOOKS, part of #1384),
     # apps/swarm-github-hooks/Dockerfile.
     "swarm-github-hooks",
+    # Voice it's GPT-Live session holder (VOICE-STATEFULSET, part of #2688),
+    # apps/swarm-voice/Dockerfile.
+    "swarm-voice",
     "workspace-apply",
 ]
 

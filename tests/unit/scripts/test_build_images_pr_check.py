@@ -76,10 +76,11 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # and swarm-graph (GS-INFRA, apps/swarm-graph/Dockerfile), which also copies
 # the worker package in (docs/design/graph-service.md §2.4), and
 # swarm-github-hooks (GS-HOOKS, apps/swarm-github-hooks/Dockerfile), which
-# copies only the contract and redaction in.
+# copies only the contract and redaction in, and swarm-voice (VOICE-STATEFULSET,
+# apps/swarm-voice/Dockerfile), which copies only the contract in.
 ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
                                   "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks",
-                                  "workspace-apply"}
+                                  "swarm-voice", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -162,7 +163,8 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         # COPY'd files outside images/.
         (["apps/common/swarm_common/models.py"],
          PYTHON_SERVICES | WORKER | {"swarm-live", "swarm-egress", "swarm-typesafe-fwd",
-                                     "swarm-graph", "swarm-github-hooks", "workspace-apply"}),
+                                     "swarm-graph", "swarm-github-hooks", "swarm-voice",
+                                     "workspace-apply"}),
         # The live relay: its recipe beside it, and its own lock.
         (["apps/swarm-live/swarm_live/main.py"], {"swarm-live"}),
         (["apps/swarm-live/uv.lock"], {"swarm-live"}),
@@ -187,6 +189,11 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-github-hooks/swarm_github_hooks/receiver.py"], {"swarm-github-hooks"}),
         (["apps/swarm-github-hooks/uv.lock"], {"swarm-github-hooks"}),
         (["apps/swarm-github-hooks/Dockerfile"], {"swarm-github-hooks"}),
+        # Voice it's session holder (VOICE-STATEFULSET): the same shape again,
+        # copying only the contract in.
+        (["apps/swarm-voice/swarm_voice/main.py"], {"swarm-voice"}),
+        (["apps/swarm-voice/uv.lock"], {"swarm-voice"}),
+        (["apps/swarm-voice/Dockerfile"], {"swarm-voice"}),
         # The quota broker redacts account health messages on write, so its
         # image and the scheduler's (which installs the broker's package)
         # copy apps/redaction in too (ACCOUNT-429-FOLLOWUP).
