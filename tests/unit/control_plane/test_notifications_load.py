@@ -19,6 +19,7 @@ in-memory Firestore, with no cloud credentials:
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import threading
 import time
@@ -87,7 +88,8 @@ def projections(monkeypatch) -> list[tuple[str, ...]]:
         fields = getattr(self, "_projection", None)
         for snap in rows(self):
             if fields is not None:
-                snap._data = {k: v for k, v in snap._data.items() if k in fields}
+                snap = dataclasses.replace(
+                    snap, _data={k: v for k, v in snap._data.items() if k in fields})
             yield snap
 
     monkeypatch.setattr(FakeQuery, "select", select, raising=False)

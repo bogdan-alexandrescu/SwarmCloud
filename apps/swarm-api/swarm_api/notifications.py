@@ -47,10 +47,17 @@ read mark that ages out (`REMINDER_PERIODS`): nothing is queued or stored, and
 an update never re-rings. A waiting step's period is the person's when they
 chose one and its author's `remind_after_seconds` at `as_set`.
 
-A SOURCE THAT FAILS FAILS ALONE. Each source is a small function of a
-`Reading`; `Notifications.feed` runs them one by one, logs a failure by the
+A SOURCE THAT FAILS FAILS ALONE, AND THE SOURCES RUN AT ONCE. Each source is
+a small function of a `Reading`; `Notifications.feed` runs them concurrently
+(lane LOAD-SPEED-NOTIFICATIONS, part of #2688: run one by one they were 17-20
+serial Firestore round trips, 6.2 s cold for an admin), logs a failure by the
 source's name and the exception's type, and serves the rest with
-`partial: true`.
+`partial: true`. Their items are merged in `SOURCES` order whatever order
+they finish in, so the first source to derive an id still keeps it. A read
+two sources share (the caller's own tasks, the tenant's PARKED tasks) is made
+once per request (`Reading._once`); every task read is one query, narrowed
+to the person IN the query where it narrows at all, and projected to
+`TASK_FIELDS`.
 
 RELEASE IAM HOLDS ARE NOT A SOURCE. A release that waits on an IAM grant is a
 GitHub environment approval; the platform keeps no record of it in Firestore,
@@ -74,7 +81,11 @@ the admin source failed, a secret's metadata could not be read, or there is no
 reader. The secret count comes from `platform_secrets.platform_secret_status`,
 the page's own read, so the badge and the page count the same rows; it is
 reused for `PLATFORM_SECRETS_TTL` per reader, because it is two Secret Manager
-metadata calls per secret and the bell polls every 30 s.
+metadata calls per secret and the bell polls every 30 s. Once a count is
+older than that it is still served, and ONE background read refreshes it
+(`_refresh_platform_secrets`): no feed waits for Secret Manager except the
+first an instance serves, and that one reads it beside the sources, not
+after them.
 
 A JOIN REQUEST RINGS ITS DECIDERS, AND ITS DECISION RINGS ITS REQUESTER
 (docs/design/join-requests.md §4.6, Q3; lane JOIN-BELL, part of #2325).
@@ -100,6 +111,7 @@ from __future__ import annotations
 import logging
 import threading
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -228,10 +240,26 @@ class Viewer:
     administers: tuple[tuple[str, str], ...] | None = ()
 
 
+#: The task fields the feed's items read: `Store.notification_tasks`
+#: projects every task read here to these, so the prompt (`input`), the
+#: checkpoint and the signed submission fields never cross the wire for a
+#: bell. The decoder's required fields lead (`codec.task_from_dict`).
+TASK_FIELDS = (
+    "id", "tenant_id", "created_at", "updated_at", "state", "runner_profile",
+    "resource_class", "submitted_by", "metadata", "park_reason", "blocked_by",
+    "current_generation", "workflow_id", "step_id", "parent_task_id",
+    "cancel_requested", "completed_at", "result_summary", "human_wait",
+    "next_eligible_at",
+)
+
+
 @dataclass
 class Reading:
-    """One feed read: what every source is given. `own_tasks` is read once
-    and shared by the sources that need it, and fails each of them alike."""
+    """One feed read: what every source is given. The sources run
+    concurrently (`Notifications._derive`), so a read two of them share --
+    the caller's own tasks, the tenant's PARKED tasks -- is made once, by
+    whichever asks first, under a lock; the others wait for it and share its
+    answer, or its failure, which fails each of them alike."""
 
     db: Any
     store: Any
@@ -239,20 +267,46 @@ class Reading:
     now: datetime
     #: The join requests' store (`joinrequests.JoinStore`); None reads none.
     joins: Any | None = None
-    _tasks: list[Any] | None = field(default=None, repr=False)
+    _shared: dict[str, tuple[bool, Any]] = field(default_factory=dict, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def email(self) -> str:
         return self.viewer.email.strip().lower()
 
+    def _once(self, key: str, read: Callable[[], list[Any]]) -> list[Any]:
+        with self._lock:
+            if key not in self._shared:
+                try:
+                    self._shared[key] = (True, read())
+                except Exception as exc:  # noqa: BLE001 - raised again to every source sharing it
+                    self._shared[key] = (False, exc)
+            ok, answer = self._shared[key]
+        if not ok:
+            raise answer
+        return answer
+
+    def tasks(self, *, state: TaskState | None = None,
+              submitted_by: str | None = None) -> list[Any]:
+        """One task read of the feed: the tenant's newest `SCAN`, narrowed in
+        the query to `state` and to `submitted_by`, projected to
+        `TASK_FIELDS`, newest first."""
+        return self.store.notification_tasks(self.viewer.tenant_id, state=state,
+                                             submitted_by=submitted_by, limit=SCAN,
+                                             fields=TASK_FIELDS)
+
     def own_tasks(self) -> list[Any]:
         """The caller's newest tasks in their tenant (index
-        tasks-tenant-submitter-created), newest first."""
-        if self._tasks is None:
-            page = self.store.list_tasks(self.viewer.tenant_id, limit=SCAN,
-                                         submitted_by=self.viewer.email)
-            self._tasks = [t for t in page.items if t.tenant_id == self.viewer.tenant_id]
-        return self._tasks
+        tasks-tenant-submitter-created), newest first. Read once."""
+        return self._once("own", lambda: self.tasks(submitted_by=self.viewer.email))
+
+    def parked(self) -> list[Any]:
+        """The tenant's newest PARKED tasks (tasks-tenant-state-created), or
+        a personal workspace member's own (tasks-tenant-submitter-state-
+        created): read ONCE, shared by `handoffs` and `awaiting_input`."""
+        scope = self.viewer.email if self.viewer.member_scope else None
+        return self._once("parked", lambda: self.tasks(state=TaskState.PARKED,
+                                                       submitted_by=scope))
 
 
 Source = Callable[[Reading], list[dict[str, Any]]]
@@ -408,11 +462,13 @@ def approval_items(reading: Reading) -> list[dict[str, Any]]:
     the inbox's writes (it materialises firings and closes stale merges)."""
     db, tenant_id, viewer = reading.db, reading.viewer.tenant_id, reading.viewer
     items: dict[str, dict[str, Any]] = {}
-    for doc in approvals.pending(db, tenant_id, limit=SCAN):
+    docs = approvals.pending(db, tenant_id, limit=SCAN)
+    live = approvals.live_merges(db, docs)
+    for doc in docs:
         expires = _aware(doc.get("expires_at"))
         if expires is not None and expires <= reading.now:
             continue
-        if doc.get("kind") == approvals.MERGE and not approvals._live_merge(db, doc):
+        if doc.get("kind") == approvals.MERGE and str(doc.get("approval_id")) not in live:
             continue
         if not _may_decide(viewer, doc.get("approvers")):
             continue
@@ -475,12 +531,6 @@ def approval_items(reading: Reading) -> list[dict[str, Any]]:
 # task: waiting on the person inside one of their tasks
 # --------------------------------------------------------------------------
 
-def _own_in_state(reading: Reading, state: TaskState) -> list[Any]:
-    page = reading.store.list_tasks(reading.viewer.tenant_id, state=state, limit=SCAN,
-                                    submitted_by=reading.viewer.email)
-    return [t for t in page.items if t.tenant_id == reading.viewer.tenant_id and t.state == state]
-
-
 #: The open hand-off's title (owner decision 2026-10-13, HANDOFF-POLICY).
 HANDOFF_TITLE = "Agent needs you"
 
@@ -518,9 +568,7 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
 
     items = []
     scope = reading.viewer.email if reading.viewer.member_scope else None
-    page = reading.store.list_tasks(reading.viewer.tenant_id, state=TaskState.RUNNING,
-                                    limit=SCAN, submitted_by=scope)
-    for task in page.items:
+    for task in reading.tasks(state=TaskState.RUNNING, submitted_by=scope):
         if task.tenant_id != reading.viewer.tenant_id or task.state != TaskState.RUNNING:
             continue
         wait = task.human_wait if isinstance(task.human_wait, dict) else None
@@ -538,8 +586,11 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
             wait.get("reason"), f"/agents/live/{task.id}/browser",
             wait.get("requested_at") or task.updated_at, topic=T_QUESTION))
     asked: dict[str, set[int]] | None = None
-    for task in _own_in_state(reading, TaskState.PARKED):
-        if task.park_reason != ParkReason.HUMAN_REQUIRED:
+    for task in reading.parked():
+        # The caller's own, out of the shared read: the same rows the
+        # tenant's PARKED page held for them before it was shared.
+        if task.submitted_by != reading.viewer.email or task.state != TaskState.PARKED \
+                or task.park_reason != ParkReason.HUMAN_REQUIRED:
             continue
         hold = _owner_questions_hold(task)
         if hold is not None:
@@ -693,10 +744,9 @@ def awaiting_input(reading: Reading) -> list[dict[str, Any]]:
     period, linked to the workflow, where the step's card takes the answer.
     A personal workspace's member reads only the steps they submitted, as
     `handoffs` does. Answered, expired or cancelled: nothing is derived."""
-    scope = reading.viewer.email if reading.viewer.member_scope else None
     items = []
-    for task in approvals.awaiting_input(reading.store, reading.viewer.tenant_id, reading.now,
-                                         limit=SCAN, submitted_by=scope):
+    for task in approvals.open_input_steps(reading.parked(), reading.viewer.tenant_id,
+                                           reading.now):
         block = approvals.await_input_declaration(task)
         remind = block.get("remind", [task.submitted_by])
         if not isinstance(remind, list) \
@@ -1032,15 +1082,48 @@ _SECRET_COUNTS: "weakref.WeakKeyDictionary[Any, tuple[datetime, int | None]]" = 
 _SECRET_COUNTS_LOCK = threading.Lock()
 
 
+#: Each reader's background refresh while one runs: at most one per reader.
+_SECRET_REFRESHES: "weakref.WeakKeyDictionary[Any, threading.Thread]" = weakref.WeakKeyDictionary()
+
+
 def platform_secrets_unset(meta: Any, db: Any, now: datetime) -> int | None:
     """How many platform secrets have no enabled version (`not_set` or
     `not_declared`), as Admin › Platform secrets counts them. None when any
     row, or the broker's account documents, could not be read: a lower bound
-    drawn as a count would be the one claim nobody measured."""
+    drawn as a count would be the one claim nobody measured.
+
+    STALE WHILE IT REFRESHES. A count read within `PLATFORM_SECRETS_TTL` is
+    served as it is. An older one is served too, and one background thread
+    reads the next (never two for one reader): the badge is at most one read
+    behind, and no admin's feed waits on Secret Manager for it. Only a reader
+    with no count yet is read inline."""
     with _SECRET_COUNTS_LOCK:
         kept = _SECRET_COUNTS.get(meta)
-    if kept is not None and now - kept[0] < PLATFORM_SECRETS_TTL:
+        if kept is not None and now - kept[0] >= PLATFORM_SECRETS_TTL:
+            running = _SECRET_REFRESHES.get(meta)
+            if running is None or not running.is_alive():
+                thread = threading.Thread(target=_read_platform_secrets, args=(meta, db, now),
+                                          name="notifications-platform-secrets", daemon=True)
+                _SECRET_REFRESHES[meta] = thread
+                thread.start()
+    if kept is not None:
         return kept[1]
+    return _read_platform_secrets(meta, db, now)
+
+
+def wait_platform_secrets_refresh(meta: Any, *, timeout: float) -> bool:
+    """Wait for `meta`'s background refresh, if one runs; True once none does.
+    For a caller that must see the refreshed count (a test, a shutdown)."""
+    with _SECRET_COUNTS_LOCK:
+        running = _SECRET_REFRESHES.get(meta)
+    if running is not None:
+        running.join(timeout)
+        return not running.is_alive()
+    return True
+
+
+def _read_platform_secrets(meta: Any, db: Any, now: datetime) -> int | None:
+    """One count from Secret Manager, kept for `platform_secrets_unset`."""
     try:
         status = psec.platform_secret_status(meta, db, catalogue=PLATFORM_SECRET_CATALOGUE,
                                              now=lambda: now)
@@ -1083,13 +1166,11 @@ class Notifications:
         items: dict[str, dict[str, Any]] = {}
         partial = viewer.preferences_unread
         unread: set[str] = set()
-        for name, source in self._sources:
-            try:
-                found = source(reading)
-            except Exception as exc:  # noqa: BLE001 - one source, never the feed
+        for name, found in self._run_sources(reading):
+            if isinstance(found, Exception):
                 partial = True
                 unread.add(name)
-                log.warning("notifications: source %s unread (%s)", name, type(exc).__name__)
+                log.warning("notifications: source %s unread (%s)", name, type(found).__name__)
                 continue
             for item in found:
                 items.setdefault(item["id"], item)
@@ -1114,6 +1195,25 @@ class Notifications:
         return _Derived(needs + updates[:MAX_UPDATES], muted, admin_pending, partial,
                         tenants_waiting)
 
+    def _run_sources(self, reading: Reading) -> list[tuple[str, Any]]:
+        """Every source at once, each on its own thread of a pool that lives
+        for this request: (name, its items or the exception it raised), in
+        `SOURCES` order. A source's failure is caught on its own thread, so
+        it never cancels or delays another's."""
+
+        def run(source: Source) -> Any:
+            try:
+                return source(reading)
+            except Exception as exc:  # noqa: BLE001 - one source, never the feed
+                return exc
+
+        if len(self._sources) <= 1:
+            return [(name, run(source)) for name, source in self._sources]
+        with ThreadPoolExecutor(max_workers=len(self._sources),
+                                thread_name_prefix="notifications") as pool:
+            futures = [(name, pool.submit(run, source)) for name, source in self._sources]
+            return [(name, future.result()) for name, future in futures]
+
     def _marks(self, viewer: Viewer) -> tuple[dict[str, datetime], datetime | None]:
         snap = self._ref(viewer).get()
         doc = snap.to_dict() if snap.exists else None
@@ -1126,14 +1226,20 @@ class Notifications:
         return marks, _aware(doc.get("all_read_at"))
 
     def feed(self, viewer: Viewer) -> dict[str, Any]:
-        derived = self._derive(viewer)
-        partial = derived.partial
-        try:
-            marks, all_read_at = self._marks(viewer)
-        except Exception as exc:  # noqa: BLE001 - unread marks show everything unread
-            partial = True
-            log.warning("notifications: read marks unread (%s)", type(exc).__name__)
-            marks, all_read_at = {}, None
+        # The read marks and the admin's platform count are read beside the
+        # sources, not after them: neither depends on what they derive.
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="notifications") as pool:
+            marks_read = pool.submit(self._marks, viewer)
+            secrets_read = pool.submit(self._platform_secrets_unset, viewer)
+            derived = self._derive(viewer)
+            partial = derived.partial
+            try:
+                marks, all_read_at = marks_read.result()
+            except Exception as exc:  # noqa: BLE001 - unread marks show everything unread
+                partial = True
+                log.warning("notifications: read marks unread (%s)", type(exc).__name__)
+                marks, all_read_at = {}, None
+            platform_secrets = secrets_read.result()
         # A reminder ages a needs-you item's read mark out (§4.6); an update's never.
         period = REMINDER_PERIODS.get(viewer.reminder)
         fresh_after = _aware(self._now()) - period if period else None
@@ -1152,7 +1258,7 @@ class Notifications:
             "unread_updates": sum(1 for i in out if not i["needs_you"] and not i["read"]),
             "admin_pending": derived.admin_pending,
             "tenants_waiting": derived.tenants_waiting,
-            "platform_secrets_unset": self._platform_secrets_unset(viewer),
+            "platform_secrets_unset": platform_secrets,
             "muted": derived.muted,
             "read_at": _iso(all_read_at),
             "partial": partial,
