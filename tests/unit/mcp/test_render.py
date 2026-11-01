@@ -430,6 +430,40 @@ class TestBindingPool:
         pools = {"global": pool("global", limit=10, active=5)}
         assert binding_pool(["global"], pools, units=2).room == 2
 
+    def test_a_provider_pool_is_divided_by_the_served_share_not_the_units(self):
+        # Contract request 128 (#2950): a large agent takes 4 units in a
+        # compute pool and 1 in a provider pool, and `/v1/capacity` serves
+        # that per profile as `pool_units`. 10 free provider slots are 10
+        # more large agents, not 2; the compute pool's 28 free units are 7, so
+        # `global` binds.
+        pools = {p["name"]: p for p in [
+            pool("global", limit=100, active=72),
+            pool("provider:anthropic", limit=50, active=40),
+        ]}
+        required = ["global", "provider:anthropic"]
+        served = {"global": 4, "provider:anthropic": 1}
+        binding = binding_pool(required, pools, units=4, pool_units=served)
+        assert binding.pool == "global"
+        assert binding.room == 7
+        # Without the field (an API from before request 128, whose admission
+        # took `units` in every pool) `units` is the share everywhere.
+        legacy = binding_pool(required, pools, units=4)
+        assert legacy.pool == "provider:anthropic"
+        assert legacy.room == 2
+
+    def test_the_capacity_table_reads_each_profiles_served_pool_units(self):
+        capacity = {
+            "pools": [pool("provider:anthropic", limit=50, active=44)],
+            "runner_profiles": {
+                "claude-code-large": {
+                    "resource_class": "large", "backend": "GKE_AUTOPILOT", "units": 4,
+                    "pools": ["provider:anthropic"],
+                    "pool_units": {"provider:anthropic": 1},
+                },
+            },
+        }
+        assert "6 more agents fit" in render.capacity_subtitle(capacity, WIDE)
+
     def test_a_paused_pool_binds_immediately(self):
         pools = {p["name"]: p for p in [
             pool("global", limit=100, active=0),

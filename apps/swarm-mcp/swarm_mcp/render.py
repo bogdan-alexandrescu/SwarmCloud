@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 from swarm_common import states as _states
+from swarm_common.models import PROVIDER_POOL_UNITS
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 
@@ -1155,8 +1156,17 @@ def binding_pool(
     required: Sequence[str],
     pools: dict[str, dict[str, Any]],
     units: int,
+    pool_units: Any = None,
 ) -> Binding:
     """The pool with the least headroom for one more task of this profile.
+
+    ROOM DIVIDES EACH POOL BY WHAT ONE AGENT TAKES IN IT, read from the
+    profile's served `pool_units` (`/v1/capacity`, contract request 128,
+    #2950): a large agent takes its 4 units in a compute pool and 1 in a
+    provider pool, so dividing a provider pool's room by 4 understated it
+    four times over. An API older than the field sends none, and that API's
+    admission took `units` in every pool, so `units` is then the true share
+    (`pool_share`).
 
     Admission is all-or-nothing across `required`, so the ceiling a profile
     actually feels is the tightest of them -- not the global one, which is the
@@ -1200,7 +1210,7 @@ def binding_pool(
         available = _int_or_none(pool.get("available"))
         if available is None:
             available = max(0, limit - (active or 0))
-        room = available // max(1, units)
+        room = available // max(1, pool_share(name, units, pool_units))
         candidate = Binding(pool=name, room=room, limit=limit, active=active)
         if best is None or room < best.room:
             best = candidate
@@ -1209,6 +1219,22 @@ def binding_pool(
     if best is None:
         return Binding(unconfigured=considered == 0)
     return best
+
+
+def pool_share(name: str, units: int, pool_units: Any) -> int:
+    """What one agent of a profile takes in pool `name`: the served
+    `pool_units` entry when there is one, else `units`.
+
+    Never restated here from the pool's kind: the rule is admission's
+    (`swarm_common.models.pool_units_for`), and the API serves its answer per
+    profile. A profile served without the field came from an API whose
+    admission took `units` in every pool, so `units` is not a guess there.
+    """
+    if isinstance(pool_units, dict):
+        share = _int_or_none(pool_units.get(name))
+        if share is not None and share > 0:
+            return share
+    return units
 
 
 def format_room(binding: Binding, style: Style) -> Cell:
@@ -1293,7 +1319,7 @@ def render_capacity(
             )
             continue
         units = _int_or_none(spec.get("units")) or 1
-        binding = binding_pool(list(spec.get("pools") or []), pools, units)
+        binding = binding_pool(list(spec.get("pools") or []), pools, units, spec.get("pool_units"))
         rows.append(
             {
                 "profile": Cell(name),
@@ -1307,8 +1333,9 @@ def render_capacity(
         )
 
     # UNITS, NOT "USED" (#192). The cell is the binding pool's `active/limit`,
-    # and admission adds a task's `units` to `active` on every pool it takes
-    # (`swarm_common/admission.py`) -- so it counts units, while ROOM beside it
+    # and admission adds a task's share to `active` on every pool it takes --
+    # its `units` in a compute pool, 1 in a provider pool (`pool_units_for`,
+    # contract request 128) -- so it counts units, while ROOM beside it
     # counts agents of the profile. The header says which, and the note under
     # the table says how the two relate.
     lines = render_table(
@@ -1410,7 +1437,8 @@ def units_note(own: str) -> str:
     )
     return (
         "UNITS is capacity units in use out of the pool's limit, not agents: an "
-        f"agent takes its resource class's units ({per_class}). On a shared pool "
+        f"agent takes its resource class's units ({per_class}) in a compute pool and "
+        f"{PROVIDER_POOL_UNITS} in a provider pool. On a shared pool "
         f"it counts every tenant's; only {own} counts yours alone. ROOM counts "
         "agents: how many more of that profile fit before the binding pool refuses."
     )
@@ -1452,7 +1480,7 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
             # the subtitle is the line people quote.
             continue
         units = _int_or_none((spec or {}).get("units")) or 1
-        binding = binding_pool(list((spec or {}).get("pools") or []), pools, units)
+        binding = binding_pool(list((spec or {}).get("pools") or []), pools, units, (spec or {}).get("pool_units"))
         if binding.pool is None:
             continue
         if binding.paused:
