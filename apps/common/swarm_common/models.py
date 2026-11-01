@@ -120,6 +120,50 @@ def pool_names_for(
     return pools
 
 
+#: What a lease takes in each `provider:*` pool, whatever its size. A provider
+#: pool bounds concurrent LLM sessions against that provider's accounts, and an
+#: agent is one session however large its runner is (contract request 129,
+#: #2950). Every other pool bounds compute and takes the resource units.
+PROVIDER_POOL_UNITS = 1
+
+
+def pool_units_for(pool: str, units: int) -> int:
+    """The units a lease of `units` resource units takes in `pool`.
+
+    THE one rule. Reserve, release and every recount of a pool's `active` go
+    through it (or through `held_pool_units`, which applies it), so what is
+    taken and what is given back cannot drift apart.
+
+      * `provider:<p>` and `provider:<p>:tenant:<t>`: 1. One agent is one
+        session against the provider; a large runner is not four sessions.
+      * `global`, `tenant:<t>`, `resource:<c>`, `runner:<p>`, `backend:<b>`:
+        the resource units. Each bounds compute -- the platform's, a tenant's
+        share of it, a size class, a profile, a backend's capacity -- and a
+        large runner is four standard runners' worth of it.
+    """
+    return PROVIDER_POOL_UNITS if pool.startswith("provider:") else units
+
+
+def reserved_pool_units(pools: list[str], units: int) -> dict[str, int]:
+    """Per pool, what a lease reserved under the current rule takes."""
+    return {name: pool_units_for(name, units) for name in pools}
+
+
+def held_pool_units(
+    pools: list[str], units: int, pool_units: dict[str, int] | None
+) -> dict[str, int]:
+    """Per pool, what a STORED lease holds: what release gives back.
+
+    A lease reserved since request 129 records `pool_units`, and holds exactly
+    that. A lease reserved before it has none and took its `units` in every
+    pool, the provider pools included, so it holds `units` in each: giving
+    back the new rule's 1 would leave the difference held for ever.
+    """
+    if pool_units is None:
+        return {name: units for name in pools}
+    return {name: int(pool_units.get(name, units)) for name in pools}
+
+
 # --------------------------------------------------------------------------
 # Leases
 # --------------------------------------------------------------------------
@@ -146,6 +190,14 @@ class Lease:
     heartbeat_at: datetime | None = None
     released_at: datetime | None = None
     release_reason: str | None = None
+    #: What the lease took in each pool (`reserved_pool_units`), written at
+    #: reserve. None on a lease reserved before contract request 129, which
+    #: took `units` in every pool.
+    pool_units: dict[str, int] | None = None
+
+    def held_units(self) -> dict[str, int]:
+        """Per pool, what this lease holds and release gives back."""
+        return held_pool_units(self.pools, self.units, self.pool_units)
 
     @property
     def is_released(self) -> bool:

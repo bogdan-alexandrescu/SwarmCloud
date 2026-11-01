@@ -149,7 +149,10 @@ def _switch_cases(app: str) -> dict[str, str]:
 def _import_map(app: str) -> dict[str, Path]:
     """Component name -> the file App.tsx imports it from."""
     out: dict[str, Path] = {}
-    for names, module in re.findall(r"import \{([^}]*)\} from '\./([\w.]+)'", app):
+    # `[\w./]`, not `[\w.]`: Voice it's panes live in a folder of their own
+    # (`./voice/Section`), and a module path with a slash in it must resolve
+    # to its file rather than fall back to App.tsx and miss the heading.
+    for names, module in re.findall(r"import \{([^}]*)\} from '\./([\w./]+)'", app):
         for name in (n.strip() for n in names.split(",")):
             if name and not name.startswith("type "):
                 out[name] = SRC / f"{module}.tsx"
@@ -329,5 +332,9 @@ def test_every_route_is_covered() -> None:
         "capacity/api-reads",
         "admin/limits",
         "admin/counts",
+        # Voice it (docs/design/voice-it.md §10, phase one): its three panes.
+        "voice/talk",
+        "voice/projects",
+        "voice/preferences",
     ):
         assert expected in {r[0] for r in ROUTES}, f"{expected} is not in the route table"

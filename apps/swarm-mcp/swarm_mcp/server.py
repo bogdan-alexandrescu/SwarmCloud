@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from swarm_common.models import PROVIDER_POOL_UNITS
 from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
 from . import artifacts, checkout, compact, config, keys, progress, qatargets, suitegate
@@ -2840,7 +2841,8 @@ TOOLS: list[dict[str, Any]] = [
                 f"{name} {resource.units}"
                 for name, resource in sorted(RESOURCE_CLASSES.items(), key=lambda kv: kv[1].units)
             )
-            + ") -- and on a shared pool it counts every tenant's."
+            + f") in a compute pool and {PROVIDER_POOL_UNITS} in a provider pool -- "
+            "and on a shared pool it counts every tenant's."
         ),
         "inputSchema": {
             "type": "object",

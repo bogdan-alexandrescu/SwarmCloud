@@ -21,12 +21,13 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, canonical, fromHash } from '../App'
+import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, canonical, fromHash, spineOf } from '../App'
 import { HELP_ROUTE } from '../help'
-import { SkyShell } from '../Spine'
+import { addressToPath, pathToAddress } from '../paths'
+import { PANEL_PAGES, SkyShell, hrefOf } from '../Spine'
 
 /**
  * The props App hands the agent list, captured. The list itself is not what
@@ -299,5 +300,103 @@ describe('the Profile spine item', () => {
     const link = item('profile')
     expect(link?.classList.contains('is-on')).toBe(true)
     expect(link?.getAttribute('aria-current')).toBe('page')
+  })
+})
+
+/**
+ * VOICE IT IS A SECTION OF ITS OWN (docs/design/voice-it.md §10, phase one's
+ * first lane; owner decision 2026-11-01): Talk, Projects and Preferences, each
+ * a page at its own path, and the section drawn on the spine only for the
+ * people who may use it. Version one is one person's; until swarm-api's
+ * session routes say who that is, the console's identity read does, and a
+ * platform admin is the only one it can name.
+ *
+ * MUTATION: drop the section from SECTIONS, a row from FIXED, the spine
+ * item's gate, or a pane's heading, and a case below fails.
+ */
+describe('the Voice it section', () => {
+  type Json = Record<string, unknown>
+  const me = (isAdmin: boolean): Json => ({
+    tenant: { tenant_id: 'u-ana', display_name: 'Your workspace' },
+    principal: { email: 'ana.b@example.com', domain: 'example.com', groups: [], is_admin: isAdmin },
+    environment: 'dev',
+    environment_declared: true,
+  })
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllEnvs()
+    window.history.pushState(null, '', '/')
+  })
+
+  /** A live shell whose `/v1/tenants/me` says `isAdmin`; every other read fails. */
+  async function liveShell(isAdmin: boolean, section: 'work' | 'voice' = 'work', tab = 'running') {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/v1/tenants/me') && !url.includes('/v1/tenants/mine')) return json(me(isAdmin))
+      return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { SkyShell: Live } = await import('../Spine')
+    render(
+      <Live section={section} tab={tab} title="x" go={vi.fn()} foot={null}>
+        {null}
+      </Live>,
+    )
+  }
+
+  const PANES: readonly [string, string, string][] = [
+    ['talk', 'Talk', '/voice/talk'],
+    ['projects', 'Projects', '/voice/projects'],
+    ['preferences', 'Preferences', '/voice/preferences'],
+  ]
+
+  it('is a section with Talk, Projects and Preferences, in that order', () => {
+    const voice = SECTIONS.find((s) => s.id === 'voice')
+    expect(voice, 'SECTIONS has no Voice it section').toBeDefined()
+    expect(voice!.label).toBe('Voice it')
+    expect(voice!.question.trim()).toMatch(/\?$/)
+    expect(voice!.tabs.map((t) => [t.id, t.label])).toEqual(PANES.map(([id, label]) => [id, label]))
+  })
+
+  it.each(PANES)('resolves %s to its own page, path and spine section', (tab, _label, path) => {
+    expect(addressToPath(`voice/${tab}`)).toBe(path)
+    expect(pathToAddress(path)?.address).toBe(`voice/${tab}`)
+    const at = resolve(`voice/${tab}`)
+    expect([at.sectionId, at.tab]).toEqual(['voice', tab])
+    expect(spineOf('voice', tab)).toBe('voice')
+  })
+
+  it('opens Talk from the section root, /voice', () => {
+    expect(pathToAddress('/voice')?.address).toBe('voice/talk')
+  })
+
+  it.each(PANES)('heads the %s page with its tab label', (tab, label) => {
+    window.location.hash = `#voice/${tab}`
+    render(<App />)
+    expect(screen.getByRole('heading', { level: 1, name: label })).toBeTruthy()
+  })
+
+  it('draws Voice it on the spine, after Admin, with its three pages, for the person it is open to', async () => {
+    await liveShell(true)
+    const item = await waitFor(() => {
+      const a = document.querySelector<HTMLAnchorElement>('.sk-spine a[data-sec="voice"]')
+      expect(a, 'no Voice it item for a platform admin').not.toBeNull()
+      return a!
+    })
+    expect(item.getAttribute('href')).toBe('/voice/talk')
+    const labels = [...document.querySelectorAll('.sk-spine a.sk-ri')].map((a) => (a.querySelector('small') ?? a).textContent?.trim())
+    expect(labels.indexOf('Voice it')).toBe(labels.indexOf('Admin') + 1)
+    expect(PANEL_PAGES.voice.map((p) => [p.label, hrefOf(p.to)])).toEqual(PANES.map(([, label, path]) => [label, path]))
+  })
+
+  it('draws no Voice it item for anyone else', async () => {
+    await liveShell(false)
+    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="work"]')).not.toBeNull())
+    // The identity read has answered once Profile's avatar carries the email.
+    await waitFor(() => expect(document.querySelector('.sk-spine .sk-av')?.getAttribute('title')).toBe('ana.b@example.com'))
+    expect(document.querySelector('.sk-spine a[data-sec="voice"]')).toBeNull()
   })
 })

@@ -65,11 +65,12 @@ import { firstName } from './PersonName'
 import { NEAR_CEILING } from './AdminSettings'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
+import { voiceItOpen } from './voice/Section'
 
-export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'help' | null
+export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
 
 /** The spine sections that draw a panel of pages. */
-type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'config' | 'admin'
+type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice'
 
 /** One page in the panel: its label, its icon, the address `go()` takes, and its children. */
 interface PanelPage {
@@ -206,6 +207,14 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
     // every tenant's schedules are Automate › Schedules, All tenants.
   ],
+  // VOICE IT (docs/design/voice-it.md §10, phase one): App.tsx SECTIONS'
+  // three tabs. The section's spine item is drawn only for the people Voice
+  // it is open to (`voiceItOpen`), so this panel is theirs alone.
+  voice: [
+    { key: 'talk', label: 'Talk', icon: 'voice', to: 'voice/talk' },
+    { key: 'projects', label: 'Projects', icon: 'timeline', to: 'voice/projects' },
+    { key: 'preferences', label: 'Preferences', icon: 'gear', to: 'voice/preferences' },
+  ],
 }
 
 /**
@@ -311,7 +320,7 @@ export function configPagesFor(personal: boolean | null): readonly PanelPage[] {
 }
 
 /** Each panel's heading: its spine section's label. */
-export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', config: 'Config', admin: 'Admin' }
+export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', config: 'Config', admin: 'Admin', voice: 'Voice it' }
 
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
 function rowFor(section: PanelSection, tab: string): string {
@@ -1519,6 +1528,13 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
+  // Voice it: a microphone.
+  voice: (
+    <>
+      <rect x="9" y="3.5" width="6" height="11" rx="3" />
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" />
+    </>
+  ),
   search: (
     <>
       <circle cx="11" cy="11" r="6.5" />
@@ -1562,6 +1578,9 @@ const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: str
   // CONFIG-NAV (part of #2157, S1): between Capacity and Admin.
   { key: 'config', label: 'Config', to: 'config/github' },
   { key: 'admin', label: 'Admin', to: 'admin/limits' },
+  // VOICE IT (voice-it.md §10, phase one): last, and drawn only for the
+  // people it is open to (`voiceItOpen`), so nobody else's spine moves.
+  { key: 'voice', label: 'Voice it', to: 'voice/talk' },
 ]
 
 export interface ShellProps {
@@ -1703,7 +1722,9 @@ export function SkyShell({
   // their item moves; with nothing waiting it opens Pool limits as before.
   const pendingAt = admin && adminPending > 0 ? adminPages.find((p) => p.key === 'people') : undefined
   const adminTo = pendingAt?.to ?? landing?.to
-  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : adminTo === undefined ? [] : [{ ...s, to: adminTo }]))
+  // Voice it's item waits for the identity read: unread draws none, so it never flickers in.
+  const voiceIt = voiceItOpen(who) === true
+  const spineItems = SPINE.flatMap((s) => (s.key === 'voice' ? (voiceIt ? [s] : []) : s.key !== 'admin' ? [s] : adminTo === undefined ? [] : [{ ...s, to: adminTo }]))
   // ADMIN'S ADDRESSES SEND A NON-ADMIN TO OVERVIEW (CONFIG-NAV), and only
   // once both reads have answered: an unread session is not "not an admin".
   const adminDecided = who !== null && (mine.status === 'ok' || mine.status === 'stale' || mine.status === 'empty')
@@ -3664,7 +3685,7 @@ function Flyout({
   onBlur: (e: ReactFocusEvent) => void
   onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
-  if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'config' && section !== 'admin') return null
+  if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'config' && section !== 'admin' && section !== 'voice') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
   const name = PANEL_TITLE[section]
   // The Admin rows in the panel's group order (S1b), so the two never list them differently.

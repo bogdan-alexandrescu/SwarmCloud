@@ -33,6 +33,14 @@
 
 def in_set($set; $v): any($set[]; . == $v);
 
+# What a lease holds in pool $pool: held_pool_units in swarm_common.models.
+# Not `.pool_units[$pool] // ...`: `//` would also skip a recorded 0.
+def held_units($pool):
+  if (.pool_units | type) == "object" and (.pool_units | has($pool))
+  then .pool_units[$pool]
+  else (.units // 1)
+  end;
+
 def judge:
   . as $s
   | [ $s.leases[].id ] as $lease_ids
@@ -43,14 +51,19 @@ def judge:
       holding_tasks: ([ $s.tasks[] | select(in_set($concurrency; .state)) ] | length),
 
       # Invariant 3, exactly: every unit a pool says is active is held by an
-      # unreleased lease that names that pool, weighted by the lease's units
-      # (`units` defaults to 1, as release_lease_in_transaction reads it).
+      # unreleased lease that names that pool, weighted by what the lease holds
+      # THERE, as release_lease_in_transaction returns it
+      # (swarm_common.models.held_pool_units): the lease's `pool_units` entry
+      # for the pool -- 1 in a provider pool since contract request 129
+      # (#2950) -- or, on a lease reserved before it with no `pool_units`, its
+      # `units` (default 1) in every pool.
       pool_mismatches: [
         $s.pools[]
         | . as $p
         | { pool: $p.id,
             active: ($p.active // 0),
-            lease_units: ([ $s.leases[] | select(in_set(.pools // []; $p.id)) | (.units // 1) ] | add // 0) }
+            lease_units: ([ $s.leases[] | select(in_set(.pools // []; $p.id))
+                            | held_units($p.id) ] | add // 0) }
         | select(.active != .lease_units)
       ],
 

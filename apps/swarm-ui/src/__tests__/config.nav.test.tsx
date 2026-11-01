@@ -110,7 +110,8 @@ describe('the Config section (CONFIG-NAV)', () => {
     // MUTATION: swap Secrets and Repositories, or leave Workspace Settings out -> fails.
     expect(config!.tabs.map((t) => t.label)).toEqual(CONFIG_TABS)
     // MUTATION: put Config after Admin -> fails.
-    expect(App.SECTIONS.map((s) => s.id)).toEqual(['overview', 'work', 'automate', 'capacity', 'config', 'admin'])
+    // Voice it (voice-it.md §10) follows Admin, last.
+    expect(App.SECTIONS.map((s) => s.id)).toEqual(['overview', 'work', 'automate', 'capacity', 'config', 'admin', 'voice'])
   })
 
   it('draws the same six pages in the panel, and Config on the spine between Capacity and Admin', async () => {
