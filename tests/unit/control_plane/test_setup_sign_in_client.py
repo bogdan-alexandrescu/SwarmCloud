@@ -130,6 +130,19 @@ def test_applied_once_the_engine_reports_the_client_in_iaps_list(setup_client, d
     assert step["state"] == "saved" and step["client_id"] == newer
 
 
+def test_saving_the_applied_client_again_answers_saved(setup_client, db, fake_secrets) -> None:
+    """The contract: a save answers `saved`. A second save of the id the
+    engine already applied (a new secret for the same client) is no
+    exception: its new version is not taken in until the hand-off sees it."""
+    seed_engine_document(db)
+    saved = client_id()
+    db.docs[ENGINE_DOC]["sign_in_client"] = {"client_id": saved}
+    answer = setup_client.post(ROUTE, json={"client_id": saved, "client_secret": client_secret()},
+                               headers=auth_header("root"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["state"] == "saved" and answer.json()["client_id"] == saved
+
+
 def test_a_client_the_terminal_recorded_before_reads_applied(setup_client, db) -> None:
     """An install whose Desktop client came from the old terminal prompt has
     no console document; the engine's record still says it is applied."""
