@@ -84,7 +84,7 @@ describe('the Talk pane', () => {
     expect(audio).not.toBeNull()
     expect(audio.srcObject).toBe(voice)
     expect(audio.autoplay).toBe(true)
-    const ctx = FakeAudioContext.all[0]
+    const ctx = FakeAudioContext.all.find((c) => c.sources.some((s) => s.stream === voice))
     expect(ctx).toBeDefined()
     const source = ctx?.sources.find((s) => s.stream === voice)
     expect(source).toBeDefined()
@@ -122,9 +122,9 @@ describe('the Talk pane', () => {
     expect(screen.getByText(/On it, drawing it\./).closest('[aria-hidden="true"]')).not.toBeNull()
     await act(async () => pc.events.deliver({ type: 'session.output_transcript.done', item_id: 'a1', transcript: 'On it, drawing it.' }))
 
-    const finals = Array.from(log.querySelectorAll('.vi-cap')).map((p) => [
-      p.querySelector('.vi-cap-who')?.textContent,
-      p.querySelector('.vi-cap-text')?.textContent,
+    const finals = Array.from(log.querySelectorAll('.vt-cap')).map((p) => [
+      p.querySelector('.vt-cap-who')?.textContent,
+      p.querySelector('.vt-cap-text')?.textContent,
     ])
     expect(finals).toEqual([
       ['You', 'Add CSV export to Runs.'],
@@ -132,7 +132,7 @@ describe('the Talk pane', () => {
     ])
     // Events that carry no caption change nothing.
     await act(async () => pc.events.deliver({ type: 'session.updated' }))
-    expect(log.querySelectorAll('.vi-cap')).toHaveLength(2)
+    expect(log.querySelectorAll('.vt-cap')).toHaveLength(2)
   })
 
   it('ends the session through swarm-api, closes the peer and stops the mic', async () => {
