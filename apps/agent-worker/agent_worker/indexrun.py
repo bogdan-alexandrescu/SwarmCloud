@@ -184,7 +184,11 @@ EXTRACT_SHARE = 0.4
 #: (2026-11-01, #2991). pyright needs about 3,400 s to cover SwarmCloud's
 #: 2,334 Python files, and 0.4 gave the pass 1,260 s of 3,600. At 0.65 the
 #: pass gets 2,160 s of 3,600 (and 4,500 of 7,200), and the agent keeps
-#: 3,600 - 2,340 - 360 - 180 = 720 s. Its cost: the extractor runs up to
+#: 3,600 - 2,340 - 360 - 180 = 720 s before a base read. A run given a base,
+#: which since #2991 is the weekly full run as well as an incremental one,
+#: also reads that base (`base_read`: about 114 s for SwarmCloud's measured
+#: base, at most half the extractor's budget), so its agent has about 600 s.
+#: Its cost: the extractor runs up to
 #: 900 s (15 indexer-pod minutes) longer on an hour-long full run, about 5
 #: to 6 cents a weekly run at the indexer's on-demand rate. Runs under an
 #: hour keep 0.4: their agents already have the least time.
@@ -337,7 +341,7 @@ def budgets(timeout_seconds: int, *, base_graph_bytes: int | None = None) -> Bud
     the timeout, so the larger runs swarm-api gives larger repositories
     (lane INDEX-BUDGETS, #1693) give the LSP pass 2,160 s of 3,600 and
     4,500 s of 7,200 (`EXTRACT_SHARE_LONG`, #2991), leaving their agents at
-    least 720 s. Never more
+    least 720 s less the base read on a run given a base. Never more
     than the task has. The base read is sized from
     `base_graph_bytes` (`base_graph_bytes()`), up to half the extractor's
     budget, which is also what an unknown size gets.

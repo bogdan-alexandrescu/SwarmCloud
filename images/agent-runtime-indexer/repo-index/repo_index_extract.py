@@ -1752,6 +1752,13 @@ def _lsp_turns(root: Path, lsp_files: dict[str, str], symbols: list[dict], sites
     total, every other file the base has no answer for (module comment
     "THE NEVER-COVERED FILES"). A language whose server reports another
     version than the base recorded keeps none of the base's answers.
+
+    A language with carried files that neither turn would start (nothing
+    affected, nothing never-covered) has its server started between them
+    with nothing to ask, only to learn its version: without it a server
+    upgrade never reached a stable language, whose files kept the old
+    server's answers until one changed. On a mismatch its files are asked
+    in turn two; with no time left to learn the version, none is carried.
     """
     total = float(options.total_budget_seconds
                   or lsp_pass.total_budget_seconds(len(lsp_files)))
@@ -1764,11 +1771,13 @@ def _lsp_turns(root: Path, lsp_files: dict[str, str], symbols: list[dict], sites
     turns: list[tuple[set[str], Any]] = []
     asked: set[str] = set()
 
-    def run(paths: set[str]) -> None:
-        wanted = {lsp_files[path] for path in paths}
+    def run(paths: set[str], probe: set[str] | None = None) -> None:
+        # `probe`: start these languages' servers, ask them nothing.
+        wanted = {lsp_files[path] for path in paths} if probe is None else probe
         result = lsp_pass.run_pass(
-            root, {path: lang for path, lang in lsp_files.items() if lang in wanted}, symbols,
-            [site for site in sites if site.path in paths],
+            root, {path: lang for path, lang in lsp_files.items() if lang in wanted},
+            symbols if probe is None else [],
+            [site for site in sites if site.path in paths] if probe is None else [],
             _replace(options, total_budget_seconds=max(LSP_TURN_MIN_SECONDS,
                                                        deadline - time.monotonic())))
         turns.append((paths, result))
@@ -1786,12 +1795,27 @@ def _lsp_turns(root: Path, lsp_files: dict[str, str], symbols: list[dict], sites
                                      f"{answered.server} {version}")
             carried.difference_update(p for p in list(carried) if lsp_files.get(p) == language)
 
+    def never_covered() -> set[str]:
+        return {path for path, lang in lsp_files.items()
+                if path not in asked and path not in carried and lang in served
+                and not lsp_pass.lsp_excluded(path, options.excluded_paths)}
+
     first = {path for path in affected if path in lsp_files}
     if first:
         run(first)
-    rest = {path for path, lang in lsp_files.items()
-            if path not in asked and path not in carried and lang in served
-            and not lsp_pass.lsp_excluded(path, options.excluded_paths)}
+    rest = never_covered()
+    met = {lang for _, result in turns for lang, answered in result.languages.items()
+           if answered.server is not None}
+    unchecked = ({lsp_files[path] for path in carried if path in lsp_files} & served) - met \
+        - {lsp_files[path] for path in rest}
+    if unchecked and deadline - time.monotonic() >= LSP_TURN_MIN_SECONDS:
+        run(set(), probe=unchecked)
+        rest = never_covered()
+    elif unchecked:
+        for language in sorted(unchecked):
+            not_carried[language] = ("the LSP pass's total ran out before this run's server "
+                                     "version was learnt, so the base's answers are not carried")
+            carried.difference_update(p for p in list(carried) if lsp_files.get(p) == language)
     if rest and deadline - time.monotonic() >= LSP_TURN_MIN_SECONDS:
         run(rest)
     return _merged_turns(turns, total), asked, carried, not_carried

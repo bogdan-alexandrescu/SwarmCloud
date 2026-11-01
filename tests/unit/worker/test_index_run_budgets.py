@@ -54,6 +54,8 @@ def test_the_pass_gets_2160_of_3600_and_the_agent_keeps_720():
     # MUTATION: keep EXTRACT_SHARE 0.4 on hour-long runs and this reads 1,260.
     budget = indexrun.budgets(3_600)
     assert budget.lsp_total == 2_160
+    # 720 s before a base read: a run given a base (the weekly full run too,
+    # since #2991) also spends `base_read` on it, about 114 s measured.
     assert 3_600 - budget.extract - budget.graph_write - budget.sweep == 720
 
 

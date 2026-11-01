@@ -1419,3 +1419,44 @@ def test_a_base_answered_by_another_server_version_is_not_carried(
                                               "server is fake 2.0.0"}
     assert _file_rows(facts)["src/c.py"]["lsp"] is True
     assert _language(facts, "python")["status"] == "ok"
+
+
+def test_a_language_no_turn_would_ask_still_learns_its_server_version(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # Every file covered, a commit that touches no Python file: neither turn
+    # has a file to ask, so without a version check a server upgrade never
+    # reached the language and its files kept the old server's answers.
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    base = _covered_base(tool, lsp, tmp_path, repo, uncovered="", version="1.0.0")
+    _commit(repo, {"README.md": "# readme\n"})
+    facts = tool.extract(repo, tool.Budget(), base=base, base_lsp_only=True, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS,
+                                   "server_info": {"name": "fake-lsp", "version": "2.0.0"}})))
+    carry = facts["extractor"]["lsp_carry"]
+    # MUTATION: check the version only in the turns that ask files, and
+    # all five files are carried from fake 1.0.0 with nothing asked.
+    assert (carry["carried_files"], carry["asked_files"]) == (0, 5)
+    assert carry["not_carried"] == {"python": "the base's answers are fake 1.0.0's; this run's "
+                                              "server is fake 2.0.0"}
+    assert _definition_files(tmp_path) == ["src/a.py", "src/c.py", "src/z.py"]
+    python = _language(facts, "python")
+    assert python["lsp"]["server_version"] == "2.0.0"
+    assert all(_file_rows(facts)[p]["lsp"] for p in CARRY_APP)
+
+
+def test_a_language_no_turn_would_ask_keeps_its_answers_from_the_same_server_version(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    base = _covered_base(tool, lsp, tmp_path, repo, uncovered="", version="1.0.0")
+    _commit(repo, {"README.md": "# readme\n"})
+    facts = tool.extract(repo, tool.Budget(), base=base, base_lsp_only=True, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS,
+                                   "server_info": {"name": "fake-lsp", "version": "1.0.0"}})))
+    carry = facts["extractor"]["lsp_carry"]
+    # The server is started to learn its version, and asked nothing.
+    assert (carry["carried_files"], carry["asked_files"], carry["not_carried"]) == (5, 0, {})
+    assert _definition_files(tmp_path) == []
+    assert _asked(_log(tmp_path), "initialize")
+    python = _language(facts, "python")
+    assert (python["status"], python["lsp"]["server_version"]) == ("ok", "1.0.0")
+    assert _edge(facts, "src/c.py#third", "src/b.py#helper")["evidence"] == "lsp"
