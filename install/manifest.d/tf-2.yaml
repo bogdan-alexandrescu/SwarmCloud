@@ -138,6 +138,25 @@ entries:
   refs:
     terraform:
     - bootstrap/google_project_iam_member.api_github_app_secrets
+- id: iam-binding.swarm-api-sign-in-client-secret-writer
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:swarm-api@'
+  apply: terraform/bootstrap/sign_in_client_setup.tf:24 google_project_iam_member.api_sign_in_client_secret
+    (secretVersionAdder, conditioned on the swarm-iap-desktop-client-secret name)
+  verify: swarm-api can add a version to swarm-iap-desktop-client-secret and to no other secret, and cannot read it
+  explain: 'Issue #2964: the console''s Sign-in client step takes the Desktop client''s secret and swarm-api stores it.'
+  guards: the condition names the one secret exactly; never a prefix
+  depends_on:
+  - sa.swarm-api
+  evidence:
+  - terraform/bootstrap/sign_in_client_setup.tf:24
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.api_sign_in_client_secret
 - id: iam-binding.deployer-iap-api-accessor
   kind: iam-binding
   scope: core

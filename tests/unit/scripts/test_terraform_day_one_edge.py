@@ -145,6 +145,20 @@ def test_app_secret_writer_scoped_to_three_names() -> None:
         assert "swarm-api" in block or "api_member" in block
 
 
+def test_sign_in_client_writer_adds_versions_to_one_secret_only() -> None:
+    """Issue #2964: swarm-api writes the Desktop client's secret for the
+    console's Sign-in client step, and holds nothing else on it: no accessor."""
+    text = _text(BOOTSTRAP / "sign_in_client_setup.tf")
+    code = _code(text)
+    grants = re.findall(r'^resource\s+"(google_[a-z_]+_iam_(?:member|binding))"\s+"([a-z_]+)"', code, re.M)
+    assert grants == [("google_project_iam_member", "api_sign_in_client_secret")], grants
+    block = _block(code, r'resource\s+"google_project_iam_member"\s+"api_sign_in_client_secret"')
+    assert re.findall(r'role\s*=\s*"([^"]+)"', block) == ["roles/secretmanager.secretVersionAdder"]
+    assert 'platform["swarm-api"]' in block
+    assert "condition" in block and "resource.name ==" in block
+    assert set(re.findall(r'"(swarm-[a-z-]+)"', code)) == {"swarm-iap-desktop-client-secret", "swarm-api"}
+
+
 def test_app_secret_containers_exist_without_app_switches() -> None:
     assert _variable_default(INFRA / "variables.tf", "enable_console_app_setup") == "false"
     main = _block(_text(INFRA / "main.tf"), r'module\s+"secret_manager"')

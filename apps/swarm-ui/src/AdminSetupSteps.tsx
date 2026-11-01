@@ -7,11 +7,25 @@
  * checklist (`ob-list`), drawn from `GET /v1/admin/setup` and nothing else:
  * nothing here is marked done by hand, every row is re-derived on every read.
  *
- * THE ORDER IS GitHub App -> first team -> Claude pool accounts -> verify ->
- * Send to your team (BGD, 2026-10-29; plan review-fix finding 1). The P1-B
- * frames drew the accounts before the team; a pool account is filed into the
- * first team's tenant and its owner must be a member there, so the accounts
- * come after the team and their link is refused before it exists.
+ * THE ORDER IS Sign-in client -> GitHub App -> first team -> Claude pool
+ * accounts -> verify -> Send to your team (BGD, 2026-10-29; plan review-fix
+ * finding 1; the sign-in client first, owner's pick 2026-11-01, issue #2964).
+ * The P1-B frames drew the accounts before the team; a pool account is filed
+ * into the first team's tenant and its owner must be a member there, so the
+ * accounts come after the team and their link is refused before it exists.
+ * The CLI's own row (the cloud stages) sits between the sign-in client and the
+ * GitHub App: swarm install waits on the sign-in client before its edge stage
+ * finishes.
+ *
+ * THE SIGN-IN CLIENT ROW (issue #2964): no Google API creates the OAuth brand
+ * or a Desktop client since the IAP OAuth Admin API shut down on 2026-03-19,
+ * so the row links the route's three Google Cloud console pages in order
+ * (Branding, Audience, Create client), says what to set on each, and takes the
+ * Desktop client's id and secret in a form that posts exactly
+ * `{client_id, client_secret}`. The secret field never echoes, is emptied as
+ * Save is pressed and is never held in React state. The row's state is the
+ * route's `sign_in_client` (waiting, saved, applied); a route that serves none
+ * is drawn as not read yet, never as done.
  *
  * THE VERIFY ROW (the gap P1 found) counts from the engine's own `verify`
  * field: the current check, done of total, elapsed, a countdown to the
@@ -66,6 +80,7 @@ import {
   restartSetupSmoke,
   retryWorkspace,
   runGitHubAppSelfCheck,
+  saveSignInClient,
   SMOKE_SUCCEEDED,
   startGitHubApp,
   startSetupVerifyRuns,
@@ -76,6 +91,7 @@ import {
   type SetupInvite,
   type SetupLink,
   type SetupMember,
+  type SetupSignInClient,
   type SetupSizing,
   type SetupSmoke,
   type SetupState,
@@ -403,6 +419,173 @@ function postManifest(action: string, manifest: Record<string, unknown>): void {
 // ---------------------------------------------------------------------------
 // each step
 // ---------------------------------------------------------------------------
+
+/** The Desktop client id's suffix, as the sign-in client route checks it (`client_id_invalid`). */
+const CLIENT_ID_SUFFIX = '.apps.googleusercontent.com'
+
+/** The three Google pages, in order, and what to set on each (issue #2964). */
+function SignInPages({ links }: { links: SetupSignInClient['links'] }) {
+  const pages: { n: number; name: string; href: string | null; what: string }[] = [
+    { n: 1, name: 'Branding', href: links.branding, what: 'app name SwarmCloud and a support email you manage (your own address or a group you own); save.' },
+    { n: 2, name: 'Audience', href: links.audience, what: 'choose Internal, so only your organisation’s accounts can sign in.' },
+    {
+      n: 3,
+      name: 'Desktop client',
+      href: links.create_client,
+      what: 'Create client: application type Desktop app, name SwarmCloud sc. Keep its dialog open: Google shows the secret only there, and you copy both values into the form below.',
+    },
+  ]
+  return (
+    <ol className="ob-list" aria-label="Google pages">
+      {pages.map((p) => (
+        <li key={p.n} className="ob-step is-todo">
+          <span className="ur-hint" aria-hidden="true">
+            {p.n}
+          </span>
+          <p className="ob-line ur-hint">
+            {p.href === null ? (
+              <b>{p.name} (page not served)</b>
+            ) : (
+              <a href={p.href} target="_blank" rel="noreferrer">
+                <b>{p.name}</b>
+              </a>
+            )}{' '}
+            {p.what}
+          </p>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+/**
+ * The Desktop client's id and secret. The secret's input is uncontrolled and
+ * never mirrored into state: Save reads it, empties the field at once and
+ * hands the value to the one request; only whether it is filled is kept, to
+ * enable Save.
+ */
+function SignInClientForm({ onChanged }: { onChanged: () => void }) {
+  const act = useAction(onChanged)
+  const [clientId, setClientId] = useState('')
+  const [hasSecret, setHasSecret] = useState(false)
+  const secret = useRef<HTMLInputElement>(null)
+  const submit = () => {
+    const field = secret.current
+    const id = clientId.trim()
+    if (field === null || id === '' || field.value === '') return
+    const value = field.value
+    field.value = ''
+    setHasSecret(false)
+    act.run('save', () => saveSignInClient(id, value), () => setClientId(''))
+  }
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault()
+        submit()
+      }}
+    >
+      <label className="c-field">
+        <span className="c-lbl">Client id</span>
+        <input
+          className="c-inp is-mono"
+          aria-label="Client id"
+          value={clientId}
+          placeholder={`…${CLIENT_ID_SUFFIX}`}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => setClientId(e.target.value)}
+        />
+        <p className="c-hint">The Desktop client’s id, from the dialog Google shows after Create</p>
+      </label>
+      <label className="c-field">
+        <span className="c-lbl">Client secret</span>
+        <input
+          ref={secret}
+          className="c-inp is-mono"
+          aria-label="Client secret"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => setHasSecret(e.target.value !== '')}
+        />
+        <p className="c-hint">Stored in Secret Manager as a new version; never shown again, here or anywhere</p>
+      </label>
+      <span className="ob-acts">
+        <Button
+          size="sm"
+          kind="primary"
+          type="submit"
+          busy={act.busy === 'save' ? 'Saving' : false}
+          disabledReason={clientId.trim() === '' ? 'Type the client id' : !hasSecret ? 'Type the secret' : undefined}
+        >
+          Save
+        </Button>
+      </span>
+      <ErrorLine error={act.error} />
+    </form>
+  )
+}
+
+/** A saved or applied client's form, behind one button: a second save replaces the id and adds a secret version. */
+function SignInReplace({ links, onChanged }: { links: SetupSignInClient['links']; onChanged: () => void }) {
+  const [open, setOpen] = useState(false)
+  if (!open) {
+    return (
+      <span className="ob-acts">
+        <Button size="sm" kind="ghost" onClick={() => setOpen(true)}>
+          Replace the client
+        </Button>
+      </span>
+    )
+  }
+  return (
+    <>
+      <SignInPages links={links} />
+      <SignInClientForm onChanged={onChanged} />
+    </>
+  )
+}
+
+function signInRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
+  const client = state.sign_in_client
+  const base = { key: 'sign-in-client', title: 'Sign-in client', by: 'this page' }
+  if (client === null) {
+    return {
+      ...base,
+      state: 'todo',
+      line: 'Not read yet: this deployment’s swarm-api does not report the sign-in client, so this page cannot say whether it is saved',
+    }
+  }
+  const saved = [client.client_id ?? 'the client', agoWords(client.saved_at, nowMs), client.saved_by === null ? null : `by ${client.saved_by}`].filter((w): w is string => w !== null).join(' · ')
+  if (client.state === 'applied') {
+    return {
+      ...base,
+      state: 'done',
+      line: `${saved} · on IAP’s programmatic-clients list: sc signs in with it`,
+      body: <SignInReplace links={client.links} onChanged={onChanged} />,
+    }
+  }
+  if (client.state === 'saved') {
+    return {
+      ...base,
+      state: 'in_progress',
+      line: `Saved ${saved}; waiting for swarm install’s infra pass to add it to IAP’s programmatic clients`,
+      body: <SignInReplace links={client.links} onChanged={onChanged} />,
+    }
+  }
+  return {
+    ...base,
+    state: 'todo',
+    line: 'Three Google pages, in order, then the Desktop client’s id and secret here: swarm install waits for them and continues on its own',
+    body: (
+      <>
+        <SignInPages links={client.links} />
+        <SignInClientForm onChanged={onChanged} />
+      </>
+    ),
+  }
+}
 
 function cloudRow(state: SetupState): Row {
   const stages = state.engine?.stages ?? []
@@ -1547,6 +1730,7 @@ export function AdminSetupSteps({ state, now, onChanged }: { state: SetupState; 
   const githubAct = useAction(reread)
   useAutoSelfCheck(state, githubAct)
   const rows = [
+    signInRow(state, reread, nowMs),
     cloudRow(state),
     githubRow(state, reread, githubAct),
     teamRow(state, reread, nowMs),
