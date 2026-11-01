@@ -4,8 +4,9 @@
 #
 # Six things, and only these:
 #
-#   * `swarm-voice`, the Google service account the pod acts as, and the
-#     Workload Identity binding that lets exactly the KSA swarm-system/
+#   * a read of `swarm-voice`, the Google service account the pod acts as,
+#     which terraform/bootstrap creates (platform_service_accounts.tf), and
+#     the Workload Identity binding that lets exactly the KSA swarm-system/
 #     swarm-voice act as it;
 #   * read (secretAccessor) on the platform owner's own OpenAI secret,
 #     `swarm-tenant-<personal tenant>-openai`, and NOTHING ELSE in Secret
@@ -50,27 +51,27 @@
 # refuses any other secret before it asks Secret Manager, so the IAM grant and
 # the code agree on the one secret twice over.
 #
-# OFF UNTIL `voice_it` SAYS SO, in THREE STEPS, because CI can create a
-# service account but can bind on one only once terraform/bootstrap -- which
-# the owner applies -- has granted it roles/iam.serviceAccountAdmin on that
-# account, and bootstrap can grant on an account only after it exists
-# (mcp_test_server.tf has the same three steps; docs/ci.md, "The deployer's
-# service-account grants"):
+# OFF UNTIL `voice_it` SAYS SO, in THREE STEPS. terraform/bootstrap -- which
+# the owner applies, and which a fresh install runs before infra -- creates
+# swarm-voice and grants the CI deployer roles/iam.serviceAccountAdmin on it
+# (its id is spelled once, in terraform/modules/service_account_ids, which
+# both roots read). This root never creates the account; it reads it and
+# binds on it (docs/ci.md, "The deployer's service-account grants"):
 #
-#   1. voice_it = "account": swarm-voice exists, holding nothing.
-#   2. the owner adds swarm-voice to the accounts bootstrap grants the
-#      deployer admin on (terraform/modules/service_account_ids; this lane's
-#      pull request asks for it) and applies bootstrap. BGD stores the OpenAI
-#      credential in Config › Secrets (personal scope, provider `openai`), so
-#      the secret the bindings name exists.
+#   1. voice_it = "account": this root reads the swarm-voice account
+#      bootstrap made, and grants nothing. If the owner's bootstrap apply has
+#      not made it yet, the plan fails at `data.google_service_account.voice`
+#      by the account's name; apply terraform/bootstrap first.
+#   2. BGD stores the OpenAI credential in Config › Secrets (personal scope,
+#      provider `openai`), so the secret the bindings name exists.
 #   3. voice_it = "on" with the swarm-voice image's digest in image_refs: the
 #      Workload Identity binding, the two secret bindings, the invoker, the
 #      address, SWARM_VOICE_URL and the manifest; then
 #      `terraform output -raw swarm_voice_manifest` is applied to
 #      swarm-autopilot (never agents-staging).
 #
-# Steps 1 and 3 change IAM, so a release making either waits at the IAM gate
-# for the owner.
+# Step 1 changes no IAM. Step 3 does, so a release making it waits at the IAM
+# gate for the owner.
 #
 # GKE ONLY. swarm-voice is a StatefulSet on the Autopilot cluster and its KSA
 # lives in that cluster's workload pool (`voice_it_needs_gke` says so).
@@ -78,12 +79,15 @@
 variable "voice_it" {
   description = <<-EOT
     Voice it's swarm-voice (voice.tf): "off" (default) creates nothing;
-    "account" creates its service account, holding nothing; "on" binds it to
+    "account" reads its service account, which terraform/bootstrap creates,
+    and grants nothing (the plan fails if bootstrap has not made it); "on"
+    binds it to
     the KSA swarm-system/swarm-voice, grants it read and add-version on the
     platform owner's own OpenAI secret and run.invoker on swarm-api, reserves
     its internal address, sets swarm-api's SWARM_VOICE_URL and renders
-    `swarm_voice_manifest`. "on" needs the owner's bootstrap grant on the
-    account, the secret stored, and the swarm-voice image's digest.
+    `swarm_voice_manifest`. "on" needs the owner's bootstrap apply (the
+    account and the deployer's grant on it), the secret stored, and the
+    swarm-voice image's digest.
   EOT
   type        = string
   default     = "off"
@@ -96,12 +100,12 @@ variable "voice_it" {
 
 locals {
   # swarm-voice's identity, spelled once. kubernetes/swarm-system/swarm-voice.yaml
-  # creates the KSA under exactly these names.
-  voice_namespace  = "swarm-system" # namespace-prefix-exempt: the platform's own namespace, not a tenant's
-  voice_ksa        = "swarm-voice"
-  voice_account_id = "swarm-voice"
+  # creates the KSA under exactly these names; the Google account's id is
+  # modules/service_account_ids' voice_id, the one bootstrap creates it with.
+  voice_namespace = "swarm-system" # namespace-prefix-exempt: the platform's own namespace, not a tenant's
+  voice_ksa       = "swarm-voice"
   # Spelled, not read from the account, so the plan knows it.
-  voice_email  = "${local.voice_account_id}@${var.project_id}.iam.gserviceaccount.com"
+  voice_email  = "${module.service_account_ids.voice_id}@${var.project_id}.iam.gserviceaccount.com"
   voice_member = "serviceAccount:${local.voice_email}"
 
   voice_account = var.voice_it != "off"
@@ -142,13 +146,15 @@ locals {
   voice_swarm_api_host = trimprefix(local.swarm_api_url, "https://")
 }
 
-resource "google_service_account" "voice" {
+# The account terraform/bootstrap made (platform_service_accounts.tf). A plan
+# against a project whose bootstrap apply has not made it fails here, by the
+# account's name, rather than binding on an account that does not exist:
+# apply terraform/bootstrap first.
+data "google_service_account" "voice" {
   count = local.voice_account ? 1 : 0
 
-  project      = var.project_id
-  account_id   = local.voice_account_id
-  display_name = "Swarm Voice it"
-  description  = "swarm-voice (Voice it) runs as this account from the KSA swarm-system/swarm-voice. Read and add-version on the platform owner's OpenAI secret, run.invoker on swarm-api, nothing else. managed-by=swarm-terraform"
+  project    = var.project_id
+  account_id = module.service_account_ids.voice_id
 }
 
 # Exactly the KSA swarm-system/swarm-voice may act as the account. The
@@ -156,7 +162,7 @@ resource "google_service_account" "voice" {
 resource "google_service_account_iam_member" "voice_workload_identity" {
   count = local.voice_on ? 1 : 0
 
-  service_account_id = google_service_account.voice[0].name
+  service_account_id = data.google_service_account.voice[0].name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${var.project_id}.svc.id.goog[${local.voice_namespace}/${local.voice_ksa}]"
 }

@@ -8,8 +8,10 @@
 # What is held here, from the phase-one row:
 #
 #   * every resource that can carry a label carries managed-by=swarm-terraform
-#     (an IAM binding cannot; a service account has no labels, so its
-#     description says it), and so does every rendered Kubernetes object;
+#     (an IAM binding cannot), and so does every rendered Kubernetes object;
+#   * swarm-voice is READ, never created: terraform/bootstrap makes it
+#     (platform_service_accounts.tf, whose description carries
+#     managed-by=swarm-terraform), and voice.tf binds on the account it read;
 #   * each Secret Manager grant names ONE secret, the platform owner's own
 #     OpenAI secret, and only the two roles credential.py needs: read, and
 #     add-version for a rotated refresh token;
@@ -55,6 +57,16 @@ override_data {
   override_during = plan
   values = {
     number = "209012342332"
+  }
+}
+
+# The swarm-voice account terraform/bootstrap made, as a read returns it.
+override_data {
+  target          = data.google_service_account.voice
+  override_during = plan
+  values = {
+    email = "swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
+    name  = "projects/saga-agents-staging/serviceAccounts/swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
   }
 }
 
@@ -114,14 +126,14 @@ run "off_by_default_nothing_exists_and_swarm_api_has_no_address" {
 
   assert {
     condition = (
-      length(google_service_account.voice) == 0
+      length(data.google_service_account.voice) == 0
       && length(google_service_account_iam_member.voice_workload_identity) == 0
       && length(google_secret_manager_secret_iam_member.voice_reads_openai) == 0
       && length(google_secret_manager_secret_iam_member.voice_stores_openai) == 0
       && length(google_cloud_run_v2_service_iam_member.voice_invokes_api) == 0
       && length(google_compute_address.voice) == 0
     )
-    error_message = "with voice_it off swarm-voice has no account, no grant and no address"
+    error_message = "with voice_it off swarm-voice's account is not read, and there is no grant and no address"
   }
 
   assert {
@@ -130,7 +142,7 @@ run "off_by_default_nothing_exists_and_swarm_api_has_no_address" {
   }
 }
 
-run "account_creates_the_account_holding_nothing" {
+run "account_reads_the_bootstrap_account_holding_nothing" {
   command = plan
 
   module {
@@ -143,11 +155,11 @@ run "account_creates_the_account_holding_nothing" {
 
   assert {
     condition = (
-      length(google_service_account.voice) == 1
-      && google_service_account.voice[0].account_id == "swarm-voice"
-      && strcontains(google_service_account.voice[0].description, "managed-by=swarm-terraform")
+      length(data.google_service_account.voice) == 1
+      && data.google_service_account.voice[0].account_id == "swarm-voice"
+      && data.google_service_account.voice[0].project == "saga-agents-staging"
     )
-    error_message = "step 1 creates swarm-voice, whose description carries managed-by=swarm-terraform (a service account has no labels)"
+    error_message = "step 1 reads swarm-voice, the account terraform/bootstrap made, by the id modules/service_account_ids spells"
   }
 
   assert {
@@ -179,14 +191,22 @@ run "on_every_labelled_resource_carries_managed_by" {
     condition = toset([
       for m in regexall("(?m)^resource \"([a-z0-9_]+)\" \"([a-z0-9_]+)\"", file("${var.tf_root}/voice.tf")) : "${m[0]}.${m[1]}"
       ]) == toset([
-      "google_service_account.voice",
       "google_service_account_iam_member.voice_workload_identity",
       "google_secret_manager_secret_iam_member.voice_reads_openai",
       "google_secret_manager_secret_iam_member.voice_stores_openai",
       "google_cloud_run_v2_service_iam_member.voice_invokes_api",
       "google_compute_address.voice",
     ])
-    error_message = "voice.tf declares the account, its Workload Identity binding, two secret bindings, the invoker and the address, and nothing else"
+    error_message = "voice.tf declares the account's Workload Identity binding, two secret bindings, the invoker and the address, and nothing else"
+  }
+
+  # The account is bootstrap's: infra reads it and never declares one.
+  assert {
+    condition = (
+      length(regexall("(?m)^resource \"google_service_account\" ", file("${var.tf_root}/voice.tf"))) == 0
+      && length(regexall("(?m)^data \"google_service_account\" \"voice\" \\{", file("${var.tf_root}/voice.tf"))) == 1
+    )
+    error_message = "voice.tf reads swarm-voice as data.google_service_account.voice and creates no service account; terraform/bootstrap creates it"
   }
 
   assert {
@@ -195,8 +215,8 @@ run "on_every_labelled_resource_carries_managed_by" {
   }
 
   assert {
-    condition     = strcontains(google_service_account.voice[0].description, "managed-by=swarm-terraform")
-    error_message = "the service account's description carries managed-by=swarm-terraform"
+    condition     = google_service_account_iam_member.voice_workload_identity[0].service_account_id == data.google_service_account.voice[0].name
+    error_message = "the Workload Identity binding is on the account voice.tf read, the one bootstrap made"
   }
 
   # Every rendered object is labelled and sits in swarm-system; no RBAC.

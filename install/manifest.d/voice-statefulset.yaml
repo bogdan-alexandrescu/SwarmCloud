@@ -2,9 +2,10 @@
 # phase one): swarm-voice runs as a one-replica StatefulSet in swarm-system
 # with its own service account and an egress policy for OpenAI and Anthropic
 # only. Its shape is swarm-live's entries in the base manifest: an image the
-# release builds and the install copies by digest, terraform's grants and
-# reserved address, and a swarm-system workload applied from a rendered
-# terraform output. Off until terraform/infra's `voice_it` is "on"
+# release builds and the install copies by digest, its account (created by
+# terraform/bootstrap, voice-account-bootstrap.yaml; infra only reads it),
+# terraform's grants and reserved address, and a swarm-system workload
+# applied from a rendered terraform output. Off until terraform/infra's `voice_it` is "on"
 # (voice.tf says the three steps).
 version: 1
 entries:
@@ -34,31 +35,30 @@ entries:
     image:
     - swarm-voice
     - dockerfile:apps/swarm-voice/Dockerfile
-- id: sa.swarm-voice
-  kind: service-account
+- id: iam-binding.swarm-voice-workload-identity
+  kind: iam-binding
   scope: core
-  stage: 3
+  stage: 6
   provider: engine
-  check: gcloud iam service-accounts describe swarm-voice@$P.iam.gserviceaccount.com --project=$P
-  apply: terraform/infra/voice.tf:145 google_service_account.voice (voice_it "account" or "on"); the Workload
-    Identity binding at voice.tf:156 once "on"
-  verify: the KSA swarm-system/swarm-voice acts as it, and it holds read and add-version on the platform owner's
-    OpenAI secret and run.invoker on swarm-api, nothing else
-  explain: swarm-voice's own identity. A Google service account rather than a bare Workload Identity principal,
-    because swarm-voice presents a Google ID token to swarm-api, and the metadata server mints one only for a KSA
-    that impersonates a GSA.
-  guards: binding it needs the owner's terraform/bootstrap grant of serviceAccountAdmin on the account to the CI
-    deployer (terraform/modules/service_account_ids); voice.tf's step 2
+  check: gcloud iam service-accounts get-iam-policy swarm-voice@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/infra/voice.tf:153 data.google_service_account.voice reads the account terraform/bootstrap
+    creates (sa.swarm-voice, voice-account-bootstrap.yaml; voice_it "account" or "on"), and voice.tf:162
+    google_service_account_iam_member.voice_workload_identity binds the KSA to it once "on"
+  verify: the KSA swarm-system/swarm-voice, and no other, holds roles/iam.workloadIdentityUser on swarm-voice
+  explain: lets swarm-voice's pod act as its own Google service account, which it needs to present a Google ID
+    token to swarm-api (the metadata server mints one only for a KSA that impersonates a GSA).
+  guards: the plan fails at data.google_service_account.voice until the owner's terraform/bootstrap apply has
+    created swarm-voice and granted the CI deployer serviceAccountAdmin on it
   secret_entry: 'null'
   depends_on:
-  - api.iam
+  - sa.swarm-voice
   evidence:
-  - terraform/infra/voice.tf:145-163
+  - terraform/infra/voice.tf:153-168
   notes: 'null'
   step: infra.pass-1
   refs:
     terraform:
-    - infra/google_service_account.voice
+    - infra/data.google_service_account.voice
     - infra/google_service_account_iam_member.voice_workload_identity
 - id: iam-binding.swarm-voice-openai-secret
   kind: iam-binding
@@ -66,7 +66,7 @@ entries:
   stage: 6
   provider: engine
   check: gcloud secrets get-iam-policy swarm-tenant-<owner's personal tenant>-openai --project=$P
-  apply: terraform/infra/voice.tf:165 (secretAccessor) and voice.tf:177 (secretVersionAdder), both bindings on the
+  apply: terraform/infra/voice.tf:171 (secretAccessor) and voice.tf:183 (secretVersionAdder), both bindings on the
     platform owner's own OpenAI secret only, once voice_it is "on"
   verify: swarm-voice reads the person's credential and stores a rotated refresh token as a new version of that
     secret, and is refused on any other secret
@@ -78,7 +78,7 @@ entries:
   depends_on:
   - sa.swarm-voice
   evidence:
-  - terraform/infra/voice.tf:165-185
+  - terraform/infra/voice.tf:171-190
   notes: 'null'
   step: infra.pass-1
   refs:
@@ -91,7 +91,7 @@ entries:
   stage: 6
   provider: engine
   check: gcloud run services get-iam-policy swarm-api --project=$P --region=$R
-  apply: terraform/infra/voice.tf:187 google_cloud_run_v2_service_iam_member.voice_invokes_api, once voice_it is "on"
+  apply: terraform/infra/voice.tf:193 google_cloud_run_v2_service_iam_member.voice_invokes_api, once voice_it is "on"
   verify: swarm-api's policy lists serviceAccount:swarm-voice@$P.iam.gserviceaccount.com under roles/run.invoker
   explain: swarm-voice calls swarm-api, and only swarm-api, for every read and write (section 3.6).
   guards: 'null'
@@ -99,7 +99,7 @@ entries:
   depends_on:
   - sa.swarm-voice
   evidence:
-  - terraform/infra/voice.tf:187-199
+  - terraform/infra/voice.tf:193-203
   notes: 'null'
   step: infra.pass-1
   refs:
