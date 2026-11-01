@@ -97,8 +97,9 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
 
   # Nothing outside what infra manages: the platform accounts, the
   # singletons (swarm-discovery and swarm-doctor joined them with
-  # DAYONE-BOOT-2, swarm-voice on 2026-11-01: terraform/bootstrap creates them, infra deploys as them),
-  # and tenant workers.
+  # DAYONE-BOOT-2: terraform/bootstrap creates them, infra deploys as them;
+  # swarm-voice joined on 2026-11-01: bootstrap creates it for Voice it's
+  # StatefulSet, which no infra file deploys yet), and tenant workers.
   assert {
     condition = alltrue([
       for id in keys(google_service_account_iam_member.deployer_admin) :
