@@ -26,7 +26,7 @@ from ..manifest import load as load_manifest
 from ..state import STATE_OBJECT, state_bucket
 from ..waits import Clock, WaitGaveUp, WaitSpec, cloud_page, wait_until
 from . import Observation, Plan, open_page
-from .preflight import ASK, BILLING, CRM, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
+from .preflight import ASK, BILLING, CRM, GCP, USAGE, ApiError, Ask, Gcp, confirm, project_number, remember
 
 def _enablement_look_at(ctx: Any) -> str:
     return (f"the project's enabled APIs, {cloud_page('apis/dashboard', ctx)}: an API stuck enabling usually "
@@ -428,13 +428,9 @@ class ProjectStep(_Base):
         ), default)
         summary = "\n".join(f"  {line}" for line in self._summary(ctx, create, link, budget))
         doing = " and ".join([*(["create"] if create else []), *(["link billing for"] if link else [])])
-        typed = self._ask(
-            ctx, self.id,
-            f"The installer will {doing} this project:\n{summary}\nType the project id ({ctx.project}) to approve",
-        ).strip()
-        if typed != ctx.project:
-            raise PermissionError(f"not confirmed (typed {typed!r}, not {ctx.project!r}); nothing was created "
-                                  "or linked")
+        confirm(self._ask, ctx, self.id,
+                f"The installer will {doing} this project:\n{summary}\nType the project id ({ctx.project}) to "
+                "approve", ctx.project, nothing="nothing was created or linked")
         remember(ctx, outputs={"budget_amount": budget})
 
         created = self._create(ctx, parent) if create else False
@@ -774,9 +770,8 @@ class DefaultComputeEditorStep(_Base):
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         member = self._member(ctx)
-        typed = self._ask(ctx, self.id, f"Type {self.CONFIRM} to remove roles/editor from {member}").strip()
-        if typed != self.CONFIRM:
-            raise PermissionError(f"not confirmed (typed {typed!r}, not {self.CONFIRM!r}); nothing was changed")
+        confirm(self._ask, ctx, self.id, f"Type {self.CONFIRM} to remove roles/editor from {member}", self.CONFIRM,
+                nothing="nothing was changed")
 
         def write() -> None:
             policy = dict(self.gcp.iam_policy(ctx.project))  # re-read each try: the etag moves

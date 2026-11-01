@@ -244,8 +244,7 @@ describe('VQ-023: the axis, the header and the footnote read one zone', () => {
     notePerson('pat@example.com')
     setZone(LA)
     const { before, after } = await drawn()
-    // A window across a daylight-saving change reads both labels ("PDT–PST",
-    // `axisZone`), as it did on 2026-11-01 in CI.
+    // A window across the zone's DST change reads "PDT–PST" (`axisZone`).
     expect(document.querySelector('.tl-axis .tl-zone')!.textContent).toMatch(/^times P[DS]T(–P[DS]T)?$/)
     expect(cov()).toContain(`times ${LA}`)
     expect(cov()).not.toContain('times UTC')

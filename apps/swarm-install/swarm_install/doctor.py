@@ -65,6 +65,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .api_client import CLOUD_PLATFORM, application_default
 from .exitcodes import MET, UNKNOWN, UNMET, ExitCode, for_statuses
 from .manifest import Entry, Manifest
 
@@ -720,10 +721,9 @@ def access_token() -> str:
     caller's application-default credentials (imported only then)."""
     if on_google_runtime():
         return str(json.loads(_metadata("token"))["access_token"])
-    import google.auth
     from google.auth.transport.requests import Request
 
-    credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    credentials = application_default([CLOUD_PLATFORM])
     credentials.refresh(Request())
     return str(credentials.token)
 
@@ -738,9 +738,7 @@ def principal() -> str:
     try:
         if on_google_runtime():
             return "serviceAccount:" + _metadata("email").strip()
-        import google.auth
-
-        credentials, _ = google.auth.default()
+        credentials = application_default()
         email = getattr(credentials, "service_account_email", None) or getattr(credentials, "account", "")
         if email and "@" in str(email):
             kind = "serviceAccount" if str(email).endswith(".gserviceaccount.com") else "user"

@@ -71,10 +71,12 @@ def test_default_compute_editor_removed(tmp_path: Path) -> None:
         {"role": "roles/editor", "members": [COMPUTE_SA, "user:owner@example.com"]},
         {"role": "roles/viewer", "members": [COMPUTE_SA]},
     ]
-    refused = foundations.DefaultComputeEditorStep(lambda: gcp, Answers(foundations_default_compute_editor=["yes"]))
+    refused = foundations.DefaultComputeEditorStep(
+        lambda: gcp, Answers(foundations_default_compute_editor=["yes"] * preflight.CONFIRM_TRIES)
+    )
     ctx = ctx_for(outputs={"project_number": NUMBER}, dry_run=False)
     assert refused.check(ctx).status == UNMET
-    with pytest.raises(PermissionError, match="not confirmed"):
+    with pytest.raises(ValueError, match="does not match 'remove-editor'.*nothing was changed"):
         refused.apply(ctx, refused.plan(ctx))
     assert gcp.mutations == []
 
@@ -351,7 +353,8 @@ def test_wrong_confirmation_creates_and_links_nothing(tmp_path: Path, monkeypatc
     SWARM_ASSUME_YES set; so does a budget that is not a whole dollar amount.
     Neither writes anything or records the budget."""
     monkeypatch.setenv("SWARM_ASSUME_YES", "1")
-    for answers_given, said in ((["", "yes"], "not confirmed"), (["a lot"], "whole number of US dollars")):
+    refused = ["", "", *["yes"] * (preflight.CONFIRM_TRIES - 1)]  # the budget's Enter, then every try wrong
+    for answers_given, said in ((refused, "nothing was created or linked"), (["a lot"], "whole number of US dollars")):
         gcp = FakeGcp(exists=False, billed=False)
         api = FakeProjectApi(gcp)
         rig = _recorded(tmp_path / said.replace(" ", "-"))
