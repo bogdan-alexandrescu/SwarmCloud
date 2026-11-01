@@ -13061,6 +13061,27 @@ export interface SetupGitHubApp {
   self_check: SetupSelfCheck | null
 }
 
+/** The sign-in client's three states as `GET /v1/admin/setup` serves them (issue #2964). */
+export type SetupSignInClientState = 'waiting' | 'saved' | 'applied'
+
+/**
+ * `sign_in_client` (issue #2964, owner's pick 2026-11-01): the Desktop OAuth
+ * client `sc` signs in with, which no Google API creates since the IAP OAuth
+ * Admin API shut down on 2026-03-19. `waiting`: nothing saved yet; `saved`:
+ * the id and the secret are stored; `applied`: IAP's programmatic-clients
+ * list holds the id (the infra pass ran). `links` are the deployment's own
+ * Google Cloud console pages, built by swarm-api from its project id; a link
+ * that is not a console.cloud.google.com page is null. The secret is never
+ * served.
+ */
+export interface SetupSignInClient {
+  state: SetupSignInClientState
+  client_id: string | null
+  saved_at: string | null
+  saved_by: string | null
+  links: { branding: string | null; audience: string | null; create_client: string | null }
+}
+
 /**
  * The route's self-check states (`routes/setup.py` `self_check_view`, audit
  * finding 28): before swarm install's infra pass 3 gives swarm-api the App's
@@ -13215,6 +13236,8 @@ export interface SetupState {
   engine: SetupEngine | null
   /** False when the install lease's heartbeat is over 2 minutes old: swarm install is not running. */
   cli_running: boolean
+  /** The Desktop sign-in client step; null until the route serves it: drawn as not read yet, never as done. */
+  sign_in_client: SetupSignInClient | null
   github_app: SetupGitHubApp | null
   teams: SetupTeam[]
   accounts: SetupAccount[]
@@ -13242,6 +13265,23 @@ const numOf = (v: unknown): number | null => {
     return Number.isNaN(ms) ? null : ms / 1000
   }
   return null
+}
+
+/** A Google Cloud console page, or null: the only pages the sign-in client step links. */
+const cloudConsolePage = (v: unknown): string | null => (typeof v === 'string' && v.startsWith('https://console.cloud.google.com/') ? v : null)
+
+/** `sign_in_client`, or null when the route serves none (a swarm-api before #2964) or a state it never writes. */
+export function normSignInClient(raw: unknown): SetupSignInClient | null {
+  const d = objOf(raw)
+  if (d === null || (d.state !== 'waiting' && d.state !== 'saved' && d.state !== 'applied')) return null
+  const links = objOf(d.links) ?? {}
+  return {
+    state: d.state,
+    client_id: strOf(d.client_id),
+    saved_at: strOf(d.saved_at),
+    saved_by: strOf(d.saved_by),
+    links: { branding: cloudConsolePage(links.branding), audience: cloudConsolePage(links.audience), create_client: cloudConsolePage(links.create_client) },
+  }
 }
 
 function normVerify(raw: unknown): SetupVerify | null {
@@ -13426,6 +13466,7 @@ export function normSetupState(raw: unknown): SetupState {
     env: strOf(d.env) ?? '',
     engine: normEngine(d.engine),
     cli_running: d.cli_running === true,
+    sign_in_client: normSignInClient(d.sign_in_client),
     github_app: normGitHubApp(d.github_app),
     teams: Array.isArray(d.teams) ? d.teams.map(normTeam).filter((t): t is SetupTeam => t !== null) : [],
     accounts: Object.keys(accounts)
@@ -13605,6 +13646,22 @@ export function convertGitHubApp(code: string, state: string): Promise<Result<{ 
   )
 }
 
+/**
+ * `POST /v1/admin/setup/sign-in-client` with exactly `{client_id, client_secret}`
+ * (issue #2964). swarm-api adds the secret as a new version of
+ * `swarm-iap-desktop-client-secret` and answers the `sign_in_client` object,
+ * which never carries the secret; nothing here keeps it past the request.
+ */
+export function saveSignInClient(clientId: string, clientSecret: string): Promise<Result<SetupSignInClient | null>> {
+  return setupWrite(
+    route('/v1/admin/setup/sign-in-client'),
+    'POST',
+    { client_id: clientId, client_secret: clientSecret },
+    normSignInClient,
+    () => normSignInClient({ ...fixtureSignInClient(), state: 'saved', client_id: clientId }),
+  )
+}
+
 /** `GET /v1/admin/setup/github-app/installation`: is the App on the org yet (polled). */
 export async function checkGitHubAppInstallation(): Promise<Result<GitHubAppInstallation>> {
   const target = route('/v1/admin/setup/github-app/installation')
@@ -13757,6 +13814,12 @@ export async function loadSetupHealth(): Promise<Result<SetupHealth | null>> {
   return r as Result<SetupHealth | null>
 }
 
+/** The fixture build's sign-in client before anything is saved: the example project's three console pages. */
+function fixtureSignInClient(): Record<string, unknown> {
+  const page = (path: string) => `https://console.cloud.google.com/auth/${path}?project=example`
+  return { state: 'waiting', client_id: null, saved_at: null, saved_by: null, links: { branding: page('branding'), audience: page('audience'), create_client: page('clients/create') } }
+}
+
 /** The fixture build's install, mid-verify: every console step done, verify on its third check. */
 function fixtureSetupState(): Record<string, unknown> {
   const at = (minAgo: number) => new Date(FIXTURE_NOW - minAgo * 60_000).toISOString()
@@ -13773,6 +13836,7 @@ function fixtureSetupState(): Record<string, unknown> {
       ready_at: null,
     },
     cli_running: true,
+    sign_in_client: { ...fixtureSignInClient(), state: 'applied', client_id: 'fixture-desktop-client.apps.googleusercontent.com', saved_at: at(38), saved_by: 'ana@example.com' },
     github_app: { started: true, id: 4242, slug: 'swarmcloud-prod', installed_on: 'example-org', secrets_written_at: at(25), self_check: { ok: true, reason: null, at: at(20) } },
     teams: [
       {

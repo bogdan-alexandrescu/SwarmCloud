@@ -138,7 +138,7 @@ describe('Admin › Setup › Sign-in client', () => {
     const posted = calls.filter((c) => c.method === 'POST' && c.url === '/v1/admin/setup/sign-in-client')
     expect(posted).toHaveLength(1)
     // MUTATION: post a third field, or the untrimmed id.
-    expect(posted[0].body).toEqual({ client_id: CLIENT_ID, client_secret: secret })
+    expect(posted[0]?.body).toEqual({ client_id: CLIENT_ID, client_secret: secret })
     // MUTATION: keep the secret in the field after Save.
     expect(secretField().value).toBe('')
     // The row re-reads the route; it is not marked saved by hand.
@@ -205,8 +205,9 @@ describe('Admin › Setup › Sign-in client', () => {
   it('a second save replaces the client from the saved and applied rows', async () => {
     await mountSteps(state(signIn({ state: 'applied', client_id: CLIENT_ID, saved_at: '2026-11-01T09:59:00Z', saved_by: 'ana@example.com' })))
     // MUTATION: offer no way to replace a client whose secret was rotated.
-    expect(within(row()).getByText('Replace the client')).toBeTruthy()
+    fireEvent.click(within(row()).getByRole('button', { name: 'Replace the client' }))
     expect(secretField().type).toBe('password')
+    expect((within(row()).getAllByRole('link') as HTMLAnchorElement[]).map((a) => a.getAttribute('href'))).toEqual([LINKS.branding, LINKS.audience, LINKS.create_client])
   })
 
   it('draws a route that serves no sign_in_client as not read yet, never as done', async () => {
