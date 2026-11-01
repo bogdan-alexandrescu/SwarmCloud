@@ -138,6 +138,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 128 | `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS`, `("jev",)`, so the workspace's switch for the claude-code lanes' TypeSafe quality checks is signed (JEV-LANES, PR 2905; QUALITY-GATES-SETTINGS-MAC, part of #2688) | ACCEPTED by the owner 2026-10-31 ('Add it (contract request)', answering PR 2905's first question) and APPLIED by the pull request that adds this line (lane QUALITY-GATES-SETTINGS-MAC): swarm-api's `qualitygates.QualityGatesStore` signs the block it writes, and `judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)` so the re-sign pass signs stored blocks |
 | 129 | `admission.py` / `models.py`: a lease takes 1 unit in each `provider:*` pool and its resource units in every other pool, records what it took per pool (`Lease.pool_units`), and release returns exactly that (LARGE-ONE-PROVIDER-SLOT, part of #2950) | ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the expected behaviour #2950 states) and APPLIED by the pull request that adds this line (lane LARGE-ONE-PROVIDER-SLOT, part of #2950): `pool_units_for` is the one rule; a lease from before it has no `pool_units` and releases its `units` from every pool |
 | 130 | `profiles.py`: `codex` becomes available, and runs on either the tenant's `OPENAI_API_KEY` or a pool ChatGPT plan (`CODEX_PLAN_ACCESS_TOKEN`, `CODEX_PLAN_ACCOUNT_ID`), `secrets_any_of=True` (CODEX-PLAN-CONTRACT, part of #2688) | open, REQUESTED 2026-11-01 by lane CODEX-PLAN-CONTRACT for the owner's shared ChatGPT-plan pool |
+| 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | open, REQUESTED 2026-11-01 by lane TIMEOUT-ASKED-CONTRACT after the owner answered "API records the ask" to the pre-publish gate lane's question (#2981, PR 2986) |
 
 ---
 
@@ -15603,3 +15604,187 @@ key the platform cannot dispatch either.
   image or command; which credential runs is the platform's choice.
 * **6, 7, 8:** unchanged (on-demand GKE Autopilot, the standard class,
   periodic checkpoints). **1, 4:** unchanged.
+
+---
+
+## 131. `models.py`: `Task.timeout_seconds_asked`, the timeout a spec asked for when swarm-api stored a lower one (TIMEOUT-ASKED-CONTRACT, part of #2688)
+
+**Status:** open, REQUESTED 2026-11-01 by lane TIMEOUT-ASKED-CONTRACT. Not
+applied: nothing under `apps/common/swarm_common/` is edited by the pull
+request that adds this entry. The pre-publish gate lane (#2981, PR 2986, merged
+2026-11-01) asked who records a lowered timeout; the owner (BGD) answered "API
+records the ask". This entry is that answer as a contract change.
+
+### What is true today
+
+Read 2026-11-01 on `9cc20f0`.
+
+* `apps/swarm-api/swarm_api/validation.py`, `validate_timeout(profile,
+  requested)`, returns `min(requested, profile.timeout_seconds)`, and
+  `service.py` `_build_task` stores only that as `Task.timeout_seconds`. Every
+  submission goes through `_build_task`: an agent, a batch entry
+  (`submit_tasks`), a workflow step (`submit_workflow`, which passes the
+  step's own `timeout_seconds`) and a child (`children.py`). A spec asking
+  10,800 s of `claude-code` (cap 7,200 s) runs under 7,200 s, and the task
+  document says nothing of the 10,800.
+* A child is lowered twice more, in `children.py`: to its parent's
+  `timeout_seconds` before `_build_task`, and again by the `replace` after it.
+  What the child's spec asked is not kept either.
+* A `browser_if_ui` step (#2322) stores its `code` alternate's timeout in
+  `metadata.runtime.alternate.timeout_seconds` (`_runtime_alternate`), also
+  through `validate_timeout`, and the scheduler swaps it onto the task document at
+  dispatch (`scheduler/runtime.py`, `RUNTIME_SWAP_FIELDS`).
+* The workflow document's step (`WorkflowStep.timeout_seconds`) keeps what
+  the caller wrote, unlowered. The worker never reads the workflow document
+  for its limit, and a lone agent, a batch entry and a child have no such
+  record anywhere.
+* The worker already reads the record this entry asks for:
+  `apps/agent-worker/agent_worker/lifecycle.py` `TIMEOUT_ASKED_FIELD =
+  "timeout_seconds_asked"`. `Worker._timeout_asked_env` reads it from the task
+  document and, only when it is an int above the attempt's
+  `cfg.timeout_seconds`, hands it to the runner as
+  `SWARM_TIMEOUT_ASKED_SECONDS`; `runners/cliagent.py` records it in the
+  runner's `limits.clamped` and `limits.timeout_seconds_asked`
+  (`tests/unit/worker/test_prepublish_deadline.py`). No writer sets the field,
+  so today that path never fires.
+
+### The change
+
+```diff
+--- a/apps/common/swarm_common/models.py
++++ b/apps/common/swarm_common/models.py
+@@ class Task:
+     #: construction of a task changes meaning; absent on every older
+     #: document, which decodes as 0.
+     platform_refusals: int = 0
++    #: Contract request 131 (TIMEOUT-ASKED-CONTRACT, part of #2688), the
++    #: owner's "API records the ask" (2026-11-01): the `timeout_seconds` the
++    #: spec asked for, written by swarm-api at submission ONLY when it stored
++    #: a lower `timeout_seconds` (the profile's cap, or a child's parent's).
++    #: A RECORD ONLY: the limit is `timeout_seconds` alone, and nothing reads
++    #: this as one (invariant 10); the worker reports it in the runner's
++    #: `limits.clamped`. Unsigned: written at submission, it chooses nothing.
++    #: None on a task that was not lowered and on every older document. Last
++    #: in the class, after `platform_refusals`, so no positional construction
++    #: of a task changes meaning.
++    timeout_seconds_asked: int | None = None
+```
+
+That is the whole frozen change: one field, appended. No new enum member, no
+state edge, no spec format. The exact patches, against `9cc20f0`, are in the
+pull request's body: the one above, and swarm-api's.
+
+The rule swarm-api applies (its patch, outside the frozen package):
+
+* `validation.timeout_asked(requested, *granted)`: the asked value when it is
+  above ANY timeout this service stores for the step, else None.
+  `validate_timeout` is unchanged and stays the limit.
+* `service._build_task` collects every timeout it grants the step -- its own,
+  and its `code` alternate's on a `browser_if_ui` step -- and writes
+  `timeout_seconds_asked=timeout_asked(spec.timeout_seconds, *granted)`. One
+  place, so an agent, a batch entry and a workflow step are covered alike. The
+  worker compares the record with the timeout it actually runs under, so a
+  step whose primary profile was lowered and whose alternate was not reports
+  nothing when it runs as the alternate.
+* `children.py` sets it again in its `replace`, from the CHILD's spec, against
+  the final `min(task.timeout_seconds, parent.timeout_seconds)`: the
+  `TaskCreate` it hands `_build_task` is already lowered to the parent's.
+* The name is refused in a caller's metadata like every platform-written key:
+  `TIMEOUT_ASKED_FIELD` joins `REFUSED_UNWRITTEN_METADATA_KEYS` with its
+  sentence in `_RESERVED_BECAUSE` (it is a top-level field, so no one writes
+  `metadata.timeout_seconds_asked`, and it is not added to
+  `RESERVED_METADATA_KEYS`, whose members are signed or served as platform
+  metadata). As a top-level key it is refused already: `TaskCreate`, the
+  batch entry, the workflow step and the child spec are `extra="forbid"`
+  (`schemas.py`, `children.py`). In `input` it is refused already: an input
+  key the profile does not declare is refused (`validate_runner_input`,
+  contract request 25).
+
+### Who else applies the rule (every mirror, read 2026-11-01 on `9cc20f0`)
+
+1. **The store's task document codec, swarm-api** (`apps/swarm-api/swarm_api/codec.py`
+   `task_from_dict`): MUST change. `task_to_api` serves a DECODED `Task`, so
+   without the read the API can never serve the record; and swarm-api writes
+   whole task documents (`store.create_tasks`, the child's `txn.set`, both
+   through `task_to_firestore`), so any task document it builds from a decoded one
+   would drop it. It reads an int above 0, anything else as None.
+2. **The API's response codec** (`codec.task_to_api`): MUST change, to serve
+   `timeout_seconds_asked` beside `timeout_seconds`, so a caller can tell a
+   lowered step from one that asked for nothing more. **The API's schemas**
+   (`schemas.py`): no change. Responses are the codec's dicts, not a response
+   model; every request model is already `extra="forbid"`.
+3. **The scheduler's task document codec** (`apps/scheduler/scheduler/codec.py`): no
+   change. It decodes for admission and dispatch and patches a task document with
+   `txn.update` (`store.py`), never writing a whole decoded task document, so a field
+   it does not read survives. The runtime swap does not touch the field.
+4. **The worker** (`lifecycle.TIMEOUT_ASKED_FIELD`, `_timeout_asked_env`;
+   `cliagent.TIMEOUT_ASKED_ENV`): no change. It already reads the raw task
+   document and treats the value as a record. The comment above
+   `TIMEOUT_ASKED_FIELD` ("requested of swarm-api in #2981") may name this
+   request when it is applied.
+5. **The console's `Task` type** (`apps/swarm-ui/src/types.ts`, `export
+   interface Task`): SHOULD change, `timeout_seconds_asked?: number | null`,
+   optional because an older API does not serve it. Showing it (a "lowered
+   from 10,800 s" beside the timeout) is a console change of its own, not
+   required by this request. `scripts/lib/check-contract-parity.sh` section 9
+   compares only `parent_task_id` and `parent_attempt_id` of `Task`: no change.
+6. **The MCP bridge's task record rendering** (`apps/swarm-mcp/swarm_mcp/render.py`
+   `render_task`): no change required. It renders no timeout today; it passes
+   the served task record through, so the field is there for a later line. Its
+   workflow builder (`workflows.py`) forwards a step's `timeout_seconds` as
+   written and must not forward `timeout_seconds_asked` (it does not).
+7. **The Firestore-shape notes:** `docs/architecture.md` §4 lists collections,
+   not task fields: no change. `docs/workflows.md`'s step table
+   ("`timeout_seconds`: optional; may only shorten the profile's own
+   default") SHOULD add that a longer ask is lowered and recorded as
+   `timeout_seconds_asked`. `docs/web-ui/03-agents-and-workflows.md` quotes
+   an older `task_to_api` key list as a dated snapshot: no change.
+8. **The spec signature** (`specsign.canonical_step_spec`): no change, and no
+   format bump. The field is UNSIGNED: it limits nothing and selects nothing,
+   so a forged value can only add a line to the runner's report.
+9. **Tests that pin the class's tail**, which redden when it is applied and
+   change with it (each measured red with both patches applied, 2026-11-01):
+   `tests/unit/common/test_budget_contract.py`
+   (`test_120_the_fields_default_to_none_and_come_last`: the last two fields
+   are `budget` and `platform_refusals`),
+   `tests/unit/common/test_model_classes.py`
+   (`test_the_new_fields_come_last_so_no_positional_construction_moves`: the
+   last three end at `platform_refusals`), and
+   `tests/unit/common/test_specsign_covers.py`
+   (`test_every_task_field_is_signed_or_named_unsigned`: the field joins
+   `UNSIGNED_TASK_FIELDS` with its reason).
+
+### What it would break if accepted
+
+* **Nothing that reads a limit.** No reader takes the field as a timeout; the
+  worker already compares it with the timeout it runs under.
+* **The three tail and signature tests in item 9 redden** until updated in
+  the applying pull request; that is their job.
+* **Firestore shape:** one optional field on `tasks/{id}`, absent on every
+  older document and on every agent not lowered. No index, no rule, no
+  migration.
+* **An old API with a new worker, or the reverse:** no record, no report;
+  the same as today.
+
+### If it is declined
+
+A lowered timeout stays silent: a spec asking 10,800 s runs under 7,200 s,
+and neither the task document, the API nor the runner's `limits.clamped` says so. The
+worker's reader stays dead code, and an agent killed at 7,200 s looks like one
+that ran past a limit it chose. The only record left is the workflow
+document's unlowered step, and only for workflow steps.
+
+### Invariants
+
+* **10 (callers pick a profile by name; never a resource spec):** held. The
+  caller may still only SHORTEN a timeout; the ask is recorded, never
+  honoured. The field is written by swarm-api alone and refused from a caller
+  as a top-level key, a metadata key and an input key.
+* **5 (fencing):** unchanged; the worker's fencing check runs before it reads
+  the task document's timeout record.
+* **8 (periodic checkpoints):** unchanged; the attempt still ends at
+  `timeout_seconds`, checkpointed as before.
+* **1, 2, 3 (capacity):** unchanged. The field adds no state and no demand,
+  and admission never reads it.
+* **4, 6, 7, 9:** unchanged; no backend, class, resource or tenant boundary is
+  touched.
