@@ -29,7 +29,9 @@ import './styles/config.css'
  * `config_setup` field (CONFIG-SETUP-READ, read through configSetupApi.ts;
  * CONFIG-PANEL-E): Secrets set is done when nothing registered is needed and
  * not stored, and otherwise names the count and the first item; People
- * invited is done when someone other than the reader holds a role. A source
+ * invited is left while requests to join wait on the reader, and is not
+ * drawn where the server says it does not apply (a group workspace whose
+ * people come from its group, with nothing waiting). A source
  * the server could not read is UNKNOWN, drawn with the server's reason, and
  * never counts as done; a step the read did not carry is unknown the same way.
  *
@@ -132,7 +134,13 @@ export function setupSteps(doc: OnboardingDoc | null, personal: boolean): SetupS
     },
     { key: 'secrets', label: 'Secrets set', to: 'config/secrets', ...secretsState(doc, setup) },
   ]
-  if (!personal) steps.push({ key: 'people', label: 'People invited', to: 'config/people', ...peopleState(doc, setup) })
+  // People invited is drawn where the server says it applies: a group
+  // workspace's people come from its group, so it applies only while
+  // requests to join wait on the reader (config_setup.py people_step). One
+  // that does not apply is left out as a personal one's is, never drawn
+  // unknown, so the meter, the strip and the spine's dot all read "nothing
+  // left" (the Config dot that never cleared, 2026-11-01).
+  if (!personal && !peopleNotApplying(setup)) steps.push({ key: 'people', label: 'People invited', to: 'config/people', ...peopleState(doc, setup) })
   return steps
 }
 
@@ -153,15 +161,19 @@ function secretsState(doc: OnboardingDoc | null, setup: ConfigSetup | null): Pic
   return { state: 'todo', line: toSet(s.needed, first === undefined ? null : itemName(first)) }
 }
 
-/** Step 4 from `config_setup.people`: done when someone besides the reader holds a role. */
+/** Whether the server read People invited and says it does not apply here (its reason says why). */
+function peopleNotApplying(setup: ConfigSetup | null): boolean {
+  return setup?.people?.applies === false
+}
+
+/** Step 4 from `config_setup.people`, where it applies: left while requests to join wait on the reader. */
 function peopleState(doc: OnboardingDoc | null, setup: ConfigSetup | null): Pick<SetupStep, 'state' | 'line'> {
   if (doc === null) return { state: 'unknown', line: 'not read' }
   const p = setup?.people ?? null
   if (p === null) return { state: 'unknown', line: 'not in the setup read' }
-  // The server judged this workspace personal while `me` said group: say so rather than guess.
-  if (!p.applies) return { state: 'unknown', line: p.reason ?? 'does not apply here' }
   if (p.done === null) return { state: 'unknown', line: p.reason ?? 'the roles could not be read' }
-  if (!p.done) return { state: 'todo', line: 'only you so far' }
+  // The server's reason counts the requests waiting ("2 requests to join are waiting for you").
+  if (!p.done) return { state: 'todo', line: p.reason ?? 'only you so far' }
   const n = p.holders ?? 0
   return { state: 'done', line: n === 1 ? '1 other person holds a role' : `${n} other people hold a role` }
 }
@@ -236,6 +248,8 @@ export function configBadges(doc: OnboardingDoc | null, personal: boolean): Read
   const holders = setup?.people?.holders ?? null
   const peopleBadge = stepBadge(people, 'only you', holders === null ? null : { tone: 'count', text: String(holders), why: `People invited: ${people?.line ?? ''}` })
   put('people', peopleBadge !== null && people?.state === 'todo' ? { ...peopleBadge, tone: 'note' } : peopleBadge)
+  // A group workspace with nothing waiting: no step, and the row says why, dimly.
+  if (!personal && peopleNotApplying(setup)) put('people', { tone: 'note', text: 'via group', why: `People invited: ${setup?.people?.reason ?? 'does not apply here'}` })
   return out
 }
 
