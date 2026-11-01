@@ -15,10 +15,11 @@ from subprocess import run as _real_run  # bound before the walk patches subproc
 from types import SimpleNamespace
 from typing import Any
 
-from swarm_api.install_record import INDIVIDUAL, InstallRecord, check_fields
+from swarm_api.install_record import INDIVIDUAL, SIGN_IN_CLIENT, InstallRecord, check_fields
 from swarm_api.routes import setup as setup_routes
 from swarm_common.identity import tenant_id_for_user
 from swarm_install import tfvars
+from swarm_install.steps import edge
 
 from .world import REPO, World
 
@@ -76,6 +77,16 @@ def _steps(world: World) -> None:
         check_fields(path, env, data)
         db.document(path).set(data, merge=True)
 
+    # Sign-in client, first in the console's order (issue #2964): the person
+    # makes the brand and the Desktop client on Google's pages and types both
+    # into the form; swarm-api adds the secret as a version of the container
+    # stage 2 made and records the id.
+    desktop = edge.DESKTOP_SECRET
+    assert (project, desktop) in cloud.secrets, f"stage 2 did not make the empty {desktop}"
+    cloud.versions.setdefault((project, desktop), []).append(secrets.token_hex(16).encode())
+    write(record.console_path(SIGN_IN_CLIENT), {
+        "client_id": f"{cloud.number(project)}-{secrets.token_hex(8)}.apps.googleusercontent.com",
+        "at": now, "by": world.installer})
     # The GitHub App: created from the manifest, its three secrets written by swarm-api.
     for name in tfvars.APP_SECRETS:
         cloud.secrets.setdefault((project, name), {"name": f"projects/{cloud.number(project)}/secrets/{name}",

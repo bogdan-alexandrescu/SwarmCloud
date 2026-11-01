@@ -84,7 +84,10 @@ def test_app_switches_after_console_app_lands() -> None:
     top = {s.id for s in discover()}
     assert not top & {"github.pass-3", "github.hook", "github.pass-4"}
     wait = next(s for s in discover() if s.id == "handoff.console")
-    assert [s.id for s in wait.triggered] == ["github.pass-3", "github.pass-4", "github.hook"]
+    # The console's Sign-in client step's three come first (issue #2964).
+    assert [s.id for s in wait.triggered] == ["handoff.sign-in-client", "handoff.sign-in-bootstrap",
+                                              "handoff.sign-in-infra", "github.pass-3", "github.pass-4",
+                                              "github.hook"]
     assert isinstance(wait, handoff.HandoffStep)
     assert "enable_github_app" not in {k for k, v in infra("infra-2", {}).items() if v is True}
 
@@ -198,6 +201,20 @@ def test_hook_raises_other_refusals(status, body) -> None:
     assert hook.check(ctx).status == "unmet"
 
 
+def _only_the_desktop_secret_is_read(path: Path) -> None:
+    """preflight.py defines `access_secret_version`; edge.py calls it, and
+    every call names `DESKTOP_SECRET`, never an App secret."""
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and ":access" in node.value:
+            assert path.name == "preflight.py", f"{path.name} reads a secret's value"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and "access_secret" in node.func.attr:
+            names = {n.id for a in node.args for n in ast.walk(a) if isinstance(n, ast.Name)}
+            assert "DESKTOP_SECRET" in names, f"{path.name} reads a secret other than the Desktop client's"
+            assert not names & {"APP_SECRETS"}, f"{path.name} reads an App secret"
+
+
 def test_engine_never_reads_an_app_secret() -> None:
     gcp = SecretMetadata(set(tfvars.APP_SECRETS))
     ctx = FakeCtx()
@@ -205,8 +222,13 @@ def test_engine_never_reads_an_app_secret() -> None:
     assert Pass3Step(Deps(gcp=lambda: gcp)).trigger(ctx) is True
     assert {verb for verb, _ in gcp.calls} == {"secret", "enabled_version"}, "metadata only"
 
-    # No module of the installer names a secret-value read (`:access`, `access_secret_version`).
+    # No module of the installer names a secret-value read (`:access`,
+    # `access_secret_version`) but the one the Desktop client's secret needs
+    # (issue #2964): preflight's reader, called only with DESKTOP_SECRET.
     for path in PACKAGE.rglob("*.py"):
+        if path.name in {"preflight.py", "edge.py"}:
+            _only_the_desktop_secret_is_read(path)
+            continue
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
