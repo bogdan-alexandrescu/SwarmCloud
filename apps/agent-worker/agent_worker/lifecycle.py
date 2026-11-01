@@ -704,6 +704,15 @@ PR_BODY_FILE = "pr-body.md"
 #: `prepublish.PR_SECTION_HEADING`, restated because the runner never imports
 #: the worker; tests/unit/worker/test_prepublish_gate.py holds them equal).
 PREPUBLISH_SECTION_FILE = "prepublish-checks.md"
+#: The runner's deadline, an epoch instant (`prepublish.RUNNER_DEADLINE_ENV`,
+#: restated like the names above; test_prepublish_deadline.py holds them equal).
+RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
+#: The task document's record of the `timeout_seconds` its spec asked for, when
+#: the API lowered it to the profile's cap (requested of swarm-api in #2981),
+#: and the runner's name for it (`cliagent.TIMEOUT_ASKED_ENV`, held equal by
+#: test_prepublish_deadline.py).
+TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
+TIMEOUT_ASKED_ENV = "SWARM_TIMEOUT_ASKED_SECONDS"
 PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
 PREPUBLISH_SECTION_MAX_CHARS = 20000
 #: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
@@ -9890,6 +9899,16 @@ class Worker:
         )
         return memory.git_token_refusal
 
+    def _timeout_asked_env(self) -> dict[str, str]:
+        """`TIMEOUT_ASKED_ENV` when the task document says its spec asked for
+        more time than the step was given (#2981), so the runner records the
+        clamp in `limits.clamped`; empty otherwise. Only ever a record: the
+        limit is `cfg.timeout_seconds`, never this (invariant 10)."""
+        asked = (self._task or {}).get(TIMEOUT_ASKED_FIELD)
+        if isinstance(asked, bool) or not isinstance(asked, int):
+            return {}
+        return {TIMEOUT_ASKED_ENV: str(asked)} if asked > self.cfg.timeout_seconds else {}
+
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
         assert ws is not None
@@ -9922,6 +9941,16 @@ class Worker:
             # a first start is told its whole limit: the supervision loop, not
             # this figure, is what kills at the deadline. Never below 1 s.
             TIMEOUT_ENV: str(max(1, math.ceil(self._runner_deadline - time.monotonic()))),
+            # THE SAME DEADLINE AS AN INSTANT (#2981). The figure above is read
+            # when this env is built, and a runner counts it from its own start
+            # -- the claude-code runner only over its CLI's own run time -- so
+            # the setup between (the issue fetch, the context pack: ~18 min on
+            # task_2518ef3904ed47d0ac52) was counted nowhere, and its
+            # pre-publish gate was still starting guard shards when this loop
+            # killed it at `_runner_deadline`. Wall-clock epoch seconds: the
+            # worker and its runner share the container's clock.
+            RUNNER_DEADLINE_ENV: f"{time.time() + self._runner_deadline - time.monotonic():.3f}",
+            **self._timeout_asked_env(),
             GRACE_ENV: str(self.cfg.termination_grace_seconds),
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
