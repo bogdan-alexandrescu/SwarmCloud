@@ -1,9 +1,16 @@
 """Voice it session routes (docs/design/voice-it.md §3.6, §3.7, §10 phase 1).
 
-    POST /v1/voice/sessions                                   {offer, project_id?}
-        -> {project_id, session_id, state, new_project, answer}
-    POST /v1/voice/projects/{project_id}/sessions/{session_id}/end
+    POST /v1/voice/sessions                   {offer_sdp, project_id?}
+        -> {project_id, session_id, state, new_project, answer_sdp}
+    POST /v1/voice/sessions/{session_id}/end
         -> {project_id, session_id, state, changed, voice_told}
+
+THE SHAPE is the Talk pane's (apps/swarm-ui/src/voice/rtc.ts,
+startVoiceSession and endVoiceSession): the pane sends `offer_sdp`, reads
+`answer_sdp`, and ends a session by its id alone. Ending finds the session's
+project among the caller's own projects in the selected workspace, so
+another tenant's session id, or another person's, is the same 404 as a
+missing one.
 
 WHO. Version one is BGD's only (§1): the caller's verified email must be in
 `voice_people` (VOICE_IT_PEOPLE, else the platform owner), or the answer is
@@ -45,7 +52,7 @@ class StartSession(BaseModel):
     #: Not stripped: the SDP goes to swarm-voice byte for byte.
     model_config = ConfigDict(extra="forbid")
 
-    offer: str = Field(min_length=1, max_length=vs.MAX_SDP_BYTES)
+    offer_sdp: str = Field(min_length=1, max_length=vs.MAX_SDP_BYTES)
     project_id: str | None = Field(default=None, min_length=1, max_length=_ID_MAX)
 
 
@@ -88,18 +95,17 @@ async def start_session(
     client: Any = Depends(voice_client),
 ) -> dict:
     service = _service(ctx, client)
-    if not body.offer.startswith("v=0"):
-        raise ValidationFailed("offer is not an SDP offer", detail={"field": "offer"})
+    if not body.offer_sdp.startswith("v=0"):
+        raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
     if body.project_id is not None:
         _check_id(body.project_id, "vp_", "project_id")
     return await run_in_threadpool(
-        service.start, tenant_id=tenant_id, person=person, offer=body.offer,
+        service.start, tenant_id=tenant_id, person=person, offer=body.offer_sdp,
         project_id=body.project_id)
 
 
-@router.post("/projects/{project_id}/sessions/{session_id}/end")
+@router.post("/sessions/{session_id}/end")
 async def end_session(
-    project_id: str,
     session_id: str,
     person: str = Depends(allowed_person),
     tenant_id: str = Depends(tenant_scope),
@@ -107,8 +113,6 @@ async def end_session(
     client: Any = Depends(voice_client),
 ) -> dict:
     service = _service(ctx, client)
-    _check_id(project_id, "vp_", "project_id")
     _check_id(session_id, "vs_", "session_id")
     return await run_in_threadpool(
-        service.end, tenant_id=tenant_id, person=person, project_id=project_id,
-        session_id=session_id)
+        service.end, tenant_id=tenant_id, person=person, session_id=session_id)

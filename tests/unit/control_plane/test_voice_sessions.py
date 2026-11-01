@@ -2,7 +2,9 @@
 
 Anyone not on the allowed list is 403, a second live session is 409, ending
 marks the session ended and tells swarm-voice, and another tenant's session
-is 404. swarm-voice is a fake on `app.state.voice_client`; no network.
+is 404. The body and paths are the Talk pane's (apps/swarm-ui/src/voice/rtc.ts):
+`offer_sdp` in, `answer_sdp` out, and ending by the session id alone.
+swarm-voice is a fake on `app.state.voice_client`; no network.
 """
 
 from __future__ import annotations
@@ -91,12 +93,12 @@ def _sessions(db) -> dict[str, dict]:
 
 
 def _start(client: TestClient, user: str, **body):
-    return client.post("/v1/voice/sessions", json={"offer": OFFER, **body},
+    return client.post("/v1/voice/sessions", json={"offer_sdp": OFFER, **body},
                        headers=auth_header(user))
 
 
-def _end(client: TestClient, user: str, project_id: str, session_id: str):
-    return client.post(f"/v1/voice/projects/{project_id}/sessions/{session_id}/end",
+def _end(client: TestClient, user: str, session_id: str):
+    return client.post(f"/v1/voice/sessions/{session_id}/end",
                        headers=auth_header(user))
 
 
@@ -114,7 +116,7 @@ def test_anyone_not_on_the_list_is_403_and_nothing_is_written(client, db, voice)
 def test_ending_is_403_for_anyone_not_on_the_list(client, db, voice):
     started = _start(client, "alice").json()
 
-    response = _end(client, "carol", started["project_id"], started["session_id"])
+    response = _end(client, "carol", started["session_id"])
 
     assert response.status_code == 403
     assert voice.ends == []
@@ -125,7 +127,7 @@ def test_a_new_talk_gets_an_untitled_project_and_the_answer_comes_back(client, d
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["answer"] == ANSWER
+    assert body["answer_sdp"] == ANSWER and "answer" not in body
     assert body["state"] == vs.LIVE and body["new_project"] is True
     project = db.docs[f"{vs.PROJECTS}/{body['project_id']}"]
     assert project["title"] == vs.UNTITLED
@@ -168,7 +170,7 @@ def test_a_second_session_on_the_same_project_is_409_too(client, db, voice):
 def test_ending_marks_it_ended_and_tells_swarm_voice(client, db, voice):
     started = _start(client, "alice").json()
 
-    response = _end(client, "alice", started["project_id"], started["session_id"])
+    response = _end(client, "alice", started["session_id"])
 
     assert response.status_code == 200, response.text
     assert response.json()["state"] == vs.ENDED and response.json()["changed"] is True
@@ -182,17 +184,58 @@ def test_ending_marks_it_ended_and_tells_swarm_voice(client, db, voice):
 
 def test_ending_twice_changes_nothing_the_second_time(client, db, voice):
     started = _start(client, "alice").json()
-    _end(client, "alice", started["project_id"], started["session_id"])
+    _end(client, "alice", started["session_id"])
 
-    again = _end(client, "alice", started["project_id"], started["session_id"])
+    again = _end(client, "alice", started["session_id"])
 
     assert again.status_code == 200 and again.json()["changed"] is False
     assert len(voice.ends) == 1
 
 
+def test_ending_finds_the_sessions_project_among_the_persons_others(client, db, voice):
+    first = _start(client, "alice").json()
+    _end(client, "alice", first["session_id"])
+    second = _start(client, "alice").json()
+    assert second["project_id"] != first["project_id"]
+
+    response = _end(client, "alice", second["session_id"])
+
+    assert response.status_code == 200, response.text
+    assert response.json()["project_id"] == second["project_id"]
+    assert response.json()["changed"] is True
+    session = db.docs[f"{vs.PROJECTS}/{second['project_id']}/{vs.SESSIONS}/{second['session_id']}"]
+    assert session["state"] == vs.ENDED
+
+
+def test_ending_a_session_nobody_started_is_404(client, db, voice):
+    response = _end(client, "alice", "vs_" + secrets.token_hex(16))
+
+    assert response.status_code == 404, response.text
+    assert voice.ends == []
+
+
+def test_the_old_project_scoped_end_path_is_gone(client, db, voice):
+    started = _start(client, "alice").json()
+
+    response = client.post(
+        f"/v1/voice/projects/{started['project_id']}/sessions/{started['session_id']}/end",
+        headers=auth_header("alice"))
+
+    assert response.status_code == 404
+    assert voice.ends == []
+
+
+def test_the_old_offer_field_is_422(client, db, voice):
+    response = client.post("/v1/voice/sessions", json={"offer": OFFER},
+                           headers=auth_header("alice"))
+
+    assert response.status_code == 422
+    assert voice.starts == []
+
+
 def test_after_ending_the_next_talk_resumes_the_project(client, db, voice):
     first = _start(client, "alice").json()
-    _end(client, "alice", first["project_id"], first["session_id"])
+    _end(client, "alice", first["session_id"])
 
     second = _start(client, "alice", project_id=first["project_id"])
 
@@ -205,7 +248,7 @@ def test_after_ending_the_next_talk_resumes_the_project(client, db, voice):
 def test_another_tenants_session_is_404(client, db, voice):
     started = _start(client, "alice").json()
 
-    response = _end(client, "bob", started["project_id"], started["session_id"])
+    response = _end(client, "bob", started["session_id"])
 
     assert response.status_code == 404, response.text
     session = db.docs[f"{vs.PROJECTS}/{started['project_id']}/{vs.SESSIONS}/{started['session_id']}"]
@@ -239,11 +282,11 @@ def _in(tenant: str) -> dict[str, str]:
 
 
 def test_the_same_person_cannot_end_their_session_from_another_workspace(two_workspaces, db, voice):
-    started = two_workspaces.post("/v1/voice/sessions", json={"offer": OFFER},
+    started = two_workspaces.post("/v1/voice/sessions", json={"offer_sdp": OFFER},
                                   headers=_in("eng"))
     assert started.status_code == 200, started.text
     started = started.json()
-    path = f"/v1/voice/projects/{started['project_id']}/sessions/{started['session_id']}/end"
+    path = f"/v1/voice/sessions/{started['session_id']}/end"
 
     response = two_workspaces.post(path, headers=_in("research"))
 
@@ -256,14 +299,14 @@ def test_the_same_person_cannot_end_their_session_from_another_workspace(two_wor
 
 def test_the_same_person_cannot_talk_on_their_project_from_another_workspace(
         two_workspaces, db, voice):
-    started = two_workspaces.post("/v1/voice/sessions", json={"offer": OFFER},
+    started = two_workspaces.post("/v1/voice/sessions", json={"offer_sdp": OFFER},
                                   headers=_in("eng")).json()
     two_workspaces.post(
-        f"/v1/voice/projects/{started['project_id']}/sessions/{started['session_id']}/end",
+        f"/v1/voice/sessions/{started['session_id']}/end",
         headers=_in("eng"))
 
     response = two_workspaces.post(
-        "/v1/voice/sessions", json={"offer": OFFER, "project_id": started["project_id"]},
+        "/v1/voice/sessions", json={"offer_sdp": OFFER, "project_id": started["project_id"]},
         headers=_in("research"))
 
     assert response.status_code == 404, response.text
@@ -309,7 +352,7 @@ def test_a_session_left_starting_by_a_crash_stops_holding_the_person(client, db,
 
 
 def test_a_malformed_offer_is_422(client, db, voice):
-    response = client.post("/v1/voice/sessions", json={"offer": "hello"},
+    response = client.post("/v1/voice/sessions", json={"offer_sdp": "hello"},
                            headers=auth_header("alice"))
 
     assert response.status_code == 422

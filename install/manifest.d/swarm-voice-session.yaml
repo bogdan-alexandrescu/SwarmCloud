@@ -6,16 +6,20 @@
 # container's env in kubernetes/swarm-system/swarm-voice.yaml, whose
 # placeholders terraform/infra/voice.tf fills (swarm_voice_manifest).
 #
-# SWARM_VOICE_AUDIENCE is not restated here. The one name is read by swarm-api
-# (the audience it mints its ID token for) and by swarm-voice (the audience it
-# checks), and voice-session-routes.yaml already lists it; an env name belongs
-# to one fragment, so listing it in both made the merge refuse
-# ("env SWARM_VOICE_AUDIENCE is already set"). swarm-voice's side of it is
-# rendered at kubernetes/swarm-system/swarm-voice.yaml:170, with the value
-# swarm-api's SWARM_VOICE_URL, which is what swarm-api mints for while its own
-# SWARM_VOICE_AUDIENCE is unset. PROJECT_ID, PORT and LOG_LEVEL, which main.py
+# SWARM_VOICE_AUDIENCE is read at both ends of the call: swarm-voice checks
+# the ID token's audience against it (apps/swarm-voice/swarm_voice/main.py:113)
+# and swarm-api mints the token for it (apps/swarm-api/swarm_api/settings.py:1125;
+# unset there means SWARM_VOICE_URL itself). It is declared once, here, not in
+# voice-session-routes.yaml too: the manifest takes one entry per variable, and
+# two declarations stopped every unit test from collecting on main
+# (2026-11-01). swarm-voice's side is rendered at
+# kubernetes/swarm-system/swarm-voice.yaml:170 with swarm-api's SWARM_VOICE_URL,
+# which is what swarm-api mints for while its own SWARM_VOICE_AUDIENCE is unset.
+# PROJECT_ID, PORT and LOG_LEVEL, which main.py
 # also reads, are already in the base manifest's env: table.
 version: 1
 env:
+  SWARM_VOICE_AUDIENCE:
+    setter: kubernetes/swarm-system/swarm-voice.yaml:170
   SWARM_VOICE_CALLERS:
     setter: kubernetes/swarm-system/swarm-voice.yaml:173

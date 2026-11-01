@@ -13,6 +13,12 @@ A talk with no project names gets a new untitled project. Another tenant's
 project or session, or another person's, is the same 404 as a missing one
 (invariant 9): nothing in a refusal says the document exists.
 
+ENDING BY SESSION ID. The Talk pane ends a session by its id alone, so `end`
+finds the project: it lists the projects whose `tenant_id` and `person` are
+the caller's (two equality filters, served by the single-field indexes) and
+reads that session id under each. A session under anyone else's project is
+never read, so it is the same 404 as a missing one.
+
 ONE LIVE SESSION PER PERSON (§3.7). `voice_live/{marker}` names the person's
 live session and is read and written in the same transaction as the session
 it names, so two starts racing each other cannot both pass: the second is 409
@@ -58,6 +64,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
 from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
 
@@ -385,7 +392,7 @@ class VoiceSessions:
         log.info("voice session started tenant=%s project=%s session=%s new_project=%s",
                  tenant_id, project_id, session_id, new_project)
         return {"project_id": project_id, "session_id": session_id, "state": LIVE,
-                "new_project": new_project, "answer": answer}
+                "new_project": new_project, "answer_sdp": answer}
 
     def _close(self, *, tenant_id: str, person: str, project_id: str, session_id: str,
                cause: str) -> dict[str, Any] | None:
@@ -416,9 +423,24 @@ class VoiceSessions:
 
         return _apply(self._db.transaction())
 
-    def end(self, *, tenant_id: str, person: str, project_id: str,
-            session_id: str) -> dict[str, Any]:
+    def _project_of(self, *, tenant_id: str, person: str, session_id: str) -> str:
+        """The project of this person's session in this tenant; `NotFound`
+        when no project of theirs holds it."""
+        projects = (self._db.collection(PROJECTS)
+                    .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+                    .where(filter=FieldFilter("person", "==", person))
+                    .stream())
+        # get_all does not keep the order it was given: match by path.
+        refs = {project.id: self._session_ref(project.id, session_id) for project in projects}
+        owner = {ref.path: project_id for project_id, ref in refs.items()}
+        for snap in (self._db.get_all(list(refs.values())) if refs else ()):
+            if snap.exists and self._mine(snap.to_dict(), tenant_id, person):
+                return owner[snap.reference.path]
+        raise NotFound(f"voice session {session_id!r} not found")
+
+    def end(self, *, tenant_id: str, person: str, session_id: str) -> dict[str, Any]:
         person = person.strip().lower()
+        project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
         before = self._close(tenant_id=tenant_id, person=person, project_id=project_id,
                              session_id=session_id, cause=END_BY_PERSON)
         told = None

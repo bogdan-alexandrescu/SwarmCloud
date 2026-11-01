@@ -10082,6 +10082,9 @@ class Worker:
                     inject=self.typesafe.on,
                     shim_file=self.typesafe.shim_file,
                     verdict=self._gates_route,
+                    # The signed workflow switch (2026-11-01), which only
+                    # narrows what the stored, signed setting allows.
+                    switch=self._dispatch_block().get(qualitygates_mod.SWITCH),
                 )
         return dict(self._gates_env)
 
@@ -10091,21 +10094,49 @@ class Worker:
         or jev-enforce flagged a rule -- counts only, never text -- so a wave
         can compare first-CI-red and NOT_YET rates with the switch on and
         off. The key file is removed. A stored "on" the scheduler did not
-        vouch for is `{"jev": false, "refused": <why>}`. Never raises."""
+        vouch for is `{"jev": false, "refused": <why>}`. Never raises.
+
+        A step whose signed dispatch block set a workflow switch (2026-11-01)
+        also records each switch, its value and the deciding source: the
+        gates' under `quality_gates.switch`, the graph's and the judgments'
+        under `graphstage.SWITCHES_FIELD`, which the experiment reads."""
+        self._record_switches(summary)
+        record = dict(getattr(getattr(self, "_gates_route", None), "record", None) or {})
         if not self._gates_env:
             route = getattr(self, "_gates_route", None)
             refused = getattr(route, "refused", None)
             if isinstance(refused, str):
                 summary[qualitygates_mod.SUMMARY_KEY] = {"jev": False, "refused": refused}
+            if record:
+                summary.setdefault(qualitygates_mod.SUMMARY_KEY, {"jev": False})["switch"] = record
             return
         try:
             counts = qualitygates_mod.finish(self._gates_env)
         except Exception as exc:
             self.log.warning("could not read the quality gates' counts", error=type(exc).__name__)
             return
-        summary[qualitygates_mod.SUMMARY_KEY] = {"jev": True, **(counts or {})}
+        summary[qualitygates_mod.SUMMARY_KEY] = {"jev": True, **(counts or {}),
+                                                 **({"switch": record} if record else {})}
         if qualitygates_mod.worth_an_event(counts):
             self._emit_startup_mark(qualitygates_mod.EVENT_CAUSE, dict(counts or {}))
+
+    def _record_switches(self, summary: dict[str, Any]) -> None:
+        """The workflow switches' record (`graphstage.switches_summary`), only
+        when the signed dispatch block set one, and the judgments' key file
+        removed after the agent (`judge.attempt.finish`). Never raises."""
+        from .judge import attempt as judge_attempt
+
+        try:
+            dispatch = self._dispatch_block()
+            work = getattr(self, "_switch_work", None)
+            if work is not None:
+                switches = graphstage_mod.switches_summary(work, dispatch)
+                if switches:
+                    summary[graphstage_mod.SWITCHES_FIELD] = switches
+            if graphstage_mod.switch_of(dispatch, judge_attempt.SWITCH) == judge_attempt.ON:
+                judge_attempt.finish(self._graph_env or {})
+        except Exception as exc:  # noqa: BLE001 -- a record is never worth the attempt
+            self.log.warning("could not record the workflow switches", error=type(exc).__name__)
 
     def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
         """The staged graph snapshot's variables (docs/design/context-quality.md
@@ -10119,6 +10150,7 @@ class Worker:
         into a stand-down that touches neither the lease nor the task, as the
         secrets release's 409 is."""
         if self._graph_env is None:
+            self._switch_work = ws.work
             try:
                 self._graph_env = graphstage_mod.prepare(
                     ws.work, profile_name=self.cfg.runner_profile,
@@ -10138,7 +10170,15 @@ class Worker:
                     # is asked only when a fetch is needed, and never when
                     # this worker must not hold the token at all. This runs
                     # before the agent starts.
-                    forge_token=None if self._git_token_refusal() else self._git_token)
+                    forge_token=None if self._git_token_refusal() else self._git_token,
+                    # The signed workflow switches (2026-11-01) and, for a
+                    # step whose `jev_judgments` is on, the WORKSPACE's
+                    # TypeSafe key, resolved as the quality gates resolve it.
+                    dispatch=self._dispatch_block(),
+                    jev_key=lambda: jevkey_mod.resolve_workspace(
+                        db=self.db, client=self.secret_client,
+                        tenant_id=self.cfg.tenant_id, logger=self.log,
+                        call_options=self.control.call_options("tenant")))
             except graph_ticket_mod.GraphTicketFenced as exc:
                 raise FencedWriteRefused(
                     self.cfg.generation, -1, str(exc), write="graph ticket"

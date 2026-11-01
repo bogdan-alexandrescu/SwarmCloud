@@ -59,6 +59,19 @@ the counts file. After the agent, `finish` sums them for the attempt's
 summary, removes the key file, and the lifecycle records one RUNNING mark,
 cause `quality_gate`, when belay blocked a stop or enforce flagged a rule.
 
+THE WORKFLOW SWITCH (the owner's experiment, 2026-11-01). A spec's signed
+dispatch block may carry `quality_gates: on|off` (`SWITCH`), which every
+step of the workflow obeys, and the stored `jev` gains a third value for it,
+`"on_request"` (`ON_REQUEST`): only a step whose signed switch says `on`
+runs the gates. The switch only narrows: `off` runs none, whatever is
+stored; `on` runs them only where the stored, signed block says `true` or
+`"on_request"`, because the gates send code to TypeSafe and only a workspace
+admin decides that. The scheduler vouches for `"on_request"` as it does for
+`true` (its verdict is then the word `on_request`), and the worker acts on a
+verdict only when it names the value stored now. `decide` says what ran and
+why -- the switch, its value and the deciding source (`workflow switch`,
+`workspace` or `default`) -- and the attempt's summary records it.
+
 NEVER FATAL. A switch that cannot be read is off; a key that cannot be read
 costs the attempt its gates, not the attempt.
 """
@@ -76,6 +89,13 @@ from . import jevkey
 SETTINGS_COLLECTION = "workspace_settings"
 FIELD = "quality_gates"
 JEV = "jev"
+#: The stored value that runs the gates only under a step's switch `on`
+#: (`swarm_api.qualitygates.ON_REQUEST`, 2026-11-01).
+ON_REQUEST = "on_request"
+#: The workflow switch in the signed dispatch block: `on` | `off`.
+SWITCH = "quality_gates"
+ON, OFF = "on", "off"
+SOURCE_SWITCH = "workflow switch"
 
 #: The runner's variable: the PATH of the gates' config, never the key.
 CONFIG_ENV = "SWARM_JEV_GATES_CONFIG"
@@ -117,8 +137,37 @@ _MAX_REASON = 64
 
 def switched_on(workspace: Mapping[str, Any] | None) -> bool:
     """`quality_gates.jev is True`; anything else, malformed or absent, is off."""
+    return stored_value(workspace) is True
+
+
+def stored_value(workspace: Mapping[str, Any] | None) -> bool | str | None:
+    """The stored `quality_gates.jev`: True, False, `ON_REQUEST`, or None when
+    absent; anything malformed is False."""
     block = workspace.get(FIELD) if isinstance(workspace, Mapping) else None
-    return isinstance(block, Mapping) and block.get(JEV) is True
+    if not isinstance(block, Mapping) or JEV not in block:
+        return None
+    value = block.get(JEV)
+    return value if value is True or value == ON_REQUEST else False
+
+
+def decide(workspace: Mapping[str, Any] | None, switch: str | None
+           ) -> tuple[bool | str, str, str]:
+    """`(wanted, source, reason)` for this step: `wanted` is the stored value
+    the gates would run under (True or `ON_REQUEST`), or False. The
+    scheduler's verdict still has to vouch for it (`prepare`)."""
+    switch = switch if switch in (ON, OFF) else None
+    stored = stored_value(workspace)
+    if switch == OFF:
+        return False, SOURCE_SWITCH, "quality gates are off (workflow switch)"
+    if stored is None:
+        return False, "default", "quality gates are off (default)"
+    if stored is False:
+        return False, "workspace", "quality gates are off (workspace setting)"
+    if stored == ON_REQUEST and switch != ON:
+        return False, "workspace", "the workspace runs quality gates only on request"
+    if switch == ON:
+        return stored, SOURCE_SWITCH, "quality gates are on (workflow switch; workspace allows it)"
+    return stored, "workspace", "quality gates are on (workspace setting)"
 
 
 class GatesVerdict:
@@ -130,10 +179,15 @@ class GatesVerdict:
         self._value = environ.get(VERDICT_ENV)
         self._reason = environ.get(REFUSED_ENV)
         self.refused: str | None = None
+        #: What `prepare` decided for a step whose signed block set the switch,
+        #: or whose workspace stored `ON_REQUEST`: `{switch, value, source,
+        #: on, reason}`, for the attempt's summary. Empty otherwise.
+        self.record: dict[str, Any] = {}
 
-    def verdict(self) -> bool:
-        """True only when the scheduler wrote exactly "true"."""
-        if self._value == "true":
+    def verdict(self, stored: bool | str = True) -> bool:
+        """True only when the scheduler wrote exactly the word for `stored`:
+        "true" for True, "on_request" for `ON_REQUEST`."""
+        if self._value == ("true" if stored is True else ON_REQUEST):
             self.refused = None
             return True
         if self._value is None:
@@ -173,36 +227,54 @@ def prepare(*, db: Any, client: Any, tenant_id: str, private_dir: Path, logger: 
             call_options: Mapping[str, Any] | None = None,
             secret_env_names: Iterable[str] = (), inject: bool = False,
             shim_file: Path | None = None,
-            verdict: GatesVerdict | None = None) -> dict[str, str]:
+            verdict: GatesVerdict | None = None,
+            switch: str | None = None) -> dict[str, str]:
     """`{CONFIG_ENV: path}` when this workspace turned the gates on, the
     scheduler vouched at dispatch that swarm-api signed that "on" (`verdict`),
     and a key (or, with the forwarder, the shim) is available; else {}.
     Without a `verdict` a stored "on" is off: nothing else checked its MAC.
-    Never raises."""
+
+    `switch` is the signed dispatch block's `quality_gates` (`SWITCH`), None
+    when unset (`decide`). A stored `ON_REQUEST` runs the gates only under
+    `on`; `off` runs none. What was decided is left in `verdict.record` when
+    the switch is set or the workspace stored `ON_REQUEST`. Never raises."""
     if db is None:
         return {}
+    switch = switch if switch in (ON, OFF) else None
+    note: dict[str, Any] = {}
     try:
-        if not switched_on(read_settings(db, tenant_id, call_options=call_options)):
+        workspace = read_settings(db, tenant_id, call_options=call_options)
+        wanted, source, reason = decide(workspace, switch)
+        if switch is not None or stored_value(workspace) == ON_REQUEST:
+            note = {"switch": SWITCH, "value": switch, "source": source, "on": False,
+                    "reason": reason}
+            if verdict is not None:
+                verdict.record = note
+        if not wanted:
             return {}
         if verdict is None:
             logger.warning("jev_gates_refused", reason=REFUSED_NO_VERDICT)
             return {}
-        if not verdict.verdict():
+        if not verdict.verdict(wanted):
             logger.warning("jev_gates_refused", reason=verdict.refused)
+            note["reason"] = f"refused ({verdict.refused})"
             return {}
         private = Path(private_dir)
         if inject:
             if shim_file is None or not Path(shim_file).is_file():
                 logger.info("jev_gates_unavailable", reason="no_shim")
+                note["reason"] = "unavailable (no_shim)"
                 return {}
             key_file = Path(shim_file)
         else:
             if client is None:
+                note["reason"] = "unavailable (no_client)"
                 return {}
             found = jevkey.resolve(db=db, client=client, tenant_id=tenant_id,
                                    submitted_by=None, logger=logger, call_options=call_options)
             if found is None:
                 logger.info("jev_gates_unavailable", reason="no_key")
+                note["reason"] = "unavailable (no_key)"
                 return {}
             key, _scope, secret = found
             key_file = private / KEY_FILE_NAME
@@ -224,6 +296,7 @@ def prepare(*, db: Any, client: Any, tenant_id: str, private_dir: Path, logger: 
     except Exception as exc:  # noqa: BLE001 -- never fatal, said by type
         logger.warning("jev_gates_unavailable", reason="error", error=type(exc).__name__)
         return {}
+    note["on"] = True
     return {CONFIG_ENV: str(config)}
 
 
@@ -301,9 +374,13 @@ __all__ = [
     "REFUSED_OFF_AT_DISPATCH",
     "VERDICT_ENV",
     "SUMMARY_KEY",
+    "ON_REQUEST",
+    "SWITCH",
+    "decide",
     "finish",
     "prepare",
     "read_settings",
+    "stored_value",
     "switched_on",
     "tally",
     "worth_an_event",
