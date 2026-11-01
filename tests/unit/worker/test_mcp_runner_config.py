@@ -193,8 +193,11 @@ def _run_body(module, monkeypatch, work: Path, relay_file: Path | None, *,
         return {}
 
     monkeypatch.setattr(module, "run_cli_agent", fake_run)
-    for name in ("SWARM_GIT", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH", "SWARM_CDP_ENDPOINT",
-                 "SWARM_GRAPH_SNAPSHOT", "SWARM_GRAPH_PIN", "SWARM_GRAPH_UNSTAGED"):
+    # SWARM_CHILDREN too: a SwarmCloud agent container sets it, and the runner
+    # then appends the child-task note to the prompt a test compares.
+    for name in ("SWARM_GIT", "SWARM_CHILDREN", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH",
+                 "SWARM_CDP_ENDPOINT", "SWARM_GRAPH_SNAPSHOT", "SWARM_GRAPH_PIN",
+                 "SWARM_GRAPH_UNSTAGED"):
         monkeypatch.delenv(name, raising=False)
     if git_spool is not None:
         monkeypatch.setenv("SWARM_GIT", git_spool)
