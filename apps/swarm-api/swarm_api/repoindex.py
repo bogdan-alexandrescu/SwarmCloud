@@ -446,7 +446,11 @@ class _Spec(BaseModel):
 _Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 _Path = Annotated[str, Field(min_length=1, max_length=400)]
 _Name = Annotated[str, Field(min_length=1, max_length=80)]
-_Line = Annotated[str, Field(min_length=1, max_length=300)]
+#: The most characters a one-line field holds (a module's purpose, a note's
+#: text, a rule, a reason). indexer_prompt() states this figure, so the agent
+#: is told the limit the worker's indexspec check and promotion enforce (#2978).
+LINE_MAX_CHARS = 300
+_Line = Annotated[str, Field(min_length=1, max_length=LINE_MAX_CHARS)]
 _Command = Annotated[str, Field(min_length=1, max_length=500)]
 
 #: How a test-map edge is known (§2.1, §2.5), strongest first: a selection
@@ -464,7 +468,7 @@ Evidence = Literal["declared", "path-ref", "lsp", "ast", "co-change", "import", 
 class Module(_Spec):
     path: _Path
     language: _Name
-    purpose: str = Field(default="", max_length=300)
+    purpose: str = Field(default="", max_length=LINE_MAX_CHARS)
     files: StrictInt = Field(ge=0)
     lines: StrictInt = Field(ge=0)
     #: On an incremental index, the commit an entry carried forward was read at.
@@ -739,7 +743,8 @@ _INDEX_SHAPE = (
     '   "extractor": {"ran": true, "command": "' + EXTRACTOR_COMMAND + '", "version": "<its version>",\n'
     '                 "history": <its extractor.history, as it wrote it>}\n'
     '             or {"ran": false, "reason": "<why: e.g. not installed in this image>"},\n'
-    '   "modules": [{"path", "language", "purpose": "<one line>", "files", "lines",\n'
+    '   "modules": [{"path", "language", "purpose": "<one line, at most ' + str(LINE_MAX_CHARS)
+    + ' characters>", "files", "lines",\n'
     '                "commit_sha": "<incremental only: the commit the entry was read at>"}],\n'
     '   "entry_points": [{"path", "kind", "started_by"}],\n'
     '   "routes": [{"kind": "http" | "export" | "mcp", "method", "path", "name", "file", "handler"}],\n'
@@ -754,7 +759,8 @@ _INDEX_SHAPE = (
     '   "territory": [{"path", "rule", "source": "<the file that says so>"}],\n'
     '   "commands": [{"name", "kind": "build" | "lint" | "test" | "ci" | "other", "command", "source"}],\n'
     '   "hot_spots": [{"path", "changes", "co_changed": ["<path>"]}],\n'
-    '   "notes": [{"text": "<one line>", "source"}],\n'
+    '   "notes": [{"text": "<one line, at most ' + str(LINE_MAX_CHARS)
+    + ' characters>", "source"}],\n'
     '   "languages": [{"language", "files", "grammar", "server", "status": "ok" | "partial" |\n'
     '                  "unsupported" | "failing" | "timed_out" | "not_run", "files_covered",\n'
     '                  "fallback"}],\n'
@@ -892,7 +898,11 @@ def indexer_prompt(
         + _INDEX_SHAPE
         + "Bounds: modules 400, entry_points 200, routes 1000, test_layout 50, test_map "
         "4000 edges, always_tests 50, territory 200, commands 100, hot_spots 50, notes 20, "
-        "languages 50. No other keys: a document with any other key is refused. A "
+        "languages 50. Every one-line field -- a module's purpose, a note's text, an "
+        "always_tests because, a territory rule, an entry_points started_by, a languages "
+        f"fallback, the extractor's reason -- is at most {LINE_MAX_CHARS} characters; a "
+        "longer one is refused, so write a shorter note, never a longer one. No other keys: "
+        "a document with any other key is refused. A "
         "repository too large for the bounds is indexed at directory granularity, and the "
         'lists you cut are named in "truncated" -- never padded to look complete. '
         f'"commit_sha" must be exactly {commit_sha}. Before you finish, the worker checks '
