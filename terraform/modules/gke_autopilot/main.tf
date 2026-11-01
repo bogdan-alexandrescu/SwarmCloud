@@ -147,7 +147,11 @@ resource "google_container_cluster" "this" {
 
   deletion_protection = var.deletion_protection
 
-  resource_labels = var.labels
+  # managed-by=swarm-terraform stated here as well as in var.labels (which
+  # carries the same value): `make destroy` keys on it, and a static scan
+  # (checkov CKV_GCP_21) cannot resolve a variable with no default, so a
+  # bare `var.labels` reads to it as a cluster with no labels.
+  resource_labels = merge({ "managed-by" = "swarm-terraform" }, var.labels)
 
   lifecycle {
     precondition {
