@@ -15259,7 +15259,7 @@ Each pool, and what it bounds:
   Cloud Run instances). **Units**, unchanged.
 * `backend:<b>`: a backend's compute capacity (Autopilot nodes, Cloud Run Job
   quota). **Units**, unchanged.
-* `runner:<p>`: a profile's concurrency. Every task of a profile has one
+* `runner:<p>`: a profile's concurrency. Every agent of a profile has one
   class, so units and agents differ by a constant factor; the configured
   limits are written in units (`runner:claude-code-large` 100 is 25 agents),
   so changing it would silently quadruple them. **Units**, unchanged.
@@ -15269,7 +15269,7 @@ Each pool, and what it bounds:
 Through the frozen functions: the scheduler (`acquire_lease`), the worker,
 the reconciler and swarm-api (every release goes through
 `release_lease_in_transaction`; nothing else writes `active`). Restated and
-changed in the same pull request: swarm-api's `headroom` (n tasks need
+changed in the same pull request: swarm-api's `headroom` (n agents need
 `n * pool_units_for` per pool), `waiting` (a row's `units` and the
 below-units verdict), the `/v1/capacity` profile's `pool_units`, the admin
 leases listing's per-row `pool_units` and `units_held_by_pool`;
@@ -15281,7 +15281,7 @@ leases listing's per-row `pool_units` and `units_held_by_pool`;
 Nothing at once: an old lease releases by the old rule. The console
 (`Holders.tsx`'s drift card, `types.ts` `blockerCeiling`, `ProfileMatrix`,
 `AdminSettings`) and swarm-mcp's `binding_pool` still divide a provider
-pool's room by the task's units, so they under-state provider room until they
+pool's room by the agent's units, so they under-state provider room until they
 read the served `pool_units`; they over-state nothing.
 
 ### If it is declined
