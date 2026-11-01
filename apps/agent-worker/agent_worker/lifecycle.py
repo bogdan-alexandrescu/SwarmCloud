@@ -4488,95 +4488,106 @@ class Worker:
         # what makes the agent's files stop changing, and the title file is
         # the agent's.
         title_refused = self._refused_title_reason() if ran_clean else None
-        # The ONLY call that may lead to a publish. The agent exited on its own
-        # here; the other five call sites are parks and crashes. The harvest
-        # runs and the publish WAITS (#165, owner decision 2026-09-28): it is
-        # made below, only once the upload manifest has passed the check.
-        summary = self._upload_outputs(defer_publish=True)
-        if ran_clean and self._no_change(summary):
-            # An empty diff this step was allowed (2026-10-05): its result,
-            # which the missing-output check and `_published_nothing` read,
-            # and which a dependant that needed the change skips on.
-            summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
-            self.log.info(
-                "nothing to change: the diff is empty and this step allows it",
-                allow_empty_diff=True,
-            )
-        elif ran_clean and (verified := self._verified_no_change(summary)) is not None:
-            # Proposal J (owner decision 2026-10-08): an agent that changed
-            # nothing AND wrote verification.md checked and found the work
-            # done, which is the same result `allow_empty_diff` produces,
-            # whatever the step's flag says. Its text is the reason. Without
-            # the file, `empty_diff` / `published_nothing` fail it as before.
-            summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
-            summary[NO_CHANGE_REASON_SUMMARY_KEY] = verified
-            self.log.info(
-                "nothing to change: the diff is empty and the agent wrote "
-                f"{VERIFICATION_FILE} (or, publishing onto a pull request, {CHECK_VERDICT_FILE})",
-                allow_empty_diff=self._allows_empty_diff(),
-            )
-        # Before the check, which counts what is carried as present (#166).
-        self._carry_parked_uploads(summary)
-        # Here, where the runner ended on its own, and not on the park, cancel
-        # and crash paths: a parked attempt resumes later and may still write
-        # the file.
-        missing = self._report_missing_outputs(summary, fails_the_attempt=ran_clean)
-        withheld = self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused)
-        self._publish_checked(summary, withheld)
-        if (
-            ran_clean
-            and withheld is None
-            and summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True
-        ):
-            # A `publish_to_pr` step that checked and changed nothing (#2241):
-            # its evidence goes onto the pull request as a comment, not a commit.
-            self._post_no_change_evidence(summary)
-            self._record_forge_credential(summary)
-        if ran_clean and self._no_change_after_publish(summary):
-            self.log.info("nothing to change: the moved branch already holds this round's change",
-                          reason=summary.get(NO_CHANGE_REASON_SUMMARY_KEY))
-        if self._pushed_branch is not None:
-            # The branch this attempt actually pushed, read from git after the
-            # push (#667, observer P11): a step summary can be checked against
-            # it. Its `name` and `head` are also what `carrier: branches` (D13)
-            # reads to start the next step from this one's work.
-            summary["branch"] = self._scrub(dict(self._pushed_branch))
-        elif self._carrier_pushed is not None:
-            # `carrier: branches` (D13): where this step's work is kept for
-            # the next step, by name and head, as the last push left it.
-            summary["branch"] = self._scrub(dict(self._carrier_pushed))
-        summary["exit_code"] = result.exit_code
-        summary["duration_seconds"] = round(result.duration_seconds, 3)
-        if len(self._runs) > 1:
-            # EVERY RUN (SWAP-RUNS, #2457): the attempt's agent time is the
-            # sum of its runs; the last run's own figure keeps its own name.
-            summary["duration_seconds"] = round(
-                sum(float(run.get("duration_s") or 0.0) for run in self._runs), 3)
-            summary["last_run_duration_seconds"] = round(result.duration_seconds, 3)
-        if self._index_phases is not None:
-            summary["repo_index_phases"] = [r.as_dict() for r in self._index_phases]
-        if self._verdict is not None:
-            summary["verdict_gate"] = dict(self._verdict)
-            if not self._verdict.get("agent_ran", True):
-                # The owner's words for it (2026-10-05): on MERGE, no fix
-                # agent; the step only published the reviewed work.
-                summary["skipped_agent"] = f"review verdict {self._verdict['verdict']}"
-                noop = self._verdict.get(verdict_mod.NOOP_PRECHECK_KEY)
-                if noop is not None:
-                    # #2524 check (b): a NOT_YET whose head a MERGE already covers.
-                    summary[verdict_mod.NOOP_PRECHECK_KEY] = dict(noop)
-                    summary["skipped_agent"] = f"no-op precheck (b): {noop['reason']}"
-            if result.exit_code != EXIT_TERMINATED:
-                # After the publish, so the epic hears of a review only once
-                # the step it gated has done its own work; never on a stop.
-                summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
-        if self._pr_text_from is not None:
-            summary["pull_request_text_from"] = dict(self._pr_text_from)
-        if self._rendered_review is not None:
-            summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
+        # HARVEST AND PUBLISH UNDER A BEATING LEASE (#2686). The supervision
+        # loop has stopped and `_checkpoint("final")` beats only for itself, so
+        # the harvest, the upload and the forge publish below ran with nothing
+        # beating: task_f06e7358 went 94-111 s silent here on each of three
+        # attempts, task_118cd828 108 s and 97 s, and the reconciler fenced a
+        # live, finishing worker every time. The thread asks for the fence
+        # before every beat and stops on it (invariant 5), and the publish
+        # still reads it before each forge write (`_own_before_forge_write`).
+        # The block ends before any terminal write, park or release below, so
+        # no beat races the write that ends the lease.
+        with self._heartbeat_meanwhile("harvest/publish"):
+            # The ONLY call that may lead to a publish. The agent exited on its own
+            # here; the other five call sites are parks and crashes. The harvest
+            # runs and the publish WAITS (#165, owner decision 2026-09-28): it is
+            # made below, only once the upload manifest has passed the check.
+            summary = self._upload_outputs(defer_publish=True)
+            if ran_clean and self._no_change(summary):
+                # An empty diff this step was allowed (2026-10-05): its result,
+                # which the missing-output check and `_published_nothing` read,
+                # and which a dependant that needed the change skips on.
+                summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
+                self.log.info(
+                    "nothing to change: the diff is empty and this step allows it",
+                    allow_empty_diff=True,
+                )
+            elif ran_clean and (verified := self._verified_no_change(summary)) is not None:
+                # Proposal J (owner decision 2026-10-08): an agent that changed
+                # nothing AND wrote verification.md checked and found the work
+                # done, which is the same result `allow_empty_diff` produces,
+                # whatever the step's flag says. Its text is the reason. Without
+                # the file, `empty_diff` / `published_nothing` fail it as before.
+                summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
+                summary[NO_CHANGE_REASON_SUMMARY_KEY] = verified
+                self.log.info(
+                    "nothing to change: the diff is empty and the agent wrote "
+                    f"{VERIFICATION_FILE} (or, publishing onto a pull request, {CHECK_VERDICT_FILE})",
+                    allow_empty_diff=self._allows_empty_diff(),
+                )
+            # Before the check, which counts what is carried as present (#166).
+            self._carry_parked_uploads(summary)
+            # Here, where the runner ended on its own, and not on the park, cancel
+            # and crash paths: a parked attempt resumes later and may still write
+            # the file.
+            missing = self._report_missing_outputs(summary, fails_the_attempt=ran_clean)
+            withheld = self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused)
+            self._publish_checked(summary, withheld)
+            if (
+                ran_clean
+                and withheld is None
+                and summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True
+            ):
+                # A `publish_to_pr` step that checked and changed nothing (#2241):
+                # its evidence goes onto the pull request as a comment, not a commit.
+                self._post_no_change_evidence(summary)
+                self._record_forge_credential(summary)
+            if ran_clean and self._no_change_after_publish(summary):
+                self.log.info("nothing to change: the moved branch already holds this round's change",
+                              reason=summary.get(NO_CHANGE_REASON_SUMMARY_KEY))
+            if self._pushed_branch is not None:
+                # The branch this attempt actually pushed, read from git after the
+                # push (#667, observer P11): a step summary can be checked against
+                # it. Its `name` and `head` are also what `carrier: branches` (D13)
+                # reads to start the next step from this one's work.
+                summary["branch"] = self._scrub(dict(self._pushed_branch))
+            elif self._carrier_pushed is not None:
+                # `carrier: branches` (D13): where this step's work is kept for
+                # the next step, by name and head, as the last push left it.
+                summary["branch"] = self._scrub(dict(self._carrier_pushed))
+            summary["exit_code"] = result.exit_code
+            summary["duration_seconds"] = round(result.duration_seconds, 3)
+            if len(self._runs) > 1:
+                # EVERY RUN (SWAP-RUNS, #2457): the attempt's agent time is the
+                # sum of its runs; the last run's own figure keeps its own name.
+                summary["duration_seconds"] = round(
+                    sum(float(run.get("duration_s") or 0.0) for run in self._runs), 3)
+                summary["last_run_duration_seconds"] = round(result.duration_seconds, 3)
+            if self._index_phases is not None:
+                summary["repo_index_phases"] = [r.as_dict() for r in self._index_phases]
+            if self._verdict is not None:
+                summary["verdict_gate"] = dict(self._verdict)
+                if not self._verdict.get("agent_ran", True):
+                    # The owner's words for it (2026-10-05): on MERGE, no fix
+                    # agent; the step only published the reviewed work.
+                    summary["skipped_agent"] = f"review verdict {self._verdict['verdict']}"
+                    noop = self._verdict.get(verdict_mod.NOOP_PRECHECK_KEY)
+                    if noop is not None:
+                        # #2524 check (b): a NOT_YET whose head a MERGE already covers.
+                        summary[verdict_mod.NOOP_PRECHECK_KEY] = dict(noop)
+                        summary["skipped_agent"] = f"no-op precheck (b): {noop['reason']}"
+                if result.exit_code != EXIT_TERMINATED:
+                    # After the publish, so the epic hears of a review only once
+                    # the step it gated has done its own work; never on a stop.
+                    summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
+            if self._pr_text_from is not None:
+                summary["pull_request_text_from"] = dict(self._pr_text_from)
+            if self._rendered_review is not None:
+                summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
 
-        runner_result = self._add_runner_block(summary)
-        self._record_quality_gates(summary)
+            runner_result = self._add_runner_block(summary)
+            self._record_quality_gates(summary)
 
         if self.budget is not None:
             # The limits, what the attempt used and, when it stopped the
