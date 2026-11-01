@@ -75,6 +75,7 @@ import { RepositoriesScreen } from './Repositories'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { useRecentName, WorkflowsScreen } from './Workflows'
+import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceTalkScreen } from './voice/Section'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
 
 /**
@@ -585,6 +586,26 @@ export const SECTIONS: SectionDef[] = [
       // it reads `/v1/tenants/mine`, which everyone may, and a workspace
       // admin who is not a platform admin is shown only this page.
       { id: 'workspaces', label: 'Workspaces you admin' },
+    ],
+  },
+  {
+    // VOICE IT (docs/design/voice-it.md §10, phase one's first lane; BGD's
+    // decision of 2026-11-01): a section of its own, and the owner's decision
+    // is the argument docs/web-ui/redesign.md §2 asks a new section for. Its
+    // question is none of the other five's: they each ask what the platform
+    // holds or is doing, and this one asks for a conversation that turns into
+    // work. A LITERAL id, for the reason given on Work. Its spine item is
+    // drawn only for the people Voice it is open to (`voiceItOpen`,
+    // voice/Section.tsx); last, after Admin, so nobody else's spine moves.
+    // The question asks what each tab answers, in tab order.
+    id: 'voice',
+    label: 'Voice it',
+    question:
+      'What do I want built next, can I talk it through out loud until it is planned and shipped, which of those talks can I pick up again, and what does Voice it remember about how I work?',
+    tabs: [
+      { id: 'talk', label: 'Talk' },
+      { id: 'projects', label: 'Projects' },
+      { id: 'preferences', label: 'Preferences' },
     ],
   },
 ]
@@ -1188,6 +1209,7 @@ export function fromAddress(full: string): Route {
 const ADMIN_SECTION = 'admin'
 const LIMITS_TAB = 'limits'
 const AUTOMATE = 'automate'
+const VOICE = 'voice'
 
 /**
  * The query keys a pane's address carries, and no other: the `?pool=` a link
@@ -1759,6 +1781,8 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return 'config'
     case ADMIN_SECTION:
       return 'admin'
+    case VOICE:
+      return 'voice'
     case HELP:
       return 'help'
     case GITHUB_CALLBACK:
@@ -2426,6 +2450,15 @@ function SectionBody({
       return <AdminPlatformSecretsScreen />
     case 'admin/workspaces':
       return <WorkspacesYouAdminScreen go={go} />
+
+    // VOICE IT (voice-it.md §10): the three panes' shells; each says what it
+    // holds and when it arrives, and offers nothing that cannot work yet.
+    case 'voice/talk':
+      return <VoiceTalkScreen />
+    case 'voice/projects':
+      return <VoiceProjectsScreen />
+    case 'voice/preferences':
+      return <VoicePreferencesScreen />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash
