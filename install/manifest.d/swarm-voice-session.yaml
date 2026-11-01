@@ -9,6 +9,6 @@
 version: 1
 env:
   SWARM_VOICE_AUDIENCE:
-    setter: 'internal: read at apps/swarm-voice/swarm_voice/main.py:113; rendered by the swarm-voice StatefulSet, which a later Voice it lane adds; until then nothing deploys swarm-voice'
+    setter: 'internal: read at both ends of the call: apps/swarm-voice/swarm_voice/main.py:113 checks the ID token''s audience against it, apps/swarm-api/swarm_api/settings.py:1125 mints the token for it (unset there means SWARM_VOICE_URL itself); rendered by the swarm-voice StatefulSet, which a later Voice it lane adds; until then nothing deploys swarm-voice'
   SWARM_VOICE_CALLERS:
     setter: 'internal: read at apps/swarm-voice/swarm_voice/main.py:112; rendered by the swarm-voice StatefulSet, which a later Voice it lane adds; until then nothing deploys swarm-voice'
