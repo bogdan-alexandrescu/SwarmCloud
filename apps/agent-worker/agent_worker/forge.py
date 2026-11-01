@@ -9,7 +9,14 @@ WHY THE PERMISSION IS ASKED FOR RATHER THAN ASSUMED
 ---------------------------------------------------
 `GET /repos/{owner}/{repo}` returns a `permissions` object when the request is
 authenticated, and `permissions.push` is the authoritative answer for a classic
-PAT, a fine-grained PAT and a GitHub App installation token alike. The obvious
+PAT and a fine-grained PAT. It is NOT for a GitHub App installation token
+(`ghs_`): those roles are a collaborator's, an installation is no collaborator,
+and GitHub answers every one of them false -- pull included, on a repository
+the same token has just read (dev acceptance, 2026-10-30 to 10-31, #2650: every
+service run's push was refused as "the token has none but not push"). So an
+installation token's push is MEASURED, by the receive-pack advertisement
+(`_receive_pack_status`), which GitHub serves only to a credential that may
+push -- the measure swarm-api's token check uses. The obvious
 alternative -- reading the `X-OAuth-Scopes` response header -- works for classic
 PATs ONLY and is absent for the other two, so a platform that trusted it would
 read every fine-grained token as unscoped and refuse work it was entitled to do.
@@ -633,6 +640,46 @@ def _request(
         raise ForgeError(f"could not reach {host}: {reason}") from None
 
 
+#: GitHub's documented prefix of an App installation token.
+APP_INSTALLATION_TOKEN_PREFIX = "ghs_"
+
+
+def _receive_pack_status(ref: RepoRef, token: str) -> int:
+    """The HTTP status of the repository's receive-pack advertisement, asked
+    with `token` as git asks it: 200 when the token may push, 401, 403 or 404
+    when it may not. Only the status is read, never the advertisement. An
+    outage or a rate limit raises `ForgeUnavailable`, a redirect
+    `ForgeRedirectRefused`, as `_request` does."""
+    url = (
+        f"https://{ref.host}/{quote(ref.owner, safe='')}/{quote(ref.name, safe='')}.git"
+        "/info/refs?service=git-receive-pack"
+    )
+    req = urllib.request.Request(url, method="GET")
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    req.add_header("Authorization", f"Basic {basic}")
+    req.add_header("User-Agent", _UA)
+    path = urlparse(url).path
+    try:
+        with open_without_redirects(req, timeout=_TIMEOUT) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as exc:
+        headers = dict(exc.headers.items()) if exc.headers else {}
+        exc.close()
+        if 300 <= exc.code < 400:
+            raise ForgeRedirectRefused(exc.code, path) from None
+        if transient_status(exc.code, headers, None):
+            raise ForgeUnavailable(
+                f"the forge answered {exc.code} to {path}",
+                retry_after_seconds=retry_after_from_headers(headers),
+            ) from None
+        return exc.code
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        reason = _network_reason(exc)
+        if transient_network_error(exc):
+            raise ForgeUnavailable(f"could not reach {ref.host}: {reason}") from None
+        raise ForgeError(f"could not reach {ref.host}: {reason}") from None
+
+
 def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
     """Ask the forge what this token may do. One GET, no side effect.
 
@@ -697,6 +744,26 @@ def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
             default_branch="",
             can_push=False,
             reason=f"the forge answered {status}{': ' + message if message else ''}",
+        )
+
+    if token.startswith(APP_INSTALLATION_TOKEN_PREFIX):
+        # See the module docstring: the roles describe no installation.
+        status = _receive_pack_status(ref, token)
+        if status == 200:
+            reason = (
+                "an App installation token: push measured by the receive-pack "
+                "advertisement"
+            )
+        else:
+            reason = (
+                "an App installation token whose receive-pack advertisement GitHub "
+                f"refused (HTTP {status})"
+            )
+        return RepoAccess(
+            ref=ref,
+            default_branch=str(data.get("default_branch") or ""),
+            can_push=status == 200,
+            reason=reason,
         )
 
     permissions = data.get("permissions")
