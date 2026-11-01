@@ -34,6 +34,17 @@ current key re-signs it without an audit row, so an admin can repair a block
 the re-sign pass has not reached. The tenant id and the block name are inside
 the signed bytes, so a block copied from another workspace's document does
 not verify (invariant 9). Only `jev is True` is ever on.
+
+THE WORKER ASKS, BECAUSE IT CANNOT CHECK. The MAC is an HMAC under the one
+`swarm-settings-key`; a tenant worker that held it could sign any tenant's
+block, so no worker does. `POST /v1/attempts/{attempt_id}/quality-gates`
+(`routes.quality_gates`) is the worker's question: proven as the context
+routes are (the worker's ID token for its tenant, the attempt key's proof,
+the fence, the signed spec), it answers `worker_verdict` for the attempt's
+OWN tenant, the id taken from the proven tuple, never from the caller. The
+verdict requires the MAC whatever SETTINGS_MAC_TENANTS says: a block that
+says on but carries no MAC, or one that does not verify, is off, and the
+answer says which (`refused`), so the attempt's summary can.
 """
 
 from __future__ import annotations
@@ -93,6 +104,30 @@ def stored_jev(doc: Mapping[str, Any] | None, *, tenant_id: str | None = None,
     if mac is not None and tenant_id:
         block = trusted_block(tenant_id, MAC_BLOCK, block, mac)
     return block.get(JEV) is True
+
+
+#: Why `worker_verdict` reads a block that says on as off.
+REFUSED_NO_KEY = "no_settings_key"
+REFUSED_UNSIGNED = "unsigned"
+REFUSED_MISMATCH = "mac_mismatch"
+
+
+def worker_verdict(tenant_id: str, doc: Mapping[str, Any] | None,
+                   mac: SettingsMac) -> dict[str, Any]:
+    """`{"jev", "refused"}`, what a worker of `tenant_id` may act on: on only
+    when the stored block says `jev: true` AND its MAC verifies under
+    `mac.keys` for this tenant and block, cut over or not. `refused` names
+    why a block that says on is off, and is None otherwise."""
+    block = (doc or {}).get(FIELD) if isinstance(doc, Mapping) else None
+    if not isinstance(block, Mapping) or block.get(JEV) is not True:
+        return {JEV: False, "refused": None}
+    if not mac.keys:
+        return {JEV: False, "refused": REFUSED_NO_KEY}
+    if not isinstance(block.get(MAC_FIELD), Mapping):
+        return {JEV: False, "refused": REFUSED_UNSIGNED}
+    if not block_verifies(tenant_id, MAC_BLOCK, block, mac.keys):
+        return {JEV: False, "refused": REFUSED_MISMATCH}
+    return {JEV: True, "refused": None}
 
 
 def authorize_write(auth: AuthContext, tenant: Tenant | None, tenant_id: str,
@@ -201,9 +236,13 @@ __all__ = [
     "OWNED_FIELDS",
     "QualityGatesPut",
     "QualityGatesStore",
+    "REFUSED_MISMATCH",
+    "REFUSED_NO_KEY",
+    "REFUSED_UNSIGNED",
     "authorize_read",
     "authorize_write",
     "can_edit",
     "stored_jev",
     "view",
+    "worker_verdict",
 ]

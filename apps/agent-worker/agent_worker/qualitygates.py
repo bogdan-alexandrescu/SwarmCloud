@@ -16,9 +16,22 @@ Both are inert without TYPESAFE_API_KEY and let the turn end on every error.
 This module is the worker's half: whether, which key, and the counts after.
 
 WHETHER. `workspace_settings/{tenant}.quality_gates.jev is True`
-(`swarm_api.qualitygates`, owner/admin-only and audited, default off). Off,
-or anything but `True`: nothing is read and the runner gets nothing, so no
+(`swarm_api.qualitygates`, owner/admin-only and audited, default off), AND
+swarm-api vouches that it signed that block (contract request 128). Off, or
+anything but `True`: nothing more is read and the runner gets nothing, so no
 hook is registered and nothing leaves the pod.
+
+WHY SWARM-API IS ASKED. Any tenant's worker can write any
+`workspace_settings` document, so a stored "on" proves nothing about who
+chose it. swarm-api stores `quality_gates.mac`, an HMAC under the one
+`swarm-settings-key`, with every write; a worker cannot check it, because a
+worker that held that key could sign any tenant's block. So when the stored
+block says on, `GatesRoute` asks `POST /v1/attempts/{attempt_id}/
+quality-gates`, signed with the child path's attempt key like the graph
+context route, and swarm-api answers for this attempt's OWN tenant whether
+the block's MAC verifies. Unsigned, a MAC that does not verify, no settings
+key, no attempt key or no answer: off, and `refused` says which, for the
+attempt's summary.
 
 WHICH KEY. The WORKSPACE's TypeSafe key, `swarm-tenant-<tenant>-typesafe`,
 the secret the jev browser tools read (`jevkey.resolve`), resolved with no
@@ -52,8 +65,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
+from urllib.parse import quote
 
 from . import indexrun
 from . import jevkey
@@ -86,11 +101,82 @@ EVENT_CAUSE = "quality_gate"
 #: A counts file larger than this is not the launcher's: read as nothing.
 MAX_COUNTS_BYTES = 256 * 1024
 
+#: The worker's question to swarm-api (`swarm_api.routes.quality_gates`).
+ROUTE = "/v1/attempts/{attempt_id}/quality-gates"
+#: Why a stored "on" is off when swarm-api never vouched for it. swarm-api's
+#: own reasons (`unsigned`, `mac_mismatch`, `no_settings_key`) are passed on
+#: as it gives them.
+REFUSED_NO_ATTEMPT_KEY = "no_attempt_key"
+REFUSED_NO_VERIFIER = "no_verifier"
+REFUSED_FENCED = "fenced"
+REFUSED_UNANSWERED = "unanswered"
+REFUSED_NOT_AN_ANSWER = "not_an_answer"
+#: A reason longer than this, or not a word, is not swarm-api's.
+_MAX_REASON = 64
+
 
 def switched_on(workspace: Mapping[str, Any] | None) -> bool:
     """`quality_gates.jev is True`; anything else, malformed or absent, is off."""
     block = workspace.get(FIELD) if isinstance(workspace, Mapping) else None
     return isinstance(block, Mapping) and block.get(JEV) is True
+
+
+class GatesRoute:
+    """Whether swarm-api vouches for this attempt's workspace's "on": asked
+    at most once, never raises. `refused` is why it did not, after `verdict`."""
+
+    def __init__(self, cfg: Any, *, children: Any,
+                 wall: Callable[[], float] = time.time) -> None:
+        self.cfg = cfg
+        self.children = children
+        self._wall = wall
+        self._verdict: bool | None = None
+        self.refused: str | None = None
+
+    def route(self) -> str:
+        return ROUTE.format(attempt_id=quote(self.cfg.attempt_id, safe=""))
+
+    def body(self) -> bytes:
+        """The exact bytes sent and signed: the attempt's fencing fields only."""
+        return json.dumps({
+            "tenant_id": self.cfg.tenant_id,
+            "task_id": self.cfg.task_id,
+            "attempt_id": self.cfg.attempt_id,
+            "lease_id": self.cfg.lease_id,
+            "generation": self.cfg.generation,
+        }, sort_keys=True).encode("utf-8")
+
+    def _refuse(self, reason: str) -> bool:
+        self.refused = reason
+        self._verdict = False
+        return False
+
+    def verdict(self) -> bool:
+        """True only when swarm-api answered `jev: true` for this attempt."""
+        if self._verdict is not None:
+            return self._verdict
+        key = getattr(self.children, "_key", None)
+        api = getattr(self.children, "_api", None)
+        if key is None or api is None or not getattr(self.children, "keyed", False):
+            return self._refuse(REFUSED_NO_ATTEMPT_KEY)
+        route, body = self.route(), self.body()
+        try:
+            headers = key.headers("POST", route, body, now=self._wall())
+            _, payload = api.call("POST", route, body=body, headers=headers)
+        except Exception as exc:  # noqa: BLE001 -- never fatal, said by status
+            fenced = getattr(exc, "status", None) == 409
+            return self._refuse(REFUSED_FENCED if fenced else REFUSED_UNANSWERED)
+        if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+            return self._refuse(REFUSED_NOT_AN_ANSWER)
+        if payload.get(JEV) is True:
+            self.refused = None
+            self._verdict = True
+            return True
+        reason = payload.get("refused")
+        if isinstance(reason, str) and reason and len(reason) <= _MAX_REASON \
+                and reason.replace("_", "").isalnum():
+            return self._refuse(reason)
+        return self._refuse(REFUSED_NOT_AN_ANSWER)
 
 
 def read_settings(db: Any, tenant_id: str, *,
@@ -116,13 +202,21 @@ def _write_private(path: Path, text: str) -> None:
 def prepare(*, db: Any, client: Any, tenant_id: str, private_dir: Path, logger: Any,
             call_options: Mapping[str, Any] | None = None,
             secret_env_names: Iterable[str] = (), inject: bool = False,
-            shim_file: Path | None = None) -> dict[str, str]:
-    """`{CONFIG_ENV: path}` when this workspace turned the gates on and a key
-    (or, with the forwarder, the shim) is available; else {}. Never raises."""
+            shim_file: Path | None = None, route: GatesRoute | None = None) -> dict[str, str]:
+    """`{CONFIG_ENV: path}` when this workspace turned the gates on, swarm-api
+    vouches that it signed that "on" (`route`), and a key (or, with the
+    forwarder, the shim) is available; else {}. Without a `route` a stored
+    "on" is off: nothing else can check its MAC. Never raises."""
     if db is None:
         return {}
     try:
         if not switched_on(read_settings(db, tenant_id, call_options=call_options)):
+            return {}
+        if route is None:
+            logger.warning("jev_gates_refused", reason=REFUSED_NO_VERIFIER)
+            return {}
+        if not route.verdict():
+            logger.warning("jev_gates_refused", reason=route.refused)
             return {}
         private = Path(private_dir)
         if inject:
@@ -229,6 +323,8 @@ __all__ = [
     "CONFIG_ENV",
     "ENFORCE",
     "EVENT_CAUSE",
+    "GatesRoute",
+    "REFUSED_NO_VERIFIER",
     "SUMMARY_KEY",
     "finish",
     "prepare",

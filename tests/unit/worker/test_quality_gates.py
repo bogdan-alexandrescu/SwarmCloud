@@ -110,12 +110,22 @@ def _world(*, gates: Any = True, tenant_key: str | None = None, user_key: str | 
     return _Db(docs), _Secrets(values)
 
 
+class _Vouches:
+    """A `GatesRoute` whose swarm-api vouched for the stored "on"."""
+
+    refused = None
+
+    def verdict(self) -> bool:
+        return True
+
+
 def _prepare(tmp_path: Path, db: _Db, client: _Secrets, **kw: Any) -> tuple[dict[str, str], str, Path]:
     from agent_worker import qualitygates
 
     log, stream = _logger()
     private = tmp_path / "private"
     private.mkdir(exist_ok=True)
+    kw.setdefault("route", _Vouches())
     env = qualitygates.prepare(db=db, client=client, tenant_id="eng", private_dir=private,
                                logger=log, **kw)
     return env, stream.getvalue(), private
@@ -224,6 +234,184 @@ def test_the_lifecycle_prepares_the_gates_for_claude_code_with_the_profiles_secr
     assert "secret_env_names=tuple(profile.secrets or ())" in text
     assert 'spec.name != "claude-code"' in text
     assert "self._record_quality_gates(summary)" in text
+
+
+# --- signed (contract request 128): swarm-api, which holds the key, vouches ---------------
+
+SETTINGS_KEY = "settings-" + secrets.token_hex(24)
+
+
+class _Cfg:
+    runner_profile = "claude-code"
+    tenant_id = "eng"
+    task_id = "task_1"
+    attempt_id = "att_1"
+    lease_id = "lease_1"
+    generation = 3
+
+
+class _AttemptKey:
+    def headers(self, method: str, path: str, body: bytes, *, now: float) -> dict[str, str]:
+        return {"X-Swarm-Attempt-Timestamp": str(int(now))}
+
+
+class _SwarmApi:
+    """swarm-api's worker route over `db`: the REAL `worker_verdict`, under
+    the settings key only swarm-api holds, for the tenant the body names."""
+
+    def __init__(self, db: _Db, *, key: str = SETTINGS_KEY, fail: Exception | None = None) -> None:
+        self.db, self.key, self.fail, self.calls = db, key, fail, []
+
+    def call(self, method: str, path: str, *, body: bytes, headers: dict[str, str]):
+        from swarm_api.judgment import SettingsMac
+        from swarm_api.qualitygates import worker_verdict
+
+        self.calls.append((method, path, json.loads(body)))
+        if self.fail is not None:
+            raise self.fail
+        tenant_id = json.loads(body)["tenant_id"]
+        doc = self.db.docs.get(f"workspace_settings/{tenant_id}")
+        return 200, {"ok": True, **worker_verdict(tenant_id, doc, SettingsMac(keys=(self.key,)))}
+
+
+class _Children:
+    def __init__(self, api: Any, *, keyed: bool = True) -> None:
+        self._api, self._key, self.keyed = api, _AttemptKey(), keyed
+
+
+def _signed(jev: bool, tenant_id: str = "eng") -> dict[str, Any]:
+    from swarm_api.judgment import sign_block
+
+    block: dict[str, Any] = {"jev": jev, "set_by": "root@example.com"}
+    block["mac"] = sign_block(SETTINGS_KEY, tenant_id=tenant_id, block="quality_gates", fields=block)
+    return block
+
+
+class _Worker:
+    """What `Worker._quality_gates_env` and `_record_quality_gates` reach."""
+
+    def __init__(self, db: _Db, secrets_client: _Secrets, children: _Children, private: Path) -> None:
+        from types import SimpleNamespace
+
+        self.cfg, self.db, self.secret_client, self.children = _Cfg(), db, secrets_client, children
+        self.log, self.stream = _logger()
+        self.control = SimpleNamespace(call_options=lambda _kind: {})
+        self.typesafe = SimpleNamespace(on=False, shim_file=None)
+        self._gates_env = None
+        self.marks: list[tuple[str, dict]] = []
+        self.ws = SimpleNamespace(private=private)
+
+    def _emit_startup_mark(self, cause: str, detail: dict) -> None:
+        self.marks.append((cause, detail))
+
+
+def _attempt(tmp_path: Path, block: Any, **api_kw: Any) -> tuple[dict[str, str], dict, _Worker]:
+    """One claude-code attempt's gates, as the lifecycle builds them, and its summary."""
+    from types import SimpleNamespace
+
+    from agent_worker.lifecycle import Worker
+
+    db, client = _world(gates=None, tenant_key=_fake_key())
+    if block is not None:
+        db.docs["workspace_settings/eng"] = {"tenant_id": "eng", "quality_gates": block}
+    private = tmp_path / "private"
+    private.mkdir(exist_ok=True)
+    worker = _Worker(db, client, _Children(_SwarmApi(db, **api_kw)), private)
+    env = Worker._quality_gates_env(worker, worker.ws, SimpleNamespace(secrets=()))
+    summary: dict[str, Any] = {}
+    Worker._record_quality_gates(worker, summary)
+    return env, summary, worker
+
+
+def test_a_stored_on_with_no_valid_mac_is_off_and_the_summary_says_why(tmp_path):
+    from agent_worker import qualitygates
+
+    for block, why in (({"jev": True}, "unsigned"),
+                       ({**_signed(False), "jev": True}, "mac_mismatch"),
+                       (_signed(True, tenant_id="research"), "mac_mismatch")):
+        env, summary, worker = _attempt(tmp_path, block)
+        # MUTATION: act on `jev is True` without asking swarm-api (main before
+        # contract request 128) -> the forged "on" hands the runner the config.
+        assert qualitygates.CONFIG_ENV not in env, block
+        assert worker.secret_client.reads == []
+        assert summary == {"quality_gates": {"jev": False, "refused": why}}
+        assert worker.marks == []
+
+
+def test_a_signed_on_runs_the_gates(tmp_path):
+    from agent_worker import qualitygates
+
+    env, summary, worker = _attempt(tmp_path, _signed(True))
+    # MUTATION: ignore swarm-api's "jev": true -> no config and no hooks.
+    assert set(env) == {qualitygates.CONFIG_ENV}
+    config = json.loads(Path(env[qualitygates.CONFIG_ENV]).read_text())
+    assert Path(config["key_file"]).name == "jev-gates.key"
+    assert worker.secret_client.reads == ["swarm-tenant-eng-typesafe"]
+    assert summary == {"quality_gates": {"jev": True}}
+    ((method, path, body),) = worker.children._api.calls
+    assert (method, path) == ("POST", "/v1/attempts/att_1/quality-gates")
+    # The attempt's tuple and nothing else (invariant 10).
+    assert body == {"tenant_id": "eng", "task_id": "task_1", "attempt_id": "att_1",
+                    "lease_id": "lease_1", "generation": 3}
+
+
+def test_a_stored_off_asks_swarm_api_nothing(tmp_path):
+    for block in (None, _signed(False), {"jev": "true"}):
+        env, summary, worker = _attempt(tmp_path, block)
+        assert env == {} and summary == {}
+        # MUTATION: ask before reading the stored switch -> one call per claude-code attempt.
+        assert worker.children._api.calls == []
+
+
+def test_no_answer_no_key_or_the_fence_is_off_never_fatal(tmp_path):
+    from agent_worker import qualitygates
+
+    class _Status(Exception):
+        def __init__(self, status: int) -> None:
+            super().__init__(f"status {status}")
+            self.status = status
+
+    for fail, why in ((_Status(409), qualitygates.REFUSED_FENCED),
+                      (_Status(503), qualitygates.REFUSED_UNANSWERED),
+                      (OSError("no route"), qualitygates.REFUSED_UNANSWERED)):
+        env, summary, _worker = _attempt(tmp_path, _signed(True), fail=fail)
+        assert env == {} and summary == {"quality_gates": {"jev": False, "refused": why}}
+    # A key swarm-api does not hold is a MAC that does not verify.
+    env, summary, _worker = _attempt(tmp_path, _signed(True), key="settings-" + secrets.token_hex(8))
+    assert env == {} and summary["quality_gates"]["refused"] == "mac_mismatch"
+
+
+def test_an_attempt_without_a_key_to_sign_with_does_not_ask(tmp_path):
+    from agent_worker import qualitygates
+
+    db, _client = _world(tenant_key=_fake_key())
+    api = _SwarmApi(db)
+    route = qualitygates.GatesRoute(_Cfg(), children=_Children(api, keyed=False))
+    assert route.verdict() is False and route.refused == qualitygates.REFUSED_NO_ATTEMPT_KEY
+    assert api.calls == []
+
+
+@pytest.mark.parametrize("payload", [None, {"jev": True}, {"ok": True, "jev": "true"},
+                                     {"ok": True, "jev": False, "refused": "x" * 65},
+                                     {"ok": True, "jev": False, "refused": "a b"}])
+def test_anything_but_swarm_apis_answer_is_off(payload):
+    from agent_worker import qualitygates
+
+    class _Api:
+        def call(self, *_a: Any, **_kw: Any):
+            return 200, payload
+
+    route = qualitygates.GatesRoute(_Cfg(), children=_Children(_Api()))
+    assert route.verdict() is False
+    assert route.refused == qualitygates.REFUSED_NOT_AN_ANSWER
+
+
+def test_without_a_route_a_stored_on_is_off(tmp_path):
+    db, client = _world(tenant_key=_fake_key())
+    env, log, _private = _prepare(tmp_path, db, client, route=None)
+    # MUTATION: treat a missing verifier as a vouch -> the forged "on" runs.
+    assert env == {} and client.reads == []
+    assert "jev_gates_refused" in log
 
 
 # --- the counts and the event ---------------------------------------------------------
