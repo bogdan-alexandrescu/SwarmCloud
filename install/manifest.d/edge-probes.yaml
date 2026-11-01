@@ -6,15 +6,17 @@
 # the proof. The DNS record is created in the project's Cloud DNS zone when one
 # covers the hostname, and is polled through Google Public DNS. The three
 # entries, whose check and apply change, are restated with replace: true.
+# Issue #2964: the brand moved after the hand-off (the console's Sign-in client
+# step), so the IAP service agent, which never needed it, no longer depends on it.
 version: 1
 entries:
 - id: oauth-brand.iap
   kind: oauth-brand
   scope: core
-  stage: 2
+  stage: 13
   provider: engine
   check: 'a Desktop client id is recorded (outputs.desktop_client_id, ^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$): the console refuses to create an OAuth client before Branding and Audience are set, so the client proves the brand. No API reads a brand: the IAP OAuth Admin API (iap.googleapis.com/v1/projects/N/brands) was shut down on 2026-03-19, so it is never called'
-  apply: 'NOT created by Terraform (google_iap_brand cannot be deleted and its API is shut down). steps/edge.py edge.brand opens https://console.cloud.google.com/auth/branding?project=$P and says what to set there: Branding (App name SwarmCloud, support email a group you own), Audience: choose Internal, then Clients > Create client > Desktop app (name SwarmCloud sc); it asks the Desktop client''s id and records it'
+  apply: 'NOT created by Terraform (google_iap_brand cannot be deleted and its API is shut down). The console''s Admin › Setup step Sign-in client (issue #2964) links https://console.cloud.google.com/auth/branding?project=$P (App name SwarmCloud, support email your own address), the Audience page (Internal) and Clients > Create client (Desktop app, SwarmCloud sc), and takes the client''s id and secret in a form; steps/edge.py edge.brand, a wait after handoff.console, asks nothing and is met once a client id is recorded or the console saved one'
   verify: verify signs in with the Desktop client (sc login), which only works when the brand exists and the backend's iap{enabled=true} blocks applied
   explain: 'The OAuth consent screen identity IAP presents; required before IAP can be turned on on any backend. Internal restricts sign-in to the organisation''s accounts'
   guards: 'undeletable once created -- a mistake here (wrong support email, wrong org) is permanent for the project''s lifetime'
@@ -41,7 +43,6 @@ entries:
   guards: null
   secret_entry: null
   depends_on:
-  - oauth-brand.iap
   - api.iap
   evidence:
   - apps/swarm-install/swarm_install/steps/edge.py

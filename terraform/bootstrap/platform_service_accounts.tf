@@ -111,6 +111,18 @@ resource "google_service_account" "doctor" {
   description  = "managed-by=swarm-terraform; the scheduled read-only doctor. Read-only project roles (viewer, securityReviewer, secretmanager.viewer, clusterViewer on the swarm cluster); posts findings to swarm-api. Writes nothing."
 }
 
+# NEW (2026-11-01). swarm-voice runs the Voice it StatefulSet on GKE through
+# Workload Identity (docs/design/voice-it.md section 3.4; terraform/infra/voice.tf).
+# Made here, holding no role, so deployer_service_accounts.tf's grant on it is
+# made in the same apply; voice.tf reads it as a data source and grants it its
+# own roles. No import block: terraform/infra never created it.
+resource "google_service_account" "voice" {
+  project      = var.project_id
+  account_id   = module.service_account_ids.voice_id
+  display_name = "Swarm Voice"
+  description  = "managed-by=swarm-terraform; the swarm-voice StatefulSet's Workload Identity account (Voice it). No project roles; terraform/infra/voice.tf grants its own."
+}
+
 # ---------------------------------------------------------------------------
 # The adoption from terraform/infra (live deployment only).
 # ---------------------------------------------------------------------------

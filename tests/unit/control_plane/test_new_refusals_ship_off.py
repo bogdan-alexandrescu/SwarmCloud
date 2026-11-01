@@ -510,6 +510,13 @@ NOT_SWITCHABLE_CODES = frozenset({
     "join_requests_daily_limit",
     "join_denied_recently",
     "join_workspace_queue_full",
+    # Admin › Setup's sign-in client (docs/design/day-one-plan.md §5.6, part
+    # of #2964): raised only by POST /v1/admin/setup/sign-in-client, which
+    # that change introduces, so no existing caller can be refused by it.
+    # Continuing past it is the breach itself: an id that is not a Desktop
+    # OAuth client's recorded as the one the installer writes into IAP's
+    # programmatic-clients list, with a secret version added beside it.
+    "client_id_invalid",
 })
 
 #: What the guard lets through without a switch.

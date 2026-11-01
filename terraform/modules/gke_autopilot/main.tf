@@ -39,6 +39,11 @@ resource "google_container_cluster" "this" {
   datapath_provider                        = "ADVANCED_DATAPATH"
   enable_cilium_clusterwide_network_policy = var.enable_cilium_clusterwide_network_policy
 
+  # Hostname-based (FQDNNetworkPolicy) egress, which needs Dataplane V2 above.
+  # Turning it on is an in-place cluster update; turning it OFF again replaces
+  # the cluster (the provider's ForceNewIfChange). See the variable.
+  enable_fqdn_network_policy = var.enable_fqdn_network_policy
+
   networking_mode = "VPC_NATIVE"
 
   ip_allocation_policy {
@@ -142,7 +147,11 @@ resource "google_container_cluster" "this" {
 
   deletion_protection = var.deletion_protection
 
-  resource_labels = var.labels
+  # managed-by=swarm-terraform stated here as well as in var.labels (which
+  # carries the same value): `make destroy` keys on it, and a static scan
+  # (checkov CKV_GCP_21) cannot resolve a variable with no default, so a
+  # bare `var.labels` reads to it as a cluster with no labels.
+  resource_labels = merge({ "managed-by" = "swarm-terraform" }, var.labels)
 
   lifecycle {
     precondition {

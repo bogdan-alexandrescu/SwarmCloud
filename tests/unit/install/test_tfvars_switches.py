@@ -251,7 +251,7 @@ def _block(text: str, header: str) -> str:
 def _platform_account_resources() -> list[str]:
     # Every account bootstrap_platform names is made by one of these resources
     # (service_account_ids' bootstrap_platform: the platform map plus tick,
-    # verify, schedule_tick, rollup_sweeper, discovery and doctor).
+    # verify, schedule_tick, rollup_sweeper, discovery, doctor and voice).
     text = (REPO / "terraform" / "bootstrap" / "platform_service_accounts.tf").read_text()
     found = re.findall(r'^resource "google_service_account" "([a-z_]+)"', text, flags=re.M)
     assert {"platform", "tick", "doctor"} <= set(found), found

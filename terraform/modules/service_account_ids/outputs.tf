@@ -33,6 +33,11 @@ output "doctor_id" {
   value       = local.doctor_id
 }
 
+output "voice_id" {
+  description = "The account the swarm-voice StatefulSet runs as through Workload Identity (terraform/infra/voice.tf); created by terraform/bootstrap."
+  value       = local.voice_id
+}
+
 output "bootstrap_platform" {
   description = "Every platform account id terraform/bootstrap creates (platform_service_accounts.tf), sorted."
   value       = local.bootstrap_platform

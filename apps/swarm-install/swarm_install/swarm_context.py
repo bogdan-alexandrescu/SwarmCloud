@@ -1,14 +1,16 @@
 """The engine's own swarm CLI context for the new deployment (design §4;
 plan §6.3; lessons 18 and 43).
 
-Two steps use it. `edge.desktop-client` (stage 2) takes the Desktop client's
-secret at a hidden prompt (`secret_entry`) and, with the same typed value,
-writes it into the swarm CLI's credential store for this context (`swarm
-context add --client-secret-stdin`, the value on stdin, never in argv), so
+Two steps use it. The console's Admin › Setup step Sign-in client adds the
+Desktop client's secret to Secret Manager (issue #2964); once it has,
+`edge.desktop-client` (stage 13, after the hand-off) reads that one version
+with the person's own credentials and writes it into the swarm CLI's
+credential store for this context (`swarm context add
+--client-secret-stdin`, the value on stdin, never in argv), so
 `verify.end-to-end` (stage 14) only signs in to a context that already holds
-it. The engine never reads a secret's value from Secret Manager
-(tests/unit/install/test_switches.py), so the prompt is the only place the
-value is ever in this process, and only while it is typed.
+it. That secret is the only one the engine ever reads a value of
+(tests/unit/install/test_switches.py); the value is in this process only
+while it is handed on, and the buffer is wiped after.
 
 The context is named after the hostname. The person's current context is
 never switched (`context add` without `--use`), and a context of that name

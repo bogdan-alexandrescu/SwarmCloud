@@ -30,9 +30,6 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     "swarm-install/{env}/console/github_app": frozenset(
         {"state_hash", "id", "slug", "client_id", "name", "installed_on",
          "secrets_written_at", "self_check"}),
-    #: The Desktop sign-in client Admin › Setup takes (issue #2964): its id and
-    #: who saved it when. The secret goes to Secret Manager, never here.
-    "swarm-install/{env}/console/sign_in_client": frozenset({"client_id", "saved_at", "saved_by"}),
     "swarm-install/{env}/console/accounts": frozenset(),
     #: A collection under the env document: `console/teams/<id>` has five
     #: segments, which real Firestore refuses as a document (audit 3, A2).
@@ -50,6 +47,10 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     #: fresh starts (DAYONE-SETUP-API-6).
     "swarm-install/{env}/console/verify_runs": frozenset(
         {"verify_runs", "retries", "repository", "started_at", "by"}),
+    #: Admin › Setup's Sign-in client step (issue #2964): the Desktop
+    #: client's id, when and by whom it was saved. Its secret goes to Secret
+    #: Manager (`swarm-iap-desktop-client-secret`) only, never here.
+    "swarm-install/{env}/console/sign_in_client": frozenset({"client_id", "saved_at", "saved_by"}),
     "swarm-install/{env}/health/latest": frozenset({"run_at", "checks", "findings"}),
 }
 ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"})
@@ -58,7 +59,7 @@ ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"
 ENGINE_DOCUMENT = "swarm-install/{env}"
 #: The engine document's fields Admin › Setup reads by name; each is in the
 #: engine's row of `swarm_install.record.WRITERS` (`test_record_parity`).
-ENGINE_FIELDS_READ = frozenset({"lease", "sizing", "installer"})
+ENGINE_FIELDS_READ = frozenset({"lease", "sizing", "installer", "sign_in_client"})
 #: `sizing`'s fields the status route serves (the INTERFACE SHEET's
 #: `state.outputs["sizing"]`, written in stage 0 by lane SIZING-ASK).
 SIZING_FIELDS: tuple[str, ...] = ("mode", "members", "pool_limits", "service_max_instances",
@@ -68,12 +69,12 @@ INDIVIDUAL = "individual"
 TEAM = "team"
 
 GITHUB_APP = "github_app"
-SIGN_IN_CLIENT = "sign_in_client"
 ACCOUNTS = "accounts"
 FINISHED = "finished"
 TEAMS = "teams"
 VERIFY_RUNS = "verify_runs"
 PERSONAL = "personal"
+SIGN_IN_CLIENT = "sign_in_client"
 
 
 class RecordFieldRefused(ValueError):
@@ -189,6 +190,7 @@ __all__ = [
     "InstallRecord",
     "PERSONAL",
     "RecordFieldRefused",
+    "SIGN_IN_CLIENT",
     "SIZING_FIELDS",
     "SWARM_API_DOCUMENTS",
     "TEAM",

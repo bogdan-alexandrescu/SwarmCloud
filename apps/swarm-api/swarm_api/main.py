@@ -180,8 +180,8 @@ UNCAPTURED_ROUTES = frozenset({
     "/v1/admin/setup/github-app/conversion",
     "/v1/admin/setup/links",
     "/v1/setup/links/redeem",
-    # The Desktop sign-in client's secret (issue #2964), on its way to
-    # Secret Manager.
+    # The Desktop sign-in client's secret (day-one-plan.md §5.6, part of
+    # #2964), which the route adds to Secret Manager and nowhere else.
     "/v1/admin/setup/sign-in-client",
 })
 

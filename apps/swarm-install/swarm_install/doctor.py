@@ -319,7 +319,8 @@ def _iap_programmatic_clients(args: Mapping[str, Any], t: Target, deps: Deps) ->
     output = str(args.get("client_output") or "desktop_client_id")
     client = t.outputs.get(output)
     if not client:
-        return UNKNOWN, f"no {output} is recorded in the install state (stage 2's edge.desktop-client records it)"
+        return UNKNOWN, (f"no {output} is recorded in the install state (the console's Admin › Setup step "
+                         "Sign-in client saves it; the hand-off wait, edge.desktop-client, records it)")
     backends = _frontend_backends(t, deps)
     if not backends:
         return UNMET, "no frontend backend has IAP on"
