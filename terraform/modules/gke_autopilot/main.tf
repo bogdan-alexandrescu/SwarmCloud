@@ -39,6 +39,11 @@ resource "google_container_cluster" "this" {
   datapath_provider                        = "ADVANCED_DATAPATH"
   enable_cilium_clusterwide_network_policy = var.enable_cilium_clusterwide_network_policy
 
+  # Hostname-based (FQDNNetworkPolicy) egress, which needs Dataplane V2 above.
+  # Turning it on is an in-place cluster update; turning it OFF again replaces
+  # the cluster (the provider's ForceNewIfChange). See the variable.
+  enable_fqdn_network_policy = var.enable_fqdn_network_policy
+
   networking_mode = "VPC_NATIVE"
 
   ip_allocation_policy {

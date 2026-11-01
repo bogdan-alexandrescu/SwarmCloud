@@ -193,6 +193,7 @@ module "gke_autopilot" {
   # shows up in a diff rather than as an edit to the rule that guards prod.
   allow_open_master_authorized_network = var.gke_allow_open_master_authorized_network
   deletion_protection                  = var.deletion_protection
+  enable_fqdn_network_policy           = var.gke_enable_fqdn_network_policy
 
   labels = local.labels
 

@@ -166,6 +166,16 @@ variable "gke_allow_open_master_authorized_network" {
   default     = false
 }
 
+variable "gke_enable_fqdn_network_policy" {
+  description = <<-EOT
+    Admit hostname-based egress policy (FQDNNetworkPolicy) on the cluster.
+    Default false, today's value; turning it off once on replaces the cluster.
+    The full note is on the gke_autopilot module's enable_fqdn_network_policy.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "gke_master_authorized_cidrs" {
   type = list(object({
     cidr_block   = string
