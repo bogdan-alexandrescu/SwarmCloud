@@ -15274,7 +15274,7 @@ changed in the same pull request: swarm-api's `headroom` (n tasks need
 below-units verdict), the `/v1/capacity` profile's `pool_units`, the admin
 leases listing's per-row `pool_units` and `units_held_by_pool`;
 `scripts/lib/concurrency-judge.jq` (invariant 3's exact check) and
-`scripts/lib/pool-units.jq` (`make pool-check`).
+`scripts/lib/pool-units.jq` (read by make pool-check).
 
 ### What it would break if accepted
 
