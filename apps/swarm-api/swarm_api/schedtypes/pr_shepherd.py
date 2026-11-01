@@ -749,7 +749,8 @@ def _plan_one(firing: Any, params: Any, writer: GitHubWriter, token: str, repo: 
         try:
             if pull.base_ref not in rules_by_base:
                 rules_by_base[pull.base_ref] = writer.branch_rules(pref, pull.base_ref, token)
-            ci = ci_facts(rules_by_base[pull.base_ref], writer.check_runs(pref, plan.head_sha, token),
+            ci = ci_facts(rules_by_base[pull.base_ref],
+                          writer.check_runs(pref, plan.head_sha, token, head_ref=pull.head_ref),
                           writer.commit_statuses(pref, plan.head_sha, token))
             plan.conditions["ci_red"] = ci.state == RED
         except ChecksForbidden as exc:

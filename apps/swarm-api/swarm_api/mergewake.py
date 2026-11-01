@@ -640,9 +640,12 @@ def _read(writer: GitHubWriter, ref: IssueRef, head: str, token: str, *,
         # No check runs on a conflicting pull request: never read them (#1076).
         return _Reading(CONFLICTING, pull)
     rules = writer.branch_rules(ref, pull.base_ref, token) if pull.base_ref else []
+    # With the pull request's head ref, as the worker's `merge.checks_at` reads
+    # it: another branch's push suite at this sha is dropped
+    # (`_other_branch_push`), so its green never stands for ours (#2946).
     reading = evaluate(
         required_status_checks(rules),
-        writer.check_runs(ref, head, token),
+        writer.check_runs(ref, head, token, head_ref=pull.head_ref or None),
         writer.commit_statuses(ref, head, token),
     )
     if reading.state == GREEN:
@@ -1215,9 +1218,11 @@ def _red_on_default(writer: GitHubWriter, ref: IssueRef, read: _Reading,
         if sha is None or sha == read.pull.head_sha:
             return None
         rules = writer.branch_rules(ref, branch, token)
+        # The default branch's own push suites only, as `_read` reads a pull
+        # request's (#2946, the worker's `_other_branch_push`).
         theirs = evaluate(
             required_status_checks(rules),
-            writer.check_runs(ref, sha, token),
+            writer.check_runs(ref, sha, token, head_ref=branch),
             writer.commit_statuses(ref, sha, token),
         ).failing_names()
     except Exception as exc:  # noqa: BLE001 -- the round goes ahead as before
