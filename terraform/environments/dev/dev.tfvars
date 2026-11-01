@@ -1077,3 +1077,13 @@ swarm_workers_log_view_enabled = true
 # public bucket. This deployment runs the acceptance suite, so it stays on and
 # the live plan shows no change.
 enable_acceptance_fixture = true
+
+# Settings signing, step one (docs/design/tenant-settings-integrity.md; #1457). The
+# key's first version was generated 2026-11-01 by scripts/create-secrets.sh
+# --settings-mac-key, so swarm-api and the scheduler may now reference it as
+# SWARM_SETTINGS_KEY. No tenant is cut over by this: scripts/resign-workspace-settings.sh
+# runs against the deployed key first, and only then does a second change add
+# Engineering to settings_mac_tenants and turn settings_mac_required on. Owner decision
+# 2026-11-01: sign settings so the Jev quality checks can run on request for the
+# code intelligence experiment.
+settings_mac_key_ready = true
