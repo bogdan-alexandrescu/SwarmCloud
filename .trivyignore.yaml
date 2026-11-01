@@ -157,9 +157,28 @@ vulnerabilities:
   # (fixed), but gke-gcloud-auth-plugin has no fixed build -- 587.0.0 is
   # go1.26.6 and the newest, 590.0.1 and 591.0.0, are go1.27.1 (fixed in
   # 1.27.3) -- so the entry is still needed for at least that tool.
+  #
+  # Re-measured 2026-11-01 ~04:00Z (owner: take every fixed build, extend one
+  # week only for what is still unfixed). Each pin downloaded as its
+  # Dockerfile does, checksum-verified, Go read with `go version -m`:
+  #
+  #   binary                   pinned build               Go        newest release        its Go
+  #   kubectl                  1.36.6                     go1.26.10 1.36.6 (1.37.2)       go1.26.10 fixed
+  #   terraform                1.17.1                     go1.26.10 1.17.1                same      fixed
+  #   trivy                    0.76.1                     go1.27.3  0.76.1                same      fixed
+  #   gh                       2.103.3                    go1.27.3  2.103.3               same      fixed
+  #   docker (docker-ce-cli)   29.9.2                     go1.26.10 29.9.2                same      fixed
+  #   gcloud-crc32c            google-cloud-cli 591.0.0   go1.27.2  591.0.0               same      NOT fixed
+  #   gke-gcloud-auth-plugin   google-cloud-cli 591.0.0   go1.27.1  591.0.0               same      NOT fixed
+  #
+  # gcloud-crc32c is also the only Go binary in workspace-apply's base,
+  # google-cloud-cli:591.0.0-stable (go1.27.2). 591.0.0 is still the newest in
+  # Google's apt index, the rapid channel's components-2.json (build
+  # 20261016073856) and the image's tags, so no pin moves; the other five are
+  # already fixed at their pins. Re-check Google's index on 2026-11-11.
   - id: CVE-2026-111943
-    statement: "Go stdlib crypto/x509 inside vendor-built Go binaries (docker, gcloud helpers, gh, kubectl, terraform, trivy); needs vendor rebuilds."
-    expired_at: 2026-11-04
+    statement: "Go stdlib crypto/x509 inside Google-built gcloud-crc32c (go1.27.2) and gke-gcloud-auth-plugin (go1.27.1) from google-cloud-cli 591.0.0; no Google build on go1.27.3 yet."
+    expired_at: 2026-11-11
 
   # Same class again (PROPOSED 2026-10-28 ~10:00Z by CLD for the owner's decision;
   # this entry is not accepted until BGD merges it): go-jose v4 DoS when parsing
