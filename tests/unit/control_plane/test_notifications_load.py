@@ -311,3 +311,28 @@ def test_the_submitter_state_index_is_declared():
         ("tenant_id", "ASCENDING"), ("submitted_by", "ASCENDING"),
         ("state", "ASCENDING"), ("created_at", "DESCENDING"),
     ]
+
+
+def test_until_the_index_is_built_the_submitter_is_filtered_after_the_read(db, monkeypatch):
+    """Firestore refuses a query whose composite index is still building
+    (FailedPrecondition). A deploy that lands before the index serves the
+    member's bell from the tenant-wide read, narrowed after, never partial."""
+    from google.api_core import exceptions as gexc
+
+    rows = FakeQuery._rows
+
+    def building(self):
+        names = {f for f, _op, _v in self._filters}
+        if self._path == "tasks" and {"submitted_by", "state"} <= names:
+            raise gexc.FailedPrecondition("The query requires an index.")
+        return rows(self)
+
+    monkeypatch.setattr(FakeQuery, "_rows", building)
+    _seed_parked(db)
+    viewer = notif.Viewer(email=ALICE, tenant_id="eng", member_scope=True)
+    feed = notif.Notifications(db, Store(db), now=_now).feed(viewer)
+    # MUTATION: let FailedPrecondition through -> both sources unread, partial.
+    assert feed["partial"] is False
+    ids = {i["id"] for i in feed["items"]}
+    assert {"task:handoff:t_browser:2", "task:input:t_review:0"} <= ids
+    assert not any("t_bobs" in i for i in ids)
