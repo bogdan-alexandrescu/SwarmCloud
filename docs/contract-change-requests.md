@@ -138,7 +138,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 128 | `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS`, `("jev",)`, so the workspace's switch for the claude-code lanes' TypeSafe quality checks is signed (JEV-LANES, PR 2905; QUALITY-GATES-SETTINGS-MAC, part of #2688) | ACCEPTED by the owner 2026-10-31 ('Add it (contract request)', answering PR 2905's first question) and APPLIED by the pull request that adds this line (lane QUALITY-GATES-SETTINGS-MAC): swarm-api's `qualitygates.QualityGatesStore` signs the block it writes, and `judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)` so the re-sign pass signs stored blocks |
 | 129 | `admission.py` / `models.py`: a lease takes 1 unit in each `provider:*` pool and its resource units in every other pool, records what it took per pool (`Lease.pool_units`), and release returns exactly that (LARGE-ONE-PROVIDER-SLOT, part of #2950) | ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the expected behaviour #2950 states) and APPLIED by the pull request that adds this line (lane LARGE-ONE-PROVIDER-SLOT, part of #2950): `pool_units_for` is the one rule; a lease from before it has no `pool_units` and releases its `units` from every pool |
 | 130 | `profiles.py`: `codex` becomes available, and runs on either the tenant's `OPENAI_API_KEY` or a pool ChatGPT plan (`CODEX_PLAN_ACCESS_TOKEN`, `CODEX_PLAN_ACCOUNT_ID`), `secrets_any_of=True` (CODEX-PLAN-CONTRACT, part of #2688) | open, REQUESTED 2026-11-01 by lane CODEX-PLAN-CONTRACT for the owner's shared ChatGPT-plan pool |
-| 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | open, REQUESTED 2026-11-01 by lane TIMEOUT-ASKED-CONTRACT after the owner answered "API records the ask" to the pre-publish gate lane's question (#2981, PR 2986) |
+| 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("API records the ask", answering the pre-publish gate lane's question on #2981, PR 2986; requested the same day by lane TIMEOUT-ASKED-CONTRACT) and APPLIED by the pull request that adds this line (lane TIMEOUT-ASKED-APPLY, part of #2688): the field last in `Task`, unsigned; swarm-api writes it in `_build_task` and a child's `replace`, reads and serves it in its codec and refuses it in a caller's metadata; the console's `Task` type declares it |
 
 ---
 
@@ -15609,9 +15609,16 @@ key the platform cannot dispatch either.
 
 ## 131. `models.py`: `Task.timeout_seconds_asked`, the timeout a spec asked for when swarm-api stored a lower one (TIMEOUT-ASKED-CONTRACT, part of #2688)
 
-**Status:** open, REQUESTED 2026-11-01 by lane TIMEOUT-ASKED-CONTRACT. Not
-applied: nothing under `apps/common/swarm_common/` is edited by the pull
-request that adds this entry. The pre-publish gate lane (#2981, PR 2986, merged
+**Status:** ACCEPTED by the owner (BGD) 2026-11-01 -- "API records the ask"
+-- and APPLIED by the pull request that adds this line (lane
+TIMEOUT-ASKED-APPLY, part of #2688), exactly as below: the field in
+`models.py`, `validation.timeout_asked` and the refused metadata key,
+`service._build_task`, the child's `replace` in `children.py`, the codec's
+`task_from_dict` and `task_to_api`, the console's `Task` type
+(`apps/swarm-ui/src/types.ts`), docs/workflows.md's step table and the three
+tests of item 9; pinned by `tests/unit/control_plane/test_timeout_seconds_asked.py`.
+Requested 2026-11-01 by lane TIMEOUT-ASKED-CONTRACT; that request's pull
+request edited nothing under `apps/common/swarm_common/`. The pre-publish gate lane (#2981, PR 2986, merged
 2026-11-01) asked who records a lowered timeout; the owner (BGD) answered "API
 records the ask". This entry is that answer as a contract change.
 
