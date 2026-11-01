@@ -145,6 +145,8 @@ def test_a_200_row_page_runs_its_reads_at_once(client, db, meter, view):
 
 def test_the_summary_projection_leaves_result_summary_on_the_server():
     assert "result_summary" not in TASK_SUMMARY_FIELDS
+    assert "result_summary.browser_used" in TASK_SUMMARY_FIELDS
+    assert "result_summary.browser_use" in TASK_SUMMARY_FIELDS
     assert set(TASK_SUMMARY_UNREAD).isdisjoint(TASK_SUMMARY_FIELDS)
     # The masker learns the secret literals from the input, so it is read.
     for needed in ("id", "tenant_id", "state", "created_at", "input", "metadata",
@@ -172,7 +174,12 @@ def _seed_rich(db) -> str:
         "input": {"prompt": "deploy", "api_token": leaked},
         "metadata": {"title": "Deploy the thing", "ticket": "T-1"},
         "last_error": f"auth failed with {leaked}",
-        "result_summary": {"summary": "x" * 5000},
+        "result_summary": {
+            "summary": "x" * 5000,
+            "browser_used": True,
+            "browser_use": {"tool_calls": 3, "mcp_calls": 1, "command_calls": 0,
+                            "images": 2, "seconds": 12.5, "complete": True},
+        },
         "latest_checkpoint": "gs://bucket/ckpt/1",
         "end_cause": "agent_failed",
         "attempt_count": 2,
@@ -195,6 +202,11 @@ def test_the_projected_summary_row_is_the_full_row_less_the_dropped_keys(client,
             assert summary[key] == value, key
     assert set(full) - set(summary) == {"input", "input_redaction_count", "result_summary",
                                         "result_summary_redaction_count"}
+    # The browser-use mark is lifted out of result_summary, so the projection
+    # keeps its two nested paths (BROWSER-USE-FLAG, #2322).
+    assert summary["browser_used"] is True
+    assert summary["browser_use"] == full["browser_use"]
+    assert summary["browser_use"]["tool_calls"] == 3
 
 
 def test_the_projected_summary_still_masks_what_the_input_names(client, db):

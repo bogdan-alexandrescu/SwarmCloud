@@ -266,7 +266,8 @@ def list_tasks(
     a request waits for the slowest of them, not their sum: measured on the
     live deployment on 2026-11-01, the Agents page's 200-row summary poll
     spent its 1.1-5.3 s in these serial round trips, not in CPU. `view=summary`
-    also reads only `store.TASK_SUMMARY_FIELDS` (no `result_summary`).
+    also reads only `store.TASK_SUMMARY_FIELDS` (of `result_summary`, only
+    its two browser-use keys).
 
     `claude_session` (CHECK-FILTER-TASKS, #1749, as CHECK-FILTER did for
     `GET /v1/workflows`) keeps only the tasks tagged with that Claude Code
