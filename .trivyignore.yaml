@@ -193,7 +193,10 @@ vulnerabilities:
   # 4.1.6, so only trivy (0.76.1, the newest, still go-jose 4.1.5) carries it.
   - id: CVE-2026-116587
     statement: "go-jose v4 JWK parsing DoS inside vendor-built terraform and trivy; no vendor release carries go-jose 4.1.6 yet."
-    expired_at: 2026-11-04
+    # 2026-11-01 (BGD, extended one week): trivy 0.76.1 (2026-10-21) is
+    # still the newest release and still links go-jose 4.1.5, so there is
+    # no release to move to. Re-check trivy's releases on 2026-11-11.
+    expired_at: 2026-11-11
   # Same class again (owner, 2026-10-28 ~21:00Z UTC): a Go standard library
   # os.Root fix (CVE-2026-56857, CRITICAL, fixed in Go 1.26.9 / 1.27.2): on
   # WINDOWS, Root.Mkdir and Root.MkdirAll can follow an NTFS junction out of the
