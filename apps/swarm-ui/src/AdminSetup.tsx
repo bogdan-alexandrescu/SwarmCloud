@@ -10,9 +10,17 @@
  * read from `GET /v1/admin/setup` every 5 s (`useSetupState`); nothing here is
  * marked done by hand.
  *
- * THE ORDER IS GitHub App -> first team -> Claude pool accounts -> verify ->
- * Send to your team (BGD, 2026-10-29): the strip draws the steps in the
- * checklist's order. The P1-B frames drew the accounts before the team.
+ * THE ORDER IS sign-in client -> GitHub App -> first team -> Claude pool
+ * accounts -> verify -> Send to your team (BGD, 2026-10-29; the sign-in
+ * client added by the owner's pick of 2026-11-01, issue #2964): after the
+ * CLI's cloud part, the strip draws the console's steps in the checklist's
+ * order. The P1-B frames drew the accounts before the team.
+ *
+ * THE SIGN-IN CLIENT STEP is read only from the route's `sign_in_client`, as
+ * the checklist's row is: waiting is to do, saved is in progress until
+ * swarm install's infra pass puts the id on IAP's programmatic clients,
+ * applied is done. A route that serves none (a swarm-api before #2964) is
+ * not read yet, never done.
  *
  * WAITING FOR THE CLI (R8): when no CLI holds the install lease the page says
  * to run swarm install in a terminal to continue (the checklist's banner),
@@ -67,7 +75,7 @@ const STRIP_CLASS: Record<StepState, string> = { done: 'is-done', in_progress: '
 const FAILED_WORKSPACE = new Set(['failed', 'denied'])
 
 interface StripStep {
-  key: 'cloud' | 'github' | 'team' | 'accounts' | 'verify' | 'send'
+  key: 'cloud' | 'sign-in-client' | 'github' | 'team' | 'accounts' | 'verify' | 'send'
   label: string
   state: StepState
   /** What is true of the step now, in a few words. */
@@ -86,6 +94,8 @@ const workspaceState = (state: SetupState): string | null => {
 export function stripSteps(state: SetupState): StripStep[] {
   const stages = state.engine?.stages ?? []
   const cloudDone = CLI_STAGES.filter((n) => stages[n]?.state === 'done').length
+  const client = state.sign_in_client
+  const signIn: StepState = client === null ? 'todo' : client.state === 'applied' ? 'done' : client.state === 'saved' ? 'in_progress' : 'todo'
   const app = state.github_app
   const org = state.github_org ?? 'your organisation'
   const github: StepState =
@@ -110,6 +120,19 @@ export function stripSteps(state: SetupState): StripStep[] {
       label: 'Cloud',
       state: cloudDone === CLI_STAGES.length ? 'done' : 'in_progress',
       line: `by swarm install, ${cloudDone} of ${CLI_STAGES.length} stages`,
+    },
+    {
+      key: 'sign-in-client',
+      label: 'Sign-in client',
+      state: signIn,
+      line:
+        client === null
+          ? 'not read yet'
+          : client.state === 'applied'
+            ? `${client.client_id ?? 'the client'} on IAP`
+            : client.state === 'saved'
+              ? `saved ${client.client_id ?? 'the client'}, waiting for the infra pass`
+              : 'not yet: three Google pages, then its id and secret',
     },
     {
       key: 'github',
@@ -240,6 +263,24 @@ export function SetupLead({ state, now }: { state: SetupState; now?: number }) {
   switch (step.key) {
     case 'cloud':
       return lead(tone, `swarm install is doing the cloud part: ${step.line.replace('by swarm install, ', '')}`, 'This page finishes the people part once swarm install hands over to it.')
+    case 'sign-in-client': {
+      const client = state.sign_in_client
+      if (client === null) {
+        return lead(
+          tone,
+          'Sign-in client: not read yet',
+          `This deployment’s swarm-api does not report the sign-in client, so this page cannot say whether it is saved; the row below says the same. ${cli}`,
+        )
+      }
+      if (client.state === 'saved') {
+        return lead(tone, `Sign-in client: ${step.line}`, `swarm install’s infra pass adds it to IAP’s programmatic clients and continues on its own; the GitHub App comes next. ${cli}`)
+      }
+      return lead(
+        tone,
+        'Sign-in client: create the Desktop client on Google’s pages and save its id and secret here',
+        `No Google API creates it, so the row below links Branding, Audience and Create client in order and says what to set on each; swarm install waits for the save and continues on its own. ${cli}`,
+      )
+    }
     case 'github':
       return lead(tone, `GitHub App: ${step.state === 'todo' ? 'create it from the manifest' : step.line}`, `swarm install did the cloud part; this page finishes the people part. ${cli}`)
     case 'team': {
