@@ -40,7 +40,7 @@ BGD answered these on 2026-11-01 at about 03:00 UTC (the evening of
 | Rescue entry point | A **"Talk it through"** button on failed or parked agents, failed workflows, and inbox items | (none) | §3.12 |
 | Credentials | **Never spoken, captioned or seen by the model**: only through the one-time secret form | (none) | §3.9 |
 | Scenarios | All four (a new app from scratch, a failed workflow rescue, a feature in an existing repository, an approvals walk-through) **plus BGD's flexibility point**: one engine whose cards and plan scale from a one-line fix to a multi-lane product | (none) | §5 |
-| Layout | **Not decided here.** Five layout directions are being drawn now | (none) | §11 |
+| Layout | **The Jarvis-like presence direction** (2026-11-01, after five directions were drawn as real console frames): the voice as a luminous ring, the card being discussed brought forward, the rest as panels around it, and a heads-up line for budget, running work and what needs BGD | The command deck | §11 |
 
 ### Where the research disagreed, recorded and not reopened
 
@@ -874,10 +874,14 @@ grace window.
 
 ---
 
-## 11. Mock-ups: the open layout decision
+## 11. Mock-ups: the layout BGD picked
 
-Five layout directions for the Talk pane are being drawn now, as real console
-frames in both themes, at desktop and phone width. The decision they settle:
+Five layout directions for the Talk pane were drawn as real console frames in
+both themes, at desktop and phone width, for the same five conversations. On
+2026-11-01 BGD picked **the Jarvis-like presence direction**. Its variant code
+(the shared Voice it parts and its layout) is where the Talk pane lanes start;
+every mock-up switch is stripped and the invented data is replaced by the card
+stream before anything is committed. The questions the five directions answered:
 
 * where the voice, the oscilloscope and the captions sit against the cards;
 * how cards stack, group and take focus as they arrive during a long talk;
@@ -910,8 +914,7 @@ states, not where they are drawn.
 7. **Transcript retention:** kept with the project until it is deleted
    (recommended), or expired after a set number of days? OpenAI keeps its own
    copy for 30 days either way.
-8. **The layout:** one of the five directions (§11), when the mock-ups are
-   ready.
+8. **The layout:** answered 2026-11-01, the Jarvis-like presence direction (§11).
 
 ---
 
