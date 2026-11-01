@@ -10,7 +10,7 @@ voice, with live captions of both sides and a voice oscilloscope while the
 agent speaks, to an agent that is a product designer, software architect and
 development buddy. It plans new apps, backends and projects, features in
 existing repositories, and SwarmCloud tasks or workflows that failed or wait
-for an approval. Then it files tasks, schedules work, starts lanes and ships.
+for an approval. Then it files issues, schedules work, starts lanes and ships.
 Cards beside the voice show what it filed or scheduled, finished work to
 review, design proposals, architecture, flow and user-flow diagrams, UI
 mock-ups, and inputs for details and for credentials.
@@ -37,7 +37,7 @@ BGD answered these on 2026-11-01 at about 03:00 UTC (the evening of
 | The OpenAI key | Decided at build time; design for a **personal secret** | (none) | §3.6, open question 1 |
 | Memory | **Saved, resumable projects**, plus BGD's **editable preferences** | (none) | §3.7, §3.11 |
 | Microphone | **Open mic with barge-in**, plus **mute** and **push-to-talk** | (none) | §3.10 |
-| Rescue entry point | A **"Talk it through"** button on failed or parked tasks, failed workflows, and inbox items | (none) | §3.12 |
+| Rescue entry point | A **"Talk it through"** button on failed or parked agents, failed workflows, and inbox items | (none) | §3.12 |
 | Credentials | **Never spoken, captioned or seen by the model**: only through the one-time secret form | (none) | §3.9 |
 | Scenarios | All four (a new app from scratch, a failed workflow rescue, a feature in an existing repository, an approvals walk-through) **plus BGD's flexibility point**: one engine whose cards and plan scale from a one-line fix to a multi-lane product | (none) | §5 |
 | Layout | **Not decided here.** Five layout directions are being drawn now | (none) | §11 |
@@ -94,15 +94,15 @@ Read on `origin/main`, 2026-11-01.
 | swarm-api's Cloud Run request timeout is **660 s**; the module default is 300 s. It runs at least two instances, is not addressable per instance, and every running attempt renews its lease through it | `terraform/infra/main.tf` (the `swarm-api` service), `terraform/modules/cloud_run/variables.tf` (`request_timeout`) | No request may be held for a whole conversation. The card stream resumes; the long-held sockets live elsewhere (§3.5) |
 | The console and the API share an origin: the load balancer sends `/v1/*` to swarm-api, and every read rides the same-origin session cookie | `images/swarm-ui/nginx.conf`, `apps/swarm-ui/src/api.ts` | A server-sent event stream needs no ticket; the session document names the tenant, because `EventSource` cannot send `X-Swarm-Tenant` |
 | The console sets no Permissions-Policy, so the top-level page may ask for the microphone | `images/swarm-ui/nginx.conf` | No header change for the mic; mock-up frames get no mic (§4) |
-| Agents in pods are headless (`claude --print`) and act through spools: child tasks, `swarm-state`, `swarm-git` and `questions.json` | `apps/agent-worker/agent_worker/runners/claude_code.py`, `statemcp/`, `gitmcp/`, `questions.py` | There is no running conversation channel into a pod. **The planner is not a pod lane** (§3.4) |
+| Agents in pods are headless (`claude --print`) and act through spools: child agents, `swarm-state`, `swarm-git` and `questions.json` | `apps/agent-worker/agent_worker/runners/claude_code.py`, `statemcp/`, `gitmcp/`, `questions.py` | There is no running conversation channel into a pod. **The planner is not a pod lane** (§3.4) |
 | The frozen contract has no conversation, voice or card type | `apps/common/swarm_common/` | Everything Voice it stores is swarm-api's own (§8) |
-| Tasks carry free-form `metadata`; `metadata.claude_session` groups "this session's work", and work the platform starts on a tagged item's behalf (an issue run's planner, its workflow, its fix rounds, its merge workflow) copies the tag | frozen `Task.metadata`; `apps/swarm-api/swarm_api/sessiontag.py`; `GET /v1/tasks?claude_session=` | Voice it tags everything with `voice:<project id>`; the ledger and the cards find a project's work, follow-ups included, by that tag |
+| Agents carry free-form `metadata`; `metadata.claude_session` groups "this session's work", and work the platform starts on a tagged item's behalf (an issue run's planner, its workflow, its fix rounds, its merge workflow) copies the tag | frozen `Task.metadata`; `apps/swarm-api/swarm_api/sessiontag.py`; `GET /v1/tasks?claude_session=` | Voice it tags everything with `voice:<project id>`; the ledger and the cards find a project's work, follow-ups included, by that tag |
 | A step may carry its own budget (`{usd}` or `{tokens}`), which only lowers the workspace limit; the worker stops it at 100% at a turn boundary and kills it at 120% | `docs/design/agent-budget.md`, frozen `Task.budget` (contract request 120) | Voice it can **reserve** money before work starts and know each step cannot spend past it (§3.8) |
 | Issue runs plan, wait for a plan approval or approve themselves, compile a workflow, run fix rounds and merge; their plans carry hard-stop holds (`iam`, `workflows`, `secrets`, `tenancy`, `shared`) that only the hold's approvers lift | `apps/swarm-api/swarm_api/routes/runs.py`, `issueruns.py` (`STOP_IAM` and the rest, `SHARED_DENY_LIST` restated and held to `scripts/lib/common.sh` by a test) | The platform already stops exactly where BGD said Voice it must stop. **Code work ships through issue runs** (§5) |
 | swarm-api can create a GitHub issue with the tenant's forge token; there is no route that creates a GitHub repository | `apps/swarm-api/swarm_api/forgewrite.py` (`create_issue`) | Filing an issue is one new route over existing code; a brand-new repository is BGD's step (§5) |
 | A workflow step can wait for a person's answer, and the console already draws that card | `apps/swarm-api/swarm_api/routes/await_input.py`, `apps/swarm-ui/src/AwaitInputCard.tsx` | The details card reuses it for lanes' waiting steps |
 | A repository's knowledge graph answers search, territory and impact | `apps/swarm-api/swarm_api/routes/repositories.py` (`/search`, `/territory`, `/impact`) | The planner splits large work by territory (§5) |
-| A fix workflow can push onto an existing pull request's branch by naming the task | `apps/swarm-api/swarm_api/continuation.py` (`WorkflowCreate.continues_task`) | The rescue path fixes a red pull request in place |
+| A fix workflow can push onto an existing pull request's branch by naming the agent | `apps/swarm-api/swarm_api/continuation.py` (`WorkflowCreate.continues_task`) | The rescue path fixes a red pull request in place |
 | A person's preferences live in a document whose id is an HMAC no worker can compute | `apps/swarm-api/swarm_api/preferences.py` | Voice it preferences use the same id scheme (§3.7) |
 | Artifacts are served as `text/plain`, and no screen ever builds HTML from artifact bytes; no diagram renderer exists | `apps/swarm-api/swarm_api/routes/tasks.py` (artifact content), `apps/swarm-ui/src/ArtifactViewer.tsx` | Mock-ups need a sandboxed frame; diagrams need a renderer (§4) |
 | A workspace secret may name provider `openai`; provider-key links are TypeSafe-only; the account pool holds Claude **subscriptions**, not API keys; the codex runner is disabled, and eng's `swarm-tenant-eng-openai` holds one version OpenAI refused on 2026-09-23 | `workspace_secrets.py` (`PROVIDERS`), `validation.py` (`PROVIDER_KEY_PROVIDERS`), `apps/quota-broker/quota_broker/oauth.py`, `apps/common/swarm_common/profiles.py` (the `codex` entry) | BGD adds a fresh personal OpenAI key through Config › Secrets. The planner needs an Anthropic **API key**; the pool is not used (§3.6) |
@@ -330,12 +330,12 @@ prefix; another tenant's project is the same 404 as a missing one.
 
 | Collection or path | Holds | Notes |
 |---|---|---|
-| `voice_projects/{project}` | Tenant, person, title, subject (for Talk it through: the task, workflow or inbox item), size, status (active, waiting, shipped, archived), the **brief** (goal, decisions, constraints, open questions; the planner keeps it at a few thousand tokens), references (repositories, issues, runs, workflows, tasks, schedules), the tag `voice:<project>` | The resumable memory |
+| `voice_projects/{project}` | Tenant, person, title, subject (for Talk it through: the agent, workflow or inbox item), size, status (active, waiting, shipped, archived), the **brief** (goal, decisions, constraints, open questions; the planner keeps it at a few thousand tokens), references (repositories, issues, runs, workflows, tasks, schedules), the tag `voice:<project>` | The resumable memory |
 | `…/cards/{card}` | The card envelope and body (§4), versioned | Large bodies go to GCS |
 | `…/sessions/{session}` | State (starting, live, rolling over, ended), the GPT-Live session ids, the grant hash, talk seconds, planner usage, end cause | One live session per person |
 | `…/sessions/{session}/events/{seq}` | The stream's log | Sequence from a counter on the session document |
 | `…/turns/{turn}` | Each planner turn: state, the transcript window it read, cards out, spoken summary, usage, and each action with its idempotency key and reservation | A retried turn reads its own actions before acting again |
-| `voice_starts/{id}` | One row per thing Voice it started: the task, workflow or run id, project, session, BGD's day, the reservation | What the ledger reads (§3.8) |
+| `voice_starts/{id}` | One row per thing Voice it started: the agent, workflow or run id, project, session, BGD's day, the reservation | What the ledger reads (§3.8) |
 | `voice_preferences/vp_<hmac>` | BGD's editable preferences (§3.11) | The id is an HMAC no worker can compute, as `preferences.py` keys `user_preferences` |
 | `tenants/<tenant>/voice/<project>/transcripts/<session>/<part>.jsonl` | The redacted transcript | Create-only objects; a new part is a new name |
 | `…/mockups/<card>/<version>.html`, `…/diagrams/<card>/<version>.mmd` or `.json`, `…/plans/<version>.md` | Card bodies too large for a document | Read back through swarm-api as text, never served as HTML |
@@ -357,7 +357,7 @@ drifted here before.
 | Planner | Each turn's token usage | Opus 5.5 from the platform's `model_prices` (`swarm_api/modelprices.py`) |
 | Work running | Each started item's step budgets, **times 1.2**, until it ends | The worker's guard kills a step at 120% of its budget (`docs/design/agent-budget.md` §5), so 120% is the true ceiling |
 | Work finished | Each started item's measured `cost_usd`, which replaces its reservation | The platform's estimate at list price |
-| Follow-ups | Tasks carrying the project's tag that the platform started for it (fix rounds, merge steps) | Measured `cost_usd`, plus an allowance reserved at start |
+| Follow-ups | Agents carrying the project's tag that the platform started for it (fix rounds, merge steps) | Measured `cost_usd`, plus an allowance reserved at start |
 
 **Before any work starts:**
 
@@ -428,7 +428,7 @@ fences them as quoted data, and the stops above hold whatever it decides.
   Escape) calls the voice's `stop` tool. That cancels the planner turn in
   flight (the Anthropic stream is aborted and tools not yet run are dropped)
   and every action still in its **grace window**.
-* **The grace window.** An action that spends (start a run, task or
+* **The grace window.** An action that spends (start a run, agent or
   workflow, approve, schedule) appears on its card as "starting in 5 s" and is
   said in a few words before it runs. The default is 5 s (question 4).
 * **Work already started is never undone silently.** It stays on its card
@@ -518,7 +518,7 @@ only "with limitations" [7]. BGD accepted this when he chose GPT-Live.
 
 ### 3.12 "Talk it through"
 
-* **Where it appears:** a button on a failed or parked task's panel
+* **Where it appears:** a button on a failed or parked agent's panel
   (`AgentDetail.tsx`), on a failed or parked workflow (`WorkflowViews.tsx`),
   and on an inbox item (`ApprovalDecision.tsx`).
 * **What it does:** opens Voice it › Talk with `?about=task:<id>`
@@ -546,7 +546,7 @@ logged. The shape follows Google's A2UI: declarative data drawn only from a
 catalogue of trusted components, "not executable code" [19].
 
 **Every card carries:** id, kind, project, session, version, state, title,
-who created it (planner, platform or BGD), references (task, workflow, run,
+who created it (planner, platform or BGD), references (agent, workflow, run,
 schedule, pull request, issue), a one-line summary the voice may read out,
 and the time.
 
@@ -555,10 +555,10 @@ done, failed, cancelled, dismissed. Each kind uses the ones that apply.
 
 | Kind | Shows | Created by | Actions | States |
 |---|---|---|---|---|
-| **Work** (filed or scheduled) | What was filed or started: issue, run, task, workflow or schedule; repository; lanes; each step's reservation; live state | Planner on act; updated by swarm-voice following the tag | Open in Work, Cancel, Pause or resume (schedules), Hold (inside the grace window) | proposed, acting (grace window), waiting, done, failed, cancelled |
+| **Work** (filed or scheduled) | What was filed or started: issue, run, agent, workflow or schedule; repository; lanes; each step's reservation; live state | Planner on act; updated by swarm-voice following the tag | Open in Work, Cancel, Pause or resume (schedules), Hold (inside the grace window) | proposed, acting (grace window), waiting, done, failed, cancelled |
 | **Review** (finished work) | Pull request, change summary, checks, review verdict, merge and release state | swarm-voice when a step finishes | Open diff, Ask for a change (a fix round), Merge when the run's policy leaves it to a person | waiting, done, failed |
 | **Proposal** (design) | Two to four options, each with what it gets right, what it costs, and a recommendation | Planner (draw) | Pick, Mix, Ask again | proposed, done (picked), dismissed |
-| **Diagram** | Architecture map, flow, user flow, sequence, ER or state diagram | Planner (draw) | Edit by voice, Open full size, File a task from a node (architecture maps) | proposed, done, failed (did not render after one repair) |
+| **Diagram** | Architecture map, flow, user flow, sequence, ER or state diagram | Planner (draw) | Edit by voice, Open full size, File an issue from a node (architecture maps) | proposed, done, failed (did not render after one repair) |
 | **Mock-up** | One or more frames of HTML | Planner for small sketches; a browser lane for real-product frames | Pick a frame, Comment, Open full size | proposed, waiting (the lane is drawing), done |
 | **Details input** | A question with options or free text; a lane's waiting step reuses `AwaitInputCard` | Planner, or a lane's question | Answer (typed or spoken) | waiting, done |
 | **Credential input** | The secret's name, provider, why it is needed, set or missing. Never a value | Planner | Set it (opens the one-time form; the mic mutes) | waiting, done |
@@ -626,7 +626,7 @@ the form. The cost is the issue run's own planner pod, a dollar or two of
 duplicated planning on small fixes. A later swarm-api change can let a run
 start from the voice planner's plan, and the holds still compute from it.
 Work that changes no code (a research question, a QA run, a diagram) can be
-a single task.
+a single agent.
 
 **Going large: waves, territory and the caps.**
 
@@ -697,7 +697,7 @@ their reservations.
 
 ## 7. Invariants
 
-* **1.** A voice session is not a task: it holds no lease and no pool slot,
+* **1.** A voice session is not an agent: it holds no lease and no pool slot,
   so talking costs no capacity. What it submits is queued and costs nothing
   until leased.
 * **2, 3 and 5.** Unchanged. Lanes go through ordinary admission and
@@ -783,7 +783,7 @@ is 128.
 | The longest a `gpt-live-1` session may last | Roll over before `expires_at` (§3.11) |
 | That server-sent events pass the load balancer and IAP unbuffered | A long poll that holds at most 25 s |
 | That platform follow-ups (CI-fix rounds, conflict-fix rounds, merge steps) inherit the step budgets Voice it sets, and that an issue run's compiled steps can carry the plan's budgets | Count them by tag after the fact, reserve an allowance per run, and if needed a swarm-api change to write budgets onto compiled steps |
-| That task and workflow submissions accept an idempotency key | A retried turn reads its own recorded actions first (§3.7) |
+| That agent and workflow submissions accept an idempotency key | A retried turn reads its own recorded actions first (§3.7) |
 | Chrome's echo cancellation in 2026 for this path (older community evidence only) | Agent audio plays from the WebRTC track; headphones advised |
 | Mermaid's `sandbox` security level in the pinned version | Render inside the mock-up card's sandboxed frame |
 | Whether the research's per-hour figures hold for BGD's real talk | The meter measures them from the first session |
@@ -831,7 +831,7 @@ is what stops OpenAI's per-second billing.
 | **Diagram cards render Mermaid after a parse check, inside its sandbox, and architecture maps in vis-network** | `voice/cards/DiagramCard.tsx`, `apps/swarm-ui/package.json` and lock (Mermaid pinned), test | S | card renderers | A broken diagram asks for one repair, then shows its source | no |
 | **Mock-up cards render HTML only inside a sandboxed frame with no network, and credential cards open the one-time secret form and never carry a value** | `voice/cards/MockupCard.tsx`, `voice/cards/CredentialCard.tsx`, test | S | card renderers | The frame has no `allow-same-origin` and the CSP meta tag; the credential card's markup holds no value in any attribute | no; **in the security review** |
 | **Transcripts are redacted before they are stored, planned on or shown again, and a credential spoken aloud raises a rotate card** | `swarm_voice/transcript.py` (uses `apps/redaction`), `swarm_api/voice/transcript.py`, tests | S | storage, planner | A fake key built at runtime never reaches the planner request, Firestore or GCS | no; **in the security review** |
-| **Failed or parked tasks and workflows, and inbox items, offer "Talk it through", which opens Voice it on that object** | `AgentDetail.tsx`, `WorkflowViews.tsx`, `ApprovalDecision.tsx`, `swarm_api/voice/rescue.py`, tests | M | planner, card renderers | The button shows only on failed or parked states; the rescue pack holds the last error and the findings | no |
+| **Failed or parked agents and workflows, and inbox items, offer "Talk it through", which opens Voice it on that object** | `AgentDetail.tsx`, `WorkflowViews.tsx`, `ApprovalDecision.tsx`, `swarm_api/voice/rescue.py`, tests | M | planner, card renderers | The button shows only on failed or parked states; the rescue pack holds the last error and the findings | no |
 
 **Phase 2 is done when** BGD talks through a failed workflow and a new idea,
 and sees a Rescue card, a Proposal, a Diagram and a Mock-up appear as he
@@ -842,7 +842,7 @@ talks, with nothing spent but talk.
 | Lane | Files | Size | Needs | Red-first test | Waits for BGD |
 |---|---|---|---|---|---|
 | **The Voice it ledger refuses any start that would pass $100 for the session or $300 for BGD's day, counting talk, planner and every step's budget times 1.2** | `swarm_api/voice/ledger.py`, `modelprices.py` (a per-minute price form), `routes/voice.py`, tests | M | storage | Refused at the cap; a finished step's cost replaces its reservation; the day follows BGD's time zone | no |
-| **swarm-voice files issues, starts issue runs, submits tasks and workflows, answers lanes' questions, schedules and cancels, each after the ledger reserves it** | `swarm_voice/tools_act.py`, `swarm_api/voice/issues.py` (over `forgewrite.create_issue`), the grant allowlist, tests | M | grant, ledger | A held approval is refused; a deny-listed name is refused; every submission carries the tag and a step budget | no |
+| **swarm-voice files issues, starts issue runs, starts agents and workflows, answers lanes' questions, schedules and cancels, each after the ledger reserves it** | `swarm_voice/tools_act.py`, `swarm_api/voice/issues.py` (over `forgewrite.create_issue`), the grant allowlist, tests | M | grant, ledger | A held approval is refused; a deny-listed name is refused; every submission carries the tag and a step budget | no |
 | **Stop, by voice or by key, cancels the planner turn in flight and every action still in its grace window** | `swarm_voice/turns.py`, `voice/Talk.tsx` (Stop), tests | S | act tools | An action stopped inside its window is never submitted; one already started keeps its card with Cancel | no |
 
 **Phase 3 is done when** BGD asks for a one-line fix and a schedule by voice,
