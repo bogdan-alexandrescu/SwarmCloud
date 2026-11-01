@@ -76,7 +76,7 @@ describe('one agent is weighed per pool, from what the API serves', () => {
 })
 
 describe('a provider limit of 2 is not below a large agent', () => {
-  const blocker = { reason: 'PROVIDER_CAPACITY', pool: PROVIDER, limit: 2, active: 2 }
+  const blocker = { reason: 'PROVIDER_CAPACITY', pool: PROVIDER, limit: 2, active: 2, group: null }
 
   it('is full, a wait, when the profile says the agent takes 1 there', () => {
     expect(blockerCeiling(blocker, LARGE)).toBe('full')
@@ -85,7 +85,7 @@ describe('a provider limit of 2 is not below a large agent', () => {
   })
 
   it('still finds a compute pool below the class, and names the share there', () => {
-    const small = { reason: 'RESOURCE_CAPACITY', pool: 'resource:large', limit: 2, active: 0 }
+    const small = { reason: 'RESOURCE_CAPACITY', pool: 'resource:large', limit: 2, active: 0, group: null }
     expect(blockerCeiling(small, LARGE)).toBe('below-units')
     expect(ceilingFigure(small, LARGE)).toBe('limit 2 · one agent takes 4 units here · 0 units held')
     // A provider limit of 1 under a large agent's share of 1 is not below it either.
