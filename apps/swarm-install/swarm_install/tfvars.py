@@ -106,7 +106,9 @@ API_GRANT_SWITCHES = (
     "enable_mcp_credentials",
     "enable_platform_secret_status",
 )
-#: The IAP Desktop client's secret (stage 2, `edge.desktop-client`).
+#: The IAP Desktop client's secret: made empty in stage 2
+#: (`edge.client-secret-container`), its versions added by the console's
+#: Sign-in client step (issue #2964).
 DESKTOP_SECRET = "swarm-iap-desktop-client-secret"
 #: The three secrets swarm-api writes from the console's App step (plan §5.5).
 APP_SECRETS = (
