@@ -10032,9 +10032,9 @@ class Worker:
             if spec is None or spec.name != "claude-code":
                 self._gates_env = {}
             else:
-                # The block's MAC is checked by swarm-api, which holds the
-                # settings key; the worker asks it, signed with the attempt key.
-                self._gates_route = qualitygates_mod.GatesRoute(self.cfg, children=self.children)
+                # The block's MAC was checked by the scheduler, which holds
+                # the settings key; its verdict is in this job's environment.
+                self._gates_route = qualitygates_mod.GatesVerdict(os.environ)
                 self._gates_env = qualitygates_mod.prepare(
                     db=self.db,
                     client=self.secret_client,
@@ -10045,7 +10045,7 @@ class Worker:
                     secret_env_names=tuple(profile.secrets or ()),
                     inject=self.typesafe.on,
                     shim_file=self.typesafe.shim_file,
-                    route=self._gates_route,
+                    verdict=self._gates_route,
                 )
         return dict(self._gates_env)
 
@@ -10054,8 +10054,8 @@ class Worker:
         one RUNNING mark, cause `quality_gate`, when jev-belay blocked a stop
         or jev-enforce flagged a rule -- counts only, never text -- so a wave
         can compare first-CI-red and NOT_YET rates with the switch on and
-        off. The key file is removed. A stored "on" swarm-api did not vouch
-        for is `{"jev": false, "refused": <why>}`. Never raises."""
+        off. The key file is removed. A stored "on" the scheduler did not
+        vouch for is `{"jev": false, "refused": <why>}`. Never raises."""
         if not self._gates_env:
             route = getattr(self, "_gates_route", None)
             refused = getattr(route, "refused", None)

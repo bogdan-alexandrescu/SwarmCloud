@@ -255,3 +255,82 @@ def read_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -> str:
         return DEFAULT_BACKEND
     value = doc.get(SETTING_FIELD)
     return value if isinstance(value, str) and value in BACKENDS else DEFAULT_BACKEND
+
+
+# --------------------------------------------------------------------------
+# The quality gates' verdict (contract request 128; the owner's pick on PR
+# 2955, "Scheduler hands a verdict")
+#
+# `workspace_settings/{tenant}.quality_gates.jev` on makes a claude-code lane
+# run jev-belay and jev-enforce under the workspace's TypeSafe key
+# (`swarm_api.qualitygates`, `agent_worker.qualitygates`). Any tenant's worker
+# can write that document, so a stored "on" counts only when swarm-api's MAC
+# over the block verifies. The worker cannot check it: the MAC is an HMAC
+# under the one `swarm-settings-key`, and a worker that held the key could
+# sign any tenant's block. This service holds it, so it checks the block at
+# dispatch and the job's environment carries the verdict, which the worker
+# acts on and nothing else does.
+#
+# The MAC is ALWAYS required for this block, and the verdict is given only
+# while SETTINGS_MAC_REQUIRED is on: with the switch off this service verifies
+# nothing, so every stored "on" is off and says `settings_mac_off`.
+
+QUALITY_GATES_BLOCK = "quality_gates"
+QUALITY_GATES_JEV = "jev"
+#: "true" only for a stored `jev: true` whose block verifies; "false" always
+#: otherwise. Written either way, never omitted: a Cloud Run execution's
+#: override MERGES with the Job's own environment, and only a value written
+#: here is this dispatch's.
+QUALITY_GATES_JEV_ENV = "SWARM_QUALITY_GATES_JEV"
+#: Why a stored "on" is off, one word; absent when the block says off.
+QUALITY_GATES_REFUSED_ENV = "SWARM_QUALITY_GATES_REFUSED"
+GATES_REFUSED_SWITCH_OFF = "settings_mac_off"
+GATES_REFUSED_NO_KEY = "no_settings_key"
+GATES_REFUSED_UNSIGNED = "unsigned"
+GATES_REFUSED_MISMATCH = "mac_mismatch"
+GATES_REFUSED_UNREADABLE = "settings_unreadable"
+
+
+def quality_gates_verdict(doc: Any, *, tenant_id: str, key: str | None
+                          ) -> tuple[bool, str | None]:
+    """(on, why not): on only when `doc`, the tenant's stored
+    `workspace_settings` document, says `quality_gates.jev is True` AND that
+    block's MAC verifies under `key` for this tenant and this block. `key`
+    None is SETTINGS_MAC_REQUIRED off (`settings_mac_key`). `why not` is None
+    for a block that does not say on."""
+    block = doc.get(QUALITY_GATES_BLOCK) if isinstance(doc, Mapping) else None
+    if not isinstance(block, Mapping) or block.get(QUALITY_GATES_JEV) is not True:
+        return False, None
+    if key is None:
+        return False, GATES_REFUSED_SWITCH_OFF
+    if not key:
+        return False, GATES_REFUSED_NO_KEY
+    if not isinstance(block.get(MAC_FIELD), Mapping):
+        return False, GATES_REFUSED_UNSIGNED
+    if not block_verifies(key, tenant_id=tenant_id, block=QUALITY_GATES_BLOCK, fields=block):
+        _say_refused(tenant_id, QUALITY_GATES_BLOCK, time.monotonic())
+        return False, GATES_REFUSED_MISMATCH
+    return True, None
+
+
+def quality_gates_env(on: bool, refused: str | None) -> dict[str, str]:
+    """The verdict as the worker reads it (`agent_worker.qualitygates`)."""
+    env = {QUALITY_GATES_JEV_ENV: "true" if on else "false"}
+    if not on and refused:
+        env[QUALITY_GATES_REFUSED_ENV] = refused
+    return env
+
+
+def read_quality_gates_env(db: Any, tenant_id: str, *, mac_key: str | None) -> dict[str, str]:
+    """`quality_gates_env` of the tenant's stored document, read raw (the
+    verdict does its own checking). Unreadable is off: a dispatch never fails
+    on this read, and an unread switch is not evidence it is on."""
+    try:
+        snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get()
+        doc = (snap.to_dict() or {}) if snap.exists else {}
+    except Exception as exc:  # noqa: BLE001 - said by type; off
+        log.warning("quality gates unreadable for tenant=%s, off: %s", tenant_id,
+                    type(exc).__name__)
+        return quality_gates_env(False, GATES_REFUSED_UNREADABLE)
+    on, refused = quality_gates_verdict(doc, tenant_id=tenant_id, key=mac_key)
+    return quality_gates_env(on, refused)

@@ -111,7 +111,7 @@ def _world(*, gates: Any = True, tenant_key: str | None = None, user_key: str | 
 
 
 class _Vouches:
-    """A `GatesRoute` whose swarm-api vouched for the stored "on"."""
+    """A `GatesVerdict` whose scheduler vouched for the stored "on"."""
 
     refused = None
 
@@ -125,7 +125,7 @@ def _prepare(tmp_path: Path, db: _Db, client: _Secrets, **kw: Any) -> tuple[dict
     log, stream = _logger()
     private = tmp_path / "private"
     private.mkdir(exist_ok=True)
-    kw.setdefault("route", _Vouches())
+    kw.setdefault("verdict", _Vouches())
     env = qualitygates.prepare(db=db, client=client, tenant_id="eng", private_dir=private,
                                logger=log, **kw)
     return env, stream.getvalue(), private
@@ -236,7 +236,7 @@ def test_the_lifecycle_prepares_the_gates_for_claude_code_with_the_profiles_secr
     assert "self._record_quality_gates(summary)" in text
 
 
-# --- signed (contract request 128): swarm-api, which holds the key, vouches ---------------
+# --- signed (contract request 128): the scheduler, which holds the key, vouches ---------
 
 SETTINGS_KEY = "settings-" + secrets.token_hex(24)
 
@@ -244,39 +244,6 @@ SETTINGS_KEY = "settings-" + secrets.token_hex(24)
 class _Cfg:
     runner_profile = "claude-code"
     tenant_id = "eng"
-    task_id = "task_1"
-    attempt_id = "att_1"
-    lease_id = "lease_1"
-    generation = 3
-
-
-class _AttemptKey:
-    def headers(self, method: str, path: str, body: bytes, *, now: float) -> dict[str, str]:
-        return {"X-Swarm-Attempt-Timestamp": str(int(now))}
-
-
-class _SwarmApi:
-    """swarm-api's worker route over `db`: the REAL `worker_verdict`, under
-    the settings key only swarm-api holds, for the tenant the body names."""
-
-    def __init__(self, db: _Db, *, key: str = SETTINGS_KEY, fail: Exception | None = None) -> None:
-        self.db, self.key, self.fail, self.calls = db, key, fail, []
-
-    def call(self, method: str, path: str, *, body: bytes, headers: dict[str, str]):
-        from swarm_api.judgment import SettingsMac
-        from swarm_api.qualitygates import worker_verdict
-
-        self.calls.append((method, path, json.loads(body)))
-        if self.fail is not None:
-            raise self.fail
-        tenant_id = json.loads(body)["tenant_id"]
-        doc = self.db.docs.get(f"workspace_settings/{tenant_id}")
-        return 200, {"ok": True, **worker_verdict(tenant_id, doc, SettingsMac(keys=(self.key,)))}
-
-
-class _Children:
-    def __init__(self, api: Any, *, keyed: bool = True) -> None:
-        self._api, self._key, self.keyed = api, _AttemptKey(), keyed
 
 
 def _signed(jev: bool, tenant_id: str = "eng") -> dict[str, Any]:
@@ -287,13 +254,22 @@ def _signed(jev: bool, tenant_id: str = "eng") -> dict[str, Any]:
     return block
 
 
+def _dispatched_env(db: _Db, *, key: str | None = SETTINGS_KEY) -> dict[str, str]:
+    """What the scheduler's dispatch writes into this attempt's job: the REAL
+    `scheduler.judgment.read_quality_gates_env` over `db`, under the settings
+    key only it and swarm-api hold."""
+    from scheduler.judgment import read_quality_gates_env
+
+    return read_quality_gates_env(db, "eng", mac_key=key)
+
+
 class _Worker:
     """What `Worker._quality_gates_env` and `_record_quality_gates` reach."""
 
-    def __init__(self, db: _Db, secrets_client: _Secrets, children: _Children, private: Path) -> None:
+    def __init__(self, db: _Db, secrets_client: _Secrets, private: Path) -> None:
         from types import SimpleNamespace
 
-        self.cfg, self.db, self.secret_client, self.children = _Cfg(), db, secrets_client, children
+        self.cfg, self.db, self.secret_client = _Cfg(), db, secrets_client
         self.log, self.stream = _logger()
         self.control = SimpleNamespace(call_options=lambda _kind: {})
         self.typesafe = SimpleNamespace(on=False, shim_file=None)
@@ -305,111 +281,116 @@ class _Worker:
         self.marks.append((cause, detail))
 
 
-def _attempt(tmp_path: Path, block: Any, **api_kw: Any) -> tuple[dict[str, str], dict, _Worker]:
-    """One claude-code attempt's gates, as the lifecycle builds them, and its summary."""
+def _attempt(tmp_path: Path, monkeypatch, block: Any, *, at_dispatch: Any = "same",
+             environ: dict[str, str] | None = None, **dispatch_kw: Any
+             ) -> tuple[dict[str, str], dict, _Worker]:
+    """One claude-code attempt's gates, as the lifecycle builds them, and its
+    summary. The job's environment is what the scheduler wrote at dispatch
+    over `at_dispatch` (the same block unless given), or `environ`."""
     from types import SimpleNamespace
 
+    from agent_worker import qualitygates
     from agent_worker.lifecycle import Worker
 
     db, client = _world(gates=None, tenant_key=_fake_key())
+    dispatched = block if at_dispatch == "same" else at_dispatch
+    if dispatched is not None:
+        db.docs["workspace_settings/eng"] = {"tenant_id": "eng", "quality_gates": dispatched}
+    env_at_dispatch = _dispatched_env(db, **dispatch_kw) if environ is None else environ
+    db.docs.pop("workspace_settings/eng", None)
     if block is not None:
         db.docs["workspace_settings/eng"] = {"tenant_id": "eng", "quality_gates": block}
+    for name in (qualitygates.VERDICT_ENV, qualitygates.REFUSED_ENV):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env_at_dispatch.items():
+        monkeypatch.setenv(name, value)
     private = tmp_path / "private"
     private.mkdir(exist_ok=True)
-    worker = _Worker(db, client, _Children(_SwarmApi(db, **api_kw)), private)
+    worker = _Worker(db, client, private)
     env = Worker._quality_gates_env(worker, worker.ws, SimpleNamespace(secrets=()))
     summary: dict[str, Any] = {}
     Worker._record_quality_gates(worker, summary)
     return env, summary, worker
 
 
-def test_a_stored_on_with_no_valid_mac_is_off_and_the_summary_says_why(tmp_path):
+def test_the_verdict_names_are_the_schedulers():
+    from agent_worker import qualitygates
+    from scheduler import judgment
+
+    assert qualitygates.VERDICT_ENV == judgment.QUALITY_GATES_JEV_ENV
+    assert qualitygates.REFUSED_ENV == judgment.QUALITY_GATES_REFUSED_ENV
+
+
+def test_a_stored_on_with_no_valid_mac_is_off_and_the_summary_says_why(tmp_path, monkeypatch):
     from agent_worker import qualitygates
 
     for block, why in (({"jev": True}, "unsigned"),
                        ({**_signed(False), "jev": True}, "mac_mismatch"),
                        (_signed(True, tenant_id="research"), "mac_mismatch")):
-        env, summary, worker = _attempt(tmp_path, block)
-        # MUTATION: act on `jev is True` without asking swarm-api (main before
-        # contract request 128) -> the forged "on" hands the runner the config.
+        env, summary, worker = _attempt(tmp_path, monkeypatch, block)
+        # MUTATION: act on `jev is True` without the scheduler's verdict (main
+        # before contract request 128) -> the forged "on" hands the runner the config.
         assert qualitygates.CONFIG_ENV not in env, block
         assert worker.secret_client.reads == []
         assert summary == {"quality_gates": {"jev": False, "refused": why}}
         assert worker.marks == []
 
 
-def test_a_signed_on_runs_the_gates(tmp_path):
+def test_a_signed_on_runs_the_gates(tmp_path, monkeypatch):
     from agent_worker import qualitygates
 
-    env, summary, worker = _attempt(tmp_path, _signed(True))
-    # MUTATION: ignore swarm-api's "jev": true -> no config and no hooks.
+    env, summary, worker = _attempt(tmp_path, monkeypatch, _signed(True))
+    # MUTATION: ignore the scheduler's "true" -> no config and no hooks.
     assert set(env) == {qualitygates.CONFIG_ENV}
     config = json.loads(Path(env[qualitygates.CONFIG_ENV]).read_text())
     assert Path(config["key_file"]).name == "jev-gates.key"
     assert worker.secret_client.reads == ["swarm-tenant-eng-typesafe"]
     assert summary == {"quality_gates": {"jev": True}}
-    ((method, path, body),) = worker.children._api.calls
-    assert (method, path) == ("POST", "/v1/attempts/att_1/quality-gates")
-    # The attempt's tuple and nothing else (invariant 10).
-    assert body == {"tenant_id": "eng", "task_id": "task_1", "attempt_id": "att_1",
-                    "lease_id": "lease_1", "generation": 3}
 
 
-def test_a_stored_off_asks_swarm_api_nothing(tmp_path):
+def test_a_stored_off_is_off_whatever_the_job_says(tmp_path, monkeypatch):
+    # Signed on at dispatch, turned off since: the switch wins at once.
     for block in (None, _signed(False), {"jev": "true"}):
-        env, summary, worker = _attempt(tmp_path, block)
+        env, summary, worker = _attempt(tmp_path, monkeypatch, block, at_dispatch=_signed(True))
+        # MUTATION: act on the verdict alone -> an "on" turned off still runs.
         assert env == {} and summary == {}
-        # MUTATION: ask before reading the stored switch -> one call per claude-code attempt.
-        assert worker.children._api.calls == []
+        assert worker.secret_client.reads == []
 
 
-def test_no_answer_no_key_or_the_fence_is_off_never_fatal(tmp_path):
-    from agent_worker import qualitygates
-
-    class _Status(Exception):
-        def __init__(self, status: int) -> None:
-            super().__init__(f"status {status}")
-            self.status = status
-
-    for fail, why in ((_Status(409), qualitygates.REFUSED_FENCED),
-                      (_Status(503), qualitygates.REFUSED_UNANSWERED),
-                      (OSError("no route"), qualitygates.REFUSED_UNANSWERED)):
-        env, summary, _worker = _attempt(tmp_path, _signed(True), fail=fail)
+def test_no_key_the_switch_off_or_another_key_is_off_never_fatal(tmp_path, monkeypatch):
+    for kw, why in (({"key": ""}, "no_settings_key"),
+                    ({"key": None}, "settings_mac_off"),
+                    ({"key": "settings-" + secrets.token_hex(8)}, "mac_mismatch")):
+        env, summary, _worker = _attempt(tmp_path, monkeypatch, _signed(True), **kw)
         assert env == {} and summary == {"quality_gates": {"jev": False, "refused": why}}
-    # A key swarm-api does not hold is a MAC that does not verify.
-    env, summary, _worker = _attempt(tmp_path, _signed(True), key="settings-" + secrets.token_hex(8))
-    assert env == {} and summary["quality_gates"]["refused"] == "mac_mismatch"
 
 
-def test_an_attempt_without_a_key_to_sign_with_does_not_ask(tmp_path):
+def test_on_after_an_off_dispatch_is_off(tmp_path, monkeypatch):
     from agent_worker import qualitygates
 
-    db, _client = _world(tenant_key=_fake_key())
-    api = _SwarmApi(db)
-    route = qualitygates.GatesRoute(_Cfg(), children=_Children(api, keyed=False))
-    assert route.verdict() is False and route.refused == qualitygates.REFUSED_NO_ATTEMPT_KEY
-    assert api.calls == []
+    # Turned on (and signed) after the scheduler read it off: no "true" was given.
+    env, summary, _worker = _attempt(tmp_path, monkeypatch, _signed(True), at_dispatch=_signed(False))
+    assert env == {} and summary == {
+        "quality_gates": {"jev": False, "refused": qualitygates.REFUSED_OFF_AT_DISPATCH}}
 
 
-@pytest.mark.parametrize("payload", [None, {"jev": True}, {"ok": True, "jev": "true"},
-                                     {"ok": True, "jev": False, "refused": "x" * 65},
-                                     {"ok": True, "jev": False, "refused": "a b"}])
-def test_anything_but_swarm_apis_answer_is_off(payload):
-    from agent_worker import qualitygates
-
-    class _Api:
-        def call(self, *_a: Any, **_kw: Any):
-            return 200, payload
-
-    route = qualitygates.GatesRoute(_Cfg(), children=_Children(_Api()))
-    assert route.verdict() is False
-    assert route.refused == qualitygates.REFUSED_NOT_AN_ANSWER
+@pytest.mark.parametrize("environ, why", [
+    ({}, "no_verdict"),
+    ({"SWARM_QUALITY_GATES_JEV": "True"}, "off_at_dispatch"),
+    ({"SWARM_QUALITY_GATES_JEV": "1"}, "off_at_dispatch"),
+    ({"SWARM_QUALITY_GATES_JEV": "false", "SWARM_QUALITY_GATES_REFUSED": "x" * 65}, "off_at_dispatch"),
+    ({"SWARM_QUALITY_GATES_JEV": "false", "SWARM_QUALITY_GATES_REFUSED": "a b"}, "off_at_dispatch"),
+])
+def test_anything_but_the_schedulers_true_is_off(tmp_path, monkeypatch, environ, why):
+    # MUTATION: read "True"/"1" as on, or no verdict as on -> the gates run unvouched.
+    env, summary, _worker = _attempt(tmp_path, monkeypatch, _signed(True), environ=environ)
+    assert env == {} and summary == {"quality_gates": {"jev": False, "refused": why}}
 
 
-def test_without_a_route_a_stored_on_is_off(tmp_path):
+def test_without_a_verdict_a_stored_on_is_off(tmp_path):
     db, client = _world(tenant_key=_fake_key())
-    env, log, _private = _prepare(tmp_path, db, client, route=None)
-    # MUTATION: treat a missing verifier as a vouch -> the forged "on" runs.
+    env, log, _private = _prepare(tmp_path, db, client, verdict=None)
+    # MUTATION: treat a missing verdict as a vouch -> the forged "on" runs.
     assert env == {} and client.reads == []
     assert "jev_gates_refused" in log
 

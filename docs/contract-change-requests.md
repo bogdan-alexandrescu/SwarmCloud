@@ -15264,13 +15264,17 @@ reads the stored block through `judgment.trusted_block`, as
 `judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)`, so
 `scripts/resign-workspace-settings.sh` signs the blocks stored before it.
 The worker cannot check an HMAC whose key would let it sign any tenant's
-block, so it asks the key holder: when the stored block says on,
-`agent_worker.qualitygates.GatesRoute` calls the worker-only
-`POST /v1/attempts/{attempt_id}/quality-gates`, proven and fenced as
-`context/graph` is, and swarm-api answers for the attempt's own tenant
-whether the MAC verifies (`qualitygates.worker_verdict`, required whatever
-SETTINGS_MAC_TENANTS says). Unsigned or mismatched is off, and the attempt's
-summary says why.
+block, so the scheduler, which holds the key, vouches for it (the owner's
+pick on PR 2955, "Scheduler hands a verdict"): at each claude-code dispatch
+`scheduler.judgment.read_quality_gates_env` reads the attempt's own tenant's
+block, and both dispatchers write `SWARM_QUALITY_GATES_JEV` ("true" only for
+a block that says on and whose MAC verifies, "false" otherwise) and, for a
+refused "on", `SWARM_QUALITY_GATES_REFUSED` into the job's environment. The
+MAC is required whatever SETTINGS_MAC_TENANTS says, and the verdict is
+given only while SETTINGS_MAC_REQUIRED is on. The worker's
+`qualitygates.GatesVerdict` acts on "true" alone, and only while the stored
+block still says on. Unsigned, mismatched, no key or the switch off is off,
+and the attempt's summary says why.
 
 ### What it would break if accepted
 
