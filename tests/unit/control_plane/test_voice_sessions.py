@@ -24,7 +24,7 @@ from swarm_api.settings import ApiSettings
 from swarm_api.voice import sessions as vs
 from swarm_api.waker import NullWaker
 
-from .conftest import NoForgeTokens, OfflineSecretMetadata, api_settings, auth_header
+from .conftest import ENG_GROUP, RESEARCH_GROUP, NoForgeTokens, OfflineSecretMetadata, api_settings, auth_header
 
 OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\n"
 ANSWER = "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\ns=-\r\n"
@@ -221,6 +221,52 @@ def test_another_tenants_project_is_404_and_looks_like_a_missing_one(client, db,
 
     assert theirs.status_code == missing.status_code == 404
     assert theirs.json()["code"] == missing.json()["code"]
+    assert len(voice.starts) == 1
+
+
+@pytest.fixture
+def two_workspaces(db, tokens, group_map, objects, voice) -> TestClient:
+    # alice is in eng AND research, so only the workspace the console selects
+    # (X-Swarm-Tenant) separates their sessions: the person check cannot.
+    group_map["alice@example.com"] = (ENG_GROUP, RESEARCH_GROUP)
+    return _client(db, tokens, group_map, objects, voice,
+                   voice_url="http://voice.internal:8080",
+                   voice_people=("alice@example.com",))
+
+
+def _in(tenant: str) -> dict[str, str]:
+    return {**auth_header("alice"), "X-Swarm-Tenant": tenant}
+
+
+def test_the_same_person_cannot_end_their_session_from_another_workspace(two_workspaces, db, voice):
+    started = two_workspaces.post("/v1/voice/sessions", json={"offer": OFFER},
+                                  headers=_in("eng"))
+    assert started.status_code == 200, started.text
+    started = started.json()
+    path = f"/v1/voice/projects/{started['project_id']}/sessions/{started['session_id']}/end"
+
+    response = two_workspaces.post(path, headers=_in("research"))
+
+    assert response.status_code == 404, response.text
+    session = db.docs[f"{vs.PROJECTS}/{started['project_id']}/{vs.SESSIONS}/{started['session_id']}"]
+    assert session["state"] == vs.LIVE and session["tenant_id"] == "eng"
+    assert voice.ends == []
+    assert two_workspaces.post(path, headers=_in("eng")).status_code == 200
+
+
+def test_the_same_person_cannot_talk_on_their_project_from_another_workspace(
+        two_workspaces, db, voice):
+    started = two_workspaces.post("/v1/voice/sessions", json={"offer": OFFER},
+                                  headers=_in("eng")).json()
+    two_workspaces.post(
+        f"/v1/voice/projects/{started['project_id']}/sessions/{started['session_id']}/end",
+        headers=_in("eng"))
+
+    response = two_workspaces.post(
+        "/v1/voice/sessions", json={"offer": OFFER, "project_id": started["project_id"]},
+        headers=_in("research"))
+
+    assert response.status_code == 404, response.text
     assert len(voice.starts) == 1
 
 
