@@ -1918,7 +1918,13 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         backend=Backend.GKE_AUTOPILOT,
         runner_argv=("python", "-m", "agent_worker.runners.codex"),
         provider="openai",
-        secrets=("OPENAI_API_KEY",),
+        # INTERCHANGEABLE, as claude-code's are (contract request 130, owner
+        # 2026-11-01): the tenant's metered key, or a ChatGPT plan leased from
+        # the pool. The plan arrives as an access token (about an hour) and the
+        # plan's account id; the quota broker alone holds and refreshes the
+        # refresh token, which never reaches a worker.
+        secrets=("OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
+        secrets_any_of=True,
         timeout_seconds=7200,
         inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
         # DISABLED 2026-09-23 by the owner's decision: the platform is focusing
@@ -1931,10 +1937,16 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # Left in the catalogue rather than deleted, so the four task documents
         # that name it stay readable and re-enabling is one word. Nothing was
         # queued or running against it when this landed.
+        #
+        # STILL DISABLED after contract request 130, by the owner's one change
+        # to it (2026-11-01): "Accept, but keep codex unavailable until the
+        # pool lanes land". A follow-up sets `available=True` once the broker
+        # leases OpenAI plan accounts and the runner uses them.
         available=False,
         disabled_reason=(
-            "codex is disabled on this platform. The provider refused the "
-            "registered credential and the platform is focused on Claude. Use "
+            "codex is disabled until the ChatGPT-plan pool lands: the quota "
+            "broker leasing OpenAI plan accounts and the codex runner using "
+            "them. A follow-up turns it on once both have merged. Use "
             "claude-code."
         ),
         secret_slots={"files": _FILES_SLOT},   # contract request 80
