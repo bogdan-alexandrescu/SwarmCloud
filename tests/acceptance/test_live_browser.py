@@ -1574,7 +1574,15 @@ _PROXY_HEADER = re.compile(r"(?i)\b" + "proxy-" + "authorization" + r"\b")
 def qa_identity_prompt(console_url: str) -> str:
     """What the QA identity's agent is asked. Every step is spelled out
     because a check reads each: one navigation, nothing typed, the hand-off
-    tried once and never waited on, and the report file."""
+    tried once and its answer read once, bounded, and the report file.
+
+    THE ANSWER IS `wait`'S (#1333). `swarm-handoff request` only queues the
+    request: it prints `requested` and exits 0 whatever the gate will say
+    (images/agent-runtime-browser/swarm-handoff, `cmd_request`). The
+    worker answers on its next tick, and `wait` prints that answer and exits
+    with its code. Read from `request`, the check saw "exited 0 with code
+    None" on every run. `--max-seconds 60` bounds it: a hold the gate did not
+    refuse exits 75 rather than waiting for a person, and fails the check."""
     console = console_url.rstrip("/") + "/"
     return (
         "Check that this browser is signed in to the SwarmCloud console, and that a hand-off "
@@ -1585,8 +1593,9 @@ def qa_identity_prompt(console_url: str) -> str:
         "a 60000 ms timeout, then wait 5 s. Read page.url, page.title() and the inner text of "
         "the body (its first 4000 characters), and end the script without closing the page or "
         "the browser. 2) Run once: swarm-handoff request --reason \"QA identity acceptance: a "
-        "hand-off on the console\". Note its exit status and the \"code\" field of the JSON it "
-        "printed (null when there is none). Never run swarm-handoff wait. 3) Write to "
+        "hand-off on the console\", then run once: swarm-handoff wait --max-seconds 60. Note the "
+        "exit status of swarm-handoff wait and the \"code\" field of the JSON it printed (null "
+        "when there is none). Run neither again. 3) Write to "
         f"$SWARM_ARTIFACTS_DIR/{QA_OUTPUT} one JSON object with the keys url, title, text, "
         "handoff_exit and handoff_code, and reply with only that JSON."
     )
