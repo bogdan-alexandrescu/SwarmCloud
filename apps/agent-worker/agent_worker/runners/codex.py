@@ -102,6 +102,10 @@ from pathlib import Path
 from typing import Any
 
 from .. import graphstage
+# The plan's access token and account id, as the worker names them for an
+# account leased from the provider "openai" pool, and the marker of the stop
+# before the token's hour: one definition, the worker's.
+from ..accountlease import PLAN_ACCOUNT_ENV, PLAN_EXPIRY_MARKER, PLAN_TOKEN_ENV
 from ..children import git_shim_argv
 from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
@@ -209,11 +213,6 @@ SPEC = CliAgentSpec(
 # A ChatGPT plan from the shared pool (part of #2688; see the module docstring)
 # ---------------------------------------------------------------------------
 
-#: The plan's access token and account id, as the worker names them for an
-#: account leased from the provider "openai" pool (`accountlease`).
-PLAN_TOKEN_ENV = "CODEX_PLAN_ACCESS_TOKEN"
-PLAN_ACCOUNT_ENV = "CODEX_PLAN_ACCOUNT_ID"
-
 #: Where codex reads auth.json and writes its state.
 CODEX_HOME_ENV = "CODEX_HOME"
 
@@ -234,7 +233,7 @@ EXPIRY_MARGIN_SECONDS = 600.0
 #: The refused-credential marker of the runner's own stop before the hour.
 #: The worker reads it (`lifecycle`) as a scheduled reload: not an auth error
 #: on the account's health, not one of the bounded refusal reloads.
-EXPIRY_MARKER = "codex plan access token nears its expiry"
+EXPIRY_MARKER = PLAN_EXPIRY_MARKER
 
 #: The marker of a 403, which cliagent's credential markers do not name.
 FORBIDDEN_MARKER = "403 forbidden"

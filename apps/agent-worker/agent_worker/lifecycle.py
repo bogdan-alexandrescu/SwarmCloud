@@ -179,11 +179,12 @@ from . import verdict as verdict_mod
 from . import workspace as workspace_mod
 from .accountlease import (
     ACCOUNTS_FULL,
-    ACCOUNT_TOKEN_ENV,
     ACCOUNT_UNREADABLE,
     BROKER_REFUSED,
     NO_RECENT_READING,
+    PLAN_EXPIRY_MARKER,
     POOL_PAUSED,
+    TENANT_KEY_FIRST,
     AccountBroker,
     AccountUnreadable,
     Assignment,
@@ -193,6 +194,7 @@ from .accountlease import (
     NoAccountAvailable,
     ReadingForwarder,
     credential_env_from_account,
+    takes_account,
 )
 from .checkpoint import (
     ARCHIVE_NAME,
@@ -369,6 +371,16 @@ MAX_IN_WORKER_RETRIES = 3
 #: forever would turn one bad account into an attempt that never fails and
 #: never finishes, holding its lease the whole time.
 MAX_CREDENTIAL_RELOADS = 2
+
+#: How many times an attempt on a ChatGPT plan may reload its account because
+#: the codex runner stopped itself before the access token's hour (part of
+#: #2688; `runners.codex.EXPIRY_MARGIN_SECONDS`). A plan token lives about an
+#: hour and the longest profile timeout is four hours (14,400 s), so a run
+#: needs at most five; eight leaves room for a resumed run's shorter first
+#: token. Past it the stop is judged as a refusal, MAX_CREDENTIAL_RELOADS and
+#: the dead-token move included, so a broker that never refreshes cannot keep
+#: an attempt restarting.
+MAX_EXPIRY_RELOADS = 8
 
 #: How long to park when the account pool has nothing and cannot say when it
 #: will. Used ONLY as the fallback: when the broker reports the instant the
@@ -1676,6 +1688,9 @@ class Worker:
         # ---- STEPS 7-9: run the child, supervised -----------------------
         attempt_number = 0
         credential_reloads = 0
+        # The codex runner's own stops before its plan token's hour, counted
+        # apart from the refusals (part of #2688).
+        expiry_reloads = 0
         while True:
             attempt_number += 1
             result = self._run_child_supervised(child_env)
@@ -1702,7 +1717,22 @@ class Worker:
                 # holds the replacement; re-reading it costs one API call and
                 # saves the attempt.
                 refusal = self._credential_refusal()
-                if refusal is not None and self._account is not None:
+                # A SCHEDULED RELOAD, NOT A REFUSAL (part of #2688). The codex
+                # runner stopped itself before its ChatGPT plan's access token
+                # reached its hour (`runners.codex.ExpiryStop`): nothing
+                # refused the account, so no auth error goes on its health
+                # record, the dead-token test is not asked (the broker may not
+                # have written the successor yet, and a token still valid for
+                # minutes is not dead) and the bounded refusal reloads are not
+                # spent. It has its own bound, MAX_EXPIRY_RELOADS; past it the
+                # stop is judged as any refusal is.
+                scheduled = (
+                    refusal is not None
+                    and self._account is not None
+                    and refusal.get("marker") == PLAN_EXPIRY_MARKER
+                    and expiry_reloads < MAX_EXPIRY_RELOADS
+                )
+                if refusal is not None and self._account is not None and not scheduled:
                     # An auth error on the held account, for its health record
                     # (#2302); every refusal, the reloaded ones included.
                     self.control.report_account_error(
@@ -1728,8 +1758,13 @@ class Worker:
                             child_env = moved
                             attempt_number -= 1
                             continue
-                if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
-                    credential_reloads += 1
+                if refusal is not None and (
+                    scheduled or credential_reloads < MAX_CREDENTIAL_RELOADS
+                ):
+                    if scheduled:
+                        expiry_reloads += 1
+                    else:
+                        credential_reloads += 1
                     # RESUMED, NOT STARTED AGAIN (#626). A restart from the
                     # prompt threw away everything the agent had done -- 26
                     # restarts and ~169 agent-minutes in the 2026-10-05
@@ -10290,7 +10325,7 @@ class Worker:
             return None
         if self._account_broker is None:
             return self._decline_pool("no_broker_configured", profile.provider)
-        if ACCOUNT_TOKEN_ENV not in (profile.secrets or ()):
+        if not takes_account(profile.provider, profile.secrets):
             self.log.info(
                 "runner profile does not accept a subscription token; using the "
                 "tenant credential rather than the account pool",
@@ -10298,6 +10333,16 @@ class Worker:
                 declared=sorted(profile.secrets or ()),
             )
             return self._decline_pool("profile_takes_no_subscription", profile.provider)
+        if profile.provider in TENANT_KEY_FIRST and self._tenant_supplies_key(profile.provider):
+            # A codex step leases a ChatGPT plan only when the tenant supplies
+            # no OPENAI_API_KEY of its own (BGD, 2026-11-01, part of #2688): a
+            # tenant paying for metered access keeps running on it.
+            self.log.info(
+                "the tenant supplies its own API key; using it rather than the "
+                "account pool",
+                provider=profile.provider,
+            )
+            return self._decline_pool("tenant_supplies_api_key", profile.provider)
 
         provider = profile.provider
         cause = POOL_UNANSWERED[0]
@@ -10386,6 +10431,18 @@ class Worker:
             },
         )
         return outcome
+
+    def _tenant_supplies_key(self, provider: str | None) -> bool:
+        """Whether the tenant registered its own credential for `provider`.
+
+        The same tenant read the fallback makes (`load_tenant`, under the
+        startup budget), and the same test `resolve_credentials` refuses a
+        missing credential by: the provider in `tenant.credentials`.
+        """
+        tenant = load_tenant(
+            self.db, self.cfg.tenant_id, call_options=self.control.call_options("tenant")
+        )
+        return bool(provider) and provider in (tenant.credentials or ())
 
     # -- the account mid-run (S13-S15) ---------------------------------------
     def _budget_env(self) -> dict[str, str]:
@@ -10935,6 +10992,7 @@ class Worker:
                 payload,
                 secret_env_names=profile.secrets,
                 secret_name=account.secret,
+                provider=profile.provider or "anthropic",
             )
         except Exception as exc:
             raise AccountUnreadable(
