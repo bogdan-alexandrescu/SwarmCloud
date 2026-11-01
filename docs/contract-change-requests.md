@@ -15276,7 +15276,7 @@ leases listing's per-row `pool_units` and `units_held_by_pool`;
 `scripts/lib/concurrency-judge.jq` (invariant 3's exact check) and
 `scripts/lib/pool-units.jq` (read by make pool-check). The console and
 swarm-mcp read the served per-pool figures in the same pull request (the
-owner's pick, 2026-11-01): `types.ts` weighs a task per pool (`unitsIn`,
+owner's pick, 2026-11-01): `types.ts` weighs an agent per pool (`unitsIn`,
 `taskWeight`, `leaseHeld`) for `blockerCeiling`, `ProfileMatrix`'s `fitsIn`,
 `AdminSettings`' ceiling arithmetic, `Submit`'s cost and verdicts and
 `Holders.tsx`'s drift card; swarm-mcp's `binding_pool` divides each pool's
