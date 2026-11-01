@@ -344,3 +344,158 @@ def test_the_reading_is_green_on_a_stuck_success(required):
     # MUTATION: read status alone -> "pending", naming ci-gate.
     assert reading.state == forgechecks.GREEN, reading
     assert reading.counts[forgechecks.PASSED] == 1, reading.counts
+
+
+# ---------------------------------------------------------------------------
+# Another branch's push suite at a shared sha is not the pull request's (#2946)
+# ---------------------------------------------------------------------------
+# At a9009a19 (PR #2929, 2026-10-31) the PR branch's push ci-gate (job
+# 124538127127, run 41200297118) failed on a GitHub 429 and sibling branch
+# swarm/task_0a667b37's push ci-gate (job 124538826396, a larger id) passed
+# at the same sha. swarm-api took the sibling's run as the push result and
+# read the head green, so the merge wake never asked the free re-run and
+# auto_merge called green what the merge step refused. The worker's
+# `merge.checks_at` already drops such a suite (`_other_branch_push`, #2365);
+# `check_runs` and `actions_check_runs` now do the same given `head_ref`.
+
+PR_BRANCH = "swarm/task_18f2c11a"
+SIBLING = "swarm/task_0a667b37"
+OWN_RED, SIBLING_GREEN, PR_GREEN = 124538127127, 124538826396, 124538900001
+OWN_RUN, SIBLING_RUN, PR_RUN = 41200297118, 41200133512, 41200300965
+SUITE_A, SUITE_B, SUITE_C = 801, 802, 803
+
+
+def _workflow_run(run_id: int, suite: int, event: str | None, branch: str | None,
+                  conclusion: str = "success") -> dict[str, Any]:
+    """An Actions run as `actions/runs?head_sha=` lists it."""
+    return {"id": run_id, "check_suite_id": suite, "event": event, "head_branch": branch,
+            "workflow_id": 7, "head_sha": SHA, "status": "completed", "conclusion": conclusion}
+
+
+def _a9009a19() -> _GitHub:
+    return _GitHub(
+        [_raw(OWN_RED, "failure", SUITE_A), _raw(SIBLING_GREEN, "success", SUITE_B),
+         _raw(PR_GREEN, "success", SUITE_C)],
+        [_workflow_run(OWN_RUN, SUITE_A, "push", PR_BRANCH, "failure"),
+         _workflow_run(SIBLING_RUN, SUITE_B, "push", SIBLING),
+         _workflow_run(PR_RUN, SUITE_C, "pull_request", PR_BRANCH)])
+
+
+def test_check_runs_drops_a_sibling_branch_push_suite():
+    required = [forgechecks.RequiredCheck(NAME, None)]
+    writer = forgewrite.GitHubWriter(send=_a9009a19())
+
+    # Today's call, no head ref: the sibling's newer green push run decides
+    # the push event and the head reads green -- the defect.
+    blind = writer.check_runs(REF, SHA, forge_fakes.make_token())
+    assert forgechecks.evaluate(required, blind, []).state == forgechecks.GREEN
+
+    runs = forgewrite.GitHubWriter(send=_a9009a19()).check_runs(
+        REF, SHA, forge_fakes.make_token(), head_ref=PR_BRANCH)
+
+    # MUTATION (forgewrite.py `check_runs`): ignore head_ref -> suite B kept,
+    # the reading green and the re-run of 41200297118 never asked.
+    assert all(r["check_suite"]["id"] != SUITE_B for r in runs), runs
+    reading = forgechecks.evaluate(required, runs, [])
+    assert reading.state == forgechecks.RED, reading
+    assert [r["id"] for r in reading.failing_runs] == [OWN_RED]
+    # What the merge wake's `_rerun_first` re-runs the failed jobs of.
+    assert reading.failing_runs[0]["workflow_run_id"] == OWN_RUN
+
+
+def test_check_runs_keeps_pull_request_and_unknown_branch_suites():
+    github = _GitHub(
+        [_raw(1, "failure", 71), _raw(2, "success", 72), _raw(3, "success", 73),
+         _raw(4, "success", 74)],
+        [_workflow_run(91, 71, "push", PR_BRANCH, "failure"),
+         # A fork's pull_request suite names the fork's branch: kept.
+         _workflow_run(92, 72, "pull_request", SIBLING),
+         # A push suite whose branch GitHub did not say: kept.
+         _workflow_run(93, 73, "push", None)])
+    # Suite 74 has no Actions run at all (another App): kept.
+
+    runs = forgewrite.GitHubWriter(send=github).check_runs(
+        REF, SHA, forge_fakes.make_token(), head_ref=PR_BRANCH)
+
+    # MUTATION: drop every suite not on head_ref -> 72 and 73 gone; drop
+    # suites with no Actions run -> 74 gone.
+    assert [r["id"] for r in runs] == [1, 2, 3, 4], runs
+
+
+def test_check_runs_without_a_head_ref_drops_nothing():
+    runs = forgewrite.GitHubWriter(send=_a9009a19()).check_runs(
+        REF, SHA, forge_fakes.make_token())
+
+    # MUTATION: treat head_ref=None as "drop every push suite" -> A and B gone.
+    assert sorted(r["id"] for r in runs) == sorted([OWN_RED, SIBLING_GREEN, PR_GREEN])
+    assert {r["id"]: r.get("event") for r in runs} == {
+        OWN_RED: "push", SIBLING_GREEN: "push", PR_GREEN: "pull_request"}
+
+
+def test_check_runs_with_a_head_ref_reads_no_workflow_runs_when_each_check_ran_once_green():
+    github = _GitHub([_raw(1, "success", 71), {**_raw(2, "success", 72), "name": "lint"}],
+                     [_workflow_run(91, 72, "push", SIBLING)])
+
+    runs = forgewrite.GitHubWriter(send=github).check_runs(
+        REF, SHA, forge_fakes.make_token(), head_ref=PR_BRANCH)
+
+    # MUTATION: read actions/runs whenever a head_ref is given -> one more
+    # request at every green head (the worker makes none).
+    assert not any("/actions/runs" in url for url in github.calls), github.calls
+    assert [r["id"] for r in runs] == [1, 2]
+
+
+class _Actions:
+    """`GET actions/runs?head_sha=` and `GET actions/runs/{id}/jobs`."""
+
+    def __init__(self, workflow_runs: list[dict[str, Any]],
+                 jobs: dict[int, list[dict[str, Any]]]) -> None:
+        self.workflow_runs = workflow_runs
+        self.jobs = jobs
+
+    def __call__(self, method, url, headers, body, timeout):
+        path = urlparse(url).path
+        if path.endswith("/jobs"):
+            run_id = int(path.rsplit("/", 2)[-2])
+            jobs = self.jobs.get(run_id, [])
+            return 200, json.dumps({"total_count": len(jobs), "jobs": jobs}).encode()
+        if path.endswith("/actions/runs"):
+            return 200, json.dumps({"total_count": len(self.workflow_runs),
+                                    "workflow_runs": self.workflow_runs}).encode()
+        return 404, json.dumps({"message": "no route"}).encode()
+
+
+def _job(job_id: int, conclusion: str) -> dict[str, Any]:
+    return {"id": job_id, "name": NAME, "status": "completed", "conclusion": conclusion}
+
+
+def _a9009a19_actions() -> _Actions:
+    return _Actions(
+        [_workflow_run(PR_RUN, SUITE_C, "pull_request", PR_BRANCH),
+         _workflow_run(OWN_RUN, SUITE_A, "push", PR_BRANCH, "failure"),
+         _workflow_run(SIBLING_RUN, SUITE_B, "push", SIBLING),
+         _workflow_run(41200000001, 804, "push", None)],
+        {OWN_RUN: [_job(OWN_RED, "failure")], SIBLING_RUN: [_job(SIBLING_GREEN, "success")],
+         PR_RUN: [_job(PR_GREEN, "success")], 41200000001: [_job(9, "success")]})
+
+
+def test_actions_check_runs_drops_a_sibling_branch_push_run_s_jobs():
+    required = [forgechecks.RequiredCheck(NAME, None)]
+
+    blind = forgewrite.GitHubWriter(send=_a9009a19_actions()).actions_check_runs(
+        REF, SHA, forge_fakes.make_token())
+    assert sorted(r["id"] for r in blind) == sorted([OWN_RED, SIBLING_GREEN, PR_GREEN, 9])
+
+    runs = forgewrite.GitHubWriter(send=_a9009a19_actions()).actions_check_runs(
+        REF, SHA, forge_fakes.make_token(), head_ref=PR_BRANCH)
+
+    # MUTATION (forgewrite.py `actions_check_runs`): ignore head_ref -> the
+    # sibling's job kept and the reading green. The pull_request run and the
+    # run of unknown branch are kept.
+    assert sorted(r["id"] for r in runs) == sorted([OWN_RED, PR_GREEN, 9]), runs
+    assert {r["id"]: r.get("head_branch") for r in runs} == {
+        OWN_RED: PR_BRANCH, PR_GREEN: PR_BRANCH, 9: None}
+    reading = forgechecks.evaluate(required, runs, [])
+    assert reading.state == forgechecks.RED, reading
+    assert [r["id"] for r in reading.failing_runs] == [OWN_RED]
+    assert reading.failing_runs[0]["workflow_run_id"] == OWN_RUN
