@@ -5256,9 +5256,8 @@ def build_parser() -> argparse.ArgumentParser:
     am.add_argument("max_agents", metavar="N", help="1 to 50")
     _common(am, root=False)
     am.set_defaults(func=cmd_account_max_agents)
-    aa = ac_sub.add_parser(
-        "add", help="add an account by signing in to Claude (or a ChatGPT plan) in your browser"
-    )
+    aa_help = "add an account by signing in to Claude (or a ChatGPT plan) in your browser"
+    aa = ac_sub.add_parser("add", help=aa_help)
     aa.add_argument("--label", required=True, help="the account's name in the pool")
     aa.add_argument(
         "--provider", default="anthropic", choices=ACCOUNT_PROVIDERS,
