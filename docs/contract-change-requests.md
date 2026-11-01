@@ -137,6 +137,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | ACCEPTED by the owner 2026-10-31 and APPLIED by the pull request that adds this line (lane LIGHTPANDA-CONTRACT, part of #2688; BGD: "go with the recommended options", accept contract request 127). Its `terraform/infra/locals.tf` mirror lands in the same pull request once `agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing image digest (CLD for BGD, 2026-10-31) |
 | 128 | `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS`, `("jev",)`, so the workspace's switch for the claude-code lanes' TypeSafe quality checks is signed (JEV-LANES, PR 2905; QUALITY-GATES-SETTINGS-MAC, part of #2688) | ACCEPTED by the owner 2026-10-31 ('Add it (contract request)', answering PR 2905's first question) and APPLIED by the pull request that adds this line (lane QUALITY-GATES-SETTINGS-MAC): swarm-api's `qualitygates.QualityGatesStore` signs the block it writes, and `judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)` so the re-sign pass signs stored blocks |
 | 129 | `admission.py` / `models.py`: a lease takes 1 unit in each `provider:*` pool and its resource units in every other pool, records what it took per pool (`Lease.pool_units`), and release returns exactly that (LARGE-ONE-PROVIDER-SLOT, part of #2950) | ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the expected behaviour #2950 states) and APPLIED by the pull request that adds this line (lane LARGE-ONE-PROVIDER-SLOT, part of #2950): `pool_units_for` is the one rule; a lease from before it has no `pool_units` and releases its `units` from every pool |
+| 130 | `profiles.py`: `codex` becomes available, and runs on either the tenant's `OPENAI_API_KEY` or a pool ChatGPT plan (`CODEX_PLAN_ACCESS_TOKEN`, `CODEX_PLAN_ACCOUNT_ID`), `secrets_any_of=True` (CODEX-PLAN-CONTRACT, part of #2688) | open, REQUESTED 2026-11-01 by lane CODEX-PLAN-CONTRACT for the owner's shared ChatGPT-plan pool |
 
 ---
 
@@ -15384,3 +15385,221 @@ standard work against the provider's real session limit.
   `concurrency-judge.jq` sums each lease's held share per pool, so its exact
   `active == held` check stays exact across old and new leases.
 * **1, 4-10:** unchanged.
+
+---
+
+## 130. `profiles.py`: `codex` becomes available, on the tenant's key or a pool ChatGPT plan (CODEX-PLAN-CONTRACT, part of #2688)
+
+**Status:** open, REQUESTED 2026-11-01 by lane CODEX-PLAN-CONTRACT. Not
+applied: nothing under `apps/common/swarm_common/` is edited by the pull
+request that adds this entry. The owner (BGD) asked on 2026-11-01 for the
+codex runner to run on ChatGPT plans from a shared pool, the way claude-code
+runs on the pool of Claude subscriptions, and accepted that this needs a
+contract request.
+
+### What is true today
+
+In `apps/common/swarm_common/profiles.py`, `RUNNER_PROFILES["codex"]`:
+
+* `available=False`, with the `disabled_reason` "codex is disabled on this
+  platform. The provider refused the registered credential and the platform
+  is focused on Claude. Use claude-code." It was turned off by request 11
+  (2026-09-23): four codex steps of a twenty-step load test failed with
+  "openai refused the credential", because the tenant's
+  `swarm-tenant-eng-openai` held one rejected version.
+* `provider="openai"`, `secrets=("OPENAI_API_KEY",)`, and `secrets_any_of`
+  left at its default, `False`.
+
+So codex authenticates only with a metered OpenAI API key, and nothing in the
+catalogue lets it name a plan's credential. claude-code already has the shape
+this needs: `secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")`,
+`secrets_any_of=True`, either one sufficing.
+
+### The change
+
+```diff
+--- a/apps/common/swarm_common/profiles.py
++++ b/apps/common/swarm_common/profiles.py
+@@ "codex": RunnerProfile(
+         runner_argv=("python", "-m", "agent_worker.runners.codex"),
+         provider="openai",
+-        secrets=("OPENAI_API_KEY",),
++        # INTERCHANGEABLE, as claude-code's are (contract request 130, owner
++        # 2026-11-01): the tenant's metered key, or a ChatGPT plan leased from
++        # the pool. The plan arrives as an access token (about an hour) and the
++        # plan's account id; the quota broker alone holds and refreshes the
++        # refresh token, which never reaches a worker.
++        secrets=("OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
++        secrets_any_of=True,
+         timeout_seconds=7200,
+         inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
+-        # DISABLED 2026-09-23 by the owner's decision: ...
+-        # ...
+-        available=False,
+-        disabled_reason=(
+-            "codex is disabled on this platform. The provider refused the "
+-            "registered credential and the platform is focused on Claude. Use "
+-            "claude-code."
+-        ),
++        # Re-enabled by contract request 130 (owner, 2026-11-01): disabled
++        # 2026-09-23 by request 11 when the one registered key was refused;
++        # it now runs on a pool ChatGPT plan as well as a tenant's key.
+         secret_slots={"files": _FILES_SLOT},   # contract request 80
+     ),
+```
+
+The exact patch against main is in the pull request's body. Nothing else in
+the catalogue changes: same image, class, backend (GKE Autopilot, request 65),
+provider, timeout, inputs and slots.
+
+`secrets_any_of=True` is what makes the three names one credential among
+alternatives: a step runs if it has `OPENAI_API_KEY`, or if it has the plan's
+pair. The pair is not two independent alternatives -- an access token without
+its account id does not reach the Codex backend -- and the flag cannot say so;
+the codex runner is what refuses a plan token without its account id
+(`agent_worker.runners.codex`, in the runner lane), exactly as claude-code's
+runner picks one of its two names.
+
+**The interface the three lanes share** (owner's brief, 2026-11-01; recorded
+here because the names are the contract's): a pool account with
+`provider: "openai"` holds a ChatGPT plan's sign-in (refresh token, account
+id). The quota broker is its ONLY writer and refreshes it serialised per
+account, because each refresh replaces the refresh token. `POST
+/v1/accounts/assign {provider: "openai", ...}` returns as `secret` a current
+access token plus the plan's `account_id`, never the refresh token, and the
+worker hands them to codex as `CODEX_PLAN_ACCESS_TOKEN` and
+`CODEX_PLAN_ACCOUNT_ID`. The sign-in is "Sign in with ChatGPT": OAuth with PKCE
+at `https://auth.openai.com`, the Codex CLI's public client; the plan's traffic
+goes to the Codex backend on the Responses wire and refuses some model names
+(measured by sagaxyz/ai-studio on a live ChatGPT Plus login, 2026-08-10).
+Measured here 2026-11-01: the codex CLI in the runtime image (`codex-cli
+0.154.0`) offers `codex login --with-api-key` and `codex login
+--with-access-token` (its help names `CODEX_ACCESS_TOKEN`), each reading stdin.
+`CODEX_PLAN_*` are the platform's names, between the broker, the worker and
+the runner; the runner turns them into whatever the CLI reads.
+
+### Who else applies the rule (every mirror, read 2026-11-01 on `bf5ca60`)
+
+Each must change with it, in the pull request that applies it unless noted:
+
+1. **`terraform/infra/locals.tf` `runner_profiles["codex"]`**:
+   `secret_env = { OPENAI_API_KEY = "openai" }` becomes the three names, each
+   mapped to `"openai"` (`{ for name in [...] : name => "openai" }`, as
+   claude-code-large writes its two). `tests/terraform/catalogue.tftest.hcl`,
+   run `the_terraform_mirror_matches_the_python_catalogue`, compares
+   `secret_env_names` to the catalogue (parsed by
+   `tests/terraform/catalogue_mirror/main.tf`) and reddens until it does.
+   Nothing in Terraform states availability. The `runner:codex` and
+   `provider:openai` pool limits (dev 20 and 100, prod 40 and 40) already exist
+   and need no change for the request; their sizing for a plan pool is the
+   pool lane's to propose.
+2. **`scripts/lib/check-contract-parity.sh`**: compares no profile's
+   `secrets`, `secrets_any_of` or `available` (its catalogue checks cover
+   inputs, model classes, image/class/backend and provider/class/backend for
+   pool units). It needs no change; it is listed because the brief named it,
+   and checked.
+3. **The console's profile list** (`apps/swarm-ui`): the live console reads
+   `available` and `disabled_reason` from `/v1/capacity` (`RunnerPicker`,
+   `ProfileMatrix`, `Submit`), so it follows the catalogue. The DEV FIXTURE
+   restates it: `src/api.ts`, `FIXTURE_AVAILABILITY`'s `"codex"` entry
+   (`available: false` and the reason), which
+   `tests/unit/control_plane/test_capacity_serves_availability.py::test_the_ui_fixture_table_is_the_catalogues_availability`
+   holds to the catalogue. Vitest files that render that fixture and expect
+   codex refused change with it: `__tests__/submit.picks.test.tsx` ("Not
+   enabled yet. Use claude-code") and `__tests__/submit.picker.test.tsx`
+   (`option('codex').disabled`).
+4. **The MCP bridge's profile list** (`apps/swarm-mcp/swarm_mcp/profiles.py`):
+   reads the BUNDLED `swarm_common.RUNNER_PROFILES`, not the API, and refuses
+   an unavailable profile in `check()`, so an installed plugin keeps refusing
+   codex until it is upgraded to a release carrying this change. No list of its
+   own to edit; comments at `profiles.py`, `workflows.py` and `cli.py` that
+   recount the 2026-09-23 disabling stay true as history.
+   `plugin/skills/delegate/SKILL.md` says "**`codex` is DISABLED.**" and
+   `tests/unit/mcp/test_profiles.py::test_the_delegation_skill_never_recommends_a_profile_the_platform_refuses`
+   holds it to `available`: the sentence changes with it.
+5. **Tests that pin codex refused**, which redden when it is applied (request
+   11's guards, doing their job):
+   `tests/unit/control_plane/test_guards.py::test_unknown_runner_profile_is_rejected`
+   (`"codex" not in known_runner_profiles`) and
+   `::test_a_disabled_profile_is_refused_as_disabled_not_as_unknown` move to a
+   profile that stays disabled (`post-verdict`, `claude-code-review`,
+   `fix-loop`); `tests/unit/docs/test_counts_mockups.py::test_the_fixture_names_a_profile_the_catalogue_marks_unavailable`
+   (`_CODEX in UNAVAILABLE`) is re-pointed the same way.
+6. **The pool's eligibility, stated in three places, all keyed to
+   `CLAUDE_CODE_OAUTH_TOKEN`** (the duplication request 22 names): the
+   scheduler's `credentials.SUBSCRIPTION_TOKEN_ENV`
+   (`PROFILE_TAKES_NO_SUBSCRIPTION`), the worker's
+   `accountlease.ACCOUNT_TOKEN_ENV` (and `lifecycle`'s "does this profile take
+   a pool account"), and swarm-api's `task_accounts.ACCOUNT_TOKEN_ENV` and
+   `service`'s pooled-profile listing. swarm-api's `SUBSCRIPTION_PROVIDER =
+   "anthropic"` refuses an openai pool account at `POST /v1/accounts`. These
+   are the broker and worker lanes' changes (a profile is pool-eligible when it
+   declares its provider's plan name: `CLAUDE_CODE_OAUTH_TOKEN` for
+   anthropic, `CODEX_PLAN_ACCESS_TOKEN` for openai); until they land, codex
+   accepted by this request runs on a tenant key only, and
+   `tests/unit/worker/test_pool_credential_parity.py` keeps the scheduler and
+   the worker agreeing either way.
+7. **The worker's credential shaping** (`agent_worker/secrets.py`,
+   `resolve_credentials`): a BARE-string tenant payload is copied into every
+   declared name. For claude-code that is harmless (the runner tells a key from
+   a token by prefix); for codex it would put an API key into
+   `CODEX_PLAN_ACCESS_TOKEN` and `CODEX_PLAN_ACCOUNT_ID`. The runner lane must
+   treat a bare payload as `OPENAI_API_KEY` only, and take the plan names from
+   a pool lease (or a JSON payload naming them), never from a copied string.
+   Likewise the scheduler's GKE/Cloud Run env (`dispatch.py`) wires every
+   declared name to `swarm-tenant-<t>-openai`, so the same rule applies to
+   what arrives through it. `agent_worker/cliagent.py` reads only `key_env`
+   and `alt_key_envs` (and registers only those for redaction), and refuses a
+   codex step that has no `OPENAI_API_KEY`: `runners/codex.py` must declare the plan
+   names so they are both handed to the child and redacted.
+8. **`/v1/runtimes` and `/v1/capacity`** (`routes/platform.py`) serve
+   `secrets`, `secrets_any_of`, `available` and `disabled_reason` straight from
+   the catalogue: no change, and `types.ts` already carries every field.
+9. **Docs** that say codex is disabled (`docs/provider-keys.md`,
+   `execution-backends.md`, `architecture.md`, `workflows.md`,
+   `worker-images.md`, `plugin/README.md`, the web-ui mockups) are corrected in
+   the applying pull request; request 11 above stays as history.
+
+### What it would break if accepted
+
+* **A tenant holding a dead key is dispatched again.** `swarm-tenant-eng-openai`
+  was the rejected key of 2026-09-23; a codex step for that tenant, with no
+  plan pool leased, fails at the provider as it did then, now as a refusal
+  against a profile that admits it. The applying lane checks each tenant's
+  registered `openai` secret (that it exists and is current, never its value)
+  or the owner rotates it first.
+* **Old plugins refuse, new API admits**, until the bridge is upgraded (item 4).
+* **Tests listed in item 5 redden** until re-pointed; that is the intended
+  signal.
+* Nothing in Firestore changes shape: the four task documents that name codex
+  still read; no lease, pool or attempt field is added.
+
+### If it is declined
+
+codex stays refused, and the owner's ChatGPT-plan pool has no runner to serve:
+the broker and worker lanes can hold and lease plan credentials, but no
+profile may name them, and the only way to run an OpenAI agent stays a metered
+key the platform cannot dispatch either.
+
+### Invariants
+
+* **3 (concurrency counts from LEASED):** unchanged. A codex step reserves
+  `provider:openai`, `provider:openai:tenant:<t>`, `runner:codex` and the
+  compute pools at LEASED in the one admission transaction (**2**), whichever
+  credential it ends up using; the pool-account lease the worker takes from
+  the broker is a separate, per-account claim that bounds a plan's own
+  concurrency and is released with the attempt, as claude-code's is.
+* **9 (per-tenant isolation):** a tenant key stays the tenant's own
+  `swarm-tenant-<t>-openai`, read by the tenant's own GSA. A pool plan is
+  served to a tenant only through the broker's assign, under the pool's
+  existing rule (`quota_broker/accounts.py`: an account belongs to exactly one
+  tenant and serves another only where its owner named it, per account), now
+  applied to `provider: "openai"` accounts too; the refresh token never leaves the
+  broker, and the access token handed to a worker lives about an hour and is
+  registered for redaction.
+* **5 (fencing):** unchanged; the worker's fencing check is its step 1, before it
+  asks the broker for an account.
+* **10:** the caller still names `codex` by name and supplies no credential,
+  image or command; which credential runs is the platform's choice.
+* **6, 7, 8:** unchanged (on-demand GKE Autopilot, the standard class,
+  periodic checkpoints). **1, 4:** unchanged.
