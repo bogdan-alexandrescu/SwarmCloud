@@ -1331,6 +1331,22 @@ DISPATCH_CARRIERS = ("checkpoints", "branches")
 DEFAULT_STRATEGY = "collect"
 DEFAULT_CARRIER = "checkpoints"
 
+#: The workflow switches (the owner's experiment, 2026-11-01): a spec's
+#: `dispatch` map may set any of these to `on` or `off`, and every step of the
+#: dispatch obeys them. They are on/off words that name no image, command,
+#: resource spec or backend (invariant 10), and they only NARROW what the
+#: workspace's and repository's stored settings allow, save that
+#: `code_intelligence: on` takes the step out of the graph-context A/B and
+#: `jev_judgments: on` runs the worker's Jev judgments outside a live-browser
+#: attempt, both only where the stored settings say on. Written inside the
+#: signed `dispatch` block (`swarm_common.specsign.SIGNED_METADATA_KEYS`),
+#: and only the keys the spec set: an absent map stores exactly the block it
+#: stored before. The worker spells them in `agent_worker.graphstage`
+#: (`SWITCH_CODE_INTELLIGENCE`), `agent_worker.qualitygates` (`SWITCH`) and
+#: `agent_worker.judge.attempt` (`SWITCH`).
+DISPATCH_SWITCHES = ("code_intelligence", "quality_gates", "jev_judgments")
+DISPATCH_SWITCH_VALUES = ("on", "off")
+
 #: The single key inside `task.metadata` this feature owns. One nested key
 #: rather than two flat ones because `metadata` is caller-supplied and free
 #: form: a caller who already sends `metadata.strategy` for their own purposes
@@ -2103,6 +2119,9 @@ class DispatchOptions:
     #: `publishtopr.resolve` read it from GitHub at submission; empty on every
     #: other dispatch. The worker derives the branch from the task id.
     publish_to_pr: tuple[tuple[str, Any], ...] = ()
+    #: `(switch, "on" | "off")` for each `DISPATCH_SWITCHES` key the spec's
+    #: `dispatch` map set, in that order (2026-11-01); empty when it set none.
+    switches: tuple[tuple[str, str], ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -2292,6 +2311,10 @@ class DispatchOptions:
         # spells the key `agent_worker.publishpr.FIELD`.
         if self.publish_to_pr:
             block["publish_to_pr"] = dict(self.publish_to_pr)
+        # Only the switches the spec set (2026-11-01), so a spec without a
+        # `dispatch` map stores exactly the block it stored before.
+        for name, value in self.switches:
+            block[name] = value
         return block
 
 
@@ -2580,12 +2603,39 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     )
 
 
+def resolve_dispatch_switches(value: Any) -> tuple[tuple[str, str], ...]:
+    """A spec's `dispatch` map as `DispatchOptions.switches`, or a refusal
+    naming the accepted switches and values. None (no map) is no switch."""
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise DispatchOptionError(
+            "dispatch is a map of switches, each `on` or `off`; accepted switches are "
+            + ", ".join(DISPATCH_SWITCHES),
+            detail={"accepted_switches": list(DISPATCH_SWITCHES),
+                    "accepted_switch_values": list(DISPATCH_SWITCH_VALUES)},
+        )
+    unknown = sorted(str(key) for key in value if key not in DISPATCH_SWITCHES)
+    if unknown:
+        raise DispatchOptionError(
+            f"unknown dispatch switch {unknown[0]!r}; accepted switches are "
+            + ", ".join(DISPATCH_SWITCHES),
+            detail={"accepted_switches": list(DISPATCH_SWITCHES), "unknown": unknown},
+        )
+    return tuple(
+        (name, _accepted_value(f"dispatch.{name}", value[name], DISPATCH_SWITCH_VALUES,
+                               "accepted_switch_values"))
+        for name in DISPATCH_SWITCHES if name in value
+    )
+
+
 def resolve_dispatch_options(
     *,
     strategy: Any,
     carrier: Any,
     scale: str,
     repository_url: str | None,
+    switches: Any = None,
 ) -> DispatchOptions:
     """Validate the pair and return it, or refuse with the accepted values named.
 
@@ -2607,6 +2657,7 @@ def resolve_dispatch_options(
                                  "accepted_strategies"),
         carrier=_accepted_value("carrier", carrier, DISPATCH_CARRIERS,
                                 "accepted_carriers"),
+        switches=resolve_dispatch_switches(switches),
     )
     if options.strategy == SINGLE_PR and scale != "workflow":
         raise DispatchOptionError(

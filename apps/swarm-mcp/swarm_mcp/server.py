@@ -5867,6 +5867,8 @@ def _call(
             # As named: `infer` above chose only the primary repository.
             additional_repositories=fields["additional_repositories"],
             publish_to_pr=publish_to_pr,
+            # Only a whole spec carries the workflow switches (2026-11-01).
+            dispatch=fields.get("dispatch"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,

@@ -5,12 +5,15 @@
     GET /v1/workspaces/{tenant_id}/quality-gates   the switches, their defaults
                                                    and whether the caller may
                                                    change them
-    PUT /v1/workspaces/{tenant_id}/quality-gates   `{jev}`, a bool: its owner or
+    PUT /v1/workspaces/{tenant_id}/quality-gates   `{jev}`: true, false or
+                                                   "on_request"; its owner or
                                                    admin, or a platform admin;
                                                    audited
 
 `jev` on makes the workspace's claude-code lanes run jev-belay and
-jev-enforce with the workspace's TypeSafe key (`qualitygates`, which says
+jev-enforce with the workspace's TypeSafe key, and `"on_request"` makes only
+the steps whose signed workflow switch says `quality_gates: on` run them
+(2026-11-01) (`qualitygates`, which says
 where it is stored, who may change it, why, and how the block is signed:
 every PUT stores its MAC under the `swarm-settings-key`). Nothing here takes or
 returns a credential, an image, a command or a URL (invariant 10).

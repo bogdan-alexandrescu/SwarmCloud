@@ -26,11 +26,28 @@ shim's URL (`settings.typesafe_url`) and the bearer the shim's local token.
 A judge on Cloud Run has no shim and keeps the key file below.
 
 THE KEY. The Internal backends (the default) carry none. TypeSafe needs the
-workspace's key, and this module reads only what the worker already resolved
-into `private/` (`jevkey.KEY_FILE_NAME`, written for a live-browser attempt);
-with no key there, TypeSafe is `no_key` and no call is made (§5.5's first
-row). Resolving a TypeSafe key for every attempt is a lifecycle change and is
-outside this lane.
+workspace's key, and without a workflow switch this module reads only what
+the worker already resolved into `private/` (`jevkey.KEY_FILE_NAME`, written
+for a live-browser attempt); with no key there, TypeSafe is `no_key` and no
+call is made (§5.5's first row).
+
+THE WORKFLOW SWITCH (the owner's experiment, 2026-11-01). The signed
+dispatch block's `jev_judgments` (`SWITCH`, `swarm_api.validation
+.DISPATCH_SWITCHES`) decides per step: `off` sets nothing up, whatever the
+workspace allows; `on` runs the judgments on the step's own profile,
+claude-code included, wherever the workspace lets Jev see code
+(`code_intelligence.jev`, and no repository `off`) and its stored backend
+can answer. For that, on the `typesafe` backend with no shim and no key in
+`private/`, `setup` asks `resolve_key` for the WORKSPACE's TypeSafe key
+(`jevkey.resolve_workspace`, exactly as the quality gates resolve theirs: no
+submitter, registered for redaction), which `register.prepare` writes as the
+one 0600 file `private/jev-key`; `finish` removes it after the agent. With
+the forwarder on, the shim is used instead and no key is read. The switch
+names no backend: it only narrows, or reaches a step the live browser does
+not, under the workspace's own choice (invariant 10). `setup` fills
+`record` with the switch, its value, the deciding source (`workflow switch`,
+`repository`, `workspace` or `default`) and the outcome, which
+`graphstage.prepare` writes into `stage.json`.
 
 NEVER RAISES. A settings read that fails is "off" with its reason, and the
 attempt runs exactly as the local-only run does.
@@ -38,6 +55,7 @@ attempt runs exactly as the local-only run does.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -63,6 +81,10 @@ TYPESAFE_KEY_FILE = "jev-typesafe.key"
 #: forwarder switched on (SEC-MIGRATE-TYPESAFE). With it, TypeSafe is the
 #: shim's loopback URL and the bearer is its local token: no key is read.
 TYPESAFE_SHIM_FILE = "jev-typesafe.shim"
+#: The workflow switch in the signed dispatch block (2026-11-01): `on` | `off`.
+SWITCH = "jev_judgments"
+ON, OFF = "on", "off"
+SOURCE_SWITCH = "workflow switch"
 
 
 def judge_settings(workspace: Mapping[str, Any] | None,
@@ -138,10 +160,26 @@ def _read(db: Any, tenant_id: str, repository_url: str | None,
     return workspace, None if isinstance(found, str) else found[0]
 
 
+def _source(switch: str | None, given: settings_mod.JudgeSettings,
+            workspace: Mapping[str, Any]) -> str:
+    """What decided whether this step's judgments may run."""
+    if switch == OFF:
+        return SOURCE_SWITCH
+    if given.repository_override == OFF:
+        return "repository"
+    block = workspace.get(CODE_INTELLIGENCE_FIELD)
+    stored = block.get("jev") if isinstance(block, Mapping) else None
+    if not given.code_opt_in:
+        return "workspace" if stored is not None else "default"
+    return SOURCE_SWITCH if switch == ON else "workspace"
+
+
 def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
           call_options: Mapping[str, Any] | None = None,
           environ: Mapping[str, str] | None = None, log: Any = None,
-          secret_env_names: Iterable[str] = ()) -> dict[str, str]:
+          secret_env_names: Iterable[str] = (), switch: str | None = None,
+          resolve_key: Callable[[], str | None] | None = None,
+          record: dict[str, Any] | None = None) -> dict[str, str]:
     """The worker's half: `{CONFIG_ENV: path}` when this attempt may ask Jev, else {}.
 
     `secret_env_names` are the task profile's registered secrets
@@ -157,11 +195,26 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
     as `db` (`indexrun.state_routes`): the workspace's settings from
     `state/context`, the registration from `state/repository`, and no
     Firestore call.
+
+    `switch` is the signed dispatch block's `jev_judgments` (`SWITCH`), None
+    when unset; `resolve_key` the worker's resolver of the workspace's
+    TypeSafe key, asked only under `on` (see the module docstring). `record`,
+    when given, is filled with `{switch, value, source, on, reason}`.
     """
+    switch = switch if switch in (ON, OFF) else None
+    note = record if record is not None else {}
+    note.update({"switch": SWITCH, "value": switch})
+    if switch == OFF:
+        note.update({"source": SOURCE_SWITCH, "on": False,
+                     "reason": "jev judgments are off (workflow switch)"})
+        if log is not None:
+            log.info("jev", on=False, reason="workflow_switch_off")
+        return {}
     try:
         options = dict(call_options or {})
         workspace, registration = _read(db, tenant_id, repository_url, options)
         given = judge_settings(workspace, registration)
+        note["source"] = _source(switch, given, workspace)
         attempt_dir = Path(work).parent
         private = attempt_dir / register.KEY_DIR
         shim = _read_shim(private)
@@ -170,19 +223,44 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
             shim_url, key = shim
         else:
             shim_url, key = None, _read_key(private)
+        if switch == ON and shim is None and not key and resolve_key is not None \
+                and given.backend == settings_mod.TYPESAFE \
+                and settings_mod.opted_in(given) is None:
+            # The WORKSPACE's key, as the quality gates resolve it; written by
+            # `register.prepare` as the one 0600 file `private/jev-key`.
+            key = resolve_key()
         done = register.prepare(attempt_dir=attempt_dir, settings=given, key=key,
                                 environ=environ, hard_stop_paths=_hard_stops(registration),
                                 secret_env_names=secret_env_names, shim_url=shim_url)
     except Exception as exc:  # noqa: BLE001 -- Jev is never worth the attempt
         if log is not None:
             log.warning("jev not set up", error=type(exc).__name__)
+        note.update({"on": False, "reason": f"error ({type(exc).__name__})"})
         return {}
+    note.update({"on": bool(done.registered), "reason": done.reason,
+                 "backend": done.backend.name if done.backend is not None else None})
     if log is not None:
         log.info("jev", on=done.registered, reason=done.reason,
                  backend=done.backend.name if done.backend is not None else None)
     if not done.registered or done.config_path is None:
         return {}
     return {CONFIG_ENV: str(done.config_path)}
+
+
+def finish(env: Mapping[str, str]) -> None:
+    """After the agent, for a step whose switch said `on`: the key file
+    `register.prepare` wrote (`private/jev-key`) removed. Only that file: the
+    shim file is the worker's. Never raises."""
+    path = (env.get(CONFIG_ENV) or "").strip()
+    if not path:
+        return
+    try:
+        config = json.loads(Path(path).read_text(encoding="utf-8"))
+        key_file = config.get("key_file") if isinstance(config, dict) else None
+        if isinstance(key_file, str) and Path(key_file).name == register.KEY_FILE:
+            Path(key_file).unlink(missing_ok=True)
+    except (OSError, ValueError):
+        return
 
 
 def load(environ: Mapping[str, str] | None = None, *,

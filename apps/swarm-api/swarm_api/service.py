@@ -1161,6 +1161,7 @@ class SubmissionService:
                             # batch is at task scale, not workflow scale.
                             scale="task",
                             repository_url=spec.repository_url,
+                            switches=spec.dispatch,
                         ),
                         tenant, spec, person=ctx.email,
                     ),
@@ -1310,6 +1311,7 @@ class SubmissionService:
                 carrier=spec.carrier,
                 scale="workflow",
                 repository_url=repository_url,
+                switches=spec.dispatch,
             )
             # Lane SPEED-D3: the pull requests of the workflow's own
             # repository it waits for, once that repository is known.

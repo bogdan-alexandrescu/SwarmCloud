@@ -59,6 +59,53 @@ costs nothing while it waits.
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
+## Workflow switches: `dispatch`
+
+Beside `strategy` and `carrier`, a workflow (or a task) may carry three
+on/off switches that every one of its steps obeys:
+
+```json
+"dispatch": {"code_intelligence": "on", "quality_gates": "off", "jev_judgments": "off"}
+```
+
+| Switch | `off` | `on` |
+|---|---|---|
+| `code_intelligence` | no graph context: nothing staged or pinned, no `swarm-graph` tool, no additional repository's graph | graph context on every step, taken out of the A/B split, wherever the repository's and the workspace's stored `context` resolve on |
+| `quality_gates` | no jev-belay or jev-enforce hooks | the hooks, only where the workspace's signed `quality_gates.jev` is `true` or `"on_request"` |
+| `jev_judgments` | none of the worker's Jev judgments | the judgments on the step's own profile, claude-code included, wherever the workspace lets Jev see code (`code_intelligence.jev`) and its judgment backend can answer; on `typesafe` with the workspace's own key |
+
+**Why they exist.** The owner's experiment (2026-11-01) builds one feature
+four ways at the same moment, as collect-only workflows that push nothing:
+with nothing, with code intelligence, with code intelligence and the Jev
+quality checks and browser, and with all of that plus the worker's Jev
+judgments. Without the switches a step's graph context came from the
+workspace setting plus a sha256(task id) A/B split, so half of a "with code
+intelligence" workflow silently ran without it, and the quality gates were
+the same for every workflow of a workspace.
+
+**They only narrow.** `off` always wins. `on` never turns on what a stored
+setting turned off: a repository or workspace whose `context` is `off` stays
+off, and the quality gates run only where a workspace admin's signed
+`quality_gates.jev` allows them, because they send code to TypeSafe. For a
+workspace that wants the gates only on request, `quality_gates.jev` takes a
+third value, `"on_request"`: every lane runs none unless its switch says
+`on`. The switches are on/off words that name no image, command, resource
+spec or backend (invariant 10).
+
+**Absent is today.** A spec without `dispatch` stores exactly the dispatch
+block it stored before; one with it stores only the keys it set, inside the
+signed `metadata.dispatch` block, so the worker reads them only once the
+spec signature verifies. Any other switch or value is refused with the
+accepted ones named.
+
+**Recorded.** Every attempt records what it ran with and why: the step's
+`.swarm-context/stage.json` names each switch, its value and the deciding
+source (`workflow switch`, `repository`, `workspace` or `default`), and,
+when the block set a switch, the task's `result_summary.switches` carries
+the same for `code_intelligence` and `jev_judgments`, and
+`result_summary.quality_gates.switch` for the gates. The experiment proves
+each workflow's conditions from these records.
+
 ## What `input` may carry
 
 A runner reads its agent's `input`, and an input means something only to the

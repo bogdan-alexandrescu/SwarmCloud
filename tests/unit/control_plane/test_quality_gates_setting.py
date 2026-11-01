@@ -164,3 +164,34 @@ def test_saving_the_same_value_over_an_unsigned_block_signs_it_without_an_audit_
 def test_a_deployment_with_no_key_writes_no_mac(client, db, seeded):
     assert _put(client, "eng", "root", {"jev": True}).status_code == 200
     assert "mac" not in db.docs["workspace_settings/eng"]["quality_gates"]
+
+
+# -- on request (the owner's pick, 2026-11-01) ---------------------------------
+
+
+def test_on_request_is_accepted_signed_and_served(client, db, seeded, api_context):
+    """The third value: only a step whose signed workflow switch says
+    `quality_gates: on` runs the gates. Signed exactly as `true` is: the MAC
+    covers `jev` whatever its value (`specsign.canonical_settings_block`
+    projects the stored value of every key SETTINGS_MAC_FIELDS lists)."""
+    key = new_key()
+    configure(api_context, settings_key=key)
+    response = _put(client, "eng", "root", {"jev": "on_request"})
+    # MUTATION: keep `jev: StrictBool` and this is 422.
+    assert response.status_code == 200, response.text
+    assert response.json()["quality_gates"] == {"jev": "on_request"}
+    block = db.docs["workspace_settings/eng"]["quality_gates"]
+    assert block["jev"] == "on_request"
+    assert reference_verifies(key, "eng", "quality_gates", block)
+    assert not reference_verifies(key, "eng", "quality_gates", {**block, "jev": True})
+    assert qualitygates.stored_jev(db.docs["workspace_settings/eng"], tenant_id="eng",
+                                   mac=None) == "on_request"
+    (row,) = _audit(db)
+    assert row["detail"]["from"] is False and row["detail"]["to"] == "on_request"
+
+
+@pytest.mark.parametrize("value", ["on-request", "ON_REQUEST", "request", "always"])
+def test_no_other_word_is_accepted(client, db, seeded, value):
+    response = _put(client, "eng", "root", {"jev": value})
+    assert response.status_code == 422, response.text
+    assert "workspace_settings/eng" not in db.docs
