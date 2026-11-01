@@ -1536,6 +1536,7 @@ def workflow_to_api(
     step_tasks: Mapping[str, Task] | None = None,
     console_url: str | None = None,
     summary: bool = False,
+    step_totals: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Public JSON shape for a workflow.
 
@@ -1570,6 +1571,13 @@ def workflow_to_api(
 
     `rollup` is None only on a path that did not read the steps. The field then
     reports the stored value and says so, rather than implying it was confirmed.
+
+    `step_totals` (console load speed, owner's pick 2026-11-01) is
+    `attempt_totals.totals_for` over the step tasks the route read; given, each
+    step carries `task_summary` (`step_task_summary`), what the Workflows board
+    draws for it, so the board needs no task list, per-workflow read or
+    per-task attempts read of its own. Absent, the key is absent: the full list
+    reads no attempts.
     """
     served = dict(rollup or {})
     state = served.pop("state", None) or workflow.state.value
@@ -1602,10 +1610,63 @@ def workflow_to_api(
                 console_url,
                 summary=summary,
                 waiting=_step_waiting(s, step_tasks or {}),
+                task_summary=(
+                    {"task_summary": step_task_summary(s, step_tasks or {}, step_totals)}
+                    if step_totals is not None else {}
+                ),
             )
             for s in workflow.steps
         ],
         "links": {"console": workflow_console_url(console_url, workflow.workflow_id)},
+    }
+
+
+#: The `metadata` keys a step's `task_summary` serves: what the Workflows
+#: board names a step by -- the lane's `unit` (`swarm_mcp.workflows`
+#: `stored_names`), then its `title`. Strings only, each masked.
+STEP_SUMMARY_METADATA_KEYS: tuple[str, ...] = ("title", "unit")
+
+
+def step_task_summary(
+    step: WorkflowStep,
+    step_tasks: Mapping[str, Task],
+    step_totals: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """What the Workflows board draws for one step, off its task: never its input.
+
+    The task's `state`, its `title` and `unit`, `started_at` and
+    `completed_at` (the last attempt's, as the task serves them), the totals
+    across every attempt `attempt_totals.totals_for` read (null figures with
+    `attempts_read: "failed"` when that read failed), and `last_error_line`: the first line of `last_error`, the line the
+    board's failure cause reads. The whole `last_error` is masked by the task's
+    own masker BEFORE it is cut, so a credential that spans lines is masked as
+    `GET /v1/tasks/{id}` masks it.
+
+    Null for a step whose task was not read, and for one whose task has no
+    entry in `step_totals`: `totals_for` gives every task it was asked about
+    one, so a task left out is one the route chose not to serve (the `?ids=`
+    batch's submitter filter), and its state and title are not served here
+    either.
+    """
+    task = step_tasks.get(step.task_id) if step.task_id else None
+    totals = step_totals.get(task.id) if task is not None else None
+    if task is None or totals is None:
+        return None
+    masking = masking_for(task, warm=False)
+    stored = task.metadata or {}
+    names: dict[str, Any] = {}
+    for key in STEP_SUMMARY_METADATA_KEYS:
+        value = stored.get(key)
+        names[key] = masking.text(value)[0] if isinstance(value, str) else None
+    error, _ = masking.text(task.last_error)
+    line = error.splitlines()[0] if error else None
+    return {
+        "state": task.state.value,
+        **names,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        **totals,
+        "last_error_line": line or None,
     }
 
 
@@ -1646,6 +1707,7 @@ def _step_to_api(
     *,
     summary: bool = False,
     waiting: dict[str, Any] | None = None,
+    task_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One workflow step. Its `input` is served MASKED, with its count.
 
@@ -1683,6 +1745,8 @@ def _step_to_api(
         "links": {"console": agent_console_url(console_url, step.task_id)},
         # #1782: why a waiting step waits, in one line (`_step_waiting`).
         "waiting": waiting,
+        # `{"task_summary": ...}` when the route read the attempt totals.
+        **(task_summary or {}),
     }
     if summary:
         return base

@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import math
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -49,7 +50,7 @@ BLOCK_KEYS = {
 def _workflow(db, workflow_id: str, steps: int, created_at: datetime, *,
               last_error: str | None = None, secret: str | None = None) -> Workflow:
     task_ids = [f"task_{workflow_id}_{i:02d}" for i in range(steps)]
-    step_input = {"prompt": PROMPT * 5, **({"api_token": secret} if secret else {})}
+    step_input = {"prompt": PROMPT * 5}
     for i, task_id in enumerate(task_ids):
         doc = seed_task(db, task_id=task_id, tenant_id="eng", state="FAILED" if last_error else "SUCCEEDED",
                         created_at=created_at, workflow_id=workflow_id)
@@ -120,7 +121,8 @@ def test_each_summary_step_carries_what_the_board_draws_and_no_input(client, db)
 
 def test_the_block_is_masked_by_the_step_tasks_own_masker(client, db):
     seed_tenant(db, "eng")
-    secret = "sk" + secrets.token_hex(16)
+    # Built at runtime: a GitHub token's shape, which the rules mask anywhere.
+    secret = "gh" + "p_" + secrets.token_hex(18)
     _workflow(db, "wf_s", 1, T0, last_error=f"auth failed with {secret}\nmore")
 
     body = _list(client, view="summary")
@@ -129,6 +131,9 @@ def test_the_block_is_masked_by_the_step_tasks_own_masker(client, db):
     assert secret not in line
     assert line.startswith("auth failed with ")
     assert secret not in json.dumps(body)
+    # Exactly as the task's own read serves it, cut to its first line.
+    task = client.get("/v1/tasks/task_wf_s_00", headers=auth_header("alice")).json()["task"]
+    assert task["last_error"].splitlines()[0] == line
 
 
 def test_a_step_with_no_task_read_has_a_null_block(client, db):
@@ -207,3 +212,24 @@ def test_the_list_reads_attempts_in_batches_and_no_task_beyond_the_rollup(client
     assert attempts == [("query", "attempts")] * math.ceil(250 / 30)
     tasks = [r for r in reads if r[1] == "tasks"]
     assert tasks == [("get_all", "tasks")] * 3
+
+
+
+def test_the_attempts_batches_run_at_once_not_one_after_another(client, db, monkeypatch):
+    """Four chunks of 30 meet at a barrier: run serially, the first would wait alone and break it."""
+    from swarm_api.routes import workflows as route
+
+    seed_tenant(db, "eng")
+    for i in range(4):
+        _workflow(db, f"wf_{i}", 30, T0 - timedelta(minutes=i))
+    barrier = threading.Barrier(4, timeout=5)
+    real = route.totals_for
+
+    def meeting(db_, tenant_id, task_ids):
+        barrier.wait()
+        return real(db_, tenant_id, task_ids)
+
+    monkeypatch.setattr(route, "totals_for", meeting)
+    body = _list(client, view="summary", limit=10)
+
+    assert sum(1 for w in body["workflows"] for s in w["steps"] if s["task_summary"]["attempts"] == 1) == 120
