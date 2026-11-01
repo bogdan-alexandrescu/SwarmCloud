@@ -10068,6 +10068,9 @@ class Worker:
             if spec is None or spec.name != "claude-code":
                 self._gates_env = {}
             else:
+                # The block's MAC was checked by the scheduler, which holds
+                # the settings key; its verdict is in this job's environment.
+                self._gates_route = qualitygates_mod.GatesVerdict(os.environ)
                 self._gates_env = qualitygates_mod.prepare(
                     db=self.db,
                     client=self.secret_client,
@@ -10078,6 +10081,7 @@ class Worker:
                     secret_env_names=tuple(profile.secrets or ()),
                     inject=self.typesafe.on,
                     shim_file=self.typesafe.shim_file,
+                    verdict=self._gates_route,
                 )
         return dict(self._gates_env)
 
@@ -10086,8 +10090,13 @@ class Worker:
         one RUNNING mark, cause `quality_gate`, when jev-belay blocked a stop
         or jev-enforce flagged a rule -- counts only, never text -- so a wave
         can compare first-CI-red and NOT_YET rates with the switch on and
-        off. The key file is removed. Never raises."""
+        off. The key file is removed. A stored "on" the scheduler did not
+        vouch for is `{"jev": false, "refused": <why>}`. Never raises."""
         if not self._gates_env:
+            route = getattr(self, "_gates_route", None)
+            refused = getattr(route, "refused", None)
+            if isinstance(refused, str):
+                summary[qualitygates_mod.SUMMARY_KEY] = {"jev": False, "refused": refused}
             return
         try:
             counts = qualitygates_mod.finish(self._gates_env)

@@ -93,6 +93,8 @@ def test_the_covered_fields_are_the_requests():
         ),
         # Contract request 119 (#2459): the workspace's per-agent budget.
         "budget": ("unit", "amount"),
+        # Contract request 128 (JEV-LANES, PR 2905): the lane quality gates.
+        "quality_gates": ("jev",),
     }
     with pytest.raises(TypeError):
         SETTINGS_MAC_FIELDS["top"] = ()  # type: ignore[index]

@@ -135,6 +135,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
 | 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
 | 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | ACCEPTED by the owner 2026-10-31 and APPLIED by the pull request that adds this line (lane LIGHTPANDA-CONTRACT, part of #2688; BGD: "go with the recommended options", accept contract request 127). Its `terraform/infra/locals.tf` mirror lands in the same pull request once `agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing image digest (CLD for BGD, 2026-10-31) |
+| 128 | `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS`, `("jev",)`, so the workspace's switch for the claude-code lanes' TypeSafe quality checks is signed (JEV-LANES, PR 2905; QUALITY-GATES-SETTINGS-MAC, part of #2688) | ACCEPTED by the owner 2026-10-31 ('Add it (contract request)', answering PR 2905's first question) and APPLIED by the pull request that adds this line (lane QUALITY-GATES-SETTINGS-MAC): swarm-api's `qualitygates.QualityGatesStore` signs the block it writes, and `judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)` so the re-sign pass signs stored blocks |
 
 ---
 
@@ -15211,3 +15212,83 @@ The alternatives are both worse:
   flags come from the catalogue and the runner.
 * **1, 4, 5, 8:** unchanged; the claude-code runner's checkpointing and
   fencing are reused as they are.
+
+## 128. `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS` (JEV-LANES, QUALITY-GATES-SETTINGS-MAC, part of #2688)
+
+**Status:** ACCEPTED by the owner 2026-10-31 and APPLIED by lane
+QUALITY-GATES-SETTINGS-MAC (part of #2688), in the pull request that adds
+row 128 of the index above. Requested 2026-10-31 by lane JEV-LANES in the
+body of PR 2905 (merged 2026-10-31T22:37Z), whose first question the owner
+answered 'Add it (contract request)'. "What is true today" below is the
+state before it was applied.
+
+### What is true today
+
+`workspace_settings/{tenant_id}.quality_gates: {jev, set_at, set_by}` is
+written by `apps/swarm-api/swarm_api/qualitygates.py::QualityGatesStore`
+(owner, workspace admin or platform admin only, audited). With `jev` true
+the worker's `qualitygates.prepare` registers jev-belay and jev-enforce on
+a claude-code lane, keyed with the workspace's own TypeSafe key. No block of
+`SETTINGS_MAC_FIELDS` covers it, so it is not signed, and the worker acts on
+a stored `jev: true` whoever wrote it.
+
+### Why
+
+[tenant-settings-integrity.md](design/tenant-settings-integrity.md) §1.3:
+any tenant worker can write `workspace_settings/<B>`. A forged "on" sends
+B's lane text (the final reply, the edits, the CLAUDE.md rule files) to
+TypeSafe under B's own key, a key B's admin set for TypeSafe, without B's
+admin having chosen it for the lanes. Bounded -- nothing goes anywhere B's
+admin had not already pointed a key at -- but it is the same kind of write
+`code_intelligence.jev` is signed against.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "quality_gates": ("jev",),
+})
+```
+
+Only `jev` is covered: `set_at` and `set_by` are a record of who changed it,
+not something any reader acts on. Nothing else in `specsign.py` changes.
+`tests/unit/common/test_settings_block.py` gains the entry.
+
+### The follow-up once it is applied
+
+In the same pull request: `QualityGatesStore.put` stores
+`quality_gates.mac` (`judgment.block_mac`) whenever it writes the block, and
+reads the stored block through `judgment.trusted_block`, as
+`codeintel.CodeIntelligenceStore` does (PR 1330's `code_intelligence.jev`);
+`judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)`, so
+`scripts/resign-workspace-settings.sh` signs the blocks stored before it.
+The worker cannot check an HMAC whose key would let it sign any tenant's
+block, so the scheduler, which holds the key, vouches for it (the owner's
+pick on PR 2955, "Scheduler hands a verdict"): at each claude-code dispatch
+`scheduler.judgment.read_quality_gates_env` reads the attempt's own tenant's
+block, and both dispatchers write `SWARM_QUALITY_GATES_JEV` ("true" only for
+a block that says on and whose MAC verifies, "false" otherwise) and, for a
+refused "on", `SWARM_QUALITY_GATES_REFUSED` into the job's environment. The
+MAC is required whatever SETTINGS_MAC_TENANTS says, and the verdict is
+given only while SETTINGS_MAC_REQUIRED is on. The worker's
+`qualitygates.GatesVerdict` acts on "true" alone, and only while the stored
+block still says on. Unsigned, mismatched, no key or the switch off is off,
+and the attempt's summary says why.
+
+### What it would break if accepted
+
+Nothing at once: a new block changes no other block's bytes. A reader that
+requires the MAC reads a stored `quality_gates` block written before the
+re-sign pass as off until the pass signs it.
+
+### If it is declined
+
+The switch stays unsigned, and a forged "on" is acted on.
+
+### Invariants
+
+**9** is what this protects: the tenant id and the block name are inside
+the signed bytes, so a block copied from another tenant's document does not
+verify. **10** holds either way: one bool, never an image, a command or a
+resource. **1-8** are untouched.
