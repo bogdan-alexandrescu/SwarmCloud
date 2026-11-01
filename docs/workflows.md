@@ -61,7 +61,7 @@ costs nothing while it waits.
 
 ## Workflow switches: `dispatch`
 
-Beside `strategy` and `carrier`, a workflow (or a task) may carry three
+Beside `strategy` and `carrier`, a workflow (or an agent) may carry three
 on/off switches that every one of its steps obeys:
 
 ```json
@@ -101,7 +101,7 @@ accepted ones named.
 **Recorded.** Every attempt records what it ran with and why: the step's
 `.swarm-context/stage.json` names each switch, its value and the deciding
 source (`workflow switch`, `repository`, `workspace` or `default`), and,
-when the block set a switch, the task's `result_summary.switches` carries
+when the block set a switch, the agent's `result_summary.switches` carries
 the same for `code_intelligence` and `jev_judgments`, and
 `result_summary.quality_gates.switch` for the gates. The experiment proves
 each workflow's conditions from these records.
