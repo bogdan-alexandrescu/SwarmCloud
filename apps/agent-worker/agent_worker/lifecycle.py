@@ -116,6 +116,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import re
 import shutil
 import stat
@@ -1125,6 +1126,11 @@ class Worker:
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
         self._pr_text_from: dict[str, str | None] | None = None
+        # The terminal transition `_finish_terminal` decided on, kept while it
+        # is written: when Firestore's contention outlasts every retry, the
+        # crash path writes THIS -- the runner's state, exit code, message and
+        # summary -- rather than the abort's text (#2650).
+        self._decided_terminal: _DecidedTerminal | None = None
         # The contributors this integrator left out of its merge because they
         # changed nothing (`_integrates_with_changes`, 2026-10-05).
         self._no_change_contributors: list[str] = []
@@ -1575,6 +1581,21 @@ class Worker:
             return exc.exit_code if fenced is None else fenced
         except Exception as exc:  # never exit without a durable terminal state
             self.log.exception("worker crashed", exc)
+            decided = self._decided_terminal
+            if decided is not None and _terminal_write_contended(exc):
+                # The attempt had decided its end, and only Firestore's
+                # contention kept it from landing (#2650): write that end, not
+                # "409 Aborted ..." as the runner's error with no exit code.
+                fenced = self._safe_finish(
+                    decided.state,
+                    exit_code=decided.exit_code,
+                    error=decided.error,
+                    end_cause=decided.end_cause,
+                    extra_summary=decided.result_summary,
+                )
+                if fenced is not None:
+                    return fenced
+                return ExitCode.OK if decided.state == TaskState.SUCCEEDED else ExitCode.FAILED
             fenced = self._safe_finish(
                 TaskState.FAILED,
                 exit_code=ExitCode.FAILED,
@@ -17599,7 +17620,18 @@ class Worker:
         retried here: it is a `FencedError`, re-raised as it was, and a
         refusal of the minimal write too raises the FIRST refusal, as before.
         Logged by type and message only, never the summary.
+
+        Kept as `_decided_terminal` while it is written, for the crash path to
+        write the same transition should Firestore's contention outlast every
+        retry (#2650).
         """
+        self._decided_terminal = _DecidedTerminal(
+            state=state,
+            exit_code=exit_code,
+            error=error,
+            end_cause=end_cause,
+            result_summary=result_summary,
+        )
         self._write_terminal_once_more_if_refused(
             lambda summary: self.control.finish(
                 state=state,
@@ -17664,9 +17696,14 @@ class Worker:
     ) -> Any:
         """Run one terminal write; when Firestore refuses its document, run it
         once more with `_minimal_terminal_summary`. The mechanics
-        `_finish_terminal` and `_fail_retryably_terminal` share (#1438)."""
+        `_finish_terminal` and `_fail_retryably_terminal` share (#1438).
+
+        And when Firestore aborts it on contention past the transaction
+        runner's own runs, the SAME write is made again, up to
+        `TERMINAL_CONTENTION_ROUNDS` in all (#2650): an aborted transaction
+        committed nothing, so writing it again cannot write it twice."""
         try:
-            return write(result_summary)
+            return self._write_through_contention(write, result_summary, decided=decided)
         except FencedError:
             raise
         except Exception as exc:
@@ -17682,8 +17719,10 @@ class Worker:
             error=refusal[:SUMMARY_REFUSED_MAX_CHARS],
         )
         try:
-            written = write(
-                _minimal_terminal_summary(decided, error, result_summary, refusal)
+            written = self._write_through_contention(
+                write,
+                _minimal_terminal_summary(decided, error, result_summary, refusal),
+                decided=decided,
             )
         except FencedError:
             raise
@@ -17699,12 +17738,51 @@ class Worker:
         )
         return written
 
+    def _write_through_contention(
+        self,
+        write: Callable[[dict[str, Any] | None], Any],
+        summary: dict[str, Any] | None,
+        *,
+        decided: str,
+    ) -> Any:
+        """`write(summary)`, made again after a contention abort (#2650).
+
+        MEASURED 2026-10-31, dev acceptance on b3d45cdc7: the mock tasks that
+        failed together (exit 2, exit 76, `fail_message`) ended `FAILED
+        runner_error` with no exit code and `last_error` "409 Aborted due to
+        cross-transaction contention": their terminal transactions -- each
+        reading the pools every admission and release writes -- were aborted
+        on every one of `FirestoreTransactionRunner`'s runs, the abort went up
+        as "worker crashed", and the crash path's FAILED carried its text.
+        A fence and every other error are raised as they are.
+        """
+        rounds = 1
+        while True:
+            try:
+                return write(summary)
+            except FencedError:
+                raise
+            except Exception as exc:
+                if rounds >= TERMINAL_CONTENTION_ROUNDS or not _terminal_write_contended(exc):
+                    raise
+                self.log.warning(
+                    "the terminal write met Firestore contention; writing the same state again",
+                    state=decided,
+                    round=rounds,
+                    error_type=type(exc).__name__,
+                )
+            # Jittered, so the writers that met each other do not meet again.
+            _terminal_contention_sleep(
+                TERMINAL_CONTENTION_PAUSE_SECONDS * rounds * random.uniform(0.5, 1.5)
+            )
+            rounds += 1
+
     def _safe_finish(
         self,
         state: TaskState,
         *,
-        exit_code: int,
-        error: str,
+        exit_code: int | None,
+        error: str | None,
         end_cause: EndCause | None = None,
         extra_summary: dict[str, Any] | None = None,
     ) -> int | None:
@@ -17734,7 +17812,7 @@ class Worker:
                 self._finish_terminal(
                     state=state,
                     exit_code=exit_code,
-                    error=self._scrub(error[:4000]),
+                    error=self._scrub(error[:4000]) if error is not None else None,
                     result_summary=summary,
                     end_cause=end_cause,
                 )
@@ -20094,6 +20172,55 @@ def _refused_key_names(keys: Sequence[str]) -> str:
     ]
     rest = len(keys) - len(shown)
     return ", ".join(shown) + (f" and {rest} more" if rest > 0 else "")
+
+
+#: Rounds of one terminal write when Firestore aborts it on contention, each
+#: round being the transaction runner's own `TRANSACTION_ABORTED_RUNS` (#2650).
+#: Four: the abort measured on 2026-10-31 outlasted one round's five runs in
+#: 3.75 s; four rounds with their pauses cover about 25 s of contention, well
+#: inside a finish's `TERMINAL_CALL_SECONDS`.
+TERMINAL_CONTENTION_ROUNDS = 4
+
+#: The pause before a terminal write's next round, times the round number and
+#: a jitter of 0.5-1.5.
+TERMINAL_CONTENTION_PAUSE_SECONDS = 2.0
+
+#: Module seam, so a unit test does not sleep.
+_terminal_contention_sleep: Callable[[float], None] = time.sleep
+
+
+@dataclass(frozen=True)
+class _DecidedTerminal:
+    """The terminal transition `_finish_terminal` is writing (#2650)."""
+
+    state: TaskState
+    exit_code: int | None
+    error: str | None
+    end_cause: EndCause | None
+    result_summary: dict[str, Any] | None
+
+
+def _terminal_write_contended(exc: BaseException) -> bool:
+    """Whether `exc` is Firestore aborting a transaction on contention: an
+    `Aborted` (a read's or the begin's, after the runner's runs), or the
+    library's "Failed to commit transaction in N attempts" `ValueError` (a
+    commit's), anywhere in the chain. Either way nothing was committed."""
+    try:
+        from google.api_core import exceptions as core
+    except ImportError:
+        core = None  # type: ignore[assignment]
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if core is not None and isinstance(current, core.Aborted):
+            return True
+        if isinstance(current, ValueError) and str(current).startswith(
+            "Failed to commit transaction in "
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 #: How much of Firestore's refusal the minimal summary keeps, as
