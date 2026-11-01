@@ -247,7 +247,7 @@ def test_an_openai_account_supplies_the_plans_two_names_only():
     json.dumps({"account_id": str(uuid.uuid4())}),
     json.dumps({"access_token": "", "account_id": str(uuid.uuid4())}),
     json.dumps(["not", "an", "object"]),
-])
+], ids=["empty", "bare", "no-account", "no-token", "empty-token", "list"])
 def test_an_openai_account_secret_of_another_shape_is_refused(payload):
     with pytest.raises(ValueError):
         credential_env_from_account(
