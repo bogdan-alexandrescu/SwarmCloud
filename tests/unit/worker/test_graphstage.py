@@ -432,8 +432,8 @@ def _run_body(module: Any, monkeypatch: pytest.MonkeyPatch, work: Path,
         return {}
 
     monkeypatch.setattr(module, "run_cli_agent", fake_run)
-    for name in ("SWARM_GIT", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH", "SWARM_CDP_ENDPOINT",
-                 graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV):
+    for name in ("SWARM_GIT", "SWARM_CHILDREN", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH",
+                 "SWARM_CDP_ENDPOINT", graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
