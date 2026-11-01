@@ -510,6 +510,12 @@ NOT_SWITCHABLE_CODES = frozenset({
     "join_requests_daily_limit",
     "join_denied_recently",
     "join_workspace_queue_full",
+    # Admin › Setup's Sign-in client step (issue #2964): raised only by POST
+    # /v1/admin/setup/sign-in-client, which that change introduces, so no
+    # existing caller can be refused by it. Continuing past it is the breach
+    # itself: a value that is not a Desktop OAuth client id recorded as the
+    # one `sc` signs in with, and its secret written beside it.
+    "client_id_invalid",
 })
 
 #: What the guard lets through without a switch.

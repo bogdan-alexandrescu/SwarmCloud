@@ -69,6 +69,12 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
             {"state_hash", "id", "slug", "client_id", "name", "installed_on", "secrets_written_at", "self_check"}
         ),
     ),
+    # The Desktop sign-in client Admin › Setup takes (issue #2964): its id and
+    # who saved it when. The secret goes to Secret Manager, never here.
+    "swarm-install/{env}/console/sign_in_client": (
+        SWARM_API,
+        frozenset({"client_id", "saved_at", "saved_by"}),
+    ),
     # Fields keyed per account label: owner, link_hash, link_expires, signed_in_at.
     "swarm-install/{env}/console/accounts": (SWARM_API, frozenset()),
     # A collection under the env document: `console/teams/<id>` has five

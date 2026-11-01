@@ -179,6 +179,9 @@ UNCAPTURED_ROUTES = frozenset({
     # the link's token and the value its form carries.
     "/v1/admin/setup/github-app/conversion",
     "/v1/admin/setup/links",
+    # The Sign-in client step's Desktop client secret (issue #2964), which
+    # swarm-api writes straight into its Secret Manager container.
+    "/v1/admin/setup/sign-in-client",
     "/v1/setup/links/redeem",
 })
 
