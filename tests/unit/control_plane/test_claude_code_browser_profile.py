@@ -212,13 +212,18 @@ def _no_live_browser_from_the_host(monkeypatch):
     refused as `live_browser_unavailable` (2026-10-25, POOL-LIMITS-QUOTA).
     The rest of a live-browser container's variables go too, so no case is a
     live attempt unless it sets its variables itself, after this has run.
+
+    `SWARM_CHILDREN` goes too: a SwarmCloud agent container sets it, and the
+    runner then appends the child-task note to the prompt, so the base-image
+    test that compares the prompt failed there and passed in CI (2026-11-01).
     """
     from agent_worker import handoff
     from agent_worker.runners import claude_code
 
     monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
     monkeypatch.delenv(handoff.HANDOFF_ENV, raising=False)
-    for name in ("SWARM_BROWSER_UPLOADS", "SWARM_TEST_BROWSERS_PATH", "SWARM_JEV_BACKEND"):
+    for name in ("SWARM_BROWSER_UPLOADS", "SWARM_TEST_BROWSERS_PATH", "SWARM_JEV_BACKEND",
+                 "SWARM_CHILDREN"):
         monkeypatch.delenv(name, raising=False)
 
 
