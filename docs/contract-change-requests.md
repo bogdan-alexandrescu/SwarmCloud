@@ -135,6 +135,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
 | 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
 | 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | ACCEPTED by the owner 2026-10-31 and APPLIED by the pull request that adds this line (lane LIGHTPANDA-CONTRACT, part of #2688; BGD: "go with the recommended options", accept contract request 127). Its `terraform/infra/locals.tf` mirror lands in the same pull request once `agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing image digest (CLD for BGD, 2026-10-31) |
+| 128 | `admission.py` / `models.py`: a lease takes 1 unit in each `provider:*` pool and its resource units in every other pool, records what it took per pool (`Lease.pool_units`), and release returns exactly that (LARGE-ONE-PROVIDER-SLOT, part of #2950) | ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the expected behaviour #2950 states) and APPLIED by the pull request that adds this line (lane LARGE-ONE-PROVIDER-SLOT, part of #2950): `pool_units_for` is the one rule; a lease from before it has no `pool_units` and releases its `units` from every pool |
 
 ---
 
@@ -15211,3 +15212,90 @@ The alternatives are both worse:
   flags come from the catalogue and the runner.
 * **1, 4, 5, 8:** unchanged; the claude-code runner's checkpointing and
   fencing are reused as they are.
+
+## 128. `admission.py` / `models.py`: a lease takes 1 unit in each provider pool, whatever its size (LARGE-ONE-PROVIDER-SLOT, part of #2950)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the
+expected behaviour #2950 states) and APPLIED by lane LARGE-ONE-PROVIDER-SLOT
+(part of #2950), in the pull request that adds row 128 of the index above.
+
+### What is true today
+
+`acquire_lease_in_transaction` reserves the same `units` -- the resource
+class's: standard 1, browser 1, large 4 -- in every pool `pool_names_for`
+lists, and `release_lease_in_transaction` subtracts the lease's `units` from
+each. Two of those pools, `provider:<p>` and `provider:<p>:tenant:<t>`, stand
+for concurrent LLM sessions against the provider's accounts, and a
+claude-code-large agent runs one Claude session, like a standard one.
+
+Measured 2026-11-01 03:46Z with `swarm capacity`: ten claude-code-large agents
+in Engineering held 40 of `provider:anthropic:tenant:eng`'s 50 slots for ten
+sessions; every other Engineering agent shared the last 3.
+
+### The change
+
+* `models.pool_units_for(pool, units)`: THE rule. A `provider:*` pool takes
+  `PROVIDER_POOL_UNITS` (1); every other pool takes the resource units.
+  `reserved_pool_units` applies it to a lease's pools.
+* `Lease.pool_units: dict[str, int] | None`, written at reserve: what the
+  lease took in each pool. `held_pool_units` (and `Lease.held_units()`) reads
+  a stored lease: its `pool_units`, or -- for a lease reserved before this
+  change, which has none -- `units` in every pool, the rule it was reserved
+  under.
+* `evaluate_capacity(pools, required, units, tasks=1)` checks each pool for
+  `tasks * pool_units_for(name, units)`; `acquire_lease_in_transaction`
+  increments each pool by its share and stores `pool_units` on the lease;
+  `release_lease_in_transaction` subtracts `held_pool_units` from each pool.
+
+Each pool, and what it bounds:
+
+* `provider:<p>`, `provider:<p>:tenant:<t>`: LLM sessions against the
+  provider (the subscription accounts' concurrency, a tenant's own key's).
+  One agent is one session: **1**.
+* `resource:<c>`: the class's compute. **Units**, unchanged.
+* `global`: the platform's compute: every agent's CPU and memory land on the
+  same backends. **Units**, unchanged.
+* `tenant:<t>`: a tenant's share of compute (its namespace's quota, its
+  Cloud Run instances). **Units**, unchanged.
+* `backend:<b>`: a backend's compute capacity (Autopilot nodes, Cloud Run Job
+  quota). **Units**, unchanged.
+* `runner:<p>`: a profile's concurrency. Every task of a profile has one
+  class, so units and agents differ by a constant factor; the configured
+  limits are written in units (`runner:claude-code-large` 100 is 25 agents),
+  so changing it would silently quadruple them. **Units**, unchanged.
+
+### Who else applies the rule
+
+Through the frozen functions: the scheduler (`acquire_lease`), the worker,
+the reconciler and swarm-api (every release goes through
+`release_lease_in_transaction`; nothing else writes `active`). Restated and
+changed in the same pull request: swarm-api's `headroom` (n tasks need
+`n * pool_units_for` per pool), `waiting` (a row's `units` and the
+below-units verdict), the `/v1/capacity` profile's `pool_units`, the admin
+leases listing's per-row `pool_units` and `units_held_by_pool`;
+`scripts/lib/concurrency-judge.jq` (invariant 3's exact check) and
+`scripts/lib/pool-units.jq` (`make pool-check`).
+
+### What it would break if accepted
+
+Nothing at once: an old lease releases by the old rule. The console
+(`Holders.tsx`'s drift card, `types.ts` `blockerCeiling`, `ProfileMatrix`,
+`AdminSettings`) and swarm-mcp's `binding_pool` still divide a provider
+pool's room by the task's units, so they under-state provider room until they
+read the served `pool_units`; they over-state nothing.
+
+### If it is declined
+
+Large work holds four provider slots per session and starves the workspace's
+other agents; the only relief is raising the provider caps, which over-admits
+standard work against the provider's real session limit.
+
+### Invariants
+
+* **2:** every pool's increment and the lease, with its `pool_units`, are
+  written in the one admission transaction, all or nothing, as before; release
+  is one transaction that reads every pool before any write.
+* **3:** counted from LEASED, as before: the shares are taken at reserve.
+  `concurrency-judge.jq` sums each lease's held share per pool, so its exact
+  `active == held` check stays exact across old and new leases.
+* **1, 4-10:** unchanged.
