@@ -583,7 +583,7 @@ function limitText(pool: Pool): string {
  * limit, so reading the served list here would mark the wrong operand.
  *
  * EACH POOL'S LIMIT IS DIVIDED BY WHAT ONE AGENT TAKES IN THAT POOL
- * (`unitsIn`, contract request 128, #2950): `units` is the profile, whose
+ * (`unitsIn`, contract request 129, #2950): `units` is the profile, whose
  * served `pool_units` puts a provider pool at 1. A provider limit of 50 is
  * 50 large agents, not 12.
  */

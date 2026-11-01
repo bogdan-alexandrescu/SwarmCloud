@@ -79,7 +79,7 @@ export interface RunnerProfile {
   pools: string[]
   /**
    * What one agent of this profile takes in each of `pools`: `units` in a
-   * compute pool, 1 in a provider pool (contract request 128, #2950). Read
+   * compute pool, 1 in a provider pool (contract request 129, #2950). Read
    * it through `unitsIn`, never `units` in every pool -- that divides a
    * provider pool's room by 4 for a large agent.
    *
@@ -365,7 +365,7 @@ export function headroomFor(profile: RunnerProfile): Headroom {
 }
 
 /**
- * A task's weight, PER POOL (contract request 128, #2950): a large agent
+ * A task's weight, PER POOL (contract request 129, #2950): a large agent
  * takes its 4 resource units in a compute pool and 1 in a provider pool.
  *
  *  - a number: the resource units, with nothing served per pool. Taken in
@@ -396,7 +396,7 @@ export function unitsIn(weight: Weight, pool: string | undefined): number | null
 
 /**
  * What one agent of `profile` costs, in words: "4 units in each of 5 pools",
- * or, where the served shares differ (contract request 128, #2950), one
+ * or, where the served shares differ (contract request 129, #2950), one
  * clause per share, largest first -- "4 units in each of 4 pools, 1 unit in
  * each of 2 pools". "In each of", never "x", which reads as a total; each
  * noun agrees with its count.
@@ -433,7 +433,7 @@ export function taskWeight(task: Pick<Task, 'waiting_for'>, units: Weight): Weig
 
 /**
  * Per pool, what one lease holds: its served `pool_units` (contract request
- * 128), else `units` in each of its pools -- what a lease reserved before the
+ * 129), else `units` in each of its pools -- what a lease reserved before the
  * request, or served by an API older than it, took and gives back. Null for a
  * row with no pools or no usable units, which holds nothing this can count.
  */
@@ -1835,7 +1835,7 @@ export interface LeaseRow {
   pools: string[]
   units: number
   /**
-   * What the lease holds in each of `pools` (contract request 128, #2950):
+   * What the lease holds in each of `pools` (contract request 129, #2950):
    * what release gives back, the provider pools at 1 for a lease reserved
    * since the request and at `units` for one reserved before it. Read it
    * through `leaseHeld`. Optional for a console beside an older API, whose
@@ -1879,7 +1879,7 @@ export interface LeasePage {
   /** Weighted units, not agents. Summed over `leases` -- the rows served. */
   units_held: number
   /**
-   * Per pool, what the served rows' leases hold (contract request 128,
+   * Per pool, what the served rows' leases hold (contract request 129,
    * #2950): the drift check's per-pool input against each pool's `active`.
    * NOT `units_held` in every pool -- a provider pool holds 1 per new lease.
    * Optional for a console beside an older API; Holders.tsx then sums the
@@ -2903,7 +2903,7 @@ export interface WaitingPool {
   active: number | null
   limit: number | null
   /**
-   * What the task takes in THIS pool (contract request 128, #2950): its
+   * What the task takes in THIS pool (contract request 129, #2950): its
    * resource units in a compute pool, 1 in a provider pool. Not the task's
    * size applied to every pool.
    */

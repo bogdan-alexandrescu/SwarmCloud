@@ -1,6 +1,6 @@
 """swarm-api's capacity views count a provider pool at 1 per agent (#2950).
 
-Contract request 128: a lease takes `pool_units_for(pool, units)` in each pool
+Contract request 129: a lease takes `pool_units_for(pool, units)` in each pool
 -- 1 in every `provider:*` pool, its resource units elsewhere. Every view that
 says how many agents fit, why one is waiting, or what the leases hold must use
 the same rule, or a screen would call a provider pool with room for ten large

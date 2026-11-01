@@ -1069,7 +1069,7 @@ def lease_from_dict(data: dict[str, Any]) -> Lease:
         heartbeat_at=as_datetime(data.get("heartbeat_at")),
         released_at=as_datetime(data.get("released_at")),
         release_reason=data.get("release_reason"),
-        # Absent on a lease reserved before contract request 128 (#2950):
+        # Absent on a lease reserved before contract request 129 (#2950):
         # None, and `Lease.held_units` then reads the old rule.
         pool_units=_pool_units(data.get("pool_units")),
     )
@@ -1258,7 +1258,7 @@ def lease_to_api(
         "pools": lease.pools,
         "units": lease.units,
         # What the lease holds in each pool, the provider pools at 1 since
-        # contract request 128 (#2950): the per-pool figure a drift check
+        # contract request 129 (#2950): the per-pool figure a drift check
         # sums against `pool.active`, never `units` times the pools.
         "pool_units": lease.held_units(),
         # Only ever LEASED or DISPATCHED. The worker advances the TASK through

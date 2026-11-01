@@ -106,7 +106,7 @@ def evaluate_capacity(
 
     `units` is the task's resource units; each pool is checked for what the
     task would take in it, `pool_units_for(name, units)` -- 1 in a provider
-    pool (contract request 128, #2950). `tasks` asks the same question for
+    pool (contract request 129, #2950). `tasks` asks the same question for
     that many such tasks at once, each pool needing `tasks` times its share:
     a headroom search asks it, and must not multiply `units` itself, which
     would charge a provider pool n x units instead of n.
@@ -301,7 +301,7 @@ def release_lease_in_transaction(
         return False                      # already released; do not double-decrement
 
     # What the lease took in each pool: its record, or -- for a lease reserved
-    # before contract request 128, which has none -- `units` in every pool.
+    # before contract request 129, which has none -- `units` in every pool.
     held = held_pool_units(list(d.get("pools", [])), int(d.get("units", 1)), d.get("pool_units"))
 
     # EVERY READ BEFORE ANY WRITE. Firestore forbids a read after a write inside

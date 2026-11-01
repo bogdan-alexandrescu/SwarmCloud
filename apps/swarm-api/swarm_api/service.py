@@ -2397,7 +2397,7 @@ class SubmissionService:
                 "pools": required,
                 # What one agent of this profile takes in each pool: `units`
                 # in the compute pools, 1 in each provider pool (contract
-                # request 128, #2950). A client dividing a pool's room by
+                # request 129, #2950). A client dividing a pool's room by
                 # `units` in every pool undercounts the provider pools.
                 "pool_units": reserved_pool_units(required, units),
                 # What this profile's RUNNER refuses to start without, so a

@@ -11,8 +11,14 @@
 
 `jev` on makes the workspace's claude-code lanes run jev-belay and
 jev-enforce with the workspace's TypeSafe key (`qualitygates`, which says
-where it is stored, who may change it and why). Nothing here takes or
+where it is stored, who may change it, why, and how the block is signed:
+every PUT stores its MAC under the `swarm-settings-key`). Nothing here takes or
 returns a credential, an image, a command or a URL (invariant 10).
+
+No worker asks this service whether a stored "on" is signed: the scheduler,
+which holds the same key, verifies the block at dispatch and hands the worker
+its verdict in the job's environment (`scheduler.judgment.quality_gates_env`,
+the owner's pick on PR 2955).
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from swarm_common.models import Tenant
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
+from ..judgment import settings_mac
 from ..qualitygates import (
     QualityGatesPut,
     QualityGatesStore,
@@ -36,11 +43,12 @@ router = APIRouter(tags=["workspace"])
 
 
 def _store(ctx: AppContext) -> QualityGatesStore:
-    return QualityGatesStore(ctx.db, now=ctx.now)
+    return QualityGatesStore(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings))
 
 
 def _answer(ctx: AppContext, auth: AuthContext, tenant: Tenant, store: QualityGatesStore) -> dict:
-    return view(tenant.tenant_id, store.document(tenant.tenant_id), editable=can_edit(auth, tenant, ctx.roles))
+    return view(tenant.tenant_id, store.document(tenant.tenant_id),
+                editable=can_edit(auth, tenant, ctx.roles), mac=store.mac)
 
 
 @router.get("/v1/quality-gates")
@@ -75,3 +83,4 @@ def put_quality_gates(
     store = _store(ctx)
     store.put(tenant_id, body.jev, by=(auth.email or "").strip().lower())
     return _answer(ctx, auth, tenant, store)
+

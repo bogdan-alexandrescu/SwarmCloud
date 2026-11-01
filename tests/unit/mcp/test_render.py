@@ -431,7 +431,7 @@ class TestBindingPool:
         assert binding_pool(["global"], pools, units=2).room == 2
 
     def test_a_provider_pool_is_divided_by_the_served_share_not_the_units(self):
-        # Contract request 128 (#2950): a large agent takes 4 units in a
+        # Contract request 129 (#2950): a large agent takes 4 units in a
         # compute pool and 1 in a provider pool, and `/v1/capacity` serves
         # that per profile as `pool_units`. 10 free provider slots are 10
         # more large agents, not 2; the compute pool's 28 free units are 7, so
@@ -445,7 +445,7 @@ class TestBindingPool:
         binding = binding_pool(required, pools, units=4, pool_units=served)
         assert binding.pool == "global"
         assert binding.room == 7
-        # Without the field (an API from before request 128, whose admission
+        # Without the field (an API from before request 129, whose admission
         # took `units` in every pool) `units` is the share everywhere.
         legacy = binding_pool(required, pools, units=4)
         assert legacy.pool == "provider:anthropic"

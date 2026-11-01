@@ -54,7 +54,7 @@ def judge:
       # unreleased lease that names that pool, weighted by what the lease holds
       # THERE, as release_lease_in_transaction returns it
       # (swarm_common.models.held_pool_units): the lease's `pool_units` entry
-      # for the pool -- 1 in a provider pool since contract request 128
+      # for the pool -- 1 in a provider pool since contract request 129
       # (#2950) -- or, on a lease reserved before it with no `pool_units`, its
       # `units` (default 1) in every pool.
       pool_mismatches: [

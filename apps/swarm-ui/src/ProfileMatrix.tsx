@@ -104,7 +104,7 @@ export function matrixRow(profile: RunnerProfile, byName: ReadonlyMap<string, Po
  * How many more tasks of a profile ONE pool has room for: its free units over
  * the profile's units, rounded down (#124). Per task, never per unit -- a
  * large task weighs 4, so 7 free units fit 1. The units are what one agent
- * takes in THIS pool (`unitsIn`, contract request 128, #2950): pass the
+ * takes in THIS pool (`unitsIn`, contract request 129, #2950): pass the
  * profile, whose served `pool_units` puts a provider pool at 1, so 7 free
  * provider slots fit 7 large agents, not 1. NULL when the pool was not
  * read or has no limit set: not measured, never a 0. A PAUSED pool fits 0:

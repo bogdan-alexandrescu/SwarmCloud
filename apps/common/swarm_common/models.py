@@ -122,7 +122,7 @@ def pool_names_for(
 
 #: What a lease takes in each `provider:*` pool, whatever its size. A provider
 #: pool bounds concurrent LLM sessions against that provider's accounts, and an
-#: agent is one session however large its runner is (contract request 128,
+#: agent is one session however large its runner is (contract request 129,
 #: #2950). Every other pool bounds compute and takes the resource units.
 PROVIDER_POOL_UNITS = 1
 
@@ -154,7 +154,7 @@ def held_pool_units(
 ) -> dict[str, int]:
     """Per pool, what a STORED lease holds: what release gives back.
 
-    A lease reserved since request 128 records `pool_units`, and holds exactly
+    A lease reserved since request 129 records `pool_units`, and holds exactly
     that. A lease reserved before it has none and took its `units` in every
     pool, the provider pools included, so it holds `units` in each: giving
     back the new rule's 1 would leave the difference held for ever.
@@ -191,7 +191,7 @@ class Lease:
     released_at: datetime | None = None
     release_reason: str | None = None
     #: What the lease took in each pool (`reserved_pool_units`), written at
-    #: reserve. None on a lease reserved before contract request 128, which
+    #: reserve. None on a lease reserved before contract request 129, which
     #: took `units` in every pool.
     pool_units: dict[str, int] | None = None
 

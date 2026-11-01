@@ -1161,7 +1161,7 @@ def binding_pool(
     """The pool with the least headroom for one more task of this profile.
 
     ROOM DIVIDES EACH POOL BY WHAT ONE AGENT TAKES IN IT, read from the
-    profile's served `pool_units` (`/v1/capacity`, contract request 128,
+    profile's served `pool_units` (`/v1/capacity`, contract request 129,
     #2950): a large agent takes its 4 units in a compute pool and 1 in a
     provider pool, so dividing a provider pool's room by 4 understated it
     four times over. An API older than the field sends none, and that API's
@@ -1335,7 +1335,7 @@ def render_capacity(
     # UNITS, NOT "USED" (#192). The cell is the binding pool's `active/limit`,
     # and admission adds a task's share to `active` on every pool it takes --
     # its `units` in a compute pool, 1 in a provider pool (`pool_units_for`,
-    # contract request 128) -- so it counts units, while ROOM beside it
+    # contract request 129) -- so it counts units, while ROOM beside it
     # counts agents of the profile. The header says which, and the note under
     # the table says how the two relate.
     lines = render_table(

@@ -269,7 +269,7 @@ def test_an_unreadable_catalogue_is_said_rather_than_read_as_fine(harness) -> No
 
 
 def test_a_provider_pool_is_judged_at_one_unit_whatever_the_class(harness) -> None:
-    """#2950: a large agent takes 1 unit in a provider pool (contract request 128).
+    """#2950: a large agent takes 1 unit in a provider pool (contract request 129).
 
     A provider limit of 1 admits one claude-code-large agent, so it is not
     "never admits"; under the old rule it warned at the class's 4 units.

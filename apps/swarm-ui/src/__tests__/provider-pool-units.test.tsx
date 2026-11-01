@@ -1,4 +1,4 @@
-// A LARGE AGENT TAKES 1 UNIT IN EACH PROVIDER POOL (contract request 128, #2950).
+// A LARGE AGENT TAKES 1 UNIT IN EACH PROVIDER POOL (contract request 129, #2950).
 //
 // Admission now charges a lease its resource units in every compute pool and 1
 // in each `provider:*` pool, and the API serves that per pool: a profile's
@@ -35,7 +35,7 @@ const WAIT = { timeout: 5000 } as const
 const PROVIDER = 'provider:anthropic'
 const POOLS = ['global', 'tenant:eng', 'resource:large', 'runner:claude-code-large', PROVIDER]
 
-/** A large profile as `/v1/capacity` serves it since contract request 128. */
+/** A large profile as `/v1/capacity` serves it since contract request 129. */
 const LARGE: Pick<RunnerProfile, 'units' | 'pools' | 'pool_units'> = {
   units: 4,
   pools: POOLS,
@@ -148,7 +148,7 @@ function ok<T>(data: T): Result<T> {
 }
 
 /**
- * Two large leases: one reserved since request 128 (1 in the provider pool),
+ * Two large leases: one reserved since request 129 (1 in the provider pool),
  * one before it (4 there). The counters hold what admission charged: 8 on
  * `global` and `resource:large`, 5 on the provider pool.
  */

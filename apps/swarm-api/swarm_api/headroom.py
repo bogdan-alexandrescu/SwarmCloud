@@ -42,7 +42,7 @@ transaction -- and reading its answer:
   * "what stops the next one?"               -> evaluate_capacity(..., units, n+1)
 
 `units` is never multiplied here: a task takes `pool_units_for(pool, units)`
-in each pool -- 1 in a provider pool (contract request 128, #2950) -- and
+in each pool -- 1 in a provider pool (contract request 129, #2950) -- and
 `evaluate_capacity` applies that rule per pool, n times over.
 
 `has_capacity(u)` is `enabled and active + u <= effective_limit`, which is

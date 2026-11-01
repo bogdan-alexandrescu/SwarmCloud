@@ -350,7 +350,7 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         # three now and Holders.tsx reads the first and the last, so they are
         # held by the two directions below like every other field.
         # `units_held_by_pool`, `LeaseRow.pool_units` and
-        # `RunnerProfile.pool_units` (contract request 128, #2950) are
+        # `RunnerProfile.pool_units` (contract request 129, #2950) are
         # declared in types.ts and read by the drift card, `fitsIn`, the
         # profile arithmetic and the submit box, so they are held by the two
         # directions below too.

@@ -25,7 +25,7 @@
 #
 # The units are swarm_common.models.pool_units_for's: the class's units, except
 # in a provider pool, where every task takes 1 -- one agent is one session
-# against the provider, however large its runner (contract request 128, #2950).
+# against the provider, however large its runner (contract request 129, #2950).
 # There the class is still the largest that reaches it; its units are 1.
 
 def classes_of_profiles(f): [ $profiles[] | select(f) | .resource_class ];

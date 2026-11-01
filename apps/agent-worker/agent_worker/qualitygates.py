@@ -16,9 +16,24 @@ Both are inert without TYPESAFE_API_KEY and let the turn end on every error.
 This module is the worker's half: whether, which key, and the counts after.
 
 WHETHER. `workspace_settings/{tenant}.quality_gates.jev is True`
-(`swarm_api.qualitygates`, owner/admin-only and audited, default off). Off,
-or anything but `True`: nothing is read and the runner gets nothing, so no
-hook is registered and nothing leaves the pod.
+(`swarm_api.qualitygates`, owner/admin-only and audited, default off), AND
+the scheduler vouched at dispatch that swarm-api signed that block (contract
+request 128). Off, or anything but `True`: nothing more is read and the
+runner gets nothing, so no hook is registered and nothing leaves the pod.
+
+WHY THE SCHEDULER VOUCHES. Any tenant's worker can write any
+`workspace_settings` document, so a stored "on" proves nothing about who
+chose it. swarm-api stores `quality_gates.mac`, an HMAC under the one
+`swarm-settings-key`, with every write; a worker cannot check it, because a
+worker that held that key could sign any tenant's block. The scheduler holds
+it: at dispatch it verifies this attempt's tenant's block and writes the
+verdict into the job's environment (`scheduler.judgment.quality_gates_env`;
+the owner's pick on PR 2955), `VERDICT_ENV` "true" only for a block that
+says on and verifies, with `REFUSED_ENV` saying why not. The worker acts on
+"true" alone, and only while the stored block still says on, so turning the
+switch off takes effect at once. Unsigned, a MAC that does not verify, no
+settings key, SETTINGS_MAC_REQUIRED off or no verdict at all (a scheduler
+older than this): off, and `refused` says which, for the attempt's summary.
 
 WHICH KEY. The WORKSPACE's TypeSafe key, `swarm-tenant-<tenant>-typesafe`,
 the secret the jev browser tools read (`jevkey.resolve`), resolved with no
@@ -86,11 +101,52 @@ EVENT_CAUSE = "quality_gate"
 #: A counts file larger than this is not the launcher's: read as nothing.
 MAX_COUNTS_BYTES = 256 * 1024
 
+#: The scheduler's verdict on this attempt's stored block, in the job's
+#: environment (restated from `scheduler.judgment`, which the worker does not
+#: import; tests/unit/worker/test_quality_gates.py holds them equal).
+VERDICT_ENV = "SWARM_QUALITY_GATES_JEV"
+REFUSED_ENV = "SWARM_QUALITY_GATES_REFUSED"
+#: Why a stored "on" is off when the scheduler gave no "true". The
+#: scheduler's own reasons (`unsigned`, `mac_mismatch`, `no_settings_key`,
+#: `settings_mac_off`, `settings_unreadable`) are passed on as it gives them.
+REFUSED_NO_VERDICT = "no_verdict"
+REFUSED_OFF_AT_DISPATCH = "off_at_dispatch"
+#: A reason longer than this, or not a word, is not the scheduler's.
+_MAX_REASON = 64
+
 
 def switched_on(workspace: Mapping[str, Any] | None) -> bool:
     """`quality_gates.jev is True`; anything else, malformed or absent, is off."""
     block = workspace.get(FIELD) if isinstance(workspace, Mapping) else None
     return isinstance(block, Mapping) and block.get(JEV) is True
+
+
+class GatesVerdict:
+    """The scheduler's verdict on this attempt's `quality_gates` block, read
+    from the job's environment. `refused` is why it is not "true", after
+    `verdict`."""
+
+    def __init__(self, environ: Mapping[str, str]) -> None:
+        self._value = environ.get(VERDICT_ENV)
+        self._reason = environ.get(REFUSED_ENV)
+        self.refused: str | None = None
+
+    def verdict(self) -> bool:
+        """True only when the scheduler wrote exactly "true"."""
+        if self._value == "true":
+            self.refused = None
+            return True
+        if self._value is None:
+            self.refused = REFUSED_NO_VERDICT
+            return False
+        reason = self._reason
+        if isinstance(reason, str) and reason and len(reason) <= _MAX_REASON \
+                and reason.replace("_", "").isalnum():
+            self.refused = reason
+        else:
+            # The block said off when the scheduler read it and on now.
+            self.refused = REFUSED_OFF_AT_DISPATCH
+        return False
 
 
 def read_settings(db: Any, tenant_id: str, *,
@@ -116,13 +172,23 @@ def _write_private(path: Path, text: str) -> None:
 def prepare(*, db: Any, client: Any, tenant_id: str, private_dir: Path, logger: Any,
             call_options: Mapping[str, Any] | None = None,
             secret_env_names: Iterable[str] = (), inject: bool = False,
-            shim_file: Path | None = None) -> dict[str, str]:
-    """`{CONFIG_ENV: path}` when this workspace turned the gates on and a key
-    (or, with the forwarder, the shim) is available; else {}. Never raises."""
+            shim_file: Path | None = None,
+            verdict: GatesVerdict | None = None) -> dict[str, str]:
+    """`{CONFIG_ENV: path}` when this workspace turned the gates on, the
+    scheduler vouched at dispatch that swarm-api signed that "on" (`verdict`),
+    and a key (or, with the forwarder, the shim) is available; else {}.
+    Without a `verdict` a stored "on" is off: nothing else checked its MAC.
+    Never raises."""
     if db is None:
         return {}
     try:
         if not switched_on(read_settings(db, tenant_id, call_options=call_options)):
+            return {}
+        if verdict is None:
+            logger.warning("jev_gates_refused", reason=REFUSED_NO_VERDICT)
+            return {}
+        if not verdict.verdict():
+            logger.warning("jev_gates_refused", reason=verdict.refused)
             return {}
         private = Path(private_dir)
         if inject:
@@ -229,6 +295,11 @@ __all__ = [
     "CONFIG_ENV",
     "ENFORCE",
     "EVENT_CAUSE",
+    "GatesVerdict",
+    "REFUSED_ENV",
+    "REFUSED_NO_VERDICT",
+    "REFUSED_OFF_AT_DISPATCH",
+    "VERDICT_ENV",
     "SUMMARY_KEY",
     "finish",
     "prepare",

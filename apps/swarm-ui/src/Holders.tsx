@@ -317,7 +317,7 @@ interface DriftRow {
 function driftRows(board: HoldersBoard, coverage: LeaseCoverage): DriftRow[] | null {
   if (board.pools === null) return null
   // WHAT EACH LEASE HOLDS IN EACH POOL, not its `units` in every pool
-  // (contract request 128, #2950): a large lease holds 4 in a compute pool
+  // (contract request 129, #2950): a large lease holds 4 in a compute pool
   // and 1 in a provider pool, and its served `pool_units` says which.
   // Summing `units` everywhere drew a false +3 provider delta per large lease.
   // `leaseHeld` falls back to `units` in each pool for a lease served without

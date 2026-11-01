@@ -1856,7 +1856,7 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   // catalogue's (`/v1/resource-classes`); null until it answers, and then the
   // box reads exactly as it did before.
   //
-  // PER POOL (contract request 128, #2950): the class weight is what one agent
+  // PER POOL (contract request 129, #2950): the class weight is what one agent
   // takes in a compute pool; the profile's served `pool_units` says what it
   // takes in each pool, 1 in a provider pool, so a provider limit of 2 is not
   // "below" a large agent.

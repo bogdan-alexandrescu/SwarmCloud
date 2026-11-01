@@ -2390,7 +2390,7 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 13. A lease's units per pool (contract request 128, #2950), restated in jq.
+# 13. A lease's units per pool (contract request 129, #2950), restated in jq.
 # --------------------------------------------------------------------------
 # swarm_common.models.pool_units_for decides what a lease takes in each pool
 # (1 in a provider pool, the resource units elsewhere) and held_pool_units what

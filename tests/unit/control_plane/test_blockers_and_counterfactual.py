@@ -260,7 +260,7 @@ def test_relaxing_the_binding_pool_reports_the_second_ceiling_not_infinity():
 
     With `resource:large` lifted, `provider:anthropic` is the next ceiling --
     so the answer is 2 sessions / 1 = 2 agents (a large agent takes 1 unit in
-    a provider pool, contract request 128, #2950), a delta of +1, and the pool
+    a provider pool, contract request 129, #2950), a delta of +1, and the pool
     that would bind next is named. An implementation that dropped the relaxed pool
     and then stopped checking would report an unbounded number and send the
     operator back for a second surprise.

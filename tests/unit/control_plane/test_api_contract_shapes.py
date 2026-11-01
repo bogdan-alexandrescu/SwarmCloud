@@ -139,7 +139,7 @@ def _distinct(annotation: str, name: str, index: int, default: Any) -> Any:
             "display": {"cpu_request": 0.5, "cpu_limit": 0.5, "memory_gib": 1.0},
         }
 
-    # Contract request 128: what a lease took in each of its pools, keyed by
+    # Contract request 129: what a lease took in each of its pools, keyed by
     # the fixture's own `pools` (["pools-0", "pools-1"]), so the served
     # `held_units()` is this value and not the old rule's `units` everywhere.
     if name == "pool_units":

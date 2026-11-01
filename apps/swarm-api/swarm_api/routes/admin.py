@@ -825,7 +825,7 @@ def list_leases(
         "units_held": sum(lease.units for lease in leases),
         # Per pool, what these rows hold: the drift check's input against each
         # pool's `active`. Not `units_held` in every pool -- a provider pool
-        # holds 1 per lease (contract request 128, #2950), and a lease from
+        # holds 1 per lease (contract request 129, #2950), and a lease from
         # before it holds its `units` there (`Lease.held_units`).
         "units_held_by_pool": units_held_by_pool(leases),
         # Live leases, under the tenant filter, that are not in these rows.

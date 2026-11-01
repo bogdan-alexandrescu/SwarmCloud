@@ -209,7 +209,7 @@ def waiting_for(
     rows: list[dict[str, Any]] = []
     for name in required:
         # What the task takes in THIS pool: 1 in a provider pool, its resource
-        # units elsewhere (contract request 128, #2950). A row's `units` and
+        # units elsewhere (contract request 129, #2950). A row's `units` and
         # its below-units verdict are about this pool, never the task's size
         # applied to every pool.
         share = pool_units_for(name, units)
