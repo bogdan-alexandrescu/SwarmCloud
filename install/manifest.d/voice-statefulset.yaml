@@ -1,0 +1,135 @@
+# Lane VOICE-STATEFULSET (part of #2688; docs/design/voice-it.md section 10,
+# phase one): swarm-voice runs as a one-replica StatefulSet in swarm-system
+# with its own service account and an egress policy for OpenAI and Anthropic
+# only. Its shape is swarm-live's entries in the base manifest: an image the
+# release builds and the install copies by digest, terraform's grants and
+# reserved address, and a swarm-system workload applied from a rendered
+# terraform output. Off until terraform/infra's `voice_it` is "on"
+# (voice.tf says the three steps).
+version: 1
+entries:
+- id: image.swarm-voice
+  kind: image
+  scope: core
+  stage: 4
+  provider: engine
+  check: gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/swarm-voice --limit=5
+  apply: apps/swarm-voice/Dockerfile (beside its app as swarm-live's; find_recipe() accepts either layout); a gated
+    image, terraform/infra/images.json, outputs=[swarm_voice_manifest]
+  verify: the image's build-time self-test imported swarm_voice.main, credential and live; the swarm_voice_manifest
+    output names this digest once voice_it is "on"
+  explain: Voice it's GPT-Live session holder, which answers the browser's offer through OpenAI and holds each
+    session's sideband.
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - registry.swarm
+  evidence:
+  - scripts/build-images.sh:179-185
+  - apps/swarm-voice/Dockerfile:171
+  - terraform/infra/images.json:33-36
+  notes: 'null'
+  step: images.copy
+  refs:
+    image:
+    - swarm-voice
+    - dockerfile:apps/swarm-voice/Dockerfile
+- id: sa.swarm-voice
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  check: gcloud iam service-accounts describe swarm-voice@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/infra/voice.tf:145 google_service_account.voice (voice_it "account" or "on"); the Workload
+    Identity binding at voice.tf:156 once "on"
+  verify: the KSA swarm-system/swarm-voice acts as it, and it holds read and add-version on the platform owner's
+    OpenAI secret and run.invoker on swarm-api, nothing else
+  explain: swarm-voice's own identity. A Google service account rather than a bare Workload Identity principal,
+    because swarm-voice presents a Google ID token to swarm-api, and the metadata server mints one only for a KSA
+    that impersonates a GSA.
+  guards: binding it needs the owner's terraform/bootstrap grant of serviceAccountAdmin on the account to the CI
+    deployer (terraform/modules/service_account_ids); voice.tf's step 2
+  secret_entry: 'null'
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/infra/voice.tf:145-163
+  notes: 'null'
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_service_account.voice
+    - infra/google_service_account_iam_member.voice_workload_identity
+- id: iam-binding.swarm-voice-openai-secret
+  kind: iam-binding
+  scope: core
+  stage: 6
+  provider: engine
+  check: gcloud secrets get-iam-policy swarm-tenant-<owner's personal tenant>-openai --project=$P
+  apply: terraform/infra/voice.tf:165 (secretAccessor) and voice.tf:177 (secretVersionAdder), both bindings on the
+    platform owner's own OpenAI secret only, once voice_it is "on"
+  verify: swarm-voice reads the person's credential and stores a rotated refresh token as a new version of that
+    secret, and is refused on any other secret
+  explain: The person's own OpenAI subscription credential, which credential.py reads by version reference and
+    writes each rotated refresh token back to (docs/design/voice-it.md section 3.6).
+  guards: the secret must exist before the binding is applied; the platform owner stores it in Config › Secrets
+    (personal scope, provider openai)
+  secret_entry: 'null'
+  depends_on:
+  - sa.swarm-voice
+  evidence:
+  - terraform/infra/voice.tf:165-185
+  notes: 'null'
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_secret_manager_secret_iam_member.voice_reads_openai
+    - infra/google_secret_manager_secret_iam_member.voice_stores_openai
+- id: iam-binding.swarm-voice-invokes-api
+  kind: iam-binding
+  scope: core
+  stage: 6
+  provider: engine
+  check: gcloud run services get-iam-policy swarm-api --project=$P --region=$R
+  apply: terraform/infra/voice.tf:187 google_cloud_run_v2_service_iam_member.voice_invokes_api, once voice_it is "on"
+  verify: swarm-api's policy lists serviceAccount:swarm-voice@$P.iam.gserviceaccount.com under roles/run.invoker
+  explain: swarm-voice calls swarm-api, and only swarm-api, for every read and write (section 3.6).
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - sa.swarm-voice
+  evidence:
+  - terraform/infra/voice.tf:187-199
+  notes: 'null'
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_cloud_run_v2_service_iam_member.voice_invokes_api
+- id: workload.swarm-voice
+  kind: namespace-object
+  scope: core
+  stage: 10
+  provider: engine
+  check: kubectl --context $E -n swarm-system get statefulset swarm-voice
+  apply: terraform output -raw swarm_voice_manifest (kubernetes/swarm-system/swarm-voice.yaml:46(Namespace),58(SA),75+98(Service
+    x2),120(StatefulSet) and kubernetes/network-policies/swarm-system-voice.yaml:52+76(NetworkPolicy x2),111(FQDNNetworkPolicy))
+  verify: kubectl -n swarm-system get pods -l app.kubernetes.io/name=swarm-voice shows one Running pod; a Voice it
+    session starts from the console
+  explain: Voice it's swarm-voice workload, one replica, behind its internal load balancer (swarm-api's SWARM_VOICE_URL)
+  guards: the FQDNNetworkPolicy needs FQDN network policy enabled on the cluster; without it swarm-voice reaches
+    only DNS and the metadata server
+  secret_entry: 'null'
+  depends_on:
+  - cluster.swarm-system-namespace
+  - sa.swarm-voice
+  - image.swarm-voice
+  evidence:
+  - kubernetes/swarm-system/swarm-voice.yaml:120
+  - kubernetes/network-policies/swarm-system-voice.yaml:111
+  notes: 'null'
+  step: cluster.workloads
+  refs:
+    kubernetes:
+    - swarm-system/swarm-voice.yaml
+    terraform:
+    - infra/google_compute_address.voice

@@ -1,0 +1,131 @@
+# swarm-voice's network: who reaches it, and the only places it reaches
+# (docs/design/voice-it.md §3.4, §3.9, §7 invariant 9, section 10 phase one;
+# lane VOICE-STATEFULSET, part of #2688).
+#
+# A TEMPLATE in swarm-system, never a tenant namespace (so
+# scripts/apply-tenant-network-policies.sh does not take it). terraform/infra/
+# voice.tf fills its placeholders and appends it to
+# kubernetes/swarm-system/swarm-voice.yaml as the `swarm_voice_manifest`
+# output, so the pod and its policies are one apply and the pod never runs
+# without them.
+#
+# IN: only swarm-api. swarm-api is Cloud Run with Direct VPC egress on the
+# cluster's subnet, so it arrives from that subnet's range (voice.tf fills
+# var.subnet_cidr, as live.tf does for swarm-live) through the internal load
+# balancer, on 8080. No tenant pod is admitted from any namespace; the
+# namespace's swarm-system-default-deny-ingress closes everything else, and
+# this policy stands on its own if that one is absent. What a request must
+# still carry is a Google ID token for swarm-voice's audience whose email is
+# swarm-api's service account (swarm_voice.main.google_caller_check).
+#
+# OUT: two objects, because a Kubernetes NetworkPolicy names addresses and
+# OpenAI publishes no address range for its API.
+#
+#   1. `swarm-voice-egress`, a NetworkPolicy, puts the pod under egress
+#      isolation and admits only what has a fixed address: cluster DNS and
+#      the GKE metadata server (the Workload Identity access token for Secret
+#      Manager, and the ID token it presents to swarm-api).
+#   2. `swarm-voice-egress-hosts`, a GKE FQDNNetworkPolicy, admits TCP 443 to
+#      the hosts by name, and only these:
+#        * api.openai.com   -- the GPT-Live call and its sideband;
+#        * auth.openai.com  -- the refresh of the person's own credential
+#                              (swarm_voice/credential.py TOKEN_URL);
+#        * api.anthropic.com -- the planner (phase two; named now so the
+#                              phase-two lane changes no network policy);
+#        * swarm-api's own run.app host -- every read and write (§3.6);
+#        * secretmanager.googleapis.com -- the person's OpenAI secret, read
+#                              and its rotated refresh token stored;
+#        * www.googleapis.com -- Google's public certificates, which the
+#                              caller check verifies swarm-api's ID token
+#                              against (google.oauth2.id_token).
+#      The last two are Google's, not "outside the cluster" in the sense the
+#      design means: without them the pod can read no credential and admit no
+#      caller.
+#
+# FAILS CLOSED. Egress isolation from (1) holds whether or not (2) is
+# admitted: on a cluster without FQDN network policy the apply of (2) is
+# refused, and the pod reaches DNS and the metadata server only. It never
+# falls back to the open internet. FQDN network policy is a cluster setting
+# (`enable_fqdn_network_policy` on the Autopilot cluster) that this lane does
+# not own; the pull request asks for it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-voice-ingress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+  annotations:
+    swarm.saga.xyz/network-source: terraform/__PROJECT_ID__/subnet_cidr
+    swarm.saga.xyz/swarm-api-egress-cidr: __SWARM_API_EGRESS_CIDR__
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-voice
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: __SWARM_API_EGRESS_CIDR__
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-voice-egress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-voice
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The GKE metadata server: the Workload Identity tokens. Port 80 as the
+    # tenant worker policy admits it (allow-egress.yaml).
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+---
+apiVersion: networking.gke.io/v1alpha1
+kind: FQDNNetworkPolicy
+metadata:
+  name: swarm-voice-egress-hosts
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-voice
+  egress:
+    - matches:
+        - name: api.openai.com
+        - name: auth.openai.com
+        - name: api.anthropic.com
+        - name: __SWARM_API_HOST__
+        - name: secretmanager.googleapis.com
+        - name: www.googleapis.com
+      ports:
+        - protocol: TCP
+          port: 443

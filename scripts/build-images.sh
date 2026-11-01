@@ -176,7 +176,13 @@ source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 # after the base (build_after) and rebuilt with it (affected_images). No
 # runner profile names it until contract request 127 is applied; until then it
 # is built and promoted, and never dispatched.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks workspace-apply)
+# swarm-voice (VOICE-STATEFULSET, part of #2688) is Voice it's GPT-Live
+# session holder, apps/swarm-voice/Dockerfile, beside its app as swarm-live's
+# recipe is: the nearest precedent, a swarm-system service on GKE holding
+# long-lived sockets. terraform/infra/voice.tf renders swarm_voice_manifest
+# only once image_refs has its digest (docs/design/voice-it.md section 10,
+# phase one). It copies apps/common in, and nothing else of ours.
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-voice swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built

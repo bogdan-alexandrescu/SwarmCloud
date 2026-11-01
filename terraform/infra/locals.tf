@@ -1128,13 +1128,13 @@ locals {
       SWARM_LIVE_URL = local.live_relay_url
 
       # Where swarm-api makes swarm-voice's internal start and end calls for
-      # Voice it (docs/design/voice-it.md §10 phase 1). Empty until the
-      # swarm-voice StatefulSet lane (voice.tf) reserves its internal address
-      # and sets it here; empty is read by swarm_api.settings as "swarm-voice
-      # is not deployed", and every Voice it route answers 503
-      # voice_unavailable. Who may talk (VOICE_IT_PEOPLE) is unset on
-      # purpose: it then defaults to PLATFORM_OWNER, BGD alone (§1).
-      SWARM_VOICE_URL = ""
+      # Voice it (docs/design/voice-it.md §10 phase 1): http on 8080 at the
+      # internal load balancer voice.tf reserves (local.voice_url), and the
+      # audience of the ID token swarm-api presents. Empty until voice_it is
+      # "on"; empty is read by swarm_api.settings as "swarm-voice is not
+      # deployed", and every Voice it route answers 503 voice_unavailable.
+      # VOICE_IT_PEOPLE is unset on purpose: PLATFORM_OWNER, BGD alone (§1).
+      SWARM_VOICE_URL = local.voice_url
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, local.model_class_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the
