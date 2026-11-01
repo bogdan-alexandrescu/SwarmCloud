@@ -218,6 +218,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -241,6 +242,9 @@ from .redact import scrub_text
 #: that is safe for this step (`lifecycle.Worker._prepublish_rebase_ref`).
 #: Unset: no rebase, and the checks diff from the clone base.
 PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
+#: The instant (epoch seconds) the worker kills the runner at, exported by
+#: `lifecycle._build_child_env` (#2981): the gate's budget never runs past it.
+RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
 #: `lifecycle.CLONE_BASE_ENV`, restated because this module is imported by the
 #: runner, which never imports the worker.
 CLONE_BASE_ENV = "SWARM_CLONE_BASE"
@@ -267,6 +271,10 @@ CHECK_TIMEOUT_SECONDS = 600.0
 #: record and sections, and the runner uploads the transcript, all before the
 #: step's SIGKILL.
 CHECK_MARGIN_SECONDS = 30.0
+#: How long the output of a check killed at its limit is read for before its
+#: pipes are closed (`_drain`): a killed group's output is already written, so
+#: seconds only, and never long enough to eat `CHECK_MARGIN_SECONDS`.
+KILL_DRAIN_SECONDS = 5.0
 #: Below this much budget left a check is not started but skipped for budget:
 #: even the quickest check (shellcheck or ruff on a few files) needs seconds to
 #: start, and one killed at its limit is only a timeout nobody can fix.
@@ -396,10 +404,38 @@ def run_command(argv: Sequence[str], cwd: Path, env: Mapping[str, str], timeout:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
-        out, err = proc.communicate()
+        out, err = _drain(proc)
         text = out.decode("utf-8", errors="replace")
         return Ran(124, f"{text}\n[timed out after {int(timeout)}s]", timed_out=True,
-                   errors=(err or b"").decode("utf-8", errors="replace"))
+                   errors=err.decode("utf-8", errors="replace"))
+
+
+def _drain(proc: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
+    """What a killed check printed, read for at most `KILL_DRAIN_SECONDS` (#2981).
+
+    The kill reaches the check's whole process group, but a descendant that
+    left it (`setsid`: a daemonised test service, a browser) still holds the
+    output pipe open, and an unbounded `communicate()` waits on it for as long
+    as it lives -- the gate would never return and the runner would be killed
+    at the step's deadline with no record. So the read is bounded, then the
+    pipes are closed and the check is reaped."""
+    try:
+        out, err = proc.communicate(timeout=KILL_DRAIN_SECONDS)
+        return out or b"", err or b""
+    except subprocess.TimeoutExpired as exc:
+        out, err = exc.output or b"", exc.stderr or b""
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+    try:
+        proc.wait(timeout=KILL_DRAIN_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    note = b"\n[a process the check started outlived its kill and held its output open]"
+    return bytes(out) + note, bytes(err)
 
 
 def run_split(argv: Sequence[str], cwd: Path, env: Mapping[str, str], timeout: float) -> Ran:
@@ -636,6 +672,74 @@ def guards_pass_on(repo: Path, base: str, *, runner: Runner = run_command,
     return None
 
 
+#: How long the guard script's `--list` may take: it only selects, never runs
+#: a test (`_guards_selection` gives it the same bound).
+GUARDS_LIST_SECONDS = 120.0
+
+
+def guards_split(repo: Path, base: str, *, runner: Runner, env: Mapping[str, str],
+                 timeout: float = GUARDS_LIST_SECONDS) -> int:
+    """The parts the guard script advises for this selection BEFORE it runs,
+    or 0 when one run can hold it (#2981).
+
+    THE THRESHOLD IS THE SCRIPT'S OWN: `changed-guards.sh --list` prints its
+    `--shard 1/<n>` hint when the selection weighs more than its
+    `SHARD_HINT_WEIGHT` (540 CI-seconds, ~400 s of wall clock in a SwarmCloud
+    container, the 540 s pytest limit less a quarter). Unsharded, such a
+    selection runs its parts in turn inside ONE command -- up to n x 540 s --
+    so under the gate's 600 s check limit it was always killed: measured on
+    #2981, every one of 15 steps burned its first 600 s that way (645-681
+    files) and only then ran as 10 shards. The weight is read from the
+    script, never restated here, so the gate and the script cannot disagree."""
+    if not (repo / GUARDS_SCRIPT).is_file():
+        return 0
+    ran = runner(["bash", GUARDS_SCRIPT, "--base", base, "--list"], repo, env, timeout)
+    if ran.code != 0 or ran.timed_out or not _GUARDS_SHARDS.search(ran.output):
+        return 0
+    return guards_parts(ran.output)
+
+
+def adds_nothing(repo: Path, base: str, patches: Sequence[str | Path], *,
+                 runner: Runner = run_command, env: Mapping[str, str] | None = None
+                 ) -> str | None:
+    """Why the branch adds nothing of this step's own, or None (#2981).
+
+    Read from git, never from the step's name or stage: the tree the publish
+    would commit (`worktree_tree`) is the base's own tree (no commit, no
+    change), or exactly the base with the step's staged input patches applied
+    (a review, visual QA or acceptance step applies its upstream step's patch
+    as one commit and changes nothing else). Those checks already ran on that
+    same diff in the step that wrote it, and CI is the gate. A patch that does
+    not apply, an unreadable base or any change of the step's own: None, and
+    the checks run as before."""
+    env = dict(os.environ if env is None else env)
+    tree = worktree_tree(repo, runner=runner, env=env)
+    base_tree = _git(repo, "rev-parse", "--verify", "--quiet", f"{base}^{{tree}}",
+                     runner=runner, env=env)
+    if not tree or base_tree.code != 0:
+        return None
+    if tree == base_tree.output.strip():
+        return "the branch changes nothing beyond its base"
+    files = [Path(p) for p in patches if Path(p).is_file()]
+    if not files:
+        return None
+    with tempfile.TemporaryDirectory(prefix="prepublish-patch-") as tmp:
+        scoped = {**env, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        if _git(repo, "read-tree", base_tree.output.strip(), runner=runner, env=scoped).code:
+            return None
+        for path in files:
+            if _git(repo, "apply", "--cached", "--whitespace=nowarn", str(path),
+                    runner=runner, env=scoped).code != 0:
+                return None
+        expected = _git(repo, "write-tree", runner=runner, env=scoped)
+    if expected.code != 0 or expected.output.strip() != tree:
+        return None
+    names = ", ".join(p.name for p in files)
+    return (f"the branch is exactly its staged input patch ({names}) applied to its base, "
+            "with no change of this step's own: the step that wrote that diff ran these "
+            "checks on it, and CI is the gate")
+
+
 def _sharded_guards(argv: Sequence[str], parts: int, remaining: Callable[[], float]
                     ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
     """The guard script as `parts` commands, `--shard 1/n` ... `--shard n/n`,
@@ -648,7 +752,7 @@ def _sharded_guards(argv: Sequence[str], parts: int, remaining: Callable[[], flo
                 outputs.append(f"[the step's budget ran out before part {k} of {parts}]")
                 return ERROR, "\n".join(outputs)
             ran = runner([*argv, "--shard", f"{k}/{parts}"], repo, env,
-                         max(30.0, min(timeout, left - 30.0)))
+                         max(MIN_CHECK_SECONDS, min(timeout, left - CHECK_MARGIN_SECONDS)))
             outputs.append(f"--- part {k}/{parts} ---\n{ran.output}")
             if ran.code != 0 or ran.timed_out:
                 status = FAILED
@@ -2168,6 +2272,9 @@ class Gate:
     context: Path | None = None
     #: The attempt's Jev client for J4 (`judge.attempt.load`), or None: no call.
     judge: Any = None
+    #: The step's staged input patches (absolute paths): a branch that is
+    #: exactly these applied to its base runs no checks (`adds_nothing`).
+    staged_patches: Sequence[str] = ()
     _snapshot: Snapshot | None = field(default=None, init=False, repr=False)
     _diff: tuple[str, list[str]] | None = field(default=None, init=False, repr=False)
     #: What happened to the guard script in each round, for the advisory section.
@@ -2208,8 +2315,15 @@ class Gate:
         record.update({"graph": {"snapshot": graph_status, "selected": {}},
                        "test_reach": None, "self_check": False, "advisory_section": False})
         outcomes: list[Outcome] = []
+        nothing = adds_nothing(self.repo, base, self.staged_patches, runner=self.runner,
+                               env=self.env) if base else None
         if not base:
             record["skipped"] = "unknown_base"
+        elif nothing:
+            # A step that adds no commit of its own re-pays nothing (#2981).
+            record.update(skipped="adds_nothing", skipped_reason=nothing)
+            self.log.info("the branch adds nothing of this step's own; no pre-publish checks",
+                          reason=nothing)
         else:
             outcomes = self._round(base)
             # A timed-out guard run is no fix turn's to fix, and never runs
@@ -2456,10 +2570,17 @@ class Gate:
             self._guards.append(f"skipped: {why}.")
             self.log.info("the guard script already passed on this tree; not run again")
             return Check(check.name, check.files, check.command, skipped=why)
+        why = "the previous run timed out"
+        if not parts:
+            parts = guards_split(self.repo, base, runner=self.runner, env=self.env,
+                                 timeout=max(MIN_CHECK_SECONDS, min(
+                                     GUARDS_LIST_SECONDS,
+                                     self.remaining() - CHECK_MARGIN_SECONDS)))
+            why = "the script said its selection is too heavy for one run"
         if parts:
             argv = ["bash", GUARDS_SCRIPT, "--base", base]
             shards = " ... ".join(f"--shard {k}/{parts}" for k in (1, parts))
-            self._guards.append(f"the previous run timed out, so this round ran it as {parts} "
+            self._guards.append(f"{why}, so this round ran it as {parts} "
                                 f"parts ({shards}), each its own command under the "
                                 f"{int(CHECK_TIMEOUT_SECONDS)} s check limit.")
             return Check(check.name, check.files, f"{' '.join(argv)} {shards}",
@@ -2530,6 +2651,18 @@ class Gate:
             if ran.code != 0:
                 self.log.error("git rebase --abort failed after the conflict turn",
                                exit_code=ran.code)
+
+
+def deadline_left(env: Mapping[str, str], *, now: Callable[[], float] = time.time
+                  ) -> float | None:
+    """Seconds until the worker's kill (`RUNNER_DEADLINE_ENV`), or None when
+    the worker named no deadline (a runner started by hand)."""
+    raw = str(env.get(RUNNER_DEADLINE_ENV, "")).strip()
+    try:
+        instant = float(raw)
+    except ValueError:
+        return None
+    return instant - now() if math.isfinite(instant) else None
 
 
 def check_env(env: Mapping[str, str], *, drop: Iterable[str], base: str | None) -> dict[str, str]:
