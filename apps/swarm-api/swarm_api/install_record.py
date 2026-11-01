@@ -47,6 +47,10 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     #: fresh starts (DAYONE-SETUP-API-6).
     "swarm-install/{env}/console/verify_runs": frozenset(
         {"verify_runs", "retries", "repository", "started_at", "by"}),
+    #: Admin › Setup's Sign-in client step (issue #2964): the Desktop
+    #: client's id, when and by whom it was saved. Its secret goes to Secret
+    #: Manager (`swarm-iap-desktop-client-secret`) only, never here.
+    "swarm-install/{env}/console/sign_in_client": frozenset({"client_id", "at", "by"}),
     "swarm-install/{env}/health/latest": frozenset({"run_at", "checks", "findings"}),
 }
 ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"})
@@ -55,7 +59,7 @@ ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"
 ENGINE_DOCUMENT = "swarm-install/{env}"
 #: The engine document's fields Admin › Setup reads by name; each is in the
 #: engine's row of `swarm_install.record.WRITERS` (`test_record_parity`).
-ENGINE_FIELDS_READ = frozenset({"lease", "sizing", "installer"})
+ENGINE_FIELDS_READ = frozenset({"lease", "sizing", "installer", "sign_in_client"})
 #: `sizing`'s fields the status route serves (the INTERFACE SHEET's
 #: `state.outputs["sizing"]`, written in stage 0 by lane SIZING-ASK).
 SIZING_FIELDS: tuple[str, ...] = ("mode", "members", "pool_limits", "service_max_instances",
@@ -70,6 +74,7 @@ FINISHED = "finished"
 TEAMS = "teams"
 VERIFY_RUNS = "verify_runs"
 PERSONAL = "personal"
+SIGN_IN_CLIENT = "sign_in_client"
 
 
 class RecordFieldRefused(ValueError):
@@ -185,6 +190,7 @@ __all__ = [
     "InstallRecord",
     "PERSONAL",
     "RecordFieldRefused",
+    "SIGN_IN_CLIENT",
     "SIZING_FIELDS",
     "SWARM_API_DOCUMENTS",
     "TEAM",

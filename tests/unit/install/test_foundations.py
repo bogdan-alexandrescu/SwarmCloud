@@ -171,8 +171,9 @@ def test_dry_run_on_an_empty_project_writes_nothing_and_knows_every_check(tmp_pa
     assert gcp.mutations == []
     assert [e["step"] for e in rig.of_kind("step_check") if e["state"] == "unknown"] == []
     planned = {e["step"] for e in rig.of_kind("step_plan")}
-    assert {"foundations.project", "foundations.apis", "foundations.state-bucket", "edge.brand",
-            "edge.desktop-client"} <= planned
+    # The brand and the Desktop client are waits after the hand-off (issue #2964).
+    assert {"foundations.project", "foundations.apis", "foundations.state-bucket",
+            "edge.client-secret-container"} <= planned
 
 
 # -- DAYONE-PROJECT-CREATE: decision 6, the project created through the APIs ---

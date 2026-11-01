@@ -60,6 +60,11 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
                 # Admin › Setup's first-team step starts from it rather than
                 # asking (N20). None for a one-person install, which has none.
                 "workspace_groups",
+                # The Desktop client the engine's last bootstrap pass put in
+                # IAP's programmatic-clients list, as `{"client_id": <id>}`:
+                # Admin › Setup's Sign-in client step reads `applied` from it
+                # (issue #2964). None until one is.
+                "sign_in_client",
             }
         ),
     ),
@@ -93,6 +98,10 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
         SWARM_API,
         frozenset({"verify_runs", "retries", "repository", "started_at", "by"}),
     ),
+    # Admin › Setup's Sign-in client step (issue #2964): the Desktop client's
+    # id, when and by whom the console saved it; its secret is in Secret
+    # Manager only. The engine's hand-off wait reads it.
+    "swarm-install/{env}/console/sign_in_client": (SWARM_API, frozenset({"client_id", "at", "by"})),
     "swarm-install/{env}/health/latest": (
         SWARM_API_FOR_DOCTOR,
         frozenset({"run_at", "checks", "findings"}),
@@ -114,6 +123,9 @@ def engine_document(env: str) -> str:
 VERIFY_RUNS = "verify_runs"
 #: The console document holding a one-person install's personal workspace.
 PERSONAL = "personal"
+#: The console document holding the Desktop client the console's Sign-in
+#: client step saved.
+SIGN_IN_CLIENT = "sign_in_client"
 
 
 def console_document(env: str, name: str) -> str:
@@ -186,6 +198,11 @@ def _workspace_groups(value: Any) -> dict[str, str] | None:
     return {"team": team} if team else None
 
 
+def _sign_in_client(value: Any) -> dict[str, str] | None:
+    client = str(value or "")
+    return {"client_id": client} if client else None
+
+
 def open_record(project: str, env: str) -> InstallRecord:
     """The install record of `env` in `project`'s swarm database, the one
     place a verb builds it (no Firestore client before it is called)."""
@@ -232,6 +249,7 @@ class InstallRecord:
             "sizing": _sizing(state.outputs.get("sizing")),
             "installer": str(state.outputs.get("installer") or "") or None,
             "workspace_groups": _workspace_groups(state.outputs.get("workspace_groups")),
+            "sign_in_client": _sign_in_client(state.outputs.get("iap_programmatic_client")),
         }
         if verify is not None:
             unknown = set(verify) - VERIFY_FIELDS

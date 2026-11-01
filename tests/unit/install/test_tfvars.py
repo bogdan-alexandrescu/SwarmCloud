@@ -184,6 +184,17 @@ def test_discovery_from_desktop_client_id() -> None:
     assert all(discovery.values())
 
 
+def test_passes_before_the_consoles_sign_in_client_run_without_one() -> None:
+    """Issue #2964: the Desktop client comes from the console's Sign-in client
+    step, after the hand-off, so every pass before it runs with no client: no
+    discovery service and no programmatic-clients list, which Terraform reads
+    as "create neither"."""
+    for pass_name in INFRA_PASSES:
+        assert _infra(pass_name, desktop_client_id="")["discovery"]["oauth_client_id"] == "", pass_name
+    assert _boot("bootstrap-2", desktop_client_id="")["frontend_iap_programmatic_clients"] == []
+    assert _boot("bootstrap-2")["frontend_iap_programmatic_clients"] == [DESKTOP_CLIENT_ID]
+
+
 def test_discovery_serves_secret_only_with_its_version() -> None:
     assert _infra("infra-1", EVERY_VERSION)["discovery_serves_client_secret"] is False, "pass 1: every switch off"
     assert _infra("infra-2", {})["discovery_serves_client_secret"] is False, "no version of the secret yet"
@@ -245,11 +256,11 @@ def test_cluster_reach_until_the_closing_pass() -> None:
 
 
 @pytest.mark.parametrize(("key", "stage"), [("github_org", "stage 0"), ("org_domain", "stage 0"),
-                                            ("installer_cidr", "stage 0"), ("desktop_client_id", "stage 2")])
+                                            ("installer_cidr", "stage 0")])
 def test_missing_key_names_the_stage_that_records_it(key: str, stage: str) -> None:
     with pytest.raises(LookupError, match=f"no {key} yet; {stage}"):
         _infra("infra-1", **{key: ""})
-    if key in ("org_domain", "desktop_client_id"):
+    if key == "org_domain":
         with pytest.raises(LookupError, match=f"no {key} yet; {stage}"):
             _boot("bootstrap-2", **{key: ""})
 

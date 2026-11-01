@@ -1,0 +1,30 @@
+# Lane SIGNIN-CLIENT-CONSOLE-BACKEND (part of #2688; issue #2964): the Desktop
+# sign-in client is made from the console's Admin › Setup step Sign-in client,
+# which adds its secret as a version of swarm-iap-desktop-client-secret through
+# swarm-api. swarm-api holds secretVersionAdder on that one secret and nothing
+# more on it.
+version: 1
+entries:
+- id: iam-binding.swarm-api-desktop-client-secret-adder
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud secrets get-iam-policy swarm-iap-desktop-client-secret --project=$P names swarm-api's account
+    with roles/secretmanager.secretVersionAdder
+  apply: terraform/infra/discovery.tf google_secret_manager_secret_iam_member.console_client_secret_adder,
+    under enable_console_app_setup (infra pass 2 turns it on)
+  verify: POST /v1/admin/setup/sign-in-client answers state saved, and the secret gains a version
+  explain: The console takes the Desktop client's secret in a form (Google shows it only when it makes the
+    client) and swarm-api adds it as a new version; the role adds versions and cannot read one. On the secret,
+    never the project.
+  guards: the container is made empty in stage 2 (edge.client-secret-container), so the grant has a secret to name
+  depends_on:
+  - secret.swarm-iap-desktop-client-secret.container
+  evidence:
+  - terraform/infra/discovery.tf
+  - apps/swarm-api/swarm_api/routes/setup.py
+  refs:
+    terraform:
+    - infra/google_secret_manager_secret_iam_member.console_client_secret_adder

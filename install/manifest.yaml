@@ -1397,7 +1397,7 @@ entries:
 - id: declared-value.frontend_iap_programmatic_clients
   kind: declared-value
   scope: core
-  stage: 2
+  stage: 13
   provider: engine
   check: grep -n frontend_iap_programmatic_clients terraform/bootstrap/terraform.tfvars
   apply: terraform/bootstrap/terraform.tfvars:168-170
@@ -1542,7 +1542,7 @@ entries:
 - id: oauth-client.desktop-sc
   kind: oauth-client
   scope: core
-  stage: 2
+  stage: 13
   provider: human-in-console
   check: 'gcloud iap settings get --project=$P --resource-type=compute --service=<backend> --format=''value(accessSettings.oauthSettings.programmaticClients)'' lists the client id (docs/runbooks/iap-desktop-client.md:115-116). Partial: it proves the id is allowlisted on each backend, not that a Desktop client with that id exists; no API lists OAuth clients since the IAP OAuth Admin API was deprecated, so existence is shown by verify (`sc login`). Not run.'
   apply: 'Created BY HAND in the GCP console (the IAP OAuth Admin API that could create clients is deprecated); referenced via terraform/bootstrap/terraform.tfvars:169 frontend_iap_programmatic_clients = ["209012342332-deadkn6c5s1ghe0s5lnq3khmekogn2tv.apps.googleusercontent.com"] ALSO: console: Google Auth Platform -> Clients -> Create client -> Application type: Desktop app -> name ''SwarmCloud sc CLI''. One client per deployment, used by every developer''s `sc login`'
@@ -1588,13 +1588,12 @@ entries:
   stage: 2
   provider: engine
   check: gcloud secrets describe swarm-iap-desktop-client-secret --project=$P
-  apply: 'NEW: the engine creates the container (labelled managed-by=swarm-install) right after the Desktop client is made'
+  apply: 'steps/edge.py edge.client-secret-container creates the container empty (labelled managed-by=swarm-install) in stage 2, so infra pass 2 can grant swarm-api secretVersionAdder on it alone (terraform/infra/discovery.tf); the console''s Admin › Setup step Sign-in client adds its versions (issue #2964)'
   verify: gcloud secrets versions list swarm-iap-desktop-client-secret --filter=state=ENABLED --limit=1 lists one version
   explain: The Desktop OAuth client's secret is kept today in the team's password manager and handed to each teammate as the plugin's oauth_client_secret; Secret Manager makes it recoverable by the deployment and servable by the discovery endpoint if BGD chooses that (design section 9.3).
   guards: null
-  secret_entry: hidden terminal prompt in stage 2 (the create-secrets.sh --stdin contract); never pasted into a chat
+  secret_entry: the console's Admin › Setup step Sign-in client takes it in a form, as a new version (POST /v1/admin/setup/sign-in-client); never typed in the terminal, never pasted into a chat
   depends_on:
-  - oauth-client.desktop-sc
   - api.secretmanager
   evidence:
   - docs/runbooks/iap-desktop-client.md:85-86
@@ -1602,7 +1601,7 @@ entries:
   - plugin/.claude-plugin/plugin.json:23
   - plugin/.claude-plugin/plugin.json:88
   notes: New secret id. Whether it is needed at all depends on open question 1 (a PKCE-only exchange).
-  step: edge.desktop-client
+  step: edge.client-secret-container
 - id: role.custom.swarmBucketMetadataReader
   kind: custom-role
   scope: core
