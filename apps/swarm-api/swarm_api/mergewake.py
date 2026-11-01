@@ -321,7 +321,14 @@ from .cifix import (
 )
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
-from .forgechecks import GREEN, RED, CiReading, evaluate, required_status_checks
+from .forgechecks import (
+    GREEN,
+    RED,
+    CiReading,
+    evaluate,
+    required_status_checks,
+    workflow_run_of,
+)
 from . import forge_limits
 from .forge import GITHUB_API_HOST
 from .forge_installation import read_credential
@@ -633,9 +640,12 @@ def _read(writer: GitHubWriter, ref: IssueRef, head: str, token: str, *,
         # No check runs on a conflicting pull request: never read them (#1076).
         return _Reading(CONFLICTING, pull)
     rules = writer.branch_rules(ref, pull.base_ref, token) if pull.base_ref else []
+    # With the pull request's head ref, as the worker's `merge.checks_at` reads
+    # it: another branch's push suite at this sha is dropped
+    # (`_other_branch_push`), so its green never stands for ours (#2946).
     reading = evaluate(
         required_status_checks(rules),
-        writer.check_runs(ref, head, token),
+        writer.check_runs(ref, head, token, head_ref=pull.head_ref or None),
         writer.commit_statuses(ref, head, token),
     )
     if reading.state == GREEN:
@@ -1049,31 +1059,6 @@ def _rerunnable(reading: CiReading | None) -> list[int]:
     return sorted(set(jobs))
 
 
-#: An Actions check run's page, `.../actions/runs/<run id>/job/<job id>`:
-#: only the digits are read, and only when the job is the check run itself.
-_ACTIONS_JOB_URL = re.compile(r"/actions/runs/(\d{1,20})/job/(\d{1,20})/?$")
-
-
-def _workflow_run_of(run: Mapping[str, Any]) -> int | None:
-    """The Actions workflow run a failing Actions check run is a job of, or None.
-
-    `workflow_run_id` when the reading stamped it from the Actions runs it
-    read; else the run id in the check's `details_url` or `html_url`, an int
-    and nothing more, and only when the URL's job is this very check run.
-    """
-    stamped = run.get("workflow_run_id")
-    if isinstance(stamped, int) and not isinstance(stamped, bool) and stamped > 0:
-        return stamped
-    for key in ("details_url", "html_url"):
-        url = run.get(key)
-        if not isinstance(url, str):
-            continue
-        found = _ACTIONS_JOB_URL.search(url.partition("?")[0].partition("#")[0])
-        if found is not None and int(found.group(2)) == run.get("id") and int(found.group(1)) > 0:
-            return int(found.group(1))
-    return None
-
-
 def _rerun_targets(reading: CiReading | None, jobs: list[int]) -> tuple[list[int], list[int]]:
     """(the workflow runs whose failed jobs to re-run, the jobs to re-run alone).
 
@@ -1084,7 +1069,7 @@ def _rerun_targets(reading: CiReading | None, jobs: list[int]) -> tuple[list[int
     alone: set[int] = set()
     by_id = {r.get("id"): r for r in (reading.failing_runs if reading else [])}
     for job in jobs:
-        run_id = _workflow_run_of(by_id.get(job) or {})
+        run_id = workflow_run_of(by_id.get(job) or {})
         if run_id is None:
             alone.add(job)
         else:
@@ -1233,9 +1218,11 @@ def _red_on_default(writer: GitHubWriter, ref: IssueRef, read: _Reading,
         if sha is None or sha == read.pull.head_sha:
             return None
         rules = writer.branch_rules(ref, branch, token)
+        # The default branch's own push suites only, as `_read` reads a pull
+        # request's (#2946, the worker's `_other_branch_push`).
         theirs = evaluate(
             required_status_checks(rules),
-            writer.check_runs(ref, sha, token),
+            writer.check_runs(ref, sha, token, head_ref=branch),
             writer.commit_statuses(ref, sha, token),
         ).failing_names()
     except Exception as exc:  # noqa: BLE001 -- the round goes ahead as before

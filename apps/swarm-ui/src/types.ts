@@ -78,6 +78,17 @@ export interface RunnerProfile {
   units: number
   pools: string[]
   /**
+   * What one agent of this profile takes in each of `pools`: `units` in a
+   * compute pool, 1 in a provider pool (contract request 129, #2950). Read
+   * it through `unitsIn`, never `units` in every pool -- that divides a
+   * provider pool's room by 4 for a large agent.
+   *
+   * OPTIONAL because an API older than the field does not send it, and that
+   * API's admission took `units` in every pool, so `unitsIn` falls back to
+   * `units` -- the true share there, not a guess.
+   */
+  pool_units?: Record<string, number>
+  /**
    * Whether this profile may be dispatched at all.
    *
    * OPTIONAL, and absent means AVAILABLE. An older API does not send the field,
@@ -354,6 +365,93 @@ export function headroomFor(profile: RunnerProfile): Headroom {
 }
 
 /**
+ * A task's weight, PER POOL (contract request 129, #2950): a large agent
+ * takes its 4 resource units in a compute pool and 1 in a provider pool.
+ *
+ *  - a number: the resource units, with nothing served per pool. Taken in
+ *    every pool, which is what an API older than the request admitted by.
+ *  - `{ units, pool_units }`: a `RunnerProfile` as `/v1/capacity` serves it,
+ *    or a task's served `waiting_for` rows (`taskWeight`). `pool_units` names
+ *    the share in each pool; a pool it does not name takes `units`.
+ *
+ * The share is never worked out here from the pool's kind: the rule is
+ * admission's (`swarm_common.models.pool_units_for`), and the API serves its
+ * answer. A copy of it here would be the drift check-contract-parity.sh exists
+ * to catch, one layer further out.
+ */
+export interface PoolWeight {
+  units: number
+  pool_units?: Record<string, number> | null
+}
+export type Weight = number | PoolWeight | null
+
+/** What `weight` takes in `pool`, or null when the weight is unknown. */
+export function unitsIn(weight: Weight, pool: string | undefined): number | null {
+  if (weight === null) return null
+  if (typeof weight === 'number') return weight
+  const share = pool === undefined ? undefined : weight.pool_units?.[pool]
+  if (typeof share === 'number' && Number.isFinite(share) && share > 0) return share
+  return typeof weight.units === 'number' && weight.units > 0 ? weight.units : null
+}
+
+/**
+ * What one agent of `profile` costs, in words: "4 units in each of 5 pools",
+ * or, where the served shares differ (contract request 129, #2950), one
+ * clause per share, largest first -- "4 units in each of 4 pools, 1 unit in
+ * each of 2 pools". "In each of", never "x", which reads as a total; each
+ * noun agrees with its count.
+ */
+export function costInWords(profile: Pick<RunnerProfile, 'units' | 'pools' | 'pool_units'>): string {
+  const counts = new Map<number, number>()
+  for (const p of profile.pools) {
+    const share = unitsIn(profile, p) ?? profile.units
+    counts.set(share, (counts.get(share) ?? 0) + 1)
+  }
+  if (counts.size === 0) counts.set(profile.units, 0)
+  return Array.from(counts.entries())
+    .sort((a, b) => b[0] - a[0])
+    .map(([u, n]) => `${u} unit${u === 1 ? '' : 's'} in each of ${n} pool${n === 1 ? '' : 's'}`)
+    .join(', ')
+}
+
+/**
+ * A waiting task's weight per pool: its class `units` (`classUnits`), and the
+ * share in each pool its served `waiting_for` rows name -- each row's `units`
+ * is what the task takes in THAT pool (swarm_api/waiting.py). With no rows
+ * served it is `units` as it was, in every pool.
+ */
+export function taskWeight(task: Pick<Task, 'waiting_for'>, units: Weight): Weight {
+  if (units === null || typeof units !== 'number') return units
+  const rows = task.waiting_for?.pools
+  if (!Array.isArray(rows) || rows.length === 0) return units
+  const pool_units: Record<string, number> = {}
+  for (const r of rows) {
+    if (r && typeof r.pool === 'string' && typeof r.units === 'number') pool_units[r.pool] = r.units
+  }
+  return { units, pool_units }
+}
+
+/**
+ * Per pool, what one lease holds: its served `pool_units` (contract request
+ * 129), else `units` in each of its pools -- what a lease reserved before the
+ * request, or served by an API older than it, took and gives back. Null for a
+ * row with no pools or no usable units, which holds nothing this can count.
+ */
+export function leaseHeld(lease: Pick<LeaseRow, 'pools' | 'units' | 'pool_units'>): Record<string, number> | null {
+  if (!Array.isArray(lease.pools)) return null
+  const units = typeof lease.units === 'number' && Number.isFinite(lease.units) ? lease.units : null
+  const served = lease.pool_units !== null && typeof lease.pool_units === 'object' ? lease.pool_units : null
+  const held: Record<string, number> = {}
+  for (const p of lease.pools) {
+    const share = served?.[p]
+    if (typeof share === 'number' && Number.isFinite(share)) held[p] = share
+    else if (units !== null) held[p] = units
+    else return null
+  }
+  return held
+}
+
+/**
  * The two groups, split by REMEDY: somebody must act, versus waiting is a
  * valid answer. Read off the response when the server sent it.
  *
@@ -377,7 +475,7 @@ export function blockerGroup(
   // and the served `group` only when one was sent.
   blocker: { reason: string; pool?: string; limit?: unknown; active?: unknown; group?: unknown },
   groups: Record<string, string[]> | undefined,
-  units: number | null = null,
+  units: Weight = null,
 ): 'needs_action' | 'no_room' | null {
   // OWNER DECISION 2026-10-01: a pool with no limit set (`limit-unset`) and a
   // pool whose limit is above 0 but below the task's units (`below-units`,
@@ -415,7 +513,7 @@ export function blockerGroup(
  * waiting is the answer there. A provider pool at zero is not either: its
  * quota can zero it and a cooldown ends by itself (`blockerCeiling`).
  */
-export function poolGroup(pool: Pool, units: number | null = null): 'needs_action' | 'no_room' | null {
+export function poolGroup(pool: Pool, units: Weight = null): 'needs_action' | 'no_room' | null {
   const reason = pool.enabled === false ? 'MANUAL_PAUSE' : pool.effective_limit === null ? POOL_LIMIT_UNSET : ''
   return blockerGroup({ pool: pool.name, reason, limit: pool.effective_limit, active: pool.active }, undefined, units)
 }
@@ -428,7 +526,9 @@ export function poolGroup(pool: Pool, units: number | null = null): 'needs_actio
  * no timer ends, a credential to sign in). Everything else is `no_room`:
  * waiting is a valid answer.
  */
-export function taskGroup(task: Task, units: number | null = null): 'needs_action' | 'no_room' {
+export function taskGroup(task: Task, units: Weight = null): 'needs_action' | 'no_room' {
+  // Each blocker is weighed by the task's share in ITS pool (`taskWeight`).
+  units = taskWeight(task, units)
   if (whyNeedsAction(task, units)) return 'needs_action'
   for (const b of task.blocked_by ?? []) {
     if (blockerGroup(b, undefined, units) === 'needs_action') return 'needs_action'
@@ -1734,6 +1834,14 @@ export interface LeaseRow {
   generation: number
   pools: string[]
   units: number
+  /**
+   * What the lease holds in each of `pools` (contract request 129, #2950):
+   * what release gives back, the provider pools at 1 for a lease reserved
+   * since the request and at `units` for one reserved before it. Read it
+   * through `leaseHeld`. Optional for a console beside an older API, whose
+   * leases all hold `units` in every pool.
+   */
+  pool_units?: Record<string, number>
   dispatch_state: 'LEASED' | 'DISPATCHED' | string
   created_at: string
   dispatch_deadline: string
@@ -1770,6 +1878,14 @@ export interface LeasePage {
   tenant_id: string | null
   /** Weighted units, not agents. Summed over `leases` -- the rows served. */
   units_held: number
+  /**
+   * Per pool, what the served rows' leases hold (contract request 129,
+   * #2950): the drift check's per-pool input against each pool's `active`.
+   * NOT `units_held` in every pool -- a provider pool holds 1 per new lease.
+   * Optional for a console beside an older API; Holders.tsx then sums the
+   * rows by `leaseHeld`.
+   */
+  units_held_by_pool?: Record<string, number>
   /**
    * LIVE LEASES, UNDER THE SAME TENANT FILTER, THAT THESE ROWS LEFT OUT.
    *
@@ -2786,7 +2902,11 @@ export interface WaitingPool {
   state: WaitingState
   active: number | null
   limit: number | null
-  /** The task's weight -- `RESOURCE_CLASSES[task.resource_class].units`. */
+  /**
+   * What the task takes in THIS pool (contract request 129, #2950): its
+   * resource units in a compute pool, 1 in a provider pool. Not the task's
+   * size applied to every pool.
+   */
   units: number
   /** `evaluate_capacity`'s reason for a refusing pool; null when open or unknown. */
   reason: string | null
@@ -3190,12 +3310,15 @@ export const POOL_LIMIT_UNSET = 'POOL_LIMIT_UNSET'
 
 export function blockerCeiling(
   b: { reason: string; pool?: string; limit?: unknown },
-  units: number | null = null,
+  units: Weight = null,
 ): Ceiling {
   if (b.reason === 'MANUAL_PAUSE') return 'paused'
   if (b.reason === POOL_LIMIT_UNSET) return 'limit-unset'
   if (b.limit !== 0) {
-    if (units !== null && typeof b.limit === 'number' && b.limit > 0 && b.limit < units) {
+    // What the task takes in THIS pool, not its size in every pool: a
+    // provider pool's limit of 2 is not below a large agent (#2950).
+    const share = unitsIn(units, b.pool)
+    if (share !== null && typeof b.limit === 'number' && b.limit > 0 && b.limit < share) {
       return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'below-units-quota' : 'below-units'
     }
     return 'full'
@@ -3221,10 +3344,11 @@ export function needsAPerson(c: Ceiling): boolean {
 export function ceilingCopy(
   b: { reason: string; pool?: string; limit?: unknown; active?: unknown },
   subject: string = b.pool ?? 'This pool',
-  units: number | null = null,
+  units: Weight = null,
 ): string | null {
   const c = blockerCeiling(b, units)
   if (c === 'full') return null
+  const share = unitsIn(units, b.pool)
   // WHAT IS STILL HELD. A pool lowered to zero under running work keeps the
   // units it already leased until they are released; admission never admits
   // past a ceiling, so they were admitted before it came down.
@@ -3248,11 +3372,11 @@ export function ceilingCopy(
     case 'below-units-quota': {
       const limit = b.limit as number
       const fact =
-        `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one agent ` +
-        'of this profile weighs, so the agent can never be admitted at this limit.'
+        `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${share} units one agent ` +
+        'of this profile takes in it, so the agent can never be admitted at this limit.'
       return c === 'below-units'
-        ? `${fact} Waiting cannot clear it: somebody has to raise the limit to at least ${units}.${held}`
-        : `${fact} A provider pool's limit also falls with its quota state, so this does not say who set it; it admits this profile once the limit reaches ${units}.${held}`
+        ? `${fact} Waiting cannot clear it: somebody has to raise the limit to at least ${share}.${held}`
+        : `${fact} A provider pool's limit also falls with its quota state, so this does not say who set it; it admits this profile once the limit reaches ${share}.${held}`
     }
   }
 }
@@ -3269,7 +3393,7 @@ export function ceilingCopy(
  */
 function leadBlocker(
   list: readonly BlockedEntry[] | null | undefined,
-  units: number | null = null,
+  units: Weight = null,
 ): BlockedEntry | undefined {
   if (!list || list.length === 0) return undefined
   return list.find((b) => needsAPerson(blockerCeiling(b, units))) ?? list[0]
@@ -3389,9 +3513,10 @@ function taskName(t: Task): string {
  */
 export function whyAgent(
   task: Task,
-  units: number | null = null,
+  units: Weight = null,
   taskById: ReadonlyMap<string, Task> | null = null,
 ): string {
+  units = taskWeight(task, units)
   if (task.state === 'PARKED') {
     const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
     const again = eligibleAgain(task.next_eligible_at)
@@ -3463,7 +3588,8 @@ export function whyAgent(
  * -- none admits the task again until somebody acts. "Sign-in needed" is
  * CREDENTIAL_MISSING.
  */
-export function whyNeedsAction(task: Task, units: number | null = null): boolean {
+export function whyNeedsAction(task: Task, units: Weight = null): boolean {
+  units = taskWeight(task, units)
   if (task.state === 'FAILED') return true
   if (task.state === 'PARKED') {
     return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))

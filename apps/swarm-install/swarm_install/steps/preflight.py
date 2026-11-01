@@ -359,6 +359,14 @@ class Gcp:
         numbers = [int(v["name"].rsplit("/", 1)[1]) for v in found]
         return max(numbers) if numbers else None
 
+    def access_secret_version(self, project: str, secret_id: str, version: int) -> bytes:
+        """One version's payload, read with the person's own credentials: the
+        Desktop client's secret the console saved, for this machine's swarm
+        credential store (issue #2964). The caller never prints or keeps it."""
+        found = self._call("GET", f"{SECRET_MANAGER_API}/projects/{project}/secrets/{secret_id}"
+                                  f"/versions/{int(version)}:access")
+        return base64.b64decode((found.get("payload") or {}).get("data") or "")
+
     def add_secret_version(self, project: str, secret_id: str, data: bytes) -> int:
         import google_crc32c  # a dependency of google-cloud-secret-manager
 

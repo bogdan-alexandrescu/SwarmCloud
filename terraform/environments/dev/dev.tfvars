@@ -57,6 +57,18 @@ enable_gke_autopilot        = true
 gke_release_channel         = "RAPID"
 gke_enable_private_endpoint = false
 
+# Hostname-based egress policy (FQDNNetworkPolicy), on by owner decision of
+# 2026-11-01: swarm-voice's policy in kubernetes/network-policies/ fails closed
+# without it, leaving swarm-voice only DNS and the metadata server. The owner
+# set two conditions, and both hold:
+#   * no charge -- GKE's release note of 2025-09-02 lists FQDN Network Policy
+#     among the features "included in the GKE offering at no additional cost";
+#     GKE has had no paid edition since;
+#   * in place -- the google provider (6.50.0, pinned) enables it with a cluster
+#     update. It REPLACES the cluster only on true -> false, so never set this
+#     back to false without planning a cluster rebuild.
+gke_enable_fqdn_network_policy = true
+
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
 # apply time as the operator's own /32. That is no longer what this does.
 #
@@ -1077,3 +1089,25 @@ swarm_workers_log_view_enabled = true
 # public bucket. This deployment runs the acceptance suite, so it stays on and
 # the live plan shows no change.
 enable_acceptance_fixture = true
+
+# Settings signing, step one (docs/design/tenant-settings-integrity.md; #1457). The
+# key's first version was generated 2026-11-01 by scripts/create-secrets.sh
+# --settings-mac-key, so swarm-api and the scheduler may now reference it as
+# SWARM_SETTINGS_KEY. No tenant is cut over by this: scripts/resign-workspace-settings.sh
+# runs against the deployed key first, and only then does a second change add
+# Engineering to settings_mac_tenants and turn settings_mac_required on. Owner decision
+# 2026-11-01: sign settings so the Jev quality checks can run on request for the
+# code intelligence experiment.
+settings_mac_key_ready = true
+
+# Settings signing, step two: Engineering is cut over and the scheduler refuses
+# an unsigned or badly signed setting for it. scripts/resign-workspace-settings.sh
+# --tenant eng --apply signed Engineering's two stored blocks on 2026-11-01 after
+# its dry run's covered values were read against Engineering's admin_audit rows
+# (judgment backend typesafe set 10-23, Jev on 10-23, graph delivery service
+# 10-28, both context fields never set); a second dry run found nothing left to
+# sign. Only Engineering: every other workspace stays unsigned and unverified
+# until it is re-signed and listed here. Owner decision 2026-11-01 ("Sign
+# settings; checks on request").
+settings_mac_tenants  = ["eng"]
+settings_mac_required = true

@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -84,6 +85,9 @@ IN_LIMIT = 30
 #: task has a handful of attempts, so a task past it is reported `unread`
 #: rather than derived from part of its history.
 PER_TASK_CAP = 64
+
+#: Chunk queries in flight at once: seven covers a full 200-row page.
+MAX_CONCURRENT_CHUNKS = 8
 
 #: The env var a runner profile declares when it accepts a subscription token.
 #: The worker's `accountlease.ACCOUNT_TOKEN_ENV`: a profile without it never
@@ -215,23 +219,36 @@ def read_account_events(
     wanted = list(dict.fromkeys(t for t in task_ids if t))
     events: dict[str, list[dict[str, Any]]] = {t: [] for t in wanted}
     complete: set[str] = set()
-    for start in range(0, len(wanted), IN_LIMIT):
-        chunk = wanted[start : start + IN_LIMIT]
-        limit = PER_TASK_CAP * len(chunk)
+    chunks = [wanted[start : start + IN_LIMIT] for start in range(0, len(wanted), IN_LIMIT)]
+
+    def run(chunk: list[str]) -> list[dict[str, Any]] | Exception:
         query = (
             db.collection_group(EVENTS)
             .where(filter=FieldFilter("tenant_id", "==", tenant_id))
             .where(filter=FieldFilter("task_id", "in", chunk))
             .where(filter=FieldFilter("detail.cause", ">=", CAUSE_FROM))
             .where(filter=FieldFilter("detail.cause", "<", CAUSE_BEFORE))
-            .limit(limit)
+            .limit(PER_TASK_CAP * len(chunk))
         )
         try:
-            rows = [snap.to_dict() or {} for snap in query.stream()]
+            return [snap.to_dict() or {} for snap in query.stream()]
         except Exception as exc:  # the tasks were read; only this reading failed
+            return exc
+
+    # The chunks are read AT ONCE (#2688, LOAD-SPEED): a 200-row page is seven
+    # independent queries. Their answers are folded below in chunk order, so
+    # `strict`, `meter` and the completeness rule are what they were serially.
+    if len(chunks) <= 1:
+        answers = [run(chunk) for chunk in chunks]
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(chunks), MAX_CONCURRENT_CHUNKS)) as pool:
+            answers = list(pool.map(run, chunks))
+    for chunk, rows in zip(chunks, answers):
+        limit = PER_TASK_CAP * len(chunk)
+        if isinstance(rows, Exception):
             if strict:
-                raise
-            log.warning("task account read failed: %s", type(exc).__name__)
+                raise rows
+            log.warning("task account read failed: %s", type(rows).__name__)
             continue
         if meter is not None:
             meter(max(1, len(rows)))

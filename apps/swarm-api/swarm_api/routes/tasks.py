@@ -22,6 +22,7 @@ is a label; the submitter filter and every check here keep using the email.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -58,7 +59,7 @@ from .children import child_service
 from ..heartbeats import heartbeats_for_page
 from ..people import add_names, name_lookup
 from ..schemas import TaskBatchCreate, TaskCreate
-from ..store import Page, task_listing_token
+from ..store import STATE_IN_MAX, TASK_SUMMARY_FIELDS, Page, task_listing_token
 from ..startup import startup_of
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
@@ -213,7 +214,10 @@ def _owner_filter(requested: str | None, auth: AuthContext, forced: str | None) 
 
 @router.get("")
 def list_tasks(
-    state: str | None = Query(default=None),
+    state: list[str] | None = Query(
+        default=None,
+        description="one state, or several: repeated (`state=A&state=B`) or comma-separated",
+    ),
     workflow_id: str | None = Query(default=None),
     runner_profile: str | None = Query(default=None),
     # A parent's children (docs/design/child-tasks.md §6.3), in this tenant.
@@ -251,6 +255,20 @@ def list_tasks(
     Every row, in both views, carries its task's attempt totals
     (`swarm_api.attempt_totals`), from one batched attempts read per 30 rows.
 
+    `state` names one state or several (#2688, LOAD-SPEED): `state=A&state=B`
+    or `state=A,B`, at most `STATE_IN_MAX`, is ONE `state IN [...]` query, so
+    the console reads the six live and waiting states in one request instead
+    of six. An unknown state is a 422 naming the known ones.
+
+    THE PAGE'S READS RUN AT ONCE (#2688, LOAD-SPEED). The pools, the accounts,
+    the leases, the attempt totals and the submitters' names each depend only
+    on the page, never on one another, so `_enrich` starts them together and
+    a request waits for the slowest of them, not their sum: measured on the
+    live deployment on 2026-11-01, the Agents page's 200-row summary poll
+    spent its 1.1-5.3 s in these serial round trips, not in CPU. `view=summary`
+    also reads only `store.TASK_SUMMARY_FIELDS` (of `result_summary`, only
+    its two browser-use keys).
+
     `claude_session` (CHECK-FILTER-TASKS, #1749, as CHECK-FILTER did for
     `GET /v1/workflows`) keeps only the tasks tagged with that Claude Code
     session (`metadata.claude_session`, read through the task's masker, so
@@ -265,15 +283,7 @@ def list_tasks(
     why, and `filter.left_out_single` the part of them in no workflow and
     with no parent -- the rows a single-task reader would have counted.
     """
-    parsed_state: TaskState | None = None
-    if state is not None:
-        try:
-            parsed_state = TaskState(state)
-        except ValueError:
-            raise ValidationFailed(
-                f"unknown state {state!r}",
-                detail={"known_states": [s.value for s in TaskState]},
-            ) from None
+    parsed_state = _parse_states(state)
     if view is not None and view not in TASK_VIEWS:
         raise ValidationFailed(
             f"unknown view {view!r}",
@@ -295,6 +305,9 @@ def list_tasks(
         "runner_profile": runner_profile,
         "submitted_by": owner,
         "parent_task_id": parent_task_id,
+        # `view=summary` reads only the fields a summary row serves or masks
+        # with (`store.TASK_SUMMARY_FIELDS`), on the session filter's pages too.
+        "fields": TASK_SUMMARY_FIELDS if summary else None,
     }
     scope: dict | None = None
     if session is None:
@@ -311,21 +324,7 @@ def list_tasks(
             "left_out": left_out,
             "left_out_single": left_out_single,
         }
-    # One read of the page's READY tasks' pools, de-duplicated (#362).
-    waiting = waiting_for_page(ctx.db, page.items, as_of=ctx.now())
-    # #379: each row's account, from ONE bounded collection-group query per 30
-    # rows of the page (Firestore's `in` cap) -- two for the 50-row phone page,
-    # seven for a full 200 -- capped at 64 event documents per task, and none
-    # for a row whose profile calls no model, never asks the pool, or was never
-    # admitted. A finished task's answer is cached per process. See
-    # `swarm_api.task_accounts`.
-    accounts = accounts_for(ctx.db, tenant_id, page.items)
-    # #179: the lease-holding rows' current leases, one `get_all` per 100.
-    beats = heartbeats_for_page(ctx.db, tenant_id, page.items, core=ctx.settings.core)
-    # EVERY ATTEMPT'S SPEND AND TIME on each row, both views (owner decision
-    # 2026-10-05, P1 follow-up): one batched attempts query per 30 rows of the
-    # page, never one per task (`swarm_api.attempt_totals.totals_for`).
-    totals = totals_for(ctx.db, tenant_id, [task.id for task in page.items])
+    waiting, accounts, beats, totals, names = _enrich(ctx, tenant_id, page.items)
     # #1782: each row's one-line reason, from the row's own document and the
     # pool reading above -- no event, pool or related read per row.
     now = ctx.now()
@@ -352,10 +351,84 @@ def list_tasks(
     }
     if scope is not None:
         payload["filter"] = scope
-    add_names(name_lookup(ctx), payload["tasks"], ("submitted_by",))
+    add_names(lambda _emails: names, payload["tasks"], ("submitted_by",))
     if summary:
         payload["view"] = "summary"
     return payload
+
+
+def _parse_states(values: list[str] | None) -> TaskState | list[TaskState] | None:
+    """`?state=`: None, one `TaskState` (the `==` query) or several (`in`).
+
+    Each value may be comma-separated; repeats are dropped. Any unknown value
+    is a 422 naming the known states, and more than `STATE_IN_MAX` is a 422
+    (Firestore refuses a larger `in`)."""
+    if not values:
+        return None
+    names = list(dict.fromkeys(
+        part.strip() for value in values for part in value.split(",") if part.strip()
+    ))
+    if not names:
+        return None
+    parsed: list[TaskState] = []
+    for name in names:
+        try:
+            parsed.append(TaskState(name))
+        except ValueError:
+            raise ValidationFailed(
+                f"unknown state {name!r}",
+                detail={"known_states": [s.value for s in TaskState]},
+            ) from None
+    if len(parsed) > STATE_IN_MAX:
+        raise ValidationFailed(
+            f"at most {STATE_IN_MAX} states in one request, not {len(parsed)}",
+            detail={"max_states": STATE_IN_MAX},
+        )
+    return parsed[0] if len(parsed) == 1 else parsed
+
+
+#: The page reads `_enrich` runs at once: one thread each.
+ENRICH_READS = 5
+
+
+def _enrich(ctx: AppContext, tenant_id: str, tasks: list) -> tuple[dict, dict, dict, dict, dict]:
+    """`(waiting, accounts, beats, totals, names)` for one page, read CONCURRENTLY.
+
+    The five reads are independent -- each takes the page and nothing another
+    returns -- so they start together and the request waits for the slowest
+    (#2688, LOAD-SPEED). Each keeps its own bound and its own failure rule:
+
+      * one read of the page's READY tasks' pools, de-duplicated (#362);
+      * #379: each row's account, from ONE bounded collection-group query per
+        30 rows (Firestore's `in` cap), capped at 64 event documents per task,
+        and none for a row whose profile calls no model, never asks the pool,
+        or was never admitted; a finished task's answer is cached per process
+        (`swarm_api.task_accounts`);
+      * #179: the lease-holding rows' current leases, one `get_all` per 100;
+      * EVERY ATTEMPT'S SPEND AND TIME (owner decision 2026-10-05): one
+        batched attempts query per 30 rows, never one per task
+        (`swarm_api.attempt_totals.totals_for`);
+      * the submitters' display names, from one lookup (`people.add_names`).
+
+    The Firestore client is safe to share across threads. A read that raises
+    raises here, exactly as it did when the reads ran one after another.
+    """
+    emails = list(dict.fromkeys(t.submitted_by for t in tasks if "@" in (t.submitted_by or "")))
+    lookup = name_lookup(ctx)
+    now = ctx.now()
+    with ThreadPoolExecutor(max_workers=ENRICH_READS, thread_name_prefix="tasks-enrich") as pool:
+        waiting = pool.submit(waiting_for_page, ctx.db, tasks, as_of=now)
+        accounts = pool.submit(accounts_for, ctx.db, tenant_id, tasks)
+        beats = pool.submit(heartbeats_for_page, ctx.db, tenant_id, tasks, core=ctx.settings.core)
+        totals = pool.submit(totals_for, ctx.db, tenant_id, [task.id for task in tasks])
+        names = pool.submit(lookup, emails) if emails else None
+        return (
+            waiting.result(),
+            accounts.result(),
+            beats.result(),
+            totals.result(),
+            names.result() if names is not None else {},
+        )
 
 
 def _session_page(

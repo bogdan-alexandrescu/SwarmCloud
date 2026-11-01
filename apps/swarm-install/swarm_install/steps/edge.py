@@ -1,17 +1,31 @@
-"""Stage 2, the edge and identity prerequisites: the OAuth brand, the IAP
-service agent, the global address, the DNS record, the certificate's
-precondition and the Desktop client with its secret (design §4; plan §9.1;
-lesson 17: none of these is in Terraform).
+"""Stage 2, the edge and identity prerequisites: the Desktop client secret's
+container, the IAP service agent, the global address, the DNS record and the
+certificate's precondition; and, after the hand-off, the waits for the OAuth
+brand and the Desktop client the console's Sign-in client step makes (design
+§4; plan §9.1; lesson 17: none of these is in Terraform; issue #2964).
+
+**Why the client waits for the console.** The console is reachable before any
+brand exists: the frontend's backends turn IAP on with no OAuth client
+(terraform/modules/frontend/main.tf), so IAP uses its Google-managed OAuth
+client, which needs no brand and admits the organisation's own people
+(https://docs.cloud.google.com/iap/docs/custom-oauth-configuration). That
+page also says an app on the Google-managed client is reached programmatically
+through a separate OAuth client in the `programmatic_clients` setting, which
+the IAP settings API writes (https://docs.cloud.google.com/iap/docs/sharing-oauth-clients;
+terraform/bootstrap/iap_programmatic_clients.tf). So the person makes the
+brand and the Desktop client from the console's Admin › Setup, and the CLI
+waits for it as it waits for the GitHub App.
 
 | Step | Manifest entries | Kind |
 |---|---|---|
-| `edge.brand` | `oauth-brand.iap` | engine: no API reads or creates a brand (Google shut the IAP OAuth Admin API down on 2026-03-19), and the console refuses to create a client before Branding and Audience are set, so the Desktop client is the brand's proof: `apply` opens the Branding page, then the Audience page (choose Internal), says to create the Desktop client, and asks the client's id; met once a Desktop client id is recorded |
+| `edge.client-secret-container` | `secret.swarm-iap-desktop-client-secret.container` | engine: creates `swarm-iap-desktop-client-secret` empty, so infra pass 2 can grant swarm-api secretVersionAdder on it alone; its versions come from the console's Admin › Setup step Sign-in client, never from this terminal |
 | `edge.iap-agent` | `other.iap-service-agent` | engine: `generateServiceIdentity` for iap.googleapis.com is both the apply and the proof: it is idempotent and answers the agent's email, which is recorded; the agent's account lives in a Google-owned project, so it is never read |
 | `edge.global-ip` | `network.global-ip` | engine: reserves the address the frontend module names (`swarm-ui-ip`) |
 | `edge.dns` | `dns.frontend-hostname` | wait, 60 min: when one of the project's public Cloud DNS managed zones covers the hostname, `apply` creates the A record there after one typed approval (the hostname); otherwise the record is set at the person's registrar, so `apply` prints it and opens a page showing what the hostname resolves to now. Either way the engine polls Google Public DNS (`dns.google/resolve`, the resolver that page shows), never the local resolver, which can cache a negative answer |
 | `edge.certificate` | `certificate.managed-ssl` | wait, 60 min (`waits.CERTIFICATE`); it never starts before DNS resolves to the reserved address (design R6) |
-| `edge.desktop-client` | `oauth-client.desktop-sc`, `declared-value.frontend_iap_programmatic_clients`, `secret.swarm-iap-desktop-client-secret.container` | engine: no API creates or lists a Desktop client, so `apply` opens the create page (or the recorded client's own page); the id, unless already recorded, is asked; the secret is a credential typed at a hidden prompt (`secret_entry`, echo off) straight to Secret Manager and, the same typed value, to the swarm credential store of the new deployment's context (`verify_context`), so verify never needs it. Normally `edge.brand` has already taken the secret, right after the id, while Google still shows it; this step then only checks, or asks again with "Add secret on this page" |
 | `edge.console-answers` (stage 8) | `other.console-through-iap` | wait, 60 min (`handoff.CONSOLE_ANSWERS`): first in stage 8, after infra pass 2 and bootstrap pass 2 (stage 7), it polls until `swarm-ui-cert` is `ACTIVE` and an anonymous GET of `https://<H>/` answers IAP's sign-in (302, 401 or 403, `handoff.IAP_ANSWERS`), so stage 8's first call through the hostname does not meet a TLS error or a load balancer still routing |
+| `edge.brand` (stage 13, after `handoff.console`) | `oauth-brand.iap` | wait, 6 h (`SIGN_IN_CLIENT`): no API reads or creates a brand (Google shut the IAP OAuth Admin API down on 2026-03-19), and the console refuses to create a client before Branding and Audience are set, so the Desktop client is the brand's proof. The console's Admin › Setup step Sign-in client (issue #2964) links Branding, Audience (Internal) and Create client and takes the client's id and secret in a form; this asks nothing and is met once a Desktop client id is recorded or the console saved one |
+| `edge.desktop-client` (stage 13) | `oauth-client.desktop-sc`, `declared-value.frontend_iap_programmatic_clients` | wait, 6 h: met once the client the console saved last is recorded, its secret has an enabled version and the new deployment's context on this machine holds it (`verify_context`). `apply` reads the secret's latest version with the person's own credentials (`take_client`) into that credential store; nothing is typed. The hand-off wait has normally done all of it already, with the bootstrap and infra passes that put the id in IAP's programmatic-clients list and the discovery document (`handoff.sign_in_triggered`) |
 
 The managed certificate itself is created by infra pass 1 (stage 5), which
 attaches it to the load balancer; Google provisions a managed certificate only
@@ -39,12 +53,10 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from .. import secret_entry, swarm_context
+from .. import swarm_context
 from ..exitcodes import MET, UNMET, WAITING
-from ..secret_entry import DevTty, Terminal
 from ..waits import CERTIFICATE, WaitSpec
 from . import Observation, Plan, open_page
-from .handoff import CONSOLE_ANSWERS, IAP_ANSWERS
 from .preflight import ASK, COMPUTE, GCP, USAGE, ApiError, Ask, Gcp, project_number, remember
 
 #: The frontend module's names (terraform/modules/frontend/main.tf:101, :297,
@@ -54,6 +66,23 @@ ADDRESS = f"{FRONTEND}-ip"
 CERT = f"{FRONTEND}-cert"
 DESKTOP_SECRET = "swarm-iap-desktop-client-secret"
 CLIENT_ID = re.compile(r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
+
+#: The console answering behind IAP right after infra pass 2 (certificate, IAP,
+#: routing). Defined here and re-exported by `handoff`, which imports this
+#: module for the client steps it registers after the hand-off.
+CONSOLE_ANSWERS = WaitSpec(
+    reason="the console answering behind IAP",
+    expected="up to 10 min",
+    expected_s=10 * 60,
+    bound_s=60 * 60,
+    look_at=("the project's SSL certificates page in the Google Cloud console (opened when this wait gives up): "
+             "the certificate's status and its domain's status say whether DNS or provisioning is behind; "
+             "the countdown above says what the console answered last"),
+    interval_s=15,
+)
+#: What an unauthenticated GET of an IAP-protected console answers: a redirect
+#: to sign in (or a 401/403 for a client IAP will not redirect).
+IAP_ANSWERS = (302, 401, 403)
 
 DNS_API = "https://dns.googleapis.com/dns/v1"
 #: Google Public DNS over HTTPS, JSON form: the resolver the page `edge.dns`
@@ -213,31 +242,108 @@ class _Base:
         return str(hostname)
 
 
-class BrandStep(_Base):
-    id = "edge.brand"
-    satisfies = ("oauth-brand.iap",)
+#: A person working through Admin › Setup's Sign-in client step: three
+#: Google Cloud console pages and a form (issue #2964).
+SIGN_IN_CLIENT = WaitSpec(
+    reason="you saving the Desktop sign-in client in the console's Admin › Setup",
+    expected="5 to 10 min",
+    expected_s=10 * 60,
+    bound_s=6 * 60 * 60,
+    look_at="the console's Admin › Setup page, step Sign-in client; run swarm install again to resume",
+    interval_s=10,
+)
+#: The console document Admin › Setup's Sign-in client step writes
+#: (`swarm-install/<env>/console/sign_in_client`: `client_id`, `saved_at`, `saved_by`).
+SIGN_IN_DOCUMENT = "sign_in_client"
+
+
+def console_client(ctx: Any) -> dict[str, Any]:
+    """The client the console saved, `{}` when none (or not a client id)."""
+    found = dict(ctx.read_console(SIGN_IN_DOCUMENT) or {})
+    return found if CLIENT_ID.match(str(found.get("client_id") or "")) else {}
+
+
+def client_pending(ctx: Any) -> str:
+    """Why the recorded client is not the one the console saved last, or ""."""
+    saved = console_client(ctx)
+    if not saved:
+        return ""
+    if saved["client_id"] != ctx.outputs.get("desktop_client_id"):
+        return f"the console saved the Desktop client {saved['client_id']}; it is not taken in yet"
+    if str(saved.get("saved_at") or "") != str(ctx.outputs.get("desktop_client_saved_at") or ""):
+        return "the console saved the Desktop client's secret again; it is not taken in yet"
+    return ""
+
+
+def take_client(ctx: Any, gcp: Gcp, contexts: swarm_context.Run) -> None:
+    """The console's client into the state, and its secret's latest version,
+    read with the person's own credentials, into the swarm credential store
+    of the new deployment's context (`verify_context`), so verify never asks.
+    The secret is never printed, logged or written to the state."""
+    saved = console_client(ctx)
+    if not saved:
+        raise LookupError("the console has not saved a Desktop client (Admin › Setup, Sign-in client)")
+    version = gcp.enabled_version(ctx.project, DESKTOP_SECRET)
+    if version is None:
+        raise LookupError(f"secret {DESKTOP_SECRET} has no enabled version yet")
+    remember(ctx, outputs={"desktop_client_id": saved["client_id"]})
+    value = bytearray(gcp.access_secret_version(ctx.project, DESKTOP_SECRET, version))
+    try:
+        name = swarm_context.store_desktop_secret(ctx, bytes(value), run=contexts)
+    finally:
+        value[:] = b"\0" * len(value)
+    remember(ctx, outputs={"verify_context": name, "desktop_client_secret_version": version,
+                           "desktop_client_saved_at": str(saved.get("saved_at") or "")})
+
+
+class ClientSecretContainerStep(_Base):
+    id = "edge.client-secret-container"
+    satisfies = ("secret.swarm-iap-desktop-client-secret.container",)
     _explain = (
-        "IAP needs an OAuth brand (consent screen) before any backend can turn it on. No API creates or "
-        "reads one: Google shut the IAP OAuth Admin API down on 2026-03-19. The console refuses to create "
-        "an OAuth client before Branding and Audience are set, so a Desktop client's existence proves the "
-        "brand: a person sets Branding, chooses Audience: Internal and creates the Desktop client in the "
-        "console, once (the brand can never be deleted), and gives the client's id (lesson 17), then, at once, "
-        "its secret: Google shows a client's secret only when it creates it (audit N18)."
+        "The Desktop client's secret is typed in the console's Admin › Setup (Sign-in client) and swarm-api "
+        "adds it as a version of this secret, the one secret infra pass 2 lets swarm-api add versions to. "
+        "The container is made here, empty, so the grant has a secret to name."
     )
 
-    def __init__(self, gcp: Callable[[], Gcp], ask: Ask, edge: Callable[[], EdgeApi] | None = None,
-                 client: DesktopClientStep | None = None) -> None:
-        super().__init__(gcp, ask, edge)
-        #: The step whose secret prompt runs right after the id; `build_steps`
-        #: passes it, so the secret is asked before the DNS wait, not after it.
-        self._client = client
+    def _check(self, ctx: Any) -> Observation:
+        if self.gcp.secret(ctx.project, DESKTOP_SECRET) is None:
+            return Observation(UNMET, f"secret {DESKTOP_SECRET} does not exist")
+        return Observation(MET, f"secret {DESKTOP_SECRET} exists")
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan(f"create the empty secret {DESKTOP_SECRET}",
+                    ("its version comes from the console's Sign-in client step, never from this terminal",))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        self.gcp.create_secret(ctx.project, DESKTOP_SECRET, {"managed-by": "swarm-install"})
+
+
+class BrandStep(_Base):
+    id = "edge.brand"
+    stage = 13
+    kind = "wait"
+    wait = SIGN_IN_CLIENT
+    needs_project = False
+    satisfies = ("oauth-brand.iap",)
+    _explain = (
+        "sc's sign-in needs an OAuth brand and a Desktop client. No API creates or reads either: Google shut "
+        "the IAP OAuth Admin API down on 2026-03-19. The console's Admin › Setup (Sign-in client, its first "
+        "step) links Branding, Audience (Internal) and Create client, and takes the client's id and secret "
+        "in a form; the console refuses to create a client before Branding and Audience are set, so the "
+        "client is the brand's proof. The browser does not need the brand: IAP signs the organisation's own "
+        "people in with its Google-managed OAuth client. This waits for the console, and asks nothing here."
+    )
 
     def _check(self, ctx: Any) -> Observation:
         client = str(ctx.outputs.get("desktop_client_id") or "")
-        if not CLIENT_ID.match(client):
-            return Observation(UNMET, "no Desktop client id is recorded; the console creates one only once the "
-                                      "OAuth brand (Branding and Audience) exists")
-        return Observation(MET, f"the Desktop client {client} exists, so the OAuth brand does")
+        saved = console_client(ctx)
+        if CLIENT_ID.match(client):
+            return Observation(MET, f"the Desktop client {client} exists, so the OAuth brand does")
+        if saved:
+            return Observation(MET, f"the console saved the Desktop client {saved['client_id']}, so the OAuth "
+                                    "brand exists")
+        return Observation(WAITING, "waiting for the console's Admin › Setup step Sign-in client (Branding, "
+                                    "Audience: Internal, then the Desktop client)")
 
     def deep_link(self, ctx: Any) -> str:
         return f"https://console.cloud.google.com/auth/branding?project={ctx.project}"
@@ -247,43 +353,21 @@ class BrandStep(_Base):
 
     def plan(self, ctx: Any) -> Plan:
         return Plan(
-            "set the OAuth brand in the console and choose Internal (once; it can never be deleted), then "
-            "create the Desktop client and give its id",
+            "wait for the console's Sign-in client step (the OAuth brand and the Desktop client)",
             (
-                f"open {self.deep_link(ctx)}",
-                "Branding: App name: SwarmCloud; support email: your own address (or a group you manage; the "
-                "install's groups exist only from stage 8); save",
-                f"open {self.audience_link(ctx)}: choose Internal",
-                f"Clients (https://console.cloud.google.com/auth/clients/create?project={ctx.project}): "
-                "Application type: Desktop app; name: SwarmCloud sc; create",
-                "give the Desktop client's id, then at once its secret at a hidden prompt, while the console "
-                "still shows it",
+                "the console's Admin › Setup, step Sign-in client, links "
+                f"{self.deep_link(ctx)} (App name SwarmCloud; support email your own address), "
+                f"{self.audience_link(ctx)} (Internal) and the Create client page (Desktop app, SwarmCloud sc)",
+                "nothing is asked in this terminal",
             ),
         )
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        """No API reads or creates a brand: the engine opens the Branding page,
-        then the Audience page, says what to set on each, and asks the Desktop
-        client's id, which proves both: the console creates no client before
-        Branding and Audience are set. The id is the one thing the check can
-        read, so it is the prompt, never a bare Enter. The secret follows at
-        once: Google shows it only in the dialog that creates the client."""
-        open_page(self.deep_link(ctx), why=(
-            "Set the OAuth brand once (it can never be deleted): Branding: App name SwarmCloud, support email "
-            "your own address (or a group you manage); save."
-        ))
-        open_page(self.audience_link(ctx), why=(
-            "Then Audience: choose Internal. Then Clients > Create client "
-            f"(https://console.cloud.google.com/auth/clients/create?project={ctx.project}): Application type "
-            "Desktop app, name SwarmCloud sc. Keep the dialog that shows the new client open: give its id "
-            "here, then its secret at the hidden prompt right after (Google shows the secret only now)."
-        ))
-        client = self._ask(ctx, self.id, "The Desktop client's id (ends .apps.googleusercontent.com)").strip()
-        if not CLIENT_ID.match(client):
-            raise ValueError(f"{client!r} is not a Desktop client id")
-        remember(ctx, outputs={"desktop_client_id": client})
-        if self._client is not None:
-            self._client.take_secret(ctx)
+        """Nothing to make or ask here: the hand-off opened the console, whose
+        Sign-in client step sends the person to each page; the engine polls
+        the install record."""
+        ctx.events.emit("step_apply", step=self.id,
+                        message="waiting for the console's Admin › Setup step Sign-in client")
 
 
 class IapAgentStep(_Base):
@@ -539,24 +623,26 @@ class CertificateStep(_Base):
 
 class DesktopClientStep(_Base):
     id = "edge.desktop-client"
+    stage = 13
+    kind = "wait"
+    wait = SIGN_IN_CLIENT
+    needs_project = False
     satisfies = (
         "oauth-client.desktop-sc",
         "declared-value.frontend_iap_programmatic_clients",
-        "secret.swarm-iap-desktop-client-secret.container",
     )
     _explain = (
         "sc signs a person in to IAP with this Desktop OAuth client (a gcloud token is refused with 401 "
-        "code 900). No API creates one, so it is made in the console; its id is not secret, its secret is "
-        "typed at a hidden prompt and goes straight to Secret Manager, never through a chat, and into the "
-        "swarm credential store of the new deployment's context, which verify signs in to."
+        "code 900). No API creates one, so the console's Admin › Setup (Sign-in client) takes its id and "
+        "secret in a form; the secret goes to Secret Manager only. This waits for that, then reads the "
+        "secret with your own credentials into the swarm credential store of the new deployment's context, "
+        "which verify signs in to, and asks nothing here."
     )
 
     def __init__(self, gcp: Callable[[], Gcp], ask: Ask,
-                 open_terminal: Callable[[], Terminal] = DevTty.open,
                  contexts: swarm_context.Run = swarm_context.run_command,
                  edge: Callable[[], EdgeApi] | None = None) -> None:
         super().__init__(gcp, ask, edge)
-        self._open_terminal = open_terminal
         self._contexts = contexts
 
     def _stored_context(self, ctx: Any) -> tuple[str, str]:
@@ -571,14 +657,13 @@ class DesktopClientStep(_Base):
                         f"{swarm_context.deployment_url(ctx) or 'the new deployment'} on this machine")
         return name, ""
 
-    def _keep(self, ctx: Any, value: bytes) -> None:
-        name = swarm_context.store_desktop_secret(ctx, value, run=self._contexts)
-        remember(ctx, outputs={"verify_context": name})
-
     def _check(self, ctx: Any) -> Observation:
+        pending = client_pending(ctx)
+        if pending:
+            return Observation(UNMET, pending)
         client = str(ctx.outputs.get("desktop_client_id") or "")
         if not CLIENT_ID.match(client):
-            return Observation(UNMET, "no Desktop client id is recorded")
+            return Observation(WAITING, "waiting for the console's Admin › Setup step Sign-in client")
         if self.gcp.secret(ctx.project, DESKTOP_SECRET) is None:
             return Observation(UNMET, f"secret {DESKTOP_SECRET} does not exist")
         version = self.gcp.enabled_version(ctx.project, DESKTOP_SECRET)
@@ -592,70 +677,69 @@ class DesktopClientStep(_Base):
 
     def plan(self, ctx: Any) -> Plan:
         return Plan(
-            "create the Desktop OAuth client in the console, then give its id, and its secret at a hidden prompt",
+            "take the Desktop client the console's Sign-in client step saved",
             (
-                f"open {self.deep_link(ctx)}",
-                "Application type: Desktop app; name: SwarmCloud sc; create",
-                f"the secret goes to Secret Manager ({DESKTOP_SECRET}), never to a chat or a file, and to the "
-                "swarm credential store of the new deployment's context (swarm context add --client-secret-stdin)",
+                f"read the latest version of {DESKTOP_SECRET} with your own credentials",
+                "write it to the swarm credential store of the new deployment's context (swarm context add "
+                "--client-secret-stdin); never to a file, a log or the install state",
             ),
         )
 
-    def deep_link(self, ctx: Any) -> str:
-        """The recorded client's own page (where its secret is), else the create page."""
-        client = str(ctx.outputs.get("desktop_client_id") or "")
-        if CLIENT_ID.match(client):
-            return f"https://console.cloud.google.com/auth/clients/{client}?project={ctx.project}"
-        return f"https://console.cloud.google.com/auth/clients/create?project={ctx.project}"
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        """The console's client, or a recorded one whose secret this machine's
+        credential store lacks (another laptop), is taken from Secret Manager;
+        with neither, the engine polls until the console saves one."""
+        if not console_client(ctx) and not CLIENT_ID.match(str(ctx.outputs.get("desktop_client_id") or "")):
+            return
+        if console_client(ctx):
+            take_client(ctx, self.gcp, self._contexts)
+            return
+        version = self.gcp.enabled_version(ctx.project, DESKTOP_SECRET)
+        if version is None:
+            # The check says so; the engine polls until the console saves
+            # the client again (Admin › Setup, step Sign-in client).
+            return
+        value = bytearray(self.gcp.access_secret_version(ctx.project, DESKTOP_SECRET, version))
+        try:
+            name = swarm_context.store_desktop_secret(ctx, bytes(value), run=self._contexts)
+        finally:
+            value[:] = b"\0" * len(value)
+        remember(ctx, outputs={"verify_context": name, "desktop_client_secret_version": version})
+
+
+class SignInRecordStep(_Base):
+    """Triggered by the hand-off wait once the console's Sign-in client step
+    saved a client this state has not taken in (`handoff.sign_in_triggered`)."""
+
+    id = "handoff.sign-in-client"
+    stage = 13
+    needs_project = False
+    _explain = ("Once the console saved the Desktop client, its id goes to the install state and its secret, "
+                "read with your own credentials, to the new deployment's swarm credential store.")
+
+    def __init__(self, gcp: Callable[[], Gcp], ask: Ask,
+                 contexts: swarm_context.Run = swarm_context.run_command) -> None:
+        super().__init__(gcp, ask)
+        self._contexts = contexts
+
+    def trigger(self, ctx: Any) -> bool:
+        return bool(client_pending(ctx)) and self.gcp.enabled_version(ctx.project, DESKTOP_SECRET) is not None
+
+    def _check(self, ctx: Any) -> Observation:
+        pending = client_pending(ctx)
+        if pending:
+            return Observation(UNMET, pending)
+        if not console_client(ctx):
+            return Observation(UNMET, "the console has not saved a Desktop client yet")
+        return Observation(MET, f"the Desktop client {ctx.outputs.get('desktop_client_id')} is taken in")
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan("take the Desktop client the console saved",
+                    (f"read the latest version of {DESKTOP_SECRET} with your own credentials into the new "
+                     "deployment's swarm credential store",))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
-        client = str(ctx.outputs.get("desktop_client_id") or "")
-        gcp = self.gcp
-        has_secret = (gcp.secret(ctx.project, DESKTOP_SECRET) is not None
-                      and gcp.enabled_version(ctx.project, DESKTOP_SECRET) is not None)
-        if not CLIENT_ID.match(client):
-            open_page(self.deep_link(ctx), why=(
-                "Create the Desktop OAuth client (Application type: Desktop app; name: SwarmCloud sc), "
-                "then give its id here, and its secret at the hidden prompt right after, while the console still "
-                "shows it (it goes to Secret Manager and the new deployment's swarm credential store only)"
-            ))
-            client = self._ask(ctx, self.id, "The Desktop client's id (ends .apps.googleusercontent.com)").strip()
-            if not CLIENT_ID.match(client):
-                raise ValueError(f"{client!r} is not a Desktop client id")
-            remember(ctx, outputs={"desktop_client_id": client})
-        elif not has_secret:
-            open_page(self.deep_link(ctx), why=(
-                f"The Desktop client {client}: Google shows a client's secret only when it makes it, so Add "
-                "secret on this page and give the new secret at the hidden prompt (it goes to Secret Manager "
-                "and the new deployment's swarm credential store only)"
-            ))
-        self.take_secret(ctx)
-
-    def take_secret(self, ctx: Any) -> None:
-        """The secret, typed once at a hidden prompt, to Secret Manager and to
-        this machine's credential store; nothing is asked when both hold it.
-        `edge.brand` calls this right after the id, while the console's
-        create dialog still shows the secret (audit N18)."""
-        gcp = self.gcp
-        if gcp.secret(ctx.project, DESKTOP_SECRET) is None:
-            gcp.create_secret(ctx.project, DESKTOP_SECRET, {"managed-by": "swarm-install"})
-        if gcp.enabled_version(ctx.project, DESKTOP_SECRET) is None:
-            version = secret_entry.enter_secret(
-                ctx, step_id=self.id, project=ctx.project, secret_id=DESKTOP_SECRET,
-                prompt="The Desktop client's secret", store=gcp, open_terminal=self._open_terminal,
-                also=lambda value: self._keep(ctx, value),
-            )
-            remember(ctx, outputs={"desktop_client_secret_version": version})
-        elif not self._stored_context(ctx)[0]:
-            # Secret Manager holds it, but this machine's credential store does
-            # not (another laptop, or a run before this step kept it there): the
-            # engine never reads it back from Secret Manager, so it is typed again
-            # (a secret added on the client's page works too: Google keeps both).
-            secret_entry.type_secret(
-                ctx, step_id=self.id, what=f"the Desktop client's secret (already in {DESKTOP_SECRET})",
-                prompt="The Desktop client's secret, for the swarm credential store",
-                use=lambda value: self._keep(ctx, value), open_terminal=self._open_terminal,
-            )
+        take_client(ctx, self.gcp, self._contexts)
 
 
 class ConsoleAnswersStep(_Base):
@@ -697,22 +781,27 @@ class ConsoleAnswersStep(_Base):
 
 
 def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK,
-                open_terminal: Callable[[], Terminal] = DevTty.open,
                 edge: Callable[[], EdgeApi] | None = None,
                 contexts: swarm_context.Run = swarm_context.run_command) -> list[Any]:
-    """Stage 2 in order: the brand (with the client's id and secret) before
-    the client's check, the address before DNS before the certificate; then the
-    console wait, first in stage 8."""
-    client = DesktopClientStep(gcp, ask, open_terminal, contexts, edge=edge)
+    """Stage 2 in order: the Desktop client secret's empty container, the IAP
+    agent, the address before DNS before the certificate; then the console
+    wait, first in stage 8. The brand and the Desktop client are waits after
+    the hand-off (`handoff.build_steps` registers `client_steps`)."""
     return [
-        BrandStep(gcp, ask, edge, client=client),
+        ClientSecretContainerStep(gcp, ask, edge),
         IapAgentStep(gcp, ask, edge),
         GlobalIpStep(gcp, ask, edge),
         DnsStep(gcp, ask, edge),
         CertificateStep(gcp, ask, edge),
-        client,
         ConsoleAnswersStep(gcp, ask, edge),
     ]
+
+
+def client_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK,
+                 edge: Callable[[], EdgeApi] | None = None,
+                 contexts: swarm_context.Run = swarm_context.run_command) -> list[Any]:
+    """The brand and the Desktop client, waits met by the console's record."""
+    return [BrandStep(gcp, ask, edge), DesktopClientStep(gcp, ask, contexts, edge=edge)]
 
 
 STEPS = build_steps()

@@ -106,7 +106,9 @@ describe('the spine order (NAV-FOOT)', () => {
   it('draws Admin in its place, after Capacity, for a platform admin', async () => {
     await liveShell('work', 'running', vi.fn(), true)
     // MUTATION: drop NAV-ADMIN-ROLE's filter, or move `admin` in SPINE, and the order changes.
-    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Help', 'Profile']))
+    // Voice it follows Admin: a platform admin is who the identity read can name
+    // as the person Voice it is open to until swarm-api's session routes say so.
+    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Voice it', 'Help', 'Profile']))
     expect(lastControl().getAttribute('data-sec')).toBe('profile')
   })
 

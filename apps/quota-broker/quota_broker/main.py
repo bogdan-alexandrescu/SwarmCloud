@@ -106,6 +106,7 @@ from .accountstore import (
 )
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
+from . import openai_plan
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
 from .publishledger import fingerprint as publish_fingerprint
 from .secretstore import SecretManagerStore
@@ -616,6 +617,23 @@ def _flag(name: str, default: bool) -> bool:
 #: keeps the same pair in `validation.APP_CREDENTIAL_PROVIDERS`; the broker
 #: does not import swarm-api.
 RETIRED_APP_PROVIDERS: frozenset[str] = frozenset({"git-merge", "git-review"})
+
+
+#: The providers a pool account may be of: Claude subscriptions and, since
+#: 2026-11-01 (#2688, BGD: codex runs on ChatGPT plans from a shared pool),
+#: ChatGPT plans. Each is a credential pair this service can refresh; a
+#: provider outside this list has no refresh path, so filing one would be a
+#: pool entry that dies at its first expiry.
+ACCOUNT_PROVIDERS = ("anthropic", openai_plan.PROVIDER)
+
+
+def _account_provider(provider: str) -> str:
+    name = (provider or "").strip().lower()
+    if name not in ACCOUNT_PROVIDERS:
+        raise BrokerValidationError(
+            f"a pool account is one of {', '.join(ACCOUNT_PROVIDERS)}, not {provider!r}"
+        )
+    return name
 
 
 def _known_provider(provider: str) -> str:
@@ -2541,6 +2559,7 @@ def create_app(
     subscription_tenants: Any | None = None,
     account_store: AccountStore | None = None,
     token_endpoint: Any | None = None,
+    plan_token_endpoint: Any | None = None,
 ) -> FastAPI:
     # The other three services do this and the broker did not, so every
     # `extra={...}` field it logged was discarded and its records arrived as
@@ -2653,6 +2672,9 @@ def create_app(
     # that reaches the real endpoint is a test that needs the network and a
     # real authorization code.
     app.state.token_endpoint = token_endpoint or HttpTokenEndpoint()
+    # The ChatGPT token endpoint, for an `openai` account's sign-in (#2688);
+    # injected for the same reason as the Claude one above.
+    app.state.plan_token_endpoint = plan_token_endpoint or openai_plan.HttpPlanTokenEndpoint()
     app.state.subscription_tenants = tenants or (lambda: [])
     # Registering an account writes two secrets, so the account routes need the
     # same store the refresher and the poller use. Exposed on app.state rather
@@ -3542,6 +3564,54 @@ def create_app(
     # verifier the client holds is a PKCE flow that proves nothing.
 
     PENDING_AUTH = "account_auth"
+
+    def _finish_plan_sign_in(
+        request: Request,
+        *,
+        ref: Any,
+        pending: dict[str, Any],
+        owner: str,
+        code: str,
+        store: Any,
+        secrets_store: Any,
+    ) -> dict[str, Any]:
+        """Redeem a ChatGPT plan's code and file the plan as an `openai` account.
+
+        The same order as a Claude sign-in: the caller was proven to be the
+        pending record's owner before this runs, the code is redeemed with the
+        verifier that record holds, both secrets are written before the
+        account document exists, and the pending record is deleted last.
+        """
+        try:
+            payload = request.app.state.plan_token_endpoint.redeem(
+                code=code,
+                verifier=str(pending.get("verifier") or ""),
+                redirect_uri=openai_plan.REDIRECT_URI,
+                state=str(pending.get("state") or ""),
+            )
+            credential = openai_plan.credential_from_sign_in(payload)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        account = _provision_and_register(
+            request,
+            store=store,
+            secrets=secrets_store,
+            owner_tenant=owner,
+            label=str(pending.get("label") or ""),
+            provider=openai_plan.PROVIDER,
+            lend_to=list(pending.get("lend_to") or ()),
+            credential_payload=openai_plan.serialise_plan(credential),
+            access_token=openai_plan.published_value(credential),
+            organisation=credential.organisation,
+        )
+        ref.delete()
+        return {
+            "account": account_to_api(account),
+            "registered": organisation_line(account.account_id, credential.organisation),
+            "organisation": _organisation_to_api(account),
+            "expires_at": credential.expires_at.isoformat(),
+            "note": "stored write-only; no route in this service returns key material",
+        }
     #: The 403 code for "the caller is not the tenant that started this
     #: sign-in". swarm-api's BrokerClient matches this exact string.
     SIGN_IN_OWNER_MISMATCH = "sign_in_owner_mismatch"
@@ -3563,9 +3633,20 @@ def create_app(
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
 
+        provider = _account_provider(body.provider)
         verifier = new_verifier()
         state = new_state()
-        url = build_authorize_url(state=state, code_challenge=challenge_for(verifier))
+        if provider == openai_plan.PROVIDER:
+            # A ChatGPT plan (#2688): its client's one registered redirect is
+            # the person's OWN machine (`localhost:1455`, measured), where
+            # `sc account add --provider openai` listens and catches the code.
+            url = openai_plan.build_authorize_url(
+                state=state, code_challenge=challenge_for(verifier)
+            )
+            redirect_uri = openai_plan.REDIRECT_URI
+        else:
+            url = build_authorize_url(state=state, code_challenge=challenge_for(verifier))
+            redirect_uri = OAUTH_REDIRECT_URI
 
         request.app.state.broker.db.collection(PENDING_AUTH).document(state).set(
             {
@@ -3573,7 +3654,7 @@ def create_app(
                 "verifier": verifier,
                 "owner_tenant": body.owner_tenant,
                 "label": body.label,
-                "provider": body.provider,
+                "provider": provider,
                 "lend_to": list(body.lend_to),
                 "created_at": datetime.now(timezone.utc),
             }
@@ -3582,6 +3663,11 @@ def create_app(
             "authorize_url": url,
             "state": state,
             "expires_in_seconds": int(PENDING_TTL.total_seconds()),
+            # Which sign-in this is and where its browser lands, so a client
+            # can tell a Claude sign-in from a plan's -- and refuse to wait on
+            # a localhost callback a Claude page will never make.
+            "provider": provider,
+            "redirect_uri": redirect_uri,
         }
 
     @app.post("/v1/accounts/exchange", status_code=201)
@@ -3696,6 +3782,12 @@ def create_app(
         # The pending record decides the tenant, never the request: `owner`
         # above is read off it, and the caller has just been proven to be it.
 
+        if str(pending.get("provider") or "") == openai_plan.PROVIDER:
+            return _finish_plan_sign_in(
+                request, ref=ref, pending=pending, owner=owner, code=code,
+                store=store, secrets_store=secrets_store,
+            )
+
         try:
             payload = request.app.state.token_endpoint.redeem(
                 code=code,
@@ -3770,6 +3862,34 @@ def create_app(
         # the operator logs in once. Refusing it here costs them one error
         # message; accepting it costs them a pool entry that looks healthy and
         # dies silently at its first expiry.
+        provider = _account_provider(body.provider)
+        if provider == openai_plan.PROVIDER:
+            # A ChatGPT plan's pair, or codex's own auth.json (#2688). Its
+            # organisation is what the pasted id_token says, when it carries one.
+            try:
+                plan = openai_plan.parse_plan_credential(body.credential)
+            except CredentialError as exc:
+                raise BrokerValidationError(str(exc)) from None
+            account = _provision_and_register(
+                request,
+                store=store,
+                secrets=secrets,
+                owner_tenant=body.owner_tenant,
+                label=body.label,
+                provider=provider,
+                lend_to=body.lend_to,
+                credential_payload=openai_plan.serialise_plan(plan),
+                access_token=openai_plan.published_value(plan),
+                organisation=plan.organisation,
+            )
+            return {
+                "account": account_to_api(account),
+                "registered": organisation_line(account.account_id, plan.organisation),
+                "organisation": _organisation_to_api(account),
+                "expires_at": plan.expires_at.isoformat(),
+                "note": "stored write-only; no route in this service returns key material",
+            }
+
         try:
             credential = parse_credential(body.credential)
         except CredentialError as exc:

@@ -2531,7 +2531,11 @@ fixer by hand and push the fix-up from a laptop.
    restates other jobs, comes last. The whole is 16 KiB at most
    (`LOG_EXCERPT_MAX_BYTES`). The merge step's own fix rounds build their
    excerpt by the same rules in Python (`swarm_api/issueci.py`,
-   `_check_section`; CIFIX-EXCERPT, part of #1914). `redact` is a pattern list
+   `_check_section`; CIFIX-EXCERPT, part of #1914), and go further: a red
+   gate's workflow run is read and its failed leaf jobs are excerpted ahead
+   of it, each section names the events it failed on, and a job red on push
+   but green on pull_request at one sha is called out as a branch behind a
+   fix on main: merge main (#2937). `redact` is a pattern list
    and not a boundary (its own header says so); what makes a leak survivable
    is that the excerpt is stored as an agent's input, which the API serves
    masked.
@@ -5002,7 +5006,16 @@ is given (CLAUDE.md, and the claude-code runner's `RELATED_TESTS_NOTE` when the
 checkout carries this script): related tests through this script; never vitest
 without file arguments; never pytest over a whole directory or with `-n auto`
 across the suite; never parallel shards or background batches polled with
-sleep; `scripts/changed-guards.sh` once at the end.
+sleep. It used to end "`scripts/changed-guards.sh` once at the end". Since
+2026-11-01 (owner decision, #2981) an agent on a runner with the worker's
+pre-publish gate (claude-code, `claude-code-lightpanda` included) does not run
+`scripts/changed-guards.sh`: the gate runs it after the agent's turn and hands
+back what fails, and the note says so. Measured on the code intelligence
+experiment: on a 33-file patch the script selected 645-681 test files, the
+agents' own runs hit their 10-minute command limit (about ten minutes a
+step), and the gate then ran the same guards again for 65-77 minutes. A
+runner without the gate (codex) keeps `scripts/changed-guards.sh` once at the
+end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
 
 **What is related** (`scripts/lib/related_tests.py`, standard library only).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the

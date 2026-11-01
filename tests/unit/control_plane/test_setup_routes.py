@@ -64,6 +64,8 @@ SIGNING_VERSION = (f"projects/{PROJECT}/locations/us-central1/keyRings/swarm-dev
 #: Every `/v1/admin/setup/*` route, with a body that passes validation.
 ROUTES: list[tuple[str, str, Any]] = [
     ("GET", "/v1/admin/setup", None),
+    ("POST", "/v1/admin/setup/sign-in-client", {"client_id": "1-a.apps.googleusercontent.com",
+                                                "client_secret": "x"}),
     ("POST", "/v1/admin/setup/github-app/manifest", {}),
     ("POST", "/v1/admin/setup/github-app/conversion", {"code": "c0de", "state": "st4te"}),
     ("GET", "/v1/admin/setup/github-app/installation", None),

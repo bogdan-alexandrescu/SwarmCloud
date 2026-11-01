@@ -1095,3 +1095,16 @@ def test_a_clean_pull_request_is_read_as_before(db, wake_client, github):
     assert _wait(db)["wake_reason"] == "red"
     assert _check_reads(github) != []
     assert _conflict_workflows(db) == []
+
+
+def test_rerun_targets_resolve_runs_through_forgechecks_workflow_run_of():
+    # #2937 moved `_workflow_run_of` to `forgechecks.workflow_run_of`, which
+    # the CI excerpt uses too; the re-run's targets read the same.
+    from swarm_api import forgechecks
+    from swarm_api.forgechecks import RED, CiReading
+
+    assert mergewake.workflow_run_of is forgechecks.workflow_run_of
+    url = "https://github.com/acme/widgets/actions/runs/88/job/2"
+    reading = CiReading(state=RED, failing_runs=[
+        {"id": 1, "workflow_run_id": 77}, {"id": 2, "details_url": url}, {"id": 3}])
+    assert mergewake._rerun_targets(reading, [1, 2, 3]) == ([77, 88], [3])

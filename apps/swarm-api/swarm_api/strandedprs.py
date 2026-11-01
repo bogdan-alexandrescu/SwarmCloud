@@ -992,7 +992,7 @@ def _judge(
                 rules_by_base[pull.base_ref] = writer.branch_rules(pref, pull.base_ref, token)
             ci = ci_facts(
                 rules_by_base.get(pull.base_ref, []),
-                writer.check_runs(pref, head, token),
+                writer.check_runs(pref, head, token, head_ref=pull.head_ref),
                 writer.commit_statuses(pref, head, token),
             )
         except ForgeRateLimited:

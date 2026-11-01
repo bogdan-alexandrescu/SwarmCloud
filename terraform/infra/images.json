@@ -29,6 +29,10 @@
     "swarm-typesafe-fwd": {
       "resources": [],
       "outputs": ["swarm_typesafe_fwd_manifest"]
+    },
+    "swarm-voice": {
+      "resources": [],
+      "outputs": ["swarm_voice_manifest"]
     }
   }
 }

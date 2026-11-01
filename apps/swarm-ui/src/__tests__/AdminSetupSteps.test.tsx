@@ -229,11 +229,11 @@ describe('Admin › Setup step panels', () => {
     expect(code.match(/[a-z_]+=/g)).toEqual(['deployment_url='])
   })
 
-  it('draws the steps in the confirmed order: GitHub App, first team, Claude accounts, verify, send', async () => {
+  it('draws the steps in the confirmed order: sign-in client, GitHub App, first team, Claude accounts, verify, send', async () => {
     await mountSteps(state({ accounts: {}, finished: null }))
     const order = Array.from(document.querySelectorAll('[data-step]')).map((el) => el.getAttribute('data-step'))
     // MUTATION: put the accounts before the team, as the P1-B frames drew them.
-    expect(order.filter((k) => k !== 'addons')).toEqual(['cloud', 'github', 'team', 'accounts', 'verify', 'send'])
+    expect(order.filter((k) => k !== 'addons')).toEqual(['sign-in-client', 'cloud', 'github', 'team', 'accounts', 'verify', 'send'])
   })
 
   it('says swarm install is not running when the lease is stale, and keeps the steps usable', async () => {

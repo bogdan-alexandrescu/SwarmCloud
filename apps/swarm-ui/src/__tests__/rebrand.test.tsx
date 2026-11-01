@@ -298,7 +298,9 @@ describe('the Sky spine shell', () => {
     const { LiveApp } = await liveApp()
     render(<LiveApp />)
     // MUTATION: move `admin` in SPINE and it leaves its place after Capacity.
-    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Help', 'Profile']))
+    // Voice it follows Admin: a platform admin is who the identity read can name
+    // as the person Voice it is open to until swarm-api's session routes say so.
+    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Voice it', 'Help', 'Profile']))
   })
 
   it('lists the open section\'s pages in the panel, with the open page\'s children', async () => {

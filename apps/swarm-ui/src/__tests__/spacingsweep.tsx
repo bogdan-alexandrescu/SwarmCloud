@@ -485,8 +485,11 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
     centred: ['button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred'],
     persona: 'platform-admin',
   },
+  // Voice it's three panes ride Admin › Setup's slice: they render their body
+  // only for the person Voice it is open to, a platform admin until swarm-api's
+  // session routes say otherwise (voice/Section.tsx `voiceItOpen`).
   {
-    name: 'admin-setup', routes: ['admin/setup', 'admin/health', 'admin/people', 'admin/workspaces'], floor: 50,
+    name: 'admin-setup', routes: ['admin/setup', 'admin/health', 'admin/people', 'admin/workspaces', 'voice/talk', 'voice/projects', 'voice/preferences'], floor: 50,
     centred: ['span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred'],
     persona: 'platform-admin',
   },

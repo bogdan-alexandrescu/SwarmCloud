@@ -21,8 +21,10 @@ import {
   blockerCeiling,
   ceilingCopy,
   needsAPerson,
+  unitsIn,
   type Ceiling,
   type ProfileBlocker,
+  type Weight,
 } from './types'
 
 /**
@@ -150,7 +152,7 @@ export type Verdict = Ceiling
 
 export function blockerVerdict(
   b: { reason: string; pool?: string; limit?: unknown },
-  units: number | null,
+  units: Weight,
 ): Verdict {
   return blockerCeiling(b, units)
 }
@@ -167,7 +169,7 @@ export function verdictNeedsAPerson(v: Verdict): boolean {
  */
 export function verdictCopy(
   b: { reason: string; pool?: string; limit?: unknown; active?: unknown },
-  units: number | null,
+  units: Weight,
   subject: string = b.pool ?? 'This pool',
 ): string | null {
   return ceilingCopy(b, subject, units)
@@ -224,7 +226,7 @@ const CEILING_TAG: Readonly<Record<Verdict, { cls: string; word: string; title: 
  * this file stopped -- so a pool capped at zero was still `full` there after
  * it had become `limit 0` here. One definition, two callers.
  */
-export function CeilingTag({ blocker, units = null }: { blocker: ProfileBlocker; units?: number | null }) {
+export function CeilingTag({ blocker, units = null }: { blocker: ProfileBlocker; units?: Weight }) {
   const tag = CEILING_TAG[blockerVerdict(blocker, units)]
   return (
     <span className={`tag ${tag.cls}`} title={tag.title}>
@@ -246,12 +248,13 @@ export function CeilingTag({ blocker, units = null }: { blocker: ProfileBlocker;
  * use" is the busy reading of a pool that has nothing in it. It prints its
  * limit beside the weight it is below.
  */
-export function ceilingFigure(blocker: ProfileBlocker, units: number | null = null): string {
+export function ceilingFigure(blocker: ProfileBlocker, units: Weight = null): string {
   const ceiling = blockerVerdict(blocker, units)
   const held = `${blocker.active} unit${blocker.active === 1 ? '' : 's'} held`
   if (ceiling === 'full') return `${blocker.active} of ${blocker.limit} units in use`
   if (ceiling === 'below-units' || ceiling === 'below-units-quota') {
-    return `limit ${blocker.limit} · one agent is ${units} units · ${held}`
+    // The share in THIS pool, not the agent's size in every pool (#2950).
+    return `limit ${blocker.limit} · one agent takes ${unitsIn(units, blocker.pool)} units here · ${held}`
   }
   if (ceiling === 'limit-unset') return `no limit set · ${held}`
   return ceiling === 'paused' ? held : `limit 0 · ${held}`

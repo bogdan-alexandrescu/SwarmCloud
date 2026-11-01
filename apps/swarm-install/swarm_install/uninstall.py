@@ -148,7 +148,7 @@ STEPS: tuple[Step, ...] = (
     # swarm-api writes each team's -git slot (managed-by=swarm-api) once infra
     # runs it, so step 5 reverses infra and team too (audit 4e F7).
     Step(5, "secrets", "delete the secrets the engine and swarm-api created, the teams' forge tokens included",
-         ("secrets.", "edge.desktop-client", "github.", "infra.", "team.")),
+         ("secrets.", "edge.client-secret-container", "edge.desktop-client", "github.", "infra.", "team.")),
     Step(6, "iam", "remove the engine-made IAM bindings and the workspace worker accounts, then your "
          "impersonation grant on the deployer",
          ("bootstrap.", "identity.")),

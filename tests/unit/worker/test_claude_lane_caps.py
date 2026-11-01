@@ -127,6 +127,10 @@ def test_a_second_guard_run_with_no_edit_between_is_warned(tmp_path, command):
     warned = _warning(_hook(state, repo, command))
     assert "changed-guards.sh" in warned
     assert "no file" in warned
+    # MUTATION: tell the agent to run it again after an edit -> this fails
+    # (#2981: the worker's pre-publish gate runs it after the turn).
+    assert "pre-publish gate runs it after your turn" in warned
+    assert "run it again only after" not in warned
 
 
 @pytest.mark.parametrize("edit", ["tracked", "untracked", "commit"])

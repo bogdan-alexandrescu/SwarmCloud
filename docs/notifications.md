@@ -200,6 +200,10 @@ read (`platform_secrets.platform_secret_status`), so the two never count
 different rows, and it is reused for five minutes per reader
 (`PLATFORM_SECRETS_TTL`): it is two Secret Manager metadata calls per secret,
 and a secret's value is written by the operator's script, not in the console.
+Past those five minutes the reader's last count is still served while one
+background read refreshes it (`_refresh_platform_secrets`), so no feed waits
+for Secret Manager except the first an instance serves, and that one reads
+it beside the other sources, not after them.
 
 **"Mark all read" marks what was shown.** With nothing muted it still sets
 `all_read_at`. With a mute in force it marks only the ids shown and leaves

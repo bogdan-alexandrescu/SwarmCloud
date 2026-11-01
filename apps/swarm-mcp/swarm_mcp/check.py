@@ -508,7 +508,7 @@ def _binding(task: dict[str, Any], reads: _Reads) -> dict[str, Any]:
     if not isinstance(spec, dict):
         return {"pool": None, "source": "/v1/capacity", "note": f"the capacity read names no profile {profile!r}"}
     units = render._int_or_none(spec.get("units")) or 1
-    bound = render.binding_pool(list(spec.get("pools") or []), pools, units)
+    bound = render.binding_pool(list(spec.get("pools") or []), pools, units, spec.get("pool_units"))
     out = {"pool": bound.pool, "active": bound.active, "limit": bound.limit, "room": bound.room,
            "source": f"/v1/capacity: the pool that binds profile {profile!r} now"}
     if bound.paused:

@@ -19,6 +19,7 @@ import pytest
 from swarm_api import qualitygates
 
 from .conftest import auth_header
+from .test_settings_mac import configure, new_key, reference_verifies
 from .test_qa_targets import (  # noqa: F401 - fixtures are used by name
     CAROL_TENANT,
     api_context,
@@ -115,3 +116,82 @@ def test_a_stored_value_that_is_not_true_reads_off(planted):
     assert qualitygates.stored_jev({"quality_gates": {"jev": planted}}) is False
     assert qualitygates.stored_jev({"quality_gates": planted}) is False
     assert qualitygates.stored_jev({"quality_gates": {"jev": True}}) is True
+
+
+# -- signed (contract request 128) ---------------------------------------------
+
+
+def test_every_write_signs_the_block_and_a_copy_onto_another_workspace_does_not_verify(
+        client, db, seeded, api_context):
+    key = new_key()
+    configure(api_context, settings_key=key)
+    assert _put(client, "eng", "root", {"jev": True}).status_code == 200
+    block = db.docs["workspace_settings/eng"]["quality_gates"]
+    # MUTATION: drop the writer's block_mac and there is no `mac` to verify.
+    assert reference_verifies(key, "eng", "quality_gates", block)
+    assert not reference_verifies(key, "research", "quality_gates", block)
+    assert not reference_verifies(key, "eng", "quality_gates", {**block, "jev": False})
+    # Off again is signed too, over the new value.
+    assert _put(client, "eng", "root", {"jev": False}).status_code == 200
+    block = db.docs["workspace_settings/eng"]["quality_gates"]
+    assert block["jev"] is False and reference_verifies(key, "eng", "quality_gates", block)
+
+
+def test_a_forged_on_reads_off_for_a_workspace_cut_over(client, db, seeded, api_context):
+    configure(api_context, settings_key=new_key(), settings_mac_tenants=("eng",))
+    db.docs["workspace_settings/eng"] = {"tenant_id": "eng", "quality_gates": {"jev": True}}
+    body = client.get(_url("eng"), headers=auth_header("alice")).json()
+    # MUTATION: read the block as stored and a forged "on" is served as on.
+    assert body["quality_gates"] == {"jev": False}
+
+
+def test_saving_the_same_value_over_an_unsigned_block_signs_it_without_an_audit_row(
+        client, db, seeded, api_context):
+    key = new_key()
+    configure(api_context, settings_key=key)
+    db.docs["workspace_settings/eng"] = {"tenant_id": "eng", "quality_gates": {"jev": True}}
+    assert _put(client, "eng", "root", {"jev": True}).status_code == 200
+    block = db.docs["workspace_settings/eng"]["quality_gates"]
+    # MUTATION: return on an unchanged value alone and the block stays unsigned.
+    assert reference_verifies(key, "eng", "quality_gates", block)
+    assert _audit(db) == []
+    # Signed now: the same value again writes nothing.
+    before = dict(block)
+    assert _put(client, "eng", "root", {"jev": True}).status_code == 200
+    assert db.docs["workspace_settings/eng"]["quality_gates"] == before
+
+
+def test_a_deployment_with_no_key_writes_no_mac(client, db, seeded):
+    assert _put(client, "eng", "root", {"jev": True}).status_code == 200
+    assert "mac" not in db.docs["workspace_settings/eng"]["quality_gates"]
+
+
+# -- on request (the owner's pick, 2026-11-01) ---------------------------------
+
+
+def test_on_request_is_accepted_signed_and_served(client, db, seeded, api_context):
+    """The third value: only a step whose signed workflow switch says
+    `quality_gates: on` runs the gates. Signed exactly as `true` is: the MAC
+    covers `jev` whatever its value (`specsign.canonical_settings_block`
+    projects the stored value of every key SETTINGS_MAC_FIELDS lists)."""
+    key = new_key()
+    configure(api_context, settings_key=key)
+    response = _put(client, "eng", "root", {"jev": "on_request"})
+    # MUTATION: keep `jev: StrictBool` and this is 422.
+    assert response.status_code == 200, response.text
+    assert response.json()["quality_gates"] == {"jev": "on_request"}
+    block = db.docs["workspace_settings/eng"]["quality_gates"]
+    assert block["jev"] == "on_request"
+    assert reference_verifies(key, "eng", "quality_gates", block)
+    assert not reference_verifies(key, "eng", "quality_gates", {**block, "jev": True})
+    assert qualitygates.stored_jev(db.docs["workspace_settings/eng"], tenant_id="eng",
+                                   mac=None) == "on_request"
+    (row,) = _audit(db)
+    assert row["detail"]["from"] is False and row["detail"]["to"] == "on_request"
+
+
+@pytest.mark.parametrize("value", ["on-request", "ON_REQUEST", "request", "always"])
+def test_no_other_word_is_accepted(client, db, seeded, value):
+    response = _put(client, "eng", "root", {"jev": value})
+    assert response.status_code == 422, response.text
+    assert "workspace_settings/eng" not in db.docs

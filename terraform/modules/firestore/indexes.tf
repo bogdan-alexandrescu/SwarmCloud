@@ -208,6 +208,22 @@ locals {
       ]
     }
 
+    # GET /v1/notifications (lane LOAD-SPEED-NOTIFICATIONS, part of #2688) --
+    # the bell's task reads in one state for one person (a personal workspace
+    # member's RUNNING and PARKED tasks), with the submitter IN the query
+    # (Store.notification_tasks), so 200 rows are 200 of theirs rather than
+    # the tenant's newest 200 filtered after. Unlabelable, as above.
+    "tasks-tenant-submitter-state-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "submitted_by", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
     # GET /v1/admin/failures (U19) -- FAILED tasks across every tenant, newest
     # first. The one task listing with no tenant filter (full admin only), so
     # no tenant-leading index can serve it. No labels possible, as above

@@ -179,11 +179,12 @@ from . import verdict as verdict_mod
 from . import workspace as workspace_mod
 from .accountlease import (
     ACCOUNTS_FULL,
-    ACCOUNT_TOKEN_ENV,
     ACCOUNT_UNREADABLE,
     BROKER_REFUSED,
     NO_RECENT_READING,
+    PLAN_EXPIRY_MARKER,
     POOL_PAUSED,
+    TENANT_KEY_FIRST,
     AccountBroker,
     AccountUnreadable,
     Assignment,
@@ -193,6 +194,7 @@ from .accountlease import (
     NoAccountAvailable,
     ReadingForwarder,
     credential_env_from_account,
+    takes_account,
 )
 from .checkpoint import (
     ARCHIVE_NAME,
@@ -369,6 +371,16 @@ MAX_IN_WORKER_RETRIES = 3
 #: forever would turn one bad account into an attempt that never fails and
 #: never finishes, holding its lease the whole time.
 MAX_CREDENTIAL_RELOADS = 2
+
+#: How many times an attempt on a ChatGPT plan may reload its account because
+#: the codex runner stopped itself before the access token's hour (part of
+#: #2688; `runners.codex.EXPIRY_MARGIN_SECONDS`). A plan token lives about an
+#: hour and the longest profile timeout is four hours (14,400 s), so a run
+#: needs at most five; eight leaves room for a resumed run's shorter first
+#: token. Past it the stop is judged as a refusal, MAX_CREDENTIAL_RELOADS and
+#: the dead-token move included, so a broker that never refreshes cannot keep
+#: an attempt restarting.
+MAX_EXPIRY_RELOADS = 8
 
 #: How long to park when the account pool has nothing and cannot say when it
 #: will. Used ONLY as the fallback: when the broker reports the instant the
@@ -692,6 +704,15 @@ PR_BODY_FILE = "pr-body.md"
 #: `prepublish.PR_SECTION_HEADING`, restated because the runner never imports
 #: the worker; tests/unit/worker/test_prepublish_gate.py holds them equal).
 PREPUBLISH_SECTION_FILE = "prepublish-checks.md"
+#: The runner's deadline, an epoch instant (`prepublish.RUNNER_DEADLINE_ENV`,
+#: restated like the names above; test_prepublish_deadline.py holds them equal).
+RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
+#: The task document's record of the `timeout_seconds` its spec asked for, when
+#: the API lowered it to the profile's cap (requested of swarm-api in #2981),
+#: and the runner's name for it (`cliagent.TIMEOUT_ASKED_ENV`, held equal by
+#: test_prepublish_deadline.py).
+TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
+TIMEOUT_ASKED_ENV = "SWARM_TIMEOUT_ASKED_SECONDS"
 PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
 PREPUBLISH_SECTION_MAX_CHARS = 20000
 #: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
@@ -1676,6 +1697,9 @@ class Worker:
         # ---- STEPS 7-9: run the child, supervised -----------------------
         attempt_number = 0
         credential_reloads = 0
+        # The codex runner's own stops before its plan token's hour, counted
+        # apart from the refusals (part of #2688).
+        expiry_reloads = 0
         while True:
             attempt_number += 1
             result = self._run_child_supervised(child_env)
@@ -1702,7 +1726,22 @@ class Worker:
                 # holds the replacement; re-reading it costs one API call and
                 # saves the attempt.
                 refusal = self._credential_refusal()
-                if refusal is not None and self._account is not None:
+                # A SCHEDULED RELOAD, NOT A REFUSAL (part of #2688). The codex
+                # runner stopped itself before its ChatGPT plan's access token
+                # reached its hour (`runners.codex.ExpiryStop`): nothing
+                # refused the account, so no auth error goes on its health
+                # record, the dead-token test is not asked (the broker may not
+                # have written the successor yet, and a token still valid for
+                # minutes is not dead) and the bounded refusal reloads are not
+                # spent. It has its own bound, MAX_EXPIRY_RELOADS; past it the
+                # stop is judged as any refusal is.
+                scheduled = (
+                    refusal is not None
+                    and self._account is not None
+                    and refusal.get("marker") == PLAN_EXPIRY_MARKER
+                    and expiry_reloads < MAX_EXPIRY_RELOADS
+                )
+                if refusal is not None and self._account is not None and not scheduled:
                     # An auth error on the held account, for its health record
                     # (#2302); every refusal, the reloaded ones included.
                     self.control.report_account_error(
@@ -1728,8 +1767,13 @@ class Worker:
                             child_env = moved
                             attempt_number -= 1
                             continue
-                if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
-                    credential_reloads += 1
+                if refusal is not None and (
+                    scheduled or credential_reloads < MAX_CREDENTIAL_RELOADS
+                ):
+                    if scheduled:
+                        expiry_reloads += 1
+                    else:
+                        credential_reloads += 1
                     # RESUMED, NOT STARTED AGAIN (#626). A restart from the
                     # prompt threw away everything the agent had done -- 26
                     # restarts and ~169 agent-minutes in the 2026-10-05
@@ -9855,6 +9899,16 @@ class Worker:
         )
         return memory.git_token_refusal
 
+    def _timeout_asked_env(self) -> dict[str, str]:
+        """`TIMEOUT_ASKED_ENV` when the task document says its spec asked for
+        more time than the step was given (#2981), so the runner records the
+        clamp in `limits.clamped`; empty otherwise. Only ever a record: the
+        limit is `cfg.timeout_seconds`, never this (invariant 10)."""
+        asked = (self._task or {}).get(TIMEOUT_ASKED_FIELD)
+        if isinstance(asked, bool) or not isinstance(asked, int):
+            return {}
+        return {TIMEOUT_ASKED_ENV: str(asked)} if asked > self.cfg.timeout_seconds else {}
+
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
         assert ws is not None
@@ -9887,6 +9941,16 @@ class Worker:
             # a first start is told its whole limit: the supervision loop, not
             # this figure, is what kills at the deadline. Never below 1 s.
             TIMEOUT_ENV: str(max(1, math.ceil(self._runner_deadline - time.monotonic()))),
+            # THE SAME DEADLINE AS AN INSTANT (#2981). The figure above is read
+            # when this env is built, and a runner counts it from its own start
+            # -- the claude-code runner only over its CLI's own run time -- so
+            # the setup between (the issue fetch, the context pack: ~18 min on
+            # task_2518ef3904ed47d0ac52) was counted nowhere, and its
+            # pre-publish gate was still starting guard shards when this loop
+            # killed it at `_runner_deadline`. Wall-clock epoch seconds: the
+            # worker and its runner share the container's clock.
+            RUNNER_DEADLINE_ENV: f"{time.time() + self._runner_deadline - time.monotonic():.3f}",
+            **self._timeout_asked_env(),
             GRACE_ENV: str(self.cfg.termination_grace_seconds),
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
@@ -10068,6 +10132,9 @@ class Worker:
             if spec is None or spec.name != "claude-code":
                 self._gates_env = {}
             else:
+                # The block's MAC was checked by the scheduler, which holds
+                # the settings key; its verdict is in this job's environment.
+                self._gates_route = qualitygates_mod.GatesVerdict(os.environ)
                 self._gates_env = qualitygates_mod.prepare(
                     db=self.db,
                     client=self.secret_client,
@@ -10078,6 +10145,10 @@ class Worker:
                     secret_env_names=tuple(profile.secrets or ()),
                     inject=self.typesafe.on,
                     shim_file=self.typesafe.shim_file,
+                    verdict=self._gates_route,
+                    # The signed workflow switch (2026-11-01), which only
+                    # narrows what the stored, signed setting allows.
+                    switch=self._dispatch_block().get(qualitygates_mod.SWITCH),
                 )
         return dict(self._gates_env)
 
@@ -10086,17 +10157,50 @@ class Worker:
         one RUNNING mark, cause `quality_gate`, when jev-belay blocked a stop
         or jev-enforce flagged a rule -- counts only, never text -- so a wave
         can compare first-CI-red and NOT_YET rates with the switch on and
-        off. The key file is removed. Never raises."""
+        off. The key file is removed. A stored "on" the scheduler did not
+        vouch for is `{"jev": false, "refused": <why>}`. Never raises.
+
+        A step whose signed dispatch block set a workflow switch (2026-11-01)
+        also records each switch, its value and the deciding source: the
+        gates' under `quality_gates.switch`, the graph's and the judgments'
+        under `graphstage.SWITCHES_FIELD`, which the experiment reads."""
+        self._record_switches(summary)
+        record = dict(getattr(getattr(self, "_gates_route", None), "record", None) or {})
         if not self._gates_env:
+            route = getattr(self, "_gates_route", None)
+            refused = getattr(route, "refused", None)
+            if isinstance(refused, str):
+                summary[qualitygates_mod.SUMMARY_KEY] = {"jev": False, "refused": refused}
+            if record:
+                summary.setdefault(qualitygates_mod.SUMMARY_KEY, {"jev": False})["switch"] = record
             return
         try:
             counts = qualitygates_mod.finish(self._gates_env)
         except Exception as exc:
             self.log.warning("could not read the quality gates' counts", error=type(exc).__name__)
             return
-        summary[qualitygates_mod.SUMMARY_KEY] = {"jev": True, **(counts or {})}
+        summary[qualitygates_mod.SUMMARY_KEY] = {"jev": True, **(counts or {}),
+                                                 **({"switch": record} if record else {})}
         if qualitygates_mod.worth_an_event(counts):
             self._emit_startup_mark(qualitygates_mod.EVENT_CAUSE, dict(counts or {}))
+
+    def _record_switches(self, summary: dict[str, Any]) -> None:
+        """The workflow switches' record (`graphstage.switches_summary`), only
+        when the signed dispatch block set one, and the judgments' key file
+        removed after the agent (`judge.attempt.finish`). Never raises."""
+        from .judge import attempt as judge_attempt
+
+        try:
+            dispatch = self._dispatch_block()
+            work = getattr(self, "_switch_work", None)
+            if work is not None:
+                switches = graphstage_mod.switches_summary(work, dispatch)
+                if switches:
+                    summary[graphstage_mod.SWITCHES_FIELD] = switches
+            if graphstage_mod.switch_of(dispatch, judge_attempt.SWITCH) == judge_attempt.ON:
+                judge_attempt.finish(self._graph_env or {})
+        except Exception as exc:  # noqa: BLE001 -- a record is never worth the attempt
+            self.log.warning("could not record the workflow switches", error=type(exc).__name__)
 
     def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
         """The staged graph snapshot's variables (docs/design/context-quality.md
@@ -10110,6 +10214,7 @@ class Worker:
         into a stand-down that touches neither the lease nor the task, as the
         secrets release's 409 is."""
         if self._graph_env is None:
+            self._switch_work = ws.work
             try:
                 self._graph_env = graphstage_mod.prepare(
                     ws.work, profile_name=self.cfg.runner_profile,
@@ -10129,7 +10234,15 @@ class Worker:
                     # is asked only when a fetch is needed, and never when
                     # this worker must not hold the token at all. This runs
                     # before the agent starts.
-                    forge_token=None if self._git_token_refusal() else self._git_token)
+                    forge_token=None if self._git_token_refusal() else self._git_token,
+                    # The signed workflow switches (2026-11-01) and, for a
+                    # step whose `jev_judgments` is on, the WORKSPACE's
+                    # TypeSafe key, resolved as the quality gates resolve it.
+                    dispatch=self._dispatch_block(),
+                    jev_key=lambda: jevkey_mod.resolve_workspace(
+                        db=self.db, client=self.secret_client,
+                        tenant_id=self.cfg.tenant_id, logger=self.log,
+                        call_options=self.control.call_options("tenant")))
             except graph_ticket_mod.GraphTicketFenced as exc:
                 raise FencedWriteRefused(
                     self.cfg.generation, -1, str(exc), write="graph ticket"
@@ -10241,7 +10354,7 @@ class Worker:
             return None
         if self._account_broker is None:
             return self._decline_pool("no_broker_configured", profile.provider)
-        if ACCOUNT_TOKEN_ENV not in (profile.secrets or ()):
+        if not takes_account(profile.provider, profile.secrets):
             self.log.info(
                 "runner profile does not accept a subscription token; using the "
                 "tenant credential rather than the account pool",
@@ -10249,6 +10362,16 @@ class Worker:
                 declared=sorted(profile.secrets or ()),
             )
             return self._decline_pool("profile_takes_no_subscription", profile.provider)
+        if profile.provider in TENANT_KEY_FIRST and self._tenant_supplies_key(profile.provider):
+            # A codex step leases a ChatGPT plan only when the tenant supplies
+            # no OPENAI_API_KEY of its own (BGD, 2026-11-01, part of #2688): a
+            # tenant paying for metered access keeps running on it.
+            self.log.info(
+                "the tenant supplies its own API key; using it rather than the "
+                "account pool",
+                provider=profile.provider,
+            )
+            return self._decline_pool("tenant_supplies_api_key", profile.provider)
 
         provider = profile.provider
         cause = POOL_UNANSWERED[0]
@@ -10337,6 +10460,18 @@ class Worker:
             },
         )
         return outcome
+
+    def _tenant_supplies_key(self, provider: str | None) -> bool:
+        """Whether the tenant registered its own credential for `provider`.
+
+        The same tenant read the fallback makes (`load_tenant`, under the
+        startup budget), and the same test `resolve_credentials` refuses a
+        missing credential by: the provider in `tenant.credentials`.
+        """
+        tenant = load_tenant(
+            self.db, self.cfg.tenant_id, call_options=self.control.call_options("tenant")
+        )
+        return bool(provider) and provider in (tenant.credentials or ())
 
     # -- the account mid-run (S13-S15) ---------------------------------------
     def _budget_env(self) -> dict[str, str]:
@@ -10886,6 +11021,7 @@ class Worker:
                 payload,
                 secret_env_names=profile.secrets,
                 secret_name=account.secret,
+                provider=profile.provider or "anthropic",
             )
         except Exception as exc:
             raise AccountUnreadable(

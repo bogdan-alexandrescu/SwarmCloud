@@ -2011,6 +2011,98 @@ def _masked(text: str, secrets: Sequence[str]) -> str:
     return text
 
 
+#: The account kinds `sc account add` signs in to. `anthropic` is the Claude
+#: subscription pool; `openai` a ChatGPT plan for the codex runner (#2688, BGD
+#: 2026-11-01: codex runs on ChatGPT plans from a shared pool).
+ACCOUNT_PROVIDERS = ("anthropic", "openai")
+
+
+def _catch_callback(redirect_uri: str, state: str, timeout: float) -> str | None:
+    """Listen where a ChatGPT plan's sign-in lands, on THIS machine, and return
+    the authorization code its redirect carries -- or None when the port could
+    not be opened or nothing arrived in time.
+
+    The redirect is `http://localhost:1455/auth/callback`, the one the Codex
+    client registered (measured: the 127.0.0.1 form failed live). Bound to the
+    loopback interface only, it answers one request whose `state` matches and
+    refuses any other, so a page that guesses the port cannot file a code. The
+    code is returned, never printed; the page says only that the sign-in
+    reached the terminal.
+    """
+    import http.server
+    import time
+    from urllib.parse import parse_qs, urlsplit
+
+    target = urlsplit(redirect_uri)
+    caught: dict[str, str] = {}
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 -- http.server's name
+            asked = urlsplit(self.path)
+            query = parse_qs(asked.query)
+            code = (query.get("code") or [""])[0]
+            if asked.path != target.path or (query.get("state") or [""])[0] != state or not code:
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"This is not the sign-in sc started. Nothing was sent.\n")
+                return
+            caught["code"] = code
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Signed in. Return to your terminal; you can close this tab.\n")
+
+        def log_message(self, *args):  # the request line carries the code
+            return
+
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", target.port or 80), Callback)
+    except OSError:
+        return None
+    server.timeout = 1.0
+    deadline = time.monotonic() + max(1.0, timeout)
+    try:
+        while not caught and time.monotonic() < deadline:
+            server.handle_request()
+    finally:
+        server.server_close()
+    return caught.get("code")
+
+
+def _code_from_address(pasted: str, state: str) -> str:
+    """The code from the address a browser landed on, pasted when the local
+    port could not be opened. Refused when its `state` is another sign-in's."""
+    from urllib.parse import parse_qs, urlsplit
+
+    query = parse_qs(urlsplit(pasted.strip()).query)
+    if not query:
+        return pasted.strip()
+    if (query.get("state") or [""])[0] != state:
+        raise SwarmError("that address belongs to a different sign-in; nothing was registered")
+    return (query.get("code") or [""])[0]
+
+
+def _plan_sign_in_code(started: dict, state: str) -> str:
+    """Wait for a ChatGPT plan's callback on this machine, or ask for the
+    address the browser landed on when the port is taken."""
+    redirect = started.get("redirect_uri")
+    if not isinstance(redirect, str) or not redirect.startswith("http://localhost:"):
+        raise SwarmError("the API named no local address for the ChatGPT sign-in; nothing was registered")
+    expires = started.get("expires_in_seconds")
+    timeout = float(expires) if isinstance(expires, int) and expires > 0 else 900.0
+    sys.stderr.write("waiting for the sign-in to come back to this machine...\n")
+    code = _catch_callback(redirect, state, timeout)
+    if code is None:
+        sys.stderr.write(
+            f"could not receive the sign-in on {redirect} (the port is in use, or "
+            "it timed out). If your browser shows a page that failed to load, "
+            "paste its whole address.\n"
+        )
+        code = _code_from_address(_read_code("paste the address (it is not echoed): "), state)
+    return code
+
+
 def cmd_account_add(client: SwarmClient, args, out) -> int:
     """Add a subscription account through the API's OWN browser sign-in.
 
@@ -2034,13 +2126,27 @@ def cmd_account_add(client: SwarmClient, args, out) -> int:
     if not label:
         raise SwarmError("`--label` names the account in the pool; give one. Nothing was sent")
     lend_to = [t.strip() for t in (args.lend_to or []) if t and t.strip()]
-    started = client.request(
-        "POST", "/v1/accounts/authorize", payload={"label": label, "lend_to": lend_to}
-    )
+    provider = (getattr(args, "provider", None) or "anthropic").strip().lower()
+    if provider not in ACCOUNT_PROVIDERS:
+        raise SwarmError(f"--provider is one of {', '.join(ACCOUNT_PROVIDERS)}. Nothing was sent")
+    payload: dict[str, Any] = {"label": label, "lend_to": lend_to}
+    if provider != "anthropic":
+        # Only named when it is not the default, so a Claude add sends exactly
+        # what it always sent.
+        payload["provider"] = provider
+    started = client.request("POST", "/v1/accounts/authorize", payload=payload)
     url = started.get("authorize_url") if isinstance(started, dict) else None
     state = started.get("state") if isinstance(started, dict) else None
     if not url or not state:
         raise SwarmError("the API began no sign-in: its answer named no URL to open")
+    if provider == "openai" and started.get("provider") != "openai":
+        # An API that dropped the provider started a CLAUDE sign-in: opening
+        # it would sign the person in to the wrong service and wait forever on
+        # a callback that page never makes.
+        raise SwarmError(
+            "this deployment's API did not start a ChatGPT sign-in (its answer "
+            "names no openai provider), so nothing was opened or registered"
+        )
     opened = _open_browser(url)
     sys.stderr.write(
         ("opened your browser to sign in. " if opened else "could not open a browser. ")
@@ -2049,7 +2155,10 @@ def cmd_account_add(client: SwarmClient, args, out) -> int:
     minutes = started.get("expires_in_seconds")
     if isinstance(minutes, int):
         sys.stderr.write(f"the sign-in expires in {minutes // 60} minutes\n")
-    code = _read_code("paste the code the page shows (it is not echoed): ").strip()
+    if provider == "openai":
+        code = _plan_sign_in_code(started, state).strip()
+    else:
+        code = _read_code("paste the code the page shows (it is not echoed): ").strip()
     if not code:
         raise SwarmError("no code was pasted; nothing was registered. Run it again to start over")
     try:
@@ -5147,8 +5256,13 @@ def build_parser() -> argparse.ArgumentParser:
     am.add_argument("max_agents", metavar="N", help="1 to 50")
     _common(am, root=False)
     am.set_defaults(func=cmd_account_max_agents)
-    aa = ac_sub.add_parser("add", help="add an account by signing in to Claude in your browser")
+    aa_help = "add an account by signing in to Claude (or a ChatGPT plan) in your browser"
+    aa = ac_sub.add_parser("add", help=aa_help)
     aa.add_argument("--label", required=True, help="the account's name in the pool")
+    aa.add_argument(
+        "--provider", default="anthropic", choices=ACCOUNT_PROVIDERS,
+        help="anthropic: a Claude subscription (default); openai: a ChatGPT plan for codex",
+    )
     aa.add_argument(
         "--lend-to", action="append", default=[], metavar="TENANT",
         help="a tenant that may run on it too (repeat for several)",

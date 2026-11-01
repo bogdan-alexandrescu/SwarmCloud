@@ -95,7 +95,8 @@ def test_infra_managed_is_the_platform_and_worker_accounts_alone():
         "local.rollup_sweeper_id",
         "local.schedule_tick_id",
         "local.discovery_id",
-        "local.doctor_id]",
+        "local.doctor_id",
+        "local.voice_id]",
     ], parts
 
 

@@ -68,7 +68,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -757,8 +757,17 @@ def awaiting_input(store: Any, tenant_id: str, now: datetime, *, limit: int = IN
     """
     page = store.list_tasks(tenant_id, state=TaskState.PARKED, limit=limit,
                             submitted_by=submitted_by)
+    return open_input_steps(page.items, tenant_id, now)
+
+
+def open_input_steps(parked: Iterable[Any], tenant_id: str, now: datetime) -> list[Any]:
+    """`awaiting_input`'s filter over PARKED tasks already read, in their
+    order: the notification feed reads PARKED once per request and shares it
+    between this and its hand-offs (lane LOAD-SPEED-NOTIFICATIONS). Checks
+    the tenant and the state again, so a task read elsewhere is held to the
+    same rule (invariant 9)."""
     open_steps = []
-    for task in page.items:
+    for task in parked:
         if task.tenant_id != tenant_id or task.state != TaskState.PARKED \
                 or task.park_reason != ParkReason.AWAITING_INPUT \
                 or task.cancel_requested or not await_input_declaration(task):
@@ -844,7 +853,27 @@ def _live_merge(db: Any, doc: Mapping[str, Any]) -> bool:
     """Whether a pending merge record still has a run waiting at its head."""
     subject = doc.get("subject") or {}
     snap = db.collection(RUNS_COLLECTION).document(str(subject.get("run_id"))).get()
-    data = snap.to_dict() if snap.exists else None
+    return _merge_run_waits(doc, snap.to_dict() if snap.exists else None)
+
+
+def live_merges(db: Any, docs: Iterable[Mapping[str, Any]]) -> set[str]:
+    """The approval ids among pending merge `docs` that `_live_merge` keeps,
+    their runs read in one batched `get_all` rather than one read per record
+    (the notification feed, lane LOAD-SPEED-NOTIFICATIONS). Reads only."""
+    merges = [d for d in docs if d.get("kind") == MERGE]
+    if not merges:
+        return set()
+    runs = db.collection(RUNS_COLLECTION)
+    found: dict[str, dict[str, Any]] = {}
+    for snap in db.get_all([runs.document(str((d.get("subject") or {}).get("run_id")))
+                            for d in merges]):
+        if snap.exists:
+            found[snap.id] = snap.to_dict() or {}
+    return {str(d.get("approval_id")) for d in merges
+            if _merge_run_waits(d, found.get(str((d.get("subject") or {}).get("run_id"))))}
+
+
+def _merge_run_waits(doc: Mapping[str, Any], data: Mapping[str, Any] | None) -> bool:
     if not data or data.get("tenant_id") != doc.get("tenant_id"):
         return False
     head = ((data.get("pull_request") or {}).get("head_sha"))
