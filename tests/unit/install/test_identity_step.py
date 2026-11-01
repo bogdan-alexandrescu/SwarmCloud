@@ -383,7 +383,7 @@ def test_groups_reader_role_assigned_after_typed_approval(tmp_path: Path, pages:
     rig = Rig(tmp_path / "refused")
     _seed(rig)
     result = rig.engine([identity.GroupsReaderRoleStep(
-        lambda: gcp, Answers(identity_groups_reader_role=["yes"]), lambda c: FakeApi())]).run()
+        lambda: gcp, Answers(identity_groups_reader_role=["yes", "", "no"]), lambda c: FakeApi())]).run()
     assert result.exit_code == ExitCode.FAIL
     assert not gcp.called("assign_role")
 

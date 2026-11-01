@@ -92,12 +92,13 @@ def test_bootstrap_impersonation_drops_it(laptop, monkeypatch) -> None:
     sent = _Transport(monkeypatch, _ANSWER)
     deployer = bootstrap._impersonated(DEPLOYER)
     deployer.session.request("GET", f"https://cloudresourcemanager.googleapis.com/v3/projects/{PROJECT}")
-    # The generateAccessToken call (the person's credentials), then the call as the deployer.
-    assert sent.quota_projects() == [None, None]
+    # The generateAccessToken call (the person's credentials), google-auth's
+    # own lookups, then the call as the deployer: none names a quota project.
+    assert len(sent.sent) >= 2 and set(sent.quota_projects()) == {None}
 
     sent.sent.clear()
     assert bootstrap.can_mint_token(DEPLOYER) is True
-    assert sent.quota_projects() == [None]
+    assert sent.sent and set(sent.quota_projects()) == {None}
 
 
 def test_api_client_id_token_minting_drops_it(laptop, monkeypatch) -> None:
@@ -212,7 +213,7 @@ def test_remove_editor_approval_gives_up_changing_nothing() -> None:
 def test_groups_reader_approval_asks_again_then_takes_delegation(answer: str) -> None:
     ask = Answers(identity_groups_reader_role=["", answer])
     step = identity.GroupsReaderRoleStep(lambda: FakeGcp(), ask)
-    ctx = ctx_for(dry_run=False)
+    ctx = ctx_for()
     step.apply(ctx, step.plan(ctx))
     assert ctx.outputs["groups_auth"] == api_client.DELEGATION
     assert len(ask.asked) == 2 and "nothing was typed" in ask.asked[1][1] and "delegation" in ask.asked[1][1]

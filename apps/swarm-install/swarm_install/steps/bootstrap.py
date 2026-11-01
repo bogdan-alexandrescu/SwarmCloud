@@ -48,7 +48,8 @@ from typing import Any
 
 from .. import adopt, tfvars, tools
 from ..adopt import InstallGcp
-from ..api_client import deployer_email
+from ..api_client import CLOUD_PLATFORM as _CLOUD_PLATFORM
+from ..api_client import application_default, deployer_email
 from ..exitcodes import MET, UNMET
 from ..state import state_bucket
 from ..terraform import AS_PERSON, Exec, Guards, Terraform, TerraformRefused, run_pass, subprocess_exec
@@ -67,8 +68,6 @@ IMPERSONATION_WAIT_S = 600.0
 IMPERSONATION_POLL_S = 10.0
 #: The output bootstrap pass 1 records once the person can mint the deployer's tokens.
 IMPERSONABLE_KEY = "deployer_impersonable"
-
-_CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
 
 #: The platform accounts the deployer must be able to act as (lesson 23).
 PLATFORM_ACCOUNTS = ("swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-verify")
@@ -145,14 +144,14 @@ class Release:
 
 
 def _impersonated(email: str) -> InstallGcp:
-    import google.auth
     from google.auth import impersonated_credentials
     from google.auth.transport.requests import AuthorizedSession
 
-    source, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    # The source sends no carried quota project on generateAccessToken.
+    source = application_default([_CLOUD_PLATFORM])
     target = impersonated_credentials.Credentials(
         source_credentials=source, target_principal=email,
-        target_scopes=["https://www.googleapis.com/auth/cloud-platform"], lifetime=3600,
+        target_scopes=[_CLOUD_PLATFORM], lifetime=3600,
     )
     return InstallGcp(AuthorizedSession(target))
 
@@ -164,11 +163,10 @@ def can_mint_token(email: str) -> bool:
     (403 while the grant spreads) or a transport failure is False, so the
     caller polls again; missing application-default credentials raise.
     """
-    import google.auth
     from google.auth import exceptions, impersonated_credentials
     from google.auth.transport.requests import Request
 
-    source, _ = google.auth.default(scopes=[_CLOUD_PLATFORM])
+    source = application_default([_CLOUD_PLATFORM])
     target = impersonated_credentials.Credentials(
         source_credentials=source, target_principal=email, target_scopes=[_CLOUD_PLATFORM], lifetime=300,
     )

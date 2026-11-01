@@ -81,11 +81,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 from .. import api_client, secret_entry
-from ..api_client import ADMIN_ROLE, DELEGATION, ApiClient, GroupResult
+from ..api_client import ADMIN_ROLE, CLOUD_PLATFORM, DELEGATION, ApiClient, GroupResult
 from ..exitcodes import MET, UNMET, WAITING
 from ..waits import WaitSpec
 from . import Observation, Plan, open_page
-from .preflight import ASK, EMAIL, GCP, IAM, ApiError, Ask, Gcp, directory_declined, remember
+from .preflight import ASK, EMAIL, GCP, IAM, ApiError, Ask, Gcp, confirm, directory_declined, remember
 
 GROUPS_SCOPE = "https://www.googleapis.com/auth/cloud-identity.groups.readonly"
 SWARM_API_ACCOUNT = "swarm-api"
@@ -124,7 +124,7 @@ CLOUD_IDENTITY = "https://cloudidentity.googleapis.com/v1"
 #: The Admin SDK does not accept cloud-platform alone: the customer read and
 #: the role assignment carry their own scopes; groups.create takes cloud-platform.
 WORKSPACE_SCOPES = (
-    "https://www.googleapis.com/auth/cloud-platform",
+    CLOUD_PLATFORM,
     "https://www.googleapis.com/auth/admin.directory.customer.readonly",
     "https://www.googleapis.com/auth/admin.directory.rolemanagement",
 )
@@ -202,11 +202,10 @@ class IdentityGcp(Gcp):
     @property
     def session(self) -> Any:
         if self._session is None:
-            import google.auth  # lazy: no credentials needed to import the engine
-            from google.auth.transport.requests import AuthorizedSession
+            from google.auth.transport.requests import AuthorizedSession  # lazy, as application_default
 
-            credentials, _ = google.auth.default(scopes=list(WORKSPACE_SCOPES))
-            self._session = AuthorizedSession(credentials)
+            # No carried quota project: `_billed` names the install's own.
+            self._session = AuthorizedSession(api_client.application_default(WORKSPACE_SCOPES))
         return self._session
 
     def _billed(self, project: str, method: str, url: str, *, body: Any = None, params: Any = None,
@@ -692,15 +691,13 @@ class GroupsReaderRoleStep(_Workspace):
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         account = swarm_api_email(ctx.project)
-        typed = self._ask(ctx, self.id, (
+        typed = confirm(self._ask, ctx, self.id, (
             f"Assign the {GROUPS_READER} admin role to {account}? It lets swarm-api read the membership of "
             f"every group in your organisation, and nothing else. Type {APPROVE} to approve, or delegation "
-            "for the fallback")).strip()
-        if typed.lower() == "delegation":
+            "for the fallback"), APPROVE, also=("delegation",), nothing="nothing was assigned")
+        if typed == "delegation":
             remember(ctx, outputs={"groups_auth": DELEGATION})
             return
-        if typed != APPROVE:
-            raise ValueError(f"{typed!r} is not {APPROVE}; nothing was assigned")
         try:
             unique_id = self._client_id(ctx)
             if not unique_id:
