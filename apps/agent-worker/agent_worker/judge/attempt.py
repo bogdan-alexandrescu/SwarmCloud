@@ -237,7 +237,7 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
             log.warning("jev not set up", error=type(exc).__name__)
         note.update({"on": False, "reason": f"error ({type(exc).__name__})"})
         return {}
-    note.update({"on": bool(done.registered), "reason": done.reason,
+    note.update({"on": bool(done.registered), "reason": done.reason or "jev judgments are on",
                  "backend": done.backend.name if done.backend is not None else None})
     if log is not None:
         log.info("jev", on=done.registered, reason=done.reason,

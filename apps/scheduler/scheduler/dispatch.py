@@ -3327,8 +3327,6 @@ class GkeJobDispatcher:
         if live:
             self._with_judgment(job, tenant, profile)
             job = with_live_display(job, rc=rc, split=split)
-        elif jev_judgments_switched_on(task):
-            self._with_judgments_forwarder(job, tenant, profile)
             # Residential egress (docs/browser-egress.md §10.3): only on a pod
             # that has the display sidecar, so only a browser that exists is
             # routed, and only when configuration switches its tenant and
@@ -3336,6 +3334,10 @@ class GkeJobDispatcher:
             if browser_egress_on(self._settings, tenant_id=tenant.tenant_id, profile=profile):
                 job = with_browser_egress(
                     job, bypass=getattr(self._settings, "browser_egress_bypass", ()))
+        elif jev_judgments_switched_on(task):
+            # The signed workflow switch `jev_judgments: on` (2026-11-01):
+            # the TypeSafe forwarder's label and variable only, nothing else.
+            self._with_judgments_forwarder(job, tenant, profile)
         return job
 
     def _with_judgment(self, job: dict[str, Any], tenant: Tenant, profile: Any) -> None:

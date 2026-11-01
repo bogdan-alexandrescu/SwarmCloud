@@ -115,7 +115,7 @@ class _Vouches:
 
     refused = None
 
-    def verdict(self) -> bool:
+    def verdict(self, stored: Any = True) -> bool:
         return True
 
 
