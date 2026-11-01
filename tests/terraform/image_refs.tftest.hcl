@@ -140,11 +140,12 @@ run "the_output_records_every_gated_image_it_was_given" {
       "swarm-graph"        = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-graph@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
       "swarm-live"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:0000000000000000000000000000000000000000000000000000000000000000"
       "swarm-typesafe-fwd" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      "swarm-voice"        = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-voice@sha256:1111111111111111111111111111111111111111111111111111111111111111"
     })
   }
 
   # MUTATION: build output.image_refs from local.deployed_images alone (the
-  # pre-#1878 value) and this fails, naming the five gated images.
+  # pre-#1878 value) and this fails, naming the six gated images.
   assert {
     condition = alltrue([
       for name in keys(jsondecode(file("../../terraform/infra/images.json")).gated) :

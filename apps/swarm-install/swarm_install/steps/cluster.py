@@ -7,17 +7,18 @@
 | `cluster.bundle` | `other.release-kubernetes-bundle` | engine: the release's `kubernetes.tgz`, checked against its cosign-verified `SHA256SUMS` (`Release.fetch`) and unpacked; never a checkout |
 | `cluster.policies` | `cluster-policy.*` (9), `rbac.provisioner-clusterrole` | engine: `render.py policies` from the bundle, applied before anything a tenant runs |
 | `cluster.swarm-system` | `cluster.swarm-system-namespace` | engine: the swarm-system namespace and its default-deny ingress, only once the policies are in |
-| `cluster.workloads` | `workload.swarm-live`, `workload.swarm-graph` | engine: the live relay and the graph service, infra's renders, applied and rolled out in swarm-system |
+| `cluster.workloads` | `workload.swarm-live`, `workload.swarm-graph`, `workload.swarm-voice` | engine: the live relay, the graph service and Voice it's swarm-voice, infra's renders, applied and rolled out in swarm-system |
 
-**swarm-system's two core workloads are Terraform's renders.** The live
-relay's manifest is terraform/infra's `swarm_live_manifest` output and the
+**swarm-system's core workloads are Terraform's renders.** The live
+relay's manifest is terraform/infra's `swarm_live_manifest` output, the
 graph service's `swarm_graph_manifest` (`kubernetes/apply.sh --swarm-system`
-and `--swarm-graph` apply them; neither is in the release bundle). Stage 10
+and `--swarm-graph` apply those two) and Voice it's `swarm_voice_manifest`;
+none is in the release bundle. Stage 10
 reads them with `terraform output` in the release's infra root, as the
 deployer (`terraform.read_outputs`), applies them with the pinned kubectl and
 waits for their rollouts. Terraform renders null while a workload is switched
-off (`enable_live_browser`, `graph_service.serve`): nothing is applied for it
-and nothing waits on it. The addon workloads (`swarm-egress`,
+off (`enable_live_browser`, `graph_service.serve`, `voice_it`): nothing is
+applied for it and nothing waits on it. The addon workloads (`swarm-egress`,
 `swarm-typesafe-fwd`, `tailscale-egress`) belong to their addons' installs.
 
 **Policies before the code that needs them** (lesson 33): the scheduler once
@@ -605,6 +606,7 @@ class SwarmSystemStep(_Base):
 CORE_WORKLOADS = (
     ("workload.swarm-live", "statefulset/swarm-live", "swarm_live_manifest"),
     ("workload.swarm-graph", "deployment/swarm-graph", "swarm_graph_manifest"),
+    ("workload.swarm-voice", "statefulset/swarm-voice", "swarm_voice_manifest"),
 )
 #: How long `kubectl rollout status` waits for one workload, inside
 #: `run_command`'s own 600 s.
@@ -631,7 +633,7 @@ class WorkloadsStep(_Base):
     id = "cluster.workloads"
     satisfies = tuple(entry for entry, _, _ in CORE_WORKLOADS)
     _explain = (
-        "The live-browser relay and the shared code graph service run in swarm-system. Their manifests are "
+        "The live-browser relay, the shared code graph service and Voice it's swarm-voice run in swarm-system. Their manifests are "
         "terraform/infra's renders (image digest, bucket, key reference, address), read from its outputs and "
         "applied after the namespace's policies; stage 10 waits for their rollouts and checks every replica "
         "is ready. A workload Terraform has switched off renders null and is skipped."

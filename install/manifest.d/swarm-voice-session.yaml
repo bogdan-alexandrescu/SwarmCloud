@@ -1,14 +1,25 @@
 # Voice it's swarm-voice service (docs/design/voice-it.md section 10, phase one,
 # the lane "swarm-voice creates a GPT-Live session from a browser's offer and
 # holds its sideband"). These are the environment variables its caller check
-# reads (google_caller_check in apps/swarm-voice/swarm_voice/main.py). Nothing
-# deploys swarm-voice yet: the StatefulSet lane renders both into
-# kubernetes/swarm-system/swarm-voice.yaml and edits these setters to that
-# file's path:line in its own PR. PROJECT_ID, PORT and LOG_LEVEL, which main.py
+# reads (google_caller_check in apps/swarm-voice/swarm_voice/main.py), set where
+# the StatefulSet lane (VOICE-STATEFULSET) renders them: the swarm-voice
+# container's env in kubernetes/swarm-system/swarm-voice.yaml, whose
+# placeholders terraform/infra/voice.tf fills (swarm_voice_manifest).
+#
+# SWARM_VOICE_AUDIENCE is read at both ends of the call: swarm-voice checks
+# the ID token's audience against it (apps/swarm-voice/swarm_voice/main.py:113)
+# and swarm-api mints the token for it (apps/swarm-api/swarm_api/settings.py:1125;
+# unset there means SWARM_VOICE_URL itself). It is declared once, here, not in
+# voice-session-routes.yaml too: the manifest takes one entry per variable, and
+# two declarations stopped every unit test from collecting on main
+# (2026-11-01). swarm-voice's side is rendered at
+# kubernetes/swarm-system/swarm-voice.yaml:170 with swarm-api's SWARM_VOICE_URL,
+# which is what swarm-api mints for while its own SWARM_VOICE_AUDIENCE is unset.
+# PROJECT_ID, PORT and LOG_LEVEL, which main.py
 # also reads, are already in the base manifest's env: table.
 version: 1
 env:
   SWARM_VOICE_AUDIENCE:
-    setter: 'internal: read at both ends of the call: apps/swarm-voice/swarm_voice/main.py:113 checks the ID token''s audience against it, apps/swarm-api/swarm_api/settings.py:1125 mints the token for it (unset there means SWARM_VOICE_URL itself); rendered by the swarm-voice StatefulSet, which a later Voice it lane adds; until then nothing deploys swarm-voice'
+    setter: kubernetes/swarm-system/swarm-voice.yaml:170
   SWARM_VOICE_CALLERS:
-    setter: 'internal: read at apps/swarm-voice/swarm_voice/main.py:112; rendered by the swarm-voice StatefulSet, which a later Voice it lane adds; until then nothing deploys swarm-voice'
+    setter: kubernetes/swarm-system/swarm-voice.yaml:173
