@@ -740,6 +740,20 @@ class Gate:
 
 _REFUSAL_CODE = re.compile(r"[a-z0-9_]{1,64}")
 
+#: The gate's refusals of one hand-off request, not of the live path, and
+#: what the agent is told. `qa_identity_host` (livegate/__main__.py, `pause`;
+#: Q7): the page is on the console the browser is signed in to as the QA
+#: identity, where a person's own sign-in would hand the agent their
+#: workspaces. Before #1333 it was caught as a lost gate: answered
+#: `gate_unavailable`, and every later hand-off of the attempt refused.
+#: Any other refusal of `pause` still ends the live path, as it did.
+REQUEST_REFUSALS: dict[str, str] = {
+    "qa_identity_host": (
+        "a hand-off is refused on the console this browser is signed in to as the QA identity; "
+        "carry on without help"
+    ),
+}
+
 
 def _resolve_relay(host: str, port: int) -> Any:
     """The pod's resolver, asked for the relay's address (LB-DNS). A module
@@ -1812,6 +1826,14 @@ class HandoffPath:
         # there is no moment a person is told to come while the agent can act.
         try:
             gate.call("pause", {"request_id": request_id, "expect": expect})
+        except GateRefused as exc:
+            if exc.code not in REQUEST_REFUSALS:
+                self.unavailable = GATE_UNAVAILABLE
+                self.log.warning("the gate did not pause the agent", error=type(exc).__name__)
+                return self._refusal(root, request_id, GATE_UNAVAILABLE, "the live browser is unavailable")
+            # The gate said no to THIS request (#1333): answered with its own
+            # word, and the live path stays open. Not counted: no hold opened.
+            return self._refusal(root, request_id, exc.code, REQUEST_REFUSALS[exc.code])
         except GateLost as exc:
             self.unavailable = GATE_UNAVAILABLE
             self.log.warning("the gate did not pause the agent", error=type(exc).__name__)
