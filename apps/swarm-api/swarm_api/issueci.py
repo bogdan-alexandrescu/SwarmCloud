@@ -1182,7 +1182,11 @@ def _read_ci(
     rules = writer.branch_rules(run.issue, pull.base_ref, token) if pull.base_ref else []
     reading = evaluate(
         required_status_checks(rules),
-        writer.check_runs(run.issue, pull.head_sha, token),
+        # The pull request's head ref, as the merge step's `merge.checks_at`
+        # reads it: another branch's push suite at this sha is dropped
+        # (`_other_branch_push`), so auto_merge never calls green what the
+        # merge step refuses (#2946).
+        writer.check_runs(run.issue, pull.head_sha, token, head_ref=pull.head_ref or None),
         writer.commit_statuses(run.issue, pull.head_sha, token),
     )
     return pull, reading
