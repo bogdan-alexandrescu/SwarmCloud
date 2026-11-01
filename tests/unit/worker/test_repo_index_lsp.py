@@ -816,17 +816,46 @@ def test_a_measured_server_needs_its_cost_and_an_unmeasured_one_the_equal_share(
                              1_260.0) == [420.0, 890.0, 120.0]
 
 
-def test_a_grant_is_the_servers_proportion_of_what_is_left_capped_at_its_budget(lsp: Any) -> None:
-    # pyright first, tsserver after: 1,000 s left, costs 900 and 100.
-    # MUTATION: divide `left` by the servers remaining (the equal split) and
-    # this reads 500.
-    assert lsp.grant_seconds(1_000.0, [900.0, 100.0], 1_800.0) == pytest.approx(900.0)
+def test_the_cheapest_server_runs_first(lsp: Any) -> None:
+    # #2991: on SwarmCloud's own registration pyright (need several times
+    # the whole pass) ran first and left tsserver 71 s and terraform-ls 10 s.
+    # Cheapest first, so the servers that can finish do, and the one that
+    # cannot takes what they leave. Ties keep the name order.
+    # MUTATION: return range(len(names)) from run_order() and pyright runs first.
+    assert lsp.run_order(["pyright", "terraform-ls", "tsserver"], [4_500.0, 30.0, 240.0]) \
+        == [1, 2, 0]
+    assert lsp.run_order(["gopls", "pyright"], [300.0, 300.0]) == [0, 1]
+
+
+def test_a_grant_is_an_equal_share_of_what_is_left_capped_at_its_budget(lsp: Any) -> None:
+    # tsserver first, pyright after: 1,000 s left, costs 100 and 900. The
+    # first gets an equal share and passes on what it does not use, so a
+    # server that turns out slower than it measured can take no more than
+    # that share from the ones after it (#2991).
+    # MUTATION: grant `left * needs[0] / sum(needs)` (the old proportion)
+    # and this reads 100, the seconds tsserver ran out of.
+    assert lsp.grant_seconds(1_000.0, [100.0, 900.0], 1_800.0) == pytest.approx(500.0)
+    # MUTATION: same, and pyright first would take 900 of the 1,000.
+    assert lsp.grant_seconds(1_000.0, [900.0, 100.0], 1_800.0) == pytest.approx(500.0)
     # §3.5's per-server budget is still the cap.
-    assert lsp.grant_seconds(1_000.0, [900.0, 100.0], 600.0) == 600.0
-    # Equal needs are the equal split, and the last server gets all that is left.
-    assert lsp.grant_seconds(1_000.0, [7.0, 7.0], 1_800.0) == pytest.approx(500.0)
+    assert lsp.grant_seconds(1_000.0, [100.0, 900.0], 400.0) == 400.0
+    # The last server gets all that is left.
     assert lsp.grant_seconds(250.0, [100.0], 1_800.0) == pytest.approx(250.0)
     assert lsp.grant_seconds(-3.0, [100.0], 1_800.0) == 0.0
+
+
+def test_the_workspace_queries_get_their_share_of_the_servers_proportion(lsp: Any) -> None:
+    # Phase 2 is supplementary: a cheap server's equal grant (500 of 1,000)
+    # must not become 250 s of incomingCalls taken from pyright's
+    # definitions. Its limit is the workspace share of the proportion its
+    # need is of what is left -- 0.5 x 1,000 x 100 / 1,000 -- and never more
+    # than the share of its own grant.
+    # MUTATION: return `grant * share` and this reads 250.
+    assert lsp.workspace_seconds(1_000.0, [100.0, 900.0], 1_800.0, 0.5) == pytest.approx(50.0)
+    # Equal needs: the share of the equal grant, as before.
+    assert lsp.workspace_seconds(1_000.0, [7.0, 7.0], 1_800.0, 0.5) == pytest.approx(250.0)
+    assert lsp.workspace_seconds(1_000.0, [100.0, 900.0], 60.0, 0.5) == pytest.approx(30.0)
+    assert lsp.workspace_seconds(-1.0, [100.0], 1_800.0, 0.5) == 0.0
 
 
 def test_a_cut_servers_cost_is_extrapolated_from_its_requests_and_grant(lsp: Any) -> None:
@@ -847,21 +876,66 @@ def test_a_cut_servers_cost_is_extrapolated_from_its_requests_and_grant(lsp: Any
                              sites=10) is None
 
 
-def test_the_history_shifts_the_pass_to_the_server_that_costs_most(tool: Any, lsp: Any,
-                                                                  tmp_path: Path) -> None:
+def test_a_slow_server_no_longer_leaves_the_next_one_seconds(tool: Any, lsp: Any,
+                                                             tmp_path: Path) -> None:
+    # #2991, measured 2026-11-01 on SwarmCloud's own registration: pyright's
+    # need took 1,175.5 s of the 1,260-second pass and tsserver reached 304
+    # of 1,130 files in the 71.4 s left. Here pyfake is slow on every query
+    # and measured to need 900 s; tsfake needs 100. tsfake runs first, on an
+    # equal share, finishes, and passes what it did not use to pyfake.
+    repo = fx.build_repo(tmp_path / "repo", {**fx.PYTHON_APP, **fx.TS_APP})
+    python, typescript = _two_slow_servers(lsp, tmp_path, {"mode": "slow", "delay": 0.4})
+    index = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, python, typescript, server_budget_seconds=60.0, total_budget_seconds=3.0,
+        request_timeout_seconds=5.0, server_costs={"pyfake": 900, "tsfake": 100}))
+    rows = {name: _language(index, name) for name in ("python", "typescript")}
+    # MUTATION: run the servers in name order with the proportional grant
+    # and tsfake gets 0.3 s of the 3.0, after pyfake has used its 2.7.
+    assert rows["typescript"]["lsp"]["grant_seconds"] >= 1.4
+    assert rows["typescript"]["status"] == "ok", rows["typescript"]["reason"]
+    assert _edge(index, "web/src/App.tsx#App", "web/src/format.ts#formatName")["evidence"] == "lsp"
+    # What tsfake left -- its phase 2 cut at 0.5 x 3.0 x 100 / 1,000 -- went to pyfake.
+    assert rows["python"]["lsp"]["grant_seconds"] >= 2.0
+    # The counts stay truthful: `ok` only when every file was covered, and a
+    # cut names exactly the files its rows say are covered.
+    python_rows = [row for row in index["files"] if row["language"] == "python"]
+    covered = sum(1 for row in python_rows if row["lsp"])
+    assert rows["python"]["files_covered"] == covered
+    if rows["python"]["status"] == "ok":
+        assert covered == len(python_rows)
+    else:
+        assert rows["python"]["status"] in ("partial", "timed_out"), rows["python"]["reason"]
+        assert covered < len(python_rows)
+    if rows["python"]["status"] == "partial":
+        found = re.fullmatch(r"pyfake reached (\d+) of (\d+) files \(\d+ of \d+ sites\) in its "
+                             r"[\d.]+-second budget", rows["python"]["reason"])
+        assert found, rows["python"]["reason"]
+        assert int(found.group(1)) == covered
+    assert all(row["lsp"] for row in index["files"] if row["language"] == "typescript"
+               and row["path"].startswith("web/"))
+    # Each row still records what its server cost, for the next run.
+    assert rows["typescript"]["lsp"]["cost_seconds"] >= 10
+    assert index["extractor"]["lsp"]["server_costs"] == {"pyfake": 900, "tsfake": 100}
+
+
+def test_a_cheap_servers_workspace_queries_are_cut_at_its_proportion(tool: Any, lsp: Any,
+                                                                    tmp_path: Path) -> None:
+    # The other half of the rule above: tsfake's equal grant (2.0 of 4.0)
+    # is not spent on its slow call hierarchy; that is held to the workspace
+    # share of its proportion, 0.5 x 4.0 x 100 / 1,000 = 0.2 s.
     repo = fx.build_repo(tmp_path / "repo", {**fx.PYTHON_APP, **fx.TS_APP})
     python, typescript = _two_slow_servers(lsp, tmp_path)
     index = tool.extract(repo, tool.Budget(), lsp=_options(
-        lsp, python, typescript, server_budget_seconds=60.0, total_budget_seconds=2.0,
+        lsp, python, typescript, server_budget_seconds=60.0, total_budget_seconds=4.0,
         server_costs={"pyfake": 900, "tsfake": 100}))
-    rows = {name: _language(index, name) for name in ("python", "typescript")}
-    # MUTATION: grant `left / (servers remaining)` in run_pass() and pyfake,
-    # which runs first, gets 1.0 s of the 2.0 instead of 1.8.
-    assert rows["python"]["lsp"]["grant_seconds"] >= 1.7
-    assert rows["typescript"]["lsp"]["grant_seconds"] > 0
-    # Each row records what its server cost, for the next run.
-    assert rows["python"]["lsp"]["cost_seconds"] == 10
-    assert index["extractor"]["lsp"]["server_costs"] == {"pyfake": 900, "tsfake": 100}
+    typescript_row = _language(index, "typescript")
+    assert typescript_row["status"] == "ok"
+    # MUTATION: give phase 2 `grant * workspace_share` and this reads
+    # "their 1-second share of the 2-second budget".
+    assert re.fullmatch(r"call hierarchy and references cut at their 0\.2-second share of the "
+                        r"2-second budget: \d+ of \d+ symbols asked", typescript_row["reason"]), \
+        typescript_row["reason"]
+    assert _language(index, "python")["lsp"]["grant_seconds"] >= 3.0
 
 
 def test_without_history_the_pass_is_split_equally(tool: Any, lsp: Any, tmp_path: Path) -> None:
