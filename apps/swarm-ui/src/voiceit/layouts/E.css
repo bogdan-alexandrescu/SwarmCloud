@@ -1,0 +1,214 @@
+/* MOCK-HOOK FILE */
+/* VOICE IT, DIRECTION E: a presence (mock-ups only, ?vi=e). Every colour is a
+   console token; glow and glass are those tokens mixed with transparency,
+   never a new hue. Depth is blur, glow and scale only: nothing is 3D. */
+
+.vi-e {
+  --glass: color-mix(in srgb, var(--surface) 70%, transparent);
+  --glass-dim: color-mix(in srgb, var(--surface) 52%, transparent);
+  --glass-line: color-mix(in srgb, var(--info) 22%, var(--line));
+  --lit: color-mix(in srgb, var(--info) 26%, transparent);
+  --warm: color-mix(in srgb, var(--warn) 30%, transparent);
+  --ring: 340px;
+  position: relative; isolation: isolate; overflow: clip;
+  display: grid; grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "hud" "stage" "subs" "mic";
+  gap: 14px; min-width: 0; padding: 14px 18px 16px;
+  border: 1px solid var(--line-soft); border-radius: var(--r-dlg); background: var(--bg);
+}
+.vi-e-sky {
+  position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(ellipse 34% 46% at 17% 46%, color-mix(in srgb, var(--info) 17%, transparent), transparent 72%),
+    radial-gradient(ellipse 38% 34% at 62% 40%, color-mix(in srgb, var(--info) 7%, transparent), transparent 75%),
+    radial-gradient(ellipse 30% 30% at 96% 4%, color-mix(in srgb, var(--paused) 8%, transparent), transparent 70%);
+}
+.vi-e.is-open .vi-e-sky {
+  background:
+    radial-gradient(ellipse 36% 48% at 50% 44%, color-mix(in srgb, var(--info) 18%, transparent), transparent 72%),
+    radial-gradient(ellipse 30% 30% at 96% 4%, color-mix(in srgb, var(--paused) 8%, transparent), transparent 70%);
+}
+
+/* ---- heads-up edge: project, status, what needs Bogdan ----------------- */
+.vi-e-hud { grid-area: hud; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.vi-e .vi-project { align-items: center; }
+.vi-e .vi-project-main { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; }
+.vi-e .vi-project-name { font-size: var(--t-lead); line-height: var(--lh-lead); }
+.vi-e .vi-project-from, .vi-e .vi-engines { flex-basis: 100%; }
+.vi-e-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 22px; font-size: var(--t-meta); color: var(--text-dim); border-top: 1px solid var(--glass-line); padding-top: 8px; }
+.vi-e-stat { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.vi-e-stat.is-live { color: var(--text); }
+.vi-e-needs-wrap { min-width: 0; }
+.vi-e-needs-wrap.has-items { flex-basis: 100%; }
+.vi-e .vi-e-needs-wrap:not(.has-items) .vi-e-needs { padding: 0; border: 0; background: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.vi-e .vi-e-needs-wrap:not(.has-items) .vi-needs-h, .vi-e .vi-e-needs-wrap:not(.has-items) .vi-needs-none { font-size: var(--t-meta); font-weight: 400; color: var(--text-dim); }
+.vi-e .vi-e-needs-wrap:not(.has-items) .vi-needs-n { display: none; }
+.vi-e .vi-e-needs { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; padding: 7px 12px; background: var(--glass-dim); border-color: var(--glass-line); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.vi-e .vi-e-needs .vi-needs-h { font-size: var(--t-body); line-height: var(--lh-body); }
+.vi-e .vi-e-needs .vi-needs-list { flex-direction: row; flex-wrap: wrap; gap: 4px 18px; }
+.vi-e .vi-e-needs .vi-needs-none { font-size: var(--t-body); }
+.vi-e .vi-e-needs.has-items { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 7%, var(--glass)); box-shadow: 0 0 22px var(--warm); }
+
+/* ---- the stage ---------------------------------------------------------
+   With nothing forward (the start, the first words) the ring is the whole
+   stage. Once a card is forward the ring moves to the head of the page with
+   its own words and the mic, a presence strip, and the card takes the width:
+   the card being discussed is the largest thing on screen. */
+.vi-e.is-open { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-areas: "hud hud hud" "left core right" "subs subs subs" "mic mic mic"; }
+.vi-e.is-open .vi-e-core { min-height: 380px; align-items: center; }
+.vi-e-presence { display: contents; }
+.vi-e-core { grid-area: core; display: flex; justify-content: center; min-width: 0; }
+.vi-e.has-focus { grid-template-columns: 176px minmax(0, 1fr) minmax(230px, 280px);
+  grid-template-areas: "hud hud hud" "core subs subs" "core mic mic" "focus focus orbit"; column-gap: 18px; align-items: start; }
+.vi-e.has-focus:not(:has(.vi-e-orbit)) { grid-template-areas: "hud hud hud" "core subs subs" "core mic mic" "focus focus focus"; }
+.vi-e.has-focus .vi-e-core { align-self: center; }
+.vi-e.has-focus .vi-e-mic { justify-content: flex-start; }
+
+/* the ring */
+.vi-e-ring { margin: 0; position: relative; width: var(--ring); max-width: 100%; aspect-ratio: 1; color: var(--info); }
+.vi-e-ring.is-medium { width: 176px; align-self: center; }
+.vi-e-ring.is-medium .vi-e-ring-word { padding: 0 16%; }
+.vi-e-ring.is-medium .vi-e-ring-state { font-size: var(--t-body); line-height: var(--lh-body); }
+.vi-e-ring svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.vi-e-ring-base { fill: none; stroke: currentColor; stroke-opacity: 0.22; stroke-width: 1; }
+.vi-e-ring-wave { fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linejoin: round; }
+.vi-e-ring-fill { fill: currentColor; fill-opacity: 0.06; }
+.vi-e-ring-glow { fill: none; stroke: currentColor; stroke-width: 9; opacity: 0.5; }
+.vi-e-ring-inner { fill: none; stroke: currentColor; stroke-opacity: 0.45; stroke-width: 1.2; }
+.vi-e-ring-still { fill: none; stroke: currentColor; stroke-opacity: 0.5; stroke-width: 1.6; }
+.vi-e-ring.is-listening { color: var(--text-dim); }
+.vi-e-ring-mic { fill: color-mix(in srgb, var(--text) 5%, transparent); stroke: var(--text); stroke-opacity: 0.7; stroke-width: 1.6; stroke-linejoin: round; }
+.vi-e-ring.is-thinking { color: var(--paused); }
+.vi-e-ring-shim { fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 46 18; }
+.vi-e-ring-shim2 { fill: none; stroke: currentColor; stroke-opacity: 0.3; stroke-width: 1; stroke-dasharray: 2 8; }
+.vi-e-ring-spin { transform-origin: 200px 200px; animation: vi-e-spin 14s linear infinite; }
+.vi-e-ring.is-idle { color: var(--text-faint); }
+@keyframes vi-e-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .vi-e-ring-spin { animation: none; } }
+.vi-e-ring-word { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; text-align: center; padding: 0 22%; pointer-events: none; }
+.vi-e-ring-name { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.vi-e-ring-state { font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; color: var(--text); }
+.vi-e-ring.is-large .vi-e-ring-state { font-size: var(--t-title); }
+.vi-e-ring-label { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+
+/* the card being discussed: forward, larger, lit */
+.vi-e-focus { grid-area: focus; min-width: 0; display: flex; flex-direction: column; }
+.vi-e-focus .vi-card {
+  background: var(--glass); border-color: var(--glass-line);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--info) 14%, transparent), 0 10px 40px var(--lit);
+  padding: 16px 18px; gap: 12px;
+}
+.vi-e-focus .vi-card.is-needs { border-left: 3px solid var(--warn); box-shadow: 0 0 0 1px var(--warm), 0 10px 40px var(--lit); }
+.vi-e-focus .vi-card .c-card-h > h3 { font-size: var(--t-title); line-height: var(--lh-title); }
+
+/* the rest, receded: smaller, behind glass */
+.vi-e-orbit { grid-area: orbit; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.vi-e-orbit-h { margin: 0; font-size: var(--t-meta); color: var(--text-dim); }
+.vi-e-glance {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 10px 12px;
+  border: 1px solid var(--glass-line); border-radius: var(--r-card); background: var(--glass-dim);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  transform: scale(0.97); transform-origin: left top;
+}
+.vi-e-glance > * { margin: 0; }
+.vi-e-glance.is-needs { border-left: 3px solid var(--warn); box-shadow: 0 0 18px var(--warm); }
+.vi-e-glance-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.vi-e-glance-state { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: var(--t-micro); }
+.vi-e-glance-title { font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; overflow-wrap: anywhere; }
+.vi-e-glance-gist { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+.vi-e-glance-go { align-self: flex-start; }
+.vi-e-glance-lanes { display: flex; flex-wrap: wrap; gap: 3px; }
+.vi-e-lanebit { --tone: var(--info); width: 22px; height: 6px; border-radius: 3px; background: linear-gradient(to right, var(--tone) var(--p), color-mix(in srgb, var(--tone) 22%, transparent) var(--p)); }
+.vi-e-lanebit.is-ok { --tone: var(--ok); }
+.vi-e-lanebit.is-warn { --tone: var(--warn); }
+.vi-e-lanebit.is-bad { --tone: var(--bad); }
+.vi-e-lanebit.is-info { --tone: var(--text-faint); }
+
+/* the start: saved projects and preferences float either side of the ring */
+.vi-e-float {
+  min-width: 0; max-width: 320px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--glass-line); border-radius: var(--r-card); background: var(--glass-dim);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+.vi-e-float.is-left { grid-area: left; justify-self: end; }
+.vi-e-float.is-right { grid-area: right; justify-self: start; }
+.vi-e-float .vi-prefs-list .c-chip { font-size: var(--t-meta); }
+.vi-e-projects { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.vi-e-projects li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 8px; align-items: center; }
+.vi-e-proj-name { font-size: var(--t-body); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.vi-e-proj-meta { grid-column: 1; font-size: var(--t-meta); color: var(--text-dim); }
+.vi-e-projects li .c-btn { grid-column: 2; grid-row: 1 / span 2; }
+
+/* ---- subtitles ---------------------------------------------------------- */
+.vi-e-subs-band {
+  grid-area: subs; min-width: 0; padding: 10px 16px;
+  border: 1px solid var(--glass-line); border-radius: var(--r-card); background: var(--glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+.vi-e-subs { gap: 4px; }
+.vi-e-subs-band { display: flex; flex-direction: column; gap: 4px; }
+.vi-e-subs-all { align-self: flex-end; }
+.vi-e-subs .vi-cap { grid-template-columns: 70px 64px minmax(0, 1fr); font-size: var(--t-lead); line-height: var(--lh-lead); }
+.vi-e-subs .vi-cap-who { font-size: var(--t-meta); }
+
+/* ---- mic, on the bottom edge ------------------------------------------- */
+.vi-e-mic { grid-area: mic; display: flex; justify-content: center; min-width: 0; }
+.vi-e-mic .vi-mic { justify-content: center; padding: 6px 10px; border: 1px solid var(--glass-line); border-radius: var(--r-pill); background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+
+/* ---- narrower windows --------------------------------------------------- */
+@media (max-width: 1300px) {
+  .vi-e.has-focus { grid-template-columns: 150px minmax(0, 1fr) minmax(210px, 250px); }
+  .vi-e-ring.is-medium { width: 150px; }
+  .vi-e.has-focus .vi-e-subs .vi-cap { font-size: var(--t-body); line-height: var(--lh-body); }
+}
+
+/* ---- phone: one column ----------------------------------------------- */
+@media (max-width: 760px) {
+  .vi-e, .vi-e.is-open { padding: 10px 10px 12px; gap: 10px; border-radius: var(--r-card);
+    grid-template-columns: minmax(0, 1fr); grid-template-areas: "hud" "core" "subs" "left" "right" "mic"; }
+  .vi-e.is-open .vi-e-core { min-height: 0; }
+  .vi-e-ring.is-large { width: 210px; }
+  .vi-e-float.is-left, .vi-e-float.is-right { justify-self: stretch; max-width: none; }
+  .vi-e-subs-band { padding: 8px 10px; }
+  .vi-e-subs .vi-cap { grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; font-size: var(--t-body); line-height: var(--lh-body); }
+  .vi-e-subs .vi-cap-text { grid-column: 1 / -1; }
+  .vi-e-focus .vi-card { padding: 12px; }
+  .vi-e-focus .vi-card .c-card-h > h3 { font-size: var(--t-lead); line-height: var(--lh-lead); }
+  .vi-e-glance { transform: none; }
+  .vi-e-mic { position: sticky; bottom: 8px; z-index: 2; }
+  .vi-e-mic .vi-mic { flex-wrap: nowrap; gap: 6px; padding: 5px 6px; background: color-mix(in srgb, var(--surface) 88%, transparent); box-shadow: 0 6px 24px color-mix(in srgb, var(--bg) 70%, transparent); }
+  .vi-e-mic .vi-mic-state { display: none; }
+
+  /* With a card forward, the ring, its newest words and the mic dock along
+     the bottom edge, so the card (and its Go) is on the first screen and the
+     voice is never out of sight. */
+  .vi-e.has-focus, .vi-e.has-focus:not(:has(.vi-e-orbit)) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "hud" "focus" "orbit" "presence"; }
+  .vi-e.has-focus .vi-e-presence {
+    grid-area: presence; position: sticky; bottom: 6px; z-index: 2;
+    display: grid; grid-template-columns: 58px minmax(0, 1fr); grid-template-areas: "core subs" "mic mic"; gap: 6px 8px;
+    padding: 8px; border: 1px solid var(--glass-line); border-radius: var(--r-card);
+    background: color-mix(in srgb, var(--surface) 90%, transparent); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 -4px 28px color-mix(in srgb, var(--info) 14%, transparent), 0 8px 24px color-mix(in srgb, var(--bg) 70%, transparent);
+  }
+  .vi-e.has-focus .vi-e-core { flex-direction: column; align-items: center; align-self: start; }
+  .vi-e.has-focus .vi-e-ring.is-medium { width: 52px; aspect-ratio: auto; }
+  .vi-e.has-focus .vi-e-ring.is-medium svg { height: 52px; }
+  .vi-e.has-focus .vi-e-ring.is-medium .vi-e-ring-word { position: static; padding: 0; margin-top: 2px; }
+  .vi-e.has-focus .vi-e-ring-name, .vi-e.has-focus .vi-e-ring-label { display: none; }
+  .vi-e.has-focus .vi-e-ring-state { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 500; }
+  .vi-e.has-focus .vi-e-subs-band { padding: 0; border: 0; background: none; backdrop-filter: none; -webkit-backdrop-filter: none; gap: 0; }
+  .vi-e.has-focus .vi-e-subs .vi-cap:not(:nth-last-child(-n+2)) { display: none; }
+  .vi-e.has-focus .vi-e-subs .vi-cap { font-size: var(--t-meta); line-height: var(--lh-meta); }
+  .vi-e.has-focus .vi-e-subs .vi-cap-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
+  .vi-e.has-focus .vi-e-subs .vi-cap:last-child .vi-cap-text { -webkit-line-clamp: 3; }
+  .vi-e.has-focus .vi-e-subs-all { display: none; }
+  .vi-e.has-focus .vi-e-mic { position: static; justify-content: center; }
+  .vi-e.has-focus .vi-e-mic .vi-mic { padding: 0; border: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+
+  /* The mock-up's own switches are not the product: on a phone they would
+     fill the first screen, so this direction hides them there (the URL still
+     switches frames). */
+  .vi-page[data-vi="e"] > .vi-switches { display: none; }
+}

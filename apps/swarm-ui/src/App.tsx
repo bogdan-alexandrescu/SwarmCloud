@@ -76,6 +76,9 @@ import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { useRecentName, WorkflowsScreen } from './Workflows'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
+import { VoiceIt } from './voiceit/VoiceIt' // MOCK-HOOK
+/** MOCK-HOOK: the Voice it mock-up's route, /voice (lane VOICE-IT-MOCKUPS). */ // MOCK-HOOK
+const isVoicePath = (p: string | null | undefined): boolean => p != null && /^\/voice\/?$/.test(p) // MOCK-HOOK
 
 /**
  * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.
@@ -1360,6 +1363,7 @@ export function App() {
   /** The path a route is written as: an open agent sits under its list's tab. */
   const pathFor = useCallback(
     (r: Route) => {
+      if (r.missing != null && isVoicePath(r.missing)) return r.missing + window.location.search // MOCK-HOOK
       if (r.missing != null) return r.missing
       if (r.sectionId === JOIN) return JOIN_PATH
       if (r.sectionId === SETUP_LINK) return SETUP_LINK_PATH
@@ -1543,7 +1547,9 @@ export function App() {
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
   // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
   // a page that is not Overview, because the spine lights the nearest section.
-  const title = at.missing
+  const title = isVoicePath(at.missing) // MOCK-HOOK
+    ? 'Voice it' // MOCK-HOOK
+    : at.missing // MOCK-HOOK
     ? NOT_FOUND_TITLE
     : at.sectionId === SUBMIT
       ? 'Submit'
@@ -1687,7 +1693,7 @@ export function App() {
                 // own on its refresh control in any case.
                 <RoutedPage.Provider value={true}>
                   <FrameAge.Provider value={at.taskId === null}>
-                  {at.missing ? <NotFound path={at.missing} go={go} /> : (() => {
+                  {isVoicePath(at.missing) ? <VoiceIt /> /* MOCK-HOOK */ : at.missing ? <NotFound path={at.missing} go={go} /> : (() => {
                     const body = (
                       <SectionBody
                         sectionId={section.id}

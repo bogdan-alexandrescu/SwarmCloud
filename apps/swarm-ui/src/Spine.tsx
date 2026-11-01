@@ -2266,6 +2266,10 @@ export function SkyShell({
         <Icon name="submit" />
         <small>Submit</small>
       </a>
+      {/* MOCK-HOOK */}<a className="sk-ri" href="/voice" title="Voice it" aria-current={typeof window !== 'undefined' && window.location.pathname.startsWith('/voice') ? 'page' : undefined}>
+        {/* MOCK-HOOK */}<svg className="sk-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+        {/* MOCK-HOOK */}<small>Voice it</small>
+      {/* MOCK-HOOK */}</a>
       <span className="sk-rsep" aria-hidden />
       {spineItems.map(sectionLink)}
       <span className="sk-grow" />

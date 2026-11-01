@@ -1,0 +1,187 @@
+/* MOCK-HOOK FILE */
+/* VOICE IT (mock-ups only). Every colour is a console token; nothing here is a
+   new hue. Type never goes under --t-micro (12px). */
+
+.vi-page { display: flex; flex-direction: column; gap: 14px; min-width: 0; max-width: 100%; }
+
+/* The mock-up's own switches. */
+.vi-switches { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 6px 10px; border: 1px dashed var(--line-soft); border-radius: var(--r-card); font-size: var(--t-micro); }
+.vi-switches-l { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.vi-fallback { margin: 0; color: var(--text-dim); font-size: var(--t-meta); }
+
+/* ---- project header ---------------------------------------------------- */
+.vi-project { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 16px; min-width: 0; }
+.vi-project-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 320px; }
+.vi-project-name { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; }
+.vi-project-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--text-dim); font-size: var(--t-meta); }
+.vi-project-from { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--t-meta); color: var(--text-dim); }
+.vi-project-from b { color: var(--text); font-weight: 600; }
+.vi-project-detail { color: var(--text-dim); }
+.vi-project-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.vi-engines { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+
+/* ---- oscilloscope ------------------------------------------------------- */
+.vi-scope { margin: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; color: var(--info); }
+.vi-scope svg { display: block; width: 100%; overflow: visible; }
+.vi-scope-axis { stroke: var(--line-soft); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.vi-scope-line { fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.vi-scope-env { fill: currentColor; opacity: 0.12; }
+.vi-scope.is-listening { color: var(--text-dim); }
+.vi-scope.is-listening .vi-scope-line { stroke-width: 1.5; }
+.vi-scope.is-thinking { color: var(--paused); }
+.vi-scope.is-thinking .vi-scope-line { stroke-width: 3; animation: vi-shimmer 2.4s ease-in-out infinite; }
+.vi-scope.is-idle { color: var(--line); }
+.vi-scope-word { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.vi-scope.is-thinking .vi-scope-word { color: var(--text); }
+@keyframes vi-shimmer { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .vi-scope.is-thinking .vi-scope-line { animation: none; } }
+
+/* ---- captions ----------------------------------------------------------- */
+.vi-captions { display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow-y: auto; }
+.vi-cap { margin: 0; display: grid; grid-template-columns: 70px 64px minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: var(--t-body); line-height: var(--lh-body); }
+.vi-cap-who { font-weight: 600; color: var(--text); }
+.vi-cap.is-agent .vi-cap-who { color: var(--info-ink, var(--text)); }
+.vi-cap.is-note .vi-cap-who { color: var(--text-faint); font-weight: 500; }
+.vi-cap.is-note .vi-cap-text { color: var(--text-dim); font-style: italic; }
+.vi-cap-at { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.vi-cap-text { color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.vi-cap.is-partial .vi-cap-text { color: var(--text-dim); }
+.vi-cap-more { color: var(--text-faint); }
+.vi-cap-empty { margin: 0; color: var(--text-dim); }
+
+/* ---- mic ---------------------------------------------------------------- */
+.vi-mic { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.vi-mic-state { font-size: var(--t-meta); color: var(--text-dim); }
+
+/* ---- budget ------------------------------------------------------------- */
+.vi-budget { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.vi-budget-row { display: flex; flex-direction: column; gap: 4px; }
+.vi-budget-fig { font-size: var(--t-meta); color: var(--text-dim); }
+.vi-budget-fig b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.vi-budget.is-inline { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vi-budget.is-inline.is-near { color: var(--text); }
+.vi-absent { color: var(--ctl-absent, var(--text-faint)); }
+
+/* ---- needs you ---------------------------------------------------------- */
+.vi-needs { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+.vi-needs.has-items { border-left: 3px solid var(--warn); }
+.vi-needs-h { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; display: flex; align-items: baseline; gap: 8px; }
+.vi-needs-n { font: 500 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
+.vi-needs-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: var(--t-body); }
+.vi-needs-list li { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.vi-needs-go { padding: 0; border: 0; background: none; font: inherit; color: var(--text); text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.vi-needs-go:hover { text-decoration-color: currentColor; }
+.vi-needs-none { margin: 0; color: var(--text-dim); }
+
+/* ---- preferences -------------------------------------------------------- */
+.vi-prefs { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 0; }
+.vi-prefs-h { margin: 0; font-size: var(--t-body); font-weight: 600; }
+.vi-prefs-list { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.vi-prefs-list .c-chip { white-space: normal; text-align: left; max-width: 100%; font-family: var(--font); }
+
+/* ---- cards -------------------------------------------------------------- */
+.vi-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 12px; align-items: start; min-width: 0; }
+.vi-cards-empty { margin: 0; color: var(--text-dim); padding: 18px 0; }
+.vi-card { min-width: 0; }
+.vi-card.is-needs { border-left: 3px solid var(--warn); }
+.vi-card .c-card-h { align-items: flex-start; }
+.vi-card .c-card-h > h3 { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 200px; }
+.vi-card-kind { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.vi-card-title { overflow-wrap: anywhere; }
+.vi-card-state { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; font-size: var(--t-meta); }
+.vi-card-at { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.vi-card-needs { margin: 0; display: flex; align-items: baseline; gap: 6px; font-weight: 600; font-size: var(--t-body); }
+.vi-card-p { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.vi-card-facts { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: var(--t-meta); color: var(--text-dim); }
+.vi-card-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.vi-diffn { font-family: var(--mono); font-size: var(--t-micro); }
+
+/* lanes */
+.vi-lanes { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.vi-lane { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.2fr) minmax(60px, 0.8fr) 82px 78px; gap: 8px; align-items: center; font-size: var(--t-meta); }
+.vi-lane-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; color: var(--text); }
+.vi-lane-step { color: var(--text-dim); min-width: 0; overflow-wrap: anywhere; }
+.vi-lane.is-waiting-on-you .vi-lane-step { color: var(--text); font-weight: 600; }
+.vi-lane-pct, .vi-lane-cost { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); text-align: right; }
+
+/* design A/B */
+.vi-ab { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); gap: 8px; }
+.vi-ab-opt { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; padding: 8px 10px; border-left: 2px solid var(--line); background: var(--surface-2); border-radius: 0 6px 6px 0; }
+.vi-ab-opt.is-rec { border-left-color: var(--info); }
+.vi-ab-opt.is-picked { border-left-color: var(--ok); }
+.vi-ab-h { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.vi-ab-list { margin: 0; padding-left: 18px; font-size: var(--t-meta); color: var(--text-dim); }
+
+/* diagram */
+.vi-diagram { margin: 0; overflow-x: auto; max-width: 100%; display: flex; flex-direction: column; gap: 6px; }
+.vi-diagram svg { display: block; flex: none; }
+.vi-dg-node rect { fill: var(--surface); stroke: var(--text-dim); stroke-width: 1.5; }
+.vi-dg-node.is-existing rect { fill: var(--surface-2); stroke: var(--line-soft); }
+.vi-dg-node.is-outside rect { fill: none; stroke: var(--line); stroke-dasharray: 5 4; }
+.vi-dg-label { font: 600 13px var(--font); fill: var(--text); }
+.vi-dg-sub { font: 12px var(--mono); fill: var(--text-dim); }
+.vi-dg-edge line { stroke: var(--text-dim); stroke-width: 1.5; }
+.vi-dg-head { fill: var(--text-dim); }
+.vi-dg-elabel { font: 12px var(--font); fill: var(--text-dim); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; }
+.vi-dg-legend { display: flex; gap: 14px; font-size: var(--t-micro); color: var(--text-dim); }
+.vi-dg-key::before { content: ''; display: inline-block; width: 14px; height: 10px; margin-right: 6px; border-radius: 3px; vertical-align: -1px; border: 1.5px solid var(--text-dim); background: var(--surface); }
+.vi-dg-key.is-existing::before { border-color: var(--line-soft); background: var(--surface-2); }
+.vi-dg-key.is-outside::before { border-style: dashed; border-color: var(--line); background: none; }
+
+/* mock-up thumbnails */
+.vi-thumbs { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 12px; }
+.vi-thumb { display: flex; flex-direction: column; gap: 4px; width: 140px; }
+.vi-thumb.is-picked .vi-sketch .is-frame { stroke: var(--text); stroke-width: 2; }
+.vi-sketch { width: 140px; height: auto; display: block; }
+.vi-sketch rect { fill: var(--line-soft); }
+.vi-sketch .is-frame { fill: var(--surface); stroke: var(--line); }
+.vi-sketch .is-top { fill: var(--surface-2); }
+.vi-sketch .is-col { fill: var(--surface-2); stroke: var(--line-soft); }
+.vi-sketch .is-hit { fill: var(--info); opacity: 0.55; }
+.vi-thumb-label { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: var(--t-meta); }
+.vi-thumb-acts { display: flex; gap: 6px; }
+
+/* plan */
+.vi-plan-sum { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
+.vi-phases { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.vi-phase { display: flex; flex-direction: column; gap: 4px; padding-left: 10px; border-left: 2px solid var(--line-soft); }
+.vi-phase.is-next, .vi-phase.is-running { border-left-color: var(--text); }
+.vi-phase-h { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: var(--t-body); }
+.vi-phase-est { font-size: var(--t-meta); color: var(--text-dim); }
+.vi-phase-lanes { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* decision rows */
+.vi-rows { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.vi-row { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; font-size: var(--t-body); }
+.vi-row dt { color: var(--text-dim); font-size: var(--t-meta); }
+.vi-row dd { margin: 0; overflow-wrap: anywhere; }
+.vi-heard { margin: 0; padding: 6px 10px; background: var(--surface-2); border-radius: 6px; font-size: var(--t-body); }
+.vi-heard span { color: var(--text-dim); }
+
+/* input */
+.vi-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+.vi-input { width: 100%; box-sizing: border-box; }
+
+/* failure log, shipped */
+.vi-log { margin: 0; padding: 8px 10px; background: var(--surface-2); border-radius: 6px; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); overflow-x: auto; white-space: pre; }
+.vi-changed { margin: 0; padding-left: 18px; font-size: var(--t-body); }
+.vi-url { font-family: var(--mono); font-size: var(--t-meta); overflow-wrap: anywhere; }
+
+/* ---- the base layout ---------------------------------------------------- */
+.vi-base { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.vi-base-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); gap: 16px; align-items: start; }
+.vi-base-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.vi-base-voice { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+.vi-base-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.vi-base-talk { min-width: 0; }
+/* A diagram or a plan reads best across the whole column. */
+.vi-base-cards .vi-card.is-diagram, .vi-base-cards .vi-card.is-plan, .vi-base-cards .vi-card.is-running { grid-column: 1 / -1; }
+.vi-base-captions { max-height: 300px; }
+.vi-base-captions .vi-cap { grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; }
+.vi-base-captions .vi-cap-text { grid-column: 1 / -1; }
+.vi-section-h { margin: 0 0 8px; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
+@media (max-width: 900px) {
+  .vi-base-grid { grid-template-columns: minmax(0, 1fr); }
+  .vi-lane { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .vi-lane-bar { grid-column: 1 / -1; }
+}
