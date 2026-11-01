@@ -7,14 +7,14 @@
 
 WHO. Version one is BGD's only (§1): the caller's verified email must be in
 `voice_people` (VOICE_IT_PEOPLE, else the platform owner), or the answer is
-403 `voice_not_allowed` before anything is read. The workspace is the one the
+403 `forbidden` before anything is read. The workspace is the one the
 console has selected, through `tenant_scope`, the same guard every
 tenant-scoped route declares; the person is the verified email, never a
 field of the body.
 
 ORDER. Who first (403), then whether swarm-voice is deployed (503
 `voice_unavailable`, nothing written), then the transaction that refuses a
-second live session (409 `voice_session_live`), then swarm-voice. The
+second live session (409 `conflict`), then swarm-voice. The
 browser's offer goes to swarm-voice unchanged and its answer comes back
 unchanged; neither is logged or stored.
 

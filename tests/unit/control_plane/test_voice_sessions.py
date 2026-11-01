@@ -104,7 +104,8 @@ def test_anyone_not_on_the_list_is_403_and_nothing_is_written(client, db, voice)
     response = _start(client, "carol")
 
     assert response.status_code == 403, response.text
-    assert response.json()["code"] == "voice_not_allowed"
+    assert response.json()["code"] == "forbidden"
+    assert "Voice it" in response.json()["message"]
     assert _docs(db, vs.PROJECTS) == {}
     assert _docs(db, vs.LIVE_MARKERS) == {}
     assert voice.starts == []
@@ -149,7 +150,8 @@ def test_a_second_live_session_is_409(client, db, voice):
     response = _start(client, "alice")
 
     assert response.status_code == 409, response.text
-    assert response.json()["code"] == "voice_session_live"
+    assert response.json()["code"] == "conflict"
+    assert "live Voice it session" in response.json()["message"]
     assert response.json()["detail"]["session_id"] == first["session_id"]
     assert len(_sessions(db)) == 1
     assert len(voice.starts) == 1

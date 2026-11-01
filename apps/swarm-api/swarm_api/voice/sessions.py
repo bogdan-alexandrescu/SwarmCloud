@@ -16,7 +16,7 @@ project or session, or another person's, is the same 404 as a missing one
 ONE LIVE SESSION PER PERSON (§3.7). `voice_live/{marker}` names the person's
 live session and is read and written in the same transaction as the session
 it names, so two starts racing each other cannot both pass: the second is 409
-`voice_session_live`. The marker's id is an HMAC of the email under the
+`conflict`. The marker's id is an HMAC of the email under the
 deployment's settings key when one is configured, so no worker can compute
 it; a session left `starting` by a crash longer than STARTING_STALE_SECONDS
 ago no longer holds it.
@@ -104,8 +104,12 @@ METADATA_IDENTITY_URL = (
 _MARKER_PURPOSE = "voice-live:"
 
 
+#: The two refusals keep the established codes, `forbidden` and `conflict`
+#: (tests/unit/control_plane/test_new_refusals_ship_off.py): a new code would
+#: have to ship behind a switch, and a switch that lets a stranger start a
+#: session, or a person hold two, is the breach itself.
 class VoiceNotAllowed(Forbidden):
-    code = "voice_not_allowed"
+    pass
 
 
 class VoiceUnavailable(UpstreamUnavailable):
@@ -113,7 +117,7 @@ class VoiceUnavailable(UpstreamUnavailable):
 
 
 class VoiceSessionLive(Conflict):
-    code = "voice_session_live"
+    pass
 
 
 class VoiceUnreachable(ApiError):
