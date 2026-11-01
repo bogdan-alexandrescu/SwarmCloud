@@ -313,9 +313,11 @@ class Sessions:
         session = self._live.get(voice_id)
         if session is None:
             return None
-        try:
-            await session.end(self._grace)
-        finally:
+        # Forgotten only once it has ended: an end that raised (the re-attach failed)
+        # leaves the session held, so swarm-api's retry can still close it and stop
+        # its per-second billing.
+        await session.end(self._grace)
+        if session.ended:
             self._forget(session)
         log.info("voice session %s: ended (%s)", voice_id, session.reason)
         return session

@@ -299,6 +299,33 @@ def test_a_dropped_sideband_is_attached_again_to_close_the_session():
     run(scenario)
 
 
+def test_an_end_whose_reattach_fails_keeps_the_session_held_so_a_retry_closes_it():
+    async def scenario(h: Harness):
+        h.openai.drop_after_attach = True
+        body = _start_body(_seed(h))
+        assert (await h.post("/internal/sessions", body)).status_code == 201
+        live_id = h.openai.live_ids[0]
+        held = h.sessions.get(body["voice_session_id"])
+        for _ in range(100):
+            if not held.attached:
+                break
+            await asyncio.sleep(0.01)
+        assert not held.attached
+        reachable = h.api.ws_base
+        h.api.ws_base = "ws://127.0.0.1:1"  # the re-attach fails once
+        r = await h.post(f"/internal/sessions/{body['voice_session_id']}/end")
+        assert r.status_code == 502
+        # Still held: forgetting it here would leave the GPT-Live session billing.
+        assert h.sessions.get(body["voice_session_id"]) is held and not held.ended
+        h.api.ws_base = reachable
+        r = await h.post(f"/internal/sessions/{body['voice_session_id']}/end")
+        assert r.status_code == 200 and r.json()["ended"] is True
+        assert h.openai.closed_by_client == [live_id]
+        assert h.sessions.get(body["voice_session_id"]) is None
+
+    run(scenario)
+
+
 def test_a_second_live_session_for_one_voice_session_is_refused():
     async def scenario(h: Harness):
         body = _start_body(_seed(h))
