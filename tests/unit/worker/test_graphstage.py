@@ -271,11 +271,15 @@ def test_a_repository_turned_off_stages_nothing_and_says_nothing(db, store, clon
 
 
 def test_nothing_in_the_task_input_is_read_by_the_decision():
-    """Invariant 10: `decide` takes the two stored documents and the task id."""
+    """Invariant 10: `decide` takes the two stored documents, the task id and
+    the SIGNED dispatch block's on/off switch (the owner's decision,
+    2026-11-01): never the task's input, and `prepare` reads the switch only
+    through `switch_of`, which accepts nothing but the two words."""
     import inspect
 
     assert set(inspect.signature(graphstage.decide).parameters) == {
-        "repository_override", "workspace_settings", "task_id"}
+        "repository_override", "workspace_settings", "task_id", "switch"}
+    assert graphstage.switch_of({"code_intelligence": "always"}, "code_intelligence") is None
 
 
 # --------------------------------------------------------------------------

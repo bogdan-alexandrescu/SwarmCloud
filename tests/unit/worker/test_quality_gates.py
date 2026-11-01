@@ -276,13 +276,25 @@ class _Worker:
         self._gates_env = None
         self.marks: list[tuple[str, dict]] = []
         self.ws = SimpleNamespace(private=private)
+        self.dispatch: dict[str, Any] = {}
+        self._graph_env: dict[str, str] | None = None
 
     def _emit_startup_mark(self, cause: str, detail: dict) -> None:
         self.marks.append((cause, detail))
 
+    def _dispatch_block(self) -> dict[str, Any]:
+        """The task's signed `metadata.dispatch` block (2026-11-01)."""
+        return dict(self.dispatch)
+
+    def _record_switches(self, summary: dict[str, Any]) -> None:
+        from agent_worker.lifecycle import Worker
+
+        Worker._record_switches(self, summary)
+
 
 def _attempt(tmp_path: Path, monkeypatch, block: Any, *, at_dispatch: Any = "same",
-             environ: dict[str, str] | None = None, **dispatch_kw: Any
+             environ: dict[str, str] | None = None, dispatch: dict[str, Any] | None = None,
+             **dispatch_kw: Any
              ) -> tuple[dict[str, str], dict, _Worker]:
     """One claude-code attempt's gates, as the lifecycle builds them, and its
     summary. The job's environment is what the scheduler wrote at dispatch
@@ -305,8 +317,9 @@ def _attempt(tmp_path: Path, monkeypatch, block: Any, *, at_dispatch: Any = "sam
     for name, value in env_at_dispatch.items():
         monkeypatch.setenv(name, value)
     private = tmp_path / "private"
-    private.mkdir(exist_ok=True)
+    private.mkdir(parents=True, exist_ok=True)
     worker = _Worker(db, client, private)
+    worker.dispatch = dict(dispatch or {})
     env = Worker._quality_gates_env(worker, worker.ws, SimpleNamespace(secrets=()))
     summary: dict[str, Any] = {}
     Worker._record_quality_gates(worker, summary)
@@ -346,6 +359,34 @@ def test_a_signed_on_runs_the_gates(tmp_path, monkeypatch):
     assert Path(config["key_file"]).name == "jev-gates.key"
     assert worker.secret_client.reads == ["swarm-tenant-eng-typesafe"]
     assert summary == {"quality_gates": {"jev": True}}
+
+
+def test_a_signed_on_request_runs_the_gates_only_under_the_switch_and_records_why(
+        tmp_path, monkeypatch):
+    """The workflow switch `quality_gates: on` (2026-11-01) over a signed
+    `on_request`: the gates run, and the summary names the switch, its value
+    and the deciding source, which the experiment reads."""
+    from agent_worker import qualitygates
+
+    env, summary, _worker = _attempt(tmp_path / "on", monkeypatch, _signed("on_request"),
+                                     dispatch={"quality_gates": "on"})
+    # MUTATION: pass no `switch` from the lifecycle and this is {}.
+    assert set(env) == {qualitygates.CONFIG_ENV}
+    record = summary["quality_gates"]["switch"]
+    assert summary["quality_gates"]["jev"] is True
+    assert record == {"switch": "quality_gates", "value": "on", "source": "workflow switch",
+                      "on": True,
+                      "reason": "quality gates are on (workflow switch; workspace allows it)"}
+
+    env, summary, _worker = _attempt(tmp_path / "unset", monkeypatch, _signed("on_request"))
+    assert env == {}
+    assert summary["quality_gates"]["jev"] is False
+    assert summary["quality_gates"]["switch"]["source"] == "workspace"
+
+    env, summary, _worker = _attempt(tmp_path / "off", monkeypatch, _signed(True),
+                                     dispatch={"quality_gates": "off"})
+    assert env == {}
+    assert summary["quality_gates"]["switch"]["source"] == "workflow switch"
 
 
 def test_a_stored_off_is_off_whatever_the_job_says(tmp_path, monkeypatch):
@@ -449,9 +490,20 @@ class _Recorder:
         self._gates_env = gates_env
         self.marks: list[tuple[str, dict]] = []
         self.log, _ = _logger()
+        self.dispatch: dict[str, Any] = {}
+        self._graph_env: dict[str, str] | None = None
 
     def _emit_startup_mark(self, cause: str, detail: dict) -> None:
         self.marks.append((cause, detail))
+
+    def _dispatch_block(self) -> dict[str, Any]:
+        """The task's signed `metadata.dispatch` block (2026-11-01)."""
+        return dict(self.dispatch)
+
+    def _record_switches(self, summary: dict[str, Any]) -> None:
+        from agent_worker.lifecycle import Worker
+
+        Worker._record_switches(self, summary)
 
 
 def test_the_attempt_records_one_counts_only_event_when_a_gate_fired(tmp_path):
