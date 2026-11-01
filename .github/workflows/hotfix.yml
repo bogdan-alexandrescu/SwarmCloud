@@ -242,26 +242,18 @@ jobs:
           # The stage failed. Superseded only when main has moved on AND the
           # newer push cancelled this commit's build: its application push
           # run concluded `cancelled` and `build images` neither succeeded nor
-          # failed in it.
-          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...main" --jq '.status' 2>/dev/null)" || status=""
-          if [ "${status}" = ahead ]; then
-            run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/application.yml/runs?head_sha=${GITHUB_SHA}&branch=main&event=push&per_page=1" \
-              --jq '.workflow_runs[0] // {} | "\(.id // "") \(.conclusion // "")"' 2>/dev/null)" || run=""
-            run_id="${run%% *}"
-            if [ -n "${run_id}" ] && [ "${run#* }" = cancelled ]; then
-              build="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
-                --jq '[.jobs[] | select(.name == "build images")][0].conclusion // "none"' 2>/dev/null)" || build=""
-              case "${build}" in
-                cancelled|skipped|none)
-                  newer="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha' 2>/dev/null)" || newer=""
-                  if [ -n "${newer}" ]; then
-                    ships="main's newest commit \`${newer}\`, whose build includes this commit's change, ships it in its own release"
-                  else
-                    ships="main's newest commit (unreadable just now: see main's history) includes this commit's change and its release ships it"
-                  fi
-                  superseded "A newer push to main cancelled application run ${run_id}, the build of \`${GITHUB_SHA}\`, before it built. ${ships}; this hotfix promoted, applied and deployed nothing." ;;
-              esac
+          # failed in it. scripts/lib/build-superseded.sh judges, and waits
+          # (bounded) for the run to conclude first: the stage fails the
+          # moment `build images` is cancelled, seconds before the run
+          # concludes `cancelled` (#2664).
+          if run_id="$(./scripts/lib/build-superseded.sh --sha "${GITHUB_SHA}" --repo "${GITHUB_REPOSITORY}")"; then
+            newer="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha' 2>/dev/null)" || newer=""
+            if [ -n "${newer}" ]; then
+              ships="main's newest commit \`${newer}\`, whose build includes this commit's change, ships it in its own release"
+            else
+              ships="main's newest commit (unreadable just now: see main's history) includes this commit's change and its release ships it"
             fi
+            superseded "A newer push to main cancelled application run ${run_id}, the build of \`${GITHUB_SHA}\`, before it built. ${ships}; this hotfix promoted, applied and deployed nothing."
           fi
           echo "::error title=images and scan failed::the images stage failed for ${GITHUB_SHA} (its error is above) and no newer push superseded its build, so this hotfix ships nothing"
           exit 1
