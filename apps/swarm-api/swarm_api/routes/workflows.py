@@ -311,7 +311,7 @@ def list_workflows(
     # The summary view is the Workflows board's one read: each step carries
     # what the board draws (`codec.step_task_summary`), its attempt totals
     # read here in batches. The full view reads no attempts, as before.
-    step_totals = _results_totals(ctx, tenant_id, results) if summary else None
+    step_totals = _results_totals(ctx, tenant_id, results, submitted_by) if summary else None
     payload = {
         # Each step's input is masked by its own task's masker, from the step
         # tasks the rollup already read (the PR #229 review); a step whose task
@@ -474,13 +474,24 @@ def _step_totals(ctx: AppContext, tenant_id: str, task_ids: list[str]) -> dict[s
     return out
 
 
-def _results_totals(ctx: AppContext, tenant_id: str, results: list[RollupResult]) -> dict[str, dict[str, Any]]:
+def _results_totals(
+    ctx: AppContext, tenant_id: str, results: list[RollupResult], submitted_by: str | None
+) -> dict[str, dict[str, Any]]:
     """The attempt totals of every step task the rollup read for these rows.
 
     The tasks are the ones the rollup's `get_all` already returned
-    (`RollupResult.step_tasks`); no task document is read again.
+    (`RollupResult.step_tasks`); no task document is read again. Filtered by
+    submitter as `_by_ids` filters its `tasks`: a step task that is not a
+    continuation-scoped caller's gets no entry, so its step's `task_summary`
+    is null whatever workflow it claims to belong to.
     """
-    return _step_totals(ctx, tenant_id, [t for r in results for t in r.step_tasks])
+    ids = [
+        task.id
+        for r in results
+        for task in r.step_tasks.values()
+        if submitted_by is None or task.submitted_by == submitted_by
+    ]
+    return _step_totals(ctx, tenant_id, ids)
 
 
 def _named(ctx: AppContext, workflows: list[dict], tasks: list[dict]) -> None:

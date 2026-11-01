@@ -233,3 +233,22 @@ def test_the_attempts_batches_run_at_once_not_one_after_another(client, db, monk
     body = _list(client, view="summary", limit=10)
 
     assert sum(1 for w in body["workflows"] for s in w["steps"] if s["task_summary"]["attempts"] == 1) == 120
+
+
+@pytest.mark.parametrize("ids", [False, True])
+def test_a_scoped_caller_gets_no_block_for_a_step_task_that_is_not_theirs(client, db, ids):
+    """The step tasks are seeded by `seed@eng`; the workflow is alice's."""
+    from swarm_api.deps import submission_scope
+
+    seed_tenant(db, "eng")
+    workflow = _workflow(db, "wf_a", 2, T0)
+    db.docs[f"tasks/{workflow.steps[0].task_id}"]["submitted_by"] = "alice@example.com"
+    client.app.dependency_overrides[submission_scope] = lambda: "alice@example.com"
+    try:
+        params = {"ids": ["wf_a"]} if ids else {}
+        steps = _list(client, view="summary", **params)["workflows"][0]["steps"]
+    finally:
+        client.app.dependency_overrides.pop(submission_scope, None)
+
+    assert steps[0]["task_summary"]["state"] == "SUCCEEDED"
+    assert steps[1]["task_summary"] is None
