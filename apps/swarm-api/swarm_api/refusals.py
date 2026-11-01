@@ -576,6 +576,19 @@ SWITCHES: dict[str, Switch] = {
         "Ships on: the console shows the step waiting until then",
         default=True,
     ),
+    # Admin › Setup's sign-in client (issue #2964): an id that is not a
+    # Desktop OAuth client's. SHIPS ON (default=True), like publishing_off:
+    # the route is new, so no caller met it before, and the console checks
+    # the same suffix before it posts. Off, the id is saved as given and `sc`
+    # signs in against a client that does not exist. Set
+    # REFUSAL_CLIENT_ID_INVALID=off to save any id again.
+    "client_id_invalid": Switch(
+        code="client_id_invalid",
+        why="POST /v1/admin/setup/sign-in-client refuses 422 an id that does not end "
+        ".apps.googleusercontent.com, and writes neither the secret nor the id. Ships on: "
+        "the route is new and the console's form checks the same suffix first",
+        default=True,
+    ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
     # of #2325) have NO switch here, deliberately: join_link_unknown,
     # join_already_member, join_already_reaches, join_not_offered,

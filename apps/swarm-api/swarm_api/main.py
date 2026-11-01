@@ -180,6 +180,9 @@ UNCAPTURED_ROUTES = frozenset({
     "/v1/admin/setup/github-app/conversion",
     "/v1/admin/setup/links",
     "/v1/setup/links/redeem",
+    # The Desktop sign-in client's secret (issue #2964), on its way to
+    # Secret Manager.
+    "/v1/admin/setup/sign-in-client",
 })
 
 # --------------------------------------------------------------------------

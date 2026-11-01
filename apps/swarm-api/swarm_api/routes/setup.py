@@ -1034,8 +1034,9 @@ def save_sign_in_client(
     `console/sign_in_client`. Neither the secret nor the request is logged."""
     client_id = body.client_id.strip()
     if not DESKTOP_CLIENT_ID.match(client_id):
-        raise ClientIdInvalid(
-            "that is not a Desktop OAuth client id; it ends .apps.googleusercontent.com")
+        # A switched refusal, on by default (`refusals.SWITCHES`).
+        refusals.refuse(ClientIdInvalid(
+            "that is not a Desktop OAuth client id; it ends .apps.googleusercontent.com"))
     secrets_.add_version(SIGN_IN_CLIENT_SECRET, body.client_secret)
     saved = {"client_id": client_id, "saved_at": ctx.now(), "saved_by": caller.email}
     record.write(record.console_path(ir.SIGN_IN_CLIENT), saved)
