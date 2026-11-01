@@ -388,3 +388,71 @@ def test_runs_serve_their_kind_and_base():
                                    "kind_reason": None})
     assert served["kind"] == "incremental" and served["base_sha"] == ONE
     assert "kind_reason" in served
+
+
+# --------------------------------------------------------------------------
+# The weekly full run builds on the servers' answers (part of #2991, owner
+# 2026-11-01): it is given the last promoted index as a base by its own
+# prompt line, so it re-asks the language servers only about the changed
+# and never-covered files and still rebuilds the tree-sitter half whole.
+# --------------------------------------------------------------------------
+
+def test_the_weekly_full_run_is_given_the_promoted_index_for_the_servers_answers():
+    choice = _choose(_state(last_indexed_at=NOW - timedelta(days=7)))
+    # MUTATION: give the weekly run no base and it starts over every week,
+    # reaching the same quarter of pyright's files.
+    assert choice == repoindex.KindChoice(
+        "full", base_sha=None, reason=choice.reason, lsp_base_sha=ONE)
+    assert "due every 7" in choice.reason
+
+
+@pytest.mark.parametrize("make", [
+    lambda: _choose(requested="full"),
+    lambda: _choose(changes={"status": "ahead", "files": ["src/a.py", "pyproject.toml"]}),
+    lambda: _choose(_state(last_indexed_at=NOW - timedelta(days=7)),
+                    version={"commit_sha": ONE, "graph_digest": None}),
+    lambda: _choose(_state(last_indexed_at=NOW - timedelta(days=7)),
+                    version={"commit_sha": ONE, "graph_digest": GRAPH,
+                             "graph_extractor": dict(CARRIED, version="1")}),
+], ids=["asked_for", "configuration", "no_graph", "other_extractor"])
+def test_no_other_full_run_carries_answers(make):
+    # An explicit request rebuilds everything; a configuration change changes
+    # what every answer means; a graph the extractor would not carry is none.
+    choice = make()
+    assert choice.kind == "full" and choice.lsp_base_sha is None
+
+
+def test_a_full_runs_prompt_names_its_lsp_base_and_no_incremental_base():
+    task = repoindex.indexer_task(
+        {"owner": "acme", "repo": "app", "default_branch": "main", "tenant_id": "t1",
+         "repo_id": "repo_1", "repository_url": "https://github.com/acme/app"},
+        TWO, "full", lsp_base_sha=ONE)
+    prompt = task.input["prompt"]
+    assert f"\n{repoindex.LSP_BASE_LINE}{ONE}\n" in prompt
+    assert repoindex.BASE_LINE not in prompt
+    # The agent is told it is still a full run.
+    assert 'write "kind": "full", no "base_sha"' in prompt
+    assert task.metadata == {"repo_index": "repo_1", "commit_sha": TWO, "index_kind": "full",
+                             "lsp_base_sha": ONE}
+    # An incremental run never names one.
+    with pytest.raises(ValueError):
+        repoindex.indexer_task(
+            {"owner": "acme", "repo": "app", "default_branch": "main", "tenant_id": "t1",
+             "repo_id": "repo_1", "repository_url": "https://github.com/acme/app"},
+            TWO, "incremental", base_sha=ONE, lsp_base_sha=ONE)
+
+
+def test_a_weekly_full_run_is_submitted_with_its_lsp_base(client, db, objects, repo_id, github):
+    _promote_one_with_a_graph(client, db, objects, repo_id)
+    index = db.docs[f"repositories/{repo_id}"]["index"]
+    index["last_full_at"] = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    github.heads["main"] = TWO
+    github.compares[(ONE, TWO)] = {"status": "ahead", "ahead_by": 1, "files": ["src/a.py"]}
+
+    run = _index_now(client, repo_id, kind="incremental").json()["run"]
+
+    assert run["kind"] == "full" and run["base_sha"] is None
+    assert run["lsp_base_sha"] == ONE
+    task = db.docs[f"tasks/{run['task_id']}"]
+    assert task["timeout_seconds"] == repoindex.FULL_TIMEOUT_SECONDS
+    assert f"\n{repoindex.LSP_BASE_LINE}{ONE}\n" in task["input"]["prompt"]

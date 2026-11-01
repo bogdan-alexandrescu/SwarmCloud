@@ -6,8 +6,8 @@ full run) and names, in the SIGNED prompt, what each language server cost
 in the last full run (`LSP_COST_LINE`). What is held here:
 
   * `budgets()` hands each phase its share of whatever timeout the task has,
-    so the LSP pass grows with the run: 540 s of 1,800, 1,260 of 3,600 and
-    2,700 of 7,200;
+    so the LSP pass grows with the run: 540 s of 1,800, 2,160 of 3,600 and
+    4,500 of 7,200 (the owner's "Give it 2,160 s", 2026-11-01, #2991);
   * the cost line is read from the signed prompt only, and a line that is
     malformed or appears twice is no history at all (the equal split);
   * the extractor is given the costs, one `--lsp-server-cost` a server.
@@ -25,8 +25,8 @@ from swarm_api import repoindex
 
 @pytest.mark.parametrize(("timeout", "extract", "lsp", "write", "sweep"), [
     (1_800, 720, 540, 180, 90),
-    (3_600, 1_440, 1_260, 360, 180),
-    (7_200, 2_880, 2_700, 720, 360),
+    (3_600, 2_340, 2_160, 360, 180),
+    (7_200, 4_680, 4_500, 720, 360),
 ])
 def test_the_phase_budgets_follow_the_timeout(timeout, extract, lsp, write, sweep):
     budget = indexrun.budgets(timeout)
@@ -35,13 +35,31 @@ def test_the_phase_budgets_follow_the_timeout(timeout, extract, lsp, write, swee
     # would go to the agent, not to the servers that ran out of time.
     assert (budget.extract, budget.lsp_total, budget.graph_write, budget.sweep) == \
         (extract, lsp, write, sweep)
-    # The agent still has the larger part of every run.
-    assert timeout - budget.extract - budget.graph_write - budget.sweep >= 810
+    # The agent keeps 810 s of a 1,800 s run and at least 720 s of a longer one.
+    assert timeout - budget.extract - budget.graph_write - budget.sweep >= (
+        810 if timeout < 3_600 else 720)
+
+
+@pytest.mark.parametrize("timeout", [2_700, 3_599])
+def test_a_run_under_an_hour_keeps_the_old_share(timeout):
+    # MUTATION: raise the share on every run and a 2,700 s run's agent keeps
+    # only 405 s.
+    assert indexrun.budgets(timeout).extract == int(timeout * 0.4)
+
+
+def test_the_pass_gets_2160_of_3600_and_the_agent_keeps_720():
+    # The owner's "Give it 2,160 s" (2026-11-01, #2991): pyright needs about
+    # 3,400 s for SwarmCloud's 2,334 Python files; 2,160 a run, carried
+    # forward, covers them in two runs.
+    # MUTATION: keep EXTRACT_SHARE 0.4 on hour-long runs and this reads 1,260.
+    budget = indexrun.budgets(3_600)
+    assert budget.lsp_total == 2_160
+    assert 3_600 - budget.extract - budget.graph_write - budget.sweep == 720
 
 
 def test_ai_studios_run_gives_the_pass_more_than_pyright_needed():
     # #1693: pyright needed ~680-890 s on ai-studio (3,795 source files) and
-    # had 270. The pass as a whole now has 1,260 s, and the driver grants it
+    # had 270. The pass as a whole now has 2,160 s, and the driver grants it
     # in proportion to each server's measured cost.
     timeout = repoindex.index_timeout_seconds("full", 3_795)
     assert indexrun.budgets(timeout).lsp_total >= 890

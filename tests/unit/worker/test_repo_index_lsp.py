@@ -1267,3 +1267,145 @@ def test_the_image_installs_the_four_servers_pinned(lsp: Any) -> None:
     # Part of the indexer's one self-test RUN (test_image_streaming.py says why).
     assert " && swarm-repo-index --lsp-self-test" in text
     assert "COPY images/agent-runtime-indexer/repo-index/lsp/ /opt/repo-index/lsp/" in text
+
+
+# --------------------------------------------------------------------------
+# Carrying the servers' answers forward (part of #2991, owner 2026-11-01).
+# pyright needs ~3,400 s for SwarmCloud's 2,334 Python files, more than any
+# run gives it, and each weekly full run started over and reached the same
+# quarter. Both run kinds now ask a server only about the files it has not
+# answered -- the affected ones first, then the never-covered ones -- and
+# keep the base's answers for every covered file that did not change.
+# --------------------------------------------------------------------------
+
+# CUT_APP and a fourth caller, c.py, that the base covers and no change touches.
+CARRY_APP: dict[str, str] = dict(CUT_APP, **{
+    "src/c.py": "from .b import helper\n\n\ndef third():\n    return helper()\n",
+})
+CARRY_DEFINITIONS = dict(CUT_DEFINITIONS, **{
+    "src/c.py:4": {"path": "src/b.py", "line": 0, "character": 4, "name": "helper"},
+})
+
+
+def _covered_base(tool: Any, lsp: Any, tmp_path: Path, repo: Path, *, uncovered: str,
+                  version: str | None = None) -> Any:
+    """An `ok` full run's base with one file marked never covered -- as a
+    budget cut leaves the files after it -- and its language `partial`."""
+    scenario: dict = {"definitions": CARRY_DEFINITIONS}
+    if version is not None:
+        scenario["server_info"] = {"name": "fake-lsp", "version": version}
+    facts = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, _fake(lsp, tmp_path, scenario, name="basefake")))
+    assert _language(facts, "python")["status"] == "ok"
+    graph = tool.graph_document(facts)
+    for row in graph["files"]:
+        if row["path"] == uncovered:
+            row["lsp"] = False
+    for row in graph["languages"]:
+        if row["language"] == "python":
+            row.update(status="partial", reason="basefake ran out of its budget", fallback="ast")
+    return tool.Base(sha=facts["commit_sha"], graph=graph, index=tool.index_document(facts))
+
+
+def _definition_files(tmp_path: Path, name: str = "fake") -> list[str]:
+    """The files the run's server was asked a definition in, in the order it was asked."""
+    asked = [p["textDocument"]["uri"].rsplit("/src/", 1)[1]
+             for p in _asked(_log(tmp_path, name), "textDocument/definition")]
+    return [f"src/{path}" for i, path in enumerate(asked) if path not in asked[:i]]
+
+
+def test_an_incremental_run_asks_the_never_covered_files_after_the_affected_ones(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    base = _covered_base(tool, lsp, tmp_path, repo, uncovered="src/a.py")
+    _commit(repo, {"src/z.py": CUT_APP["src/z.py"] + "\n\ndef later():\n    return 1\n"})
+    facts = tool.extract(repo, tool.Budget(), base=base, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS})))
+    assert facts["kind"] == "incremental" and facts["changes"]["affected"] == ["src/z.py"]
+    # MUTATION: ask only the affected files (the old incremental run) and
+    # a.py, which no server has finished, is never asked again.
+    # MUTATION: ask both sets in one pass and the driver's path order puts
+    # a.py before the change: z.py must come first.
+    assert _definition_files(tmp_path) == ["src/z.py", "src/a.py"]
+    rows = _file_rows(facts)
+    assert rows["src/a.py"]["lsp"] is True and rows["src/z.py"]["lsp"] is True
+    # c.py is covered and unchanged: not asked, and its base answer kept.
+    assert rows["src/c.py"]["lsp"] is True
+    assert _edge(facts, "src/c.py#third", "src/b.py#helper")["evidence"] == "lsp"
+    python = _language(facts, "python")
+    # Every file is now covered, asked or carried, so the language is whole.
+    # MUTATION: keep the worse of the run's and the base's status even when
+    # every file is covered and this reads `partial`.
+    assert (python["status"], python["files_covered"], python["fallback"]) == ("ok", 5, None)
+
+
+def test_an_incremental_run_that_runs_out_before_the_never_covered_files_stays_partial(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # The truthful row: a never-covered file the budget did not reach is
+    # still uncovered, so the language is not `ok`.
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    base = _covered_base(tool, lsp, tmp_path, repo, uncovered="src/z.py")
+    _commit(repo, {"src/a.py": A_CHANGED})
+    facts = tool.extract(repo, tool.Budget(), base=base, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS,
+                                   "slow_paths": {"src/z.py": 0.6}}),
+        total_budget_seconds=3.0))
+    rows = _file_rows(facts)
+    assert rows["src/a.py"]["lsp"] is True and rows["src/z.py"]["lsp"] is False
+    assert _language(facts, "python")["status"] == "partial"
+
+
+def test_a_full_run_given_a_base_asks_only_changed_and_never_covered_files(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    base = _covered_base(tool, lsp, tmp_path, repo, uncovered="src/z.py")
+    _commit(repo, {"src/a.py": A_CHANGED})
+    facts = tool.extract(repo, tool.Budget(), base=base, base_lsp_only=True, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS})))
+    # Still a full run: the tree-sitter half is rebuilt whole, and the index
+    # names no base (promotion refuses a full run's index that claims one).
+    assert facts["kind"] == "full" and facts["base_sha"] is None and "changes" not in facts
+    carry = facts["extractor"]["lsp_carry"]
+    assert carry["base_sha"] == base.sha and carry["ran"] is True and carry["reason"] is None
+    assert carry["carried"] == ["src/__init__.py", "src/b.py", "src/c.py"]
+    # MUTATION: ask every file, as a full run did, and c.py is asked again.
+    assert _definition_files(tmp_path) == ["src/a.py", "src/z.py"]
+    rows = _file_rows(facts)
+    assert all(rows[p]["lsp"] for p in CARRY_APP)
+    assert _edge(facts, "src/c.py#third", "src/b.py#helper")["evidence"] == "lsp"
+    assert _language(facts, "python")["status"] == "ok"
+    # The tree-sitter half is this run's: a.py's new symbol is there.
+    assert any(s["id"] == "src/a.py#second" for s in facts["symbols"])
+
+
+def test_a_full_run_does_not_carry_a_base_of_another_extractor_version(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    base = _covered_base(tool, lsp, tmp_path, repo, uncovered="src/z.py")
+    base.graph["extractor"]["version"] = "0"
+    _commit(repo, {"src/a.py": A_CHANGED})
+    facts = tool.extract(repo, tool.Budget(), base=base, base_lsp_only=True, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS})))
+    carry = facts["extractor"]["lsp_carry"]
+    assert carry["ran"] is False and "version '0'" in carry["reason"]
+    # MUTATION: carry the base whatever wrote it and c.py is not asked.
+    assert _definition_files(tmp_path) == ["src/a.py", "src/c.py", "src/z.py"]
+
+
+def test_a_base_answered_by_another_server_version_is_not_carried(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    base = _covered_base(tool, lsp, tmp_path, repo, uncovered="src/z.py", version="1.0.0")
+    _commit(repo, {"src/a.py": A_CHANGED})
+    facts = tool.extract(repo, tool.Budget(), base=base, base_lsp_only=True, lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS,
+                                   "server_info": {"name": "fake-lsp", "version": "2.0.0"}})))
+    carry = facts["extractor"]["lsp_carry"]
+    # MUTATION: carry a covered file whatever server answered it and c.py
+    # keeps an answer from a server this run does not run.
+    assert "src/c.py" in _definition_files(tmp_path)
+    assert carry["carried"] == []
+    assert carry["not_carried"] == {"python": "the base's answers are fake 1.0.0's; this run's "
+                                              "server is fake 2.0.0"}
+    assert _file_rows(facts)["src/c.py"]["lsp"] is True
+    assert _language(facts, "python")["status"] == "ok"
