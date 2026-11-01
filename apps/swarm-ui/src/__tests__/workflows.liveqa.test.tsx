@@ -19,7 +19,7 @@
  */
 import STYLES from '../styles.css?raw'
 import WF_CSS from '../styles/workflows.css?raw'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -153,11 +153,6 @@ function serve(workflows: Workflow[], taskById: Map<string, Task> | null, nextPa
   } satisfies Result<WorkflowBoard>)
 }
 
-const notFound = {
-  status: 'error',
-  error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' },
-} as const
-
 /** An IntersectionObserver that never reports a row in view: nothing scrolls here. */
 class NeverInView {
   observe(): void {}
@@ -202,69 +197,28 @@ const rowIds = () => [...document.querySelectorAll<HTMLElement>('.wfl-table tbod
 // WF-1 (S1)
 // ---------------------------------------------------------------------------
 
-describe('WF-1: a search finds a row whose name had not been read, without scrolling to it', () => {
-  it('reads the unread row for the search, and the row is found', async () => {
-    api.loadWorkflow.mockImplementation(async (id: string) =>
-      id === 'wf_old'
-        ? ({ status: 'ok', data: { workflow: old, tasks: [oldTask] }, fetchedAt: T0 } satisfies Result<WorkflowRead>)
-        : notFound,
-    )
+describe('WF-1: a search finds a row by the name the list read served, without scrolling to it', () => {
+  // THE NAMES COME WITH THE LIST (console load speed, owner's pick
+  // 2026-11-01): each step's block carries its task's `unit` and `title`, so
+  // a search reads every row's name from the list read and reads no row by id.
+  it('finds a row by its step block’s name, with no read of its own', async () => {
+    serve([fresh, old], new Map([['task_fresh', task('task_fresh', 'SUCCEEDED', { metadata: { unit: 'fresh-title' } })], ['task_old', oldTask]]))
     render(<WorkflowsScreen view="q=VQA-L10" />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_old']))
-    // No row was ever in view: the search itself asked for the read.
-    expect(api.loadWorkflow).toHaveBeenCalledWith('wf_old')
     expect(document.querySelector('.wfl-none')).toBeNull()
+    // MUTATION: put `useRowReads` back -- the search reads rows by id.
+    expect(api.loadWorkflow).not.toHaveBeenCalled()
   })
 
-  it('never says "no match among" the rows while a name it searches is still unread', async () => {
-    // The read never lands: the row can be judged neither way.
-    api.loadWorkflow.mockReturnValue(new Promise(() => {}))
+  it('a row the list read served no name for is not read for the search either', async () => {
     render(<WorkflowsScreen view="q=VQA-L10" />)
-    const none = await waitFor(() => {
-      const p = document.querySelector('.wfl-none')
-      expect(p).not.toBeNull()
-      return p!
-    })
-    expect(none.textContent).not.toMatch(/No match among/)
-    expect(none.textContent).toMatch(/1 of the 2 workflows have not had their names read/)
+    await waitFor(() => expect(document.querySelector('.wfl-none')?.textContent).toMatch(/^No match among all 2 workflows read\./))
+    expect(api.loadWorkflow).not.toHaveBeenCalled()
   })
 
-  it('says "no match" once every name it searched was read', async () => {
-    api.loadWorkflow.mockResolvedValue({ status: 'ok', data: { workflow: old, tasks: [oldTask] }, fetchedAt: T0 } satisfies Result<WorkflowRead>)
+  it('says "no match" over every row the list read', async () => {
     render(<WorkflowsScreen view="q=nothing-is-called-this" />)
     await waitFor(() => expect(document.querySelector('.wfl-none')?.textContent).toMatch(/^No match among all 2 workflows read\./))
-  })
-
-  it('keeps no more than six row reads in flight at once', async () => {
-    const many = Array.from({ length: 20 }, (_, i) =>
-      workflow(`wf_${String(i).padStart(2, '0')}`, 'SUCCEEDED', [step('implement', { task_id: `task_${i}` })], 1000 + i),
-    )
-    serve(many, new Map())
-    let inFlight = 0
-    let most = 0
-    const settle: (() => void)[] = []
-    api.loadWorkflow.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          inFlight += 1
-          most = Math.max(most, inFlight)
-          settle.push(() => {
-            inFlight -= 1
-            resolve(notFound)
-          })
-        }),
-    )
-    render(<WorkflowsScreen view="q=anything" />)
-    await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledTimes(6))
-    expect(most).toBe(6)
-    // Each read that lands lets one more start, until all twenty were asked.
-    for (let i = 0; i < 20; i++) {
-      await act(async () => {
-        settle.shift()?.()
-      })
-    }
-    await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledTimes(20))
-    expect(most).toBe(6)
   })
 })
 
