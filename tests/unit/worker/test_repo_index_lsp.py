@@ -918,6 +918,26 @@ def test_a_slow_server_no_longer_leaves_the_next_one_seconds(tool: Any, lsp: Any
     assert index["extractor"]["lsp"]["server_costs"] == {"pyfake": 900, "tsfake": 100}
 
 
+def test_each_server_records_its_peak_memory_for_the_next_decision(tool: Any, lsp: Any,
+                                                                  tmp_path: Path) -> None:
+    # #2991: running the servers side by side, rather than cheapest first,
+    # is a memory question (the indexer has 8 GiB, each server may hold
+    # three quarters of it), and no run recorded what a server holds. Each
+    # row now says, in 256 MiB steps so timing noise does not move the
+    # graph's bytes.
+    repo = fx.build_repo(tmp_path / "repo", CUT_APP)
+    index = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, _fake(lsp, tmp_path, {"definitions": CUT_DEFINITIONS})))
+    counts = _language(index, "python")["lsp"]
+    # MUTATION: leave `peak_rss_mib` out of run_pass()'s counts and this is a KeyError.
+    assert counts["peak_rss_mib"] >= lsp.RSS_STEP_MIB
+    assert counts["peak_rss_mib"] % lsp.RSS_STEP_MIB == 0
+    assert lsp.rss_mib(0) == 0
+    assert lsp.rss_mib(1) == 256
+    assert lsp.rss_mib(256 * 1024 * 1024) == 256
+    assert lsp.rss_mib(256 * 1024 * 1024 + 1) == 512
+
+
 def test_a_cheap_servers_workspace_queries_are_cut_at_its_proportion(tool: Any, lsp: Any,
                                                                     tmp_path: Path) -> None:
     # The other half of the rule above: tsfake's equal grant (2.0 of 4.0)
