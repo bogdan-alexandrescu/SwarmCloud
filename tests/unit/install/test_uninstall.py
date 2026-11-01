@@ -780,6 +780,10 @@ def test_forge_and_tenant_secrets_are_listed_too():
     assert [c[2]["filter"] for c in api.calls if c[1] == url] == list(SECRET_FILTERS)
     # Step 5 runs whenever infra ran: swarm-api writes the slots, not an engine step.
     assert "infra." in un.STEPS[4].reverses and "team." in un.STEPS[4].reverses
+    # Issue #2964: stage 2's edge.client-secret-container makes the Desktop
+    # client's secret empty, before any infra pass; an install stopped there
+    # still has it, so step 5 reverses that step too.
+    assert any("edge.client-secret-container".startswith(p) for p in un.STEPS[4].reverses)
 
 
 def test_workspace_accounts_and_their_bindings_are_removed(tmp_path):
