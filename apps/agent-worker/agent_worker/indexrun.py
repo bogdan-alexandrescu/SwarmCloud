@@ -102,6 +102,13 @@ registration, whose content the digests vouch for. Whatever cannot be staged mak
 the run full, and the phase record says why; it never fails the run. The
 extractor then decides for itself, from the files it can compare
 (`repo_index_extract.incremental_changes`), and runs full when it must.
+
+A WEEKLY FULL RUN'S BASE (part of #2991, owner 2026-11-01). The weekly full
+run is given the promoted index too, by its own line (`LSP_BASE_LINE`),
+staged exactly as above; the extractor is told `--base-lsp-only`
+(`base_lsp_only`), so it rebuilds the tree-sitter half whole and keeps only
+the base's language-server answers for the covered files that did not
+change, asking the servers about the changed and never-covered ones.
 """
 
 from __future__ import annotations
