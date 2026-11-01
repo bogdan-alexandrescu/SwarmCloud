@@ -4,6 +4,7 @@ import { AgChildrenPane, useChildCount } from './AgentChildren'
 import { AgentDetailScreen, DRAWER_POLL_MS, Mark, timesRun } from './AgentDetail'
 import { AgentLogs, LogLastLine } from './AgentLogs'
 import { backLabel, type AgentTab } from './agentlist'
+import { agentPanelShown } from './Agents'
 import { loadAttempts, loadTask } from './api'
 import type { Result } from './fetch'
 import type { TaskPane } from './App'
@@ -201,6 +202,18 @@ export function AgentSplit({
               : null,
         )
   const headReadAt = head.state.status === 'ok' || head.state.status === 'stale' ? head.state.fetchedAt : null
+  // THE LIST WAITS FOR THIS PANEL (load-speed investigation, the owner's pick
+  // 2026-11-01): opened at its own address, the agent's task, attempts and
+  // events are read first, and the list's first read starts once this panel
+  // has rendered with its task and attempt reads answered (`listMayStart` in
+  // Agents.tsx). The panes' event reads start on this panel's first render, so
+  // they are under way before it. Told again when the agent closes.
+  const panelDrawn = head.state.status !== 'loading' && runsRead.state.status !== 'loading'
+  useEffect(() => {
+    if (!panelDrawn) return
+    agentPanelShown(taskId)
+    return () => agentPanelShown(null)
+  }, [panelDrawn, taskId])
 
   useListWidth(snap, pane === 'changes')
 

@@ -14,7 +14,7 @@ import { BudgetRowMark, budgetRowSay, budgetStopLine, stoppedAtBudgetRow, useBud
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
-import type { Result } from './fetch'
+import { pageReads, type Result } from './fetch'
 import { isLiveBrowser, liveBrowserRows, needsYou } from './Handoff'
 import { presetLabel } from './LiveBrowser'
 import { theaterPath } from './LiveThumb'
@@ -326,12 +326,123 @@ function appendPage(held: readonly Task[], got: TaskPage | null, token: string |
   return { tasks: [...held, ...rows], token }
 }
 
-async function loadAgentsPage(): Promise<Result<AgentsPage>> {
+/**
+ * THE LIST'S POLL PLAN (load-speed investigation, the owner's pick 2026-11-01,
+ * part of #2688). Measured in the owner's browser, `GET /v1/tasks?limit=200&
+ * view=summary` took 5.3 s on first load and 1.1-2.1 s on every poll, almost
+ * all of it server time, and the list re-read that page every 5 s while Live
+ * held a row -- then, only once it had answered, read the live and waiting
+ * states one `?state=` read each.
+ *
+ * NOW A 5 s POLL IS ONE READ: the live and waiting states together, as one
+ * `?state=A,B,...` list (`GET /v1/tasks` takes several states in one `in`
+ * query, #2998), merged into the page already held. The 200-row page itself is
+ * re-read every `PAGE_REREAD_MS`, and when it is, the state read is started at
+ * the same instant beside it rather than after it. A live agent changes on the
+ * order of seconds and every one of them is in the state read; a finished
+ * agent's row no longer changes, so its page can be 30 s old.
+ *
+ * A ROW THAT LEFT THE LIVE AND WAITING STATES -- held as live or waiting, absent
+ * from a whole state read -- finished, or was cancelled, since the page was
+ * read. Its new row is the page's to bring, so it leaves Live at once and the
+ * next poll re-reads the page (`due`), rather than drawing a finished agent as
+ * running for up to 30 s or guessing the state it ended in.
+ */
+export const PAGE_REREAD_MS = IDLE_POLL_MS
+
+/** The page the list holds between page reads, and when that page was read. */
+export interface HeldPage {
+  page: AgentsPage
+  /** When the page read started. */
+  at: number
+  /** A row left the live and waiting states: the next poll re-reads the page. */
+  due: boolean
+}
+
+/**
+ * THE STATES ONE STATE READ ASKS FOR: every live state and every waiting state
+ * a task is ever in. QUEUED is a workflow's state and never a task's
+ * (`NEVER_WRITTEN`), so it is not asked for (VQ-012).
+ */
+const WAITING_READ: readonly TaskState[] = [...WAITING_STATES].filter((s) => !NEVER_WRITTEN.has(s))
+export const LIVE_AND_WAITING: readonly TaskState[] = [...CONCURRENCY_STATES, ...WAITING_READ]
+const IN_STATE_READ: ReadonlySet<TaskState> = new Set(LIVE_AND_WAITING)
+
+/** Whether the list must read its 200-row page on this read, rather than the states alone. */
+export function pageDue(held: HeldPage | null, now: number = Date.now()): boolean {
+  return held === null || held.due || now - held.at >= PAGE_REREAD_MS
+}
+
+/**
+ * ONE `?state=` READ OF THE LIVE AND WAITING STATES, summary rows. The route
+ * takes `state=A,B` as one `state IN [...]` query (swarm-api routes/tasks.py
+ * `_parse_states`, at most `STATE_IN_MAX` states); `loadTasksInState` sends the
+ * value it is handed as the one `state` parameter, so the comma list goes to
+ * the route as written. A FIXTURE BUILD filters its one fixture page instead,
+ * through `loadTasks`, so its request log shows the one read.
+ *
+ * A read that throws or answers nothing is a failed read, never an empty
+ * state, as the header's attempt read treats one (AgentSplit.tsx). Called
+ * WITHOUT a microtask in front of it, so the read starts inside `pageReads`
+ * (CH-2) when the page's load calls it.
+ */
+function readLiveAndWaiting(): Promise<Result<TaskPage> | null> {
+  try {
+    if (USE_FIXTURES) {
+      return loadTasks(TASK_PAGE_LIMIT, { view: 'summary' }).then(
+        (r): Result<TaskPage> | null => {
+          if (r.status !== 'ok' && r.status !== 'stale') return r
+          const tasks = r.data.tasks.filter((t) => IN_STATE_READ.has(t.state))
+          return tasks.length === 0 ? { status: 'empty', fetchedAt: r.fetchedAt } : { ...r, data: { ...r.data, tasks } }
+        },
+        () => null,
+      )
+    }
+    const states = LIVE_AND_WAITING.join(',') as TaskState
+    return loadTasksInState(states, { view: 'summary' }).then((r) => r ?? null, () => null)
+  } catch {
+    return Promise.resolve(null)
+  }
+}
+
+/** The state read as rows, and whether it holds every live and waiting task. */
+function stateRows(r: Result<TaskPage> | null): { tasks: Task[]; whole: boolean; ok: boolean } {
+  if (r !== null && r.status === 'empty') return { tasks: [], whole: true, ok: true }
+  if (r !== null && r.status === 'ok') return { tasks: r.data.tasks, whole: !r.data.next_page_token, ok: true }
+  if (r !== null && r.status === 'stale') return { tasks: r.data.tasks, whole: false, ok: false }
+  return { tasks: [], whole: false, ok: false }
+}
+
+/** `rows` with every row of `extra` whose id it does not already hold after them. */
+function joinRows(rows: readonly Task[], extra: readonly Task[]): Task[] {
+  const held = new Set(rows.map((t) => t.id))
+  return [...rows, ...extra.filter((t) => !held.has(t.id))]
+}
+
+/**
+ * READ THE LIST: the page and the state read together when the page is due,
+ * the state read alone otherwise. `held` is the screen's own (`AgentsScreen`),
+ * written here after every read, so a tenant switch -- which remounts the
+ * screen -- starts from no page.
+ */
+export async function loadAgentsPage(held: { current: HeldPage | null }): Promise<Result<AgentsPage>> {
+  const last = held.current
+  if (!pageDue(last) && last !== null) return pollStates(last, held)
+  const startedAt = Date.now()
   const asked = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
   // The summary view (#168): no row on this screen draws `input`, `metadata`
   // or `result_summary` -- the inspector reads its own task, full, through
   // `loadTask` -- and the trap in `drawer.reread.test.tsx` holds that.
-  const read = await loadTasks(asked, { view: 'summary' })
+  // BOTH READS START HERE, before the first `await`.
+  // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
+  // there is no capped page to read the states beside, and the state read would
+  // be the same fixture rows again.
+  const [read, states] = await Promise.all([
+    loadTasks(asked, { view: 'summary' }),
+    USE_FIXTURES ? Promise.resolve(null) : readLiveAndWaiting(),
+  ])
+  const fresh = stateRows(states)
+  let page: AgentsPage
   // AN EMPTY READ IS A PAGE OF NO ROWS, NOT A DIFFERENT SCREEN (V151, visual
   // QA #1038). Handed to `Screen` as `empty`, it replaced the whole body with
   // one panel: the tab strip, the search and the filters went with it, so the
@@ -339,79 +450,99 @@ async function loadAgentsPage(): Promise<Result<AgentsPage>> {
   // see a minute later. The body draws each tab's own real zero, mark and
   // all, under the same chrome it always has.
   if (read.status === 'empty') {
-    return { status: 'ok', data: { tasks: [], next_page_token: null, asked }, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
+    page = { tasks: fresh.ok ? fresh.tasks : [], next_page_token: null, asked, liveWhole: true, waitingWhole: true }
+    held.current = { page, at: startedAt, due: false }
+    return { status: 'ok', data: page, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
   }
   if (read.status !== 'ok' && read.status !== 'stale') return read
-  if (!read.data.next_page_token) return { ...read, data: { ...read.data, asked, liveWhole: true, waitingWhole: true } }
-  // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
-  // there is no capped page to read the live states beside, and its `?state=`
-  // reads are the same fixture rows again, not a second population.
-  if (USE_FIXTURES) return { ...read, data: { ...read.data, asked, liveWhole: false, waitingWhole: false } }
-  const [live, waiting] = await Promise.all([readStates([...CONCURRENCY_STATES]), readStates(WAITING_READ)])
-  const held = new Set(read.data.tasks.map((t) => t.id))
-  const extra: Task[] = []
-  for (const t of [...live.tasks, ...waiting.tasks]) {
-    if (held.has(t.id)) continue
-    held.add(t.id)
-    extra.push(t)
+  // A PAGE WITH NO TOKEN HOLDS EVERY ROW, live ones included (QA12-20). A
+  // capped one holds every live and waiting row only when the state read beside
+  // it was whole; a failed or capped state read leaves Live and Waiting lower
+  // bounds, as they were. The state read's rows are the newer of the two for
+  // a task both hold only by a hair, so the page's own row is kept.
+  const capped = Boolean(read.data.next_page_token)
+  page = {
+    ...read.data,
+    tasks: joinRows(read.data.tasks, fresh.tasks),
+    asked,
+    liveWhole: !capped || fresh.whole,
+    waitingWhole: !capped || fresh.whole,
   }
-  return {
-    ...read,
-    data: {
-      ...read.data,
-      tasks: [...read.data.tasks, ...extra],
-      asked,
-      liveWhole: live.whole,
-      waitingWhole: waiting.whole,
-    },
-  }
+  if (read.status === 'ok') held.current = { page, at: startedAt, due: false }
+  return { ...read, data: page }
 }
 
 /**
- * THE WAITING STATES, READ IN FULL TOO (VQ-012, BGD's visual QA 2026-10-26):
- * over a capped page the tab read `Waiting 38+` beside the panel's `Waiting
- * 38` -- the panel counts by state over every task (`/v1/stats`, Spine.tsx
- * D27), the tab over the newest page -- so one figure was drawn with and
- * without its `+`. Read whole, as the live states are, the tab's figure is
- * every waiting agent and needs no `+`; a failed or capped read keeps it a
- * lower bound. QUEUED is a workflow's state and never a task's
- * (`NEVER_WRITTEN`), so it is not asked for.
+ * A 5 s POLL: the state read alone, merged into the page held. A row the read
+ * holds takes the read's row; a row held as live or waiting that a WHOLE read
+ * no longer holds is dropped and the page marked `due`; every other row is the
+ * page's. A failed state read is a failed read of the list: `Screen` keeps the
+ * rows on screen, dimmed with their age, and backs off.
  */
-const WAITING_READ: readonly TaskState[] = [...WAITING_STATES].filter((s) => !NEVER_WRITTEN.has(s))
+async function pollStates(last: HeldPage, held: { current: HeldPage | null }): Promise<Result<AgentsPage>> {
+  const states = await readLiveAndWaiting()
+  const fresh = stateRows(states)
+  if (!fresh.ok) {
+    if (states !== null && states.status === 'error') return states
+    return {
+      status: 'error',
+      error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The live and waiting agents could not be read.' },
+    }
+  }
+  const byId = new Map(fresh.tasks.map((t) => [t.id, t]))
+  let left = false
+  const kept: Task[] = []
+  for (const t of last.page.tasks) {
+    const now = byId.get(t.id)
+    if (now !== undefined) kept.push(now)
+    else if (fresh.whole && IN_STATE_READ.has(t.state)) left = true
+    else kept.push(t)
+  }
+  const page: AgentsPage = {
+    ...last.page,
+    tasks: joinRows(kept, fresh.tasks),
+    liveWhole: fresh.whole,
+    waitingWhole: fresh.whole,
+  }
+  held.current = { page, at: last.at, due: last.due || left }
+  const at = states !== null && (states.status === 'ok' || states.status === 'empty') ? states : null
+  return { status: 'ok', data: page, fetchedAt: at?.fetchedAt ?? Date.now(), ...(at?.serverAt !== undefined ? { serverAt: at.serverAt } : {}) }
+}
 
 /**
- * THE LIVE STATES, READ IN FULL (live-browser QA p12, QA12-20). Live was
- * counted over the newest 200 rows, so with more beyond them it read `Live
- * 5+` with exactly five live, offered `Load 200 more` under five rows, and a
- * resumed task older than the page -- the case p12 measured -- was not on it
- * at all. A live agent holds a pool slot, so the live states are bounded by
- * concurrency (invariant 3), not by the page: one `?state=` read each, summary
- * rows, made only when the page is capped. A failed or capped read leaves
- * Live a lower bound, as it was.
+ * OPENING ONE AGENT READS THAT AGENT FIRST (load-speed investigation, the
+ * owner's pick 2026-11-01). `/agents/live/{task}` mounted the list and the
+ * agent together, so the agent's task, attempts and events queued behind a
+ * 200-row page read that took 5.3 s. Now the list's first read waits until the
+ * agent's panel has rendered (`agentPanelShown`, called by AgentSplit once its
+ * task and attempt reads have answered) and starts then; on a phone, where an
+ * open agent covers the list, it waits until the agent is closed. While it
+ * waits the list is `Screen`'s loading skeleton, never an empty list. Only the
+ * FIRST read waits: a list already on screen when an agent opens stays.
  */
-async function readStates(states: readonly TaskState[]): Promise<{ tasks: Task[]; whole: boolean }> {
-  const reads = await Promise.all(
-    // A read that throws or answers nothing is a failed read, never an
-    // empty state, as the header's attempt read treats one (AgentSplit.tsx).
-    states.map((state) =>
-      Promise.resolve()
-        .then(() => loadTasksInState(state, { view: 'summary' }))
-        .then((r) => r ?? null, () => null),
-    ),
-  )
-  let whole = true
-  const tasks: Task[] = []
-  for (const r of reads) {
-    if (r !== null && r.status === 'empty') continue
-    if (r === null || r.status !== 'ok') {
-      whole = false
-      if (r !== null && r.status === 'stale') tasks.push(...r.data.tasks)
-      continue
-    }
-    tasks.push(...r.data.tasks)
-    if (r.data.next_page_token) whole = false
-  }
-  return { tasks, whole }
+let panelShownFor: string | null = null
+const panelWaiters = new Set<() => void>()
+
+/** The agent panel for `taskId` has rendered (AgentSplit); null when it closed. */
+export function agentPanelShown(taskId: string | null): void {
+  panelShownFor = taskId
+  for (const wake of [...panelWaiters]) wake()
+}
+
+/** Whether the list may start its first read with `open` the agent in the address. */
+export function listMayStart(open: string | null): boolean {
+  if (open === null) return true
+  if (phoneWidth()) return false
+  return panelShownFor === open
+}
+
+/**
+ * WHILE AN AGENT IS OPEN THE LIST POLLS AT THE IDLE CADENCE: the reader is on
+ * the agent, whose own reads keep it current, and the list beside it is
+ * context. 5 s returns when the agent is closed and Live holds a row.
+ */
+export function listPollInterval(page: TaskPage | null, open: string | null): number {
+  return open !== null ? IDLE_POLL_MS : pollInterval(page)
 }
 
 /**
@@ -483,6 +614,40 @@ export function AgentsScreen({
   const [more, setMore] = useState<MorePages | null>(null)
   const [moreRead, setMoreRead] = useState<MoreRead>({ kind: 'idle' })
   const busy = useRef(false)
+  // THE PAGE HELD BETWEEN PAGE READS (`loadAgentsPage`), and the first read's
+  // wait for the agent panel (`listMayStart`). `open` is read through a ref so
+  // the wait sees the address as it is when it wakes, not when it began.
+  const held = useRef<HeldPage | null>(null)
+  const open = useRef(taskId)
+  open.current = taskId
+  const waits = useRef(new Set<() => void>())
+  useEffect(() => {
+    for (const wake of [...panelWaiters]) wake()
+  }, [taskId])
+  useEffect(
+    () => () => {
+      for (const wake of waits.current) panelWaiters.delete(wake)
+      waits.current.clear()
+    },
+    [],
+  )
+  const load = async (): Promise<Result<AgentsPage>> => {
+    if (held.current === null && !listMayStart(open.current)) {
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          if (!listMayStart(open.current)) return
+          panelWaiters.delete(wake)
+          waits.current.delete(wake)
+          resolve()
+        }
+        panelWaiters.add(wake)
+        waits.current.add(wake)
+      })
+      // Past the wait the reads are still the page's (CH-2).
+      return pageReads(() => loadAgentsPage(held))
+    }
+    return loadAgentsPage(held)
+  }
   const loadMore = async (page: AgentsPage) => {
     const token = more !== null ? more.token : (page.next_page_token ?? null)
     if (token === null || busy.current) return
@@ -506,14 +671,14 @@ export function AgentsScreen({
     <>
       <Screen
         title="Agents"
-        load={loadAgentsPage}
+        load={load}
         // THE LIST RE-READS (AG-1). It read once and never again, while its
         // clock went on adding to every row: a finished agent read `running`
         // and was counted in Live. `Screen` owns the timer, the pause while the
         // tab is hidden, the back-off and the stop on an answer only a person
         // can change; this screen owns the cadence, which is a function of the
         // rows it holds.
-        pollMs={pollInterval}
+        pollMs={(page) => listPollInterval(page, open.current)}
         summary={(first) => {
           const d = withMorePages(first, more)
           const live = d.tasks.filter((t) => tabOf(t) === 'live').length
@@ -540,7 +705,7 @@ export function AgentsScreen({
             // screen hands over the last GOOD read's time, which is the one the
             // rows describe.
             readAt={reading.fetchedAt}
-            interval={reading.pollMs ?? pollInterval(d)}
+            interval={reading.pollMs ?? listPollInterval(d, taskId)}
             tab={tab}
             setTab={setTab}
             recentState={recentState}
@@ -1940,12 +2105,20 @@ const RUNS_HELD = 500
 
 /**
  * HOW MANY TIMES A ROW'S TASK RAN, read as the task header reads it
- * (`timesRun` over `GET /v1/tasks/{id}/attempts`, QA12-12). Only for a row
- * that shows the figure -- live, or over its cap -- and re-read only when the
+ * (`timesRun` over `GET /v1/tasks/{id}/attempts`, QA12-12). Only for THE ROW
+ * THE INSPECTOR HAS OPEN, when it shows the figure -- live, or over its cap --
+ * and re-read only when the
  * task says its attempts changed (its generation, its counter or its state),
  * the header's own key, never on every list poll. Until the documents are
  * read, or when the read fails, the task's own counter, as the header falls
  * back to it.
+ *
+ * EVERY OTHER ROW TAKES ITS TOTAL FROM THE ROW (load-speed investigation, the
+ * owner's pick 2026-11-01): one `/attempts` read per live row made a list of
+ * twelve live agents twelve more requests on every key change, beside the
+ * page. The row's `attempt_count` is the task's own counter, the figure the
+ * header falls back to; the open row is the one drawn beside that header, so
+ * it alone reads the documents and cannot contradict it.
  *
  * UNTIL THE FIRST READ LANDS, NULL (visual QA QA-026): the counter is the
  * figure only once a read has FAILED, never while one is in flight -- in
@@ -2153,7 +2326,7 @@ function CompactRow({
         ? `${sinceSubmit} since it was submitted at ${new Date(submitted).toISOString().slice(0, 16).replace('T', ' ')}Z: nothing records when it was ${task.state.toLowerCase()}`
         : undefined
   const ran = finished && el.phase !== 'unknown' ? (el.phase === 'ran' ? `ran ${el.text}` : el.text) : null
-  const tries = attemptsUsed(task, useRuns(task, live || task.attempt_count > task.max_attempts))
+  const tries = attemptsUsed(task, useRuns(task, open && (live || task.attempt_count > task.max_attempts)))
   // EVERY LIVE AND WAITING ROW SAYS ITS STATE IN WORDS (visual QA pass 1,
   // overview-agents-11, -56): a running row was told only by its dot, and a
   // waiting row's `queued` or `ready` was in its accessible name and nowhere
