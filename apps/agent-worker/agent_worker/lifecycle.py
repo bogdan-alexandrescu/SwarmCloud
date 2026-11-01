@@ -126,7 +126,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, NamedTuple, Sequence
+from typing import Any, Callable, Iterator, Mapping, NamedTuple, Sequence
 
 from swarm_common.config import Settings
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
@@ -207,6 +207,7 @@ from .config import WorkerConfig
 from .control import (
     ARCHIVE_DIGEST_RE,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
+    QUOTA_PARK_RESUMES_METADATA_KEY,
     RELEASE_WAIT_MAX_RESUMES,
     ControlPlane,
     ControlSignals,
@@ -3526,8 +3527,11 @@ class Worker:
         # whether or not a checkpoint did, which is what bounds the mock's
         # simulated park (runners/mock.py, the review of #213). ASSIGNED, not
         # `setdefault`: a count a caller could set would be a bound a caller
-        # could lift.
-        payload["attempt_count"] = int(task.get("attempt_count") or 0)
+        # could lift. Counted with the refunded resumes (`_refunded_resumes`):
+        # a refunded quota park takes one off `attempt_count`, so without them
+        # every lease after the mock's park read 1 again and parked again
+        # (dev acceptance, #2650).
+        payload["attempt_count"] = int(task.get("attempt_count") or 0) + _refunded_resumes(task)
         payload.setdefault("resumed_from_checkpoint", bool(self._restored_from))
         # The owner's answers to the blocking questions this task parked on
         # (AU-7, §3.9 step 4): `work/answers.json`, and the prompt's last
@@ -5342,12 +5346,12 @@ class Worker:
         # attempt after a hand-off park read `attempt_count` 1, was taken for
         # the task's first, restored nothing, and its agent started the task
         # over -- asking again for the hand-off already done.
-        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        resumes = 0
-        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
-            value = metadata.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
-                resumes += max(0, value)
+        #
+        # A refunded QUOTA park takes one off the same way (#2650): the
+        # attempt after a quota park read 1, restored nothing, and the file
+        # its agent wrote before the park never reached the attempt that
+        # succeeded (the workflow group's carry check).
+        resumes = _refunded_resumes(task)
         if (
             isinstance(count, bool)
             or not isinstance(count, int)
@@ -15736,8 +15740,8 @@ class Worker:
         one may have pushed. A fresh lane's first attempt publishes a branch
         origin cannot hold yet, so it makes no token-bearing fetch for it.
 
-        `attempt_count` is counted with the refunded child-await and hand-off
-        resumes, as `_recorded_checkpoint` counts it.
+        `attempt_count` is counted with the refunded child-await, hand-off and
+        quota-park resumes, as `_recorded_checkpoint` counts it.
         """
         task = self._task or {}
         try:
@@ -15748,12 +15752,7 @@ class Worker:
         count = task.get("attempt_count")
         if isinstance(count, bool) or not isinstance(count, int):
             return False
-        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        resumes = 0
-        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
-            value = metadata.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
-                resumes += max(0, value)
+        resumes = _refunded_resumes(task)
         return count + resumes > 1
 
     def _read_publish_remote_tip(
@@ -20196,6 +20195,31 @@ def _runner_argv(cfg: WorkerConfig) -> list[str]:
     if program in ("python", "python3") and shutil.which(program) is None:
         argv[0] = sys.executable
     return argv
+
+
+#: The metadata counters of the parks that REFUND their attempt: each takes
+#: one off `attempt_count`, so the attempt after it reads the same number as
+#: the attempt before it. A child await, a hand-off park and a provider-quota
+#: park (control.py). The quota one was missing (#2650).
+REFUNDED_RESUME_METADATA_KEYS = (
+    CHILD_AWAIT_RESUMES_METADATA_KEY,
+    handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY,
+    QUOTA_PARK_RESUMES_METADATA_KEY,
+)
+
+
+def _refunded_resumes(task: Mapping[str, Any]) -> int:
+    """How many parks of this task refunded their attempt: what `attempt_count`
+    lacks to be this attempt's number."""
+    metadata = task.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return 0
+    resumes = 0
+    for key in REFUNDED_RESUME_METADATA_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            resumes += max(0, value)
+    return resumes
 
 
 def _control_plane_unreachable(exc: BaseException) -> bool:
