@@ -2531,7 +2531,11 @@ fixer by hand and push the fix-up from a laptop.
    restates other jobs, comes last. The whole is 16 KiB at most
    (`LOG_EXCERPT_MAX_BYTES`). The merge step's own fix rounds build their
    excerpt by the same rules in Python (`swarm_api/issueci.py`,
-   `_check_section`; CIFIX-EXCERPT, part of #1914). `redact` is a pattern list
+   `_check_section`; CIFIX-EXCERPT, part of #1914), and go further: a red
+   gate's workflow run is read and its failed leaf jobs are excerpted ahead
+   of it, each section names the events it failed on, and a job red on push
+   but green on pull_request at one sha is called out as a branch behind a
+   fix on main: merge main (#2937). `redact` is a pattern list
    and not a boundary (its own header says so); what makes a leak survivable
    is that the excerpt is stored as an agent's input, which the API serves
    masked.
