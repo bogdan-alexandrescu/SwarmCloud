@@ -56,6 +56,7 @@ import {
   PARK_REASONS,
   ageSpan,
   bindingWindow,
+  costInWords,
   formatDuration,
   leaseLiveliness,
   elapsed,
@@ -1712,7 +1713,7 @@ export function ProfileTile({
       ? h.basis === 'uncapped'
         ? `${name}: no pool in this profile is configured, so nothing caps it.`
         : `${name}: not measured, ${countOf(h.unread.length, 'required pool')} could not be read.`
-      : `${name}: ${countOf(h.agents, 'more agent')} can start; ${profile.units} unit(s) per agent.` +
+      : `${name}: ${countOf(h.agents, 'more agent')} can start; one agent takes ${costInWords(profile)}.` +
         (h.blockers.length > 0
           ? ` Refusing: ${h.blockers.map((b) => `${b.pool} (${b.active}/${b.limit ?? 'no limit set'})`).join(', ')}.`
           : h.binding !== null

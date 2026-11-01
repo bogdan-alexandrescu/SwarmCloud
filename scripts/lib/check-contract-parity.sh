@@ -2389,6 +2389,120 @@ else
   fi
 fi
 
+# --------------------------------------------------------------------------
+# 13. A lease's units per pool (contract request 129, #2950), restated in jq.
+# --------------------------------------------------------------------------
+# swarm_common.models.pool_units_for decides what a lease takes in each pool
+# (1 in a provider pool, the resource units elsewhere) and held_pool_units what
+# a stored lease gives back (its `pool_units`, or `units` in every pool on a
+# lease from before the request). Two jq files restate it:
+#   * concurrency-judge.jq's `held_units`, invariant 3's exact pool check;
+#   * pool-units.jq's provider branch, `make pool-check`'s smallest useful limit.
+# The judge is run with every pool's `active` at -1, so every pool is a
+# mismatch and its `lease_units` -- the jq's sum of held units -- is printed.
+POOL_UNIT_CASES='[
+  {"id": "new-large", "task_id": "t1", "units": 4,
+   "pools": ["global", "tenant:eng", "resource:large", "runner:claude-code-large",
+             "backend:GKE_AUTOPILOT", "provider:anthropic", "provider:anthropic:tenant:eng"],
+   "pool_units": {"global": 4, "tenant:eng": 4, "resource:large": 4,
+                  "runner:claude-code-large": 4, "backend:GKE_AUTOPILOT": 4,
+                  "provider:anthropic": 1, "provider:anthropic:tenant:eng": 1}},
+  {"id": "old-large", "task_id": "t2", "units": 4,
+   "pools": ["global", "tenant:eng", "resource:large", "provider:anthropic",
+             "provider:anthropic:tenant:eng"]},
+  {"id": "old-unitless", "task_id": "t3",
+   "pools": ["global", "tenant:eng", "provider:anthropic"]},
+  {"id": "new-standard", "task_id": "t4", "units": 1,
+   "pools": ["global", "tenant:eng", "provider:anthropic"],
+   "pool_units": {"global": 1, "tenant:eng": 1, "provider:anthropic": 1}}
+]'
+JUDGE_HELD="$(
+  jq -c '{at: "2026-11-01T00:00:00Z", leases: ., tasks: [],
+          pools: ([ .[].pools[] ] | unique | map({id: ., active: -1}))}' <<<"${POOL_UNIT_CASES}" \
+  | jq -c --arg mode sample --argjson concurrency '[]' --argjson pending '[]' \
+      --argjson pre_running '[]' --argjson grace 0 -f "${SWARM_LIB_DIR}/concurrency-judge.jq" \
+  | jq -c '.pool_mismatches | map({key: .pool, value: .lease_units}) | from_entries'
+)" || JUDGE_HELD="(concurrency-judge.jq failed)"
+PY_HELD="$(python3 - "${REPO_ROOT}" "${POOL_UNIT_CASES}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import held_pool_units
+
+held = {}
+for lease in json.loads(sys.argv[2]):
+    for name, units in held_pool_units(
+        lease["pools"], int(lease.get("units", 1)), lease.get("pool_units")
+    ).items():
+        held[name] = held.get(name, 0) + units
+print(json.dumps(dict(sorted(held.items())), separators=(",", ":")))
+PY
+)"
+if [[ "$(jq -cS . <<<"${JUDGE_HELD}" 2>/dev/null || true)" == "$(jq -cS . <<<"${PY_HELD}")" ]]; then
+  ok "held_pool_units: concurrency-judge.jq sums what each lease holds as the frozen model does"
+else
+  err "concurrency-judge.jq's held_units has DRIFTED from swarm_common.models.held_pool_units:"
+  err "    frozen model        : ${PY_HELD}"
+  err "    concurrency-judge.jq: ${JUDGE_HELD}"
+  FAILED=1
+fi
+
+UNIT_CATALOGUE="$(python3 - "${REPO_ROOT}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import pool_names_for
+from swarm_common.profiles import RUNNER_PROFILES, default_sizes, resolve_backend
+
+classes = {name: {"units": size.units} for name, size in default_sizes().items()}
+profiles = {
+    name: {"resource_class": p.resource_class, "backend": resolve_backend(p).value,
+           "provider": p.provider}
+    for name, p in RUNNER_PROFILES.items()
+}
+pools = sorted({
+    pool
+    for name, p in RUNNER_PROFILES.items()
+    for pool in pool_names_for(tenant_id="eng", provider=p.provider,
+                               resource_class=p.resource_class, runner_profile=name,
+                               backend=resolve_backend(p).value)
+})
+print(json.dumps({"classes": classes, "profiles": profiles, "pools": pools}))
+PY
+)"
+UNIT_POOLS_SEEN=0
+UNIT_DRIFT=""
+while IFS= read -r U_POOL; do
+  [[ -n "${U_POOL}" ]] || continue
+  UNIT_POOLS_SEEN=$(( UNIT_POOLS_SEEN + 1 ))
+  U_GOT="$(jq -c --argjson classes "$(jq -c .classes <<<"${UNIT_CATALOGUE}")" \
+             --argjson profiles "$(jq -c .profiles <<<"${UNIT_CATALOGUE}")" \
+             --arg pool "${U_POOL}" -n -f "${SWARM_LIB_DIR}/pool-units.jq")"
+  U_WANT="$(python3 - "${REPO_ROOT}" "${U_POOL}" "${U_GOT}" "${UNIT_CATALOGUE}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import pool_units_for
+
+got = json.loads(sys.argv[3])
+classes = json.loads(sys.argv[4])["classes"]
+print("null" if got is None else pool_units_for(sys.argv[2], classes[got["class"]]["units"]))
+PY
+)"
+  if [[ "$(jq -c '.units // null' <<<"${U_GOT}")" != "${U_WANT}" ]]; then
+    UNIT_DRIFT="${UNIT_DRIFT} ${U_POOL}=${U_GOT}(frozen ${U_WANT})"
+  fi
+done < <(jq -r '.pools[]' <<<"${UNIT_CATALOGUE}")
+if [[ "${UNIT_POOLS_SEEN}" -eq 0 ]]; then
+  err "pool_units_for parity read no pools at all; nothing was checked"
+  FAILED=1
+elif [[ -z "${UNIT_DRIFT}" ]]; then
+  ok "pool_units_for: pool-units.jq charges ${UNIT_POOLS_SEEN} catalogue pools as the frozen model does"
+else
+  err "pool-units.jq has DRIFTED from swarm_common.models.pool_units_for:${UNIT_DRIFT}"
+  FAILED=1
+fi
+
 hr
 [[ "${FAILED}" -eq 0 ]] || die "a restatement of the frozen contract has drifted"
 ok "every restatement of the frozen contract still matches it"

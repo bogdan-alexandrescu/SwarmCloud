@@ -259,8 +259,9 @@ def test_relaxing_the_binding_pool_reports_the_second_ceiling_not_infinity():
     """The case a naive counterfactual gets dangerously wrong.
 
     With `resource:large` lifted, `provider:anthropic` is the next ceiling --
-    so the answer is 8 units / 4 = 2 agents, a delta of +1, and the pool that
-    would bind next is named. An implementation that dropped the relaxed pool
+    so the answer is 2 sessions / 1 = 2 agents (a large agent takes 1 unit in
+    a provider pool, contract request 129, #2950), a delta of +1, and the pool
+    that would bind next is named. An implementation that dropped the relaxed pool
     and then stopped checking would report an unbounded number and send the
     operator back for a second surprise.
     """
@@ -268,7 +269,7 @@ def test_relaxing_the_binding_pool_reports_the_second_ceiling_not_infinity():
     pools = by_name(
         pool("global", 64, 0),
         pool("resource:large", 4, 0),        # 4 units -> 1 large agent: binds
-        pool("provider:anthropic", 8, 0),    # 8 units -> 2 large agents: next
+        pool("provider:anthropic", 2, 0),    # 2 sessions -> 2 large agents: next
     )
 
     got = analyse_profile(required=required, pools=pools, units=4)

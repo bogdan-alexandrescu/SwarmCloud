@@ -26,7 +26,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.identity import Principal
-from swarm_common.models import ProviderState, SlotPool, Task, Tenant
+from swarm_common.models import Lease, ProviderState, SlotPool, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from .. import roles, runnersizes
@@ -682,6 +682,16 @@ def list_pools(
     return {"pools": [{**pool_to_api(p), **pool_attribution(p)} for p in pools]}
 
 
+def units_held_by_pool(leases: list[Lease]) -> dict[str, int]:
+    """Per pool, the units these leases hold, by `Lease.held_units`: the one
+    rule admission reserved and release returns by (#2950)."""
+    held: dict[str, int] = {}
+    for lease in leases:
+        for name, units in lease.held_units().items():
+            held[name] = held.get(name, 0) + units
+    return held
+
+
 @router.get("/leases")
 def list_leases(
     tenant_id: str | None = Query(default=None),
@@ -813,6 +823,11 @@ def list_leases(
         # Weighted UNITS, not agents -- admission increments by the resource
         # class's units, so this and len(leases) are different numbers.
         "units_held": sum(lease.units for lease in leases),
+        # Per pool, what these rows hold: the drift check's input against each
+        # pool's `active`. Not `units_held` in every pool -- a provider pool
+        # holds 1 per lease (contract request 129, #2950), and a lease from
+        # before it holds its `units` there (`Lease.held_units`).
+        "units_held_by_pool": units_held_by_pool(leases),
         # Live leases, under the tenant filter, that are not in these rows.
         # 0 is what makes a units_held / pool.active delta evidence.
         "active_beyond_window": scan.active_beyond_window,
