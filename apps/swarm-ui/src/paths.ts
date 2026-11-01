@@ -324,6 +324,11 @@ export const FIXED: Readonly<Record<string, string>> = {
   // connections, bell and Claude accounts (docs/design/user-profile.md).
   // Settings keeps it and nothing else since SSC-UI.
   'settings/profile': '/settings/profile',
+  // VOICE IT (docs/design/voice-it.md §10, phase one): its three panes, one
+  // path each. `/voice` opens Talk (SECTION_ROOTS).
+  'voice/talk': '/voice/talk',
+  'voice/projects': '/voice/projects',
+  'voice/preferences': '/voice/preferences',
   [HELP_ROUTE]: '/help',
 }
 
@@ -418,6 +423,7 @@ export const SECTION_ROOTS: Readonly<Record<string, string>> = {
   '/capacity': 'capacity/pools',
   '/admin': 'admin/limits',
   '/config': 'config/github',
+  '/voice': 'voice/talk',
   // Not a section, but `/settings` is the head of Profile's path, and a person
   // trimming the link back to it should land on the page rather than a 404.
   '/settings': 'settings/profile',

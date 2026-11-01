@@ -257,7 +257,13 @@ def test_a_phone_capture_runs_to_the_end_and_segments_governs_the_desktop():
 
 #: The admin group's routes, captured as a platform admin who also administers
 #: one group workspace (QAFIX4-FIXTURE-A, run-4 admin-004 and admin-005).
-ADMIN_ROUTES = ("limits", "runner-sizes", "tenants", "counts", "platform-secrets", "setup", "health", "people", "workspaces")
+#: Voice it's three panes ride with them (docs/design/voice-it.md §10): they
+#: draw their body only for the person Voice it is open to, a platform admin
+#: until swarm-api's session routes say who (voice/Section.tsx `voiceItOpen`).
+ADMIN_ROUTES = (
+    "limits", "runner-sizes", "tenants", "counts", "platform-secrets", "setup", "health", "people", "workspaces",
+    "voice-talk", "voice-projects", "voice-preferences",
+)
 
 
 def test_the_admin_group_is_captured_as_a_platform_admin_and_pool_limits_once_as_the_member():
