@@ -203,3 +203,39 @@ def test_a_generation_fenced_while_it_publishes_stops_and_never_pushes(db, worke
     assert not after_fence, f"beats after the attempt was fenced: {after_fence}"
     assert not pushed, "a fenced generation made its forge write"
     assert code == ExitCode.GENERATION_FENCED, code
+
+
+#: The beat times the CI run in #2976 recorded: the last gap is one interval
+#: that subtracts to 22.00000000000003.
+_ROUNDED_BEATS = [154.26275479, 176.26275479, 198.26275479, 220.26275479,
+                  242.26275479, 264.26275479000003]
+
+
+def test_a_gap_of_one_interval_passes_however_the_floats_round():
+    silence = _longest_silence(_ROUNDED_BEATS)
+    assert silence > INTERVAL, "the recorded marks no longer round above the interval"
+    assert _no_longer_than(silence, INTERVAL)
+    # The slack is for rounding only: a beat a millisecond late still fails.
+    assert not _no_longer_than(INTERVAL + 0.002, INTERVAL)
+
+
+def test_the_clock_wakes_a_wait_whose_target_rounds_just_above_the_tick():
+    clock = _Clock(_ROUNDED_BEATS[0])
+    stop = threading.Event()
+    woke: list[float] = []
+    beat = threading.Thread(
+        target=lambda: woke.append(clock.wait(stop, INTERVAL + 3e-14) or clock.now),
+        daemon=True,
+    )
+    beat.start()
+    try:
+        deadline = time.monotonic() + 10
+        while beat not in clock._waiting:
+            assert time.monotonic() < deadline, "the wait never registered"
+            time.sleep(0.001)
+        clock.advance(INTERVAL)
+        beat.join(timeout=1)
+        assert woke == [clock.now], f"the wait slept past tick {INTERVAL}: {woke}"
+    finally:
+        stop.set()
+        beat.join(timeout=10)
