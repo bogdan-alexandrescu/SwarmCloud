@@ -116,6 +116,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import re
 import shutil
 import stat
@@ -126,7 +127,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, NamedTuple, Sequence
+from typing import Any, Callable, Iterator, Mapping, NamedTuple, Sequence
 
 from swarm_common.config import Settings
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
@@ -207,6 +208,7 @@ from .config import WorkerConfig
 from .control import (
     ARCHIVE_DIGEST_RE,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
+    QUOTA_PARK_RESUMES_METADATA_KEY,
     RELEASE_WAIT_MAX_RESUMES,
     ControlPlane,
     ControlSignals,
@@ -1124,6 +1126,11 @@ class Worker:
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
         self._pr_text_from: dict[str, str | None] | None = None
+        # The terminal transition `_finish_terminal` decided on, kept while it
+        # is written: when Firestore's contention outlasts every retry, the
+        # crash path writes THIS -- the runner's state, exit code, message and
+        # summary -- rather than the abort's text (#2650).
+        self._decided_terminal: _DecidedTerminal | None = None
         # The contributors this integrator left out of its merge because they
         # changed nothing (`_integrates_with_changes`, 2026-10-05).
         self._no_change_contributors: list[str] = []
@@ -1574,6 +1581,21 @@ class Worker:
             return exc.exit_code if fenced is None else fenced
         except Exception as exc:  # never exit without a durable terminal state
             self.log.exception("worker crashed", exc)
+            decided = self._decided_terminal
+            if decided is not None and _terminal_write_contended(exc):
+                # The attempt had decided its end, and only Firestore's
+                # contention kept it from landing (#2650): write that end, not
+                # "409 Aborted ..." as the runner's error with no exit code.
+                fenced = self._safe_finish(
+                    decided.state,
+                    exit_code=decided.exit_code,
+                    error=decided.error,
+                    end_cause=decided.end_cause,
+                    extra_summary=decided.result_summary,
+                )
+                if fenced is not None:
+                    return fenced
+                return ExitCode.OK if decided.state == TaskState.SUCCEEDED else ExitCode.FAILED
             fenced = self._safe_finish(
                 TaskState.FAILED,
                 exit_code=ExitCode.FAILED,
@@ -3526,8 +3548,11 @@ class Worker:
         # whether or not a checkpoint did, which is what bounds the mock's
         # simulated park (runners/mock.py, the review of #213). ASSIGNED, not
         # `setdefault`: a count a caller could set would be a bound a caller
-        # could lift.
-        payload["attempt_count"] = int(task.get("attempt_count") or 0)
+        # could lift. Counted with the refunded resumes (`_refunded_resumes`):
+        # a refunded quota park takes one off `attempt_count`, so without them
+        # every lease after the mock's park read 1 again and parked again
+        # (dev acceptance, #2650).
+        payload["attempt_count"] = int(task.get("attempt_count") or 0) + _refunded_resumes(task)
         payload.setdefault("resumed_from_checkpoint", bool(self._restored_from))
         # The owner's answers to the blocking questions this task parked on
         # (AU-7, §3.9 step 4): `work/answers.json`, and the prompt's last
@@ -5342,12 +5367,12 @@ class Worker:
         # attempt after a hand-off park read `attempt_count` 1, was taken for
         # the task's first, restored nothing, and its agent started the task
         # over -- asking again for the hand-off already done.
-        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        resumes = 0
-        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
-            value = metadata.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
-                resumes += max(0, value)
+        #
+        # A refunded QUOTA park takes one off the same way (#2650): the
+        # attempt after a quota park read 1, restored nothing, and the file
+        # its agent wrote before the park never reached the attempt that
+        # succeeded (the workflow group's carry check).
+        resumes = _refunded_resumes(task)
         if (
             isinstance(count, bool)
             or not isinstance(count, int)
@@ -15736,8 +15761,8 @@ class Worker:
         one may have pushed. A fresh lane's first attempt publishes a branch
         origin cannot hold yet, so it makes no token-bearing fetch for it.
 
-        `attempt_count` is counted with the refunded child-await and hand-off
-        resumes, as `_recorded_checkpoint` counts it.
+        `attempt_count` is counted with the refunded child-await, hand-off and
+        quota-park resumes, as `_recorded_checkpoint` counts it.
         """
         task = self._task or {}
         try:
@@ -15748,12 +15773,7 @@ class Worker:
         count = task.get("attempt_count")
         if isinstance(count, bool) or not isinstance(count, int):
             return False
-        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        resumes = 0
-        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
-            value = metadata.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
-                resumes += max(0, value)
+        resumes = _refunded_resumes(task)
         return count + resumes > 1
 
     def _read_publish_remote_tip(
@@ -17600,7 +17620,18 @@ class Worker:
         retried here: it is a `FencedError`, re-raised as it was, and a
         refusal of the minimal write too raises the FIRST refusal, as before.
         Logged by type and message only, never the summary.
+
+        Kept as `_decided_terminal` while it is written, for the crash path to
+        write the same transition should Firestore's contention outlast every
+        retry (#2650).
         """
+        self._decided_terminal = _DecidedTerminal(
+            state=state,
+            exit_code=exit_code,
+            error=error,
+            end_cause=end_cause,
+            result_summary=result_summary,
+        )
         self._write_terminal_once_more_if_refused(
             lambda summary: self.control.finish(
                 state=state,
@@ -17665,9 +17696,14 @@ class Worker:
     ) -> Any:
         """Run one terminal write; when Firestore refuses its document, run it
         once more with `_minimal_terminal_summary`. The mechanics
-        `_finish_terminal` and `_fail_retryably_terminal` share (#1438)."""
+        `_finish_terminal` and `_fail_retryably_terminal` share (#1438).
+
+        And when Firestore aborts it on contention past the transaction
+        runner's own runs, the SAME write is made again, up to
+        `TERMINAL_CONTENTION_ROUNDS` in all (#2650): an aborted transaction
+        committed nothing, so writing it again cannot write it twice."""
         try:
-            return write(result_summary)
+            return self._write_through_contention(write, result_summary, decided=decided)
         except FencedError:
             raise
         except Exception as exc:
@@ -17683,8 +17719,10 @@ class Worker:
             error=refusal[:SUMMARY_REFUSED_MAX_CHARS],
         )
         try:
-            written = write(
-                _minimal_terminal_summary(decided, error, result_summary, refusal)
+            written = self._write_through_contention(
+                write,
+                _minimal_terminal_summary(decided, error, result_summary, refusal),
+                decided=decided,
             )
         except FencedError:
             raise
@@ -17700,12 +17738,51 @@ class Worker:
         )
         return written
 
+    def _write_through_contention(
+        self,
+        write: Callable[[dict[str, Any] | None], Any],
+        summary: dict[str, Any] | None,
+        *,
+        decided: str,
+    ) -> Any:
+        """`write(summary)`, made again after a contention abort (#2650).
+
+        MEASURED 2026-10-31, dev acceptance on b3d45cdc7: the mock tasks that
+        failed together (exit 2, exit 76, `fail_message`) ended `FAILED
+        runner_error` with no exit code and `last_error` "409 Aborted due to
+        cross-transaction contention": their terminal transactions -- each
+        reading the pools every admission and release writes -- were aborted
+        on every one of `FirestoreTransactionRunner`'s runs, the abort went up
+        as "worker crashed", and the crash path's FAILED carried its text.
+        A fence and every other error are raised as they are.
+        """
+        rounds = 1
+        while True:
+            try:
+                return write(summary)
+            except FencedError:
+                raise
+            except Exception as exc:
+                if rounds >= TERMINAL_CONTENTION_ROUNDS or not _terminal_write_contended(exc):
+                    raise
+                self.log.warning(
+                    "the terminal write met Firestore contention; writing the same state again",
+                    state=decided,
+                    round=rounds,
+                    error_type=type(exc).__name__,
+                )
+            # Jittered, so the writers that met each other do not meet again.
+            _terminal_contention_sleep(
+                TERMINAL_CONTENTION_PAUSE_SECONDS * rounds * random.uniform(0.5, 1.5)
+            )
+            rounds += 1
+
     def _safe_finish(
         self,
         state: TaskState,
         *,
-        exit_code: int,
-        error: str,
+        exit_code: int | None,
+        error: str | None,
         end_cause: EndCause | None = None,
         extra_summary: dict[str, Any] | None = None,
     ) -> int | None:
@@ -17735,7 +17812,7 @@ class Worker:
                 self._finish_terminal(
                     state=state,
                     exit_code=exit_code,
-                    error=self._scrub(error[:4000]),
+                    error=self._scrub(error[:4000]) if error is not None else None,
                     result_summary=summary,
                     end_cause=end_cause,
                 )
@@ -20097,6 +20174,55 @@ def _refused_key_names(keys: Sequence[str]) -> str:
     return ", ".join(shown) + (f" and {rest} more" if rest > 0 else "")
 
 
+#: Rounds of one terminal write when Firestore aborts it on contention, each
+#: round being the transaction runner's own `TRANSACTION_ABORTED_RUNS` (#2650).
+#: Four: the abort measured on 2026-10-31 outlasted one round's five runs in
+#: 3.75 s; four rounds with their pauses cover about 25 s of contention, well
+#: inside a finish's `TERMINAL_CALL_SECONDS`.
+TERMINAL_CONTENTION_ROUNDS = 4
+
+#: The pause before a terminal write's next round, times the round number and
+#: a jitter of 0.5-1.5.
+TERMINAL_CONTENTION_PAUSE_SECONDS = 2.0
+
+#: Module seam, so a unit test does not sleep.
+_terminal_contention_sleep: Callable[[float], None] = time.sleep
+
+
+@dataclass(frozen=True)
+class _DecidedTerminal:
+    """The terminal transition `_finish_terminal` is writing (#2650)."""
+
+    state: TaskState
+    exit_code: int | None
+    error: str | None
+    end_cause: EndCause | None
+    result_summary: dict[str, Any] | None
+
+
+def _terminal_write_contended(exc: BaseException) -> bool:
+    """Whether `exc` is Firestore aborting a transaction on contention: an
+    `Aborted` (a read's or the begin's, after the runner's runs), or the
+    library's "Failed to commit transaction in N attempts" `ValueError` (a
+    commit's), anywhere in the chain. Either way nothing was committed."""
+    try:
+        from google.api_core import exceptions as core
+    except ImportError:
+        core = None  # type: ignore[assignment]
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if core is not None and isinstance(current, core.Aborted):
+            return True
+        if isinstance(current, ValueError) and str(current).startswith(
+            "Failed to commit transaction in "
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 #: How much of Firestore's refusal the minimal summary keeps, as
 #: `summary_refused` (#1438). The refusal measured on 2026-10-16 -- "400
 #: Property result_summary contains an invalid nested entity." -- is under 70
@@ -20196,6 +20322,31 @@ def _runner_argv(cfg: WorkerConfig) -> list[str]:
     if program in ("python", "python3") and shutil.which(program) is None:
         argv[0] = sys.executable
     return argv
+
+
+#: The metadata counters of the parks that REFUND their attempt: each takes
+#: one off `attempt_count`, so the attempt after it reads the same number as
+#: the attempt before it. A child await, a hand-off park and a provider-quota
+#: park (control.py). The quota one was missing (#2650).
+REFUNDED_RESUME_METADATA_KEYS = (
+    CHILD_AWAIT_RESUMES_METADATA_KEY,
+    handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY,
+    QUOTA_PARK_RESUMES_METADATA_KEY,
+)
+
+
+def _refunded_resumes(task: Mapping[str, Any]) -> int:
+    """How many parks of this task refunded their attempt: what `attempt_count`
+    lacks to be this attempt's number."""
+    metadata = task.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return 0
+    resumes = 0
+    for key in REFUNDED_RESUME_METADATA_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            resumes += max(0, value)
+    return resumes
 
 
 def _control_plane_unreachable(exc: BaseException) -> bool:

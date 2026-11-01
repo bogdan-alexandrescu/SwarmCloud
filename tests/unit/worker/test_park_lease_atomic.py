@@ -528,3 +528,110 @@ def test_the_buffered_store_raises_on_a_read_after_a_write():
         runner.run(body)
     assert db.doc("tasks/task_1")["state"] == TaskState.RUNNING.value
 
+
+
+# -- a terminal write Firestore aborts on contention (#2650) -----------------------
+#
+# Dev acceptance on b3d45cdc7 (2026-10-31): the mock tasks that failed together
+# ended `FAILED runner_error` with no exit code and `last_error` "409 Aborted
+# due to cross-transaction contention": every run of their finish was aborted,
+# the abort went up as "worker crashed", and the crash path wrote its text.
+
+
+def _exit_two(message: str) -> dict[str, Any]:
+    return {"prompt": "fail", "steps": 1, "sleep_seconds": 0.05,
+            "fail": True, "fail_message": message, "exit_code": 2}
+
+
+def _abort_the_first_finishes(db: AbortingFirestore, worker: Any, calls: int) -> list[int]:
+    """Every pool read of the first `calls` finishes is aborted, every run."""
+    real_finish = worker.control.finish
+    made: list[int] = []
+
+    def finish(**kwargs: Any) -> Any:
+        made.append(1)
+        db.pool_aborts = 10_000 if len(made) <= calls else 0
+        try:
+            return real_finish(**kwargs)
+        finally:
+            db.pool_aborts = 0
+
+    worker.control.finish = finish  # type: ignore[method-assign]
+    return made
+
+
+@pytest.fixture
+def _no_terminal_pause(monkeypatch):
+    from agent_worker import lifecycle as lifecycle_mod
+
+    monkeypatch.setattr(
+        lifecycle_mod, "_terminal_contention_sleep", lambda _s: None, raising=False
+    )
+
+
+def _assert_the_runners_end(db: AbortingFirestore, message: str) -> None:
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value
+    assert task["end_cause"] == "runner_error"
+    # MUTATION: no second round and no decided end in the crash path: the
+    # crash path's FAILED carries the abort's text and no exit code.
+    assert CONTENTION not in (task["last_error"] or "")
+    assert message in task["last_error"], task["last_error"]
+    assert task["result_summary"]["exit_code"] == 2
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    assert db.doc("pools/global")["active"] == 2
+
+
+def test_a_runners_failure_whose_finish_is_aborted_once_is_written_as_the_runners(
+    store, tmp_path, log_stream, _no_terminal_pause
+):
+    db = AbortingFirestore()
+    message = "acceptance fail_message " + "x" * 8
+    seed_attempt(db, task_input=_exit_two(message), pool_active=3)
+    worker = _worker(db, store, tmp_path, log_stream)
+    made = _abort_the_first_finishes(db, worker, 1)
+
+    assert worker.run() == ExitCode.FAILED
+
+    assert db.aborted == control_mod.TRANSACTION_ABORTED_RUNS
+    assert len(made) == 2
+    _assert_the_runners_end(db, message)
+
+
+def test_contention_past_every_round_still_ends_with_the_runners_failure(
+    store, tmp_path, log_stream, _no_terminal_pause
+):
+    """The crash path writes the end the attempt had decided, not the abort."""
+    from agent_worker import lifecycle as lifecycle_mod
+
+    db = AbortingFirestore()
+    message = "acceptance exit 2 " + "y" * 8
+    seed_attempt(db, task_input=_exit_two(message), pool_active=3)
+    worker = _worker(db, store, tmp_path, log_stream)
+    rounds = getattr(lifecycle_mod, "TERMINAL_CONTENTION_ROUNDS", 4)
+    made = _abort_the_first_finishes(db, worker, rounds)
+
+    assert worker.run() == ExitCode.FAILED
+
+    assert len(made) == rounds + 1
+    assert "worker crashed" in log_stream.getvalue()
+    _assert_the_runners_end(db, message)
+
+
+def test_only_a_contention_abort_is_written_again():
+    from google.api_core import exceptions as core
+
+    from agent_worker.lifecycle import _terminal_write_contended
+
+    assert _terminal_write_contended(_aborted())
+    assert _terminal_write_contended(ValueError("Failed to commit transaction in 5 attempts."))
+    try:
+        try:
+            raise _aborted()
+        except Exception as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as outer:
+        assert _terminal_write_contended(outer)
+    assert not _terminal_write_contended(core.InvalidArgument("invalid nested entity"))
+    assert not _terminal_write_contended(ValueError("something else"))
+    assert not _terminal_write_contended(RuntimeError("boom"))
