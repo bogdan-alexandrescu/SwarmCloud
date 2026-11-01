@@ -1294,7 +1294,8 @@ class GitTools:
         call.fields["resolved_sha"] = pull.head_sha
         rules = self.writer.branch_rules(ref, pull.base_ref, token) if pull.base_ref else []
         required = required_status_checks(rules)
-        runs, source = self._check_runs(call, ref, pull.head_sha, token)
+        runs, source = self._check_runs(call, ref, pull.head_sha, token,
+                                        head_ref=pull.head_ref)
         statuses = self.writer.commit_statuses(ref, pull.head_sha, token)
         reading = evaluate(required, runs, statuses)
         needed = {check.context for check in required}
@@ -1322,9 +1323,11 @@ class GitTools:
         return {"pr": pull.number, "head_sha": pull.head_sha, "state": reading.state,
                 "rows": rows, "source": source}
 
-    def _check_runs(self, call: _Call, ref: IssueRef, sha: str,
-                    token: str) -> tuple[list[dict[str, Any]], str]:
-        """The check runs at `sha`, and where they were read.
+    def _check_runs(self, call: _Call, ref: IssueRef, sha: str, token: str, *,
+                    head_ref: str | None = None) -> tuple[list[dict[str, Any]], str]:
+        """The check runs at `sha` for the pull request whose head branch is
+        `head_ref` (another branch's push suites dropped, #2946), and where
+        they were read.
 
         #1188: every git-tools acceptance run from 2026-10-23 to 2026-10-27
         answered `pr_checks` forge_refused on the private sandbox, whose slot
@@ -1336,10 +1339,11 @@ class GitTools:
         with the check-runs read's own sentence.
         """
         try:
-            return self.writer.check_runs(ref, sha, token), CHECKS_FROM_CHECK_RUNS
+            return (self.writer.check_runs(ref, sha, token, head_ref=head_ref),
+                    CHECKS_FROM_CHECK_RUNS)
         except ChecksForbidden as refused:
             try:
-                runs = self.writer.actions_check_runs(ref, sha, token)
+                runs = self.writer.actions_check_runs(ref, sha, token, head_ref=head_ref)
             except (ForgeWriteForbidden, ForgeWriteNotFound, ForgeWriteUnauthorized):
                 raise refused from None
         call.fields["source"] = CHECKS_FROM_ACTIONS_JOBS

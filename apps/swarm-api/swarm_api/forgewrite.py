@@ -408,6 +408,22 @@ def _int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _other_branch_push(event: str | None, branch: str | None, head_ref: str | None) -> bool:
+    """Whether an Actions run was triggered by a push to a known branch that
+    is not `head_ref` -- another branch's result at a shared sha, not the
+    pull request's (#2946). The worker's `merge._other_branch_push` (#2365)
+    is the same rule. False when anything is unknown; an empty `head_ref`
+    (`PullSnapshot` when GitHub named no head ref) is unknown, as the worker
+    reads it."""
+    if not head_ref:
+        return False
+    return event == "push" and branch is not None and branch != head_ref
+
+
 def _full_name(side: Mapping[str, Any]) -> str:
     """`owner/repo` of a pull request's head or base, "" when GitHub named none."""
     repo = side.get("repo")
@@ -860,8 +876,10 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
         return [rule for rule in data if isinstance(rule, dict)]
 
-    def check_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
-        """The LATEST check run of each name at `sha` (`filter=latest`), every page.
+    def check_runs(self, ref: IssueRef, sha: str, token: str, *,
+                   head_ref: str | None = None) -> list[dict[str, Any]]:
+        """The LATEST check run of each name at `sha` (`filter=latest`), every page,
+        for the pull request whose head branch is `head_ref`.
 
         When a name is listed more than once, or a run finished neither green
         nor tolerated, the Actions runs at `sha` are read in ONE more read
@@ -873,6 +891,18 @@ class GitHubWriter:
         concurrency cancelled reads as pending here as it does in the merge
         step (#2582). A head whose every check ran once and passed costs
         nothing more.
+
+        `commits/{sha}/check-runs` lists every check suite at the sha, from
+        whichever branch pushed it, and swarm/ lanes branch from one another:
+        at a9009a19 a sibling branch's newer green push ci-gate stood as the
+        PR's push result beside the PR branch's red one, so the merge wake
+        read green and never asked the free re-run (#2946). So with a
+        `head_ref`, a run whose suite's Actions run was triggered by a push to
+        a KNOWN branch other than `head_ref` is dropped, from the same read,
+        exactly as the worker's `merge.checks_at` drops it
+        (`_other_branch_push`, #2365). pull_request suites (a fork's names the
+        fork's branch), suites whose branch is unknown (no `actions: read`,
+        another App) and, without a `head_ref`, every run are kept.
         """
         what = f"the check runs at {ref.repository}@{sha[:12]}"
         url = self._url(ref, f"commits/{quote(sha, safe='')}/check-runs")
@@ -894,15 +924,19 @@ class GitHubWriter:
                   for run in runs)
         if len(names) != len(set(names)) or red:
             workflow_runs = self._workflow_runs(ref, sha, token)
-            events = {row["check_suite_id"]: row["event"] for row in workflow_runs
-                      if isinstance(row.get("event"), str)
-                      and row.get("check_suite_id") is not None}
+            suites = {row["check_suite_id"]: (_str(row.get("event")), _str(row.get("head_branch")))
+                      for row in workflow_runs if row.get("check_suite_id") is not None}
+            kept: list[dict[str, Any]] = []
             for run in runs:
                 suite = run.get("check_suite")
-                event = events.get(suite.get("id")) if isinstance(suite, dict) else None
+                event, branch = (suites.get(suite.get("id"), (None, None))
+                                 if isinstance(suite, dict) else (None, None))
+                if _other_branch_push(event, branch, head_ref):
+                    continue
                 if event is not None:
                     run["event"] = event
-            runs = forgechecks.mark_workflow_runs(runs, workflow_runs)
+                kept.append(run)
+            runs = forgechecks.mark_workflow_runs(kept, workflow_runs)
         return runs
 
     def _workflow_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
@@ -932,7 +966,8 @@ class GitHubWriter:
                 break
         return rows
 
-    def actions_check_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
+    def actions_check_runs(self, ref: IssueRef, sha: str, token: str, *,
+                           head_ref: str | None = None) -> list[dict[str, Any]]:
         """The Actions jobs at `sha`, each shaped as the check run it is.
 
         #1188 (measured 2026-10-27): a fine-grained personal access token has
@@ -950,6 +985,12 @@ class GitHubWriter:
         concurrency cancelled reads as pending, as `check_runs` reads it.
         And its run's id as `workflow_run_id`, the run whose failed jobs the
         merge wake tick's free re-run asks GitHub to re-run (#2841).
+
+        With a `head_ref`, the jobs of a run triggered by a push to a KNOWN
+        branch other than `head_ref` are not read: another branch's result at
+        a shared sha, dropped as `check_runs` drops it (#2946) and the
+        worker's `merge.checks_at` does (#2365). Each job carries its run's
+        `head_branch` beside its `event`.
         """
         what = f"the Actions runs at {ref.repository}@{sha[:12]}"
         # The newest MAX_ACTIONS_RUNS runs, one read: each costs a jobs read
@@ -963,6 +1004,9 @@ class GitHubWriter:
             run_id = _int(run.get("id"))
             if run_id is None or run.get("head_sha") not in (None, sha):
                 continue
+            event, branch = _str(run.get("event")), _str(run.get("head_branch"))
+            if _other_branch_push(event, branch, head_ref):
+                continue
             for job in self.run_jobs(ref, run_id, token):
                 job_id = _int(job.get("id"))
                 if job_id is None:
@@ -973,7 +1017,8 @@ class GitHubWriter:
                     "app": {"id": GITHUB_ACTIONS_APP_ID, "slug": "github-actions"},
                     "check_suite": {"id": run.get("check_suite_id")},
                     "workflow_run_id": run_id,
-                    **({"event": run["event"]} if isinstance(run.get("event"), str) else {}),
+                    **({"event": event} if event is not None else {}),
+                    **({"head_branch": branch} if branch is not None else {}),
                 })
         return forgechecks.mark_workflow_runs(checks, runs)
 

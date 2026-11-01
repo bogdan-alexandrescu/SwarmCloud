@@ -557,14 +557,18 @@ class _Lane:
             "head_sha": head_sha, "tree_sha": tree_sha, "pull_request": pull.number,
         }})
 
-    def _reading(self, head_sha: str) -> Any:
+    def _reading(self, head_sha: str, branch: str | None = None) -> Any:
+        """The CI reading at the train's composed head, on the train's own
+        branch: another branch's push suites at that sha are dropped (#2946)."""
         token = self.token()
         required = required_status_checks(self.writer.branch_rules(self.ref, self.base, token))
-        return evaluate(required, self.writer.check_runs(self.ref, head_sha, token),
+        return evaluate(required, self.writer.check_runs(self.ref, head_sha, token, head_ref=branch),
                         self.writer.commit_statuses(self.ref, head_sha, token))
 
     def _test(self, train: Mapping[str, Any]) -> None:
-        reading = self._reading(str(train.get("head_sha")))
+        branch = train.get("branch")
+        reading = self._reading(str(train.get("head_sha")),
+                                branch if isinstance(branch, str) and branch else None)
         started = train.get("started_at")
         verdict = judge(reading.state, started_at=started if isinstance(started, datetime)
                         else self.now, now=self.now,
