@@ -15274,15 +15274,20 @@ changed in the same pull request: swarm-api's `headroom` (n agents need
 below-units verdict), the `/v1/capacity` profile's `pool_units`, the admin
 leases listing's per-row `pool_units` and `units_held_by_pool`;
 `scripts/lib/concurrency-judge.jq` (invariant 3's exact check) and
-`scripts/lib/pool-units.jq` (read by make pool-check).
+`scripts/lib/pool-units.jq` (read by make pool-check). The console and
+swarm-mcp read the served per-pool figures in the same pull request (the
+owner's pick, 2026-11-01): `types.ts` weighs a task per pool (`unitsIn`,
+`taskWeight`, `leaseHeld`) for `blockerCeiling`, `ProfileMatrix`'s `fitsIn`,
+`AdminSettings`' ceiling arithmetic, `Submit`'s cost and verdicts and
+`Holders.tsx`'s drift card; swarm-mcp's `binding_pool` divides each pool's
+room by the profile's served share. None of them restates the rule: each
+reads what the API serves, and falls back to `units` in every pool only for an
+API older than the fields, whose admission charged exactly that.
 
 ### What it would break if accepted
 
-Nothing at once: an old lease releases by the old rule. The console
-(`Holders.tsx`'s drift card, `types.ts` `blockerCeiling`, `ProfileMatrix`,
-`AdminSettings`) and swarm-mcp's `binding_pool` still divide a provider
-pool's room by the agent's units, so they under-state provider room until they
-read the served `pool_units`; they over-state nothing.
+Nothing at once: an old lease releases by the old rule, and the console and
+swarm-mcp read each lease's and each profile's served share.
 
 ### If it is declined
 
