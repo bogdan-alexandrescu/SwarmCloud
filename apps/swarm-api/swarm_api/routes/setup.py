@@ -1054,7 +1054,10 @@ def save_sign_in_client(
     doc = record.write(record.console_path(ir.SIGN_IN_CLIENT),
                        {"client_id": client_id, "at": ctx.now(), "by": caller.email})
     log.info("sign-in client saved by the console client_id=%s by=%s", client_id, caller.email)
-    return sign_in_client_view(ctx.settings.project_id, doc, record.read_engine())
+    # A save always answers `saved` (the route contract): even for the id the
+    # engine already applied, the new secret version is not taken in until
+    # the hand-off sees this record.
+    return {**sign_in_client_view(ctx.settings.project_id, doc, record.read_engine()), "state": SAVED_CLIENT}
 
 
 # --------------------------------------------------------------------------
