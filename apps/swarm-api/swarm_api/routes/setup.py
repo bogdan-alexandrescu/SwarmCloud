@@ -2,6 +2,7 @@
 DAYONE-SETUP-API-1, part of #2688).
 
     GET  /v1/admin/setup                          the page's whole state
+    POST /v1/admin/setup/sign-in-client           the Desktop sign-in client's id and secret
     POST /v1/admin/setup/github-app/manifest      the App manifest and form target
     POST /v1/admin/setup/github-app/conversion    state check, code exchange, 3 secrets
     GET  /v1/admin/setup/github-app/installation  is the App on the org yet
@@ -71,6 +72,7 @@ Manager, and a link's value straight into its one container.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -959,6 +961,8 @@ def setup_state(
         "steps": steps_view(mode, teams, publishing=bool(getattr(publisher, "enabled", False))),
         "personal": personal,
         "cli_running": _cli_running(engine, ctx.now()),
+        "sign_in_client": sign_in_client_view(
+            record.read(record.console_path(ir.SIGN_IN_CLIENT)), ctx.settings.project_id),
         "github_app": _github_view(record.read(record.console_path(ir.GITHUB_APP))),
         "teams": [team_row(request, ctx, record, team_id, doc, directory=directory,
                            first=index == 0, runs=runs, flow=flow, github=github,
@@ -972,6 +976,71 @@ def setup_state(
         "hostname": ctx.settings.install_hostname or None,
         "github_org": ctx.settings.setup_github_org or None,
     }
+
+
+# --------------------------------------------------------------------------
+# the Desktop sign-in client (issue #2964)
+# --------------------------------------------------------------------------
+
+#: The Desktop OAuth client's secret container `sc` signs in with; the
+#: installer's `edge.desktop-client` step and swarm-discovery name the same one.
+SIGN_IN_CLIENT_SECRET = "swarm-iap-desktop-client-secret"
+#: A Desktop OAuth client's id, as `swarm_install.adopt.DESKTOP_CLIENT_ID` checks it.
+DESKTOP_CLIENT_ID = re.compile(r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
+
+
+class ClientIdInvalid(ValidationFailed):
+    code = "client_id_invalid"
+
+
+class SignInClientSave(StrictModel):
+    client_id: str = Field(min_length=1, max_length=256)
+    client_secret: str = Field(min_length=1, max_length=1024)
+
+
+def sign_in_client_links(project_id: str) -> dict[str, str | None]:
+    """The deployment's own console pages the step links: no API creates the
+    brand or the client since the IAP OAuth Admin API shut down on 2026-03-19."""
+    if not project_id:
+        return {"branding": None, "audience": None, "create_client": None}
+    base = "https://console.cloud.google.com/auth"
+    return {"branding": f"{base}/branding?project={project_id}",
+            "audience": f"{base}/audience?project={project_id}",
+            "create_client": f"{base}/clients/create?project={project_id}"}
+
+
+def sign_in_client_view(doc: dict[str, Any] | None, project_id: str) -> dict[str, Any]:
+    """`waiting` until an id and secret are saved, then `saved`. The secret is
+    never in the record, so it is never served."""
+    client_id = (doc or {}).get("client_id") or None
+    return {"state": "saved" if client_id else "waiting",
+            "client_id": client_id,
+            "saved_at": (doc or {}).get("saved_at"),
+            "saved_by": (doc or {}).get("saved_by"),
+            "links": sign_in_client_links(project_id)}
+
+
+@router.post("/sign-in-client", dependencies=[Depends(admin_auth)])
+def save_sign_in_client(
+    body: SignInClientSave,
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+    secrets_: SetupSecrets = Depends(setup_secrets),
+) -> dict:
+    """Store the Desktop client the person made in Google's console: the
+    secret as a new version of `swarm-iap-desktop-client-secret`, written
+    before the id is recorded so a failed write records nothing; the id in
+    `console/sign_in_client`. Neither the secret nor the request is logged."""
+    client_id = body.client_id.strip()
+    if not DESKTOP_CLIENT_ID.match(client_id):
+        raise ClientIdInvalid(
+            "that is not a Desktop OAuth client id; it ends .apps.googleusercontent.com")
+    secrets_.add_version(SIGN_IN_CLIENT_SECRET, body.client_secret)
+    saved = {"client_id": client_id, "saved_at": ctx.now(), "saved_by": caller.email}
+    record.write(record.console_path(ir.SIGN_IN_CLIENT), saved)
+    log.info("the sign-in client was saved by the console by=%s", caller.email)
+    return sign_in_client_view(saved, ctx.settings.project_id)
 
 
 # --------------------------------------------------------------------------

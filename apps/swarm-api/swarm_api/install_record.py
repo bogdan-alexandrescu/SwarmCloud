@@ -30,6 +30,9 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     "swarm-install/{env}/console/github_app": frozenset(
         {"state_hash", "id", "slug", "client_id", "name", "installed_on",
          "secrets_written_at", "self_check"}),
+    #: The Desktop sign-in client Admin › Setup takes (issue #2964): its id and
+    #: who saved it when. The secret goes to Secret Manager, never here.
+    "swarm-install/{env}/console/sign_in_client": frozenset({"client_id", "saved_at", "saved_by"}),
     "swarm-install/{env}/console/accounts": frozenset(),
     #: A collection under the env document: `console/teams/<id>` has five
     #: segments, which real Firestore refuses as a document (audit 3, A2).
@@ -65,6 +68,7 @@ INDIVIDUAL = "individual"
 TEAM = "team"
 
 GITHUB_APP = "github_app"
+SIGN_IN_CLIENT = "sign_in_client"
 ACCOUNTS = "accounts"
 FINISHED = "finished"
 TEAMS = "teams"
