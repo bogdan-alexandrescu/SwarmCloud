@@ -39,6 +39,23 @@ INTERVAL = 22
 STALE_AFTER = 90
 #: How long the stand-in publish takes, in virtual seconds.
 PUBLISH_SECONDS = 150
+#: How far apart two virtual times may be and still count as the same instant.
+#: The clock starts at a real `time.monotonic()` reading and moves in float
+#: steps, so a time one interval later can subtract or compare a few ulps off
+#: (#2976: a gap of exactly 22 s read as 22.00000000000003). A millisecond is
+#: far above that rounding and far below the clock's one-second tick, so no
+#: late beat or real oversleep hides inside it.
+FLOAT_SLACK = 1e-3
+
+
+def _no_longer_than(seconds: float, limit: float) -> bool:
+    """`seconds <= limit`, with float rounding forgiven up to FLOAT_SLACK."""
+    return seconds <= limit + FLOAT_SLACK
+
+
+def _longest_silence(marks: list[float]) -> float:
+    """The longest gap between consecutive virtual times in `marks`."""
+    return max(later - earlier for earlier, later in zip(marks, marks[1:]))
 
 
 class _Clock:
@@ -73,7 +90,8 @@ class _Clock:
             target = self.now + max(seconds, 0.0)
             self._waiting[me] = target
             self._cond.notify_all()
-            while self.now < target and not event.is_set():
+            # A target one rounding above a tick is due at that tick.
+            while self.now < target - FLOAT_SLACK and not event.is_set():
                 # The stop event does not notify the condition: poll it.
                 self._cond.wait(timeout=0.01)
             self._waiting.pop(me, None)
@@ -81,7 +99,8 @@ class _Clock:
 
     def _settled(self) -> bool:
         return all(
-            not thread.is_alive() or self._waiting.get(thread, -1.0) > self.now
+            not thread.is_alive()
+            or self._waiting.get(thread, -1.0) > self.now + FLOAT_SLACK
             for thread in self._threads
         )
 
@@ -89,7 +108,7 @@ class _Clock:
         for _ in range(seconds):
             with self._cond:
                 self.now += 1
-                while self._scheduled and self._scheduled[0][0] <= self.now:
+                while self._scheduled and self._scheduled[0][0] <= self.now + FLOAT_SLACK:
                     _, action = self._scheduled.pop(0)
                     action()
                 self._cond.notify_all()
@@ -179,8 +198,8 @@ def test_a_long_publish_keeps_the_lease_beating(db, worker_factory):
     # the lease ages for the whole publish.
     assert during, f"no beat while publishing for {PUBLISH_SECONDS} s: beats={beats}"
     marks = [start, *during, end]
-    silence = max(later - earlier for earlier, later in zip(marks, marks[1:]))
-    assert silence <= INTERVAL, (
+    silence = _longest_silence(marks)
+    assert _no_longer_than(silence, INTERVAL), (
         f"the lease went {silence} s without a beat while publishing: {during}"
     )
     assert silence < STALE_AFTER
