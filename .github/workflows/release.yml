@@ -1109,6 +1109,23 @@ jobs:
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         timeout-minutes: 20
         run: ./scripts/roll-typesafe-fwd.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-voice to this release's image
+        # Lane VOICE-ROLL (part of #2688; docs/design/voice-it.md §3.4, phase one).
+        # swarm-voice, the one-replica StatefulSet swarm-system/swarm-voice on
+        # swarm-autopilot, is rendered by terraform/infra/voice.tf as
+        # `swarm_voice_manifest`, null until voice_it = "on". This applies it
+        # through kubernetes/apply.sh --swarm-voice (the same agents-staging
+        # refusal, and swarm-autopilot only), waits for `rollout status
+        # statefulset/swarm-voice` and checks its pod runs the manifest's
+        # digest. Not served is a notice, not a failure, and then gcloud and
+        # the cluster are asked nothing.
+        # No continue-on-error: a swarm-voice left on the old image or
+        # crash-looping fails the platform owner's next voice session. No
+        # PYTHON_BIN: the --swarm-voice path runs neither render.py nor
+        # network_parity.py.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        run: ./scripts/roll-voice.sh --tf-init --get-credentials --confirm
 
       - name: smoke test (inside the VPC)
         # The `mock` profile needs no provider key, so this proves the whole
