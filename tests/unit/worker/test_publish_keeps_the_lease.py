@@ -39,6 +39,23 @@ INTERVAL = 22
 STALE_AFTER = 90
 #: How long the stand-in publish takes, in virtual seconds.
 PUBLISH_SECONDS = 150
+#: How far apart two virtual times may be and still count as the same instant.
+#: The clock starts at a real `time.monotonic()` reading and moves in float
+#: steps, so a time one interval later can subtract or compare a few ulps off
+#: (#2976: a gap of exactly 22 s read as 22.00000000000003). A millisecond is
+#: far above that rounding and far below the clock's one-second tick, so no
+#: late beat or real oversleep hides inside it.
+FLOAT_SLACK = 1e-3
+
+
+def _no_longer_than(seconds: float, limit: float) -> bool:
+    """`seconds <= limit`, with float rounding forgiven up to FLOAT_SLACK."""
+    return seconds <= limit + FLOAT_SLACK
+
+
+def _longest_silence(marks: list[float]) -> float:
+    """The longest gap between consecutive virtual times in `marks`."""
+    return max(later - earlier for earlier, later in zip(marks, marks[1:]))
 
 
 class _Clock:
@@ -73,7 +90,8 @@ class _Clock:
             target = self.now + max(seconds, 0.0)
             self._waiting[me] = target
             self._cond.notify_all()
-            while self.now < target and not event.is_set():
+            # A target one rounding above a tick is due at that tick.
+            while self.now < target - FLOAT_SLACK and not event.is_set():
                 # The stop event does not notify the condition: poll it.
                 self._cond.wait(timeout=0.01)
             self._waiting.pop(me, None)
@@ -81,7 +99,8 @@ class _Clock:
 
     def _settled(self) -> bool:
         return all(
-            not thread.is_alive() or self._waiting.get(thread, -1.0) > self.now
+            not thread.is_alive()
+            or self._waiting.get(thread, -1.0) > self.now + FLOAT_SLACK
             for thread in self._threads
         )
 
@@ -89,7 +108,7 @@ class _Clock:
         for _ in range(seconds):
             with self._cond:
                 self.now += 1
-                while self._scheduled and self._scheduled[0][0] <= self.now:
+                while self._scheduled and self._scheduled[0][0] <= self.now + FLOAT_SLACK:
                     _, action = self._scheduled.pop(0)
                     action()
                 self._cond.notify_all()
@@ -179,8 +198,8 @@ def test_a_long_publish_keeps_the_lease_beating(db, worker_factory):
     # the lease ages for the whole publish.
     assert during, f"no beat while publishing for {PUBLISH_SECONDS} s: beats={beats}"
     marks = [start, *during, end]
-    silence = max(later - earlier for earlier, later in zip(marks, marks[1:]))
-    assert silence <= INTERVAL, (
+    silence = _longest_silence(marks)
+    assert _no_longer_than(silence, INTERVAL), (
         f"the lease went {silence} s without a beat while publishing: {during}"
     )
     assert silence < STALE_AFTER
@@ -203,3 +222,39 @@ def test_a_generation_fenced_while_it_publishes_stops_and_never_pushes(db, worke
     assert not after_fence, f"beats after the attempt was fenced: {after_fence}"
     assert not pushed, "a fenced generation made its forge write"
     assert code == ExitCode.GENERATION_FENCED, code
+
+
+#: The beat times the CI run in #2976 recorded: the last gap is one interval
+#: that subtracts to 22.00000000000003.
+_ROUNDED_BEATS = [154.26275479, 176.26275479, 198.26275479, 220.26275479,
+                  242.26275479, 264.26275479000003]
+
+
+def test_a_gap_of_one_interval_passes_however_the_floats_round():
+    silence = _longest_silence(_ROUNDED_BEATS)
+    assert silence > INTERVAL, "the recorded marks no longer round above the interval"
+    assert _no_longer_than(silence, INTERVAL)
+    # The slack is for rounding only: a beat a millisecond late still fails.
+    assert not _no_longer_than(INTERVAL + 0.002, INTERVAL)
+
+
+def test_the_clock_wakes_a_wait_whose_target_rounds_just_above_the_tick():
+    clock = _Clock(_ROUNDED_BEATS[0])
+    stop = threading.Event()
+    woke: list[float] = []
+    beat = threading.Thread(
+        target=lambda: woke.append(clock.wait(stop, INTERVAL + 3e-14) or clock.now),
+        daemon=True,
+    )
+    beat.start()
+    try:
+        deadline = time.monotonic() + 10
+        while beat not in clock._waiting:
+            assert time.monotonic() < deadline, "the wait never registered"
+            time.sleep(0.001)
+        clock.advance(INTERVAL)
+        beat.join(timeout=1)
+        assert woke == [clock.now], f"the wait slept past tick {INTERVAL}: {woke}"
+    finally:
+        stop.set()
+        beat.join(timeout=10)
