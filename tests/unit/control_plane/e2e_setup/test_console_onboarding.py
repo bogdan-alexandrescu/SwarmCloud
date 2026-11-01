@@ -381,9 +381,11 @@ def engine_sees_finished(console: Console, *, tenant: str, one_person: bool) -> 
     runs = (engine.read_console(engine_record.VERIFY_RUNS) or {}).get("verify_runs") or {}
     assert set(engine_verify.CONSOLE_KEYS.values()) <= set(runs), runs
     engine.state.outputs["verify_runs"] = dict(runs)
-    for step in handoff.build_triggered():
+    # The Sign-in client step's three (issue #2964), then the App's switches.
+    wait = handoff.HandoffStep(handoff.DEPS)
+    for step in wait.triggered:
         engine.state.steps[step.id] = StepRecord(state=STEP_DONE, at=time.time(), by=ROOT)
-    observed = handoff.HandoffStep(handoff.DEPS).check(engine)
+    observed = wait.check(engine)
     assert observed.status == handoff.MET, observed
     if one_person:
         personal = engine.read_console(engine_record.PERSONAL)

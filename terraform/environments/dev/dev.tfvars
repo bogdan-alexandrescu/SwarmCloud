@@ -57,6 +57,18 @@ enable_gke_autopilot        = true
 gke_release_channel         = "RAPID"
 gke_enable_private_endpoint = false
 
+# Hostname-based egress policy (FQDNNetworkPolicy), on by owner decision of
+# 2026-11-01: swarm-voice's policy in kubernetes/network-policies/ fails closed
+# without it, leaving swarm-voice only DNS and the metadata server. The owner
+# set two conditions, and both hold:
+#   * no charge -- GKE's release note of 2025-09-02 lists FQDN Network Policy
+#     among the features "included in the GKE offering at no additional cost";
+#     GKE has had no paid edition since;
+#   * in place -- the google provider (6.50.0, pinned) enables it with a cluster
+#     update. It REPLACES the cluster only on true -> false, so never set this
+#     back to false without planning a cluster rebuild.
+gke_enable_fqdn_network_policy = true
+
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
 # apply time as the operator's own /32. That is no longer what this does.
 #

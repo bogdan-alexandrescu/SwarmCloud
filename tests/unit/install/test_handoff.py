@@ -254,6 +254,9 @@ def test_handoff_is_not_met_while_the_switches_are_off() -> None:
     assert wait.verify(ctx).status != "met"
     for switch in handoff.SWITCHES:
         ctx.state.steps[switch] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    assert "handoff.sign-in-client" in wait.check(ctx).detail, "the console's Sign-in client step too (#2964)"
+    for step in handoff.sign_in_triggered(Deps(gcp=lambda: None)):
+        ctx.state.steps[step.id] = StepRecord(state="done", at=1.0, by="admin@example.com")
     assert wait.check(ctx).status == "met" and wait.verify(ctx).status == "met"
 
 

@@ -10,9 +10,9 @@
 | `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row`, `other.verify-gke`, `other.verify-live-browser`, `other.verify-code-intelligence` | seven runs on the NEW deployment: a single task and a workflow from the plugin and from the console, each to a pull request, and three check runs (a task on GKE, a live-browser task, a code-intelligence read) | 18: the plugin signs in with the Desktop client; 43: no run's task cloned or pushed with a personal access token; the console's used an App installation token (below) |
 
 **The new deployment, never the person's current context.** The step uses
-the engine's own swarm context, which `edge.desktop-client` (stage 2) wrote
+the engine's own swarm context, which `edge.desktop-client` (stage 13) wrote
 with the Desktop client's secret in the swarm credential store, the value
-the person typed at its hidden prompt (`swarm_context`; named after the
+the console's Sign-in client step saved (`swarm_context`; named after the
 hostname, never `--use`; a context of that name pointing elsewhere is left
 alone and the engine's is `<hostname>-install`), so verify never needs the
 secret. It signs the person in to that context once in the browser, and
@@ -829,12 +829,13 @@ class SwarmCli:
         url = deployment_url(ctx)
         name = str(ctx.outputs.get("verify_context") or "")
         if not url or not name:
-            raise LookupError("edge.desktop-client (stage 2) writes the swarm context for the new deployment, "
+            raise LookupError("edge.desktop-client (stage 13) writes the swarm context for the new deployment, "
                               "with the Desktop client's secret, and records it as verify_context")
         row = list_contexts(self.run, self.cli, self._env(ctx)).get(name)
         if row is None or not points_at(row, url):
             raise LookupError(f"swarm context {name} for {url} is not on this machine; edge.desktop-client "
-                              f"writes it again, its secret typed at a hidden prompt: swarm install")
+                              f"writes it again, its secret read from Secret Manager with your own credentials: "
+                              "swarm install")
         if row.get("signed_in") is not True:
             ctx.events.emit("step_apply", step="verify.end-to-end",
                             message=f"sign in to {url} in the browser that opens (swarm --context {name} login)")
