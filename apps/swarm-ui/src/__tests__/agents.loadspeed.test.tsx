@@ -46,7 +46,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api, USE_FIXTURES: false }
 })
 
-import { AgentsScreen, IDLE_POLL_MS, LIVE_POLL_MS, PAGE_REREAD_MS, agentPanelShown } from '../Agents'
+import { AgentsScreen, IDLE_POLL_MS, LIVE_POLL_MS, PAGE_REREAD_MS, agentPanelGone, agentPanelOpening, agentPanelShown } from '../Agents'
 import { AgentSplit } from '../AgentSplit'
 
 function tid(n: number): string {
@@ -114,7 +114,7 @@ const finished = Array.from({ length: 5 }, (_, i) => row(100 + i, 'SUCCEEDED'))
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
   media(false)
-  agentPanelShown(null)
+  for (let n = 0; n < 8; n++) agentPanelGone(tid(n))
   api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadLiveSession.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
 })
@@ -208,6 +208,7 @@ describe('the page read and the state read start together', () => {
 
 describe('attempt totals come from the rows; only the open row reads /attempts', () => {
   it('reads no /attempts for live rows that are not open, and one for the open row', async () => {
+    // With no split beside it, an open agent's list reads at once (`listMayStart`).
     api.loadTasks.mockImplementation(async () => page([...live, ...finished], null))
     statesFrom(() => live)
     const { rerender } = render(<AgentsScreen onOpen={() => {}} />)
@@ -216,7 +217,6 @@ describe('attempt totals come from the rows; only the open row reads /attempts',
     expect(rowEl(tid(1))?.querySelector('.cr-try')?.textContent).toBe('attempt 1 of 3')
     expect(api.loadAttempts, 'a row that is not open read its attempts').not.toHaveBeenCalled()
 
-    agentPanelShown(tid(2))
     rerender(<AgentsScreen onOpen={() => {}} taskId={tid(2)} />)
     await advance(0)
     await advance(0)
@@ -225,9 +225,19 @@ describe('attempt totals come from the rows; only the open row reads /attempts',
 })
 
 describe('an open agent is read first, and the list after its panel', () => {
+  it('reads at once when no agent panel is coming beside it', async () => {
+    api.loadTasks.mockImplementation(async () => page([...live, ...finished], 'next-1'))
+    statesFrom(() => live)
+    render(<AgentsScreen onOpen={() => {}} taskId={tid(1)} />)
+    await advance(0)
+    expect(api.loadTasks).toHaveBeenCalledTimes(1)
+  })
+
   it('shows loading, not an empty list, until the panel has rendered, then reads the list', async () => {
     api.loadTasks.mockImplementation(async () => page([...live, ...finished], 'next-1'))
     statesFrom(() => live)
+    // AgentSplit says so during its render; this list has no split beside it.
+    agentPanelOpening(tid(1))
     const { container } = render(<AgentsScreen onOpen={() => {}} taskId={tid(1)} />)
     await advance(0)
     await advance(1_000)

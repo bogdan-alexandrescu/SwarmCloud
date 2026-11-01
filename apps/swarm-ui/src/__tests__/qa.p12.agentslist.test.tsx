@@ -43,7 +43,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api, USE_FIXTURES: false }
 })
 
-import { AgentsScreen, LIVE_POLL_MS, agentPanelShown } from '../Agents'
+import { AgentsScreen, LIVE_POLL_MS } from '../Agents'
 
 const BROWSER = 'claude-code-browser'
 
@@ -103,8 +103,6 @@ function session(device: LiveSession['device']): Result<LiveRead> {
 const rowEl = (id: string) => document.querySelector<HTMLElement>(`.row.is-compact[data-task-id="${id}"]`)
 
 async function mount(open: string | null = null): Promise<void> {
-  // An open agent's list waits for its panel (`listMayStart`); none is drawn here.
-  if (open !== null) agentPanelShown(open)
   render(<AgentsScreen onOpen={() => {}} taskId={open} />)
   await waitFor(() => expect(document.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
 }
