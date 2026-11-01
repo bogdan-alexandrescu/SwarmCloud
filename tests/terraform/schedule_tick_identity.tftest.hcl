@@ -294,7 +294,7 @@ run "the_tick_holds_no_grant_but_run_invoker_on_swarm_api" {
       ]) : l
       if !contains([
         "modules/service_account_ids/main.tf: schedule_tick_id = \"swarm-schedule-tick\"",
-        "modules/service_account_ids/main.tf: [local.tick_id, local.verify_id, local.rollup_sweeper_id, local.schedule_tick_id, local.discovery_id, local.doctor_id],",
+        "modules/service_account_ids/main.tf: [local.tick_id, local.verify_id, local.rollup_sweeper_id, local.schedule_tick_id, local.discovery_id, local.doctor_id, local.voice_id],",
         "modules/service_account_ids/outputs.tf: output \"schedule_tick_id\" {",
         "modules/service_account_ids/outputs.tf: value = local.schedule_tick_id",
         "modules/scheduler/main.tf: account_id = module.service_account_ids.schedule_tick_id",

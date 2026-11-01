@@ -63,9 +63,10 @@ run "platform_and_tick_accounts_are_adopted_only_under_the_infra_state_gate" {
         google_service_account.rollup_sweeper,
         google_service_account.discovery,
         google_service_account.doctor,
+        google_service_account.voice,
       ] : sa.create_ignore_already_exists != true
     ])
-    error_message = "swarm-tick, swarm-verify, swarm-schedule-tick, swarm-rollup-sweeper, swarm-discovery or swarm-doctor adopts a pre-existing account of its name on a 409"
+    error_message = "swarm-tick, swarm-verify, swarm-schedule-tick, swarm-rollup-sweeper, swarm-discovery, swarm-doctor or swarm-voice adopts a pre-existing account of its name on a 409"
   }
 
   # The control: the accounts are planned at all, under their names.
@@ -74,8 +75,9 @@ run "platform_and_tick_accounts_are_adopted_only_under_the_infra_state_gate" {
       toset(keys(google_service_account.platform)) == toset(["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"])
       && google_service_account.tick.account_id == "swarm-tick"
       && google_service_account.verify.account_id == "swarm-verify"
+      && google_service_account.voice.account_id == "swarm-voice"
     )
-    error_message = "the four platform accounts, swarm-tick and swarm-verify are not planned, so the assertions above prove nothing"
+    error_message = "the four platform accounts, swarm-tick, swarm-verify and swarm-voice are not planned, so the assertions above prove nothing"
   }
 }
 

@@ -112,6 +112,7 @@ resource "google_service_account_iam_member" "deployer_admin" {
     google_service_account.rollup_sweeper,
     google_service_account.discovery,
     google_service_account.doctor,
+    google_service_account.voice,
   ]
 
   lifecycle {
