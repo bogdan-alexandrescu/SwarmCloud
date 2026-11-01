@@ -146,6 +146,13 @@ VERSIONS_COLLECTION = "index_versions"
 #: (`swarm_api.repoindex.BASE_LINE`): a line of its own, the prefix and a
 #: 40-hex sha. A request, checked; see the module doc.
 BASE_LINE = "swarm-index-base: "
+#: The prompt line that gives a FULL run the last promoted index as a base
+#: for the language servers' answers only (part of #2991, owner 2026-11-01):
+#: staged exactly as BASE_LINE's base is, and the extractor is told
+#: `--base-lsp-only`, so it rebuilds the tree-sitter half whole and asks the
+#: servers only about the changed and never-covered files. Signed, like
+#: BASE_LINE (`swarm_api.repoindex.LSP_BASE_LINE`).
+LSP_BASE_LINE = "swarm-index-lsp-base: "
 #: The prompt line that names the commits the sweep keeps
 #: (`swarm_api.repoindex.KEEP_LINE`): a line of its own, the prefix and
 #: space-separated 40-hex shas. Signed, like BASE_LINE; see the module doc.
@@ -165,6 +172,17 @@ MAX_BASE_INDEX_BYTES = 512 * 1024
 #: run's 1,800 s is 720 s: twice the ~6 minutes measured on a 1,685-file
 #: repository on 2026-10-06, and still leaves the agent most of the rest.
 EXTRACT_SHARE = 0.4
+#: ... and on a run of an hour or more (swarm-api gives 3,600 s and 7,200 s
+#: to the largest repositories), 0.65: the owner's "Give it 2,160 s"
+#: (2026-11-01, #2991). pyright needs about 3,400 s to cover SwarmCloud's
+#: 2,334 Python files, and 0.4 gave the pass 1,260 s of 3,600. At 0.65 the
+#: pass gets 2,160 s of 3,600 (and 4,500 of 7,200), and the agent keeps
+#: 3,600 - 2,340 - 360 - 180 = 720 s. Its cost: the extractor runs up to
+#: 900 s (15 indexer-pod minutes) longer on an hour-long full run, about 5
+#: to 6 cents a weekly run at the indexer's on-demand rate. Runs under an
+#: hour keep 0.4: their agents already have the least time.
+EXTRACT_SHARE_LONG = 0.65
+EXTRACT_SHARE_LONG_FROM_SECONDS = 3_600
 EXTRACT_MIN_SECONDS = 120
 #: The LSP pass is given the extractor's budget less this, so the extractor
 #: stops its servers and writes what it has (every language it could not
@@ -310,14 +328,16 @@ def budgets(timeout_seconds: int, *, base_graph_bytes: int | None = None) -> Bud
     pass, and 180 s reserved for the graph write and 90 s for the sweep
     after it: the agent has at least the 810 s between. Every share follows
     the timeout, so the larger runs swarm-api gives larger repositories
-    (lane INDEX-BUDGETS, #1693) give the LSP pass 1,260 s of 3,600 and
-    2,700 s of 7,200 -- the time pyright ran out of on ai-studio. Never more
+    (lane INDEX-BUDGETS, #1693) give the LSP pass 2,160 s of 3,600 and
+    4,500 s of 7,200 (`EXTRACT_SHARE_LONG`, #2991), leaving their agents at
+    least 720 s. Never more
     than the task has. The base read is sized from
     `base_graph_bytes` (`base_graph_bytes()`), up to half the extractor's
     budget, which is also what an unknown size gets.
     """
     total = max(1, int(timeout_seconds))
-    extract = min(total, max(EXTRACT_MIN_SECONDS, int(total * EXTRACT_SHARE)))
+    share = EXTRACT_SHARE_LONG if total >= EXTRACT_SHARE_LONG_FROM_SECONDS else EXTRACT_SHARE
+    extract = min(total, max(EXTRACT_MIN_SECONDS, int(total * share)))
     write = min(total, max(GRAPH_WRITE_MIN_SECONDS, int(total * GRAPH_WRITE_SHARE)))
     sweep = min(total, max(INDEX_SWEEP_MIN_SECONDS, int(total * INDEX_SWEEP_SHARE)))
     lsp = max(30, extract - EXTRACT_LSP_RESERVE_SECONDS)
@@ -403,7 +423,7 @@ def phase_env(*, home: Path, tmp: Path, tenant_id: str, bucket: str) -> dict[str
 
 def extractor_argv(
     program: str, *, checkout: Path, work: Path, lsp_total: int, base_sha: str | None = None,
-    lsp_costs: Mapping[str, int] | None = None,
+    lsp_costs: Mapping[str, int] | None = None, base_lsp_only: bool = False,
 ) -> list[str]:
     argv = [
         program, "--repo", str(checkout), "--out", str(work / EXTRACT_FILE),
@@ -413,6 +433,8 @@ def extractor_argv(
     if base_sha is not None:
         argv += ["--base-sha", base_sha, "--base-index", str(work / BASE_INDEX_FILE),
                  "--base-graph", str(work / BASE_GRAPH_FILE)]
+        if base_lsp_only:
+            argv.append("--base-lsp-only")
     for server, seconds in sorted((lsp_costs or {}).items()):
         argv += ["--lsp-server-cost", f"{server}={seconds}"]
     return argv
@@ -473,16 +495,37 @@ def is_commit_sha(value: str) -> bool:
     return bool(_SHA.match(value))
 
 
-def requested_base(task_input: Any) -> str | None:
-    """The base swarm-api asked this run to build on, from the SIGNED prompt; None for full.
+_LSP_BASE_LINE = re.compile(r"^" + re.escape(LSP_BASE_LINE) + r"([0-9a-f]{40})$", re.MULTILINE)
 
-    Exactly one base line, or none: two that disagree are no request at all.
-    """
+
+def _base_lines(task_input: Any) -> tuple[set[str], set[str]]:
+    """The shas the SIGNED prompt's BASE_LINEs and LSP_BASE_LINEs name."""
     prompt = task_input.get("prompt") if isinstance(task_input, Mapping) else None
     if not isinstance(prompt, str):
+        return set(), set()
+    return set(_BASE_LINE.findall(prompt)), set(_LSP_BASE_LINE.findall(prompt))
+
+
+def requested_base(task_input: Any) -> str | None:
+    """The base swarm-api asked this run to build on, from the SIGNED prompt; None for none.
+
+    An incremental run's BASE_LINE or a full run's LSP_BASE_LINE, exactly
+    one sha, or none: two that disagree, or both kinds of line, are no
+    request at all. The base is staged the same way for either
+    (`stage_base`); `base_lsp_only` says which the extractor is told.
+    """
+    incremental, lsp_only = _base_lines(task_input)
+    if incremental and lsp_only:
         return None
-    found = set(_BASE_LINE.findall(prompt))
+    found = incremental or lsp_only
     return found.pop() if len(found) == 1 else None
+
+
+def base_lsp_only(task_input: Any) -> bool:
+    """True when the staged base is a full run's LSP_BASE_LINE base: the
+    extractor carries only the language servers' answers (`--base-lsp-only`)."""
+    incremental, lsp_only = _base_lines(task_input)
+    return not incremental and len(lsp_only) == 1
 
 
 _LSP_COST_LINE = re.compile(r"^" + re.escape(LSP_COST_LINE) + r"(.*)$", re.MULTILINE)
@@ -761,7 +804,7 @@ __all__ = [
     "KEEP_LINE", "LSP_COST_LINE", "MAX_BASE_INDEX_BYTES", "MAX_LSP_COST_SECONDS", "PHASES_FILE", "PhaseRecord", "SWEEP_PHASE", "Target",
     "base_graph_bytes", "budgets", "content_digest", "extractor_argv", "graph_read_argv",
     "graph_write_argv", "is_index_run", "kept_commits", "last_line", "lsp_costs", "phase_env",
-    "repo_id_for",
+    "repo_id_for", "LSP_BASE_LINE", "base_lsp_only",
     "requested_base", "resolve", "resolve_base", "sweep_argv", "sweep_refusal",
     "sweep_retention", "target",
     "write_phases",

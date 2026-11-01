@@ -431,7 +431,7 @@ def test_a_full_runs_prompt_names_its_lsp_base_and_no_incremental_base():
     assert f"\n{repoindex.LSP_BASE_LINE}{ONE}\n" in prompt
     assert repoindex.BASE_LINE not in prompt
     # The agent is told it is still a full run.
-    assert 'write "kind": "full", no "base_sha"' in prompt
+    assert 'Write "kind": "full", no "base_sha"' in prompt
     assert task.metadata == {"repo_index": "repo_1", "commit_sha": TWO, "index_kind": "full",
                              "lsp_base_sha": ONE}
     # An incremental run never names one.
@@ -452,7 +452,7 @@ def test_a_weekly_full_run_is_submitted_with_its_lsp_base(client, db, objects, r
     run = _index_now(client, repo_id, kind="incremental").json()["run"]
 
     assert run["kind"] == "full" and run["base_sha"] is None
-    assert run["lsp_base_sha"] == ONE
     task = db.docs[f"tasks/{run['task_id']}"]
     assert task["timeout_seconds"] == repoindex.FULL_TIMEOUT_SECONDS
+    assert task["metadata"]["lsp_base_sha"] == ONE
     assert f"\n{repoindex.LSP_BASE_LINE}{ONE}\n" in task["input"]["prompt"]
