@@ -49,7 +49,7 @@ costs nothing while it waits.
 | `depends_on` | upstream `step_id`s, up to 50. |
 | `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace. |
 | `resource_class` | optional named class, no larger than the profile's own. |
-| `timeout_seconds` | optional; may only shorten the profile's own default. A longer ask is lowered to the profile's cap (a child's, to its parent's) and recorded on the task as `timeout_seconds_asked`, a record the worker reports in its runner's `limits.clamped` and never a limit (contract request 131). |
+| `timeout_seconds` | optional; may only shorten the profile's own default. A longer ask is lowered to the profile's cap (a child's, to its parent's) and recorded as the task field `timeout_seconds_asked`, a record the worker reports in its runner's `limits.clamped` and never a limit (contract request 131). |
 | `when` | `{"step": upstream, "verdict_in": ["NOT_YET"]}`: run this step's agent only on those verdicts; see [review before publishing](#review-before-publishing-implement-review-fix-if-needed) |
 | `builds_on` | an upstream `step_id` whose pushed branch this step's checkout starts from, instead of `repository_ref` |
 | `allow_empty_diff` | `true`: an empty diff is this step's result, not its failure; see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff) |
