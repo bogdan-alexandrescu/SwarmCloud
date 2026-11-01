@@ -33,7 +33,19 @@ Saving the value already stored over a block that does not verify under the
 current key re-signs it without an audit row, so an admin can repair a block
 the re-sign pass has not reached. The tenant id and the block name are inside
 the signed bytes, so a block copied from another workspace's document does
-not verify (invariant 9). Only `jev is True` is ever on.
+not verify (invariant 9). Only `jev is True` is ever on for every lane.
+
+ON REQUEST (the owner's pick, 2026-11-01). `jev` may also be the word
+`"on_request"` (`ON_REQUEST`): the gates run only on a step whose signed
+workflow switch says `quality_gates: on` (`validation.DISPATCH_SWITCHES`),
+for the owner's experiment that builds one feature with and without them at
+the same moment. It is signed exactly as `true` and `false` are: the MAC
+covers `jev` whatever its value, because
+`swarm_common.specsign.canonical_settings_block` projects every key
+SETTINGS_MAC_FIELDS lists for the block (`quality_gates: ("jev",)`) as
+stored, a string as much as a bool. A switch never turns the gates on where
+this setting does not allow them: only a workspace admin decides that code
+is sent to TypeSafe.
 
 THE SCHEDULER VOUCHES, BECAUSE THE WORKER CANNOT CHECK. The MAC is an
 HMAC under the one `swarm-settings-key`; a tenant worker that held it could
@@ -48,7 +60,7 @@ is off, and the environment says why, so the attempt's summary can.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 from google.cloud import firestore
 from pydantic import StrictBool
@@ -83,25 +95,30 @@ MAC_BLOCK = FIELD
 OWNED_FIELDS = (JEV, SET_AT, SET_BY, MAC_FIELD)
 #: Off until the workspace's owner or admin turns it on (BGD, 2026-10-31).
 DEFAULT_JEV = False
+#: Only the steps whose signed workflow switch says `quality_gates: on`
+#: (2026-11-01; `agent_worker.qualitygates.ON_REQUEST`).
+ON_REQUEST = "on_request"
 
 
 class QualityGatesPut(StrictModel):
-    #: StrictBool: "true" and 1 are refused, not read as on.
-    jev: StrictBool
+    #: StrictBool: "true" and 1 are refused, not read as on. Or the one word
+    #: `on_request`; any other string is refused.
+    jev: StrictBool | Literal["on_request"]
 
 
 def stored_jev(doc: Mapping[str, Any] | None, *, tenant_id: str | None = None,
-               mac: SettingsMac | None = None) -> bool:
-    """On only when the stored map says `jev: true`; anything else is off.
-    With `mac` and `tenant_id`, the block is read through
-    `judgment.trusted_block`: for a tenant cut over, a block whose MAC does
-    not verify is off."""
+               mac: SettingsMac | None = None) -> bool | str:
+    """True only when the stored map says `jev: true`, `ON_REQUEST` when it
+    says exactly that; anything else is off. With `mac` and `tenant_id`, the
+    block is read through `judgment.trusted_block`: for a tenant cut over, a
+    block whose MAC does not verify is off."""
     block = (doc or {}).get(FIELD) if isinstance(doc, Mapping) else None
     if not isinstance(block, Mapping):
         return False
     if mac is not None and tenant_id:
         block = trusted_block(tenant_id, MAC_BLOCK, block, mac)
-    return block.get(JEV) is True
+    value = block.get(JEV)
+    return value if value is True or value == ON_REQUEST else False
 
 
 def authorize_write(auth: AuthContext, tenant: Tenant | None, tenant_id: str,
@@ -137,7 +154,7 @@ class QualityGatesStore:
         snap = self._ref(tenant_id).get()
         return (snap.to_dict() or {}) if snap.exists else {}
 
-    def put(self, tenant_id: str, jev: bool, *, by: str) -> None:
+    def put(self, tenant_id: str, jev: bool | str, *, by: str) -> None:
         """Store `jev`, signed, and its audit in one transaction. The same
         value again writes nothing, unless the stored block does not verify
         under the current key: then it is re-signed, with no audit row."""
@@ -207,6 +224,7 @@ __all__ = [
     "FIELD",
     "JEV",
     "MAC_BLOCK",
+    "ON_REQUEST",
     "OWNED_FIELDS",
     "QualityGatesPut",
     "QualityGatesStore",

@@ -241,3 +241,64 @@ def test_the_switch_ships_off_and_reads_its_environment(monkeypatch):
     on = SchedulerSettings.from_env()
     assert on.typesafe_forwarder_enabled is True
     assert on.typesafe_forwarder_tenants == ("eng", "u-alice")
+
+
+# --- the workflow switch `jev_judgments: on` (2026-11-01) ---------------------
+
+
+def _switched_pod(tenant: Tenant, *, dispatch: dict[str, Any] | None, profile: str = "claude-code",
+                  backend: str = "typesafe", forwarder: bool = True,
+                  tenants: tuple[str, ...] = ("eng",)) -> dict[str, Any]:
+    settings = _settings(forwarder=forwarder, tenants=tenants, live=True)
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=object(), judgment=lambda tenant_id: backend)
+    task = make_task(profile)
+    if dispatch is not None:
+        task = dataclasses.replace(task, metadata={"dispatch": dispatch})
+    job = dispatcher._manifest(task=task, lease=make_lease(task),
+                               profile=RUNNER_PROFILES[profile], tenant=tenant)
+    return job["spec"]["template"]
+
+
+def _worker(template: dict[str, Any]) -> dict[str, Any]:
+    (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
+    return worker
+
+
+def test_judgments_switched_on_label_a_claude_code_pod_and_switch_its_worker(tenant):
+    """The worker resolves the workspace's TypeSafe key for the judgments of a
+    step whose signed switch says on; with the forwarder serving the tenant,
+    the shim serves it, as it does the browser's."""
+    template = _switched_pod(tenant, dispatch={"jev_judgments": "on"})
+    # MUTATION: drop the `elif jev_judgments_switched_on(task)` branch and
+    # this pod is unlabelled.
+    assert template["metadata"]["labels"]["swarm-typesafe"] == "inject"
+    assert _switch_entries(_worker(template)["env"]) == [
+        {"name": SWITCH[0], "value": SWITCH[1]}]
+
+
+@pytest.mark.parametrize("dispatch, change", [
+    pytest.param(None, {}, id="no-block"),
+    pytest.param({"strategy": "collect"}, {}, id="no-switch"),
+    pytest.param({"jev_judgments": "off"}, {}, id="switch-off"),
+    pytest.param({"jev_judgments": True}, {}, id="not-the-word"),
+    pytest.param({"jev_judgments": "on"}, {"backend": "internal-jev"}, id="internal-backend"),
+    pytest.param({"jev_judgments": "on"}, {"forwarder": False}, id="forwarder-off"),
+    pytest.param({"jev_judgments": "on"}, {"tenants": ("research",)}, id="tenant-not-listed"),
+])
+def test_anything_else_leaves_a_claude_code_pod_as_it_was(tenant, dispatch, change):
+    template = _switched_pod(tenant, dispatch=dispatch, **change)
+    assert "swarm-typesafe" not in template["metadata"]["labels"]
+    assert _switch_entries(_worker(template)["env"]) == []
+
+
+def test_the_switch_reaches_only_a_profile_that_carries_the_jev_client():
+    settings = _settings(forwarder=True, tenants=("eng",), live=False)
+    profile = RUNNER_PROFILES["claude-code"]
+    assert not typesafe_forwarder_on(settings, tenant_id="eng", profile=profile,
+                                     backend="typesafe")
+    assert typesafe_forwarder_on(settings, tenant_id="eng", profile=profile,
+                                 backend="typesafe", judgments_switched_on=True)
+    mock = RUNNER_PROFILES["mock"]
+    assert not typesafe_forwarder_on(settings, tenant_id="eng", profile=mock,
+                                     backend="typesafe", judgments_switched_on=True)
