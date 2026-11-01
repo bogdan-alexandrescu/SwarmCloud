@@ -1071,6 +1071,8 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         # An existing pull request to push onto (#2183); `read_spec` refused
         # it beside a merge.
         publish_to_pr=spec["publish_to_pr"],
+        # The workflow switches (2026-11-01), as the spec named them.
+        dispatch=spec["dispatch"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")

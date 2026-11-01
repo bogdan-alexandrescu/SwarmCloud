@@ -150,8 +150,8 @@ def test_the_consoles_saved_client_is_taken_without_a_prompt(tmp_path: Path,
     rig = _rig(tmp_path)
     brand, client = handoff.client_steps(lambda: gcp, NeverAsk(), edge=lambda: FakeEdge(), contexts=contexts)
     engine = rig.engine([brand, client])
-    engine.record = Console(sign_in_client={"client_id": client_id, "at": "2026-11-01T10:00:00Z",
-                                            "by": "root@example.com"})
+    engine.record = Console(sign_in_client={"client_id": client_id, "saved_at": "2026-11-01T10:00:00Z",
+                                            "saved_by": "root@example.com"})
     result = engine.run()
     assert result.exit_code == ExitCode.OK, result.message
     outputs = rig.store.load().outputs
@@ -191,7 +191,8 @@ def test_a_second_console_save_replaces_the_recorded_client(tmp_path: Path) -> N
     rig = _rig(tmp_path, desktop_client_id=old, verify_context=HOST)
     record = edge.SignInRecordStep(lambda: gcp, NeverAsk(), contexts=contexts)
     engine = rig.engine([])
-    engine.record = Console(sign_in_client={"client_id": new, "at": "2026-11-01T11:00:00Z", "by": "x@example.com"})
+    engine.record = Console(sign_in_client={"client_id": new, "saved_at": "2026-11-01T11:00:00Z",
+                                            "saved_by": "x@example.com"})
     ctx = _context(engine)
     assert record.trigger(ctx)
     record.apply(ctx, record.plan(ctx))
@@ -214,8 +215,8 @@ class World:
         self.log: list[str] = []
 
     def save(self) -> None:
-        self.docs["sign_in_client"] = {"client_id": self.client_id, "at": "2026-11-01T10:00:00Z",
-                                       "by": "root@example.com"}
+        self.docs["sign_in_client"] = {"client_id": self.client_id, "saved_at": "2026-11-01T10:00:00Z",
+                                       "saved_by": "root@example.com"}
 
     def read_console(self, name: str) -> dict[str, Any] | None:
         return self.docs.get(name)

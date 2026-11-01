@@ -196,3 +196,41 @@ def test_with_the_switch_off_a_signed_on_is_off_on_both_backends(monkeypatch, te
     for env in (_cloud_run_env(router, settings, tenant), _gke_env(router, tenant)):
         assert env[QUALITY_GATES_JEV_ENV] == "false"
         assert env[QUALITY_GATES_REFUSED_ENV] == GATES_REFUSED_SWITCH_OFF
+
+
+# --- on request (2026-11-01) ---------------------------------------------------
+
+
+def _signed_word(jev: Any, *, tenant_id: str = "eng", key: str = KEY) -> dict[str, Any]:
+    from swarm_api.judgment import sign_block
+
+    block: dict[str, Any] = {"jev": jev, "set_by": "root@example.com"}
+    block["mac"] = sign_block(key, tenant_id=tenant_id, block="quality_gates", fields=block)
+    return block
+
+
+def test_a_signed_on_request_is_vouched_for_as_its_own_word():
+    from scheduler.judgment import QUALITY_GATES_ON_REQUEST, quality_gates_env
+
+    doc = {"quality_gates": _signed_word("on_request")}
+    # MUTATION: keep `is not True` in the verdict and this is (False, None).
+    assert quality_gates_verdict(doc, tenant_id="eng", key=KEY) == (QUALITY_GATES_ON_REQUEST, None)
+    assert quality_gates_env(QUALITY_GATES_ON_REQUEST, None) == {QUALITY_GATES_JEV_ENV: "on_request"}
+    # Never the word that runs every lane.
+    assert quality_gates_env(QUALITY_GATES_ON_REQUEST, None)[QUALITY_GATES_JEV_ENV] != "true"
+
+
+@pytest.mark.parametrize("block, why", [
+    pytest.param({"jev": "on_request"}, GATES_REFUSED_UNSIGNED, id="unsigned"),
+    pytest.param({**_signed_word(True), "jev": "on_request"}, GATES_REFUSED_MISMATCH,
+                 id="mac-over-true"),
+    pytest.param({**_signed_word("on_request"), "jev": True}, GATES_REFUSED_MISMATCH,
+                 id="true-over-a-mac-for-on-request"),
+])
+def test_an_on_request_that_does_not_verify_is_off(block, why):
+    assert quality_gates_verdict({"quality_gates": block}, tenant_id="eng", key=KEY) == (False, why)
+
+
+def test_another_word_is_not_on():
+    doc = {"quality_gates": _signed_word("on-request")}
+    assert quality_gates_verdict(doc, tenant_id="eng", key=KEY) == (False, None)

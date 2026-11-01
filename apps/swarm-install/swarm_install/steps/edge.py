@@ -253,7 +253,7 @@ SIGN_IN_CLIENT = WaitSpec(
     interval_s=10,
 )
 #: The console document Admin › Setup's Sign-in client step writes
-#: (`swarm-install/<env>/console/sign_in_client`: `client_id`, `at`, `by`).
+#: (`swarm-install/<env>/console/sign_in_client`: `client_id`, `saved_at`, `saved_by`).
 SIGN_IN_DOCUMENT = "sign_in_client"
 
 
@@ -270,7 +270,7 @@ def client_pending(ctx: Any) -> str:
         return ""
     if saved["client_id"] != ctx.outputs.get("desktop_client_id"):
         return f"the console saved the Desktop client {saved['client_id']}; it is not taken in yet"
-    if str(saved.get("at") or "") != str(ctx.outputs.get("desktop_client_saved_at") or ""):
+    if str(saved.get("saved_at") or "") != str(ctx.outputs.get("desktop_client_saved_at") or ""):
         return "the console saved the Desktop client's secret again; it is not taken in yet"
     return ""
 
@@ -293,7 +293,7 @@ def take_client(ctx: Any, gcp: Gcp, contexts: swarm_context.Run) -> None:
     finally:
         value[:] = b"\0" * len(value)
     remember(ctx, outputs={"verify_context": name, "desktop_client_secret_version": version,
-                           "desktop_client_saved_at": str(saved.get("at") or "")})
+                           "desktop_client_saved_at": str(saved.get("saved_at") or "")})
 
 
 class ClientSecretContainerStep(_Base):

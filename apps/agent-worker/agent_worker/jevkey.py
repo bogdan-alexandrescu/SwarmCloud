@@ -209,6 +209,29 @@ def resolve(*, db: Any, client: Any, tenant_id: str, submitted_by: Any, logger: 
     return None
 
 
+def resolve_workspace(*, db: Any, client: Any, tenant_id: str, logger: Any,
+                      call_options: Mapping[str, Any] | None = None) -> str | None:
+    """The WORKSPACE's TypeSafe key for a step whose signed workflow switch
+    says `jev_judgments: on` (2026-11-01), or None. Resolved exactly as the
+    quality gates resolve theirs (`qualitygates.prepare`): `resolve` with no
+    submitter, so a person's own key is never spent on a workflow's switch,
+    and registered for redaction before it is returned. Never raises."""
+    if db is None or client is None:
+        return None
+    try:
+        found = resolve(db=db, client=client, tenant_id=tenant_id, submitted_by=None,
+                        logger=logger, call_options=call_options)
+    except Exception as exc:  # noqa: BLE001 -- never fatal, said by type
+        logger.warning("jev_key_unavailable", use="judgments", error=type(exc).__name__)
+        return None
+    if found is None:
+        logger.info("jev_key_absent", provider=PROVIDER, use="judgments")
+        return None
+    key, scope, secret = found
+    logger.info("jev_key_resolved", scope=scope, secret=secret, use="judgments")
+    return key
+
+
 def _write_private(path: Path, text: str) -> None:
     if path.is_symlink() or path.exists():
         path.unlink()

@@ -9,7 +9,7 @@ import { HOLDERS_POLL_MS, capacityPoll, paneHref, tableMode, useLinkedParam, use
 import { Screen } from './Shell'
 import { LeaseRef, TaskRef } from './TaskRef'
 import './styles/capacity.css'
-import { formatDuration, leaseLiveliness, poolLabel, type LeasePage, type LeaseRow } from './types'
+import { formatDuration, leaseHeld, leaseLiveliness, poolLabel, type LeasePage, type LeaseRow } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
@@ -316,12 +316,29 @@ interface DriftRow {
  */
 function driftRows(board: HoldersBoard, coverage: LeaseCoverage): DriftRow[] | null {
   if (board.pools === null) return null
+  // WHAT EACH LEASE HOLDS IN EACH POOL, not its `units` in every pool
+  // (contract request 129, #2950): a large lease holds 4 in a compute pool
+  // and 1 in a provider pool, and its served `pool_units` says which.
+  // Summing `units` everywhere drew a false +3 provider delta per large lease.
+  // `leaseHeld` falls back to `units` in each pool for a lease served without
+  // the field -- what a lease from before the request holds, and what release
+  // gives back for it -- so old and new leases sum as the counter counts them.
+  //
+  // The route serves that sum as `units_held_by_pool`, over exactly these
+  // rows (routes/admin.py, `Lease.held_units`); it is read first, and the rows
+  // are summed here only beside an API older than the field.
   const byPool = new Map<string, number>()
-  for (const l of board.page.leases) {
-    if (!Array.isArray(l.pools)) continue
-    const units = typeof l.units === 'number' && Number.isFinite(l.units) ? l.units : null
-    if (units === null) continue
-    for (const p of l.pools) byPool.set(p, (byPool.get(p) ?? 0) + units)
+  const served = board.page.units_held_by_pool
+  if (served !== null && typeof served === 'object') {
+    for (const [p, units] of Object.entries(served)) {
+      if (typeof units === 'number' && Number.isFinite(units)) byPool.set(p, units)
+    }
+  } else {
+    for (const l of board.page.leases) {
+      const held = leaseHeld(l)
+      if (held === null) continue
+      for (const [p, units] of Object.entries(held)) byPool.set(p, (byPool.get(p) ?? 0) + units)
+    }
   }
   // OVER EVERY LIVE LEASE, EVERY POOL IS COMPARED (CP-7, visual QA 2026-09-25).
   // A pool no loaded lease names used to be skipped, on the grounds that its

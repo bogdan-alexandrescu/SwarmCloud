@@ -643,6 +643,20 @@ class ApiSettings:
     #: How long a controller's console has to renew before control lapses
     #: (§4.2): a closed tab stops renewing, and its control ends within this.
     live_control_renew_seconds: int = 60
+    #: Voice it (docs/design/voice-it.md §3.2, §10 phase 1): where swarm-api
+    #: makes swarm-voice's internal start and end calls, from SWARM_VOICE_URL
+    #: (`http://<address>:<port>`, no trailing path). Empty means swarm-voice
+    #: is not deployed, and every Voice it session route answers 503
+    #: `voice_unavailable` before it writes anything.
+    voice_url: str = ""
+    #: The audience of the Google ID token swarm-api presents to swarm-voice,
+    #: from SWARM_VOICE_AUDIENCE; empty means the URL itself.
+    voice_audience: str = ""
+    #: Who may talk to Voice it (lower-cased emails), from VOICE_IT_PEOPLE.
+    #: Version one is BGD's only (voice-it.md §1, "Who uses it"), so unset
+    #: means exactly the platform owner (PLATFORM_OWNER), and with neither
+    #: set nobody may start a session.
+    voice_people: tuple[str, ...] = ()
     #: How long a controller may send no input before control ends (§4.2), and
     #: how far each input moves the hold's deadline (§4.3). 300 is the design's
     #: default: long enough to find a password, short enough that a person who
@@ -1107,6 +1121,10 @@ class ApiSettings:
             live_tunnel_ticket_seconds=_int("LIVE_TUNNEL_TICKET_SECONDS", 60),
             live_viewer_ticket_seconds=_int("LIVE_VIEWER_TICKET_SECONDS", 30),
             live_control_renew_seconds=_int("LIVE_CONTROL_RENEW_SECONDS", 60),
+            voice_url=os.environ.get("SWARM_VOICE_URL", "").strip(),
+            voice_audience=os.environ.get("SWARM_VOICE_AUDIENCE", "").strip(),
+            voice_people=tuple(
+                person.lower() for person in _csv("VOICE_IT_PEOPLE", platform_owner)),
             control_idle_seconds=_int("CONTROL_IDLE_SECONDS", 300),
             live_membership_recheck_seconds=float(
                 _int("LIVE_MEMBERSHIP_RECHECK_SECONDS", 300)),

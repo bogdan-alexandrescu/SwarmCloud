@@ -132,8 +132,8 @@ def test_brand_never_calls_the_brands_api_and_is_met_by_the_desktop_client(
     rig = _rig(tmp_path)
     step = edge.BrandStep(lambda: gcp, NeverAsk(), lambda: FakeEdge())
     engine = rig.engine([step])
-    engine.record = Console(sign_in_client={"client_id": CLIENT_ID, "at": "2026-11-01T10:00:00Z",
-                                            "by": "root@example.com"})
+    engine.record = Console(sign_in_client={"client_id": CLIENT_ID, "saved_at": "2026-11-01T10:00:00Z",
+                                            "saved_by": "root@example.com"})
     result = engine.run()
     assert result.exit_code == ExitCode.OK, result.message
     assert opened == [] and gcp.mutations == []
@@ -156,7 +156,7 @@ def test_brand_refuses_what_is_not_a_desktop_client_id(tmp_path: Path, monkeypat
     rig = _rig(tmp_path, desktop_client_id="not-a-client")
     step = edge.BrandStep(lambda: FakeGcp(), NeverAsk(), lambda: FakeEdge())
     engine = rig.engine([step])
-    engine.record = Console(sign_in_client={"client_id": "not-a-client", "at": "x", "by": "y"})
+    engine.record = Console(sign_in_client={"client_id": "not-a-client", "saved_at": "x", "saved_by": "y"})
     result = engine.run()
     assert result.exit_code == ExitCode.PAUSED, result.message
     assert rig.of_kind("wait_countdown", "edge.brand")

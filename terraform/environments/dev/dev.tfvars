@@ -1087,3 +1087,15 @@ enable_acceptance_fixture = true
 # 2026-11-01: sign settings so the Jev quality checks can run on request for the
 # code intelligence experiment.
 settings_mac_key_ready = true
+
+# Settings signing, step two: Engineering is cut over and the scheduler refuses
+# an unsigned or badly signed setting for it. scripts/resign-workspace-settings.sh
+# --tenant eng --apply signed Engineering's two stored blocks on 2026-11-01 after
+# its dry run's covered values were read against Engineering's admin_audit rows
+# (judgment backend typesafe set 10-23, Jev on 10-23, graph delivery service
+# 10-28, both context fields never set); a second dry run found nothing left to
+# sign. Only Engineering: every other workspace stays unsigned and unverified
+# until it is re-signed and listed here. Owner decision 2026-11-01 ("Sign
+# settings; checks on request").
+settings_mac_tenants  = ["eng"]
+settings_mac_required = true

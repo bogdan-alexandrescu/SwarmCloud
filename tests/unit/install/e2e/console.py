@@ -86,7 +86,7 @@ def _steps(world: World) -> None:
     cloud.versions.setdefault((project, desktop), []).append(secrets.token_hex(16).encode())
     write(record.console_path(SIGN_IN_CLIENT), {
         "client_id": f"{cloud.number(project)}-{secrets.token_hex(8)}.apps.googleusercontent.com",
-        "at": now, "by": world.installer})
+        "saved_at": now, "saved_by": world.installer})
     # The GitHub App: created from the manifest, its three secrets written by swarm-api.
     for name in tfvars.APP_SECRETS:
         cloud.secrets.setdefault((project, name), {"name": f"projects/{cloud.number(project)}/secrets/{name}",

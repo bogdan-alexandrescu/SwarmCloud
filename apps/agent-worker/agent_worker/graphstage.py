@@ -15,21 +15,37 @@ the harvested patch or the published branch (the `children.prepare` pattern).
 CTXQ-P writes CONTEXT.md and pack.json into the same directory and reads
 `stage.json` for the arm.
 
-WHO DECIDES: A STORED SETTING, NEVER THE CALLER (§4.7, owner decision Q1,
-2026-10-14). Invariant 10 holds because nothing in the task's input or
-metadata is read here. The decision is, in order:
+WHO DECIDES: THE STORED SETTINGS, NARROWED BY THE SIGNED WORKFLOW SWITCH
+(§4.7, owner decision Q1, 2026-10-14; revised by the owner 2026-11-01 for the
+signed dispatch block only). Until 2026-11-01 this was "a stored setting,
+never the caller", and nothing in the task's input or metadata was read.
+The owner's experiment -- one feature built four ways at once, with and
+without code intelligence -- needs a workflow's every step to stage or not
+as its spec says, so the switch `code_intelligence: on|off` in the SIGNED
+`task.metadata.dispatch` block (`swarm_api.validation.DISPATCH_SWITCHES`,
+covered by the spec signature) is read too, and nothing else of the task's.
+Invariant 10 holds: the switch is an on/off word that names no image,
+command, resource spec or backend. The decision is, in order:
 
+  0. the workflow switch `off`: nothing is staged, whatever is stored;
   1. the registration's `context` override: `on` or `off`; absent, or
      `inherit`, defers to
-  2. the workspace's `tenant_settings/<tenant>.code_intelligence.context`:
+  2. the workspace's `workspace_settings/<tenant>.code_intelligence.context`:
      `on` or `off`; absent defers to
   3. `DEFAULT_CONTEXT`, `on`: local context never leaves the platform.
 
-  Then `code_intelligence.context_ab` (default `DEFAULT_AB`) splits the
-  staged steps for the online A/B (§6.2): with `ab`, `assign_arm` puts a task
-  on arm A (staged nothing, today's runner) or arm B (staged) from
-  sha256(task_id) mod 2, so every attempt of one task is on one arm and who
-  submits it cannot bias the split. `on` or `off` runs no experiment.
+  A stored `off` (1 or 2) stays off under the switch `on`: that is an
+  admin's decision. Otherwise the switch `on` stages, on either arm, and
+  runs no experiment. Without a switch, `code_intelligence.context_ab`
+  (default `DEFAULT_AB`) splits the staged steps for the online A/B (§6.2):
+  with `ab`, `assign_arm` puts a task on arm A (staged nothing, today's
+  runner) or arm B (staged) from sha256(task_id) mod 2, so every attempt of
+  one task is on one arm and who submits it cannot bias the split. `on` or
+  `off` runs no experiment. `stage.json` names the switch, its value and the
+  deciding source (`workflow switch`, `repository`, `workspace` or
+  `default`), which is how the experiment proves each step's condition. A
+  step the switch turns off gets no graph tool at all: no snapshot, no pin,
+  no ticket, and no additional repository's graph.
 
   Both documents are swarm-api's to write (lane CTXQ-SET builds the routes);
   this module only reads them, and their field names are fixed HERE until it
@@ -105,12 +121,13 @@ the `CLOUD_RUN_JOB` backend (today `claude-code-review`) cannot reach the
 headless in-cluster Service, so it stages whatever the setting says, and its
 `stage.json` says why.
 
-WHERE THE SETTING IS READ. `graph_delivery` is written by swarm-api's
-`codeintel` into `workspace_settings/<tenant>.code_intelligence`
-(DELIVERY_SETTINGS_COLLECTION), and read from there. `context` and
-`context_ab` are still read from SETTINGS_COLLECTION, as before this lane;
-that the two collections differ is reported, not changed here, because
-moving those reads changes which steps stage at all.
+WHERE THE SETTING IS READ. swarm-api's `codeintel` writes `context`,
+`context_ab` and `graph_delivery` into
+`workspace_settings/<tenant>.code_intelligence` (`swarm_api.codeintel
+.COLLECTION`), and all three are read from there (SETTINGS_COLLECTION), by
+Firestore and from `state/context`'s `workspace_settings` alike. Until
+2026-11-01 `context` and `context_ab` were read from `tenant_settings`,
+which nothing writes, so a workspace's choice never reached the worker.
 
 ADDITIONAL REPOSITORIES (docs/design/multi-repository-steps.md §4.9, lane
 MR-GRAPH, part of #1434). `prepare` takes the task's SIGNED
@@ -232,9 +249,11 @@ STAGING_BACKENDS = ("CLOUD_RUN_JOB",)
 # the stored setting (§4.7)
 # --------------------------------------------------------------------------
 
-#: `tenant_settings/<tenant_id>`: swarm-api's own document, NOT the frozen
-#: `swarm_common.models.Tenant` (§4.7). Written by CTXQ-SET.
-SETTINGS_COLLECTION = "tenant_settings"
+#: `workspace_settings/<tenant_id>`: swarm-api's own document, NOT the frozen
+#: `swarm_common.models.Tenant` (§4.7). Written by `swarm_api.codeintel`
+#: (`COLLECTION`); read from `tenant_settings` until 2026-11-01, which nothing
+#: wrote (see the module docstring).
+SETTINGS_COLLECTION = "workspace_settings"
 CODE_INTELLIGENCE_FIELD = "code_intelligence"
 #: `code_intelligence.context`: `on` | `off`.
 CONTEXT_FIELD = "context"
@@ -246,8 +265,19 @@ REPOSITORY_CONTEXT_FIELD = "context"
 #: §8.1, GS-SETTING's `swarm_api.codeintel.DELIVERY_FIELD`).
 DELIVERY_FIELD = "graph_delivery"
 #: Where swarm-api writes it: `workspace_settings/<tenant_id>`
-#: (`swarm_api.codeintel.COLLECTION`). See the module docstring.
-DELIVERY_SETTINGS_COLLECTION = "workspace_settings"
+#: (`swarm_api.codeintel.COLLECTION`), the same document as the rest.
+DELIVERY_SETTINGS_COLLECTION = SETTINGS_COLLECTION
+
+#: The workflow switch in the signed `task.metadata.dispatch` block
+#: (`swarm_api.validation.DISPATCH_SWITCHES`, 2026-11-01): `on` | `off`.
+SWITCH_CODE_INTELLIGENCE = "code_intelligence"
+#: The deciding source when the switch decided.
+SOURCE_SWITCH = "workflow switch"
+#: `stage.json`'s record of the workflow switches: `{code_intelligence:
+#: {value, source, graph, reason}, jev_judgments: {value, source, on, reason}}`,
+#: and the attempt's `result_summary` key it is copied to when the signed
+#: block set any switch (`switches_summary`).
+SWITCHES_FIELD = "switches"
 
 #: Local context is ON unless a workspace or a repository turns it off: it never
 #: leaves the platform (owner decision Q1, 2026-10-14).
@@ -311,21 +341,35 @@ def _word(value: Any) -> str:
     return value.strip().lower() if isinstance(value, str) else ""
 
 
+def switch_of(dispatch: Mapping[str, Any] | None, name: str) -> str | None:
+    """`on` or `off` from the signed dispatch block's switch `name`; None when
+    absent or not one of the two words (an older or newer control plane)."""
+    value = dispatch.get(name) if isinstance(dispatch, Mapping) else None
+    return value if value in (ON, OFF) else None
+
+
 @dataclass(frozen=True)
 class Decision:
-    """Whether to stage, from the stored setting and the arm."""
+    """Whether to stage, from the stored setting, the switch and the arm."""
 
     stage: bool
     context: str          # on | off: what the setting resolved to
-    source: str           # repository | workspace | default
+    source: str           # workflow switch | repository | workspace | default
     ab: str               # ab | on | off
     arm: str | None       # A | B under the experiment, else None
     reason: str
+    #: The signed workflow switch `code_intelligence`: on | off, None when unset.
+    switch: str | None = None
 
 
 def decide(*, repository_override: Any, workspace_settings: Mapping[str, Any] | None,
-           task_id: str) -> Decision:
-    """The stored setting's answer for this task. Unknown values read as unset."""
+           task_id: str, switch: str | None = None) -> Decision:
+    """The stored setting's answer for this task, narrowed by the signed
+    workflow `switch` (`switch_of`). Unknown values read as unset.
+
+    `off` never stages. `on` stages on either A/B arm wherever the stored
+    context resolves on, and never over a stored `off`."""
+    switch = switch if switch in (ON, OFF) else None
     code_intel = (workspace_settings or {}).get(CODE_INTELLIGENCE_FIELD)
     code_intel = code_intel if isinstance(code_intel, Mapping) else {}
     override = _word(repository_override)
@@ -338,9 +382,15 @@ def decide(*, repository_override: Any, workspace_settings: Mapping[str, Any] | 
         context, source = DEFAULT_CONTEXT, "default"
     ab = _word(code_intel.get(AB_FIELD))
     ab = ab if ab in (AB, ON, OFF) else DEFAULT_AB
+    if switch == OFF:
+        return Decision(False, OFF, SOURCE_SWITCH, ab, None,
+                        "graph context is off (workflow switch)", switch)
     if context == OFF:
         return Decision(False, context, source, ab, None,
-                        f"graph context is off ({source} setting)")
+                        f"graph context is off ({source} setting)", switch)
+    if switch == ON:
+        return Decision(True, context, SOURCE_SWITCH, ab, None,
+                        f"graph context is on (workflow switch; {source} allows it)", switch)
     if ab != AB:
         return Decision(True, context, source, ab, None, f"graph context is on ({source})")
     arm = assign_arm(task_id)
@@ -785,6 +835,13 @@ class StageResult:
         """The setting asked for context on this task (so its absence is said)."""
         return self.decision is not None and self.decision.stage
 
+    def switch_record(self, switch: str | None) -> dict[str, Any]:
+        """The `code_intelligence` switch's line in `stage.json`: its value,
+        the deciding source and whether a graph was delivered."""
+        source = self.decision.source if self.decision is not None else None
+        return {"value": switch, "source": source, "graph": self.delivery != DELIVERY_NONE,
+                "reason": self.reason}
+
     def record(self) -> dict[str, Any]:
         return {
             "schema": STAGE_SCHEMA,
@@ -858,15 +915,6 @@ class ServiceRoute:
         return None
 
 
-def _delivery_setting(db: Any, tenant_id: str, options: Mapping[str, Any]) -> str:
-    """The workspace's `graph_delivery`; DEFAULT_GRAPH_DELIVERY when unreadable."""
-    try:
-        snap = db.collection(DELIVERY_SETTINGS_COLLECTION).document(tenant_id).get(**options)
-        return delivery_of((snap.to_dict() or {}) if snap.exists else None)
-    except Exception:  # noqa: BLE001 -- the default is today's path, never a failure
-        return DEFAULT_GRAPH_DELIVERY
-
-
 def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, task_id: str,
           checkout: Path | None, base_sha: str | None, context_dir: Path,
           call_options: Mapping[str, Any] | None = None,
@@ -874,7 +922,8 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
           service: ServiceRoute | None = None,
           unserved: str | None = None,
           graph_context: graphroute.GraphContextRoute | None = None,
-          fetch_history: Callable[[Path, str], str | None] | None = None) -> StageResult:
+          fetch_history: Callable[[Path, str], str | None] | None = None,
+          switch: str | None = None) -> StageResult:
     """Decide and stage (or pin), timed on `clock`. Every failure is a reason;
     only the fence, GraphTicketFenced, is raised (invariant 5).
 
@@ -889,7 +938,10 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
 
     `fetch_history` deepens a shallow `checkout` behind `base_sha` when the
     ancestry proof needs it (`history_fetcher`, lane GRAPH-ANCESTRY); None
-    proves from the clone and the recorded compare alone."""
+    proves from the clone and the recorded compare alone.
+
+    `switch` is the signed dispatch block's `code_intelligence` (`switch_of`):
+    `off` stages nothing, `on` stages on either A/B arm (`decide`)."""
     started = clock()
     route_note: str | None = None
     try:
@@ -908,7 +960,7 @@ def stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, ta
                         base_sha=base_sha, context_dir=context_dir,
                         options=dict(call_options or {}), service=service or ServiceRoute(),
                         unserved=unserved, graph_context=graph_context,
-                        fetch_history=fetch_history)
+                        fetch_history=fetch_history, switch=switch)
     except graph_ticket_mod.GraphTicketFenced:
         raise
     except StageRefused as refused:
@@ -925,7 +977,8 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
            options: dict[str, Any], service: ServiceRoute,
            unserved: str | None = None,
            graph_context: graphroute.GraphContextRoute | None = None,
-           fetch_history: Callable[[Path, str], str | None] | None = None) -> StageResult:
+           fetch_history: Callable[[Path, str], str | None] | None = None,
+           switch: str | None = None) -> StageResult:
     where = indexrun.target(tenant_id, repository_url)
     if isinstance(where, str):
         return StageResult(False, where)
@@ -945,8 +998,10 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
             return StageResult(False, served)
         data, rows = dict(served[0]), served[1]
         context = indexrun.route_context(state)
-        settings = _mapping(context.get("tenant_settings"))
-        delivery = delivery_of(_mapping(context.get("workspace_settings")))
+        # The one document swarm-api writes all three fields into (see the
+        # module docstring): never `tenant_settings`, which nothing writes.
+        settings = _mapping(context.get("workspace_settings"))
+        delivery = delivery_of(settings)
 
         def candidates_of(index_state: Mapping[str, Any]) -> list[Version]:
             return _served_candidates(rows, index_state)
@@ -961,18 +1016,16 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
         data = found
         settings_snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get(**options)
         settings = (settings_snap.to_dict() or {}) if settings_snap.exists else {}
-        delivery = None
+        delivery = delivery_of(settings)
 
         def candidates_of(index_state: Mapping[str, Any]) -> list[Version]:
             return _candidates(registration, index_state, options)
     decision = decide(repository_override=data.get(REPOSITORY_CONTEXT_FIELD),
-                      workspace_settings=settings, task_id=task_id)
+                      workspace_settings=settings, task_id=task_id, switch=switch)
     if not decision.stage:
         return StageResult(False, decision.reason, decision)
     result = StageResult(False, "", decision)
-    # HOW, once WHETHER is settled (§8.1).
-    if delivery is None:
-        delivery = _delivery_setting(db, tenant_id, options)
+    # HOW, once WHETHER is settled (§8.1), from the same document.
     wants_service = delivery == DELIVERY_SERVICE
     if wants_service:
         result.fallback = unserved or service.unavailable()
@@ -1063,6 +1116,30 @@ def _pin_and_serve(service: ServiceRoute, store: Any, *, where: indexrun.Target,
 # --------------------------------------------------------------------------
 
 
+def switches_summary(work: Path, dispatch: Mapping[str, Any] | None
+                     ) -> dict[str, Any] | None:
+    """`stage.json`'s `SWITCHES_FIELD` for the attempt's `result_summary`,
+    only when the signed dispatch block set a workflow switch, so every other
+    attempt's summary is the one it wrote before. When nothing was staged for
+    the step (no `stage.json`), each set switch with its value alone. Never
+    raises."""
+    from .judge import attempt as judge_attempt
+
+    names = (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH, "quality_gates")
+    set_ = {name: switch_of(dispatch, name) for name in names}
+    if not any(set_.values()):
+        return None
+    try:
+        stored = json.loads((Path(work) / CONTEXT_DIR_NAME / STAGE_RECORD_NAME)
+                            .read_text(encoding="utf-8")).get(SWITCHES_FIELD)
+    except (OSError, ValueError, AttributeError):
+        stored = None
+    stored = dict(stored) if isinstance(stored, Mapping) else {}
+    return {name: stored.get(name) if isinstance(stored.get(name), Mapping)
+            else {"value": set_[name]}
+            for name in (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH)}
+
+
 def offers_graph(runner_argv: Sequence[str]) -> bool:
     """Whether this profile's runner can name `swarm-graph` to its agent."""
     return any(part in GRAPH_RUNNERS for part in runner_argv)
@@ -1083,7 +1160,9 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
             additional_repositories: Sequence[Mapping[str, Any]] | None = None,
             repos_dir: Path | None = None,
             graph_context: graphroute.GraphContextRoute | None = None,
-            forge_token: Callable[[], str | None] | None = None) -> dict[str, str]:
+            forge_token: Callable[[], str | None] | None = None,
+            dispatch: Mapping[str, Any] | None = None,
+            jev_key: Callable[[], str | None] | None = None) -> dict[str, str]:
     """Stage (or pin) for this attempt and return the runner's variables.
 
     Raises only `graph_ticket.GraphTicketFenced`, the fence (invariant 5);
@@ -1124,6 +1203,14 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
     repository's steps and leaves a private one's a reason. It is used only
     with a `private_dir` (lane GRAPH-TOKEN-2563): never written beside the
     context dir the agent reads.
+
+    `dispatch` is the task's SIGNED `metadata.dispatch` block (the worker
+    verified the spec before this runs); only its workflow switches are read
+    (`switch_of`): `code_intelligence` here, `jev_judgments` by the judge's
+    setup, which asks `jev_key` for the workspace's TypeSafe key under `on`
+    (`judge.attempt.setup`). `stage.json` records both (`SWITCHES_FIELD`). A
+    step whose `code_intelligence` switch is `off` gets no graph tool at all:
+    nothing staged or pinned, no ticket, no additional repository's graph.
     """
     try:
         if profile_name == indexrun.INDEXER_PROFILE or not offers_graph(runner_argv) \
@@ -1135,10 +1222,11 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         context_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         service = ServiceRoute(ticket=graph_ticket, private_dir=private_dir, backend=backend,
                                url=service_url, probe=probe)
+        switch = switch_of(dispatch, SWITCH_CODE_INTELLIGENCE)
         result = stage(db=db, store=store, tenant_id=tenant_id, repository_url=repository_url,
                        task_id=task_id, checkout=checkout, base_sha=base_sha,
                        context_dir=context_dir, call_options=call_options, service=service,
-                       graph_context=graph_context,
+                       graph_context=graph_context, switch=switch,
                        # The token only ever lands in the worker's own
                        # `private_dir`: with none, the fetch is anonymous and
                        # its logs go to the context dir, which then holds no
@@ -1158,8 +1246,6 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                 # A restored checkpoint's snapshot from an earlier attempt is
                 # not this attempt's decision; never left for the server.
                 shutil.rmtree(stale, ignore_errors=True)
-        (context_dir / STAGE_RECORD_NAME).write_text(
-            json.dumps(result.record(), indent=2, default=str) + "\n", encoding="utf-8")
         if log is not None:
             log.info("graph context", staged=result.staged, reason=result.reason,
                      arm=result.decision.arm if result.decision else None,
@@ -1167,7 +1253,9 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                      bytes=result.facts.get("bytes"), blobs=result.facts.get("blobs"),
                      fallback=result.fallback, route=result.route)
         prepare_additional(
-            context_dir, entries=additional_repositories,
+            # The switch `off` runs no graph, so no additional repository's
+            # either: `prepare_additional` still clears what a checkpoint left.
+            context_dir, entries=None if switch == OFF else additional_repositories,
             primary_unserved=None if result.served else (result.fallback or result.reason),
             db=db, store=store, tenant_id=tenant_id, task_id=task_id,
             repos_dir=repos_dir if repos_dir is not None else work / REPOS_DIR_NAME,
@@ -1184,9 +1272,19 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         # Here, not in the lifecycle, because this is its one setup call.
         from .judge import attempt as judge_attempt
 
+        judgments: dict[str, Any] = {}
         jev = judge_attempt.setup(work=work, db=db, tenant_id=tenant_id,
                                   repository_url=repository_url, call_options=call_options,
-                                  log=log, secret_env_names=secret_env_names)
+                                  log=log, secret_env_names=secret_env_names,
+                                  switch=switch_of(dispatch, judge_attempt.SWITCH),
+                                  resolve_key=jev_key, record=judgments)
+        # What this attempt ran with, and why (2026-11-01): the experiment
+        # proves each step's condition from this record.
+        (context_dir / STAGE_RECORD_NAME).write_text(
+            json.dumps({**result.record(), SWITCHES_FIELD: {
+                SWITCH_CODE_INTELLIGENCE: result.switch_record(switch),
+                judge_attempt.SWITCH: {k: v for k, v in judgments.items() if k != "switch"},
+            }}, indent=2, default=str) + "\n", encoding="utf-8")
         if result.served and result.pin is not None and result.ticket_file is not None:
             return {CONTEXT_ENV: str(context_dir), PIN_ENV: str(result.pin),
                     TICKET_FILE_ENV: str(result.ticket_file), URL_ENV: str(service_url),
@@ -1365,12 +1463,13 @@ __all__ = [
     "DELIVERY_SETTINGS_COLLECTION", "DELIVERY_STAGED", "Decision", "GRAPH_RUNNERS",
     "MIN_FORMAT", "PIN_ENV", "PIN_MANIFEST_NAME", "PIN_NAME", "READY_MARK",
     "REPOSITORY_CONTEXT_FIELD", "REPOS_CONTEXT_DIR_NAME", "REPOS_DIR_NAME", "SERVER_NAME",
-    "SETTINGS_COLLECTION", "SHIM_MODULE",
+    "SETTINGS_COLLECTION", "SHIM_MODULE", "SOURCE_SWITCH", "SWITCHES_FIELD",
+    "SWITCH_CODE_INTELLIGENCE",
     "SNAPSHOT_DIR_NAME", "SNAPSHOT_ENV", "STAGE_RECORD_NAME", "STAGING_BACKENDS",
     "ServiceRoute", "StageResult", "TICKET_FILE_ENV", "UNSTAGED_ENV", "URL_ENV",
     "assign_arm", "checked_manifest", "decide", "delivery_of", "history_fetcher",
     "is_ancestor", "is_shallow", "offers_graph",
     "pin", "prepare", "prepare_additional", "prove_ancestry", "ready_detail", "remove_pin",
-    "server_argv",
+    "server_argv", "switch_of", "switches_summary",
     "served_env", "shim_argv", "stage", "unstaged_note", "write_snapshot",
 ]

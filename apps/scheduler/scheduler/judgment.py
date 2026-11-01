@@ -277,7 +277,13 @@ def read_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) -> str:
 
 QUALITY_GATES_BLOCK = "quality_gates"
 QUALITY_GATES_JEV = "jev"
-#: "true" only for a stored `jev: true` whose block verifies; "false" always
+#: The stored value that runs the gates only on a step whose signed workflow
+#: switch says `quality_gates: on` (2026-11-01; `swarm_api.qualitygates
+#: .ON_REQUEST`). Vouched for exactly as `true` is, and handed over as its own
+#: word, so the worker runs the gates for it only under the switch.
+QUALITY_GATES_ON_REQUEST = "on_request"
+#: "true" only for a stored `jev: true` whose block verifies, "on_request"
+#: only for a stored `jev: "on_request"` whose block verifies; "false" always
 #: otherwise. Written either way, never omitted: a Cloud Run execution's
 #: override MERGES with the Job's own environment, and only a value written
 #: here is this dispatch's.
@@ -292,14 +298,16 @@ GATES_REFUSED_UNREADABLE = "settings_unreadable"
 
 
 def quality_gates_verdict(doc: Any, *, tenant_id: str, key: str | None
-                          ) -> tuple[bool, str | None]:
+                          ) -> tuple[bool | str, str | None]:
     """(on, why not): on only when `doc`, the tenant's stored
-    `workspace_settings` document, says `quality_gates.jev is True` AND that
-    block's MAC verifies under `key` for this tenant and this block. `key`
-    None is SETTINGS_MAC_REQUIRED off (`settings_mac_key`). `why not` is None
-    for a block that does not say on."""
+    `workspace_settings` document, says `quality_gates.jev is True` -- or
+    `"on_request"`, which `on` then is -- AND that block's MAC verifies under
+    `key` for this tenant and this block. `key` None is SETTINGS_MAC_REQUIRED
+    off (`settings_mac_key`). `why not` is None for a block that does not say
+    on."""
     block = doc.get(QUALITY_GATES_BLOCK) if isinstance(doc, Mapping) else None
-    if not isinstance(block, Mapping) or block.get(QUALITY_GATES_JEV) is not True:
+    value = block.get(QUALITY_GATES_JEV) if isinstance(block, Mapping) else None
+    if value is not True and value != QUALITY_GATES_ON_REQUEST:
         return False, None
     if key is None:
         return False, GATES_REFUSED_SWITCH_OFF
@@ -310,12 +318,14 @@ def quality_gates_verdict(doc: Any, *, tenant_id: str, key: str | None
     if not block_verifies(key, tenant_id=tenant_id, block=QUALITY_GATES_BLOCK, fields=block):
         _say_refused(tenant_id, QUALITY_GATES_BLOCK, time.monotonic())
         return False, GATES_REFUSED_MISMATCH
-    return True, None
+    return (True if value is True else QUALITY_GATES_ON_REQUEST), None
 
 
-def quality_gates_env(on: bool, refused: str | None) -> dict[str, str]:
+def quality_gates_env(on: bool | str, refused: str | None) -> dict[str, str]:
     """The verdict as the worker reads it (`agent_worker.qualitygates`)."""
-    env = {QUALITY_GATES_JEV_ENV: "true" if on else "false"}
+    word = ("true" if on is True else QUALITY_GATES_ON_REQUEST
+            if on == QUALITY_GATES_ON_REQUEST else "false")
+    env = {QUALITY_GATES_JEV_ENV: word}
     if not on and refused:
         env[QUALITY_GATES_REFUSED_ENV] = refused
     return env

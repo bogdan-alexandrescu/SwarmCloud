@@ -193,6 +193,12 @@ class TaskCreate(StrictModel):
     #: gets exactly the dispatch they got before this feature existed.
     strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
     carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: The workflow switches (2026-11-01): `{code_intelligence, quality_gates,
+    #: jev_judgments}`, each `on` or `off`, stored inside the signed dispatch
+    #: block. Checked in `validation.resolve_dispatch_switches`, which names
+    #: the accepted switches and values in its refusal, for the reason
+    #: `strategy` is. Absent: today's dispatch exactly.
+    dispatch: dict[str, Any] | None = None
     #: Per-run credentials for the `dispatch` servers `input.mcp_servers`
     #: names, by server name (docs/design/registered-mcp-servers.md §4.3):
     #: beside the task, never in it. Checked and stored by `SubmissionService`.
@@ -366,6 +372,12 @@ class WorkflowCreate(StrictModel):
     #: Same accepted values and same defaults as `TaskCreate`.
     strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
     carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: The workflow switches (2026-11-01): `{code_intelligence, quality_gates,
+    #: jev_judgments}`, each `on` or `off`, stored inside the signed dispatch
+    #: block. Checked in `validation.resolve_dispatch_switches`, which names
+    #: the accepted switches and values in its refusal, for the reason
+    #: `strategy` is. Absent: today's dispatch exactly.
+    dispatch: dict[str, Any] | None = None
     #: The repository every step of this workflow clones, and the one an
     #: `integrate` step opens its pull request against.
     #:

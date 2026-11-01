@@ -93,7 +93,7 @@ def test_a_saved_secret_never_appears_in_the_answer_the_record_or_a_log(setup_cl
     assert body["saved_by"] == ROOT and body["saved_at"]
     assert first_secret not in answer.text
     assert fake_secrets.versions[SECRET] == [first_secret]
-    assert set(db.docs[DOC]) == {"client_id", "at", "by"}
+    assert set(db.docs[DOC]) == {"client_id", "saved_at", "saved_by"}
     assert first_secret not in repr(db.docs)
     assert first_secret not in caplog.text
     # The audit line names the client and the person, never the secret.
@@ -111,6 +111,14 @@ def test_a_saved_secret_never_appears_in_the_answer_the_record_or_a_log(setup_cl
     assert answer.json()["client_id"] == second_id
     assert fake_secrets.versions[SECRET] == [first_secret, second_secret]
     assert db.docs[DOC]["client_id"] == second_id
+
+
+def test_a_failed_secret_write_records_no_id(setup_client, db, fake_secrets) -> None:
+    fake_secrets.fail = True
+    answer = setup_client.post(ROUTE, json={"client_id": client_id(), "client_secret": client_secret()},
+                               headers=auth_header("root"))
+    assert answer.status_code == 503, answer.text
+    assert DOC not in db.docs
 
 
 def test_applied_once_the_engine_reports_the_client_in_iaps_list(setup_client, db) -> None:
@@ -155,5 +163,5 @@ def test_a_client_the_terminal_recorded_before_reads_applied(setup_client, db) -
 
 def test_the_record_row_names_the_three_fields() -> None:
     assert ir.SWARM_API_DOCUMENTS["swarm-install/{env}/console/sign_in_client"] == frozenset(
-        {"client_id", "at", "by"})
+        {"client_id", "saved_at", "saved_by"})
     assert "sign_in_client" in ir.ENGINE_FIELDS_READ

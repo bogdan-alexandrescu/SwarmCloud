@@ -50,7 +50,7 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     #: Admin › Setup's Sign-in client step (issue #2964): the Desktop
     #: client's id, when and by whom it was saved. Its secret goes to Secret
     #: Manager (`swarm-iap-desktop-client-secret`) only, never here.
-    "swarm-install/{env}/console/sign_in_client": frozenset({"client_id", "at", "by"}),
+    "swarm-install/{env}/console/sign_in_client": frozenset({"client_id", "saved_at", "saved_by"}),
     "swarm-install/{env}/health/latest": frozenset({"run_at", "checks", "findings"}),
 }
 ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"})

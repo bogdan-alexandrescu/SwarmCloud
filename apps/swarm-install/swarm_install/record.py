@@ -101,7 +101,10 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
     # Admin › Setup's Sign-in client step (issue #2964): the Desktop client's
     # id, when and by whom the console saved it; its secret is in Secret
     # Manager only. The engine's hand-off wait reads it.
-    "swarm-install/{env}/console/sign_in_client": (SWARM_API, frozenset({"client_id", "at", "by"})),
+    "swarm-install/{env}/console/sign_in_client": (
+        SWARM_API,
+        frozenset({"client_id", "saved_at", "saved_by"}),
+    ),
     "swarm-install/{env}/health/latest": (
         SWARM_API_FOR_DOCTOR,
         frozenset({"run_at", "checks", "findings"}),

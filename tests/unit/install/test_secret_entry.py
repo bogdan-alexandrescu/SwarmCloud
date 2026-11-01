@@ -76,8 +76,8 @@ def _run(tmp_path: Path, gcp: Any, contexts: FakeContexts | None = None, *, save
     rig.contexts = contexts if contexts is not None else FakeContexts()
     step = edge.DesktopClientStep(lambda: gcp, NeverAsk(), rig.contexts)
     engine = rig.engine([step])
-    engine.record = Console(**({"sign_in_client": {"client_id": CLIENT_ID, "at": "2026-11-01T10:00:00Z",
-                                                   "by": "root@example.com"}} if saved else {}))
+    engine.record = Console(**({"sign_in_client": {"client_id": CLIENT_ID, "saved_at": "2026-11-01T10:00:00Z",
+                                                   "saved_by": "root@example.com"}} if saved else {}))
     rig.result = engine.run()
     return rig
 

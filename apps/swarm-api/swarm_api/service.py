@@ -42,6 +42,7 @@ from swarm_common.models import (
     WorkflowStep,
     new_id,
     pool_names_for,
+    reserved_pool_units,
     utcnow,
 )
 from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backend
@@ -1161,6 +1162,7 @@ class SubmissionService:
                             # batch is at task scale, not workflow scale.
                             scale="task",
                             repository_url=spec.repository_url,
+                            switches=spec.dispatch,
                         ),
                         tenant, spec, person=ctx.email,
                     ),
@@ -1310,6 +1312,7 @@ class SubmissionService:
                 carrier=spec.carrier,
                 scale="workflow",
                 repository_url=repository_url,
+                switches=spec.dispatch,
             )
             # Lane SPEED-D3: the pull requests of the workflow's own
             # repository it waits for, once that repository is known.
@@ -2394,6 +2397,11 @@ class SubmissionService:
                 "disabled_reason": profile.disabled_reason,
                 "units": units,
                 "pools": required,
+                # What one agent of this profile takes in each pool: `units`
+                # in the compute pools, 1 in each provider pool (contract
+                # request 129, #2950). A client dividing a pool's room by
+                # `units` in every pool undercounts the provider pools.
+                "pool_units": reserved_pool_units(required, units),
                 # What this profile's RUNNER refuses to start without, so a
                 # submit form can refuse locally instead of spending a slot on
                 # an attempt that cannot succeed. Served as data for the same

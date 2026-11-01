@@ -104,7 +104,7 @@ def test_a_graph_that_could_not_be_staged_is_marked_none_with_its_reason(db, clo
 def test_a_step_the_setting_did_not_ask_for_is_not_marked(db, store, clone):
     """Arm A, or context off: there was no graph to deliver, so no reading."""
     checkout, first, second = clone
-    db.seed(f"tenant_settings/{TENANT}", {"code_intelligence": {"context_ab": "ab"}})
+    db.seed(f"workspace_settings/{TENANT}", {"code_intelligence": {"context_ab": "ab"}})
     _promote(db, store, first)
 
     env, marks = _prepare(db, store, checkout, second, task_id=_arm_task("A"))
