@@ -40,12 +40,14 @@ import {
   DEFAULT_CARRIER,
   DEFAULT_STRATEGY,
   consequenceOf,
+  costInWords,
   headroomFor,
   requiredInputKeys,
   type Capacity,
   type Pool,
   type RunnerProfile,
   type Task,
+  type Weight,
 } from './types'
 import './styles/submit.css'
 import { Button } from './components'
@@ -1720,8 +1722,7 @@ function Form({ capacity }: { capacity: Capacity }) {
             <li className={profile === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>cost</b>
               {profile === null ? <i className="ctl-em">&mdash;</i> : <>
-                {profile.units} unit{profile.units === 1 ? '' : 's'} in each of {profile.pools.length}{' '}
-                pool{profile.pools.length === 1 ? '' : 's'}
+                {costInWords(profile)}
               </>}
             </li>
             <li className={profile === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
@@ -1854,7 +1855,13 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   // use" -- wait -- about a task no wait will admit. The weight is the class
   // catalogue's (`/v1/resource-classes`); null until it answers, and then the
   // box reads exactly as it did before.
-  const units = classUnits(useResourceClasses(), profile.resource_class)
+  //
+  // PER POOL (contract request 128, #2950): the class weight is what one agent
+  // takes in a compute pool; the profile's served `pool_units` says what it
+  // takes in each pool, 1 in a provider pool, so a provider limit of 2 is not
+  // "below" a large agent.
+  const classWeight = classUnits(useResourceClasses(), profile.resource_class)
+  const units: Weight = classWeight === null ? null : { units: classWeight, pool_units: profile.pool_units }
   const lead =
     room.blockers.find((b) => verdictNeedsAPerson(blockerVerdict(b, units))) ??
     room.blockers.find((b) => b.pool === room.binding)
@@ -1887,8 +1894,7 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
           The decided phrase at every pool count, one pool included: "in each
           of 1 pool", not a second wording. Each noun agrees with its count. */}
       <p className="sbf-room-h">
-        <span className="mono">{name}</span> right now · {profile.units} unit{profile.units === 1 ? '' : 's'}{' '}
-        in each of {profile.pools.length} pool{profile.pools.length === 1 ? '' : 's'}
+        <span className="mono">{name}</span> right now · {costInWords(profile)}
       </p>
       <p className="muted">
         {room.agents === null ? (

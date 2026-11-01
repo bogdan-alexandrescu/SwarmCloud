@@ -349,20 +349,11 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         # while the API served them ahead of the client. types.ts declares all
         # three now and Holders.tsx reads the first and the last, so they are
         # held by the two directions below like every other field.
-        # Served ahead of the client (contract request 128, #2950). Remove
-        # when types.ts declares it and Holders.tsx's drift card reads it.
-        "units_held_by_pool": "per pool, what the rows' leases hold (1 per lease in a provider "
-        "pool since contract request 128, #2950); the drift card's per-pool input, read by a "
-        "follow-up console lane",
-    },
-    "LeaseRow": {
-        "pool_units": "what the lease holds in each pool (contract request 128, #2950); served "
-        "ahead of the console, read by a follow-up console lane",
-    },
-    "RunnerProfile": {
-        "pool_units": "what one agent of the profile takes in each pool, 1 in a provider pool "
-        "(contract request 128, #2950); served ahead of the console, read by a follow-up "
-        "console lane",
+        # `units_held_by_pool`, `LeaseRow.pool_units` and
+        # `RunnerProfile.pool_units` (contract request 128, #2950) are
+        # declared in types.ts and read by the drift card, `fitsIn`, the
+        # profile arithmetic and the submit box, so they are held by the two
+        # directions below too.
     },
     # `Me.environment` and `Me.environment_declared` were excused the same way
     # and are declared the same way; Brand.tsx's badge reads both.

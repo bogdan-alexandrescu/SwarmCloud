@@ -19,6 +19,7 @@ import {
   poolLabel,
   poolLabelAmong,
   setBy,
+  unitsIn,
   type AdminPool,
   type Capacity,
   type Me,
@@ -32,6 +33,7 @@ import {
   type Pool,
   type PoolKind,
   type QuotaState,
+  type Weight,
 } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 // The Config pages' lead (`.ws-lead`, WS-SETTINGS-PAGE), which every Admin
@@ -579,16 +581,22 @@ function limitText(pool: Pool): string {
  * about the CEILING, which is a property of the limits alone. The two name
  * different pools whenever one pool is busier than another with a higher
  * limit, so reading the served list here would mark the wrong operand.
+ *
+ * EACH POOL'S LIMIT IS DIVIDED BY WHAT ONE AGENT TAKES IN THAT POOL
+ * (`unitsIn`, contract request 128, #2950): `units` is the profile, whose
+ * served `pool_units` puts a provider pool at 1. A provider limit of 50 is
+ * 50 large agents, not 12.
  */
 function arithmetic(
   pools: string[],
-  units: number,
+  units: Weight,
   byName: Map<string, Pool>,
 ): { operands: Operand[]; ceiling: number | null; binding: string[]; unset: boolean } {
-  const w = units > 0 ? units : 1
   const operands: Operand[] = pools.map((pool) => {
     const p = byName.get(pool)
     if (p !== undefined && p.effective_limit === null) return { pool, agents: null, unset: true }
+    const share = unitsIn(units, pool)
+    const w = share !== null && share > 0 ? share : 1
     return { pool, agents: p ? Math.floor(p.effective_limit as number / w) : null, unset: false }
   })
 
@@ -784,8 +792,8 @@ function impactOf(pool: Pool, next: number, capacity: Capacity): Sentence[] {
     .filter(([, prof]) => prof.pools.includes(pool.name))
     .sort(([a], [b]) => a.localeCompare(b))
   for (const [name, prof] of profiles) {
-    const before = arithmetic(prof.pools, prof.units, byName).ceiling
-    const now = arithmetic(prof.pools, prof.units, changed)
+    const before = arithmetic(prof.pools, prof, byName).ceiling
+    const now = arithmetic(prof.pools, prof, changed)
     if (before !== now.ceiling) {
       const binds: Sentence = now.binding.length === 0 ? [] : [`, ${now.unset ? 'no limit set on' : 'binds on'} `, ...operands(now.binding)]
       moved.push([`${name} ${before ?? '—'} → ${now.ceiling ?? '—'}`, ...binds])

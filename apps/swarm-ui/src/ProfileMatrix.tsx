@@ -9,10 +9,12 @@ import {
   headroomFor,
   poolKind,
   poolLabelAmong,
+  unitsIn,
   type Capacity,
   type Pool,
   type PoolKind,
   type RunnerProfile,
+  type Weight,
 } from './types'
 
 /**
@@ -101,16 +103,20 @@ export function matrixRow(profile: RunnerProfile, byName: ReadonlyMap<string, Po
 /**
  * How many more tasks of a profile ONE pool has room for: its free units over
  * the profile's units, rounded down (#124). Per task, never per unit -- a
- * large task weighs 4, so 7 free units fit 1. NULL when the pool was not
+ * large task weighs 4, so 7 free units fit 1. The units are what one agent
+ * takes in THIS pool (`unitsIn`, contract request 128, #2950): pass the
+ * profile, whose served `pool_units` puts a provider pool at 1, so 7 free
+ * provider slots fit 7 large agents, not 1. NULL when the pool was not
  * read or has no limit set: not measured, never a 0. A PAUSED pool fits 0:
  * `available` stays positive while it is paused (it is ceiling minus active),
  * but admission refuses it, and the server prices it with `resume`.
  */
-export function fitsIn(row: Pool | null, units: number): number | null {
+export function fitsIn(row: Pool | null, units: Weight): number | null {
   if (row === null || row.available === null || row.effective_limit === null) return null
   if (isPaused(row)) return 0
-  if (!Number.isFinite(units) || units <= 0) return null
-  return Math.max(0, Math.floor(row.available / units))
+  const share = unitsIn(units, row.name)
+  if (share === null || !Number.isFinite(share) || share <= 0) return null
+  return Math.max(0, Math.floor(row.available / share))
 }
 
 /**
@@ -250,7 +256,7 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                       ) : (
                         binds.map((b) => {
                           const row = byName.get(b) ?? null
-                          const fits = fitsIn(row, profile.units)
+                          const fits = fitsIn(row, profile)
                           // LEASED/CEILING BESIDE THE NAME (QA G5-08): `tenant
                           // eng (37/40)` says how near the pool is without the
                           // family cell, which a phone card does not draw.
@@ -359,7 +365,7 @@ function FitsTable({
         <tbody role="rowgroup">
           {profile.pools.map((name) => {
             const row = byName.get(name) ?? null
-            const fits = fitsIn(row, profile.units)
+            const fits = fitsIn(row, profile)
             const binding = binds.includes(name)
             return (
               <tr role="row" key={name} data-pool={name} className={binding ? 'is-binding' : undefined}>
