@@ -419,3 +419,21 @@ def test_credential_reprs_hold_no_secret():
 def test_only_a_secret_version_reference_is_accepted(ref):
     with pytest.raises(cred.CredentialRefused):
         cred.check_scope(ref, person=PERSON, project=PROJECT)
+
+
+def test_the_caller_check_refuses_to_run_without_an_audience_or_callers():
+    from swarm_voice.main import google_caller_check
+
+    with pytest.raises(RuntimeError, match="SWARM_VOICE_AUDIENCE"):
+        google_caller_check("", frozenset({CALLER}))
+    with pytest.raises(RuntimeError, match="SWARM_VOICE_CALLERS"):
+        google_caller_check("https://voice.internal", frozenset())
+
+
+def test_nothing_is_built_at_import_and_a_start_without_a_project_refuses(monkeypatch):
+    from swarm_voice.main import build_sessions
+
+    create_app()  # builds no client: everything waits for the app's start
+    monkeypatch.delenv("PROJECT_ID", raising=False)
+    with pytest.raises(RuntimeError, match="PROJECT_ID"):
+        build_sessions(http=None)
