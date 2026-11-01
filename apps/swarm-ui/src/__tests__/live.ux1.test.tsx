@@ -222,10 +222,15 @@ const theaterOpen = () => screen.queryByRole('dialog', { name: /^Theater/ })
  * than waitFor's default second. 8 s was not enough on PR #1592's run
  * 39206985893 (shard 4/4: 1,234 s of test time in 298 s of wall clock), where
  * the second wait of the LIVE test timed out with the tab still unselected;
- * the same test takes ~4 s on an idle machine. 12 s keeps that test's two
- * waits inside vitest.config.ts's 30 s testTimeout.
+ * the same test takes ~4 s on an idle machine. 12 s was not enough on PR
+ * #2959's run 41288544689 either (shard 4/4: 3,145 s of test time in 819 s of
+ * wall clock), where both item 1 tests ran out with the tab still unselected;
+ * on an idle machine the first takes ~6 s and the second ~7 s. 20 s per wait,
+ * and ITEM_1 for the two tests that ran out, keeps the LIVE test's two waits
+ * inside its own timeout.
  */
-const SPLIT = { timeout: 12_000 }
+const SPLIT = { timeout: 20_000 }
+const ITEM_1 = 60_000
 
 beforeEach(() => {
   localStorage.clear()
@@ -264,7 +269,7 @@ describe('item 1: Details, Browser, Logs, and Browser opens while the agent runs
     expect(tabs().map(label).slice(0, 3)).toEqual(['Details', 'Browser', 'Logs'])
     expect(went).toContain(`work/task/${ID}/browser`)
     expect(went.filter((to) => to.endsWith('/logs'))).toEqual([])
-  })
+  }, ITEM_1)
 
   it('marks the Browser tab LIVE while the session is open, and not before the tunnel is up', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
@@ -277,7 +282,7 @@ describe('item 1: Details, Browser, Logs, and Browser opens while the agent runs
     render(<Routed onGo={() => {}} />)
     await waitFor(() => expect(browserTab().getAttribute('aria-selected')).toBe('true'), SPLIT)
     expect(browserTab().textContent).not.toContain('LIVE')
-  })
+  }, ITEM_1)
 })
 
 // ---------------------------------------------------------------------------
