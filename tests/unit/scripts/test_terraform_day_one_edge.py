@@ -7,6 +7,8 @@
   and the acceptance fixture's public bucket is an `addon:ci` switch, off;
 * swarm-api can store the GitHub App's three secrets, and only those, under
   `enable_console_app_setup`, whose containers exist without the App switches;
+* swarm-api may add versions to the Desktop client secret through infra's one
+  grant on that secret, and the bootstrap root grants it nothing there;
 * the release deployer may pass IAP on the API backend only;
 * the hourly doctor is off by default, is a platform account, and cannot write.
 
@@ -147,16 +149,48 @@ def test_app_secret_writer_scoped_to_three_names() -> None:
 
 def test_sign_in_client_writer_adds_versions_to_one_secret_only() -> None:
     """Issue #2964: swarm-api writes the Desktop client's secret for the
-    console's Sign-in client step, and holds nothing else on it: no accessor."""
-    text = _text(BOOTSTRAP / "sign_in_client_setup.tf")
-    code = _code(text)
-    grants = re.findall(r'^resource\s+"(google_[a-z_]+_iam_(?:member|binding))"\s+"([a-z_]+)"', code, re.M)
-    assert grants == [("google_project_iam_member", "api_sign_in_client_secret")], grants
-    block = _block(code, r'resource\s+"google_project_iam_member"\s+"api_sign_in_client_secret"')
+    console's Sign-in client step, and holds nothing else on it: no accessor.
+    The grant is infra's alone (owner's pick, 2026-11-01): on the secret
+    itself, under enable_console_app_setup, applied by infra pass 2 before the
+    hand-off. No bootstrap file grants swarm-api anything on that secret."""
+    secret = "swarm-iap-desktop-client-secret"
+    for path in sorted(BOOTSTRAP.glob("*.tf")):
+        code = _code(_text(path))
+        assert secret not in code, f"{path.relative_to(ROOT)} names {secret}: the grant is infra's alone"
+    assert not (BOOTSTRAP / "sign_in_client_setup.tf").exists()
+
+    # Every IAM resource in the infra root that gives swarm-api anything on
+    # this secret is the one grant below.
+    iam = re.compile(r'^resource\s+"(google_[a-z_]+_iam_(?:member|binding))"\s+"([a-z_0-9]+)"', re.M)
+    grants = []
+    for path in sorted(INFRA.glob("*.tf")):
+        code = _code(_text(path))
+        for rtype, name in iam.findall(code):
+            block = _block(code, rf'resource\s+"{rtype}"\s+"{name}"')
+            on_secret = secret in block or "discovery_desktop_client_secret" in block
+            if on_secret and "swarm-api" in block:
+                grants.append((path.name, rtype, name))
+    assert grants == [
+        ("discovery.tf", "google_secret_manager_secret_iam_member", "console_client_secret_adder")
+    ], grants
+
+    block = _resource(INFRA / "discovery.tf", "google_secret_manager_secret_iam_member", "console_client_secret_adder")
     assert re.findall(r'role\s*=\s*"([^"]+)"', block) == ["roles/secretmanager.secretVersionAdder"]
-    assert 'platform["swarm-api"]' in block
-    assert "condition" in block and "resource.name ==" in block
-    assert set(re.findall(r'"(swarm-[a-z-]+)"', code)) == {"swarm-iap-desktop-client-secret", "swarm-api"}
+    assert re.search(r"^\s*secret_id\s*=\s*local\.discovery_desktop_client_secret\s*$", block, re.M)
+    assert re.search(
+        rf'^\s*discovery_desktop_client_secret\s*=\s*"{secret}"\s*$', _text(INFRA / "discovery.tf"), re.M
+    )
+    assert re.search(r'^\s*member\s*=\s*module\.iam\.service_account_members\["swarm-api"\]\s*$', block, re.M)
+    assert re.search(r"count\s*=\s*var\.enable_console_app_setup\s*\?\s*1\s*:\s*0", block)
+
+    # The manifest names infra's grant, at infra pass 2, and no bootstrap one.
+    manifests = "\n".join(_text(p) for p in sorted((ROOT / "install").glob("manifest*.yaml")))
+    manifests += "\n".join(_text(p) for p in sorted((ROOT / "install" / "manifest.d").glob("*.yaml")))
+    assert "api_sign_in_client_secret" not in manifests
+    assert "sign_in_client_setup.tf" not in manifests
+    entry = re.search(r"^- id: iam-binding\.swarm-api-desktop-client-secret-adder\n(?:  .*\n|    .*\n)+", manifests, re.M)
+    assert entry, "no manifest entry for infra's grant"
+    assert re.search(r"^  step: infra\.pass-2$", entry.group(0), re.M)
 
 
 def test_app_secret_containers_exist_without_app_switches() -> None:
