@@ -1028,6 +1028,11 @@ def render_accounts(
             Column("new", "NEW AGENT", drop=3),
             Column("agents", "AGENTS", align="right", drop=4),
         ]
+    # WHICH PROVIDER (#2688): a pool of Claude subscriptions alone needs no
+    # column, so it appears once any account is something else -- a ChatGPT
+    # plan for the codex runner -- and then names every account's.
+    if any(str(a.get("provider") or "anthropic") != "anthropic" for a in accounts):
+        columns.insert(1, Column("provider", "PROVIDER", drop=7))
     tenant = listing_tenant(accounts)
 
     rows: list[dict[str, Any]] = []
@@ -1047,6 +1052,7 @@ def render_accounts(
         rows.append(
             {
                 "account": Cell(account_id),
+                "provider": Cell(str(account.get("provider") or "anthropic")),
                 "short": format_window(short, style),
                 "long": format_window(long, style),
                 "clears": Cell(
