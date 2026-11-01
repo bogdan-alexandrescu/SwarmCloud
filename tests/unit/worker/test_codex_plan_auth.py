@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import secrets as pysecrets
 import time
 import uuid

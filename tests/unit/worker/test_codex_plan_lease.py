@@ -27,7 +27,6 @@ import json
 import secrets as pysecrets
 import time
 import uuid
-from pathlib import Path
 
 import pytest
 
