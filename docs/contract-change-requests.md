@@ -15263,6 +15263,14 @@ reads the stored block through `judgment.trusted_block`, as
 `codeintel.CodeIntelligenceStore` does (PR 1330's `code_intelligence.jev`);
 `judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)`, so
 `scripts/resign-workspace-settings.sh` signs the blocks stored before it.
+The worker cannot check an HMAC whose key would let it sign any tenant's
+block, so it asks the key holder: when the stored block says on,
+`agent_worker.qualitygates.GatesRoute` calls the worker-only
+`POST /v1/attempts/{attempt_id}/quality-gates`, proven and fenced as
+`context/graph` is, and swarm-api answers for the attempt's own tenant
+whether the MAC verifies (`qualitygates.worker_verdict`, required whatever
+SETTINGS_MAC_TENANTS says). Unsigned or mismatched is off, and the attempt's
+summary says why.
 
 ### What it would break if accepted
 
