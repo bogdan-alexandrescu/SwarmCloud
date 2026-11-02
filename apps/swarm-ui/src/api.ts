@@ -6047,14 +6047,18 @@ async function fixtureWorkflows(): Promise<Result<WorkflowPage>> {
 // `finish_account_authorization` in quota_broker/main.py).
 //
 // THE PROXY'S BODIES ARE NARROWER THAN THE BROKER'S, and that is not cosmetic.
-// `AccountSignInStart` is `{label, lend_to}` and `AccountSignInFinish` is
-// `{state, code}` (swarm_api/schemas.py), both on `StrictModel`, whose
-// `model_config` is `extra="forbid"`. A body carrying `owner_tenant` or
-// `provider`, which this file used to send because the BROKER takes them, is
+// `AccountSignInStart` is `{label, provider, lend_to}` and
+// `AccountSignInFinish` is `{state, code}` (swarm_api/schemas.py), both on
+// `StrictModel`, whose `model_config` is `extra="forbid"`. A body carrying
+// `owner_tenant`, which this file used to send because the BROKER takes it, is
 // refused 422 by FastAPI before any handler runs: not a message about the
 // sign-in, and the first thing an operator adding a real account would have
-// met. The tenant comes from the verified token and the provider is fixed to
-// SUBSCRIPTION_PROVIDER inside the proxy, so neither is this page's to send.
+// met. The tenant comes from the verified token. `provider` defaults to
+// `anthropic` there, and this page sends none: a ChatGPT plan's sign-in
+// (`provider: "openai"`, #2688) redirects to `localhost:1455` on the person's
+// own machine, which only `sc account add --provider openai` listens on, so
+// the console shows that command for a plan instead of starting a sign-in it
+// could never finish (`PlanReauth` in Accounts.tsx).
 //
 // A 404 or a 405 from either path therefore no longer means "this gap is
 // known": it means the API answering is not the one in this repository, and
@@ -6173,13 +6177,14 @@ export async function beginAccountSignIn(body: {
   /**
    * The label, and nothing the proxy does not have a field for.
    *
-   * NO `owner_tenant` AND NO `provider`, both of which this call used to send
-   * because quota-broker's own route takes them. `AccountSignInStart` is a
-   * `StrictModel`, so an extra key is a 422 raised by validation -- a refusal
-   * about the shape of the request, not about the sign-in, on the one control
-   * this screen exists for. The tenant is resolved from the verified token by
-   * the proxy and the provider is fixed there; a page cannot influence either,
-   * which is the rule every other account route already follows.
+   * NO `owner_tenant`, which this call used to send because quota-broker's own
+   * route takes it. `AccountSignInStart` is a `StrictModel`, so an extra key is
+   * a 422 raised by validation -- a refusal about the shape of the request,
+   * not about the sign-in, on the one control this screen exists for. The
+   * tenant is resolved from the verified token by the proxy, the rule every
+   * other account route already follows. NO `provider` either: absent is a
+   * Claude sign-in, the only kind a browser can finish (a plan's redirect is
+   * the person's own machine; see the note above `loadAccountsBoard`).
    */
   label: string
   lend_to: string[]
@@ -6809,6 +6814,24 @@ let fixtureAccounts: ServedAccount[] = [
     windows: {
       five_hour: { utilization: 0.52, resets_at: ISO(4 * 3600_000 + 39 * 60_000), reset: false },
       seven_day: { utilization: 0.71, resets_at: ISO(2 * 86_400_000 + 6 * 3600_000), reset: false },
+    },
+  }),
+  // A CHATGPT PLAN (#2688): the pool's second provider, which codex runs on.
+  // Its row and its sheet name it "ChatGPT plan", and its sign-in section
+  // gives `sc account add --provider openai` rather than a browser sign-in.
+  // The broker records a plan's organisation as `ChatGPT` and its plan type.
+  fixtureAccount('u-bogdan', 'codex-plan', {
+    provider: 'openai',
+    assigned: 1,
+    max_agents: 6,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
+    organisation: { name: 'ChatGPT', plan: 'Plus' },
+    lend_to: ['smoke'],
+    windows: {
+      five_hour: { utilization: 0.22, resets_at: ISO(3 * 3600_000 + 8 * 60_000), reset: false },
+      seven_day: { utilization: 0.35, resets_at: ISO(5 * 86_400_000), reset: false },
     },
   }),
   fixtureAccount('u-bogdan', 'team-copy', {

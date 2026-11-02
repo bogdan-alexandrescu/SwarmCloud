@@ -53,6 +53,29 @@ import './styles/accounts-ranked.css'
 // Cells
 // ---------------------------------------------------------------------------
 
+/**
+ * WHICH KIND OF ACCOUNT A ROW IS, IN WORDS (#2688). The pool holds Claude
+ * subscriptions (`anthropic`) and, since the owner's choice of 2026-11-01,
+ * ChatGPT plans (`openai`, which codex runs on); routes/accounts.py's
+ * ACCOUNT_PROVIDERS. A provider this console does not know by name is null
+ * here and is drawn as its own id: a guess at what it is would be a claim
+ * nobody made.
+ */
+const PROVIDER_NAMES: Readonly<Record<string, string>> = {
+  anthropic: 'Claude subscription',
+  openai: 'ChatGPT plan',
+}
+
+export function providerName(provider: string): string | null {
+  return Object.prototype.hasOwnProperty.call(PROVIDER_NAMES, provider) ? PROVIDER_NAMES[provider]! : null
+}
+
+/** The provider's words, or its id drawn as an id when it has none. */
+export function ProviderName({ provider }: { provider: string }) {
+  const name = providerName(provider)
+  return name === null ? <span className="mono">{provider}</span> : <>{name}</>
+}
+
 /** The can-take chip: `Yes · 6 free`, `Full · 6 of 6`, `No · paused` (cap2-01), `No`. */
 export function CanTakeChip({ a, scope }: { a: PoolAccount; scope: string | null }) {
   const can = canTake(a, scope)
@@ -360,13 +383,16 @@ function RowMarks({ a, scope }: { a: PoolAccount; scope: string | null }) {
 
 /**
  * Under the name: the id that gets pasted into a command (#1913: the Name
- * never hides which account this is), the organisation, the reading's age and
- * when it was last given out (#127).
+ * never hides which account this is), which kind of account it is, the
+ * organisation, the reading's age and when it was last given out (#127).
  */
 function RowFacts({ a, scope, now }: { a: PoolAccount; scope: string | null; now: number }) {
   return (
     <>
       <small className="raw">{a.account_id}</small>
+      <small className="acct-prov" data-provider={a.provider}>
+        <ProviderName provider={a.provider} />
+      </small>
       <OrgLine a={a} />
       <small className="acct-age">{ageOf(a, now)}</small>
       <small className="acct-given">{givenOut(a, now)}</small>
@@ -583,7 +609,10 @@ function AccountCards({
                     <WindowCell a={a} k={SEVEN_DAY} now={now} />
                   </div>
                   <p className="acct-card-meta">
-                    <b>{agentsOf(a)}</b> agents &middot; {lentPhrase(a, scope)} &middot;{' '}
+                    <span className="acct-prov" data-provider={a.provider}>
+                      <ProviderName provider={a.provider} />
+                    </span>{' '}
+                    &middot; <b>{agentsOf(a)}</b> agents &middot; {lentPhrase(a, scope)} &middot;{' '}
                     {organisationLine(a) ?? 'organisation not recorded'}
                   </p>
                   <p className="acct-card-meta">
