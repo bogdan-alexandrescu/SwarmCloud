@@ -36,6 +36,7 @@ const api = vi.hoisted(() => ({
   loadTaskLogs: vi.fn(),
   loadTranscript: vi.fn(),
   loadLiveSession: vi.fn(),
+  loadTaskDigests: vi.fn(),
   mintLiveTicket: vi.fn(),
   takeLiveControl: vi.fn(),
   returnLiveControl: vi.fn(),
@@ -217,13 +218,31 @@ describe('the Agents list: All | Browsers N', () => {
       data: { tasks: rows().filter((t) => states.includes(t.state)), tenant_id: 'u-ada' },
       fetchedAt: Date.now(),
     }) satisfies Result<TaskPage>)
-    api.loadLiveSession.mockImplementation(async (id: string) =>
+    const liveOf = (id: string) =>
       id === 'task_needsyou00000000001'
         ? read(session({ device: { preset: 'iphone-15', orientation: 'portrait', touch: true } }))
         : id === 'task_tablet0000000000001'
           ? read(session({ device: { preset: 'ipad-7', orientation: 'landscape', touch: true } }))
-          : read(session({ device: null })),
-    )
+          : read(session({ device: null }))
+    api.loadLiveSession.mockImplementation(async (id: string) => liveOf(id))
+    // The rows' outlines: ONE digests read for every browser row (#2688).
+    api.loadTaskDigests.mockImplementation(async (ids: readonly string[]) => {
+      const reads = ids.map((id) => [id, liveOf(id)] as const)
+      const first = reads[0]?.[1]
+      const presets = first !== undefined && first.status === 'ok' ? first.data.session?.presets ?? [] : []
+      return {
+        status: 'ok',
+        fetchedAt: Date.now(),
+        data: {
+          digests: reads.map(([id, r]) => ({
+            task_id: id,
+            state: 'RUNNING' as const,
+            live: { live_browser: true, session_state: 'open' as const, device: r.status === 'ok' ? r.data.session?.device ?? null : null },
+          })),
+          presets,
+        },
+      }
+    })
     const view = render(<AgentsScreen onOpen={() => {}} />)
     await waitFor(() => expect(view.container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
     return view
@@ -263,8 +282,9 @@ describe('the Agents list: All | Browsers N', () => {
     // Not reported (LB-SEAM serves null): an outline that says so, not a guessed desktop.
     await waitFor(() => expect(device('task_browser0000000000001')?.getAttribute('data-device')).toBe('unknown'))
     expect(device('task_browser0000000000001')?.getAttribute('aria-label')).toMatch(/not reported/i)
-    // An ordinary agent gets no outline and no session read.
+    // An ordinary agent gets no outline and no session read, alone or batched.
     expect(api.loadLiveSession.mock.calls.map(([id]) => id)).not.toContain('task_coder000000000000001')
+    expect(api.loadTaskDigests.mock.calls.flatMap(([ids]) => ids as string[])).not.toContain('task_coder000000000000001')
 
     const theaterAll = screen.getByRole('link', { name: /watch all browsers/i })
     expect(theaterAll.getAttribute('href')).toBe(theaterPath('task_needsyou00000000001', null))

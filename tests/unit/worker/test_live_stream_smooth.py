@@ -15,8 +15,10 @@ part of the fix:
   sent as drawn (nothing is painted over a frame since LIVE-NOMASK, #2298);
 * a viewer that asks once is sent once, however many frames are published
   meanwhile: nothing queues behind a slow viewer;
-* Tight, which noVNC offers, is lossless here: Fill and zlib'd Basic, never
-  JPEG, and what the viewer rebuilds is the published frame byte for byte;
+* Tight, which noVNC offers, is lossless with adaptive JPEG off
+  (`SWARM_LIVE_JPEG_QUALITY=0`; its default, on, is test_live_rfb_jpeg.py):
+  Fill and zlib'd Basic, never JPEG, and what the viewer rebuilds is the
+  published frame byte for byte;
 * a controller's key reaches the display while an update is being encoded,
   and the framebuffer is grabbed off the event loop.
 
@@ -218,7 +220,9 @@ class Gate:
 
     async def connect(self, conn_id: str, encodings: tuple[int, ...] = NOVNC) -> Viewer:
         (sr, sw), (vr, vw) = await _pair()
-        session = rfb.RfbSession(conn_id, sr, sw, self.hub, self.control, self.injector)
+        # Lossless only: these assert the frame byte for byte (adaptive JPEG
+        # is test_live_rfb_jpeg.py's).
+        session = rfb.RfbSession(conn_id, sr, sw, self.hub, self.control, self.injector, jpeg_quality=0)
         self.sessions[conn_id] = session
         self.tasks.append(asyncio.create_task(session.serve()))
         viewer = Viewer(vr, vw)
