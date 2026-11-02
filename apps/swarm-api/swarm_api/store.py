@@ -49,6 +49,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
 
@@ -103,6 +104,51 @@ from .executioncancel import ExecutionTarget
 log = logging.getLogger(__name__)
 
 TASKS = "tasks"
+
+#: Firestore's cap on the values of one `in` filter: `GET /v1/tasks?state=`
+#: names at most this many states in one request.
+STATE_IN_MAX = 30
+
+#: The task document fields `GET /v1/tasks?view=summary` never serves, so its
+#: read leaves them on the server (`Store.list_tasks(fields=...)`, #2688
+#: LOAD-SPEED): `result_summary` (the agent's own summary and artifact list,
+#: the bulk of a finished task's document) and the spec signature triple (the
+#: worker's to check, served by no route). `input` STAYS in the read although
+#: the summary row does not serve it: the task's masker learns from the input
+#: which literals are secret (`task_input.TaskMasking`) and masks them in
+#: `last_error`, the title and the rest of the summary row, so a summary read
+#: without it would serve a credential its input named.
+TASK_SUMMARY_UNREAD: tuple[str, ...] = (
+    "result_summary",
+    "spec_signature",
+    "spec_key_version",
+    "spec_format",
+)
+
+#: The two `result_summary` keys a summary row DOES serve: the codec lifts
+#: `browser_used` and `browser_use` out of the summary
+#: (`codec.browser_use_to_api`, BROWSER-USE-FLAG #2322) so the Agents page's
+#: list row carries the browser-use mark, so the read keeps these dotted paths
+#: and nothing else of `result_summary`.
+TASK_SUMMARY_NESTED: tuple[str, ...] = (
+    "result_summary.browser_used",
+    "result_summary.browser_use",
+)
+
+#: The field paths a summary page reads: every `Task` field but the four
+#: above, plus the two nested browser-use paths.
+TASK_SUMMARY_FIELDS: tuple[str, ...] = tuple(
+    f.name for f in dataclass_fields(Task) if f.name not in TASK_SUMMARY_UNREAD
+) + TASK_SUMMARY_NESTED
+
+
+def _state_values(state: TaskState | Sequence[TaskState] | None) -> list[str]:
+    """`list_tasks`' state filter as stored values, de-duplicated, in order."""
+    if state is None:
+        return []
+    if isinstance(state, TaskState):
+        return [state.value]
+    return list(dict.fromkeys(s.value for s in state))
 WORKFLOWS = "workflows"
 TENANTS = "tenants"
 #: The tenant document's wave-epic field (#638); see `Store.get_findings_epic`.
@@ -1285,15 +1331,28 @@ class Store:
         self,
         tenant_id: str,
         *,
-        state: TaskState | None = None,
+        state: TaskState | Sequence[TaskState] | None = None,
         workflow_id: str | None = None,
         runner_profile: str | None = None,
         limit: int = 50,
         page_token: str | None = None,
         submitted_by: str | None,
         parent_task_id: str | None = None,
+        fields: Sequence[str] | None = None,
     ) -> Page:
         """One page of this tenant's tasks, newest first.
+
+        `state` is one state or several. Several are ONE query, `state IN
+        [...]` (at most `STATE_IN_MAX`, Firestore's cap on an `in`), served by
+        the same `tasks-tenant-state-created` index as one state: Firestore
+        plans an `in` on an indexed field as the equality it is a disjunction
+        of, so no index is added for it (#2688, LOAD-SPEED). One state is the
+        `==` it always was.
+
+        `fields` projects the read (`Query.select`): only those document
+        fields cross the wire, and every other field decodes as its default.
+        `view=summary` passes `TASK_SUMMARY_FIELDS`, which leaves out what a
+        summary row never serves.
 
         `submitted_by` is required, as on `get_task`: `None` reads every
         submitter's tasks; an email narrows the page to that submitter's. It is
@@ -1320,7 +1379,7 @@ class Store:
         """
         owner_in_query = (
             submitted_by is not None
-            and state is None
+            and not _state_values(state)
             and workflow_id is None
             and runner_profile is None
             and parent_task_id is None
@@ -1330,8 +1389,11 @@ class Store:
         )
         if owner_in_query:
             query = query.where(filter=FieldFilter("submitted_by", "==", submitted_by))
-        if state is not None:
-            query = query.where(filter=FieldFilter("state", "==", state.value))
+        states = _state_values(state)
+        if len(states) == 1:
+            query = query.where(filter=FieldFilter("state", "==", states[0]))
+        elif states:
+            query = query.where(filter=FieldFilter("state", "in", states))
         if workflow_id is not None:
             query = query.where(filter=FieldFilter("workflow_id", "==", workflow_id))
         if runner_profile is not None:
@@ -1340,6 +1402,8 @@ class Store:
             # A parent's children (contract request 14), served by the
             # `tasks-tenant-parent-created` composite index.
             query = query.where(filter=FieldFilter("parent_task_id", "==", parent_task_id))
+        if fields is not None:
+            query = query.select(list(fields))
         page = self._keyset_page(
             query,
             field="created_at",
@@ -1356,6 +1420,69 @@ class Store:
                 next_page_token=page.next_page_token,
             )
         return page
+
+    def notification_tasks(
+        self,
+        tenant_id: str,
+        *,
+        state: TaskState | None = None,
+        submitted_by: str | None,
+        limit: int,
+        fields: Sequence[str] | None = None,
+    ) -> list[Task]:
+        """This tenant's newest `limit` tasks for the notification feed: ONE
+        query, never paged (lane LOAD-SPEED-NOTIFICATIONS, part of #2688).
+
+        The feed reads a window, not a history, so it has no cursor and none
+        of `_keyset_page`'s run reads. `submitted_by` is applied IN the query,
+        also beside `state`, so 200 rows are 200 of the person's, not 200 of
+        the tenant's filtered after: served by tasks-tenant-submitter-created
+        (no state) and tasks-tenant-submitter-state-created (with one), and
+        without a submitter by tasks-tenant-created / tasks-tenant-state-created.
+        `fields` projects the documents (`Query.select`) to what the feed's
+        items use; the decoder's required fields must be among them.
+
+        UNTIL THE FOUR-FIELD INDEX IS BUILT (the release applies it, and an
+        index builds for minutes after the apply) Firestore refuses the query
+        with FailedPrecondition; it is then read as it was before that index,
+        the tenant's newest `limit` in `state`, and narrowed to the submitter
+        after, so a deploy that lands first serves the bell, not a partial one.
+        """
+        try:
+            return self._notification_tasks(tenant_id, state=state, submitted_by=submitted_by,
+                                            limit=limit, fields=fields, owner_in_query=True)
+        except gexc.FailedPrecondition:
+            if state is None or submitted_by is None:
+                raise
+            log.warning("notification_tasks: tasks-tenant-submitter-state-created not ready; "
+                        "the submitter is filtered after the read")
+            return self._notification_tasks(tenant_id, state=state, submitted_by=submitted_by,
+                                            limit=limit, fields=fields, owner_in_query=False)
+
+    def _notification_tasks(self, tenant_id: str, *, state: TaskState | None,
+                            submitted_by: str | None, limit: int,
+                            fields: Sequence[str] | None, owner_in_query: bool) -> list[Task]:
+        query = self._db.collection(TASKS).where(
+            filter=FieldFilter("tenant_id", "==", tenant_id)
+        )
+        if submitted_by is not None and owner_in_query:
+            query = query.where(filter=FieldFilter("submitted_by", "==", submitted_by))
+        if state is not None:
+            query = query.where(filter=FieldFilter("state", "==", state.value))
+        query = query.order_by("created_at", direction=firestore.Query.DESCENDING).limit(limit)
+        # The unit tests' in-memory Firestore has no projection; Firestore's
+        # own query always has `select`, so production always projects.
+        select = getattr(query, "select", None) if fields else None
+        if select is not None:
+            query = select(list(fields))
+        tasks = []
+        for snap in query.stream():
+            task = task_from_dict(snap.to_dict() or {})
+            if task.tenant_id != tenant_id or (state is not None and task.state != state) \
+                    or (submitted_by is not None and task.submitted_by != submitted_by):
+                continue
+            tasks.append(task)
+        return tasks
 
     def list_failures(self, *, limit: int = 50, page_token: str | None = None) -> Page:
         """One page of FAILED tasks across EVERY tenant, newest first (U19).

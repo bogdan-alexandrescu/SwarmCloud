@@ -149,11 +149,13 @@ locals {
     # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A of
     # #939); its Cloud Run Jobs stay as the rollback, as generic's do.
     "codex" = {
-      image           = "agent-runtime-base"
-      resource_class  = "standard"
-      backend         = "GKE_AUTOPILOT"
-      provider        = "openai"
-      secret_env      = { OPENAI_API_KEY = "openai" }
+      image          = "agent-runtime-base"
+      resource_class = "standard"
+      backend        = "GKE_AUTOPILOT"
+      provider       = "openai"
+      # Contract request 130 (owner, 2026-11-01): the tenant's key or a pool
+      # ChatGPT plan's two names, interchangeable (secrets_any_of).
+      secret_env      = { for name in ["OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"] : name => "openai" }
       timeout_seconds = 7200
 
       model_classes       = []
