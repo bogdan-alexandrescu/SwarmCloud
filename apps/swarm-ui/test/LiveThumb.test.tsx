@@ -1,6 +1,7 @@
 // LB-L12b UI-GRAPH acceptance (docs/design/live-browser.md §6 and §9):
 //
-//   * a running browser node expands a card with a thumbnail at <= 1 fps;
+//   * a running browser node expands a card with a paced thumbnail (<= 1 fps
+//     with many on screen, <= 4 fps with few: `thumbIntervalMs`);
 //   * Open Browser tab and ⤢ Theater navigate to the same session;
 //   * no thumbnail stream for a finished step.
 //
@@ -9,7 +10,7 @@
 // inspector, as the owner's chosen mockup draws it), and the stream is a fake
 // socket speaking the gate's side of RFB 3.8
 // (`livegate/rfb.py`): this suite is offline, and the gate answers an update
-// request only when asked, which is what the <= 1 fps assertion measures.
+// request only when asked, which is what the pacing assertion measures.
 
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -17,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   LIVE_BROWSER_PROFILES,
   RfbThumb,
+  THUMB_FEW_INTERVAL_MS,
   THUMB_MIN_INTERVAL_MS,
   browserTabPath,
   liveSocketUrl,
@@ -145,8 +147,11 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('a running browser node expands a card with a thumbnail at <= 1 fps', () => {
-  it('draws the card with a live thumbnail and never asks the gate for more than one frame a second', () => {
+describe('a running browser node expands a card with a paced thumbnail', () => {
+  // One card on screen is "few" (`THUMB_FEW_VISIBLE`), so it is paced at
+  // `THUMB_FEW_INTERVAL_MS`; the 1 s floor with more on screen is held by
+  // src/__tests__/live.thumb.pace.test.tsx.
+  it('draws the card with a live thumbnail and never asks the gate for more than four frames a second', () => {
     const gates: FakeGate[] = []
     const open = vi.fn<OpenLive>(() => {
       const g = new FakeGate()
@@ -172,12 +177,13 @@ describe('a running browser node expands a card with a thumbnail at <= 1 fps', (
 
     const times = gate.requestTimes
     expect(times.length).toBeGreaterThan(5)
-    expect(times.length).toBeLessThanOrEqual(11)
+    const most = 10_000 / THUMB_FEW_INTERVAL_MS + 1
+    expect(times.length).toBeLessThanOrEqual(most)
     for (let i = 1; i < times.length; i += 1) {
-      expect((times[i] as number) - (times[i - 1] as number)).toBeGreaterThanOrEqual(THUMB_MIN_INTERVAL_MS)
+      expect((times[i] as number) - (times[i - 1] as number)).toBeGreaterThanOrEqual(THUMB_FEW_INTERVAL_MS)
     }
     expect(putImageData.mock.calls.length).toBeGreaterThan(5)
-    expect(putImageData.mock.calls.length).toBeLessThanOrEqual(11)
+    expect(putImageData.mock.calls.length).toBeLessThanOrEqual(most)
     const canvas = document.querySelector('canvas.wf-live-thumb') as HTMLCanvasElement
     expect(Number(canvas.dataset.frames)).toBe(putImageData.mock.calls.length)
     expect(canvas.width).toBe(W)

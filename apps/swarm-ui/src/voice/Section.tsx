@@ -21,6 +21,7 @@ import { loadMe } from '../api'
 import { PageHead } from '../Shell'
 import { Absent } from '../primitives'
 import type { Me } from '../types'
+import { VoicePreferences } from './Preferences'
 import { TalkPane } from './Talk'
 
 /**
@@ -111,10 +112,7 @@ export function VoicePreferencesScreen() {
     <>
       <PageHead title="Preferences" />
       <Gate>
-        <Absent kind="zero" heading="Preferences arrive in phase four" say="Preferences arrive in phase four">
-          What Voice it remembers about how you work will be listed here, and you will be able to change or
-          remove any of it.
-        </Absent>
+        <VoicePreferences />
       </Gate>
     </>
   )

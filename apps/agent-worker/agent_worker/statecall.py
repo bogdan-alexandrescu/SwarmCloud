@@ -31,14 +31,26 @@ WHAT AN ANSWER BECOMES. The caller acts on worker errors, never on HTTP:
     longer owns its task -> `FencedWriteRefused`, nothing written
     (invariant 5). The caller exits without running or continuing the agent
     and makes no release call;
-  * 5xx, 429 and no answer: retried with the child path's backoff (1 s,
-    doubling to 8 s) until the call's budget is spent, then
+  * 5xx, 429, no answer, and a 404 swarm-api did not name: retried with
+    the child path's backoff (1 s, doubling to 8 s) until the call's budget
+    is spent, then
     `google.api_core.exceptions.ServiceUnavailable`, which the lifecycle
     already reads as an outage: 69 before the runner, the mid-run outage
     rule after;
   * 401 -> `Unauthenticated` and 403 -> `PermissionDenied`, the refusals the
     lifecycle already reads as "cannot start" (78) at the generation check;
   * anything else -> `StateRefused`, a `ControlPlaneError` naming the code.
+    That includes a 404 swarm-api answers itself: every refusal it raises
+    carries a `code` (`not_found` and the like), and that 404 is final.
+
+WHY A BARE 404 IS AN OUTAGE (#3041). Every route here is served by every
+swarm-api revision a worker can meet, and every refusal swarm-api's handlers
+answer names its code. A 404 whose body has no code -- the router's
+`{"detail": "Not Found"}`, or a page from in front of the service -- is the
+transport's `http_404`: the request did not reach a state route, which is
+what a release rolling a revision out looks like from the worker. A running
+task failed on exactly that, mid-run, so it is retried within the call's
+budget like any other outage, never past it.
 
 IDEMPOTENCY. A call whose answer was lost is sent again with the SAME body:
 transitions, parks, finishes and retries carry a `request_id` the caller
@@ -78,6 +90,10 @@ RETRY_CAP_SECONDS = 8.0
 #: has closed -- the task left LEASED, DISPATCHED and STARTING, or its lease
 #: is not live -- which `state/open` meets only when another owner moved it.
 FENCED_CODES = frozenset({"attempt_fenced", "child_key_taken", "child_key_window_closed"})
+
+#: The code `children.ChildApi.call` gives a 404 whose body is not swarm-api's
+#: refusal shape (no `code`): not an answer from a state route (#3041).
+BARE_NOT_FOUND = "http_404"
 
 
 def state_request_message(method: str, path: str, body: bytes, timestamp: str) -> bytes:
@@ -137,6 +153,11 @@ def _refused_identity(status: int, message: str) -> Exception:
     if status == 401:
         return core_exceptions.Unauthenticated(message)
     return core_exceptions.PermissionDenied(message)
+
+
+def _bare_not_found(exc: ChildApiError) -> bool:
+    """A 404 no state route answered: no code of swarm-api's, no message."""
+    return exc.status == 404 and exc.code == BARE_NOT_FOUND and not exc.message
 
 
 class StateCall:
@@ -266,7 +287,7 @@ class StateCall:
                 )
                 return payload if isinstance(payload, dict) else {}
             except ChildApiError as exc:
-                if exc.retryable:
+                if exc.retryable or _bare_not_found(exc):
                     remaining = deadline - self._clock()
                     if remaining > 0:
                         self._sleep(min(delay, remaining))

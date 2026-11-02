@@ -29,6 +29,7 @@ come back out.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -561,6 +562,39 @@ def test_both_filters_give_the_fixtures_output_exactly(case):
     assert python.text == case["expected"], python.text
     assert shell == case["expected"], f"the two filters are not one rule: {shell!r} vs {python.text!r}"
     assert python.count == case["count"], python.count
+
+
+#: THE THIRD COPY: the Jev outbound filter (lane jev-outbound-redaction, owner
+#: decision 2026-11-02). `swarm-jev-gate.mjs` DROPS every string of a gate
+#: hook's or the Jev browser's request body that a rule here would mask. It
+#: asks the image's own `swarm_redaction` (a JavaScript regex cannot spell the
+#: key/value rule's conditional groups), so the fixture is run through the
+#: launcher's `credentialFlags`, the very call it makes, and each case must be
+#: flagged exactly when this filter counts it.
+JEV_GATE = REPO / "images/agent-runtime-base/jev-gates/bin/swarm-jev-gate.mjs"
+
+
+def test_the_jev_outbound_filter_flags_exactly_what_the_rules_mask():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        if os.environ.get("CI"):
+            pytest.fail("node is not on PATH in CI, so the outbound filter cannot run; it must not pass by skipping")
+        pytest.skip("node is not installed here; CI runs these")
+    texts = [case["text"] for case in PARITY_CASES] + [case["expected"] for case in PARITY_CASES]
+    script = (f"import {{ credentialFlags }} from {json.dumps(JEV_GATE.as_uri())};\n"
+              f"const texts = JSON.parse(await new Promise((ok) => {{ let s = ''; process.stdin.on('data', (c) => s += c); process.stdin.on('end', () => ok(s)); }}));\n"
+              f"console.log(JSON.stringify(credentialFlags(texts, {json.dumps(sys.executable)})));")
+    done = subprocess.run([node, "--input-type=module", "-e", script], input=json.dumps(texts),
+                          capture_output=True, text=True, timeout=60, check=False)
+    assert done.returncode == 0, done.stderr
+    flags = json.loads(done.stdout)
+    assert flags == [redact(text).count > 0 for text in texts]
+    # Every case that holds a credential is flagged, so none is ever sent.
+    for case, flagged in zip(PARITY_CASES, flags):
+        assert flagged == (case["count"] > 0), case["name"]
 
 
 # --------------------------------------------------------------------------
