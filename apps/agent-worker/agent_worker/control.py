@@ -1588,7 +1588,7 @@ class ControlPlane:
         the only write a start or a SIGTERM exit makes, under the startup
         budget (`lifecycle._exit_interrupted_before_runner`), so the task's
         totals wait for `store_pending_attempt_totals`, which the lifecycle
-        calls once the window has closed without an exit.
+        calls once the runner child has started.
         """
         if self._budgeted:
             self._totals_pending = True
@@ -1612,7 +1612,7 @@ class ControlPlane:
 
     def store_pending_attempt_totals(self) -> None:
         """The task's totals deferred by an attempt write made inside the
-        startup window (`_store_attempt_totals`), now that it has closed.
+        startup window (`_store_attempt_totals`), once the runner has started.
         Nothing when none is pending. Never raises."""
         if self._totals_pending and not self._budgeted:
             self._store_attempt_totals()
