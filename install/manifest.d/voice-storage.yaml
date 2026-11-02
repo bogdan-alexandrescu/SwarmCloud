@@ -1,0 +1,56 @@
+# Lane VOICE-STORAGE (part of #2688; docs/design/voice-it.md section 3.7 and
+# section 10, phase two): swarm-api keeps a Voice it project's redacted
+# transcript and its large card bodies under tenants/<tenant>/voice/<project>/
+# in the artifact bucket, and removes them when the person deletes the
+# project. Two bucket-scoped grants, both conditioned on that shape, both off
+# until terraform/infra's `voice_it` is "on". They are IAM changes, so the
+# release that carries them waits at the IAM gate for the owner.
+version: 1
+entries:
+- id: iam-binding.swarm-api-voice-blob-writer
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://<artifacts-bucket> --project=$P | grep voice-it-blobs-create
+  apply: terraform/infra/voice.tf:312 google_storage_bucket_iam_member.api_voice_blob_writer, once voice_it is "on"
+  verify: swarm-api holds roles/storage.objectCreator on the artifact bucket under the condition voice-it-blobs-create,
+    which admits tenants/<t>/voice/<project>/ objects only
+  explain: swarm-api creates Voice it transcripts and card bodies too large for a document (section 3.7); create-only,
+    and the writer uploads with if_generation_match=0 so nothing is overwritten.
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - bucket.artifacts
+  - sa.swarm-api
+  evidence:
+  - terraform/infra/voice.tf:312-324
+  notes: 'null'
+  step: infra.pass-2
+  refs:
+    terraform:
+    - infra/google_storage_bucket_iam_member.api_voice_blob_writer
+- id: iam-binding.swarm-api-voice-blob-deleter
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://<artifacts-bucket> --project=$P | grep voice-it-blobs-delete
+  apply: terraform/infra/voice.tf:326 google_storage_bucket_iam_member.api_voice_blob_deleter, once voice_it is "on"
+  verify: swarm-api holds swarmHistoryPurgeDeleter (storage.objects.delete only) on the artifact bucket under the
+    condition voice-it-blobs-delete, which admits tenants/<t>/voice/<project>/ objects only
+  explain: deleting a Voice it project removes its objects before its documents (section 3.7); the role is the
+    history purge's delete-only custom role, which terraform/bootstrap defines.
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - bucket.artifacts
+  - sa.swarm-api
+  - role.custom.swarmHistoryPurgeDeleter
+  evidence:
+  - terraform/infra/voice.tf:326-338
+  notes: 'null'
+  step: infra.pass-2
+  refs:
+    terraform:
+    - infra/google_storage_bucket_iam_member.api_voice_blob_deleter

@@ -5,6 +5,24 @@
     POST /v1/voice/sessions/{session_id}/end
         -> {project_id, session_id, state, changed, voice_told}
 
+    GET    /v1/voice/projects                 -> {projects: [...]}, newest first
+    GET    /v1/voice/projects/{project_id}    -> the project
+    PATCH  /v1/voice/projects/{project_id}    {title} -> the project
+    DELETE /v1/voice/projects/{project_id}    -> {project_id, deleted, documents, objects}
+    GET    /v1/voice/preferences              -> {preferences, revision, can_undo, previous}
+    PATCH  /v1/voice/preferences              {changes, revision?} -> the same, plus changed
+    POST   /v1/voice/preferences/undo         {revision?} -> the same
+
+PROJECTS AND PREFERENCES (§3.7, §3.11, §10 phase 2; swarm_api/voice/store.py
+and voice/preferences.py). The same who-guard and the same workspace: a
+project is read only when its tenant is the selected workspace and its person
+is the caller, so another tenant's project, or another person's, is the same
+404 as a missing one. Deleting a project removes its objects under
+`tenants/<tenant>/voice/<project>/` and then its documents; it is 409 while one
+of its sessions is live. Preferences are the person's own, keyed by an HMAC of
+the verified email, never by a field of the body. None of these routes needs
+swarm-voice, so none answers 503 for its absence.
+
 THE SHAPE is the Talk pane's (apps/swarm-ui/src/voice/rtc.ts,
 startVoiceSession and endVoiceSession): the pane sends `offer_sdp`, reads
 `answer_sdp`, and ends a session by its id alone. Ending finds the session's
@@ -40,7 +58,9 @@ from starlette.concurrency import run_in_threadpool
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ValidationFailed
+from ..voice import preferences as vprefs
 from ..voice import sessions as vs
+from ..voice import store as vstore
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
@@ -116,3 +136,129 @@ async def end_session(
     _check_id(session_id, "vs_", "session_id")
     return await run_in_threadpool(
         service.end, tenant_id=tenant_id, person=person, session_id=session_id)
+
+
+# --------------------------------------------------------------------------
+# Projects and preferences (§3.7, §3.11, §10 phase 2)
+# --------------------------------------------------------------------------
+
+
+class RenameProject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=vstore.TITLE_MAX)
+
+
+class EditPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    changes: dict[str, Any]
+    revision: int | None = Field(default=None, ge=0)
+
+
+class UndoPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision: int | None = Field(default=None, ge=0)
+
+
+def voice_blobs(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
+    """`app.state.voice_blobs` when one is set (a test's), else the artifact
+    bucket's, else none (no bucket: nothing was ever written there)."""
+    if not hasattr(request.app.state, "voice_blobs"):
+        core = getattr(ctx.settings, "core", None)
+        request.app.state.voice_blobs = vstore.build_voice_blobs(
+            bucket=str(getattr(core, "artifact_bucket", "") or ""),
+            project_id=getattr(ctx.settings, "project_id", None))
+    return request.app.state.voice_blobs
+
+
+def _store(ctx: AppContext, blobs: Any) -> vstore.VoiceStore:
+    return vstore.VoiceStore(ctx.db, now=ctx.now, blobs=blobs)
+
+
+def _preferences(ctx: AppContext) -> vprefs.VoicePreferences:
+    return vprefs.VoicePreferences(
+        ctx.db, key=str(getattr(ctx.settings, "child_key", "") or ""), now=ctx.now)
+
+
+@router.get("/projects")
+async def list_projects(
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    blobs: Any = Depends(voice_blobs),
+) -> dict:
+    rows = await run_in_threadpool(
+        _store(ctx, blobs).list_projects, tenant_id=tenant_id, person=person)
+    return {"projects": rows}
+
+
+@router.get("/projects/{project_id}")
+async def get_project(
+    project_id: str,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    blobs: Any = Depends(voice_blobs),
+) -> dict:
+    _check_id(project_id, "vp_", "project_id")
+    return await run_in_threadpool(
+        _store(ctx, blobs).get_project, tenant_id=tenant_id, person=person,
+        project_id=project_id)
+
+
+@router.patch("/projects/{project_id}")
+async def rename_project(
+    project_id: str,
+    body: RenameProject,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    blobs: Any = Depends(voice_blobs),
+) -> dict:
+    _check_id(project_id, "vp_", "project_id")
+    return await run_in_threadpool(
+        _store(ctx, blobs).rename_project, tenant_id=tenant_id, person=person,
+        project_id=project_id, title=body.title)
+
+
+@router.delete("/projects/{project_id}")
+async def delete_project(
+    project_id: str,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    blobs: Any = Depends(voice_blobs),
+) -> dict:
+    _check_id(project_id, "vp_", "project_id")
+    return await run_in_threadpool(
+        _store(ctx, blobs).delete_project, tenant_id=tenant_id, person=person,
+        project_id=project_id)
+
+
+@router.get("/preferences")
+async def read_preferences(
+    person: str = Depends(allowed_person),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    return await run_in_threadpool(_preferences(ctx).read, person)
+
+
+@router.patch("/preferences")
+async def edit_preferences(
+    body: EditPreferences,
+    person: str = Depends(allowed_person),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    return await run_in_threadpool(
+        _preferences(ctx).edit, person, body.changes, revision=body.revision)
+
+
+@router.post("/preferences/undo")
+async def undo_preferences(
+    body: UndoPreferences,
+    person: str = Depends(allowed_person),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    return await run_in_threadpool(_preferences(ctx).undo, person, revision=body.revision)

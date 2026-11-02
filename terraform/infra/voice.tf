@@ -2,7 +2,7 @@
 # §3.2, §3.4, §3.6, §7, section 10 phase one; lane VOICE-STATEFULSET, part of
 # #2688).
 #
-# Six things, and only these:
+# Seven things, and only these (the last, lane VOICE-STORAGE):
 #
 #   * a read of `swarm-voice`, the Google service account the pod acts as,
 #     which terraform/bootstrap creates (platform_service_accounts.tf), and
@@ -21,7 +21,9 @@
 #     it, and so swarm-api's SWARM_VOICE_URL (locals.tf, local.voice_url);
 #   * its manifest, kubernetes/swarm-system/swarm-voice.yaml followed by
 #     kubernetes/network-policies/swarm-system-voice.yaml, rendered with the
-#     values above as the `swarm_voice_manifest` output.
+#     values above as the `swarm_voice_manifest` output;
+#   * swarm-api's conditioned create and delete on the artifact bucket's
+#     `tenants/<tenant>/voice/<project>/` objects (below, "Voice it's blobs").
 #
 # WHY A GOOGLE SERVICE ACCOUNT, when swarm-live holds its grants as a bare
 # Workload Identity principal (live.tf says why it can). swarm-voice must call
@@ -219,6 +221,120 @@ resource "google_compute_address" "voice" {
   labels = merge(local.labels, {
     "component" = "voice"
   })
+}
+
+# --- Voice it's blobs: swarm-api's two storage grants -----------------------
+#
+# docs/design/voice-it.md §3.7 and §10 phase 2 (lane VOICE-STORAGE, part of
+# #2688). swarm-api keeps a project's redacted transcript and the card bodies
+# too large for a document under the tenant's prefix in the artifact bucket:
+#
+#   tenants/<t>/voice/<project>/transcripts/<session>/<part>.jsonl
+#   tenants/<t>/voice/<project>/mockups/<card>/<version>.html
+#   tenants/<t>/voice/<project>/diagrams/<card>/<version>.mmd | .json
+#   tenants/<t>/voice/<project>/plans/<version>.md
+#
+# and removes all of it when the person deletes the project. Two grants, both
+# bucket-scoped members of the artifact bucket's policy (never the project's:
+# this shared project holds another team's buckets), both conditioned on the
+# same shape, and nothing else:
+#
+#   * api_voice_blob_writer: roles/storage.objectCreator, create and nothing
+#     else -- no get, no list, no delete. swarm-api's read and list stay
+#     `api_reader` in modules/iam/bindings.tf, unchanged;
+#   * api_voice_blob_deleter: swarmHistoryPurgeDeleter, the custom role that is
+#     storage.objects.delete and nothing else (terraform/bootstrap
+#     history_purge.tf defines it; this root names it through
+#     modules/custom_role_ids and may not read it, #79).
+#
+# CREATE-ONLY IN THE CODE, NOT ONLY IN IAM. Create plus delete on one prefix
+# would admit a replace, so the writer (swarm_api/voice/store.py, `create`)
+# uploads with if_generation_match=0: an existing name is a refusal, and a new
+# transcript part or card version is a new name.
+#
+# THE TENANT IS FIXED BY THE CODE, NOT BY THIS CONDITION. One swarm-api serves
+# every tenant, so no condition can tie the tenant segment to the caller.
+# store.py builds every key from the tenant the caller resolves to and refuses
+# any key outside tenants/<that tenant>/voice/<project>/ before it calls GCS
+# (`key_refusal`: no "..", no absolute path, no other tenant). The condition
+# pins the SHAPE, so neither grant reaches a task's artifacts, a checkpoint, a
+# verdict, the repository index or another feature's prefix.
+#
+# THE CONDITION, four clauses ANDed. Cloud Storage IAM conditions have no
+# matches() (Google refused one with a 400, release run 38114832799;
+# modules/iam bindings.tf `history_purge_condition` records it), and a
+# startsWith per tenant would miss the personal tenants created at runtime, so
+# the shape is pinned with startsWith and extract() comparisons:
+#
+#   1. an object in this bucket under tenants/ -- never another bucket, a
+#      longer bucket name, the bucket itself or a key outside tenants/;
+#   2. T, the text after /objects/tenants/ up to the next "/", is not empty;
+#   3. T is also the text before the FIRST "/voice/" after it, so the name is
+#      tenants/T/voice/... with T one segment (not tenants/a/b/voice/,
+#      tenants/a/tasks/t/voice/ or tenants/a/repos/r/voice/);
+#   4. P, the text after the first "/voice/" up to the next "/", is not empty,
+#      so the name is tenants/T/voice/P/<object>: never an object directly
+#      under voice/, and never tenants/T/voice//<object>.
+#
+# extract("pre{x}suf") returns the text between the FIRST pre and the first
+# suf after it, "" when either is missing, and {x} may span "/" (Google's
+# attribute reference). The first "/voice/" is the one after T because the
+# bucket name and T hold no "/" and clause 3 puts one there. What it does not
+# pin: P's `vp_` form and the kinds below it; store.py refuses any other shape
+# before GCS is called, and neither widens the reach past one tenant's voice/.
+#
+# tests/terraform/voice_storage.tftest.hcl evaluates this expression against
+# admitted and refused names, clause by clause.
+#
+# Behind the same switch as everything else here (voice_it = "on"). Both are
+# IAM changes, so the release that carries them waits at the IAM gate for the
+# owner.
+
+# The delete role's full name, a plain string: terraform/bootstrap defines the
+# role, and this root may not so much as read one (#79).
+module "voice_role_ids" {
+  source = "../modules/custom_role_ids"
+
+  project_id = var.project_id
+}
+
+locals {
+  voice_blob_condition = join(" && ", [
+    "resource.name.startsWith(\"projects/_/buckets/${module.storage.artifact_bucket_name}/objects/tenants/\")",
+    "resource.name.extract(\"/objects/tenants/{t}/\") != \"\"",
+    "resource.name.extract(\"/objects/tenants/{t}/\") == resource.name.extract(\"/objects/tenants/{t}/voice/\")",
+    "resource.name.extract(\"/voice/{p}/\") != \"\"",
+  ])
+}
+
+# An IAM member takes no labels; destroy-guard.jq treats it as a policy edge,
+# and each condition's description carries managed-by=swarm-terraform.
+resource "google_storage_bucket_iam_member" "api_voice_blob_writer" {
+  count = local.voice_on ? 1 : 0
+
+  bucket = module.storage.artifact_bucket_name
+  role   = "roles/storage.objectCreator"
+  member = module.iam.service_account_members["swarm-api"]
+
+  condition {
+    title       = "voice-it-blobs-create"
+    description = "managed-by=swarm-terraform; swarm-api creates Voice it transcripts and card bodies under tenants/<t>/voice/<project>/ only (docs/design/voice-it.md section 3.7)."
+    expression  = local.voice_blob_condition
+  }
+}
+
+resource "google_storage_bucket_iam_member" "api_voice_blob_deleter" {
+  count = local.voice_on ? 1 : 0
+
+  bucket = module.storage.artifact_bucket_name
+  role   = module.voice_role_ids.names.history_purge_deleter
+  member = module.iam.service_account_members["swarm-api"]
+
+  condition {
+    title       = "voice-it-blobs-delete"
+    description = "managed-by=swarm-terraform; swarm-api deletes a removed Voice it project's objects under tenants/<t>/voice/<project>/ only (docs/design/voice-it.md section 3.7)."
+    expression  = local.voice_blob_condition
+  }
 }
 
 check "voice_it_needs_gke" {
