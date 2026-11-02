@@ -46,6 +46,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from quota_broker.accounts import (
     ASSIGNABLE_STATES,
+    DUPLICATE_MATCHED_ON,
+    DUPLICATE_REASON,
     HOLD_LOG_COLLECTION,
     Account,
     Unavailable,
@@ -53,6 +55,7 @@ from quota_broker.accounts import (
     choose,
     duplicates,
     eligibility,
+    withheld_mark,
 )
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import (
@@ -420,18 +423,26 @@ def pool_blockers(
     label: the other side of a pair is named only when it is `tenant_id`'s
     own account (POOL-WAITLINE).
     """
-    # The withheld side as `choose()` decides it (`_withheld`): the stored
-    # mark, or a pair in this very list the broker's sweep has not marked yet.
+    # The withheld side as `choose()` decides it (`_withheld`): a stored mark
+    # that still holds (`withheld_mark`: only on a recorded organisation and
+    # seat, #3046), or a pair in this very list the broker's sweep has not
+    # marked yet. The block says why and which identity's KIND matched,
+    # never the identity itself.
     pairs = duplicates(accounts)
+    listed = {a.account_id: a for a in accounts}
     out: list[dict[str, Any]] = []
     for account in accounts:
         item: dict[str, Any] = {"account": account.label}
         if account.state not in ASSIGNABLE_STATES:
             item["state"] = account.state.value
         other, held = pairs.get(account.account_id, (None, False))
-        if account.duplicate_withheld or held:
+        if held or withheld_mark(account, listed):
             partner = other if held else account.duplicate_of
-            item["withheld"] = {"same_subscription_as": _own_label(partner, tenant_id)}
+            item["withheld"] = {
+                "same_subscription_as": _own_label(partner, tenant_id),
+                "reason": f"{DUPLICATE_REASON} another account",
+                "matched_on": DUPLICATE_MATCHED_ON,
+            }
         windows = account.blocking_windows(now)
         if windows:
             item["windows"] = {

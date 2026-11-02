@@ -321,6 +321,24 @@ with `next_eligible_at` set to the broker's reset time, or to a fallback when
 the broker has none: 300 seconds for an account nobody has read lately, 900 for
 a paused one (`lifecycle._park_no_account`).
 
+**An account is withheld as a duplicate only on the provider's own identity**
+(#3046). Two pool accounts are one subscription only when both have a recorded
+organisation **and** seat and the two match
+(`quota_broker.accounts.subscription_identity`). These are opaque digests of
+what the provider's token or profile answer named, and they do not change while
+the sign-in is valid. Of such a pair, the broker hands out only the older
+registration. A label, an owner, a loan or a usage reading never makes two
+accounts one subscription. An account with no recorded identity is never
+withheld: identical readings only flag it as a `possible_duplicate`, which is
+advisory, and a stored mark on it does not count. On the night of 24 to 25
+October 2026, the rule then in force keyed on the organisation alone. It held
+four seats of one Team organisation as duplicates of a seat that was 97% spent,
+while 46 steps waited. Two of those seats ran 15 agents each a few hours later.
+A withheld account's entry in the park's `accounts` block reads
+`withheld: {same_subscription_as, reason, matched_on: "organisation_and_seat"}`,
+and Capacity › Accounts gives the same reason and kind. Neither ever shows the
+identity's value.
+
 **Every quota window binds every attempt, whatever its model class** (#1435,
 owner's answer to Q5 of [model-per-step.md](design/model-per-step.md#47-accounts-and-quota-windows-windows-unchanged-classes-served-per-account),
 2026-10-17). An account's headroom is the minimum over all its windows
