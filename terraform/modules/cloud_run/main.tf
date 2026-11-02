@@ -203,11 +203,25 @@ resource "google_cloud_run_v2_service" "this" {
 # which terraform cannot plan: the first plan on a fresh project fails with
 # "the for_each map includes keys derived from resource attributes that cannot
 # be determined until apply".
+#
+# A service in `invokers_elsewhere` is named by string: another call of this
+# module creates it, and the caller orders the two (variables.tf says why).
+locals {
+  invokers_by_service = merge(
+    var.invokers_elsewhere,
+    { for svc_name, svc in var.services : svc_name => svc.invokers },
+  )
+  invoked_service_names = merge(
+    { for svc_name, _ in var.invokers_elsewhere : svc_name => svc_name },
+    { for svc_name, s in google_cloud_run_v2_service.this : svc_name => s.name },
+  )
+}
+
 resource "google_cloud_run_v2_service_iam_member" "invokers" {
   for_each = {
     for pair in flatten([
-      for svc_name, svc in var.services : [
-        for label, member in svc.invokers : {
+      for svc_name, invokers in local.invokers_by_service : [
+        for label, member in invokers : {
           key     = "${svc_name}:${label}"
           service = svc_name
           member  = member
@@ -218,7 +232,7 @@ resource "google_cloud_run_v2_service_iam_member" "invokers" {
 
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.this[each.value.service].name
+  name     = local.invoked_service_names[each.value.service]
   role     = "roles/run.invoker"
   member   = each.value.member
 }

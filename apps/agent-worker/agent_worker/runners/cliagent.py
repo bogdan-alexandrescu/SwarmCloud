@@ -477,6 +477,9 @@ SESSION_FILE_ENV = "SWARM_SESSION_FILE"
 #: Why a session is being resumed.
 RESUME_MOVED = "moved"
 RESUME_RELOADED = "credential_reloaded"
+#: A new attempt continuing a step that stopped at its time limit (BGD,
+#: 2026-11-02): set by the worker, with a session to resume or without one.
+RESUME_TIME_LIMIT = "time_limit"
 
 #: What a resumed CLI is told. The conversation, the tool results and the
 #: workspace are all as they were; this is the one new user message.
@@ -495,8 +498,23 @@ RELOAD_RESUME_PROMPT = (
 )
 
 
+#: The same, and the note a fresh start is given, on a new attempt that
+#: continues a step stopped at its time limit (BGD, 2026-11-02): the worker
+#: checkpointed the workspace at the limit and restored it here.
+TIME_LIMIT_RESUME_PROMPT = (
+    "You are continuing after a time limit: the step's last attempt reached its "
+    "time limit and was stopped, its workspace was checkpointed, and this is a "
+    "new attempt that resumes from that checkpoint with a time limit of its own. "
+    "The last action you took may not have completed; check the workspace and "
+    "your notes in $SWARM_ARTIFACTS_DIR before relying on it, then carry on "
+    "where you left off and finish the task."
+)
+
+
 def resume_prompt(reason: str | None) -> str:
     """The resumed CLI's one new message, by why it was stopped."""
+    if reason == RESUME_TIME_LIMIT:
+        return TIME_LIMIT_RESUME_PROMPT
     return RELOAD_RESUME_PROMPT if reason == RESUME_RELOADED else RESUME_PROMPT
 
 #: Why this runner stopped the CLI at a turn boundary.
@@ -1935,6 +1953,10 @@ def run_cli_agent(
     # The step's wall clock (#2139): last for a task with no repository,
     # just before the platform paragraph for one with a repository.
     first_prompt = f"{task_prompt}\n\n{time_limit_line(limits.timeout_seconds)}"
+    if not resume and os.environ.get(RESUME_REASON_ENV, "").strip() == RESUME_TIME_LIMIT:
+        # A continuation at the time limit with no session to resume (BGD,
+        # 2026-11-02): the task again, in the restored workspace, and the note.
+        first_prompt = f"{TIME_LIMIT_RESUME_PROMPT}\n\n{first_prompt}"
     if cwd != ctx.work_dir:
         # A task with a repository (Proposal A, owner decision 2026-10-08):
         # the platform paragraph, last. Not on a resume: the session

@@ -210,6 +210,10 @@ def put_platform_settings(
     whole (`{}` clears it). No workspace default may be saved above it in its
     unit, no step may ask for more, and every budgeted attempt's limit is at
     most it (`budget`). Read at every submission and every save.
+
+    `jev_token_rates` (JEV-USAGE-PAGE): `{input, output}`, Jev's price in USD
+    per million tokens, replaced whole (`{}` clears it). No default; until it
+    is set, Capacity › Jev usage shows "rate not set" and no dollars.
     """
     changes = body.model_dump(exclude_none=True)
     if not changes:

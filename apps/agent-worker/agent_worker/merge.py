@@ -205,6 +205,14 @@ MERGE_TARGET_FIELD = "merge_target"
 
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: The `result_summary` key listing each unanswered advisory question this
+#: merge went ahead past (owner decision, 2 November 2026): `{task_id,
+#: step_id, question_index, question, recommended, built}`. swarm-api's answer
+#: route reads it from a SUCCEEDED merge to start a pick-fix round against the
+#: default branch when the owner later picks another option
+#: (`swarm_api.agent_questions.ADVISORY_MERGED_PAST_KEY`, held equal by
+#: tests/unit/worker/test_merge_advisory_questions.py).
+ADVISORY_MERGED_PAST_KEY = "advisory_merged_past"
 #: The code a merge refuses with when the owner picked an option the asking
 #: branch did not build (ANSWER-CONTENT-CHECK, owner decision 2026-10-26), the
 #: `result_summary` key naming each such pick, and the code for a counted
@@ -550,6 +558,8 @@ PURE_BASE_MERGES_KEY = "pure_base_merges"
 _OUT_OF_DATE = re.compile(r"out of date|not up to date|is behind", re.IGNORECASE)
 #: A 405/422 (merge) or 422 (update-branch) that names a merge conflict.
 _CONFLICT = re.compile(r"conflict", re.IGNORECASE)
+#: A 422 from a branch delete that means the branch is already gone.
+_REF_GONE = re.compile(r"reference does not exist", re.IGNORECASE)
 #: A 405/422 from the merge call that means the base merges only through a
 #: merge queue: GitHub's "Changes must be made through the merge queue",
 #: alone (405) or under "Repository rule violations found" (422).
@@ -1216,6 +1226,14 @@ class EnqueueAnswer:
     message: str = ""
 
 
+@dataclass(frozen=True)
+class BranchFacts:
+    """A branch as GitHub reads it: its head commit and whether it is protected."""
+
+    sha: str | None
+    protected: bool
+
+
 class ForgeMerger(Protocol):
     """What the merge step asks of a forge. One implementation: `GitHubMerger`."""
 
@@ -1252,6 +1270,12 @@ class ForgeMerger(Protocol):
     def closing_issues(self, number: int) -> ClosingReferences: ...
 
     def close_issue(self, number: int, *, comment: str) -> bool: ...
+
+    def branch_facts(self, name: str) -> BranchFacts | None: ...
+
+    def open_pulls_from(self, name: str) -> int: ...
+
+    def delete_branch(self, name: str) -> bool: ...
 
 
 class UnsupportedForge(ValueError):
@@ -1637,6 +1661,38 @@ class GitHubMerger:
         )
         return commented and answer.status == 200
 
+    def branch_facts(self, name: str) -> BranchFacts | None:
+        """The branch's head and protection; None when the branch is gone."""
+        answer = self._client.get(f"{self._base}/branches/{quote(name, safe='')}")
+        if answer.status == 404:
+            return None
+        if answer.status != 200:
+            raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/branches",
+                                          forge_mod._message_of(answer.data))
+        data = _mapping(answer.data)
+        return BranchFacts(sha=_str(_mapping(data.get("commit")).get("sha")),
+                           protected=data.get("protected") is True)
+
+    def open_pulls_from(self, name: str) -> int:
+        """How many open pull requests have `name`, in this repository, as their head."""
+        pulls = self._client.get_ok(f"{self._base}/pulls",
+                                    query={"state": "open", "head": f"{self.owner}:{name}"})
+        return len(pulls) if isinstance(pulls, list) else 0
+
+    def delete_branch(self, name: str) -> bool:
+        """Delete the branch: True when this call deleted it, False when it was
+        already gone (after GitHub's auto-delete of merged head branches a
+        delete answers 404, or 422 "Reference does not exist"). Raises on any
+        other answer."""
+        path = f"{self._base}/git/refs/heads/{quote(name, safe='/')}"
+        answer = self._client.request("DELETE", path)
+        message = forge_mod._message_of(answer.data)
+        if answer.status == 204:
+            return True
+        if answer.status == 404 or (answer.status == 422 and _REF_GONE.search(message)):
+            return False
+        raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/git/refs/heads", message)
+
 
 def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
     return QueueFacts(True, _str(entry.get("id")), _int(entry.get("position")),
@@ -1944,8 +2000,15 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # #2070: the owner questions the review said hold the merge, each
         # answer re-read; then the ones it said need not, listed if open.
         held = _unanswered(ctx, verdict.needs_owner)
+        # 2 November 2026: an advisory question -- not blocking, with a
+        # recommended option the branch built, about nothing sensitive
+        # (`owner_questions.hold_reason`) -- no longer holds the merge. It
+        # is merged past, recorded, and stays open for the owner.
+        held, past = _advisory_split(ctx, held)
         if held or verdict.needs_owner_unreadable:
             return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+        if past:
+            summary[ADVISORY_MERGED_PAST_KEY] = past
         # ANSWER-CONTENT-CHECK: answered is not enough; the pick must be
         # the option the asking branch built -- for every answered question
         # that names `built`, held or not (PICK-FIX-ROUND). One it did not
@@ -1955,7 +2018,11 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # blocking one still unanswered holds the merge as `needs_owner` does.
         try:
             asked_by_rounds = _round_questions(ctx, target, opener)
-            unbuilt = _unbuilt_picks(ctx, target, verdict.needs_owner, asked_by_rounds)
+            # A merged-past question is unanswered: no pick to check yet.
+            merged_past = {(q["task_id"], q["question_index"]) for q in past}
+            unbuilt = _unbuilt_picks(ctx, target, tuple(
+                ref for ref in verdict.needs_owner
+                if (ref.task_id, ref.question_index) not in merged_past), asked_by_rounds)
         except InputUnavailable as exc:
             summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
             return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
@@ -2380,7 +2447,7 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
 
     def wait(code: str, rows: list[dict[str, Any]], why: str) -> ActionOutcome:
         summary[UNBUILT_PICKS_KEY] = rows
-        waited = _ci_wait_age(ctx)
+        waited = _ci_wait_age(ctx, pinned)
         if waited is not None:
             return refuse(rows, f"{why}, and the step has waited {int(waited // 60)} min, "
                                 f"past {MERGE_CI_MAX_SECONDS // 3600} h")
@@ -2515,6 +2582,43 @@ def _unanswered(ctx: ActionContext,
     return out
 
 
+def _advisory_split(ctx: ActionContext, held: list[dict[str, Any]]
+                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(still held, merged past)`: the `_unanswered` rows split by `hold_reason`.
+
+    Owner decision, 2 November 2026: advisory questions stop holding merges.
+    Each row's question is read again from its asking task's own validated
+    `questions.json` (`owner_questions.questions_of`), never from the
+    review's copy. FAIL CLOSED: a task that cannot be read, is not a step of
+    this workflow, or holds no such question still holds, as does any
+    question `owner_questions.hold_reason` names a reason for. Nothing is
+    answered here: a merged-past question stays open for the owner.
+    """
+    kept: list[dict[str, Any]] = []
+    past: list[dict[str, Any]] = []
+    asked: dict[str, dict[int, Mapping[str, Any]] | None] = {}
+    for row in held:
+        task_id = row.get("task_id")
+        if isinstance(task_id, str) and task_id not in asked:
+            try:
+                doc = ctx.fetch_upstream(task_id)
+                ours = ctx.workflow_id is not None and doc.get("workflow_id") == ctx.workflow_id
+                asked[task_id] = ({q["question_index"]: q for q in owner_questions_mod.questions_of(
+                    task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id)} if ours else None)
+            except InputUnavailable:
+                asked[task_id] = None
+        question = (asked.get(task_id) or {}).get(row.get("question_index")) \
+            if isinstance(task_id, str) else None
+        if question is None or not owner_questions_mod.merges_past(question):
+            kept.append(row)
+            continue
+        past.append({**row, "question": question.get("question") or row.get("question"),
+                     "recommended": question.get("recommended"),
+                     "built": question.get(owner_questions_mod.BUILT_KEY,
+                                           question.get("recommended"))})
+    return kept, past
+
+
 def _asked_questions(ctx: ActionContext, task_id: str,
                      doc: Mapping[str, Any]) -> dict[int, Any]:
     """`{question_index: question text}` as task `task_id` asked them; {} unreadable."""
@@ -2542,6 +2646,28 @@ def open_questions_lines(rows: list[Mapping[str, Any]]) -> list[str]:
         where = row.get("step_id") or row.get("task_id")
         lines.append(f"- step {where} question {row.get('question_index')} "
                      f"(task {row.get('task_id')}): {text}".replace("```", "ʼʼʼ"))
+    lines.append("```")
+    return lines
+
+
+def advisory_lines(rows: list[Mapping[str, Any]]) -> list[str]:
+    """The comment's section listing the advisory questions this merge went past.
+
+    Untrusted agent text, fenced as `open_questions_lines` fences it. Each
+    names the recommended option the branch builds: an answer picking
+    another one starts a pick-fix round against the default branch.
+    """
+    if not rows:
+        return []
+    lines = ["", "", "Merged past these advisory owner questions, building each one's "
+             "recommended option; they stay open (answer them on their task: another "
+             "pick starts a pick-fix round against the default branch):", "", "```text"]
+    for row in rows:
+        text = " ".join(str(row.get("question") or "").split())
+        where = row.get("step_id") or row.get("task_id")
+        lines.append(f"- step {where} question {row.get('question_index')} "
+                     f"(task {row.get('task_id')}), recommended {row.get('recommended')!r}: "
+                     f"{text}".replace("```", "ʼʼʼ"))
     lines.append("```")
     return lines
 
@@ -2716,6 +2842,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                         train_provenance(ctx, merger, number=number, head=pr.head_sha,
                                          base=default, train=landed.get("train_id")))
                 _close_issues(run, merger, number)
+                _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                    default=default)
                 return _outcome(TaskState.SUCCEEDED, None, summary, "")
             if _queued_by_this_step(own):
                 # The merge queue merged what this step enqueued (C3H): this
@@ -2727,6 +2855,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                         queued_provenance(ctx, merger, number=number, head=pr.head_sha,
                                           base=default))
                 _close_issues(run, merger, number)
+                _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                    default=default)
                 return _outcome(TaskState.SUCCEEDED, None, summary, "")
             # A lost attempt that merged, or another merger after this step's
             # update: the merge stands, and the issues it closes are closed
@@ -2734,6 +2864,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             summary["already_merged"] = True
             summary["merge_commit"] = pr.merge_commit_sha
             _close_issues(run, merger, number)
+            _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                default=default)
             return _outcome(TaskState.SUCCEEDED, None, summary, "")
         return run.refuse("merged_at_other_head",
                           f"pull request #{number} was merged at {pr.head_sha}, not {pinned}")
@@ -2795,7 +2927,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         slot.renew(updates=updates)
 
     def wait(code: str, message: str, pending: list[str]) -> ActionOutcome:
-        waited = _ci_wait_age(ctx)
+        waited = _ci_wait_age(ctx, head)
         if waited is not None:
             return run.refuse("checks_timeout",
                               f"CI has not settled in {int(waited // 60)} min, past "
@@ -2984,6 +3116,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     # answer; each failure is recorded, never raised.
     _record(summary, merger, number, message)
     _close_issues(run, merger, number)
+    _delete_head_branch(summary, merger, pr, head=head, branch=branch, default=default)
     return _outcome(TaskState.SUCCEEDED, None, summary, "")
 
 
@@ -3063,11 +3196,77 @@ def _record(summary: dict[str, Any], merger: ForgeMerger, number: int, message: 
     rows = summary.get("open_questions")
     if isinstance(rows, list) and rows:
         message = message + "\n".join(open_questions_lines(rows))
+    past = summary.get(ADVISORY_MERGED_PAST_KEY)
+    if isinstance(past, list) and past:
+        message = message + "\n".join(advisory_lines(past))
     try:
         summary["recorded_on_pull_request"] = merger.comment(number, message)
     except forge_mod.ForgeError as exc:
         summary["recorded_on_pull_request"] = False
         summary["recorded_on_pull_request_reason"] = str(exc)[:300]
+
+
+#: The merge record's key: whether the pull request's head branch is gone
+#: after the merge (deleted by this step, or already gone).
+BRANCH_DELETED_KEY = "branch_deleted"
+#: The merge record's key: what the step did with the head branch and why
+#: (`_delete_head_branch`). `outcome` "failed" is retried by swarm-api's
+#: hand-off branch sweep (`swarm_api.handoffbranches`) once the workflow ends.
+BRANCH_CLEANUP_KEY = "branch_cleanup"
+#: The prefix of a branch the owner keeps: never deleted.
+KEEP_BRANCH_PREFIX = "keep/"
+
+
+def _delete_head_branch(summary: dict[str, Any], merger: ForgeMerger, pr: PullRequestFacts, *,
+                        head: str | None, branch: str | None, default: str | None) -> None:
+    """After a merge, delete the pull request's head branch under the owner's
+    rule (2026-11-02): only a branch the platform created (the workflow's own
+    `swarm/<task>` branch, in this repository), only while its head is still
+    the merged commit (nothing pushed after the merge), never the default
+    branch, a protected branch, a `keep/` branch or one another open pull
+    request is from. A branch already gone (GitHub's auto-delete) counts as
+    deleted. The merge stands whatever this answers: a failure is recorded
+    as `outcome` "failed", for swarm-api's hand-off branch sweep to retry,
+    never raised."""
+    name = pr.head_ref
+    record: dict[str, Any] = {"branch": name, "head": head}
+    summary[BRANCH_CLEANUP_KEY] = record
+    summary[BRANCH_DELETED_KEY] = False
+
+    def kept(reason: str) -> None:
+        record.update(outcome="kept", reason=reason)
+
+    if name is None or branch is None or name != branch:
+        return kept("not_platform_branch")
+    if pr.head_repo is None or pr.head_repo.lower() != (pr.base_repo or "").lower():
+        return kept("not_platform_branch")
+    if name == default or name.startswith(KEEP_BRANCH_PREFIX):
+        return kept("kept_branch")
+    if head is None:
+        return kept("head_unknown")
+    try:
+        facts = merger.branch_facts(name)
+        if facts is None:
+            summary[BRANCH_DELETED_KEY] = True
+            record["outcome"] = "already_deleted"
+            return None
+        if facts.protected:
+            return kept("protected")
+        if facts.sha != head:
+            record["branch_head"] = facts.sha
+            return kept("head_moved")
+        if merger.open_pulls_from(name) > 0:
+            return kept("open_pull_request")
+        deleted = merger.delete_branch(name)
+    except forge_mod.ForgeError as exc:
+        record.update(outcome="failed", reason=str(exc)[:300])
+        return None
+    except Exception as exc:  # noqa: BLE001 - the merge stands; the type is enough
+        record.update(outcome="failed", reason=type(exc).__name__)
+        return None
+    summary[BRANCH_DELETED_KEY] = True
+    record["outcome"] = "deleted" if deleted else "already_deleted"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -4009,7 +4208,7 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
                           "fix round can push to it")
 
     def wait(code: str, why: str) -> ActionOutcome:
-        waited = _ci_wait_age(run.ctx)
+        waited = _ci_wait_age(run.ctx, head)
         if waited is not None:
             return run.refuse("merge_conflict",
                               f"{message}; {why}, and the step has waited {int(waited // 60)} "
@@ -4241,28 +4440,59 @@ def _await_workflow_patch(run: _Run, message: str, task_id: str, refused: Mappin
                 "step reads the pull request again once its head moves", [])
 
 
-def _ci_wait_age(ctx: ActionContext) -> float | None:
-    """Seconds since this step first parked for CI, when past MERGE_CI_MAX_SECONDS.
+def _ci_wait_age(ctx: ActionContext, head: str) -> float | None:
+    """Seconds this step has waited for CI at `head`, when past MERGE_CI_MAX_SECONDS.
 
     `merge_wait.first_parked_at` on the step's own document, written by the
-    fenced park (`control.ControlPlane.park_ci_pending`). The document is
+    fenced park (`control.ControlPlane.park_ci_pending`, or swarm-api's
+    `attemptstate` CI park on the state routes). The document is
     tenant-writable, so a forged instant can at worst end the step early as a
     refusal, which changes nothing on the forge; an unreadable one waits on,
     and `max_attempts` still bounds the wakes.
+
+    THE INSTANT IS READ IN EITHER SHAPE (#3033). Direct Firestore hands back
+    a datetime; a tenant on the state routes reads its own document through
+    `GET state/upstream`, which serves it as JSON (`attemptstate.jsonable`),
+    so the same instant arrives as an ISO string. Reading only the datetime
+    returned None on every wake of an `eng` merge step (dev's
+    `state_via_api_tenants`): task_5c00c810495e4f949212 parked 56 times at
+    one head over 13 hours and the 6 h limit never fired.
+
+    THE CLOCK IS THIS HEAD'S. A record left at another head is a wait that
+    ended (a fix round or a branch update moved the head), so the wait about
+    to park at `head` starts afresh and reads no age; a record naming no head
+    is read as this head's. A clock paused by a
+    merge-slot or merge-train wait (`ci_paused_at`) counts only to the pause:
+    a queue for the slot is not CI time.
     """
     try:
         doc = ctx.fetch_upstream(ctx.task_id)
     except Exception:  # noqa: BLE001 - an unreadable record is no timeout
         return None
     wait = _mapping(_mapping(_mapping(doc).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
-    first = wait.get("first_parked_at")
-    if not isinstance(first, datetime):
+    recorded = wait.get("head")
+    if recorded and recorded != head:
         return None
-    try:
-        waited = (utcnow() - first).total_seconds()
-    except TypeError:  # a naive instant: not one the park wrote
+    first = _stored_instant(wait.get("first_parked_at"))
+    if first is None:
         return None
+    paused = _stored_instant(wait.get("ci_paused_at"))
+    waited = ((paused if paused is not None else utcnow()) - first).total_seconds()
     return waited if waited > MERGE_CI_MAX_SECONDS else None
+
+
+def _stored_instant(value: Any) -> datetime | None:
+    """An aware instant from a task document: a datetime as Firestore hands it
+    back, or the ISO string the state routes serve. Anything else -- naive,
+    unparseable, absent -- is None: not one a park wrote."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        return None
+    return value
 
 
 def _close_issues(run: _Run, merger: ForgeMerger, number: int) -> None:

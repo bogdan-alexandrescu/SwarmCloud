@@ -271,9 +271,12 @@ REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
 REQUIREMENTS_CHECK_STEP = "requirements-check"
 #: The cheap class: confirming a list against a diff needs no Opus.
 REQUIREMENTS_CHECK_MODEL_CLASS = "sonnet"
-#: Its cap. No profile field caps turns (a contract request on the pull
-#: request that built this); the step's own timeout is the cap it has.
+#: Its time cap.
 REQUIREMENTS_CHECK_TIMEOUT_SECONDS = 900
+#: Its turn cap, a field of the step (contract request 133, accepted by the
+#: owner 2 November 2026): the claude-code runner passes it as
+#: `--max-turns`, so the agent stops at it instead of being asked to.
+REQUIREMENTS_CHECK_MAX_TURNS = 30
 def _check_class(class_models: Mapping[str, str] | None) -> dict[str, Any]:
     """`{"model_class": "sonnet"}` where this deployment pins it, else nothing.
 
@@ -308,6 +311,7 @@ def _requirements_check(
         "runner_profile": STEP_PROFILE,
         **_check_class(class_models),
         "timeout_seconds": REQUIREMENTS_CHECK_TIMEOUT_SECONDS,
+        "max_turns": REQUIREMENTS_CHECK_MAX_TURNS,
         # Read-only: it changes nothing, and no integrator merges it.
         "allow_empty_diff": True,
         "metadata": metadata,
@@ -320,7 +324,7 @@ def _requirements_check(
                 f"Confirm, for GitHub issue {ref.short}, whether the change on this branch "
                 "delivers each requirement of the approved plan. This is a requirements "
                 "check, not a review: do not judge the code, do not write a verdict, do not "
-                "edit, commit or push anything, and use at most 30 turns. Read the issue "
+                "edit, commit or push anything. Read the issue "
                 f"file and the diff ({staged}; the whole change is this branch against the "
                 "default branch).\n\n"
                 "The issue's requirements, as the approved plan lists them:\n"

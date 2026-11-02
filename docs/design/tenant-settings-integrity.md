@@ -725,6 +725,40 @@ do not change.
 | another tenant's worker names this attempt | `401`: its token's email is not `worker_service_account_id(this tenant)`. |
 | a worker on the old path after the role is removed | `PermissionDenied` on its first read; the attempt fails retryably. Phase 3 removes the role only after `STATE_VIA_API_TENANTS` covers every tenant. |
 
+**Why a bare 404 is an outage, and a named one is not (#3041).** On
+2026-11-02 a running agent failed about 80 seconds into its run on
+`swarm-api refused the state call (404 http_404):` while a release rolled
+out. No state route changed in that window: the worker had called the same
+routes since 2026-10-23, and every swarm-api revision served them. The
+`http_404` code is what the worker's transport names a 404 whose body has no
+`code`, and every refusal swarm-api's handlers raise carries one, so that
+answer did not come from a state route: it came from the router's generic
+not-found or from in front of the service while a revision rolled out, and
+swarm-api's request log holds no line for it. `statecall.StateCall` now
+retries that answer, with the same bytes and the same backoff, inside the
+call's own budget, and raises the outage the lifecycle already reads once
+the budget is spent. A 404 swarm-api answers with a code stays final, and a
+`409 attempt_fenced` still ends the attempt without touching the lease
+(invariant 5). The worker's route list is held to swarm-api's router in
+`tests/unit/worker/test_statecall.py`, so a commit cannot ship a worker call
+without the route that serves it.
+
+**One release rolls swarm-api before the scheduler (owner's pick, #3041).**
+Every Cloud Run service used to roll in parallel from one `for_each`, so a
+release that added a state route and its first worker call in one commit
+could have the scheduler, whose `WORKER_IMAGE_REFS` picks every new
+dispatch's image, hand a worker the new image while the serving swarm-api
+revision still lacked the route. `terraform/infra/main.tf` now creates
+swarm-api in its own call of the module, `module.cloud_run_api`, and
+`module.cloud_run` (every other service) `depends_on` it: one apply of the
+one reviewed plan waits for swarm-api's new revision to be Ready before it
+touches the scheduler. The service carries over by one `moved` block
+(`terraform/infra/cloud_run_api_moved.tf`), so the release that ships this
+updates it in place rather than recreating it; swarm-api's run.invoker
+grants stay in `module.cloud_run` (`invokers_elsewhere`) at the addresses
+they always had, because their keys are per tenant and no `moved` block can
+list them. The bare-404 retry above still covers a revision's own rollout.
+
 ### 4.8 What this does not do
 
 * **It does not make the agent unable to act as its own attempt** if

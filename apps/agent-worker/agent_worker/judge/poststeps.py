@@ -17,7 +17,10 @@ last turn and before its result is written, over what the agent wrote into
     Jev never decides; it can only make a person look.
   Written to `PLAN_ADVISORY_FILE` beside `plan.json`; `plan.json` itself is
   never touched.
-* REVIEWER (`review_post_step`), over `verdict.json`:
+* REVIEWER (`review_post_step`), over the `verdict.json` the step wrote into
+  its artifacts -- a review's, or a re-review's own (never the earlier
+  verdict a re-review stages: `contextpack.tasktype.classify` types a step
+  that owes its own verdict a review, and a fix that only stages one a fix):
   * J3, finding triage: one `noul` per finding, "is this a real defect in
     this diff, as stated?", with the code around the finding's line and the
     patch's hunk for its file. The answers go onto the findings as `p_real`
