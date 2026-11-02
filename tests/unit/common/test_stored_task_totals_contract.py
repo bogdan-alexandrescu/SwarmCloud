@@ -43,7 +43,8 @@ def test_the_two_fields_default_to_none_and_come_last():
     names = [f.name for f in fields(Task)]
     # MUTATION: insert them before `platform_refusals`, so a positional
     # construction of a task changes meaning.
-    assert names[-2:] == ["attempt_totals", "current_account"]
+    # Contract request 133 appended `max_turns` after them, 2 November 2026.
+    assert names[-3:] == ["attempt_totals", "current_account", "max_turns"]
     defaults = {f.name: f.default for f in fields(Task)}
     assert defaults["attempt_totals"] is None and defaults["current_account"] is None
 

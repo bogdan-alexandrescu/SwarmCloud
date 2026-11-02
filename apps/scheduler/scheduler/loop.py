@@ -315,6 +315,37 @@ def accounts_held_by(db: Any, task_id: str) -> set[str]:
     return held
 
 
+def holds_released_since(db: Any, after: datetime, limit: int) -> list[dict[str, Any]]:
+    """The hold records closed after `after`, oldest release first (#3042).
+
+    EVERY RELEASE PASSES HERE. The broker closes `account_holds/{assignment_id}`
+    with `released_at` whatever ended the hold: a worker's release at any exit
+    (an end, a park, a retry, a crash's `finally`), a swap, or an account
+    removed. (A lapsed hold the sweep reclaims is closed at its own deadline,
+    which can be before the last pass's cursor; `choose()` stopped counting it
+    at that deadline, and the parks behind it wake at their own instant.)
+    A worker rings
+    `task_finished` only when it ENDS its task, so the finish event alone
+    never saw an account an attempt gave back when it parked or failed back
+    to READY. A range and an order on the one field: the built-in
+    single-field index serves it.
+
+    Each item carries the record's id as `assignment_id`.
+    """
+    query = (
+        db.collection(HOLD_LOG_COLLECTION)
+        .where(filter=FieldFilter("released_at", ">", after))
+        .order_by("released_at")
+        .limit(limit)
+    )
+    out: list[dict[str, Any]] = []
+    for snap in query.stream():
+        data = dict(snap.to_dict() or {})
+        data["assignment_id"] = snap.id
+        out.append(data)
+    return out
+
+
 def owner_wait(task: Task, key: str) -> bool:
     """Whether the worker's park carries an agent's `release_wait` or `question_wait` (AU-7).
 
@@ -370,6 +401,44 @@ def account_park_provider(task: Task) -> str | None:
     return None
 
 
+def account_park_reason(task: Task) -> str | None:
+    """The broker's reason a no-account park recorded (`account_pool_reason`), or None."""
+    for block in task.blocked_by or ():
+        if isinstance(block, dict) and block.get("park_phase") == "account_assign":
+            reason = block.get("account_pool_reason")
+            return reason if isinstance(reason, str) and reason else None
+    return None
+
+
+#: The pool's own reasons, which an account coming free can answer (#3042):
+#: every account full, a reading too old, every window spent. NEVER
+#: `pool_paused` (every account paused, draining or signed out: a person
+#: acts), nor `broker_refused` or `account_unreadable` (an administrator
+#: fixes a grant), nor a broker that did not answer: a release changes none
+#: of those, and waking them would start a container to park again.
+ACCOUNT_WAKE_REASONS = frozenset({
+    Unavailable.ACCOUNTS_FULL.value,
+    Unavailable.NO_RECENT_READING.value,
+    Unavailable.NO_ACCOUNT_AVAILABLE.value,
+})
+
+#: How far back the first pass of a scheduler process reads released holds.
+#: The parks a release can wake fall back at five minutes
+#: (`POOL_RECHECK_SECONDS`), so a release older than that has nothing left to
+#: wake that the fallback has not already woken.
+RELEASE_LOOKBACK_SECONDS = 300
+
+#: How many parks one wake reads, in pages of `dependency_sweep_size`, to
+#: wake the OLDEST first. The store pages in document-id order, which says
+#: nothing about age, so a wake reads every pool park up to this many pages
+#: and sorts them; past it, the oldest of what it read.
+ACCOUNT_WAKE_MAX_PAGES = 5
+
+#: How many hold records and finished tasks a scheduler process remembers as
+#: already spent on a wake, so the next pass does not count one release twice.
+WOKEN_MEMORY = 2000
+
+
 #: Park reasons that a provider pool's `quota_derived_limit` already guards, so
 #: promoting them early is safe: admission still refuses until quota returns.
 PREWARM_REASONS = (
@@ -382,8 +451,8 @@ PREWARM_REASONS = (
 #: again, when what holds it clears with no instant (#2222): a slot freeing
 #: on a full account, or the broker's next usage poll. The worker parks the
 #: same two waits for the same five minutes
-#: (`agent_worker.lifecycle.STALE_READING_RETRY_SECONDS`), and the finish
-#: event wakes these parks sooner when an account comes free.
+#: (`agent_worker.lifecycle.STALE_READING_RETRY_SECONDS`), and a released
+#: account wakes these parks sooner, within one pass (`_wake_on_releases`).
 POOL_RECHECK_SECONDS = 300
 
 #: The same, for a pool waiting on a person (every account paused, draining
@@ -703,9 +772,10 @@ class DrainReport:
     #: CI_PENDING parks returned to READY: swarm-api's wake tick marked their
     #: checks settled, or their fallback instant passed (lane MS2).
     promoted_ci_waits: int = 0
-    #: PROVIDER_QUOTA_EXHAUSTED parks at `account_assign` returned to READY by
-    #: a finish event, because an account the finished task held serves their
-    #: tenant and `choose()` now has one for them (#1885).
+    #: PROVIDER_QUOTA_EXHAUSTED parks at `account_assign` returned to READY
+    #: because an account was released -- by the finished task (#1885), or by
+    #: any attempt since the last pass (#3042) -- that serves their tenant, and
+    #: `choose()` now has one for them.
     promoted_account_waits: int = 0
     #: Tasks the account pool held back (#2222): parked by admission BEFORE a
     #: lease because no account the worker would be offered can take a new
@@ -800,11 +870,16 @@ class Scheduler:
         # capacity and runs to completion (docs/workflows.md says so).
         self._workflow_verdicts: dict[tuple[str, str], FailedWorkflow | None] = {}
         # Where each paged park sweep resumes (`_parked_window`), keyed by
-        # (sweep, reason): the account wake and the prewarm both read
-        # PROVIDER_QUOTA_EXHAUSTED, and one cursor between them would hand each
-        # only every other page. Kept across drains on purpose: that is what
-        # moves the window.
+        # (sweep, reason): two sweeps reading one reason would hand each only
+        # every other page through one cursor. Kept across drains on purpose:
+        # that is what moves the window.
         self._park_cursors: dict[tuple[str, ParkReason], str | None] = {}
+        # The account wake on release (#3042), kept across runs: the instant
+        # of the last released hold a pass read, and the hold records and
+        # finished tasks already spent on a wake, oldest first, so a release
+        # the finish event spent is not counted again by the pass after it.
+        self._release_cursor: datetime | None = None
+        self._woken_for: dict[str, None] = {}
         self._swept_workflows: set[tuple[str, str]] = set()
         # Tasks this run ended itself (`_note_ended`), whose dependants it
         # resolves before it returns (`_release_ended`, #636). Per run.
@@ -887,6 +962,9 @@ class Scheduler:
             report.children_cascaded += self._sweep_child_cascade(report)
         except Exception:
             log.exception("child-task sweeps failed this drain; admission continues")
+        # Before the prewarm: a park an account was released for wakes on the
+        # release, and the prewarm's own window is left for the rest (#3042).
+        report.promoted_account_waits = len(self._wake_on_releases(report))
         if self._settings.enable_prewarm:
             report.promoted_prewarm = self._prewarm(report)
         # The sweeps above run AFTER `_promote_dependencies`, so what they
@@ -1046,6 +1124,8 @@ class Scheduler:
         report.promoted_dependencies = len(released)
         # The account the parent held is free now, too (#1885).
         woken = self._wake_account_parks(parent, report)
+        # And any other account given back since the last pass (#3042).
+        woken += self._wake_on_releases(report)
         report.promoted_account_waits = len(woken)
         released = released + woken
 
@@ -1069,49 +1149,157 @@ class Scheduler:
         `next_eligible_at`, the broker's instant -- the prewarm sweep is the
         one place such a park returns to READY -- and nothing happened when an
         account came free. So this runs on the finish event: the accounts the
-        ended task held (`accounts_held_by`), the tenants each serves (its
-        owner and the tenants it is lent to, `Account.may_serve`), and every
-        PROVIDER_QUOTA_EXHAUSTED park at `account_assign` of one of those
-        tenants, for that account's provider.
-
-        GATED ON THE BROKER'S OWN `choose()`, over the pool admission reads
-        this run and the parked step's model class (`task_model_class`, the
-        rule the broker's `step_class_for` applies). Promoting unconditionally
-        would start a container per parked task per finish, each to park
-        again. Promoting only when an account would be handed over costs a
-        container only when one runs.
-
-        AND EACH PROMOTION TAKES ITS SLOT (#2222). The list is read once, so
-        before this one freed slot answered yes for every park in turn and
-        woke them all. Each promotion now `claim`s the account `choose()`
-        named, so the next park is asked about one slot fewer, and a finish
-        wakes at most as many parks as there are free slots, in the order the
-        store returns them.
-
-        Invariant 1 holds: a park this leaves alone holds nothing, a park it
-        promotes becomes READY, which holds nothing either, and only the
-        admission pass that follows takes a lease, through the ordinary
-        all-or-nothing transaction. A tenant no freed account serves is never
-        looked at.
+        ended task held (`accounts_held_by`), and `_wake_for_accounts` over
+        them, up to the pool's free slots. The pass after it reads the same
+        releases from `account_holds` (`_wake_on_releases`); the ended task is
+        remembered so that pass does not spend them a second time.
         """
         if not self._pool.configured:
             return []
         held = accounts_held_by(self._store.db, ended.id)
         if not held:
             return []
+        self._remember_woken(f"task:{ended.id}")
+        return self._wake_for_accounts(
+            {account_id: 1 for account_id in held},
+            report,
+            cause={"finished_task_id": ended.id},
+        )
+
+    def _wake_on_releases(self, report: DrainReport) -> list[str]:
+        """Wake the pool parks the accounts released since the last pass can serve (#3042).
+
+        THE ONE PLACE EVERY RELEASE PASSES is the broker's hold record
+        (`holds_released_since`). The finish event saw only the accounts of a
+        task that ENDED: an attempt that parked -- on a 429, for a person, on
+        a merge or CI wait -- or failed back to READY gave its account back
+        and rang nothing, and a step parked on the full pool behind it waited
+        for its own five-minute instant, or the prewarm sweep two minutes
+        before it. Now every scheduler pass (the safety tick and every push)
+        reads the records closed since the last one, so a park wakes within
+        one pass of the release.
+
+        A record the finish event already spent -- its task's, or the same
+        record -- is skipped (`_woken_for`), so one release triggers one
+        wake, which promotes as many parks as the pool has free slots
+        (`_wake_for_accounts`). The first pass of a process reads back
+        `RELEASE_LOOKBACK_SECONDS`; a second scheduler instance reading the
+        same release can wake one park more, whose worker asks the broker
+        and parks again: a container, not a double lease, because the lease
+        is still the all-or-nothing admission transaction.
+
+        Never raises: a read that fails leaves the cursor where it was, and
+        the parks wake at their own instant as before this existed.
+        """
+        if not self._pool.configured:
+            return []
+        now = self._now()
+        after = self._release_cursor or now - timedelta(seconds=RELEASE_LOOKBACK_SECONDS)
+        try:
+            records = holds_released_since(
+                self._store.db, after, self._settings.dependency_sweep_size
+            )
+        except Exception:
+            log.exception("reading released account holds failed; pool parks wake at their instant")
+            return []
+        freed: dict[str, int] = {}
+        for record in records:
+            released_at = _instant(record.get("released_at"))
+            if released_at is not None and released_at > after:
+                after = released_at
+            key = f"hold:{record.get('assignment_id')}"
+            task_key = f"task:{record.get('task_id')}"
+            if key in self._woken_for or task_key in self._woken_for:
+                continue
+            self._remember_woken(key)
+            account_id = record.get("account_id")
+            if isinstance(account_id, str) and account_id:
+                freed[account_id] = freed.get(account_id, 0) + 1
+        self._release_cursor = after
+        if not freed:
+            return []
+        return self._wake_for_accounts(freed, report, cause={"released_holds": sum(freed.values())})
+
+    def _remember_woken(self, key: str) -> None:
+        self._woken_for[key] = None
+        while len(self._woken_for) > WOKEN_MEMORY:
+            self._woken_for.pop(next(iter(self._woken_for)))
+
+    def _pool_parks_oldest_first(self) -> list[Task]:
+        """The PROVIDER_QUOTA_EXHAUSTED parks at `account_assign`, longest parked first.
+
+        Read from the top in pages (`ACCOUNT_WAKE_MAX_PAGES` at most) and
+        sorted by when each was parked (`updated_at`, the park's own write;
+        nothing writes a parked task until it is promoted), then by when it
+        was submitted: a freed slot goes to the step that has waited longest.
+        """
+        size = self._settings.dependency_sweep_size
+        parks: list[Task] = []
+        after: str | None = None
+        for _ in range(ACCOUNT_WAKE_MAX_PAGES):
+            page = self._store.parked_page(ParkReason.PROVIDER_QUOTA_EXHAUSTED, size, after)
+            parks.extend(task for task in page if account_park_provider(task))
+            if len(page) < size:
+                break
+            after = page[-1].id
+        floor = datetime.min.replace(tzinfo=timezone.utc)
+        return sorted(
+            parks,
+            key=lambda t: (t.updated_at or floor, t.created_at or floor, t.id),
+        )
+
+    def _wake_for_accounts(
+        self, freed: dict[str, int], report: DrainReport, *, cause: dict[str, Any]
+    ) -> list[str]:
+        """Promote the oldest pool parks the `freed` accounts serve, up to the pool's free slots.
+
+        `freed` is account id -> holds released. The tenants each serves are
+        its owner and the tenants it is lent to (`Account.may_serve`); a park
+        of any other tenant, or for another provider, is never looked at, so
+        another workspace's release wakes nothing here. Only a park whose
+        recorded reason is the pool's own (`ACCOUNT_WAKE_REASONS`) is woken:
+        a pool paused, or a grant to fix, waits on a person.
+
+        GATED ON THE BROKER'S OWN `choose()`, over the pool admission reads
+        this run and the parked step's model class (`task_model_class`, the
+        rule the broker's `step_class_for` applies). Promoting unconditionally
+        would start a container per parked task per release, each to park
+        again. Promoting only when an account would be handed over costs a
+        container only when one runs.
+
+        AS MANY PARKS AS THE POOL HAS FREE SLOTS (the #2222 rule; BGD's pick
+        on PR #3044, "free slots only"): a release is the trigger, not the
+        count. Each promotion `claim`s the account `choose()` named (#2222),
+        so the next park is asked about one slot fewer, and a wake never
+        promotes more parks than the readings show room for. A slot that was
+        free before the release (an administrator raised `max_agents`, a
+        first reading arrived) is used at the next release rather than at
+        the park's own instant.
+
+        Invariant 1 holds: a park this leaves alone holds nothing, a park it
+        promotes becomes READY, which holds nothing either, and only the
+        admission pass that follows takes a lease, through the ordinary
+        all-or-nothing transaction (invariant 2). The promotion is the
+        guarded PARKED -> READY write on the park as read, so a park the
+        prewarm sweep, a person or another wake moved first is not written
+        twice, and the lease admission takes carries a new fencing
+        generation as every lease does (invariant 5).
+        """
         pool = self._pool.accounts()
         served: set[tuple[str, str]] = set()
         for account in pool:
-            if account.account_id in held:
+            if account.account_id in freed:
                 for tenant_id in (account.owner_tenant, *account.lend_to):
                     served.add((tenant_id, account.provider))
         if not served:
             return []
         now = self._now()
         woken: list[str] = []
-        for task in self._parked_window(ParkReason.PROVIDER_QUOTA_EXHAUSTED, sweep="account_wake"):
+        for task in self._pool_parks_oldest_first():
             provider = account_park_provider(task)
             if provider is None or (task.tenant_id, provider) not in served:
+                continue
+            if account_park_reason(task) not in ACCOUNT_WAKE_REASONS:
                 continue
             if self._stop_for_failed_workflow(task, report):
                 continue
@@ -1131,7 +1319,8 @@ class Scheduler:
                 detail={
                     "reason": "account_freed",
                     "park_reason": ParkReason.PROVIDER_QUOTA_EXHAUSTED.value,
-                    "finished_task_id": ended.id,
+                    "account_pool_reason": account_park_reason(task),
+                    **cause,
                     "was_eligible_at": (
                         task.next_eligible_at.isoformat() if task.next_eligible_at else None
                     ),

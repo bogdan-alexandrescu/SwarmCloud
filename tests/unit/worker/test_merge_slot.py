@@ -643,7 +643,10 @@ def test_a_parked_waiter_holds_no_capacity(db, worker_factory, monkeypatch, no_r
     wait = task["metadata"]["merge_wait"]
     assert wait["code"] == mergeslot.MERGE_SLOT_WAIT
     assert wait["slot_waits"] == 1 and wait["wakes"] == 3, "a slot wait spent a CI wake"
-    assert wait["first_parked_at"] is None, "a slot wait ran the CI clock"
+    # Paused, not cleared (#3033): the CI wait it follows keeps its start, and
+    # `ci_paused_at` stops the clock for as long as the step queues.
+    assert wait["first_parked_at"] == T0, "a slot wait restarted the CI clock"
+    assert isinstance(wait["ci_paused_at"], datetime), "a slot wait ran the CI clock"
     parked = [e for e in db.events("task_1") if e["type"] == EventType.PARKED.value]
     assert parked[-1]["detail"]["code"] == mergeslot.MERGE_SLOT_WAIT
     waiters = db.doc(f"{mergeslot.MERGE_SLOTS_COLLECTION}/{slot}")["waiters"]

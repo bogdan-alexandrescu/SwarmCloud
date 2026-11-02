@@ -73,7 +73,7 @@ output "image_refs" {
 
 output "service_images" {
   description = "Cloud Run service -> the image its template names, read off the planned resource. Every value is a digest."
-  value       = module.cloud_run.images
+  value       = merge(module.cloud_run_api.images, module.cloud_run.images)
 }
 
 output "job_images" {
@@ -117,7 +117,7 @@ output "tenant_secret_ids" {
 # --- compute ---------------------------------------------------------------
 
 output "service_urls" {
-  value = module.cloud_run.service_urls
+  value = merge(module.cloud_run_api.service_urls, module.cloud_run.service_urls)
 }
 
 output "job_names" {

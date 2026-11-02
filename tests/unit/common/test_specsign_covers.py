@@ -280,6 +280,8 @@ _DOCS_BY_FORMAT: dict[int, dict[str, Any]] = {
     5: {**_DOC, "model_class": "sonnet"},
     # Contract request 120 (#2459): the resolved budget.
     6: {**_DOC, "budget": {"usd": 1.0}},
+    # Contract request 133: the resolved turn cap.
+    7: {**_DOC, "max_turns": 30},
 }
 
 

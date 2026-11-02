@@ -419,6 +419,25 @@ without one is promoted only once its `next_eligible_at` has passed, and a park
 with no `next_eligible_at` at all is left where it is. See section 4 for why a
 tenant that runs on a pool account usually has no such pool.
 
+**A released account wakes the agents parked on a full pool** (#3042). An agent
+that found no free pool account parks for up to five minutes, because no clock
+says when another agent will give an account back. Every release closes the
+broker's hold record in `account_holds` with `released_at`, whether the agent
+that let go ended, parked or failed back to `READY`. Each scheduler
+pass (the one-minute tick and every wake) reads the records closed since the
+last pass (`apps/scheduler/scheduler/loop.py::Scheduler._wake_on_releases`). It
+returns to `READY` the oldest parks of the tenants the freed account serves,
+for its provider, as many as the pool has free slots (each one claims the
+account it would get, so the next is asked about one slot fewer), and only
+when the broker's own `choose()` would hand that agent an account. The finish event does the same for
+the account of an agent that ended. Only the pool's own reasons wake this way:
+`accounts_full`, `no_recent_reading` and `no_account_available`. A paused pool,
+or a grant an administrator has to fix, waits for a person. The wake changes
+eligibility only: the admission pass that follows reserves capacity in its one
+all-or-nothing transaction, as it does for any `READY` agent. So the wait after
+a release is now one scheduler pass, at most the one-minute tick, where it was
+up to five minutes (or three, when the prewarm sweep reached the park first).
+
 ---
 
 ## 6. Operating it
