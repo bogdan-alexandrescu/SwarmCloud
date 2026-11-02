@@ -12,6 +12,14 @@
     GET    /v1/voice/preferences              -> {preferences, revision, can_undo, previous}
     PATCH  /v1/voice/preferences              {changes, revision?} -> the same, plus changed
     POST   /v1/voice/preferences/undo         {revision?} -> the same
+    GET    /v1/voice/sessions/{session_id}/ledger
+        -> {session_id, date, time_zone, session, day, not_counted}
+
+THE LEDGER (§3.8; swarm_api/voice/ledger.py) is computed on every read from
+the session's seconds, its turns' usage and what Voice it started, against
+$100 for the session and $300 for the person's day in their saved time zone.
+The same who-guard and workspace: another tenant's session, or another
+person's, is the same 404 as a missing one. It needs no swarm-voice.
 
 PROJECTS AND PREFERENCES (§3.7, §3.11, §10 phase 2; swarm_api/voice/store.py
 and voice/preferences.py). The same who-guard and the same workspace: a
@@ -39,8 +47,12 @@ tenant-scoped route declares; the person is the verified email, never a
 field of the body.
 
 ORDER. Who first (403), then whether swarm-voice is deployed (503
-`voice_unavailable`, nothing written), then the transaction that refuses a
-second live session (409 `conflict`), then swarm-voice. The
+`voice_unavailable`, nothing written), then the person's stored ChatGPT
+sign-in (403 `forbidden` naming Voice it › Preferences, nothing written or
+sent: `ChatGPTSignIn.stored_version`, voice/signin.py, whose version
+reference alone is what swarm-voice is sent as `credential`), then the
+transaction that refuses a second live session (409 `conflict`), then
+swarm-voice. The
 browser's offer goes to swarm-voice unchanged and its answer comes back
 unchanged; neither is logged or stored.
 
@@ -59,9 +71,15 @@ from starlette.concurrency import run_in_threadpool
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ValidationFailed
+from .profile import preferences_store
+from ..preferences import Preferences
+from ..voice import ledger as vledger
 from ..voice import preferences as vprefs
 from ..voice import sessions as vs
+from ..voice import signin as vsi
 from ..voice import store as vstore
+from ..workspace_secrets import SecretWriter
+from .workspace_secrets import secret_writer
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
@@ -99,7 +117,13 @@ def _service(ctx: AppContext, client: Any) -> vs.VoiceSessions:
         raise vs.unavailable()
     return vs.VoiceSessions(ctx.db, client,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
-                            now=ctx.now)
+                            project=str(ctx.settings.project_id or ""), now=ctx.now)
+
+
+def _stored_sign_in(ctx: AppContext, writer: SecretWriter, person: str) -> str | None:
+    """The version reference of the person's own stored ChatGPT sign-in. Only the
+    provider-keys record is read: the writer and token endpoint are never called."""
+    return vsi.ChatGPTSignIn(ctx.db, writer, vsi.HttpTokenEndpoint(), now=ctx.now).stored_version(person)
 
 
 def _check_id(value: str, prefix: str, what: str) -> None:
@@ -114,15 +138,20 @@ async def start_session(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
     client: Any = Depends(voice_client),
+    writer: SecretWriter = Depends(secret_writer),
 ) -> dict:
     service = _service(ctx, client)
     if not body.offer_sdp.startswith("v=0"):
         raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
     if body.project_id is not None:
         _check_id(body.project_id, "vp_", "project_id")
-    return await run_in_threadpool(
-        service.start, tenant_id=tenant_id, person=person, offer=body.offer_sdp,
-        project_id=body.project_id)
+
+    def _start() -> dict:
+        return service.start(tenant_id=tenant_id, person=person, offer=body.offer_sdp,
+                             project_id=body.project_id,
+                             credential=_stored_sign_in(ctx, writer, person))
+
+    return await run_in_threadpool(_start)
 
 
 @router.post("/sessions/{session_id}/end")
@@ -271,3 +300,31 @@ async def undo_preferences(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     return await run_in_threadpool(_preferences(ctx).undo, person, revision=body.revision)
+
+
+# --------------------------------------------------------------------------
+# The ledger (§3.8, §10 phase 3)
+# --------------------------------------------------------------------------
+
+
+def _ledger(ctx: AppContext, prefs: Preferences, request: Request) -> vledger.VoiceLedger:
+    return vledger.VoiceLedger(
+        ctx.db, now=ctx.now,
+        prices=lambda: ctx.store.get_platform_settings()["model_prices"],
+        time_zone=lambda email: prefs.read(email).time_zone,
+        work=getattr(request.app.state, "voice_work", None))
+
+
+@router.get("/sessions/{session_id}/ledger")
+async def read_ledger(
+    session_id: str,
+    request: Request,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    prefs: Preferences = Depends(preferences_store),
+) -> dict:
+    _check_id(session_id, "vs_", "session_id")
+    return await run_in_threadpool(
+        _ledger(ctx, prefs, request).compute, tenant_id=tenant_id, person=person,
+        session_id=session_id)

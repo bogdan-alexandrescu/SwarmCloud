@@ -42,6 +42,44 @@ outside the workflow finishes on its own -- the third and fourth sections below.
 plain continuation of the lane is live on the same branch -- the first section
 below.**
 
+## Revised 2026-11-02: advisory owner questions do not hold a merge (part of #2688)
+
+The owner chose on 2 November 2026 that advisory questions stop holding
+merges: over the 14 days before, 251 hours of finished merges sat parked on
+"Waiting for answers to N owner question before merging" for questions the
+asking agent had marked non-blocking (71 holds, 86 hours of them ending only in
+a cancellation). The merge step now goes ahead past an unanswered `needs_owner`
+question that is not blocking, has a `recommended` option, and whose branch
+built that option (its `built` is the recommended label or null; a question
+with no `built` is read as the recommended option built, which agents are told
+to do). It still holds for a blocking question, a question with no recommended
+option, one whose branch built another option, one it cannot read, and any
+question whose text, context or options touch IAM, secrets or credentials,
+tenant isolation, the frozen contract, cost or quota limits, or workflow files
+(`agent_worker.owner_questions.hold_reason`, a deliberately broad keyword
+match: a false hold costs an answer, a false pass merges the owner's decision).
+Why each still holds: those are the decisions CLAUDE.md reserves to the owner.
+A merge that goes past such questions lists them in
+`result_summary.advisory_merged_past` and in the comment that records the
+merge; nothing answers them, and they stay open on the agent that asked them. When the owner
+later answers one with a pick other than what the branch built, the answer
+route (`swarm_api.agent_questions.answer_question`) claims it on the merge's
+`metadata.advisory_pick_fix`, in the answer's own transaction, and submits a
+pick-fix round as the answering member: a full lane from the default branch
+(the pull request is merged, so there is no branch to continue) that builds
+the pick, reports `picks-built.json` and opens its own pull request
+(`mergewake.advisory_pick_fix_round`). The owner picked on 2 November 2026
+that the round is merged by its own review and merge steps rather than left
+open for a person: it is an `integrate` workflow, pick-fix -> review -> fix
+gated on NOT_YET, with `metadata.merge` `"on_merge_verdict"`, so submission
+appends the re-review and the merge step and it merges only on a MERGE
+verdict, as any lane does. Why: a pick the owner already made is not a
+decision a person must make again at the merge, and the review still gates
+it; a second NOT_YET after the one fix leaves the pull request open for a
+person (`REREVIEW_ROUNDS`). The recommended pick,
+or the same pick answered again, starts nothing. Fencing, the merge slot and
+the hold for every other question are unchanged.
+
 ## Revised 2026-10-29: a plain continuation of the lane holds the merge's rounds (part of #2685)
 
 **One writer per pull request, at any head (#2577)** already held the tick:
@@ -713,6 +751,24 @@ things on the agent:
 * the head it is waiting at;
 * the pending check names, in `blocked_by`;
 * `metadata.merge_wait`: `first_parked_at`, `wakes`, `updates`.
+
+**The CI clock is the wait's, not the park's (#3033).** On 2026-11-01 a merge
+step (task_5c00c810495e4f949212) parked `checks_pending` 56 times at one head
+over 13 hours, and the 6 h `MERGE_CI_MAX_SECONDS` never ended it. Its tenant
+was on the state routes. There the step reads its own document through
+swarm-api's `GET state/upstream`, which serves it as JSON, so
+`first_parked_at` arrived as an ISO string. The limit read only a
+datetime and found nothing on every wake. Now the limit reads either shape,
+on every path that parks for CI again: the CI wait, the merge queue, the CI-fix,
+conflict and pick-fix rounds. Both parks, the worker's and swarm-api's, keep
+one clock. The first CI park of a wait starts it, and every later park at
+the same head carries it. A park at another head starts it again: the old
+wait ended when a fix round or a branch update moved the head. A merge-slot
+or merge-train wait **pauses** the clock (`ci_paused_at`) instead of
+clearing it, and the next CI park moves `first_parked_at` on by the pause.
+Clearing it let a step that kept alternating the two waits wait for CI
+without bound. Running it through a pause would count a queue as slow CI.
+The waiting detail serves `first_parked_at` as `waiting.since`.
 
 It refunds the attempt that admission counted, up to `MERGE_CI_MAX_WAKES`
 (proposed 60). Then it releases the lease and exits 75.

@@ -5,13 +5,21 @@ marks the session ended and tells swarm-voice, and another tenant's session
 is 404. The body and paths are the Talk pane's (apps/swarm-ui/src/voice/rtc.ts):
 `offer_sdp` in, `answer_sdp` out, and ending by the session id alone.
 swarm-voice is a fake on `app.state.voice_client`; no network.
+
+The start call swarm-api sends is swarm-voice's `StartRequest` field for field
+(apps/swarm-voice/swarm_voice/main.py), its `credential` the version reference
+of the person's own stored ChatGPT sign-in (voice/signin.py); a person with no
+stored sign-in is refused, pointing at Voice it › Preferences, before anything
+is written or sent (owner, 2026-11-02).
 """
 
 from __future__ import annotations
 
 import hashlib
 import secrets
+import sys
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,14 +30,45 @@ from swarm_api.deps import build_context
 from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.provider_keys import KEYS_COLLECTION, USER, ProviderKeys
 from swarm_api.settings import ApiSettings
 from swarm_api.voice import sessions as vs
+from swarm_api.voice import signin as vsi
 from swarm_api.waker import NullWaker
 
-from .conftest import ENG_GROUP, RESEARCH_GROUP, NoForgeTokens, OfflineSecretMetadata, api_settings, auth_header
+from .conftest import (
+    ENG_GROUP,
+    PROJECT,
+    RESEARCH_GROUP,
+    NoForgeTokens,
+    OfflineSecretMetadata,
+    api_settings,
+    auth_header,
+)
+
+# swarm-voice is not a member of the root uv workspace; its package is put on
+# the path the way tests/unit/voice/test_live_session.py reaches it.
+_VOICE = str(Path(__file__).resolve().parents[3] / "apps" / "swarm-voice")
+if _VOICE not in sys.path:
+    sys.path.insert(0, _VOICE)
+
+from swarm_voice.main import StartRequest  # noqa: E402
 
 OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\n"
 ANSWER = "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\ns=-\r\n"
+#: The people the `client` fixture has signed in with ChatGPT (Voice it › Preferences).
+SIGNED_IN = ("alice@example.com", "bob@example.com")
+
+
+def _version(person: str, n: int = 1) -> str:
+    return f"projects/{PROJECT}/secrets/{vsi.personal_secret_id(person)}/versions/{n}"
+
+
+def _store_sign_in(db, person: str, version: str) -> None:
+    """What `ChatGPTSignIn.finish` records: the provider-keys record, never a value."""
+    ProviderKeys(db, now=lambda: None).record(
+        tenant_id=vsi.tenant_id_for_user(person), provider=vsi.PROVIDER, scope=USER,
+        by=person, version=version, via_link=False)
 
 
 class FakeVoice:
@@ -40,11 +79,11 @@ class FakeVoice:
         self.starts: list[vs.StartCall] = []
         self.ends: list[tuple[str, str]] = []
 
-    def start(self, call: vs.StartCall) -> str:
+    def start(self, call: vs.StartCall) -> vs.StartAnswer:
         self.starts.append(call)
         if self.refuse:
             raise vs.VoiceUnreachable("swarm-voice refused the session (HTTP 500); it was ended.")
-        return ANSWER
+        return vs.StartAnswer(answer=ANSWER, live_session_id="live_" + call.session_id[3:13])
 
     def end(self, session_id: str, *, cause: str) -> bool:
         self.ends.append((session_id, cause))
@@ -56,7 +95,9 @@ def voice() -> FakeVoice:
     return FakeVoice()
 
 
-def _client(db, tokens, group_map, objects, voice, **settings) -> TestClient:
+def _client(db, tokens, group_map, objects, voice, *, signed_in=SIGNED_IN, **settings) -> TestClient:
+    for person in signed_in:
+        _store_sign_in(db, person, _version(person))
     ctx = build_context(
         settings=api_settings(**settings),
         db=db,
@@ -137,7 +178,9 @@ def test_a_new_talk_gets_an_untitled_project_and_the_answer_comes_back(client, d
     # The offer went to swarm-voice unchanged, with the grant whose hash
     # alone is stored; the grant is never returned to the browser.
     (call,) = voice.starts
-    assert call.offer == OFFER and call.tenant_id == "eng"
+    assert call.offer == OFFER and call.tenant_id == "eng" and call.project_id == body["project_id"]
+    assert call.credential == _version("alice@example.com")
+    assert session["live_session_id"] == "live_" + body["session_id"][3:13]
     assert session["grant_hash"] == hashlib.sha256(call.grant.encode()).hexdigest()
     assert call.grant not in response.text
     assert call.grant not in repr(call)
@@ -351,6 +394,57 @@ def test_a_session_left_starting_by_a_crash_stops_holding_the_person(client, db,
     assert _start(client, "alice").status_code == 200
 
 
+def test_a_person_with_no_stored_sign_in_is_told_to_sign_in_and_nothing_is_sent(
+        db, tokens, group_map, objects, voice):
+    client = _client(db, tokens, group_map, objects, voice, signed_in=("bob@example.com",),
+                     voice_url="http://voice.internal:8080",
+                     voice_people=("alice@example.com", "bob@example.com"))
+
+    response = _start(client, "alice")
+
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "forbidden"
+    assert "Voice it › Preferences" in response.json()["message"]
+    assert "Sign in with ChatGPT" in response.json()["message"]
+    assert voice.starts == []
+    assert _docs(db, vs.PROJECTS) == {} and _docs(db, vs.LIVE_MARKERS) == {}
+    assert _docs(db, vs.AUDIT + "/") == {}
+    # Bob's stored sign-in is his alone: it is never what alice's start carries.
+    assert _start(client, "bob").status_code == 200
+    (call,) = voice.starts
+    assert call.person == "bob@example.com" and call.credential == _version("bob@example.com")
+
+
+@pytest.mark.parametrize("stored", [
+    lambda: _version("bob@example.com"),
+    lambda: f"projects/another-project/secrets/{vsi.personal_secret_id('alice@example.com')}/versions/1",
+    lambda: f"projects/{PROJECT}/secrets/{vsi.personal_secret_id('alice@example.com')}/versions/latest",
+], ids=["another-persons-secret", "another-project", "not-a-version"])
+def test_a_stored_reference_outside_the_persons_own_secret_is_never_sent(
+        db, tokens, group_map, objects, voice, stored):
+    client = _client(db, tokens, group_map, objects, voice, signed_in=(),
+                     voice_url="http://voice.internal:8080",
+                     voice_people=("alice@example.com",))
+    _store_sign_in(db, "alice@example.com", stored())
+
+    response = _start(client, "alice")
+
+    assert response.status_code == 403, response.text
+    assert "Voice it › Preferences" in response.json()["message"]
+    assert stored() not in response.text
+    assert voice.starts == [] and _docs(db, vs.PROJECTS) == {}
+
+
+def test_the_newest_stored_sign_in_is_the_one_sent(client, db, voice):
+    _store_sign_in(db, "alice@example.com", _version("alice@example.com", 4))
+
+    assert _start(client, "alice").status_code == 200
+    (call,) = voice.starts
+    assert call.credential == _version("alice@example.com", 4)
+    record = db.docs[f"{KEYS_COLLECTION}/{vsi.personal_secret_id('alice@example.com')}"]
+    assert record["version"] == call.credential
+
+
 def test_a_malformed_offer_is_422(client, db, voice):
     response = client.post("/v1/voice/sessions", json={"offer_sdp": "hello"},
                            headers=auth_header("alice"))
@@ -403,15 +497,21 @@ def swarm_voice():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     seen: list[dict] = []
-    state = {"status": 200}
+    state: dict = {"status": 201, "voice_session_id": None}
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802 - the stdlib's name
             length = int(self.headers.get("Content-Length") or 0)
             seen.append({"path": self.path, "authorization": self.headers.get("Authorization"),
                          "body": json.loads(self.rfile.read(length))})
-            payload = json.dumps({"answer": ANSWER} if self.path == "/internal/sessions" else {})
-            self.send_response(state["status"])
+            body = seen[-1]["body"]
+            # swarm-voice's start answer (swarm_voice/main.py, `start`); its end answers 200.
+            payload = json.dumps(
+                {"voice_session_id": state["voice_session_id"] or body.get("voice_session_id"),
+                 "live_session_id": "live_0123456789", "answer": ANSWER}
+                if self.path == "/internal/sessions" else {})
+            self.send_response(state["status"] if self.path == "/internal/sessions"
+                               else state.get("end_status", 200))
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(payload.encode())
@@ -438,26 +538,47 @@ def test_the_http_client_sends_the_offer_and_grant_with_an_id_token(swarm_voice)
 
     client = vs.HttpVoiceClient(url, token=token)
     grant = secrets.token_urlsafe(32)
-    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng",
-                        person="alice@example.com", offer=OFFER, grant=grant)
+    session_id = "vs_" + secrets.token_hex(16)
+    credential = _version("alice@example.com", 3)
+    call = vs.StartCall(session_id=session_id, project_id="vp_" + secrets.token_hex(16), tenant_id="eng",
+                        person="alice@example.com", credential=credential, offer=OFFER, grant=grant)
 
-    assert client.start(call) == ANSWER
-    assert client.end("vs_1", cause=vs.END_BY_PERSON) is True
+    # swarm-voice answers 201 with the session's id, its live id and the SDP answer.
+    assert client.start(call) == vs.StartAnswer(answer=ANSWER, live_session_id="live_0123456789")
+    assert client.end(session_id, cause=vs.END_BY_PERSON) is True
     assert audiences == [url, url]
     start, end = seen
     assert start["path"] == "/internal/sessions"
     assert start["authorization"] == f"Bearer {bearer}"
-    assert start["body"] == {"session_id": "vs_1", "project_id": "vp_1", "tenant_id": "eng",
-                             "person": "alice@example.com", "offer": OFFER, "grant": grant}
-    assert end["path"] == "/internal/sessions/vs_1/end"
+    # swarm-voice's StartRequest, field for field: the version reference, never a value.
+    assert start["body"] == {"voice_session_id": session_id, "project_id": call.project_id,
+                             "person": "alice@example.com", "credential": credential,
+                             "offer": OFFER, "grant": grant}
+    assert set(start["body"]) == set(StartRequest.model_fields)
+    parsed = StartRequest.model_validate(start["body"])
+    assert parsed.credential == credential and parsed.voice_session_id == session_id
+    assert end["path"] == f"/internal/sessions/{session_id}/end"
+    assert grant not in repr(call) and credential not in repr(call)
+
+
+def test_the_http_client_reads_an_answer_for_another_session_as_unreachable(swarm_voice):
+    url, _, state = swarm_voice
+    state["voice_session_id"] = "vs_" + secrets.token_hex(16)
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_" + secrets.token_hex(16), project_id="vp_1", tenant_id="eng",
+                        person="alice@example.com", credential=_version("alice@example.com"),
+                        offer=OFFER, grant=secrets.token_urlsafe(32))
+
+    with pytest.raises(vs.VoiceUnreachable):
+        client.start(call)
 
 
 def test_the_http_client_reads_a_refusal_as_unreachable(swarm_voice):
     url, _, state = swarm_voice
-    state["status"] = 500
+    state["status"] = state["end_status"] = 500
     client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
-    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng",
-                        person="alice@example.com", offer=OFFER, grant="g")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="alice@example.com",
+                        credential=_version("alice@example.com"), offer=OFFER, grant="g")
 
     with pytest.raises(vs.VoiceUnreachable):
         client.start(call)

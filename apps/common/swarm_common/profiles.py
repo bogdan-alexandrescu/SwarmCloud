@@ -1289,6 +1289,17 @@ class RunnerProfile:
     #: positional construction of a profile changes meaning.
     model_classes: tuple[str, ...] = ()
     default_model_class: str | None = None
+    #: Contract request 133 (CONTRACT-MAXTURNS, part of #2524), accepted by
+    #: the owner 2 November 2026. Whether this profile's runner passes a turn
+    #: cap to its agent CLI (claude_code: `--max-turns`). False: swarm-api
+    #: refuses a step's `max_turns` for it, because a cap the runner ignores
+    #: is a promise nothing keeps.
+    supports_max_turns: bool = False
+    #: The most turns an attempt on this profile may run, and the cap for a
+    #: step that names none. None: no cap (today's behaviour). Only read when
+    #: `supports_max_turns`. Last in the class, after the model classes, so no
+    #: positional construction of a profile changes meaning.
+    max_turns: int | None = None
 
     def __post_init__(self) -> None:
         if self.control_plane:
@@ -1395,6 +1406,14 @@ class RunnerProfile:
             raise ValueError(
                 f"runner {self.name}: Spot is disabled platform-wide; Spot Pods cannot "
                 "use extended run time and would violate the no-preemption requirement"
+            )
+        if self.max_turns is not None and (
+            isinstance(self.max_turns, bool) or not isinstance(self.max_turns, int)
+            or self.max_turns < 1
+        ):
+            raise ValueError(
+                f"runner {self.name}: max_turns is a positive integer or None "
+                "(contract request 133)"
             )
         self._check_model_classes()
 
@@ -1877,6 +1896,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # default (R3: a step naming no class runs opus).
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
     ),
     # CONTRACT REQUEST 113, accepted by the owner 2026-10-22 (Q6 of
     # docs/design/agent-autonomy.md §7, applied by lane AU-9): claude-code made
@@ -1906,6 +1926,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secret_slots={"files": _FILES_SLOT},
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
     ),
     "codex": RunnerProfile(
         name="codex",
@@ -2058,6 +2079,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # it keeps the pin it has today and gains no class.
         model_classes=("opus",),
         default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
     ),
     # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
     # on agent-runtime-indexer, the image that carries the repository index's
@@ -2086,6 +2108,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # Contract request 101 (owner's Q3): claude-code's classes and default.
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
     ),
     # CONTRACT REQUEST 67, accepted by the owner 2026-10-11: claude-code on
     # agent-runtime-browser (Playwright + Chromium), so an agent can render
@@ -2117,6 +2140,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # Contract request 101 (owner's Q3): claude-code's classes and default.
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
     ),
     # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
     # docs/design/lightpanda-runtime.md), accepted by the owner 2026-10-31:
@@ -2143,6 +2167,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secret_slots={"files": _FILES_SLOT},
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
     ),
     # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
     # docs/design/human-steps.md §5 request C): a workflow step that waits for

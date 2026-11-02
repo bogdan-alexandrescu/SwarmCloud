@@ -71,6 +71,7 @@ import { SCOPE_WORDS, SHORTCUTS, shortcut } from './shortcuts'
 export type TopicId =
   | 'absent-vs-zero'
   | 'account-health'
+  | 'jev-usage'
   | 'account-label-rules'
   | 'account-owned-by-one-tenant'
   | 'account-removal-is-reversible'
@@ -1380,6 +1381,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     see: ['absent-vs-zero', 'account-states'],
   },
 
+  'jev-usage': {
+    group: 'reading-a-figure',
+    title: 'Jev’s usage is counted when an attempt settles',
+    short:
+      'Each attempt adds its Jev calls and input tokens to the workspace’s record when it ends. The page sums those records per day and kind, says why each skipped call was skipped, and prices them only at a rate a platform admin has set: until then the dollars are a dash, never zero.',
+    long: [
+      'A kind is who asked: the worker’s judgments, one per question, the quality gate, the agent’s decision tool and the Jev browser. A record that was not split by kind is shown whole, as not split, rather than guessed apart.',
+      'The monthly cap is the workspace’s Code intelligence setting; a call that would take the month past it is skipped, and the skip names the cap as its reason.',
+      'The records hold counts only: never what was sent, what came back or a key.',
+    ],
+    see: ['absent-vs-zero'],
+  },
+
   lending: {
     group: 'an-account',
     title: 'What lending an account does',
@@ -1945,6 +1959,7 @@ export const HELP_PLACES = {
   'capacity/holders': 'Holders',
   'capacity/accounts': 'Subscription accounts',
   'capacity/account-health': 'Account health',
+  'capacity/jev-usage': 'Jev usage',
   'capacity/quota': 'Provider quota',
   'admin/limits': 'Pool limits',
   'admin/tenants': 'Tenants',
@@ -2344,6 +2359,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'account-health': {
     subject: 'Account health',
     act: { say: 'Open the worst account first: sign in again where re-auth is needed, and wait out a limit until its window resets.', at: 'capacity/account-health' },
+  },
+  'jev-usage': {
+    subject: 'Jev usage and cost',
+    act: { say: 'Read the skipped reasons first: a cap or a limit reached is a setting to raise, a failure is the backend.', at: 'capacity/jev-usage' },
   },
   lending: {
     subject: 'Lending an account',

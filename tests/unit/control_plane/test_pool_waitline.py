@@ -17,11 +17,13 @@ as nothing at all. What is held here:
 
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timedelta, timezone
 
-from quota_broker.accounts import WindowReading
+from quota_broker.accounts import DUPLICATE_MATCHED_ON, DUPLICATE_REASON, WindowReading
 from quota_broker.accountstore import AccountStore
 from quota_broker.main import acquire_hold
+from quota_broker.oauth import Organisation, organisation_identity, seat_identity
 from swarm_api.waiting_detail import build_waiting
 from swarm_common.models import Task
 from swarm_common.profiles import RUNNER_PROFILES
@@ -43,6 +45,19 @@ def _world(db) -> AccountStore:
     seed_pool(db, "global", hard_limit=20)
     seed_tenant(db, OWNER, credentials=("anthropic",), max_active=20)
     return AccountStore(db)
+
+
+def _one_seat(store: AccountStore, *account_ids: str) -> None:
+    """Record one organisation AND seat on each: a pair only that identity
+    makes (#3046). Built at runtime; never a real id."""
+    shared = Organisation(identity=organisation_identity(secrets.token_hex(8)), name="Team",
+                          plan="Team", seat=seat_identity(secrets.token_hex(8)))
+    for account_id in account_ids:
+        store.record_organisation(account_id, shared)
+
+
+#: The park's `withheld` block beyond whom it names (#3046).
+WHY = {"reason": f"{DUPLICATE_REASON} another account", "matched_on": DUPLICATE_MATCHED_ON}
 
 
 def _ready(db, task_id: str = "task_r") -> None:
@@ -84,6 +99,7 @@ def test_a_wait_whose_only_free_looking_account_is_withheld_names_it_as_withheld
     store.record_reading(f"{OWNER}:team", {"seven_day": WindowReading(0.99, clears)},
                          observed_at=_now())
     measure(store, f"{OWNER}:team-again")  # plenty of room: it looks free
+    _one_seat(store, f"{OWNER}:team", f"{OWNER}:team-again")
     store.set_duplicate(f"{OWNER}:team", f"{OWNER}:team-again", withheld=False)
     store.set_duplicate(f"{OWNER}:team-again", f"{OWNER}:team", withheld=True)
     _ready(db)
@@ -95,7 +111,7 @@ def test_a_wait_whose_only_free_looking_account_is_withheld_names_it_as_withheld
     # MUTATION: dropping the withheld mark leaves team-again with nothing
     # named against it, and the line reads as if it could take the agent.
     assert by_label["team-again"] == {
-        "account": "team-again", "withheld": {"same_subscription_as": "team"}}
+        "account": "team-again", "withheld": {"same_subscription_as": "team", **WHY}}
     assert "withheld" not in by_label["team"], "the kept side is not withheld"
     assert "team-again withheld: same subscription as team" in _line(block)
 
@@ -107,6 +123,7 @@ def test_another_workspaces_duplicate_is_named_without_its_label(
     store.register(OWNER, "team")
     store.register(OTHER, "night-shift")  # not lent to eng: eng never sees its label
     measure(store, f"{OWNER}:team")
+    _one_seat(store, f"{OWNER}:team", f"{OTHER}:night-shift")
     store.set_duplicate(f"{OWNER}:team", f"{OTHER}:night-shift", withheld=True)
     _ready(db)
 
@@ -117,7 +134,7 @@ def test_another_workspaces_duplicate_is_named_without_its_label(
     # MUTATION: writing the other side's label puts another tenant's account
     # name into eng's task document (BGD, Q2: "only within the same tenant").
     assert block["accounts"] == [
-        {"account": "team", "withheld": {"same_subscription_as": None}}]
+        {"account": "team", "withheld": {"same_subscription_as": None, **WHY}}]
     assert "night-shift" not in repr(block)
     line = _line(block)
     assert "night-shift" not in line
