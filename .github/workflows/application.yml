@@ -13,17 +13,15 @@ on:
   # ever ran on pull requests, and a repository whose history landed straight
   # on main had never run its own tests once.
   #
-  # AND ON A LANE BRANCH (LANE CI-EARLY, part of #1694, owner decision
-  # 2026-10-20). Under the integrate strategy the implement step pushes
-  # `swarm/<task id>` and opens no pull request; the fix step opens one after
-  # review. CI now starts on that push, the whole suite as on main, while
-  # review and fix run. The merge step holds EVERY run of a required check at
-  # the head, from any event (agent_worker/merge.py required_check_state), so
-  # a push run is one more run that must be green and the rule is unchanged.
-  # security.yml and terraform.yml (which ci-gate waits for) run on the same
-  # pushes; release.yml never does. tests/unit/scripts/test_ci_early.py.
+  # NOT ON A LANE BRANCH (owner decision 2026-11-02, CI once per head, part
+  # of #2688). CI-EARLY (2026-10-20) ran this on a push to `swarm/**` too, so
+  # a lane head with a pull request ran every check twice, once per event,
+  # and merges queued behind both (docs/ci.md "A lane head runs CI once, on
+  # its pull request"). A lane head is tested by its pull request's run
+  # alone; security.yml and terraform.yml match.
+  # tests/unit/scripts/test_ci_once_per_head.py.
   push:
-    branches: [main, "swarm/**"]
+    branches: [main]
   # EVERY PULL REQUEST, WITH NO PATH FILTER (owner request 2026-10-07, docs/ci.md
   # "The merge pipeline's wall time"). The `ci-gate` job at the bottom of this
   # file is the check ruleset 24160219 requires, and GitHub holds a required
