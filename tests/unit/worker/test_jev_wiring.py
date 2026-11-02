@@ -527,11 +527,22 @@ def test_j2_flags_uncovered_requirements_and_j5_holds_a_likely_duplicate(tmp_pat
     assert len(fake.requests) == 2
     written = json.loads((artifacts / poststeps.PLAN_ADVISORY_FILE).read_text())
     assert written == advisory
-    assert written["coverage"]["flagged"] == [{"index": 1, "requirement": "keep the header accessible"}]
+    assert written["coverage"]["flagged"] == [
+        {"index": 1, "requirement": "keep the header accessible", "coverage": "none"}]
     assert written["duplicate"]["ref"] == "swarm/sort" and written["hold_for_human"] is True
     assert (artifacts / "plan.json").read_bytes() == before
     # §5.4: in-flight lanes go as titles and files; never an author.
     assert "someone@example.com" not in json.dumps(fake.requests)
+
+
+def test_j2_records_a_weakly_covered_requirement_as_weak(tmp_path):
+    artifacts, context = _planner(tmp_path, lanes=False)
+
+    def answer(name, q, state):
+        return _choice(list(q["criteria"]), "sort-key", 0.9 if name == "r0" else 0.3)
+    advisory = poststeps.plan_post_step(_judge(tmp_path, FakeJev(answer)), artifacts, context)
+    assert advisory["coverage"]["flagged"] == [
+        {"index": 1, "requirement": "keep the header accessible", "coverage": "weak"}]
 
 
 def test_j5_under_085_does_not_hold(tmp_path):
@@ -595,7 +606,9 @@ def _setup(tmp_path: Path, workspace: dict | None, environ: dict | None = None) 
     docs = {} if workspace is None else {"workspace_settings/acme": workspace}
     return attempt.setup(work=work, db=_Db(docs), tenant_id="acme", repository_url=URL,
                          environ=environ if environ is not None
-                         else {settings.INTERNAL_URL_ENV: INTERNAL_URL})
+                         else {settings.INTERNAL_URL_ENV: INTERNAL_URL,
+                               # The scheduler vouched for the signed block.
+                               attempt.VERDICT_ENV: "true"})
 
 
 @pytest.mark.parametrize("workspace", [
@@ -609,7 +622,7 @@ def test_the_setting_off_writes_nothing_and_loads_no_client(tmp_path, workspace)
 
 def test_no_backend_url_or_no_typesafe_key_is_off(tmp_path):
     on = {"code_intelligence": {"jev": True}}
-    assert _setup(tmp_path / "a", on, environ={}) == {}
+    assert _setup(tmp_path / "a", on, environ={attempt.VERDICT_ENV: "true"}) == {}
     typesafe = {"code_intelligence": {"jev": True}, "judgment_backend": "typesafe"}
     assert _setup(tmp_path / "b", typesafe) == {}
 

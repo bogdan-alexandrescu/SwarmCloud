@@ -1489,6 +1489,17 @@ PR_TITLE_NAME = "pr-title.txt"
 #: agent can fix in one pass once it is told which fields. A document still
 #: refused after it fails the attempt (`lifecycle.Worker._index_after_agent`).
 INDEX_REPAIR_MAX_TURNS = 1
+#: A review's own verdict.json that was written but does not read as a verdict
+#: (`expected_outputs.verdict_problem`) is given ONE turn naming the problem and
+#: the shape (#3024): task_3f1d937155f745c4a461 wrote "changes_requested" and
+#: lost three attempts and $9.79 to a word the agent fixes in one pass once it
+#: is told it. A file still refused after it fails the attempt, unchanged
+#: (`lifecycle.Worker._unreadable_verdict`, cause `unreadable_verdict`); a file
+#: never written keeps the missing-output turn.
+VERDICT_REPAIR_MAX_TURNS = 1
+#: The most of `verdict_problem` a repair prompt and the result carry: it
+#: quotes the value the agent wrote, which may be as long as the file.
+VERDICT_PROBLEM_CHARS = 300
 #: `indexrun.INDEXER_PROFILE`, the profile whose runs owe a repo-index.json;
 #: `SWARM_RUNNER_PROFILE` is the worker's (`lifecycle._build_child_env`).
 INDEXER_PROFILE = "indexer"
@@ -1616,6 +1627,7 @@ def _with_reason(entry: str) -> str:
 def repair_prompt(
     missing: Sequence[str], flagged: Sequence[str], artifacts_dir: Path | str,
     index_problems: Sequence[str] = (),
+    verdict_problem: str | None = None,
 ) -> str:
     """The one user message a repair turn is given: what failed, exactly."""
     directory = PurePosixPath(os.path.abspath(os.fspath(artifacts_dir)))
@@ -1655,6 +1667,13 @@ def repair_prompt(
             "turn, and a document still refused fails the run:"
         )
         lines += [f"- {entry}" for entry in index_problems]
+    if verdict_problem:
+        lines.append(
+            f"{directory / expected_mod.REVIEW_VERDICT_NAME} was written but the worker "
+            f"does not read it as a verdict: {verdict_problem}. Rewrite only that file, "
+            "from the review you already did; do not review again. "
+            f"{expected_mod.verdict_line()} You get this one turn."
+        )
     return "\n".join(lines)
 
 
@@ -2581,10 +2600,26 @@ def run_cli_agent(
             return indexspec.problems_of_file(
                 Path(ctx.artifacts_dir) / indexspec.INDEX_FILE) or []
 
+        # A REVIEW'S OWN VERDICT (#3024), read the way the worker reads it after
+        # the session. Only a file that was written: one never written is the
+        # missing-output check's, and keeps its turn.
+        verdict_owed = expected_mod.REVIEW_VERDICT_NAME in told
+
+        def verdict_check() -> str | None:
+            name = expected_mod.REVIEW_VERDICT_NAME
+            if not verdict_owed or written_outputs_missing([name], ctx.artifacts_dir):
+                return None
+            problem = expected_mod.verdict_problem(ctx.artifacts_dir)
+            if problem is not None and len(problem) > VERDICT_PROBLEM_CHARS:
+                problem = problem[:VERDICT_PROBLEM_CHARS] + "..."
+            return problem
+
         ctx.report["repair_turns"] = 0
         missing, flagged = run_checks()
         index_problems = index_check()
         index_turns = 0
+        verdict_bad = verdict_check()
+        verdict_turns = 0
         if repair_scan_error is not None:
             log.warning(
                 "the publish credential scan could not run before the step ended; "
@@ -2593,15 +2628,23 @@ def run_cli_agent(
             )
         while True:
             ask_index = index_problems if index_turns < INDEX_REPAIR_MAX_TURNS else []
-            if not (missing or flagged or ask_index):
+            ask_verdict = verdict_bad if verdict_turns < VERDICT_REPAIR_MAX_TURNS else None
+            if not (missing or flagged or ask_index or ask_verdict):
                 if index_problems:
                     log.warning(
                         f"{indexspec.INDEX_FILE} is still refused after its repair turn; "
                         "the worker fails the attempt with the errors",
                         index_problems=index_problems,
                     )
+                if verdict_bad:
+                    log.warning(
+                        f"{expected_mod.REVIEW_VERDICT_NAME} is still not a verdict after "
+                        "its repair turn; the worker's own check decides",
+                        verdict_problem=verdict_bad,
+                    )
                 break
             if repair_turns >= TITLE_REPAIR_MAX_TURNS and not flagged and not ask_index \
+                    and not ask_verdict \
                     and list(missing) == [PR_TITLE_NAME]:
                 # Only the title is still missing: it had its one follow-up
                 # turn (Proposal B), and the worker decides the rest.
@@ -2649,14 +2692,18 @@ def run_cli_agent(
                 missing_outputs=missing[:REPAIR_LIST_CAP],
                 credential_lines=flagged[:REPAIR_LIST_CAP],
                 index_problems=ask_index,
+                verdict_problem=ask_verdict,
                 remaining_seconds=round(remaining, 1),
             )
             if ask_index:
                 index_turns += 1
-            text = repair_prompt(missing, flagged, ctx.artifacts_dir, ask_index)
+            if ask_verdict:
+                verdict_turns += 1
+            text = repair_prompt(missing, flagged, ctx.artifacts_dir, ask_index, ask_verdict)
             pass_within_ceiling(session, text, step_remaining, "repair")
             after_missing, after_flagged = run_checks()
             index_problems = index_check()
+            verdict_bad = verdict_check()
             # What a turn fixed is what it was asked to fix and no longer fails.
             # A credential line is named by `path:line rule`, so one that only
             # moved when an earlier line was removed reads as fixed here and as
@@ -2670,14 +2717,18 @@ def run_cli_agent(
                 **({"index_problems": list(ask_index),
                     "index_fixed": bool(ask_index) and not index_problems}
                    if index_run else {}),
+                **({"verdict_problem": ask_verdict,
+                    "verdict_fixed": bool(ask_verdict) and not verdict_bad}
+                   if verdict_owed else {}),
             })
             ctx.report["repairs"] = repairs
             missing, flagged = after_missing, after_flagged
-        if missing or flagged or index_problems:
+        if missing or flagged or index_problems or verdict_bad:
             unresolved = {
                 "missing_outputs": missing[:REPAIR_LIST_CAP],
                 "credential_lines": flagged[:REPAIR_LIST_CAP],
                 **({"index_problems": index_problems} if index_run else {}),
+                **({"verdict_problem": verdict_bad} if verdict_owed else {}),
             }
 
     # JEV'S POST-STEPS (lane CTXQ-JW; `judge.poststeps`). The planner's plan
