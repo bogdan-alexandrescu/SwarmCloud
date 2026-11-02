@@ -87,6 +87,35 @@ def _approve_command(run: dict[str, Any]) -> str:
 # Showing a run
 # --------------------------------------------------------------------------
 
+def advisory_lines(advisory: Any) -> list[str]:
+    """The planner's Jev advisory (`plan_advisory`, served by the run read) as
+    sentences: each requirement J2 flagged, and J5's likely duplicate with why
+    the plan waits. Empty when there is none, or it flagged nothing. Advisory:
+    it is shown to a person and decides nothing here."""
+    if not isinstance(advisory, dict):
+        return []
+    lines = []
+    coverage = advisory.get("coverage")
+    flagged = coverage.get("flagged") if isinstance(coverage, dict) else None
+    for flag in flagged if isinstance(flagged, list) else []:
+        if not isinstance(flag, dict) or not flag.get("requirement"):
+            continue
+        index = flag.get("index")
+        which = f"requirement {index + 1}" if isinstance(index, int) and not isinstance(index, bool) else "a requirement"
+        how = "weakly covered" if flag.get("coverage") == "weak" else "no step covers this"
+        lines.append(f'{which} "{flag["requirement"]}": {how}')
+    duplicate = advisory.get("duplicate")
+    if isinstance(duplicate, dict):
+        p = duplicate.get("p")
+        likely = f" ({round(p * 100)}% likely)" if isinstance(p, (int, float)) and not isinstance(p, bool) else ""
+        what = ", ".join(str(v) for v in (duplicate.get("title"), duplicate.get("ref")) if v)
+        link = f" {duplicate['url']}" if duplicate.get("url") else ""
+        lines.append(f"likely duplicate{likely}: {what or 'work in flight'}{link}")
+        if advisory.get("hold_for_human") is True:
+            lines.append("the plan waits for a person's approval because it likely duplicates that work")
+    return lines
+
+
 def run_lines(run: dict[str, Any], style: Style) -> list[str]:
     """The run: where it is, what it is running, and what it ended as."""
     dash = style.dash
@@ -177,6 +206,11 @@ def plan_lines(run: dict[str, Any], style: Style) -> list[str]:
                 f"{overlap.get('kind')} {overlap.get('ref')}: {overlap.get('note')}",
                 style, indent=4, tone="warn",
             ))
+    advised = advisory_lines(run.get("plan_advisory"))
+    if advised:
+        lines.append("  the planner's check (advisory)")
+        for line in advised:
+            lines.extend(render.detail(line, style, indent=4, tone="warn"))
     for step in steps:
         title = f"  {style.marker} {step.get('step_id')}  {step.get('title') or ''}"
         if step.get("estimate"):
@@ -203,6 +237,8 @@ def runs_lines(listing: dict[str, Any], style: Style) -> list[str]:
             f"  {run.get('id')}  {_issue_text(run)}  {run.get('state')}  "
             f"{run.get('updated_at') or style.dash}{tail}"
         )
+        for line in advisory_lines(run.get("plan_advisory")):
+            lines.extend(render.detail(line, style, indent=4, tone="warn"))
     if listing.get("next_page_token"):
         lines.append(f"  more: --page-token {listing['next_page_token']}")
     return lines
@@ -310,6 +346,9 @@ def follow(
 def summary(client: SwarmClient, run: dict[str, Any]) -> dict[str, Any]:
     """What the MCP tools answer: the run as served, its steps, and what to do next."""
     out: dict[str, Any] = {"run": run}
+    advised = advisory_lines(run.get("plan_advisory"))
+    if advised:
+        out["plan_advisory_lines"] = advised
     hint = attach_with(run)
     if hint:
         out["attach_with"] = hint

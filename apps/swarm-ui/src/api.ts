@@ -1550,6 +1550,30 @@ export async function loadRuns(
   return read<IssueRunSummaryPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
 }
 
+/**
+ * THE PLANNER'S CHECK OF ITS OWN PLAN (CLD's Jev report: plan coverage),
+ * served on the run read as `plan_advisory` (`served_plan_advisory`,
+ * routes/runs.py): read from the planner's `plan-advisory.json` when the run
+ * is read, never stored on the run. Null when the planner wrote none; absent
+ * on a list row that is not PLANNED (not read). Advisory: it decides nothing.
+ */
+export interface PlanAdvisory {
+  /** J2: the requirements no step covers (`none`) or covers only weakly (`weak`). */
+  coverage: {
+    requirements: number | null
+    flagged: { index: number | null; requirement: string; coverage: 'none' | 'weak' }[]
+  } | null
+  /** J5: the work in flight this plan likely duplicates; `url` only on github.com. */
+  duplicate: { title: string | null; ref: string | null; url: string | null; p: number | null } | null
+  /** The duplicate made the plan wait for a person's approval. */
+  hold_for_human: boolean
+  /** The plan revision that was judged: the planner's own, 1. */
+  judged_revision: number
+}
+
+/** A run as the run read serves it, with the planner's check. */
+export type AdvisedIssueRun = IssueRun & { plan_advisory?: PlanAdvisory | null }
+
 /** `GET /v1/runs/{run_id}`. The read advances the run (routes/runs.py). */
 export async function loadRun(runId: string): Promise<Result<IssueRunRead>> {
   if (USE_FIXTURES) return fixtureRun(runId)
