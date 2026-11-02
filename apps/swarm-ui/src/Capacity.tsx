@@ -642,6 +642,25 @@ function HoldersLink({ pool, active, holders }: { pool: string; active: number; 
   )
 }
 
+const LOWERED_INPUT: Record<string, string> = {
+  adaptive_target: 'the adaptive target',
+  quota_derived_limit: 'the provider quota',
+}
+
+/**
+ * The ceiling's title: the configured hard limit, the applied value, and which
+ * input lowered it and when the broker last set it (#3047), so a cap of 7
+ * against 40 says why without a trip to the broker's documents.
+ */
+export function ceilingTitle(pool: Pool): string {
+  const base = `Configured hard limit is ${pool.hard_limit}; ${pool.effective_limit} applies`
+  const why = (pool.lowered_by ?? []).map((entry) => {
+    const what = LOWERED_INPUT[entry.input] ?? entry.input
+    return entry.set_at ? `${what} (${entry.value}), set ${entry.set_at}` : `${what} (${entry.value})`
+  })
+  return why.length ? `${base}, lowered by ${why.join(' and ')}.` : `${base}.`
+}
+
 function PoolRow({
   pool,
   scope,
@@ -719,7 +738,7 @@ function PoolRow({
             // `0 of 6 (lowered from 10)` instead (styles/capacity.css), which
             // needs the `/` to be something it can hide; the wide table keeps
             // the frame's `6/10`.
-            <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
+            <span className="cap-was" title={ceilingTitle(pool)}>
               <span className="cap-was-sl">/</span>
               {pool.hard_limit}
             </span>

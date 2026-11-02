@@ -36,6 +36,7 @@ from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
 
 from swarm_common.models import (
+    SlotPool,
     Task,
     Tenant,
     Workflow,
@@ -2355,7 +2356,12 @@ class SubmissionService:
                     continue
                 if ":tenant:" in pool.name and not pool.name.endswith(own_provider_suffix):
                     continue
-            visible.append(pool_to_api(pool))
+            served = pool_to_api(pool)
+            # THE APPLIED VALUE BESIDE THE CEILING, AND WHY (#3047): the
+            # applied value is `effective_limit`; this says which input holds
+            # it below `hard_limit` and when the broker last set it.
+            served["lowered_by"] = self._pool_lowered_by(pool)
+            visible.append(served)
         visible.sort(key=lambda p: p["name"])
 
         # Units at the CURRENT runner size version, which is what admission
@@ -2441,6 +2447,52 @@ class SubmissionService:
             "blocked_reason_groups": blocked_reason_groups(),
             "generated_at": self._now(),
         }
+
+    def _pool_lowered_by(self, pool: SlotPool) -> list[dict[str, Any]]:
+        """The inputs that hold a pool's applied limit below its ceiling (#3047).
+
+        Empty when the ceiling applies or is unknown. An input is named when it
+        is below `hard_limit` and equal to `effective_limit`, the minimum the
+        contract's `SlotPool` takes, so two at the same value are both named.
+        `set_at` is the broker's quota document's `updated_at` for a per-tenant
+        provider pool -- the broker writes the pool's inputs in that document's
+        transaction -- and null for any other pool, which has no such record.
+        One document read, and only for a pool that is lowered. Only numbers,
+        a state word and instants are copied from the quota document.
+        """
+        applied, ceiling = pool.effective_limit, pool.hard_limit
+        if applied is None or ceiling is None or applied >= ceiling:
+            return []
+        quota: dict[str, Any] = {}
+        parts = pool.name.split(":")
+        if len(parts) == 4 and parts[0] == "provider" and parts[2] == "tenant":
+            try:
+                snap = self._store.db.collection("quota").document(f"{parts[1]}:{parts[3]}").get()
+                quota = (snap.to_dict() or {}) if getattr(snap, "exists", False) else {}
+            except Exception as exc:  # noqa: BLE001 - the pool row is still served
+                log.warning("quota document for %s unreadable: %s", pool.name, type(exc).__name__)
+
+        def instant(value: Any) -> str | None:
+            return value.isoformat() if isinstance(value, datetime) else (
+                value if isinstance(value, str) else None
+            )
+
+        out: list[dict[str, Any]] = []
+        for name, value in (
+            ("adaptive_target", pool.adaptive_target),
+            ("quota_derived_limit", pool.quota_derived_limit),
+        ):
+            if value is None or value >= ceiling or max(0, value) != applied:
+                continue
+            entry: dict[str, Any] = {
+                "input": name, "value": value, "set_at": instant(quota.get("updated_at")),
+            }
+            if name == "adaptive_target" and quota.get("last_429_at") is not None:
+                entry["last_rate_limited_at"] = instant(quota.get("last_429_at"))
+            if name == "quota_derived_limit" and isinstance(quota.get("state"), str):
+                entry["provider_state"] = quota["state"]
+            out.append(entry)
+        return out
 
     def providers(
         self,

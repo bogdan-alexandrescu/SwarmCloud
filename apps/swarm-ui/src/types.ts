@@ -31,6 +31,24 @@ export interface Pool {
   available: number | null
   enabled: boolean
   updated_at: string
+  /**
+   * Which input holds `effective_limit` (the applied value) below `hard_limit`
+   * (the ceiling), and when the broker last set it (#3047). Empty when the
+   * ceiling applies. Served by /v1/capacity only.
+   */
+  lowered_by?: PoolLoweredBy[]
+}
+
+/** One input that lowers a pool's applied limit (#3047). */
+export interface PoolLoweredBy {
+  input: 'adaptive_target' | 'quota_derived_limit'
+  value: number
+  /** When the broker last wrote it; null where no record dates it. */
+  set_at: string | null
+  /** The adaptive target's last rate limit, the instant that cut it. */
+  last_rate_limited_at?: string | null
+  /** The provider state behind a quota-derived value. */
+  provider_state?: string
 }
 
 /** One field of a pool's last admin change: the value before and after (#133). */
