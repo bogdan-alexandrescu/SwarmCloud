@@ -1043,9 +1043,27 @@ enable_typesafe_forwarder = true
 # forwarder forwards nothing until the owner names tenants (step 3), and pods
 # reach it only once SWARM_TYPESAFE_INJECT is set and the owner has re-applied
 # `kubernetes/apply.sh --policies` for allow-typesafe-fwd (PR 1409).
+#
+# Step 3 of 3, 2026-11-02 (the owner chose to build every improvement proposal
+# in CLD's Jev report, the forwarder one among them): `enabled` with `eng` the
+# one tenant. The forwarder's ConfigMap and the scheduler's
+# TYPESAFE_FORWARDER_ENABLED/_TENANTS read these same two values, so an eng
+# GKE pod on the TypeSafe judgment backend (a live browser, or a step whose
+# signed switch says `jev_judgments: on`) is labelled `swarm-typesafe: inject`,
+# its worker gets SWARM_TYPESAFE_INJECT=on and runs the loopback shim, and no
+# key file is written. Every other tenant, and eng on an internal backend,
+# keeps today's path. Checked the same day: the key's version and the
+# bootstrap read are above; the release has applied allow-typesafe-fwd to
+# every tenant namespace since 2026-10-23 (scripts/apply-tenant-network-policies.sh).
+# A group task's ticket names only the WORKSPACE's key
+# (swarm-tenant-eng-typesafe), never the submitter's own, so eng needs that
+# key stored and its judgment backend set to TypeSafe: owner steps,
+# docs/runbooks/typesafe-forwarder.md, which also shows one call go through.
+# Rollback: `enabled = false` (or drop eng); the next release re-renders both.
 typesafe_forwarder = {
   serve   = true
-  enabled = false
+  enabled = true
+  tenants = ["eng"]
 }
 
 # The shared graph service (#1384, docs/design/graph-service.md;

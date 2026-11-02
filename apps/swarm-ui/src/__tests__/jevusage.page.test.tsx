@@ -44,10 +44,10 @@ describe('Capacity › Jev usage', () => {
 
   it('shows every skipped call’s reason', () => {
     render(<JevUsageBody usage={usage()} />)
-    expect(screen.getByText('2 ok · 0 failed · 2 skipped (oversize 2)')).toBeTruthy()
-    expect(screen.getByText('1 ok · 1 failed · 1 skipped (budget_calls 1)')).toBeTruthy()
+    expect(screen.getByText('2 ok · 0 failed · 2 skipped (question too large 2)')).toBeTruthy()
+    expect(screen.getByText('1 ok · 1 failed · 1 skipped (call budget spent 1)')).toBeTruthy()
     expect(outcomeText({ ...usage().total.outcomes!, unrecorded: 0 })).toBe(
-      '3 ok · 1 failed · 3 skipped (budget_calls 1, oversize 2)',
+      '3 ok · 1 failed · 3 skipped (call budget spent 1, question too large 2)',
     )
   })
 
@@ -60,7 +60,7 @@ describe('Capacity › Jev usage', () => {
     expect(within(unsplit).getByRole('img', { name: 'outcomes not recorded' })).toBeTruthy()
     expect(unsplit.textContent).not.toMatch(/0 ok/)
     expect(outcomeText(u.total.outcomes!)).toBe(
-      '3 ok · 1 failed · 3 skipped (budget_calls 1, oversize 2) · 2 not recorded',
+      '3 ok · 1 failed · 3 skipped (call budget spent 1, question too large 2) · 2 not recorded',
     )
   })
 

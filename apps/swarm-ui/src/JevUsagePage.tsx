@@ -24,6 +24,7 @@ import { Screen } from './Shell'
 import {
   JEV_GROUP_LABEL,
   loadJevUsage,
+  skipReasonLabel,
   type JevKindRow,
   type JevOutcomes,
   type JevTally,
@@ -51,10 +52,10 @@ function Tokens({ v }: { v: number | null }) {
   return v === null ? <Dash why={NO_OUTPUT} /> : <>{n(v)}</>
 }
 
-/** "2 ok · 1 failed · 3 skipped (oversize 2, budget_calls 1) · 2 not recorded". */
+/** "2 ok · 1 failed · 3 skipped (call budget spent 1, question too large 2) · 2 not recorded". */
 export function outcomeText(o: JevOutcomes): string {
   const parts = [`${n(o.ok)} ok`, `${n(o.failed)} failed`, `${n(o.skipped)} skipped`]
-  const reasons = o.skippedByReason.map((r) => `${r.reason} ${n(r.count)}`).join(', ')
+  const reasons = o.skippedByReason.map((r) => `${skipReasonLabel(r.reason)} ${n(r.count)}`).join(', ')
   const text = reasons === '' ? parts.join(' · ') : `${parts.join(' · ')} (${reasons})`
   return o.unrecorded > 0 ? `${text} · ${n(o.unrecorded)} not recorded` : text
 }

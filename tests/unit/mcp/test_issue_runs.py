@@ -522,3 +522,65 @@ def test_swarm_run_issue_passes_auto_merge_strictly():
     api = FakeApi()
     server._call(_client(api), "swarm_run_issue", {"issue": "o/r#5", "auto_merge": "false"})
     assert api.sent[0][2]["auto_merge"] is False, "the string 'false' is not true"
+
+
+# --------------------------------------------------------------------------
+# the planner's advisory (CLD's Jev report: plan coverage)
+# --------------------------------------------------------------------------
+
+ADVISORY = {
+    "coverage": {"requirements": 2, "flagged": [
+        {"index": 0, "requirement": "the thing exists", "coverage": "none"},
+        {"index": 1, "requirement": "the thing is tested", "coverage": "weak"},
+    ]},
+    "duplicate": {"title": "Add the same thing", "ref": "o/r#9",
+                  "url": "https://github.com/o/r/issues/9", "p": 0.91},
+    "hold_for_human": True,
+    "judged_revision": 1,
+}
+
+ADVISORY_LINES = [
+    'requirement 1 "the thing exists": no step covers this',
+    'requirement 2 "the thing is tested": weakly covered',
+    "likely duplicate (91% likely): Add the same thing, o/r#9 https://github.com/o/r/issues/9",
+    "the plan waits for a person's approval because it likely duplicates that work",
+]
+
+
+def test_advisory_lines_say_each_flag_and_the_duplicate():
+    assert runs.advisory_lines(ADVISORY) == ADVISORY_LINES
+    assert runs.advisory_lines(None) == []
+    assert runs.advisory_lines({"coverage": {"requirements": 2, "flagged": []},
+                                "duplicate": None, "hold_for_human": False}) == []
+
+
+def test_swarm_run_prints_the_planners_flags():
+    api = FakeApi(run=_run(plan_advisory=ADVISORY))
+    answer = json.loads(server._call(_client(api), "swarm_run", {"run_id": "run_1"}))
+    assert answer["plan_advisory_lines"] == ADVISORY_LINES
+
+
+def test_swarm_run_without_an_advisory_prints_none():
+    for run in (_run(), _run(plan_advisory=None)):
+        answer = json.loads(server._call(_client(FakeApi(run=run)), "swarm_run", {"run_id": "run_1"}))
+        assert "plan_advisory_lines" not in answer
+
+
+def test_swarm_runs_prints_each_rows_flags():
+    api = FakeApi(run=_run(plan_advisory=ADVISORY))
+    listing = json.loads(server._call(_client(api), "swarm_runs", {}))
+    assert listing["runs"][0]["plan_advisory_lines"] == ADVISORY_LINES
+    plain = json.loads(server._call(_client(FakeApi()), "swarm_runs", {}))
+    assert "plan_advisory_lines" not in plain["runs"][0]
+
+
+def test_sc_prints_the_flags_above_the_steps_and_in_the_list():
+    style = sc.render.Style(width=200, unicode=False)
+    run = _run(plan_advisory=ADVISORY)
+    printed = "\n".join(runs.plan_lines(run, style))
+    for line in ADVISORY_LINES:
+        assert line in printed
+    assert printed.index("no step covers this") < printed.index("build  Build it")
+    listed = "\n".join(runs.runs_lines({"runs": [run]}, style))
+    assert ADVISORY_LINES[0] in listed and ADVISORY_LINES[2] in listed
+    assert "duplicate" not in "\n".join(runs.plan_lines(_run(), style))

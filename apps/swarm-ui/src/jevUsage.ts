@@ -32,6 +32,21 @@ export const JEV_GROUP_LABEL: Readonly<Record<JevUsageGroup, string>> = {
   other: 'Other',
 }
 
+/** Why the worker skipped a Jev call, in words (`judge/budget.py`, `judge/client.py`). */
+export const JEV_SKIP_LABEL: Readonly<Record<string, string>> = Object.fromEntries([
+  ['breaker_open', 'Jev unavailable'],
+  ['budget_calls', 'call budget spent'],
+  ['budget_tokens', 'token budget spent'],
+  ['budget_monthly', 'monthly cap reached'],
+  ['oversize', 'question too large'],
+  ['empty_state', 'nothing to ask'],
+])
+
+/** A skip reason the page can print: its words, or the code's words for one it does not know. */
+export function skipReasonLabel(reason: string): string {
+  return JEV_SKIP_LABEL[reason] ?? reason.replace(/_/g, ' ')
+}
+
 export interface JevOutcomes {
   ok: number
   failed: number
