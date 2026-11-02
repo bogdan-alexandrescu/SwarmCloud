@@ -243,7 +243,18 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # decodes and writes again keeps the signed budget it was submitted
         # with. Anything but a map is no budget.
         budget=_budget_map(data.get("budget")),
+        # Contract request 132: read-side views, read back so a task this
+        # service decodes and writes again keeps them, and so `GET /v1/tasks`
+        # serves them (`attempt_totals.served_totals`,
+        # `task_accounts.served_account`). Anything but a map is none.
+        attempt_totals=_view_map(data.get("attempt_totals")),
+        current_account=_view_map(data.get("current_account")),
     )
+
+
+def _view_map(value: Any) -> dict[str, Any] | None:
+    """A stored read-side view (contract request 132), or None when it is not a map."""
+    return dict(value) if isinstance(value, Mapping) else None
 
 
 def _budget_map(value: Any) -> dict[str, Any] | None:

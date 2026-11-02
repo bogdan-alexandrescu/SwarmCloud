@@ -139,6 +139,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 129 | `admission.py` / `models.py`: a lease takes 1 unit in each `provider:*` pool and its resource units in every other pool, records what it took per pool (`Lease.pool_units`), and release returns exactly that (LARGE-ONE-PROVIDER-SLOT, part of #2950) | ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the expected behaviour #2950 states) and APPLIED by the pull request that adds this line (lane LARGE-ONE-PROVIDER-SLOT, part of #2950): `pool_units_for` is the one rule; a lease from before it has no `pool_units` and releases its `units` from every pool |
 | 130 | `profiles.py`: `codex` becomes available, and runs on either the tenant's `OPENAI_API_KEY` or a pool ChatGPT plan (`CODEX_PLAN_ACCESS_TOKEN`, `CODEX_PLAN_ACCOUNT_ID`), `secrets_any_of=True` (CODEX-PLAN-CONTRACT, part of #2688) | ACCEPTED IN PART: accepted by the owner (BGD) 2026-11-01 with one change, "Accept, but keep codex unavailable until the pool lanes land", and APPLIED in part by the pull request that adds this line (lane CODEX-CONTRACT-APPLY): `codex` declares `OPENAI_API_KEY`, `CODEX_PLAN_ACCESS_TOKEN` and `CODEX_PLAN_ACCOUNT_ID` with `secrets_any_of=True`, with its `terraform/infra/locals.tf` `secret_env` mirror; it stays `available=False`, its `disabled_reason` saying it waits for the ChatGPT-plan pool, and a follow-up turns it on once the broker and runner lanes have merged |
 | 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | open, REQUESTED 2026-11-01 by lane TIMEOUT-ASKED-CONTRACT after the owner answered "API records the ask" to the pre-publish gate lane's question (#2981, PR 2986) |
+| 132 | `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and the account its current attempt holds, so `GET /v1/tasks` stops reading every row's attempts and account events (STORED-TASK-TOTALS, from LOAD-SPEED-TASKS-LIST, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("Accept"; drafted by lane LOAD-SPEED-TASKS-LIST as 131, renumbered: TIMEOUT-ASKED-CONTRACT took 131 the same day). APPLIED by the pull request that adds this line (lane STORED-TASK-TOTALS): the worker and swarm-api write both views with each attempt start, spend and end and each account event; `GET /v1/tasks` serves them and derives a task that has none; `scripts/backfill-task-views.sh` fills older tasks once |
 
 ---
 
@@ -15794,3 +15795,103 @@ document's unlowered step, and only for workflow steps.
   and admission never reads it.
 * **4, 6, 7, 9:** unchanged; no backend, class, resource or tenant boundary is
   touched.
+
+## 132. `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and current account (STORED-TASK-TOTALS, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-11-01 ("Accept") and APPLIED by
+lane STORED-TASK-TOTALS (part of #2688), in the pull request that adds row
+132 of the index above. Drafted by lane LOAD-SPEED-TASKS-LIST as request 131;
+that number was taken the same day by `Task.timeout_seconds_asked`
+(TIMEOUT-ASKED-CONTRACT), so it is 132 here.
+
+### What is true today
+
+Read 2026-11-01 on `f676500`.
+
+`Task` (`apps/common/swarm_common/models.py`) has no field for the totals of
+its attempts or for the account its current attempt runs on.
+`swarm_api.attempt_totals.totals_for` and `swarm_api.task_accounts.accounts_for`
+derive both on every `GET /v1/tasks`, one query per 30 rows each: 7 attempt
+queries and up to 7 collection-group event queries for a 200-row page, run
+concurrently since part of #2688 but still made. Measured live 2026-11-01:
+Work > Agents 5.3 s on first load and 1.1-2.1 s per poll, almost all server
+time. Requests 13 (`Attempt` does not record its pool account) and 44 are the
+same gap on the attempt and the event.
+
+### The change
+
+```diff
+--- a/apps/common/swarm_common/models.py
++++ b/apps/common/swarm_common/models.py
+@@ class Task:
+     platform_refusals: int = 0
++    attempt_totals: dict[str, Any] | None = None
++    current_account: dict[str, Any] | None = None
+```
+
+Both optional, None by default, last in the class, so every existing
+document decodes as it does and no positional construction moves. Each carries
+a comment that it is a READ-SIDE VIEW ONLY.
+
+* `attempt_totals`: exactly `swarm_api.attempt_totals.attempt_totals()`'s keys
+  (`attempts`, `attempts_with_cost`, `cost_usd_total`, `cost_incomplete`,
+  `duration_s_total`, `duration_incomplete`, `first_started_at`,
+  `last_attempt_cost_usd`, `last_attempt_duration_s`) plus `as_of`
+  (`{attempt_id, generation}` of the attempt that wrote it).
+* `current_account`: the shape `task_accounts._account()` serves (`status`,
+  `account_id`, `provider`, `attempt_id`, `generation`, `swapped_from`,
+  `swaps`). Never a token or a secret name.
+
+### Who writes them
+
+* **The worker's direct path** (`apps/agent-worker/agent_worker/control.py`):
+  the totals in the same transaction as the attempt's end (`finish`, `park`,
+  `retry`), and after its start, its spend and a bare `record_attempt_end`;
+  the account in the same transaction as each `account_assigned` /
+  `account_unreadable` event (`emit`, which `lifecycle._lease_account`, the
+  swap and `_reject_account` all go through). The rules are swarm-api's,
+  restated in the worker's separate image, and a parity test holds the two
+  equal. Only while the writer's attempt is the task document's current
+  generation, in its own tenant (invariant 5).
+* **swarm-api's state routes** (`attemptstate.py`, for workers on
+  `SWARM_STATE_VIA_API`): the same writes on start, spend, attempt end, park,
+  finish, retry and the account events.
+* **Once, for older agents:** `scripts/backfill-task-views.sh` (dry run by
+  default, the project id typed to apply, ignores `SWARM_ASSUME_YES`) runs
+  `task_accounts.backfill_task_views`, which writes only an absent field, in
+  a transaction that re-reads the task document.
+
+### Who reads them
+
+`GET /v1/tasks` only (`attempt_totals.totals_for_page`,
+`task_accounts.served_account`): a stored copy is served when its generation
+is the document's `current_generation`; an agent with none, a malformed one
+or one from an earlier attempt is derived as before. The stored maps are never served
+raw: a row carries the same `attempts*`, `cost_*`, `duration_*` and `account`
+keys it carried before, so the console's `Task` type does not change. A
+200-row page whose agents carry both is the page, the leases and the pools:
+three round trips.
+
+### What it would break if accepted
+
+Nothing reads them but the list. The three tests that pin the class's tail
+(`test_budget_contract.py`, `test_model_classes.py`,
+`test_specsign_covers.py`) change with it; both fields are unsigned (they
+choose nothing). swarm-api's codec reads both back, so a document it decodes
+and writes whole keeps them; the scheduler only patches task documents.
+
+### If it is declined
+
+`GET /v1/tasks` keeps deriving both per request.
+
+### Invariants
+
+* **1, 2, 3:** neither field is read by admission, leasing, the scheduler,
+  the reconciler, the quota broker or capacity; they create no demand and
+  count nothing. Capacity is still reserved all-or-nothing from the pool
+  documents and concurrency still counts from LEASED.
+  `tests/unit/common/test_stored_task_totals_contract.py` greps those modules
+  for both names.
+* **5:** written only by the attempt at the document's current generation.
+* **9:** per agent, read and written in the agent's own tenant.
+* **4, 6, 7, 8, 10:** untouched.

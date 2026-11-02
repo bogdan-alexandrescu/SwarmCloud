@@ -672,6 +672,27 @@ class Task:
     #: construction of a task changes meaning; absent on every older
     #: document, which decodes as 0.
     platform_refusals: int = 0
+    #: Contract request 132 (STORED-TASK-TOTALS, part of #2688), accepted by
+    #: the owner 2026-11-01. A READ-SIDE VIEW ONLY of this task's attempt
+    #: documents: `swarm_api.attempt_totals.attempt_totals()`'s keys plus
+    #: `as_of` ({attempt_id, generation} of the attempt that wrote it).
+    #: Rewritten when an attempt starts, records its spend and ends, so
+    #: `GET /v1/tasks` serves it instead of reading every row's attempts.
+    #: NOTHING in admission, leasing, the scheduler or capacity reads it:
+    #: capacity is reserved all-or-nothing from the pools (invariant 2) and
+    #: concurrency counts from LEASED (invariant 3). Unsigned. None on every
+    #: older document, which a reader derives as before.
+    attempt_totals: dict[str, Any] | None = None
+    #: Contract request 132, accepted 2026-11-01. A READ-SIDE VIEW ONLY of
+    #: this task's account events: the account its current attempt holds,
+    #: `swarm_api.task_accounts`' served shape (`status`, `account_id`,
+    #: `provider`, `attempt_id`, `generation`, `swapped_from`, `swaps`),
+    #: written with each `account_assigned` / `account_unreadable` event.
+    #: Never a token or a secret name. NOTHING in admission, leasing, the
+    #: scheduler or capacity reads it (invariants 2 and 3; the broker's own
+    #: holds are the account capacity). Unsigned. None on every older
+    #: document. Last in the class, so no positional construction moves.
+    current_account: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         # Only the fields of requests 54 and 95: a document decoded before them

@@ -420,6 +420,10 @@ UNSIGNED_TASK_FIELDS = {
     # Contract request 123: the scheduler counts refused dispatches after
     # submission, so it cannot be inside a signature made at it.
     "platform_refusals",
+    # Contract request 132: read-side views written after submission, as
+    # attempts end and accounts are assigned; they choose nothing.
+    "attempt_totals",
+    "current_account",
 }
 
 
