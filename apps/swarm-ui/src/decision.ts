@@ -69,7 +69,7 @@ export interface Finding {
    * Jev's triage (CLD's Jev report, 2026-11-02): read off the finding when it
    * kept `p_real`/`triage` (a structured finding the worker kept as JSON), or
    * the worker's "verify before acting" text mark, which is taken off the
-   * text; `withTriage` adds the verdict file's. Null when Jev did not judge it.
+   * text; `wfreview.withVerdictTriage` adds the verdict file's. Null when Jev did not judge it.
    */
   readonly triage: FindingTriage | null
   /** The finding's index in the gate's recorded `findings`, the verdict file's index (`verdictTriage`). */
@@ -124,19 +124,6 @@ export function parseFinding(raw: unknown, at = 0): Finding | null {
     triage,
     at,
   }
-}
-
-/**
- * The findings with the verdict file's triage (`api.verdictTriage`, indexed
- * as the gate recorded them): a number the file holds replaces a text mark;
- * a finding the file says nothing about keeps what it had.
- */
-export function withTriage(findings: readonly Finding[], triage: readonly (FindingTriage | null)[] | null): readonly Finding[] {
-  if (triage === null) return findings
-  return findings.map((f) => {
-    const t = triage[f.at] ?? null
-    return t === null ? f : { ...f, triage: t }
-  })
 }
 
 export interface FindingGroup {

@@ -40,16 +40,17 @@ import {
   pullRequestOf,
   runnerReportOf,
   skippedAgentOf,
-  withTriage,
   writesVerdict,
   type Finding,
   type GateDecision,
   type PrTextSource,
 } from './decision'
 import type { Result } from './fetch'
+import type { ArtifactContent } from './types'
 import { Mark } from './primitives'
 import { useRead } from './RunFiles'
 import { TERMINAL_STATES, stagedInputsOf, type Task } from './types'
+import { withVerdictTriage } from './wfreview'
 
 /** The tone of a verdict word: MERGE is a pass, NOT_YET asks for work. */
 function verdictTone(v: string): string {
@@ -228,28 +229,45 @@ export function TriageChip({ triage }: { triage: FindingTriage | null }) {
   )
 }
 
+/** The triage a review's verdict file holds (`api.verdictTriage`); null when it cannot be read whole. */
+async function readTriage(reviewTaskId: string, name: string): Promise<(FindingTriage | null)[] | null> {
+  let r: Result<ArtifactContent> | undefined
+  try {
+    r = await loadArtifactContent(reviewTaskId, name)
+  } catch {
+    return null // the chips are an annotation: a failed read draws none, never an error card
+  }
+  if (r === undefined || r.status !== 'ok' || r.data.status !== 'ok' || r.data.content === null || r.data.truncated) return null
+  return verdictTriage(r.data.content)
+}
+
 /**
  * The triage the review's verdict file holds, indexed as the gate recorded
  * its findings (`api.verdictTriage`); null until read, or when the file is
  * not readable or holds no findings list. Read once per review and file.
  */
 export function useVerdictTriage(reviewTaskId: string | null, file: string | null): (FindingTriage | null)[] | null {
-  const name = file ?? 'verdict.json'
-  const { state } = useRead<(FindingTriage | null)[]>(
+  return useVerdictTriages(reviewTaskId === null ? [] : [{ review: reviewTaskId, file }]).get(reviewTaskId ?? '') ?? null
+}
+
+/** `useVerdictTriage` for several reviews at once, by review task id: one read of each file. */
+export function useVerdictTriages(
+  reviews: readonly { review: string; file: string | null }[],
+): ReadonlyMap<string, (FindingTriage | null)[]> {
+  const asked = Array.from(new Map(reviews.map((r) => [r.review, r.file ?? 'verdict.json'])).entries())
+  const key = asked.map(([id, name]) => `${id}:${name}`).join(',')
+  const { state } = useRead<[string, (FindingTriage | null)[]][]>(
     async () => {
-      if (reviewTaskId === null) return { status: 'empty', fetchedAt: Date.now() }
-      const r = await loadArtifactContent(reviewTaskId, name)
-      if (r.status !== 'ok' || r.data.status !== 'ok' || r.data.content === null || r.data.truncated) {
-        return { status: 'empty', fetchedAt: Date.now() }
-      }
-      const triage = verdictTriage(r.data.content)
-      return triage === null ? { status: 'empty', fetchedAt: Date.now() } : { status: 'ok', data: triage, fetchedAt: Date.now() }
+      if (asked.length === 0) return { status: 'empty', fetchedAt: Date.now() }
+      const read = await Promise.all(asked.map(async ([id, name]) => [id, await readTriage(id, name)] as const))
+      const found = read.flatMap(([id, t]): [string, (FindingTriage | null)[]][] => (t === null ? [] : [[id, t]]))
+      return found.length === 0 ? { status: 'empty', fetchedAt: Date.now() } : { status: 'ok', data: found, fetchedAt: Date.now() }
     },
-    `${reviewTaskId ?? 'none'}:${name}`,
+    key === '' ? 'none' : key,
     '',
     null,
   )
-  return state.status === 'ok' ? state.data : null
+  return new Map(state.status === 'ok' ? state.data : [])
 }
 
 function FindingItem({ f }: { f: Finding }) {
@@ -274,7 +292,7 @@ function FindingItem({ f }: { f: Finding }) {
 /** The review's findings by severity, with the count line; a dash with its reason when none were recorded. */
 function Findings({ gate, empty, review }: { gate: GateDecision; empty: string; review: string | null }) {
   const triage = useVerdictTriage(gate.findings !== null && gate.findings.length > 0 ? review : null, gate.file)
-  const findings = gate.findings === null ? null : withTriage(gate.findings, triage)
+  const findings = gate.findings === null ? null : withVerdictTriage(gate.findings, triage)
   if (findings === null) {
     return (
       <p className="dt-note">

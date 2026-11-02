@@ -180,7 +180,8 @@ import {
   WfStepMark,
   shapeWords,
 } from './WorkflowViews'
-import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
+import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, withVerdictTriage, type MergeRead, type VerdictRead } from './wfreview'
+import { TriageChip, useVerdictTriage } from './DecisionCard'
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
 import { PersonName } from './PersonName'
 import { Mark } from './primitives'
@@ -2652,7 +2653,7 @@ function StepCardExtras({
           />
         </div>
       )}
-      {verdict !== null && <VerdictCard verdict={verdict} />}
+      {verdict !== null && task !== null && <VerdictCard verdict={verdict} review={task.id} />}
       {reviewed && (
         <p className="wf-verdict is-pending">
           {/* ONE SENTENCE, THE MARK INLINE (QA G3-19): a colon after the
@@ -2678,7 +2679,10 @@ function StepCardExtras({
  * review agent's own words, printed as plain text; a finding without a
  * severity goes under Not graded, never Blocker.
  */
-function VerdictCard({ verdict }: { verdict: VerdictRead }) {
+function VerdictCard({ verdict, review }: { verdict: VerdictRead; review: string }) {
+  // Jev's triage of each finding, from the review's own verdict file (CLD's
+  // Jev report, 2026-11-02); a finding Jev did not judge has no chip.
+  const triage = useVerdictTriage(verdict.total > 0 ? review : null, verdict.file)
   const tone = verdict.verdict === 'MERGE' ? 'is-merge' : verdict.verdict === 'NOT_YET' ? 'is-notyet' : 'is-other'
   return (
     <section className="wf-verdict" aria-label="Review verdict">
@@ -2695,9 +2699,15 @@ function VerdictCard({ verdict }: { verdict: VerdictRead }) {
           <span className="wf-sev-h">
             {g.label} <span className="wf-sev-n">{g.items.length}</span>
           </span>
-          {g.items.map((text, i) => (
+          {withVerdictTriage(g.items, triage).map((f, i) => (
             <p key={i} className="wf-finding">
-              {text}
+              {f.text}
+              {f.triage !== null && (
+                <>
+                  {' '}
+                  <TriageChip triage={f.triage} />
+                </>
+              )}
             </p>
           ))}
         </div>
