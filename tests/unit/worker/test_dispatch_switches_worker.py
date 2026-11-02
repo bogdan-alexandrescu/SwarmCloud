@@ -206,7 +206,9 @@ def _judged(tmp_path: Path, workspace: dict[str, Any] | None, *, switch: str | N
 
     record: dict[str, Any] = {}
     env = attempt.setup(work=work, db=_Db(docs), tenant_id=TENANT, repository_url=URL,
-                        environ={settings.INTERNAL_URL_ENV: INTERNAL_URL}, switch=switch,
+                        environ={settings.INTERNAL_URL_ENV: INTERNAL_URL,
+                                 # The scheduler vouched for the signed block.
+                                 attempt.VERDICT_ENV: "true"}, switch=switch,
                         resolve_key=resolve_key, record=record)
     return env, record, asked
 

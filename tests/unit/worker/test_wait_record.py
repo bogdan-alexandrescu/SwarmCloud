@@ -236,7 +236,8 @@ def test_a_reader_that_ignores_the_new_fields_reads_what_it_read_before():
         wait = task["metadata"][control_mod.MERGE_WAIT_METADATA_KEY]
         # MUTATION: a `merge_wait` field the scheduler or swarm-api reads goes -> fails.
         assert MERGE_WAIT_FIELDS_BEFORE <= set(wait)
-        assert set(wait) - MERGE_WAIT_FIELDS_BEFORE <= {"failed"}
+        # `ci_paused_at`: the CI clock's pause across a slot wait (#3033), additive.
+        assert set(wait) - MERGE_WAIT_FIELDS_BEFORE <= {"failed", "ci_paused_at"}
 
 
 def _seed_merge(db: FakeFirestore) -> None:

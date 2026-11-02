@@ -4644,6 +4644,7 @@ class Worker:
 
             runner_result = self._add_runner_block(summary)
             self._record_quality_gates(summary)
+            self._settle_jev()
 
         if self.budget is not None:
             # The limits, what the attempt used and, when it stopped the
@@ -10110,9 +10111,10 @@ class Worker:
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
-        base.update(self._graph_context_env(ws, clone_base))
-        # `work/repos`, when the task reads additional repositories: a path.
-        base.update(extrarepos_mod.child_env(ws, self._extra_checkouts))
+        # BEFORE THE GRAPH CONTEXT, whose `judge.attempt.setup` reads the key
+        # file this writes (`attempt.TYPESAFE_KEY_FILE`): after it, a live-
+        # browser attempt's judge on TypeSafe found no key and read `no_key`
+        # (lane JEV-JUDGMENTS-RUN, 2026-11-02).
         # The jev MCP server's TypeSafe key, on a live-browser attempt with a
         # key (JEV-RUNNER, `jevkey`): the PATH of a 0600 file in private/,
         # never the key, which reaches only that server's process. Never
@@ -10130,6 +10132,9 @@ class Worker:
             inject=self.typesafe.on,
             shim_file=self.typesafe.shim_file,
         ))
+        base.update(self._graph_context_env(ws, clone_base))
+        # `work/repos`, when the task reads additional repositories: a path.
+        base.update(extrarepos_mod.child_env(ws, self._extra_checkouts))
         # The lane quality gates (JEV-LANES, `qualitygates`): on a claude-code
         # attempt whose workspace turned `quality_gates.jev` on, the PATH of a
         # 0600 config naming the workspace key's 0600 file in private/, never
@@ -10207,6 +10212,29 @@ class Worker:
                                                  **({"switch": record} if record else {})}
         if qualitygates_mod.worth_an_event(counts):
             self._emit_startup_mark(qualitygates_mod.EVENT_CAUSE, dict(counts or {}))
+
+    def _settle_jev(self) -> None:
+        """After the agent, before any terminal write: this attempt's Jev calls
+        and tokens into `jev_usage` (`judge.attempt.settle`), one row per
+        attempt and the workspace's month, in one transaction fenced by this
+        attempt's generation as every guarded write is (invariant 5): a
+        superseded attempt writes nothing. The next attempt of the task counts
+        these calls, and the month's total is what `code_intelligence
+        .jev_monthly_cap_tokens` is held to. Never raises; no output changes."""
+        from .judge import attempt as judge_attempt
+
+        if not self._graph_env:
+            return
+        try:
+            judge_attempt.settle(
+                self._graph_env, db=self.db,
+                run_transaction=self.control._run_transaction,
+                tenant_id=self.cfg.tenant_id, task_id=self.cfg.task_id,
+                generation=self.cfg.generation,
+                fence=lambda txn: self.control._fenced_task(txn, write="jev usage"),
+                log=self.log)
+        except Exception as exc:  # noqa: BLE001 -- accounting is never worth the attempt
+            self.log.warning("jev_settle_failed", error=type(exc).__name__)
 
     def _record_switches(self, summary: dict[str, Any]) -> None:
         """The workflow switches' record (`graphstage.switches_summary`), only
