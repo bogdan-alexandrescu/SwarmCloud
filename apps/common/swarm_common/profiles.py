@@ -1938,17 +1938,10 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # that name it stay readable and re-enabling is one word. Nothing was
         # queued or running against it when this landed.
         #
-        # STILL DISABLED after contract request 130, by the owner's one change
-        # to it (2026-11-01): "Accept, but keep codex unavailable until the
-        # pool lanes land". A follow-up sets `available=True` once the broker
-        # leases OpenAI plan accounts and the runner uses them.
-        available=False,
-        disabled_reason=(
-            "codex is disabled until the ChatGPT-plan pool lands: the quota "
-            "broker leasing OpenAI plan accounts and the codex runner using "
-            "them. A follow-up turns it on once both have merged. Use "
-            "claude-code."
-        ),
+        # Re-enabled by contract request 130 (owner, 2026-11-01; turned on
+        # 2026-11-02 once the pool lanes had merged): disabled 2026-09-23 by
+        # request 11 when the one registered key was refused; it now runs on a
+        # pool ChatGPT plan as well as a tenant's key.
         secret_slots={"files": _FILES_SLOT},   # contract request 80
     ),
     "browser": RunnerProfile(
