@@ -27,15 +27,31 @@ The asymmetry is deliberate and is the whole design:
   when every account the tenant may draw from is limited at once -- the pool
   itself is spent (`quota_broker.main._account_scope`).
 
+  RECOVERY ALSO RUNS ON THE CLOCK (owner, 2026-11-02). Counting successes
+  alone, a workspace halved from 40 to 7 needed some 660 clean task finishes
+  to climb back, which is days. So the target ALSO rises by one for every
+  `recovery_interval_seconds` (5 minutes) without a workspace-wide refusal,
+  up to the ceiling (`recover_over_time`). There is no timer: the climb is
+  worked out when the target is read, from the time of the last cut or the
+  last climb, which the store keeps on the quota document beside the state
+  (`recovery_clock`). A refusal still halves at once and restarts that
+  clock; only the recovery got faster.
+
 THE INVARIANT THAT MUST NEVER BREAK:
 
-    adaptive_target <= configured_hard_max, always.
+    adaptive_target <= ceiling = min(configured_hard_max, pool hard limit), always.
 
 `configured_hard_max` is an admin's statement about what the platform is allowed
-to do to a provider -- a contractual or budget ceiling, not a guess. AIMD may
-only ever propose a number BELOW it. Every function here clamps on the way out,
-and `_clamp` is the single place that arithmetic happens, so a new signal cannot
-be added that forgets to clamp.
+to do to a provider -- a contractual or budget ceiling, not a guess. The
+per-tenant pool's own `hard_limit` (`provider:<p>:tenant:<t>`) is the same kind
+of statement, and it is the number the console shows; on 2026-10-24 the pool
+said 40 while the quota document said 50, and halving started from 50. So the
+lower of the two is the ceiling (owner, 2026-11-02), and the routes that set
+either one now set both. AIMD may only ever propose a number at or BELOW it.
+Every function here clamps on the way out, and `_clamp` is the single place
+that arithmetic happens, so a new signal cannot be added that forgets to clamp.
+A caller that has not read the pool passes no `pool_hard_limit`, and the
+quota document's maximum is the ceiling alone.
 """
 
 from __future__ import annotations
@@ -67,6 +83,10 @@ class AimdConfig:
     max_cooldown_seconds: int = 900
     #: Consecutive 429s that mean "stop entirely" rather than "slow down".
     exhaustion_threshold: int = 5
+    #: Seconds without a workspace-wide refusal that raise the target by one,
+    #: on top of the success-based climb (owner, 2026-11-02). 0 turns the
+    #: clock off and leaves only the success-based climb.
+    recovery_interval_seconds: int = 300
 
     def __post_init__(self) -> None:
         if self.additive_increase <= 0:
@@ -77,16 +97,34 @@ class AimdConfig:
             raise ValueError("success_threshold must be positive")
         if self.min_target < 0:
             raise ValueError("min_target cannot be negative")
+        if self.recovery_interval_seconds < 0:
+            raise ValueError("recovery_interval_seconds cannot be negative")
 
 
-def _clamp(value: int | float, state: QuotaState, config: AimdConfig) -> int:
+def ceiling_of(state: QuotaState, pool_hard_limit: int | None = None) -> int:
+    """The highest target allowed: the lower of the quota document's
+    `configured_hard_max` and the per-tenant pool's `hard_limit`, when the
+    caller read the pool. Never below 0."""
+    ceiling = max(0, int(state.configured_hard_max))
+    if pool_hard_limit is not None:
+        ceiling = min(ceiling, max(0, int(pool_hard_limit)))
+    return ceiling
+
+
+def _clamp(
+    value: int | float,
+    state: QuotaState,
+    config: AimdConfig,
+    pool_hard_limit: int | None = None,
+) -> int:
     """The ONLY place an adaptive target is produced.
 
-    Clamps into [min_target, configured_hard_max]. If an admin sets a hard max
-    below min_target, the hard max wins -- an operator's explicit ceiling
-    outranks this module's preference for keeping a little headroom alive.
+    Clamps into [min_target, ceiling], the ceiling being `ceiling_of`. If an
+    admin sets a ceiling below min_target, the ceiling wins -- an operator's
+    explicit ceiling outranks this module's preference for keeping a little
+    headroom alive.
     """
-    ceiling = max(0, int(state.configured_hard_max))
+    ceiling = ceiling_of(state, pool_hard_limit)
     floor = min(config.min_target, ceiling)
     target = int(math.floor(value))
     if target < floor:
@@ -96,11 +134,13 @@ def _clamp(value: int | float, state: QuotaState, config: AimdConfig) -> int:
     return target
 
 
-def current_target(state: QuotaState, config: AimdConfig) -> int:
+def current_target(
+    state: QuotaState, config: AimdConfig, *, pool_hard_limit: int | None = None
+) -> int:
     """The working target, clamped. Never trusts a stored value."""
     if state.adaptive_target is None:
-        return _clamp(state.configured_hard_max, state, config)
-    return _clamp(state.adaptive_target, state, config)
+        return _clamp(state.configured_hard_max, state, config, pool_hard_limit)
+    return _clamp(state.adaptive_target, state, config, pool_hard_limit)
 
 
 def initial_state(provider: str, tenant_id: str, *, configured_hard_max: int,
@@ -141,6 +181,7 @@ def record_success(
     *,
     now: datetime | None = None,
     config: AimdConfig = AimdConfig(),
+    pool_hard_limit: int | None = None,
     requests_remaining: int | None = None,
     tokens_remaining: int | None = None,
     reset_at: datetime | None = None,
@@ -161,9 +202,9 @@ def record_success(
         )
 
     successes = state.success_count + 1
-    target = current_target(state, config)
+    target = current_target(state, config, pool_hard_limit=pool_hard_limit)
     if successes >= config.success_threshold:
-        target = _clamp(target + config.additive_increase, state, config)
+        target = _clamp(target + config.additive_increase, state, config, pool_hard_limit)
         successes = 0
 
     return replace(
@@ -198,6 +239,7 @@ def record_rate_limit(
     *,
     now: datetime | None = None,
     config: AimdConfig = AimdConfig(),
+    pool_hard_limit: int | None = None,
     retry_after_seconds: int | None = None,
     reset_at: datetime | None = None,
 ) -> QuotaState:
@@ -211,9 +253,8 @@ def record_rate_limit(
     """
     moment = now or utcnow()
     rate_limits = _run_count(state) + 1
-    target = _clamp(
-        current_target(state, config) * config.multiplicative_decrease, state, config
-    )
+    before = current_target(state, config, pool_hard_limit=pool_hard_limit)
+    target = _clamp(before * config.multiplicative_decrease, state, config, pool_hard_limit)
 
     cooldown = retry_after_seconds if retry_after_seconds is not None else None
     if cooldown is None and reset_at is not None:
@@ -251,11 +292,13 @@ def record_exhausted(
     *,
     now: datetime | None = None,
     config: AimdConfig = AimdConfig(),
+    pool_hard_limit: int | None = None,
     reset_at: datetime | None = None,
     retry_after_seconds: int | None = None,
 ) -> QuotaState:
     """The provider says the quota window is spent, not merely busy."""
     moment = now or utcnow()
+    before = current_target(state, config, pool_hard_limit=pool_hard_limit)
     cooldown = retry_after_seconds
     if cooldown is None and reset_at is not None:
         cooldown = int(max(0, (reset_at - moment).total_seconds()))
@@ -267,7 +310,7 @@ def record_exhausted(
         state=ProviderState.EXHAUSTED if state.state is not ProviderState.DISABLED
         else ProviderState.DISABLED,
         adaptive_target=_clamp(
-            current_target(state, config) * config.multiplicative_decrease, state, config
+            before * config.multiplicative_decrease, state, config, pool_hard_limit
         ),
         quota_derived_limit=0,
         cooldown_until=moment + timedelta(seconds=cooldown),
@@ -290,6 +333,7 @@ def reset_target(
     *,
     now: datetime | None = None,
     config: AimdConfig = AimdConfig(),
+    pool_hard_limit: int | None = None,
     clear_cooldown: bool = False,
 ) -> QuotaState:
     """An admin's reset of the working target. The ONLY path that raises it
@@ -324,7 +368,7 @@ def reset_target(
         )
     changed = replace(
         state,
-        adaptive_target=_clamp(int(target), state, config),
+        adaptive_target=_clamp(int(target), state, config, pool_hard_limit),
         success_count=0,
         rate_limit_count=0,
         updated_at=moment,
@@ -353,6 +397,7 @@ def refresh(
     *,
     now: datetime | None = None,
     config: AimdConfig = AimdConfig(),
+    pool_hard_limit: int | None = None,
 ) -> QuotaState:
     """Expire a cooldown or a reset window that has passed.
 
@@ -382,9 +427,79 @@ def refresh(
         # additive increase climb back. Jumping straight back to the hard max is
         # how a provider gets a second wall of 429s.
         rate_limit_count=0,
-        adaptive_target=current_target(state, config),
+        adaptive_target=current_target(state, config, pool_hard_limit=pool_hard_limit),
         updated_at=moment,
     )
+
+
+def recover_over_time(
+    state: QuotaState,
+    *,
+    clock_at: datetime | None,
+    now: datetime | None = None,
+    config: AimdConfig = AimdConfig(),
+    pool_hard_limit: int | None = None,
+) -> tuple[QuotaState, datetime | None, int]:
+    """The time-based climb, worked out at the moment the target is read.
+
+    Returns (state, clock, intervals): the target raised by one for every whole
+    `recovery_interval_seconds` since `clock_at` -- the last cut or the last
+    climb -- up to the ceiling; the clock moved on by the intervals spent, so a
+    part-interval carries to the next read; and how many intervals were spent
+    (0 when nothing rose). No timer or loop runs this: the store calls it on
+    every read-modify-write and on the sweep's tick, which already runs every
+    five minutes to retire cooldowns.
+
+    `clock_at` None is a document written before the clock existed: its last
+    429 starts the clock, else its last write. DISABLED never climbs; only the
+    admin's enable switch leaves it. A target at or above the ceiling has
+    nothing to climb and is returned as it is, the clock with it.
+    """
+    moment = now or utcnow()
+    interval = int(config.recovery_interval_seconds)
+    if interval <= 0 or state.state is ProviderState.DISABLED:
+        return state, clock_at, 0
+    start = clock_at or state.last_429_at or state.updated_at
+    target = current_target(state, config, pool_hard_limit=pool_hard_limit)
+    ceiling = ceiling_of(state, pool_hard_limit)
+    if target >= ceiling or start is None or moment <= start:
+        return state, clock_at, 0
+    intervals = int((moment - start).total_seconds() // interval)
+    if intervals <= 0:
+        return state, start, 0
+    raised = _clamp(target + intervals, state, config, pool_hard_limit)
+    spent = min(intervals, raised - target)
+    if spent <= 0:
+        return state, clock_at, 0
+    return (
+        replace(state, adaptive_target=raised, updated_at=moment),
+        start + timedelta(seconds=spent * interval),
+        spent,
+    )
+
+
+def recovery_clock(
+    before: QuotaState,
+    after: QuotaState,
+    *,
+    clock_at: datetime | None,
+    now: datetime | None = None,
+    config: AimdConfig = AimdConfig(),
+    pool_hard_limit: int | None = None,
+) -> datetime | None:
+    """The clock to store once a signal has turned `before` into `after`.
+
+    A refusal (a new `last_429_at`) or any move of the target -- a halving, a
+    success-based climb, an admin's reset or a lowered ceiling -- restarts it
+    at `now`, so the next time-based climb is a full interval after the cut or
+    the climb. Anything else keeps it.
+    """
+    moved = current_target(before, config, pool_hard_limit=pool_hard_limit) != current_target(
+        after, config, pool_hard_limit=pool_hard_limit
+    )
+    if moved or after.last_429_at != before.last_429_at:
+        return now or utcnow()
+    return clock_at
 
 
 def quota_derived_limit_for(
@@ -392,6 +507,7 @@ def quota_derived_limit_for(
     config: AimdConfig = AimdConfig(),
     *,
     now: datetime | None = None,
+    pool_hard_limit: int | None = None,
 ) -> int:
     """The cap this quota state imposes on the matching slot pool.
 
@@ -417,4 +533,4 @@ def quota_derived_limit_for(
         return 0
     if state.cooldown_until is not None and state.cooldown_until > reference:
         return 0
-    return _clamp(current_target(state, config), state, config)
+    return current_target(state, config, pool_hard_limit=pool_hard_limit)

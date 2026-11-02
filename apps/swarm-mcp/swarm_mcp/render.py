@@ -1406,6 +1406,7 @@ def render_capacity(
                 ),
                 "free": Cell(style.dash if available is None else str(available),
                              "dim" if available is None else None),
+                "ceiling": ceiling_cell(pool, style),
                 "state": state,
             }
         )
@@ -1419,6 +1420,9 @@ def render_capacity(
                     # the pool's free units, which ROOM divides.
                     Column("used", "UNITS", align="right"),
                     Column("free", "FREE", align="right", drop=2),
+                    # The configured ceiling beside the applied limit UNITS
+                    # divides by, and what lowered it (#3047).
+                    Column("ceiling", "CEILING", align="right", drop=3),
                     Column("state", "STATE", drop=1),
                 ],
                 pool_rows,
@@ -1428,6 +1432,36 @@ def render_capacity(
             + lines
         )
     return lines
+
+
+#: The short word for each input that can hold a pool below its ceiling.
+_LOWERED_WORD = {"adaptive_target": "adaptive", "quota_derived_limit": "quota"}
+
+
+def ceiling_cell(pool: dict[str, Any], style: Style) -> Cell:
+    """A pool's configured ceiling, and the input that holds UNITS' limit below it (#3047).
+
+    `40` when the ceiling applies; `40 adaptive` when the AIMD target holds the
+    applied limit (UNITS' denominator) below it, `40 quota` when the provider
+    quota does. The input is read from the `lowered_by` /v1/capacity serves;
+    an older API without it is read from the pool's own fields the same way.
+    """
+    ceiling = _int_or_none(pool.get("hard_limit"))
+    applied = _int_or_none(pool.get("effective_limit"))
+    if ceiling is None:
+        return Cell(style.dash, "dim")
+    if applied is None or applied >= ceiling:
+        return Cell(str(ceiling), "dim")
+    served = pool.get("lowered_by")
+    if isinstance(served, list):
+        inputs = [str(e.get("input")) for e in served if isinstance(e, dict)]
+    else:
+        inputs = [
+            name for name in ("adaptive_target", "quota_derived_limit")
+            if _int_or_none(pool.get(name)) == applied
+        ]
+    words = [_LOWERED_WORD.get(name, name) for name in inputs]
+    return Cell(" ".join([str(ceiling), *words]), "warn")
 
 
 def units_note(own: str) -> str:

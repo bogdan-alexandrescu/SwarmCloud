@@ -23,6 +23,7 @@
  *    block when a step carries one and not at all otherwise; a check whose
  *    state is not one of the words below reads "not read", never passed.
  */
+import { VERIFY_TEXT_MARK, findingTriageOf, type FindingTriage } from './api'
 import type { Task } from './types'
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -61,11 +62,19 @@ export const SEVERITY_LABEL: Readonly<Record<Severity | 'none', string>> = {
   none: 'Not graded',
 }
 
+/** One finding of a verdict card: the review agent's own words, and Jev's triage. */
+export interface VerdictItem {
+  readonly text: string
+  /** From the gate's record (a kept `p_real`, or the worker's text mark); `withVerdictTriage` adds the verdict file's. */
+  readonly triage: FindingTriage | null
+  /** Its index in the gate's recorded `findings`: the verdict file's index (`api.verdictTriage`). */
+  readonly at: number
+}
+
 export interface VerdictGroup {
   readonly key: Severity | 'none'
   readonly label: string
-  /** The review agent's own words, as text. */
-  readonly items: readonly string[]
+  readonly items: readonly VerdictItem[]
 }
 
 export interface VerdictRead {
@@ -85,13 +94,31 @@ export interface VerdictRead {
 }
 
 function findingText(f: unknown): string | null {
-  if (typeof f === 'string') return f
+  if (typeof f === 'string') return f.startsWith(VERIFY_TEXT_MARK) ? f.slice(VERIFY_TEXT_MARK.length) : f
   if (!isRecord(f)) return null
   for (const k of ['summary', 'title', 'message', 'text']) {
     const v = f[k]
     if (typeof v === 'string' && v !== '') return v
   }
   return null
+}
+
+/** Jev's triage as the gate recorded it: an object's `p_real`, or the worker's text mark. */
+function recordedTriage(f: unknown): FindingTriage | null {
+  if (typeof f === 'string') return f.startsWith(VERIFY_TEXT_MARK) ? { pReal: null, verify: true } : null
+  return findingTriageOf(f)
+}
+
+/** The triage the verdict file holds, by the gate's index, laid over what the gate recorded. */
+export function withVerdictTriage<T extends { readonly triage: FindingTriage | null; readonly at: number }>(
+  items: readonly T[],
+  triage: readonly (FindingTriage | null)[] | null | undefined,
+): readonly T[] {
+  if (triage === null || triage === undefined) return items
+  return items.map((f) => {
+    const t = triage[f.at] ?? null
+    return t === null ? f : { ...f, triage: t }
+  })
 }
 
 function severityOf(f: unknown): Severity | null {
@@ -113,14 +140,14 @@ export function verdictFor(reviewTaskId: string, tasks: readonly Task[]): Verdic
     const verdict = g['verdict']
     if (typeof verdict !== 'string' || verdict === '') continue
     const raw = Array.isArray(g['findings']) ? (g['findings'] as unknown[]) : []
-    const by: Record<Severity | 'none', string[]> = { blocker: [], major: [], minor: [], none: [] }
+    const by: Record<Severity | 'none', VerdictItem[]> = { blocker: [], major: [], minor: [], none: [] }
     let total = 0
-    for (const f of raw) {
+    raw.forEach((f, at) => {
       const text = findingText(f)
-      if (text === null) continue
+      if (text === null) return
       total += 1
-      by[severityOf(f) ?? 'none'].push(text)
-    }
+      by[severityOf(f) ?? 'none'].push({ text, triage: recordedTriage(f), at })
+    })
     const graded = by.blocker.length + by.major.length + by.minor.length > 0
     const keys: (Severity | 'none')[] = graded ? ['blocker', 'major', 'minor', 'none'] : ['none']
     const dropped = g['findings_dropped']
@@ -159,6 +186,12 @@ export interface ReviewFinding {
   readonly review: string
   readonly summary: string
   readonly severity: Severity | 'none'
+  /** Jev's triage, as `VerdictItem.triage`. */
+  readonly triage: FindingTriage | null
+  /** Its index in the gate's recorded `findings`. */
+  readonly at: number
+  /** The verdict file the gate read (`verdict_gate.file`), where the triage's numbers are. */
+  readonly verdictFile: string | null
   readonly file: string | null
   /** Set together with `side` or not at all: a line in an unknown half of a patch cannot be placed. */
   readonly line: number | null
@@ -210,6 +243,9 @@ export function reviewFindings(tasks: readonly Task[]): ReviewFinding[] {
         review,
         summary,
         severity: severityOf(f) ?? 'none',
+        triage: recordedTriage(f),
+        at: index,
+        verdictFile: typeof g['file'] === 'string' && g['file'] !== '' ? g['file'] : null,
         file,
         line: placed ? (n as number) : null,
         side: placed ? (sd as 'old' | 'new') : null,

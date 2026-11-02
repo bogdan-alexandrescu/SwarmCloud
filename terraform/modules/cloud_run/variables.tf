@@ -173,3 +173,48 @@ variable "services" {
 variable "labels" {
   type = map(string)
 }
+
+# INVOKER GRANTS ON A SERVICE ANOTHER CALL OF THIS MODULE CREATES (#3041).
+#
+# terraform/infra calls this module twice: once for swarm-api alone, then for
+# every other service with `depends_on` on the first call, so one apply rolls
+# swarm-api's new revision to Ready before the scheduler's hands new workers
+# their image. swarm-api's run.invoker grants stay HERE, at the addresses they
+# have always had (`invokers["swarm-api:<label>"]`), rather than moving with
+# the service: their keys include each tenant and each api_invokers member,
+# which a `moved` block cannot enumerate, and an iam_member destroyed at the
+# old address while it is created at the new one can remove the very binding
+# it re-adds -- the IAP agent's among them.
+#
+# service name -> (caller label -> member), the shape of a service's own
+# `invokers`. The service is named by string; ordering comes from the caller's
+# `depends_on`. Empty by default: a single call creates every service it grants.
+variable "invokers_elsewhere" {
+  type    = map(map(string))
+  default = {}
+
+  # The same two refusals `services` makes, for the same reasons.
+  validation {
+    condition = alltrue([
+      for k, v in var.invokers_elsewhere : alltrue([
+        for label, member in v : member != "allAuthenticatedUsers"
+      ])
+    ])
+    error_message = "allAuthenticatedUsers may never be granted run.invoker: it means every Google account, and the application's own ID-token check is what authenticates callers."
+  }
+
+  validation {
+    condition = alltrue([
+      for k, v in var.invokers_elsewhere :
+      !contains(values(v), "allUsers") || var.ingress != "INGRESS_TRAFFIC_ALL"
+    ])
+    error_message = "allUsers is only permitted while ingress is restricted. With INGRESS_TRAFFIC_ALL it would leave the API genuinely open to the internet."
+  }
+
+  # A service this call creates grants through its own `invokers`; naming it
+  # here too would make two grants race for one key.
+  validation {
+    condition     = length(setintersection(keys(var.invokers_elsewhere), keys(var.services))) == 0
+    error_message = "invokers_elsewhere names a service this call creates; grant it through that service's own invokers."
+  }
+}
