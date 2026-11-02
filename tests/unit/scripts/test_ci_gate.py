@@ -553,9 +553,9 @@ def test_the_gate_job_is_named_ci_gate_and_always_runs():
     # Every pull request, with no filter: a filtered gate is the problem it
     # exists to solve.
     assert "pull_request" in on and not (on["pull_request"] or {}), on
-    # main, and the lane branches whose implement push starts CI early
-    # (LANE CI-EARLY, test_ci_early.py).
-    assert on["push"] == {"branches": ["main", "swarm/**"]}, on
+    # main only: a lane head runs CI once, on its pull request (owner,
+    # 2026-11-02, test_ci_once_per_head.py).
+    assert on["push"] == {"branches": ["main"]}, on
     job = gate_job()
     assert job.get("name") == "ci-gate", job
     # Skipped would read as passed; !cancelled() runs it when something it

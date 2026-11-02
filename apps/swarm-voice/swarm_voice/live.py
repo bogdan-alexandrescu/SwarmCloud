@@ -31,11 +31,16 @@ swarm-api, a process shutdown (`Sessions.end_all`), and a sideband that drops
 duration limit, or the browser's own `session.close` on the data channel -- is
 forgotten when its `session.closed` arrives.
 
-Phase one holds talk and captions only: no delegation is configured, so the
-voice never waits on a planner that does not exist yet (phase two adds
-`delegation: {"type": "client"}` with the planner). Transcript events are passed
-to `on_event` and not stored here: storing them waits for the redaction step of
-§3.9, which is phase two's.
+DELEGATION (phase two, §3.3). With a planner (planner.py), each session is
+created with `delegation: {"type": "client"}` and its voice is told to delegate.
+On the sideband, `session.delegation.created` names a delegation id and no task
+text ("metadata, not task text"), so this module keeps a window of the final
+transcript segments of both sides and hands it to `Planner.delegate` with the
+session's person and grant; the planner's at most two sentences go back as
+`session.commentary.append` for that delegation id (at most 500 tokens an
+append). Without a planner nothing changes: no delegation is configured, so
+the voice never waits on one. Transcript events are still passed to `on_event`
+and not stored here: storing them waits for the redaction step of §3.9.
 """
 
 from __future__ import annotations
@@ -44,7 +49,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from typing import Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 import httpx
 from websockets.asyncio.client import connect as ws_connect
@@ -52,6 +57,9 @@ from websockets.exceptions import WebSocketException
 
 from .credential import Credential, CredentialError
 from .grant import SessionGrant
+
+if TYPE_CHECKING:
+    from .planner import Planner
 
 log = logging.getLogger("swarm_voice.live")
 #: The websockets library logs every handshake header at DEBUG, the bearer among
@@ -78,6 +86,27 @@ INSTRUCTIONS = (
     "If the person starts to read one aloud, stop them at once and tell them to use the "
     "console's secret form instead, because anything said aloud is heard and transcribed."
 )
+
+#: Added to the instructions when a planner is configured (§3.3 step 1).
+DELEGATE_INSTRUCTIONS = (
+    " When the person asks for something to be planned, drawn, looked up or explained from "
+    "SwarmCloud, delegate it, say a few words while you wait, then speak the result you are "
+    "given and point at the card on screen. Never invent a plan or a status yourself."
+)
+
+#: The sideband event that starts a planner turn, and the one its result goes back as.
+DELEGATION_CREATED = "session.delegation.created"
+COMMENTARY_APPEND = "session.commentary.append"
+#: Final transcript segments, by side: what the planner reads (captions.ts names the same).
+TRANSCRIPT_FINAL = {
+    "session.input_transcript.done": "person",
+    "conversation.item.input_audio_transcription.completed": "person",
+    "session.output_transcript.done": "voice",
+    "response.output_audio_transcript.done": "voice",
+    "response.audio_transcript.done": "voice",
+}
+#: Segments of transcript kept for the planner.
+TRANSCRIPT_LINES = 200
 
 
 class LiveError(RuntimeError):
@@ -157,7 +186,8 @@ class LiveSession:
     """One GPT-Live session and the sideband held for it."""
 
     def __init__(self, voice_id: str, live_id: str, credential: Credential, api: LiveApi,
-                 *, on_event: EventSink | None, on_closed: Callable[["LiveSession"], None]) -> None:
+                 *, on_event: EventSink | None, on_closed: Callable[["LiveSession"], None],
+                 person: str = "", planner: "Planner | None" = None) -> None:
         self.voice_id = voice_id
         self.live_id = live_id
         self._credential = credential
@@ -174,6 +204,11 @@ class LiveSession:
         self.grant: SessionGrant | None = None
         self.usage_seconds: float | None = None
         self.reason: str | None = None
+        self.person = person
+        self._planner = planner
+        #: (speaker, text) of the final transcript segments, newest last.
+        self.transcript: list[tuple[str, str]] = []
+        self._turns: set[asyncio.Task] = set()
 
     @property
     def attached(self) -> bool:
@@ -217,6 +252,10 @@ class LiveSession:
                     self.reason = str(event.get("reason") or "closed")
                     self._closed.set()
                     break
+                if kind in TRANSCRIPT_FINAL:
+                    self._note_transcript(TRANSCRIPT_FINAL[kind], event)
+                elif kind == DELEGATION_CREATED and self._planner is not None:
+                    self._delegated(event)
                 if kind == "error":
                     # The error's code only: its message may quote what was sent.
                     error = event.get("error") if isinstance(event.get("error"), dict) else {}
@@ -235,6 +274,45 @@ class LiveSession:
                 self._on_closed(self)
             else:
                 log.info("voice session %s: sideband detached; the next end attaches again", self.voice_id)
+
+    def _note_transcript(self, speaker: str, event: dict) -> None:
+        text = event.get("transcript")
+        if not isinstance(text, str):
+            text = event.get("text")
+        if isinstance(text, str) and text.strip():
+            self.transcript.append((speaker, text.strip()))
+            del self.transcript[:-TRANSCRIPT_LINES]
+
+    def _delegated(self, event: dict) -> None:
+        """Start a planner turn for a delegation; its result is spoken when it ends."""
+        delegation = event.get("delegation") if isinstance(event.get("delegation"), dict) else {}
+        delegation_id = delegation.get("id")
+        if not isinstance(delegation_id, str) or not delegation_id:
+            log.warning("voice session %s: a delegation without an id was ignored", self.voice_id)
+            return
+        task = asyncio.create_task(self._plan(delegation_id), name=f"planner-{self.voice_id}")
+        self._turns.add(task)
+        task.add_done_callback(self._turns.discard)
+
+    async def _plan(self, delegation_id: str) -> None:
+        assert self._planner is not None
+        result = await self._planner.delegate(person=self.person, grant=self.grant,
+                                              transcript=list(self.transcript),
+                                              delegation_id=delegation_id)
+        if self.ended or self._socket is None or not result.spoken:
+            return
+        try:
+            await self._socket.send(json.dumps({
+                "type": COMMENTARY_APPEND, "event_id": f"planner_{delegation_id}"[:64],
+                "delegation_id": delegation_id, "content": result.spoken}))
+        except WebSocketException as exc:
+            log.info("voice session %s: the planner's summary was not sent (%s)",
+                     self.voice_id, type(exc).__name__)
+
+    def cancel_turns(self) -> None:
+        """Drop planner turns in flight: an ended session speaks nothing more."""
+        for task in list(self._turns):
+            task.cancel()
 
     async def end(self, grace: float) -> None:
         """Send `session.close`, wait up to `grace` for `session.closed`, then close the socket."""
@@ -274,8 +352,9 @@ class Sessions:
     session is held exactly once."""
 
     def __init__(self, api: LiveApi, *, credentials: Credentials, close_grace: float = 5.0,
-                 on_event: EventSink | None = None) -> None:
+                 on_event: EventSink | None = None, planner: "Planner | None" = None) -> None:
         self.api = api
+        self._planner = planner
         self._credentials = credentials
         self._grace = close_grace
         self._on_event = on_event
@@ -291,6 +370,9 @@ class Sessions:
     def _forget(self, session: LiveSession) -> None:
         # The grant dies with the session (§3.6): an ended session presents none.
         session.grant = None
+        session.cancel_turns()
+        if self._planner is not None:
+            self._planner.forget(session.voice_id)
         if self._live.get(session.voice_id) is session:
             del self._live[session.voice_id]
 
@@ -303,9 +385,14 @@ class Sessions:
         self._starting.add(voice_id)
         try:
             credential = await self._credentials.for_person(credential_ref, person=person)
-            live_id, answer = await self.api.create(credential, offer, {"model": MODEL, "instructions": INSTRUCTIONS})
+            config: dict[str, Any] = {"model": MODEL, "instructions": INSTRUCTIONS}
+            if self._planner is not None:
+                config = {"model": MODEL, "instructions": INSTRUCTIONS + DELEGATE_INSTRUCTIONS,
+                          "delegation": {"type": "client"}}
+            live_id, answer = await self.api.create(credential, offer, config)
             session = LiveSession(voice_id, live_id, credential, self.api,
-                                  on_event=self._on_event, on_closed=self._forget)
+                                  on_event=self._on_event, on_closed=self._forget,
+                                  person=person, planner=self._planner)
             session.answer = answer
             session.grant = grant
             # Attached BEFORE the answer goes back: a session this process cannot end

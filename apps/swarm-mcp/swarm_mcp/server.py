@@ -2842,7 +2842,10 @@ TOOLS: list[dict[str, Any]] = [
                 for name, resource in sorted(RESOURCE_CLASSES.items(), key=lambda kv: kv[1].units)
             )
             + f") in a compute pool and {PROVIDER_POOL_UNITS} in a provider pool -- "
-            "and on a shared pool it counts every tenant's."
+            "and on a shared pool it counts every tenant's. Under the pools, Jev's "
+            "last 30 days as the console's Capacity › Jev usage shows them: calls, "
+            "tokens, dollars ('rate not set' while no per-token rate is set, never "
+            "$0), outcomes, and the month's use of its cap."
         ),
         "inputSchema": {
             "type": "object",
@@ -4278,8 +4281,7 @@ def _accounts_view(snap, style):
 def _capacity_view(snap, style):
     from . import render
 
-    return [render.section("capacity", render.capacity_subtitle(snap.capacity, style), style)] + \
-        render.render_capacity(snap.capacity, style, error=snap.capacity_error)
+    return render.render_capacity_view(snap, style)
 
 
 def _agents_view(snap, style):
