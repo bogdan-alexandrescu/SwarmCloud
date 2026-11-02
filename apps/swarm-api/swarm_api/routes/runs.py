@@ -2,7 +2,8 @@
 
     POST /v1/runs                         read the open work, then one planner task
     GET  /v1/runs                         the caller's tenant's runs, newest first
-    GET  /v1/runs/{run_id}                one run, advanced to what its tasks say
+    GET  /v1/runs/{run_id}                one run, advanced to what its tasks say,
+                                          with the planner's `plan_advisory`
     POST /v1/runs/{run_id}/plan:approve   {"plan_digest"}  -> a new workflow
     POST /v1/runs/{run_id}/plan:edit      {"plan_digest", "plan"}
     POST /v1/runs/{run_id}/plan:reject    {"plan_digest"?, "reason"?}
@@ -64,6 +65,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field, replace
 
 from fastapi import APIRouter, Depends, Query, Response, status
@@ -209,6 +211,82 @@ def jev_holds_for_human(run: IssueRun, advisory: dict | None) -> bool:
         return False
     duplicate = advisory.get("duplicate")
     return advisory.get("hold_for_human") is True and isinstance(duplicate, dict)
+
+
+#: SERVED ON THE RUN READ (CLD's Jev report, plan coverage; owner 2026-11-02):
+#: until then only the hold read the advisory, so nobody saw a flag. The run
+#: read serves it as `plan_advisory`, taken from the artifact when the run is
+#: read and never stored on the run, so it moves nothing (invariant 1) and the
+#: frozen run model is untouched. Only these shaped fields are served, each
+#: text bounded: the artifact is the planner's output, and a reader renders
+#: it as text. A flagged requirement's `coverage` is `weak` when the artifact
+#: says so and otherwise `none` -- J2 flags a requirement no step covers at
+#: p >= 0.5 (`agent_worker.judge.shapes.read_plan_coverage`).
+MAX_ADVISORY_TEXT = 500
+MAX_ADVISORY_FLAGS = 50
+_DUPLICATE_ISSUE_REF = re.compile(r"^([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})#([1-9][0-9]{0,9})$")
+
+
+def _advisory_text(value: object) -> str | None:
+    return value[:MAX_ADVISORY_TEXT] if isinstance(value, str) and value else None
+
+
+def _advisory_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _duplicate_url(ref: str | None) -> str | None:
+    """A GitHub link for an `owner/repo#N` ref or a github.com URL, else None."""
+    if ref is None:
+        return None
+    if ref.startswith("https://github.com/") and not any(c.isspace() for c in ref):
+        return ref
+    m = _DUPLICATE_ISSUE_REF.match(ref)
+    return f"https://github.com/{m.group(1)}/{m.group(2)}/issues/{m.group(3)}" if m else None
+
+
+def served_plan_advisory(advisory: dict | None) -> dict | None:
+    """The advisory as the run read serves it: J2's flags, J5's duplicate, the hold."""
+    if not advisory:
+        return None
+    coverage = advisory.get("coverage")
+    served_coverage = None
+    if isinstance(coverage, dict):
+        flagged = []
+        for row in coverage.get("flagged") or []:
+            text = _advisory_text(row.get("requirement")) if isinstance(row, dict) else None
+            if text is None:
+                continue
+            flagged.append({"index": _advisory_int(row.get("index")), "requirement": text,
+                            "coverage": "weak" if row.get("coverage") == "weak" else "none"})
+        served_coverage = {"requirements": _advisory_int(coverage.get("requirements")),
+                           "flagged": flagged[:MAX_ADVISORY_FLAGS]}
+    duplicate = advisory.get("duplicate")
+    served_duplicate = None
+    if isinstance(duplicate, dict):
+        ref = _advisory_text(duplicate.get("ref"))
+        p = duplicate.get("p")
+        served_duplicate = {
+            "title": _advisory_text(duplicate.get("title")),
+            "ref": ref,
+            "url": _duplicate_url(ref),
+            "p": float(p) if isinstance(p, (int, float)) and not isinstance(p, bool) and 0 <= p <= 1 else None,
+        }
+    return {"coverage": served_coverage, "duplicate": served_duplicate,
+            "hold_for_human": advisory.get("hold_for_human") is True,
+            # The planner judged its own plan, revision 1; an edit is not re-judged.
+            "judged_revision": 1}
+
+
+def with_plan_advisory(ctx: AppContext, tenant_id: str, run: IssueRun, row: dict) -> dict:
+    """`row` (a run's API row) with `plan_advisory`, read when the run has a plan.
+
+    A run with no plan has nothing judged and reads nothing: `None`."""
+    advisory = None
+    if run.plan is not None and run.planner_task_id:
+        advisory = served_plan_advisory(read_plan_advisory(ctx, tenant_id, run.planner_task_id))
+    row["plan_advisory"] = advisory
+    return row
 
 
 def workflows_refusal(paths: list[str]) -> str:
@@ -1143,7 +1221,13 @@ def list_runs(
                 # One run's read failing must not hide the page; the row is
                 # served as stored, and its own GET reports the failure.
                 log.warning("issue run %s not advanced in the list (%s)", run.id, exc.code)
-        served.append(run_summary(run.to_api()) if summary else run.to_api())
+        row = run.to_api()
+        # The advisory is one artifact read per row, so the list reads it only
+        # for the rows that wait for an approval; elsewhere the key is absent
+        # (not read), never null (read, and none).
+        if run.state == RunState.PLANNED:
+            row = with_plan_advisory(ctx, tenant_id, run, row)
+        served.append(run_summary(row) if summary else row)
     payload = {"runs": served, "next_page_token": next_token, "tenant_id": tenant_id}
     if summary:
         payload["view"] = "summary"
@@ -1156,8 +1240,8 @@ def get_run(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    run = _runs(ctx).get(tenant_id, run_id)
-    return {"run": advance_run(ctx, tenant_id, run).to_api()}
+    run = advance_run(ctx, tenant_id, _runs(ctx).get(tenant_id, run_id))
+    return {"run": with_plan_advisory(ctx, tenant_id, run, run.to_api())}
 
 
 @router.post("/{run_id}/plan:approve")
