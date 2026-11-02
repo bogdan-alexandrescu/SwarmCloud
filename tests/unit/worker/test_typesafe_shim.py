@@ -780,6 +780,10 @@ def test_the_judge_sends_nothing_to_a_shim_address_that_is_not_the_shims(url):
     assert isinstance(chosen, judge_settings.Off) and chosen.reason == "no_key"
 
 
+#: The scheduler's verdict on the signed `code_intelligence` block.
+SIGNED = {"SWARM_JEV_JUDGMENTS": "true"}
+
+
 def _judge_db() -> _Db:
     return _Db({"workspace_settings/eng": {"code_intelligence": {"jev": True},
                                            "judgment_backend": "typesafe"}})
@@ -795,7 +799,7 @@ def test_judge_setup_reads_the_shim_file_and_never_the_key_file(route, fwd, tmp_
     inject.start(private)
     try:
         env = judge_attempt.setup(work=work, db=_judge_db(), tenant_id="eng",
-                                  repository_url=None, environ={})
+                                  repository_url=None, environ=SIGNED)
         config = json.loads(Path(env[judge_attempt.CONFIG_ENV]).read_text())
         assert config["backend"]["url"] == inject.shim.url
         assert Path(config["key_file"]).read_text() == inject.shim.token
@@ -819,7 +823,7 @@ def test_judge_setup_without_a_shim_keeps_todays_key_file(tmp_path):
     key = _fake_key()
     (private / jevkey.KEY_FILE_NAME).write_text(key)
     env = judge_attempt.setup(work=work, db=_judge_db(), tenant_id="eng", repository_url=None,
-                              environ={})
+                              environ=SIGNED)
     config = json.loads(Path(env[judge_attempt.CONFIG_ENV]).read_text())
     assert config["backend"]["url"] == judge_settings.TYPESAFE_URL
     assert Path(config["key_file"]).read_text() == key
