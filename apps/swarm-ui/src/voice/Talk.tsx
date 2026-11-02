@@ -25,7 +25,7 @@ import { Button, Segmented, ToneMark } from '../components'
 import { noteActivity } from '../Shell'
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
 import { micWord, useMic, type MicMode } from './mic'
-import { connectTalk, endVoiceSession, type TalkCall } from './rtc'
+import { connectTalk, endVoiceSession, TalkError, type TalkCall } from './rtc'
 import { Ring, type ScopeState } from './Scope'
 import './talk-pane.css'
 
@@ -49,6 +49,18 @@ function eventType(data: unknown): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Why a start failed, for the page. swarm-api's refusal is shown as served:
+ * its sentence already says what happened and that nothing was started (a 503
+ * while swarm-voice is not deployed here, a 403 for anyone it is not open
+ * to), so it is not wrapped in words of the page's own. A failure in this
+ * browser has no such sentence and is headed as one.
+ */
+function startProblem(e: unknown): string {
+  if (e instanceof TalkError && e.api !== null && e.api.message.trim() !== '') return e.api.message
+  return `Voice it could not start: ${e instanceof Error ? e.message : 'the call failed.'}`
 }
 
 function MicGlyph({ off = false }: { off?: boolean }) {
@@ -174,7 +186,7 @@ export function TalkPane() {
       setPhase('live')
     } catch (e) {
       if (!mounted.current) return
-      setProblem(`Voice it could not start: ${e instanceof Error ? e.message : 'the call failed.'}`)
+      setProblem(startProblem(e))
       setPhase('idle')
     }
   }, [onEvent, end])

@@ -151,7 +151,7 @@ describe('the Talk pane', () => {
     fetchMock.write.mockResolvedValue({ status: 'error', error: { kind: 'forbidden', httpStatus: 403, code: null, message: 'Voice it is for its owner only.' } })
     render(<TalkPane />)
     const pc = await start()
-    expect(screen.getByRole('alert').textContent).toMatch(/could not start/i)
+    expect(screen.getByRole('alert').textContent).toBe('Voice it is for its owner only.')
     expect(pc.closed).toBe(true)
     expect(mic.stop).toHaveBeenCalled()
   })
