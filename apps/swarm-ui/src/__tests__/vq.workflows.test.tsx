@@ -207,7 +207,7 @@ describe('VQ-013: the list is compact rows under one note', () => {
     expect(notes).toHaveLength(1)
     expect(notes[0]!.textContent).toBe(
       'Counts and order are of the 2 newest workflows; older ones are on the server and not read yet · ' +
-        '1 of 2 rows have their steps read; older rows show ids only until they scroll into view',
+        "1 of 2 rows have their steps read; the list read did not serve the rest's, which each one's page reads",
     )
     // No margin of its own on top of the list's gap.
     expect(painted(notes[0]!, 'margin', { width: 1440 })).toBe('0')

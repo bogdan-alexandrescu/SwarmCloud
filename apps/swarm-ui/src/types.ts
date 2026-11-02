@@ -874,6 +874,13 @@ export interface Task {
   model_class?: string | null
   model_class_defaulted?: boolean
   timeout_seconds: number | null
+  /**
+   * Contract request 131: the `timeout_seconds` the spec asked for when the
+   * API stored a lower one (the profile's cap, or a child's parent's), else
+   * null. A record only: the limit is `timeout_seconds`. OPTIONAL: an older
+   * API does not send it.
+   */
+  timeout_seconds_asked?: number | null
   /** When a PARKED task becomes eligible again. Null unless it is parked. */
   next_eligible_at: string | null
   /**

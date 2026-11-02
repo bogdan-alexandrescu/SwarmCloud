@@ -367,11 +367,13 @@ catalogue's own words — so the two answers stay apart:
 * *`codex` is refused: …* — a **known** profile that is turned off. Do not go
   hunting for a typo and do not retry it.
 
-**`codex` is DISABLED.** It is still in the catalogue so that existing runs
-which name it stay readable, but this platform is focused on Claude and the
-provider refused the registered credential — on 2026-09-23 four codex steps of a
-twenty-step run failed with "openai refused the credential", each after being
-admitted, leased and dispatched. Use `claude-code`. The same refusal now happens
+**`codex` is DISABLED.** It was turned off on 2026-09-23, when four codex
+steps of a twenty-step run failed with "openai refused the credential", each
+after being admitted, leased and dispatched. It now names a ChatGPT plan's
+credential beside the tenant's OpenAI key, but stays off until the
+ChatGPT-plan pool lands (the quota broker leasing OpenAI plan accounts and the
+codex runner using them); a follow-up turns it on once both have merged. Until
+then, use `claude-code`. The same refusal now happens
 at submission for a whole workflow, so a DAG with one bad step is refused
 entire rather than running the other nineteen and failing that one late.
 

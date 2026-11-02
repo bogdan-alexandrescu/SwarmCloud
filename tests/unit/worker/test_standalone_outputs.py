@@ -191,6 +191,15 @@ print(json.dumps(out))
 """
 
 
+@pytest.fixture(autouse=True)
+def _no_prompt_notes_from_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A SwarmCloud agent container sets these, and the runner then appends
+    the Playwright and child-task notes to the prompt these tests compare:
+    they failed there and passed in CI (2026-11-02, as #2990 for two others)."""
+    for name in ("PLAYWRIGHT_BROWSERS_PATH", "SWARM_CHILDREN"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def agent_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     binary = tmp_path / "fake-claude"

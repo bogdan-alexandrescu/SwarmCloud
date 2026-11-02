@@ -2,9 +2,9 @@
 
 WHY EVERY ROUTE HERE IS A PROXY
 -------------------------------
-An account is a Claude subscription the platform runs agents on, and its
-credential is a rotating OAuth pair: refreshing it REVOKES the token it
-replaces. Two components that both write one do not race, they brick it. The
+An account is a Claude subscription or a ChatGPT plan the platform runs agents
+on, and its credential is a rotating OAuth pair: refreshing it REVOKES the
+token it replaces. Two components that both write one do not race, they brick it. The
 quota broker is the platform's single writer, so nothing in this file touches
 Secret Manager; `brokerclient.py` speaks HTTP to that service and this file adds
 the one thing the broker cannot know -- which human is calling.
@@ -35,14 +35,19 @@ resolved tenant and refused when it differs -- and never used as the value
 anything is filed under, so no ordering of checks exists in which a body field
 could put a live credential into somebody else's pool.
 
-ONE KIND OF CREDENTIAL
-----------------------
-The pool holds CLAUDE SUBSCRIPTIONS and nothing else. There is no API-key
-branch here and no credential-kind selector: `provider` is accepted only so a
-caller that names something else is told why, and the single accepted value is
-`anthropic`. The unrelated `POST /v1/tenants/me/credentials`, which writes a
-tenant's own provider API key into that tenant's secret, is a different surface
-and is untouched by this file.
+ONE KIND OF CREDENTIAL, TWO PROVIDERS
+-------------------------------------
+The pool holds ROTATING OAUTH PAIRS and nothing else: Claude subscriptions
+(`anthropic`) and, since the owner's choice of 2026-11-01 (#2688), ChatGPT
+plans (`openai`, which codex runs on). There is no API-key branch here and no
+credential-kind selector: `provider` names which of those two pairs an
+account is, a sign-in that names neither is refused by its request model, and
+a registration that names neither is refused by name with the known providers
+in the refusal's detail. A sign-in that sends no provider is a Claude sign-in,
+exactly as before. This file forwards the provider unchanged and never reads
+or holds the pair itself. The unrelated `POST /v1/tenants/me/credentials`,
+which writes a tenant's own provider API key into that tenant's secret, is a
+different surface and is untouched by this file.
 
 WHY OWNERSHIP IS RE-CHECKED HERE RATHER THAN LEFT TO THE BROKER
 ---------------------------------------------------------------
@@ -105,7 +110,7 @@ from ..schemas import (
     ACCOUNT_HEALTH_STATUSES,
     ACCOUNT_HEALTH_WINDOWS,
     ACCOUNT_HOLD_DEADLINE,
-    SUBSCRIPTION_PROVIDER,
+    ACCOUNT_PROVIDERS,
     AccountCreate,
     AccountLending,
     AccountSignInFinish,
@@ -373,7 +378,7 @@ def register_account(
     ctx: AppContext = Depends(get_context),
     pool: AccountPool = Depends(account_pool),
 ) -> dict:
-    """Register a subscription into the caller's own pool.
+    """Register a subscription or a ChatGPT plan into the caller's own pool.
 
     The credential is taken as pasted and forwarded once. The broker parses it
     BEFORE writing anything, so a credential with no refresh token is refused at
@@ -393,16 +398,16 @@ def register_account(
                 "owner comes from the verified token, so the field can be omitted"
             )
     provider = body.provider.strip().lower()
-    if provider != SUBSCRIPTION_PROVIDER:
-        # THE POOL HOLDS SUBSCRIPTIONS, so this is not a choice -- it is the
-        # one accepted value, checked so a caller naming anything else is told
-        # why rather than having a live credential filed under a provider the
-        # broker cannot refresh. Every account here is an OAuth pair the broker
-        # rotates; there is no API-key path in the account pool at all.
+    if provider not in ACCOUNT_PROVIDERS:
+        # THE POOL HOLDS ROTATING PAIRS, so this is not a free choice: a
+        # caller naming anything else is told why rather than having a live
+        # credential filed under a provider the broker cannot refresh. There is
+        # no API-key path in the account pool at all.
         raise ValidationFailed(
-            "the account pool holds Claude subscriptions only, so provider "
-            f"must be {SUBSCRIPTION_PROVIDER!r}, not {provider!r}",
-            detail={"known_providers": [SUBSCRIPTION_PROVIDER]},
+            "the account pool holds Claude subscriptions and ChatGPT plans, so "
+            f"provider must be one of {', '.join(map(repr, ACCOUNT_PROVIDERS))}, "
+            f"not {provider!r}",
+            detail={"known_providers": list(ACCOUNT_PROVIDERS)},
         )
     result = pool.register(
         owner_tenant=tenant_id,
@@ -439,11 +444,16 @@ def begin_sign_in(
     The tenant comes from the verified token, never from the body -- the same
     rule every other route here follows, and the reason the body has no
     owner_tenant field at all.
+
+    The provider is the body's, forwarded unchanged (`anthropic` when absent,
+    so a Claude sign-in is exactly what it was). The broker's answer names the
+    provider and the redirect it chose, which is how `sc account add
+    --provider openai` knows to listen on its own machine for the callback.
     """
     return pool.begin_sign_in(
         owner_tenant=_writer_tenant_id(ctx, auth),
         label=body.label,
-        provider=SUBSCRIPTION_PROVIDER,
+        provider=body.provider,
         lend_to=list(body.lend_to),
     )
 

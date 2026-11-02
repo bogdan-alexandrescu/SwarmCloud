@@ -144,6 +144,31 @@ Neither is counted in a cut's "N of M files (K of S sites)", nor in the
 sites `measured_cost` scales a cut server's grant by: they are not work
 the server was given.
 
+THE FILES ASKED (part of #2991, owner 2026-11-02). A run built on a base
+asks a server only about some files (`LspOptions.asked_paths`): the ones a
+change affected and the ones no server has answered yet. The server is still
+given the whole workspace, so a definition can land in any file. Phase 1
+asks `first_paths` first -- the affected files, which have no earlier
+answer to fall back on -- and the rest in path order, all in one session,
+so a server is started once and its workspace loaded once. The files a
+previous run's server answered (`LspOptions.answered`) are asked too when
+this run's server is not that server at that version (`answers_kept`): the
+version is learnt at initialize, before phase 1, so the order is decided
+then. With a file to ask, phase 2 covers every file it opens, as an
+unrestricted run's does.
+
+A server with no file to ask is not started when its version is already
+known with this install (owner 2026-11-02): every language it serves that
+a previous run answered recorded the same server at the same reported
+version and the same `server_build` -- the fingerprint of the installed
+server's files (`server_build`), which the image pins, so the same build
+reports the same version. Its row takes that version, asks nothing, and
+keeps the cost the previous run measured (`Answered.cost_seconds`), which
+is what the next run's shares follow. Otherwise -- no version known, an
+"unknown" one, or another build -- it is started, asks nothing in either
+phase, and its version is read at initialize, so a server upgrade still
+reaches a language none of whose files changed.
+
 THE ENVIRONMENT. A server reads the checkout, which is untrusted input, so
 it gets a minimal environment built here -- PATH, a throwaway HOME and
 caches, the locale and the spec's own variables -- and none of the
@@ -160,6 +185,7 @@ on its first question.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import posixpath
 import re
@@ -357,6 +383,116 @@ class LspOptions:
     max_consecutive_timeouts: int = MAX_CONSECUTIVE_TIMEOUTS
     #: Gitignore-style globs of the files no server opens (module doc, "less work").
     excluded_paths: tuple[str, ...] = LSP_EXCLUDED_PATHS
+    #: The files whose sites phase 1 asks; None: every file (module doc,
+    #: "the files asked"). The others stay in the server's workspace.
+    asked_paths: frozenset[str] | None = None
+    #: Asked before the rest, which follow in path order.
+    first_paths: frozenset[str] = frozenset()
+    #: By language: the files a previous run's server answered, asked too
+    #: unless this run's server is the same one at the same version.
+    answered: Mapping[str, "Answered"] | None = None
+
+
+@dataclass(frozen=True)
+class Answered:
+    """The files of one language a previous run's server answered (`LspOptions.answered`)."""
+
+    server: str | None
+    version: str | None
+    paths: frozenset[str] = frozenset()
+    #: The install that version was read from (`server_build`); None: not recorded.
+    build: str | None = None
+    #: What that server cost when it last ran (`measured_cost`); None: not measured.
+    cost_seconds: float | None = None
+
+
+def answers_kept(answered: Answered, server: str | None, version: str | None) -> bool:
+    """Whether a previous run's answers stand for this run's `server` at `version`.
+
+    Only the same server at the same reported version: an unreported version
+    ("unknown") matches nothing, since an upgrade could hide behind it.
+    """
+    return (server is not None and version not in (None, "unknown")
+            and (answered.server, answered.version) == (server, version))
+
+
+def server_build(spec: ServerSpec, bin_dir: Path) -> str | None:
+    """The installed server's fingerprint, read without starting it; None when
+    it is not installed or cannot be read (module doc, "the files asked").
+
+    A sha256 over every file its command names -- the executable the driver
+    starts and any absolute file argument -- symlinks resolved, and, for a
+    file inside an npm package, the package's package.json and the
+    package-lock.json beside the outermost node_modules: an npm server's
+    entry file is the same between versions, its manifest and lock are not.
+    """
+    program = _program(spec, bin_dir)
+    if program is None:
+        return None
+    named = [program] + [Path(arg) for arg in spec.command[1:] if Path(arg).is_absolute()]
+    digest = hashlib.sha256()
+    try:
+        for path in named:
+            path = path.resolve()
+            if not path.is_file():
+                continue
+            for part in _installed_files(path):
+                digest.update(str(part).encode("utf-8") + b"\0")
+                with part.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1 << 20), b""):
+                        digest.update(chunk)
+    except OSError:
+        return None
+    return "sha256:" + digest.hexdigest()
+
+
+def _installed_files(path: Path) -> list[Path]:
+    """`path`, and when it is inside an npm package, that package's manifest
+    and the lock beside the outermost node_modules (`server_build`)."""
+    parts = path.parts
+    if "node_modules" not in parts:
+        return [path]
+    outer = parts.index("node_modules")
+    inner = len(parts) - 1 - parts[::-1].index("node_modules")
+    depth = 2 if inner + 2 < len(parts) and parts[inner + 1].startswith("@") else 1
+    package = Path(*parts[:inner + 1 + depth])
+    extra = [package / "package.json", Path(*parts[:outer]) / "package-lock.json"]
+    return [path] + [file for file in extra if file != path and file.is_file()]
+
+
+def _program(spec: ServerSpec, bin_dir: Path) -> Path | None:
+    """The executable the driver starts: from `bin_dir` unless the command is absolute."""
+    program = Path(spec.command[0])
+    if not program.is_absolute():
+        program = Path(bin_dir) / spec.command[0]
+    if not (program.is_file() and os.access(program, os.X_OK)):
+        return None
+    return program
+
+
+def _known_version(spec: ServerSpec, served: Sequence[str], files: Mapping[str, str],
+                   options: "LspOptions", build: str | None) -> Answered | None:
+    """What a previous run answered with, when this server need not be started:
+    no file of its languages to ask, and its version known with this `build`
+    (module doc, "the files asked"); None: start it."""
+    if options.asked_paths is None or build is None:
+        return None
+    if any(files.get(path) in served and not lsp_excluded(path, options.excluded_paths)
+           for path in options.asked_paths):
+        return None
+    known = [answered for language, answered in (options.answered or {}).items()
+             if language in served]
+    if not known or any(answered.build != build
+                        or not answers_kept(answered, spec.name, answered.version)
+                        for answered in known):
+        return None
+    if len({answered.version for answered in known}) != 1:
+        return None
+    costs = [answered.cost_seconds for answered in known
+             if isinstance(answered.cost_seconds, (int, float))
+             and not isinstance(answered.cost_seconds, bool) and answered.cost_seconds > 0]
+    return Answered(spec.name, known[0].version, build=build,
+                    cost_seconds=max(costs) if costs else None)
 
 
 @dataclass(frozen=True)
@@ -438,6 +574,25 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
         if served:
             planned.append((spec, served))
             claimed.update(served)
+    builds = {spec.name: server_build(spec, options.bin_dir) for spec, _ in planned}
+    starting: list[tuple[ServerSpec, list[str]]] = []
+    for spec, served in planned:
+        known = _known_version(spec, served, files, options, builds[spec.name])
+        if known is None:
+            starting.append((spec, served))
+            continue
+        # Nothing to ask and the version known with this install: not
+        # started, and not counted in the others' shares (module doc).
+        run = _ServerRun(Path(root), spec, set(served), files, symbols, sites, options, 0.0, memory_mib)
+        run._opened()
+        versions[spec.name] = str(known.version)
+        counts = dict(run.counts, server_version=known.version, server_build=known.build,
+                      grant_seconds=0.0, peak_rss_mib=0)
+        if known.cost_seconds is not None:
+            counts["cost_seconds"] = known.cost_seconds
+        for lang in served:
+            languages[lang] = LanguageResult(STATUS_OK, None, spec.name, dict(counts))
+    planned = starting
     needs = planned_needs([spec.name for spec, _ in planned], options.server_costs, total)
     order = run_order([spec.name for spec, _ in planned], needs)
     planned = [planned[i] for i in order]
@@ -463,7 +618,7 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
         cost = measured_cost(measured, elapsed=time.monotonic() - started, grant=run.budget,
                              requests=run.counts["requests"], sites=run._sites_total)
         counts = dict(run.counts, server_version=run.server_version,
-                      grant_seconds=round(run.budget, 1), peak_rss_mib=rss_mib(run.peak_rss_bytes))
+                      server_build=builds[spec.name], grant_seconds=round(run.budget, 1), peak_rss_mib=rss_mib(run.peak_rss_bytes))
         if cost is not None:
             counts["cost_seconds"] = cost
         for lang in served:
@@ -586,13 +741,10 @@ class _ServerRun:
     # --- the run ------------------------------------------------------------
 
     def _argv(self) -> list[str] | None:
-        command = list(self.spec.command)
-        program = Path(command[0])
-        if not program.is_absolute():
-            program = Path(self.options.bin_dir) / command[0]
-        if not (program.is_file() and os.access(program, os.X_OK)):
+        program = _program(self.spec, self.options.bin_dir)
+        if program is None:
             return None
-        return [str(program)] + command[1:]
+        return [str(program)] + list(self.spec.command[1:])
 
     def _env(self, home: Path) -> dict[str, str]:
         for sub in ("cache", "config", "data", "tmp", "go", "go-build"):
@@ -716,19 +868,12 @@ class _ServerRun:
         self._hierarchy = self._hierarchy and bool(capabilities.get("callHierarchyProvider"))
         self._references = self._references and bool(capabilities.get("referencesProvider"))
         client.notify("initialized", {})
-        paths = []
-        for path in sorted(self.files):
-            if self.files[path] not in self.languages:
-                continue
-            language_id = self.spec.language_ids.get(posixpath.splitext(path)[1])
-            if language_id is None:
-                continue
-            if lsp_excluded(path, self.options.excluded_paths):
-                # Parsed, never opened (module doc, "less work").
-                self.counts["files_excluded"] += 1
-                self.counts["sites_excluded"] += len(self.sites_by_path.get(path, []))
-                continue
-            paths.append((path, language_id))
+        # The files phase 1 asks (module doc, "the files asked"), now that
+        # the server's version is known: `first_paths`, then path order.
+        wanted = self._wanted()
+        opened = self._opened()
+        paths = [(path, language_id) for path, language_id in opened
+                 if wanted is None or path in wanted]
         # Only the sites an answer could become an edge at are asked.
         asked: dict[str, list[Site]] = {}
         for path, _ in paths:
@@ -757,8 +902,10 @@ class _ServerRun:
         # rather than a hung server, and the budget running out here cuts
         # this phase only: phase 1's edges are complete and are kept, and
         # the row's reason says how many symbols were asked.
+        # A server asked no file asks no workspace query either: it was
+        # started only to learn its version.
         todo = []
-        for path, language_id in paths:
+        for path, language_id in opened if paths else []:
             own = self.symbols_by_path.get(path, [])
             symbols = [s for s in own if self._hierarchy and s["kind"] in CALLABLE_KINDS and s["exported"]]
             symbols += [s for s in own if self._references and s["kind"] in self.spec.reference_kinds]
@@ -789,6 +936,36 @@ class _ServerRun:
             self.counts["symbols_skipped"] = total - asked
             self.reason = (f"call hierarchy and references cut at their {_seconds(share)}-second share "
                            f"of the {_seconds(self.budget)}-second budget: {asked} of {total} symbols asked")
+
+    def _opened(self) -> list[tuple[str, str]]:
+        """The files this server opens, with their language ids: `first_paths`,
+        then path order. Counts the excluded ones, which it never opens."""
+        first = self.options.first_paths
+        opened = []
+        for path in sorted(self.files, key=lambda p: (p not in first, p)):
+            if self.files[path] not in self.languages:
+                continue
+            language_id = self.spec.language_ids.get(posixpath.splitext(path)[1])
+            if language_id is None:
+                continue
+            if lsp_excluded(path, self.options.excluded_paths):
+                # Parsed, never opened (module doc, "less work").
+                self.counts["files_excluded"] += 1
+                self.counts["sites_excluded"] += len(self.sites_by_path.get(path, []))
+                continue
+            opened.append((path, language_id))
+        return opened
+
+    def _wanted(self) -> set[str] | None:
+        """The files phase 1 asks; None: every file (module doc, "the files asked")."""
+        if self.options.asked_paths is None:
+            return None
+        wanted = set(self.options.asked_paths)
+        for language, answered in (self.options.answered or {}).items():
+            if language in self.languages and not answers_kept(answered, self.spec.name,
+                                                                self.server_version):
+                wanted |= answered.paths
+        return wanted
 
     def _external(self, site: Site) -> bool:
         """No answer about `site` could be kept: its name is no repository symbol's

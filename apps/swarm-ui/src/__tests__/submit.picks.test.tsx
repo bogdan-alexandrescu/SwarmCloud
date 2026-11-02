@@ -177,7 +177,7 @@ describe('the task form is F1', () => {
     expect(codex.querySelector('input')!.disabled).toBe(true)
     // One short line (walkthrough E); the platform's words are its tooltip.
     expect(visible(codex.querySelector('.sbf-runner-off'))).toBe('Not enabled yet. Use claude-code')
-    expect(codex.querySelector('.sbf-runner-off')!.getAttribute('title')).toMatch(/codex is disabled on this platform/)
+    expect(codex.querySelector('.sbf-runner-off')!.getAttribute('title')).toMatch(/codex is disabled until the ChatGPT-plan pool lands/)
   })
 
   it('draws steps 2 and 3 as cards, dimmed until a runner is chosen', async () => {

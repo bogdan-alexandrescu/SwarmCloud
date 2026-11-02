@@ -130,6 +130,7 @@ import tempfile
 import time
 import warnings
 from dataclasses import dataclass, field
+from dataclasses import replace as _replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -1457,6 +1458,32 @@ def _list_paths(root: Path, in_git: bool) -> list[str]:
 # come out byte-identical, so its shards are the same blobs (§2.5) and the
 # writer stores nothing new for them. Deleted files are gone from every list.
 #
+# THE NEVER-COVERED FILES (part of #2991, owner 2026-11-01). pyright needs
+# about 3,400 s to cover SwarmCloud's 2,334 Python files, more than any run
+# gives it, so every run used to reach the same quarter and stop. A run built
+# on a base now asks the servers, after the affected files, about every file
+# the base has no answer for (`files[].lsp` false), in the same pass
+# (`_lsp_on_base`): the driver asks the affected files first
+# (`LspOptions.first_paths`), because an affected file has no base answer to
+# fall back on, and the rest in path order, each server started once. A
+# covered file that did not change and is not affected keeps its base answer
+# and is not asked, so the coverage grows run by run until every file is
+# answered. A language whose server reports another version than the base's
+# keeps none of the base's answers: the driver learns the version at
+# initialize and asks its covered files after the affected ones
+# (`LspOptions.answered`), and the language's row says why (`not_carried`).
+#
+# A FULL RUN GIVEN A BASE (`--base-lsp-only`, the weekly run, #2991) is the
+# same for the servers and full for everything else: the tree-sitter half is
+# rebuilt whole from this checkout (no carried edges, modules or reading, no
+# test_layout from the base), and only the base's `lsp` evidence is kept, for
+# the covered, unchanged, unaffected files. The run's `kind` stays "full" and
+# `extractor.lsp_carry` says what was carried; a base this tool would not
+# carry (another extractor version, budget or a configuration change, as
+# `incremental_changes` says) is not carried and every file is asked. The
+# 300-file cap of an incremental run does not apply: carrying answers costs
+# nothing per changed file, and each changed file is simply asked.
+#
 # The agent's reading -- module purposes, entry points, territory, commands,
 # notes -- is carried from the base index, minus what names a deleted file;
 # each module says which commit its entry was read at (`commit_sha`): the
@@ -1526,8 +1553,13 @@ def _path_of(node_id: str) -> str:
 
 
 def incremental_changes(base: Base, head_blobs: dict[str, str] | None, budget: Budget,
-                        commit_sha: str | None) -> Changes | str:
-    """The diff an incremental run rewrites, or why this run has to be full."""
+                        commit_sha: str | None, *, lsp_only: bool = False) -> Changes | str:
+    """The diff an incremental run rewrites, or why this run has to be full.
+
+    `lsp_only` (a full run given a base, #2991) checks the same, except the
+    cap on changed files: such a run carries only answers, and asks each
+    changed file whatever their number.
+    """
     graph, index = base.graph, base.index
     if not isinstance(base.sha, str) or not _SHA_RE.match(base.sha):
         return "the base is not a 40-hex commit sha"
@@ -1568,7 +1600,7 @@ def incremental_changes(base: Base, head_blobs: dict[str, str] | None, budget: B
                               if head_blobs[p] != base_blobs[p])),
         deleted=tuple(sorted(set(base_blobs) - set(head_blobs))),
     )
-    if changes.count >= MAX_INCREMENTAL_CHANGES:
+    if not lsp_only and changes.count >= MAX_INCREMENTAL_CHANGES:
         return (f"{changes.count} files changed since the base, at or over the "
                 f"{MAX_INCREMENTAL_CHANGES} an incremental run takes")
     config = sorted(p for p in (*changes.added, *changes.modified, *changes.deleted)
@@ -1610,6 +1642,137 @@ def _carry_edges(fresh: "_Edges", base_graph: dict, affected: set[str],
             continue
         merged.edges.setdefault((frm, to, kind), dict(edge))
     return merged
+
+
+def _base_covered(files: list[dict], base_graph: Any, affected: set[str]) -> set[str]:
+    """The files whose base answers may be kept: not affected, and covered in the base.
+
+    A base graph written before `files[].lsp` existed said it through its
+    language's status, `ok` being every file and anything else none.
+    """
+    base_rows = {str(row.get("path")): row for row in (base_graph or {}).get("files") or []
+                 if isinstance(row, dict)}
+    base_status = {row.get("language"): row.get("status")
+                   for row in (base_graph or {}).get("languages") or [] if isinstance(row, dict)}
+    covered = set()
+    for record in files:
+        path = record["path"]
+        before = base_rows.get(path)
+        if path in affected or before is None:
+            continue
+        flag = before.get("lsp")
+        if flag is True or (flag is None and base_status.get(record["language"]) == "ok"):
+            covered.add(path)
+    return covered
+
+
+def _base_servers(base_graph: Any) -> dict[str, "lsp_pass.Answered"]:
+    """Each language's server, the version it reported, its install
+    (`server_build`) and its cost, as the base recorded them (no paths)."""
+    found: dict[str, lsp_pass.Answered] = {}
+    for row in (base_graph or {}).get("languages") or []:
+        if isinstance(row, dict) and isinstance(row.get("language"), str):
+            counts = row.get("lsp") if isinstance(row.get("lsp"), dict) else {}
+            build, cost = counts.get("server_build"), counts.get("cost_seconds")
+            found[row["language"]] = lsp_pass.Answered(
+                row.get("server"), counts.get("server_version"),
+                build=build if isinstance(build, str) else None,
+                cost_seconds=cost if isinstance(cost, (int, float))
+                and not isinstance(cost, bool) else None)
+    return found
+
+
+def _lsp_on_base(root: Path, lsp_files: dict[str, str], symbols: list[dict], sites: list,
+                 options: "lsp_pass.LspOptions", affected: set[str], carried: set[str],
+                 base_graph: Any) -> tuple[Any, set[str], set[str], dict[str, str]]:
+    """The LSP pass of a run built on a base: (result, asked, carried, not_carried).
+
+    One pass asks the affected files first, then every other file the base
+    has no answer for (module comment "THE NEVER-COVERED FILES"), each
+    server started once. A language whose server reports another version
+    than the base recorded keeps none of the base's answers: the driver
+    learns the version at initialize and asks those files too, in path
+    order after the affected ones (`lsp_pass.Answered`).
+
+    A language with carried files and nothing to ask has its server started,
+    asked nothing, only to learn its version -- without it a server upgrade
+    never reached a stable language, whose files kept the old server's
+    answers until one changed -- unless the base recorded that server's
+    version with this same install (`server_build`, which the image pins):
+    then the driver reads the version from the base and starts nothing
+    (owner 2026-11-02). When the total runs out before a server's version
+    is learnt, none of its languages' answers is carried.
+    """
+    servers = lsp_pass.SERVERS if options.servers is None else options.servers
+    served = {lang for spec in servers.values() for lang in spec.languages}
+    before = _base_servers(base_graph)
+    carried = set(carried)
+    first = {path for path in affected if path in lsp_files}
+    rest = {path for path, lang in lsp_files.items()
+            if path not in first and path not in carried and lang in served
+            and not lsp_pass.lsp_excluded(path, options.excluded_paths)}
+    answered: dict[str, Any] = {}
+    for path in carried:
+        language = lsp_files.get(path)
+        if language in served:
+            recorded = before.get(language) or lsp_pass.Answered(None, None)
+            answered.setdefault(language, (recorded, set()))[1].add(path)
+    wanted = {lsp_files[path] for path in first | rest} | set(answered)
+    if not wanted:
+        return None, set(), carried, {}
+    result = lsp_pass.run_pass(
+        root, {path: lang for path, lang in lsp_files.items() if lang in wanted}, symbols, sites,
+        _replace(options, asked_paths=frozenset(first | rest), first_paths=frozenset(first),
+                 answered={language: _replace(recorded, paths=frozenset(paths))
+                           for language, (recorded, paths) in answered.items()}))
+    asked = first | rest
+    not_carried: dict[str, str] = {}
+    for language, (recorded, paths) in sorted(answered.items()):
+        base_server, base_version = recorded.server, recorded.version
+        row = result.languages.get(language)
+        server = row.server if row is not None else None
+        version = row.counts.get("server_version") if row is not None else None
+        if version is None:
+            # Never initialized: a crash keeps the base's answers, as the
+            # files it would have asked keep their `ast` edges; a total that
+            # ran out first does not, as no version was checked.
+            if row is not None and row.status == lsp_pass.STATUS_TIMED_OUT:
+                not_carried[language] = ("the LSP pass's total ran out before this run's server "
+                                         "version was learnt, so the base's answers are not carried")
+                carried -= paths
+            continue
+        if lsp_pass.answers_kept(lsp_pass.Answered(base_server, base_version), server, version):
+            continue
+        then = (f"{base_server} {base_version}'s" if base_version
+                else "no recorded server version's")
+        not_carried[language] = (f"the base's answers are {then}; this run's server is "
+                                 f"{server} {version}")
+        carried -= paths
+        asked |= paths
+    return result, asked, carried, not_carried
+
+
+def _carry_lsp_edges(edges: "_Edges", base_graph: Any, carried: set[str]) -> None:
+    """A full run given a base: the carried files' `lsp` evidence, onto the fresh edges."""
+    for edge in (base_graph or {}).get("call_edges") or []:
+        if not isinstance(edge, dict) or _path_of(str(edge.get("from"))) not in carried:
+            continue
+        evidence, also = edge.get("evidence"), edge.get("also_evidence") or []
+        if evidence != "lsp" and "lsp" not in also:
+            continue
+        key = (str(edge.get("from")), str(edge.get("to")), str(edge.get("kind")))
+        current = edges.edges.get(key)
+        confidence = edge.get("confidence")
+        confidence = (float(confidence) if isinstance(confidence, (int, float))
+                      else lsp_pass.LSP_DECLARED)
+        if current is None:
+            edges.edges[key] = dict(edge, evidence="lsp", confidence=round(confidence, 3),
+                                    also_evidence=[])
+        elif current["evidence"] != "lsp" and "lsp" not in current["also_evidence"]:
+            if evidence == "lsp":
+                _merge_evidence(current, "lsp", confidence)
+            else:
+                current["also_evidence"] = sorted(set(current["also_evidence"]) | {"lsp"})
 
 
 def _module_for(path: str, module_paths: set[str]) -> str | None:
@@ -2861,7 +3024,7 @@ def _parse_file(parsers: _Parsers, grammar: str, data: bytes, facts: Facts,
 
 def extract(root: Path, budget: Budget | None = None,
             lsp: "lsp_pass.LspOptions | None" = None, base: Base | None = None,
-            test_layout: list[dict] | None = None) -> dict:
+            test_layout: list[dict] | None = None, base_lsp_only: bool = False) -> dict:
     """The mechanical index of the checkout at `root`.
 
     With `lsp` the LSP pass runs after the tree-sitter pass and its resolved
@@ -2869,8 +3032,11 @@ def extract(root: Path, budget: Budget | None = None,
     the run is incremental when `incremental_changes` allows it, and full,
     with the reason in `extractor.incremental`, when it does not.
 
+    `base_lsp_only` (a full run given a base, #2991) keeps only the base's
+    language-server answers and rebuilds everything else; the run is full.
+
     `test_layout` is the agent's last reading of the suites (`root`,
-    `covers`); without it, the base index's, when one was staged. Its roots
+    `covers`); without it, the base index's, when an incremental run's was staged. Its roots
     make files test-side and its `covers` globs give `declared` edges.
     """
     budget = budget or Budget()
@@ -2881,7 +3047,8 @@ def extract(root: Path, budget: Budget | None = None,
     in_git = toplevel is not None and Path(toplevel).resolve() == root
     truncated: set[str] = set()
     if test_layout is None:
-        test_layout = _test_layout_rows(base.index) if base is not None else []
+        test_layout = (_test_layout_rows(base.index)
+                       if base is not None and not base_lsp_only else [])
     test_roots = [row["root"] for row in test_layout]
 
     all_paths = _list_paths(root, in_git)
@@ -2895,11 +3062,16 @@ def extract(root: Path, budget: Budget | None = None,
         if ref.returncode == 0:
             branch = ref.stdout.decode().strip() or None
     changes: Changes | None = None
+    # A full run given a base: the diff its servers' answers are carried over.
+    lsp_changes: Changes | None = None
     fell_back: str | None = None
     if base is not None:
-        planned = incremental_changes(base, head_blobs, budget, commit_sha)
+        planned = incremental_changes(base, head_blobs, budget, commit_sha,
+                                      lsp_only=base_lsp_only)
         if isinstance(planned, str):
             fell_back = planned
+        elif base_lsp_only:
+            lsp_changes = planned
         else:
             changes = planned
     listed = all_paths[:budget.max_files]
@@ -3007,26 +3179,38 @@ def extract(root: Path, budget: Budget | None = None,
 
     symbols = [s for path in sorted(facts) for s in facts[path].symbols]
     affected: set[str] | None = None
-    if changes is not None and base is not None:
-        affected = _affected(changes, base.graph, edges)
-        edges = _carry_edges(edges, base.graph, affected, set(changes.deleted))
+    built_on = changes if changes is not None else lsp_changes
+    if built_on is not None and base is not None:
+        affected = _affected(built_on, base.graph, edges)
+        if changes is not None:
+            edges = _carry_edges(edges, base.graph, affected, set(changes.deleted))
     lsp_result = None
+    # Built on a base: the files this run asked a server about, and the
+    # covered files whose base answers it kept (module comment, "THE
+    # NEVER-COVERED FILES"). Without the pass an incremental run keeps its
+    # carried files' flags, as it keeps their edges; a full one keeps none.
+    asked: set[str] | None = None
+    carried_lsp: set[str] = set()
+    not_carried: dict[str, str] = {}
+    if affected is not None and base is not None:
+        asked = set(affected)
+        if lsp is not None or changes is not None:
+            carried_lsp = _base_covered(files, base.graph, affected)
     if lsp is not None:
         lsp_files = {path: facts[path].language for path in facts}
         sites = _lsp_sites(facts)
-        if affected is not None:
-            # Only the affected files' sites are asked, and only their
-            # languages' servers started; every other file keeps its edges.
-            wanted = {facts[path].language for path in affected if path in facts}
-            lsp_files = {path: lang for path, lang in lsp_files.items() if lang in wanted}
-            sites = [site for site in sites if site.path in affected]
-        if affected is None or lsp_files:
+        if affected is None:
             lsp_result = lsp_pass.run_pass(root, lsp_files, symbols, sites, lsp)
+        else:
+            lsp_result, asked, carried_lsp, not_carried = _lsp_on_base(
+                root, lsp_files, symbols, sites, lsp, affected, carried_lsp,
+                base.graph if base is not None else None)
+        if lsp_changes is not None and base is not None:
+            _carry_lsp_edges(edges, base.graph, carried_lsp)
     if lsp_result is not None:
         for edge in lsp_result.edges:
             edges.add(edge.frm, edge.to, edge.kind, "lsp", edge.confidence, edge.path, edge.line)
-    covered = _lsp_coverage(files, lsp_result, affected,
-                            base.graph if affected is not None and base is not None else None)
+    covered = _lsp_coverage(lsp_result, asked, carried_lsp)
     for record in files:
         record["lsp"] = record["path"] in covered
     routes = [r for path in sorted(facts) for r in facts[path].routes]
@@ -3073,7 +3257,7 @@ def extract(root: Path, budget: Budget | None = None,
 
     modules = _modules(files, truncated)
     incremental = None
-    if base is not None:
+    if base is not None and not base_lsp_only:
         incremental = {"base_sha": base.sha if isinstance(base.sha, str) else None,
                        "ran": changes is not None, "reason": fell_back}
     carried: dict[str, Any] = {}
@@ -3086,7 +3270,7 @@ def extract(root: Path, budget: Budget | None = None,
             "carried": carried_reading(base.index, changes.deleted),
         }
     carried_languages = None
-    if changes is not None and base is not None:
+    if built_on is not None and base is not None:
         carried_languages = {row["language"]: row for row in base.graph.get("languages") or []
                              if isinstance(row, dict) and isinstance(row.get("language"), str)}
 
@@ -3105,7 +3289,7 @@ def extract(root: Path, budget: Budget | None = None,
         "test_map": sorted(test_edges, key=lambda t: (t["source"], t["test"])),
         "test_coverage": test_coverage(modules, files, test_edges, test_side),
         "hot_spots": hot_spots,
-        "languages": _languages(files, lsp_result, carried_languages, affected),
+        "languages": _languages(files, lsp_result, carried_languages, asked, not_carried),
         "files": files,
         "communities": community_rows,
         "terms": term_rows,
@@ -3143,6 +3327,12 @@ def extract(root: Path, budget: Budget | None = None,
                 "server_costs": dict(lsp_result.server_costs),
             },
             **({} if incremental is None else {"incremental": incremental}),
+            **({} if not base_lsp_only or base is None else {"lsp_carry": {
+                "base_sha": base.sha if isinstance(base.sha, str) else None,
+                "ran": lsp_changes is not None, "reason": fell_back,
+                "carried_files": len(carried_lsp), "asked_files": len(asked or ()),
+                "not_carried": dict(sorted(not_carried.items())),
+            }}),
         },
     }
 
@@ -3373,41 +3563,22 @@ def _modules(files: list[dict], truncated: set[str]) -> list[dict]:
     return modules[:MAX_MODULES]
 
 
-def _lsp_coverage(files: list[dict], lsp_result: Any, affected: set[str] | None,
-                  base_graph: Any) -> set[str]:
+def _lsp_coverage(lsp_result: Any, asked: set[str] | None, carried: set[str]) -> set[str]:
     """The files whose edges a language server answered whole (`files[].lsp`).
 
-    A full run takes the servers' `covered` (lsp/driver.py: every file of an
-    `ok` language, the finished ones of a `partial` one, none of the rest).
-    An incremental run asked only about the affected files, and every other
-    file keeps its base edges verbatim, so it keeps its base flag too; a base
-    graph written before the flag existed said it through its language's
-    status, `ok` being every file and anything else none.
+    A run on no base takes the servers' `covered` (lsp/driver.py: every file
+    of an `ok` language, the finished ones of a `partial` one, none of the
+    rest). A run built on a base counts what its servers answered of the
+    files it `asked` (`_lsp_on_base`), and keeps the base's flag for the
+    files whose answers it `carried`, edges and all.
     """
     ran: set[str] = set()
     if lsp_result is not None:
         for result in lsp_result.languages.values():
             ran |= result.covered
-    if affected is None:
+    if asked is None:
         return ran
-    base_rows = {str(row.get("path")): row for row in (base_graph or {}).get("files") or []
-                 if isinstance(row, dict)}
-    base_status = {row.get("language"): row.get("status")
-                   for row in (base_graph or {}).get("languages") or [] if isinstance(row, dict)}
-    covered = set()
-    for record in files:
-        path = record["path"]
-        if path in affected:
-            if path in ran:
-                covered.add(path)
-            continue
-        before = base_rows.get(path)
-        if before is None:
-            continue
-        flag = before.get("lsp")
-        if flag is True or (flag is None and base_status.get(record["language"]) == "ok"):
-            covered.add(path)
-    return covered
+    return (ran & asked) | carried
 
 
 #: How much less a language's status says of its edges, best first: `ok`
@@ -3428,7 +3599,8 @@ def _worse(own: str, base: str | None) -> str:
 
 def _languages(files: list[dict], lsp_result: Any = None,
                carried: dict[str, dict] | None = None,
-               affected: set[str] | None = None) -> list[dict]:
+               affected: set[str] | None = None,
+               not_carried: dict[str, str] | None = None) -> list[dict]:
     """The `languages` table: what each language got, and why.
 
     Without the LSP pass every language with a grammar is `unsupported`
@@ -3450,6 +3622,16 @@ def _languages(files: list[dict], lsp_result: Any = None,
     the base's, edges and all, so the base's status still describes them;
     taking the run's own `ok` flipped the console's banner from "timed out"
     to "partial" and back with every run between two full ones (#1693).
+    `affected` is every file the run asked a server about: since #2991 the
+    never-covered files too, after the affected ones.
+
+    `ok` only when every file is covered -- answered by this run's server,
+    carried covered from the base, or new and answered (#2991): a run whose
+    server answered every file it asked, where every other file was carried
+    covered, is `ok` whatever the base said, because the base's status no
+    longer describes any file it left uncovered. `not_carried` names the
+    languages whose base answers were dropped (another server version) and
+    why, in the reason.
     """
     table: dict[str, dict] = {}
     for f in files:
@@ -3506,13 +3688,15 @@ def _languages(files: list[dict], lsp_result: Any = None,
         before = carried.get(language) or {}
         base_status = before.get("status") if isinstance(before.get("status"), str) else None
         own = entry["status"]
+        whole = not any(f["path"] in parsed and f.get("lsp") is not True for f in files)
+        if own == "ok" and whole:
+            # Every file is covered, asked or carried: nothing uncovered is left
+            # for the base's worse status to describe (#2991).
+            continue
         merged = _worse(own, base_status)
         covered, total = entry["files_covered"], entry["files"]
-        if merged == own == "ok" and any(
-                f["path"] in parsed and f.get("lsp") is not True for f in files):
-            merged = "partial"
         if merged == own == "ok":
-            continue
+            merged = "partial"
         if merged == "partial" and own == "ok":
             reason = (f"{entry['server']} answered every file this run asked about; "
                       f"{covered} of {total} files are covered, "
@@ -3525,6 +3709,11 @@ def _languages(files: list[dict], lsp_result: Any = None,
             reason = (f"{entry['reason']} (this run asked {entry['server']} about {asked} of "
                       f"{total} files; {covered} of {total} are covered, carried from the base index)")
         entry.update(status=merged, fallback="ast", reason=reason)
+    for language, why in (not_carried or {}).items():
+        entry = table.get(language)
+        if entry is not None:
+            entry["reason"] = (f"{entry['reason']}; " if entry.get("reason") else "") + (
+                f"not carried from the base index: {why}")
     return [table[name] for name in sorted(table)]
 
 
@@ -4010,6 +4199,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-index", help="incremental: that index's repo-index.json")
     parser.add_argument("--base-graph",
                         help="incremental: its graph, as `swarm-repo-graph read` wrote it")
+    parser.add_argument("--base-lsp-only", action="store_true",
+                        help="a full run given a base: keep only the base's language-server "
+                             "answers for covered, unchanged files and rebuild the rest whole")
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
@@ -4041,7 +4233,8 @@ def main(argv: list[str] | None = None) -> int:
     gc_was_enabled = gc.isenabled()
     gc.disable()
     try:
-        facts = extract(root, budget, lsp=lsp_options, base=base)
+        facts = extract(root, budget, lsp=lsp_options, base=base,
+                        base_lsp_only=bool(args.base_lsp_only and base is not None))
         graph_payload = dumps(graph_document(facts))
         index = index_document(facts, graph_payload, max_bytes=args.max_index_bytes)
         payload = dumps(index)
@@ -4060,12 +4253,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.buffer.write(payload)
     summary = index["graph"]
     incremental = facts["extractor"].get("incremental") or {}
+    carry = facts["extractor"].get("lsp_carry") or {}
     print(
         f"{EXTRACTOR_NAME}: kind={facts['kind']}"
         + (f" base={str(incremental.get('base_sha'))[:12]}" if incremental else "")
         + (f" changed={sum(len(v) for k, v in facts['changes'].items() if k != 'affected')}"
            f" affected={len(facts['changes']['affected'])}" if "changes" in facts else "")
         + (f" full_because={incremental['reason']!r}" if incremental.get("reason") else "")
+        + (f" lsp_base={str(carry.get('base_sha'))[:12]} lsp_carried={carry['carried_files']}"
+           f" lsp_asked={carry['asked_files']}" if carry else "")
+        + (f" lsp_not_carried={carry['reason']!r}" if carry.get("reason") else "")
         + f" files={summary['files']} symbols={summary['symbols']} "
         f"edges={summary['call_edges']} routes={len(index['routes'])} "
         f"statuses={json.dumps(summary['files_by_status'], sort_keys=True)} "

@@ -494,11 +494,14 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           }
-          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...main" --jq '.status' 2>/dev/null)" || status=""
+          # A BUILT AND SCANNED RELEASE DEPLOYS, even when main has moved past
+          # it meanwhile, as hotfix.yml's does (#3000). Skipping it left the
+          # change to "the newer commit's release", which a busy main also
+          # skips the same way: on 2026-11-01 no release deployed from 17:52Z
+          # for over five hours. One release runs at a time (`concurrency:`),
+          # so the newer commit's release still deploys after this one and
+          # nothing rolls back.
           if [ "${STAGE}" = success ]; then
-            if [ "${status}" = ahead ]; then
-              superseded "Commit \`${GITHUB_SHA}\` was built and scanned, but main moved past it meanwhile. The newer commit's release ships its change; this run promoted, applied and deployed nothing."
-            fi
             echo "superseded=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi

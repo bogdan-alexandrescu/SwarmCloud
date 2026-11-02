@@ -563,8 +563,6 @@ def test_red_after_a_no_change_round_and_the_rerun_due_park_is_checks_failed(tmp
 @pytest.mark.parametrize("rerun, answered", [
     pytest.param({}, True, id="new-run-id"),
     pytest.param({"ago": merge.RERUN_SETTLE_SECONDS + 5}, False, id="settled"),
-    pytest.param({"error": "403 Resource not accessible by integration"}, False,
-                 id="github-refused"),
 ])
 def test_red_after_a_no_change_round_and_its_red_rerun_is_checks_failed(tmp_path, rerun,
                                                                          answered):
@@ -580,24 +578,119 @@ def test_red_after_a_no_change_round_and_its_red_rerun_is_checks_failed(tmp_path
 
 
 @pytest.mark.parametrize("rerun, answered", [
-    pytest.param({"runs": [41], "error": "403 Resource not accessible by integration"}, False,
-                 id="run-rerun-refused"),
     pytest.param({"runs": [41]}, True, id="run-rerun-answered-red"),
     pytest.param({"runs": [41], "ago": merge.RERUN_SETTLE_SECONDS + 5}, False,
                  id="run-rerun-settled"),
 ])
-def test_red_after_a_no_change_round_with_a_refused_rerun_at_this_head_is_checks_failed(
+def test_red_after_a_no_change_round_with_an_answered_rerun_at_this_head_is_checks_failed(
     tmp_path, rerun, answered,
 ):
     """#2841: the tick now asks GitHub to re-run the failed jobs of the
     failing check's workflow run and records the run ids as `runs` beside the
-    failing check ids in `jobs`. The step reads the record as before: a re-run
-    at this head -- refused, answered red, or settled -- is the one free
+    failing check ids in `jobs`. A re-run GitHub accepted at this head --
+    answered red, or settled with its run's status unread -- is the one free
     re-run, so a no_change round's red still refuses."""
     world = MergeWorld(tmp_path)
     _no_change_round(world, rerun=rerun)
     if answered:
         _rerun_answered_red(world)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    assert "round 1" in outcome.summary["refusal"]["message"]
+
+
+REFUSED = "403 Resource not accessible by integration"
+
+
+@pytest.mark.parametrize("rerun", [
+    pytest.param({"runs": [41], "error": REFUSED, "requested_at": None}, id="run-rerun-refused"),
+    pytest.param({"error": REFUSED, "requested_at": None}, id="github-refused"),
+])
+def test_red_after_a_no_change_round_with_a_refused_rerun_at_this_head_parks_ci_rerun_due(
+    tmp_path, rerun,
+):
+    """#3006 (PR #2971 at a1e16b2c): GitHub refused the tick's re-run, so
+    nothing re-ran. That is not the head's free re-run: after the no_change
+    round the step parks once more for it, and the tick asks again."""
+    world = MergeWorld(tmp_path)
+    _no_change_round(world, rerun=rerun)
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_DUE, PINNED)
+    assert "round 1" in outcome.summary["wait"]["message"]
+
+
+def test_red_after_a_no_change_round_whose_retried_rerun_was_refused_names_the_error(tmp_path):
+    """#3006: the tick asks again at most once. Two refused re-runs at the
+    head refuse `checks_failed`, naming the last refusal, bounded like a
+    round's error."""
+    world = MergeWorld(tmp_path)
+    _no_change_round(world, rerun={"error": REFUSED, "requested_at": None})
+    last = "403 refused again: " + "x" * 400
+    reruns = world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY][merge.RERUNS_KEY]
+    reruns.append({**reruns[0], "round": 2, "error": last})
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "checks_failed", outcome.summary
+    message = outcome.summary["refusal"]["message"]
+    assert "round 1" in message
+    assert last[:300] in message and last[:301] not in message
+    assert REFUSED not in message
+
+
+SUITE = 900
+
+
+def _rerun_run(world: MergeWorld, status: str) -> None:
+    """Workflow run 41 made the red check's suite; its latest attempt is `status`."""
+    world.runs[0]["check_suite"] = {"id": SUITE}
+    world.workflow_runs.append({
+        "id": 41, "check_suite_id": SUITE, "workflow_id": 3, "event": "pull_request",
+        "head_branch": world.pr["head"]["ref"], "status": status, "run_attempt": 2,
+        "conclusion": "failure" if status == "completed" else None,
+    })
+
+
+@pytest.mark.parametrize("status", ["in_progress", "queued"])
+def test_red_after_a_no_change_round_with_a_lapsed_rerun_still_running_parks_pending(
+    tmp_path, status,
+):
+    """#3006 (PR #2973 at 22ef10c2): the accepted re-run's workflow run
+    attempt was still running when RERUN_SETTLE_SECONDS ran out. The window
+    is a floor, not the answer: the step waits for the attempt."""
+    world = MergeWorld(tmp_path)
+    _no_change_round(world, rerun={"runs": [41], "ago": merge.RERUN_SETTLE_SECONDS + 5})
+    _rerun_run(world, status)
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CI_RERUN_PENDING, PINNED)
+
+
+def _actions_unreadable(world: MergeWorld) -> None:
+    _rerun_run(world, "in_progress")
+    world.github.route("GET", f"{merge_world.API}/actions/runs",
+                       (403, {}, {"message": "Resource not accessible by integration"}))
+
+
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda w: _rerun_run(w, "completed"), id="attempt-completed"),
+    pytest.param(_actions_unreadable, id="runs-unreadable"),
+    pytest.param(lambda w: _rerun_run(w, "in_progress") or w.workflow_runs[0].update(id=42),
+                 id="another-run-running"),
+])
+def test_red_after_a_no_change_round_with_a_lapsed_rerun_not_running_is_checks_failed(
+    tmp_path, mutate,
+):
+    """Once the re-run's attempt completed, or its status cannot be read, the
+    600 s window alone decides: past it, the red reading refuses."""
+    world = MergeWorld(tmp_path)
+    _no_change_round(world, rerun={"runs": [41], "ago": merge.RERUN_SETTLE_SECONDS + 5})
+    mutate(world)
 
     outcome = merge.run_merge(world.context())
 

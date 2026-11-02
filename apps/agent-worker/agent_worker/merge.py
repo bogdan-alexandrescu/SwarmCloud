@@ -358,9 +358,17 @@ MERGE_FIX_ROUNDS_MAX = 5
 #: GitHub has not replaced yet, not the re-run's answer, so a wake inside it
 #: (the MERGE_CI_FALLBACK_SECONDS fallback, any other) parks rather than
 #: refusing on them: task_076d1ae89d014e4688ce refused `checks_failed` on one
-#: flaky shard a re-run would have passed (PR #2229).
+#: flaky shard a re-run would have passed (PR #2229). Past the window it
+#: still holds while a workflow run the re-run named (`runs`) has a latest
+#: attempt that has not completed (#3006: PR #2973 refused at 22ef10c2 while
+#: its re-run was still running); the window alone decides when that cannot
+#: be read. A record with `error` re-ran nothing: after a no_change round
+#: it is not the head's free re-run (`_rerun_due`).
 RERUNS_KEY = "reruns"
 RERUN_SETTLE_SECONDS = 600
+#: How many re-runs GitHub refused at one head before the step stops
+#: parking for another (#3006): the tick asks again at most once.
+RERUN_REFUSALS_MAX = 2
 
 #: The park codes of a red reading a CI-fix round may still fix: rounds are
 #: left and the tick has not claimed the next one yet, or one is running at
@@ -368,7 +376,9 @@ RERUN_SETTLE_SECONDS = 600
 CI_FIX_PENDING = "ci_fix_pending"
 CI_FIX_RUNNING = "ci_fix_running"
 #: The park code of a red reading whose failing jobs the tick re-ran at this
-#: head less than RERUN_SETTLE_SECONDS ago: the re-run has not answered yet.
+#: head less than RERUN_SETTLE_SECONDS ago, or whose re-run's workflow run
+#: attempt is still running past that (#3006): the re-run has not answered
+#: yet. MERGE_CI_MAX_SECONDS bounds it.
 CI_RERUN_PENDING = "ci_rerun_pending"
 #: The park code of a red reading with no CI-fix round left to ask for and no
 #: re-run recorded at this head (#2351, BGD 2026-10-27): swarm-api's wake
@@ -380,7 +390,11 @@ CI_RERUN_PENDING = "ci_rerun_pending"
 #: re-run (the tick found no Actions job to re-run) refuses `checks_failed`.
 #: A CI-fix round that ended at the red head with `no_change` reaches it too
 #: (#2684): task_d2698b60 diagnosed a flaky shard on PR #2603 and asked for
-#: a re-run, and the step refused without one (task_69eb7362).
+#: a re-run, and the step refused without one (task_69eb7362). There a
+#: re-run GitHub refused (`error`) re-ran nothing, so it is not the head's
+#: free re-run (#3006, PR #2971 at a1e16b2c): the step parks again while
+#: fewer than RERUN_REFUSALS_MAX refusals are recorded at the head, then
+#: refuses naming the last refusal's error.
 CI_RERUN_DUE = "ci_rerun_due"
 #: The park code of a red reading no CI-fix round can fix (#2046): the
 #: publish that wrote this head -- the opener's, or the CI-fix round's that
@@ -652,6 +666,12 @@ class ActionsSuite(NamedTuple):
     #: A newer Actions run of the same workflow and event, from the same
     #: branch, is at the sha: the run that concurrency cancelled this one.
     superseded: bool = False
+    #: The Actions run's id, and its LATEST attempt's status and number
+    #: (GitHub serves the newest attempt): what holds a re-run the tick asked
+    #: for while that run is still running (`_rerun_running`, #3006).
+    run_id: int | None = None
+    status: str | None = None
+    run_attempt: int | None = None
 
 
 _NO_SUITE = ActionsSuite(None, None)
@@ -680,7 +700,9 @@ def actions_suites(runs: Iterable[Any]) -> dict[int | None, ActionsSuite]:
             and _str(other.get("head_branch")) == branch
             and (_int(other.get("id")) or 0) > run_id
             for other in rows)
-        suites[suite] = ActionsSuite(event, branch, _str(run.get("conclusion")), superseded)
+        suites[suite] = ActionsSuite(event, branch, _str(run.get("conclusion")), superseded,
+                                     run_id, _str(run.get("status")),
+                                     _int(run.get("run_attempt")))
     return suites
 
 
@@ -1007,6 +1029,10 @@ class CheckFacts:
     #: (#2582). None and False when the Actions runs were not read.
     workflow_conclusion: str | None = None
     workflow_superseded: bool = False
+    #: That Actions run's id and its latest attempt's status (#3006): None
+    #: when the Actions runs were not read.
+    workflow_run_id: int | None = None
+    workflow_status: str | None = None
 
     def as_run(self) -> dict[str, Any]:
         return {"name": self.name, "status": self.status, "conclusion": self.conclusion,
@@ -1014,6 +1040,16 @@ class CheckFacts:
                 "check_suite_id": self.check_suite_id,
                 "workflow_conclusion": self.workflow_conclusion,
                 "workflow_superseded": self.workflow_superseded}
+
+
+def workflow_run_states(checks: Iterable[CheckFacts]) -> dict[int, str | None] | None:
+    """The status of each Actions run's latest attempt the checks at a head
+    were read with, by run id (#3006); None when no check carries one: the
+    Actions runs were not read (`checks_at` reads them for a red reading),
+    or a credential without `actions: read` could not read them."""
+    states = {check.workflow_run_id: check.workflow_status for check in checks
+              if check.workflow_run_id is not None}
+    return states or None
 
 
 @dataclass(frozen=True)
@@ -1353,7 +1389,8 @@ class GitHubMerger:
         if len(names) != len(set(names)) or red:
             suites = self._suite_events(sha)
             out = [replace(check, event=suite.event, workflow_conclusion=suite.conclusion,
-                           workflow_superseded=suite.superseded)
+                           workflow_superseded=suite.superseded, workflow_run_id=suite.run_id,
+                           workflow_status=suite.status)
                    for check in out
                    for suite in (suites.get(check.check_suite_id, _NO_SUITE),)
                    if not _other_branch_push(suites.get(check.check_suite_id), head_ref)]
@@ -2765,7 +2802,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             failing_ids = _with_failing(failing_ids, failing_run_ids(runs, OTHER_TOLERATED))
         judged = list(by_check.values())
     if failed:
-        return _red(run, own, head=head, failed=failed, failing_ids=failing_ids, wait=wait)
+        return _red(run, own, head=head, failed=failed, failing_ids=failing_ids, wait=wait,
+                    run_states=workflow_run_states(checks))
     if pending:
         since = cancelled_since(judged)
         if since is not None:
@@ -3545,33 +3583,44 @@ def _with_failing(ids: set[int] | None, more: set[int] | None) -> set[int] | Non
     return None if ids is None or more is None else ids | more
 
 
-def _rerun_settling(own: Mapping[str, Any], head: str,
-                    failing_ids: set[int] | None) -> datetime | None:
-    """When the tick's last re-run at `head` was requested, while it settles.
+def _rerun_settling(own: Mapping[str, Any], head: str, failing_ids: set[int] | None,
+                    run_states: Mapping[int, str | None] | None = None) -> datetime | None:
+    """When the tick's last accepted re-run at `head` was requested, while it settles.
 
-    None unless GitHub accepted it (no `error`) less than
-    RERUN_SETTLE_SECONDS ago, and EVERY failing run this step reads
-    (`failing_ids`) is one of the jobs it re-ran: the reading is still the
-    one the re-run replaces. A red check it did not re-run -- another job,
-    a commit status (`failing_ids` None), or a re-run job's own red answer
-    under a new id -- is a failure no waiting changes, so it holds nothing
-    even while another re-run job settles (PR 2268 re-review; the tick's
-    `_rerunnable` likewise re-runs only a reading made wholly of Actions
-    jobs). The document is tenant-writable, so only an
-    instant the tick could have written counts: a tz-aware datetime not in
-    the future, or its ISO 8601 text, which is how swarm-api's state routes
-    serve a Firestore instant (`attemptstate.jsonable`). A forged one can at
-    most make the step wait that long.
+    None unless GitHub accepted it (the last record at `head` with no
+    `error`) and EVERY failing run this step reads (`failing_ids`) is one of
+    the jobs it re-ran: the reading is still the one the re-run replaces. A
+    red check it did not re-run -- another job, a commit status
+    (`failing_ids` None), or a re-run job's own red answer under a new id --
+    is a failure no waiting changes, so it holds nothing even while another
+    re-run job settles (PR 2268 re-review; the tick's `_rerunnable` likewise
+    re-runs only a reading made wholly of Actions jobs).
+
+    It settles for RERUN_SETTLE_SECONDS after `requested_at`, and past that
+    for as long as a workflow run it re-ran (`runs`) has a latest attempt
+    this reading says has not completed (`run_states`, `_rerun_running`):
+    PR #2973 refused at 22ef10c2 while its re-run's attempt was still
+    running (#3006). The window is the floor whenever that status cannot be
+    read -- no `runs` recorded, or no Actions runs read (403/404).
+
+    The document is tenant-writable, so only an instant the tick could have
+    written counts: a tz-aware datetime not in the future, or its ISO 8601
+    text, which is how swarm-api's state routes serve a Firestore instant
+    (`attemptstate.jsonable`). A forged instant, or forged `runs` naming a
+    run still going, can at most make the step wait, which
+    MERGE_CI_MAX_SECONDS bounds.
     """
-    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
-    if not mine or mine[-1].get("error"):
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head
+            and not r.get("error")]
+    if not mine:
         return None
-    jobs = mine[-1].get("jobs")
+    entry = mine[-1]
+    jobs = entry.get("jobs")
     asked = {j for j in jobs if isinstance(j, int) and not isinstance(j, bool)} if isinstance(
         jobs, list) else set()
     if not failing_ids or not failing_ids <= asked:
         return None
-    since = mine[-1].get("requested_at")
+    since = entry.get("requested_at")
     if isinstance(since, str):
         try:
             since = datetime.fromisoformat(since)
@@ -3580,27 +3629,60 @@ def _rerun_settling(own: Mapping[str, Any], head: str,
     if not isinstance(since, datetime) or since.tzinfo is None:
         return None
     age = (utcnow() - since).total_seconds()
-    return since if 0 <= age < RERUN_SETTLE_SECONDS else None
+    if age < 0:
+        return None
+    return since if age < RERUN_SETTLE_SECONDS or _rerun_running(entry, run_states) else None
 
 
-def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None) -> bool:
+def _rerun_running(entry: Mapping[str, Any], run_states: Mapping[int, str | None] | None) -> bool:
+    """Whether a workflow run a re-run record names (`runs`) has a latest
+    attempt that has not completed, as this reading's Actions runs say
+    (#3006). False when either is missing: the settle window decides."""
+    runs = entry.get("runs")
+    if not run_states or not isinstance(runs, list):
+        return False
+    return any(isinstance(r, int) and not isinstance(r, bool) and r in run_states
+               and run_states[r] != "completed" for r in runs)
+
+
+def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, *,
+               after_no_change: bool = False) -> bool:
     """Whether a red reading at `head` parks `CI_RERUN_DUE` for the tick's free re-run (#2351).
 
-    Only while nothing at this head has answered it: no re-run recorded at
-    `head` (answered, refused or settling -- `_rerun_settling` holds the
-    last), and this step's own last park (`merge_wait`) was not already
-    `CI_RERUN_DUE` at `head`, so a tick that found no Actions job to re-run
-    and woke the step red is answered with the refusal, not a second park.
+    Only while nothing at this head has answered it: no re-run GitHub
+    accepted is recorded at `head` (answered or settling -- `_rerun_settling`
+    holds the latter), and this step's own last park (`merge_wait`) was not
+    already `CI_RERUN_DUE` at `head`, so a tick that found no Actions job to
+    re-run and woke the step red is answered with the refusal, not a second
+    park. After a CI-fix round ended at `head` with nothing to change
+    (`after_no_change`), a re-run GitHub refused (`error`) re-ran nothing,
+    so it is not the head's free re-run (#3006, PR #2971 at a1e16b2c): the
+    step parks again while fewer than RERUN_REFUSALS_MAX refusals are
+    recorded at `head` -- the tick asks again only then -- so a credential
+    that cannot re-run costs one more request, not a loop. Without a round,
+    a refused re-run hands the red to a round or refuses, as before.
     Never for a failing run no re-run replaces (`failing_ids` None, a commit
     status): waiting changes nothing. The document is tenant-writable; a
-    forged record can at most refuse at once, as before #2351, or park once.
+    forged record can at most refuse at once, as before #2351, or park,
+    which MERGE_CI_MAX_SECONDS bounds.
     """
     if not failing_ids:
         return False
-    if any(r.get("head") == head for r in _fix_rounds(own, RERUNS_KEY)):
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
+    if not after_no_change:
+        if mine:
+            return False
+    elif any(not r.get("error") for r in mine) or len(mine) >= RERUN_REFUSALS_MAX:
         return False
     parked = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
     return not (parked.get("code") == CI_RERUN_DUE and parked.get("head") == head)
+
+
+def _rerun_refused(own: Mapping[str, Any], head: str) -> str | None:
+    """The error of the last re-run recorded at `head`, when GitHub refused it (#3006)."""
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
+    error = mine[-1].get("error") if mine else None
+    return str(error) if error else None
 
 
 def _rounds_asked(own: Mapping[str, Any]) -> int:
@@ -3900,7 +3982,8 @@ def _ended(ctx: ActionContext, task_id: str) -> bool:
 
 
 def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
-         failing_ids: set[int] | None, wait: Any) -> ActionOutcome:
+         failing_ids: set[int] | None, wait: Any,
+         run_states: Mapping[int, str | None] | None = None) -> ActionOutcome:
     """A failing required check at `head`: a CI-fix round's to fix, or `checks_failed`.
 
     docs/merge-step.md "Revised 2026-10-06" §1: with rounds left the tick
@@ -3912,11 +3995,13 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
 
     Before the budget is read, a re-run of the failing Actions jobs the tick
     asked GitHub for at this head (#2257), accepted and inside
-    RERUN_SETTLE_SECONDS, parks `CI_RERUN_PENDING` whatever the budget, even
-    none, while every failing run is one it re-ran (`failing_ids`): the
-    reading is the one the re-run replaces. Once any of it answers red -- a
-    failing run is a new id, inside the window or not -- or a check it did
-    not re-run is red, this refuses (or hands it to a round) as before.
+    RERUN_SETTLE_SECONDS -- or past it while a workflow run it re-ran is
+    still running by this reading's Actions runs (`run_states`, #3006) --
+    parks `CI_RERUN_PENDING` whatever the budget, even none, while every
+    failing run is one it re-ran (`failing_ids`): the reading is the one the
+    re-run replaces. Once any of it answers red -- a failing run is a new
+    id, inside the window or not -- or a check it did not re-run is red,
+    this refuses (or hands it to a round) as before.
 
     With no round left to ask for, the FIRST red reading at a head with no
     re-run recorded there parks once `CI_RERUN_DUE` (#2351), so the tick's
@@ -3925,7 +4010,10 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     `_round_left_nothing`) gets the same: the re-run settling parks
     `CI_RERUN_PENDING`, none recorded at the head parks `CI_RERUN_DUE` once,
     and anything else refuses after the round (#2684). Still one free re-run
-    per head: a head the tick re-ran before the round refuses.
+    per head: a head the tick re-ran before the round refuses. A re-run
+    GitHub refused re-ran nothing, so it is not that one (#3006, PR #2971 at
+    a1e16b2c): the step parks `CI_RERUN_DUE` for one more request, and a
+    second refusal refuses `checks_failed` naming its error.
 
     A head written by a publish swarm-api refused WORKFLOW_SCOPE_MISSING --
     the opener's pinned head, or the head a round ended at -- parks
@@ -3953,22 +4041,29 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
         if _round_left_nothing(run.ctx, task_id):
             parked = _rerun_wait(own, head, failing_ids, wait,
                                  f"{message}; CI fix round {number} ({task_id}) found "
-                                 "nothing to change")
+                                 "nothing to change", run_states=run_states,
+                                 after_no_change=True)
             if parked is not None:
                 return parked
+            rerun_error = _rerun_refused(own, head)
+            if rerun_error is not None:
+                return run.refuse("checks_failed",
+                                  f"{message}, after CI fix round {number} ({task_id}) ended at "
+                                  f"this head; its re-run was refused: {rerun_error[:300]}")
         return run.refuse("checks_failed",
                           f"{message}, after CI fix round {number} ({task_id}) ended at this head")
     if run.refused_publish is not None and run.refused_publish[1] == head:
         opener, _, refused = run.refused_publish
         return _await_workflow_patch(run, message, opener, refused, wait)
-    parked = _rerun_wait(own, head, failing_ids, wait, message, due=False)
+    parked = _rerun_wait(own, head, failing_ids, wait, message, due=False,
+                         run_states=run_states)
     if parked is not None:
         return parked
     asked = _rounds_asked(own)
     if len(rounds) < asked:
         return wait(CI_FIX_PENDING,
                     f"{message}; CI fix round {len(rounds) + 1} of {asked} is due", [])
-    parked = _rerun_wait(own, head, failing_ids, wait, message)
+    parked = _rerun_wait(own, head, failing_ids, wait, message, run_states=run_states)
     if parked is not None:
         return parked
     if asked:
@@ -3977,20 +4072,24 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
 
 
 def _rerun_wait(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, wait: Any,
-                message: str, *, due: bool = True) -> ActionOutcome | None:
+                message: str, *, due: bool = True,
+                run_states: Mapping[int, str | None] | None = None,
+                after_no_change: bool = False) -> ActionOutcome | None:
     """The park a red reading at `head` owes the tick's free re-run, or None.
 
     `CI_RERUN_PENDING` while a re-run at `head` settles (`_rerun_settling`);
     then, with `due`, `CI_RERUN_DUE` once when none is recorded there
     (`_rerun_due`). One rule for a red reading with no round at the head and
-    for a round that ended there with nothing to change (#2684).
+    for a round that ended there with nothing to change (#2684). `run_states`
+    is this reading's Actions runs (`workflow_run_states`): a re-run whose
+    run is still going holds past the window (#3006).
     """
-    requested_at = _rerun_settling(own, head, failing_ids)
+    requested_at = _rerun_settling(own, head, failing_ids, run_states)
     if requested_at is not None:
         return wait(CI_RERUN_PENDING,
                     f"{message}; the failing jobs were re-run at {requested_at.isoformat()}, "
                     "and the re-run has not answered yet", [])
-    if due and _rerun_due(own, head, failing_ids):
+    if due and _rerun_due(own, head, failing_ids, after_no_change=after_no_change):
         return wait(CI_RERUN_DUE,
                     f"{message}; the failing jobs are due their one free re-run at this head", [])
     return None

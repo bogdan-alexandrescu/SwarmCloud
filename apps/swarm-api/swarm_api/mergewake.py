@@ -215,6 +215,19 @@ whose own loop fixes CI before it merges). Three things come with them:
   task_d2698b60 on PR #2603 asked for a re-run, and the merge
   task_69eb7362 refused without one). Still once per head: a head re-run
   before its round wakes the step as before.
+  Only an answered re-run is the head's re-run (#3006). A refused one ran
+  nothing, so after a no_change round a head whose every re-run GitHub
+  refused is asked once more, and its second refusal (RERUN_REFUSALS_MAX)
+  wakes the step: a credential without `actions: write` costs one extra
+  request, never a loop. An accepted re-run past RERUN_SETTLE_SECONDS
+  still holds the tick while a workflow run it asked of reads not
+  `completed` (`GitHubWriter.read_run`), bounded by the worker's
+  MERGE_CI_MAX_SECONDS; a run whose status cannot be read leaves the
+  window alone as the floor. PR #2971 (a1e16b2c) and PR #2973 (22ef10c2)
+  refused `checks_failed` with no re-run answer: one head's re-run was
+  refused, the other's fixed 600 s window lapsed while its fan-in
+  `ci-gate` run was still running. This is still one answered re-run per
+  head, with at most one retry of a refusal.
 * EACH ROUND IS A STEP OF THE MERGE'S WORKFLOW. After the round's own
   workflow is submitted, the tick appends a step `ci-fix:<n>`,
   `conflict-fix:<n>` or `pick-fix:<n>` (ROLLUP-PICK-FIX) naming the round's
@@ -451,15 +464,22 @@ CONFLICT_ROUNDS_KEY = "conflict_rounds"
 MERGE_CONFLICT_ROUNDS_MAX = 2
 #: The one step of a conflict fix round's workflow.
 CONFLICT_FIX_STEP = "conflict-fix"
-#: The re-runs of failing Actions jobs in `metadata.merge_fix`, one per head
-#: at most (SPEED-D2): each `{round, head, claimed_at}` as a round is
-#: claimed, then `jobs` and `requested_at`, or `error` when GitHub refused.
+#: The re-runs of failing Actions jobs in `metadata.merge_fix`, one accepted
+#: per head at most (SPEED-D2; a refused one is asked once more, #3006): each
+#: `{round, head, claimed_at}` as a round is claimed, then `jobs`, `runs`
+#: and `requested_at`, or `error` when GitHub refused.
 RERUNS_KEY = "reruns"
 #: How long after a re-run was requested the tick keeps reading the same
 #: failed check runs as "GitHub has not made the new ones yet" rather than as
 #: the re-run's answer. Ten minutes: GitHub queues a re-run in seconds, and
-#: past this a re-run that never registered gives way to a round.
+#: past this a re-run that never registered gives way to a round -- unless a
+#: workflow run it asked of still reads not `completed` (#3006), which holds
+#: on; the window is the floor when that status cannot be read.
 RERUN_SETTLE_SECONDS = 600
+#: The re-run requests GitHub may refuse at one head before the step is
+#: woken without one (#3006): a refused re-run ran nothing, so it is asked
+#: once more, and a credential without `actions: write` costs one request.
+RERUN_REFUSALS_MAX = 2
 #: The App whose check runs are Actions jobs, the only ones a re-run reaches.
 ACTIONS_APP_SLUG = "github-actions"
 #: A merge parked on an owner pick its branch did not build (PICK-FIX-ROUND,
@@ -1077,6 +1097,25 @@ def _rerun_targets(reading: CiReading | None, jobs: list[int]) -> tuple[list[int
     return sorted(runs), sorted(alone)
 
 
+def _rerun_running(ctx: Any, ref: IssueRef, entry: Mapping[str, Any], token: str) -> bool:
+    """True while a workflow run an accepted re-run asked of has a latest
+    attempt that has not completed (#3006: a fan-in `ci-gate` run still
+    re-running its needs past RERUN_SETTLE_SECONDS). A run whose status
+    cannot be read counts as answered: the window alone holds then."""
+    for run_id in entry.get("runs") or []:
+        if not isinstance(run_id, int) or isinstance(run_id, bool):
+            continue
+        try:
+            status = ctx.forge_writer.read_run(ref, run_id, token).get("status")
+        except Exception as exc:  # noqa: BLE001 - an unread run falls back to the window
+            log.info("merge wake: the status of re-run Actions run %d is unread (%s)",
+                     run_id, type(exc).__name__)
+            continue
+        if status != "completed":
+            return True
+    return False
+
+
 def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref: IssueRef,
                  head: str, read: _Reading, token: str, now: datetime) -> tuple[str, None] | None:
     """Re-run the failed jobs of a red head's failing Actions checks' workflow
@@ -1085,22 +1124,28 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
     (`_RERUN` | `_WAITING`, None) when this tick asked for the re-run or is
     waiting for GitHub to make it; None to go on to the round: no job a
     re-run could fix, a re-run at this head already answered red, or one
-    GitHub refused. See the module docstring.
+    GitHub refused twice. A refused re-run ran nothing, so it is not the
+    head's re-run: asked once more, at most (RERUN_REFUSALS_MAX, #3006). See
+    the module docstring.
     """
     task_id = str(doc.get("id") or "")
-    reruns = _rounds(_mapping(doc.get("metadata")), RERUNS_KEY)
+    metadata = _mapping(doc.get("metadata"))
+    reruns = _rounds(metadata, RERUNS_KEY)
     jobs = _rerunnable(read.checks)
     mine = [r for r in reruns if r.get("head") == head]
-    if mine:
-        entry = mine[-1]
+    refused = [r for r in mine if r.get("error")]
+    if mine and len(refused) < len(mine):
+        entry = [r for r in mine if not r.get("error")][-1]
         asked = {j for j in entry.get("jobs") or [] if isinstance(j, int)}
         since = entry.get("requested_at")
         if (
-            not entry.get("error") and asked & set(jobs)
-            and isinstance(since, datetime) and since <= now
-            and now - since < timedelta(seconds=RERUN_SETTLE_SECONDS)
+            asked & set(jobs) and isinstance(since, datetime) and since <= now
+            and (now - since < timedelta(seconds=RERUN_SETTLE_SECONDS)
+                 or _rerun_running(ctx, ref, entry, token))
         ):
             return _WAITING, None
+        return None
+    if len(refused) >= RERUN_REFUSALS_MAX:
         return None
     if not jobs:
         return None
@@ -1118,10 +1163,17 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
         reason = exc.message if isinstance(exc, ApiError) else (
             str(exc) if isinstance(exc, ForgeWriteError) else type(exc).__name__
         )
+        error = failure_text(reason)
         _record_round(db, tenant_id, task_id, claimed,
-                      {"jobs": jobs, "runs": runs, "error": failure_text(reason)}, RERUNS_KEY)
-        log.info("merge wake %s tenant=%s: re-run refused (%s); a round instead",
-                 task_id, tenant_id, reason)
+                      {"jobs": jobs, "runs": runs, "error": error}, RERUNS_KEY)
+        log.info("merge wake %s tenant=%s: re-run refused (%s)", task_id, tenant_id, error)
+        # After a no_change round at this head (#3006) a first refusal is
+        # asked once more on the next tick; before any round, or at the
+        # bound, the refusal costs nothing: a round, or the wake, this tick.
+        rounds = _rounds(metadata)
+        if (rounds and rounds[-1].get("head") == head
+                and len(refused) + 1 < RERUN_REFUSALS_MAX):
+            return _WAITING, None
         return None
     _record_round(db, tenant_id, task_id, claimed,
                   {"jobs": jobs, "runs": runs, "requested_at": now}, RERUNS_KEY)

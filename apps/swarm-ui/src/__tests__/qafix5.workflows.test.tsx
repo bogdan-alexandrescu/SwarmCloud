@@ -372,7 +372,7 @@ describe('D2: a workflow cost still being read reads "reading", never "not repor
     expect(cost.textContent).not.toMatch(/not reported/)
   })
 
-  it('draws "reading" in the list’s Cost cell while the read is in flight, not the "—" of an absence', async () => {
+  it('the list’s Cost cell waits on no attempt read: its steps’ totals come with the list (console load speed, 2026-11-01)', async () => {
     api.loadWorkflowUsage.mockReturnValue(new Promise(() => {}))
     render(<WorkflowsScreen view="" onView={() => {}} />)
     const cell = await waitFor(() => {
@@ -380,9 +380,10 @@ describe('D2: a workflow cost still being read reads "reading", never "not repor
       expect(td).toBeTruthy()
       return td!
     })
-    // MUTATION: drop the `reading` prop from the row's `Spend`.
-    expect(cell.textContent).toBe('reading')
-    expect(within(cell).getByRole('img', { name: /still being read/ })).toBeTruthy()
+    // MUTATION: put the list's `useWorkflowUsage` back -- the cell reads
+    // `reading` while the attempt read the list no longer makes is out.
+    expect(cell.textContent).not.toBe('reading')
+    expect(api.loadWorkflowUsage).not.toHaveBeenCalled()
   })
 
   it('draws reading upright and faint, apart from the italic absence', () => {

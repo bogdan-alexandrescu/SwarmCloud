@@ -184,6 +184,7 @@ from .validation import (
     validate_runner_profile,
     validate_step_routing,
     validate_storable,
+    timeout_asked,
     validate_timeout,
     workflow_label,
 )
@@ -899,6 +900,15 @@ class SubmissionService:
             # before classes existed; a stored class is signed at the format
             # that covers it (`specsign.signing_format`).
             model_class=stored_model_class(profile, model_class),
+            # Contract request 131: what the spec asked when every timeout
+            # stored for it is lower (its own and, on a `browser_if_ui` step,
+            # its `code` alternate's). A record only: the limit stays
+            # `timeout_seconds`, and nothing reads this as one (invariant 10).
+            timeout_seconds_asked=timeout_asked(
+                spec.timeout_seconds, timeout,
+                *((metadata[RUNTIME_METADATA_KEY]["alternate"]["timeout_seconds"],)
+                  if runtime is not None else ()),
+            ),
         )
 
     def _runtime_alternate(

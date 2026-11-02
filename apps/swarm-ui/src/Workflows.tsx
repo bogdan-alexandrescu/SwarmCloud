@@ -111,6 +111,7 @@ import {
   parentsDoneOf,
   resultTokenKinds,
   sameStepAcross,
+  summaryTaskById,
   shapeSignature,
   stateEnteredAt,
   stateRankOf,
@@ -138,7 +139,6 @@ import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EV
 import { StopRun } from './StopRun'
 import { LiveThumb, showsLiveThumb, type OpenLive } from './LiveThumb'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
-import { useInView } from './useInView'
 import {
   bytesLabel,
   consequenceOf,
@@ -727,10 +727,10 @@ interface PickedStep {
  *
  * It lived inside `Board`, so the step table's total read attempt telemetry
  * while the page head beside it and the list row summed the step results
- * alone, and one page showed two totals. The page now reads it once and hands
- * it to the head and the board; the list reads it for the rows it draws.
- * `firstId` is the workflow whose steps go first, so the sample cap never
- * leaves out the steps of the page's own workflow.
+ * alone, and one page showed two totals. The page now reads it once, over its
+ * own steps, and hands it to the head and the board. The list reads none: its
+ * rows total from the steps' blocks in the list read (console load speed,
+ * 2026-11-01). `firstId` is the workflow whose steps go first under the cap.
  */
 function useWorkflowUsage(workflows: readonly Workflow[], firstId: string | null): UsageRead {
   // Every task a step points at, in board order. `loadWorkflowUsage` dedupes
@@ -5749,26 +5749,22 @@ function WorkflowList({
   // for (WF-2). Everything below -- counts, sorts, search -- is over these.
   const older = useOlderWorkflows(board)
   const all = older.all
-  const reads = useRowReads(board)
-  const taskById = reads.taskById
+  // THE STEPS' STATES ARE IN THE LIST READ ITSELF (console load speed, owner's
+  // pick 2026-11-01): each step carries its task's block, joined by
+  // `summaryTaskById` for the first page and for every older page alike. No
+  // row reads its workflow by id as it scrolls in, and none waits to.
+  const taskById = useMemo(() => {
+    const own = new Set(board.workflows.map((w) => w.workflow_id))
+    const extra = all.filter((w) => !own.has(w.workflow_id))
+    if (extra.length === 0) return board.taskById
+    const out = summaryTaskById(extra)
+    for (const [k, t] of board.taskById ?? []) out.set(k, t)
+    return out
+  }, [all, board.workflows, board.taskById])
   const labels = useMemo(
     () => new Map(all.map((w) => [w.workflow_id, workflowLabel(w, taskById)] as const)),
     [all, taskById],
   )
-  const searching = query.q.trim() !== ''
-  // A SEARCH READS EVERY ROW'S STEPS, NOT ONLY THE ROWS IN VIEW (live QA WF-1,
-  // S1, 2026-10-11). A row's name is its step tasks' `metadata.unit`, and a
-  // row the task window missed learns it only from its own read, which was
-  // started when the row scrolled into view. So typing the name of row 82 on a
-  // fresh load found nothing and said "no match among the 100 newest", a false
-  // negative read as a measured absence. The first keystroke now asks for
-  // every unread row (`useRowReads` keeps a few in flight at once), and until
-  // they land the list says how many names it has not read yet.
-  const { want } = reads
-  useEffect(() => {
-    if (!searching) return
-    for (const w of all) if (!stepsRead(w, taskById)) want(w)
-  }, [searching, all, taskById, want])
   // The segment's counts follow the OTHER filters, so "Failed 2" means two
   // failed workflows of priya's, when owner is priya.
   const filtered = all.filter((w) => listMatches(w, labels.get(w.workflow_id) ?? null, query))
@@ -5779,23 +5775,8 @@ function WorkflowList({
     taskById,
   )
   // HOW MANY ROWS KNOW THEIR STEPS (QA G3-06), said once above the table
-  // rather than as a dash in every cell of every row the window missed.
+  // rather than as a dash in every cell of every row the read did not serve.
   const unread = rows.filter((w) => !stepsRead(w, taskById))
-  const failedReads = unread.filter((w) => reads.failed.has(w.workflow_id)).length
-  // THE ROWS A SEARCH CANNOT YET JUDGE (WF-1): they pass every other filter,
-  // their name is not known, and their read has not failed. They are being
-  // read; a "no match" over them would be a guess.
-  const unjudged = searching
-    ? all.filter(
-        (w) =>
-          !filtered.includes(w) &&
-          (query.state === 'all' || bucketOf(w) === query.state) &&
-          matchesFilters(w, null, { ...query, q: '' }) &&
-          labels.get(w.workflow_id) === null &&
-          !stepsRead(w, taskById) &&
-          !reads.failed.has(w.workflow_id),
-      ).length
-    : 0
   // A pasted workflow id the read does not hold (WF-3): its page reads it by id.
   const pastedId = query.q.trim()
   const outside = WORKFLOW_ID.test(pastedId) && !all.some((w) => w.workflow_id === pastedId) ? pastedId : null
@@ -5804,12 +5785,9 @@ function WorkflowList({
   const owners = withChosen(ownersOf(all), query.owner)
   const profiles = withChosen(profilesOf(all), query.profile)
   const filteredAtAll = query.q !== '' || query.owner !== '' || query.profile !== ''
-  // THE ROWS' COST, BY THE TABLE'S RULE (WF-5): attempt telemetry where the
-  // read carried a cost, the step's result where it did not. Read for the rows
-  // drawn, in their order, so the cap covers the top of the list; a step
-  // outside the cap totals from its result and its row says how many did.
-  const listUsage = useWorkflowUsage(rows, null)
-  const telemetry = telemetryOf(listUsage)
+  // THE ROWS' COST, BY THE TABLE'S RULE (WF-5): each step's total over every
+  // attempt comes with its block in the list read, so no attempt read is made
+  // for the rows and no cost cell waits on one.
   // One clock for every running row's `so far`, on the shared age tick: the
   // started and duration columns move on the same beat as every other age on
   // the screen, and a running row's duration advances between polls. The
@@ -5837,9 +5815,7 @@ function WorkflowList({
   const listNote = [
     older.more !== null ? `Counts and order are of ${scope} workflows; older ones are on the server and not read yet` : null,
     unread.length > 0
-      ? `${rows.length - unread.length} of ${rows.length} rows have their steps read; ${
-          searching ? 'the rest are being read for the search' : 'older rows show ids only until they scroll into view'
-        }${failedReads > 0 ? `; ${failedReads} could not be read` : ''}`
+      ? `${rows.length - unread.length} of ${rows.length} rows have their steps read; the list read did not serve the rest's, which each one's page reads`
       : null,
   ]
     .filter((c): c is string => c !== null)
@@ -5865,13 +5841,10 @@ function WorkflowList({
         <p className="wfl-none">
           {/* WHAT WAS SEARCHED (QA G3-21; live QA WF-1): the filters run over
               the rows this list holds, so "no match" is never a claim about
-              older workflows, nor about rows whose names are still being
-              read. */}
+              older workflows. */}
           {!filteredAtAll
             ? `No ${which}workflow in this read.`
-            : unjudged > 0
-              ? `No ${which}match yet: ${unjudged} of the ${all.length} workflows have not had their names read; searching them as they arrive.`
-              : `No ${which}match among ${scope} workflows read${older.more === null ? '.' : '; older ones are not searched until they are read.'}`}
+            : `No ${which}match among ${scope} workflows read${older.more === null ? '.' : '; older ones are not searched until they are read.'}`}
           {filteredAtAll && (
             <Button size="sm" onClick={() => choose({ ...query, q: '', owner: '', profile: '' })}>
               Clear the filters
@@ -5889,12 +5862,8 @@ function WorkflowList({
                   workflow={w}
                   label={labels.get(w.workflow_id) ?? null}
                   taskById={taskById}
-                  telemetry={telemetry}
-                  usageReading={listUsage.kind === 'reading'}
                   query={query}
                   now={now}
-                  pending={!stepsRead(w, taskById) && !reads.failed.has(w.workflow_id)}
-                  onSeen={stepsRead(w, board.taskById) ? null : reads.want}
                 />
               ))}
             </tbody>
@@ -5996,90 +5965,6 @@ function useOlderWorkflows(board: WorkflowBoard): {
   return { all, more: next === null ? null : more, read }
 }
 
-/** How many rows' steps are read at once: a search asks for every unread row (WF-1). */
-const ROW_READS_AT_ONCE = 6
-
-/**
- * ONE ROW'S STEPS, READ AS IT SCROLLS IN (QA G3-06, 2026-10-07). The board
- * joins states through a window of the tenant's newest tasks, so 55 of 100
- * rows read `wf_… · — · start not read · not read` while the workflow's own
- * page showed its title, start and $0.62. A row the window missed reads
- * `GET /v1/workflows/{id}` -- the page's own read, so the row and the page
- * agree, cost totals included -- once it is near the viewport, or once a
- * search needs its name (WF-1), and its tasks join the board's. The window's
- * copy wins where both hold a task: it is the fresher read. A finished row
- * reads once; a running one again on each board read (each read is new
- * `Workflow` objects), so its cost does not freeze at the first look. At most
- * `ROW_READS_AT_ONCE` are in flight; the rest queue.
- */
-function useRowReads(board: WorkflowBoard): {
-  taskById: ReadonlyMap<string, Task> | null
-  failed: ReadonlySet<string>
-  want: (w: Workflow) => void
-} {
-  const [extra, setExtra] = useState<ReadonlyMap<string, Task>>(() => new Map())
-  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set())
-  const askedIds = useRef(new Set<string>())
-  const askedReads = useRef(new WeakSet<Workflow>())
-  const queue = useRef<string[]>([])
-  const inFlight = useRef(0)
-  const live = useRef(true)
-  useEffect(() => {
-    live.current = true
-    return () => {
-      live.current = false
-    }
-  }, [])
-  const pump = useCallback(() => {
-    while (inFlight.current < ROW_READS_AT_ONCE && queue.current.length > 0) {
-      const id = queue.current.shift() as string
-      inFlight.current += 1
-      void loadWorkflow(id).then((r) => {
-        inFlight.current -= 1
-        if (!live.current) return
-        if (r.status === 'ok' || r.status === 'stale') {
-          setExtra((m) => {
-            const next = new Map(m)
-            for (const t of r.data.tasks) next.set(t.id, t)
-            return next
-          })
-          setFailed((f) => {
-            if (!f.has(id)) return f
-            const next = new Set(f)
-            next.delete(id)
-            return next
-          })
-        } else {
-          setFailed((f) => (f.has(id) ? f : new Set(f).add(id)))
-        }
-        pump()
-      })
-    }
-  }, [])
-  const want = useCallback(
-    (w: Workflow) => {
-      const id = w.workflow_id
-      if (bucketOf(w) === 'running') {
-        if (askedReads.current.has(w)) return
-        askedReads.current.add(w)
-      } else {
-        if (askedIds.current.has(id)) return
-        askedIds.current.add(id)
-      }
-      if (!queue.current.includes(id)) queue.current.push(id)
-      pump()
-    },
-    [pump],
-  )
-  const taskById = useMemo(() => {
-    if (extra.size === 0) return board.taskById
-    const out = new Map(extra)
-    for (const [k, t] of board.taskById ?? []) out.set(k, t)
-    return out
-  }, [extra, board.taskById])
-  return { taskById, failed, want }
-}
-
 function withChosen(options: string[], chosen: string): string[] {
   return chosen === '' || options.includes(chosen) ? options : [...options, chosen].sort()
 }
@@ -6147,31 +6032,16 @@ function WorkflowListRow({
   workflow,
   label,
   taskById,
-  telemetry,
-  usageReading,
   query,
   now,
-  pending,
-  onSeen,
 }: {
   workflow: Workflow
   label: string | null
+  /** The list read's join (`summaryTaskById`): each step's state, names and totals over every attempt. */
   taskById: ReadonlyMap<string, Task> | null
-  /** The list's attempt read (`useWorkflowUsage`): the row totals by the table's rule (WF-5). */
-  telemetry: ReadonlyMap<string, StepUsage> | null
-  /** The list's attempt read is still in flight: the cost cell says `reading` rather than a total that is about to move (D2). */
-  usageReading: boolean
   query: WorkflowQuery
   now: number
-  /** The row's steps are not read yet and their read has not failed: it is queued, or waits to scroll in (WF-11). */
-  pending: boolean
-  /** Set when the board's window missed this row's steps: read them once it is in view (G3-06). */
-  onSeen: ((w: Workflow) => void) | null
 }) {
-  const [seenRef, inView] = useInView<HTMLTableRowElement>()
-  useEffect(() => {
-    if (onSeen !== null && inView) onSeen(workflow)
-  }, [onSeen, inView, workflow])
   // The name's line, measured: its width comes from the fixed table's column,
   // never from what it holds, so measuring it cannot feed back into itself.
   const lineRef = useRef<HTMLSpanElement | null>(null)
@@ -6186,11 +6056,12 @@ function WorkflowListRow({
     watch.observe(el)
     return () => watch.disconnect()
   }, [])
-  const why = listRowWhy(workflow, taskById, pending)
+  const why = listRowWhy(workflow, taskById)
   // A row known to have no label or title is "Untitled workflow", id under it.
   const named = listRowName(workflow.workflow_id, label, stepsRead(workflow, taskById))
   const roll = rollupLine(workflow, taskById)
-  const spend = workflowSpend(workflow.steps, taskById, telemetry)
+  // The steps' totals over every attempt, from their blocks (`totalCostOf`).
+  const spend = workflowSpend(workflow.steps, taskById)
   const failed = why !== null && (why.kind === 'failed' || why.kind === 'failed-unread')
   // SUBMITTED is when the workflow was submitted, the instant every order
   // sorts by (QA G3-20), with the first step's start in its hover -- the
@@ -6198,8 +6069,6 @@ function WorkflowListRow({
   // submission (`workflowDuration`), so the two columns share one origin.
   const started = workflowStartUtc(workflow, taskById, now)
   const read = workflowDuration(workflow, taskById, now)
-  // NOT READ YET IS NOT A FAILED READ (live QA WF-11): the legend's `not read`
-  // means the read failed, and a row whose read has not been made yet said it.
   // NO DURATION CLAIM WHILE THE STATE IS UNKNOWN (visual QA pass 2,
   // overview-agents-62, #2694): the Running bucket holds a workflow whose
   // state this read could not derive, so its row measured to now and said
@@ -6219,11 +6088,9 @@ function WorkflowListRow({
         text: `began ${formatDuration(read.ms ?? 0).split(' ')[0]} ago`,
         title: `The workflow's state is unknown, so whether it is still running, and so its duration, is not known. Submitted ${workflow.created_at}.`,
       }
-    : pending && read.ms === null && read.text === 'not read'
-      ? { ...read, text: 'not yet read', title: "this row's steps are read when it scrolls into view" }
-      : read
+    : read
   return (
-    <tr ref={seenRef} className={`wfl-row${failed ? ' is-failed' : ''}`} data-workflow={workflow.workflow_id}>
+    <tr className={`wfl-row${failed ? ' is-failed' : ''}`} data-workflow={workflow.workflow_id}>
       {/* EVERY CELL NAMES ITS COLUMN (browser QA D8): the sheet sizes State,
           Steps done and Duration to what they hold, and cuts the name and the
           shape with their whole text as the title. */}
@@ -6288,7 +6155,7 @@ function WorkflowListRow({
         <Mix steps={workflow.steps} />
       </td>
       <td className="num" data-col="cost">
-        <Spend spend={spend} short reading={usageReading || pending} />
+        <Spend spend={spend} short />
       </td>
       <td className="wfl-owner" data-col="owner" title={workflow.submitted_by ?? undefined}>
         {ownerShort(workflow.submitted_by)}
@@ -6361,15 +6228,12 @@ type ListWhy = RowWhy | { kind: 'running'; step: string }
  * wording is for a read that missed it, and a row that has not been read yet
  * fills in when it scrolls into view.
  */
-function listRowWhy(w: Workflow, taskById: ReadonlyMap<string, Task> | null, pending: boolean): ListWhy | null {
+function listRowWhy(w: Workflow, taskById: ReadonlyMap<string, Task> | null): ListWhy | null {
   const why = rowWhy(w, taskById)
   if (why === null) return null
   // The state mark says `state unknown` with the API's why as its title
   // (overview-agents-62): a second line saying it again is the same fact twice.
   if (why.kind === 'unread' && (w.state_source !== 'derived' || !w.rollup)) return null
-  if (why.kind === 'failed-unread' && pending) {
-    return { kind: 'failed-unread', why: 'the failing step is read when this row scrolls into view' }
-  }
   if (why.kind === 'parked') {
     const running = w.steps.find((s) => {
       const st = stepState(s, taskById)
@@ -6488,11 +6352,22 @@ function StepsDone({ workflow, roll }: { workflow: Workflow; roll: Rollup }) {
 /**
  * THE BOARD AROUND ONE WORKFLOW'S PAGE, read once the page is up (live QA
  * CH-21). The page draws from its own read (`loadWorkflowPage`); the same-step
- * scrubber and the attempt read's sample need the other workflows, which come
- * from the board -- the slow list read -- and are joined in when it lands.
- * Until then, or if it fails, the page is its own workflow alone. Read once
+ * scrubber needs the other workflows and their steps' states, and those come
+ * from `GET /v1/workflows?limit=AROUND_LIMIT&view=summary` alone: each step
+ * carries its task's block (`summaryTaskById`), so no task list is read
+ * (console load speed, owner's pick 2026-11-01). Joined in when it lands;
+ * until then, or if it fails, the page is its own workflow alone. Read once
  * per page open: the page's poll re-reads its own workflow, not the list.
  */
+/**
+ * HOW MANY OF THE NEWEST WORKFLOWS A PAGE READS AROUND ITSELF: where the
+ * same-step scrubber may land. 50, half the list's page: every workflow in it
+ * costs the route a read of its step tasks and their attempts, and the
+ * scrubber steps through the runs of the same shape, which a recurring
+ * workflow fills in far fewer than 50.
+ */
+export const AROUND_LIMIT = 50
+
 function useBoardAround(own: WorkflowBoard, id: string): WorkflowBoard {
   const [around, setAround] = useState<Result<WorkflowBoard> | null>(null)
   // A page whose own read failed already holds the board, or says why not.
@@ -6501,7 +6376,7 @@ function useBoardAround(own: WorkflowBoard, id: string): WorkflowBoard {
     let live = true
     setAround(null)
     if (missed) return
-    void loadWorkflowBoard().then((r) => {
+    void loadWorkflowBoard(AROUND_LIMIT).then((r) => {
       if (live) setAround(r)
     })
     return () => {
@@ -6542,10 +6417,12 @@ function WorkflowPage({
   const workflow = board.workflows.find((w) => w.workflow_id === id) ?? null
   const found = workflow !== null
   const derived = workflow === null ? null : derivedStateOf(workflow)
-  // ONE ATTEMPT READ FOR THE PAGE: the head's total and the board's (the
-  // nodes, the step table and its total) come from it, so the page never
-  // shows two totals (WF-5). This workflow's steps go first under the cap.
-  const usage = useWorkflowUsage(board.workflows, id)
+  // ONE ATTEMPT READ FOR THE PAGE, OF ITS OWN STEPS ONLY: the head's total
+  // and the board's (the nodes, the step table and its total) come from it,
+  // so the page never shows two totals (WF-5). The workflows around it are
+  // drawn only by the scrubber, which reads their states, never their costs.
+  const itself = useMemo(() => (workflow === null ? [] : [workflow]), [workflow])
+  const usage = useWorkflowUsage(itself, id)
 
   // OPENING A WORKFLOW RECORDS IT in the panel's Recent (5), with the state it
   // was read in, so the switcher can draw its mark without a read of its own.

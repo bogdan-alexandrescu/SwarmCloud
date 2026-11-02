@@ -11,7 +11,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
-import type { WorkflowBoard, WorkflowRead, WorkflowUsage } from '../api'
+import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { cascade } from './cssgate'
 
@@ -178,7 +178,7 @@ function scrollIn(el: Element): void {
   })
 }
 
-describe('G3-06: a row whose steps the task window missed reads them as it scrolls in, and the list says how many are read', () => {
+describe('G3-06: a row whose steps the list read did not serve stays an id, and the list says how many are read', () => {
   it('stepsRead is true only when every step that has a task is in the read', () => {
     const b = board()
     const [fresh, old] = b.workflows
@@ -189,49 +189,24 @@ describe('G3-06: a row whose steps the task window missed reads them as it scrol
     expect(wl.stepsRead(workflow('wf_q', 'QUEUED', 'sam', [step('a')], 10), new Map())).toBe(true)
   })
 
-  it('says once above the table how many rows have their steps read, and reads the rest in view', async () => {
+  it('says once above the table how many rows have their steps read, and reads no row by id as it scrolls in', async () => {
+    // THE LIST READ SERVES EVERY STEP'S BLOCK (console load speed, owner's
+    // pick 2026-11-01): a row it did not serve stays an id, and the list
+    // reads nothing more for it -- its page reads it.
     FakeObserver.all = []
     vi.stubGlobal('IntersectionObserver', FakeObserver)
-    const b = board()
-    api.loadWorkflow.mockResolvedValue({
-      status: 'ok',
-      data: { workflow: b.workflows[1]!, tasks: [b.oldTask] },
-      fetchedAt: T0,
-    } satisfies Result<WorkflowRead>)
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
-    // Before the old row is in view: its id alone, and the note says so.
     expect(row('wf_old').querySelector('.wfl-line > a')!.textContent).toBe('wf_old')
     const note = document.querySelector('.wfl .c-count-note')
-    expect(note?.textContent).toBe('1 of 2 rows have their steps read; older rows show ids only until they scroll into view')
+    expect(note?.textContent).toBe("1 of 2 rows have their steps read; the list read did not serve the rest's, which each one's page reads")
     // The note sits above the table, once.
     expect(document.querySelectorAll('.wfl .c-count-note')).toHaveLength(1)
     expect(note!.compareDocumentPosition(document.querySelector('.wfl-table')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    // The fresh row was read by the window; it never asks.
-    expect(api.loadWorkflow).not.toHaveBeenCalledWith('wf_fresh')
-
     scrollIn(row('wf_old'))
-    await waitFor(() => expect(row('wf_old').querySelector('.wfl-line > a')!.textContent).toBe('Commits SwarmCloud old title'))
-    expect(api.loadWorkflow).toHaveBeenCalledWith('wf_old')
-    expect(api.loadWorkflow).toHaveBeenCalledTimes(1)
-    // The duration the detail page knows: submission to the last end.
-    expect(row('wf_old').querySelector('.wfl-dur')!.textContent).toBe('20m 0s')
-    // Every row read: no note.
-    expect(document.querySelector('.wfl .c-count-note')).toBeNull()
-  })
-
-  it('a row whose own read failed stays an id and the note counts it as not read', async () => {
-    FakeObserver.all = []
-    vi.stubGlobal('IntersectionObserver', FakeObserver)
-    render(<WorkflowsScreen />)
-    await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
-    scrollIn(row('wf_old'))
-    await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledWith('wf_old'))
-    await waitFor(() =>
-      expect(document.querySelector('.wfl .c-count-note')?.textContent).toBe(
-        '1 of 2 rows have their steps read; older rows show ids only until they scroll into view; 1 could not be read',
-      ),
-    )
+    // MUTATION: put `useRowReads` back -- the row reads its workflow by id.
+    await new Promise((r) => setTimeout(r, 20))
+    expect(api.loadWorkflow).not.toHaveBeenCalled()
     expect(row('wf_old').querySelector('.wfl-line > a')!.textContent).toBe('wf_old')
   })
 })

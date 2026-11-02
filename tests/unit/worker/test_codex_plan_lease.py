@@ -193,12 +193,14 @@ def test_no_openai_account_registered_falls_back_to_the_tenant(
     assert db.doc("tasks/task_1")["park_reason"] == ParkReason.CREDENTIAL_MISSING.value
 
 
-def test_the_catalogue_codex_without_the_plan_names_never_asks_the_pool(
+def test_the_catalogue_codex_on_a_tenant_key_never_asks_the_pool(
     db, worker_factory, tmp_path
 ):
-    """Until the contract request lands, codex declares OPENAI_API_KEY alone:
-    an account has no variable to put a plan in, and nothing changes."""
-    assert PLAN_TOKEN_ENV not in RUNNER_PROFILES["codex"].secrets
+    """Contract request 130 (owner, 2026-11-01) put the plan's two names in the
+    catalogue's codex itself; a tenant that registered its own OpenAI key still
+    runs on that key, and the pool is not asked."""
+    assert RUNNER_PROFILES["codex"].secrets == ("OPENAI_API_KEY", PLAN_TOKEN_ENV, PLAN_ACCOUNT_ENV)
+    assert RUNNER_PROFILES["codex"].secrets_any_of is True
     secrets = FakeSecretClient({TENANT_SECRET: "sk-" + "proj-" + pysecrets.token_hex(16)})
     seed_attempt(db, runner_profile="codex")
     seed_tenant(db, credentials=["openai"])

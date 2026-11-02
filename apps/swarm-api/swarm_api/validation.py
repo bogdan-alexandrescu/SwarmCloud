@@ -1589,7 +1589,11 @@ RESERVED_METADATA_KEYS = (
 #: written by no one yet: the lane that writes it (HW-API-ANSWER) decides how
 #: it is served, and moves it into that tuple with the parity test's entry.
 #: Until then nothing a caller sends can reach the store under it.
-REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY,)
+#: `timeout_seconds_asked` (contract request 131) is a top-level `Task`
+#: field written only by swarm-api, never a metadata key; it is refused here
+#: so a caller cannot plant a look-alike record under `metadata`.
+TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
+REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY, TIMEOUT_ASKED_FIELD)
 
 #: An agent's blocking question (lane AU-7, docs/design/agent-autonomy.md
 #: §3.9): the wait swarm-api adopts from the worker's park into
@@ -2476,6 +2480,13 @@ _RESERVED_BECAUSE = {
         "`await-input` step's wait and the answer it was given, written only by "
         "the platform. Declare the wait as the step's own `await_input` field "
         "(POST /v1/workflows) instead."
+    ),
+    TIMEOUT_ASKED_FIELD: (
+        f"metadata.{TIMEOUT_ASKED_FIELD} is reserved: the task's "
+        f"`{TIMEOUT_ASKED_FIELD}` records the timeout a spec asked for when this "
+        "service stored a lower one, written only by the platform. Ask with the "
+        "top-level `timeout_seconds` instead; it may only shorten the runner "
+        "profile's own."
     ),
     AFTER_PRS_METADATA_KEY: (
         f"metadata.{AFTER_PRS_METADATA_KEY} is reserved: it records the pull "
@@ -3632,6 +3643,20 @@ def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:
     if requested <= 0:
         raise ValidationFailed("timeout_seconds must be positive")
     return min(int(requested), profile.timeout_seconds)
+
+
+def timeout_asked(asked: int | None, *granted: int) -> int | None:
+    """`Task.timeout_seconds_asked` (contract request 131, "API records the ask").
+
+    The timeout the spec asked for when it is above any timeout this service
+    stores for the step (`granted`: its own, and its `code` alternate's on a
+    `browser_if_ui` step), else None. A RECORD ONLY: `validate_timeout` stays
+    the limit, and nothing reads this value as one (invariant 10); the worker
+    compares it with the timeout it runs under and reports the clamp.
+    """
+    if asked is None or not granted:
+        return None
+    return int(asked) if int(asked) > min(granted) else None
 
 
 

@@ -672,6 +672,17 @@ class Task:
     #: construction of a task changes meaning; absent on every older
     #: document, which decodes as 0.
     platform_refusals: int = 0
+    #: Contract request 131 (TIMEOUT-ASKED-CONTRACT, part of #2688), the
+    #: owner's "API records the ask" (2026-11-01): the `timeout_seconds` the
+    #: spec asked for, written by swarm-api at submission ONLY when it stored
+    #: a lower `timeout_seconds` (the profile's cap, or a child's parent's).
+    #: A RECORD ONLY: the limit is `timeout_seconds` alone, and nothing reads
+    #: this as one (invariant 10); the worker reports it in the runner's
+    #: `limits.clamped`. Unsigned: written at submission, it chooses nothing.
+    #: None on a task that was not lowered and on every older document. After
+    #: `platform_refusals`, so no positional construction of a task changes
+    #: meaning.
+    timeout_seconds_asked: int | None = None
     #: Contract request 132 (STORED-TASK-TOTALS, part of #2688), accepted by
     #: the owner 2026-11-01. A READ-SIDE VIEW ONLY of this task's attempt
     #: documents: `swarm_api.attempt_totals.attempt_totals()`'s keys plus
@@ -691,7 +702,8 @@ class Task:
     #: Never a token or a secret name. NOTHING in admission, leasing, the
     #: scheduler or capacity reads it (invariants 2 and 3; the broker's own
     #: holds are the account capacity). Unsigned. None on every older
-    #: document. Last in the class, so no positional construction moves.
+    #: document. Last in the class, after `timeout_seconds_asked`, so no
+    #: positional construction moves.
     current_account: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:

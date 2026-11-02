@@ -264,6 +264,17 @@ function noteInput(): void {
   lastInput = Date.now()
 }
 
+/**
+ * Input that is not a key, a pointer or a wheel: speech. Voice it's Talk pane
+ * calls this on every final caption from either side while a session is live
+ * (docs/design/voice-it.md §3.10), so a person who is only talking is not
+ * taken for someone who left. When the session ends nothing calls it, and the
+ * fifteen-minute rule applies again.
+ */
+export function noteActivity(): void {
+  noteInput()
+}
+
 /** One set of listeners for the whole tab, installed by the first poller. */
 function watchInput(): void {
   if (watchingInput || typeof window === 'undefined') return

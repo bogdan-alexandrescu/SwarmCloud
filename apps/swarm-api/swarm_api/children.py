@@ -95,6 +95,7 @@ from .validation import (
     CHILD_REQUEST_ID_METADATA_KEY,
     mcp_server_names,
     resolve_dispatch_options,
+    timeout_asked,
 )
 
 log = logging.getLogger(__name__)
@@ -1409,9 +1410,15 @@ class ChildService:
             mcp_inherited=mcp_inherited,
         )
         # A child's timeout is never above its parent's, whatever the profile.
+        child_timeout = min(task.timeout_seconds, parent.timeout_seconds)
         task = replace(
             task,
-            timeout_seconds=min(task.timeout_seconds, parent.timeout_seconds),
+            timeout_seconds=child_timeout,
+            # Contract request 131: the CHILD's own ask, against its final
+            # timeout. `create` was already lowered to the parent's, so what
+            # `_build_task` recorded from it is not what the child asked. A
+            # record only; nothing reads it as a limit (invariant 10).
+            timeout_seconds_asked=timeout_asked(spec.timeout_seconds, child_timeout),
             parent_task_id=parent.id,
             parent_attempt_id=body.attempt_id,
             # The parent's GitHub credential and access mode (#780 OB7): the
