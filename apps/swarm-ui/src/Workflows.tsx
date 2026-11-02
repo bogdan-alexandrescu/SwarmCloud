@@ -15,7 +15,7 @@ import {
   cancelWorkflow,
   loadWorkflow,
   loadWorkflowBoard,
-  loadTaskEventsPage,
+  loadTaskDigests,
   loadWorkflowUsage,
   loadOlderWorkflows,
   type CancelWorkflowResult,
@@ -113,7 +113,6 @@ import {
   sameStepAcross,
   summaryTaskById,
   shapeSignature,
-  stateEnteredAt,
   stateRankOf,
   stepOrder,
   stepTimes,
@@ -180,7 +179,8 @@ import {
   WfStepMark,
   shapeWords,
 } from './WorkflowViews'
-import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
+import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, withVerdictTriage, type MergeRead, type VerdictRead } from './wfreview'
+import { TriageChip, useVerdictTriage } from './DecisionCard'
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
 import { PersonName } from './PersonName'
 import { Mark } from './primitives'
@@ -2652,7 +2652,7 @@ function StepCardExtras({
           />
         </div>
       )}
-      {verdict !== null && <VerdictCard verdict={verdict} />}
+      {verdict !== null && task !== null && <VerdictCard verdict={verdict} review={task.id} />}
       {reviewed && (
         <p className="wf-verdict is-pending">
           {/* ONE SENTENCE, THE MARK INLINE (QA G3-19): a colon after the
@@ -2678,7 +2678,10 @@ function StepCardExtras({
  * review agent's own words, printed as plain text; a finding without a
  * severity goes under Not graded, never Blocker.
  */
-function VerdictCard({ verdict }: { verdict: VerdictRead }) {
+function VerdictCard({ verdict, review }: { verdict: VerdictRead; review: string }) {
+  // Jev's triage of each finding, from the review's own verdict file (CLD's
+  // Jev report, 2026-11-02); a finding Jev did not judge has no chip.
+  const triage = useVerdictTriage(verdict.total > 0 ? review : null, verdict.file)
   const tone = verdict.verdict === 'MERGE' ? 'is-merge' : verdict.verdict === 'NOT_YET' ? 'is-notyet' : 'is-other'
   return (
     <section className="wf-verdict" aria-label="Review verdict">
@@ -2695,9 +2698,15 @@ function VerdictCard({ verdict }: { verdict: VerdictRead }) {
           <span className="wf-sev-h">
             {g.label} <span className="wf-sev-n">{g.items.length}</span>
           </span>
-          {g.items.map((text, i) => (
+          {withVerdictTriage(g.items, triage).map((f, i) => (
             <p key={i} className="wf-finding">
-              {text}
+              {f.text}
+              {f.triage !== null && (
+                <>
+                  {' '}
+                  <TriageChip triage={f.triage} />
+                </>
+              )}
             </p>
           ))}
         </div>
@@ -3385,11 +3394,13 @@ function CriticalPathNote({
  * drawn at any tier draws exactly the horizontal row it drew before.
  */
 /**
- * At most this many event reads per poll. A wide stage of parked steps would
- * otherwise be one request per step every time the task record moved; the
- * rest keep their lower bound (`stepDuration`'s `≥`) until a later poll.
+ * At most this many waits timed per poll. It was 24 EVENT READS, one request
+ * per step; it is now the ids of ONE digest read (`loadTaskDigests`), the
+ * route's own bound (`api.ts`'s `DIGEST_MAX_IDS`, restated as a literal: a
+ * screen test that mocks `../api` without it would fail at import). The rest
+ * keep their lower bound (`stepDuration`'s `≥`) until a later poll.
  */
-const ENTERED_READS = 24
+const ENTERED_READS = 100
 
 /** One wait, as the record read now says it: a new park is a new key. */
 const enteredKey = (t: Task): string => `${t.id}:${t.state}:${t.updated_at}`
@@ -3425,17 +3436,27 @@ function useEnteredAt(
   }, [])
   useEffect(() => {
     const fresh = waiting.filter((t) => !asked.current.has(enteredKey(t))).slice(0, ENTERED_READS)
-    for (const t of fresh) {
-      const key = enteredKey(t)
-      asked.current.add(key)
-      // A failed read leaves the lower bound, which is still true.
-      void loadTaskEventsPage(t.id, { order: 'desc' })
-        .then((r) => (r.status === 'ok' ? stateEnteredAt(t.state, r.data.events) : null))
-        .catch(() => null)
-        .then((at) => {
-          if (mounted.current) setEntered((m) => new Map(m).set(key, at))
+    if (fresh.length === 0) return
+    for (const t of fresh) asked.current.add(enteredKey(t))
+    // ONE READ FOR EVERY WAIT (#2688, WORK-READS-SPEED): the digests route
+    // applies `stateEnteredAt`'s rule to each task's newest events page where
+    // the events are, so the page no longer reads one events page per waiting
+    // step -- 24 on the owner's 40-step page, the slowest 16.7 s. A digest of
+    // another state than the record's describes a different wait and gives no
+    // time; a failed read leaves the lower bound, which is still true.
+    void loadTaskDigests(fresh.map((t) => t.id), ['entered'])
+      .then((r) => {
+        const served = new Map((r.status === 'ok' || r.status === 'stale' ? r.data.digests : []).map((d) => [d.task_id, d] as const))
+        return fresh.map((t) => {
+          const d = served.get(t.id)
+          const at = d !== undefined && d.state === t.state && typeof d.entered_at === 'string' ? Date.parse(d.entered_at) : NaN
+          return [enteredKey(t), Number.isFinite(at) ? at : null] as const
         })
-    }
+      })
+      .catch(() => fresh.map((t) => [enteredKey(t), null] as const))
+      .then((got) => {
+        if (mounted.current) setEntered((m) => new Map([...m, ...got]))
+      })
     // `want` is the waits' identity; `waiting` is rebuilt every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [want])
