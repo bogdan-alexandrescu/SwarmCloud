@@ -163,8 +163,9 @@ the platform setting `jev_token_rates` (USD per million tokens, in and out),
 which has no default: until a platform admin sets it the page says "rate not
 set" and prints no figure, never $0. **The gap:** the worker's attempt rows
 carry `calls` and `input_tokens` only, so today every call is shown as
-"not split by kind", on the day of the row's last write, with no outcomes and
-no output tokens; the read sums `settled_at` and the per-kind split
+"not split by kind", on the day of the row's last write, with its outcomes
+"not recorded" (null, never 0 ok and 0 failed; the 30-day total counts those
+calls as `unrecorded`) and no output tokens; the read sums `settled_at` and the per-kind split
 (`by_kind: {kind: {calls, input_tokens, output_tokens, outcomes}}`) once the
 worker's settle writes them from its ledger's audit rows, a change asked of
 the owner in that lane's PR. The quality gates' jev-belay and jev-enforce

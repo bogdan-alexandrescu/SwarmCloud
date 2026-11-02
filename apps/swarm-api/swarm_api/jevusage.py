@@ -24,6 +24,11 @@ A row without `by_kind` is counted under kind `unattributed` with its calls
 and input tokens and no outcomes: the worker's audit rows hold the split, but
 they live in the attempt's own directory, and a row is never guessed apart.
 
+OUTCOMES NOT RECORDED ARE NULL, NOT ZERO. A tally whose calls carry no
+`outcomes` (an unattributed row, or a kind without them) serves `outcomes:
+null`, never "0 ok, 0 failed"; a tally mixing both counts what was recorded
+and says how many calls were not in `outcomes.unrecorded`.
+
 DOLLARS ARE BLANK, NOT ZERO, WITHOUT A RATE. The rate is the platform setting
 `jev_token_rates` (`{input, output}`, USD per million tokens, `store`), with
 no default: nobody has recorded Jev's price, and an invented one would print
@@ -129,6 +134,10 @@ class Tally:
     ok: int = 0
     failed: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
+    #: Calls whose outcome no row recorded.
+    unrecorded: int = 0
+    #: Whether any row behind this tally recorded outcomes.
+    outcomes_recorded: bool = False
 
     def add(self, other: "Tally") -> None:
         self.calls += other.calls
@@ -139,6 +148,21 @@ class Tally:
         self.failed += other.failed
         for reason, n in other.skipped.items():
             self.skipped[reason] = self.skipped.get(reason, 0) + n
+        self.unrecorded += other.unrecorded
+        self.outcomes_recorded = self.outcomes_recorded or other.outcomes_recorded
+
+    def outcomes(self) -> dict[str, Any] | None:
+        """The recorded outcomes, or None when calls were made and no row
+        recorded one: an outcome never recorded is not a zero."""
+        if not self.outcomes_recorded and self.unrecorded:
+            return None
+        return {
+            "ok": self.ok,
+            "failed": self.failed,
+            "skipped": sum(self.skipped.values()),
+            "skipped_by_reason": dict(sorted(self.skipped.items())),
+            "unrecorded": self.unrecorded,
+        }
 
     def usd(self, rates: Mapping[str, float | None]) -> float | None:
         """Dollars at `rates`, or None when a rate the figure needs is not set."""
@@ -156,12 +180,7 @@ class Tally:
             "calls": self.calls,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
-            "outcomes": {
-                "ok": self.ok,
-                "failed": self.failed,
-                "skipped": sum(self.skipped.values()),
-                "skipped_by_reason": dict(sorted(self.skipped.items())),
-            },
+            "outcomes": self.outcomes(),
             "usd": self.usd(rates),
         }
 
@@ -172,7 +191,11 @@ def _kind_tally(value: Any) -> Tally:
     if "output_tokens" in raw and raw.get("output_tokens") is not None:
         tally.output_tokens = _count(raw.get("output_tokens"))
     outcomes = raw.get("outcomes")
-    for outcome, n in (outcomes.items() if isinstance(outcomes, Mapping) else ()):
+    if not isinstance(outcomes, Mapping):
+        tally.unrecorded = tally.calls
+        return tally
+    tally.outcomes_recorded = True
+    for outcome, n in outcomes.items():
         n = _count(n)
         if not n or not isinstance(outcome, str):
             continue
@@ -195,8 +218,9 @@ def row_kinds(data: Mapping[str, Any]) -> dict[str, Tally]:
         for kind, value in split.items():
             out.setdefault(_ident(kind), Tally()).add(_kind_tally(value))
         return out
-    return {UNATTRIBUTED: Tally(calls=_count(data.get("calls")),
-                                input_tokens=_count(data.get("input_tokens")))}
+    calls = _count(data.get("calls"))
+    return {UNATTRIBUTED: Tally(calls=calls, input_tokens=_count(data.get("input_tokens")),
+                                unrecorded=calls)}
 
 
 def _utc(value: Any) -> datetime | None:

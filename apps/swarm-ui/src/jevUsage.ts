@@ -38,6 +38,8 @@ export interface JevOutcomes {
   skipped: number
   /** Each skip's reason and its count, by reason. */
   skippedByReason: ReadonlyArray<{ reason: string; count: number }>
+  /** Calls whose outcome no record carried. */
+  unrecorded: number
 }
 
 export interface JevTally {
@@ -45,7 +47,8 @@ export interface JevTally {
   inputTokens: number
   /** Null where no record carried output tokens. */
   outputTokens: number | null
-  outcomes: JevOutcomes
+  /** Null where no record carried an outcome: never "0 ok, 0 failed". */
+  outcomes: JevOutcomes | null
   /** Null while the rate is not set, or a figure needs a rate that is not. */
   usd: number | null
 }
@@ -85,8 +88,9 @@ function figure(v: unknown): number | null {
 
 const GROUPS = new Set<string>(Object.keys(JEV_GROUP_LABEL))
 
-function normOutcomes(v: unknown): JevOutcomes {
-  const o = isRecord(v) ? v : {}
+function normOutcomes(v: unknown): JevOutcomes | null {
+  if (!isRecord(v)) return null
+  const o = v
   const byReason = isRecord(o.skipped_by_reason) ? o.skipped_by_reason : {}
   return {
     ok: count(o.ok),
@@ -96,6 +100,7 @@ function normOutcomes(v: unknown): JevOutcomes {
       .map(([reason, n]) => ({ reason, count: count(n) }))
       .filter((r) => r.count > 0)
       .sort((a, b) => a.reason.localeCompare(b.reason)),
+    unrecorded: count(o.unrecorded),
   }
 }
 
