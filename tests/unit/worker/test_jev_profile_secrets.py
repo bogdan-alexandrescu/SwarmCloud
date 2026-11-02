@@ -57,7 +57,8 @@ def _j1(tmp_path: Path, value: str, **setup_kwargs: Any) -> FakeJev:
     work.mkdir(parents=True)
     env = attempt.setup(work=work, db=_Db({"workspace_settings/acme": OPTED_IN}),
                         tenant_id="acme", repository_url=URL,
-                        environ={settings.INTERNAL_URL_ENV: INTERNAL_URL}, **setup_kwargs)
+                        environ={settings.INTERNAL_URL_ENV: INTERNAL_URL,
+                                 attempt.VERDICT_ENV: "true"}, **setup_kwargs)
     assert attempt.CONFIG_ENV in env
     fake = FakeJev()
     judge, why = attempt.load({attempt.CONFIG_ENV: env[attempt.CONFIG_ENV], SECRET_NAME: value},

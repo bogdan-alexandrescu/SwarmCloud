@@ -58,6 +58,8 @@ from .specsigning import SpecSigner, signer_from_settings
 from .startup import StartupEstimates
 from .settings import ApiSettings
 from .store import Store
+from .voice import grant as voice_grant
+from .voice import sessions as voice_sessions
 from .waker import SchedulerWaker, waker_for
 
 #: Sentinel for "the caller did not pass this", kept distinct from None because
@@ -387,33 +389,41 @@ def current_auth(
     # the caller cannot see -- after the identity is verified, so an
     # unauthenticated caller still sees only a 401. Otherwise the value goes
     # through the same `_select_tenant` check as the header.
-    conflicting = False
-    if route in TENANT_QUERY_ROUTES:
-        queried = request.query_params.get(TENANT_QUERY) or None
-        if queried is not None:
-            conflicting = bool(requested_tenant) and requested_tenant != queried
-            requested_tenant = queried
-    try:
-        auth = ctx.authenticator.authenticate(
-            presented, iap_assertion, tenant=None if conflicting else requested_tenant
-        )
-    except Exception as exc:
-        ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
-        log.warning(
-            "authentication failed (%s); auth headers present: %s",
-            type(exc).__name__,
-            ",".join(
-                n for n, v in (
-                    ("Authorization", authorization),
-                    ("X-Serverless-Authorization", serverless_authorization),
-                ) if v
-            ) or "none",
-        )
-        raise
-    if conflicting:
-        raise ValidationFailed(
-            f"{TENANT_HEADER} and ?{TENANT_QUERY}= name different tenants; send one."
-        )
+    # A Voice it session grant (voice/grant.py) is judged on its own path,
+    # never the person's; both then pass the same checks below.
+    grant = request.headers.get(voice_grant.GRANT_HEADER)
+    if grant is not None:
+        auth = _voice_grant_auth(
+            request, ctx, grant, presented=presented, iap_assertion=iap_assertion,
+            requested_tenant=requested_tenant, route=route)
+    else:
+        conflicting = False
+        if route in TENANT_QUERY_ROUTES:
+            queried = request.query_params.get(TENANT_QUERY) or None
+            if queried is not None:
+                conflicting = bool(requested_tenant) and requested_tenant != queried
+                requested_tenant = queried
+        try:
+            auth = ctx.authenticator.authenticate(
+                presented, iap_assertion, tenant=None if conflicting else requested_tenant
+            )
+        except Exception as exc:
+            ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
+            log.warning(
+                "authentication failed (%s); auth headers present: %s",
+                type(exc).__name__,
+                ",".join(
+                    n for n, v in (
+                        ("Authorization", authorization),
+                        ("X-Serverless-Authorization", serverless_authorization),
+                    ) if v
+                ) or "none",
+            )
+            raise
+        if conflicting:
+            raise ValidationFailed(
+                f"{TENANT_HEADER} and ?{TENANT_QUERY}= name different tenants; send one."
+            )
     # DEFAULT-DENY for a continuation-scoped account (contract request 30):
     # here, in the dependency every route reaches -- directly, or through
     # `tenant_scope`/`admin_auth` -- so a route added tomorrow is closed to that
@@ -439,6 +449,50 @@ def current_auth(
         ctx.metrics.rate_limited.labels(tenant=auth.tenant_id).inc()
         raise
     request.state.tenant_id = auth.tenant_id
+    return auth
+
+
+#: Where `main.FrontDoor` leaves the values the error pages scrub
+#: (`main.SCRUB_STATE`; main imports this module, so it is restated, and
+#: tests/unit/control_plane/test_voice_grant.py holds the two equal).
+_SCRUB_STATE = "_scrub_values"
+
+
+def _voice_grant_auth(request: Request, ctx: AppContext, grant: str, *,
+                      presented: str | None, iap_assertion: str | None,
+                      requested_tenant: str | None,
+                      route: tuple[str, str] | None) -> AuthContext:
+    """A Voice it session grant -> the session's person (`voice.grant`).
+
+    The grant is a credential: before anything can fail it joins the values
+    every error page scrubs, and nothing here logs it -- a refusal is logged
+    by its class name and the route alone. Order: swarm-voice's identity
+    (401), the allowlist (403, before any document is read), the live
+    session (401), the person still allowed Voice it (403), then the
+    person's own resolution in the session's workspace."""
+    state = request.scope.setdefault("state", {})
+    state[_SCRUB_STATE] = (*(state.get(_SCRUB_STATE) or ()), grant)
+    try:
+        ctx.authenticator.voice_caller(presented, iap_assertion)
+        voice_grant.check_route(route)
+        session = voice_grant.resolve(
+            ctx.db, session_header=request.headers.get(voice_grant.SESSION_HEADER),
+            grant=grant)
+        people = tuple(getattr(ctx.settings, "voice_people", ()) or ())
+        if not voice_sessions.is_allowed(people, session.person):
+            raise voice_sessions.not_allowed()
+        if requested_tenant and requested_tenant != session.tenant_id:
+            raise voice_grant.RouteNotGranted(
+                "a Voice it grant acts only in its session's workspace")
+        auth = ctx.authenticator.authenticate_voice_grant(session)
+    except Exception as exc:
+        ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
+        log.warning("voice grant refused (%s) on %s", type(exc).__name__,
+                    " ".join(route) if route else "no route")
+        raise
+    voice_grant.write_audit(ctx.db, voice_grant.audit_row(
+        session, method=request.method.upper(), route=route[1] if route else "",
+        path_params=dict(request.path_params), at=ctx.now()))
     return auth
 
 

@@ -130,12 +130,20 @@ from .mcp_admission import names_mcp_servers
 from .judgment import BACKENDS as JUDGMENT_BACKENDS
 from .judgment import (
     DEFAULT_BACKEND,
+    GATES_REFUSED_UNREADABLE,
+    INTERNAL_JEV,
+    INTERNAL_LAYA,
+    SETTINGS_COLLECTION,
     TYPESAFE_BACKEND,
     jev_dispatch,
+    judge_dispatch,
+    judgments_env,
+    judgments_verdict,
     quality_gates_env,
     read_quality_gates_env,
     read_settings,
     settings_mac_key,
+    trusted_settings,
 )
 
 if TYPE_CHECKING:
@@ -1144,6 +1152,65 @@ def pod_judge_backend(db: Any, tenant_id: str, *, mac_key: str | None = None) ->
     return DEFAULT_BACKEND if backend is None else backend
 
 
+@dataclass(frozen=True)
+class JevJudgments:
+    """The Jev judgments' reading of one `workspace_settings` document at
+    dispatch (lane JEV-JUDGMENTS-RUN, 2026-11-02): the verdict's environment
+    (`judgment.judgments_env`), whether it is on, and the backend in the
+    worker's precedence (`judge_backend`) over the trusted settings."""
+
+    env: dict[str, str]
+    on: bool
+    backend: str
+
+
+def read_jev_judgments(db: Any, tenant_id: str, *, mac_key: str | None) -> JevJudgments:
+    """One read of the tenant's stored document, as `judgment
+    .read_quality_gates_env` reads it: raw, because the verdict does its own
+    checking, and the backend through `trusted_settings`. Unreadable is off
+    on the default backend: a dispatch never fails on this read."""
+    try:
+        snap = db.collection(SETTINGS_COLLECTION).document(tenant_id).get()
+        doc = (snap.to_dict() or {}) if snap.exists else {}
+    except Exception as exc:  # noqa: BLE001 - said by type; off
+        log.warning("jev judgments unreadable for tenant=%s, off: %s", tenant_id,
+                    type(exc).__name__)
+        return JevJudgments(judgments_env(False, GATES_REFUSED_UNREADABLE), False,
+                            DEFAULT_BACKEND)
+    on, refused = judgments_verdict(doc, tenant_id=tenant_id, key=mac_key)
+    backend = judge_backend(trusted_settings(doc, tenant_id=tenant_id, key=mac_key))
+    return JevJudgments(judgments_env(on, refused), on, backend)
+
+
+def jev_judgments_reading(judgments: Callable[[str], JevJudgments] | None,
+                          tenant_id: str, profile: Any) -> JevJudgments | None:
+    """This dispatch's reading for a profile that carries the Jev client
+    (`runs_jev_client`), None for any other; an explicit off when this
+    deployment reads no settings. FROM THE STORED SETTING AND THIS SERVICE'S
+    KEY ONLY, never a caller's (invariant 10)."""
+    if not runs_jev_client(profile):
+        return None
+    if judgments is None:
+        return JevJudgments(judgments_env(False, None), False, DEFAULT_BACKEND)
+    return judgments(tenant_id)
+
+
+def judges_internally(reading: JevJudgments | None, task: Any) -> bool:
+    """Whether this attempt's worker may judge, on an internal backend: a
+    profile with the Jev client whose workspace's signed `code_intelligence
+    .jev` is on, or whose signed dispatch block says `jev_judgments: on`,
+    and never one whose block says `off`. The worker still decides; this only
+    gives its pod the way to the decision API."""
+    if reading is None or reading.backend not in (INTERNAL_JEV, INTERNAL_LAYA):
+        return False
+    metadata = getattr(task, "metadata", None)
+    block = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
+    switch = block.get(JEV_JUDGMENTS_SWITCH) if isinstance(block, Mapping) else None
+    if switch == "off":
+        return False
+    return reading.on or switch == "on"
+
+
 def typesafe_judge_needs_gke(settings: Any, *, tenant_id: str, profile: Any,
                              backend: Backend, judgment: str | None) -> bool:
     """Whether this attempt must NOT run as a Cloud Run Job, because its judge
@@ -1982,12 +2049,17 @@ class CloudRunJobDispatcher:
     def __init__(
         self, settings: Any, *, client: Any | None = None, pool: AccountPool | None = None,
         quality_gates: Callable[[str], dict[str, str]] | None = None,
+        jev_judgments: Callable[[str], JevJudgments] | None = None,
     ) -> None:
         self._settings = settings
         self._client = client
         #: tenant id -> the quality gates' verdict env
         #: (`judgment.read_quality_gates_env`); None reads as off.
         self._quality_gates = quality_gates
+        #: tenant id -> the Jev judgments' reading (`read_jev_judgments`);
+        #: None reads as off. Only the verdict reaches a Cloud Run Job: it
+        #: cannot reach the decision API's egress, which is a cluster Service.
+        self._jev_judgments = jev_judgments
         self._ensured: set[str] = set()
         # The Scheduler's own AccountPool, handed over by main.build_scheduler,
         # so the Job's secret mount is decided on the list admission read.
@@ -2416,6 +2488,9 @@ class CloudRunJobDispatcher:
         name = self.ensure_job(profile, tenant, resource_class_for(task, profile))
         env = worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings)
         env.update(quality_gates_dispatch_env(self._quality_gates, tenant.tenant_id, profile))
+        judgments = jev_judgments_reading(self._jev_judgments, tenant.tenant_id, profile)
+        if judgments is not None:
+            env.update(judgments.env)
         overrides = run_v2.RunJobRequest.Overrides(
             container_overrides=[
                 run_v2.RunJobRequest.Overrides.ContainerOverride(
@@ -2942,10 +3017,15 @@ class GkeJobDispatcher:
     def __init__(self, settings: Any, *, target: GkeTarget | None = None,
                  batch_api: Any | None = None, identity: str = "",
                  judgment: Callable[[str], str] | None = None,
-                 quality_gates: Callable[[str], dict[str, str]] | None = None) -> None:
+                 quality_gates: Callable[[str], dict[str, str]] | None = None,
+                 jev_judgments: Callable[[str], JevJudgments] | None = None) -> None:
         self._settings = settings
         self._target = target
         self._batch_api = batch_api
+        #: tenant id -> the Jev judgments' reading (`read_jev_judgments`):
+        #: the verdict for every claude-code and codex pod, and the decision
+        #: API's address for one that judges internally. None reads as off.
+        self._jev_judgments = jev_judgments
         #: tenant id -> the quality gates' verdict env, as the Cloud Run
         #: dispatcher's (`judgment.read_quality_gates_env`); None reads as off.
         self._quality_gates = quality_gates
@@ -3088,6 +3168,9 @@ class GkeJobDispatcher:
                               settings=self._settings).items()]
         env.extend({"name": k, "value": v} for k, v in quality_gates_dispatch_env(
             self._quality_gates, tenant.tenant_id, profile).items())
+        judgments = jev_judgments_reading(self._jev_judgments, tenant.tenant_id, profile)
+        if judgments is not None:
+            env.extend({"name": k, "value": v} for k, v in judgments.env.items())
         # The Job's own name, for the worker's check 5 (contract request 34).
         # FROM THIS SAME RENDER, so the comparison proves only that this
         # dispatcher agrees with itself; GKE injects no Job name of its own.
@@ -3338,7 +3421,29 @@ class GkeJobDispatcher:
             # The signed workflow switch `jev_judgments: on` (2026-11-01):
             # the TypeSafe forwarder's label and variable only, nothing else.
             self._with_judgments_forwarder(job, tenant, profile)
+        if judges_internally(judgments, task):
+            assert judgments is not None
+            self._with_judge_address(job, judgments.backend)
         return job
+
+    def _with_judge_address(self, job: dict[str, Any], backend: str) -> None:
+        """The decision API's address for this attempt's own judgments (lane
+        JEV-JUDGMENTS-RUN): SWARM_JUDGE_INTERNAL_URL on the worker, and the
+        `swarm-judge: internal` label and hostAliases entry `_with_judgment`
+        gives a live-browser pod, from the same `jev_dispatch`, so JUDGE-NET's
+        NetworkPolicy (allow-judge-egress.yaml) admits it. A live-browser pod
+        that already carries them is not given them twice. Nothing with the
+        tailnet egress off."""
+        env, labels, host_aliases = judge_dispatch(
+            backend, str(getattr(self._settings, "internal_decision_api_url", "") or ""))
+        if not env:
+            return
+        template = job["spec"]["template"]
+        (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
+        worker["env"].extend({"name": k, "value": v} for k, v in env.items())
+        template["metadata"]["labels"].update(labels)
+        present = template["spec"].setdefault("hostAliases", [])
+        present.extend(alias for alias in host_aliases if alias not in present)
 
     def _with_judgment(self, job: dict[str, Any], tenant: Tenant, profile: Any) -> None:
         """Where this live-browser pod's Jev judgments go (`judgment`,
@@ -3699,8 +3804,14 @@ def build_router(settings: Any, *, pool: AccountPool | None = None,
     # holds the key. Without `db`, every claude-code attempt is told off.
     gates = ((lambda tenant_id: read_quality_gates_env(db, tenant_id, mac_key=mac_key))
              if db is not None else None)
+    # The Jev judgments' verdict and backend (lane JEV-JUDGMENTS-RUN): one
+    # document read per claude-code or codex dispatch, the
+    # `code_intelligence` block's MAC checked here, as the gates' is.
+    judgments = ((lambda tenant_id: read_jev_judgments(db, tenant_id, mac_key=mac_key))
+                 if db is not None else None)
     return BackendRouter(
-        cloud_run=CloudRunJobDispatcher(settings, pool=pool, quality_gates=gates),
+        cloud_run=CloudRunJobDispatcher(settings, pool=pool, quality_gates=gates,
+                                        jev_judgments=judgments),
         # `db` for the workspace's Jev judgment backend (JUDGE-SELECT), one
         # document read per live-browser dispatch; without it, the default.
         # Read in the router's precedence (#1334 c31), so the pod judges where
@@ -3709,7 +3820,7 @@ def build_router(settings: Any, *, pool: AccountPool | None = None,
             settings, target=target,
             judgment=(lambda tenant_id: pod_judge_backend(db, tenant_id, mac_key=mac_key))
             if db is not None else None,
-            quality_gates=gates),
+            quality_gates=gates, jev_judgments=judgments),
         settings=settings,
         # The same document, read as the worker's judge reads it (JUDGE-GKE).
         judgment=(lambda tenant_id: read_judge_backend(db, tenant_id, mac_key=mac_key))

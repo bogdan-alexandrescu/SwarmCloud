@@ -171,6 +171,10 @@ def _prompt_the_agent_received(tmp_path: Path, monkeypatch, payload: dict[str, A
 
     monkeypatch.setenv("FAKE_KEY", "sk-value-0123456789")
     monkeypatch.setenv("FAKE_BIN", str(_argv_recording_cli(tmp_path)))
+    # A worker's own child-task spool adds its line to the prompt (#3024's
+    # lane ran these inside an agent container, where SWARM_CHILDREN is set):
+    # these tests hold the prompt without it, so it is not inherited.
+    monkeypatch.delenv("SWARM_CHILDREN", raising=False)
     spec = CliAgentSpec(
         name="fake",
         provider="anthropic",

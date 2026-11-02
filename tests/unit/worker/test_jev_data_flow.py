@@ -130,7 +130,27 @@ def test_the_record_states_where_jev_runs_its_key_its_egress_and_the_url_gap() -
                     "## What each audit line records", "## Known gaps"):
         assert f"\n{heading}" in text, heading
     gaps = text.split("\n## Known gaps", 1)[1]
-    assert "SWARM_JUDGE_INTERNAL_URL" in gaps and "no_internal_url" in gaps
+    # Closed by lane JEV-JUDGMENTS-RUN (2026-11-02): recorded as closed, and
+    # no longer listed among the open gaps.
+    still_open, closed = gaps.split("\n### Closed by lane JEV-JUDGMENTS-RUN", 1)
+    assert "SWARM_JUDGE_INTERNAL_URL" in closed and "no_internal_url" in closed
+    assert "Nothing sets `SWARM_JUDGE_INTERNAL_URL`" not in still_open
+
+
+def test_the_record_states_when_a_call_may_be_made() -> None:
+    """JEV-JUDGMENTS-RUN: the signed opt-in, the address, the setup order,
+    the per-agent count, the monthly cap and the settle, each a row citing its
+    code and a test (`test_every_cited_symbol_and_test_exists` resolves them)."""
+    text = DOC.read_text(encoding="utf-8")
+    section = text.split("\n## When a call may be made\n", 1)[1].split("\n## ", 1)[0]
+    rows = [line for line in section.splitlines() if line.startswith("| **")]
+    named = [re.match(r"\| \*\*([^*]+)\*\*", row).group(1).lower() for row in rows]
+    assert named == ["the signed opt-in.", "the decision api's address.", "the setup order.",
+                     "the per-agent count.", "the monthly cap.", "the settle."], named
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        assert len(cells) == 3, cells[0]
+        assert _CITE.findall(cells[1]) and _CITE.findall(cells[2]), cells[0]
 
 
 LAUNCHER = REPO / "images" / "agent-runtime-base" / "jev-gates" / "bin" / "swarm-jev-gate.mjs"
