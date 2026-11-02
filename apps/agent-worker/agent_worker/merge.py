@@ -2428,7 +2428,7 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
 
     def wait(code: str, rows: list[dict[str, Any]], why: str) -> ActionOutcome:
         summary[UNBUILT_PICKS_KEY] = rows
-        waited = _ci_wait_age(ctx)
+        waited = _ci_wait_age(ctx, pinned)
         if waited is not None:
             return refuse(rows, f"{why}, and the step has waited {int(waited // 60)} min, "
                                 f"past {MERGE_CI_MAX_SECONDS // 3600} h")
@@ -2849,7 +2849,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         slot.renew(updates=updates)
 
     def wait(code: str, message: str, pending: list[str]) -> ActionOutcome:
-        waited = _ci_wait_age(ctx)
+        waited = _ci_wait_age(ctx, head)
         if waited is not None:
             return run.refuse("checks_timeout",
                               f"CI has not settled in {int(waited // 60)} min, past "
@@ -4127,7 +4127,7 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
                           "fix round can push to it")
 
     def wait(code: str, why: str) -> ActionOutcome:
-        waited = _ci_wait_age(run.ctx)
+        waited = _ci_wait_age(run.ctx, head)
         if waited is not None:
             return run.refuse("merge_conflict",
                               f"{message}; {why}, and the step has waited {int(waited // 60)} "
@@ -4359,28 +4359,59 @@ def _await_workflow_patch(run: _Run, message: str, task_id: str, refused: Mappin
                 "step reads the pull request again once its head moves", [])
 
 
-def _ci_wait_age(ctx: ActionContext) -> float | None:
-    """Seconds since this step first parked for CI, when past MERGE_CI_MAX_SECONDS.
+def _ci_wait_age(ctx: ActionContext, head: str) -> float | None:
+    """Seconds this step has waited for CI at `head`, when past MERGE_CI_MAX_SECONDS.
 
     `merge_wait.first_parked_at` on the step's own document, written by the
-    fenced park (`control.ControlPlane.park_ci_pending`). The document is
+    fenced park (`control.ControlPlane.park_ci_pending`, or swarm-api's
+    `attemptstate` CI park on the state routes). The document is
     tenant-writable, so a forged instant can at worst end the step early as a
     refusal, which changes nothing on the forge; an unreadable one waits on,
     and `max_attempts` still bounds the wakes.
+
+    THE INSTANT IS READ IN EITHER SHAPE (#3033). Direct Firestore hands back
+    a datetime; a tenant on the state routes reads its own document through
+    `GET state/upstream`, which serves it as JSON (`attemptstate.jsonable`),
+    so the same instant arrives as an ISO string. Reading only the datetime
+    returned None on every wake of an `eng` merge step (dev's
+    `state_via_api_tenants`): task_5c00c810495e4f949212 parked 56 times at
+    one head over 13 hours and the 6 h limit never fired.
+
+    THE CLOCK IS THIS HEAD'S. A record left at another head is a wait that
+    ended (a fix round or a branch update moved the head), so the wait about
+    to park at `head` starts afresh and reads no age; a record naming no head
+    is read as this head's. A clock paused by a
+    merge-slot or merge-train wait (`ci_paused_at`) counts only to the pause:
+    a queue for the slot is not CI time.
     """
     try:
         doc = ctx.fetch_upstream(ctx.task_id)
     except Exception:  # noqa: BLE001 - an unreadable record is no timeout
         return None
     wait = _mapping(_mapping(_mapping(doc).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
-    first = wait.get("first_parked_at")
-    if not isinstance(first, datetime):
+    recorded = wait.get("head")
+    if recorded and recorded != head:
         return None
-    try:
-        waited = (utcnow() - first).total_seconds()
-    except TypeError:  # a naive instant: not one the park wrote
+    first = _stored_instant(wait.get("first_parked_at"))
+    if first is None:
         return None
+    paused = _stored_instant(wait.get("ci_paused_at"))
+    waited = ((paused if paused is not None else utcnow()) - first).total_seconds()
     return waited if waited > MERGE_CI_MAX_SECONDS else None
+
+
+def _stored_instant(value: Any) -> datetime | None:
+    """An aware instant from a task document: a datetime as Firestore hands it
+    back, or the ISO string the state routes serve. Anything else -- naive,
+    unparseable, absent -- is None: not one a park wrote."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        return None
+    return value
 
 
 def _close_issues(run: _Run, merger: ForgeMerger, number: int) -> None:
