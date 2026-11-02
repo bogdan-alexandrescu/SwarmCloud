@@ -201,25 +201,47 @@ per Jev call, `{model, state, questions}`):
 | jev-enforce, first run in a checkout | once per rule set, cached in the data directory | the rule texts | what each rule constrains |
 | jev-enforce, Edit/Write | **never**: in `end` mode it only records the edit's text in the data directory (`private/jev-gates-data`) for the Stop hook | -- | -- |
 
-**The redaction applied.** Before any send, the launcher
-(`swarm-jev-gate.mjs` `guardedFetch` and `scrub`) parses the body and
-replaces, in every string and every key at every depth, the workspace key
-itself and the value of every secret the agent profile registered
-(`secret_env_names`, read from the hook's own environment) with
-`<redacted>`; a value shorter than 8 characters is not scrubbed, the same
-line the judge's sanitizer draws. That is the redaction: rules 1 to 3 and
-5 of the table above (path deny, credential scan, the redaction families,
-never-sent keys)
-are `JudgeClient`'s and do **not** apply to these hooks, see Known gaps.
+**The redaction applied: the outbound filter.** Lane
+jev-outbound-redaction (owner decision 2026-11-02, CLD's Jev report). Before
+any send, the launcher (`swarm-jev-gate.mjs` `guardedFetch`, which runs
+`filterBody`) parses the body and applies the worker's rules to every string
+and every key at every depth, a matching string **dropped, never masked**, as
+`JudgeClient` does:
+
+| # | Rule | Enforced by (`images/agent-runtime-base/jev-gates/bin/swarm-jev-gate.mjs`) | Test that fails when it is removed |
+|---|---|---|---|
+| G1 | **Path deny.** An object whose `path` or `file` is `.env*`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `*.tfstate*`, under `secrets/` or `credentials/`, or one of the repository's hard-stop paths (the config's `hard_stop_paths`, tried repository-relative too) keeps its identity keys only. jev-enforce sends each edit as `{kind, file, text}`, so an edited `.env` goes as its name. The globs, directories and keys are `sanitize.py`'s, held equal. | `isDeniedPath`, `walk`, `DENIED_NAME_GLOBS` | `tests/unit/worker/test_jev_outbound_filter.py::test_an_edited_env_files_text_never_reaches_the_fake_jev_from_jev_enforce`, `tests/unit/worker/test_jev_outbound_filter.py::test_the_repositorys_hard_stop_paths_are_denied_when_the_config_names_them`, `tests/unit/worker/test_jev_outbound_filter.py::test_the_path_deny_and_never_sent_keys_are_the_workers`, `tests/unit/worker/test_jev_outbound_filter.py::test_the_launchers_path_deny_agrees_with_the_workers` |
+| G2 | **The redaction rule families, then drop.** A string any rule of `swarm_redaction.rules` would mask is removed from its object or list. The rules are asked of the image's own module (`/opt/venv/bin/python -I`, one batched call per request), not ported: the key/value rule is built on conditional groups (`(?(name)...)`) that a JavaScript `RegExp` cannot spell, and a hand-written second definition would drift. If the rules cannot be asked, nothing is sent. | `credentialFlags`, `filterBody` | `tests/unit/control_plane/test_log_redaction.py::test_the_jev_outbound_filter_flags_exactly_what_the_rules_mask` (the parity fixture, every case), `tests/unit/worker/test_jev_outbound_filter.py::test_a_credential_in_an_edit_is_dropped_and_a_registered_secret_is_still_scrubbed`, `tests/unit/worker/test_jev_outbound_filter.py::test_without_its_redaction_python_the_filter_sends_nothing` |
+| G3 | **The key and the registered secrets** (`secret_env_names`, read from the hook's own environment) are replaced with `<redacted>` (`scrub`), first; a value shorter than 8 characters is not scrubbed, the same line the judge's sanitizer draws. | `scrub`, `secretValues` | `tests/unit/worker/test_quality_gates.py::test_the_launcher_sends_only_to_typesafe_scrubbed_and_counted`, `tests/unit/worker/test_jev_outbound_filter.py::test_a_credential_in_an_edit_is_dropped_and_a_registered_secret_is_still_scrubbed` |
+| G4 | **Never sent:** `author(s)`, `email(s)`, `user`, `login`, `env`, `environ`, `environment`, `transcript`, removed wherever they appear. | `walk`, `NEVER_SENT_KEYS` | `tests/unit/worker/test_jev_outbound_filter.py::test_the_filter_drops_never_sent_keys_and_credentials_at_every_depth` |
+| G5 | **JSON text is filtered as its structure** (the browser's internal backend sends `state` as JSON text). | `walk` | `tests/unit/worker/test_jev_outbound_filter.py::test_a_state_sent_as_json_text_is_filtered_as_its_structure` |
+
 `guardedFetch` also refuses any URL but TypeSafe's, and sends to the URL
 the worker's config chose (TypeSafe, or the loopback shim) with the
 config's key, whatever `JEV_BASE_URL` or `CLAUDE_PLUGIN_OPTION_*` the
 environment holds; the launcher removes those and `JEV_BELAY_LOG`, so
-neither tool writes a text log.
+neither tool writes a text log. The publish gate's own predicate
+(`lifecycle._credential_in`, rule 2 of the table above) is not asked here:
+it lives in the worker package, whose import would cost each hook seconds.
+
+**The Jev browser takes the same filter.** `images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp`
+starts the server as `node --import` of the launcher's `installBrowserFilter`
+(the launcher is installed in agent-runtime-base, which the browser image is
+built FROM), so the global `fetch` upstream `src/jev.mjs` calls for every Jev
+request is the filtered one: page text, element labels and any JSON-text
+`state` go through G1 to G5, with the TypeSafe key it was given scrubbed. The
+wrapper refuses to start when the launcher is missing, and always sets the
+interpreter it asks (`SWARM_JEV_REDACTION_PYTHON`) itself. Held by
+`tests/unit/worker/test_jev_outbound_filter.py::test_a_page_holding_a_github_token_never_reaches_the_fake_jev_from_the_browser`
+and `tests/unit/worker/test_jev_browser_image.py::test_without_the_outbound_filter_the_wrapper_refuses_to_start`.
 
 **Where the audit lands.** Each hook run appends one line of counts to
 `private/jev-gates.counts` -- which hook, how many Jev calls, whether it
-blocked, how many rules it flagged; never text. After the agent,
+blocked, how many rules it flagged, and the outbound filter's `dropped`,
+`denied` and `withheld` counts; never text. The browser writes one such line
+per Jev call (`hook: "browser"`) to its stderr, which the CLI keeps as the
+MCP server's log, and to `SWARM_JEV_BROWSER_COUNTS` when the runner names a
+file. After the agent,
 `apps/agent-worker/agent_worker/qualitygates.py::finish` sums them, removes
 the key file, and `apps/agent-worker/agent_worker/lifecycle.py::Worker._record_quality_gates`
 puts them in the attempt's summary under `quality_gates` and records one
@@ -239,13 +261,12 @@ hooks, launcher redaction and URL pin, counts and event) and
 
 ## Known gaps
 
-* **The lane hooks get only the registered-secret scrub.** jev-enforce sends
-  an edited file's text whatever its path, so an edit to a `.env` or `*.pem`
-  file the agent writes reaches TypeSafe with only the profile's registered
-  secrets and the key replaced; rule 1a's path deny, rule 2's credential
-  scan and rule 3's redaction families are `JudgeClient`'s and do not run
-  in the launcher. Turning `quality_gates.jev` on accepts that; it is off
-  by default.
+* **The outbound filter's drop counts reach no summary yet.** They are in
+  each line of `private/jev-gates.counts` and the browser's log, but
+  `apps/agent-worker/agent_worker/qualitygates.py::finish` sums only calls,
+  blocks and flags, and nothing hands the browser a `SWARM_JEV_BROWSER_COUNTS`
+  file or the worker's `hard_stop_paths`; those are the worker's files, asked
+  for in the lane's PR.
 * **Nothing sets `SWARM_JUDGE_INTERNAL_URL`** (context-quality.md §5.6). The
   scheduler sends `JEV_API_URL` to live-browser attempts only. So an
   opted-in workspace on the default Internal Jev backend reads
@@ -257,6 +278,14 @@ hooks, launcher redaction and URL pin, counts and event) and
 * **Rule 5c holds for J3 by a check, and for J1 and J4 by construction**: their
   rows are read from the attempt's checkout, with no separate guard that would
   refuse a path leaving it.
+
+### Closed by lane jev-outbound-redaction (2026-11-02)
+
+* **The lane hooks got only the registered-secret scrub**, so jev-enforce
+  could send an edited `.env` or `*.pem` file's text, and **the Jev browser
+  sent page text and element labels with no SwarmCloud-side redaction.** Both
+  launchers now run every request body through the outbound filter (G1 to G5
+  under "The lane hooks").
 
 ### Closed by lane JEV-SCRUB (2026-10-18)
 
