@@ -133,6 +133,9 @@ from .judgment import (
     GATES_REFUSED_UNREADABLE,
     INTERNAL_JEV,
     INTERNAL_LAYA,
+    JEV_BACKEND_ENV,
+    QUALITY_GATES_JEV_ENV,
+    QUALITY_GATES_ON_REQUEST,
     SETTINGS_COLLECTION,
     TYPESAFE_BACKEND,
     jev_dispatch,
@@ -712,6 +715,19 @@ TYPESAFE_POD_LABEL = ("swarm-typesafe", "inject")
 #: `SWITCH_ON`, because the scheduler's image does not carry the worker;
 #: tests/unit/control_plane/test_typesafe_switch_parity.py holds them equal.
 TYPESAFE_INJECT_ENV = ("SWARM_TYPESAFE_INJECT", "on")
+#: THE DIRECT TYPESAFE LABEL (the TypeSafe egress allowlist,
+#: docs/runbooks/typesafe-egress.md; part of #2688). What
+#: `swarm-allow-typesafe-direct` (kubernetes/network-policies/fqdn/
+#: allow-typesafe-direct.yaml), the one tenant-side FQDN rule naming
+#: api.typesafe.ai, selects. Set by `with_typesafe_direct` and
+#: `_with_judgments_forwarder` on a pod that calls TypeSafe itself, never on
+#: one labelled TYPESAFE_POD_LABEL: a different KEY,
+#: so the forwarder's ingress, which selects `swarm-typesafe: inject`, never
+#: admits a direct pod and a pod can never carry both.
+TYPESAFE_DIRECT_POD_LABEL = ("swarm-jev", "typesafe-direct")
+#: The quality gates' verdicts under which the lane hooks run, and so call
+#: https://api.typesafe.ai themselves (docs/jev-data-flow.md, The lane hooks).
+QUALITY_GATES_ON_WORDS = ("true", QUALITY_GATES_ON_REQUEST)
 
 #: The three volumes both containers mount, and only these (§3.1). All memory,
 #: so inside the pod's memory limit, and none under WORKSPACE_MOUNT, so none
@@ -1065,6 +1081,26 @@ CODE_INTELLIGENCE_FIELD = "code_intelligence"
 JUDGMENT_BACKEND_FIELD = "judgment_backend"
 #: The DispatchError code of a TypeSafe judge held off Cloud Run.
 TYPESAFE_JUDGE_NEEDS_GKE = "typesafe_judge_needs_gke"
+
+
+def with_typesafe_direct(job: dict[str, Any]) -> dict[str, Any]:
+    """Label `job`'s pod TYPESAFE_DIRECT_POD_LABEL when its worker will call
+    TypeSafe directly: its SWARM_JEV_BACKEND is `typesafe` (`_with_judgment`,
+    the live browser's) or its quality gates' verdict is on, and the pod is not
+    labelled TYPESAFE_POD_LABEL, whose worker reaches TypeSafe only through the
+    forwarder's loopback shim. Read from the rendered pod only, so the label
+    and the environment it describes cannot disagree; the environment itself
+    comes from the stored settings and configuration (invariant 10)."""
+    template = job["spec"]["template"]
+    labels = template["metadata"]["labels"]
+    if labels.get(TYPESAFE_POD_LABEL[0]) == TYPESAFE_POD_LABEL[1]:
+        return job
+    (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
+    env = {e.get("name"): e.get("value") for e in worker.get("env", ())}
+    if (env.get(JEV_BACKEND_ENV) == TYPESAFE_BACKEND
+            or env.get(QUALITY_GATES_JEV_ENV) in QUALITY_GATES_ON_WORDS):
+        labels[TYPESAFE_DIRECT_POD_LABEL[0]] = TYPESAFE_DIRECT_POD_LABEL[1]
+    return job
 
 
 def runs_jev_client(profile: Any) -> bool:
@@ -3424,7 +3460,9 @@ class GkeJobDispatcher:
         if judges_internally(judgments, task):
             assert judgments is not None
             self._with_judge_address(job, judgments.backend)
-        return job
+        # LAST, from the pod as rendered: the label the direct TypeSafe FQDN
+        # rule selects, on a pod that calls TypeSafe without the forwarder.
+        return with_typesafe_direct(job)
 
     def _with_judge_address(self, job: dict[str, Any], backend: str) -> None:
         """The decision API's address for this attempt's own judgments (lane
@@ -3477,11 +3515,18 @@ class GkeJobDispatcher:
         and SWARM_TYPESAFE_INJECT=on when the forwarder serves its tenant on
         the TypeSafe backend (`typesafe_forwarder_on`), so the worker's
         judgments use the shim as the quality checks do. Nothing else of
-        `_with_judgment`: every other pod is returned exactly as built."""
+        `_with_judgment`: every other pod is returned exactly as built.
+
+        Without the forwarder, a TypeSafe-backed pod that carries the Jev
+        client gets TYPESAFE_DIRECT_POD_LABEL instead: its worker resolves the
+        workspace's key and calls TypeSafe itself (`jevkey.resolve_workspace`)."""
         backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
         if not typesafe_forwarder_on(self._settings, tenant_id=tenant.tenant_id,
                                      profile=profile, backend=backend,
                                      judgments_switched_on=True):
+            if backend == TYPESAFE_BACKEND and runs_jev_client(profile):
+                labels = job["spec"]["template"]["metadata"]["labels"]
+                labels[TYPESAFE_DIRECT_POD_LABEL[0]] = TYPESAFE_DIRECT_POD_LABEL[1]
             return
         template = job["spec"]["template"]
         (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]

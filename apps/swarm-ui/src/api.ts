@@ -18,7 +18,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
-import { summaryTaskById, type StepTaskSummary } from './stepviews'
+import { stateEnteredAt, summaryTaskById, type StepTaskSummary } from './stepviews'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
 import { noteProfile, revisionAfterZoneSaves } from './timezone'
@@ -707,6 +707,9 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
                         },
                       },
                     }),
+                // A Jev agent's own record (its verdict gate, its quality
+                // gates, the review's verdict.json in its manifest) on top.
+                ...(FIXTURE_JEV_IDS.has(task.id) ? task.result_summary : {}),
               }
             : task.result_summary,
       },
@@ -1108,6 +1111,124 @@ export async function loadArtifactContent(
   if (options.limitBytes !== undefined) query.set('limit_bytes', String(options.limitBytes))
   // Path literal and query kept apart; see loadCheckpoints above for why.
   return read<ArtifactContent>(route('/v1/tasks/{id}/artifacts/content', { id: taskId }, query), () => false)
+}
+
+// ---------------------------------------------------------------------------
+// Jev's finding triage and the attempt's quality gates (CLD's Jev report,
+// "make it visible", owner's choice 2026-11-02)
+// ---------------------------------------------------------------------------
+//
+// WHERE `p_real` LIVES, AND WHY IT IS READ FROM THE VERDICT FILE. When the
+// review's workspace opted in to Jev, the review's post-step writes `p_real`
+// (0 to 1) onto each finding it asked about in the review's own
+// `verdict.json`, and `"triage": "verify before acting"` under 0.15
+// (agent_worker/verdict.py `annotate_findings`). The gated step's
+// `result_summary.verdict_gate.findings` keeps each finding as TEXT
+// (`verdict._finding_text`), so the number is gone there and only a text mark
+// remains on a low one. The verdict file is already served, redacted, by
+// `GET /v1/tasks/{id}/artifacts/content`, so nothing new is asked of swarm-api.
+//
+// THE INDEX. The gate's finding `i` is the `i`-th item of the file's
+// `findings` whose worker text is not empty, the first `MAX_FINDINGS` of them:
+// `verdictTriage` keeps exactly those, in order, so `triage[i]` is the gate's
+// finding `i`. A finding Jev did not ask about is null: no chip, never 0.
+
+/** Restated from agent_worker/verdict.py: the bound under which a finding is "verify before acting". */
+export const FINDING_VERIFY_BELOW = 0.15
+export const VERIFY_BEFORE_ACTING = 'verify before acting'
+/** The worker's text mark on a low finding in the gate's record (`verdict._finding_text`). */
+export const VERIFY_TEXT_MARK = `[${VERIFY_BEFORE_ACTING}: Jev judged this unlikely to be real] `
+/** `verdict.MAX_FINDINGS`: how many findings the gate records. */
+const VERDICT_MAX_FINDINGS = 50
+
+export interface FindingTriage {
+  /** Jev's probability that the finding is real, 0 to 1; null when only the text mark survived. */
+  readonly pReal: number | null
+  /** Under `FINDING_VERIFY_BELOW`, or marked so by the worker. */
+  readonly verify: boolean
+}
+
+const recordOf = (v: unknown): Record<string, unknown> | null =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+
+/** One finding's triage as the worker annotated it, or null when Jev did not judge it. */
+export function findingTriageOf(raw: unknown): FindingTriage | null {
+  const o = recordOf(raw)
+  if (o === null) return null
+  const p = o['p_real']
+  const pReal = typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= 1 ? p : null
+  const marked = o['triage'] === VERIFY_BEFORE_ACTING
+  if (pReal === null && !marked) return null
+  return { pReal, verify: marked || (pReal !== null && pReal < FINDING_VERIFY_BELOW) }
+}
+
+/** Whether the worker keeps a text for this finding (`verdict._finding_text` is not None). */
+function keptByWorker(item: unknown): boolean {
+  if (typeof item === 'string') return item.trim() !== ''
+  const o = recordOf(item)
+  if (o === null) return false
+  for (const k of ['summary', 'title', 'message']) {
+    const v = o[k]
+    if (typeof v === 'string') return v.trim() !== ''
+  }
+  return true
+}
+
+/**
+ * The triage of each finding a verdict file holds, indexed as the gate
+ * recorded them (see THE INDEX above); null when the text is not a verdict
+ * document with a `findings` list.
+ */
+export function verdictTriage(text: string): (FindingTriage | null)[] | null {
+  let doc: unknown
+  try {
+    doc = JSON.parse(text)
+  } catch {
+    return null
+  }
+  const findings = recordOf(doc)?.['findings']
+  if (!Array.isArray(findings)) return null
+  return findings.filter(keptByWorker).slice(0, VERDICT_MAX_FINDINGS).map(findingTriageOf)
+}
+
+/**
+ * `result_summary.quality_gates` (agent_worker/lifecycle.py
+ * `_record_quality_gates`): the hooks' counts when the gates ran, why not when
+ * a stored "on" was refused, or the switch's record when they were off.
+ */
+export type QualityGates =
+  | {
+      readonly kind: 'ran'
+      /** Null when no hook ran, so no count was measured. */
+      readonly counts: {
+        readonly stopsBlocked: number
+        readonly rulesFlagged: number
+        readonly jevCalls: number
+      } | null
+    }
+  | { readonly kind: 'refused'; readonly refused: string }
+  | { readonly kind: 'off'; readonly reason: string | null }
+
+/** The attempt's quality gates, or null when its summary has no `quality_gates`. */
+export function qualityGatesOf(task: Task): QualityGates | null {
+  const g = recordOf(recordOf(task.result_summary)?.['quality_gates'])
+  if (g === null) return null
+  if (g['jev'] === true) {
+    const blocks = countOf(g['belay_blocks'])
+    const rules = countOf(g['enforce_rules_flagged'])
+    const belay = countOf(g['belay_calls'])
+    const enforce = countOf(g['enforce_calls'])
+    const counts =
+      blocks === null || rules === null || belay === null || enforce === null
+        ? null
+        : { stopsBlocked: blocks, rulesFlagged: rules, jevCalls: belay + enforce }
+    return { kind: 'ran', counts }
+  }
+  if (g['jev'] !== false) return null
+  const refused = g['refused']
+  if (typeof refused === 'string' && refused !== '') return { kind: 'refused', refused }
+  const reason = recordOf(g['switch'])?.['reason']
+  return { kind: 'off', reason: typeof reason === 'string' && reason !== '' ? reason : null }
 }
 
 // ---------------------------------------------------------------------------
@@ -1549,6 +1670,30 @@ export async function loadRuns(
   if (limit !== null) query.set('limit', String(limit))
   return read<IssueRunSummaryPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
 }
+
+/**
+ * THE PLANNER'S CHECK OF ITS OWN PLAN (CLD's Jev report: plan coverage),
+ * served on the run read as `plan_advisory` (`served_plan_advisory`,
+ * routes/runs.py): read from the planner's `plan-advisory.json` when the run
+ * is read, never stored on the run. Null when the planner wrote none; absent
+ * on a list row that is not PLANNED (not read). Advisory: it decides nothing.
+ */
+export interface PlanAdvisory {
+  /** J2: the requirements no step covers (`none`) or covers only weakly (`weak`). */
+  coverage: {
+    requirements: number | null
+    flagged: { index: number | null; requirement: string; coverage: 'none' | 'weak' }[]
+  } | null
+  /** J5: the work in flight this plan likely duplicates; `url` only on github.com. */
+  duplicate: { title: string | null; ref: string | null; url: string | null; p: number | null } | null
+  /** The duplicate made the plan wait for a person's approval. */
+  hold_for_human: boolean
+  /** The plan revision that was judged: the planner's own, 1. */
+  judged_revision: number
+}
+
+/** A run as the run read serves it, with the planner's check. */
+export type AdvisedIssueRun = IssueRun & { plan_advisory?: PlanAdvisory | null }
 
 /** `GET /v1/runs/{run_id}`. The read advances the run (routes/runs.py). */
 export async function loadRun(runId: string): Promise<Result<IssueRunRead>> {
@@ -2138,6 +2283,8 @@ async function fixtureArtifactContent(
       2,
     ),
   }
+  // The Jev review's verdict file, with `p_real` on its findings.
+  if (taskId === FIXTURE_JEV_REVIEW) bodies['verdict.json'] = FIXTURE_JEV_VERDICT
   const content = bodies[name] ?? `fixture artifact ${name}\n`
   const bytes = new TextEncoder().encode(content).length
   return {
@@ -3256,6 +3403,152 @@ export async function loadTaskEventsPage(
   if (opts.pageToken) q.set('page_token', opts.pageToken)
   // An empty page is still a page: "no events" is drawn as such, not as a failure.
   return read<TaskEventsPage>(route('/v1/tasks/{id}/events', { id: taskId }, q), () => false)
+}
+
+/**
+ * ONE TASK'S DIGEST, AS `GET /v1/tasks/digests` SERVES IT (#2688,
+ * WORK-READS-SPEED): what a page draws for each of many tasks, so it reads
+ * them all at once. The owner's 40-step workflow page made 24 events pages
+ * and 12 attempt reads for these figures, and the Agents list one live
+ * session read per browser row on every refresh.
+ *
+ *  - `entered_at`: when a PARKED, LEASED or DISPATCHED task entered that
+ *    state (the server applies `stateEnteredAt`'s rule to the same newest
+ *    page), else null; absent when `entered` was not asked for.
+ *  - `usage`: the task's attempts summed as `StepUsage`; null with
+ *    `usage_read: 'failed'` when they were not read -- never a zero.
+ *  - `live`: the current attempt's session state and device (`include` live).
+ *
+ * A task of another tenant, or a missing one, is simply not in `digests`.
+ */
+export interface TaskDigest {
+  task_id: string
+  state: TaskState
+  entered_at?: string | null
+  usage?: {
+    attempts: number
+    attempts_with_cost: number
+    attempts_with_tokens: number
+    checkpoints: number
+    cost_usd: number | null
+    input_tokens: number | null
+    output_tokens: number | null
+    cache_read_input_tokens: number | null
+    cache_creation_input_tokens: number | null
+  } | null
+  usage_read?: 'ok' | 'failed'
+  live?: { live_browser: boolean; session_state: 'open' | 'closed' | null; device: LiveDevice | null }
+}
+
+export interface TaskDigests {
+  tenant_id?: string
+  read_at?: string
+  digests: TaskDigest[]
+  /** The gate's presets, once beside the rows, when `live` was asked for. */
+  presets?: LivePreset[]
+}
+
+export type DigestPart = 'entered' | 'usage' | 'live'
+
+/** The most ids one digest read takes: the route's `DIGEST_MAX_IDS`. */
+export const DIGEST_MAX_IDS = 100
+
+/**
+ * `GET /v1/tasks/digests?ids=...&include=...`: many tasks' digests in ONE
+ * request. More than `DIGEST_MAX_IDS` ids are read in as many requests as
+ * they need, never one per task.
+ */
+export async function loadTaskDigests(
+  taskIds: readonly string[],
+  include: readonly DigestPart[] = ['entered', 'usage'],
+): Promise<Result<TaskDigests>> {
+  const wanted = Array.from(new Set(taskIds.filter((id) => id !== '')))
+  if (wanted.length === 0) return { status: 'empty', fetchedAt: Date.now() }
+  if (USE_FIXTURES) return fixtureTaskDigests(wanted, include)
+  const chunks: string[][] = []
+  for (let i = 0; i < wanted.length; i += DIGEST_MAX_IDS) chunks.push(wanted.slice(i, i + DIGEST_MAX_IDS))
+  const pages = await Promise.all(
+    chunks.map((ids) =>
+      read<TaskDigests>(
+        route('/v1/tasks/digests', {}, new URLSearchParams({ ids: ids.join(','), include: include.join(',') })),
+        () => false,
+      ),
+    ),
+  )
+  const failed = pages.find((p) => p.status === 'error')
+  if (failed !== undefined) return failed
+  const digests: TaskDigest[] = []
+  let presets: LivePreset[] | undefined
+  let fetchedAt = Date.now()
+  for (const p of pages) {
+    if (p.status !== 'ok' && p.status !== 'stale') continue
+    digests.push(...p.data.digests)
+    presets = presets ?? p.data.presets
+    fetchedAt = Math.min(fetchedAt, p.fetchedAt)
+  }
+  return { status: 'ok', fetchedAt, data: { digests, ...(presets !== undefined ? { presets } : {}) } }
+}
+
+/**
+ * The fixture build's digests, from THE SAME fixture reads the per-task routes
+ * serve: each task's newest events page through `stateEnteredAt`, its attempt
+ * rows through `rollUpAttempts`, and its live session as `loadLiveSession`
+ * answers it. One probe, as one request.
+ */
+async function fixtureTaskDigests(ids: readonly string[], include: readonly DigestPart[]): Promise<Result<TaskDigests>> {
+  noteFixtureProbe(route('/v1/tasks/digests'), 200, true)
+  const tasks = await fixtureTasks()
+  const byId = new Map(tasks.status === 'ok' ? tasks.data.tasks.map((t) => [t.id, t] as const) : [])
+  const digests: TaskDigest[] = []
+  let presets: LivePreset[] | undefined
+  for (const id of ids) {
+    let t = byId.get(id) ?? null
+    if (t === null) {
+      const detail = await fixtureAgentDetail(id)
+      t = detail.status === 'ok' ? detail.data.task : null
+    }
+    if (t === null) continue
+    const row: TaskDigest = { task_id: id, state: t.state }
+    if (include.includes('entered')) {
+      const page = await fixtureEventsPage(id, 'desc')
+      const at = page.status === 'ok' ? stateEnteredAt(t.state, page.data.events) : null
+      row.entered_at = at === null ? null : new Date(at).toISOString()
+    }
+    if (include.includes('usage')) {
+      const got = await fixtureStepAttempts(id)
+      const rows = got.status === 'ok' ? got.data.attempts : got.status === 'empty' ? [] : null
+      if (rows === null) {
+        row.usage = null
+        row.usage_read = 'failed'
+      } else {
+        const u = rollUpAttempts(rows)
+        row.usage = {
+          attempts: u.attempts,
+          attempts_with_cost: u.attemptsWithCost,
+          attempts_with_tokens: u.attemptsWithTokens,
+          checkpoints: u.checkpoints,
+          cost_usd: u.costUsd,
+          input_tokens: u.inputTokens,
+          output_tokens: u.outputTokens,
+          cache_read_input_tokens: u.cacheReadTokens,
+          cache_creation_input_tokens: u.cacheCreationTokens,
+        }
+        row.usage_read = 'ok'
+      }
+    }
+    if (include.includes('live')) {
+      const live = await loadLiveSession(id)
+      const data = live.status === 'ok' ? live.data : null
+      row.live = {
+        live_browser: data?.live_browser ?? false,
+        session_state: data?.session?.state ?? null,
+        device: data?.session?.device ?? null,
+      }
+      presets = presets ?? data?.session?.presets
+    }
+    digests.push(row)
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: { digests, presets: include.includes('live') ? (presets ?? []) : undefined } }
 }
 
 async function fixtureAttemptsPage(since: string, until: string): Promise<Result<AttemptsPage>> {
@@ -5216,12 +5509,117 @@ function fixtureOtherSubmitterTasks(listed: Task[]): Task[] {
   ]
 }
 
-/** A task a per-task read answers and no list returns: a waiting one (#1782), a budget one (#2459), or another user's (#1857). */
+/**
+ * THE JEV AGENTS (CLD's Jev report, "make it visible"; the owner's pick on
+ * PR #3032, 2026-11-02: "Add a fixture"). The finding triage chips and the
+ * Quality gates line had no task in the fixture build to draw them, so neither
+ * could be seen without live data. Two finished claude-code agents:
+ *
+ *   * `task_jev_review`, a review whose `verdict.json` (served by
+ *     `fixtureArtifactContent`) carries Jev's `p_real` the way
+ *     `agent_worker/verdict.py` `annotate_findings` writes it: one likely
+ *     real, one under 0.15 marked "verify before acting", one Jev did not
+ *     judge (no chip, never 0%).
+ *   * `task_jev_gated`, the step gated on it: its `result_summary.verdict_gate`
+ *     keeps the findings as TEXT, the low one with the worker's mark, as
+ *     `verdict._finding_text` does, so its Decision card lays the file's
+ *     numbers over them; and its `quality_gates` say the hooks ran, with
+ *     counts, so its Details draws the Quality gates line.
+ *
+ * Reached BY ID AND KEPT OFF THE LISTS, as the budget agents are, so every
+ * list and count other tests pin stays where it was.
+ */
+const FIXTURE_JEV_REVIEW = 'task_jev_review'
+const FIXTURE_JEV_GATED = 'task_jev_gated'
+const FIXTURE_JEV_IDS: ReadonlySet<string> = new Set([FIXTURE_JEV_REVIEW, FIXTURE_JEV_GATED])
+
+/** The review's findings, in its verdict.json's order. */
+const FIXTURE_JEV_FINDINGS = [
+  { severity: 'major', file: 'apps/swarm-scheduler/lease.py', summary: 'the lease is released twice when the attempt is reclaimed', p_real: 0.62 },
+  {
+    severity: 'minor',
+    file: 'apps/swarm-scheduler/admission.py',
+    summary: 'the concurrency cap counts RUNNING rather than LEASED',
+    p_real: 0.08,
+    triage: VERIFY_BEFORE_ACTING,
+  },
+  { severity: 'minor', file: 'docs/api.md', summary: 'the docstring names the wrong route' },
+] as const
+
+/** The review's `verdict.json` as Jev's post-step left it. */
+const FIXTURE_JEV_VERDICT = JSON.stringify({ verdict: 'NOT_YET', findings: FIXTURE_JEV_FINDINGS }, null, 2)
+
+/**
+ * `result_summary.quality_gates` as `agent_worker/lifecycle.py`
+ * `_record_quality_gates` writes it when the hooks ran.
+ */
+function fixtureJevGates(blocks: number, rules: number, belay: number, enforce: number): Record<string, unknown> {
+  return { jev: true, belay_blocks: blocks, enforce_rules_flagged: rules, belay_calls: belay, enforce_calls: enforce }
+}
+
+function fixtureJevTasks(listed: Task[]): Task[] {
+  const base = listed.find((t) => t.state === 'SUCCEEDED' && t.runner_profile === 'claude-code') ?? listed[0]
+  if (base === undefined) return []
+  const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
+  const one = (id: string, title: string, since: number, last: number, summary: Record<string, unknown>, over: Partial<Task> = {}): Task =>
+    fixtureTimed({
+      ...base,
+      id,
+      state: 'SUCCEEDED',
+      runner_profile: 'claude-code',
+      metadata: { title },
+      input: null,
+      workflow_id: null,
+      step_id: null,
+      depends_on: null,
+      attempt_count: 1,
+      current_generation: 1,
+      current_lease_id: null,
+      created_at: at(since),
+      // Its end: `fixtureTimed` derives the start and the completion from it.
+      updated_at: at(last),
+      end_cause: null,
+      last_error: null,
+      dispatch: { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [] },
+      result_summary: summary as Task['result_summary'],
+      ...over,
+    })
+  const gated = { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [], verdict_gate: { task_id: FIXTURE_JEV_REVIEW, verdict_in: ['NOT_YET'] } }
+  return [
+    one(FIXTURE_JEV_REVIEW, 'Review the lease release path', 120, 100, {
+      artifacts: [{ name: 'verdict.json', bytes: new TextEncoder().encode(FIXTURE_JEV_VERDICT).length, uri: 'gs://swarm-artifacts-dev/u-bogdan/verdict.json' }],
+      quality_gates: fixtureJevGates(0, 0, 4, 2),
+    }),
+    one(
+      FIXTURE_JEV_GATED,
+      'Fix what the lease review found',
+      98,
+      70,
+      {
+        verdict_gate: {
+          task_id: FIXTURE_JEV_REVIEW,
+          file: 'verdict.json',
+          verdict: 'NOT_YET',
+          verdict_in: ['NOT_YET'],
+          agent_ran: true,
+          // As `verdict._finding_text` keeps them: text, the low one marked.
+          findings: FIXTURE_JEV_FINDINGS.map((f) => `${'triage' in f ? VERIFY_TEXT_MARK : ''}${f.file}: ${f.summary}`),
+          findings_dropped: 0,
+        },
+        quality_gates: fixtureJevGates(1, 2, 9, 3),
+      },
+      { dispatch: gated as unknown as Task['dispatch'] },
+    ),
+  ]
+}
+
+/** A task a per-task read answers and no list returns: a waiting one (#1782), a budget one (#2459), another user's (#1857), or a Jev one. */
 function fixtureOffList(listed: Task[], taskId: string): Task | undefined {
   return (
     fixtureWaitingTasks(listed).find((t) => t.id === taskId) ??
     fixtureBudgetTasks(listed).find((t) => t.id === taskId) ??
-    fixtureOtherSubmitterTasks(listed).find((t) => t.id === taskId)
+    fixtureOtherSubmitterTasks(listed).find((t) => t.id === taskId) ??
+    fixtureJevTasks(listed).find((t) => t.id === taskId)
   )
 }
 
@@ -7659,7 +8057,6 @@ export async function loadSpend(page: TaskPage): Promise<Result<SpendRollup>> {
  * is the honest shape.
  */
 const STEP_USAGE_SAMPLE_TASKS = 12
-const STEP_USAGE_CONCURRENCY = 3
 
 /** What one step's attempts add up to. Every summable field is nullable. */
 export interface StepUsage {
@@ -7708,27 +8105,30 @@ export async function loadWorkflowUsage(
   // them -- and distinct from "we could not read the attempts".
   if (sample.length === 0) return { status: 'empty', fetchedAt: Date.now() }
 
-  const results = await mapWithLimit(sample, STEP_USAGE_CONCURRENCY, (id) =>
-    USE_FIXTURES ? fixtureStepAttempts(id) : loadAttempts(id),
-  )
-
+  // ONE READ FOR EVERY SAMPLED STEP (#2688, WORK-READS-SPEED): the digests
+  // route sums each task's attempts where they are, so the board no longer
+  // reads one attempt page per step -- 12 requests on the owner's 40-step
+  // page, three at a time. The opened step still reads its own attempts.
+  const r = await loadTaskDigests(sample, ['usage'])
   const byTaskId = new Map<string, StepUsage>()
   const failed = new Map<string, string>()
-  results.forEach((r, i) => {
-    const id = sample[i]
-    if (id === undefined) return
-    if (r.status === 'error') {
-      failed.set(id, r.error.message)
-      return
-    }
+  if (r.status === 'error') {
+    for (const id of sample) failed.set(id, r.error.message)
+  } else if (r.status === 'loading') {
     // `loading` cannot be awaited into existence here, but the union permits
     // it and a silent `continue` would record the task as measured-with-zero.
-    if (r.status === 'loading') {
-      failed.set(id, 'The attempt read did not complete.')
-      return
+    for (const id of sample) failed.set(id, 'The attempt read did not complete.')
+  } else {
+    const served = new Map((r.status === 'empty' ? [] : r.data.digests).map((d) => [d.task_id, d] as const))
+    for (const id of sample) {
+      const d = served.get(id)
+      // Not served is another tenant's, a missing task, or not the caller's:
+      // what the per-task read answered with a 404.
+      if (d === undefined) failed.set(id, 'The task was not found.')
+      else if (d.usage === null || d.usage === undefined || d.usage_read === 'failed') failed.set(id, 'The attempt read failed.')
+      else byTaskId.set(id, usageOfDigest(d.usage))
     }
-    byTaskId.set(id, rollUpAttempts(r.status === 'empty' ? [] : r.data.attempts))
-  })
+  }
 
   return {
     status: 'ok',
@@ -7740,6 +8140,21 @@ export async function loadWorkflowUsage(
       sampleLimit: STEP_USAGE_SAMPLE_TASKS,
       tasksRequested: wanted.length,
     },
+  }
+}
+
+/** A digest's `usage` as the board's `StepUsage`: the same figures, renamed. */
+function usageOfDigest(u: NonNullable<TaskDigest['usage']>): StepUsage {
+  return {
+    attempts: u.attempts,
+    attemptsWithCost: u.attempts_with_cost,
+    attemptsWithTokens: u.attempts_with_tokens,
+    checkpoints: u.checkpoints,
+    costUsd: u.cost_usd,
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+    cacheReadTokens: u.cache_read_input_tokens,
+    cacheCreationTokens: u.cache_creation_input_tokens,
   }
 }
 

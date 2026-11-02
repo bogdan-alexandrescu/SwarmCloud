@@ -7,7 +7,8 @@ last turn and before its result is written, over what the agent wrote into
 
 * PLANNER (`plan_post_step`), over `plan.json`:
   * J2, plan coverage: one `choice` per requirement over the plan's steps and
-    `none`. A requirement whose best step is under p 0.5, or `none`, is flagged.
+    `none`. A requirement whose best step is under p 0.5, or `none`, is flagged,
+    with `coverage` `none` (no step) or `weak` (a step, under p 0.5).
   * J5, duplicate: one `choice` over the in-flight lanes the stager wrote
     (`inflight.json`, titles and files only, §5.4) and `none`. p >= 0.85 on a
     lane asks for the auto-approved plan to be HELD FOR A HUMAN (owner
@@ -16,10 +17,13 @@ last turn and before its result is written, over what the agent wrote into
     Jev never decides; it can only make a person look.
   Written to `PLAN_ADVISORY_FILE` beside `plan.json`; `plan.json` itself is
   never touched.
-* REVIEWER (`review_post_step`), over every verdict file the step owes: each
-  declared output named `*verdict.json` and each `*verdict.json` it wrote
-  (`verdict.json`, and the experiment reviews' `code-verdict.json` and
-  `ui-verdict.json`; owner, 2 November 2026):
+* REVIEWER (`review_post_step`), over every verdict file the step owes in its
+  artifacts: each declared output named `*verdict.json` and each
+  `*verdict.json` it wrote (`verdict.json`, and the experiment reviews'
+  `code-verdict.json` and `ui-verdict.json`; owner, 2 November 2026) -- a
+  review's, or a re-review's own (never the earlier verdict a re-review
+  stages: `contextpack.tasktype.classify` types a step that owes its own
+  verdict a review, and a fix that only stages one a fix):
   * J3, finding triage: one `noul` per finding, "is this a real defect in
     this diff, as stated?", with the code around the finding's line and the
     patch's hunk for its file. A finding is an item of `findings`,
@@ -129,8 +133,8 @@ def plan_post_step(judge: Any, artifacts_dir: Path, context_dir: Path | None) ->
             flagged = shapes.read_plan_coverage(answers)
             advisory["coverage"] = {
                 "requirements": len(asked),
-                "flagged": [{"index": k, "requirement": asked[k]} for k in flagged
-                            if k < len(asked)],
+                "flagged": [{"index": k, "requirement": asked[k], "coverage": how}
+                            for k, how in flagged if k < len(asked)],
             }
     lanes = _in_flight(context_dir)
     if lanes and steps:

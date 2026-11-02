@@ -1461,13 +1461,30 @@ class AttemptState:
             refund = counts[counter] < bound and attempt_count > 0
             if refund:
                 counts[counter] += 1
+            # The CI clock, as the direct path keeps it
+            # (`control.ControlPlane.park_ci_pending`, #3033): started by the
+            # first CI park of a wait, carried at the same head, restarted
+            # only once the head moved; a slot or train wait PAUSES it
+            # (`ci_paused_at`) rather than clearing it, so neither a queue
+            # reads as `checks_timeout` nor a queue between two CI parks
+            # restarts the 6 h.
             first = last.get("first_parked_at")
+            paused = last.get("ci_paused_at")
+            if not isinstance(first, datetime) or (last.get("head") or ci.head) != ci.head:
+                first, paused = None, None
+            if not isinstance(paused, datetime):
+                paused = None
+            if not ci_clock:
+                paused = (paused or now) if first is not None else None
+            elif first is None:
+                first = now
+            elif paused is not None:
+                first, paused = first + max(now - paused, timedelta(0)), None
             names = [str(n)[:256] for n in ci.pending]
             metadata[MERGE_WAIT] = {
                 "code": ci.code, "head": ci.head, "pull_request": ci.pull_request,
                 "pending": names, **counts, "updates": _count(last.get("updates")),
-                "first_parked_at": (first if isinstance(first, datetime) else now)
-                if ci_clock else None,
+                "first_parked_at": first, "ci_paused_at": paused,
                 "parked_at": now,
             }
             payload["metadata"] = metadata
