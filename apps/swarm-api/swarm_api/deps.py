@@ -389,46 +389,41 @@ def current_auth(
     # the caller cannot see -- after the identity is verified, so an
     # unauthenticated caller still sees only a 401. Otherwise the value goes
     # through the same `_select_tenant` check as the header.
+    # A Voice it session grant (voice/grant.py) is judged on its own path,
+    # never the person's; both then pass the same checks below.
     grant = request.headers.get(voice_grant.GRANT_HEADER)
     if grant is not None:
         auth = _voice_grant_auth(
             request, ctx, grant, presented=presented, iap_assertion=iap_assertion,
             requested_tenant=requested_tenant, route=route)
-        return _admitted(request, ctx, auth, route=route, path=path)
-    conflicting = False
-    if route in TENANT_QUERY_ROUTES:
-        queried = request.query_params.get(TENANT_QUERY) or None
-        if queried is not None:
-            conflicting = bool(requested_tenant) and requested_tenant != queried
-            requested_tenant = queried
-    try:
-        auth = ctx.authenticator.authenticate(
-            presented, iap_assertion, tenant=None if conflicting else requested_tenant
-        )
-    except Exception as exc:
-        ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
-        log.warning(
-            "authentication failed (%s); auth headers present: %s",
-            type(exc).__name__,
-            ",".join(
-                n for n, v in (
-                    ("Authorization", authorization),
-                    ("X-Serverless-Authorization", serverless_authorization),
-                ) if v
-            ) or "none",
-        )
-        raise
-    if conflicting:
-        raise ValidationFailed(
-            f"{TENANT_HEADER} and ?{TENANT_QUERY}= name different tenants; send one."
-        )
-    return _admitted(request, ctx, auth, route=route, path=path)
-
-
-def _admitted(request: Request, ctx: AppContext, auth: AuthContext, *,
-              route: tuple[str, str] | None, path: str | None) -> AuthContext:
-    """What every authenticated request passes after its identity resolved,
-    whether a person's own or a Voice it grant's."""
+    else:
+        conflicting = False
+        if route in TENANT_QUERY_ROUTES:
+            queried = request.query_params.get(TENANT_QUERY) or None
+            if queried is not None:
+                conflicting = bool(requested_tenant) and requested_tenant != queried
+                requested_tenant = queried
+        try:
+            auth = ctx.authenticator.authenticate(
+                presented, iap_assertion, tenant=None if conflicting else requested_tenant
+            )
+        except Exception as exc:
+            ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
+            log.warning(
+                "authentication failed (%s); auth headers present: %s",
+                type(exc).__name__,
+                ",".join(
+                    n for n, v in (
+                        ("Authorization", authorization),
+                        ("X-Serverless-Authorization", serverless_authorization),
+                    ) if v
+                ) or "none",
+            )
+            raise
+        if conflicting:
+            raise ValidationFailed(
+                f"{TENANT_HEADER} and ?{TENANT_QUERY}= name different tenants; send one."
+            )
     # DEFAULT-DENY for a continuation-scoped account (contract request 30):
     # here, in the dependency every route reaches -- directly, or through
     # `tenant_scope`/`admin_auth` -- so a route added tomorrow is closed to that
