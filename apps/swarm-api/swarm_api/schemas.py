@@ -618,6 +618,14 @@ class BudgetCeilingRequest(StrictModel):
     tokens: StrictInt | None = Field(default=None, ge=1, le=BUDGET_MAX_TOKENS)
 
 
+class JevTokenRatesRequest(StrictModel):
+    """`jev_token_rates` (JEV-USAGE-PAGE): Jev's price in USD per million
+    tokens, per direction. A direction left out has no rate, so `{}` clears it."""
+
+    input: StrictFloat | StrictInt | None = Field(default=None, ge=0, le=1_000_000)
+    output: StrictFloat | StrictInt | None = Field(default=None, ge=0, le=1_000_000)
+
+
 class PlatformSettingsRequest(StrictModel):
     """`PUT /v1/admin/settings`: the settings to change; one omitted is left as it is."""
 
@@ -644,6 +652,9 @@ class PlatformSettingsRequest(StrictModel):
     #: workspace default above it in its unit is refused on save, and every
     #: budgeted attempt's limit is at most it. Off by default.
     agent_budget_ceiling: BudgetCeilingRequest | None = None
+    #: Jev's per-token rate (JEV-USAGE-PAGE), replaced whole. No default:
+    #: Capacity › Jev usage shows "rate not set" and no dollars until it is set.
+    jev_token_rates: JevTokenRatesRequest | None = None
 
 
 #: A runner-size change, by class then field (docs/design/runner-sizes.md

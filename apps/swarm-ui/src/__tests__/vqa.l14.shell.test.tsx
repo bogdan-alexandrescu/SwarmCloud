@@ -232,7 +232,7 @@ describe('V083: collapsed, the section you are in opens its pages', () => {
     const fly = c.querySelector('.sk-flyout')
     expect(fly, 'no way to the other Capacity pages').not.toBeNull()
     // API reads is Capacity's last page since NAV-FOOT (#1672).
-    expect([...fly!.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts', 'API reads'])
+    expect([...fly!.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts', 'Jev usage', 'API reads'])
     expect(go).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Open the panel' }))
     expect(c.querySelector('.sk-app.is-collapsed')).toBeNull()
