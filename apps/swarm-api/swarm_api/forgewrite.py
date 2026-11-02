@@ -814,6 +814,21 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
         return _pull(ref, entries[0], what) if entries else None
 
+    def pulls_from(self, ref: IssueRef, head: str, token: str) -> list[PullSnapshot]:
+        """Every pull request from `head` (a branch of this repository), in any
+        state, newest first: one page of `PAGE_SIZE`. GitHub's list answer
+        carries `merged_at` but not `merged`, so a merged one is read by
+        `merged_at`."""
+        what = f"the pull requests from {head} in {ref.repository}"
+        query = (f"head={quote(ref.owner, safe='')}:{quote(head, safe='/')}"
+                 f"&state=all&per_page={PAGE_SIZE}")
+        entries = self._call(
+            "GET", f"{self._url(ref, 'pulls')}?{query}", token, what, needs=PULLS_WRITE,
+        )
+        if not isinstance(entries, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+        return [_pull(ref, entry, what) for entry in entries]
+
     def open_pull(
         self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str,
         draft: bool = False,
@@ -1144,15 +1159,35 @@ class GitHubWriter:
         )
 
     def delete_branch(self, ref: IssueRef, branch: str, token: str) -> bool:
-        """Delete `branch`; False when it was already gone."""
+        """Delete `branch`; False when it was already gone (404, or 422
+        "Reference does not exist", GitHub's answer once its auto-delete of a
+        merged head branch got there first)."""
+        what = f"the branch {branch} of {ref.repository}"
         try:
-            self._call(
+            data = self._call(
                 "DELETE", self._url(ref, f"git/refs/heads/{quote(branch, safe='/')}"), token,
-                f"the branch {branch} of {ref.repository}", needs=CONTENTS_WRITE, ok=(204,),
+                what, needs=CONTENTS_WRITE, ok=(204, 422),
             )
         except ForgeWriteNotFound:
             return False
-        return True
+        if data is None:
+            return True
+        message = data.get("message") if isinstance(data, dict) else None
+        if isinstance(message, str) and "reference does not exist" in message.lower():
+            return False
+        raise ForgeWriteError(f"GitHub answered HTTP 422 for {what}")
+
+    def branch_protected(self, ref: IssueRef, branch: str, token: str) -> bool | None:
+        """Whether `branch` is protected; None when there is no such branch."""
+        what = f"the branch {branch} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"branches/{quote(branch, safe='')}"), token, what,
+                needs=CONTENTS_READ,
+            )
+        except ForgeWriteNotFound:
+            return None
+        return isinstance(data, dict) and data.get("protected") is True
 
     def branches_page(self, ref: IssueRef, page: int, token: str) -> list[dict[str, Any]]:
         """Page `page` (from 1, `PAGE_SIZE` a page) of the repository's branches,

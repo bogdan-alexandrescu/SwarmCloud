@@ -29,6 +29,7 @@
  *    (`InputUnavailable`, "the agent was not started and nothing was
  *    published") and the reason is the task's `last_error`.
  */
+import { VERIFY_TEXT_MARK, findingTriageOf, type FindingTriage } from './api'
 import { TERMINAL_STATES, type GitSummary, type Task } from './types'
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -64,6 +65,15 @@ export interface Finding {
   /** What is wrong, in the review's words: its `problem`, else its summary, else the whole text. */
   readonly problem: string
   readonly fix: string | null
+  /**
+   * Jev's triage (CLD's Jev report, 2026-11-02): read off the finding when it
+   * kept `p_real`/`triage` (a structured finding the worker kept as JSON), or
+   * the worker's "verify before acting" text mark, which is taken off the
+   * text; `wfreview.withVerdictTriage` adds the verdict file's. Null when Jev did not judge it.
+   */
+  readonly triage: FindingTriage | null
+  /** The finding's index in the gate's recorded `findings`, the verdict file's index (`verdictTriage`). */
+  readonly at: number
 }
 
 const PROBLEM_KEYS = ['problem', 'summary', 'title', 'message', 'what', 'text']
@@ -79,10 +89,16 @@ function first(o: Record<string, unknown>, keys: readonly string[]): string | nu
 }
 
 /** One finding as the worker kept it, read back; null for an entry with nothing to say. */
-export function parseFinding(raw: unknown): Finding | null {
+export function parseFinding(raw: unknown, at = 0): Finding | null {
   let o: Record<string, unknown> | null = isRecord(raw) ? raw : null
+  let marked = false
   if (o === null && typeof raw === 'string') {
-    const s = raw.trim()
+    let s = raw.trim()
+    if (s.startsWith(VERIFY_TEXT_MARK)) {
+      marked = true
+      s = s.slice(VERIFY_TEXT_MARK.length).trim()
+    }
+    const mark: FindingTriage | null = marked ? { pReal: null, verify: true } : null
     if (s.startsWith('{')) {
       try {
         const parsed: unknown = JSON.parse(s)
@@ -91,9 +107,10 @@ export function parseFinding(raw: unknown): Finding | null {
         // Cut at the worker's bound, or never JSON: it is the text it is.
       }
     }
-    if (o === null) return s === '' ? null : { severity: null, file: null, problem: s, fix: null }
+    if (o === null) return s === '' ? null : { severity: null, file: null, problem: s, fix: null, triage: mark, at }
   }
   if (o === null) return null
+  const triage = findingTriageOf(o) ?? (marked ? { pReal: null, verify: true } : null)
   const problem = first(o, PROBLEM_KEYS)
   const severity = text(o['severity'])
   const file = first(o, FILE_KEYS)
@@ -104,6 +121,8 @@ export function parseFinding(raw: unknown): Finding | null {
     file,
     problem: problem ?? JSON.stringify(o),
     fix,
+    triage,
+    at,
   }
 }
 
@@ -210,7 +229,7 @@ export function gateDecisionOf(task: Task): GateDecision | null {
   else verdict = { kind: 'unrecorded' }
   const raw = recorded === null ? undefined : recorded['findings']
   const findings = Array.isArray(raw)
-    ? raw.map(parseFinding).filter((f): f is Finding => f !== null)
+    ? raw.map((f, i) => parseFinding(f, i)).filter((f): f is Finding => f !== null)
     : null
   const dropped = recorded?.['findings_dropped']
   const ran = recorded?.['agent_ran']

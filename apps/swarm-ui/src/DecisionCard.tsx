@@ -22,8 +22,8 @@
  */
 import type { ReactNode } from 'react'
 
-import { Dash, ToneMark } from './components'
-import { loadWorkflow, type WorkflowRead } from './api'
+import { Chip, Dash, ToneMark } from './components'
+import { VERIFY_BEFORE_ACTING, loadArtifactContent, loadWorkflow, verdictTriage, type FindingTriage, type WorkflowRead } from './api'
 import { absTime } from './AttemptTimeline'
 import {
   artifactHref,
@@ -46,9 +46,11 @@ import {
   type PrTextSource,
 } from './decision'
 import type { Result } from './fetch'
+import type { ArtifactContent } from './types'
 import { Mark } from './primitives'
 import { useRead } from './RunFiles'
 import { TERMINAL_STATES, stagedInputsOf, type Task } from './types'
+import { withVerdictTriage } from './wfreview'
 
 /** The tone of a verdict word: MERGE is a pass, NOT_YET asks for work. */
 function verdictTone(v: string): string {
@@ -196,10 +198,88 @@ function VerdictRow({ task, gate, reviewLink }: { task: Task; gate: GateDecision
   )
 }
 
+/**
+ * JEV'S TRIAGE OF ONE FINDING, as a chip (CLD's Jev report, owner's choice
+ * 2026-11-02): "likely real" with Jev's percentage, or "verify before acting"
+ * under 0.15. Nothing when Jev did not judge the finding: an unjudged finding
+ * is not a 0%. It annotates and never grades: the verdict is the review's.
+ */
+export function TriageChip({ triage }: { triage: FindingTriage | null }) {
+  if (triage === null) return null
+  const pct = triage.pReal === null ? null : `${Math.round(triage.pReal * 100)}%`
+  if (triage.verify) {
+    return (
+      <Chip
+        tone="park"
+        className="triage-chip"
+        title={
+          pct === null
+            ? 'Jev judged this finding unlikely to be real in this diff: check it before acting on it.'
+            : `Jev judged this finding ${pct} likely to be real in this diff: check it before acting on it.`
+        }
+      >
+        {VERIFY_BEFORE_ACTING}
+      </Chip>
+    )
+  }
+  return (
+    <Chip className="triage-chip" title={`Jev judged this finding ${pct ?? ''} likely to be real in this diff.`}>
+      likely real{pct !== null && ` ${pct}`}
+    </Chip>
+  )
+}
+
+/** The triage a review's verdict file holds (`api.verdictTriage`); null when it cannot be read whole. */
+async function readTriage(reviewTaskId: string, name: string): Promise<(FindingTriage | null)[] | null> {
+  let r: Result<ArtifactContent> | undefined
+  try {
+    r = await loadArtifactContent(reviewTaskId, name)
+  } catch {
+    return null // the chips are an annotation: a failed read draws none, never an error card
+  }
+  if (r === undefined || r.status !== 'ok' || r.data.status !== 'ok' || r.data.content === null || r.data.truncated) return null
+  return verdictTriage(r.data.content)
+}
+
+/**
+ * The triage the review's verdict file holds, indexed as the gate recorded
+ * its findings (`api.verdictTriage`); null until read, or when the file is
+ * not readable or holds no findings list. Read once per review and file.
+ */
+export function useVerdictTriage(reviewTaskId: string | null, file: string | null): (FindingTriage | null)[] | null {
+  return useVerdictTriages(reviewTaskId === null ? [] : [{ review: reviewTaskId, file }]).get(reviewTaskId ?? '') ?? null
+}
+
+/** `useVerdictTriage` for several reviews at once, by review task id: one read of each file. */
+export function useVerdictTriages(
+  reviews: readonly { review: string; file: string | null }[],
+): ReadonlyMap<string, (FindingTriage | null)[]> {
+  const asked = Array.from(new Map(reviews.map((r) => [r.review, r.file ?? 'verdict.json'])).entries())
+  const key = asked.map(([id, name]) => `${id}:${name}`).join(',')
+  const { state } = useRead<[string, (FindingTriage | null)[]][]>(
+    async () => {
+      if (asked.length === 0) return { status: 'empty', fetchedAt: Date.now() }
+      const read = await Promise.all(asked.map(async ([id, name]) => [id, await readTriage(id, name)] as const))
+      const found = read.flatMap(([id, t]): [string, (FindingTriage | null)[]][] => (t === null ? [] : [[id, t]]))
+      return found.length === 0 ? { status: 'empty', fetchedAt: Date.now() } : { status: 'ok', data: found, fetchedAt: Date.now() }
+    },
+    key === '' ? 'none' : key,
+    '',
+    null,
+  )
+  return new Map(state.status === 'ok' ? state.data : [])
+}
+
 function FindingItem({ f }: { f: Finding }) {
   return (
     <li className="dc-finding">
       {f.file !== null && <code className="dc-file">{f.file}</code>} <span>{f.problem}</span>
+      {f.triage !== null && (
+        <>
+          {' '}
+          <TriageChip triage={f.triage} />
+        </>
+      )}
       {f.fix !== null && (
         <span className="dc-fix">
           <span className="dc-k">fix</span> {f.fix}
@@ -210,8 +290,9 @@ function FindingItem({ f }: { f: Finding }) {
 }
 
 /** The review's findings by severity, with the count line; a dash with its reason when none were recorded. */
-function Findings({ gate, empty }: { gate: GateDecision; empty: string }) {
-  const findings = gate.findings
+function Findings({ gate, empty, review }: { gate: GateDecision; empty: string; review: string | null }) {
+  const triage = useVerdictTriage(gate.findings !== null && gate.findings.length > 0 ? review : null, gate.file)
+  const findings = gate.findings === null ? null : withVerdictTriage(gate.findings, triage)
   if (findings === null) {
     return (
       <p className="dt-note">
@@ -252,7 +333,7 @@ function Weighed({ gate }: { gate: GateDecision }) {
   return (
     <div className="dc-part" data-testid="decision-findings">
       <span className="dc-h">What the review weighed</span>
-      <Findings gate={gate} empty="The review recorded no findings." />
+      <Findings gate={gate} review={gate.reviewTaskId} empty="The review recorded no findings." />
     </div>
   )
 }
@@ -505,7 +586,7 @@ function ReviewDecision({ task, readAt }: { task: Task; readAt: number | null })
             )}
           </span>
         </div>
-        {gate !== null && <Findings gate={gate} empty="This review recorded no findings." />}
+        {gate !== null && <Findings gate={gate} review={task.id} empty="This review recorded no findings." />}
       </div>
       <div className="dc-part" data-testid="decision-gated">
         <span className="dc-h">What it gated</span>

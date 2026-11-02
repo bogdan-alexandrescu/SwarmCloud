@@ -177,7 +177,9 @@ def _run_body(monkeypatch, tmp_path, *, payload: dict[str, Any], jev_key: bool =
                                           f"{backend.split('-', 1)[1]}/v1/decide")
     else:
         monkeypatch.delenv("JEV_API_URL", raising=False)
-    for name in ("SWARM_GIT", "SWARM_SEARCH"):
+    # SWARM_CHILDREN too: inherited from a SwarmCloud container, it puts the
+    # exploration note ahead of the browser lead this test reads first.
+    for name in ("SWARM_GIT", "SWARM_SEARCH", "SWARM_CHILDREN"):
         monkeypatch.delenv(name, raising=False)
     ctx = RunnerContext(
         work_dir=tmp_path / "work", artifacts_dir=tmp_path / "artifacts",
@@ -209,6 +211,7 @@ def test_the_runner_registers_the_choice_and_names_it_first(monkeypatch, tmp_pat
     assert set(seen["mcp"]) == servers
     # Playwright MCP connects with its client tag; jev's wrapper adds its own.
     assert seen["mcp"]["playwright"]["args"] == ["--cdp-endpoint", ENDPOINT + "/client/playwright",
+                                                 "--image-responses", "omit",
                                                  "--output-dir", str(tmp_path / "artifacts" / "screenshots")]
     if "jev" in servers:
         # With the key file, the launcher starts the wrapper; the config holds the

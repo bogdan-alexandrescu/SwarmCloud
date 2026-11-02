@@ -4639,6 +4639,13 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             limit=limit if isinstance(limit, int) and not isinstance(limit, bool) else None,
             page_token=args.get("page_token") or None,
         )
+        from . import runs
+
+        # The planner's flags, as the same sentences `swarm_run` answers with.
+        for row in listing.get("runs") or []:
+            advised = runs.advisory_lines(row.get("plan_advisory")) if isinstance(row, dict) else []
+            if advised:
+                row["plan_advisory_lines"] = advised
         return json.dumps(listing, indent=2, default=str)
     run_id = _text_arg(args, "run_id", name)
     if name == "swarm_run":
