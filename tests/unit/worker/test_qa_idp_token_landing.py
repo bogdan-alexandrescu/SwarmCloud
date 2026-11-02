@@ -33,8 +33,8 @@ def _target() -> gate_qt.QaTarget:
         "target_id": "qat_" + secrets.token_hex(8), "base_url": f"{ORIGIN}/home", "origins": [ORIGIN, IDP],
         "sign_in": {"kind": "own_login", "login_url": f"{IDP}/login", "signed_in_selector": "#me"},
         # Built at runtime: nothing here is a literal credential.
-        "credential": ********"username": "qa-" + secrets.token_hex(4) + "@example.com",
-                       "password": "********" + secrets.token_hex(12)},
+        "credential": {"username": "qa-" + secrets.token_hex(4) + "@example.com",
+                       "password": "pw-" + secrets.token_hex(12)},
         "idp_token_path": TOKEN_PATH,
     })
     return target
