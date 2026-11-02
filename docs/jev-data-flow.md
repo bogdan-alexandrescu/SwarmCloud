@@ -155,7 +155,7 @@ with `blockers`, `majors` and `minors`, and no finding carried `p_real`.
 `*verdict.json` and every `*verdict.json` the step wrote, takes a finding from
 any of the four lists (a string or an object, its text from `summary` or the
 briefs' `problem`), and asks about blockers before majors and minors under the
-same five-call cap, so it spends no more of the task's eight calls than before.
+same five-call cap, so it spends no more of the agent's eight calls than before.
 Each finding is sent through `shapes.j3_finding` and the client's sanitizer
 like any other; the answer goes onto it as `p_real` and nothing else in the
 file changes, `verdict` least of all. The step's summary (`jev.review`) names
