@@ -66,6 +66,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 
 from ..errors import Conflict, NotFound, UpstreamUnavailable, ValidationFailed
+from . import cards as vcards
 from . import sessions as vs
 
 log = logging.getLogger(__name__)
@@ -500,9 +501,14 @@ class VoiceStore:
     def put_card(self, *, tenant_id: str, person: str, project_id: str, card_id: str,
                  kind: str, body: dict[str, Any], session_id: str | None = None,
                  turn_id: str | None = None) -> dict[str, Any]:
-        """Write the card's next version. A body over CARD_BODY_MAX_BYTES is
-        refused here: the caller puts it in the bucket (`create_blob`) and
-        stores the key."""
+        """Write the card's next version. `body` is the writer's part of the
+        card (state, title, created_by, references, summary and the kind's
+        body); it is checked against the card catalogue (`cards.validate`)
+        here, so no card write bypasses it: an unknown kind, a field the kind
+        does not carry, a state it does not use or a credential-shaped string
+        is a 422 before anything is written. A body over CARD_BODY_MAX_BYTES
+        is refused here too: the caller puts it in the bucket (`create_blob`)
+        and stores the key."""
         self._owned(tenant_id, person, project_id)
         check_id(card_id, "vc_", "card_id")
         if not isinstance(kind, str) or not kind.strip():
@@ -510,6 +516,13 @@ class VoiceStore:
         if not isinstance(body, dict) or _json_size(body) > CARD_BODY_MAX_BYTES:
             raise ValidationFailed("a card body over 256 KiB goes to the bucket",
                                    detail={"field": "body"})
+        for name in ("card_id", "kind"):
+            if name in body:
+                raise ValidationFailed(f"body.{name}: is an argument, not a body field",
+                                       detail={"field": f"body.{name}"})
+        checked = vcards.validate({**body, "card_id": card_id, "kind": kind.strip()})
+        kind = checked["kind"]
+        body = {k: v for k, v in checked.items() if k not in ("card_id", "kind")}
         ref = self._sub_ref(project_id, CARDS, card_id)
 
         @firestore.transactional
@@ -521,7 +534,7 @@ class VoiceStore:
             now = self._now()
             doc = {
                 "tenant_id": tenant_id, "person": person, "project_id": project_id,
-                "kind": kind.strip(), "body": body, "version": int(old.get("version") or 0) + 1,
+                "kind": kind, "body": body, "version": int(old.get("version") or 0) + 1,
                 "session_id": session_id, "turn_id": turn_id,
                 "created_at": old.get("created_at") or now, "updated_at": now,
             }

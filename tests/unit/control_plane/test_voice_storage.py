@@ -15,7 +15,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api.errors import NotFound
+from swarm_api.errors import NotFound, ValidationFailed
+from swarm_api.voice import cards as vcards
 from swarm_api.voice import preferences as vprefs
 from swarm_api.voice import sessions as vs
 from swarm_api.voice import store as vstore
@@ -212,6 +213,19 @@ def test_a_blob_is_created_once_and_never_overwritten(db, blobs):
 # ---- the documents ---------------------------------------------------------
 
 
+def _card_body(question: str = "Which export?") -> dict:
+    """A proposal's writer fields, as `put_card` takes them."""
+    return {"state": "proposed", "title": "Export", "created_by": "planner",
+            "references": {name: None for name in vcards.REFERENCES},
+            "summary": "Two ways to export.",
+            "body": {"question": question, "recommendation": "CSV first",
+                     "options": [
+                         {"label": "CSV", "gets_right": "simple", "costs": "little",
+                          "recommended": True},
+                         {"label": "Parquet", "gets_right": "typed", "costs": "more",
+                          "recommended": False}]}}
+
+
 def _seed(db, blobs, project: str, session: str, *, tenant="eng", person="alice@example.com"):
     store = _store(db, blobs)
     db.collection(vs.PROJECTS).document(project).set(
@@ -219,7 +233,8 @@ def _seed(db, blobs, project: str, session: str, *, tenant="eng", person="alice@
     db.collection(vs.PROJECTS).document(project).collection(vs.SESSIONS).document(session).set(
         {"tenant_id": tenant, "person": person, "state": vs.ENDED})
     kw = dict(tenant_id=tenant, person=person, project_id=project)
-    store.put_card(**kw, card_id="vc_" + secrets.token_hex(4), kind="proposal", body={"a": 1})
+    store.put_card(**kw, card_id="vc_" + secrets.token_hex(16), kind="proposal",
+                   body=_card_body())
     store.record_turn(**kw, turn_id="vt_" + secrets.token_hex(4), fields={"state": "done"})
     store.append_event(**kw, session_id=session, event={"type": "card"})
     store.append_event(**kw, session_id=session, event={"type": "caption"})
@@ -246,10 +261,36 @@ def test_a_cards_version_counts_up(db, blobs):
     store = _seed(db, blobs, project, session)
     kw = dict(tenant_id="eng", person="alice@example.com", project_id=project)
 
-    store.put_card(**kw, card_id="vc_same", kind="diagram", body={"v": 1})
-    card = store.put_card(**kw, card_id="vc_same", kind="diagram", body={"v": 2})
+    card_id = "vc_" + secrets.token_hex(16)
+    store.put_card(**kw, card_id=card_id, kind="proposal", body=_card_body("One?"))
+    card = store.put_card(**kw, card_id=card_id, kind="proposal", body=_card_body("Two?"))
 
-    assert card["version"] == 2 and card["body"] == {"v": 2}
+    assert card["version"] == 2 and card["body"]["body"]["question"] == "Two?"
+
+
+def test_put_card_validates_every_write_against_the_catalogue(db, blobs):
+    project, session = "vp_" + "d" * 32, "vs_" + "d" * 32
+    store = _seed(db, blobs, project, session)
+    kw = dict(tenant_id="eng", person="alice@example.com", project_id=project)
+    card_id = "vc_" + secrets.token_hex(16)
+    before = {path for path in db.docs if f"/{vstore.CARDS}/" in path}
+    fake = "sk-" + secrets.token_hex(24)
+
+    refusals = (
+        ("banner", _card_body(), "kind"),
+        ("proposal", {**_card_body(), "state": "acting"}, "state"),
+        ("proposal", {**_card_body(), "tenant_id": "research"}, "tenant_id"),
+        ("proposal", {**_card_body(), "kind": "diagram"}, "body.kind"),
+        ("proposal", _card_body(f"use {fake}"), "body.question"),
+        ("proposal", {"a": 1}, "a"),
+    )
+    for kind, body, field in refusals:
+        with pytest.raises(ValidationFailed) as refused:
+            store.put_card(**kw, card_id=card_id, kind=kind, body=body)
+        assert refused.value.detail == {"field": field}
+        assert fake not in str(refused.value)
+
+    assert {path for path in db.docs if f"/{vstore.CARDS}/" in path} == before
 
 
 def test_a_retried_turn_keeps_the_actions_it_recorded(db, blobs):

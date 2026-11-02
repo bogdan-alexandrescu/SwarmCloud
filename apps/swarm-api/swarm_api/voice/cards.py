@@ -6,7 +6,9 @@ ONE SCHEMA, THREE READERS.
   * swarm-api validates every card write against it (`validate`, and
     `write_card`, which stores the card and its stream event): an unknown kind,
     a field the kind does not carry, or a state the kind does not use is a 422
-    before anything is written.
+    before anything is written. `voice.store.VoiceStore.put_card`, the one
+    place a card document is written, calls `validate` itself, so no card
+    write bypasses the catalogue.
   * The planner reads it as strict tool schemas, one `draw_<kind>` tool a kind
     (`tool_schemas`), from `GET /v1/voice/cards/schema` (routes/voice.py).
   * The console names the same kinds, fields, states and actions in
@@ -498,7 +500,8 @@ def write_card(store: Any, *, tenant_id: str, person: str, project_id: str,
     """Validate, store the card's next version, and append its `card.upsert`
     to the session's stream when it belongs to one. `store` is a
     `voice.store.VoiceStore`; the tenant and the person are the caller's,
-    resolved by the route, never a field of the card."""
+    resolved by the route, never a field of the card. `put_card` validates
+    the card again as it stores it; this first check picks the card id."""
     checked = validate(card)
     card_id = checked["card_id"] or "vc_" + secrets.token_hex(16)
     doc = store.put_card(
