@@ -363,7 +363,28 @@ const TALK_MIC_ON_GLASS: Exemption = {
     f.detail.endsWith('on rgb(198 199 200)'),
 }
 
-const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE, TALK_MIC_ON_GLASS]
+/**
+ * THE TALK PANE'S CARDS ON GLASS, the same artefact one layer deeper. A
+ * `.vt-card > .c-card` is `--vt-glass` (`--surface` at 70%) over the card
+ * area's `--vt-glass-dim` (`--surface` at 52%) over the pane's opaque `--bg`
+ * (styles/talk-pane.css), so the drawn ground in the light pass is about
+ * #fdfeff: the card's `--vt-glass-line` hairline, rgb(168 198 218), is about
+ * 1.64:1 on it, over the 1.15 floor, and an `Open …` button's boundary,
+ * rgb(125 142 163), about 3.3:1. The probe, compositing each glass's alpha
+ * twice, measures greys rgb(186 187 188) and rgb(181 181 181). Keyed on those
+ * measured grounds so a real finding on a card or a button elsewhere still
+ * fails.
+ */
+const TALK_CARDS_ON_GLASS: Exemption = {
+  name: 'talk cards on glass',
+  why: "the probe composites the cards' nested color-mix(--surface, transparent) glass twice; the drawn hairline is about 1.64:1, the buttons' boundary about 3.3:1",
+  matches: (f) =>
+    f.kind === 'divider-under-floor' &&
+    ((f.where === 'section.c-card' && f.detail.endsWith('on rgb(186 187 188)')) ||
+      (f.where === 'a.c-btn.is-sm' && f.detail.endsWith('on rgb(181 181 181)'))),
+}
+
+const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE, TALK_MIC_ON_GLASS, TALK_CARDS_ON_GLASS]
 
 function lines(r: Report): string[] {
   return r.findings

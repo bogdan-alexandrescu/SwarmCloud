@@ -1,5 +1,5 @@
-/* VOICE IT, TALK: the presence direction (docs/design/voice-it.md §11), phase
-   one. Every colour is a console token; glow and glass are those tokens mixed
+/* VOICE IT, TALK: the presence direction (docs/design/voice-it.md §11), phases
+   one and two. Every colour is a console token; glow and glass are those tokens mixed
    with transparency, never a new hue, so both themes hold. Depth is blur,
    glow and scale only: nothing is 3D. The glass, its line and the ring's size
    are `--vt-*` tokens on `:root` in styles.css, the shell's, as every section
@@ -82,12 +82,43 @@
 .vt-mic-state { font-size: var(--t-meta); color: var(--text-dim); }
 .vt-mic-group .c-btn[aria-pressed="true"] { touch-action: none; }
 
-/* ---- the card area: empty until phase two -------------------------------- */
+/* ---- the card area -------------------------------------------------------- */
 .vt-cards { grid-area: cards; min-width: 0; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px;
   border: 1px dashed var(--vt-glass-line); border-radius: var(--r-card); background: var(--vt-glass-dim); }
 .vt-cards > p { margin: 0; }
 .vt-cards-h { font-size: var(--t-meta); color: var(--text-dim); }
 .vt-cards-none { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
+
+/* ---- the cards (phase two): panels of glass around the ring --------------- */
+/* The cards keep the console's own components (Card, Chip, Tag, UsageBar,
+   .c-tbl); these rules only seat them in the pane. Each card is a glass
+   panel in arrival order, the newest last; a card waiting on BGD carries the
+   paused line on its left edge, a failed one the bad line, as the
+   heads-up edge marks a problem. */
+.vt-card-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 10px;
+  align-items: start; min-width: 0; }
+.vt-card-list > .c-hint, .vt-card-list > .vt-cards-none { grid-column: 1 / -1; margin: 0; }
+.vt-card { min-width: 0; }
+.vt-card > .c-card { border-color: var(--vt-glass-line); background: var(--vt-glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.vt-card[data-state="waiting"] > .c-card { border-left: 3px solid var(--paused); }
+.vt-card[data-state="failed"] > .c-card { border-left: 3px solid var(--bad); }
+.vt-card-tags { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.vt-card p { margin: 0; }
+.vt-card-summary { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.vt-card-text { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); overflow-wrap: anywhere; }
+.vt-card-answer { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.vt-card-refs, .vt-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.vt-card-facts { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); }
+.vt-card-facts dt { color: var(--text-dim); }
+.vt-card-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.vt-card-lanes, .vt-card-waves { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); }
+.vt-card-waves > li { display: flex; flex-direction: column; gap: 4px; }
+.vt-card-territory { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.vt-card-territory code { padding: 0 4px; border-radius: var(--r-card); background: var(--vt-glass-dim); overflow-wrap: anywhere; }
+.vt-card-lines { min-width: 0; overflow-x: auto; }
 
 /* The agent's voice plays from this element; nothing of it is drawn. */
 .vt-voice { display: none; }
@@ -103,4 +134,6 @@
   .vt-mic { position: sticky; bottom: 8px; z-index: 2; }
   .vt-mic-group { flex-wrap: nowrap; gap: 6px; padding: 5px 6px; background: color-mix(in srgb, var(--surface) 88%, transparent); }
   .vt-mic-state { display: none; }
+  .vt-cards { padding: 8px 10px; }
+  .vt-card-list { grid-template-columns: minmax(0, 1fr); gap: 8px; }
 }
