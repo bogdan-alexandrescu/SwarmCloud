@@ -608,6 +608,28 @@ class TestCapacityView:
         capacity = dict(self.CAPACITY, pools=[bare])
         assert "not reported" in text(render_capacity(capacity, WIDE))
 
+    def test_the_pool_table_shows_the_applied_limit_beside_the_ceiling_and_why(self):
+        # #3047: a cap of 7 against a ceiling of 40 says which input holds it.
+        lowered = pool(
+            "provider:anthropic:tenant:acme", limit=40, active=7,
+            adaptive_target=7, effective_limit=7, available=0,
+            lowered_by=[{"input": "adaptive_target", "value": 7, "set_at": iso()}],
+        )
+        capacity = dict(self.CAPACITY, pools=[pool("global", limit=100, active=10), lowered])
+        lines = render_capacity(capacity, WIDE)
+        assert "CEILING" in text(lines)
+        row = next(line for line in lines if "provider:anthropic:tenant:acme" in line)
+        assert "7/7" in row and "40 adaptive" in row
+        plain = next(line for line in lines if line.strip().startswith("global"))
+        assert "10/100" in plain and "adaptive" not in plain
+
+    def test_an_api_without_lowered_by_still_names_the_input(self):
+        quota = pool("provider:anthropic", limit=40, active=0, quota_derived_limit=0,
+                     effective_limit=0, available=0)
+        row = next(line for line in render_capacity(dict(self.CAPACITY, pools=[quota]), WIDE)
+                   if "provider:anthropic" in line)
+        assert "40 quota" in row
+
     def test_unreadable_capacity_prints_no_ceilings(self):
         out = text(render_capacity(None, WIDE, error="connection refused"))
         assert "connection refused" in out

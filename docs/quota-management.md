@@ -490,6 +490,36 @@ original state on every exit path.
 
 ## 7. What to look at when it misbehaves
 
+**Every refusal on a limit says which value it applied, and why (#3047).** On
+24 October 2026 admission refused up to 48 steps on the provider concurrency
+limit while 6 or 7 agents ran against a configured ceiling of 40, and nothing
+recorded the limit applied: the adaptive target and the quota-derived limit are
+current values only, so "about 7" had to be inferred from the agents running.
+Now the scheduler writes, on each refused agent's `blocked_by` entry, the
+limit's name (`limit_name`, the pool), the value admission applied (`applied`,
+the transaction's own `effective_limit`), the configured ceiling (`ceiling`,
+the pool's `hard_limit`), the units in use (`in_use`), and, when `applied` is
+below `ceiling`, `lowered_by`: each input that holds it there (`adaptive_target`,
+`quota_derived_limit`, or `override` for a target an admin set after the last
+rate limit) with its value and what dates it: `set_at` is the override's audit
+instant when an override still holds the value, else the 429 that last cut the
+target (`last_rate_limited_at`), and `set_by` says which. It is never the quota
+document's `updated_at`: the broker rewrites that on every success and refresh,
+so for a target that has held 7 for hours it reads minutes ago; it is kept
+apart as `quota_written_at`. The broker records no "target last changed"
+instant, so a target the +1-per-successes step has raised since the cut is
+still dated by the cut.
+The ceiling and inputs are read just after the refusal, outside the admission
+transaction, so recording them cannot change who is admitted. The `drain
+finished` log line sums the same per limit (`limits`: refusals, the lowest
+value applied, the most units in use, the ceiling and what lowered it), so a
+busy period can be read back from Cloud Logging. Capacity › Pools draws the
+applied value with `/ceiling` beside it, its title naming the input and when it
+was set; `sc capacity` prints a CEILING column (`40 adaptive`). Note that AIMD
+clamps to the quota document's `configured_hard_max` (default 50), not to the
+pool's `hard_limit`: three tenant-scoped 429s take a target 50 -> 25 -> 12 ->
+6, and one more slot needs `AIMD_SUCCESS_THRESHOLD` (20) successful agents.
+
 | Symptom | Likely cause | Check |
 |---|---|---|
 | Agents park on their first drain after submit | tenant has no key for the profile's provider, and no pool account can run the profile for it | `park_reason: CREDENTIAL_MISSING`; the `parked` event's `detail.account_pool` says which condition in section 4 failed; `scripts/create-secrets.sh --list` |
