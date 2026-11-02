@@ -7,13 +7,14 @@
  * WHAT EACH PANE DRAWS TODAY, AND WHY NOTHING MORE. Talk is the Talk pane
  * (Talk.tsx, §3.10): its start control asks swarm-api's session routes for a
  * session, and while swarm-voice is not deployed here swarm-api refuses it and
- * the pane shows that refusal as served. Projects and Preferences are phase
- * four's (§3.11): a control nothing answers would be a stub, so each says
- * plainly what it will hold and when, and offers no control.
+ * the pane shows that refusal as served. Projects (Projects.tsx) and
+ * Preferences (Preferences.tsx) are §3.11's panes over swarm-api's projects
+ * and preferences routes: the saved projects to resume, rename or delete, and
+ * the standing preferences with Undo beside the ChatGPT sign-in.
  *
  * ONLY TALK LISTENS, AND ONLY WHEN ASKED. Nothing asks for the microphone
  * until the person presses Start talking; Projects and Preferences open no
- * connection and read no secret.
+ * call and read no secret's value.
  */
 import { useEffect, useState, type ReactNode } from 'react'
 
@@ -21,7 +22,8 @@ import { loadMe } from '../api'
 import { PageHead } from '../Shell'
 import { Absent } from '../primitives'
 import type { Me } from '../types'
-import { VoicePreferences } from './Preferences'
+import { VoicePreferences, VoiceStandingPreferences } from './Preferences'
+import { VoiceProjects } from './Projects'
 import { TalkPane } from './Talk'
 
 /**
@@ -98,9 +100,7 @@ export function VoiceProjectsScreen() {
     <>
       <PageHead title="Projects" />
       <Gate>
-        <Absent kind="zero" heading="Projects arrive in phase four" say="Saved projects arrive in phase four">
-          Each talk will be kept here as a project you can name, reopen and pick up where it stopped.
-        </Absent>
+        <VoiceProjects />
       </Gate>
     </>
   )
@@ -112,6 +112,7 @@ export function VoicePreferencesScreen() {
     <>
       <PageHead title="Preferences" />
       <Gate>
+        <VoiceStandingPreferences />
         <VoicePreferences />
       </Gate>
     </>
