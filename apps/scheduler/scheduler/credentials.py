@@ -33,12 +33,15 @@ read from the two components that act on it:
     reason. `quota_broker.accounts.accounts_serving` states this, and the
     broker's assign route calls the same function.
   * ONLY ITS OWN PROVIDER. Same function.
-  * ONLY A PROFILE THAT TAKES A SUBSCRIPTION TOKEN. An account is a Claude
-    subscription. Its token fills CLAUDE_CODE_OAUTH_TOKEN and nothing else, and
-    the worker does not ask the pool for a profile whose `secrets` omit that
-    name (`lifecycle._account_for`). `claude-code` declares it. `browser`
-    declares ANTHROPIC_API_KEY only, so no account can run it, however many a
-    tenant is lent.
+  * ONLY A PROFILE THAT TAKES A SUBSCRIPTION TOKEN. An anthropic account is a
+    Claude subscription. Its token fills CLAUDE_CODE_OAUTH_TOKEN and nothing
+    else; an openai account is a ChatGPT plan, whose access token and account
+    id fill CODEX_PLAN_ACCESS_TOKEN and CODEX_PLAN_ACCOUNT_ID (contract request
+    130). The worker does not ask the pool for a profile whose `secrets` omit
+    its provider's names (`lifecycle._account_for`, `ACCOUNT_ENVS`).
+    `claude-code` and `codex` declare them. `browser` declares
+    ANTHROPIC_API_KEY only, so no account can run it, however many a tenant is
+    lent.
   * ONLY ON A DEPLOYMENT WITH A BROKER. With no QUOTA_BROKER_URL no worker is
     told where the pool is (`dispatch.worker_env`).
   * ONLY A STEP OF A MODEL CLASS IT SERVES (owner decision R5, 2026-10-17).
@@ -189,6 +192,28 @@ from .secret_slots import MissingSlot, WorkspaceGrants
 #: asks for one home in `swarm_common.profiles`.
 SUBSCRIPTION_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 
+#: Which variables an account of each provider's pool fills: RESTATED from
+#: `agent_worker.accountlease.ACCOUNT_ENVS` for the same reason, and held to it
+#: by the same parity test. An openai account is a ChatGPT plan (contract
+#: request 130): its access token and account id, never its refresh token.
+ACCOUNT_ENVS: dict[str, tuple[str, ...]] = {
+    "anthropic": (SUBSCRIPTION_TOKEN_ENV,),
+    "openai": ("CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
+}
+
+
+def takes_pool_account(profile: Any) -> bool:
+    """Whether a profile can run on an account of its provider's pool.
+
+    The worker's `accountlease.takes_account`: the profile declares every
+    variable an account of its provider fills. `claude-code` declares
+    CLAUDE_CODE_OAUTH_TOKEN; `codex` declares the plan's two names; `browser`
+    declares only a metered key, so no account can supply it.
+    """
+    wanted = ACCOUNT_ENVS.get(getattr(profile, "provider", None) or "")
+    declared = tuple(getattr(profile, "secrets", None) or ())
+    return bool(wanted) and all(name in declared for name in wanted)
+
 
 class CredentialSource(str, Enum):
     """What a task would run on, as far as admission can tell."""
@@ -213,8 +238,9 @@ class PoolAnswer(str, Enum):
     SERVES = "serves"
     #: This deployment has no quota broker, so no worker is told of a pool.
     NO_BROKER_CONFIGURED = "no_broker_configured"
-    #: The profile does not declare SUBSCRIPTION_TOKEN_ENV, so no account can
-    #: supply its credential. The `browser` profile is one.
+    #: The profile does not declare what its provider's accounts fill
+    #: (`ACCOUNT_ENVS`), so no account can supply its credential. The
+    #: `browser` profile is one.
     PROFILE_TAKES_NO_SUBSCRIPTION = "profile_takes_no_subscription"
     #: No account of this provider is owned by or lent to the tenant. The
     #: broker's own spelling, taken from its enum rather than restated.
@@ -826,7 +852,7 @@ def _provider_answer(profile: RunnerProfile, tenant: Tenant, pool: AccountPool) 
         return CredentialAnswer(
             provider, CredentialSource.MISSING, PoolAnswer.NO_BROKER_CONFIGURED
         )
-    if SUBSCRIPTION_TOKEN_ENV not in (profile.secrets or ()):
+    if not takes_pool_account(profile):
         return CredentialAnswer(
             provider, CredentialSource.MISSING, PoolAnswer.PROFILE_TAKES_NO_SUBSCRIPTION
         )
@@ -838,6 +864,7 @@ def _provider_answer(profile: RunnerProfile, tenant: Tenant, pool: AccountPool) 
 
 
 __all__ = [
+    "ACCOUNT_ENVS",
     "SUBSCRIPTION_TOKEN_ENV",
     "AccountPool",
     "CredentialAnswer",
@@ -848,5 +875,6 @@ __all__ = [
     "credential_for",
     "forge_answer",
     "needs_user_slot",
+    "takes_pool_account",
     "task_model_class",
 ]
