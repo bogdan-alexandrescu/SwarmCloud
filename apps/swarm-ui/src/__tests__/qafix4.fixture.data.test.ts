@@ -191,7 +191,8 @@ describe('F13 (capacity-006): a disabled runtime advises a runtime a caller can 
         }
       }
     }
-    expect(advised, 'no disabled runtime advises another, so this check read nothing').toBeGreaterThan(1)
+    // Since codex became available (contract request 130), demo-vendor's 'Use demo-probe' is the one advice left.
+    expect(advised, 'no disabled runtime advises another, so this check read nothing').toBeGreaterThan(0)
   }, LONG)
 })
 

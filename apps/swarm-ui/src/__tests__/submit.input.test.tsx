@@ -404,8 +404,10 @@ describe('the send panel', () => {
     // #114: the row says whether the tenant HOLDS the key, from /v1/providers,
     // rather than only that one is needed.
     await waitFor(() => expect(facts('claude-code')).toContain('anthropic key present'), { timeout: 4000 })
-    // codex is refused, so its card names no key at all (visual QA QA-105).
-    expect(facts('codex')).not.toMatch(/key/)
+    // codex is offered since contract request 130 (owner, 2026-11-02), so its
+    // card names its key like any enabled runner's; the fixture holds no
+    // openai key.
+    expect(facts('codex')).toContain('openai key missing')
     expect(facts('mock')).toContain('no key needed')
     for (const n of ['claude-code', 'codex', 'mock']) expect(facts(n), n).not.toMatch(/needs a /)
   })
