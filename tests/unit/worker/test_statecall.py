@@ -286,3 +286,52 @@ def test_request_ids_are_what_the_routes_accept_and_never_repeat():
     ids = {statecall.new_request_id() for _ in range(50)}
     assert len(ids) == 50
     assert all(re.fullmatch(r"[a-z0-9-]{1,64}", i) for i in ids)
+
+
+#: The state ops the worker sends outside `RemoteControlPlane`: the merge
+#: slot and train, the CI-fix count, and the index run's two reads.
+_MODULE_OPS = {
+    "mergeslot.py": {"merge-slot"},
+    "mergetrain.py": {"merge-train"},
+    "inputs.py": {"ci-fix-tasks", "upstream"},
+    "indexrun.py": {"context", "repository"},
+}
+
+
+def _worker_ops() -> set[str]:
+    import re
+    from pathlib import Path
+
+    import agent_worker
+
+    root = Path(agent_worker.__file__).parent
+    control = (root / "control.py").read_text()
+    ops = set(re.findall(r'self\._(?:post|get)\(\s*"([a-z][a-z-]*)"', control))
+    for name, expected in _MODULE_OPS.items():
+        text = (root / name).read_text()
+        for op in expected:
+            assert re.search(rf'\.(?:post|get)\(\s*"{op}"', text), (name, op)
+        ops |= expected
+    return ops | {"open"}
+
+
+def test_swarm_api_serves_every_state_route_the_worker_calls():
+    # #3041: a worker must never call a state route the API it talks to lacks.
+    # In one commit, every op the worker sends is a route swarm-api serves, by
+    # method, so the API carries a route no later than the worker that uses it.
+    from swarm_api.routes import attemptstate
+
+    prefix = attemptstate.PREFIX + "/"
+    served = {
+        (method, route.path[len(prefix):])
+        for route in attemptstate.router.routes
+        if route.path.startswith(prefix)
+        for method in route.methods
+    }
+    gets = {"poll", "upstream", "context", "repository"}
+    ops = _worker_ops()
+
+    assert {"heartbeat", "poll", "transition", "finish", "park"} <= ops
+    missing = sorted(op for op in ops
+                     if ("GET" if op in gets else "POST", op) not in served)
+    assert missing == []
