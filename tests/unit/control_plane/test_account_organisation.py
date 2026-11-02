@@ -59,6 +59,7 @@ from quota_broker.oauth import (
     organisation_identity,
     read_organisation,
     refresh,
+    seat_identity,
 )
 
 from .conftest import auth_header
@@ -402,8 +403,8 @@ def test_two_accounts_on_one_organisation_are_both_flagged_on_refresh(broker):
     assert listed["team"]["duplicate_of"] == "eng:saga-personal"
     assert listed["team"]["can_take_new_agent"] is False
     assert {"duplicate_of": "eng:saga-personal",
-            "reason": "registered on the same organisation as eng:saga-personal"} in listed[
-        "team"]["blocked_by"]
+            "reason": "registered on the same organisation and seat as eng:saga-personal",
+            "matched_on": "organisation_and_seat"} in listed["team"]["blocked_by"]
     assert listed["saga-personal"]["duplicate_of"] == "eng:team"
 
     # choose() offers only the older registration, however the headroom reads.
@@ -423,7 +424,7 @@ def test_two_accounts_on_one_organisation_are_both_flagged_on_refresh(broker):
     assert {a.duplicate_of for a in store.list()} == {None}
 
 
-def _acct(label, *, org=None, registered=None, holds=0, observed=NOW, windows=True,
+def _acct(label, *, org=None, seat=None, registered=None, holds=0, observed=NOW, windows=True,
           max_agents=6) -> Account:
     return Account(
         account_id=account_id_for(ENG, label),
@@ -440,21 +441,24 @@ def _acct(label, *, org=None, registered=None, holds=0, observed=NOW, windows=Tr
                     for i in range(holds)),
         assigned=holds,
         organisation_id=org,
+        seat_id=seat,
         registered_at=registered,
         max_agents=max_agents,
     )
 
 
 def test_choose_hands_out_only_the_older_of_a_pair_the_sweep_has_not_marked_yet():
-    shared = organisation_identity(_org_id())
-    older = _acct("saga-personal", org=shared, registered=NOW - timedelta(days=9), holds=2)
-    newer = _acct("team", org=shared, registered=NOW - timedelta(hours=1))
+    # One organisation AND one seat, both recorded (#2282, #3046).
+    shared, seat = organisation_identity(_org_id()), seat_identity(_org_id())
+    older = _acct("saga-personal", org=shared, seat=seat, registered=NOW - timedelta(days=9),
+                  holds=2)
+    newer = _acct("team", org=shared, seat=seat, registered=NOW - timedelta(hours=1))
     # The newer has more room by every measure; only the pair rule skips it.
     assert choose([older, newer], ENG, NOW).label == "saga-personal"
     assert duplicates([older, newer]) == {
         "eng:saga-personal": ("eng:team", False), "eng:team": ("eng:saga-personal", True)}
     # A document registered before `registered_at` existed is the older one.
-    legacy = _acct("legacy", org=shared, registered=None)
+    legacy = _acct("legacy", org=shared, seat=seat, registered=None)
     assert duplicates([newer, legacy])["eng:legacy"] == ("eng:team", False)
 
 
@@ -625,8 +629,8 @@ def test_the_listing_names_a_duplicate_only_to_its_own_tenant(broker_app, broker
         "this subscription is already registered in another workspace")
     assert theirs["can_take_new_agent"] is False
     assert {"duplicate_of": None,
-            "reason": "this subscription is already registered in another workspace"} in theirs[
-        "blocked_by"]
+            "reason": "this subscription is already registered in another workspace",
+            "matched_on": "organisation_and_seat"} in theirs["blocked_by"]
     _foreign_free(research.text, "mine", "eng:", organisation_identity(org_id), org_id)
 
     # And the other way round: eng learns nothing of research's account either.

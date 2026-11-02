@@ -248,13 +248,14 @@ def test_the_new_fields_come_last_so_no_positional_construction_moves():
     # Contract request 131 (#2688) appends `timeout_seconds_asked` after
     # `platform_refusals`.
     # Contract request 132 appends `attempt_totals` and `current_account`.
+    # Contract request 133 appends `max_turns` to both classes.
     # MUTATION: inserting it before `budget` moves budget's position and
     # turns this red.
-    assert [f.name for f in fields(Task)][-6:] == [
+    assert [f.name for f in fields(Task)][-7:] == [
         "model_class", "budget", "platform_refusals", "timeout_seconds_asked",
-        "attempt_totals", "current_account",
+        "attempt_totals", "current_account", "max_turns",
     ]
-    assert [f.name for f in fields(WorkflowStep)][-2:] == ["model_class", "budget"]
+    assert [f.name for f in fields(WorkflowStep)][-3:] == ["model_class", "budget", "max_turns"]
     # RS-4 (contract request 111) appends the sized_* record after `model`;
     # `model` keeps its position and only RS-4's six fields follow it.
     # MUTATION: inserting an RS-4 field before `model`, or any other field
@@ -270,4 +271,6 @@ def test_the_new_fields_come_last_so_no_positional_construction_moves():
         "sized_live_split",
     ]
     names = [f.name for f in fields(profiles.RunnerProfile)]
-    assert names[-2:] == ["model_classes", "default_model_class"]
+    # Contract request 133 appends `supports_max_turns` and `max_turns`.
+    assert names[-4:] == ["model_classes", "default_model_class",
+                          "supports_max_turns", "max_turns"]

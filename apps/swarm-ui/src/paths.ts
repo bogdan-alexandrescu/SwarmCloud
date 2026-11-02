@@ -277,6 +277,8 @@ export const FIXED: Readonly<Record<string, string>> = {
   // ACCOUNT-HEALTH-PAGE (part of #2302): Capacity › Account health.
   'capacity/account-health': '/capacity/account-health',
   'capacity/quota': '/capacity/accounts/quota',
+  // JEV-USAGE-PAGE (part of #2688): Capacity › Jev usage.
+  'capacity/jev-usage': '/capacity/jev-usage',
   // NAV-FOOT (#1672): API reads, Capacity's last page. It was `/api-reads`
   // at the spine's foot; that path and `/reference` still land here.
   'capacity/api-reads': '/capacity/api-reads',

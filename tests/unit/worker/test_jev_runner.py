@@ -346,7 +346,7 @@ def test_internal_jev_with_no_key_registers_jev_and_writes_no_key_file(monkeypat
     jev = servers["jev"]
     # The wrapper itself, started directly: no launcher, no key, no env block
     # (it reads the CLI's environment, which carries the backend and URL).
-    assert jev == {"type": "stdio", "command": str(jev_bin), "args": []}
+    assert jev == {"type": "stdio", "command": str(jev_bin), "args": [], "alwaysLoad": True}
     assert "TYPESAFE_API_KEY" not in json.dumps(jev)
     assert seen["prompt"].count(claude_code.BROWSER_TOOL_STRENGTH_JEV_INTERNAL) == 1
     assert claude_code.BROWSER_TOOL_STRENGTH["jev"] not in seen["prompt"]

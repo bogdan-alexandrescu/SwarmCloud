@@ -36,7 +36,7 @@ from starlette.concurrency import run_in_threadpool
 from swarm_common.models import Attempt, Task
 from swarm_common.states import TaskState
 
-from .. import agent_questions, roles
+from .. import agent_questions, mergewake, roles
 from ..agent_output import AgentOutputService
 from ..attempt_totals import IN_LIMIT as ATTEMPTS_IN_LIMIT
 from ..attempt_totals import PER_TASK_CAP as ATTEMPTS_PER_TASK_CAP
@@ -1538,6 +1538,9 @@ def answer_question(
     return agent_questions.answer_question(
         ctx.store, service, ctx.db, tenant_id, task_id, body,
         submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=ctx.now(),
+        # A pick other than the one a merge went past starts a pick-fix
+        # round against the default branch, as the answering member.
+        start_pick_fix=lambda merge, claim: mergewake.advisory_pick_fix(ctx, auth, merge, claim),
     )
 
 

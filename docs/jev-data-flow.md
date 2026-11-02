@@ -143,10 +143,24 @@ records are the authority on what was sent.
   secret names, never their values) and the ledger, or nothing when Jev is
   off. After the agent it settles the ledger into `jev_usage`
   (`judge.attempt.settle`).
-* **Not the agent, today.** `register.register_jev_tool` (the agent's
-  `jev_decide` MCP tool, §5.1's owner override) exists but no runner calls it
-  (§5.6, "Not built here"). When it is wired, the tool process is the agent's
-  child and runs the same client, sanitizer and ledger.
+* **The agent's `jev_decide` tool, on claude-code steps** (§5.1's owner
+  override; wired by lane AGENTS-USE-TOOLS on 2026-11-02, when the owner chose
+  that agents must use the tools switched on for them). The claude-code runner
+  registers `swarm-jev` only when the worker handed it `SWARM_JUDGE_CONFIG`,
+  that is, only for a workspace opted in to Jev judgments under the signed
+  setting and the step's `jev_judgments` switch; the entry is
+  `register.server_entry` over the worker's own config, so the tool's calls
+  go through the same `JudgeClient`, sanitizer (every rule above) and ledger
+  as J1-J5 and count against the same per-agent and monthly budget. The entry
+  carries Claude Code's `alwaysLoad`, so the tool is in the prompt from the
+  session's start, and the prompt has one line saying when to ask it. The
+  tool process is the agent's child, running as the agent's user: on the
+  TypeSafe backend it reads the key from the file the config names
+  (`private/jev-key`, or the shim's local token on GKE), exactly as the lane
+  hooks reach theirs, the residual the owner accepted; the key is never in the
+  MCP config, the prompt, a log or the summary. Its calls are counted in the
+  attempt's `result_summary.runner.metrics.tool_calls` as `jev_decision`.
+  Codex steps do not register it.
 * **Never swarm-api.** swarm-api reads `plan-advisory.json` (the J2/J5
   result) and never holds a Jev client.
 
@@ -165,6 +179,30 @@ file changes, `verdict` least of all. The step's summary (`jev.review`) names
 how many findings each file had and how many were scored, and names every file
 it could not read, which is left byte for byte. One failed call still leaves
 every file as the review wrote it.
+
+**What a person can see of it (lane JEV-USAGE-PAGE, 2026-11-02).** The owner
+chose that day to build a Jev usage and cost page, because no one could see
+how many calls, tokens or dollars Jev used and its price was recorded
+nowhere. swarm-api's `GET /v1/jev-usage` (`swarm_api.jevusage`, drawn by the
+console's Capacity › Jev usage) sums the selected workspace's `jev_usage`
+attempt rows per UTC day and kind over 30 days, with the month's total
+against `code_intelligence.jev_monthly_cap_tokens`. It reads counts only --
+calls, input and output tokens, and outcomes (`ok`, `failed`,
+`skipped:<reason>`) -- so nothing this record forbids sending can reach the
+page: every query filters on `tenant_id` and a row filed under another
+tenant is dropped again in code (per-tenant isolation), and the task id, the
+generation and any field not counted never leave swarm-api. Dollars come from
+the platform setting `jev_token_rates` (USD per million tokens, in and out),
+which has no default: until a platform admin sets it the page says "rate not
+set" and prints no figure, never $0. **The gap:** the worker's attempt rows
+carry `calls` and `input_tokens` only, so today every call is shown as
+"not split by kind", on the day of the row's last write, with its outcomes
+"not recorded" (null, never 0 ok and 0 failed; the 30-day total counts those
+calls as `unrecorded`) and no output tokens; the read sums `settled_at` and the per-kind split
+(`by_kind: {kind: {calls, input_tokens, output_tokens, outcomes}}`) once the
+worker's settle writes them from its ledger's audit rows, a change asked of
+the owner in that lane's PR. The quality gates' jev-belay and jev-enforce
+hooks and the Jev browser record nothing in `jev_usage` yet.
 
 ## Which key
 

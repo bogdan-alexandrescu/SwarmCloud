@@ -549,6 +549,24 @@ silently cut. That follows graphmcp's "never a silent truncation".
 same server through `-c mcp_servers.swarm-graph.*`, as `codex.py` registers
 `swarm-git`.
 
+**Loaded up front, and asked first (built, lane AGENTS-USE-TOOLS, 2026-11-02).**
+The first experiment batch (2 November 2026, eight workflows, 56 steps) had
+`swarm-graph` connected in all 42 steps with code intelligence on, and no
+agent called it: Claude Code deferred its tools behind tool search, and
+nothing told the agent they existed or when to use them, so one build step
+made 97 shell calls, mostly searches. Since then, on claude-code and
+claude-code-browser steps with the graph registered, the `swarm-graph` entry
+in the `--mcp-config` carries Claude Code's per-server `alwaysLoad: true`
+("all tools from this server are always included in the prompt and never
+deferred behind tool search"), and the prompt carries one line
+(`claude_code.GRAPH_FIRST_NOTE`): the graph answers callers, definitions and
+what a change touches better than a text search, so use it first for those.
+A step with code intelligence off gets neither. Whether the agent then used
+it is in the attempt's `result_summary.runner.metrics.tool_calls`
+(`families.code_graph`, beside `jev_browser`, `playwright`, `jev_decision`,
+`built_in` and `other_mcp`), counted from the session's stream, so an
+experiment reads it without parsing transcripts.
+
 **The tools the brief names, against the KG4 tools.** No aliases, because the
 schema budget is under 2k tokens:
 

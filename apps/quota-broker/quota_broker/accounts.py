@@ -159,6 +159,7 @@ MAX_AGENTS_BEFORE_READING = 1
 #: resets ONE SECOND apart. A reset is an absolute instant the provider keeps
 #: per subscription, so two subscriptions agree on it only by coincidence;
 #: five seconds allows for the provider's own rounding and nothing more.
+#: It FLAGS a possible duplicate and never withholds one (#3046).
 IDENTICAL_RESET_SKEW = timedelta(seconds=5)
 
 #: How close a window's `resets_at` must be to a recorded 429's reset to be the
@@ -625,8 +626,8 @@ class Account:
     registered_at: datetime | None = None
 
     #: Another account registered on the same SUBSCRIPTION (#2222) -- the same
-    #: organisation and seat, or with no seat recorded the same readings
-    #: (#2282, `duplicates`) -- or None.
+    #: recorded organisation and seat (#2282, #3046, `duplicates`), never a
+    #: reading -- or None.
     #: Both of a pair carry it, each naming the other side; `duplicate_withheld`
     #: is True on the newer one, which `choose()` never hands out -- one
     #: subscription is one account's worth of agents, however many labels it
@@ -1462,71 +1463,104 @@ def _registration_order(account: Account) -> tuple[int, datetime, str]:
     )
 
 
-def one_subscription(a: Account, b: Account) -> bool:
-    """Whether two accounts on ONE organisation are one subscription (#2282).
+#: WHICH IDENTITY A DUPLICATE MATCHED ON (#3046): its KIND, never its value.
+#: The park's `accounts` block and the account listing carry it beside the
+#: reason, so a reader can tell a proven pair from a resemblance. The only
+#: kind there is: the provider's organisation AND seat, both recorded.
+DUPLICATE_MATCHED_ON = "organisation_and_seat"
 
-    ONE SUBSCRIPTION IS ONE SEAT (BGD, 2026-10-25). On a Claude Team
-    organisation every seat has its own limits; on 2026-10-25 four seats of
-    one Team organisation read 59-61% of their week beside the kept one's 97%
-    and were withheld as its duplicates, with 104 tasks queued. So: two
-    recorded seats decide -- the same seat is one subscription whatever the
-    readings say, two seats are two whatever they say. Where either seat is
-    not recorded yet (every account added before #2282, until its next
-    refresh) only identical readings pair them (`readings_identical`, DUP-1's
-    fallback): readings that differ are proof of two quotas.
+#: The reason a withheld duplicate carries, before the other side's name.
+DUPLICATE_REASON = "registered on the same organisation and seat as"
+
+
+def subscription_identity(a: Account) -> tuple[str, str, str] | None:
+    """The identity the provider reports for an account's subscription, or None.
+
+    THE ORGANISATION AND THE SEAT, BOTH RECORDED (#2222, #2282, #3046): the
+    opaque digests of what the provider's own token or profile answer named
+    (`oauth.Organisation`), stable for as long as the sign-in is. None when
+    either is not recorded yet -- every account added before #2282, until its
+    next refresh -- and an account with None is in no pair.
     """
-    seat_a, seat_b = getattr(a, "seat_id", None), getattr(b, "seat_id", None)
-    if seat_a and seat_b:
-        return seat_a == seat_b
-    return readings_identical(a, b)
+    org = getattr(a, "organisation_id", None)
+    seat = getattr(a, "seat_id", None)
+    if not org or not seat:
+        return None
+    return (a.provider, org, seat)
+
+
+def one_subscription(a: Account, b: Account) -> bool:
+    """Whether two accounts are one subscription (#2282, #3046).
+
+    ONLY THE PROVIDER'S IDENTITY DECIDES: the same organisation AND the same
+    seat, both recorded on both. On the night of 24 to 25 October 2026 the
+    organisation alone withheld eng:aieng-claude1, eng:saga-team,
+    eng:ai-eng-3 and eng:devops-main as duplicates of ai-eng-2 (97% of its
+    week) -- four seats of one Team organisation, each with its own limits,
+    two of which ran 15 agents each a few hours later. #2282 added the seat
+    but paired an account whose seat was not recorded by IDENTICAL READINGS;
+    a usage reading is not an identity (BGD, 2026-11-02). So an account
+    whose identity is unknown is never one subscription with another:
+    `identical_reading_pairs` still flags it, and that flag is advisory.
+    """
+    mine = subscription_identity(a)
+    return mine is not None and mine == subscription_identity(b)
 
 
 def duplicates(accounts: Iterable[Account]) -> dict[str, tuple[str, bool]]:
     """Every account sharing a subscription with another: `(other, withheld)`.
 
-    A SUBSCRIPTION IS AN ORGANISATION AND A SEAT (#2222, #2282), whatever the
-    labels or owners: two accounts on one organisation are a pair only when
-    `one_subscription` says so. Of a pair the OLDEST registration is kept: it
-    names the first newer one and is not withheld. Every newer one names the
-    kept one it pairs with and is withheld, so `choose()` hands the
-    subscription out once. An account with no recorded organisation is in no
-    pair here (absence is not sameness; `identical_reading_pairs` flags it).
-    An account in no pair is absent from the answer.
+    A SUBSCRIPTION IS AN ORGANISATION AND A SEAT, BOTH RECORDED (#2222,
+    #2282, #3046; `subscription_identity`), whatever the labels, owners,
+    loans or readings. Of a pair the OLDEST registration is kept: it names the
+    first newer one and is not withheld. Every newer one names the kept one
+    and is withheld, so `choose()` hands the subscription out once. An account
+    with no recorded organisation or seat is in no pair here (absence is not
+    sameness; `identical_reading_pairs` flags it). An account in no pair is
+    absent from the answer.
     """
-    groups: dict[tuple[str, str], list[Account]] = {}
+    groups: dict[tuple[str, str, str], list[Account]] = {}
     for a in accounts:
-        identity = getattr(a, "organisation_id", None)
-        if identity:
-            groups.setdefault((a.provider, identity), []).append(a)
+        identity = subscription_identity(a)
+        if identity is not None:
+            groups.setdefault(identity, []).append(a)
     out: dict[str, tuple[str, bool]] = {}
     for group in groups.values():
         if len(group) < 2:
             continue
-        # Compared with EVERY older account, withheld ones too, and withheld
-        # against the kept account at the root of the chain: a seatless K
-        # paired with B (seat s1) by its readings, and a later C on seat s1,
-        # are one subscription however C's readings compare with K's.
-        seen: list[Account] = []
-        root: dict[str, str] = {}
-        for a in sorted(group, key=_registration_order):
-            older = next((k for k in seen if one_subscription(k, a)), None)
-            seen.append(a)
-            if older is None:
-                continue
-            kept = root.get(older.account_id, older.account_id)
-            root[a.account_id] = kept
-            out[a.account_id] = (kept, True)
-            out.setdefault(kept, (a.account_id, False))
+        kept, *newer = sorted(group, key=_registration_order)
+        out[kept.account_id] = (newer[0].account_id, False)
+        for a in newer:
+            out[a.account_id] = (kept.account_id, True)
     return out
+
+
+def withheld_mark(account: Account, listed: dict[str, Account] | None = None) -> bool:
+    """Whether a STORED `duplicate_withheld` mark still withholds `account` (#3046).
+
+    The sweep (`main.mark_duplicates`) rewrites the marks, but a mark written
+    under an older rule outlives it until that sweep runs. So a mark counts
+    only on an account whose identity is recorded (`subscription_identity`),
+    and, when the side it names is in `listed`, only while the two are still
+    one subscription. A mark whose other side is not listed still counts: a
+    borrower's list may not hold the owner's other registration.
+    """
+    if getattr(account, "duplicate_withheld", False) is not True:
+        return False
+    if subscription_identity(account) is None:
+        return False
+    other = (listed or {}).get(getattr(account, "duplicate_of", None) or "")
+    return other is None or one_subscription(account, other)
 
 
 def _withheld(accounts: list[Account]) -> set[str]:
     """Accounts `choose()` must not hand out because an older registration of
-    the same subscription (`duplicates`) is the one in use: the stored mark,
-    or a pair in this very list that the sweep has not marked yet. A stored
-    mark whose pair no longer holds is cleared by the broker's next sweep
-    (`main.mark_duplicates`), which is also what the hold transaction reads."""
-    marked = {a.account_id for a in accounts if getattr(a, "duplicate_withheld", False) is True}
+    the same subscription (`duplicates`) is the one in use: a stored mark that
+    still holds (`withheld_mark`), or a pair in this very list that the sweep
+    has not marked yet. The broker's next sweep (`main.mark_duplicates`)
+    clears a stored mark whose pair no longer holds."""
+    listed = {a.account_id: a for a in accounts}
+    marked = {a.account_id for a in accounts if withheld_mark(a, listed)}
     return marked | {i for i, (_, held) in duplicates(accounts).items() if held}
 
 
@@ -1554,17 +1588,25 @@ def readings_identical(a: Account, b: Account, *, skew: timedelta = IDENTICAL_RE
     return True
 
 
+def _identities_decide(a: Account, b: Account) -> bool:
+    """Whether recorded identities already say if two accounts are one subscription."""
+    if a.organisation_id and b.organisation_id and a.organisation_id != b.organisation_id:
+        return True
+    return subscription_identity(a) is not None and subscription_identity(b) is not None
+
+
 def identical_reading_pairs(
     accounts: Iterable[Account],
 ) -> dict[str, tuple[IdenticalReadings | None, str | None]]:
     """Every account's next identical-readings count and possible duplicate.
 
     THE FALLBACK FOR A MISSING ORGANISATION (#2222, `IDENTICAL_RESET_SKEW`).
-    Two accounts of one provider are compared only when they do not BOTH
-    carry a recorded organisation: two recorded organisations are decided by
-    `duplicates` (the same organisation and seat, or with a seat unrecorded
-    the same readings, #2282), and a recorded organisation that differs
-    always wins over figures that coincide.
+    Two accounts of one provider are compared only when their recorded
+    identities do not already decide them: two recorded organisations that
+    differ are two subscriptions whatever the figures, and two recorded
+    organisations AND seats are decided by `duplicates`. Everything else --
+    an organisation or a seat not recorded on either side -- is compared
+    here, and only ever FLAGGED (#3046): a reading is not an identity.
 
     A count goes up only when BOTH sides carry a reading newer than the ones
     it was last counted on, so a pass that sees the same readings again, or a
@@ -1583,7 +1625,7 @@ def identical_reading_pairs(
             for b in accounts
             if b.account_id != a.account_id
             and b.provider == a.provider
-            and not (a.organisation_id and b.organisation_id)
+            and not _identities_decide(a, b)
             and readings_identical(a, b)
         ]
         if not partners:
@@ -1651,8 +1693,8 @@ def choose(
     however much headroom it has (owner decision R5).
 
     A DUPLICATE IS HANDED OUT ONCE (#2222): of two accounts on one
-    subscription -- one organisation and one seat (#2282) -- only the older
-    registration is a candidate (`duplicates`).
+    subscription -- one recorded organisation and one recorded seat (#2282,
+    #3046) -- only the older registration is a candidate (`duplicates`).
     AND A NEVER-MEASURED ACCOUNT TAKES ONE AGENT (`awaits_first_reading`):
     it is skipped while it holds one and has no reading, and is an ordinary
     candidate from its first reading on.
@@ -1912,7 +1954,11 @@ __all__ = [
     "choose",
     "due_for_refresh",
     "duplicates",
+    "DUPLICATE_MATCHED_ON",
+    "DUPLICATE_REASON",
     "one_subscription",
+    "subscription_identity",
+    "withheld_mark",
     "eligibility",
     "holds_from_firestore",
     "identical_reading_pairs",

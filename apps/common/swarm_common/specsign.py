@@ -52,10 +52,14 @@ from typing import Any, Mapping
 #: 6 is contract request 120 (BUDGET-CAP, #2459), accepted by the owner
 #: 2026-10-26: format 5's fields plus `budget`, so a task whose resolved
 #: budget was raised or removed fails its worker's check.
-SPEC_FORMAT = 6
+#:
+#: 7 is contract request 133 (CONTRACT-MAXTURNS, part of #2524), accepted by
+#: the owner 2 November 2026: format 6's fields plus `max_turns`, so a task
+#: whose resolved turn cap was raised or removed fails its worker's check.
+SPEC_FORMAT = 7
 
 #: Every format a verifier accepts, oldest first.
-SPEC_FORMATS = (1, 2, 3, 4, 5, 6)
+SPEC_FORMATS = (1, 2, 3, 4, 5, 6, 7)
 
 #: The fields format 2 adds to format 1's projection.
 _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
@@ -83,12 +87,18 @@ _FORMAT_5_FIELDS = ("model_class",)
 #: to a task signed without it must fail verification.
 _FORMAT_6_FIELDS = ("budget",)
 
+#: The fields format 7 adds to format 6's projection (contract request 133).
+#: Formats 1-6 do not cover them, so a document at any of those that sets one
+#: (non-None) is not canonical: the worker passes the cap to the agent CLI, so
+#: adding one to a task signed without it must fail verification.
+_FORMAT_7_FIELDS = ("max_turns",)
+
 #: The top-level fields every writer stores as integers (`Task`'s types).
 #: JCS gives 3600 and 3600.0 the same bytes, so without this a rewrite of one
 #: to the other keeps the signature valid. Checked at every format: it removes
 #: a canonical form from a value no signer writes, and changes the bytes of
 #: none that has one, so it is not a new format (contract request 58).
-_INTEGER_FIELDS = ("timeout_seconds", "max_attempts")
+_INTEGER_FIELDS = ("timeout_seconds", "max_attempts", "max_turns")
 
 
 def signing_format(doc: Mapping[str, Any]) -> int:
@@ -129,7 +139,14 @@ def signing_format(doc: Mapping[str, Any]) -> int:
     at it, and swarm-api stores one only when the step or its workspace sets
     one, so a workspace that sets nothing keeps the format and the bytes it
     had before format 6.
+
+    Format 7 too (contract request 133): only a task with a turn cap is
+    signed at it, and swarm-api stores one only when the step or its profile
+    sets one, so a task without a cap keeps the format and the bytes it had
+    before format 7.
     """
+    if any(doc.get(key) is not None for key in _FORMAT_7_FIELDS):
+        return 7
     if any(doc.get(key) is not None for key in _FORMAT_6_FIELDS):
         return 6
     if any(doc.get(key) is not None for key in _FORMAT_5_FIELDS):
@@ -188,7 +205,8 @@ def canonical_step_spec(
     set `additional_repositories` at formats 1-3; at format 4 the list is
     projected as stored, in submission order, and the order is in the bytes.
     And for a set `model_class` at formats 1-4 (contract request 104), and a
-    set `budget` at formats 1-5 (contract request 120).
+    set `budget` at formats 1-5 (contract request 120), and a set `max_turns`
+    at formats 1-6 (contract request 133).
     """
     if spec_format not in SPEC_FORMATS or isinstance(spec_format, bool):
         raise SpecNotCanonical(f"spec format {spec_format!r} is not one of {SPEC_FORMATS}")
@@ -211,6 +229,10 @@ def canonical_step_spec(
                 raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
     if spec_format < 6:
         for key in _FORMAT_6_FIELDS:
+            if doc.get(key) is not None:
+                raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
+    if spec_format < 7:
+        for key in _FORMAT_7_FIELDS:
             if doc.get(key) is not None:
                 raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
     for key in _INTEGER_FIELDS:
@@ -251,6 +273,9 @@ def canonical_step_spec(
             spec[key] = doc.get(key)
     if spec_format >= 6:
         for key in _FORMAT_6_FIELDS:
+            spec[key] = doc.get(key)
+    if spec_format >= 7:
+        for key in _FORMAT_7_FIELDS:
             spec[key] = doc.get(key)
     return jcs(spec)
 
