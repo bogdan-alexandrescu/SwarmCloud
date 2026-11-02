@@ -726,7 +726,7 @@ do not change.
 | a worker on the old path after the role is removed | `PermissionDenied` on its first read; the attempt fails retryably. Phase 3 removes the role only after `STATE_VIA_API_TENANTS` covers every tenant. |
 
 **Why a bare 404 is an outage, and a named one is not (#3041).** On
-2026-11-02 a running task failed about 80 seconds into its agent's run on
+2026-11-02 a running agent failed about 80 seconds into its run on
 `swarm-api refused the state call (404 http_404):` while a release rolled
 out. No state route changed in that window: the worker had called the same
 routes since 2026-10-23, and every swarm-api revision served them. The
