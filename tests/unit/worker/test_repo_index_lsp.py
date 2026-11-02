@@ -664,14 +664,14 @@ def test_an_incremental_run_on_a_base_that_covered_nothing_asks_every_file(
         total_budget_seconds=3.0))
     assert facts["kind"] == "incremental" and facts["changes"]["affected"] == ["src/a.py"]
     python = _language(facts, "python")
-    # MUTATION: take the run's own `ok` from the turn that asked a.py and
+    # MUTATION: take the run's own `ok` from the affected file alone and
     # this reads `ok` with z.py uncovered.
     assert python["status"] == "partial", python["reason"]
     assert python["fallback"] == "ast"
     rows = _file_rows(facts)
     assert rows["src/a.py"]["lsp"] is True and rows["src/z.py"]["lsp"] is False
-    # What the second turn finished before its share ran out depends on the
-    # clock; that a.py counts and z.py does not, does not.
+    # What the pass finished after a.py before its total ran out depends on
+    # the clock; that a.py counts and z.py does not, does not.
     assert 1 <= python["files_covered"] < 4
     # With the time to finish, the same run covers every file and says so.
     whole = tool.extract(repo, tool.Budget(), base=base, lsp=_options(
@@ -1334,9 +1334,12 @@ def test_an_incremental_run_asks_the_never_covered_files_after_the_affected_ones
     assert facts["kind"] == "incremental" and facts["changes"]["affected"] == ["src/z.py"]
     # MUTATION: ask only the affected files (the old incremental run) and
     # a.py, which no server has finished, is never asked again.
-    # MUTATION: ask both sets in one pass and the driver's path order puts
-    # a.py before the change: z.py must come first.
+    # MUTATION: drop `first_paths` from the pass's options and the driver's
+    # path order puts a.py before the change: z.py must come first.
     assert _definition_files(tmp_path) == ["src/z.py", "src/a.py"]
+    # One pass, owner 2026-11-02: the server is started once, not once for
+    # the affected files and again for the never-covered ones.
+    assert len(_asked(_log(tmp_path), "initialize")) == 1
     rows = _file_rows(facts)
     assert rows["src/a.py"]["lsp"] is True and rows["src/z.py"]["lsp"] is True
     # c.py is covered and unchanged: not asked, and its base answer kept.
@@ -1413,7 +1416,10 @@ def test_a_base_answered_by_another_server_version_is_not_carried(
     carry = facts["extractor"]["lsp_carry"]
     # MUTATION: carry a covered file whatever server answered it and c.py
     # keeps an answer from a server this run does not run.
-    assert "src/c.py" in _definition_files(tmp_path)
+    # The version is learnt at initialize, so the same session asks the
+    # change first and then every file the old server answered.
+    assert _definition_files(tmp_path) == ["src/a.py", "src/c.py", "src/z.py"]
+    assert len(_asked(_log(tmp_path), "initialize")) == 1
     assert carry["carried_files"] == 0
     assert carry["not_carried"] == {"python": "the base's answers are fake 1.0.0's; this run's "
                                               "server is fake 2.0.0"}
@@ -1421,10 +1427,10 @@ def test_a_base_answered_by_another_server_version_is_not_carried(
     assert _language(facts, "python")["status"] == "ok"
 
 
-def test_a_language_no_turn_would_ask_still_learns_its_server_version(
+def test_a_language_with_nothing_to_ask_still_learns_its_server_version(
         tool: Any, lsp: Any, tmp_path: Path) -> None:
-    # Every file covered, a commit that touches no Python file: neither turn
-    # has a file to ask, so without a version check a server upgrade never
+    # Every file covered, a commit that touches no Python file: the pass
+    # has no file to ask, so without a version check a server upgrade never
     # reached the language and its files kept the old server's answers.
     repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
     base = _covered_base(tool, lsp, tmp_path, repo, uncovered="", version="1.0.0")
@@ -1433,7 +1439,7 @@ def test_a_language_no_turn_would_ask_still_learns_its_server_version(
         lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS,
                                    "server_info": {"name": "fake-lsp", "version": "2.0.0"}})))
     carry = facts["extractor"]["lsp_carry"]
-    # MUTATION: check the version only in the turns that ask files, and
+    # MUTATION: start only the servers with a file to ask, and
     # all five files are carried from fake 1.0.0 with nothing asked.
     assert (carry["carried_files"], carry["asked_files"]) == (0, 5)
     assert carry["not_carried"] == {"python": "the base's answers are fake 1.0.0's; this run's "
@@ -1444,7 +1450,7 @@ def test_a_language_no_turn_would_ask_still_learns_its_server_version(
     assert all(_file_rows(facts)[p]["lsp"] for p in CARRY_APP)
 
 
-def test_a_language_no_turn_would_ask_keeps_its_answers_from_the_same_server_version(
+def test_a_language_with_nothing_to_ask_keeps_its_answers_from_the_same_server_version(
         tool: Any, lsp: Any, tmp_path: Path) -> None:
     repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
     base = _covered_base(tool, lsp, tmp_path, repo, uncovered="", version="1.0.0")
@@ -1456,7 +1462,45 @@ def test_a_language_no_turn_would_ask_keeps_its_answers_from_the_same_server_ver
     # The server is started to learn its version, and asked nothing.
     assert (carry["carried_files"], carry["asked_files"], carry["not_carried"]) == (5, 0, {})
     assert _definition_files(tmp_path) == []
-    assert _asked(_log(tmp_path), "initialize")
+    assert len(_asked(_log(tmp_path), "initialize")) == 1
+    # MUTATION: run phase 2 over the opened files whether or not phase 1
+    # asked one, and a version check costs every workspace query.
+    assert _asked(_log(tmp_path), "textDocument/prepareCallHierarchy") == []
+    assert _asked(_log(tmp_path), "textDocument/references") == []
     python = _language(facts, "python")
     assert (python["status"], python["lsp"]["server_version"]) == ("ok", "1.0.0")
     assert _edge(facts, "src/c.py#third", "src/b.py#helper")["evidence"] == "lsp"
+
+
+def test_the_driver_asks_only_the_asked_files_the_first_ones_first(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # The driver's half of the one pass (owner 2026-11-02): `asked_paths`
+    # restricts phase 1, `first_paths` leads it, and the files a previous
+    # server answered join it only when this run's server is another one.
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    facts = tool.extract(repo, tool.Budget())
+    files = {path: "python" for path in CARRY_APP}
+    callers = {"src/a.py": "first", "src/c.py": "third", "src/z.py": "late"}
+    sites = [lsp.Site("python", path, f"{path}#{caller}", "helper", 5, "call", imported=True)
+             for path, caller in callers.items()]
+    options = _options(lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS}),
+                       asked_paths=frozenset({"src/a.py", "src/z.py"}),
+                       first_paths=frozenset({"src/z.py"}),
+                       answered={"python": lsp.Answered("fake", "1.0.0", frozenset({"src/c.py"}))})
+    result = lsp.run_pass(repo, files, facts["symbols"], sites, options)
+    # MUTATION: ignore `answered` and c.py, answered by a server this run
+    # does not run (the fake reports 0.0.1), is never asked.
+    # MUTATION: ignore `first_paths` and a.py is asked before z.py.
+    assert _definition_files(tmp_path) == ["src/z.py", "src/a.py", "src/c.py"]
+    assert result.languages["python"].covered == frozenset({"src/a.py", "src/c.py", "src/z.py"})
+    assert len(_asked(_log(tmp_path), "initialize")) == 1
+
+
+def test_a_previous_answer_stands_only_for_the_same_server_at_a_reported_version(lsp: Any) -> None:
+    answered = lsp.Answered("pyright", "1.1.400")
+    assert lsp.answers_kept(answered, "pyright", "1.1.400")
+    assert not lsp.answers_kept(answered, "pyright", "1.1.401")
+    assert not lsp.answers_kept(answered, "basedpyright", "1.1.400")
+    # MUTATION: compare the pair alone and an unreported version matches itself.
+    assert not lsp.answers_kept(lsp.Answered("pyright", "unknown"), "pyright", "unknown")
+    assert not lsp.answers_kept(answered, "pyright", None)

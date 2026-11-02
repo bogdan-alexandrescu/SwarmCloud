@@ -144,6 +144,20 @@ Neither is counted in a cut's "N of M files (K of S sites)", nor in the
 sites `measured_cost` scales a cut server's grant by: they are not work
 the server was given.
 
+THE FILES ASKED (part of #2991, owner 2026-11-02). A run built on a base
+asks a server only about some files (`LspOptions.asked_paths`): the ones a
+change affected and the ones no server has answered yet. The server is still
+given the whole workspace, so a definition can land in any file. Phase 1
+asks `first_paths` first -- the affected files, which have no earlier
+answer to fall back on -- and the rest in path order, all in one session,
+so a server is started once and its workspace loaded once. The files a
+previous run's server answered (`LspOptions.answered`) are asked too when
+this run's server is not that server at that version (`answers_kept`): the
+version is learnt at initialize, before phase 1, so the order is decided
+then. A server with no file to ask is still started, to learn its version,
+and asks nothing in either phase; with a file to ask, phase 2 covers every
+file it opens, as an unrestricted run's does.
+
 THE ENVIRONMENT. A server reads the checkout, which is untrusted input, so
 it gets a minimal environment built here -- PATH, a throwaway HOME and
 caches, the locale and the spec's own variables -- and none of the
@@ -357,6 +371,33 @@ class LspOptions:
     max_consecutive_timeouts: int = MAX_CONSECUTIVE_TIMEOUTS
     #: Gitignore-style globs of the files no server opens (module doc, "less work").
     excluded_paths: tuple[str, ...] = LSP_EXCLUDED_PATHS
+    #: The files whose sites phase 1 asks; None: every file (module doc,
+    #: "the files asked"). The others stay in the server's workspace.
+    asked_paths: frozenset[str] | None = None
+    #: Asked before the rest, which follow in path order.
+    first_paths: frozenset[str] = frozenset()
+    #: By language: the files a previous run's server answered, asked too
+    #: unless this run's server is the same one at the same version.
+    answered: Mapping[str, "Answered"] | None = None
+
+
+@dataclass(frozen=True)
+class Answered:
+    """The files of one language a previous run's server answered (`LspOptions.answered`)."""
+
+    server: str | None
+    version: str | None
+    paths: frozenset[str] = frozenset()
+
+
+def answers_kept(answered: Answered, server: str | None, version: str | None) -> bool:
+    """Whether a previous run's answers stand for this run's `server` at `version`.
+
+    Only the same server at the same reported version: an unreported version
+    ("unknown") matches nothing, since an upgrade could hide behind it.
+    """
+    return (server is not None and version not in (None, "unknown")
+            and (answered.server, answered.version) == (server, version))
 
 
 @dataclass(frozen=True)
@@ -716,8 +757,12 @@ class _ServerRun:
         self._hierarchy = self._hierarchy and bool(capabilities.get("callHierarchyProvider"))
         self._references = self._references and bool(capabilities.get("referencesProvider"))
         client.notify("initialized", {})
-        paths = []
-        for path in sorted(self.files):
+        # The files phase 1 asks (module doc, "the files asked"), now that
+        # the server's version is known: `first_paths`, then path order.
+        wanted = self._wanted()
+        first = self.options.first_paths
+        opened = []
+        for path in sorted(self.files, key=lambda p: (p not in first, p)):
             if self.files[path] not in self.languages:
                 continue
             language_id = self.spec.language_ids.get(posixpath.splitext(path)[1])
@@ -728,7 +773,9 @@ class _ServerRun:
                 self.counts["files_excluded"] += 1
                 self.counts["sites_excluded"] += len(self.sites_by_path.get(path, []))
                 continue
-            paths.append((path, language_id))
+            opened.append((path, language_id))
+        paths = [(path, language_id) for path, language_id in opened
+                 if wanted is None or path in wanted]
         # Only the sites an answer could become an edge at are asked.
         asked: dict[str, list[Site]] = {}
         for path, _ in paths:
@@ -757,8 +804,10 @@ class _ServerRun:
         # rather than a hung server, and the budget running out here cuts
         # this phase only: phase 1's edges are complete and are kept, and
         # the row's reason says how many symbols were asked.
+        # A server asked no file asks no workspace query either: it was
+        # started only to learn its version.
         todo = []
-        for path, language_id in paths:
+        for path, language_id in opened if paths else []:
             own = self.symbols_by_path.get(path, [])
             symbols = [s for s in own if self._hierarchy and s["kind"] in CALLABLE_KINDS and s["exported"]]
             symbols += [s for s in own if self._references and s["kind"] in self.spec.reference_kinds]
@@ -789,6 +838,17 @@ class _ServerRun:
             self.counts["symbols_skipped"] = total - asked
             self.reason = (f"call hierarchy and references cut at their {_seconds(share)}-second share "
                            f"of the {_seconds(self.budget)}-second budget: {asked} of {total} symbols asked")
+
+    def _wanted(self) -> set[str] | None:
+        """The files phase 1 asks; None: every file (module doc, "the files asked")."""
+        if self.options.asked_paths is None:
+            return None
+        wanted = set(self.options.asked_paths)
+        for language, answered in (self.options.answered or {}).items():
+            if language in self.languages and not answers_kept(answered, self.spec.name,
+                                                                self.server_version):
+                wanted |= answered.paths
+        return wanted
 
     def _external(self, site: Site) -> bool:
         """No answer about `site` could be kept: its name is no repository symbol's

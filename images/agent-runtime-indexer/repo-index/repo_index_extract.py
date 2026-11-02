@@ -1462,15 +1462,16 @@ def _list_paths(root: Path, in_git: bool) -> list[str]:
 # about 3,400 s to cover SwarmCloud's 2,334 Python files, more than any run
 # gives it, so every run used to reach the same quarter and stop. A run built
 # on a base now asks the servers, after the affected files, about every file
-# the base has no answer for (`files[].lsp` false), in a second turn of the
-# pass with what the first left of the total (`_lsp_turns`): the affected
-# files first, because the driver asks a turn's files in path order and an
-# affected file has no base answer to fall back on. A covered file that did
-# not change and is not affected keeps its base answer and is not asked, so
-# the coverage grows run by run until every file is answered. A language
-# whose server reports another version than the base's keeps none of the
-# base's answers: its covered files join the second turn when the first turn
-# met the new server, and are uncovered otherwise (`not_carried`).
+# the base has no answer for (`files[].lsp` false), in the same pass
+# (`_lsp_on_base`): the driver asks the affected files first
+# (`LspOptions.first_paths`), because an affected file has no base answer to
+# fall back on, and the rest in path order, each server started once. A
+# covered file that did not change and is not affected keeps its base answer
+# and is not asked, so the coverage grows run by run until every file is
+# answered. A language whose server reports another version than the base's
+# keeps none of the base's answers: the driver learns the version at
+# initialize and asks its covered files after the affected ones
+# (`LspOptions.answered`), and the language's row says why (`not_carried`).
 #
 # A FULL RUN GIVEN A BASE (`--base-lsp-only`, the weekly run, #2991) is the
 # same for the servers and full for everything else: the tree-sitter half is
@@ -1675,150 +1676,70 @@ def _base_servers(base_graph: Any) -> dict[str, tuple[Any, Any]]:
     return found
 
 
-def _status_rank(status: str) -> int:
-    return STATUS_ORDER.index(status) if status in STATUS_ORDER else len(STATUS_ORDER)
-
-
-def _merged_counts(parts: list[dict]) -> dict:
-    """One server's counts over the turns it ran in: sums, the peak, the last version."""
-    merged: dict[str, Any] = {}
-    for counts in parts:
-        for key, value in counts.items():
-            before = merged.get(key)
-            if key == "server_version":
-                merged[key] = value if value is not None else before
-            elif key == "peak_rss_mib" and isinstance(value, (int, float)):
-                merged[key] = max(value, before) if isinstance(before, (int, float)) else value
-            elif (isinstance(value, (int, float)) and not isinstance(value, bool)
-                  and isinstance(before, (int, float)) and not isinstance(before, bool)):
-                merged[key] = round(before + value, 1) if isinstance(value, float) or \
-                    isinstance(before, float) else before + value
-            else:
-                merged[key] = value
-    return merged
-
-
-def _merged_turns(turns: list[tuple[set[str], Any]], total: float) -> Any:
-    """The turns' results as one pass: each turn's coverage of the files it asked.
-
-    A turn is given every file of its languages, so the server can resolve a
-    definition anywhere, but asked only its own files' sites; a file with no
-    site asked in a turn is "covered" by it vacuously, so a turn's coverage
-    counts only the files it asked. A language in two turns takes the worse
-    status, `partial` rather than `timed_out` when a turn answered files.
-    """
-    if not turns:
-        return None
-    languages: dict[str, Any] = {}
-    for language in sorted({lang for _, result in turns for lang in result.languages}):
-        parts = [(paths, result.languages[language]) for paths, result in turns
-                 if language in result.languages]
-        covered = frozenset().union(*(res.covered & paths for paths, res in parts))
-        if len(parts) == 1:
-            languages[language] = lsp_pass.LanguageResult(
-                parts[0][1].status, parts[0][1].reason, parts[0][1].server,
-                dict(parts[0][1].counts), covered)
-            continue
-        worst = max((res for _, res in parts), key=lambda res: _status_rank(res.status))
-        status = worst.status
-        if status == lsp_pass.STATUS_TIMED_OUT and covered:
-            status = lsp_pass.STATUS_PARTIAL
-        server = worst.server or next((res.server for _, res in parts if res.server), None)
-        languages[language] = lsp_pass.LanguageResult(
-            status, worst.reason, server, _merged_counts([res.counts for _, res in parts]),
-            covered)
-    first = turns[0][1]
-    servers: dict[str, str] = {}
-    for _, result in turns:
-        servers.update(result.servers)
-    return lsp_pass.PassResult(
-        edges=[edge for _, result in turns for edge in result.edges], languages=languages,
-        servers=servers, request_timeout_seconds=first.request_timeout_seconds,
-        server_budget_seconds=first.server_budget_seconds, total_budget_seconds=total,
-        memory_limit_mib=first.memory_limit_mib, server_costs=dict(first.server_costs),
-        excluded_paths=first.excluded_paths)
-
-
-#: A second turn with less than this left of the pass's total is not started.
-LSP_TURN_MIN_SECONDS = 1.0
-
-
-def _lsp_turns(root: Path, lsp_files: dict[str, str], symbols: list[dict], sites: list,
-               options: "lsp_pass.LspOptions", affected: set[str], carried: set[str],
-               base_graph: Any) -> tuple[Any, set[str], set[str], dict[str, str]]:
+def _lsp_on_base(root: Path, lsp_files: dict[str, str], symbols: list[dict], sites: list,
+                 options: "lsp_pass.LspOptions", affected: set[str], carried: set[str],
+                 base_graph: Any) -> tuple[Any, set[str], set[str], dict[str, str]]:
     """The LSP pass of a run built on a base: (result, asked, carried, not_carried).
 
-    Turn one asks the affected files; turn two, with what is left of the
-    total, every other file the base has no answer for (module comment
-    "THE NEVER-COVERED FILES"). A language whose server reports another
-    version than the base recorded keeps none of the base's answers.
+    One pass asks the affected files first, then every other file the base
+    has no answer for (module comment "THE NEVER-COVERED FILES"), each
+    server started once. A language whose server reports another version
+    than the base recorded keeps none of the base's answers: the driver
+    learns the version at initialize and asks those files too, in path
+    order after the affected ones (`lsp_pass.Answered`).
 
-    A language with carried files that neither turn would start (nothing
-    affected, nothing never-covered) has its server started between them
-    with nothing to ask, only to learn its version: without it a server
+    A language with carried files and nothing to ask still has its server
+    started, asked nothing, only to learn its version: without it a server
     upgrade never reached a stable language, whose files kept the old
-    server's answers until one changed. On a mismatch its files are asked
-    in turn two; with no time left to learn the version, none is carried.
+    server's answers until one changed. When the total runs out before a
+    server's version is learnt, none of its languages' answers is carried.
     """
-    total = float(options.total_budget_seconds
-                  or lsp_pass.total_budget_seconds(len(lsp_files)))
-    deadline = time.monotonic() + total
     servers = lsp_pass.SERVERS if options.servers is None else options.servers
     served = {lang for spec in servers.values() for lang in spec.languages}
     before = _base_servers(base_graph)
     carried = set(carried)
-    not_carried: dict[str, str] = {}
-    turns: list[tuple[set[str], Any]] = []
-    asked: set[str] = set()
-
-    def run(paths: set[str], probe: set[str] | None = None) -> None:
-        # `probe`: start these languages' servers, ask them nothing.
-        wanted = {lsp_files[path] for path in paths} if probe is None else probe
-        result = lsp_pass.run_pass(
-            root, {path: lang for path, lang in lsp_files.items() if lang in wanted},
-            symbols if probe is None else [],
-            [site for site in sites if site.path in paths] if probe is None else [],
-            _replace(options, total_budget_seconds=max(LSP_TURN_MIN_SECONDS,
-                                                       deadline - time.monotonic())))
-        turns.append((paths, result))
-        asked.update(paths)
-        for language, answered in result.languages.items():
-            version = answered.counts.get("server_version")
-            if answered.server is None or version is None or language in not_carried:
-                continue
-            base_server, base_version = before.get(language, (None, None))
-            if (base_server, base_version) == (answered.server, version) and version != "unknown":
-                continue
-            then = (f"{base_server} {base_version}'s" if base_version
-                    else "no recorded server version's")
-            not_carried[language] = (f"the base's answers are {then}; this run's server is "
-                                     f"{answered.server} {version}")
-            carried.difference_update(p for p in list(carried) if lsp_files.get(p) == language)
-
-    def never_covered() -> set[str]:
-        return {path for path, lang in lsp_files.items()
-                if path not in asked and path not in carried and lang in served
-                and not lsp_pass.lsp_excluded(path, options.excluded_paths)}
-
     first = {path for path in affected if path in lsp_files}
-    if first:
-        run(first)
-    rest = never_covered()
-    met = {lang for _, result in turns for lang, answered in result.languages.items()
-           if answered.server is not None}
-    unchecked = ({lsp_files[path] for path in carried if path in lsp_files} & served) - met \
-        - {lsp_files[path] for path in rest}
-    if unchecked and deadline - time.monotonic() >= LSP_TURN_MIN_SECONDS:
-        run(set(), probe=unchecked)
-        rest = never_covered()
-    elif unchecked:
-        for language in sorted(unchecked):
-            not_carried[language] = ("the LSP pass's total ran out before this run's server "
-                                     "version was learnt, so the base's answers are not carried")
-            carried.difference_update(p for p in list(carried) if lsp_files.get(p) == language)
-    if rest and deadline - time.monotonic() >= LSP_TURN_MIN_SECONDS:
-        run(rest)
-    return _merged_turns(turns, total), asked, carried, not_carried
+    rest = {path for path, lang in lsp_files.items()
+            if path not in first and path not in carried and lang in served
+            and not lsp_pass.lsp_excluded(path, options.excluded_paths)}
+    answered: dict[str, Any] = {}
+    for path in carried:
+        language = lsp_files.get(path)
+        if language in served:
+            server, version = before.get(language, (None, None))
+            answered.setdefault(language, (server, version, set()))[2].add(path)
+    wanted = {lsp_files[path] for path in first | rest} | set(answered)
+    if not wanted:
+        return None, set(), carried, {}
+    result = lsp_pass.run_pass(
+        root, {path: lang for path, lang in lsp_files.items() if lang in wanted}, symbols, sites,
+        _replace(options, asked_paths=frozenset(first | rest), first_paths=frozenset(first),
+                 answered={language: lsp_pass.Answered(server, version, frozenset(paths))
+                           for language, (server, version, paths) in answered.items()}))
+    asked = first | rest
+    not_carried: dict[str, str] = {}
+    for language, (base_server, base_version, paths) in sorted(answered.items()):
+        row = result.languages.get(language)
+        server = row.server if row is not None else None
+        version = row.counts.get("server_version") if row is not None else None
+        if version is None:
+            # Never initialized: a crash keeps the base's answers, as the
+            # files it would have asked keep their `ast` edges; a total that
+            # ran out first does not, as no version was checked.
+            if row is not None and row.status == lsp_pass.STATUS_TIMED_OUT:
+                not_carried[language] = ("the LSP pass's total ran out before this run's server "
+                                         "version was learnt, so the base's answers are not carried")
+                carried -= paths
+            continue
+        if lsp_pass.answers_kept(lsp_pass.Answered(base_server, base_version), server, version):
+            continue
+        then = (f"{base_server} {base_version}'s" if base_version
+                else "no recorded server version's")
+        not_carried[language] = (f"the base's answers are {then}; this run's server is "
+                                 f"{server} {version}")
+        carried -= paths
+        asked |= paths
+    return result, asked, carried, not_carried
 
 
 def _carry_lsp_edges(edges: "_Edges", base_graph: Any, carried: set[str]) -> None:
@@ -3271,7 +3192,7 @@ def extract(root: Path, budget: Budget | None = None,
         if affected is None:
             lsp_result = lsp_pass.run_pass(root, lsp_files, symbols, sites, lsp)
         else:
-            lsp_result, asked, carried_lsp, not_carried = _lsp_turns(
+            lsp_result, asked, carried_lsp, not_carried = _lsp_on_base(
                 root, lsp_files, symbols, sites, lsp, affected, carried_lsp,
                 base.graph if base is not None else None)
         if lsp_changes is not None and base is not None:
@@ -3638,7 +3559,7 @@ def _lsp_coverage(lsp_result: Any, asked: set[str] | None, carried: set[str]) ->
     A run on no base takes the servers' `covered` (lsp/driver.py: every file
     of an `ok` language, the finished ones of a `partial` one, none of the
     rest). A run built on a base counts what its servers answered of the
-    files it `asked` (`_lsp_turns`), and keeps the base's flag for the
+    files it `asked` (`_lsp_on_base`), and keeps the base's flag for the
     files whose answers it `carried`, edges and all.
     """
     ran: set[str] = set()
