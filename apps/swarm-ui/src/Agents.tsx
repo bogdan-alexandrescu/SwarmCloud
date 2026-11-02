@@ -12,7 +12,7 @@ import { TaskIdLine } from './TaskIdLine'
 import { BrowserUseMark, browserUseOf, browserUseSay } from './BrowserUse'
 import { BudgetRowMark, budgetRowSay, budgetStopLine, stoppedAtBudgetRow, useBudgetWarning } from './AgentBudget'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, workflowHref, type AgentList, type RecentState } from './agentlist'
-import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInStates, type LiveSession, type ResourceClasses } from './api'
+import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadTask, loadTaskDigests, loadTasks, loadTasksInStates, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { pageReads, type Result } from './fetch'
 import { isLiveBrowser, liveBrowserRows, needsYou } from './Handoff'
@@ -113,12 +113,44 @@ export function browserRows(tasks: readonly Task[]): Task[] {
   return [...liveBrowserRows(tasks), ...tasks.filter((t) => t.state === 'STARTING' && isLiveBrowser(t))]
 }
 
+/** What a browser row's outline draws: its session's device, and the presets that size it. */
+type RowDevice = Pick<LiveSession, 'device' | 'presets'>
+
 /**
- * THE LIST'S READ TIME, FOR THE ROWS THAT READ ON THE LIST'S POLL (QA12-29):
- * the device outline. A context rather than a prop through every row
- * component, because one cell of one kind of row uses it.
+ * EVERY BROWSER ROW'S DEVICE, FROM ONE READ PER LIST READ (#2688,
+ * WORK-READS-SPEED). Each row read its own `GET /v1/tasks/{id}/live/session`
+ * on every list poll -- 15-20 at the same instant on the owner's list, each a
+ * transaction on the server -- for an outline. The list now reads them all in
+ * one `GET /v1/tasks/digests?include=live` (`useRowDevices`); the open
+ * viewer keeps its own session read. A context rather than a prop through
+ * every row component, because one cell of one kind of row uses it.
  */
-const ListReadAt = createContext<number | null>(null)
+const RowDevices = createContext<ReadonlyMap<string, RowDevice> | null>(null)
+
+/**
+ * The browser rows' devices, re-read with each list read (`readAt`) so an
+ * outline follows a device switch (QA12-29). The outlines drawn stay until
+ * the next read answers; a failed read keeps them.
+ */
+function useRowDevices(taskIds: readonly string[], readAt: number | null): ReadonlyMap<string, RowDevice> | null {
+  const [got, setGot] = useState<ReadonlyMap<string, RowDevice> | null>(null)
+  const key = [...taskIds].sort().join(',')
+  useEffect(() => {
+    if (key === '') return
+    let live = true
+    void loadTaskDigests(key.split(','), ['live']).then((r) => {
+      if (!live || (r.status !== 'ok' && r.status !== 'stale')) return
+      const presets = r.data.presets ?? []
+      const next = new Map<string, RowDevice>()
+      for (const d of r.data.digests) next.set(d.task_id, { device: d.live?.device ?? null, presets })
+      setGot(next)
+    })
+    return () => {
+      live = false
+    }
+  }, [key, readAt])
+  return got
+}
 
 /**
  * EACH WORKFLOW STEP'S WORKFLOW TITLE (VQ-009, BGD's visual QA 2026-10-26):
@@ -126,7 +158,7 @@ const ListReadAt = createContext<number | null>(null)
  * Overview's Running now named the same agents `<title> · implement`. The
  * list reads the titles the way Overview does (`useRowTitles`: one full read
  * per workflow, once a session, at most 12 at a time, a shared cache), so the
- * two pages name an agent one way. A context, as `ListReadAt`, because only
+ * two pages name an agent one way. A context, as `RowDevices`, because only
  * the row's name uses it. A lone agent is never read for it: reading every
  * lone row in full would be a read per row, so its title comes on the summary
  * row itself (`ownTitle`, SUMMARY-TITLE).
@@ -1054,10 +1086,12 @@ function AgentsBody({
         : `${sortWord}; press for the list’s own order, ${ownOrder}`
   // The workflow titles of the steps on screen (VQ-009, `RowTitleOf`).
   const titleOf = useRowTitles(rows.filter((t) => isStep(t) && stepWorkflowTitle(t, null) === null))
+  // The browser rows' outlines, one read for all of them (`RowDevices`).
+  const devices = useRowDevices(rows.filter((t) => t.state === 'RUNNING' && isLiveBrowser(t)).map((t) => t.id), readAt)
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
   return (
-    <ListReadAt.Provider value={readAt}>
+    <RowDevices.Provider value={devices}>
     <RowTitleOf.Provider value={titleOf}>
       {/* THE SECTION'S PAGES AS A STRIP (agents.html V1; #503 at 390): Live,
           Waiting and Recent with their counts, underlined rather than boxed.
@@ -1414,7 +1448,7 @@ function AgentsBody({
         </div>
       )}
     </RowTitleOf.Provider>
-    </ListReadAt.Provider>
+    </RowDevices.Provider>
   )
 }
 
@@ -2671,23 +2705,14 @@ export function deviceShape(session: Pick<LiveSession, 'device' | 'presets'> | n
  * RE-READ WITH THE LIST'S POLL (live-browser QA p12, QA12-29). It was read
  * once, when the row first drew, on the reasoning that the device moves only
  * when someone switches it -- and after a switch the row went on drawing the
- * old device for as long as the list was open. Still one small session read
- * per live browser row, never a socket; each list read (`ListReadAt`) brings
- * the next, and the outline drawn stays until it answers.
+ * old device for as long as the list was open. Each list read brings the
+ * next (`useRowDevices`), and the outline drawn stays until it answers.
+ *
+ * NO READ OF ITS OWN (#2688, WORK-READS-SPEED): it was one session read per
+ * row per poll; the list reads every row's device at once (`RowDevices`).
  */
 function DeviceThumb({ taskId }: { taskId: string }) {
-  const [got, setGot] = useState<{ taskId: string; session: LiveSession | null } | null>(null)
-  const polledAt = useContext(ListReadAt)
-  useEffect(() => {
-    let live = true
-    void loadLiveSession(taskId).then((r) => {
-      if (live && (r.status === 'ok' || r.status === 'stale')) setGot({ taskId, session: r.data.session ?? null })
-    })
-    return () => {
-      live = false
-    }
-  }, [taskId, polledAt])
-  const session = got !== null && got.taskId === taskId ? got.session : null
+  const session = useContext(RowDevices)?.get(taskId) ?? null
   const shape = deviceShape(session)
   const device = session?.device ?? null
   // A desktop is landscape and a phone portrait unless the session says otherwise.
