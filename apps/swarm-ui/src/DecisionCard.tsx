@@ -22,8 +22,8 @@
  */
 import type { ReactNode } from 'react'
 
-import { Dash, ToneMark } from './components'
-import { loadWorkflow, type WorkflowRead } from './api'
+import { Chip, Dash, ToneMark } from './components'
+import { VERIFY_BEFORE_ACTING, loadArtifactContent, loadWorkflow, verdictTriage, type FindingTriage, type WorkflowRead } from './api'
 import { absTime } from './AttemptTimeline'
 import {
   artifactHref,
@@ -40,6 +40,7 @@ import {
   pullRequestOf,
   runnerReportOf,
   skippedAgentOf,
+  withTriage,
   writesVerdict,
   type Finding,
   type GateDecision,
@@ -196,10 +197,71 @@ function VerdictRow({ task, gate, reviewLink }: { task: Task; gate: GateDecision
   )
 }
 
+/**
+ * JEV'S TRIAGE OF ONE FINDING, as a chip (CLD's Jev report, owner's choice
+ * 2026-11-02): "likely real" with Jev's percentage, or "verify before acting"
+ * under 0.15. Nothing when Jev did not judge the finding: an unjudged finding
+ * is not a 0%. It annotates and never grades: the verdict is the review's.
+ */
+export function TriageChip({ triage }: { triage: FindingTriage | null }) {
+  if (triage === null) return null
+  const pct = triage.pReal === null ? null : `${Math.round(triage.pReal * 100)}%`
+  if (triage.verify) {
+    return (
+      <Chip
+        tone="park"
+        className="triage-chip"
+        title={
+          pct === null
+            ? 'Jev judged this finding unlikely to be real in this diff: check it before acting on it.'
+            : `Jev judged this finding ${pct} likely to be real in this diff: check it before acting on it.`
+        }
+      >
+        {VERIFY_BEFORE_ACTING}
+      </Chip>
+    )
+  }
+  return (
+    <Chip className="triage-chip" title={`Jev judged this finding ${pct ?? ''} likely to be real in this diff.`}>
+      likely real{pct !== null && ` ${pct}`}
+    </Chip>
+  )
+}
+
+/**
+ * The triage the review's verdict file holds, indexed as the gate recorded
+ * its findings (`api.verdictTriage`); null until read, or when the file is
+ * not readable or holds no findings list. Read once per review and file.
+ */
+export function useVerdictTriage(reviewTaskId: string | null, file: string | null): (FindingTriage | null)[] | null {
+  const name = file ?? 'verdict.json'
+  const { state } = useRead<(FindingTriage | null)[]>(
+    async () => {
+      if (reviewTaskId === null) return { status: 'empty', fetchedAt: Date.now() }
+      const r = await loadArtifactContent(reviewTaskId, name)
+      if (r.status !== 'ok' || r.data.status !== 'ok' || r.data.content === null || r.data.truncated) {
+        return { status: 'empty', fetchedAt: Date.now() }
+      }
+      const triage = verdictTriage(r.data.content)
+      return triage === null ? { status: 'empty', fetchedAt: Date.now() } : { status: 'ok', data: triage, fetchedAt: Date.now() }
+    },
+    `${reviewTaskId ?? 'none'}:${name}`,
+    '',
+    null,
+  )
+  return state.status === 'ok' ? state.data : null
+}
+
 function FindingItem({ f }: { f: Finding }) {
   return (
     <li className="dc-finding">
       {f.file !== null && <code className="dc-file">{f.file}</code>} <span>{f.problem}</span>
+      {f.triage !== null && (
+        <>
+          {' '}
+          <TriageChip triage={f.triage} />
+        </>
+      )}
       {f.fix !== null && (
         <span className="dc-fix">
           <span className="dc-k">fix</span> {f.fix}
@@ -210,8 +272,9 @@ function FindingItem({ f }: { f: Finding }) {
 }
 
 /** The review's findings by severity, with the count line; a dash with its reason when none were recorded. */
-function Findings({ gate, empty }: { gate: GateDecision; empty: string }) {
-  const findings = gate.findings
+function Findings({ gate, empty, review }: { gate: GateDecision; empty: string; review: string | null }) {
+  const triage = useVerdictTriage(gate.findings !== null && gate.findings.length > 0 ? review : null, gate.file)
+  const findings = gate.findings === null ? null : withTriage(gate.findings, triage)
   if (findings === null) {
     return (
       <p className="dt-note">
@@ -252,7 +315,7 @@ function Weighed({ gate }: { gate: GateDecision }) {
   return (
     <div className="dc-part" data-testid="decision-findings">
       <span className="dc-h">What the review weighed</span>
-      <Findings gate={gate} empty="The review recorded no findings." />
+      <Findings gate={gate} review={gate.reviewTaskId} empty="The review recorded no findings." />
     </div>
   )
 }
@@ -505,7 +568,7 @@ function ReviewDecision({ task, readAt }: { task: Task; readAt: number | null })
             )}
           </span>
         </div>
-        {gate !== null && <Findings gate={gate} empty="This review recorded no findings." />}
+        {gate !== null && <Findings gate={gate} review={task.id} empty="This review recorded no findings." />}
       </div>
       <div className="dc-part" data-testid="decision-gated">
         <span className="dc-h">What it gated</span>

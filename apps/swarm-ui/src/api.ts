@@ -1111,6 +1111,124 @@ export async function loadArtifactContent(
 }
 
 // ---------------------------------------------------------------------------
+// Jev's finding triage and the attempt's quality gates (CLD's Jev report,
+// "make it visible", owner's choice 2026-11-02)
+// ---------------------------------------------------------------------------
+//
+// WHERE `p_real` LIVES, AND WHY IT IS READ FROM THE VERDICT FILE. When the
+// review's workspace opted in to Jev, the review's post-step writes `p_real`
+// (0 to 1) onto each finding it asked about in the review's own
+// `verdict.json`, and `"triage": "verify before acting"` under 0.15
+// (agent_worker/verdict.py `annotate_findings`). The gated step's
+// `result_summary.verdict_gate.findings` keeps each finding as TEXT
+// (`verdict._finding_text`), so the number is gone there and only a text mark
+// remains on a low one. The verdict file is already served, redacted, by
+// `GET /v1/tasks/{id}/artifacts/content`, so nothing new is asked of swarm-api.
+//
+// THE INDEX. The gate's finding `i` is the `i`-th item of the file's
+// `findings` whose worker text is not empty, the first `MAX_FINDINGS` of them:
+// `verdictTriage` keeps exactly those, in order, so `triage[i]` is the gate's
+// finding `i`. A finding Jev did not ask about is null: no chip, never 0.
+
+/** Restated from agent_worker/verdict.py: the bound under which a finding is "verify before acting". */
+export const FINDING_VERIFY_BELOW = 0.15
+export const VERIFY_BEFORE_ACTING = 'verify before acting'
+/** The worker's text mark on a low finding in the gate's record (`verdict._finding_text`). */
+export const VERIFY_TEXT_MARK = `[${VERIFY_BEFORE_ACTING}: Jev judged this unlikely to be real] `
+/** `verdict.MAX_FINDINGS`: how many findings the gate records. */
+const VERDICT_MAX_FINDINGS = 50
+
+export interface FindingTriage {
+  /** Jev's probability that the finding is real, 0 to 1; null when only the text mark survived. */
+  readonly pReal: number | null
+  /** Under `FINDING_VERIFY_BELOW`, or marked so by the worker. */
+  readonly verify: boolean
+}
+
+const recordOf = (v: unknown): Record<string, unknown> | null =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+
+/** One finding's triage as the worker annotated it, or null when Jev did not judge it. */
+export function findingTriageOf(raw: unknown): FindingTriage | null {
+  const o = recordOf(raw)
+  if (o === null) return null
+  const p = o['p_real']
+  const pReal = typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= 1 ? p : null
+  const marked = o['triage'] === VERIFY_BEFORE_ACTING
+  if (pReal === null && !marked) return null
+  return { pReal, verify: marked || (pReal !== null && pReal < FINDING_VERIFY_BELOW) }
+}
+
+/** Whether the worker keeps a text for this finding (`verdict._finding_text` is not None). */
+function keptByWorker(item: unknown): boolean {
+  if (typeof item === 'string') return item.trim() !== ''
+  const o = recordOf(item)
+  if (o === null) return false
+  for (const k of ['summary', 'title', 'message']) {
+    const v = o[k]
+    if (typeof v === 'string') return v.trim() !== ''
+  }
+  return true
+}
+
+/**
+ * The triage of each finding a verdict file holds, indexed as the gate
+ * recorded them (see THE INDEX above); null when the text is not a verdict
+ * document with a `findings` list.
+ */
+export function verdictTriage(text: string): (FindingTriage | null)[] | null {
+  let doc: unknown
+  try {
+    doc = JSON.parse(text)
+  } catch {
+    return null
+  }
+  const findings = recordOf(doc)?.['findings']
+  if (!Array.isArray(findings)) return null
+  return findings.filter(keptByWorker).slice(0, VERDICT_MAX_FINDINGS).map(findingTriageOf)
+}
+
+/**
+ * `result_summary.quality_gates` (agent_worker/lifecycle.py
+ * `_record_quality_gates`): the hooks' counts when the gates ran, why not when
+ * a stored "on" was refused, or the switch's record when they were off.
+ */
+export type QualityGates =
+  | {
+      readonly kind: 'ran'
+      /** Null when no hook ran, so no count was measured. */
+      readonly counts: {
+        readonly stopsBlocked: number
+        readonly rulesFlagged: number
+        readonly jevCalls: number
+      } | null
+    }
+  | { readonly kind: 'refused'; readonly refused: string }
+  | { readonly kind: 'off'; readonly reason: string | null }
+
+/** The attempt's quality gates, or null when its summary has no `quality_gates`. */
+export function qualityGatesOf(task: Task): QualityGates | null {
+  const g = recordOf(recordOf(task.result_summary)?.['quality_gates'])
+  if (g === null) return null
+  if (g['jev'] === true) {
+    const blocks = countOf(g['belay_blocks'])
+    const rules = countOf(g['enforce_rules_flagged'])
+    const belay = countOf(g['belay_calls'])
+    const enforce = countOf(g['enforce_calls'])
+    const counts =
+      blocks === null || rules === null || belay === null || enforce === null
+        ? null
+        : { stopsBlocked: blocks, rulesFlagged: rules, jevCalls: belay + enforce }
+    return { kind: 'ran', counts }
+  }
+  if (g['jev'] !== false) return null
+  const refused = g['refused']
+  if (typeof refused === 'string' && refused !== '') return { kind: 'refused', refused }
+  const reason = recordOf(g['switch'])?.['reason']
+  return { kind: 'off', reason: typeof reason === 'string' && reason !== '' ? reason : null }
+}
+
+// ---------------------------------------------------------------------------
 // The Artifacts tab (#184): what a task took in and what it produced
 // ---------------------------------------------------------------------------
 //

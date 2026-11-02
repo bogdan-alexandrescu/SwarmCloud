@@ -1,4 +1,4 @@
-import { Banner, Button, ButtonLink, CIcon, Count, ToneMark } from './components'
+import { Banner, Button, ButtonLink, CIcon, Chip, Count, ToneMark } from './components'
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -6,7 +6,9 @@ import {
   loadArtifactContent,
   loadTaskInputOnce,
   loadWorkflow,
+  qualityGatesOf,
   type AgentRun,
+  type QualityGates,
   type ResourceClasses,
 } from './api'
 import { ArtifactViewer, diffStat } from './ArtifactViewer'
@@ -514,6 +516,10 @@ export function Run({
           from, what it used, when it was warned, and for a stop that the work
           was kept. Nothing for an agent with no budget. */}
       <BudgetCard task={task} events={events} now={now} />
+      {/* THE QUALITY GATES, ONE LINE (CLD's Jev report, owner's choice
+          2026-11-02): what jev-belay and jev-enforce did, or why they did not
+          run. Nothing for an attempt whose summary has no `quality_gates`. */}
+      <QualityGatesLine task={task} />
       {/* RESOURCES ARE ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): "too much
           prose on this page, we don't need so much text for showing resource
           consumption". The strip and the Resources card are unchanged, one
@@ -625,6 +631,68 @@ function endCauseOf(task: Task): EndCause | null {
  * jump between Now, Progress, Resources and Input, while Attempts and
  * Children are `h2`. styles/details.css draws it exactly as the `<b>` was.
  */
+/** The scheduler's and the worker's refusal codes (agent_worker/qualitygates.py), in words. */
+const GATES_REFUSED: Readonly<Record<string, string>> = {
+  unsigned: "the workspace's setting is not signed",
+  mac_mismatch: "the workspace's setting does not match its signature",
+  no_settings_key: 'no settings key was there to check the setting with',
+  settings_mac_off: 'settings signing is off',
+  settings_unreadable: "the workspace's setting could not be read",
+  no_verdict: 'the scheduler gave no verdict on the setting',
+  off_at_dispatch: 'the setting was off when this attempt was dispatched',
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`
+}
+
+/**
+ * THE QUALITY GATES LINE: stops blocked, rules flagged and Jev calls when the
+ * gates ran; why they did not when a stored "on" was refused or they were
+ * off. Counts only, never the hooks' text. Null when the attempt's summary
+ * has no `quality_gates`.
+ */
+export function QualityGatesLine({ task }: { task: Task }) {
+  const gates: QualityGates | null = qualityGatesOf(task)
+  if (gates === null) return null
+  let body: ReactNode
+  if (gates.kind === 'ran') {
+    body =
+      gates.counts === null ? (
+        <span className="dt-note">on · no hook ran in this attempt</span>
+      ) : (
+        <>
+          <Chip tone={gates.counts.stopsBlocked > 0 ? 'park' : undefined}>
+            {plural(gates.counts.stopsBlocked, 'stop blocked', 'stops blocked')}
+          </Chip>
+          <Chip tone={gates.counts.rulesFlagged > 0 ? 'park' : undefined}>
+            {plural(gates.counts.rulesFlagged, 'rule flagged', 'rules flagged')}
+          </Chip>
+          <Chip faint>{plural(gates.counts.jevCalls, 'Jev call', 'Jev calls')}</Chip>
+        </>
+      )
+  } else if (gates.kind === 'refused') {
+    const words = GATES_REFUSED[gates.refused]
+    body = (
+      <span className="dt-note">
+        <ToneMark tone="warn">did not run</ToneMark> · refused: {words ?? <code className="mono">{gates.refused}</code>}
+      </span>
+    )
+  } else {
+    body = (
+      <span className="dt-note">
+        <ToneMark tone="unknown">off</ToneMark>
+        {gates.reason !== null && <> · {gates.reason}</>}
+      </span>
+    )
+  }
+  return (
+    <section className="dt-card dt-gates" aria-label="Quality gates" data-testid="quality-gates">
+      <DtCardHead title="Quality gates">{body}</DtCardHead>
+    </section>
+  )
+}
+
 function DtCardHead({ title, children }: { title: ReactNode; children?: ReactNode }) {
   return (
     <div className="dt-card-head">
