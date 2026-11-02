@@ -705,6 +705,16 @@ class Task:
     #: document. Last in the class, after `timeout_seconds_asked`, so no
     #: positional construction moves.
     current_account: dict[str, Any] | None = None
+    #: Contract request 133 (CONTRACT-MAXTURNS, part of #2524), accepted by
+    #: the owner 2 November 2026: the attempt's RESOLVED turn cap -- min(the
+    #: step's ask, the profile's `max_turns`), or the profile's when the step
+    #: names none. Written by swarm-api at submission, only for a profile with
+    #: `supports_max_turns`; signed at spec format 7. The worker passes it to
+    #: the agent CLI (claude_code: `--max-turns N`). None: no cap, today's
+    #: behaviour. It only lowers a limit and chooses no resource (invariant
+    #: 10). Last in the class, after `current_account`, so no positional
+    #: construction moves.
+    max_turns: int | None = None
 
     def __post_init__(self) -> None:
         # Only the fields of requests 54 and 95: a document decoded before them
@@ -1043,6 +1053,10 @@ class WorkflowStep:
     #: and/or `tokens`, as submitted. Its task's `budget` is what it resolved
     #: to. None: the step set none.
     budget: dict[str, float | int] | None = None
+    #: Contract request 133 (part of #2524), accepted by the owner 2 November
+    #: 2026: the turn cap this step ASKED for, as submitted. Its task's
+    #: `max_turns` is what it resolved to. None: the step set none.
+    max_turns: int | None = None
 
 
 @dataclass

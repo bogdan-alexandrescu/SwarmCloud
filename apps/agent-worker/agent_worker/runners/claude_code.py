@@ -1502,11 +1502,24 @@ def live_browser_refusal(env: dict[str, str], browsers: str, endpoint: str) -> s
     return None
 
 
+#: The verified task's resolved turn cap (contract request 133), exported by
+#: the worker from `Task.max_turns` (`lifecycle.MAX_TURNS_ENV`, held equal by
+#: tests/unit/worker/test_runners.py). Never `input.max_turns`: a caller
+#: writes the input, and swarm-api refuses that key at every door.
+MAX_TURNS_ENV = "SWARM_MAX_TURNS"
+
+
+def step_max_turns(env: Mapping[str, str]) -> int | None:
+    """The cap from `MAX_TURNS_ENV`, or None: unset or unusable, no cap."""
+    raw = str(env.get(MAX_TURNS_ENV, "")).strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+
 def body(ctx: RunnerContext) -> dict[str, Any]:
     extra: list[str] = []
-    max_turns = ctx.payload.get("max_turns")
+    max_turns = step_max_turns(os.environ)
     if max_turns is not None:
-        extra += ["--max-turns", str(int(max_turns))]
+        extra += ["--max-turns", str(max_turns)]
     # claude-code-lightpanda (docs/design/lightpanda-runtime.md §6.2): the
     # profile the worker named, never input. Its three denied tools go before
     # `--settings`, because the CLI's flag is variadic.
