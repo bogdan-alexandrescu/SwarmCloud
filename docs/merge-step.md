@@ -61,7 +61,7 @@ match: a false hold costs an answer, a false pass merges the owner's decision).
 Why each still holds: those are the decisions CLAUDE.md reserves to the owner.
 A merge that goes past such questions lists them in
 `result_summary.advisory_merged_past` and in the comment that records the
-merge; nothing answers them, and they stay open on their task. When the owner
+merge; nothing answers them, and they stay open on the agent that asked them. When the owner
 later answers one with a pick other than what the branch built, the answer
 route (`swarm_api.agent_questions.answer_question`) claims it on the merge's
 `metadata.advisory_pick_fix`, in the answer's own transaction, and submits a
