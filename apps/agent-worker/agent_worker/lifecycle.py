@@ -1674,6 +1674,9 @@ class Worker:
         finally:
             # The startup window is over: no probe thread runs past it.
             self._stop_egress_probe()
+        # Contract request 132: the start's task totals, held back while the
+        # window was open so a SIGTERM exit writes only the attempt document.
+        self.control.store_pending_attempt_totals()
         if callable(prepared):
             # A worker action, run after the startup window: it classifies its
             # own outages as exit 69 (`_exit_action_unavailable`, #2000).

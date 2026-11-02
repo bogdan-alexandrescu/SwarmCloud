@@ -942,6 +942,10 @@ class ControlPlane:
         # True inside `startup_budget()`. Read by `call_options`, which every
         # call this class makes goes through.
         self._budgeted = False
+        # Contract request 132: an attempt write made inside `startup_budget()`
+        # whose task totals wait for the window to close
+        # (`store_pending_attempt_totals`).
+        self._totals_pending = False
         # Where provider outcomes go: the quota broker, which the entrypoint
         # builds from `WorkerConfig` (`BrokerQuotaReporter.for_broker`). None
         # means this deployment has no broker; outcomes are then logged and
@@ -1578,7 +1582,18 @@ class ControlPlane:
     def _store_attempt_totals(self) -> None:
         """After an attempt write made outside the end's commit (the start,
         the spend, a bare end): the task's totals, only while this attempt is
-        still its current one. Never raises."""
+        still its current one. Never raises.
+
+        NOT INSIDE THE STARTUP WINDOW. There the attempt's own document is
+        the only write a start or a SIGTERM exit makes, under the startup
+        budget (`lifecycle._exit_interrupted_before_runner`), so the task's
+        totals wait for `store_pending_attempt_totals`, which the lifecycle
+        calls once the window has closed without an exit.
+        """
+        if self._budgeted:
+            self._totals_pending = True
+            return
+        self._totals_pending = False
 
         def _apply(txn: Any) -> None:
             snap = _snapshot(txn.get(self._task_ref(), **self.call_options("attempt")))
@@ -1594,6 +1609,13 @@ class ControlPlane:
             self._run_transaction(_apply, call="attempt")
         except Exception as exc:
             self._log.warning("attempt totals not stored", error_type=type(exc).__name__)
+
+    def store_pending_attempt_totals(self) -> None:
+        """The task's totals deferred by an attempt write made inside the
+        startup window (`_store_attempt_totals`), now that it has closed.
+        Nothing when none is pending. Never raises."""
+        if self._totals_pending and not self._budgeted:
+            self._store_attempt_totals()
 
     def _fence_fields(self, event_type: EventType) -> dict[str, Any]:
         """`submitter_service` for a `generation_fenced` event line, else nothing.
@@ -1957,6 +1979,12 @@ class ControlPlane:
             merge=True,
             **self.call_options("attempt"),
         )
+        if self._budgeted:
+            # An exit taken from the startup window writes this attempt's own
+            # document and nothing else: the task is the reconciler's to
+            # requeue, and a start's deferred totals are dropped with it.
+            self._totals_pending = False
+            return
         # Contract request 132: the end counted on the task.
         self._store_attempt_totals()
 

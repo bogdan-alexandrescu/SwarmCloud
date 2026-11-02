@@ -203,10 +203,11 @@ class FakeTransaction:
     def __init__(self, db: "FakeFirestore") -> None:
         self._db = db
 
-    def get(self, ref: FakeDocumentRef, **_call_options: Any) -> FakeSnapshot:
+    def get(self, ref: FakeDocumentRef, **call_options: Any) -> FakeSnapshot:
         # `Transaction.get` takes `retry` and `timeout`; before the runner the
-        # worker passes its startup budget there.
-        return ref.get()
+        # worker passes its startup budget there. Passed on to the reference,
+        # so a recording one sees the budget the transaction's read carried.
+        return ref.get(**call_options)
 
     def set(self, ref: FakeDocumentRef, data: dict[str, Any], merge: bool = False) -> None:
         # `merge`, as `Transaction.set` takes it: an end writes its attempt's
