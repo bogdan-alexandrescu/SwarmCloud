@@ -6,8 +6,8 @@
  * voice as a luminous ring at the centre of a quiet stage, the captions as a
  * subtitle band under it, the mic on the bottom edge, and the cards around
  * it. Phase one is the talk itself: the call, the ring, both sides'
- * captions, mute and push-to-talk. Cards are phase two, so their area is
- * drawn empty and says so rather than showing anything invented.
+ * captions, mute and push-to-talk. The cards beside it are the session's
+ * card stream (CardList.tsx), drawn from the catalogue only.
  *
  * WHAT THE PAGE HOLDS. The WebRTC peer, the mic and the agent's track, the
  * captions and the ring (§3.2). It holds no key and no client secret: the
@@ -23,6 +23,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button, Segmented, ToneMark } from '../components'
 import { noteActivity } from '../Shell'
+import { CardList } from './CardList'
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
 import { micWord, useMic, type MicMode } from './mic'
 import { connectTalk, endVoiceSession, TalkError, type TalkCall } from './rtc'
@@ -287,7 +288,7 @@ export function TalkPane() {
 
       <section className="vt-cards" aria-label="Cards">
         <p className="vt-cards-h">Cards</p>
-        <p className="vt-cards-none">Cards arrive in phase two: what the conversation designs, plans and starts will appear here.</p>
+        <CardList sessionId={call.current?.sessionId ?? null} />
       </section>
 
       <audio ref={audio} autoPlay className="vt-voice" />
