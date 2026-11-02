@@ -49,6 +49,25 @@ not, under the workspace's own choice (invariant 10). `setup` fills
 `repository`, `workspace` or `default`) and the outcome, which
 `graphstage.prepare` writes into `stage.json`.
 
+THE SIGNED SETTING (lane JEV-JUDGMENTS-RUN, 2026-11-02). Any tenant's worker
+can write `workspace_settings/<any tenant>`, so a stored `code_intelligence
+.jev: true` counts only when swarm-api's MAC over the block verifies
+(docs/design/tenant-settings-integrity.md row 7). The worker holds no
+settings key; the scheduler checks the block at dispatch and hands the
+verdict in VERDICT_ENV, exactly as it does the quality gates'. Anything but
+"true" there -- unsigned, mismatched, the MAC switch off, an older scheduler
+that says nothing -- reads as not opted in: nothing is set up.
+
+THE BUDGET ACROSS ATTEMPTS AND THE MONTH (same lane). On Firestore, `setup`
+starts the ledger with the task's earlier attempts' calls and tokens
+(`budget.FirestoreMonthlyLedger.task_spend`) and, when the workspace set
+`jev_monthly_cap_tokens`, the month's use so far; `settle`, called by the
+lifecycle after the agent, writes the attempt's row and adds its tokens to
+the month, fenced by the generation. A tenant on the state routes holds no
+Firestore client: with a cap set its month is unread, so it counts as spent
+(every call `skipped:budget_monthly`), and its earlier attempts are not
+carried.
+
 NEVER RAISES. A settings read that fails is "off" with its reason, and the
 attempt runs exactly as the local-only run does.
 """
@@ -57,11 +76,12 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from agent_worker.judge import client as client_mod
-from agent_worker.judge import register, settings as settings_mod
+from agent_worker.judge import budget, register, settings as settings_mod
 
 #: The runner's variable: the path of the attempt's Jev config, never a key.
 CONFIG_ENV = "SWARM_JUDGE_CONFIG"
@@ -85,6 +105,16 @@ TYPESAFE_SHIM_FILE = "jev-typesafe.shim"
 SWITCH = "jev_judgments"
 ON, OFF = "on", "off"
 SOURCE_SWITCH = "workflow switch"
+#: The scheduler's verdict on the signed `code_intelligence` block
+#: (`scheduler.judgment.JEV_JUDGMENTS_ENV`; tests/unit/worker/
+#: test_jev_judgments_run.py holds the names equal): "true" or not on.
+VERDICT_ENV = "SWARM_JEV_JUDGMENTS"
+VERDICT_REFUSED_ENV = "SWARM_JEV_JUDGMENTS_REFUSED"
+VERDICT_ON = "true"
+#: The worker's own task and generation, the variables `WorkerConfig.from_env`
+#: reads: what the per-task count and the attempt's row are keyed by.
+TASK_ID_ENV = "TASK_ID"
+GENERATION_ENV = "GENERATION"
 
 
 def judge_settings(workspace: Mapping[str, Any] | None,
@@ -160,6 +190,31 @@ def _read(db: Any, tenant_id: str, repository_url: str | None,
     return workspace, None if isinstance(found, str) else found[0]
 
 
+def unverified(env: Mapping[str, str]) -> str | None:
+    """None when the scheduler vouched for the stored opt-in, else why not."""
+    if (env.get(VERDICT_ENV) or "").strip() == VERDICT_ON:
+        return None
+    return (env.get(VERDICT_REFUSED_ENV) or "").strip() or "no_verdict"
+
+
+def _carried(db: Any, tenant_id: str, given: settings_mod.JudgeSettings,
+             env: Mapping[str, str], now: datetime) -> tuple[int, int, int]:
+    """`(month_used_tokens, task_calls, task_input_tokens)` for this
+    attempt's ledger. Raises what a read raises: `setup` turns it into off."""
+    from agent_worker import indexrun
+
+    if indexrun.state_routes(db) is not None:
+        # No Firestore here: an unread month counts as spent, never as free.
+        cap = given.monthly_cap_tokens
+        return (cap if cap is not None else 0), 0, 0
+    usage = budget.FirestoreMonthlyLedger(db, runner=None)
+    month_used = (usage.used(tenant_id, budget.month_of(now))
+                  if given.monthly_cap_tokens is not None else 0)
+    task_id = (env.get(TASK_ID_ENV) or "").strip()
+    calls, tokens = usage.task_spend(tenant_id, task_id) if task_id else (0, 0)
+    return month_used, calls, tokens
+
+
 def _source(switch: str | None, given: settings_mod.JudgeSettings,
             workspace: Mapping[str, Any]) -> str:
     """What decided whether this step's judgments may run."""
@@ -179,7 +234,8 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
           environ: Mapping[str, str] | None = None, log: Any = None,
           secret_env_names: Iterable[str] = (), switch: str | None = None,
           resolve_key: Callable[[], str | None] | None = None,
-          record: dict[str, Any] | None = None) -> dict[str, str]:
+          record: dict[str, Any] | None = None,
+          now: Callable[[], datetime] | None = None) -> dict[str, str]:
     """The worker's half: `{CONFIG_ENV: path}` when this attempt may ask Jev, else {}.
 
     `secret_env_names` are the task profile's registered secrets
@@ -200,7 +256,12 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
     when unset; `resolve_key` the worker's resolver of the workspace's
     TypeSafe key, asked only under `on` (see the module docstring). `record`,
     when given, is filled with `{switch, value, source, on, reason}`.
+
+    `environ` (the worker's own environment when None) carries the
+    scheduler's verdict (VERDICT_ENV), the decision API's URL and the task
+    and generation; `now` is the clock the month is read by.
     """
+    env = os.environ if environ is None else environ
     switch = switch if switch in (ON, OFF) else None
     note = record if record is not None else {}
     note.update({"switch": SWITCH, "value": switch})
@@ -215,6 +276,13 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
         workspace, registration = _read(db, tenant_id, repository_url, options)
         given = judge_settings(workspace, registration)
         note["source"] = _source(switch, given, workspace)
+        refused = unverified(env)
+        if given.code_opt_in and refused is not None:
+            # A stored "on" the scheduler did not vouch for is no opt-in.
+            note.update({"on": False, "reason": f"jev settings not signed ({refused})"})
+            if log is not None:
+                log.info("jev", on=False, reason="settings_unverified", refused=refused)
+            return {}
         attempt_dir = Path(work).parent
         private = attempt_dir / register.KEY_DIR
         shim = _read_shim(private)
@@ -229,9 +297,15 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
             # The WORKSPACE's key, as the quality gates resolve it; written by
             # `register.prepare` as the one 0600 file `private/jev-key`.
             key = resolve_key()
+        month_used = task_calls = task_tokens = 0
+        if settings_mod.opted_in(given) is None:
+            month_used, task_calls, task_tokens = _carried(
+                db, tenant_id, given, env, (now or _utcnow)())
         done = register.prepare(attempt_dir=attempt_dir, settings=given, key=key,
-                                environ=environ, hard_stop_paths=_hard_stops(registration),
-                                secret_env_names=secret_env_names, shim_url=shim_url)
+                                environ=env, hard_stop_paths=_hard_stops(registration),
+                                secret_env_names=secret_env_names, shim_url=shim_url,
+                                month_used_tokens=month_used, task_calls=task_calls,
+                                task_input_tokens=task_tokens)
     except Exception as exc:  # noqa: BLE001 -- Jev is never worth the attempt
         if log is not None:
             log.warning("jev not set up", error=type(exc).__name__)
@@ -245,6 +319,55 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
     if not done.registered or done.config_path is None:
         return {}
     return {CONFIG_ENV: str(done.config_path)}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class _Transactions:
+    """`run(fn)`, the runner `budget.FirestoreMonthlyLedger` takes, over the
+    control plane's own `_run_transaction` (its budget and abort retries)."""
+
+    def __init__(self, run_transaction: Callable[[Callable[[Any], Any]], Any]) -> None:
+        self._run_transaction = run_transaction
+
+    def run(self, fn: Callable[[Any], Any]) -> Any:
+        return self._run_transaction(fn)
+
+
+def settle(env: Mapping[str, str], *, db: Any,
+           run_transaction: Callable[[Callable[[Any], Any]], Any], tenant_id: str, task_id: str,
+           generation: int, fence: Callable[[Any], Any] | None = None, log: Any = None,
+           now: Callable[[], datetime] | None = None) -> tuple[int, int] | None:
+    """After the agent: this attempt's Jev calls and tokens into `jev_usage`
+    (`budget.settle_attempt`), one row per attempt and the month's total, in
+    one transaction that `fence` refuses for a superseded attempt
+    (invariant 5). Nothing for an attempt without Jev, or on the state
+    routes, which hold no Firestore client. Returns what was settled, or
+    None. Never raises, and changes no output of the attempt."""
+    from agent_worker import indexrun
+
+    path = (env.get(CONFIG_ENV) or "").strip()
+    if not path:
+        return None
+    try:
+        if indexrun.state_routes(db) is not None:
+            return None
+        config = json.loads(Path(path).read_text(encoding="utf-8"))
+        ledger_path = config.get("ledger") if isinstance(config, dict) else None
+        if not isinstance(ledger_path, str) or not ledger_path:
+            return None
+        warn = None if log is None else (lambda event, **kw: log.warning(event, **kw))
+        return budget.settle_attempt(
+            budget.Ledger(Path(ledger_path)),
+            budget.FirestoreMonthlyLedger(db, _Transactions(run_transaction)),
+            workspace=tenant_id, task_id=task_id, generation=generation,
+            month=budget.month_of((now or _utcnow)()), fence=fence, log=warn)
+    except Exception as exc:  # noqa: BLE001 -- accounting is never worth the attempt
+        if log is not None:
+            log.warning("jev_settle_failed", error=type(exc).__name__)
+        return None
 
 
 def finish(env: Mapping[str, str]) -> None:
