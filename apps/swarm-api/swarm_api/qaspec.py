@@ -1051,7 +1051,12 @@ def _gate_report_line() -> str:
         "`gate_refusals` was not read say so. Then, on a line of its own, name what the gate let through: "
         "for each entry of the manifests' `gate_refusals.allowed`, write its label (\"allowed: IdP token "
         "refresh\") with its count, method, origin and path; these are not refusals and never count toward "
-        "N. Carry every review's `about_run` into findings.json's "
+        "N. Then, when a manifest's `gate_refusals.sign_in.state` is not `signed_in`, write one sentence: "
+        "\"the target's sign-in provider token refreshes were refused because the gate's own sign-in ended "
+        "<state> (<cause>); it reaches signed in when the leg's signed-in marker, its "
+        "`sign_in.signed_in_selector`, names an element the page the app draws after sign-in shows\", "
+        "with that manifest's `state` and `cause`; when it is `signed_in`, or `gate_refusals.sign_in` is "
+        "null, add nothing. Carry every review's `about_run` into findings.json's "
         "`about_run`, and move there any finding whose evidence is a request in a screen's `gate_refused` "
         "or a console error naming one of its URLs: a gate refusal is never the app's defect."
     )
