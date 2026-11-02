@@ -157,10 +157,43 @@ holding it is dropped.
 * **TypeSafe direct** (`https://api.typesafe.ai/v1/systemone`) and **the
   Internal URL** (`SWARM_JUDGE_INTERNAL_URL`, the decision API over the
   tailnet) are opened with `urllib.request.urlopen`, which honours the runner
-  process's `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`. Beyond that the call takes
-  the attempt's ordinary network egress: no Jev-specific egress rule exists
-  in this repository, and this record does not establish which network path
-  a deployed worker's traffic takes past the process.
+  process's `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`. Past the process, the
+  Internal URL takes the tailnet forwarder (`swarm-judge: internal`,
+  `allow-judge-egress.yaml`) and TypeSafe direct takes the pod's egress,
+  below.
+
+**The TypeSafe egress allowlist** (2026-11-02, the owner's choice to build
+every proposal in CLD's Jev report; [the runbook](runbooks/typesafe-egress.md)).
+Two GKE FQDNNetworkPolicies name `api.typesafe.ai`, and nothing else in
+`kubernetes/` does:
+
+* **The forwarder**, `kubernetes/network-policies/swarm-system-typesafe-fwd.yaml`:
+  `swarm-typesafe-fwd`, the one process that holds workspaces' TypeSafe keys,
+  is put under egress isolation and reaches DNS, the metadata server, and TCP
+  443 to `api.typesafe.ai` and `secretmanager.googleapis.com` by name only.
+* **A direct pod**, `kubernetes/network-policies/fqdn/allow-typesafe-direct.yaml`:
+  TCP 443 to `api.typesafe.ai` for a tenant pod the dispatcher labelled
+  `swarm-jev: typesafe-direct`
+  (`apps/scheduler/scheduler/dispatch.py::TYPESAFE_DIRECT_POD_LABEL`, set by
+  `apps/scheduler/scheduler/dispatch.py::with_typesafe_direct` and
+  `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._with_judgments_forwarder`):
+  a TypeSafe-backed live browser, quality gates on, or a `jev_judgments: on`
+  step on the TypeSafe backend, whenever the pod is not labelled
+  `swarm-typesafe: inject`.
+
+A pod labelled `swarm-typesafe: inject` has no TypeSafe allow: it reaches
+TypeSafe only through the forwarder, on TCP 8080 (`allow-typesafe-fwd.yaml`).
+An unlabelled pod has none either. Held by
+`tests/unit/scripts/test_typesafe_egress_allowlist.py` (every FQDN policy
+under `kubernetes/` judged against an unlabelled, a forwarded and a direct
+pod and the forwarder) and
+`tests/unit/control_plane/test_dispatch_typesafe_direct_label.py::test_a_forwarded_pod_has_no_direct_label`.
+
+**What the allowlist does not do**: deny. `allow-egress.yaml` rule 4 still
+admits every tenant pod to the public internet on TCP 443, and policies are
+allow-only unions, so an unlabelled pod's packets to `api.typesafe.ai` are
+not dropped (Known gaps). Both files are applied by the owner by hand
+(the runbook); no render applies them yet.
 
 ## The lane hooks
 
@@ -227,11 +260,13 @@ RUNNING event, cause `quality_gate`, with the same counts when belay blocked
 a stop or enforce flagged a rule. There is no per-call ledger row like rule
 6's; TypeSafe's own records are the authority on what was sent.
 
-**Egress.** The same path the jev browser tools' direct calls take: no host
-allowlist exists for TypeSafe; `kubernetes/network-policies/allow-egress.yaml`
-rule 4 (the internet minus every private range, TCP 443) applies to every
-worker pod, and the forwarder's path (`allow-typesafe-fwd.yaml`) to a pod
-labelled `swarm-typesafe: inject`. No new rule was needed.
+**Egress.** The same path the jev browser tools' direct calls take
+(Which egress path): a gates-on pod without the forwarder is labelled
+`swarm-jev: typesafe-direct`, which the TypeSafe allowlist's direct FQDN rule
+selects; with the forwarder, the hooks use the loopback shim and the pod's
+`swarm-typesafe: inject` path (`allow-typesafe-fwd.yaml`).
+`kubernetes/network-policies/allow-egress.yaml` rule 4 (the internet minus
+every private range, TCP 443) still applies to every worker pod.
 
 Held by `tests/unit/worker/test_quality_gates.py` (switch, key, config,
 hooks, launcher redaction and URL pin, counts and event) and
@@ -257,6 +292,15 @@ hooks, launcher redaction and URL pin, counts and event) and
 * **Rule 5c holds for J3 by a check, and for J1 and J4 by construction**: their
   rows are read from the attempt's checkout, with no separate guard that would
   refuse a path leaving it.
+
+* **The TypeSafe allowlist names, it does not deny.** An unlabelled tenant
+  pod can still reach `api.typesafe.ai` through `allow-egress.yaml` rule 4:
+  NetworkPolicies cannot subtract a host from an allow, and the host's
+  addresses are shared Cloudflare ones no `except` may pin. What stops such a
+  pod's call doing anything is that it holds no workspace key. Closing it (a
+  hostname sinkhole on unlabelled pods, or the general internet behind a
+  proxy that refuses the host) is an owner question, in
+  [the runbook](runbooks/typesafe-egress.md).
 
 ### Closed by lane JEV-SCRUB (2026-10-18)
 
