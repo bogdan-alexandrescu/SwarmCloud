@@ -344,3 +344,81 @@ def read_quality_gates_env(db: Any, tenant_id: str, *, mac_key: str | None) -> d
         return quality_gates_env(False, GATES_REFUSED_UNREADABLE)
     on, refused = quality_gates_verdict(doc, tenant_id=tenant_id, key=mac_key)
     return quality_gates_env(on, refused)
+
+
+# --------------------------------------------------------------------------
+# The Jev judgments' verdict and address (lane JEV-JUDGMENTS-RUN; the owner
+# chose on 2026-11-02 to build every proposal in CLD's Jev report)
+#
+# `workspace_settings/{tenant}.code_intelligence.jev` on lets the worker's
+# J1-J5 judgments send repository excerpts to Jev
+# (`agent_worker.judge.attempt.setup`). Any tenant's worker can write that
+# document, so, as for the quality gates above, a stored "on" counts only when
+# swarm-api's MAC over the `code_intelligence` block verifies, which only
+# this service can check: the job's environment carries the verdict and the
+# worker treats anything but "true" as off
+# (docs/design/tenant-settings-integrity.md row 7). The same rule as the
+# gates: the verdict is given only while SETTINGS_MAC_REQUIRED is on.
+#
+# And the address. A judging attempt on an internal backend needs the
+# decision API's URL in SWARM_JUDGE_INTERNAL_URL (`judge.settings
+# .INTERNAL_URL_ENV`), the `swarm-judge: internal` label JUDGE-NET's
+# NetworkPolicy keys on, and the hostAliases entry: `judge_dispatch`, built
+# from `jev_dispatch`, so the live browser's pod and the judge's pod are given
+# them by one code path.
+
+JUDGMENTS_BLOCK = "code_intelligence"
+JUDGMENTS_FIELD = "jev"
+#: "true" only for a stored `code_intelligence.jev: true` whose block
+#: verifies; "false" otherwise. Written either way, never omitted, for the
+#: reason QUALITY_GATES_JEV_ENV is.
+JEV_JUDGMENTS_ENV = "SWARM_JEV_JUDGMENTS"
+#: Why a stored "on" is off, one of the GATES_REFUSED_* words.
+JEV_JUDGMENTS_REFUSED_ENV = "SWARM_JEV_JUDGMENTS_REFUSED"
+#: `agent_worker.judge.settings.INTERNAL_URL_ENV`, restated because the
+#: scheduler does not import the worker; tests/unit/control_plane/
+#: test_judge_address.py holds them equal.
+JUDGE_INTERNAL_URL_ENV = "SWARM_JUDGE_INTERNAL_URL"
+
+
+def judgments_verdict(doc: Any, *, tenant_id: str, key: str | None
+                      ) -> tuple[bool, str | None]:
+    """(on, why not): on only when `doc` says `code_intelligence.jev is True`
+    AND that block's MAC verifies under `key` for this tenant and block.
+    `key` None is SETTINGS_MAC_REQUIRED off. `why not` is None for a block
+    that does not say on."""
+    block = doc.get(JUDGMENTS_BLOCK) if isinstance(doc, Mapping) else None
+    value = block.get(JUDGMENTS_FIELD) if isinstance(block, Mapping) else None
+    if value is not True:
+        return False, None
+    if key is None:
+        return False, GATES_REFUSED_SWITCH_OFF
+    if not key:
+        return False, GATES_REFUSED_NO_KEY
+    if not isinstance(block.get(MAC_FIELD), Mapping):
+        return False, GATES_REFUSED_UNSIGNED
+    if not block_verifies(key, tenant_id=tenant_id, block=JUDGMENTS_BLOCK, fields=block):
+        _say_refused(tenant_id, JUDGMENTS_BLOCK, time.monotonic())
+        return False, GATES_REFUSED_MISMATCH
+    return True, None
+
+
+def judgments_env(on: bool, refused: str | None) -> dict[str, str]:
+    """The verdict as the worker reads it (`agent_worker.judge.attempt`)."""
+    env = {JEV_JUDGMENTS_ENV: "true" if on else "false"}
+    if not on and refused:
+        env[JEV_JUDGMENTS_REFUSED_ENV] = refused
+    return env
+
+
+def judge_dispatch(backend: str, internal_url: str
+                   ) -> tuple[dict[str, str], dict[str, str], list[dict[str, Any]]]:
+    """(env, pod labels, pod hostAliases) for an attempt whose worker judges
+    on `backend`: `jev_dispatch`'s URL as SWARM_JUDGE_INTERNAL_URL, with its
+    label and hostAliases entry, for an internal backend with the tailnet
+    egress on; nothing at all otherwise (TypeSafe goes its own way)."""
+    env, labels, host_aliases = jev_dispatch(backend, internal_url)
+    url = env.get(JEV_API_URL_ENV)
+    if not url:
+        return {}, {}, []
+    return {JUDGE_INTERNAL_URL_ENV: url}, labels, host_aliases

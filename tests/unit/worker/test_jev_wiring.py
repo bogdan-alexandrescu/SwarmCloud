@@ -606,7 +606,9 @@ def _setup(tmp_path: Path, workspace: dict | None, environ: dict | None = None) 
     docs = {} if workspace is None else {"workspace_settings/acme": workspace}
     return attempt.setup(work=work, db=_Db(docs), tenant_id="acme", repository_url=URL,
                          environ=environ if environ is not None
-                         else {settings.INTERNAL_URL_ENV: INTERNAL_URL})
+                         else {settings.INTERNAL_URL_ENV: INTERNAL_URL,
+                               # The scheduler vouched for the signed block.
+                               attempt.VERDICT_ENV: "true"})
 
 
 @pytest.mark.parametrize("workspace", [
@@ -620,7 +622,7 @@ def test_the_setting_off_writes_nothing_and_loads_no_client(tmp_path, workspace)
 
 def test_no_backend_url_or_no_typesafe_key_is_off(tmp_path):
     on = {"code_intelligence": {"jev": True}}
-    assert _setup(tmp_path / "a", on, environ={}) == {}
+    assert _setup(tmp_path / "a", on, environ={attempt.VERDICT_ENV: "true"}) == {}
     typesafe = {"code_intelligence": {"jev": True}, "judgment_backend": "typesafe"}
     assert _setup(tmp_path / "b", typesafe) == {}
 

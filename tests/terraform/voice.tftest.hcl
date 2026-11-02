@@ -132,6 +132,8 @@ run "off_by_default_nothing_exists_and_swarm_api_has_no_address" {
       && length(google_secret_manager_secret_iam_member.voice_stores_openai) == 0
       && length(google_cloud_run_v2_service_iam_member.voice_invokes_api) == 0
       && length(google_compute_address.voice) == 0
+      && length(google_storage_bucket_iam_member.api_voice_blob_writer) == 0
+      && length(google_storage_bucket_iam_member.api_voice_blob_deleter) == 0
     )
     error_message = "with voice_it off swarm-voice's account is not read, and there is no grant and no address"
   }
@@ -196,8 +198,10 @@ run "on_every_labelled_resource_carries_managed_by" {
       "google_secret_manager_secret_iam_member.voice_stores_openai",
       "google_cloud_run_v2_service_iam_member.voice_invokes_api",
       "google_compute_address.voice",
+      "google_storage_bucket_iam_member.api_voice_blob_writer",
+      "google_storage_bucket_iam_member.api_voice_blob_deleter",
     ])
-    error_message = "voice.tf declares the account's Workload Identity binding, two secret bindings, the invoker and the address, and nothing else"
+    error_message = "voice.tf declares the account's Workload Identity binding, two secret bindings, the invoker, the address and swarm-api's two conditioned blob grants (voice_storage.tftest.hcl holds those), and nothing else"
   }
 
   # The account is bootstrap's: infra reads it and never declares one.
