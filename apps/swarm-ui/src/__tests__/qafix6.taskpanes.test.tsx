@@ -285,15 +285,18 @@ describe('Logs toolbar', () => {
   // -------------------------------------------------------------- g
 
   describe('g (box 6329547758): one clock', () => {
-    it('stamps a pause at 21:25:53 as `21:25:53`', async () => {
+    // TZ-CLOCKTIME (part of #2391): the stamp is `clockTime`'s, in the
+    // person's zone with its label -- UTC when none is set -- not the
+    // browser's clock.
+    it('stamps a pause at 21:25:53 UTC as `21:25:53 UTC`', async () => {
       vi.useFakeTimers({ toFake: ['Date'] })
-      vi.setSystemTime(new Date(2026, 9, 23, 21, 25, 53))
+      vi.setSystemTime(new Date(Date.UTC(2026, 9, 23, 21, 25, 53)))
       render(<AgentLogs task={row()} />)
       fireEvent.click(within(dock()).getByRole('group', { name: 'Which log' }).querySelector('button')!)
       await waitFor(() => expect(dock().querySelector('.ag-logs-facts')?.textContent).toMatch(/source/))
       fireEvent.click(within(dock()).getByRole('button', { name: /^Following/ }))
       // MUTATION: print `new Date(frozen.at).toLocaleTimeString()` again (AgentLogs.tsx) -- `9:25:53 PM`.
-      await waitFor(() => expect(dock().querySelector('.ag-logs-paused time')?.textContent).toBe('21:25:53'))
+      await waitFor(() => expect(dock().querySelector('.ag-logs-paused time')?.textContent).toBe('21:25:53 UTC'))
     })
   })
 })
