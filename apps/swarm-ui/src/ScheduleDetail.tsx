@@ -46,7 +46,8 @@ import { usd } from './measure'
 import { pluralise } from './types'
 import { Absent, Mark } from './primitives'
 import { addressToPath } from './paths'
-import { EditSchedule, plainValue } from './ScheduleEdit'
+import { dayWords, EditSchedule, HardStops, plainValue } from './ScheduleEdit'
+import { gapWords } from './ScheduleTemplates'
 import { HistoryTimeline, workAddress } from './ScheduleHistoryTimeline'
 import {
   DryRunChip,
@@ -82,10 +83,34 @@ export function detailTabOf(v: string | null): DetailTab {
   return DETAIL_TABS.includes(v as DetailTab) ? (v as DetailTab) : 'history'
 }
 
+/**
+ * A SKIP IN WORDS (QA2 automate2-03): `skipped: OVERLAP` printed the API's
+ * code, and a skip served without one read `skipped: undefined`. Each of
+ * `schedulefire`'s skip codes (§1.2) in words; an unknown or absent code is
+ * plain `skipped`. `NOTHING_STARTED` has its own words below.
+ */
+const SKIP_WORDS: Readonly<Record<string, string>> = {
+  OVERLAP: 'the last firing was still running',
+  BUDGET_EXHAUSTED: 'the day budget was spent',
+  MISSED_SLOT: 'its time had passed',
+  OWNER_NOT_MEMBER: 'its owner is no longer a member',
+  OWNER_ROLE_NARROWED: 'its owner may no longer submit work',
+  REPOSITORY_NOT_GRANTED: 'a repository in its scope is not granted',
+  SCHEDULES_DISABLED: 'schedules are switched off',
+  DRY_RUN: 'a dry run, so nothing was started',
+  SCHEDULE_NOT_ENABLED: 'the schedule was paused or disabled',
+  TYPE_UNAVAILABLE: 'its type has left the catalogue',
+  RUN_OVER_BUDGET: 'a run cost more than the per-run tripwire',
+  CONSECUTIVE_FAILURES: 'too many firings failed in a row',
+}
+
 /** What a firing came to: its outcome once ended, its state while it is not. */
 function firingWord(f: ScheduleFiring): string {
   if (f.skip?.code === 'NOTHING_STARTED') return `nothing started: ${nothingStartedWords(nothingDetail(f))}`
-  if (f.skip !== null) return `skipped: ${f.skip.code}`
+  if (f.skip !== null) {
+    const why = typeof f.skip.code === 'string' ? SKIP_WORDS[f.skip.code] : undefined
+    return why === undefined ? 'skipped' : `skipped: ${why}`
+  }
   return f.outcome ?? f.state.replace(/_/g, ' ')
 }
 
@@ -194,9 +219,11 @@ export function refusalWords(code: string): string {
  * never disagree about a firing.
  */
 function FiringOutcome({ f }: { f: ScheduleFiring }) {
+  // Read whole, never `.sc-cut` (QA2-FIX-21 review): cut, an OVERLAP skip
+  // read 'skipped: the la…' at 1440, its reason only in a hover title.
   return (
     <>
-      <span className="sc-cut" title={firingWord(f)}>{firingWord(f)}</span>
+      <span className="sc-why">{firingWord(f)}</span>
       {f.approval_id !== null && f.state === 'awaiting_approval' && <span className="sc-sub">waiting for approval, holding nothing</span>}
       {f.skip?.code === 'NOTHING_STARTED' &&
         nothingStartedLines(nothingDetail(f)).map((line) => (
@@ -256,11 +283,17 @@ function workCount(work: readonly FiringWork[]): string {
   return [...n].map(([noun, k]) => pluralise(k, noun)).join(', ')
 }
 
-/** Minutes between the slot and the firing, when it fired a whole minute or more late. */
+/**
+ * How late a firing was, when it fired a whole minute or more after its slot,
+ * in the template card's duration words (QA2 automate2-19): `300 min late`
+ * is `5 hours late`, and `1 day 1 hour late` beside `at least 1 day apart`.
+ */
 function lateWords(f: ScheduleFiring): string | null {
   if (f.slot === null || f.fired_at === null) return null
   const late = Math.floor((Date.parse(f.fired_at) - Date.parse(f.slot)) / 60_000)
-  return Number.isFinite(late) && late >= 1 ? `${late} min late` : null
+  if (!Number.isFinite(late) || late < 1) return null
+  const parts = [Math.floor(late / 1440) * 1440, Math.floor((late % 1440) / 60) * 60, late % 60].filter((m) => m > 0)
+  return `${parts.map(gapWords).join(' ')} late`
 }
 
 /**
@@ -498,8 +531,12 @@ export function BurnBar({ use }: { use: ScheduleBudgetUse }) {
   )
 }
 
-/** What the merge switch knows of the type's floor: `auto` allowed, never, or not read. */
-type Floor = 'auto' | 'never' | 'unknown' | 'reading'
+/**
+ * What the merge switch knows of the type's floor: `auto` allowed, never, not
+ * read, or `off` -- a type that never merges at all (QA2 automate2-10), whose
+ * schedule is never told to edit its gate to approve merges.
+ */
+type Floor = 'auto' | 'never' | 'off' | 'unknown' | 'reading'
 
 function useMergeFloor(type: string): Floor {
   const [floor, setFloor] = useState<Floor>('reading')
@@ -511,7 +548,7 @@ function useMergeFloor(type: string): Floor {
       // A type this account may not create is not in its catalogue; the
       // server still holds the floor, so the switch is offered and it decides.
       const row: ScheduleTypeRow | undefined = r.data.types.find((t) => t.name === type)
-      setFloor(row === undefined ? 'unknown' : row.floor_gate.merge === 'auto' ? 'auto' : 'never')
+      setFloor(row === undefined ? 'unknown' : row.floor_gate.merge === 'auto' ? 'auto' : row.floor_gate.merge === 'off' ? 'off' : 'never')
     })
     return () => {
       live = false
@@ -716,7 +753,7 @@ export function MergeSwitch({ s, onChanged, go }: { s: Schedule; onChanged: () =
   const blockId = useId()
   const typedHint = useId()
   const merge = s.gate.merge
-  const blocked = useSwitchBlock(s, merge === 'approve' && floor !== 'never')
+  const blocked = useSwitchBlock(s, merge === 'approve' && floor !== 'never' && floor !== 'off')
 
   const close = () => {
     setOpen(false)
@@ -754,12 +791,15 @@ export function MergeSwitch({ s, onChanged, go }: { s: Schedule; onChanged: () =
   if (merge !== 'approve') {
     return (
       <p className="sb-note" data-testid="sc-merge-switch" data-mode={merge ?? 'unset'}>
-        This schedule does not merge. Edit its gate to approve each merge before it can be switched to automatic.
+        This schedule does not merge.
+        {floor === 'off'
+          ? ' Its type never merges, so there is no gate to edit.'
+          : floor !== 'reading' && ' Edit its gate to approve each merge before it can be switched to automatic.'}
       </p>
     )
   }
   if (floor === 'reading') return <p className="sb-note" data-testid="sc-merge-switch">Reading whether this type may merge unattended…</p>
-  if (floor === 'never') {
+  if (floor === 'never' || floor === 'off') {
     return (
       <p className="sb-note" data-testid="sc-merge-switch" data-mode="approve">
         Each merge is approved by a person, and stays so: {s.type} never merges unattended.
@@ -1197,6 +1237,29 @@ function Cadence({ s, word }: { s: Schedule; word: StateWord | undefined }) {
 function Firings({ s, firings, go }: { s: Schedule; firings: ServedFiring[]; go: (to: string) => void }) {
   const [page, setPage] = useState(0)
   const [view, setView] = useState<'table' | 'timeline'>('table')
+  const now = useNow()
+  if (firings.length === 0 && s.last_firing !== null) {
+    // FIRED, BUT NOT SERVED (QA2 automate2-02): an empty list beside a
+    // `last_firing` is a read that served no firings, never "Never fired" --
+    // the list's Last firing column says the same schedule failed 5h ago.
+    const last = s.last_firing
+    const at = last.ended_at ?? last.slot
+    return (
+      <Sec name="firings" title="Firings">
+        <p className="sb-note" data-testid="sc-firings-unserved">
+          &mdash; recent firings not served by this read. The last firing{' '}
+          {last.outcome === null ? 'is still in progress' : <b>{last.outcome}</b>}
+          {at !== null && (
+            <>
+              {', '}
+              <span title={localTime(at)}>{timeAgo(at, now)}</span>
+            </>
+          )}
+          .
+        </p>
+      </Sec>
+    )
+  }
   if (firings.length === 0) {
     // A6: NEVER FIRED IS A FACT, NOT A ZERO (§6.2). No table, no "0 runs".
     return (
@@ -1244,10 +1307,18 @@ function Firings({ s, firings, go }: { s: Schedule; firings: ServedFiring[]; go:
  * (`BurnBar`, which adds nothing up), then the day budget and the per-run
  * tripwire as the tick holds them.
  */
-function Spend({ s }: { s: Schedule }) {
+function Spend({ s, type }: { s: Schedule; type: ScheduleTypeRow | null | 'unread' }) {
   const b = s.budget
+  // A FIELD LEFT TO THE TYPE (QA2 automate2-18): the gate rows' words, not
+  // "— not set". `resolve_budget` fills an unset field from the type's caps.
+  const left = (key: 'per_day_usd' | 'per_run_usd' | 'max_concurrent', say: (v: number) => string): ReactNode => {
+    if (type === null) return <span className="as-dim">the type’s default; reading which…</span>
+    const d = type === 'unread' ? undefined : type.budget_caps?.[key]
+    if (d === undefined || d === null) return <i className="ctl-em">&mdash; the type’s default, which the catalogue did not say</i>
+    return `${say(d)} (the type’s default)`
+  }
   return (
-    <Sec name="spend" title="Spend today" sub={`${s.spend_today.day} · the schedule’s own day`}>
+    <Sec name="spend" title="Spend today" sub={`${dayWords(s.spend_today.day)} · the schedule’s own day`}>
       {s.budget_use === undefined || s.budget_use === null ? (
         <p className="sb-note" data-testid="sc-burn-absent">
           {s.budget_use === null
@@ -1262,7 +1333,7 @@ function Spend({ s }: { s: Schedule }) {
       <dl className="as-kv" data-testid="sc-budget">
         <Kv name="Day budget">
           {b.per_day_usd === undefined ? (
-            '— not set'
+            left('per_day_usd', (v) => `${usd(v)} a day`)
           ) : (
             <>
               <b>{usd(b.per_day_usd)}</b> a day. When it is spent, the next firing is skipped.
@@ -1271,14 +1342,14 @@ function Spend({ s }: { s: Schedule }) {
         </Kv>
         <Kv name="Per-run tripwire">
           {b.per_run_usd === undefined ? (
-            '— not set'
+            left('per_run_usd', (v) => `${usd(v)} a run`)
           ) : (
             <>
               <b>{usd(b.per_run_usd)}</b> a run. A run that costs more fails its firing and pauses this schedule.
             </>
           )}
         </Kv>
-        <Kv name="Live runs">{b.max_concurrent === undefined ? '— not set' : `at most ${b.max_concurrent} at once`}</Kv>
+        <Kv name="Live runs">{b.max_concurrent === undefined ? left('max_concurrent', (v) => `at most ${v} at once`) : `at most ${b.max_concurrent} at once`}</Kv>
       </dl>
     </Sec>
   )
@@ -1318,8 +1389,8 @@ function Gate({ s, type, onChanged, go }: { s: Schedule; type: ScheduleTypeRow |
           )}
         </Kv>
         <Kv name="Hard stops">
-          A change to IAM, the frozen contract, security, CODEOWNERS or a protected path is held for a second member, or in a platform
-          repository for the owner, whatever the gate; a change to <code>.github/workflows/</code> is refused.{' '}
+          {/* The same sentence as the form's Gates card (QA1 automate-09). */}
+          <HardStops />{' '}
           {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule.
         </Kv>
       </dl>
@@ -1427,7 +1498,7 @@ function SheetBody({
       </Sec>
       <Cadence s={s} word={s.state_word} />
       <Firings s={s} firings={firings} go={go} />
-      <Spend s={s} />
+      <Spend s={s} type={type} />
       <Gate s={s} type={type} onChanged={reread} go={go} />
       <FoldSec
         name="settings"

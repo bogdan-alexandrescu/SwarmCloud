@@ -49,7 +49,9 @@ from .test_build_images_incremental import (
 )
 from .test_ci_built_images import FAKE_GH, IMAGES, OWNER_REPO, REGISTRY, ci_run
 
-WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer"}
+# agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base by digest.
+WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer",
+          "agent-runtime-lightpanda"}
 
 
 class Release(Sandbox):

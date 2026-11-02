@@ -67,6 +67,8 @@ IMAGES = [
     "agent-runtime-base-nocodex",
     "agent-runtime-browser",
     "agent-runtime-indexer",
+    # agent-runtime-base by digest plus Lightpanda (LIGHTPANDA-BUILD-SCRIPTS).
+    "agent-runtime-lightpanda",
     "swarm-api",
     "swarm-scheduler",
     "swarm-quota-broker",
@@ -80,6 +82,9 @@ IMAGES = [
     # The public GitHub push receiver (GS-HOOKS, part of #1384),
     # apps/swarm-github-hooks/Dockerfile.
     "swarm-github-hooks",
+    # Voice it's GPT-Live session holder (VOICE-STATEFULSET, part of #2688),
+    # apps/swarm-voice/Dockerfile.
+    "swarm-voice",
     "workspace-apply",
 ]
 

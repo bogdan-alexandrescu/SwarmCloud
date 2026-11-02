@@ -118,6 +118,12 @@
 .cfg-meter-bar > i.is-next { background: var(--sk-ac, var(--s-live)); }
 .cfg-meter-bar > i.is-failed { background: var(--s-bad); }
 .cfg-meter-bar > i.is-stale { background: var(--s-warn); }
+/* A STEP NOTHING MEASURED IS NOT A STEP TO DO (QA1-FIX-32, admin-shell-10):
+   Workspaces you admin said `Setup 2 of 4 · 2 not measured` over four bars
+   of which the two unmeasured were the same solid grey as a step not done.
+   An unknown is hollow and dashed, the mark an unknown tile wears
+   (`.c-tile.is-unknown`), on every meter that draws the steps. */
+.cfg-meter-bar > i.is-unknown { box-sizing: border-box; background: none; border: 1px dashed var(--ctl-absent); }
 
 /* ---- the pages under the strip ------------------------------------------------ */
 /* A box or a radio on a Config page wore the browser's 0.5ex side margins, a

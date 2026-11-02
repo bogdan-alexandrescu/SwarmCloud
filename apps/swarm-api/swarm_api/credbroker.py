@@ -32,6 +32,22 @@ secret before the last step:
 Checks 4 and 6-8 are pure (`is_current`, `decide_slot`), so the rule that keeps
 Alice's token from Bob's attempt is testable without a route.
 
+A SERVICE SUBMISSION'S RUN (DAYONE-SERVICE-APP-TOKEN; lesson 43). A task whose
+SIGNED `submitted_by` is a service account (`validation.is_service_submitter`,
+the rule submission's service path uses) never reaches checks 6-9: after
+checks 1-5 it is released an App installation token minted for this one call
+(`decide_run_token`, then `forge_installation.InstallationTokens.run_token`):
+THIS tenant's installation of the signed repository's owner, that one
+repository, `contents` and `pull_requests` write for a write and read for a
+read, never held and never written to a slot. The answer names the task's
+signed slot as `secret`, the name the worker checks it against. No
+installation, a mint GitHub refuses, or no minter wired
+(FORGE_INSTALLATION_READS off) is 403 `app_installation_unavailable`, and the
+worker keeps today's service rule: it reads that slot itself. This path does
+not wait for FORGE_BROKER, which is about a PERSON'S slot: it needs only the
+minter and swarm-child-key (checks 1-5 are the attempt proof). With
+FORGE_BROKER off a person's task is still refused 503, after check 5.
+
 NEVER A VALUE. The token is returned in the 200's body and nowhere else: not
 a log line, an event, a Firestore field, a response header or an error. Logs
 carry the decision code, the task id and the secret's NAME.
@@ -47,6 +63,7 @@ from typing import Any, Callable, Literal, Mapping
 
 from pydantic import Field
 
+from swarm_common.models import FORGE_CREDENTIAL
 from swarm_common.states import TaskState
 
 from . import verdictpublish
@@ -62,10 +79,11 @@ from .children import (
 )
 from .errors import ApiError, ValidationFailed
 from .forge import NoForgeCredential
+from .forge_installation import RunMintRefused
 from .gittokens import Scope, owner_suffix, provider_suffix, secret_name_for
 from .repositories import repo_id_for
 from .store import LEASES, TASKS
-from .validation import github_repository
+from .validation import github_repository, is_service_submitter
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +167,14 @@ class CredentialUnavailable(ApiError):
 class CredentialReadFailed(ApiError):
     status_code = 502
     code = "credential_read_failed"
+
+
+class AppInstallationUnavailable(ApiError):
+    """A service submission's run gets no installation token; the worker
+    keeps today's service rule (`agent_worker` reads the task's slot)."""
+
+    status_code = 403
+    code = "app_installation_unavailable"
 
 
 # --------------------------------------------------------------------------
@@ -250,6 +276,43 @@ def decide_slot(task: Mapping[str, Any], *, tenant_id: str, access: str,
     return Release(suffix=suffix, repo_id=repo_id)
 
 
+@dataclass(frozen=True)
+class RunRelease:
+    """What `decide_run_token` allows: the slot the answer names, the one
+    repository the token is minted for, and whether it may write."""
+
+    suffix: str
+    owner: str
+    repo: str
+    write: bool
+
+
+def decide_run_token(task: Mapping[str, Any], *, access: str) -> RunRelease:
+    """The service-submission path's checks over a task whose signature
+    already verified: the signed submitter is a service account, the signed
+    slot is a forge credential suffix, the signed repository is on GitHub,
+    and a write was signed for write. Raises the refusal; mints nothing."""
+    submitted_by = task.get("submitted_by")
+    if not isinstance(submitted_by, str) or not is_service_submitter(submitted_by):
+        raise CredentialNotSubmitters(
+            "this task was not submitted by a service account; an installation token is "
+            "minted only for a service submission's run")
+    suffix = task.get("forge_credential")
+    if not isinstance(suffix, str) or not FORGE_CREDENTIAL.fullmatch(suffix):
+        raise AppInstallationUnavailable(
+            "this task's forge credential is not a forge credential suffix")
+    try:
+        named = github_repository(task.get("repository_url"))
+    except ValidationFailed:
+        named = None
+    if named is None:
+        raise AppInstallationUnavailable(
+            "this task names no GitHub repository an installation token could cover")
+    if access == _WRITE and task.get("forge_access") != _WRITE:
+        raise GrantReadOnly("this task was submitted for read access to its repository")
+    return RunRelease(suffix=suffix, owner=named[0], repo=named[1], write=access == _WRITE)
+
+
 # --------------------------------------------------------------------------
 # The service
 # --------------------------------------------------------------------------
@@ -261,12 +324,15 @@ class ForgeCredentialBroker:
     `children` authenticates the worker and verifies the attempt proof, the
     child route's own checks, reused; `grant_mode` is
     `SubmissionService._grant_mode`, the check submission resolved the slot
-    with; `tokens` is the context's `forge_tokens` (`SecretManagerForgeTokens`).
+    with; `tokens` is the context's `forge_tokens` (`SecretManagerForgeTokens`);
+    `installations` the context's `forge_installations`
+    (`forge_installation.InstallationTokens`), which mints a service
+    submission's run token, or None when FORGE_INSTALLATION_READS is off.
     """
 
     def __init__(self, *, settings: Any, db: Any, store: Any, children: ChildService,
                  grant_mode: Callable[[str, str, str], str | None], tokens: Any,
-                 now: Callable[[], datetime]) -> None:
+                 now: Callable[[], datetime], installations: Any = None) -> None:
         self._settings = settings
         self._db = db
         self._store = store
@@ -274,6 +340,10 @@ class ForgeCredentialBroker:
         self._grant_mode = grant_mode
         self._tokens = tokens
         self._now = now
+        self._installations = installations
+
+    def _mints_run_tokens(self) -> bool:
+        return callable(getattr(self._installations, "run_token", None))
 
     def _refuse(self, error: ApiError, body: ForgeCredentialRequest | None,
                 secret: str | None = None) -> ApiError:
@@ -284,7 +354,8 @@ class ForgeCredentialBroker:
 
     def release(self, authorization: str | None, raw: bytes, *, path: str,
                 proof: str | None, timestamp: str | None) -> Released:
-        if getattr(self._settings, "forge_broker", False) is not True:
+        broker_on = getattr(self._settings, "forge_broker", False) is True
+        if not broker_on and not self._mints_run_tokens():
             raise self._refuse(ForgeCredentialUnavailable(
                 "the forge broker is switched off here (FORGE_BROKER), so it releases no "
                 "person's slot; workers read their own"), None)
@@ -332,6 +403,14 @@ class ForgeCredentialBroker:
         if refusal is not None:
             raise self._refuse(SpecUnverified(refusal), body)
 
+        # A service submission's run: an installation token, never a slot.
+        if is_service_submitter(task.get("submitted_by")):
+            return self._release_run_token(task, body)
+        if not broker_on:
+            raise self._refuse(ForgeCredentialUnavailable(
+                "the forge broker is switched off here (FORGE_BROKER), so it releases no "
+                "person's slot; workers read their own"), body)
+
         # 6-8: the submitter's own slot, under a grant that still holds.
         try:
             release = decide_slot(task, tenant_id=body.tenant_id, access=body.access,
@@ -362,3 +441,38 @@ class ForgeCredentialBroker:
                  "generation=%s access=%s secret=%s", body.tenant_id, body.task_id,
                  body.generation, body.access, secret)
         return Released(secret=secret, token=value.value)
+
+    def _release_run_token(self, task: Mapping[str, Any],
+                           body: ForgeCredentialRequest) -> Released:
+        """`decide_run_token`, then one fresh mint. The token is in the
+        answer only; the log names the decision, the repository and the
+        slot's NAME, never a value."""
+        try:
+            release = decide_run_token(task, access=body.access)
+        except ApiError as exc:
+            raise self._refuse(exc, body) from None
+        secret = secret_name_for(body.tenant_id, release.suffix)
+        repository = f"{release.owner}/{release.repo}"
+        if not self._mints_run_tokens():
+            raise self._refuse(AppInstallationUnavailable(
+                "this deployment mints no installation tokens (FORGE_INSTALLATION_READS is "
+                "off); the run keeps its slot"), body, secret)
+        try:
+            token = self._installations.run_token(
+                body.tenant_id, release.owner, release.repo, write=release.write)
+        except RunMintRefused as exc:
+            raise self._refuse(AppInstallationUnavailable(
+                f"no installation token for {repository} ({exc.reason}); the run keeps "
+                "its slot"), body, secret) from None
+        except Exception as exc:  # noqa: BLE001 -- the type only, never a message
+            raise self._refuse(AppInstallationUnavailable(
+                f"no installation token for {repository} ({type(exc).__name__}); the run "
+                "keeps its slot"), body, secret) from None
+        if not isinstance(token, str) or not token:
+            raise self._refuse(AppInstallationUnavailable(
+                f"no installation token for {repository}; the run keeps its slot"),
+                body, secret)
+        log.info("forge credential released decision=app_installation tenant=%s task=%s "
+                 "generation=%s access=%s repository=%s secret=%s", body.tenant_id,
+                 body.task_id, body.generation, body.access, repository, secret)
+        return Released(secret=secret, token=token)

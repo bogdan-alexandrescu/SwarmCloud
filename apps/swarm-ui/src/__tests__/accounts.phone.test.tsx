@@ -86,6 +86,10 @@ describe('the phone cards draw each window against its floor', () => {
 })
 
 describe('an account name is never broken at its hyphen', () => {
+  // THE VERDICT JUDGES A GONE CLOCK AGAINST ITS OWN `now` PROP (capacity-03,
+  // QA1B-02 and QA1C-FOLLOWUPS): a reset 40 minutes after NOW is long past on
+  // the wall clock, and still named, because `Verdict` hands `verdictOf` the
+  // board's clock. No fake Date is held for it.
   it('holds every name in the verdict whole', () => {
     expect(css).toMatch(/\.acct-nm\s*\{[^}]*white-space:\s*nowrap/)
     const now = NOW

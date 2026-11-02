@@ -44,7 +44,7 @@ const CHECKS: readonly { key: AccessCheckName; label: string }[] = [
   { key: 'pull_request', label: 'Pull request' },
 ]
 
-/** 0 a failure, 1 not yet known, 2 passed: the grid's order (failures first). */
+/** 0 a failure, 1 not yet known, 2 passed: a failure leads the grid (`reachOrder`). */
 export function grantRank(g: AccessGrant): number {
   const needed: AccessCheckName[] = g.mode === 'write' ? ['clone', 'push', 'pull_request'] : ['clone']
   const states = needed.map((k) => g.checks[k]?.state)
@@ -53,10 +53,41 @@ export function grantRank(g: AccessGrant): number {
   return 2
 }
 
+/**
+ * THE GRID'S ORDER: FAILURES FIRST, THEN BY NAME (console visual QA pass 2,
+ * config2-09; part of #2694). Ordered by every rank, a grant not verified yet
+ * (rank 1) went above the ones that passed, so the fixture console's table
+ * read example-web, example-api, payments while the registered cards under
+ * it read example-api, example-web, payments: one page, the same three
+ * repositories in two orders. A failure still leads, because it asks for
+ * something; everything else is in the cards' order, by full name.
+ */
+export function reachOrder(a: AccessGrant, b: AccessGrant): number {
+  return Number(grantRank(b) === 0) - Number(grantRank(a) === 0) || a.repository.localeCompare(b.repository)
+}
+
+/**
+ * A CHECK A READ GRANT DOES NOT NEED: THE DASH AND ITS REASON, BOTH SEEN
+ * (console visual QA pass 2, config2-07, was config-18; part of #2694). As a
+ * bare Dash the read row's Push, Pull request and Push test read as three
+ * unknowns, the reason only on hover. config-e.html S3a's reach table draws
+ * "— read grant" there, so the words sit beside the dash; the Dash keeps the
+ * full reason as its name, and the words are hidden from a screen reader,
+ * which already hears it.
+ */
+function ReadGrantDash({ why }: { why: string }) {
+  return (
+    <span className="ac-why" data-why="read grant">
+      <Dash why={why} />{' '}
+      <small aria-hidden="true">read grant</small>
+    </span>
+  )
+}
+
 function CheckCell({ grant, name, label }: { grant: AccessGrant; name: AccessCheckName; label: string }) {
   const c: AccessCheck | undefined = grant.checks[name]
   if (c?.state === 'not_required' || (c === undefined && grant.mode === 'read' && name !== 'clone')) {
-    return <Dash why={`${label} is not needed for a read grant`} />
+    return <ReadGrantDash why={`${label} is not needed for a read grant`} />
   }
   if (c === undefined) return <UrCap label={label} cell={{ state: 'unknown', reason: 'Not checked yet' }} word="not checked" />
   const state = c.state === 'ok' || c.state === 'missing' ? c.state : 'unknown'
@@ -71,7 +102,7 @@ function CheckCell({ grant, name, label }: { grant: AccessGrant; name: AccessChe
  * unknown never a pass -- or that it has not been run.
  */
 function PushTestCell({ grant, check }: { grant: AccessGrant; check: AccessCheck | undefined }) {
-  if (grant.mode !== 'write') return <Dash why="Push test is not offered on a read grant: SwarmCloud never pushes there (D9)" />
+  if (grant.mode !== 'write') return <ReadGrantDash why="Push test is not offered on a read grant: SwarmCloud never pushes there (D9)" />
   if (check === undefined) return <UrCap label="Push test" cell={{ state: 'unknown', reason: 'Not run: it is opt-in' }} word="not run" />
   const state = check.state === 'ok' || check.state === 'missing' ? check.state : 'unknown'
   const reason = [check.code, check.checked_at ? `run ${timeAgo(check.checked_at)}` : null].filter(Boolean).join(' · ') || null
@@ -108,7 +139,7 @@ export function ReachableRepositories({
   const [filter, setFilter] = useState('')
   const sorted = [...grants]
     .filter((g) => filter.trim() === '' || g.repository.toLowerCase().includes(filter.trim().toLowerCase()))
-    .sort((a, b) => grantRank(a) - grantRank(b) || a.repository.localeCompare(b.repository))
+    .sort(reachOrder)
 
   async function verify(g: AccessGrant): Promise<void> {
     setBusy(g.repo_id)

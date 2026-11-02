@@ -24,10 +24,17 @@ import './styles/secrets.css'
 
 const ROUTE = 'GET /v1/admin/platform-secrets'
 
+/**
+ * `not_declared` IS "NO SECRET" (visual QA pass 1, admin-shell-22, part of
+ * #2596). The status means the name is in the catalogue and Secret Manager
+ * holds no secret of that name. "Not declared" read as the opposite -- the
+ * banner went on to say the name IS in the catalogue -- while the row's own
+ * columns already said "no secret".
+ */
 const STATUS_WORDS: Readonly<Record<string, string>> = {
   set: 'set',
   not_set: 'declared, no version',
-  not_declared: 'not declared',
+  not_declared: 'no secret',
   unreadable: 'unreadable',
 }
 
@@ -115,13 +122,15 @@ function PlatformSecretsBody({ data }: { data: PlatformSecrets }) {
         <section className="sec-lead is-warn" aria-label="Needs a look">
           <span className="sec-k">Needs a look</span>
           <b>
-            {look.length === 1
-              ? `${look[0]!.secret_id} is ${STATUS_WORDS[look[0]!.status] ?? look[0]!.status}`
-              : `${look.length} platform secrets are not set`}
+            {look.length !== 1
+              ? `${look.length} platform secrets are not set`
+              : look[0]!.status === 'not_declared'
+                ? `${look[0]!.secret_id} has no secret yet`
+                : `${look[0]!.secret_id} is ${STATUS_WORDS[look[0]!.status] ?? look[0]!.status}`}
           </b>
           <span>
             {look.length === 1 && look[0]!.status === 'not_declared'
-              ? 'Its name is in the catalogue but no secret exists. '
+              ? 'It is in the catalogue but nothing was stored. '
               : ''}
             {grace.length > 0 ? `${grace.length === 1 ? 'One other is' : `${grace.length} are`} mid-rotation, which is expected for 24 h. ` : ''}
             {blind.length > 0
@@ -180,12 +189,14 @@ function PlatformSecretsBody({ data }: { data: PlatformSecrets }) {
                   <span className={r.status === 'set' ? 'sec-state is-ok' : unread(r) ? 'sec-chip is-info' : 'sec-chip is-warn'}>{STATUS_WORDS[r.status] ?? r.status}</span>
                   {r.reason !== null && <small className="sec-sub">{REASON_WORDS[r.reason] ?? r.reason}</small>}
                 </td>
+                {/* SAID ONCE (visual QA pass 2, admin2-16): the pill says "no
+                    secret"; the figures beside it are a dash, not the same words twice more. */}
                 <td data-label="Enabled versions">
-                  {unread(r) ? <NotRead /> : r.enabled_versions === null ? 'no secret' : r.enabled_versions}
+                  {unread(r) ? <NotRead /> : r.enabled_versions === null ? '—' : r.enabled_versions}
                   {r.rotation_in_grace && <small className="sec-sub">rotation in its grace</small>}
                 </td>
                 <td data-label="Age of newest">
-                  {unread(r) ? <NotRead /> : r.newest_enabled_at === null ? (r.status === 'not_declared' ? 'no secret' : 'no version') : timeAgo(r.newest_enabled_at)}
+                  {unread(r) ? <NotRead /> : r.newest_enabled_at === null ? (r.status === 'not_declared' ? '—' : 'no version') : timeAgo(r.newest_enabled_at)}
                 </td>
                 <td data-label="Managed by">{r.managed_by}<small className="sec-sub">{r.written_by}</small></td>
               </tr>

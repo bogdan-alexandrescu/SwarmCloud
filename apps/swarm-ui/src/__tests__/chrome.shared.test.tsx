@@ -115,7 +115,8 @@ async function liveApp(hash: string, held = '/v1/admin/tenants'): Promise<{ rele
   render(<LiveApp />)
   // The FRAME's read has landed: the tab now holds a successful read that is
   // not the screen's.
-  await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Bogdan'))
+  // The caller's own personal workspace, by its one name (admin-shell-21).
+  await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Your workspace'))
   return {
     release: async (res: Response) => {
       await act(async () => {
@@ -156,7 +157,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     expect(dockLine()).toMatch(/newest/)
 
     await release(json({ tenants: [] }))
-    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ read \d+ s ago$/))
+    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ read once · \d+ s ago$/))
     expect(document.querySelector('.ctl-head-age')).toBeNull()
   })
 
@@ -172,7 +173,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     expect(dockLine()).toMatch(/newest/)
 
     await release(json({ repositories: [] }))
-    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ read \d+ s ago$/))
+    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ read once · \d+ s ago$/))
     expect(document.querySelector('.ctl-head-age')).toBeNull()
   })
 

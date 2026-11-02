@@ -1330,3 +1330,22 @@ def test_the_403_classifier_reads_the_status_and_falls_back_to_the_text():
     weird = Exception("timeout")
     weird.status = "unknown"
     assert not GkeJobDispatcher._is_forbidden(weird)
+
+
+def test_a_finished_gke_job_frees_its_quota_slot_after_ten_minutes(settings, tenant):
+    """BGD 2026-10-28: ttlSecondsAfterFinished 3600 -> 600.
+
+    A finished Job keeps its `count/jobs.batch` slot until its TTL expires. On
+    2026-10-28 ~09:30-11:15Z eng's 240 slots filled with FINISHED Jobs and 28
+    steps were refused `gke_job_quota_exceeded`. MUTATION: put 3600 back in
+    dispatch.py's manifest and this reads 3600.
+    """
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=api)
+    task = make_task("browser")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+    )
+
+    assert api.created[0][1]["spec"]["ttlSecondsAfterFinished"] == 600

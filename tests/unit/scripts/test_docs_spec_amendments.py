@@ -76,11 +76,14 @@ def test_the_catalogue_is_what_the_amendment_describes():
     # claude-code-browser: contract request 67 (owner, 2026-10-11), on the
     # browser image, which runs only on GKE. claude-code-large: contract
     # request 113 (owner, 2026-10-22), claude-code on the large class.
+    # claude-code-lightpanda: contract request 127 (owner, 2026-10-31),
+    # claude-code on the Lightpanda image, the standard class.
     assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {
         "browser",
         "claude-code-browser",
         "claude-code",
         "claude-code-large",
+        "claude-code-lightpanda",
         "indexer",
         "generic",
         "codex",
@@ -96,6 +99,8 @@ def test_the_catalogue_is_what_the_amendment_describes():
         # Contract requests 93 and 94: a control_plane profile, which nothing
         # runs on any backend; CLOUD_RUN_JOB is the catalogue's statement only.
         "await-input",
+        # Contract request 124: the second control_plane profile, the same way.
+        "fix-loop",
     }
 
 

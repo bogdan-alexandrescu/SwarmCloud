@@ -193,6 +193,7 @@ module "gke_autopilot" {
   # shows up in a diff rather than as an edit to the rule that guards prod.
   allow_open_master_authorized_network = var.gke_allow_open_master_authorized_network
   deletion_protection                  = var.deletion_protection
+  enable_fqdn_network_policy           = var.gke_enable_fqdn_network_policy
 
   labels = local.labels
 
@@ -290,7 +291,10 @@ module "secret_manager" {
   # The SwarmCloud GitHub App's client secret and private key (#780, OB2):
   # two empty platform slots swarm-api alone reads. github_app.tf says why
   # the user slots' grants are not made here.
-  github_app_secrets_enabled = var.enable_github_app
+  # The App's two secret containers exist under enable_console_app_setup alone
+  # too, so the console's App step has somewhere to store the manifest
+  # exchange's results before any App switch is on (DAYONE-TF-2).
+  github_app_secrets_enabled = var.enable_github_app || var.enable_console_app_setup
   github_app_secret_readers  = [module.iam.service_account_members["swarm-api"]]
 
   labels = local.labels
@@ -693,9 +697,20 @@ module "frontend" {
   ui_service_name = "swarm-ui"
   hostname        = var.frontend_hostname
 
+  # The unauthenticated /.well-known/swarmcloud backend (discovery.tf); "" when
+  # swarm-discovery is not deployed, which makes no backend and no path rule.
+  discovery_service_name = local.discovery_on ? local.discovery_name : ""
+
   labels = local.labels
 
-  depends_on = [module.project_services, module.cloud_run]
+  # NOT module.cloud_run. Nothing here reads a Cloud Run output: the services
+  # are named by string, and a serverless NEG names its service rather than
+  # needing it to exist. swarm-api's environment reads this module's
+  # iap_audiences (locals.tf IAP_AUDIENCES), so waiting for module.cloud_run
+  # was the cycle that made the audiences a value copied by hand out of
+  # `terraform output` and back into tfvars (docs/design/day-one-install.md
+  # §5.2).
+  depends_on = [module.project_services]
 }
 
 module "monitoring" {
@@ -725,41 +740,49 @@ module "monitoring" {
   # The declared tenants, whose forge slots the workspace job must never bind.
   tenant_ids = local.tenant_ids
 
+  # Release acceptance's tenant and swarm-verify's own: the declared tenant
+  # whose principal is the verify account. Read from var.tenants, which holds
+  # the id swarm_common.identity derived, rather than restating that rule here
+  # or naming one deployment's id (DAYONE-TF-1, plan R9). The account's address
+  # is built from its id, not read off google_service_account.verify, so it is
+  # known at plan on a fresh project too.
+  fencing_alert_excluded_tenants = concat(["smoke"], sort([
+    for t, v in var.tenants : t
+    if lower(v.principal) == "${module.service_account_ids.verify_id}@${var.project_id}.iam.gserviceaccount.com"
+  ]))
+
   labels = local.labels
 
   depends_on = [module.project_services]
 }
 
 # ---------------------------------------------------------------------------
-# The account pool is wired, or terraform says so
+# The account pool's and the child routes' addresses, computed
 # ---------------------------------------------------------------------------
 #
-# The failure this exists to prevent is completely silent at runtime. With
-# QUOTA_BROKER_URL unset on the scheduler, `WorkerConfig.quota_broker_url` is
-# None, `Worker.__init__` builds no AccountBroker, and `_lease_account` returns
-# None on its first branch for every task -- so every agent runs on the one
-# shared per-tenant subscription, which is the exact contention the pool was
-# built to remove. Nothing fails. Nothing logs. The pool's own listing shows a
-# healthy, idle set of accounts, because it is idle.
+# The scheduler hands QUOTA_BROKER_URL and SWARM_API_URL to every worker it
+# dispatches, and swarm-api proxies the account pool to the broker. Those
+# environments are INPUTS to module.cloud_run, and a service's `uri` is an
+# OUTPUT of it, so reading the uri there is a cycle terraform refuses to plan.
+# Until DAYONE-TF-1 the way round was a hand copy: apply, read `terraform
+# output`, paste into tfvars, apply again, with a `check` per value to catch a
+# stale paste.
 #
-# A `check` and not a `precondition`, deliberately: on a fresh project the
-# broker does not exist yet, so the value cannot be known on the first apply
-# and a hard failure would make the configuration unbootstrappable. A check
-# reports on every plan and apply without blocking either, which is the right
-# shape for "apply once, read the output, put it in tfvars" -- the same
-# two-step frontend_iap_audiences already uses.
+# Cloud Run also serves every service at a DETERMINISTIC URL,
+# https://<service>-<project number>.<region>.run.app
+# (https://cloud.google.com/run/docs/triggering/https-request), and the
+# project number is read here already (data.google_project.this). So both are
+# built, and the copy, the second pass and the two checks are gone
+# (docs/design/day-one-install.md §5.2).
 #
-# ONLY THE MISMATCH IS ASSERTED HERE, and the emptiness is not, which is not an
-# oversight. `terraform test` treats a failed check as a failed run, and the
-# suite in tests/terraform plans this root with no tfvars at all -- so an
-# assertion that the variable is set would fail every one of those runs for a
-# value they have no reason to supply. The "this deployment is silently inert"
-# alarm therefore lives where it can tell the difference between "no pool" and
-# "a pool nobody is using": the broker's own sweep warns when accounts are
-# registered and nothing has ever been assigned from them.
-check "quota_broker_url_is_wired" {
-  assert {
-    condition     = var.quota_broker_url == "" || var.quota_broker_url == module.cloud_run.service_urls["swarm-quota-broker"]
-    error_message = "quota_broker_url does not match the deployed swarm-quota-broker URL. A stale value is worse than an empty one: a request to it is refused rather than unanswered, and a worker that is refused PARKS every task rather than falling back. Run `terraform output quota_broker_url` and update tfvars."
-  }
+# Audiences do not move with this: every token minted for these services
+# names a custom audience (local.push_audiences), never the URL.
+#
+# To be proven in P3 on the throwaway project of D22 (the design's own words):
+# that the existing smoke reaches both services at this address, internal
+# ingress included. The fallback is the design's: the engine reads
+# `terraform output quota_broker_url` after pass 1 and writes it for pass 2.
+locals {
+  quota_broker_url = "https://swarm-quota-broker-${data.google_project.this.number}.${var.region}.run.app"
+  swarm_api_url    = "https://swarm-api-${data.google_project.this.number}.${var.region}.run.app"
 }

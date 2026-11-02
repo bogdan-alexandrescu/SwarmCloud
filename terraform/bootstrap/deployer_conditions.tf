@@ -81,7 +81,7 @@ locals {
   # condition, and "You can't substitute the project ID for the project number"
   # (resource attributes page, above). Read from the project rather than
   # pasted, as wif.tf already does for the Cloud Build service account.
-  deployer_project_number = var.enable_github_wif ? data.google_project.this[0].number : ""
+  deployer_project_number = local.deployer_on ? data.google_project.this[0].number : ""
 
   # role -> the resource types the condition governs, and the name prefixes it
   # admits within them. Rendered into CEL once, below; the tests read these
@@ -470,10 +470,10 @@ locals {
   deployer_scoped = merge(
     {
       for role in keys(local.deployer_conditions) :
-      role => var.enable_github_wif && contains(var.deployer_scoped_roles, role)
+      role => local.deployer_on && contains(var.deployer_scoped_roles, role)
     },
     {
-      "roles/resourcemanager.projectIamAdmin" = var.enable_github_wif && contains(var.deployer_scoped_roles, "roles/resourcemanager.projectIamAdmin")
+      "roles/resourcemanager.projectIamAdmin" = local.deployer_on && contains(var.deployer_scoped_roles, "roles/resourcemanager.projectIamAdmin")
     },
   )
 }

@@ -206,6 +206,20 @@
         "persona": "platform-admin"
       },
       {
+        "id": "setup",
+        "address": "admin/setup",
+        "path": "/admin/setup",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "health",
+        "address": "admin/health",
+        "path": "/admin/setup/health",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
         "id": "people",
         "address": "admin/people",
         "path": "/admin/people",
@@ -216,6 +230,27 @@
         "id": "workspaces",
         "address": "admin/workspaces",
         "path": "/admin/workspaces",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "voice-talk",
+        "address": "voice/talk",
+        "path": "/voice/talk",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "voice-projects",
+        "address": "voice/projects",
+        "path": "/voice/projects",
+        "ready": "main h1",
+        "persona": "platform-admin"
+      },
+      {
+        "id": "voice-preferences",
+        "address": "voice/preferences",
+        "path": "/voice/preferences",
         "ready": "main h1",
         "persona": "platform-admin"
       }

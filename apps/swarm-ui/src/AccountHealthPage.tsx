@@ -35,6 +35,8 @@ import {
   counts24h,
   familyCount,
   healthServed,
+  healthyWithheld,
+  healthyWithheldLine,
   hm,
   incidentSummary,
   incidentTitle,
@@ -64,7 +66,6 @@ import {
 } from './accountHealthModel'
 import { blocksOf, isDuplicateBlock, verdictOf, type PoolAccount } from './accountsPool'
 import { whyOf } from './AccountsTable'
-import { HelpLinks } from './HelpCard'
 import type { TopicId } from './help'
 import { loadAccountHealthBoard, type AccountHealthBoard } from './api'
 import { capacityPoll, paneHref, usePhoneTables } from './capacityPoll'
@@ -86,9 +87,16 @@ export function sheetHref(accountId: string): string {
 }
 
 /**
- * The page's help, as a footer index rather than a `?` after the title: the
- * console's glyph count is capped (B7.4, `tests/help.test.ts`), and a new
- * screen explains itself through the footer index before it takes a glyph.
+ * The page's help, as the topic index the title's `?` opens.
+ *
+ * NO LONGER A FOOTER (QA1-FIX-24, capacity-13, part of #2596). It was a
+ * `Reading this screen:` row of underlined monospace links at the foot of
+ * both layouts, because the console's glyph count is capped (B7.4,
+ * `tests/help.test.ts`). VQ-033 (BGD 2026-10-26: "Move the topics behind the
+ * page's one ?") moved Pools', Accounts' and Provider quota's behind the `?`
+ * the title already draws -- the section's question, which a list joins
+ * rather than replaces -- so this costs no glyph, and Account health does the
+ * same.
  */
 const HEALTH_TOPICS: readonly TopicId[] = ['account-health', 'absent-vs-zero']
 
@@ -97,6 +105,7 @@ export function AccountHealthScreen() {
   return (
     <Screen
       title="Account health"
+      help={HEALTH_TOPICS}
       load={loadAccountHealthBoard}
       pollMs={capacityPoll(ACCOUNT_HEALTH_POLL_MS)}
     >
@@ -176,7 +185,6 @@ function DesktopBody({ m }: { m: Model }) {
       <Tiles m={m} />
       <AccountList m={m} />
       <Timeline m={m} />
-      <HelpLinks topics={HEALTH_TOPICS} />
     </div>
   )
 }
@@ -405,9 +413,21 @@ function OutrankedLine({ m }: { m: Model }) {
   )
 }
 
+/** Under Healthy: the healthy accounts the pool still withholds, by name (capacity-04). */
+function WithheldLine({ m }: { m: Model }) {
+  const held = healthyWithheld(m.accounts, m.records, m.scope)
+  const line = healthyWithheldLine(held)
+  if (line === null) return null
+  return (
+    <small className="ah-tile-also" data-withheld={held.length}>
+      {line}
+    </small>
+  )
+}
+
 function Tiles({ m }: { m: Model }) {
   const t = tallyOf(m)
-  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall)
+  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall, m.now)
   return (
     <div className="ah-tiles" role="list" aria-label="Accounts by health status">
       {TILE_ORDER.map((s) => (
@@ -420,6 +440,7 @@ function Tiles({ m }: { m: Model }) {
           </div>
           <small>{m.served ? STATUS_HINT[s] : 'not served'}</small>
           {m.served && s === 'erroring' && <OutrankedLine m={m} />}
+          {m.served && s === 'healthy' && <WithheldLine m={m} />}
         </div>
       ))}
       <div className="ah-tile is-verdict" role="listitem" data-tile="verdict">
@@ -1028,14 +1049,13 @@ function PhoneBody({ m, view, setView }: { m: Model; view: PhoneView; setView: (
           <Timeline m={m} />
         </>
       )}
-      <HelpLinks topics={HEALTH_TOPICS} />
     </div>
   )
 }
 
 function SummaryLine({ m, open }: { m: Model; open: Incident[] | null }) {
   const t = tallyOf(m)
-  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall)
+  const v = verdictOf(m.accounts as PoolAccount[], m.scope, m.shortfall, m.now)
   const on = open === null ? null : new Set(open.map((x) => x.account_id)).size
   return (
     <div className="ah-sumline" data-summary="">

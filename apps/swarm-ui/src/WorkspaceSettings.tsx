@@ -21,7 +21,7 @@ import {
 } from './api'
 import { CodeIntelligenceCard } from './CodeIntelligence'
 import { Banner, Button, ButtonLink, Card, Dash, Tabs, routedClick } from './components'
-import { SetupContext, setupCount, useSetupSteps, type SetupStep } from './ConfigSetup'
+import { SetupContext, checklistCount, setupCount, useSetupSteps, type SetupStep } from './ConfigSetup'
 import type { ApiError } from './fetch'
 import { Refusal } from './GitHubConnect'
 import { NewWorkspaceForm, STEP_LABEL as JOB_STEP_LABEL, STEP_ORDER as JOB_STEP_ORDER } from './NewWorkspace'
@@ -31,6 +31,7 @@ import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { notServed } from './RepositoriesData'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
+import { OWN_WORKSPACE_LABEL } from './Spine'
 import { timeAgo, type OnboardingDoc, type Profile, type WorkspaceRoles } from './types'
 import './styles/workspace-settings.css'
 
@@ -153,7 +154,8 @@ function SetupLead({ part, go }: { part: 'settings' | 'setup'; go?: (to: string)
       <Lead
         kicker="Setup’s next step"
         title={title}
-        body={countLabel(d)}
+        // config2-03: the strip beside it counts steps; this names the checklist it counts.
+        body={checklistCount(d) ?? countLabel(d)}
         action={
           <ButtonLink kind="primary" size="sm" href={addressToPath(WORKSPACE_SETUP_ADDRESS)} onClick={routed(WORKSPACE_SETUP_ADDRESS, go)}>
             Open Workspace setup
@@ -443,7 +445,10 @@ function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead
   const [renaming, setRenaming] = useState(false)
   const read = me.state.status === 'ok' || me.state.status === 'stale' ? me.state.data : null
   const stored = read !== null && ws !== null && read.tenant.tenant_id === ws.tenant_id ? read.tenant.display_name || null : null
-  const name = renamed ?? stored ?? ws?.display_name ?? ''
+  // ONE NAME FOR THE PERSON'S OWN WORKSPACE (visual QA pass 2, admin-shell-21;
+  // part of #2694): the switcher's `Your workspace`, the id on its own row
+  // below, never `Your workspace (u-…)` here and `Bogdan` in the refusal.
+  const name = ws?.kind === 'user' ? OWN_WORKSPACE_LABEL : (renamed ?? stored ?? ws?.display_name ?? '')
   const mayRename = ws !== null && ws.kind === 'group' && role?.name === 'admin'
   return (
     <Card

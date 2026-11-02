@@ -265,6 +265,6 @@ describe('V224: the list\'s count line holds its place', () => {
   it('says the count once read', async () => {
     routes()
     await mount(null)
-    await waitFor(() => expect(visible(document.querySelector('.c-count-note'))).toBe('1 registered'), WAIT)
+    await waitFor(() => expect(visible(document.querySelector('.c-count-note'))).toBe('Registered repositories · 1'), WAIT)
   })
 })

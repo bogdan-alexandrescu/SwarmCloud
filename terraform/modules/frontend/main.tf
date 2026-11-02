@@ -262,6 +262,61 @@ removed {
 #
 # With no UI backend the default is the API, which is how an API-only
 # deployment behaves.
+# ---------------------------------------------------------------------------
+# The discovery backend: /.well-known/swarmcloud, WITHOUT IAP (DAYONE-TF-2,
+# design §9.2 (c)).
+# ---------------------------------------------------------------------------
+#
+# The plugin fetches the deployment's discovery document before it has any
+# credential, so this one path cannot sit behind IAP. It is served by
+# swarm-discovery (terraform/infra/discovery.tf), a separate service whose
+# only route is that path and whose document is non-secret; the invoker check
+# is disabled on that service, so no allUsers binding exists anywhere. Not a
+# backend bucket (option a: allUsers on a bucket, which Domain Restricted
+# Sharing refuses) and not a non-IAP route to swarm-api (option b: the whole
+# API service would lose its invoker check).
+#
+# Only while the URL map has its path matcher (the UI is on), which is every
+# deployment this module serves; the rule is the one exact path, no wildcard.
+locals {
+  discovery_enabled = var.discovery_service_name != "" && local.ui_enabled
+}
+
+resource "google_compute_region_network_endpoint_group" "discovery" {
+  count = local.discovery_enabled ? 1 : 0
+
+  project               = var.project_id
+  name                  = "${local.name}-discovery-neg"
+  region                = var.region
+  network_endpoint_type = "SERVERLESS"
+
+  cloud_run {
+    service = var.discovery_service_name
+  }
+}
+
+resource "google_compute_backend_service" "discovery" {
+  count = local.discovery_enabled ? 1 : 0
+
+  project     = var.project_id
+  name        = "${local.name}-discovery-backend"
+  description = "managed-by=swarm-terraform; /.well-known/swarmcloud only, no IAP (non-secret discovery document)"
+
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  protocol              = "HTTPS"
+
+  backend {
+    group = google_compute_region_network_endpoint_group.discovery[0].id
+  }
+
+  log_config {
+    enable      = true
+    sample_rate = 0.1
+  }
+
+  # No iap block: IAP stays off on this backend alone.
+}
+
 resource "google_compute_url_map" "this" {
   project         = var.project_id
   name            = "${local.name}-urlmap"
@@ -287,6 +342,15 @@ resource "google_compute_url_map" "this" {
       path_rule {
         paths   = ["/v1", "/v1/*", "/healthz", "/readyz", "/metrics", "/docs", "/openapi.json"]
         service = google_compute_backend_service.this.id
+      }
+
+      # The discovery document, exact path, to the backend with no IAP.
+      dynamic "path_rule" {
+        for_each = local.discovery_enabled ? [1] : []
+        content {
+          paths   = ["/.well-known/swarmcloud"]
+          service = google_compute_backend_service.discovery[0].id
+        }
       }
     }
   }

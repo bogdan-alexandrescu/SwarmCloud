@@ -298,7 +298,9 @@ describe('the "joined by request" mark is drawn from the members list (§4.6)', 
     await waitFor(() => expect(document.querySelectorAll('.pp-joined-unread')).toHaveLength(1), WAIT)
     const note = visible(document.querySelector('.pp-joined-unread'))
     expect(note).toContain('Example Labs')
-    expect(note).toContain('membership_unavailable')
+    // In words, never the code (QA1-FIX-17, admin-shell-05).
+    expect(note).not.toContain('membership_unavailable')
+    expect(note).toContain('its members list could not be read')
     expect(note).not.toContain('Example Team')
     expect(document.querySelector('.pp-joined')).toBeNull()
   })

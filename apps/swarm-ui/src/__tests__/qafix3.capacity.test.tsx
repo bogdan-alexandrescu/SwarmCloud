@@ -353,6 +353,6 @@ describe('Pools Set by: the configured case is the faint dot, the word only on P
       // asks for the faint dot, quieter than a word.
       expect(painted(dot, 'color', { ...WIDE, theme })).toBe('var(--text-faint)')
     }
-    expect(rowOf('tenant:eng').querySelector('td[data-label="Set by"]')!.textContent).toBe('AIMD back-off')
+    expect(rowOf('tenant:eng').querySelector('td[data-label="Set by"]')!.textContent).toBe('lowered automatically after errors')
   })
 })

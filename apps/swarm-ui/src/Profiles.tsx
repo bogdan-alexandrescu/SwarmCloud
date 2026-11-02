@@ -1,7 +1,6 @@
 import { loadCapacity } from './api'
 import { CapSeg, NoPools, PoolsSkeleton, keepNoPools } from './Capacity'
 import type { TopicId } from './help'
-import { HelpLinks } from './HelpCard'
 import { POOLS_POLL_MS, capacityPoll } from './capacityPoll'
 import { ProfileMatrix } from './ProfileMatrix'
 import { Screen, timeAgo } from './Shell'
@@ -46,12 +45,18 @@ export function ProfilesScreen() {
          contract's field name and invariant 10 is why this screen exists, so
          the address keeps the contract's noun. */
       title="Pools"
-      /* THE SCREEN'S ONE `?` (CP-5's second half, #85): Pools' glyph, on the
-         same topic. The banner it replaces said the conjunction once for
-         every card, and the glyph does too -- after the title, AH-24's slot
-         for a property of the whole screen -- because a `?` in each card
-         head would be one per profile saying one thing. */
-      help="pools-all-at-once"
+      /* THE SCREEN'S ONE `?` (CP-5's second half, #85): Pools' glyph. The
+         banner it replaces said the conjunction once for every card, and the
+         glyph does too -- after the title, AH-24's slot for a property of the
+         whole screen -- because a `?` in each card head would be one per
+         profile saying one thing.
+         IT OPENS THE SCREEN'S TOPICS (QA1-FIX-24, capacity-13, part of
+         #2596), as Ceilings' `?` has since VQ-033 (BGD 2026-10-26: "Move the
+         topics behind the page's one ?"). By runner profile still ended in
+         the `Reading this screen:` row of underlined monospace links; the
+         row is gone and its four topics, `pools-all-at-once` among them, are
+         behind this one glyph. See PROFILE_TOPICS. */
+      help={PROFILE_TOPICS}
       load={loadProfilesView}
       // Part of Pools, so Pools' cadence (#117): every 30s, paused while the
       // tab is hidden (`Screen`).
@@ -104,10 +109,9 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
           outlined. The per-profile cards that sat under it as each row's
           detail were removed with the rebrand (owner's decision, 2026-10-01).
           The conjunction -- a task clears every pool at once, so the figure is
-          a minimum and never a sum -- is `#help/pools-all-at-once`, the `?`
-          after this screen's title and in its footer. */}
+          a minimum and never a sum -- is `#help/pools-all-at-once`, in the
+          topic index the `?` after this screen's title opens. */}
       <ProfileMatrix capacity={capacity} />
-      <HelpLinks topics={PROFILE_TOPICS} />
     </>
   )
 }
@@ -116,7 +120,7 @@ const loadProfilesView = keepNoPools(() => loadCapacity())
 
 /**
  * The count note (#138): `36 profiles · 2 backends · the whole catalogue ·
- * counts read 2 m ago, one pool at a time`.
+ * counters last reported 2m ago, one pool at a time`.
  *
  * §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PAGE. Every figure on it is worked
  * out from pool counts read at one instant, and the instant is the server's
@@ -135,15 +139,24 @@ function CatalogueCount({ capacity }: { capacity: Capacity }) {
 }
 
 /**
- * `counts read 2m ago, one pool at a time`, on the age tick, so it moves while
- * the page is open. The `<time>` carries the server's own instant.
+ * `counters last reported 2m ago, one pool at a time`, on the age tick, so it
+ * moves while the page is open. The `<time>` carries the server's own instant.
+ *
+ * REPORTED, NOT READ (visual QA pass 2, cap2-12, 2026-10-29): 'counts read
+ * 10d ago' sat beside the refresh chip's 'read 0 s ago', two reads of one page
+ * ten days apart. They are two instants: the chip is when this page last asked,
+ * and `generated_at` is when the server's counters were last written. This one
+ * says it is the counters' report time; the chip keeps the read.
  */
 function CountsAge({ generatedAt }: { generatedAt: string }) {
   const now = useNow(AGE_TICK_MS)
   return (
     <>
-      counts read{' '}
-      <time dateTime={generatedAt} title={generatedAt}>
+      counters last reported{' '}
+      <time
+        dateTime={generatedAt}
+        title={`${generatedAt}: when the server last reported these counters. The refresh control says when this page last read them.`}
+      >
         {timeAgo(generatedAt, now)}
       </time>
       , one pool at a time
@@ -152,7 +165,9 @@ function CountsAge({ generatedAt }: { generatedAt: string }) {
 }
 
 /**
- * The two `<dt>`/`<dd>` pairs this screen used to end on, as links.
+ * The two `<dt>`/`<dd>` pairs this screen used to end on, as links -- and then
+ * as a footer index, until QA1-FIX-24 (capacity-13, part of #2596) moved it
+ * behind the title's `?` (`help` above), as VQ-033 did Ceilings'.
  *
  * Both were arguments made on other screens too -- `units-not-agents` on six
  * files and `runner-profile-by-name` on three -- so collapsing them into one

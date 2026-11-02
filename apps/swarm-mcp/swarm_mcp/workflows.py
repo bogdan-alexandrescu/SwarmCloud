@@ -140,6 +140,12 @@ SPEC_KEYS = frozenset(
         "steps",
         "strategy",
         "carrier",
+        # The workflow switches (the owner's experiment, 2026-11-01):
+        # `{code_intelligence, quality_gates, jev_judgments}`, each `on` or
+        # `off`, which every step obeys. Sent as the top-level `dispatch`
+        # field; swarm-api checks the switches and their values
+        # (`validation.resolve_dispatch_switches`) and names the accepted ones.
+        "dispatch",
         "repository_url",
         "repository_ref",
         "on_step_failure",
@@ -394,6 +400,9 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             # A real boolean only: `"true"` or 1 reaching the API as a 422 is a
             # worse place to learn it. Sent only when set, so every other
             # step's body reads exactly as it did before the key existed.
+            # Under direct-pr the API sets it itself for a reader step (one a
+            # dependant depends on and no step builds_on), so an author need
+            # not; this parser does not decide that.
             if not isinstance(raw["allow_empty_diff"], bool):
                 raise SwarmError(
                     f"{where}: allow_empty_diff must be true or false -- whether "
@@ -494,6 +503,21 @@ def check_title(value: Any, *, where: str) -> str | None:
     return value.strip()
 
 
+def check_dispatch(value: Any, *, where: str) -> dict[str, Any] | None:
+    """A spec's `dispatch` map as given, or None. Only its shape is checked
+    here; swarm-api refuses a switch or a value it does not accept and names
+    the accepted ones, so the two cannot come to disagree."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise SwarmError(
+            f"{where}'s `dispatch` is a map of workflow switches, e.g. "
+            '{"code_intelligence": "on", "quality_gates": "off", "jev_judgments": "off"}. '
+            "Nothing was sent"
+        )
+    return dict(value)
+
+
 def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, Any]:
     """A whole `swarm workflow` spec, checked, as `submit`'s keyword arguments.
 
@@ -531,6 +555,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "steps": build_steps(document.get("steps")),
         "strategy": document.get("strategy"),
         "carrier": document.get("carrier"),
+        "dispatch": check_dispatch(document.get("dispatch"), where=where),
         "repository_url": document.get("repository_url"),
         "repository_ref": document.get("repository_ref"),
         "on_step_failure": document.get("on_step_failure"),
@@ -565,8 +590,12 @@ def submit(
     mcp_credentials: dict[str, Any] | None = None,
     additional_repositories: list[dict[str, str]] | None = None,
     publish_to_pr: int | str | None = None,
+    dispatch: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
+
+    `dispatch` is the spec's workflow switches (`check_dispatch`), sent
+    top-level only when given, so a spec without them sends what it sent.
 
     `publish_to_pr` (#2183) is sent top-level, only when given, as `merge_pr`
     is, in the form `check_publish_to_pr` returns. A merge beside it is
@@ -618,6 +647,8 @@ def submit(
         body["strategy"] = strategy
     if carrier:
         body["carrier"] = carrier
+    if dispatch is not None:
+        body["dispatch"] = dict(dispatch)
     if repository_url:
         body["repository_url"] = repository_url
     if repository_ref:
@@ -887,7 +918,7 @@ def workflow_title(name: str, steps: int) -> str:
 
     No workspace: SC-ROWS put `[<workspace>] ` after the prefix, SC-WS-DESC
     moved it to the run's description, and SC-DESC-DETAILS (owner 2026-10-14:
-    no `[Engineering]` or `[eng@saga.xyz]` in front of any name) took the
+    no `[Engineering]` or `[eng@example.com]` in front of any name) took the
     parameter away, so no caller can put it back.
 
     The NAME is cut, never the step count: at the last word boundary that

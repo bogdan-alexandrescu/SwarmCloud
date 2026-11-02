@@ -383,11 +383,32 @@ def test_a_day_stored_under_v10_is_derived_again_under_v11():
         "arrived": outcomes._encode_rows([], outcomes.ARRIVED_COLS),
     }
     # MUTATION: add the class without the bump and a v10 day is served with
-    # its budget stops still counted as runner errors.
-    assert outcomes.DERIVE_VERSION == 11
+    # its budget stops still counted as runner errors. (12 since contract
+    # request 126's class.)
+    assert outcomes.DERIVE_VERSION >= 11
     assert "budget_exceeded" in outcomes.FAILURE_KEYS
     assert outcomes._decode_stored(base, []) is None
-    assert outcomes._decode_stored({**base, "derive_version": 11}, []) is not None
+    assert outcomes._decode_stored({**base, "derive_version": outcomes.DERIVE_VERSION}, []) is not None
+
+
+def test_a_day_stored_under_v11_is_derived_again_under_v12():
+    """Contract request 126 (BGD 2026-10-27): `fix_loop_exhausted` is a class
+    of its own. A day counted under 11 has no such key, so it is refused and
+    re-derived."""
+    base = {
+        "derive_version": 11,
+        "classifier_version": outcomes.CLASSIFIER_VERSION,
+        "built_at": T_SUBMIT,
+        "sealed": True,
+        "ended": outcomes._encode_rows([], outcomes.ENDED_COLS),
+        "arrived": outcomes._encode_rows([], outcomes.ARRIVED_COLS),
+    }
+    # MUTATION: add the class without the bump and a v11 day is served
+    # without the key, its exhausted loops counted nowhere.
+    assert outcomes.DERIVE_VERSION == 12
+    assert "fix_loop_exhausted" in outcomes.FAILURE_KEYS
+    assert outcomes._decode_stored(base, []) is None
+    assert outcomes._decode_stored({**base, "derive_version": 12}, []) is not None
 
 
 @pytest.fixture

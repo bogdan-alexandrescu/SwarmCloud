@@ -8,7 +8,14 @@
     is given a Secret Manager version reference and the bucket name, and reads
     exactly the variables apps/swarm-graph/swarm_graph/main.py reads;
   * its ingress: TCP 8080 from any pod of a tenant namespace (§2.1: any agent
-    pod may hold a graph ticket), one peer, and from nothing else;
+    pod may hold a graph ticket), one peer, and from nothing else; TCP 8081,
+    the stats port, from swarm-api's Direct VPC egress range and from the
+    swarm-graph pods themselves (a replica reads its peers' /v1/stats/local,
+    BGD 2026-10-28), and from nothing else (docs/design/graph-answer-cache.md
+    §5.3; lane CACHE-2-NETWORK). kubernetes/network_parity.py judges the
+    policy with the same function the tests use;
+  * swarm-api's way in: the internal load balancer `swarm-graph-stats` on the
+    reserved address graph_service.tf renders, 8081 only;
   * the kill switch: a ConfigMap whose rendered setting has exactly the keys
     swarm_graph.main.CONFIG_KEYS accepts, mounted as a directory (never
     subPath) at the path main.py defaults to, and shipped OFF;
@@ -44,6 +51,19 @@ CACHE_PY = REPO / "apps" / "swarm-graph" / "swarm_graph" / "cache.py"
 NAME = "swarm-graph"
 APP = {"app.kubernetes.io/name": NAME}
 PORT = 8080
+STATS_PORT = 8081
+STATS_PY = REPO / "apps" / "swarm-graph" / "swarm_graph" / "stats.py"
+#: A swarm-api range and a load balancer address that appear nowhere else, so
+#: a rendered value that matches them can only have come from the render.
+FAKE_API_CIDR = "10.123.16.0/20"
+FAKE_STATS_ADDRESS = "10.123.16.81"
+GRAPH_POD_PEER = {"podSelector": {"matchLabels": APP}}
+TENANT_PEER = {
+    "namespaceSelector": {
+        "matchLabels": {"app.kubernetes.io/part-of": "swarm"},
+        "matchExpressions": [{"key": "swarm-tenant", "operator": "Exists"}],
+    }
+}
 
 
 def _constant(path: Path, name: str) -> str:
@@ -55,6 +75,8 @@ def _constant(path: Path, name: str) -> str:
 def _rendered() -> list[dict[str, Any]]:
     text = TEMPLATE.read_text()
     text = text.replace("__GRAPH_CONFIG_JSON__", '{"enabled":false}')
+    text = text.replace("__SWARM_API_EGRESS_CIDR__", FAKE_API_CIDR)
+    text = text.replace("__GRAPH_STATS_ADDRESS__", FAKE_STATS_ADDRESS)
     for placeholder in set(re.findall(r"__[A-Z0-9_]+__", text)):
         text = text.replace(placeholder, "placeholder-value")
     return [d for d in yaml.safe_load_all(text) if d]
@@ -69,12 +91,42 @@ def _deployment() -> dict[str, Any]:
     return deploy
 
 
-def _render_module() -> Any:
-    spec = importlib.util.spec_from_file_location("swarm_k8s_render_graph", KUBERNETES / "render.py")
+def _load(name: str, path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _render_module() -> Any:
+    return _load("swarm_k8s_render_graph", KUBERNETES / "render.py")
+
+
+def _parity() -> Any:
+    return _load("swarm_k8s_parity_graph", KUBERNETES / "network_parity.py")
+
+
+def _policy() -> dict[str, Any]:
+    (policy,) = _kind(_rendered(), "NetworkPolicy")
+    return policy
+
+
+def _admitted(policy: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
+    """Port -> every peer the policy admits to it. A rule with no ports or no
+    peers would admit every port or every peer; this names that as None."""
+    admitted: dict[int, list[dict[str, Any]]] = {}
+    for rule in policy["spec"]["ingress"]:
+        assert rule.get("ports"), f"a rule with no ports admits every port: {rule}"
+        assert rule.get("from"), f"a rule with no peer admits every peer: {rule}"
+        for port in rule["ports"]:
+            assert port.get("protocol") == "TCP" and "endPort" not in port, port
+            admitted.setdefault(port["port"], []).extend(rule["from"])
+    return admitted
+
+
+def _services() -> dict[str, dict[str, Any]]:
+    return {s["metadata"]["name"]: s for s in _kind(_rendered(), "Service")}
 
 
 # --- swarm-system ------------------------------------------------------------
@@ -139,28 +191,122 @@ def test_the_requests_equal_limits_check_can_fail():
 
 
 def test_only_a_tenant_namespace_reaches_it_on_8080():
-    docs = _rendered()
-    (policy,) = _kind(docs, "NetworkPolicy")
+    policy = _policy()
     assert policy["metadata"]["name"] == "swarm-graph-ingress"
     spec = policy["spec"]
     assert spec["podSelector"] == {"matchLabels": APP}
     assert spec["policyTypes"] == ["Ingress"]
-    (rule,) = spec["ingress"]
-    (peer,) = rule["from"]
-    # Any pod of a tenant namespace (§2.1), and only a tenant namespace: a
-    # namespace selector alone, with both the part-of label and swarm-tenant.
-    assert set(peer) == {"namespaceSelector"}
-    ns = peer["namespaceSelector"]
-    assert ns["matchLabels"] == {"app.kubernetes.io/part-of": "swarm"}
-    assert ns["matchExpressions"] == [{"key": "swarm-tenant", "operator": "Exists"}]
-    assert rule["ports"] == [{"protocol": "TCP", "port": PORT}]
-    (service,) = _kind(docs, "Service")
+    # The tenant rule, exactly as it was: any pod of a tenant namespace (§2.1),
+    # and only a tenant namespace -- a namespace selector alone, with both the
+    # part-of label and swarm-tenant -- on 8080 and never 8081.
+    tenant_rule = spec["ingress"][0]
+    assert tenant_rule == {"from": [TENANT_PEER], "ports": [{"protocol": "TCP", "port": PORT}]}
+    assert _admitted(policy)[PORT] == [TENANT_PEER]
+    services = _services()
+    service = services[NAME]
     assert service["spec"]["clusterIP"] == "None"
     assert service["spec"]["selector"] == APP
     assert [p["port"] for p in service["spec"]["ports"]] == [PORT]
-    (container,) = _deployment()["spec"]["template"]["spec"]["containers"]
-    assert [p["containerPort"] for p in container["ports"]] == [PORT]
     assert _constant(SERVER_PY, "PORT") == str(PORT)
+
+
+def test_8081_is_admitted_only_from_swarm_api_and_the_graph_pods():
+    """§5.3 and BGD's 2026-10-28 rule: swarm-api's Direct VPC egress range for
+    GET /v1/stats, and the swarm-graph pods of this namespace for the peer
+    fan-out to /v1/stats/local. Neither reaches 8080; no tenant reaches 8081."""
+    admitted = _admitted(_policy())
+    assert set(admitted) == {PORT, STATS_PORT}
+    assert sorted(admitted[STATS_PORT], key=str) == sorted(
+        [{"ipBlock": {"cidr": FAKE_API_CIDR}}, GRAPH_POD_PEER], key=str)
+    # A bare podSelector is this namespace's pods; a namespaceSelector beside
+    # it would widen the peer to other namespaces.
+    for peer in admitted[STATS_PORT]:
+        assert "namespaceSelector" not in peer, peer
+        assert peer.get("ipBlock", {}).get("except") is None, peer
+    assert TENANT_PEER not in admitted[STATS_PORT]
+    assert {"ipBlock": {"cidr": FAKE_API_CIDR}} not in admitted[PORT]
+    assert GRAPH_POD_PEER not in admitted[PORT]
+    assert _constant(STATS_PY, "STATS_PORT") == str(STATS_PORT)
+    # The swarm-api range is the one swarm-live-ingress already admits: the
+    # same placeholder, filled by terraform from the same local.
+    assert "cidr: __SWARM_API_EGRESS_CIDR__" in TEMPLATE.read_text()
+
+
+def test_the_container_declares_both_ports():
+    (container,) = _deployment()["spec"]["template"]["spec"]["containers"]
+    assert [(p["name"], p["containerPort"]) for p in container["ports"]] == [
+        ("http", PORT), ("stats", STATS_PORT)]
+
+
+def test_the_stats_service_is_internal_and_exposes_8081_only():
+    services = _services()
+    assert set(services) == {NAME, "swarm-graph-stats"}
+    stats = services["swarm-graph-stats"]
+    assert stats["metadata"]["annotations"] == {"networking.gke.io/load-balancer-type": "Internal"}
+    spec = stats["spec"]
+    assert spec["type"] == "LoadBalancer"
+    assert spec["selector"] == APP
+    assert spec["loadBalancerIP"] == FAKE_STATS_ADDRESS
+    assert [(p["protocol"], p["port"], p["targetPort"]) for p in spec["ports"]] == [
+        ("TCP", STATS_PORT, STATS_PORT)]
+    # The node, not the pod, is health-checked (as swarm-live-internal), so
+    # the ingress policy needs no health-check range.
+    assert spec["externalTrafficPolicy"] == "Cluster"
+    assert "loadBalancerSourceRanges" not in spec
+
+
+def test_the_parity_check_passes_the_rendered_policy():
+    assert _parity().check_graph_ingress(_policy(), FAKE_API_CIDR) == []
+
+
+@pytest.mark.parametrize("widen", [
+    "tenant_gains_8081", "api_gains_8080", "pods_gain_8080", "peer_in_any_namespace",
+    "api_range_differs", "pod_rule_dropped", "api_rule_dropped", "rule_with_no_ports",
+])
+def test_the_parity_check_refuses_every_widening_and_every_missing_rule(widen):
+    policy = _policy()
+    rules = policy["spec"]["ingress"]
+    stats_port = {"protocol": "TCP", "port": STATS_PORT}
+    api = {"ipBlock": {"cidr": FAKE_API_CIDR}}
+    if widen == "tenant_gains_8081":
+        rules[0]["ports"].append(stats_port)
+    elif widen == "api_gains_8080":
+        rules.append({"from": [api], "ports": [{"protocol": "TCP", "port": PORT}]})
+    elif widen == "pods_gain_8080":
+        rules[0]["from"].append(GRAPH_POD_PEER)
+    elif widen == "peer_in_any_namespace":
+        for rule in rules:
+            for peer in rule["from"]:
+                if peer == GRAPH_POD_PEER:
+                    peer["namespaceSelector"] = {}
+    elif widen == "api_range_differs":
+        for rule in rules:
+            for peer in rule["from"]:
+                if "ipBlock" in peer:
+                    peer["ipBlock"]["cidr"] = "10.0.0.0/8"
+    elif widen == "pod_rule_dropped":
+        policy["spec"]["ingress"] = [r for r in rules if GRAPH_POD_PEER not in r["from"]]
+    elif widen == "api_rule_dropped":
+        policy["spec"]["ingress"] = [r for r in rules if api not in r["from"]]
+    elif widen == "rule_with_no_ports":
+        rules.append({"from": [GRAPH_POD_PEER]})
+    assert _parity().check_graph_ingress(policy, FAKE_API_CIDR), widen
+
+
+def test_the_parity_check_runs_against_swarm_systems_policies(tmp_path, capsys):
+    """`network_parity.py --graph-ingress`: swarm-graph-ingress as the API
+    server holds it, against swarm-api's live range; a missing policy fails."""
+    import json
+    live = tmp_path / "live.json"
+    live.write_text(json.dumps({"swarm_api_egress_cidr": FAKE_API_CIDR, "source": "test"}))
+    policies = tmp_path / "policies.json"
+    policies.write_text(json.dumps({"items": [_policy()]}))
+    parity = _parity()
+    assert parity.main(["--graph-ingress", "--live", str(live), "--policies", str(policies)]) == 0
+    assert "ok swarm-system/swarm-graph-ingress" in capsys.readouterr().out
+    policies.write_text(json.dumps({"items": []}))
+    assert parity.main(["--graph-ingress", "--live", str(live), "--policies", str(policies)]) == 1
+    assert "swarm-system/swarm-graph-ingress does not exist" in capsys.readouterr().out
 
 
 def test_the_pod_is_given_references_and_names_never_a_key():
@@ -218,7 +364,8 @@ def test_the_placeholders_are_the_ones_terraform_fills():
     placeholders = set(re.findall(r"__[A-Z0-9_]+__", TEMPLATE.read_text()))
     assert placeholders == {"__SWARM_GRAPH_IMAGE__", "__GRAPH_TICKET_KEY_VERSION__",
                             "__GRAPH_BUCKET__", "__GRAPH_CONFIG_JSON__",
-                            "__GRAPH_CONFIG_SHA256__"}
+                            "__GRAPH_CONFIG_SHA256__", "__SWARM_API_EGRESS_CIDR__",
+                            "__GRAPH_STATS_ADDRESS__"}
     tf = GRAPH_TF.read_text()
     for placeholder in placeholders:
         assert f'"{placeholder}"' in tf, placeholder
@@ -230,6 +377,18 @@ def test_swarm_api_reads_the_ticket_key_through_the_one_merge():
     found = re.search(r"^\s*api_secret_env\s*=\s*merge\(([^)]*)\)", text, re.M)
     assert found, "locals.tf merges swarm-api's secret references in api_secret_env"
     assert "local.graph_ticket_key_secret_env" in found.group(1)
+
+
+def test_swarm_api_reads_the_stats_url_through_its_env_merge():
+    """SWARM_GRAPH_STATS_URL reaches swarm-api through graph_service.tf's
+    local, merged into service_env["swarm-api"] like the other switches."""
+    text = LOCALS_TF.read_text()
+    found = re.search(r'^\s*"swarm-api"\s*=\s*merge\(([^{]*)\{', text, re.M)
+    assert found, 'locals.tf builds service_env["swarm-api"] with one merge'
+    assert "local.api_graph_stats_env" in found.group(1)
+    tf = GRAPH_TF.read_text()
+    assert re.search(r'SWARM_GRAPH_STATS_URL\s*=\s*local\.graph_stats_serving \? '
+                     r'"http://\$\{google_compute_address\.graph_stats\[0\]\.address\}:8081"', tf)
 
 
 def test_no_secret_value_is_ever_terraform_s():

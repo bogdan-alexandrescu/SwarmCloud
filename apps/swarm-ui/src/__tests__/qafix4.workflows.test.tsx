@@ -99,7 +99,7 @@ describe('c28: from 1280 the Cost column holds "3 of 4 reported" on one line', (
     expect(room).toBeGreaterThanOrEqual(textPx('3 of 4 reported', cov, env))
   })
 
-  it('never clips a longer coverage at 1440: "10 of 12 reported" wraps instead', () => {
+  it('never clips a longer coverage at 1440: "100 of 120 reported" wraps instead', () => {
     const host = list()
     const env: CascadeEnv = { width: 1440 }
     const th = host.querySelector('th[data-col="cost"]')!
@@ -107,9 +107,11 @@ describe('c28: from 1280 the Cost column holds "3 of 4 reported" on one line', (
     const cov = host.querySelector('.wf-spend-cov')!
     const st = cellStyle(td, env)
     const room = (lengthPx(painted(th, 'width', env), 0) ?? 0) - st.pl - st.pr
-    // The premise: a 12-step workflow's coverage (R10) is wider than the box,
-    // and the cell clips what overflows it.
-    expect(textPx('10 of 12 reported', cov, env)).toBeGreaterThan(room)
+    // The premise: a long coverage is wider than the box, and the cell clips
+    // what overflows it. A 12-step workflow's (R10) fits since the note is in
+    // the body face (visual QA pass 2 ovag2-15, #2694), so the premise is a
+    // three-figure count's.
+    expect(textPx('100 of 120 reported', cov, env)).toBeGreaterThan(room)
     expect(painted(td, 'text-overflow', env)).toBe('clip')
     // MUTATION: put `.wf-spend-cov { white-space: nowrap }` in the 1280 block:
     // the coverage stays one 122px line in a 116px box and the clip takes
@@ -118,7 +120,7 @@ describe('c28: from 1280 the Cost column holds "3 of 4 reported" on one line', (
     // Wrapped at its spaces, every word fits: nothing of it is cut.
     // MUTATION: narrow the 1280 head under the widest word ('reported', 58px,
     // plus the cell's 20px of padding) and a word itself is clipped.
-    for (const word of '10 of 12 reported'.split(' ')) {
+    for (const word of '100 of 120 reported'.split(' ')) {
       expect(textPx(word, cov, env)).toBeLessThanOrEqual(room)
     }
   })

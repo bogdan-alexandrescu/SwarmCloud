@@ -16,6 +16,11 @@ output "workload_identity_pool" {
   value       = "${var.project_id}.svc.id.goog"
 }
 
+output "fqdn_network_policy_enabled" {
+  description = "Whether the cluster admits FQDNNetworkPolicy (hostname-based egress)."
+  value       = google_container_cluster.this.enable_fqdn_network_policy
+}
+
 output "location" {
   value = google_container_cluster.this.location
 }

@@ -47,6 +47,32 @@ export const GITHUB_CALLBACK_ADDRESS = 'onboarding/github/callback'
 export const GITHUB_CALLBACK_PATH = '/onboarding/github/callback'
 
 /**
+ * ADMIN › SETUP'S ONE-TIME LINK (DAYONE-SETUP-UI-5B; part of #2688): swarm-api
+ * mints `/admin/setup/link/<token>` (`setup_links.LINK_FORM`) for a Claude
+ * pool account's owner, a team's git slot or an add-on's secret, and the person
+ * it names opens it. Not in FIXED and not behind the admin gate: the owner is
+ * rarely a platform admin. ITS TOKEN IS NEVER PART OF AN ADDRESS: App reads it
+ * off the bar once (`setupLinkToken`) and rewrites the bar to SETUP_LINK_PATH.
+ */
+export const SETUP_LINK_PATH = '/admin/setup/link'
+
+/** The link's token, read off a path: only under SETUP_LINK_PATH, '' for a
+ *  segment that is not one, null where the path is not the link's. */
+export function setupLinkToken(pathname: string): string | null {
+  const path = pathname.replace(/\/+$/, '')
+  if (path === SETUP_LINK_PATH) return null
+  if (!path.startsWith(`${SETUP_LINK_PATH}/`)) return null
+  const seg = path.slice(SETUP_LINK_PATH.length + 1)
+  return /^[A-Za-z0-9_-]+$/.test(seg) ? seg : ''
+}
+
+/** Whether a path is the link's page, with or without its token. */
+export function isSetupLinkPath(pathname: string): boolean {
+  const path = pathname.replace(/\/+$/, '')
+  return path === SETUP_LINK_PATH || path.startsWith(`${SETUP_LINK_PATH}/`)
+}
+
+/**
  * THE TYPESAFE KEY FORM'S ONE-TIME LINK (KEYS-UI; docs/provider-keys.md §3):
  * `POST /v1/provider-keys/typesafe/links` answers
  * `/settings/keys/typesafe?scope=user|tenant&t=<token>`, and `/sc` hands that
@@ -262,6 +288,15 @@ export const FIXED: Readonly<Record<string, string>> = {
   // SSC-UI (part of #2158; docs/design/secrets-scopes.md §5): Admin › Platform
   // secrets, a platform admin's alone, status only.
   'admin/platform-secrets': '/admin/platform-secrets',
+  // DAYONE-SETUP-UI-3 (part of #2688; docs/design/day-one-plan.md §5.1):
+  // Admin › Setup, where swarm install hands the people part of an install
+  // over to the console, and Health, the scheduled doctor's findings, under
+  // it. The GitHub App callback is the page GitHub sends the person back to
+  // with `?code=&state=`; FIXED_BACK keeps that query on the way in, and the
+  // route drops it from the bar once the page has read it (App.tsx).
+  'admin/setup': '/admin/setup',
+  'admin/health': '/admin/setup/health',
+  'admin/setup/github-app/callback': '/admin/setup/github-app/callback',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
   // NAV-ADMIN-ROLE (part of #1633): Admin › Workspaces you admin, the group
@@ -289,6 +324,11 @@ export const FIXED: Readonly<Record<string, string>> = {
   // connections, bell and Claude accounts (docs/design/user-profile.md).
   // Settings keeps it and nothing else since SSC-UI.
   'settings/profile': '/settings/profile',
+  // VOICE IT (docs/design/voice-it.md §10, phase one): its three panes, one
+  // path each. `/voice` opens Talk (SECTION_ROOTS).
+  'voice/talk': '/voice/talk',
+  'voice/projects': '/voice/projects',
+  'voice/preferences': '/voice/preferences',
   [HELP_ROUTE]: '/help',
 }
 
@@ -383,9 +423,26 @@ export const SECTION_ROOTS: Readonly<Record<string, string>> = {
   '/capacity': 'capacity/pools',
   '/admin': 'admin/limits',
   '/config': 'config/github',
+  '/voice': 'voice/talk',
   // Not a section, but `/settings` is the head of Profile's path, and a person
   // trimming the link back to it should land on the page rather than a 404.
   '/settings': 'settings/profile',
+}
+
+/**
+ * WORK'S TABS BY THEIR NAMES UNDER `/work` (visual QA pass 2 runs2-14, was
+ * runs-submit-32, part of #2694): `/work` opens Work, so a person who types
+ * `/work/runs` for the Runs tab was told "Not found". Each tab's name, as the
+ * spine writes it, lands on the tab -- one way only, like a section root: the
+ * address goes back to the tab's own path (`/runs`), the bar rewritten once by
+ * App's normalise, so no page gains a second spelling. `/work/running` is the
+ * internal address, not a name anyone reads, and stays a missing page.
+ */
+const WORK_TAB_PATHS: Readonly<Record<string, string>> = {
+  '/work/agents': 'work/running',
+  '/work/workflows': 'work/workflows',
+  '/work/runs': 'work/runs',
+  '/work/timeline': 'work/timeline',
 }
 
 const GROUP_IDS: readonly string[] = HELP_GROUPS.map((g) => g.id)
@@ -761,7 +818,7 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // API reads' old paths, and anything under them (NAV-FOOT, #1672).
   if (OLD_API_READS_PATHS.some((old) => path === old || path.startsWith(`${old}/`))) return plain(REFERENCE_ADDRESS)
 
-  const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path]
+  const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path] ?? WORK_TAB_PATHS[path]
   if (fixed === undefined) return null
   return plain(query === '' ? fixed : `${fixed}?${query}`)
 }

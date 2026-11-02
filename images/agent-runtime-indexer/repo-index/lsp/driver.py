@@ -25,8 +25,9 @@ through a receiver (`obj.method()` where `obj` is neither the enclosing
 class nor an imported module), which the server can only have resolved
 through the type it inferred for `obj`.
 
-THE FALLBACKS. One server per language, run one at a time (the indexer's
-memory is sized for the largest server, not for four at once):
+THE FALLBACKS. One server per language, run one at a time, cheapest first
+(the indexer's memory is sized for the largest server, not for four at
+once):
 
   ok           the server answered to the end; its edges are kept
   partial      its budget ran out in phase 1 (below) after it had finished
@@ -57,32 +58,42 @@ timeout is never a failed index, it is a less certain one, and says so.
 
 THE TOTAL BUDGET. §3.5's per-server budget is a cap, not a grant: the
 servers run one after another inside ONE indexer step, which swarm-api
-kills at the full-run timeout (1,800 s, apps/swarm-api/swarm_api/
-repoindex.py), and that timeout also has to cover the agent and the
-tree-sitter pass. A step killed there produces no index at all, which is
-the one outcome §3.5 rules out. So the pass as a whole gets
-`total_budget_seconds` -- by default LSP_TOTAL_SHARE of §3.5's full-run
-budget for the repository's size -- and each server, when its turn comes,
-is granted the smaller of its §3.5 budget and its share of what is left
-of the total among the servers still to run. Time a server does not use
-passes to the ones after it. A server whose turn comes after the total has
-run out is not started: its language is `timed_out`, with that reason.
+kills at the full-run timeout (apps/swarm-api/swarm_api/repoindex.py), and
+that timeout also has to cover the agent and the tree-sitter pass. A step
+killed there produces no index at all, which is the one outcome §3.5 rules
+out. So the pass as a whole gets `total_budget_seconds` -- the extractor's
+`--lsp-total-budget-seconds`, which the worker sizes from the run's
+timeout (agent_worker/indexrun.py `budgets`) -- and each server, when its
+turn comes, is granted the smaller of its §3.5 budget and an equal share of
+what is left of the total among the servers still to run. Time a server
+does not use passes to the ones after it. A server whose turn comes after
+the total has run out is not started: its language is `timed_out`, with
+that reason.
 
-THE SHARES FOLLOW WHAT EACH SERVER COST LAST TIME (lane INDEX-BUDGETS,
-part of #1693). An equal split gave pyright 270 s of ai-studio's 540 when
-it needed ~680-890 s, and timed it out in 16 of 16 full runs while the
-other server finished early. So each server's share is in proportion to
-its NEED (`planned_needs`): what it cost in the previous full run
-(`LspOptions.server_costs`, which swarm-api reads from the promoted
-graph's manifest and names in the signed prompt), or, for a server with no
-measurement, the equal share of the total. With no history at all every
-need is equal and this is the equal split exactly. Every run records each
-server's `grant_seconds` and `cost_seconds` in its counts for the next one
-(`measured_cost`): what it used when it finished, or, when its budget cut
-it, its grant scaled by the sites it had over the requests it managed --
-pyright's 270 s x 86,805 / 26,562 is ~882 s. The cost is recorded in
-10-second steps, so two runs that got the same answers still write the same
-bytes.
+THE CHEAPEST SERVER RUNS FIRST (#2991). Each server's NEED
+(`planned_needs`) is what it cost in the previous full run
+(`LspOptions.server_costs`, which swarm-api reads from the promoted graph's
+manifest and names in the signed prompt), or, for a server with no
+measurement, the equal share of the total. The needs set the ORDER
+(`run_order`), cheapest first, not the size of the grants. The grants
+were once in proportion to the needs (lane INDEX-BUDGETS, #1693), so a need
+several times the whole pass took nearly all of it whichever server it
+was: on SwarmCloud's own registration on 2026-11-01 pyright, first by
+name, was granted 1,175.5 s of the 1,260-second pass and reached 588 of
+2,334 files, tsserver had 71.4 s for 304 of 1,130 files and terraform-ls
+10.1 s for 56 of 173, and every language was `partial`. Cheapest first on
+equal shares is max-min fair: a server that can finish in its share does,
+and leaves the rest to the next; a server slower than it measured takes at
+most its share from the ones after it; and the most expensive, last, takes
+everything the others left -- 1,260 s less tsserver's and terraform-ls's
+few minutes, against the 1,175.5 s it had. With no history at all every
+need is equal, the order is by name and this is the equal split exactly.
+Every run records each server's `grant_seconds` and `cost_seconds` in its
+counts for the next one (`measured_cost`): what it used when it finished,
+or, when its budget cut it, its grant scaled by the sites it had over the
+requests it managed -- pyright's 270 s x 86,805 / 26,562 is ~882 s. The
+cost is recorded in 10-second steps, so two runs that got the same answers
+still write the same bytes.
 
 TWO PHASES. Every site's definition is asked first, across all files; the
 workspace queries (call hierarchy, references) run after. A workspace query
@@ -91,8 +102,11 @@ symbol on this repository on 2026-10-05, against milliseconds a definition
 -- so a timed-out one is a slow answer and never counts toward
 `max_consecutive_timeouts`. Phase 2 is supplementary, and on a large
 workspace it would run until the budget ran out every time, so it gets at
-most `workspace_share` of the server's grant: what it leaves unused goes to
-the next server's phase 1, the per-site answer §3.5 is for. Its limit
+most `workspace_share` of the server's PROPORTION of what is left -- its
+need over the needs still to run -- and never more than that share of its
+grant (`workspace_seconds`): an equal grant is for a cheap server's
+definitions, not for its incomingCalls, and what phase 2 leaves unused goes
+to the next server's phase 1, the per-site answer §3.5 is for. Its limit
 running out ends phase 2 only: the language stays `ok`, keeps every
 definition edge, and its reason says how many symbols were asked ("call
 hierarchy and references cut at their N-second share of the M-second
@@ -130,6 +144,31 @@ Neither is counted in a cut's "N of M files (K of S sites)", nor in the
 sites `measured_cost` scales a cut server's grant by: they are not work
 the server was given.
 
+THE FILES ASKED (part of #2991, owner 2026-11-02). A run built on a base
+asks a server only about some files (`LspOptions.asked_paths`): the ones a
+change affected and the ones no server has answered yet. The server is still
+given the whole workspace, so a definition can land in any file. Phase 1
+asks `first_paths` first -- the affected files, which have no earlier
+answer to fall back on -- and the rest in path order, all in one session,
+so a server is started once and its workspace loaded once. The files a
+previous run's server answered (`LspOptions.answered`) are asked too when
+this run's server is not that server at that version (`answers_kept`): the
+version is learnt at initialize, before phase 1, so the order is decided
+then. With a file to ask, phase 2 covers every file it opens, as an
+unrestricted run's does.
+
+A server with no file to ask is not started when its version is already
+known with this install (owner 2026-11-02): every language it serves that
+a previous run answered recorded the same server at the same reported
+version and the same `server_build` -- the fingerprint of the installed
+server's files (`server_build`), which the image pins, so the same build
+reports the same version. Its row takes that version, asks nothing, and
+keeps the cost the previous run measured (`Answered.cost_seconds`), which
+is what the next run's shares follow. Otherwise -- no version known, an
+"unknown" one, or another build -- it is started, asks nothing in either
+phase, and its version is read at initialize, so a server upgrade still
+reaches a language none of whose files changed.
+
 THE ENVIRONMENT. A server reads the checkout, which is untrusted input, so
 it gets a minimal environment built here -- PATH, a throwaway HOME and
 caches, the locale and the spec's own variables -- and none of the
@@ -146,6 +185,7 @@ on its first question.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import posixpath
 import re
@@ -187,6 +227,10 @@ LSP_TOTAL_SHARE = 0.5
 # of 600-2,700 s, coarse enough that the timing noise of a run that got the
 # same answers does not change the graph's bytes.
 COST_STEP_SECONDS = 10
+# A server's peak resident memory is recorded rounded up to this step
+# (`rss_mib`): what deciding to run servers side by side needs (#2991),
+# coarse enough that two runs that got the same answers write the same bytes.
+RSS_STEP_MIB = 256
 # Phase 2's share of a server's grant: half, so a slow incomingCalls never
 # takes more than half of what a server was granted and the rest passes on.
 WORKSPACE_SHARE = 0.5
@@ -240,13 +284,40 @@ def planned_needs(names: Sequence[str], costs: Mapping[str, float] | None,
     return needs
 
 
+def run_order(names: Sequence[str], needs: Sequence[float]) -> list[int]:
+    """The servers' run order, as indices: the cheapest need first, ties by name.
+
+    Module doc, "the cheapest server runs first": the servers that can
+    finish do, and the one that cannot takes what they leave.
+    """
+    return sorted(range(len(names)), key=lambda i: (needs[i], names[i]))
+
+
 def grant_seconds(left: float, needs: Sequence[float], budget: float) -> float:
-    """The grant of the first of `needs`: its proportion of `left`, capped at `budget`."""
+    """The grant of the first of `needs`: an equal share of `left`, capped at `budget`.
+
+    `needs` are the servers still to run, cheapest first (`run_order`); the
+    first gets `left` over how many they are, and what it does not use
+    passes on, so the last gets everything left.
+    """
+    if left <= 0 or not needs:
+        return 0.0
+    return min(budget, left / len(needs))
+
+
+def workspace_seconds(left: float, needs: Sequence[float], budget: float, share: float) -> float:
+    """Phase 2's limit for the first of `needs`: `share` of its proportion of `left`.
+
+    The proportion is the server's need over all the needs still to run,
+    capped at `budget` and at the equal grant (`grant_seconds`): phase 2
+    is supplementary, and a cheap server's equal grant is not spent on
+    workspace queries that the expensive server's definitions need.
+    """
     if left <= 0 or not needs:
         return 0.0
     whole = sum(needs)
-    share = left * needs[0] / whole if whole > 0 else left / len(needs)
-    return min(budget, share)
+    proportion = left * needs[0] / whole if whole > 0 else left / len(needs)
+    return share * min(proportion, grant_seconds(left, needs, budget))
 
 
 def measured_cost(status: str | None, *, elapsed: float, grant: float, requests: int,
@@ -266,6 +337,14 @@ def measured_cost(status: str | None, *, elapsed: float, grant: float, requests:
         return None
     steps = max(1, -(-int(need * 1000) // (COST_STEP_SECONDS * 1000)))
     return steps * COST_STEP_SECONDS
+
+
+def rss_mib(peak_bytes: int) -> int:
+    """A server's peak resident memory in MiB, rounded up to RSS_STEP_MIB; 0 when none was seen."""
+    if peak_bytes <= 0:
+        return 0
+    step = RSS_STEP_MIB * 1024 * 1024
+    return -(-int(peak_bytes) // step) * RSS_STEP_MIB
 
 
 def _seconds(value: float) -> str:
@@ -304,6 +383,116 @@ class LspOptions:
     max_consecutive_timeouts: int = MAX_CONSECUTIVE_TIMEOUTS
     #: Gitignore-style globs of the files no server opens (module doc, "less work").
     excluded_paths: tuple[str, ...] = LSP_EXCLUDED_PATHS
+    #: The files whose sites phase 1 asks; None: every file (module doc,
+    #: "the files asked"). The others stay in the server's workspace.
+    asked_paths: frozenset[str] | None = None
+    #: Asked before the rest, which follow in path order.
+    first_paths: frozenset[str] = frozenset()
+    #: By language: the files a previous run's server answered, asked too
+    #: unless this run's server is the same one at the same version.
+    answered: Mapping[str, "Answered"] | None = None
+
+
+@dataclass(frozen=True)
+class Answered:
+    """The files of one language a previous run's server answered (`LspOptions.answered`)."""
+
+    server: str | None
+    version: str | None
+    paths: frozenset[str] = frozenset()
+    #: The install that version was read from (`server_build`); None: not recorded.
+    build: str | None = None
+    #: What that server cost when it last ran (`measured_cost`); None: not measured.
+    cost_seconds: float | None = None
+
+
+def answers_kept(answered: Answered, server: str | None, version: str | None) -> bool:
+    """Whether a previous run's answers stand for this run's `server` at `version`.
+
+    Only the same server at the same reported version: an unreported version
+    ("unknown") matches nothing, since an upgrade could hide behind it.
+    """
+    return (server is not None and version not in (None, "unknown")
+            and (answered.server, answered.version) == (server, version))
+
+
+def server_build(spec: ServerSpec, bin_dir: Path) -> str | None:
+    """The installed server's fingerprint, read without starting it; None when
+    it is not installed or cannot be read (module doc, "the files asked").
+
+    A sha256 over every file its command names -- the executable the driver
+    starts and any absolute file argument -- symlinks resolved, and, for a
+    file inside an npm package, the package's package.json and the
+    package-lock.json beside the outermost node_modules: an npm server's
+    entry file is the same between versions, its manifest and lock are not.
+    """
+    program = _program(spec, bin_dir)
+    if program is None:
+        return None
+    named = [program] + [Path(arg) for arg in spec.command[1:] if Path(arg).is_absolute()]
+    digest = hashlib.sha256()
+    try:
+        for path in named:
+            path = path.resolve()
+            if not path.is_file():
+                continue
+            for part in _installed_files(path):
+                digest.update(str(part).encode("utf-8") + b"\0")
+                with part.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1 << 20), b""):
+                        digest.update(chunk)
+    except OSError:
+        return None
+    return "sha256:" + digest.hexdigest()
+
+
+def _installed_files(path: Path) -> list[Path]:
+    """`path`, and when it is inside an npm package, that package's manifest
+    and the lock beside the outermost node_modules (`server_build`)."""
+    parts = path.parts
+    if "node_modules" not in parts:
+        return [path]
+    outer = parts.index("node_modules")
+    inner = len(parts) - 1 - parts[::-1].index("node_modules")
+    depth = 2 if inner + 2 < len(parts) and parts[inner + 1].startswith("@") else 1
+    package = Path(*parts[:inner + 1 + depth])
+    extra = [package / "package.json", Path(*parts[:outer]) / "package-lock.json"]
+    return [path] + [file for file in extra if file != path and file.is_file()]
+
+
+def _program(spec: ServerSpec, bin_dir: Path) -> Path | None:
+    """The executable the driver starts: from `bin_dir` unless the command is absolute."""
+    program = Path(spec.command[0])
+    if not program.is_absolute():
+        program = Path(bin_dir) / spec.command[0]
+    if not (program.is_file() and os.access(program, os.X_OK)):
+        return None
+    return program
+
+
+def _known_version(spec: ServerSpec, served: Sequence[str], files: Mapping[str, str],
+                   options: "LspOptions", build: str | None) -> Answered | None:
+    """What a previous run answered with, when this server need not be started:
+    no file of its languages to ask, and its version known with this `build`
+    (module doc, "the files asked"); None: start it."""
+    if options.asked_paths is None or build is None:
+        return None
+    if any(files.get(path) in served and not lsp_excluded(path, options.excluded_paths)
+           for path in options.asked_paths):
+        return None
+    known = [answered for language, answered in (options.answered or {}).items()
+             if language in served]
+    if not known or any(answered.build != build
+                        or not answers_kept(answered, spec.name, answered.version)
+                        for answered in known):
+        return None
+    if len({answered.version for answered in known}) != 1:
+        return None
+    costs = [answered.cost_seconds for answered in known
+             if isinstance(answered.cost_seconds, (int, float))
+             and not isinstance(answered.cost_seconds, bool) and answered.cost_seconds > 0]
+    return Answered(spec.name, known[0].version, build=build,
+                    cost_seconds=max(costs) if costs else None)
 
 
 @dataclass(frozen=True)
@@ -385,11 +574,34 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
         if served:
             planned.append((spec, served))
             claimed.update(served)
+    builds = {spec.name: server_build(spec, options.bin_dir) for spec, _ in planned}
+    starting: list[tuple[ServerSpec, list[str]]] = []
+    for spec, served in planned:
+        known = _known_version(spec, served, files, options, builds[spec.name])
+        if known is None:
+            starting.append((spec, served))
+            continue
+        # Nothing to ask and the version known with this install: not
+        # started, and not counted in the others' shares (module doc).
+        run = _ServerRun(Path(root), spec, set(served), files, symbols, sites, options, 0.0, memory_mib)
+        run._opened()
+        versions[spec.name] = str(known.version)
+        counts = dict(run.counts, server_version=known.version, server_build=known.build,
+                      grant_seconds=0.0, peak_rss_mib=0)
+        if known.cost_seconds is not None:
+            counts["cost_seconds"] = known.cost_seconds
+        for lang in served:
+            languages[lang] = LanguageResult(STATUS_OK, None, spec.name, dict(counts))
+    planned = starting
     needs = planned_needs([spec.name for spec, _ in planned], options.server_costs, total)
+    order = run_order([spec.name for spec, _ in planned], needs)
+    planned = [planned[i] for i in order]
+    needs = [needs[i] for i in order]
     for turn, (spec, served) in enumerate(planned):
         left = pass_deadline - time.monotonic()
         run = _ServerRun(Path(root), spec, set(served), files, symbols, sites, options,
-                         grant_seconds(left, needs[turn:], budget), memory_mib)
+                         grant_seconds(left, needs[turn:], budget), memory_mib,
+                         workspace_seconds(left, needs[turn:], budget, options.workspace_share))
         started = time.monotonic()
         if left <= 0:
             run._stop(STATUS_TIMED_OUT, f"the LSP pass's {_seconds(total)}-second total budget "
@@ -406,7 +618,7 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
         cost = measured_cost(measured, elapsed=time.monotonic() - started, grant=run.budget,
                              requests=run.counts["requests"], sites=run._sites_total)
         counts = dict(run.counts, server_version=run.server_version,
-                      grant_seconds=round(run.budget, 1))
+                      server_build=builds[spec.name], grant_seconds=round(run.budget, 1), peak_rss_mib=rss_mib(run.peak_rss_bytes))
         if cost is not None:
             counts["cost_seconds"] = cost
         for lang in served:
@@ -480,13 +692,16 @@ class _ServerRun:
     def __init__(self, root: Path, spec: ServerSpec, languages: set[str],
                  files: Mapping[str, str], symbols: Sequence[Mapping[str, Any]],
                  sites: Sequence[Site], options: LspOptions, budget: float,
-                 memory_mib: int) -> None:
+                 memory_mib: int, workspace_budget: float | None = None) -> None:
         self.root = root
         self.spec = spec
         self.languages = languages
         self.files = files
         self.options = options
         self.budget = budget
+        #: Phase 2's limit (`workspace_seconds`); by default its share of the grant.
+        self.workspace_budget = (budget * options.workspace_share if workspace_budget is None
+                                 else workspace_budget)
         self.memory_mib = memory_mib
         self.status = STATUS_OK
         self.reason: str | None = None
@@ -502,6 +717,8 @@ class _ServerRun:
         self._sites_total = 0
         #: Whether the budget, not the server, ended phase 1 (`_cut`).
         self.budget_cut = False
+        #: The server's peak resident memory, as the client's watchdog saw it.
+        self.peak_rss_bytes = 0
         self.counts = {"requests": 0, "resolved": 0, "unresolved": 0, "request_timeouts": 0,
                        "errors": 0, "edges": 0, "symbols_skipped": 0, "sites_skipped_external": 0,
                        "files_excluded": 0, "sites_excluded": 0}
@@ -524,13 +741,10 @@ class _ServerRun:
     # --- the run ------------------------------------------------------------
 
     def _argv(self) -> list[str] | None:
-        command = list(self.spec.command)
-        program = Path(command[0])
-        if not program.is_absolute():
-            program = Path(self.options.bin_dir) / command[0]
-        if not (program.is_file() and os.access(program, os.X_OK)):
+        program = _program(self.spec, self.options.bin_dir)
+        if program is None:
             return None
-        return [str(program)] + command[1:]
+        return [str(program)] + list(self.spec.command[1:])
 
     def _env(self, home: Path) -> dict[str, str]:
         for sub in ("cache", "config", "data", "tmp", "go", "go-build"):
@@ -589,6 +803,7 @@ class _ServerRun:
                     self._stop(STATUS_FAILING, f"{self.spec.name} exited with status {code}")
             finally:
                 client.close()
+                self.peak_rss_bytes = client.peak_rss_bytes
             if client.memory_exceeded and self.status in (STATUS_OK, STATUS_PARTIAL):
                 # It finished its last answer as the watchdog stopped it.
                 self._stop(STATUS_FAILING,
@@ -653,19 +868,12 @@ class _ServerRun:
         self._hierarchy = self._hierarchy and bool(capabilities.get("callHierarchyProvider"))
         self._references = self._references and bool(capabilities.get("referencesProvider"))
         client.notify("initialized", {})
-        paths = []
-        for path in sorted(self.files):
-            if self.files[path] not in self.languages:
-                continue
-            language_id = self.spec.language_ids.get(posixpath.splitext(path)[1])
-            if language_id is None:
-                continue
-            if lsp_excluded(path, self.options.excluded_paths):
-                # Parsed, never opened (module doc, "less work").
-                self.counts["files_excluded"] += 1
-                self.counts["sites_excluded"] += len(self.sites_by_path.get(path, []))
-                continue
-            paths.append((path, language_id))
+        # The files phase 1 asks (module doc, "the files asked"), now that
+        # the server's version is known: `first_paths`, then path order.
+        wanted = self._wanted()
+        opened = self._opened()
+        paths = [(path, language_id) for path, language_id in opened
+                 if wanted is None or path in wanted]
         # Only the sites an answer could become an edge at are asked.
         asked: dict[str, list[Site]] = {}
         for path, _ in paths:
@@ -694,8 +902,10 @@ class _ServerRun:
         # rather than a hung server, and the budget running out here cuts
         # this phase only: phase 1's edges are complete and are kept, and
         # the row's reason says how many symbols were asked.
+        # A server asked no file asks no workspace query either: it was
+        # started only to learn its version.
         todo = []
-        for path, language_id in paths:
+        for path, language_id in opened if paths else []:
             own = self.symbols_by_path.get(path, [])
             symbols = [s for s in own if self._hierarchy and s["kind"] in CALLABLE_KINDS and s["exported"]]
             symbols += [s for s in own if self._references and s["kind"] in self.spec.reference_kinds]
@@ -703,10 +913,11 @@ class _ServerRun:
                 todo.append((path, language_id, symbols))
         total = sum(len(symbols) for _, _, symbols in todo)
         asked = 0
-        # Phase 2's own limit (module doc): at most its share of the grant,
-        # counted from the server's first answer when phase 1 asked nothing,
-        # so the workspace load is not charged to it.
-        share = self.budget * self.options.workspace_share
+        # Phase 2's own limit (module doc): at most its share of the
+        # server's proportion of the pass (`workspace_seconds`), counted
+        # from the server's first answer when phase 1 asked nothing, so the
+        # workspace load is not charged to it.
+        share = self.workspace_budget
         self._workspace_limit = share
         if not self._warming:
             self._limit_workspace(client)
@@ -725,6 +936,36 @@ class _ServerRun:
             self.counts["symbols_skipped"] = total - asked
             self.reason = (f"call hierarchy and references cut at their {_seconds(share)}-second share "
                            f"of the {_seconds(self.budget)}-second budget: {asked} of {total} symbols asked")
+
+    def _opened(self) -> list[tuple[str, str]]:
+        """The files this server opens, with their language ids: `first_paths`,
+        then path order. Counts the excluded ones, which it never opens."""
+        first = self.options.first_paths
+        opened = []
+        for path in sorted(self.files, key=lambda p: (p not in first, p)):
+            if self.files[path] not in self.languages:
+                continue
+            language_id = self.spec.language_ids.get(posixpath.splitext(path)[1])
+            if language_id is None:
+                continue
+            if lsp_excluded(path, self.options.excluded_paths):
+                # Parsed, never opened (module doc, "less work").
+                self.counts["files_excluded"] += 1
+                self.counts["sites_excluded"] += len(self.sites_by_path.get(path, []))
+                continue
+            opened.append((path, language_id))
+        return opened
+
+    def _wanted(self) -> set[str] | None:
+        """The files phase 1 asks; None: every file (module doc, "the files asked")."""
+        if self.options.asked_paths is None:
+            return None
+        wanted = set(self.options.asked_paths)
+        for language, answered in (self.options.answered or {}).items():
+            if language in self.languages and not answers_kept(answered, self.spec.name,
+                                                                self.server_version):
+                wanted |= answered.paths
+        return wanted
 
     def _external(self, site: Site) -> bool:
         """No answer about `site` could be kept: its name is no repository symbol's

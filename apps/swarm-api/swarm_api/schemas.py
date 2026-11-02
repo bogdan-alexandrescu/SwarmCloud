@@ -193,6 +193,12 @@ class TaskCreate(StrictModel):
     #: gets exactly the dispatch they got before this feature existed.
     strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
     carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: The workflow switches (2026-11-01): `{code_intelligence, quality_gates,
+    #: jev_judgments}`, each `on` or `off`, stored inside the signed dispatch
+    #: block. Checked in `validation.resolve_dispatch_switches`, which names
+    #: the accepted switches and values in its refusal, for the reason
+    #: `strategy` is. Absent: today's dispatch exactly.
+    dispatch: dict[str, Any] | None = None
     #: Per-run credentials for the `dispatch` servers `input.mcp_servers`
     #: names, by server name (docs/design/registered-mcp-servers.md §4.3):
     #: beside the task, never in it. Checked and stored by `SubmissionService`.
@@ -366,6 +372,12 @@ class WorkflowCreate(StrictModel):
     #: Same accepted values and same defaults as `TaskCreate`.
     strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
     carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: The workflow switches (2026-11-01): `{code_intelligence, quality_gates,
+    #: jev_judgments}`, each `on` or `off`, stored inside the signed dispatch
+    #: block. Checked in `validation.resolve_dispatch_switches`, which names
+    #: the accepted switches and values in its refusal, for the reason
+    #: `strategy` is. Absent: today's dispatch exactly.
+    dispatch: dict[str, Any] | None = None
     #: The repository every step of this workflow clones, and the one an
     #: `integrate` step opens its pull request against.
     #:
@@ -764,32 +776,51 @@ class TenantFindingsEpicRequest(StrictModel):
 # The account pool (proxied to the quota broker)
 # --------------------------------------------------------------------------
 
-#: The one kind of credential the account pool handles.
+#: The kinds of account the pool holds (#2688).
 #:
-#: An account in this pool is a CLAUDE SUBSCRIPTION: a rotating OAuth pair the
-#: quota broker refreshes on a timer, where refreshing REVOKES the token it
-#: replaces. There is no API-key account and no credential-kind selector --
-#: nothing in the pool's write path, the broker's refresher or the worker's
-#: lease would know what to do with one. A tenant's own provider API key is a
-#: different thing entirely and has a different route
-#: (`POST /v1/tenants/me/credentials`), which this constant does not touch.
+#: Every account in this pool is a ROTATING OAUTH PAIR the quota broker
+#: refreshes on a timer, where refreshing REVOKES the token it replaces: a
+#: Claude subscription (`anthropic`) or, since the owner's choice of
+#: 2026-11-01, a ChatGPT plan (`openai`, which codex runs on). There is no
+#: API-key account and no credential-kind selector -- nothing in the pool's
+#: write path, the broker's refresher or the worker's lease would know what to
+#: do with one. The broker keeps the same pair as `ACCOUNT_PROVIDERS` in
+#: `quota_broker.main` and refuses anything else; this service does not import
+#: the broker, so the pair is restated here and checked against it by test.
+#: A tenant's own provider API key is a different thing entirely and has a
+#: different route (`POST /v1/tenants/me/credentials`), which this does not
+#: touch.
 SUBSCRIPTION_PROVIDER = "anthropic"
+PLAN_PROVIDER = "openai"
+ACCOUNT_PROVIDERS = (SUBSCRIPTION_PROVIDER, PLAN_PROVIDER)
+AccountProvider = Literal["anthropic", "openai"]
 
 
 class AccountSignInStart(StrictModel):
-    """Begin adding an account by signing in to Claude in a browser.
+    """Begin adding an account by signing in to its provider in a browser.
 
     No credential here, which is the whole point: the person signs in with
-    Anthropic and we never see anything but the short code their callback page
-    displays afterwards.
+    Anthropic or OpenAI and we never see anything but the code the provider
+    hands back afterwards.
+
+    `provider` defaults to `anthropic`, so a Claude sign-in sends nothing new
+    and behaves exactly as it did before ChatGPT plans existed. It is forwarded
+    to the broker unchanged; the broker picks the authorize page and the
+    redirect from it and echoes both in its answer.
     """
 
     label: str = Field(min_length=1, max_length=64)
+    provider: AccountProvider = SUBSCRIPTION_PROVIDER
     lend_to: list[str] = Field(default_factory=list, max_length=50)
 
 
 class AccountSignInFinish(StrictModel):
-    """Finish it, with what the callback page showed."""
+    """Finish it, with what the callback page showed.
+
+    No `provider` field: the broker's exchange takes none. The PENDING sign-in
+    the broker keyed by `state` records which provider started it, so the
+    finish cannot disagree with the start.
+    """
 
     state: str = Field(min_length=8, max_length=256)
     #: Taken as pasted. The callback renders the code followed by a hash and
@@ -798,11 +829,11 @@ class AccountSignInFinish(StrictModel):
 
 
 class AccountCreate(StrictModel):
-    """Register a Claude subscription into the CALLER's pool.
+    """Register a Claude subscription or a ChatGPT plan into the CALLER's pool.
 
-    A SUBSCRIPTION, and nothing else: see `SUBSCRIPTION_PROVIDER` above. There
-    is no `api_key` field here and no kind selector, because the pool has one
-    kind of member.
+    A rotating OAuth pair, and nothing else: see `ACCOUNT_PROVIDERS` above.
+    There is no `api_key` field here and no kind selector beyond `provider`,
+    because every member of the pool is a pair the broker refreshes.
 
     THE OWNER IS THE TENANT ON THE VERIFIED TOKEN, always. `owner_tenant` below
     is read for one purpose only -- to be compared against it -- and its value
@@ -819,10 +850,10 @@ class AccountCreate(StrictModel):
     #: Optional, and only ever equal to the caller's own tenant. See above.
     owner_tenant: str | None = Field(default=None, max_length=64)
     label: str = Field(min_length=1, max_length=64)
-    #: Not a choice: `SUBSCRIPTION_PROVIDER` is the only accepted value. The
-    #: field survives so a caller naming anything else gets a 422 that says why
-    #: rather than a bare `extra_forbidden`, and so the body still mirrors the
-    #: broker's own contract. `routes/accounts.py` does the comparison.
+    #: One of `ACCOUNT_PROVIDERS`, defaulting to a Claude subscription. A plain
+    #: string rather than a Literal so it is compared case-insensitively and a
+    #: caller naming anything else gets a 422 that names it and lists the known
+    #: providers. `routes/accounts.py` does the comparison.
     provider: str = Field(default=SUBSCRIPTION_PROVIDER, max_length=64)
     #: Tenants this account will lend spare capacity to. Isolation is the
     #: default (CONTRACT.md invariant 9); this is the narrowing, with a name on

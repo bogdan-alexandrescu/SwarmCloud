@@ -120,6 +120,50 @@ def pool_names_for(
     return pools
 
 
+#: What a lease takes in each `provider:*` pool, whatever its size. A provider
+#: pool bounds concurrent LLM sessions against that provider's accounts, and an
+#: agent is one session however large its runner is (contract request 129,
+#: #2950). Every other pool bounds compute and takes the resource units.
+PROVIDER_POOL_UNITS = 1
+
+
+def pool_units_for(pool: str, units: int) -> int:
+    """The units a lease of `units` resource units takes in `pool`.
+
+    THE one rule. Reserve, release and every recount of a pool's `active` go
+    through it (or through `held_pool_units`, which applies it), so what is
+    taken and what is given back cannot drift apart.
+
+      * `provider:<p>` and `provider:<p>:tenant:<t>`: 1. One agent is one
+        session against the provider; a large runner is not four sessions.
+      * `global`, `tenant:<t>`, `resource:<c>`, `runner:<p>`, `backend:<b>`:
+        the resource units. Each bounds compute -- the platform's, a tenant's
+        share of it, a size class, a profile, a backend's capacity -- and a
+        large runner is four standard runners' worth of it.
+    """
+    return PROVIDER_POOL_UNITS if pool.startswith("provider:") else units
+
+
+def reserved_pool_units(pools: list[str], units: int) -> dict[str, int]:
+    """Per pool, what a lease reserved under the current rule takes."""
+    return {name: pool_units_for(name, units) for name in pools}
+
+
+def held_pool_units(
+    pools: list[str], units: int, pool_units: dict[str, int] | None
+) -> dict[str, int]:
+    """Per pool, what a STORED lease holds: what release gives back.
+
+    A lease reserved since request 129 records `pool_units`, and holds exactly
+    that. A lease reserved before it has none and took its `units` in every
+    pool, the provider pools included, so it holds `units` in each: giving
+    back the new rule's 1 would leave the difference held for ever.
+    """
+    if pool_units is None:
+        return {name: units for name in pools}
+    return {name: int(pool_units.get(name, units)) for name in pools}
+
+
 # --------------------------------------------------------------------------
 # Leases
 # --------------------------------------------------------------------------
@@ -146,6 +190,14 @@ class Lease:
     heartbeat_at: datetime | None = None
     released_at: datetime | None = None
     release_reason: str | None = None
+    #: What the lease took in each pool (`reserved_pool_units`), written at
+    #: reserve. None on a lease reserved before contract request 129, which
+    #: took `units` in every pool.
+    pool_units: dict[str, int] | None = None
+
+    def held_units(self) -> dict[str, int]:
+        """Per pool, what this lease holds and release gives back."""
+        return held_pool_units(self.pools, self.units, self.pool_units)
 
     @property
     def is_released(self) -> bool:
@@ -273,6 +325,13 @@ class EndCause(str, Enum):
     checkpoint, and published what it had. Written only by the worker, beside
     TIMEOUT. Never retried by the worker: another attempt of the same step
     starts from the same budget, so a resume is a person's choice.
+
+    FIX_LOOP_EXHAUSTED is contract request 126 (FL-CONTRACT, #2509), accepted
+    by the owner 2026-10-27 and applied 2026-10-28: a workflow's `fix-loop`
+    step whose review-fix rounds ended without a MERGE -- a person answered
+    "stop", or the park for a person passed 7 days. Written only by swarm-api
+    and the scheduler's `_expire_human_waits`; a failure of the work, not of
+    the platform.
     """
 
     TIMEOUT = "timeout"
@@ -294,6 +353,7 @@ class EndCause(str, Enum):
     PUBLISH_REFUSED = "publish_refused"   # the worker refused to publish: a credential in the final tree, or an unusable pr-title.txt
     CHILD_CASCADE = "child_cascade"   # the parent task was cancelled or ended, or its await expired
     BUDGET_EXCEEDED = "budget_exceeded"   # the worker stopped the agent: it spent its budget
+    FIX_LOOP_EXHAUSTED = "fix_loop_exhausted"   # the fix loop's rounds ended without a MERGE
 
 
 #: The shape of `Task.forge_credential`: a provider suffix for
@@ -606,6 +666,23 @@ class Task:
     #: (invariant 10). Before this field the same figures were pinned in
     #: `metadata.dispatch.budget`, which readers fall back to for one release.
     budget: dict[str, float | int] | None = None
+    #: Consecutive dispatches the platform refused (PLATFORM_REFUSED parks).
+    #: Reset to 0 by a dispatch that succeeds. Contract request 123, accepted
+    #: by BGD 2026-10-28. Last in the class, after `budget`, so no positional
+    #: construction of a task changes meaning; absent on every older
+    #: document, which decodes as 0.
+    platform_refusals: int = 0
+    #: Contract request 131 (TIMEOUT-ASKED-CONTRACT, part of #2688), the
+    #: owner's "API records the ask" (2026-11-01): the `timeout_seconds` the
+    #: spec asked for, written by swarm-api at submission ONLY when it stored
+    #: a lower `timeout_seconds` (the profile's cap, or a child's parent's).
+    #: A RECORD ONLY: the limit is `timeout_seconds` alone, and nothing reads
+    #: this as one (invariant 10); the worker reports it in the runner's
+    #: `limits.clamped`. Unsigned: written at submission, it chooses nothing.
+    #: None on a task that was not lowered and on every older document. Last
+    #: in the class, after `platform_refusals`, so no positional construction
+    #: of a task changes meaning.
+    timeout_seconds_asked: int | None = None
 
     def __post_init__(self) -> None:
         # Only the fields of requests 54 and 95: a document decoded before them
@@ -659,6 +736,16 @@ def retries_exhausted(attempt_count: int, max_attempts: int) -> bool:
     restatement: here.
     """
     return attempt_count >= max_attempts
+
+
+#: Consecutive PLATFORM_REFUSED parks after which a task is reported as
+#: trouble (contract request 123). Beside `retries_exhausted` because it is
+#: its counterpart for a refusal that spends no attempt: past it the task
+#: STAYS PARKED and keeps being retried at the longest backoff -- BGD's
+#: standing rule (2026-09-14) is that a quota pauses work and never fails
+#: it, and BGD's 2026-10-28 brief applies that to the platform's refusals.
+PLATFORM_REFUSED_MAX_PARKS = 5
+
 
 @dataclass
 class Attempt:

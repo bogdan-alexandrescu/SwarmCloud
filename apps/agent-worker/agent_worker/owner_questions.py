@@ -49,7 +49,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from swarm_common.config import Settings
 from swarm_common.states import TaskState
@@ -289,7 +289,11 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
         f"question, in the same shape, in `{OPEN_QUESTIONS_KEY}`, so the pull request "
         f"lists it. The merge step will not merge while a `{NEEDS_OWNER_KEY}` question "
         "is unanswered, nor once its answer picks an option other than its `built`; "
-        "it merges past the others. An answered question goes in neither."
+        "it merges past the others. An answered question goes in neither. "
+        "A finding that waits only on an unanswered owner question is not a NOT_YET "
+        f"finding: put that question in `{NEEDS_OWNER_KEY}` (the merge step holds for "
+        "its answer and builds the owner's pick in a pick-fix round) and give MERGE if "
+        "nothing else is open; give NOT_YET only for findings a fix step can act on now."
     )
 
 
@@ -308,3 +312,40 @@ def stage(work: Path | str, payload: dict[str, Any], rows: list[dict[str, Any]])
     if isinstance(prompt, str):
         payload["prompt"] = prompt + guidance(path.resolve(), rows)
     return len(rows)
+
+
+def normalised(text: Any) -> str:
+    """A question's text as the dedupe compares it: case and spacing ignored."""
+    return " ".join(text.split()).casefold() if isinstance(text, str) else ""
+
+
+def drop_answered(directory: Path | str, answered: Iterable[str]) -> list[str]:
+    """Drop from `directory/questions.json` every question already answered; the dropped.
+
+    `answered` is the text of each question the owner answered on a step
+    this one builds on (#2836): the agent was given them, and one it asks
+    again would put the same question to the owner twice. A question matches
+    on its text (`normalised`). The file is rewritten without them, removed
+    when none is left, and the `await-answers` beside it removed when no
+    blocking question is left, so the step never parks on a decision already
+    made. A file that does not validate is left as it is, for
+    `questions.summarise` to report.
+    """
+    seen = {normalised(text) for text in answered} - {""}
+    if not seen:
+        return []
+    try:
+        data = questions_mod.read(directory)
+        asked = questions_mod.validate(data) if data is not None else []
+    except questions_mod.Rejected:
+        return []
+    kept = [q for q in asked if normalised(q.get("question")) not in seen]
+    if len(kept) == len(asked):
+        return []
+    path = Path(directory) / questions_mod.NAME
+    path.unlink(missing_ok=True)
+    if kept:
+        path.write_text(json.dumps(kept, indent=2))
+    if not questions_mod.blocking(kept):
+        (Path(directory) / questions_mod.AWAIT_ANSWERS).unlink(missing_ok=True)
+    return [q["question"] for q in asked if normalised(q.get("question")) in seen]

@@ -279,6 +279,11 @@ KEEP_LINE = "swarm-index-keep: "
 #: whose LSP pass grants each server its share of the total in proportion.
 #: In the signed prompt for BASE_LINE's reason.
 LSP_COST_LINE = "swarm-index-lsp-cost: "
+#: The prompt line that gives a FULL run the promoted index as a base for
+#: the language servers' answers only (`agent_worker.indexrun.LSP_BASE_LINE`,
+#: #2991): the weekly full run (`choose_kind`). In the signed prompt for
+#: BASE_LINE's reason; `metadata.lsp_base_sha` is this service's record.
+LSP_BASE_LINE = "swarm-index-lsp-base: "
 
 #: §3.4: incremental only when the diff touches fewer than this many files.
 #: GitHub's compare lists at most 300 changed files, so a diff of 300 or more
@@ -446,7 +451,11 @@ class _Spec(BaseModel):
 _Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 _Path = Annotated[str, Field(min_length=1, max_length=400)]
 _Name = Annotated[str, Field(min_length=1, max_length=80)]
-_Line = Annotated[str, Field(min_length=1, max_length=300)]
+#: The most characters a one-line field holds (a module's purpose, a note's
+#: text, a rule, a reason). indexer_prompt() states this figure, so the agent
+#: is told the limit the worker's indexspec check and promotion enforce (#2978).
+LINE_MAX_CHARS = 300
+_Line = Annotated[str, Field(min_length=1, max_length=LINE_MAX_CHARS)]
 _Command = Annotated[str, Field(min_length=1, max_length=500)]
 
 #: How a test-map edge is known (§2.1, §2.5), strongest first: a selection
@@ -464,7 +473,7 @@ Evidence = Literal["declared", "path-ref", "lsp", "ast", "co-change", "import", 
 class Module(_Spec):
     path: _Path
     language: _Name
-    purpose: str = Field(default="", max_length=300)
+    purpose: str = Field(default="", max_length=LINE_MAX_CHARS)
     files: StrictInt = Field(ge=0)
     lines: StrictInt = Field(ge=0)
     #: On an incremental index, the commit an entry carried forward was read at.
@@ -739,7 +748,8 @@ _INDEX_SHAPE = (
     '   "extractor": {"ran": true, "command": "' + EXTRACTOR_COMMAND + '", "version": "<its version>",\n'
     '                 "history": <its extractor.history, as it wrote it>}\n'
     '             or {"ran": false, "reason": "<why: e.g. not installed in this image>"},\n'
-    '   "modules": [{"path", "language", "purpose": "<one line>", "files", "lines",\n'
+    '   "modules": [{"path", "language", "purpose": "<one line, at most ' + str(LINE_MAX_CHARS)
+    + ' characters>", "files", "lines",\n'
     '                "commit_sha": "<incremental only: the commit the entry was read at>"}],\n'
     '   "entry_points": [{"path", "kind", "started_by"}],\n'
     '   "routes": [{"kind": "http" | "export" | "mcp", "method", "path", "name", "file", "handler"}],\n'
@@ -754,7 +764,8 @@ _INDEX_SHAPE = (
     '   "territory": [{"path", "rule", "source": "<the file that says so>"}],\n'
     '   "commands": [{"name", "kind": "build" | "lint" | "test" | "ci" | "other", "command", "source"}],\n'
     '   "hot_spots": [{"path", "changes", "co_changed": ["<path>"]}],\n'
-    '   "notes": [{"text": "<one line>", "source"}],\n'
+    '   "notes": [{"text": "<one line, at most ' + str(LINE_MAX_CHARS)
+    + ' characters>", "source"}],\n'
     '   "languages": [{"language", "files", "grammar", "server", "status": "ok" | "partial" |\n'
     '                  "unsupported" | "failing" | "timed_out" | "not_run", "files_covered",\n'
     '                  "fallback"}],\n'
@@ -803,6 +814,21 @@ def _incremental_paragraph(base_sha: str) -> str:
     )
 
 
+def _lsp_base_paragraph(lsp_base_sha: str) -> str:
+    """What a full run does with the base it is given for the servers' answers (#2991).
+
+    It opens with `LSP_BASE_LINE`, a line of its own, which the worker reads.
+    """
+    return (
+        f"{LSP_BASE_LINE}{lsp_base_sha}\n"
+        "THIS IS A FULL RUN. The worker staged the previous index, of commit "
+        f"{lsp_base_sha}, as {BASE_INDEX_FILE} only so the extractor could keep the language "
+        "servers' answers for the files that did not change; its tree-sitter half is rebuilt "
+        f"whole and {EXTRACT_FILE} says \"kind\": \"full\" (its extractor.lsp_carry says what "
+        'was carried). Write "kind": "full", no "base_sha", and read the whole repository.\n\n'
+    )
+
+
 def kept_commits(
     rows: Iterable[Mapping[str, Any]], *, keep_versions: int, current_sha: str | None,
     own: str,
@@ -831,7 +857,7 @@ def kept_commits(
 def indexer_prompt(
     repository: str, commit_sha: str, branch: str, *, tenant_id: str, repo_id: str,
     base_sha: str | None = None, keep: Sequence[str] | None = None,
-    lsp_costs: Mapping[str, int] | None = None,
+    lsp_costs: Mapping[str, int] | None = None, lsp_base_sha: str | None = None,
 ) -> str:
     """The indexer's instructions. Composed here from the registration; never a caller's text.
 
@@ -882,6 +908,7 @@ def indexer_prompt(
         '"extractor": {"ran": false, "reason": "<the reason the phases file gives, e.g. '
         'not installed in this image>"}, with "kind": "full".\n\n'
         + (_incremental_paragraph(base_sha) if base_sha else "")
+        + (_lsp_base_paragraph(lsp_base_sha) if lsp_base_sha and not base_sha else "")
         + "THEN read what needs reading: a one-line purpose per module, the territory rules "
         "the repository states (CLAUDE.md track tables, CODEOWNERS, frozen directories, "
         "do-not-edit notes, each quoted with its source file), the build, lint, test and CI "
@@ -892,7 +919,11 @@ def indexer_prompt(
         + _INDEX_SHAPE
         + "Bounds: modules 400, entry_points 200, routes 1000, test_layout 50, test_map "
         "4000 edges, always_tests 50, territory 200, commands 100, hot_spots 50, notes 20, "
-        "languages 50. No other keys: a document with any other key is refused. A "
+        "languages 50. Every one-line field -- a module's purpose, a note's text, an "
+        "always_tests because, a territory rule, an entry_points started_by, a languages "
+        f"fallback, the extractor's reason -- is at most {LINE_MAX_CHARS} characters; a "
+        "longer one is refused, so write a shorter note, never a longer one. No other keys: "
+        "a document with any other key is refused. A "
         "repository too large for the bounds is indexed at directory granularity, and the "
         'lists you cut are named in "truncated" -- never padded to look complete. '
         f'"commit_sha" must be exactly {commit_sha}. Before you finish, the worker checks '
@@ -914,7 +945,8 @@ def indexer_prompt(
 
 def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full", *,
                  base_sha: str | None = None, keep: Sequence[str] | None = None,
-                 model_class: str | None = INDEXER_MODEL_CLASS) -> TaskCreate:
+                 model_class: str | None = INDEXER_MODEL_CLASS,
+                 lsp_base_sha: str | None = None) -> TaskCreate:
     """The index run: an ordinary task, signed by `submit_tasks` like any other.
 
     An incremental run names its base in the prompt's `BASE_LINE`, inside
@@ -923,7 +955,10 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
     stages against the digests promotion recorded. `metadata.base_sha`,
     beside `index_kind`, is this service's own record. `keep` is named the
     same way, in the prompt's `KEEP_LINE` (`kept_commits`); without it the
-    worker's sweep retires nothing and says so.
+    worker's sweep retires nothing and says so. A full run's `lsp_base_sha`
+    (the weekly run's, `choose_kind`) is named in `LSP_BASE_LINE` and
+    recorded as `metadata.lsp_base_sha`: the worker stages it like a base,
+    and the extractor keeps only the language servers' answers from it.
 
     The timeout follows the promoted index's size (`index_timeout_seconds`,
     lane INDEX-BUDGETS), and what each language server cost in the last
@@ -937,10 +972,14 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
     index = index if isinstance(index, Mapping) else {}
     if kind == "incremental" and base_sha is None:
         raise ValueError("an incremental index run names its base")
+    if kind != "full" and lsp_base_sha is not None:
+        raise ValueError("only a full index run is given a base for its servers' answers")
     repository = f"{record['owner']}/{record['repo']}"
     metadata = {"repo_index": record["repo_id"], "commit_sha": commit_sha, "index_kind": kind}
     if kind == "incremental":
         metadata["base_sha"] = base_sha
+    if lsp_base_sha is not None:
+        metadata["lsp_base_sha"] = lsp_base_sha
     return TaskCreate(
         runner_profile=INDEXER_PROFILE,
         model_class=model_class,
@@ -948,7 +987,7 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
             repository, commit_sha, record["default_branch"],
             tenant_id=record["tenant_id"], repo_id=record["repo_id"],
             base_sha=base_sha if kind == "incremental" else None, keep=keep,
-            lsp_costs=_valid_costs(index.get("lsp_costs")),
+            lsp_costs=_valid_costs(index.get("lsp_costs")), lsp_base_sha=lsp_base_sha,
         )},
         priority=INDEX_PRIORITY,
         repository_url=record["repository_url"],
@@ -1364,6 +1403,9 @@ class KindChoice:
     kind: str
     base_sha: str | None = None
     reason: str | None = None
+    #: A full run's base for the language servers' answers only (#2991): the
+    #: weekly full run is given the promoted index, named in LSP_BASE_LINE.
+    lsp_base_sha: str | None = None
 
 
 def choose_kind(
@@ -1376,7 +1418,8 @@ def choose_kind(
     `read_changes(current, head)`, None when GitHub could not answer. Pure:
     the caller reads both. The conditions, in the order a reader checks them:
     a previous index exists, is kept and has a graph; the last full run is
-    younger than `full_every_days` (the weekly full run, §3.3); it is an
+    younger than `full_every_days` (the weekly full run, §3.3, which is
+    still given the promoted index as `lsp_base_sha`, #2991); it is an
     ANCESTOR of the head; the diff touches fewer than
     MAX_INCREMENTAL_CHANGES files; and no build or test configuration changed.
 
@@ -1404,8 +1447,17 @@ def choose_kind(
     if full_at is None:
         return KindChoice("full", reason="no full run is recorded for this repository")
     if now - full_at >= timedelta(days=days):
+        # The weekly full run rebuilds the tree-sitter half whole, but builds
+        # on the promoted index's language-server answers (owner, 2026-11-01,
+        # #2991): pyright needs ~3,400 s for SwarmCloud's Python files, more
+        # than any run has, and a full run that started over reached the
+        # same quarter every week. The graph is one the extractor would
+        # carry (checked above), and the extractor itself refuses a base of
+        # another extractor or server version, or one whose configuration
+        # changed, and then asks every file.
         return KindChoice("full", reason=(
-            f"the last full run is {(now - full_at).days} days old; one is due every {days}"))
+            f"the last full run is {(now - full_at).days} days old; one is due every {days}"),
+            lsp_base_sha=current)
     if changes is None:
         return KindChoice("full", reason=(
             "GitHub could not say how the head relates to the promoted index"))
@@ -2598,7 +2650,7 @@ class RepoIndex:
             # its owner's GitHub connection (`forge.service_slot`, INDEX-CRED).
             submission = self._submissions.submit_tasks(
                 auth, [indexer_task(record, sha, choice.kind, base_sha=choice.base_sha,
-                                    keep=keep,
+                                    keep=keep, lsp_base_sha=choice.lsp_base_sha,
                                     model_class=index_model_class(self._class_models))],
                 service_submission=True,
             )
@@ -3600,7 +3652,8 @@ def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
 
 
 __all__ = [
-    "BASE_INDEX_FILE", "BASE_LINE", "KEEP_LINE", "LSP_COST_LINE", "INDEX_TIMEOUT_TABLE",
+    "BASE_INDEX_FILE", "BASE_LINE", "KEEP_LINE", "LSP_BASE_LINE", "LSP_COST_LINE",
+    "INDEX_TIMEOUT_TABLE",
     "MAX_INDEX_TIMEOUT_SECONDS", "index_timeout_seconds", "lsp_costs_of", "source_files_of", "SWEEP_PHASE", "kept_commits", "retention_of",
     "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",
     "EXTRACTOR_COMMAND", "GRAPH_WRITER_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE",

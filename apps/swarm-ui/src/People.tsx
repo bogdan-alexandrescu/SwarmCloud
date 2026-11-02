@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { createContext, Fragment, useContext, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
   approveWorkspace,
@@ -22,7 +22,7 @@ import { groupWorkspaceName, useStoredRoles } from './Profile'
 import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
-import { nameTenants, type NamedTenantChoice } from './Spine'
+import { nameTenants, OWN_WORKSPACE_LABEL, type NamedTenantChoice } from './Spine'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { PersonWorkspaceRoles, WorkspaceRolesCard } from './WorkspaceRolesAdmin'
 import type {
@@ -202,6 +202,64 @@ function named(a: { account_id: string; label: string | null; display_name?: str
   return accountName({ label: a.label ?? '', display_name: a.display_name }) || a.account_id
 }
 
+/**
+ * AN ACCOUNT'S STATE IN PLAIN WORDS (visual QA pass 2, admin2-04,
+ * 2026-10-29): the lend select read 'AVAILABLE', 'PAUSED' and
+ * 'REAUTH_REQUIRED', the broker's enum. These are the words the Accounts
+ * table's reasons use (`AccountsTable.tsx` `whyOf`: paused, draining, signed
+ * out until someone signs in again). A state this console does not know is
+ * its own word, lower case, as `AcctState` draws it.
+ */
+const ACCOUNT_STATE_WORD: Readonly<Record<string, string>> = {
+  AVAILABLE: 'available',
+  PAUSED: 'paused',
+  DRAINING: 'draining',
+  REAUTH_REQUIRED: 'needs signing in again',
+}
+
+export function accountStateWord(state: string): string {
+  return ACCOUNT_STATE_WORD[state] ?? state.toLowerCase().replace(/_/g, ' ')
+}
+
+/**
+ * WHO LENT IT, AS A WORKSPACE (admin2-04): the select and 'Now using' named
+ * the lender by its tenant id, 'lent by u-bogdan'. A workspace is named first
+ * as the switcher names it (`nameTenants`): the caller's own personal
+ * workspace is 'your workspace', a group one its switcher name. Then a group
+ * workspace by its column's name, which `withWorkspaceNames` already renamed
+ * by the switcher's rule; then a personal workspace by its person, as the
+ * People table lists them ("Bo's workspace"), but only when ONE row holds
+ * that id: the review's render had two people in u-bogdan and named it by
+ * whichever sorted first (QA2-FIX-18 review, 2026-10-29). A tenant the page
+ * cannot name stays its id.
+ */
+export function lenderNames(
+  doc: Pick<PeopleDoc, 'people'> & { workspaces?: PeopleWorkspaceColumn[] | null },
+  named: readonly NamedTenantChoice[] = [],
+): (tenant: string) => string {
+  const names = new Map<string, string>()
+  for (const c of named) {
+    if (c.display_name === OWN_WORKSPACE_LABEL) names.set(c.tenant_id, 'your workspace')
+    else if (c.display_name !== '' && c.display_name !== c.tenant_id) names.set(c.tenant_id, c.display_name)
+  }
+  for (const c of Array.isArray(doc.workspaces) ? doc.workspaces : []) {
+    if (c.display_name !== '' && !names.has(c.tenant_id)) names.set(c.tenant_id, c.display_name)
+  }
+  const holders = new Map<string, PersonRow[]>()
+  for (const r of Array.isArray(doc.people) ? doc.people : []) {
+    const id = r.workspace.workspace_id
+    if (typeof id === 'string' && id !== '') holders.set(id, [...(holders.get(id) ?? []), r])
+  }
+  for (const [id, rows] of holders) {
+    const only = rows.length === 1 ? rows[0] : undefined
+    if (only !== undefined && !names.has(id)) names.set(id, `${only.display_name || only.email}\u2019s workspace`)
+  }
+  return (tenant) => names.get(tenant) ?? tenant
+}
+
+/** The page's lender namer; the bare id outside a People page. */
+const LenderName = createContext<(tenant: string) => string>((tenant) => tenant)
+
 /** An account with its id: the id, then how the console names it when that is something else. */
 function accountWithId(a: { account_id: string; label: string | null; display_name?: string | null }): string {
   const name = named(a)
@@ -213,7 +271,7 @@ function accountWithId(a: { account_id: string; label: string | null; display_na
  * the owner tenant and never the account. An older API without
  * `lent_accounts` still says its owners.
  */
-function claudeText(c: PersonClaudeAccount): ReactNode {
+function claudeText(c: PersonClaudeAccount, lender: (tenant: string) => string = (t) => t): ReactNode {
   if (c.source === 'own') return `own (${c.own})`
   if (c.source === 'lent' && c.lent_accounts !== undefined && c.lent_accounts.length > 0) {
     // Each id is one token (`ai-eng-4` broke as "ai-" over "eng-4" at 390,
@@ -228,7 +286,7 @@ function claudeText(c: PersonClaudeAccount): ReactNode {
   }
   // The lenders' tenant ids are tokens like the workspace ids beside them:
   // "lent by u-" over "bogdan" read as a lender called "u-" (rendered review).
-  if (c.source === 'lent') return c.lent_by.length > 0 ? <>lent by <span className="pp-nobr">{c.lent_by.join(', ')}</span></> : `lent (${c.lent})`
+  if (c.source === 'lent') return c.lent_by.length > 0 ? <>lent by <span className="pp-nobr">{c.lent_by.map(lender).join(', ')}</span></> : `lent (${c.lent})`
   if (c.source === 'provider_key') return 'provider key'
   return 'none'
 }
@@ -337,6 +395,21 @@ function Approve({ row, reload, confirm, onSaid }: { row: PersonRow; reload: () 
   )
 }
 
+/**
+ * ESCAPE CANCELS A DENY REASON (visual QA pass 1, admin-shell-08,
+ * 2026-10-28): only Cancel closed the inline form, so Escape left it open and
+ * a keyboard user tabbed on and lost their place. Escape now does what Cancel
+ * does, and the form's effect hands focus back to Deny, as the Restore and
+ * Grant admin dialogs do. It stops there: inside the Manage drawer, Escape
+ * closes the reason, not the drawer.
+ */
+function cancelOnEscape(e: ReactKeyboardEvent<HTMLElement>, cancel: () => void): void {
+  if (e.key !== 'Escape') return
+  e.preventDefault()
+  e.stopPropagation()
+  cancel()
+}
+
 function Deny({ row, reload, onSaid }: { row: PersonRow; reload: () => void; onSaid?: (s: Said) => void }) {
   const id = row.workspace.workspace_id ?? ''
   const [open, setOpen] = useState(false)
@@ -380,7 +453,7 @@ function Deny({ row, reload, onSaid }: { row: PersonRow; reload: () => void; onS
     )
   }
   return (
-    <span className="pp-deny">
+    <span className="pp-deny" onKeyDown={(e) => cancelOnEscape(e, () => setOpen(false))}>
       <label className="c-field">
         <span className="c-lbl">Reason, shown to {row.email}</span>
         <textarea ref={reasonRef} className="c-inp" value={reason} maxLength={500} rows={2} onChange={(e) => setReason(e.target.value)} />
@@ -600,6 +673,7 @@ function LoanPicker({
   const [busy, setBusy] = useState(false)
   const [said, say] = useSaid(onSaid)
   const chosen = accounts.find((a) => a.account_id === account) ?? null
+  const lender = useContext(LenderName)
   const go = async () => {
     if (busy || chosen === null) return
     setBusy(true)
@@ -613,7 +687,7 @@ function LoanPicker({
     )
     reload()
   }
-  const name = chosen === null ? '' : `${named(chosen)} (${chosen.owner_tenant})`
+  const name = chosen === null ? '' : `${named(chosen)} (${lender(chosen.owner_tenant)})`
   const idle = chosen !== null && chosen.state !== null && NOT_ASSIGNING.has(chosen.state)
   const verb = lend ? 'Lend' : 'Reclaim'
   const one = !lend && accounts.length === 1 ? accounts[0]! : null
@@ -621,8 +695,8 @@ function LoanPicker({
     <div className="pp-loan">
       {one !== null ? (
         <span className="pp-loan-one" data-testid="pp-loan-one">
-          Lent to them: <strong>{accountWithId(one)}</strong> · {one.owner_tenant}
-          {one.state !== null ? ` · ${one.state}` : ''}
+          Lent to them: <strong>{accountWithId(one)}</strong> · {lender(one.owner_tenant)}
+          {one.state !== null ? ` · ${accountStateWord(one.state)}` : ''}
         </span>
       ) : (
         <label className="c-field">
@@ -636,8 +710,8 @@ function LoanPicker({
             <option value="">choose…</option>
             {accounts.map((a) => (
               <option key={a.account_id} value={a.account_id}>
-                {named(a)} · {a.owner_tenant}
-                {a.state !== null ? ` · ${a.state}` : ''}
+                {named(a)} · {lender(a.owner_tenant)}
+                {a.state !== null ? ` · ${accountStateWord(a.state)}` : ''}
                 {a.state !== null && NOT_ASSIGNING.has(a.state) ? ' (starts no new agent)' : ''}
               </option>
             ))}
@@ -663,12 +737,12 @@ function LoanPicker({
           <p>{lend ? `Lend ${name} to ${row.email}?` : `Reclaim ${name} from ${row.email}?`}</p>
           <p className="ur-hint">
             {lend
-              ? `Their work may then run on an account ${chosen.owner_tenant} owns.`
-              : `${chosen.owner_tenant} stops lending it to them; their new work is no longer offered it.`}
+              ? `Their work may then run on an account ${lender(chosen.owner_tenant)} owns.`
+              : `${lender(chosen.owner_tenant)} stops lending it to them; their new work is no longer offered it.`}
           </p>
           {lend && idle && (
             <p className="ur-hint" role="note" data-testid="pp-loan-idle">
-              This account is {chosen.state}: it starts no new agent until its owner makes it available again.
+              This account is {accountStateWord(chosen.state ?? '')}: it starts no new agent until its owner makes it available again.
             </p>
           )}
         </Dialog>
@@ -706,7 +780,10 @@ function LimitChips({ limits }: { limits: Record<string, number> | undefined }) 
   if (typeof l.quota_cpu === 'number') parts.push(`${l.quota_cpu} vCPU`)
   if (typeof l.quota_pods === 'number') parts.push(`${l.quota_pods} pods`)
   if (typeof l.capacity_units === 'number') parts.push(`${l.capacity_units} capacity units`)
-  if (parts.length === 0) return <span className="ur-hint">the record carries no limits</span>
+  // WHAT APPROVING DOES, NOT WHAT IS STORED (visual QA pass 1, admin-shell-20,
+  // 2026-10-28): "the record carries no limits" told the approver nothing.
+  // With none asked for, Approve creates the workspace at `DEFAULT_CEILING`.
+  if (parts.length === 0) return <span className="ur-hint">No ceiling was asked for: approving sets the default, {DEFAULT_CEILING} agents at once</span>
   return (
     <span className="pp-limits" aria-label="Limits it would get">
       {parts.map((p) => (
@@ -856,7 +933,7 @@ function useWorkspaceMembers(columns: readonly PeopleWorkspaceColumn[] | null, v
             : r.status === 'empty'
               ? { ok: true, members: new Map() }
               : r.status === 'error'
-                ? { ok: false, why: r.error.code ?? r.error.kind }
+                ? { ok: false, why: r.error.kind }
                 : null
         if (read === null) return
         setReads((was) => ({ ...was, [id]: read }))
@@ -873,16 +950,42 @@ function joinedIn(reads: Readonly<Record<string, MembersRead>>, tenant: string, 
   return read?.ok === true ? read.members.get(email.toLowerCase()) : undefined
 }
 
-/** Said once, above the grid: the columns whose members list was not read, so no mark is drawn in them. */
+/**
+ * WHY A MEMBERS LIST WAS NOT READ, IN WORDS (visual QA pass 1, admin-shell-05,
+ * 2026-10-28): the note printed the error's raw kind, "eng (not_found)". Only
+ * the kinds a reader can act on get their own words; the rest "could not be
+ * read". `plural` picks the verb for one list or several.
+ */
+export function membersUnreadWhy(kind: string, plural: boolean): string {
+  const was = plural ? 'were' : 'was'
+  if (kind === 'not_found') return `${was} not found`
+  if (kind === 'forbidden' || kind === 'admin_required') return `${was} refused to you`
+  return 'could not be read'
+}
+
+/**
+ * Said once, above the grid: the columns whose members list was not read, so
+ * no "joined by request" mark is drawn in them. THE ROLES IN THOSE COLUMNS ARE
+ * A SEPARATE READ (admin-shell-05): the note said "could not be read" above a
+ * column full of roles, and read as if the roles were unread too, so it says
+ * which mark is missing and that the roles stand.
+ */
 function MembersUnread({ columns, reads }: { columns: readonly PeopleWorkspaceColumn[]; reads: Readonly<Record<string, MembersRead>> }) {
   const failed = columns.flatMap((c) => {
     const read = reads[c.tenant_id]
-    return read !== undefined && !read.ok ? [`${c.display_name} (${read.why})`] : []
+    return read !== undefined && !read.ok ? [{ name: c.display_name, why: read.why }] : []
   })
-  if (failed.length === 0) return null
+  const first = failed[0]
+  if (first === undefined) return null
+  const one = failed.length === 1
+  const same = failed.every((f) => f.why === first.why)
+  const lists = same
+    ? `${one ? 'its members list' : 'their members lists'} ${membersUnreadWhy(first.why, !one)}`
+    : listed(failed.map((f) => `${f.name}’s members list ${membersUnreadWhy(f.why, false)}`))
   return (
     <p className="ur-hint pp-joined-unread">
-      No “joined by request” mark is drawn for {listed(failed)}: {failed.length === 1 ? 'its members list' : 'their members lists'} could not be read.
+      No “joined by request” mark can be drawn in the {listed(failed.map((f) => f.name))} {one ? 'column' : 'columns'}: {lists}. The roles shown{' '}
+      {one ? 'there' : 'in them'} are read separately and are not affected.
     </p>
   )
 }
@@ -999,7 +1102,7 @@ function JoinDeny({ join, reload, onSaid }: { join: JoinRequestRow; reload: () =
     )
   }
   return (
-    <span className="pp-deny">
+    <span className="pp-deny" onKeyDown={(e) => cancelOnEscape(e, () => setOpen(false))}>
       <label className="c-field">
         <span className="c-lbl">Reason, shown to {join.requester}</span>
         <textarea ref={reasonRef} className="c-inp" value={reason} maxLength={JOIN_REASON_MAX} rows={2} onChange={(e) => setReason(e.target.value)} />
@@ -1102,9 +1205,21 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc & JoinFields; rows:
               {kind === 'workspace' ? (
                 <>
                   <div className="pp-req-what">
+                    {/* WHAT IS ASKED FOR, BY KIND AND PERSON (visual QA pass 2,
+                        admin2-22, 2026-10-29): 'Workspace w-c4r01e' named the
+                        request by a generated id an approver cannot place. A
+                        person's row asks for their own workspace, so the line
+                        says so; the id it will have is the secondary line. */}
                     <span>
-                      Workspace <code className="pp-id">{row.workspace.workspace_id}</code> · <Requested at={at} />
+                      {/* '·' is held to 'asked' (U+00A0), so a phone's line break never leaves it alone at a line's end. */}
+                      A personal workspace for {row.email} ·{'\u00a0'}
+                      <Requested at={at} />
                     </span>
+                    {row.workspace.workspace_id != null && row.workspace.workspace_id !== '' && (
+                      <small className="pp-req-id">
+                        id <code className="pp-id">{row.workspace.workspace_id}</code>
+                      </small>
+                    )}
                     <LimitChips limits={row.workspace.limits} />
                   </div>
                   <div className="pp-req-acts">
@@ -1373,7 +1488,7 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
   return (
     <div className="pp-ws" data-workspace-state={w.state}>
       <ToneMark tone={STATE_TONE[w.state] ?? 'unknown'}>{STATE_WORD[w.state] ?? w.state}</ToneMark>
-      {w.workspace_id != null && w.workspace_id !== '' && (
+      {w.workspace_id != null && w.workspace_id !== '' && w.state !== 'requested' && (
         <>
           {' '}
           {/* Whole in `title`: people.css cuts an id longer than its room (V021, V161). */}
@@ -1381,6 +1496,17 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
             {w.workspace_id}
           </code>
         </>
+      )}
+      {/* A REQUESTED WORKSPACE'S ID IS SECONDARY (admin2-22, QA2-FIX-18 review,
+          2026-10-29): 'requested w-c4r01e' named the request by a generated
+          id, as Waiting for you did; the id it will have is its own line. */}
+      {w.workspace_id != null && w.workspace_id !== '' && w.state === 'requested' && (
+        <p className="ur-hint pp-req-id">
+          id{' '}
+          <code className="pp-id" title={w.workspace_id}>
+            {w.workspace_id}
+          </code>
+        </p>
       )}
       {w.state === 'failed' && failedAt !== null && <> ({failedAt})</>}
       {w.state === 'needs_owner' && (
@@ -1419,7 +1545,8 @@ function lenderOf(a: PersonLentAccount): string {
  */
 function ClaudeSummary({ c }: { c: PersonClaudeAccount }) {
   const accounts = c.source === 'lent' ? (c.lent_accounts ?? []) : []
-  if (accounts.length < 2) return <>{claudeText(c)}</>
+  const lender = useContext(LenderName)
+  if (accounts.length < 2) return <>{claudeText(c, lender)}</>
   const lenders = [...new Set(accounts.map(lenderOf))]
   return (
     <details className="pp-loans">
@@ -1606,10 +1733,10 @@ function AdminSwitch({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; rel
   const why = !read
     ? `The admin roles were not read (${doc.admins_error ?? 'not served'}), so this cannot be switched here.`
     : holder?.role === 'owner'
-      ? 'Platform owner: set by PLATFORM_OWNER in configuration, so it is not switched here.'
+      ? 'Platform owner: set in the deployment’s configuration, so it is not switched here.'
       : on
         ? `Granted by ${holder.granted_by ?? 'unknown'}${holder.granted_at !== null ? ` ${timeAgo(holder.granted_at)}` : ''}. The last admin cannot be removed; the API says so when it refuses.`
-        : 'Off. An admin through an ADMIN_GROUPS group holds no role document and shows as off here.'
+        : 'Off. An admin through a group is an admin but has no role recorded here, so they show as off.'
   const go = async () => {
     if (busy) return
     setBusy(true)
@@ -1790,7 +1917,7 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
           </span>
           <span className="ur-hint">
             {a.role === 'owner'
-              ? 'set by PLATFORM_OWNER in configuration'
+              ? 'set in the deployment’s configuration'
               : `granted by ${a.granted_by ?? 'unknown'}${a.granted_at !== null ? ` ${timeAgo(a.granted_at)}` : ''}`}
           </span>
           {/* The owner is not removable here: the API refuses it
@@ -1929,8 +2056,8 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
     <Card className="pp-admins" title="Admins">
       <p className="ur-hint">
         Any admin may grant or remove admin. The platform owner can be changed only by the owner, and the last admin cannot
-        be removed; the API says so when it refuses. An admin through an ADMIN_GROUPS group holds no role document and is
-        not listed.
+        be removed; the API says so when it refuses. An admin through a group has no role recorded here and is not
+        listed.
       </p>
       {admins !== null ? (
         <AdminList admins={admins} onRemove={setTarget} />
@@ -2631,7 +2758,7 @@ function withWorkspaceNames<D extends { workspaces?: PeopleWorkspaceColumn[] | n
   }
 }
 
-function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () => void }) {
+function PeopleBody({ doc, reload, named = [] }: { doc: PeopleDoc & JoinFields; reload: () => void; named?: readonly NamedTenantChoice[] }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
   const phone = usePhoneTables()
   // The drawer follows the person, not a snapshot of their row: each read
@@ -2653,8 +2780,9 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () =
     setVersion((v) => v + 1)
   }
   const grid: JoinGrid = { joins, members }
+  const lender = useMemo(() => lenderNames(doc, named), [doc, named])
   return (
-    <>
+    <LenderName.Provider value={lender}>
       <PeopleLead rows={rows} joins={joins} joinsError={joinsError} />
       <BuildingOff doc={doc} />
       {joinsError !== null && <JoinsUnread code={joinsError} />}
@@ -2741,7 +2869,7 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc & JoinFields; reload: () =
       </div>
       {managed !== null && <Drawer key={managed.email} row={managed} doc={doc} reload={reload} onClose={() => setManaging(null)} />}
       {granting && <GrantDialog reload={reload} onClose={() => setGranting(false)} onSaid={setSaid} />}
-    </>
+    </LenderName.Provider>
   )
 }
 
@@ -2774,7 +2902,7 @@ export function PeopleScreen() {
           isScoped(d) ? (
             <ScopedBody doc={withWorkspaceNames(d, named)} reload={people.reload} />
           ) : (
-            <PeopleBody doc={withWorkspaceNames(d, named)} reload={people.reload} />
+            <PeopleBody doc={withWorkspaceNames(d, named)} reload={people.reload} named={named} />
           )
         }
       </UrRegion>

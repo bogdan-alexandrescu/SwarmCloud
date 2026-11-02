@@ -271,6 +271,10 @@ SETTINGS_PURPOSE = "swarm.settings/v1"
 #:
 #: "budget" is contract request 119 (BUDGET-CAP, #2459), accepted by the owner
 #: 2026-10-26: the workspace's per-agent budget default, `{unit, amount}`.
+#:
+#: "quality_gates" is contract request 128 (JEV-LANES, PR 2905), accepted by
+#: the owner 2026-10-31: whether the workspace's claude-code lanes run
+#: jev-belay and jev-enforce, `{jev}`.
 SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "top": ("judgment_backend",),
@@ -283,6 +287,7 @@ SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "judgment_backend",
         ),
         "budget": ("unit", "amount"),
+        "quality_gates": ("jev",),
     }
 )
 

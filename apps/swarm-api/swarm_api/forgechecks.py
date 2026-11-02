@@ -65,6 +65,7 @@ unchanged (a `cancelled` run counts as skipped here and pending there, #1778).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -196,10 +197,13 @@ def mark_workflow_runs(runs: Sequence[Mapping[str, Any]],
     run at the sha has the same `workflow_id`, event and head branch and a
     larger id -- the run a concurrency group cancelled this one for, which
     may not have created this check yet (#2582). The worker's
-    `merge.actions_suites` reads Actions runs the same way.
+    `merge.actions_suites` reads Actions runs the same way. Each also carries
+    the run's `id` as `workflow_run_id`, the run whose failed jobs the merge
+    wake tick's free re-run asks GitHub to re-run (#2841); no reader here
+    judges a check by it.
     """
     rows = [row for row in workflow_runs if isinstance(row, Mapping)]
-    marks: dict[int, tuple[Any, bool]] = {}
+    marks: dict[int, tuple[Any, bool, int | None]] = {}
     for row in rows:
         suite, workflow, run_id = (_int(row.get("check_suite_id")), _int(row.get("workflow_id")),
                                    _int(row.get("id")))
@@ -211,14 +215,43 @@ def mark_workflow_runs(runs: Sequence[Mapping[str, Any]],
             and other.get("head_branch") == row.get("head_branch")
             and (_int(other.get("id")) or 0) > run_id
             for other in rows)
-        marks[suite] = (row.get("conclusion"), superseded)
+        marks[suite] = (row.get("conclusion"), superseded, run_id)
     out: list[dict[str, Any]] = []
     for run in runs:
         suite = run.get("check_suite")
         mark = marks.get(_int(suite.get("id"))) if isinstance(suite, Mapping) else None
         out.append(dict(run) if mark is None else
-                   {**run, "workflow_conclusion": mark[0], "workflow_superseded": mark[1]})
+                   {**run, "workflow_conclusion": mark[0], "workflow_superseded": mark[1],
+                    **({"workflow_run_id": mark[2]} if mark[2] is not None else {})})
     return out
+
+
+#: An Actions check run's page, `.../actions/runs/<run id>/job/<job id>`:
+#: only the digits are read, and only when the job is the check run itself.
+_ACTIONS_JOB_URL = re.compile(r"/actions/runs/(\d{1,20})/job/(\d{1,20})/?$")
+
+
+def workflow_run_of(run: Mapping[str, Any]) -> int | None:
+    """The Actions workflow run a failing Actions check run is a job of, or None.
+
+    The merge wake tick re-runs its failed jobs through it (#2841); the CI
+    excerpt reads a red gate's failed leaf jobs from it (`issueci`, #2937).
+
+    `workflow_run_id` when the reading stamped it from the Actions runs it
+    read; else the run id in the check's `details_url` or `html_url`, an int
+    and nothing more, and only when the URL's job is this very check run.
+    """
+    stamped = run.get("workflow_run_id")
+    if isinstance(stamped, int) and not isinstance(stamped, bool) and stamped > 0:
+        return stamped
+    for key in ("details_url", "html_url"):
+        url = run.get(key)
+        if not isinstance(url, str):
+            continue
+        found = _ACTIONS_JOB_URL.search(url.partition("?")[0].partition("#")[0])
+        if found is not None and int(found.group(2)) == run.get("id") and int(found.group(1)) > 0:
+            return int(found.group(1))
+    return None
 
 
 def check_run_finished(run: Mapping[str, Any]) -> bool:

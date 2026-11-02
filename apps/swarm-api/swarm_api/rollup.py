@@ -30,7 +30,10 @@ moved there so the reconciler's workflow stall check (#616) applies the SAME
 rule rather than a second copy of it: the scheduler and the reconciler images
 cannot import this package, and `apps/common/swarm_common/` is frozen. What
 stays here is the half bound to swarm-api's store and metrics: reading the step
-tasks, writing the derived state back, and counting drift. The request to move
+tasks, writing the derived state back, and counting drift. The in-transaction
+write a step transition makes, `derived_state_write`, is also `swarm_rollup`'s
+and re-exported here: the scheduler and the worker make step transitions too
+and call the same function (#2838). The request to move
 the derivation into the frozen contract itself is entry 7 in
 docs/contract-change-requests.md.
 """
@@ -55,6 +58,7 @@ from swarm_rollup import (  # noqa: F401
     _check_coverage,
     derive,
     derive_for,
+    derived_state_write,
     drift_of,
     effective_state,
     read_steps,

@@ -10,6 +10,7 @@ import { ConnectButton, Refusal } from './GitHubConnect'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { UrCap, UrRadio, UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { notServed, type CapCell } from './RepositoriesData'
+import { githubTokenState } from './githubTokenState'
 import { PageHead } from './Shell'
 import { usePhoneTables } from './capacityPoll'
 import type {
@@ -424,6 +425,7 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
   const expiresAt = connection?.access_expires_at ?? null
   const expiresMs = expiresAt === null ? NaN : new Date(expiresAt).getTime()
   const expired = Number.isFinite(expiresMs) && expiresMs <= now
+  const tokenState = connection === null ? null : githubTokenState(connection.state, expiresAt, now)
   return (
     <Card className="ac-conn" title="GitHub" action={<Chip>acts as you</Chip>}>
       {said !== null && (
@@ -450,7 +452,7 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
             </span>
             <span>{connection.method === 'app_user' ? 'GitHub App · user token' : (connection.method ?? 'connection')}</span>
             <span>
-              <ToneMark tone={active ? 'ok' : 'bad'}>{active ? 'active' : (connection.state ?? 'unknown')}</ToneMark>
+              <ToneMark tone={tokenState?.tone ?? 'bad'}>{tokenState?.word ?? 'unknown'}</ToneMark>
             </span>
           </p>
           <p className="ur-cmeta">
@@ -464,7 +466,8 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
                 <b>{tokenExpiry(connection.access_expires_at, now)}</b>
               )}
             </span>
-            <span>{expired ? 'the next use renews it' : 'renewed automatically'}</span>
+            {/* An expired token's renewal is said once, in the state above. */}
+            {!expired && <span>renewed automatically</span>}
             {connection.refreshed_at !== null && <span>last renewed {timeAgo(connection.refreshed_at)}</span>}
           </p>
           {!active && (
@@ -1684,8 +1687,11 @@ function Installs({ grants, open }: { grants: AccessGrant[]; open: Open }) {
       title="Where the App is installed"
       action={
         isGitHubUrl(installUrl) ? (
+          // ANOTHER organisation (visual QA pass 2 config2-22): every owner
+          // listed has its own row's button; this one is for an owner the list
+          // does not name yet.
           <ButtonLink size="sm" href={installUrl} target="_blank" rel="noreferrer">
-            Install on an organisation…
+            Install on another organisation…
           </ButtonLink>
         ) : undefined
       }
@@ -1762,8 +1768,10 @@ function Installs({ grants, open }: { grants: AccessGrant[]; open: Open }) {
                             Request install
                           </Button>
                         ) : (
+                          // Says whose (config2-22): a bare `Install` on the
+                          // person's own row did not say it was their account.
                           <ButtonLink size="sm" href={o.install_url} target="_blank" rel="noreferrer">
-                            Install
+                            Install on your account
                           </ButtonLink>
                         )}
                       </td>

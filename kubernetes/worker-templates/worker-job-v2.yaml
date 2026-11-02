@@ -73,7 +73,9 @@ spec:
   parallelism: 1
   # Later than the worker's TASK_TIMEOUT_SECONDS; see worker-job.yaml.
   activeDeadlineSeconds: __ACTIVE_DEADLINE_SECONDS__
-  ttlSecondsAfterFinished: 3600
+  # Ten minutes (BGD 2026-10-28): a finished Job holds a count/jobs.batch
+  # slot until this expires. Same value as dispatch.FINISHED_JOB_TTL_SECONDS.
+  ttlSecondsAfterFinished: 600
   template:
     metadata:
       labels:

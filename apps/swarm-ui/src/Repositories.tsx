@@ -3,20 +3,20 @@ import { deleteRepository, loadAccess, loadRepositories, loadRepositoryCounts, l
 import { ADD_REPOSITORY_ADDRESS } from './Access'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark, Tabs, TypedConfirm, routedClick } from './components'
 import { useSetupSteps } from './ConfigSetup'
-import { addressToPath } from './paths'
+import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { ReachableRepositories } from './ReachableRepositories'
 import { HEAD_UNREAD, WORKFLOW_FILES_WHY, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
-import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
+import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrGraphCacheSection, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
 import { RepoDot, repoStatus, useForgePermissions } from './PermissionCards'
 import { QA_TARGETS_PAGE, QaTargetsScreen } from './QaTargets'
-import type { ForgeRepoStatus, RepoCounts } from './api'
+import type { ForgeGap, ForgeRepoStatus, RepoCounts } from './api'
 import type { AccessGrant } from './types'
 import type { QaLink } from './qaTargetsApi'
 import { useRoleGate } from './Profile'
-import { CountNote, PageHead } from './Shell'
+import { PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/repositories.css'
 
@@ -175,9 +175,9 @@ function Lead({ kicker, title, actions, children }: { kicker: string; title: str
  * "Add new repository" the two read as two buttons for one job. "more" only
  * once something is chosen: with nothing chosen there is nothing to add to.
  */
-function AddRepository({ go, more }: { go: (to: string) => void; more: boolean }) {
+function AddRepository({ go, more, kind = 'primary' }: { go: (to: string) => void; more: boolean; kind?: 'primary' | 'secondary' }) {
   return (
-    <UrNavButton to={ADD_REPOSITORY_ADDRESS} go={go} kind="primary" size="sm">
+    <UrNavButton to={ADD_REPOSITORY_ADDRESS} go={go} kind={kind} size="sm">
       {more ? 'Choose more on GitHub' : 'Choose on GitHub'}
     </UrNavButton>
   )
@@ -369,6 +369,16 @@ function RepositoryList({
   // repository, so the header does not repeat it"): in the lead when the lead
   // offers it, in the head otherwise.
   const leadAdds = grants !== null && (grants.length === 0 || (missing !== null && missing.length === 0))
+  // ONE PRIMARY ADD ACTION, AND IT IS THE LEAD'S (console visual QA pass 2,
+  // config2-08, was config-16; part of #2694). With the lead drawn, the head's
+  // Register repository was a second add path beside the lead's Choose more
+  // on GitHub (or beside its own Register). The lead names the one next
+  // action -- Choose on GitHub, Register the chosen repository, or Choose
+  // more on GitHub -- and every chosen repository not registered has its
+  // dashed card's Register, so the head keeps Register repository only while
+  // the lead is not drawn (a read not in hand). Choose more on GitHub stays in
+  // the head beside a lead that registers, as a secondary.
+  const leadDrawn = grants !== null && (grants.length === 0 || missing !== null)
   const chosen = (missing ?? []).map((g) => <ChosenCard key={g.repo_id} g={g} go={go} gated={roleGate !== null} />)
   // THE COUNT LINE IS THERE IN EVERY STATE (V224). Absent while the list was
   // read and when it failed, it arrived with the cards and pushed them ~37px
@@ -377,9 +387,9 @@ function RepositoryList({
     count !== null ? (
       // The dashed cards are drawn in the same grid, so the note counts them apart (S3a).
       missing !== null && missing.length > 0 ? (
-        `${count} registered · ${missing.length} chosen, not registered`
+        `Registered repositories · ${count} · ${missing.length} chosen, not registered`
       ) : (
-        `${count} registered`
+        `Registered repositories · ${count}`
       )
     ) : state.status === 'loading' ? (
       'Reading the registered repositories…'
@@ -401,7 +411,7 @@ function RepositoryList({
           <UrNavButton to={GT_PAGE} go={go} size="sm">
             Git tokens
           </UrNavButton>
-          {roleGate === null ? (
+          {leadDrawn ? null : roleGate === null ? (
             <UrNavButton to={REGISTER} go={go} size="sm">
               Register repository
             </UrNavButton>
@@ -410,7 +420,7 @@ function RepositoryList({
               Register repository
             </Button>
           )}
-          {!leadAdds && <AddRepository go={go} more={grants !== null && grants.length > 0} />}
+          {!leadAdds && <AddRepository go={go} more={grants !== null && grants.length > 0} kind={leadDrawn ? 'secondary' : 'primary'} />}
         </span>,
       )}
       <RepositoriesTabs current="list" go={go} />
@@ -436,7 +446,9 @@ function RepositoryList({
           {failed}
         </Banner>
       )}
-      <CountNote>{meta}</CountNote>
+      {/* THE COUNT HEADS THE CARD GRID (QA1 config-19). As a lone note,
+          `3 registered` floated between the reach table and the cards. */}
+      <h3 className="c-count-note">{meta}</h3>
       <UrRegion
         state={state}
         route="GET /v1/repositories"
@@ -468,7 +480,10 @@ function RepositoryList({
       >
         {(repos) => (
           <div className="ur-cards">
-            {repos.map((r) => (
+            {/* BY FULL NAME, THE REACH TABLE'S ORDER (config2-09): in the order
+                served, the cards and the table above them listed the same
+                repositories in two orders. */}
+            {[...repos].sort((a, b) => repoName(a).localeCompare(repoName(b))).map((r) => (
               <RepoCard
                 key={r.repo_id}
                 r={r}
@@ -701,7 +716,7 @@ function FailureLine({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
  * owner report 2026-10-13: "it says all tests pass for /repositories/tokens
  * but it can't index the repo in my personal workspace?"). Try it checks the
  * access a person's own tasks use; an index run is the tenant's, so the card
- * names the credential it uses -- the team token, the workspace owner's
+ * names the credential it uses -- the workspace token, the workspace owner's
  * GitHub connection, or none -- beside the last result, and a passing check
  * and a failing index never look alike without saying why.
  */
@@ -758,29 +773,56 @@ function SwitchStates({ r }: { r: RepoRecord }) {
  * #2596). A red ◆ after the freshness chip on every card read as an
  * unexplained mark: its words were only the tooltip and the accessible name.
  * A dot that asks for something says what, in a word a person can read
- * without hovering: how many GitHub permissions are missing (`blocked_by`'s
- * permissions), or that they were not all checked. A green dot
- * asks for nothing and stays a dot. The full reason stays the tooltip.
+ * without hovering. A green dot asks for nothing and stays a dot. The full
+ * reason stays the tooltip.
+ *
+ * IT NAMES THE PERMISSION AND WHERE IT IS GRANTED (console visual QA pass 2,
+ * config2-01; part of #2694). "1 GitHub permission missing" never said which,
+ * and on the fixture console it sat on example-api, whose reach row above
+ * reads Clone ok, Push ok, Pull request ok: the two measure different things
+ * (the reach table what you may do as yourself, this the App's grant), so
+ * the line says the permission by name -- "Not granted on GitHub: Actions
+ * (read)" -- and links where it is fixed: an App permission on Workspace
+ * setup, where the App and each org's grants are drawn; a token's on Git
+ * tokens. A refusal that names no permission (`permission: null`, a token's
+ * measured one) is counted, as before.
  */
-function PermWord({ row }: { row: ForgeRepoStatus | undefined }) {
+function permissionName(g: ForgeGap): string {
+  const plain = g.permission!.replace(/_/g, ' ')
+  const word = plain.charAt(0).toUpperCase() + plain.slice(1)
+  return g.access === null ? word : `${word} (${g.access})`
+}
+
+function PermWord({ row, go }: { row: ForgeRepoStatus | undefined; go: (to: string) => void }) {
   if (row === undefined) return null
   const s = repoStatus(row)
   if (s.tone === 'ok') return null
-  // A token's measured refusal names no permission (`permission: null`): each counts on its own.
-  const n =
-    new Set(row.blocked_by.flatMap((g) => (g.permission === null ? [] : [g.permission]))).size +
-    row.blocked_by.filter((g) => g.permission === null).length
+  if (s.tone === 'unknown') {
+    return (
+      <span className="ur-mu" data-perm-word={s.tone} title={s.tip} aria-hidden="true">
+        GitHub permissions not all checked
+      </span>
+    )
+  }
+  const named = new Map<string, ForgeGap>()
+  for (const g of row.blocked_by) if (g.permission !== null && !named.has(g.permission)) named.set(g.permission, g)
+  const unnamed = row.blocked_by.filter((g) => g.permission === null).length
+  const names = [...named.values()].map(permissionName)
   const word =
-    s.tone === 'unknown'
-      ? 'GitHub permissions not all checked'
-      : n === 0
-        ? 'A GitHub permission is missing'
-        : n === 1
-          ? '1 GitHub permission missing'
-          : `${n} GitHub permissions missing`
+    names.length > 0
+      ? `Not granted on GitHub: ${names.join(', ')}${unnamed > 0 ? ` and ${unnamed} more` : ''}`
+      : unnamed > 1
+        ? `${unnamed} GitHub permissions missing`
+        : 'A GitHub permission is missing'
+  const where = row.credential === 'token' ? { to: GT_PAGE, label: 'Git tokens' } : { to: WORKSPACE_SETUP_ADDRESS, label: 'Workspace setup' }
   return (
-    <span className="ur-mu" data-perm-word={s.tone} title={s.tip} aria-hidden="true">
-      {word}
+    <span className="ur-mu ur-perm" data-perm-word={s.tone}>
+      <span title={s.tip} aria-hidden="true">
+        {word}
+      </span>{' '}
+      <UrLink to={where.to} go={go}>
+        Grant it in {where.label}
+      </UrLink>
     </span>
   )
 }
@@ -840,7 +882,7 @@ function RepoCard({
       <div className="ur-cbadge" data-badge="">
         <UrFreshPill f={f} />
         <RepoDot row={perm} />
-        <PermWord row={perm} />
+        <PermWord row={perm} go={go} />
       </div>
       <div className="ur-cmeta">
         <span>
@@ -886,7 +928,7 @@ function RepoCard({
         )}
         {onRemove !== undefined && (
           <Button size="sm" kind="danger" onClick={onRemove}>
-            Remove
+            Unregister
           </Button>
         )}
       </div>
@@ -900,6 +942,8 @@ function RepoCard({
           onCancel={onCancel}
         />
       )}
+      {/* THE CACHE SECTION, LAST AND FOLDED (graph-answer-cache.md §5.1): it reads nothing until opened. */}
+      <UrGraphCacheSection r={r} />
     </Card>
   )
 }

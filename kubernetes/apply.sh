@@ -32,7 +32,10 @@
 #                         # until graph_service.serve, and then nothing is
 #                         # applied (docs/design/graph-service.md §2.1, §8.2).
 #                         # scripts/roll-graph.sh drives it and waits for the
-#                         # rollout
+#                         # rollout. After applying, swarm-api's egress range
+#                         # is read from its service and swarm-graph-ingress
+#                         # is compared with it (network_parity.py
+#                         # --graph-ingress); a difference fails the apply
 #   kubernetes/apply.sh --swarm-typesafe-fwd --confirm   # the TypeSafe forwarder:
 #                         # `terraform output -raw swarm_typesafe_fwd_manifest`
 #                         # (terraform/infra/typesafe_fwd.tf), alone; null
@@ -40,6 +43,14 @@
 #                         # is applied (docs/design/workspace-secrets.md §3.5).
 #                         # scripts/roll-typesafe-fwd.sh drives it and waits
 #                         # for the rollout
+#   kubernetes/apply.sh --swarm-voice --confirm      # Voice it's swarm-voice:
+#                         # `terraform output -raw swarm_voice_manifest`
+#                         # (terraform/infra/voice.tf), alone, to the swarm's
+#                         # Autopilot cluster (GKE_CLUSTER, swarm-autopilot)
+#                         # and no other; null until voice_it = "on", and then
+#                         # nothing is applied (docs/design/voice-it.md §3.4,
+#                         # section 10 phase one). scripts/roll-voice.sh drives
+#                         # it and waits for the StatefulSet's rollout
 #   kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 #                         # ... with the step-spec public keys ConfigMap, from
 #                         # `terraform output -json spec_verify_keys_configmap`
@@ -130,6 +141,15 @@ REPO="$(cd -- "${HERE}/.." && pwd)"
 # defines functions and arrays when sourced -- it reads no .env and contacts
 # nothing -- so sourcing it costs nothing and buys `kubectl_bin` as well.
 COMMON="${REPO}/scripts/lib/common.sh"
+# THE PROJECT IS THE CALLER'S, NEVER A DEFAULT (DAYONE-K8S-1, design §7).
+# common.sh's load_env fills an unset PROJECT_ID with the live project, so a
+# caller in any other project that forgot it would read that project's cluster
+# context check, uniqueIds and network, and render its identities. Marked here,
+# before load_env runs: the environment or the env file replaces the mark, and
+# a mark that survives is a project nobody gave, refused below once --help has
+# had its chance. "(none given)" is no project id, so load_env's `:-` keeps it.
+PROJECT_NOT_GIVEN="(none given)"
+[[ -n "${PROJECT_ID:-}" ]] || PROJECT_ID="${PROJECT_NOT_GIVEN}"
 [[ -f "${COMMON}" ]] || { printf 'error: %s is missing; the shared deny-list lives there\n' "${COMMON}" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../scripts/lib/common.sh
@@ -184,6 +204,12 @@ LIVE_FLAGS=(--swarm-api-egress-cidr --swarm-api-egress-source)
 # eng and smoke namespaces' Job read.
 VERIFY_FLAGS=(--verify-uid)
 
+# THE PROJECT IS PROJECT_ID, NOT PASSED: every render below is given
+# `--project "${PROJECT_ID}"`, the project whose cluster, uniqueIds and network
+# this script reads. A forwarded `--project` would come after it and win, and
+# render another project's identities into this cluster.
+PROJECT_FLAGS=(--project)
+
 # derived_flag_for ARG FLAG... -- print the FLAG that ARG spells, and succeed,
 # when ARG (the part before any `=`) is one of the FLAGs or ANY PREFIX of one.
 #
@@ -216,6 +242,7 @@ while [[ $# -gt 0 ]]; do
     --swarm-system) MODE="swarm-system"; shift ;;
     --swarm-graph) MODE="swarm-graph"; shift ;;
     --swarm-typesafe-fwd) MODE="swarm-typesafe-fwd"; shift ;;
+    --swarm-voice) MODE="swarm-voice"; shift ;;
     --confirm|-y) CONFIRM=1; shift ;;
     --server-dry-run) SERVER_DRY_RUN=1; shift ;;
     --context)    CONTEXT="$2"; shift 2 ;;
@@ -258,6 +285,11 @@ while [[ $# -gt 0 ]]; do
        the tenant GSA's IAM policy (its roles/iam.workloadIdentityUser members); it cannot
        be passed, in full or abbreviated. Bind the KSA in IAM and re-run."
       fi
+      if PROJECT_FLAG="$(derived_flag_for "$1" "${PROJECT_FLAGS[@]}")"; then
+        die "'${1%%=*}' would reach the renderer as ${PROJECT_FLAG}; the project is PROJECT_ID
+       (${PROJECT_ID}), the one whose cluster and identities this script reads. Set
+       PROJECT_ID instead."
+      fi
       if VERIFY_FLAG="$(derived_flag_for "$1" "${VERIFY_FLAGS[@]}")"; then
         die "'${1%%=*}' would reach the renderer as ${VERIFY_FLAG}, which this script resolves
        itself (swarm-verify's uniqueId, by uid_of, for the eng and smoke renders); it
@@ -266,6 +298,12 @@ while [[ $# -gt 0 ]]; do
       RENDER_ARGS+=("$1"); shift ;;
   esac
 done
+
+# --- 0. the project, before anything is contacted ------------------------------
+[[ "${PROJECT_ID}" != "${PROJECT_NOT_GIVEN}" ]] \
+  || die "PROJECT_ID is not set (in the environment or ${SWARM_ENV_FILE:-.env}); refusing to render.
+       Every object here names its project's identities, and there is no default project.
+       Run: PROJECT_ID=<your project> $0 ..."
 
 # --- 0. the workspace label, before anything is contacted ---------------------
 # Checked here as well as in render.py so a refused id costs no cluster read,
@@ -312,6 +350,23 @@ if [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
   [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
   [[ -z "${RENDER_ARGS[*]+x}" ]] \
     || die "--swarm-typesafe-fwd takes no render arguments (got: ${RENDER_ARGS[*]}); terraform renders its manifest"
+  tf_initialised \
+    || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
+fi
+# --swarm-voice likewise, and to ONE cluster: voice.tf's output says "apply to
+# swarm-autopilot only". The swarm's Autopilot cluster is GKE_CLUSTER
+# (common.sh, default swarm-autopilot); any other `swarm-` cluster -- an old
+# one, a second one -- holds no swarm-voice KSA binding in its workload pool,
+# so a pod there could not act as swarm-voice@ and is refused here, before
+# anything is contacted. The deny-list refusals below still apply first-class.
+VOICE_CLUSTER="${GKE_CLUSTER:-swarm-autopilot}"
+if [[ "${MODE}" == "swarm-voice" ]]; then
+  [[ -z "${TENANT}" ]] || die "--swarm-voice applies swarm-system's swarm-voice, not a tenant's; drop --tenant"
+  [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
+  [[ -z "${RENDER_ARGS[*]+x}" ]] \
+    || die "--swarm-voice takes no render arguments (got: ${RENDER_ARGS[*]}); terraform renders its manifest"
+  [[ "${CLUSTER}" == "${VOICE_CLUSTER}" ]] \
+    || die "--swarm-voice applies to ${VOICE_CLUSTER} only, not cluster '${CLUSTER}'; nothing was applied."
   tf_initialised \
     || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
 fi
@@ -462,6 +517,76 @@ if [[ "${CURRENT_CLUSTER}" != "${EXPECTED_CLUSTER}" ]]; then
 fi
 info "context  ${CURRENT} -> ${CURRENT_CLUSTER}"
 
+# SWARM-API'S DIRECT VPC EGRESS RANGE, READ FROM ITS SERVICE, NEVER TYPED.
+# Sets SWARM_API_EGRESS_CIDR and SWARM_API_EGRESS_SOURCE, or dies. Called, not
+# $(...)'d: what it assigns is what the caller reads. --swarm-system reads it
+# before rendering (the relay and its policies admit it); --swarm-graph reads
+# it after applying, for the parity check of swarm-graph-ingress, whose stats
+# rule terraform rendered from its own copy of the subnet (CACHE-FOLLOWUPS).
+# EGRESS_UNREAD is what a failure says happened to the run: nothing rendered
+# before an apply, a comparison not made after one.
+EGRESS_UNREAD="nothing was rendered."
+read_swarm_api_egress() {
+  local ref
+  # To files and read in THIS shell. The v1 (Knative) shape is what `gcloud run services
+  # describe` returns -- the annotation holds a JSON list -- and the v2 shape
+  # is read as well, as scripts/lib/deploy.sh does for the image, so a gcloud
+  # that switches surfaces does not turn this into "no subnet".
+  LIVE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-live-netpol.XXXXXX")"
+  if ! gcloud run services describe "${API_SERVICE}" --project "${PROJECT_ID}" --region "${REGION}" \
+      --format=json >"${LIVE_WORK}/service.json" 2>"${LIVE_WORK}/service.err"; then
+    LIVE_ERR="$(redact <"${LIVE_WORK}/service.err")"
+    rm -rf "${LIVE_WORK}"
+    die_if_auth_failure "${LIVE_ERR}"
+    err "could not describe Cloud Run service ${API_SERVICE} in ${PROJECT_ID}/${REGION}:"
+    printf '%s\n' "${LIVE_ERR}" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "swarm-system's ingress admits swarm-api's egress range, read from the service or not at all; ${EGRESS_UNREAD}"
+  fi
+  if ! jq -r '
+      [ ((.spec.template.metadata.annotations["run.googleapis.com/network-interfaces"] // "[]")
+          | fromjson | .[]? | .subnetwork // empty),
+        (.template.vpcAccess.networkInterfaces[]? | .subnetwork // empty) ]
+      | unique | .[]' "${LIVE_WORK}/service.json" >"${LIVE_WORK}/subnets" 2>"${LIVE_WORK}/jq.err"; then
+    rm -rf "${LIVE_WORK}"
+    die "could not read ${API_SERVICE}'s Direct VPC egress from its description; ${EGRESS_UNREAD}"
+  fi
+  # Counted, not `${#array[@]}`: an empty array is an unbound variable under
+  # bash 3.2's `set -u` (CLAUDE.md), and none is exactly the case to report.
+  SUBNET_REF=""
+  SUBNET_COUNT=0
+  while IFS= read -r ref; do
+    [[ -n "${ref}" ]] || continue
+    SUBNET_REF="${ref}"
+    SUBNET_COUNT=$((SUBNET_COUNT + 1))
+  done <"${LIVE_WORK}/subnets"
+  if [[ "${SUBNET_COUNT}" -ne 1 ]]; then
+    rm -rf "${LIVE_WORK}"
+    die "${API_SERVICE} names ${SUBNET_COUNT} Direct VPC egress subnetworks, not exactly one; swarm-system
+       admits one range and this script will not choose. (terraform/modules/cloud_run sets
+       network_interfaces.subnetwork on every service.) ${EGRESS_UNREAD}"
+  fi
+  # A name or a path (projects/<p>/regions/<r>/subnetworks/<name>); the
+  # region in a path wins over ${REGION}.
+  SUBNET="${SUBNET_REF##*/}"
+  SUBNET_REGION="${REGION}"
+  case "${SUBNET_REF}" in
+    */regions/*/subnetworks/*) SUBNET_REGION="${SUBNET_REF#*/regions/}"; SUBNET_REGION="${SUBNET_REGION%%/*}" ;;
+  esac
+  [[ "${SUBNET}" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { rm -rf "${LIVE_WORK}"; die "${API_SERVICE}'s subnetwork '${SUBNET_REF}' is not a subnetwork name; ${EGRESS_UNREAD}"; }
+  if ! gcloud compute networks subnets describe "${SUBNET}" --project "${PROJECT_ID}" \
+      --region "${SUBNET_REGION}" --format=json >"${LIVE_WORK}/subnet.json" 2>"${LIVE_WORK}/subnet.err"; then
+    LIVE_ERR="$(redact <"${LIVE_WORK}/subnet.err")"
+    rm -rf "${LIVE_WORK}"
+    die_if_auth_failure "${LIVE_ERR}"
+    die "could not describe subnetwork ${SUBNET} in ${PROJECT_ID}/${SUBNET_REGION}; ${EGRESS_UNREAD}"
+  fi
+  SWARM_API_EGRESS_CIDR="$(jq -r '.ipCidrRange // empty' "${LIVE_WORK}/subnet.json")"
+  rm -rf "${LIVE_WORK}"
+  [[ -n "${SWARM_API_EGRESS_CIDR}" ]] || die "subnetwork ${SUBNET} reports no ipCidrRange; ${EGRESS_UNREAD}"
+  SWARM_API_EGRESS_SOURCE="run/${PROJECT_ID}/${SUBNET_REGION}/${API_SERVICE}/${SUBNET}"
+  info "swarm-api egress  ${SWARM_API_EGRESS_CIDR}  (${SWARM_API_EGRESS_SOURCE})"
+}
+
 # --- render ------------------------------------------------------------------
 PYTHON="${PYTHON_BIN:-python3}"
 
@@ -577,65 +702,7 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
     warn "previewing swarm-system's policies alone; --confirm will refuse."
   fi
 
-  # SWARM-API'S DIRECT VPC EGRESS SUBNET, READ FROM THE SERVICE. To files and
-  # read in THIS shell (CLAUDE.md: a command substitution throws away what the
-  # function assigned). The v1 (Knative) shape is what `gcloud run services
-  # describe` returns -- the annotation holds a JSON list -- and the v2 shape
-  # is read as well, as scripts/lib/deploy.sh does for the image, so a gcloud
-  # that switches surfaces does not turn this into "no subnet".
-  LIVE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-live-netpol.XXXXXX")"
-  if ! gcloud run services describe "${API_SERVICE}" --project "${PROJECT_ID}" --region "${REGION}" \
-      --format=json >"${LIVE_WORK}/service.json" 2>"${LIVE_WORK}/service.err"; then
-    LIVE_ERR="$(redact <"${LIVE_WORK}/service.err")"
-    rm -rf "${LIVE_WORK}"
-    die_if_auth_failure "${LIVE_ERR}"
-    err "could not describe Cloud Run service ${API_SERVICE} in ${PROJECT_ID}/${REGION}:"
-    printf '%s\n' "${LIVE_ERR}" | sed -n '1,5p' | sed 's/^/     /' >&2
-    die "swarm-system's ingress admits swarm-api's egress range, read from the service or not at all."
-  fi
-  if ! jq -r '
-      [ ((.spec.template.metadata.annotations["run.googleapis.com/network-interfaces"] // "[]")
-          | fromjson | .[]? | .subnetwork // empty),
-        (.template.vpcAccess.networkInterfaces[]? | .subnetwork // empty) ]
-      | unique | .[]' "${LIVE_WORK}/service.json" >"${LIVE_WORK}/subnets" 2>"${LIVE_WORK}/jq.err"; then
-    rm -rf "${LIVE_WORK}"
-    die "could not read ${API_SERVICE}'s Direct VPC egress from its description; nothing was rendered."
-  fi
-  # Counted, not `${#array[@]}`: an empty array is an unbound variable under
-  # bash 3.2's `set -u` (CLAUDE.md), and none is exactly the case to report.
-  SUBNET_REF=""
-  SUBNET_COUNT=0
-  while IFS= read -r ref; do
-    [[ -n "${ref}" ]] || continue
-    SUBNET_REF="${ref}"
-    SUBNET_COUNT=$((SUBNET_COUNT + 1))
-  done <"${LIVE_WORK}/subnets"
-  if [[ "${SUBNET_COUNT}" -ne 1 ]]; then
-    rm -rf "${LIVE_WORK}"
-    die "${API_SERVICE} names ${SUBNET_COUNT} Direct VPC egress subnetworks, not exactly one; the relay
-       admits one range and this script will not choose. (terraform/modules/cloud_run sets
-       network_interfaces.subnetwork on every service.)"
-  fi
-  # A name or a path (projects/<p>/regions/<r>/subnetworks/<name>); the
-  # region in a path wins over ${REGION}.
-  SUBNET="${SUBNET_REF##*/}"
-  SUBNET_REGION="${REGION}"
-  case "${SUBNET_REF}" in
-    */regions/*/subnetworks/*) SUBNET_REGION="${SUBNET_REF#*/regions/}"; SUBNET_REGION="${SUBNET_REGION%%/*}" ;;
-  esac
-  [[ "${SUBNET}" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { rm -rf "${LIVE_WORK}"; die "${API_SERVICE}'s subnetwork '${SUBNET_REF}' is not a subnetwork name"; }
-  if ! gcloud compute networks subnets describe "${SUBNET}" --project "${PROJECT_ID}" \
-      --region "${SUBNET_REGION}" --format=json >"${LIVE_WORK}/subnet.json" 2>"${LIVE_WORK}/subnet.err"; then
-    LIVE_ERR="$(redact <"${LIVE_WORK}/subnet.err")"
-    rm -rf "${LIVE_WORK}"
-    die_if_auth_failure "${LIVE_ERR}"
-    die "could not describe subnetwork ${SUBNET} in ${PROJECT_ID}/${SUBNET_REGION}; nothing was rendered."
-  fi
-  SWARM_API_EGRESS_CIDR="$(jq -r '.ipCidrRange // empty' "${LIVE_WORK}/subnet.json")"
-  rm -rf "${LIVE_WORK}"
-  [[ -n "${SWARM_API_EGRESS_CIDR}" ]] || die "subnetwork ${SUBNET} reports no ipCidrRange; nothing was rendered."
-  SWARM_API_EGRESS_SOURCE="run/${PROJECT_ID}/${SUBNET_REGION}/${API_SERVICE}/${SUBNET}"
-  info "swarm-api egress  ${SWARM_API_EGRESS_CIDR}  (${SWARM_API_EGRESS_SOURCE})"
+  read_swarm_api_egress
 
 
   if [[ -n "${RELAY_MANIFEST}" ]]; then
@@ -882,8 +949,70 @@ elif [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
   MANIFEST="$(cat "${TSF_WORK}/fwd.yaml")"
   rm -rf "${TSF_WORK}"
   info "rendering the TypeSafe forwarder  terraform output swarm_typesafe_fwd_manifest"
+elif [[ "${MODE}" == "swarm-voice" ]]; then
+  # --tenant, --spec-verify-keys, render arguments and any cluster but
+  # ${VOICE_CLUSTER} were refused at 0.
+
+  # VOICE IT'S swarm-voice, FROM TERRAFORM, ALONE (lane VOICE-ROLL, part of
+  # #2688; docs/design/voice-it.md §3.4, section 10 phase one). terraform/
+  # infra/voice.tf's `swarm_voice_manifest`: kubernetes/swarm-system/
+  # swarm-voice.yaml (its Namespace, KSA, two Services and the one-replica
+  # StatefulSet) followed by kubernetes/network-policies/
+  # swarm-system-voice.yaml, with the digest, the GSA, the internal address,
+  # the audience, the caller and swarm-api's range filled in. Its own mode,
+  # as --swarm-graph is: it needs neither the live relay's manifest nor
+  # anything --swarm-system applies.
+  #
+  # NULL UNTIL voice_it = "on" with an image (every environment today), and
+  # then nothing is applied and this exits 0 with a notice. Terraform leaves a
+  # null output OUT of state, so the named read fails 'Output "..." not found'
+  # exactly as an unreadable state does (PR 1402); one unnamed `output -json`
+  # tells them apart. Neither read asks gcloud or the cluster anything. Read
+  # here, AFTER the context checks above, so nothing below can send it to
+  # agents-staging. To files, not $(...): the status and the error are kept.
+  VOICE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-voice-apply.XXXXXX")"
+  trap 'rm -rf "${VOICE_WORK}"' EXIT
+  TF_DIR="$(tf_root)"
+  if ! tf -chdir="${TF_DIR}" output -raw swarm_voice_manifest >"${VOICE_WORK}/voice.yaml" 2>"${VOICE_WORK}/voice.err" \
+      || [[ ! -s "${VOICE_WORK}/voice.yaml" ]]; then
+    if tf -chdir="${TF_DIR}" output -json >"${VOICE_WORK}/outputs.json" 2>>"${VOICE_WORK}/voice.err" \
+        && jq -e --arg k swarm_voice_manifest \
+          'type == "object" and ((.[$k].value // null) == null or .[$k].value == "")' \
+          "${VOICE_WORK}/outputs.json" >/dev/null 2>&1; then
+      if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+        printf '::notice title=swarm-voice not applied::%s\n' "voice_it is not on for ${ENVIRONMENT}: terraform rendered no swarm_voice_manifest."
+      fi
+      info "no swarm-voice manifest (voice_it is not on, or no swarm-voice digest); swarm-voice is not served and nothing about it is applied"
+      exit 0
+    fi
+    redact <"${VOICE_WORK}/voice.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "could not read terraform's swarm_voice_manifest output (above); nothing was applied."
+  fi
+  # The graph service's checks: no placeholder left unfilled, no Kubernetes
+  # RBAC (swarm-voice calls no Kubernetes API and mounts no token), no Secret
+  # (the platform owner's OpenAI credential is read from Secret Manager by the
+  # pod's own identity and held in memory, never shipped in a manifest that is
+  # previewed and diffed), and nothing outside swarm-system.
+  if grep -Eo '__[A-Z0-9_]+__' "${VOICE_WORK}/voice.yaml" >"${VOICE_WORK}/voice-placeholders"; then
+    PLACEHOLDER="$(head -n 1 "${VOICE_WORK}/voice-placeholders")"
+    die "the swarm-voice manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
+  fi
+  if grep -Eq '^kind:[[:space:]]*(Cluster)?Role(Binding)?[[:space:]]*$' "${VOICE_WORK}/voice.yaml"; then
+    die "the swarm-voice manifest carries Kubernetes RBAC; swarm-voice holds none. Nothing was applied."
+  fi
+  if grep -Eq '^kind:[[:space:]]*Secret[[:space:]]*$' "${VOICE_WORK}/voice.yaml"; then
+    die "the swarm-voice manifest carries a Secret; the OpenAI credential is read from Secret Manager, never shipped in a manifest. Nothing was applied."
+  fi
+  if grep -E '^[[:space:]]+namespace:[[:space:]]' "${VOICE_WORK}/voice.yaml" \
+      | grep -Ev '^[[:space:]]+namespace:[[:space:]]+swarm-system[[:space:]]*$' >"${VOICE_WORK}/voice-foreign"; then
+    redact <"${VOICE_WORK}/voice-foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "the swarm-voice manifest names a namespace other than swarm-system (above); nothing was applied."
+  fi
+  MANIFEST="$(cat "${VOICE_WORK}/voice.yaml")"
+  rm -rf "${VOICE_WORK}"
+  info "rendering swarm-voice  terraform output swarm_voice_manifest"
 else
-  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system, --swarm-graph or --swarm-typesafe-fwd)"
+  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system, --swarm-graph, --swarm-typesafe-fwd or --swarm-voice)"
 
   # A WORKSPACE TENANT'S QUOTA IS ITS RECORD'S (QUOTA-ONE, #2039; BGD's
   # decision, 2026-10-23). The workspace job's A7 renders the namespace with
@@ -895,17 +1024,30 @@ else
   #   * all five --quota-* flags given (the job's A7, under a call guard that
   #     admits no call to swarm-api): rendered as given, nothing is read;
   #   * a Terraform tenant -- named in this environment's tfvars, eng or smoke
-  #     -- has no workspace record: render.py's defaults, nothing is read, and
+  #     -- has no workspace record: render.py's Terraform tenant quota
+  #     (`terraform-quota`, passed as flags), nothing is read, and
   #     the release, whose account is no swarm-api admin, applies it as before;
   #   * any other tenant: its record is read from swarm-api with the
   #     operator's own credentials (--workspace-id names it; else the admin
   #     list, matched by the tenant its principal derives), and render.py's
   #     `workspace-quota` turns its limits into the five flags with the job's
-  #     formula. No record names it: the defaults, said so. An unreadable
+  #     formula. No record names it: the Terraform tenant quota, said so. An unreadable
   #     answer renders nothing -- falling back to the defaults is the defect.
   # A --quota-* flag on the command line still wins over the record's: the
   # record's flags are passed first, and render.py takes the last of a flag.
   QUOTA_ARGS=()
+  # render.py's tenant render has no quota default (DAYONE-K8S-1): where no
+  # record exists, the Terraform tenant quota is passed by name, as flags, from
+  # `render.py terraform-quota`, before any flag given on the command line.
+  terraform_quota_args() {
+    local line
+    QUOTA_ARGS=()
+    while IFS= read -r line; do
+      if [[ -n "${line}" ]]; then QUOTA_ARGS+=("${line}"); fi
+    done < <("${PYTHON}" "${HERE}/render.py" terraform-quota)
+    [[ "${#QUOTA_ARGS[@]}" -eq 10 ]] \
+      || die "render.py terraform-quota printed ${#QUOTA_ARGS[@]} values, not five flags and their numbers"
+  }
   QUOTA_SEEN=" "
   for arg in ${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}; do
     case "${arg%%=*}" in
@@ -923,7 +1065,8 @@ else
   if [[ "${#QUOTA_GIVEN[@]}" -eq 5 ]]; then
     info "quota  as given: all five --quota-* flags are on the command line; no workspace record is read"
   elif [[ $'\n'"${TF_TENANTS}"$'\n' == *$'\n'"${TENANT}"$'\n'* ]]; then
-    info "quota  render.py's defaults: ${TENANT} is a Terraform tenant (${ENVIRONMENT}.tfvars), which has no workspace record"
+    terraform_quota_args
+    info "quota  render.py's Terraform tenant quota: ${TENANT} is a Terraform tenant (${ENVIRONMENT}.tfvars), which has no workspace record"
   else
     QUOTA_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-quota.XXXXXX")"
     QUOTA_PATH="/admin/workspaces${WORKSPACE_ID:+/${WORKSPACE_ID}}"
@@ -948,7 +1091,8 @@ else
     done <"${QUOTA_WORK}/args"
     rm -rf "${QUOTA_WORK}"
     if [[ -z "${QUOTA_ID}" ]]; then
-      info "quota  render.py's defaults: no workspace record names ${TENANT}"
+      terraform_quota_args
+      info "quota  render.py's Terraform tenant quota: no workspace record names ${TENANT}"
     else
       [[ "${QUOTA_ID}" =~ ^w-[0-9a-f]{6}$ ]] || QUOTA_ID="(an unrecognised id)"
       [[ "${#QUOTA_ARGS[@]}" -eq 10 ]] \
@@ -969,7 +1113,7 @@ else
   # deployer, which runs this script for those, gains no lookup. Where the read
   # is rendered, a missing account is as FATAL as a missing scheduler: an eng
   # render without it applies cleanly and leaves e2e [10] failing on a 403.
-  VERIFY_GSA="$("${PYTHON}" "${HERE}/render.py" verify-read --tenant "${TENANT}" \
+  VERIFY_GSA="$("${PYTHON}" "${HERE}/render.py" verify-read --tenant "${TENANT}" --project "${PROJECT_ID}" \
     ${WORKSPACE_ARGS[@]+"${WORKSPACE_ARGS[@]}"} \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")" \
     || die "could not ask render.py whether tenant ${TENANT}'s render binds swarm-verify (above);
@@ -1026,7 +1170,7 @@ else
   # would drop a bound account's RoleBinding subject. A GSA that does not exist
   # yet (register-tenant.sh --dry-run previews a new tenant whose GSA it has not
   # created) binds nothing, and says so.
-  IDENTITY="$("${PYTHON}" "${HERE}/render.py" identity --tenant "${TENANT}" \
+  IDENTITY="$("${PYTHON}" "${HERE}/render.py" identity --tenant "${TENANT}" --project "${PROJECT_ID}" \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")" \
     || die "could not resolve tenant ${TENANT}'s namespace and service account (above);
        nothing was rendered or applied."
@@ -1098,7 +1242,7 @@ else
     dim "  no --spec-verify-keys: swarm-spec-verify-keys is not rendered; an existing one is left as it is"
   fi
 
-  MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" \
+  MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" --project "${PROJECT_ID}" \
     ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
     --scheduler-uid "${SCHEDULER_UID}" \
     --reconciler-uid "${RECONCILER_UID}" \
@@ -1213,12 +1357,18 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
     fi
   fi
   if [[ "${MODE}" == "swarm-graph" ]]; then
-    dim "  --confirm applies it; scripts/roll-graph.sh --confirm also waits for deploy/swarm-graph"
-    dim "    and checks its pods run the manifest's digest"
+    dim "  --confirm applies it, then reads swarm-api's egress range from its service and compares"
+    dim "    swarm-system/swarm-graph-ingress with it (kubernetes/network_parity.py --graph-ingress);"
+    dim "    scripts/roll-graph.sh --confirm also waits for deploy/swarm-graph and checks its pods"
+    dim "    run the manifest's digest"
   fi
   if [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
     dim "  --confirm applies it; scripts/roll-typesafe-fwd.sh --confirm also waits for deploy/swarm-typesafe-fwd"
     dim "    and checks its pods run the manifest's digest"
+  fi
+  if [[ "${MODE}" == "swarm-voice" ]]; then
+    dim "  --confirm applies it; scripts/roll-voice.sh --confirm also waits for statefulset/swarm-voice"
+    dim "    and checks its pod runs the manifest's digest"
   fi
   ok "dry run only. Re-run with --confirm to apply."
   exit 0
@@ -1330,4 +1480,33 @@ if [[ "${MODE}" == "swarm-system" ]]; then
     die "applied, but swarm-system's ingress does not match what was rendered (above)."
   fi
   rm -rf "${LIVE_WORK}"
+fi
+if [[ "${MODE}" == "swarm-graph" ]]; then
+  # RUN, like --swarm-system's (CACHE-FOLLOWUPS, part of #1835; BGD,
+  # 2026-10-28; docs/design/graph-answer-cache.md §5.3). swarm-graph-ingress
+  # admits swarm-api's range on the stats port, and terraform rendered that
+  # range from var.subnet_cidr, its own copy of the subnet; the range swarm-api
+  # actually egresses from is READ here, from its service, exactly as
+  # --swarm-system reads it, and the policy as the API server now holds it is
+  # judged against it by check_graph_ingress: three rules, one peer and one
+  # port each -- tenants on 8080, swarm-api's range and the swarm-graph pods
+  # on 8081 -- and nothing more. A stale subnet, a missing policy or any
+  # widening fails the apply with the checker's reason.
+  EGRESS_UNREAD="swarm-graph was applied, but its ingress was not compared."
+  read_swarm_api_egress
+  info "comparing swarm-system/swarm-graph-ingress with swarm-api's ${SWARM_API_EGRESS_CIDR}"
+  GRAPH_PARITY_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-graph-parity.XXXXXX")"
+  trap 'rm -rf "${GRAPH_PARITY_WORK}"' EXIT
+  if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" get networkpolicies -n swarm-system -o json \
+      >"${GRAPH_PARITY_WORK}/policies.json" 2>"${GRAPH_PARITY_WORK}/policies.err"; then
+    redact <"${GRAPH_PARITY_WORK}/policies.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "applied, but swarm-system's NetworkPolicies could not be read back; swarm-graph-ingress was not compared."
+  fi
+  jq -n --arg cidr "${SWARM_API_EGRESS_CIDR}" --arg source "${SWARM_API_EGRESS_SOURCE}" \
+    '{swarm_api_egress_cidr: $cidr, source: $source}' >"${GRAPH_PARITY_WORK}/live.json"
+  if ! "${PYTHON}" "${HERE}/network_parity.py" --graph-ingress \
+      --live "${GRAPH_PARITY_WORK}/live.json" --policies "${GRAPH_PARITY_WORK}/policies.json"; then
+    die "applied, but swarm-system/swarm-graph-ingress does not match swarm-api's ${SWARM_API_EGRESS_CIDR} (above)."
+  fi
+  rm -rf "${GRAPH_PARITY_WORK}"
 fi

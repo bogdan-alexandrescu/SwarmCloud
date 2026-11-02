@@ -308,7 +308,8 @@
 .rn-run .c-phead > div.head > :not(h1) { flex: none; }
 .rn-run .c-phead > .c-acts { margin-left: auto; flex: 0 1 auto; min-width: 0; max-width: 100%; }
 /* A REFERENCE IS NEVER CUT TO MAKE ROOM FOR THE `?` (browser QA D11): beside
-   it, `bogdan-alexandrescu/SwarmCloud#454` (335px drawn) lost its last digit
+   it, a reference to issue 454 in the live deployment's own repository
+   (335px drawn) lost its last digit
    in a 390px phone's 358px column. The `?` stays beside a reference that
    fits with it (V096: `example-org/agent-swarm-infra#512` is 304px) and
    wraps under one that does not; only a reference wider than the column
@@ -437,6 +438,17 @@
   margin: 0 -14px -12px; padding: 10px 14px;
   border-top: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius);
   background: var(--surface);
+}
+/* THE BAR IS THE CARD'S WHOLE WIDTH (QA2-FIX-27, runs2-12, part of #2694).
+   runs.css caps every block of the plan at `max-width: 100%` (`.rn-plan >
+   *`) and loads after this sheet, so the bar's -14px margins moved it left
+   without widening it: at 390 its top rule and its fill stopped 28px short
+   of the card's right edge, and the step scrolling under it showed through
+   the gap. Uncapped here, at (0,2,0), the bar runs edge to
+   edge; a soft shade above the rule says the plan goes on under it. */
+.rn-plan > .rn-actbar {
+  max-width: none;
+  box-shadow: 0 -6px 8px -6px color-mix(in srgb, var(--text) 22%, transparent);
 }
 
 .rn-history ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }

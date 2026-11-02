@@ -372,7 +372,7 @@ describe('D2: a workflow cost still being read reads "reading", never "not repor
     expect(cost.textContent).not.toMatch(/not reported/)
   })
 
-  it('draws "reading" in the list’s Cost cell while the read is in flight, not the "—" of an absence', async () => {
+  it('the list’s Cost cell waits on no attempt read: its steps’ totals come with the list (console load speed, 2026-11-01)', async () => {
     api.loadWorkflowUsage.mockReturnValue(new Promise(() => {}))
     render(<WorkflowsScreen view="" onView={() => {}} />)
     const cell = await waitFor(() => {
@@ -380,9 +380,10 @@ describe('D2: a workflow cost still being read reads "reading", never "not repor
       expect(td).toBeTruthy()
       return td!
     })
-    // MUTATION: drop the `reading` prop from the row's `Spend`.
-    expect(cell.textContent).toBe('reading')
-    expect(within(cell).getByRole('img', { name: /still being read/ })).toBeTruthy()
+    // MUTATION: put the list's `useWorkflowUsage` back -- the cell reads
+    // `reading` while the attempt read the list no longer makes is out.
+    expect(cell.textContent).not.toBe('reading')
+    expect(api.loadWorkflowUsage).not.toHaveBeenCalled()
   })
 
   it('draws reading upright and faint, apart from the italic absence', () => {
@@ -412,12 +413,13 @@ describe('work-a-010: at 1440 the Cost column holds "3 of 4 reported" with a gly
     const td = host.querySelector('td')!
     const st = cellStyle(td, WIDE)
     const room = (lengthPx(painted(th, 'width', WIDE), 0) ?? 0) - st.pl - st.pr
-    // MEASURED IN THE FACE IT IS DRAWN IN: the coverage is `.wf-spend`'s DM
-    // Mono (0.6em), 108px. c28 measured it on the cell, in the sans face
-    // (100.8px), and so found 7px of slack that was never there.
+    // MEASURED IN THE FACE IT IS DRAWN IN. It was `.wf-spend`'s DM Mono
+    // (0.6em), 108px; since visual QA pass 2 ovag2-15 (#2694) the coverage is
+    // a note in the body face (`.wf-spend-cov { font-family: var(--font) }`),
+    // 100.8px, and the 136px column holds it with more to spare.
     const cov = host.querySelector('.wf-spend-cov')!
     const text = textPx('3 of 4 reported', cov, WIDE)
-    expect(text).toBeCloseTo(108, 5)
+    expect(text).toBeCloseTo(100.8, 5)
     // MUTATION: put the 1280 head back at 128px -- the room is exactly the
     // text's 108px, and a browser that rounds one advance up wraps 'reported'.
     expect(room - text).toBeGreaterThanOrEqual(text / 15)

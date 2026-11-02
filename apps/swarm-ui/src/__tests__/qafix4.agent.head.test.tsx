@@ -218,16 +218,18 @@ describe('N15: at 390 More wraps no item and keeps off the Logs toolbar', () => 
     expect(painted(item, 'white-space', PHONE)).toBe('nowrap')
   })
 
-  it('on Logs it opens upward, over the head, not down over the Logs toolbar', () => {
+  it('on a phone\'s Logs it opens upward, over the head, not down over the Logs toolbar', () => {
     bar(ended(), 'logs')
     fireEvent.click(screen.getByRole('button', { name: /^More \d+ tabs: / }))
     const menu = screen.getByRole('group', { name: 'More agent panes' })
-    for (const env of [PHONE, WIDE]) {
-      // MUTATION: drop the on-logs placement and the menu hangs `top: calc(100% + 4px)`, over the Logs bar.
-      expect(painted(menu, 'top', env)).toBe('auto')
-      // MUTATION: keep `bottom` unset and the menu has no edge to open from.
-      expect((painted(menu, 'bottom', env) ?? '').replace(/\s+/g, ' ')).toBe('calc(100% + 4px)')
-    }
+    // MUTATION: drop the on-logs placement and the menu hangs `top: calc(100% + 4px)`, over the Logs bar.
+    expect(painted(menu, 'top', PHONE)).toBe('auto')
+    // MUTATION: keep `bottom` unset and the menu has no edge to open from.
+    expect((painted(menu, 'bottom', PHONE) ?? '').replace(/\s+/g, ' ')).toBe('calc(100% + 4px)')
+    // On desktop the column scrolls on Logs too (AGENT-HEAD-B, BGD's pick AH1
+    // B, 2026-10-28): the head may be gone from above the stuck strip, so the
+    // menu drops, over the log's bar (the strip's layer is above it).
+    expect((painted(menu, 'top', WIDE) ?? '').replace(/\s+/g, ' ')).toBe('calc(100% + 4px)')
   })
 
   it('off Logs it still drops under the bar, where the pane has no toolbar to cover', () => {

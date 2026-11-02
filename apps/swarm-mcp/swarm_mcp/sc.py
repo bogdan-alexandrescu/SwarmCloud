@@ -2011,6 +2011,98 @@ def _masked(text: str, secrets: Sequence[str]) -> str:
     return text
 
 
+#: The account kinds `sc account add` signs in to. `anthropic` is the Claude
+#: subscription pool; `openai` a ChatGPT plan for the codex runner (#2688, BGD
+#: 2026-11-01: codex runs on ChatGPT plans from a shared pool).
+ACCOUNT_PROVIDERS = ("anthropic", "openai")
+
+
+def _catch_callback(redirect_uri: str, state: str, timeout: float) -> str | None:
+    """Listen where a ChatGPT plan's sign-in lands, on THIS machine, and return
+    the authorization code its redirect carries -- or None when the port could
+    not be opened or nothing arrived in time.
+
+    The redirect is `http://localhost:1455/auth/callback`, the one the Codex
+    client registered (measured: the 127.0.0.1 form failed live). Bound to the
+    loopback interface only, it answers one request whose `state` matches and
+    refuses any other, so a page that guesses the port cannot file a code. The
+    code is returned, never printed; the page says only that the sign-in
+    reached the terminal.
+    """
+    import http.server
+    import time
+    from urllib.parse import parse_qs, urlsplit
+
+    target = urlsplit(redirect_uri)
+    caught: dict[str, str] = {}
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 -- http.server's name
+            asked = urlsplit(self.path)
+            query = parse_qs(asked.query)
+            code = (query.get("code") or [""])[0]
+            if asked.path != target.path or (query.get("state") or [""])[0] != state or not code:
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"This is not the sign-in sc started. Nothing was sent.\n")
+                return
+            caught["code"] = code
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Signed in. Return to your terminal; you can close this tab.\n")
+
+        def log_message(self, *args):  # the request line carries the code
+            return
+
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", target.port or 80), Callback)
+    except OSError:
+        return None
+    server.timeout = 1.0
+    deadline = time.monotonic() + max(1.0, timeout)
+    try:
+        while not caught and time.monotonic() < deadline:
+            server.handle_request()
+    finally:
+        server.server_close()
+    return caught.get("code")
+
+
+def _code_from_address(pasted: str, state: str) -> str:
+    """The code from the address a browser landed on, pasted when the local
+    port could not be opened. Refused when its `state` is another sign-in's."""
+    from urllib.parse import parse_qs, urlsplit
+
+    query = parse_qs(urlsplit(pasted.strip()).query)
+    if not query:
+        return pasted.strip()
+    if (query.get("state") or [""])[0] != state:
+        raise SwarmError("that address belongs to a different sign-in; nothing was registered")
+    return (query.get("code") or [""])[0]
+
+
+def _plan_sign_in_code(started: dict, state: str) -> str:
+    """Wait for a ChatGPT plan's callback on this machine, or ask for the
+    address the browser landed on when the port is taken."""
+    redirect = started.get("redirect_uri")
+    if not isinstance(redirect, str) or not redirect.startswith("http://localhost:"):
+        raise SwarmError("the API named no local address for the ChatGPT sign-in; nothing was registered")
+    expires = started.get("expires_in_seconds")
+    timeout = float(expires) if isinstance(expires, int) and expires > 0 else 900.0
+    sys.stderr.write("waiting for the sign-in to come back to this machine...\n")
+    code = _catch_callback(redirect, state, timeout)
+    if code is None:
+        sys.stderr.write(
+            f"could not receive the sign-in on {redirect} (the port is in use, or "
+            "it timed out). If your browser shows a page that failed to load, "
+            "paste its whole address.\n"
+        )
+        code = _code_from_address(_read_code("paste the address (it is not echoed): "), state)
+    return code
+
+
 def cmd_account_add(client: SwarmClient, args, out) -> int:
     """Add a subscription account through the API's OWN browser sign-in.
 
@@ -2034,13 +2126,27 @@ def cmd_account_add(client: SwarmClient, args, out) -> int:
     if not label:
         raise SwarmError("`--label` names the account in the pool; give one. Nothing was sent")
     lend_to = [t.strip() for t in (args.lend_to or []) if t and t.strip()]
-    started = client.request(
-        "POST", "/v1/accounts/authorize", payload={"label": label, "lend_to": lend_to}
-    )
+    provider = (getattr(args, "provider", None) or "anthropic").strip().lower()
+    if provider not in ACCOUNT_PROVIDERS:
+        raise SwarmError(f"--provider is one of {', '.join(ACCOUNT_PROVIDERS)}. Nothing was sent")
+    payload: dict[str, Any] = {"label": label, "lend_to": lend_to}
+    if provider != "anthropic":
+        # Only named when it is not the default, so a Claude add sends exactly
+        # what it always sent.
+        payload["provider"] = provider
+    started = client.request("POST", "/v1/accounts/authorize", payload=payload)
     url = started.get("authorize_url") if isinstance(started, dict) else None
     state = started.get("state") if isinstance(started, dict) else None
     if not url or not state:
         raise SwarmError("the API began no sign-in: its answer named no URL to open")
+    if provider == "openai" and started.get("provider") != "openai":
+        # An API that dropped the provider started a CLAUDE sign-in: opening
+        # it would sign the person in to the wrong service and wait forever on
+        # a callback that page never makes.
+        raise SwarmError(
+            "this deployment's API did not start a ChatGPT sign-in (its answer "
+            "names no openai provider), so nothing was opened or registered"
+        )
     opened = _open_browser(url)
     sys.stderr.write(
         ("opened your browser to sign in. " if opened else "could not open a browser. ")
@@ -2049,7 +2155,10 @@ def cmd_account_add(client: SwarmClient, args, out) -> int:
     minutes = started.get("expires_in_seconds")
     if isinstance(minutes, int):
         sys.stderr.write(f"the sign-in expires in {minutes // 60} minutes\n")
-    code = _read_code("paste the code the page shows (it is not echoed): ").strip()
+    if provider == "openai":
+        code = _plan_sign_in_code(started, state).strip()
+    else:
+        code = _read_code("paste the code the page shows (it is not echoed): ").strip()
     if not code:
         raise SwarmError("no code was pasted; nothing was registered. Run it again to start over")
     try:
@@ -3765,12 +3874,18 @@ def cmd_login(_client, args, out) -> int:
 
     deployment = _resolve(args)
     store = credentials.store()
-    secret = _read_secret_line() if getattr(args, "client_secret_stdin", False) else None
+    # `--pkce-only` is GATE 0b's Q1 probe (plan §6.3): the Desktop client's
+    # sign-in with PKCE and NO client secret -- none read, asked for or sent.
+    # `python -m swarm_mcp.signin --pkce-only` runs the same `login`.
+    pkce_only = bool(getattr(args, "pkce_only", False))
+    wants_secret = getattr(args, "client_secret_stdin", False) and not pkce_only
+    secret = _read_secret_line() if wants_secret else None
     claims = signin.login(
         deployment,
         store=store,
         client_secret=secret or None,
         notify=lambda line: print(line, file=sys.stderr),
+        pkce_only=pkce_only,
     )
     email = claims.get("email") or "(the token carried no email)"
     out.write(f"signed in to {deployment.context} ({deployment.url}) as {email}\n")
@@ -3984,8 +4099,16 @@ def cmd_whoami(_client, args, out) -> int:
     reason printed, because a blank reads as "none".
     """
     shown, code = read_whoami(args)
+    # The plugin/deployment version skew (plan §6.5), read beside the rest
+    # and never deciding the exit code: whoami answers who, doctor whether.
+    versions = None
+    if shown["url"]:
+        try:
+            versions = version_check(_resolve(args))
+        except SwarmError as exc:
+            versions = {"verdict": f"not checked: {exc}", "status": "unknown", "compatible": None}
     if getattr(args, "json", False):
-        out.write(json.dumps(shown, indent=2) + "\n")
+        out.write(json.dumps({**shown, "versions": versions}, indent=2) + "\n")
         return code
     labels = (
         ("context", "context"), ("url", "url"), ("source", "from"), ("tier", "tier"),
@@ -4007,9 +4130,89 @@ def cmd_whoami(_client, args, out) -> int:
         if field == "tenant":
             states = ", ".join(f"{name} {state}" for name, state in shown["features"].items())
             out.write(f"{'features':<11} {states}\n")
+    if versions is not None:
+        out.write(version_text(versions))
     if shown["error"]:
         out.write(f"{'problem':<11} {shown['error']}\n")
     return code
+
+
+def cmd_doctor(_client, args, out) -> int:
+    """Whether this plugin and the deployment it talks to agree on version
+    (plan §6.5): both versions, the range each accepts, and, when they do not
+    agree, which of the two to upgrade and the command that does it.
+
+    Exit 0 when they agree; 3 when they do not, or when the deployment's
+    version could not be read -- an unread version is never "fine".
+    """
+    deployment = _resolve(args)
+    versions = version_check(deployment)
+    if getattr(args, "json", False):
+        shown = {"context": deployment.context, "url": deployment.url, "versions": versions}
+        out.write(json.dumps(shown, indent=2) + "\n")
+    else:
+        out.write(f"{'context':<11} {deployment.context}\n")
+        out.write(f"{'url':<11} {deployment.url}\n")
+        out.write(version_text(versions))
+    return EXIT_OK if versions["compatible"] is True else EXIT_TROUBLE
+
+
+def version_check(deployment: Any) -> dict[str, Any]:
+    """The plugin's version against the deployment's, in plain words (plan §6.5).
+
+    `compatible` is True, False, or None when the deployment's discovery
+    document could not be read (never a guessed version). `upgrade` names the
+    side to move -- "plugin" or "deployment" -- and `verdict` says so, with
+    both versions and the command. `status` is `discovery.Checker.status()`.
+    """
+    from . import discovery
+
+    checker = discovery.Checker(deployment.url, required=False)
+    plugin, span = checker.plugin, checker.span
+    shown: dict[str, Any] = {
+        "plugin": plugin, "deployment": None, "compatible": None, "upgrade": None,
+        "status": checker.status(), "verdict": "",
+    }
+    try:
+        document = checker.cache.get(deployment.url)
+    except discovery.DiscoveryUnreachable as exc:
+        shown["verdict"] = f"not checked: the deployment's version could not be read ({exc})"
+        return shown
+    version = document.version
+    shown["deployment"] = version
+    supports = f"plugin {plugin} supports deployments {discovery._range_text(span)}" if span else ""
+    if document.plugin_min_version and discovery.older(plugin, document.plugin_min_version):
+        shown.update(compatible=False, upgrade="plugin", verdict=(
+            f"no: plugin {plugin} is older than deployment {version} accepts "
+            f"(it needs plugin {document.plugin_min_version} or later). "
+            f"Upgrade the plugin: {discovery.UPDATE_PLUGIN}"
+        ))
+    elif span is not None and span.min and discovery.older(version, span.min):
+        shown.update(compatible=False, upgrade="deployment", verdict=(
+            f"no: deployment {version} is older than {supports}. Upgrade the deployment: "
+            f"ask your admin to run `swarm upgrade --to {plugin}`, or pin the plugin to "
+            "your deployment: claude plugin marketplace add "
+            + discovery.RELEASE_MARKETPLACE.format(version=version)
+        ))
+    elif span is not None and span.max_exclusive and not discovery.older(version, span.max_exclusive):
+        shown.update(compatible=False, upgrade="plugin", verdict=(
+            f"no: deployment {version} is newer than {supports}. "
+            f"Upgrade the plugin: {discovery.UPDATE_PLUGIN}"
+        ))
+    else:
+        unranged = "" if span else (
+            "; this plugin publishes no supported range, so only the deployment's "
+            "oldest accepted plugin was checked"
+        )
+        shown.update(compatible=True, verdict=(
+            f"yes: plugin {plugin} works with deployment {version}{unranged}"
+        ))
+    return shown
+
+
+def version_text(versions: dict[str, Any]) -> str:
+    """The two lines `sc doctor` and `sc whoami` print for `version_check`."""
+    return f"{'versions':<11} {versions['status']}\n{'compatible':<11} {versions['verdict']}\n"
 
 
 def plugin_manifest() -> tuple[Any, str | None]:
@@ -4990,11 +5193,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--client-secret-stdin", action="store_true",
         help="read the Desktop OAuth client secret from stdin instead of asking",
     )
+    li.add_argument(
+        "--pkce-only", action="store_true",
+        help="sign in with PKCE and no client secret (the Desktop-client probe, plan §6.3)",
+    )
     li.set_defaults(func=cmd_login, no_client=True)
 
     lo = sub.add_parser("logout", help="forget and revoke your sign-in to the current deployment")
     _common(lo, root=False)
     lo.set_defaults(func=cmd_logout, no_client=True)
+
+    dr = sub.add_parser(
+        "doctor", help="whether this plugin and the deployment agree on version (exit 3 if not)"
+    )
+    _common(dr, root=False)
+    dr.set_defaults(func=cmd_doctor, no_client=True)
 
     wh = sub.add_parser("whoami", help="the context, URL, principal and tenant this machine uses")
     _common(wh, root=False)
@@ -5043,8 +5256,13 @@ def build_parser() -> argparse.ArgumentParser:
     am.add_argument("max_agents", metavar="N", help="1 to 50")
     _common(am, root=False)
     am.set_defaults(func=cmd_account_max_agents)
-    aa = ac_sub.add_parser("add", help="add an account by signing in to Claude in your browser")
+    aa_help = "add an account by signing in to Claude (or a ChatGPT plan) in your browser"
+    aa = ac_sub.add_parser("add", help=aa_help)
     aa.add_argument("--label", required=True, help="the account's name in the pool")
+    aa.add_argument(
+        "--provider", default="anthropic", choices=ACCOUNT_PROVIDERS,
+        help="anthropic: a Claude subscription (default); openai: a ChatGPT plan for codex",
+    )
     aa.add_argument(
         "--lend-to", action="append", default=[], metavar="TENANT",
         help="a tenant that may run on it too (repeat for several)",

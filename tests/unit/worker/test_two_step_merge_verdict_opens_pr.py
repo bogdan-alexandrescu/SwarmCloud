@@ -43,6 +43,7 @@ import spec_keys
 from worker_seeds import TENANT, seed_attempt
 from test_input_from import run_upstream
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     forge,
     local_urls,
     origin,

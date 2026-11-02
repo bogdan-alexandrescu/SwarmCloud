@@ -1,4 +1,4 @@
-# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # agent-runtime-base -- the image every non-browser runner profile runs in.
 #
@@ -58,8 +58,13 @@ ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
-ARG MIRROR_GHCR=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-ghcr
+# No default, so this file names no project (DAYONE-DESAGA-1,
+# docs/design/day-one-install.md section 7): scripts/build-images.sh passes
+# the mirror of the project it builds for (lib/build-mirror.sh
+# mirror_build_args), and the `# syntax=` frontend through the same mirror as
+# BUILDKIT_SYNTAX. A `docker build` given neither fails on its first FROM.
+ARG MIRROR_DOCKER_HUB=
+ARG MIRROR_GHCR=
 
 # ---------------------------------------------------------------------------
 # uv and Node arrive as pinned images rather than as curl | sh
@@ -103,6 +108,11 @@ COPY pyproject.toml uv.lock /src/
 # patterns the worker's per-commit secret scan matches (#259), and the worker.
 COPY apps/common/ /src/apps/common/
 COPY apps/redaction/ /src/apps/redaction/
+# The workflow state derivation: a park, finish or retry on the direct
+# Firestore path writes the workflow's derived state in its own transaction
+# (#2838). `apps/agent-worker/pyproject.toml` resolves it through
+# `{ path = "../workflow-rollup" }`.
+COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
 COPY apps/agent-worker/ /src/apps/agent-worker/
 
 # Build our own packages into a local wheelhouse. No index has ever heard of
@@ -110,6 +120,7 @@ COPY apps/agent-worker/ /src/apps/agent-worker/
 # `--no-index` (#663).
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
+ && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker
 
 # Floors, not pins: both ship inside the stdlib venv at versions Debian's
@@ -140,16 +151,15 @@ RUN python -m venv /opt/venv \
 
 # Third-party dependencies, exported from uv.lock for the worker alone. The
 # root project depends on every app, so the export prunes the internal packages
-# swarm-agent-worker does not depend on (`swarm-api`, `swarm-mcp`,
-# `swarm-quota-broker`, `swarm-reconciler`, `swarm-scheduler`,
-# `swarm-workflow-rollup`), and the third-party packages only they need go with
-# them. `--no-emit-local` leaves our own packages out of the file: they come
+# swarm-agent-worker does not depend on (`swarm-api`, `swarm-install`,
+# `swarm-mcp`, `swarm-quota-broker`, `swarm-reconciler`, `swarm-scheduler`),
+# and the third-party packages only they need go with them. `--no-emit-local` leaves our own packages out of the file: they come
 # from /wheels, below. The export carries a hash for every file; `--no-hashes`
 # must never be added here.
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
-      --prune swarm-api --prune swarm-mcp \
+      --prune swarm-api --prune swarm-install --prune swarm-mcp \
       --prune swarm-quota-broker --prune swarm-reconciler \
-      --prune swarm-scheduler --prune swarm-workflow-rollup \
+      --prune swarm-scheduler \
       > /tmp/requirements.txt
 
 # Installed at exactly the versions and hashes in uv.lock, with nothing
@@ -169,7 +179,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # means no index is ever asked for them; `--no-deps` because their third-party
 # dependencies are already installed above, by hash.
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-redaction swarm-agent-worker
+      swarm-common swarm-redaction swarm-workflow-rollup swarm-agent-worker
 
 # pytest for the generic runner's `python -m pytest` (see the venv step above).
 RUN uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
@@ -689,24 +699,37 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Source of GCLOUD_* and GKE_PLUGIN_*: the Filename and SHA256 fields of
 # https://packages.cloud.google.com/apt/dists/cloud-sdk/main/binary-amd64/Packages
 # (packages google-cloud-cli and google-cloud-cli-gke-gcloud-auth-plugin,
-# Version 587.0.0-0), recomputed over the downloaded files. Neither .deb
+# Version 591.0.0-0), recomputed over the downloaded files.
+# 591.0.0, the newest in that index on 2026-10-31 (lane IMAGE-SCAN-NOV), not
+# 587.0.0: its gcloud-crc32c is built with go1.27.2 (587.0.0's was go1.26.6),
+# which fixes CVE-2026-78667, CVE-2026-78669 (stdlib) and CVE-2026-97031 in
+# it. Its gke-gcloud-auth-plugin is still go1.27.1 with golang.org/x/net
+# v0.59.0, below the fixed go1.27.2 and x/net 0.60.0, and no Google build is
+# newer, so the plugin's findings are accepted in .trivyignore.yaml until a
+# fixed build ships. Measured with `go version -m` and `trivy rootfs` over the
+# unpacked .debs. Neither .deb
 # declares a Depends. The auth plugin is not on the §2.12 list, but kubectl
 # cannot authenticate to a GKE cluster without it, so without it the kubectl
 # below would only reach clusters nobody here runs.
-ARG GCLOUD_VERSION=587.0.0
-ARG GCLOUD_POOL_ID=997633f1dce2c650ae5bc92a1ec32bca
-ARG GCLOUD_SHA256=117c7a96c43ecf649f91d7f775f54ff83134caeb42df4cfed8a7b92c2b701c14
+ARG GCLOUD_VERSION=591.0.0
+ARG GCLOUD_POOL_ID=a9222e6bee57d1c0f6eb73c93218c714
+ARG GCLOUD_SHA256=e11c443efa5d59bbb457cdf28e025246483d01db5b7fde772fe8a339a7ca20d0
 # Named GKE_PLUGIN_*, not GKE_AUTH_PLUGIN_*: Trivy DS-0031 reads "AUTH" in an ARG name as a secret and fails the PR; these are public package pool ids and checksums.
-ARG GKE_PLUGIN_POOL_ID=207adf5dccdc107f7d16bf1e01bd1398
-ARG GKE_PLUGIN_SHA256=c572f6cf9b401820032e8459b2bade792442dfbbce30e53d3b1b0d7be1bf9e24
-# kubectl 1.36.5: the newest 1.36 patch (https://dl.k8s.io/release/stable-1.36.txt
-# on 2026-10-01), one minor ahead of the 1.35 control plane as kubectl's skew
+ARG GKE_PLUGIN_POOL_ID=0f14e7e21ca8f8a0ba22a1f83c4b26b1
+ARG GKE_PLUGIN_SHA256=b46d7490fd2b596e3b58b0d94aa8f0328c288fcfa517a6f6b8a01e704b5760c7
+# kubectl 1.36.6: the newest 1.36 patch (https://dl.k8s.io/release/stable-1.36.txt
+# on 2026-10-28), built on go1.26.10, which fixes CVE-2026-111943 and
+# CVE-2026-56857 in kubectl (1.36.5 was go1.26.8), and CVE-2026-78667 in
+# it. It still links golang.org/x/net v0.56.0 (CVE-2026-78669, fixed in
+# 0.60.0), and so does every kubectl release: the newest, 1.37.2, carries
+# v0.57.0 (read 2026-10-31), so that one id is accepted in .trivyignore.yaml.
+# One minor ahead of the 1.35 control plane as kubectl's skew
 # policy allows and the line docs/versions.md pins for operators. The static
 # binary from dl.k8s.io rather than Google's `kubectl` .deb, which is 141 MB
 # of several bundled versions. Checksum:
-# https://dl.k8s.io/release/v1.36.5/bin/linux/amd64/kubectl.sha256. Scan: clean.
-ARG KUBECTL_VERSION=1.36.5
-ARG KUBECTL_SHA256=33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b430248648e
+# https://dl.k8s.io/release/v1.36.6/bin/linux/amd64/kubectl.sha256.
+ARG KUBECTL_VERSION=1.36.6
+ARG KUBECTL_SHA256=29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634
 # dpkg runs with /usr/sbin on PATH because it refuses to start without
 # ldconfig and start-stop-daemon, which live there and which the runtime PATH
 # deliberately omits; /usr/local/bin is there for the postinst's python3.
@@ -745,20 +768,23 @@ RUN mkdir -p /tmp/toolbox \
 #
 # GitHub and Docker CLIs.
 #
-# gh 2.102.0: the newest release (https://api.github.com/repos/cli/cli/releases/latest,
-# published 2026-09-30). Checksum from the vendor's own
-# https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_checksums.txt
-# (gh_2.102.0_linux_amd64.tar.gz). Scan: clean.
-ARG GH_VERSION=2.102.0
-ARG GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
-# docker CLI 29.8.2: Docker publishes no checksum beside its static tarballs,
+# gh 2.103.3: the newest release (https://api.github.com/repos/cli/cli/releases/latest,
+# published 2026-10-26), built with go1.27.3 and golang.org/x/net v0.60.0,
+# which fix CVE-2026-78667 and CVE-2026-78669 (2.102.0 was go1.27.1, x/net
+# v0.58.0). Checksum from the vendor's own
+# https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_checksums.txt
+# (gh_2.103.3_linux_amd64.tar.gz). Scan, 2026-10-31: clean.
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+# docker CLI 29.9.2 (newest on 2026-10-31), built with go1.26.10, which fixes
+# CVE-2026-78667 and CVE-2026-78669 (29.8.2 was go1.26.8). Docker publishes no checksum beside its static tarballs,
 # so this is the `docker-ce-cli` .deb, newest for bookworm in
 # https://download.docker.com/linux/debian/dists/bookworm/stable/binary-amd64/Packages
-# (Version 5:29.8.2-1~debian.12~bookworm), with that index's SHA256. It is the
+# (Version 5:29.9.2-1~debian.12~bookworm), with that index's SHA256. It is the
 # CLI alone -- Depends: libc6 only -- installed without its Recommends
 # (buildx, compose), and with no daemon. Scan: clean.
-ARG DOCKER_CLI_VERSION=29.8.2
-ARG DOCKER_CLI_SHA256=ff99352d3b95ebaaf94bcdf65026714a1a72a44a999a9fc83f1386c3f30f33d6
+ARG DOCKER_CLI_VERSION=29.9.2
+ARG DOCKER_CLI_SHA256=06ebf3de771f5673de48d01837d55309e0732958f071ac8c93f4e35d85979bf1
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     mkdir -p /tmp/toolbox \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gh.tar.gz \
@@ -775,16 +801,23 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
 
 # Terraform, and the two tools held back from the default build.
 #
-# terraform 1.16.4, NOT the 1.16.2 that scripts/prerequisites.sh and CI's
+# terraform 1.17.1 (newest, 2026-10-31), built with go1.26.10, golang.org/x/net
+# v0.62.0 and go-jose 4.1.6: it fixes CVE-2026-78667 and CVE-2026-78669
+# (1.16.4 was go1.26.8, x/net v0.58.0) and CVE-2026-116587 (go-jose). The
+# 1.16 line's newest, 1.16.7, fixes the first two but still carries go-jose
+# 4.1.4, so 1.17.1 is the release the scan passes. Terraform 1.x reads and
+# writes the same state format across minors.
+#
+# Before that, terraform 1.16.4, NOT the 1.16.2 that scripts/prerequisites.sh and CI's
 # terraform.yml/release.yml pin for operators: 1.16.2 is built with Go 1.26.4,
 # and the scan found nine fixable HIGHs in its stdlib (CVE-2026-33818,
 # CVE-2026-39821, CVE-2026-39822, CVE-2026-46600, CVE-2026-56853,
 # CVE-2026-56858, CVE-2026-56859, CVE-2026-56860, CVE-2026-56862; fixed in Go
 # 1.26.6). 1.16.4 (2026-09-23, newest) scanned clean. A patch release of the
 # same minor reads and writes the same state and lock files. Checksum:
-# https://releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_SHA256SUMS.
-ARG TERRAFORM_VERSION=1.16.4
-ARG TERRAFORM_SHA256=dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df
+# https://releases.hashicorp.com/terraform/1.17.1/terraform_1.17.1_SHA256SUMS.
+ARG TERRAFORM_VERSION=1.17.1
+ARG TERRAFORM_SHA256=4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061
 # INSTALL_TOFU and INSTALL_TFLINT are each OFF by default because no published
 # release of tofu, and none of tflint, passes the promote gate, and the gate
 # refuses the whole image, not just the tool. Re-scanned on 2026-10-09 with
@@ -869,16 +902,20 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
 # https://api.github.com/repos/koalaman/shellcheck/releases/latest, recomputed
 # over the downloaded file.
 #
-# trivy 0.75.0 (2026-10-01), the newest release: it scanned clean on
-# 2026-10-06 (see INSTALL_TOFU and INSTALL_TFLINT above for the scan and why
-# 0.74.0 could not ship). It is the agent's scanner, not the gate's: CI and the release pin
-# their own trivy in .github/workflows. Checksum from
-# https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_checksums.txt
-# (trivy_0.75.0_Linux-64bit.tar.gz), recomputed over the downloaded file.
+# trivy 0.76.1 (2026-10-21), the newest release, built with go1.27.3 and
+# golang.org/x/net v0.60.0, which fix CVE-2026-78667 and CVE-2026-78669
+# (0.75.0 was go1.27.1, x/net v0.59.0). It still carries go-jose 4.1.5
+# (CVE-2026-116587, accepted in .trivyignore.yaml: no trivy release has
+# 4.1.6). 0.75.0 had scanned clean on 2026-10-06 (see INSTALL_TOFU and
+# INSTALL_TFLINT above for the scan and why 0.74.0 could not ship). It is the
+# agent's scanner, not the gate's: CI and the release pin their own trivy in
+# .github/workflows. Checksum from
+# https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_checksums.txt
+# (trivy_0.76.1_Linux-64bit.tar.gz), recomputed over the downloaded file.
 ARG SHELLCHECK_VERSION=0.11.0
 ARG SHELLCHECK_SHA256=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
-ARG TRIVY_VERSION=0.75.0
-ARG TRIVY_SHA256=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+ARG TRIVY_VERSION=0.76.1
+ARG TRIVY_SHA256=c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     mkdir -p /tmp/toolbox \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/shellcheck.tar.gz \
@@ -1012,6 +1049,57 @@ RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
            ${codex:+"${codex}"} \
       && npm cache clean --force ; \
     fi
+
+# THE LANE QUALITY GATES (JEV-LANES, BGD 2026-10-31; #642: 25% of lane PRs were
+# red on their first CI run). Two Claude Code hooks checked by TypeSafe's Jev,
+# pinned, MIT both:
+#   * jev-belay v0.2.0 (valentynkit/jev-belay at commit
+#     ef719db7eaadc56aa4def86c4da4ffff5bcbca35, its v0.2.0 tag), a Stop hook
+#     that blocks an unverified "done". It is not on the npm registry, and no
+#     Dockerfile here fetches from GitHub (docs/runbooks/build-mirror.md), so
+#     its three files are VENDORED beside the launcher, jev-gates/vendor/
+#     jev-belay, byte for byte; tests/unit/worker/test_quality_gates.py holds
+#     each file to the commit's sha256.
+#   * jev-enforce v1.1.1 (erkamyaman/jev-enforce), the final reply and every
+#     Edit/Write checked against the repository's CLAUDE.md rules: the npm
+#     registry's tarball, checked against the sha512 below (the registry's
+#     own `dist.integrity`; its `gitHead` is the v1.1.1 tag's commit
+#     ed9c7d79bad2bfdea474df5e414b8b601c0e92cd, and its dist/src is that
+#     commit's, file for file). Retried like the npm tarballs above.
+# Neither has a runtime dependency, so only their own files are kept,
+# root-owned and read-only, off PATH.
+# They are NOT a plugin the CLI enables by itself: the claude-code runner
+# registers them in its `--settings` hooks (`claude_code.write_headless_settings`)
+# only when the worker handed it the gates' config, i.e. the workspace turned
+# `quality_gates.jev` on and its TypeSafe key was readable, and every hook
+# command is the launcher below (`swarm-jev-gate.mjs`), which holds the key in
+# its own process, sends only to TypeSafe's API and scrubs the registered
+# secrets (docs/jev-data-flow.md, "The lane hooks"). Without that config, or
+# without TYPESAFE_API_KEY, both are inert. With INSTALL_AGENT_CLIS=0 nothing
+# is fetched or installed but the launcher, and the runner, finding no tool,
+# registers nothing.
+ARG JEV_ENFORCE_VERSION=1.1.1
+ARG JEV_ENFORCE_SHA512=9964c65068cb2e6b423d610c66b90b82f6fe391b3c3d85a9e8eac1e75fd1c160b573720ca0dce47e8fa104a7ff234299e7aa6360cafe7afef7ce04a019ea2ddf
+RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev-gates-build \
+    install -d -m 0755 /opt/swarm/jev-gates /opt/swarm/jev-gates/bin \
+ && install -o root -g root -m 0555 /tmp/jev-gates-build/bin/swarm-jev-gate.mjs /opt/swarm/jev-gates/bin/swarm-jev-gate.mjs \
+ && if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
+      JE_TGZ="/tmp/jev-enforce-${JEV_ENFORCE_VERSION}.tgz" \
+      && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${JE_TGZ}" \
+           "https://registry.npmjs.org/jev-enforce/-/jev-enforce-${JEV_ENFORCE_VERSION}.tgz" \
+      && echo "${JEV_ENFORCE_SHA512}  ${JE_TGZ}" | sha512sum -c - \
+      && install -d -m 0755 /tmp/jev-enforce-src /opt/swarm/jev-gates/jev-belay /opt/swarm/jev-gates/jev-enforce/dist/src \
+      && tar -xzf "${JE_TGZ}" -C /tmp/jev-enforce-src --strip-components=1 \
+      && grep -q "\"version\": \"${JEV_ENFORCE_VERSION}\"" /tmp/jev-enforce-src/package.json \
+      && install -o root -g root -m 0444 /tmp/jev-enforce-src/package.json /tmp/jev-enforce-src/LICENSE \
+           /opt/swarm/jev-gates/jev-enforce/ \
+      && install -o root -g root -m 0444 /tmp/jev-enforce-src/dist/src/*.js /opt/swarm/jev-gates/jev-enforce/dist/src/ \
+      && install -o root -g root -m 0444 /tmp/jev-gates-build/vendor/jev-belay/belay.mjs \
+           /tmp/jev-gates-build/vendor/jev-belay/package.json /tmp/jev-gates-build/vendor/jev-belay/LICENSE \
+           /opt/swarm/jev-gates/jev-belay/ \
+      && rm -rf /tmp/jev-enforce-src "${JE_TGZ}" ; \
+    fi \
+ && chmod -R a+rX,a-w /opt/swarm/jev-gates
 
 # A warmed npm cache for this repository's UI (docs/design/agent-autonomy.md
 # §3.10, lane AU-8). Built from apps/swarm-ui's lockfile with `npm ci --cache

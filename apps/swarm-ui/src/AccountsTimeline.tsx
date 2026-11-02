@@ -237,7 +237,15 @@ function bandWords(b: Band, now: number): ReactNode {
       {lead}
       <b>{pct(left)} left</b> ({pct(1 - left)} used)
       {b.kind === 'stale' && <> · counted at half: {pct(b.counted ?? 0)}</>}
-      {!unknown && <> · floor {pct(b.floor)}</>} · {b.blocks ? <b className="acct-tl-clears">clears {at}</b> : <>resets {at}</>}
+      {!unknown && <> · floor {pct(b.floor)}</>} ·{' '}
+      {/* A reset already past is not when it clears (capacity-03). */}
+      {b.resetsAt !== null && b.resetsAt <= now ? (
+        <>reset {at} passed, nothing read since</>
+      ) : b.blocks ? (
+        <b className="acct-tl-clears">clears {at}</b>
+      ) : (
+        <>resets {at}</>
+      )}
     </>
   )
 }

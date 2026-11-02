@@ -115,13 +115,20 @@ describe('config-16: one add action, named for what it does', () => {
     expect(links()).not.toContain('Add new repository')
   })
 
-  it('a chosen repository not registered: the head carries Choose more on GitHub beside Register repository', async () => {
+  it('a chosen repository not registered: the lead registers it, and the head carries Choose more on GitHub as a secondary', async () => {
     live([repo()], [GRANT(1, 'example-org/example-api'), GRANT(2, 'example-labs/console')])
     await mount()
     await waitFor(() => expect(visible(lead())).toContain('example-labs/console is chosen but not registered'), WAIT)
-    expect(links()).toContain('Register repository')
+    // QA2-FIX-19 (config2-08): the lead's Register is the one primary add
+    // action; the head's Register repository beside it was a second.
+    // MUTATION: draw the head's Register repository beside the lead's Register and this finds it.
+    expect(links()).not.toContain('Register repository')
+    expect(Array.from(lead()!.querySelectorAll('a')).map((a) => visible(a))).toEqual(['Register'])
     // MUTATION: name the head's button for the empty state ("Choose on GitHub") and this fails.
-    expect(links().filter((t) => t === 'Choose more on GitHub')).toHaveLength(1)
+    const more = Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).filter((a) => visible(a) === 'Choose more on GitHub')
+    expect(more).toHaveLength(1)
+    // MUTATION: leave it primary and the page has two primary add actions.
+    expect(more[0]!.className).not.toMatch(/is-primary/)
     expect(links()).not.toContain('Add new repository')
   })
 })
@@ -130,22 +137,22 @@ describe('config-17: the permission dot says what it asks for', () => {
   const card = () => document.querySelector<HTMLElement>('.ur-cards > .ur-card:not(.is-chosen)')
   const word = () => card()?.querySelector<HTMLElement>('[data-perm-word]') ?? null
 
-  it('a red dot with one permission missing (the fixture console) says "1 GitHub permission missing" beside it', async () => {
+  it('a red dot with one permission missing (the fixture console) names it beside it, and where it is granted (QA2-FIX-19 config2-01)', async () => {
     const r = repo()
     live([r], [GRANT(1, 'example-org/example-api')], forge([{ repo_id: r.repo_id, capabilities: { ...ALL_TRUE, actions: false }, blocked_by: [GAP('actions', ['actions'])] }]))
     await mount()
     await waitFor(() => expect(card()?.querySelector('.fp-dot')).toBeTruthy(), WAIT)
     // MUTATION: drop the word beside RepoDot and the red ◆ is unexplained again; this is null.
     expect(word()).not.toBeNull()
-    expect(visible(word())).toBe('1 GitHub permission missing')
+    expect(visible(word())).toBe('Not granted on GitHub: Actions (read) Grant it in Workspace setup')
     expect(word()!.getAttribute('data-perm-word')).toBe('bad')
-    // It follows the dot in the badge row, and its tooltip is the dot's.
+    // It follows the dot in the badge row, and its words' tooltip is the dot's.
     const badge = card()!.querySelector<HTMLElement>('[data-badge]')!
     expect(badge.contains(word())).toBe(true)
-    expect(word()!.getAttribute('title')).toBe(card()!.querySelector('.fp-dot')!.getAttribute('title'))
+    expect(word()!.querySelector('[title]')!.getAttribute('title')).toBe(card()!.querySelector('.fp-dot')!.getAttribute('title'))
   })
 
-  it('counts permissions, not gaps: two gaps on one permission are one; a refusal with no permission named counts on its own', async () => {
+  it('names permissions, not gaps: two gaps on one permission are one; a refusal with no permission named counts on its own', async () => {
     const r = repo()
     live(
       [r],
@@ -160,8 +167,8 @@ describe('config-17: the permission dot says what it asks for', () => {
     )
     await mount()
     await waitFor(() => expect(word()).not.toBeNull(), WAIT)
-    // MUTATION: count `blocked_by.length` and this says 3.
-    expect(visible(word())).toBe('2 GitHub permissions missing')
+    // MUTATION: name each gap and Statuses is said twice.
+    expect(visible(word())).toBe('Not granted on GitHub: Statuses (read) and 1 more Grant it in Workspace setup')
   })
 
   it('the grey ring says the permissions were not all checked; the green dot carries no word', async () => {

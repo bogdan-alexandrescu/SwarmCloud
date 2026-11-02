@@ -248,10 +248,11 @@ def test_newest_reads_an_unreadable_api_as_release_this_commit(tmp_path):
     assert "::warning::" in proc.stdout
 
 
-@pytest.mark.parametrize("status, superseded", [("ahead", "true"), ("identical", "false")])
-def test_after_a_successful_wait_a_moved_main_still_supersedes(tmp_path, status, superseded):
-    """Built and scanned, but main moved on meanwhile: the newer release ships
-    it. MUTATION: decide only on the failure path."""
+@pytest.mark.parametrize("status, superseded", [("ahead", "false"), ("identical", "false")])
+def test_after_a_successful_wait_the_release_deploys_even_when_main_moved(tmp_path, status, superseded):
+    """Built and scanned: it deploys, even when main moved on meanwhile (#3000:
+    a busy main superseded every release and none deployed for five hours).
+    MUTATION: supersede a successful stage when the compare says `ahead`."""
     proc, outputs, _, _ = _run_step(tmp_path, "after", {COMPARE: {"status": status}}, stage="success")
     assert proc.returncode == 0, proc.stderr
     assert outputs == {"superseded": superseded}

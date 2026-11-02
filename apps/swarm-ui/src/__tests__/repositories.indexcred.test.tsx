@@ -69,11 +69,11 @@ describe('each repository card says which credential indexing uses', () => {
     expect(line!.getAttribute('data-source')).toBe('owner')
   })
 
-  it('names the team token', async () => {
+  it('names the workspace token (QA2-FIX-19 config2-12: "team" was said in a personal workspace)', async () => {
     listing(TEAM_CRED)
     await mountList()
     await waitFor(() => expect(cards()).toHaveLength(1), WAIT)
-    expect(visible(cards()[0]!.querySelector('.ur-cred'))).toContain('Indexing uses the team token')
+    expect(visible(cards()[0]!.querySelector('.ur-cred'))).toContain('Indexing uses the workspace token')
   })
 
   it('says none and where to connect, beside the failure it explains', async () => {
@@ -163,7 +163,7 @@ describe('Try it says what indexing uses and how the repository last indexed', (
   it('a repository that indexed says when', async () => {
     const tryIt = await mountTokens([repo({ index_credential: TEAM_CRED }, { last_indexed_at: ago(5 * MIN) })])
     const note = await within(tryIt).findByTestId('indexing-note', {}, WAIT)
-    await waitFor(() => expect(visible(note)).toContain('Indexing uses: the team token'), WAIT)
+    await waitFor(() => expect(visible(note)).toContain('Indexing uses: the workspace token'), WAIT)
     expect(visible(note)).toContain('Last index of example-org/example-api: indexed 5m ago.')
   })
 

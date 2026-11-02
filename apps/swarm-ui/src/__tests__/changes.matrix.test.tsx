@@ -545,3 +545,34 @@ describe("WG-9: the matrix's step headers wrap, so six step columns fit a 1440 f
     expect(painted(table().querySelector('thead th:not([data-step])')!, 'white-space', WIDE)).toBe('nowrap')
   })
 })
+
+describe('overview-agents-78 (visual QA pass 2): at 390 the chips wrap and the matrix stacks', () => {
+  const PHONE: CascadeEnv = { width: 390 }
+  const WIDE: CascadeEnv = { width: 1440 }
+
+  it('wraps the step chips instead of scrolling one cut row', async () => {
+    render(<Tab steps={THREE} tasks={THREE_TASKS} />)
+    const chips = screen.getByRole('group', { name: 'Steps' })
+    // MUTATION: put back `.chg-mx-chips { flex-wrap: nowrap; overflow-x: auto }`
+    // under the phone breakpoint and the strip is one row cut by a scrollbar.
+    expect(painted(chips, 'flex-wrap', PHONE)).toBe('wrap')
+    expect(painted(chips, 'overflow-x', PHONE)).not.toBe('auto')
+  })
+
+  it('stacks the table, one file a block with one named line per step, and keeps the grid on a desktop', async () => {
+    render(<Tab steps={THREE} tasks={THREE_TASKS} />)
+    await waitFor(() => expect(cell('src/app/one.ts', 'implement').textContent).toBe('+2 −2'))
+    const td = cell('src/app/one.ts', 'fix')
+    // MUTATION: drop the cell's `data-label` and a stacked line no longer says whose step it is.
+    expect(td.getAttribute('data-label')).toBe('fix')
+    // MUTATION: drop the phone stacking rules and the table needs a second sideways scroll.
+    expect(painted(table(), 'display', PHONE)).toBe('block')
+    expect(painted(td.parentElement!, 'display', PHONE)).toBe('block')
+    expect(painted(td, 'content', PHONE, 'before')).toBe('attr(data-label)')
+    // The step heads stay drawn on a phone, each its own line; the File head leaves the layout only.
+    expect(painted(head('fix'), 'display', PHONE)).toBe('block')
+    expect(painted(table().querySelector('thead th:not([data-step])')!, 'clip-path', PHONE)).toBe('inset(50%)')
+    // The desktop grid is untouched.
+    expect(painted(table(), 'display', WIDE)).not.toBe('block')
+  })
+})

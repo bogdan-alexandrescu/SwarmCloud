@@ -42,3 +42,26 @@ def test_swarm_workflow_advertises_allow_empty_diff():
     schema = next(t for t in server.TOOLS if t["name"] == "swarm_workflow")["inputSchema"]
     step = schema["properties"]["steps"]["items"]["properties"]
     assert step["allow_empty_diff"]["type"] == "boolean"
+
+
+def test_allow_empty_diff_description_names_the_direct_pr_reader_rule():
+    schema = next(t for t in server.TOOLS if t["name"] == "swarm_workflow")["inputSchema"]
+    step = schema["properties"]["steps"]["items"]["properties"]
+    description = step["allow_empty_diff"]["description"]
+    assert "direct-pr" in description
+    assert "builds_on" in description
+
+
+def test_a_review_feeding_a_fix_sends_no_allow_empty_diff_key():
+    # The API decides a reader step's allow_empty_diff; the parser must not.
+    steps = {
+        s["step_id"]: s
+        for s in workflows.build_steps(
+            [
+                {"step_id": "review", "prompt": "review it"},
+                {"step_id": "fix", "prompt": "fix it", "depends_on": ["review"]},
+            ]
+        )
+    }
+    assert "allow_empty_diff" not in steps["review"]
+    assert "allow_empty_diff" not in steps["fix"]

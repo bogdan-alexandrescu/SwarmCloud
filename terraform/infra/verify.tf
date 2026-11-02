@@ -29,26 +29,24 @@
 # identically in CI -- the ingress setting already permits internal traffic.
 
 # The id is spelled in modules/service_account_ids, which terraform/bootstrap
-# reads to grant the release deployer roles/iam.serviceAccountAdmin on this
-# account and on no account infra does not manage (#334).
+# reads to create the account (platform_service_accounts.tf, DAYONE-BOOT-2,
+# design Q7) and to grant the release deployer roles/iam.serviceAccountAdmin on
+# it (#334). This root reads it. The live account was forgotten here, never
+# destroyed (removed.tf), and adopted by bootstrap's gated import; its email
+# and unique id did not change, so no grant below moved.
 module "service_account_ids" {
   source = "../modules/service_account_ids"
 }
 
-resource "google_service_account" "verify" {
-  project      = var.project_id
-  account_id   = module.service_account_ids.verify_id
-  display_name = "SwarmCloud verification job"
-  # No create_ignore_already_exists: this account is in state, and a 409 on it
-  # should fail the release rather than adopt an account somebody else made
-  # under the name (#334 security review).
-  # 256 characters at most -- the provider refuses a longer description at
-  # plan time, which is how an earlier wording of this line failed CI. This one
-  # is 255. It names what the identity CAN do (any runner ceiling, through
-  # admin_pool_users) rather than what race-test does with it (mock's), and it
-  # says it is not an admin: the wording before 2026-09-24's correction said it
-  # was one.
-  description = "Runs the verification suites inside the VPC. Reads Firestore, Cloud Run executions, GKE Jobs and artifact objects. Writes only through swarm-api: as its own tenant, and runner ceilings where admin_pool_users names it (for race-test). Not a platform admin."
+data "google_service_account" "verify" {
+  project    = var.project_id
+  account_id = module.service_account_ids.verify_id
+}
+
+locals {
+  # Built from the account id (known at plan, and what a mock provider keeps)
+  # rather than read off `.email`; the reference orders every use after the read.
+  verify_email = "${data.google_service_account.verify.account_id}@${var.project_id}.iam.gserviceaccount.com"
 }
 
 # WHY THIS IS NO LONGER THE ONLY GRANT.
@@ -92,7 +90,7 @@ resource "google_cloud_run_v2_service_iam_member" "verify_invokes_api" {
   # map key itself, so take it from the map-shaped output.
   name   = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
   role   = "roles/run.invoker"
-  member = "serviceAccount:${google_service_account.verify.email}"
+  member = "serviceAccount:${local.verify_email}"
 }
 
 # Firestore. require_fs_database asks the Admin API whether the database
@@ -102,7 +100,7 @@ resource "google_cloud_run_v2_service_iam_member" "verify_invokes_api" {
 resource "google_project_iam_member" "verify_reads_firestore" {
   project = var.project_id
   role    = "roles/datastore.viewer"
-  member  = "serviceAccount:${google_service_account.verify.email}"
+  member  = "serviceAccount:${local.verify_email}"
 }
 
 # Cloud Run executions. CONTRACT invariant 1 -- that QUEUED, PARKED and READY
@@ -111,7 +109,7 @@ resource "google_project_iam_member" "verify_reads_firestore" {
 resource "google_project_iam_member" "verify_reads_run" {
   project = var.project_id
   role    = "roles/run.viewer"
-  member  = "serviceAccount:${google_service_account.verify.email}"
+  member  = "serviceAccount:${local.verify_email}"
 }
 
 # Artifact objects. The smoke suite proves artifacts landed under the tenant's
@@ -122,7 +120,7 @@ resource "google_project_iam_member" "verify_reads_run" {
 resource "google_storage_bucket_iam_member" "verify_reads_artifacts" {
   bucket = module.storage.artifact_bucket_name
   role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${google_service_account.verify.email}"
+  member = "serviceAccount:${local.verify_email}"
 }
 
 # The swarm cluster, for e2e-test.sh [10] (owner decisions 2026-10-20 and
@@ -160,7 +158,7 @@ resource "google_cloud_run_v2_job" "verify" {
 
   template {
     template {
-      service_account = google_service_account.verify.email
+      service_account = local.verify_email
       max_retries     = 0 # A flaky gate that retries is a gate that lies.
       timeout         = "1800s"
 
@@ -240,6 +238,16 @@ resource "google_cloud_run_v2_job" "verify" {
           for_each = var.acceptance_console_url == "" ? [] : [var.acceptance_console_url]
           content {
             name  = "SWARM_ACCEPTANCE_CONSOLE_URL"
+            value = env.value
+          }
+        }
+        # The sandbox the acceptance groups push to. Rendered only when set:
+        # unset, config.sh keeps its own default and the live deployment's
+        # plan shows no change.
+        dynamic "env" {
+          for_each = var.acceptance_sandbox_repository_url == null ? [] : [var.acceptance_sandbox_repository_url]
+          content {
+            name  = "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"
             value = env.value
           }
         }

@@ -6,7 +6,8 @@
 //     browser agents, running and starting; it said "Live" until live-browser
 //     QA p12, QA12-20), not a "Live browsers" checkbox; Browsers lists them
 //     needs-you first, then running, then starting, each running one with a
-//     device outline read from its session, and "⤢ theater all" opens the
+//     device outline read from its session, and "⤢ Watch all browsers" (it
+//     read "theater all" until visual QA pass 1, overview-agents-18) opens the
 //     first row's Browser tab with ?theater=1;
 //   * the Overview's "Needs a look" hand-off card offers Take control beside
 //     "browse →" only when the session read says you may (`can_control`),
@@ -17,7 +18,7 @@
 //
 // MUTATIONS, one per block: keep the checkbox (the switch is not found); count
 // every RUNNING row as N; drop the device read (every outline is "not
-// reported"); point "theater all" at the agent page without ?theater=1; drop
+// reported"); point "Watch all browsers" at the agent page without ?theater=1; drop
 // the `can_control` check on the card; navigate before the take resolves (or
 // not at all); render LiveDevice outside LiveToolMenu.
 
@@ -41,9 +42,18 @@ const api = vi.hoisted(() => ({
   openLiveToMembers: vi.fn(),
 }))
 
+// The fixture build is a flag the theater-all test turns on (overview-agents-17).
+const build = vi.hoisted(() => ({ fixtures: false }))
+
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
-  return { ...actual, ...api, USE_FIXTURES: false }
+  return {
+    ...actual,
+    ...api,
+    get USE_FIXTURES() {
+      return build.fixtures
+    },
+  }
 })
 
 vi.mock('@novnc/novnc/core/rfb.js', () => ({
@@ -225,7 +235,7 @@ describe('the Agents list: All | Browsers N', () => {
 
   it('Browsers lists them needs-you first, each with its device outline, and theater all opens the first', async () => {
     const { container } = await mount()
-    expect(screen.queryByRole('link', { name: /theater all/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /watch all browsers/i })).toBeNull()
     fireEvent.click(within(screen.getByRole('group', { name: /browser agents/i })).getByRole('button', { name: /^Browsers/ }))
     await waitFor(() =>
       expect([...container.querySelectorAll('.rows .row.clickable')].map((r) => r.getAttribute('data-task-id'))).toEqual([
@@ -249,9 +259,28 @@ describe('the Agents list: All | Browsers N', () => {
     // An ordinary agent gets no outline and no session read.
     expect(api.loadLiveSession.mock.calls.map(([id]) => id)).not.toContain('task_coder000000000000001')
 
-    const theaterAll = screen.getByRole('link', { name: /theater all/i })
+    const theaterAll = screen.getByRole('link', { name: /watch all browsers/i })
     expect(theaterAll.getAttribute('href')).toBe(theaterPath('task_needsyou00000000001', null))
     expect(theaterAll.getAttribute('href')).toMatch(/\/browser\?theater=1$/)
+  })
+
+  /**
+   * Visual QA pass 1, overview-agents-17 (QA1B-07). The fixture build serves
+   * no live session, actions or recordings, so '⤢ theater all' opened a
+   * theater on 'Not found' and 'No recording to play'. The owner's answer:
+   * hide the link in fixtures. MUTATION: drop `!USE_FIXTURES` from the
+   * link's condition in Agents.tsx and the link is found.
+   */
+  it('offers no theater all in the fixture build, which has no live browser to show', async () => {
+    build.fixtures = true
+    try {
+      const { container } = await mount()
+      fireEvent.click(within(screen.getByRole('group', { name: /browser agents/i })).getByRole('button', { name: /^Browsers/ }))
+      await waitFor(() => expect(container.querySelectorAll('.rows .row.clickable')).toHaveLength(4))
+      expect(screen.queryByRole('link', { name: /theater all/i })).toBeNull()
+    } finally {
+      build.fixtures = false
+    }
   })
 })
 

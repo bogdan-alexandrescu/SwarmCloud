@@ -1,0 +1,1076 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="icon" href="data:,">
+<title>SwarmCloud plan diagrams, proposal C: Diagrams in the conversation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
+<style>
+/*
+ * Plan diagrams, proposal C, "Diagrams in the conversation" (PLANS-DIAG-C, part of #2585).
+ * Built on proposal D's decision page as merged (plans-d.html, PR 2587): its tokens, chrome,
+ * plan document, margin, revision bar and decision bar are copied whole. The pinned strip,
+ * diagram messages, the review chat and the switches below are this proposal's.
+ * PICKS.md rules: 12px type floor, no all-caps, a theme toggle, an unknown figure is a dash.
+ */
+:root{--bg:#f3f6f9;--surface:#ffffff;--surface-2:#eef4fa;--line:#d6e0ea;--line-soft:#dde5ee;--text:#0d1724;--text-dim:#4f5d6e;--text-faint:#606a77;--ok:#1a7f37;--warn:#6e4a00;--bad:#681117;--info:#0369a1;--paused:#7139db;--ok-ink:#15662c;--warn-ink:#805500;--bad-ink:#a71b25;--info-ink:#075985;--paused-ink:#6629d8;--ctl-bd:#7d8ea3;--ctl-onac:#ffffff;--bar-bg:#e3eaf1;--scrim:rgba(6,16,30,.28);--sh:-14px 0 34px rgba(11,58,122,.16);--font:"Inter Tight",system-ui,-apple-system,sans-serif;--mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--bar-bg:#1d3049;--scrim:rgba(0,0,0,.5);--sh:-14px 0 34px rgba(0,0,0,.55);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--surface-2:#11233b;--line:#1e3350;--line-soft:#1d3049;--text:#eef4fa;--text-dim:#9fb0c4;--text-faint:#828d9b;--ok:#58c668;--warn:#ffd60a;--bad:#f85149;--info:#7cc8f8;--paused:#b288f8;--ok-ink:#42bf53;--warn-ink:#d29922;--bad-ink:#fa7872;--info-ink:#b9e3fc;--paused-ink:#b892f9;--ctl-bd:#5f7087;--ctl-onac:#06101e;--bar-bg:#1d3049;--scrim:rgba(0,0,0,.5);--sh:-14px 0 34px rgba(0,0,0,.55);color-scheme:dark}
+:root{--t-ok:color-mix(in srgb,var(--ok) 13%,var(--surface));--t-warn:color-mix(in srgb,var(--warn-ink) 14%,var(--surface));--t-bad:color-mix(in srgb,var(--bad-ink) 12%,var(--surface));--t-info:color-mix(in srgb,var(--info) 11%,var(--surface));--t-pa:color-mix(in srgb,var(--paused) 12%,var(--surface));--l-info:color-mix(in srgb,var(--info) 40%,var(--line))}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--font);overflow-x:hidden}
+a{color:var(--info)}
+code,.mono{font-family:var(--mono);font-size:13px;background:var(--surface-2);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--info);outline-offset:2px}
+
+/* ---------- the document around the frames ---------- */
+.topbar{position:relative;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+.topbar .in{max-width:1520px;margin:0 auto;padding:8px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.topbar b{font-size:14px;font-weight:650}
+.topbar .sp0{flex:1}
+.doc{max-width:1520px;margin:0 auto;padding:28px 16px 80px}
+.doc .kick{font:500 13px var(--mono);color:var(--info);margin:0}
+.doc h1{font-size:clamp(26px,4vw,38px);line-height:1.15;margin:8px 0 12px;font-weight:650}
+.doc h2{font-size:24px;margin:0;font-weight:650;scroll-margin-top:60px;flex:1 1 200px;min-width:0;overflow-wrap:anywhere}
+.doc p,.doc li{max-width:86ch}
+.doc .lede{font-size:17px;color:var(--text-dim)}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--text);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--info);color:var(--info)}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin-top:20px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 6px;font-size:15px;color:var(--info-ink)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}.idea li{margin:3px 0}
+.rules{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 18px;margin-top:16px;font-size:14px}
+.rules ul{margin:6px 0 0;padding-left:18px}
+
+/* a frame box: one per frame id, each state a labelled sub-frame */
+.frame{margin-top:44px;border:1px solid var(--line);border-radius:16px;background:color-mix(in srgb,var(--surface) 55%,var(--bg));padding:16px 16px 20px;scroll-margin-top:60px;min-width:0}
+.flabel{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+.fid{font:600 14px var(--mono);color:var(--info-ink);background:var(--t-info);border:1px solid var(--l-info);padding:2px 10px;border-radius:99px;flex:none}
+.frame>p{font-size:14px;color:var(--text-dim);margin:8px 0 0}
+.sub{margin:20px 0 0;min-width:0}
+.sub>.sl{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:0 0 8px;font-size:14px}
+.sub>.sl .sid{font:500 13px var(--mono);color:var(--info-ink)}
+.sub>.sl b{font-weight:600}
+.sub>.sl span.dim{font-size:13px}
+.sub figcaption{font-size:13.5px;color:var(--text-dim);margin-top:8px;max-width:110ch}
+.sub figcaption b{color:var(--text)}
+.scroller{overflow-x:auto;border-radius:12px;border:1px solid var(--line);max-width:100%;background:var(--bg)}
+.pair{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}
+.pair>.sub{flex:0 1 auto;max-width:100%;width:min-content}
+.dt{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doct{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+table.doct th,table.doct td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doct th{font-size:13px;color:var(--text-dim);font-weight:600}
+table.doct tr:last-child td{border-bottom:0}
+
+.tseg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface)}
+.tseg button{border:0;background:none;padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-dim);display:inline-flex;gap:5px;align-items:center;border-right:1px solid var(--line)}
+.tseg button:last-child{border-right:0}
+.tseg button[aria-pressed="true"]{background:var(--t-info);color:var(--info-ink);font-weight:600}
+
+/* ---------- frames: shared ---------- */
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.F{font:14px/1.45 var(--font);color:var(--text);text-align:left}
+.F a{color:var(--info);text-decoration:none}
+/* 1440 wide, or the page's own width when the window is narrower; a grid so the side sheet lies over the list in the same cell */
+.app{display:grid;grid-template-columns:84px 236px minmax(0,1fr);width:clamp(1180px,100%,1440px);min-height:720px;background:var(--bg)}
+.app.short{min-height:560px}
+.app>.sp{grid-column:1;grid-row:1}.app>.pn{grid-column:2;grid-row:1}.app>.ct{grid-column:3;grid-row:1}
+.app>.scr{grid-column:3;grid-row:1;background:var(--scrim)}
+.app>.dsheet{grid-column:3;grid-row:1;justify-self:end;align-self:stretch}
+
+.sp{background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:14px 0 12px;gap:2px;color:#bcd6ee}
+.sp .hv{margin:0 0 12px}
+.sp .si{width:74px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;font-size:12px;line-height:1.15;color:#bcd6ee;position:relative;text-align:center}
+.sp .si .ic{width:20px;height:20px}
+.sp .si.on{background:rgba(124,200,248,.2);color:#fff}
+.sp .si.on::before{content:"";position:absolute;left:-5px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.sp .si.go{background:#38bdf8;color:#06101e;width:56px;border-radius:12px;font-weight:600;margin-bottom:8px}
+.sp .si .dt0{position:absolute;top:4px;right:14px;width:8px;height:8px;border-radius:50%;background:#f5c451;box-shadow:0 0 0 2px #0b3a7a}
+.sp .gr{flex:1}
+.sp .av{margin-top:6px}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--font);text-align:center;flex:none}
+
+.pn{background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:14px 0 0}
+.pn .wm{display:flex;align-items:center;gap:8px;padding:0 16px 10px;font-weight:650;font-size:16px}
+.pn .wm span{color:var(--info)}
+.pill{font:500 12px/1 var(--mono);padding:4px 7px;border-radius:99px;color:var(--info-ink);background:var(--t-info);border:1px solid var(--l-info);margin-left:auto}
+.wsb{margin:0 12px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;display:flex;gap:9px;align-items:center}
+.wsb .tg{width:26px;height:26px;border-radius:7px;background:var(--t-info);color:var(--info-ink);font:650 12px/26px var(--font);text-align:center;flex:none}
+.wsb .tt{display:flex;flex-direction:column;line-height:1.25;min-width:0;flex:1}
+.wsb .tt b{font-size:13px}.wsb .tt small{font-size:12px;color:var(--text-dim)}
+.pn .sec{font-size:15px;font-weight:650;padding:4px 20px 6px}
+.pi{display:flex;align-items:center;gap:9px;min-height:34px;padding:0 10px;margin:1px 10px;border-radius:8px;color:var(--text-dim);position:relative;font-size:13.5px}
+.pi .lb{flex:1;color:var(--text)}
+.pi.on{background:var(--t-info);color:var(--info)}.pi.on .lb{color:var(--info-ink);font-weight:600}
+.pi.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--info)}
+.pnote{font-size:12px;color:var(--text-dim);padding:10px 20px 0;line-height:1.4}
+.pgrow{flex:1}
+.pf{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px}
+.pf .who{display:flex;gap:9px;align-items:center}
+.pf .who span:not(.av){display:flex;flex-direction:column;line-height:1.25}.pf .who b{font-size:13px}.pf .who small{font-size:12px;color:var(--text-dim)}
+.pf .tseg button{padding:3px 8px;font-size:12px;flex:1;justify-content:center}
+
+.ct{min-width:0;padding:18px 28px 32px;display:flex;flex-direction:column;gap:14px}
+.hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.hd .tl{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.hd .cr{font-size:12px;color:var(--text-dim)}
+.hd .h{font-size:22px;font-weight:650;line-height:1.2}
+.hd .age{font:12px var(--mono);color:var(--text-dim)}
+
+.lead{display:flex;gap:16px;align-items:center;padding:14px 18px;border-radius:12px;background:var(--t-info);border:1px solid var(--l-info);flex-wrap:wrap}
+.lead .lt{flex:1;min-width:240px;display:flex;flex-direction:column;gap:2px}
+.lead .lt .k{font-size:12px;color:var(--info-ink);font-weight:600}
+.lead .lt b{font-size:16px;font-weight:600}
+.lead .lt span{font-size:13px;color:var(--text-dim)}
+.lead.ok{background:var(--t-ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+.lead.ok .lt .k{color:var(--ok-ink)}
+.lead.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.lead.wn .lt .k{color:var(--warn-ink)}
+.lead.bd{background:var(--t-bad);border-color:color-mix(in srgb,var(--bad-ink) 40%,var(--line))}
+.lead.bd .lt .k{color:var(--bad-ink)}
+.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+.cd{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
+.cd .ch{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.cd .ch b{font-size:15px;font-weight:600}
+.cd .ch .r{margin-left:auto}
+.cd p{margin:0 0 8px;font-size:13.5px;color:var(--text-dim)}
+.cd.dash{border-style:dashed;background:transparent}
+.g2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.g4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:5px 14px;font-size:13.5px;margin:0}
+.kv dt{color:var(--text-dim)}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.dim{color:var(--text-dim)}.faint{color:var(--text-faint)}
+.sm12{font-size:12px}
+.mn{font-family:var(--mono);font-size:12.5px;overflow-wrap:anywhere}
+
+.b{height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--ctl-bd);background:var(--surface);color:var(--text);font:600 13px var(--font);display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:default}
+.b.p{background:var(--info);color:var(--ctl-onac);border-color:var(--info)}
+.b.q{border-color:transparent;background:none;color:var(--info);padding:0 6px}
+.hint .b.q,.bn .b.q{display:inline;height:auto;padding:0 2px;white-space:normal}
+.hint .b.q svg,.bn .b.q svg{vertical-align:-2px;margin-right:3px}
+.lede code{white-space:nowrap}
+.bn code{white-space:nowrap}
+.b.d{color:var(--bad-ink)}
+.b.s{height:28px;font-size:12.5px;padding:0 10px}
+.b[aria-disabled="true"]{opacity:.55}
+.b.d[aria-disabled="true"]{color:var(--text-dim);border-color:var(--line);border-style:dashed}
+.c{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--text-dim);white-space:nowrap;display:inline-flex;gap:4px;align-items:center;line-height:1.5}
+.c.ok{background:var(--t-ok);color:var(--ok-ink)}
+.c.wn{background:var(--t-warn);color:var(--warn-ink)}
+.c.bd{background:var(--t-bad);color:var(--bad-ink)}
+.c.in{background:var(--t-info);color:var(--info-ink)}
+.c.pa{background:var(--t-pa);color:var(--paused-ink)}
+.c.ln{background:none;border:1px solid var(--line)}
+.c .ic{width:12px;height:12px}
+.st{display:inline-flex;align-items:center;gap:6px}
+.st .ic{width:14px;height:14px}
+.st.ok{color:var(--ok-ink)}.st.wn{color:var(--warn-ink)}.st.bd{color:var(--bad-ink)}.st.in{color:var(--info-ink)}.st.nu{color:var(--text-dim)}
+.sg{display:inline-flex;border:1px solid var(--ctl-bd);border-radius:8px;overflow:hidden;background:var(--surface);flex:none;flex-wrap:wrap}
+.sg span{padding:5px 11px;font-size:13px;color:var(--text-dim);border-right:1px solid var(--line);white-space:nowrap;display:inline-flex;gap:5px;align-items:center}
+.sg span:last-child{border-right:0}
+.sg span.on{background:var(--t-info);color:var(--info-ink);font-weight:600}
+.fld{display:flex;flex-direction:column;gap:4px;font-size:13px;min-width:0}
+.fld>span{color:var(--text-dim);font-weight:600;font-size:12.5px}
+.inp{min-height:34px;border:1px solid var(--ctl-bd);border-radius:8px;background:var(--surface);display:flex;align-items:center;padding:0 10px;font-size:13.5px;color:var(--text-faint);gap:8px;min-width:0}
+.inp.v{color:var(--text)}
+.inp.er{border-color:var(--bad-ink);box-shadow:0 0 0 1px var(--bad-ink)}
+.err{font-size:12.5px;color:var(--bad-ink);display:flex;gap:6px;align-items:flex-start}
+.err .ic{width:14px;height:14px;margin-top:2px}
+.col4{display:flex;flex-direction:column;gap:4px;min-width:0}
+.hint{font-size:12.5px;color:var(--text-dim)}
+.bn{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:10px;font-size:13px;border:1px solid var(--line);background:var(--surface-2)}
+.bn.in{background:var(--t-info);border-color:var(--l-info)}
+.bn.wn{background:var(--t-warn);border-color:color-mix(in srgb,var(--warn-ink) 40%,var(--line))}
+.bn.bd{background:var(--t-bad);border-color:color-mix(in srgb,var(--bad-ink) 40%,var(--line))}
+.bn.ok{background:var(--t-ok);border-color:color-mix(in srgb,var(--ok) 35%,var(--line))}
+.bn b{display:block}
+.bn .ic{margin-top:2px}
+.bn>div{min-width:0}
+
+/* tables; .rs turns rows into cards on the phone */
+.tw{border:1px solid var(--line);border-radius:10px;overflow-x:auto;background:var(--surface)}
+table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+.t th{font-size:12px;font-weight:600;color:var(--text-dim);text-align:left;padding:8px 10px;background:var(--surface-2);border-bottom:1px solid var(--line);white-space:nowrap}
+.t td{padding:8px 10px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.t tr:last-child td{border-bottom:0}
+.t .n{text-align:right}
+.t tr.need td{background:color-mix(in srgb,var(--warn-ink) 6%,var(--surface))}
+.t tr.sel td{background:var(--t-info)}
+.t tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--info)}
+.t tr.grp td{background:var(--bg);font-weight:600;font-size:12px;color:var(--text-dim);padding:6px 10px}
+.t td small{display:block;font-size:12px;color:var(--text-dim)}
+.t td .nw{white-space:nowrap}
+.t td b.nm{font-weight:600}
+.t tr.fade td{opacity:.55}
+
+/* bars: spend against the day budget, a run against the per-run tripwire */
+.bar{position:relative;height:6px;border-radius:3px;background:var(--bar-bg);width:100%;min-width:60px}
+.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--info)}
+.bar i.ok{background:var(--ok)}.bar i.wn{background:var(--warn-ink)}.bar i.bd{background:var(--bad-ink)}
+.bar u{position:absolute;top:0;bottom:0;border-radius:0 3px 3px 0;background:repeating-linear-gradient(90deg,var(--ctl-bd) 0 3px,transparent 3px 6px);opacity:.7}
+.bar s{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--text);border-radius:1px}
+.bar.big{height:10px;border-radius:5px}.bar.big i{border-radius:5px}
+.lg{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--text-dim)}
+.lg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+/* the side sheet (accounts-a.html's, wider: a schedule carries a history table) */
+.dsheet{width:680px;max-width:100%;background:var(--surface);border-left:1px solid var(--line);box-shadow:var(--sh);padding:18px 22px 26px;display:flex;flex-direction:column;gap:14px;min-width:0;position:relative}
+.dsheet.w6{width:600px}
+.shh{display:flex;align-items:flex-start;gap:10px}
+.shh .tt{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.shh .tt .cr{font-size:12px;color:var(--text-dim)}
+.shh .tt h4{margin:0;font-size:19px;font-weight:650;line-height:1.25}
+.shh .tt .meta{display:flex;gap:6px 10px;flex-wrap:wrap;align-items:center;font-size:12.5px;color:var(--text-dim)}
+.shh .x{flex:none;width:32px;padding:0;justify-content:center}
+.shs{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.shs>h5{margin:0;font-size:14px;font-weight:600;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.shs>h5 small{font-size:12px;font-weight:400;color:var(--text-dim)}
+.shs>p{margin:0;font-size:13.5px}
+.shs .t{font-size:12.5px}
+.fires{display:flex;gap:6px;flex-wrap:wrap}
+.fires span{font-size:12.5px;padding:3px 9px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);white-space:nowrap}
+.fires span:first-child{border-color:var(--l-info);background:var(--t-info);color:var(--info-ink);font-weight:600}
+.solo{display:flex;flex-direction:column}
+.scroller.solo{width:max-content;max-width:100%}
+.solo .dsheet{border:1px solid var(--line);border-radius:12px;box-shadow:none}
+.foot{display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--line);padding-top:12px}
+.foot .grow{flex:1}
+.quote{margin:0;font-size:13.5px;padding:8px 12px;border-left:3px solid var(--line);background:var(--surface-2);border-radius:0 8px 8px 0}
+.files{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px;font-size:13px}
+.files li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.who0{display:flex;gap:10px;align-items:center;font-size:13.5px}
+
+/* the stepped sheet (A3) */
+.wz{display:flex;gap:6px;flex-wrap:wrap}
+.wz span{display:inline-flex;gap:6px;align-items:center;font-size:12.5px;color:var(--text-dim);padding:3px 10px 3px 4px;border-radius:99px;border:1px solid var(--line)}
+.wz span i{width:20px;height:20px;border-radius:50%;background:var(--surface-2);font:600 12px/20px var(--font);text-align:center;font-style:normal}
+.wz span.d i{background:var(--ok);color:var(--surface)}
+.wz span.e i{background:var(--bad-ink);color:var(--surface)}
+.wz span.on{border-color:var(--info);color:var(--info-ink);font-weight:600}
+.wz span.on i{background:var(--info);color:var(--ctl-onac)}
+.opt{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;font-size:13.5px;background:var(--surface);min-width:0}
+.opt.on{border-color:var(--info);background:var(--t-info)}
+.opt.x{opacity:.6}
+.opt .rd{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--ctl-bd);flex:none;margin-top:2px}
+.opt.on .rd{border:5px solid var(--info)}
+.opt>span:last-child{min-width:0}
+.opt b{display:block;font-size:13.5px}
+.opt small{font-size:12.5px;color:var(--text-dim);display:block}
+.tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.chk{display:inline-flex;align-items:center;gap:8px;font-size:13.5px}
+.chk i{width:16px;height:16px;border-radius:4px;border:1.5px solid var(--ctl-bd);flex:none;display:inline-flex;align-items:center;justify-content:center}
+.chk i.y{background:var(--info);border-color:var(--info);color:var(--ctl-onac)}
+.chk i .ic{width:11px;height:11px;stroke-width:3}
+
+/* empty */
+.empty{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:20px 20px}
+.empty b{font-size:15px}
+.empty p{margin:0;font-size:13.5px;color:var(--text-dim)}
+
+/* ---------- phone ---------- */
+.ph{width:390px;max-width:100%;border:1px solid var(--line);border-radius:28px;overflow:hidden;background:var(--bg);position:relative}
+.phd{height:52px;background:#0b3a7a;color:#eef4fa;display:flex;align-items:center;gap:10px;padding:0 14px}
+.phd b{font-size:15px;font-weight:650;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.phd .wsc{font-size:12px;padding:3px 8px;border-radius:99px;background:rgba(124,200,248,.18);color:#cfe9fb;border:1px solid rgba(124,200,248,.45);white-space:nowrap}
+.pb{padding:14px;display:flex;flex-direction:column;gap:12px}
+.ph .ct{padding:0;gap:12px}
+.ph .hd .h{font-size:20px}
+.ph .g2,.ph .g4,.ph .tiles{grid-template-columns:minmax(0,1fr)}
+.ph .lead{padding:12px 14px}
+.ph .lead .lt{min-width:0}
+.ph .lead .acts{width:100%}
+.ph .cd{padding:12px}
+.ph .tw{border:0;background:none;overflow:visible}
+.ph .rs thead{display:none}
+.ph .rs,.ph .rs tbody,.ph .rs tr,.ph .rs td{display:block;width:100%}
+.ph .rs tr{border:1px solid var(--line);border-radius:10px;background:var(--surface);margin-bottom:8px;padding:6px 0}
+.ph .rs tr.need{border-color:color-mix(in srgb,var(--warn-ink) 45%,var(--line))}
+.ph .rs tr.need td{background:none}
+.ph .rs tr.grp{border:0;background:none;padding:0;margin:4px 0 6px}
+.ph .rs tr.grp td{padding:0 2px;background:none;justify-content:flex-start}
+.ph .rs td{display:flex;justify-content:flex-end;gap:4px 12px;border:0;padding:4px 12px;text-align:right;align-items:flex-start;flex-wrap:wrap}
+.ph .rs td>*{text-align:right}
+.ph .rs td::before{content:attr(data-l);color:var(--text-dim);font-size:12px;text-align:left;flex:none;margin-right:auto}
+.ph .rs td:first-child{font-weight:600;justify-content:flex-start;text-align:left}
+.ph .rs td:first-child>*{text-align:left}
+.ph .rs td:first-child::before{display:none}
+.ph .rs td:empty{display:none}
+.ph .rs td small{text-align:right;flex-basis:100%}
+.ph .rs td:first-child small{text-align:left}
+.ph .rs td .bar{flex-basis:100%}
+.ph .hd:has(.acts) .tl{flex-basis:100%}
+.ph .sg{flex-wrap:wrap}
+.ph .kv{grid-template-columns:1fr;gap:1px}
+.ph .kv dd{margin-bottom:6px}
+.ph .dsheet{width:100%;border:0;box-shadow:none;padding:14px;gap:12px}
+.ph .shh .tt h4{font-size:18px}
+.ph .foot{position:sticky;bottom:0}
+.back{font-size:13.5px;color:var(--info);font-weight:600;display:inline-flex;gap:4px;align-items:center}
+.hide-ph{}
+.ph .hide-ph{display:none}
+
+@media (max-width:600px){
+  .doc{padding:20px 0 60px}
+  .doc>:not(.frame){margin-left:12px;margin-right:12px}
+  .frame{padding:12px 0 16px;border-radius:0;border-left:0;border-right:0}
+  .frame>.flabel,.frame>p,.frame>.dt,.sub>.sl,.sub figcaption{margin-left:12px;margin-right:12px}
+  .sub>.scroller{margin:0 12px;max-width:calc(100% - 24px)}
+  .ph{border-radius:0;border-left:0;border-right:0}
+  .g2.fail2{grid-template-columns:minmax(0,1fr)}
+  .solo .revs{min-width:0}.solo .revs span{white-space:normal;border-radius:10px}
+  .dt table.doct{min-width:0}.dt thead{display:none}.dt tr,.dt td{display:block}.dt table.doct td{border-bottom:0;padding:2px 12px}.dt table.doct td:first-child{font-weight:600;padding-top:10px}.dt table.doct td:last-child{padding-bottom:10px;border-bottom:1px solid var(--line)}.dt table.doct tr:last-child td:last-child{border-bottom:0}
+  .dt table.doct td:nth-child(n+2)::before{display:block;font-size:13px;font-weight:600;color:var(--text-dim);margin-top:6px}.dt table.doct td:nth-child(2)::before{content:"What it is"}.dt table.doct td:nth-child(3)::before{content:"Why this proposal needs it"}.dt table.doct td:nth-child(4)::before{content:"Frames"}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---------- proposal D: the plan as a reviewed document with a thread ---------- */
+.inbox{display:grid;grid-template-columns:minmax(0,470px) minmax(0,1fr);gap:14px;align-items:start}
+.thl{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
+.thl .grp{padding:7px 14px;font-size:12px;font-weight:600;color:var(--text-dim);background:var(--bg);border-bottom:1px solid var(--line-soft)}
+.th{display:flex;flex-direction:column;gap:4px;padding:10px 14px;border-bottom:1px solid var(--line-soft);min-width:0}
+.th:last-child{border-bottom:0}
+.th .r1{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.th .r1 b{font-size:13.5px;font-weight:600;flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
+.th .r2{display:flex;gap:6px 10px;flex-wrap:wrap;align-items:center;font-size:12.5px;color:var(--text-dim)}
+.th .last{font-size:12.5px;color:var(--text-dim);display:flex;gap:6px;align-items:flex-start}
+.th .last .ic{width:14px;height:14px;margin-top:2px}
+.th.need{background:color-mix(in srgb,var(--warn-ink) 6%,var(--surface))}
+.th.sel{background:var(--t-info);box-shadow:inset 3px 0 0 var(--info)}
+.th.fade{opacity:.62}
+.srcchip{font-size:12px;padding:1px 8px;border-radius:6px;border:1px solid var(--line);color:var(--text-dim);white-space:nowrap}
+.revbar{display:flex;gap:8px 14px;align-items:center;flex-wrap:wrap;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:13px}
+.revs{display:inline-flex;gap:4px;flex-wrap:wrap}
+.revs span{font:500 12.5px var(--mono);padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--text-dim);white-space:nowrap}
+.revs span.on{border-color:var(--info);background:var(--t-info);color:var(--info-ink);font-weight:600}
+.revs span.new{border-color:color-mix(in srgb,var(--warn-ink) 50%,var(--line));color:var(--warn-ink);background:var(--t-warn)}
+.revs span.x{text-decoration:line-through}
+.pdoc{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:0 18px;align-items:start}
+.pdoc>.row{display:contents}
+.blk{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin-bottom:12px;min-width:0}
+.blk h5{margin:0 0 6px;font-size:14.5px;font-weight:600;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.blk h5 small{font-weight:400;font-size:12.5px;color:var(--text-dim)}
+.blk p{margin:0 0 6px;font-size:13.5px}
+.blk ol,.blk ul{margin:4px 0 0;padding-left:20px;font-size:13.5px}
+.blk li{margin:3px 0}
+.blk.hl{border-color:var(--info);box-shadow:0 0 0 1px var(--info)}
+.mg{display:flex;flex-direction:column;gap:8px;margin-bottom:12px;min-width:0}
+.why{font-size:12.5px;padding:8px 10px;border-left:3px solid var(--l-info);background:var(--t-info);border-radius:0 8px 8px 0;color:var(--text)}
+.why b{display:block;font-size:12px;color:var(--info-ink);font-weight:600;margin-bottom:2px}
+.cm{display:flex;gap:8px;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface);min-width:0}
+.cm .av{width:26px;height:26px;font-size:12px;line-height:26px}
+.cm .av.pl{background:linear-gradient(135deg,#7139db,#0b3a7a)}
+.cm>div{min-width:0;flex:1}
+.cm .who{font-size:12px;color:var(--text-dim);display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}
+.cm .who b{color:var(--text);font-size:12.5px}
+.cm p{margin:3px 0 0;font-size:13px}
+.cm.pl{border-color:color-mix(in srgb,var(--paused) 35%,var(--line))}
+.cm.res{opacity:.7}
+.box{min-height:56px;border:1px solid var(--ctl-bd);border-radius:8px;background:var(--surface);padding:7px 10px;font-size:13px;color:var(--text-faint)}
+.box.v{color:var(--text)}
+.diff{font:12.5px/1.6 var(--mono);border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface)}
+.diff div{padding:1px 10px;overflow-wrap:anywhere}
+.diff .a{background:var(--t-ok);color:var(--ok-ink)}
+.diff .d{background:var(--t-bad);color:var(--bad-ink);text-decoration:line-through}
+.diff .h{background:var(--surface-2);color:var(--text-dim)}
+.risk{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:6px}
+.risk span{overflow-wrap:anywhere}
+.risk span{display:flex;gap:6px;align-items:center;font-size:12.5px;padding:5px 9px;border:1px solid var(--line);border-radius:8px}
+.risk span .ic{width:14px;height:14px;color:var(--ok-ink)}
+.risk span.hit{border-color:color-mix(in srgb,var(--bad-ink) 45%,var(--line));background:var(--t-bad);color:var(--bad-ink)}
+.risk span.hit .ic{color:var(--bad-ink)}
+.fold{border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:13px;display:flex;gap:6px;align-items:center;color:var(--text-dim);margin-top:6px}
+.fold .ic{width:14px;height:14px}
+.stp{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:6px}
+.stp.gone{border-style:dashed;opacity:.7}
+.stp.gone .sh b{text-decoration:line-through}
+.stp .sh{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.stp .sh b{font-size:13.5px}
+.decide{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.decide .grow{flex:1;min-width:180px;font-size:12.5px;color:var(--text-dim)}
+.trace{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.trace li{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:4px 10px;padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px;align-items:start}
+.trace li:last-child{border-bottom:0}
+.trace .dot{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--surface-2);color:var(--text-dim)}
+.trace .dot .ic{width:13px;height:13px}
+.trace .dot.ok{background:var(--t-ok);color:var(--ok-ink)}.trace .dot.bd{background:var(--t-bad);color:var(--bad-ink)}.trace .dot.in{background:var(--t-info);color:var(--info-ink)}.trace .dot.wn{background:var(--t-warn);color:var(--warn-ink)}
+.trace small{display:block;font-size:12.5px;color:var(--text-dim)}
+.trace .tm{font:12px var(--mono);color:var(--text-dim);white-space:nowrap}
+.ph .inbox,.ph .pdoc{grid-template-columns:minmax(0,1fr)}
+.ph .pdoc>.row{display:contents}
+.ph .decide{position:sticky;bottom:0;border-radius:0;border-left:0;border-right:0;box-shadow:0 -6px 18px rgba(0,0,0,.12)}
+.ph .trace li{grid-template-columns:24px minmax(0,1fr)}
+.ph .trace .tm{grid-column:2}
+.ph .th .r1 b{flex-basis:100%}
+.acts>.sg{flex:0 1 auto;max-width:100%}
+
+/* ---------- proposal C: diagrams in the conversation ---------- */
+.ask{margin:16px 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:12px}
+.ask blockquote{margin:0;background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--info);border-radius:0 12px 12px 0;padding:10px 14px;font-size:14px}
+.ask blockquote b{display:block;font-size:12.5px;color:var(--info-ink);margin-bottom:4px}
+/* the pinned strip: one diagram shown at a time, the rest named on tabs, so the strip stays one card tall */
+.pins{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 14px 12px;min-width:0}
+.pins .ph1{display:flex;gap:8px 12px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.pins .ph1 b{font-size:14.5px;font-weight:600}
+.pins .ph1 .r{margin-left:auto}
+.ptabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.ptabs span{font-size:12.5px;padding:4px 10px;border-radius:8px;border:1px solid var(--line);color:var(--text-dim);display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
+.ptabs span.on{border-color:var(--info);background:var(--t-info);color:var(--info-ink);font-weight:600}
+.ptabs span.nw{border-color:color-mix(in srgb,var(--ok) 50%,var(--line))}
+.ptabs span i{font-style:normal;font:500 12px var(--mono)}
+.dgw{overflow-x:auto;border:1px solid var(--line-soft);border-radius:10px;background:var(--bg);padding:8px}
+.dgw svg{display:block}
+.dgc{font-size:12.5px;color:var(--text-dim);margin-top:6px;display:flex;gap:6px 12px;flex-wrap:wrap;align-items:center}
+.dgc .grow{flex:1;min-width:160px}
+/* diagram ink: every colour is a token, so a diagram reads in both themes */
+.dg text{font-family:var(--font);font-size:12.5px;fill:var(--text)}
+.dg text.sm{font-size:12px;fill:var(--text-dim)}
+.dg text.mo{font-family:var(--mono);font-size:12px}
+.dg text.b{font-weight:600}
+.dg .nd{fill:var(--surface);stroke:var(--ctl-bd);stroke-width:1.3}
+.dg .q{fill:var(--surface-2);stroke:var(--ctl-bd);stroke-width:1.3}
+.dg .nw{fill:var(--t-info);stroke:var(--info);stroke-width:2}
+.dg .ok{fill:var(--t-ok);stroke:var(--ok-ink);stroke-width:1.3}
+.dg .bd{fill:var(--t-bad);stroke:var(--bad-ink);stroke-width:1.3}
+.dg .wn{fill:var(--t-warn);stroke:var(--warn-ink);stroke-width:1.3}
+.dg .ln{stroke:var(--text-dim);stroke-width:1.4;fill:none}
+.dg .ln.y{stroke:var(--bad-ink)}
+.dg .ln.d{stroke-dasharray:4 4}
+.dg .ll{stroke:var(--line);stroke-width:1.2;stroke-dasharray:3 4}
+.dg .ah{fill:var(--text-dim)}.dg .ah.y{fill:var(--bad-ink)}
+.dg .zone{fill:color-mix(in srgb,var(--warn-ink) 9%,transparent);stroke:none}
+/* a diagram as a thread or chat message */
+.cm .att{margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--surface)}
+.cm .att .ah1{display:flex;gap:6px 10px;flex-wrap:wrap;align-items:baseline;font-size:12.5px;margin-bottom:6px}
+.cm .att .ah1 b{font-size:13px}
+.cm .acts{margin-top:8px}
+.anc{font-size:12px;padding:1px 7px;border-radius:6px;background:var(--surface-2);color:var(--text-dim);white-space:nowrap;border:1px solid var(--line-soft)}
+.cm.me{border-color:var(--l-info)}
+.cm.wk{border-style:dashed;border-color:color-mix(in srgb,var(--paused) 50%,var(--line))}
+.cm .av.ag{background:linear-gradient(135deg,#1a7f37,#0b3a7a)}
+.wkl{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--text-dim);flex-wrap:wrap;margin-top:4px}
+.wkl{flex-wrap:nowrap}.wkl>span:not(.dots):not(.b){flex:0 1 auto;min-width:0}.wkl>.dots,.wkl>.b{flex:none}
+.dots{display:inline-flex;gap:3px}.dots i{width:6px;height:6px;border-radius:50%;background:var(--paused);opacity:.45}.dots i:nth-child(2){opacity:.7}.dots i:nth-child(3){opacity:1}
+.skel{margin-top:8px;border:1px dashed var(--line);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:6px}
+.skel span{display:block;height:10px;border-radius:5px;background:var(--bar-bg)}
+.skel p{margin:0;font-size:12.5px;color:var(--text-dim)}
+.compose{display:flex;flex-direction:column;gap:6px}
+.compose .acts{justify-content:flex-end}
+/* the decision page with the chat open: document | chat */
+.withchat{display:grid;grid-template-columns:minmax(0,1fr) 440px;gap:16px;align-items:start}
+.withchat .pdoc{grid-template-columns:minmax(0,1fr)}
+.chat{background:var(--surface);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;min-width:0;position:sticky;top:0}
+.chat .chh{display:flex;gap:8px;align-items:flex-start;padding:10px 14px;border-bottom:1px solid var(--line)}
+.chat .chh .tt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.chat .chh b{font-size:14.5px}
+.chat .chh small{font-size:12px;color:var(--text-dim)}
+.chat .cbody{padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.chat .cfoot{border-top:1px solid var(--line);padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.meter{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text-dim)}
+.meter .bar{flex:1}
+.chatbtn{display:inline-flex}
+.inl{display:flex;flex-direction:column;gap:8px;margin:-4px 0 12px}
+/* the large view */
+.lbx{grid-column:3;grid-row:1;align-self:start;justify-self:center;margin-top:24px;width:calc(100% - 48px);background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.3);display:flex;flex-direction:column;min-width:0}
+.lbx .lh{display:flex;gap:10px;align-items:flex-start;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.lbx .lh .tt{flex:1;min-width:260px;display:flex;flex-direction:column;gap:2px}
+.lbx .lh .tt b{font-size:17px}
+.lbx .lb{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+.lbx .dgw{max-height:none}
+.src{font:12.5px/1.6 var(--mono);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 0;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.src span{display:block;padding:0 12px 0 44px;text-indent:-32px}
+.src span.er{background:var(--t-bad);color:var(--bad-ink)}
+.alt{font-size:13px;margin:0;padding-left:20px}
+.alt li{margin:2px 0}
+.sw{display:inline-flex;width:38px;height:22px;border-radius:99px;background:var(--bar-bg);border:1px solid var(--ctl-bd);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--surface);border:1px solid var(--ctl-bd)}
+.sw.on{background:var(--info);border-color:var(--info)}
+.sw.on::after{left:18px;border-color:var(--info)}
+.setrow{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line-soft)}
+.setrow:first-of-type{border-top:0}
+.setrow>div{flex:1;min-width:0;font-size:13.5px}
+.setrow>div b{display:block}
+.setrow>div small{display:block;font-size:12.5px;color:var(--text-dim)}
+.prec{margin:0;padding-left:20px;font-size:13px}
+.ph .withchat{grid-template-columns:minmax(0,1fr)}
+.ph .chat{position:static;border-radius:16px 16px 0 0}
+.ph .pins{padding:10px}
+.ph .lbx{margin:0;width:100%}
+.sheet-grab{width:40px;height:4px;border-radius:2px;background:var(--line);margin:6px auto 0}
+.ph .chat .cbody{padding:8px}.ph .chat .cm{padding:6px}.ph .chat .cm .av{display:none}.ph .att{padding:4px}.ph .dgw{padding:4px}
+.ph .mg .cm .av{display:none}
+.ph .pb{padding:10px}.ph .pins{padding:8px}.ph .pins .dgw,.ph .chat .dgw{padding:0;border:0}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient>
+<symbol id="hive" viewBox="0 0 44 44"><g fill="url(#g-hive-b)"><path d="M22 4l6.5 3.75v7.5L22 19l-6.5-3.75v-7.5z"/><path d="M11 22.5l6.5 3.75v7.5L11 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M33 22.5l6.5 3.75v7.5L33 37.5l-6.5-3.75v-7.5z" opacity=".85"/><path d="M22 22.5l5 2.9v5.8l-5 2.9-5-2.9v-5.8z" opacity=".7"/><path d="M11 6.5l4.5 2.6v5.2L11 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M33 6.5l4.5 2.6v5.2L33 16.9l-4.5-2.6V9.1z" opacity=".55"/><path d="M22 36l3.5 2v4L22 44l-3.5-2v-4z" opacity=".45"/></g></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-work" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1"/></symbol>
+<symbol id="i-automate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-capacity" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol>
+<symbol id="i-config" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+<symbol id="i-admin" viewBox="0 0 24 24"><path d="M12 3.5 19.5 6v5.5c0 4.5-3.2 8-7.5 9-4.3-1-7.5-4.5-7.5-9V6Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol>
+<symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></symbol>
+<symbol id="i-repo" viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5Z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0Z"/><path d="M12 17v4"/></symbol>
+<symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M18.5 19.5a5 5 0 0 0-2.5-4.3"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 21 19.5H3Z"/><path d="M12 10v4.5M12 17v.1"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.1"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+<symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol>
+<symbol id="i-sys" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+<symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 8.5 4.5 9.5 6-.5.8-1.5 2.1-2.9 3.3M6.6 6.6C4.6 7.9 3.2 9.8 2.5 12c1 1.5 4.5 6 9.5 6a9.6 9.6 0 0 0 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5v14l11-7Z"/></symbol>
+<symbol id="i-env" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 9h17M7 7h.1M9.5 7h.1"/></symbol>
+<symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></symbol>
+<symbol id="i-building" viewBox="0 0 24 24"><path d="M4 20V6.5L12 3.5l8 3V20"/><path d="M9 20v-4.5h6V20M8.5 9.5h1M14.5 9.5h1M8.5 12.5h1M14.5 12.5h1"/></symbol>
+<symbol id="i-counts" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol>
+<symbol id="i-sizes" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M9 4v16M4 9h5M4 14h5"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M8.5 3v4M15.5 3v4"/></symbol>
+<symbol id="i-qa" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="m9 10.5 2 2 4-4M9 20h6"/></symbol>
+</defs></svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5.5v13M15 5.5v13"/></symbol>
+<symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16Z"/><path d="m13.5 6.5 4 4"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-back" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/></symbol>
+</defs></svg>
+<div class="topbar"><div class="in">
+  <b>Plan diagrams proposal C · Diagrams in the conversation</b>
+  <span class="sp0"></span>
+  <span class="sm12 dim">Theme for the page and every frame</span>
+  <div class="tseg" role="group" aria-label="Theme">
+    <button type="button" data-theme-set="light"><svg class="ic"><use href="#i-sun"/></svg>Light</button><button type="button" data-theme-set="dark"><svg class="ic"><use href="#i-moon"/></svg>Dark</button><button type="button" data-theme-set="system" aria-pressed="true"><svg class="ic"><use href="#i-sys"/></svg>System</button>
+  </div>
+</div></div>
+
+<main class="doc">
+<p class="kick">PLANS-DIAG-C · part of #2585 · drawn 2026-10-28 · not picked</p>
+<h1>Plan diagrams, proposal C: Diagrams in the conversation</h1>
+<p class="lede">One of three competing proposals for diagrams in plans, drawn on proposal D's decision page as merged (<code>plans-d.html</code>, PR 2587, BGD's pick on 2026-10-28 for the plan and its conversation). This one makes a diagram a <b>message</b>: the planner's first message in the thread carries the plan's diagrams, every diagram asked for later is a message anchored to what it explains (in the thread) or a reply in the chat, and the diagrams added to the plan are <b>pinned</b> in a strip above the document, inside the plan's digest.</p>
+
+<div class="ask">
+  <blockquote><b>BGD, 2026-10-28, first ask</b>“generate flow diagrams and schematics to be included in plans for the majority of coding tasks, product design or research, issue fixing, error and failure fixes and more but also not everywhere where it doesn't make sense, like fixing a line in terraform … by default on but toggleable from the automation settings”</blockquote>
+  <blockquote><b>BGD, 2026-10-28, second ask</b>“the interactive conversational part of the plan review … to also be able to provide on demand schematics and diagrams during the plan review process”</blockquote>
+  <blockquote><b>BGD, 2026-10-28, third addition</b>on-demand diagrams must work “even if the plan reviewer / approver asks this in chat with the agent that takes part in the plan review conversation, interactively in a chat section on the plan review page”</blockquote>
+</div>
+
+<div class="idea">
+  <div><h4>Idea</h4><p>A diagram belongs to the conversation that produced it. The planner opens the thread with its plan and the diagrams it judged useful (or one line saying why it drew none). A reviewer asks for another in the thread, anchored to a step, a requirement or the whole plan, and the planner answers with a diagram message; or asks the <b>review agent</b> in the chat, which answers in seconds. Either answer can be <b>pinned to the plan</b>: pinning makes a new revision whose digest covers the diagram set, so Approve always names the diagrams it approves, and the old revision keeps its own set. The chat is a column the reviewer opens beside the document; the thread stays in D's margin.</p></div>
+  <div><h4>Pros</h4><ul>
+    <li>Every diagram says who drew it, when, from which question and at what cost: its message is its provenance.</li>
+    <li>Asking is the same gesture in the thread and the chat; the answer lands where the question was, next to what it explains.</li>
+    <li>The strip shows only what the plan carries, so “what am I approving” stays one revision, diagrams included.</li>
+    <li>No diagram is drawn twice: in the strip it is drawn, in its message it is named with a link to the strip.</li></ul></div>
+  <div><h4>Real costs</h4><ul>
+    <li>Every on-demand diagram is an agent turn: a planner answer in the thread (about $0.40 here, example) or a chat reply. Both are shown with their cost while they run, and the chat has a cap.</li>
+    <li>Pinning makes a revision, so a plan that gathers diagrams gathers revisions; a revision that only adds a diagram says so on its chip.</li>
+    <li>Two conversations on one page (the anchored thread to the planner, the chat to the review agent) need a clear line between them: only the thread can change the steps; the chat can only add a diagram.</li>
+    <li>Needs a diagram field in the plan, a renderer endpoint, a chat endpoint and three switches (listed at the end).</li></ul></div>
+</div>
+
+<div class="rules">
+  <b>What every frame obeys</b>
+  <ul>
+    <li>PICKS.md: nothing below 12px, no all-caps, a light / dark / system toggle (top of the page and every frame's panel foot), an unknown figure is a dash with its reason, and state words are lower-case words.</li>
+    <li>Proposal D's tokens, decision page, revision bar, margin, thread and decision bar, copied whole. Only the diagrams, the chat and the switches are this proposal's.</li>
+    <li>The canonical plan is the real <code>run_fba2dc8f6ec9494dae2f</code> (issue #2583, from the failure-review schedule), cut where D cut it. It carries <b>no diagrams today</b>: every diagram, revision after 1, chat message and cost below is an <b>example</b> of what the planner and the review agent would produce, and says so. The diagrams are inline SVG standing for what the renderer draws from each diagram's source (D4 shows one source). Read at <b>Wednesday 2026-10-28 03:00Z</b>; the viewer is Operator, the platform owner.</li>
+  </ul>
+</div>
+
+<ul class="toc">
+  <li><a href="#D1">D1 A plan with its diagrams</a></li><li><a href="#D2">D2 A plan with none</a></li><li><a href="#D3">D3 On demand, in the thread</a></li><li><a href="#D4">D4 One diagram, large</a></li><li><a href="#D5">D5 The switch</a></li><li><a href="#D6">D6 Honest states</a></li><li><a href="#D7">D7 Phone at 390</a></li><li><a href="#D8">D8 The chat</a></li><li><a href="#fields">New fields this proposal needs</a></li>
+</ul>
+
+<section class="frame" id="D1" data-frame="D1">
+  <div class="flabel"><span class="fid">D1</span><h2>A plan with its diagrams</h2></div>
+  <p>D's decision page for run_fba2dc8f6ec9494dae2f, with one thing added above the document: the strip of diagrams pinned to this revision. The planner's first message, at the head of the margin, is where they came from: it names each one and says why it drew it. The chat is closed; its button sits in the page head.</p>
+  <figure class="sub" id="D1a" data-frame="D1a"><div class="sl"><span class="sid">D1a</span><b>Revision 1 with 2 pinned diagrams, the overview flow shown</b><span class="dim">desktop 1440 · diagrams are examples</span></div><div class="scroller" data-f="d1a"></div>
+  <figcaption><b>The overview flow</b> is cifix.stamp's refusal checks in the order the summary gives them; the fifth, a plain continuation (a <code>continues_task</code> workflow with no writer mark of its own, or a <code>publish_to_pr</code> workflow naming the same branch task), is the one this plan adds and is drawn in the accent. <b>The strip</b> shows one diagram at a time so it stays one card tall; the others are named on its tabs with their anchor. A strip tab and the planner's message name the same two diagrams, and each is drawn once.</figcaption></figure>
+  <figure class="sub" id="D1b" data-frame="D1b"><div class="sl"><span class="sid">D1b</span><b>The strip on its second tab: step 1's diagram</b><span class="dim">the strip alone · example</span></div><div class="scroller solo" data-f="d1b"></div>
+  <figcaption>A step diagram is anchored to its step: the step's block in the document carries a “diagram 2” link back to it, and the strip tab names the step.</figcaption></figure>
+</section>
+
+<section class="frame" id="D2" data-frame="D2">
+  <div class="flabel"><span class="fid">D2</span><h2>A plan where the planner drew none, and says why</h2></div>
+  <p>The switch is on, but a diagram is the planner's call per plan: a one-line value change gets none. The strip is replaced by the planner's reason, in one line, and the reviewer can still ask for one.</p>
+  <figure class="sub" id="D2a" data-frame="D2a"><div class="sl"><span class="sid">D2a</span><b>A one-line change to terraform/environments/dev/dev.tfvars</b><span class="dim">desktop 1440 · example plan</span></div><div class="scroller" data-f="d2a"></div>
+  <figcaption>The reason is the planner's own, carried on the plan (<code>diagrams_reason</code>, new) and inside its digest, so “no diagram” is a decision on the record, not a missing field. Asking for one costs a planner turn and is offered, not hidden.</figcaption></figure>
+</section>
+
+<section class="frame" id="D3" data-frame="D3">
+  <div class="flabel"><span class="fid">D3</span><h2>On demand, in the thread: ask, wait, read, add to the plan</h2></div>
+  <p>The reviewer asks in the step's thread: <i>show the failure path when the continuation finishes mid-check</i>. The planner draws (its cost so far on the waiting message), answers with a diagram message anchored to the step, and Pin to the plan makes revision 2. Revision 1 keeps its 2 diagrams. Every message, cost and digest after revision 1 is an example.</p>
+  <div class="pair">
+    <figure class="sub" id="D3a" data-frame="D3a"><div class="sl"><span class="sid">D3a</span><b>Asked, and the planner drawing</b><span class="dim">the step's margin · example</span></div><div class="scroller solo" data-f="d3a"></div>
+    <figcaption><b>Ask for a diagram</b> sits beside Comment in every margin composer. The waiting message shows elapsed time and cost so far, read from the planner's turn; Stop ends the turn and keeps what it cost.</figcaption></figure>
+    <figure class="sub" id="D3b" data-frame="D3b"><div class="sl"><span class="sid">D3b</span><b>The answer, before it is added</b><span class="dim">the step's margin · example</span></div><div class="scroller solo" data-f="d3b"></div>
+    <figcaption>The answer is a message with its diagram drawn in it. Until it is pinned it is part of the conversation, not of the plan: Approve would not include it.</figcaption></figure>
+  </div>
+  <figure class="sub" id="D3c" data-frame="D3c"><div class="sl"><span class="sid">D3c</span><b>Pinned: revision 2, with 3 diagrams</b><span class="dim">desktop 1440 · example</span></div><div class="scroller" data-f="d3c"></div>
+  <figcaption><b>Pin to the plan</b> makes revision 2: the same steps, requirements and overlaps, and one more diagram, so a new digest. No planner run is needed, so it costs nothing and its author is the person who pinned. The revision chip says “diagrams only”, the diff names the one entry, and revision 1, still readable, keeps its 2 diagrams. In the margin the message now names the diagram and points at the strip, where it is drawn.</figcaption></figure>
+</section>
+
+<section class="frame" id="D4" data-frame="D4">
+  <div class="flabel"><span class="fid">D4</span><h2>One diagram opened large</h2></div>
+  <p>Any diagram (a strip tab, a thread message, a chat reply) opens over the page: zoom and pan, full screen, its text alternative, and its source, which is what the plan stores and what the digest covers.</p>
+  <figure class="sub" id="D4a" data-frame="D4a"><div class="sl"><span class="sid">D4a</span><b>The overview flow at 125%, with its text alternative and source</b><span class="dim">desktop 1440 · example source</span></div><div class="scroller" data-f="d4a"></div>
+  <figcaption>The source is Mermaid text. The server renders it to SVG (<code>POST /v1/diagrams:render</code>, new), so the console never runs diagram code from an agent. The text alternative is written by whoever drew the diagram and is required: a screen reader, a phone with a slow link and a failed render all fall back to it.</figcaption></figure>
+</section>
+
+<section class="frame" id="D5" data-frame="D5">
+  <div class="flabel"><span class="fid">D5</span><h2>The switch: a workspace default, per schedule, per issue submission</h2></div>
+  <p>On by default, as BGD asked. The workspace default lives in Config › Workspace Settings; a schedule overrides it on its Gates and approvers card; an issue submitted by hand overrides it on Submit › From a GitHub issue. On means the planner may draw (and decides per plan) and anyone reviewing may ask; off means no diagrams and no way to ask.</p>
+  <figure class="sub" id="D5a" data-frame="D5a"><div class="sl"><span class="sid">D5a</span><b>Config › Workspace Settings: the default, on</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="d5a"></div></figure>
+  <div class="pair">
+    <figure class="sub" id="D5b" data-frame="D5b"><div class="sl"><span class="sid">D5b</span><b>A schedule's Gates and approvers card: off for this one</b><span class="dim">the schedule sheet's card</span></div><div class="scroller solo" data-f="d5b"></div>
+    <figcaption>The card's rows above Diagrams are today's (ScheduleDetail.tsx <code>Gate</code>); Diagrams is new, with three values: the workspace default (and what it is now), on, off.</figcaption></figure>
+    <figure class="sub" id="D5c" data-frame="D5c"><div class="sl"><span class="sid">D5c</span><b>Submit › From a GitHub issue: move 3</b><span class="dim">the submit page's third move</span></div><div class="scroller solo" data-f="d5c"></div>
+    <figcaption>Plan approval and Merge are today's (IssueSubmit.tsx); Diagrams in the plan is new and starts at the workspace default.</figcaption></figure>
+  </div>
+  <div class="pair">
+    <figure class="sub" id="D5d" data-frame="D5d"><div class="sl"><span class="sid">D5d</span><b>What off means on the plan page</b><span class="dim">a plan from Terraform tidy (example)</span></div><div class="scroller solo" data-f="d5d"></div>
+    <figcaption>No strip, no Ask for a diagram in the margin, no Draw in the chat. The line says where the switch is, so nobody hunts for a missing button.</figcaption></figure>
+    <figure class="sub" id="D5e" data-frame="D5e"><div class="sl"><span class="sid">D5e</span><b>Which switch wins</b><span class="dim">this proposal's one override order</span></div><div class="scroller solo" data-f="d5e"></div></figure>
+  </div>
+</section>
+
+<section class="frame" id="D6" data-frame="D6">
+  <div class="flabel"><span class="fid">D6</span><h2>Honest states</h2></div>
+  <div class="pair">
+    <figure class="sub" id="D6a" data-frame="D6a"><div class="sl"><span class="sid">D6a</span><b>A diagram that failed to render</b><span class="dim">example</span></div><div class="scroller solo" data-f="d6a"></div>
+    <figcaption>Never a blank box: the reason the renderer gave, the source with the failing line marked, and the text alternative, which still reads. The plan can still be approved; the diagram is in the digest as source either way.</figcaption></figure>
+    <figure class="sub" id="D6b" data-frame="D6b"><div class="sl"><span class="sid">D6b</span><b>The renderer not served</b><span class="dim">an older server</span></div><div class="scroller solo" data-f="d6b"></div></figure>
+  </div>
+  <figure class="sub" id="D6c" data-frame="D6c"><div class="sl"><span class="sid">D6c</span><b>The switch off for this schedule, and a diagram asked for in the chat</b><span class="dim">example</span></div><div class="scroller solo" data-f="d6c"></div>
+  <figcaption>The review agent still answers, in words, and says which switch keeps it from drawing and who may turn it on. It does not draw anyway, and the chat's Draw is absent rather than disabled.</figcaption></figure>
+</section>
+
+<section class="frame" id="D7" data-frame="D7">
+  <div class="flabel"><span class="fid">D7</span><h2>Phone at 390: the plan, a diagram asked for, the chat</h2></div>
+  <p>On the phone the strip draws each diagram in a tall layout of the same source (the renderer is asked for top-to-bottom at this width), so the page never scrolls sideways. A sequence diagram has no tall layout: in the thread it scrolls inside its own box, and Open large shows it whole. The thread sits under each part, as in D's P7. The chat opens as a sheet over the plan.</p>
+  <div class="pair">
+    <figure class="sub" id="D7a" data-frame="D7a"><div class="sl"><span class="sid">D7a</span><b>D1 on the phone</b><span class="dim">390</span></div><div class="scroller solo" data-f="d7a"></div></figure>
+    <figure class="sub" id="D7b" data-frame="D7b"><div class="sl"><span class="sid">D7b</span><b>D3 on the phone</b><span class="dim">390 · example</span></div><div class="scroller solo" data-f="d7b"></div></figure>
+    <figure class="sub" id="D7c" data-frame="D7c"><div class="sl"><span class="sid">D7c</span><b>The chat on the phone</b><span class="dim">390 · example</span></div><div class="scroller solo" data-f="d7c"></div></figure>
+  </div>
+</section>
+
+<section class="frame" id="D8" data-frame="D8">
+  <div class="flabel"><span class="fid">D8</span><h2>The chat section: words, a diagram, and pinning it</h2></div>
+  <p>The chat is a column on the right of the decision page, opened from the page head; while it is open the margin's reasons and thread fold under each part of the document, as on the phone. The reviewer talks with the <b>review agent</b>, which reads the plan on screen and the repository at the plan's base, writes nothing, and answers in words or with a diagram. It cannot change a step: that is the thread's job. It can offer a diagram for pinning, which makes a revision exactly as in D3. Revision 2 here is D3's; every message and cost is an example.</p>
+  <figure class="sub" id="D8a" data-frame="D8a"><div class="sl"><span class="sid">D8a</span><b>A question answered in words, then “draw the failure path” answered with a diagram</b><span class="dim">desktop 1440 · example</span></div><div class="scroller" data-f="d8a"></div>
+  <figcaption>The chat's head names the agent, its runner and model, and what it may read. The meter under the composer is this conversation's cost against its cap; each reply carries its own. The words answer quotes requirement 1, which is the plan's own text.</figcaption></figure>
+  <div class="pair">
+    <figure class="sub" id="D8b" data-frame="D8b"><div class="sl"><span class="sid">D8b</span><b>The agent at work: typing, then drawing</b><span class="dim">the chat column · example</span></div><div class="scroller solo" data-f="d8b"></div>
+    <figcaption>The reply streams: words appear as they are written; a diagram shows its outline until the renderer answers. Elapsed time and cost so far are on the working message, and the meter moves with them.</figcaption></figure>
+    <figure class="sub" id="D8c" data-frame="D8c"><div class="sl"><span class="sid">D8c</span><b>Pinned from the chat: revision 3, with 4 diagrams</b><span class="dim">the strip and the chat · example</span></div><div class="scroller solo" data-f="d8c"></div>
+    <figcaption>The strip’s line under the diagram says it was drawn by the review agent in the chat and pinned from it; the chat reply now points at the strip. Revision 2 keeps its 3 diagrams.</figcaption></figure>
+  </div>
+</section>
+
+<section class="frame" id="fields">
+  <div class="flabel"><span class="fid">+</span><h2>New fields this proposal needs</h2></div>
+  <p>On top of proposal D's (<code>plan_revisions[]</code>, <code>plan_thread[]</code> and <code>:plan-comment</code>, <code>:plan-revise</code>, <code>rationale</code>, <code>risk_paths</code>, <code>expected_cost_usd</code>, <code>can_decide</code>/<code>deciders</code>), which these frames assume.</p>
+  <div class="dt"><table class="doct"><thead><tr><th>Field</th><th>What it is</th><th>Why this proposal needs it</th><th>Frames</th></tr></thead><tbody>
+    <tr><td><code>diagrams[]</code> on <code>PlanSpec</code></td><td>Each pinned diagram: id, title, kind (flow, sequence, schematic), <code>source</code> (Mermaid text), <code>alt_text</code> (required), anchor (the plan, a step id, a requirement), origin (planner, thread, chat) and the message it came from. Inside the plan digest.</td><td>The strip draws it; Approve names it through the digest; an older revision keeps its own set.</td><td>D1, D3, D4, D7, D8</td></tr>
+    <tr><td><code>diagrams_reason</code> on <code>PlanSpec</code></td><td>The planner's one line when it draws none (“no diagram: a one-line value change”).</td><td>So “no diagram” is a stated decision, not an absent field.</td><td>D2</td></tr>
+    <tr><td><code>diagram</code> on a <code>plan_thread[]</code> message, and <code>POST /v1/runs/{id}:plan-diagram</code></td><td>A thread message may carry a diagram (same shape as one entry of <code>diagrams[]</code>), its anchor, and the planner turn's cost. The endpoint asks the planner for one, anchored, and answers with the turn's id.</td><td>Ask for a diagram in the margin, and the waiting message's cost so far.</td><td>D3, D7</td></tr>
+    <tr><td><code>POST /v1/runs/{id}:plan-pin</code></td><td>Pins a diagram from a message (thread or chat) and makes a revision: the shown digest in, a new digest out, <code>409 plan_changed</code> on a stale digest, author the person, cost nothing.</td><td>Adding a diagram to the plan is a revision, so the approved digest covers it.</td><td>D3, D8</td></tr>
+    <tr><td><code>plan_chat[]</code>, <code>POST /v1/runs/{id}:plan-chat</code> and its stream</td><td>The review chat: messages (words or a diagram), the agent's runner and model, each reply's cost, the conversation's total and its cap, and a stream of the reply while it is written.</td><td>The chat section, its working state and its meter.</td><td>D6, D7, D8</td></tr>
+    <tr><td><code>plan_review_agent</code> settings</td><td>The chat agent's runner profile, model and per-conversation cost cap ($2.00 drawn here, example), and what it may read.</td><td>The chat's head and its meter. PLANS-DESIGN designs the agent itself; this proposal only draws where it sits.</td><td>D8</td></tr>
+    <tr><td><code>POST /v1/diagrams:render</code></td><td>Renders diagram source to SVG on the server (sandboxed), returns the SVG or the renderer's error with its line.</td><td>The console never runs agent-written diagram code; a failure has a reason to show.</td><td>D4, D6</td></tr>
+    <tr><td><code>plan_diagrams</code> in workspace settings</td><td>The workspace default, on or off; on when unset.</td><td>BGD's “by default on”.</td><td>D5</td></tr>
+    <tr><td><code>gate.diagrams</code> on a schedule</td><td><i>default</i>, <i>on</i> or <i>off</i>; default when unset.</td><td>The per-schedule switch on the Gates and approvers card.</td><td>D5, D6</td></tr>
+    <tr><td><code>plan_diagrams</code> on an issue-run submission</td><td>As the schedule's, chosen on Submit › From a GitHub issue; stored on the run.</td><td>The per-submission switch.</td><td>D5</td></tr>
+    <tr><td><code>diagrams_effective</code> on the run read</td><td>On or off, and which switch decided it (workspace, schedule, submission).</td><td>The plan page's off line names the switch that turned it off.</td><td>D5, D6</td></tr>
+  </tbody></table></div>
+  <p>None is in the frozen <code>apps/common/swarm_common/</code>: plans, threads and approvals are swarm-api documents (issueruns.py, approvals.py), and a schedule's gate is a schedule field.</p>
+</section>
+</main>
+<script>
+(function(){
+'use strict';
+const I=(n,c)=>`<svg class="ic ${c||''}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+const B=(t,c,ic,dis)=>`<span class="b ${c||''}" role="button"${dis?' aria-disabled="true"':''}>${ic?I(ic):''}${t}</span>`;
+const C=(t,c,ic)=>`<span class="c ${c||''}">${ic?I(ic):''}${t}</span>`;
+const DASH=(why)=>`<span class="dim">— <small class="sm12" style="display:inline">${why}</small></span>`;
+const SG=(opts,on)=>`<span class="sg">${opts.map((o,i)=>`<span class="${i===on?'on':''}">${o}</span>`).join('')}</span>`;
+const LEAD=(k,t,s,acts,cls)=>`<section class="lead ${cls||''}"><div class="lt"><span class="k">${k}</span><b>${t}</b>${s?`<span>${s}</span>`:''}</div>${acts?`<div class="acts">${acts}</div>`:''}</section>`;
+const BAR=(pct,cls)=>`<div class="bar"><i class="${cls||''}" style="width:${Math.min(pct,100)}%"></i></div>`;
+const strip=s=>s.replace(/<[^>]+>/g,'');
+function T(cols,rows){
+  const h=cols.map(c=>{const n=c.startsWith('#');return `<th class="${n?'n':''}">${n?c.slice(1):c}</th>`}).join('');
+  const b=rows.map(r=>{const cells=Array.isArray(r)?r:r.c;const cls=Array.isArray(r)?'':(r.cls||'');
+    return `<tr class="${cls}">${cells.map((v,i)=>{const c=cols[i]||'';const n=c.startsWith('#');return `<td data-l="${strip(n?c.slice(1):c)}" class="${n?'n':''}">${v}</td>`}).join('')}</tr>`}).join('');
+  return `<div class="tw"><table class="t rs"><thead><tr>${h}</tr></thead><tbody>${b}</tbody></table></div>`;
+}
+
+/* ---------- chrome: the console's spine and a section panel ---------- */
+function spine(on){
+  const it=(lb,ic,o)=>`<span class="si ${o?'on':''}">${I(ic)}${lb}</span>`;
+  return `<nav class="sp" aria-label="Sections"><svg class="hv" width="44" height="44" aria-label="SwarmCloud"><use href="#hive"/></svg>`+
+    `<span class="si go">${I('plus')}Submit</span>`+it('Overview','overview')+it('Work','work')+it('Automate','automate',on==='automate')+it('Capacity','capacity')+
+    it('Config','config',on==='config')+it('Admin','admin')+`<span class="gr"></span>`+it('Help','help')+`<span class="si"><span class="av">OP</span></span></nav>`;
+}
+const PI=(on,ic,lb,badge)=>`<span class="pi ${on?'on':''}">${ic?I(ic):''}<span class="lb">${lb}</span>${badge||''}</span>`;
+function panel(x){
+  const items=x.sec==='config'
+    ?PI(0,'github','GitHub access')+PI(0,'repo','Repositories')+PI(0,'key','Secrets')+PI(0,'plug','MCP servers')+PI(0,'people','People and roles')+PI(1,'gear','Workspace Settings')
+    :PI(0,'cal','Schedules','<span class="sm12 dim">8</span>')+PI(1,'check','Approvals',C('4 waiting','wn'));
+  const note=x.sec==='config'?'How this workspace reaches GitHub, its repositories, secrets, people and settings.':'What runs here by itself, on a schedule, and what is waiting on you to approve.';
+  return `<aside class="pn" aria-label="Pages"><div class="wm"><span style="color:var(--text)">Swarm</span><span>Cloud</span><span class="pill">dev</span></div>`+
+    `<div class="wsb"><span class="tg">PL</span><span class="tt"><b>platform</b><small>you are the platform owner</small></span>${I('chevd')}</div>`+
+    `<div class="sec">${x.sec==='config'?'Config':'Automate'}</div>`+items+`<p class="pnote">${note}</p>`+
+    `<span class="pgrow"></span><div class="pf"><div class="who"><span class="av">OP</span><span><b>Operator</b><small>platform owner</small></span></div>`+
+    `<div class="tseg" role="group" aria-label="Theme"><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="system">System</button></div></div></aside>`;
+}
+function head(hd){
+  return `<div class="hd"><div class="tl"><span class="cr">${hd.cr||'Automate'}</span><span class="h">${hd.h}</span></div>${hd.right?`<div class="acts">${hd.right}</div>`:''}${hd.age?`<span class="age">${hd.age}</span>`:''}</div>`;
+}
+function desk(x,hd,body,over){
+  x=x||{};
+  return `<div class="F app${x.short?' short':''}">${spine(x.sec||'automate')}${panel(x)}<main class="ct">${head(hd)}${body}</main>${over?`<div class="scr" style="grid-column:1/-1"></div>${over}`:''}</div>`;
+}
+function phone(title,body){return `<div class="F ph"><div class="phd">${I('menu')}<svg width="26" height="26" aria-hidden="true"><use href="#hive"/></svg><b>${title}</b><span class="wsc">platform</span></div><div class="pb">${body}</div></div>`}
+const solo=(body,w)=>`<div class="F" style="width:${w||640}px;max-width:100%;background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:12px">${body}</div>`;
+
+/* ---------- the canonical plan, in its own words (D's) ---------- */
+const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='bogdan-alexandrescu/SwarmCloud#2583';
+const DIG='sha256:be162b53886ee2620…';
+const DIG2='sha256:3f9a07c1d2e4… (example)',DIG3='sha256:81c4e2a90b6f… (example)';
+const SUMMARY="cifix.stamp's ci_fix branch refuses a PR-side CI fix while a lane's merge step, a live issue run, a live conflict fix or a live claim on the same failure holds the pull request, but never while a plain continuation (a <code>continues_task</code> workflow with no writer mark of its own, or a <code>publish_to_pr</code> workflow naming the same branch task) is live on it. #2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order. On 2026-1…";
+const REQ1="cifix.stamp's ci_fix branch refuses a CI-fix request while a non-terminal plain continues_task task of the same tenant continues the same root (metadata.dispatch.continues == root) and would push to t…";
+const STEP='ci-fix-waits-on-continuation';
+const FILES=['apps/swarm-api/swarm_api/cifix.py','apps/swarm-api/swarm_api/refusals.py','scripts/ci-fix.sh'];
+const fileList=(fs)=>`<ul class="files">${fs.map(f=>`<li><code>${f}</code></li>`).join('')}</ul>`;
+
+/* ---------- diagram ink: what the renderer would draw from each source ---------- */
+function arr(x1,y1,x2,y2,c){const a=Math.atan2(y2-y1,x2-x1),L=8,W=4.5,bx=x2-L*Math.cos(a),by=y2-L*Math.sin(a),px=-Math.sin(a)*W,py=Math.cos(a)*W;
+  return `<line class="ln ${c||''}" x1="${x1}" y1="${y1}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}"/><path class="ah ${(c||'').replace('d','')}" d="M${x2},${y2}L${(bx+px).toFixed(1)},${(by+py).toFixed(1)}L${(bx-px).toFixed(1)},${(by-py).toFixed(1)}Z"/>`}
+function poly(pts,c){const n=pts.length,[x1,y1]=pts[n-2],[x2,y2]=pts[n-1];return `<polyline class="ln ${c||''}" points="${pts.slice(0,-1).map(p=>p.join(',')).join(' ')} ${x1},${y1}"/>`+arr(x1,y1,x2,y2,c)}
+const tx=(x,y,s,c,a)=>`<text x="${x}" y="${y}" class="${c||''}" text-anchor="${a||'middle'}">${s}</text>`;
+function box(x,y,w,h,c,lines,r){
+  const n=lines.length,top=y+h/2-(n-1)*8+4.5;
+  return `<rect class="${c}" x="${x}" y="${y}" width="${w}" height="${h}" rx="${r===undefined?8:r}"/>`+lines.map((l,i)=>{const m=Array.isArray(l);return tx(x+w/2,top+i*16,m?l[0]:l,m?l[1]:(i===0?'b':''))}).join('');
+}
+const svg=(w,h,label,inner)=>`<svg class="dg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${label}">${inner}</svg>`;
+const CHECKS=[['merge step','live?'],['issue run','live?'],['conflict fix','live?'],['claim on the','failure live?'],['plain continuation','live? · new']];
+function flowH(){
+  let s=box(4,30,100,52,'nd',['CI-fix request',['ci-fix.sh','sm mo']],26);
+  s+=arr(104,56,132,56);
+  CHECKS.forEach((c,i)=>{const x=132+i*142,last=i===4;
+    s+=box(x,30,118,52,last?'nw':'q',[c[0],[c[1],'sm']]);
+    if(i<4){s+=arr(x+118,56,x+142,56);s+=tx(x+130,48,'no','sm')}
+    s+=arr(x+59,82,x+59,150,'y');s+=tx(x+67,122,'yes','sm','start');
+  });
+  s+=arr(818,56,846,56)+tx(832,48,'no','sm');
+  s+=box(846,30,78,52,'ok',['stamp',['the fix runs','sm']],26);
+  s+=box(132,150,686,50,'bd',['refuse: 409, naming the task that holds the pull request',['refusals.py · the operator is told which task to wait for','sm']]);
+  s+=`<rect class="nw" x="132" y="222" width="16" height="12" rx="3"/>`+tx(156,232,'new in this plan: the check step 1 adds','sm','start');
+  s+=`<rect class="q" x="432" y="222" width="16" height="12" rx="3"/>`+tx(456,232,'already in cifix.stamp (#2554 and before)','sm','start');
+  return svg(928,244,'Overview flow: a CI-fix request through cifix.stamp’s five refusal checks',s);
+}
+function flowV(){
+  let s=box(12,8,170,40,'nd',['CI-fix request · ci-fix.sh'],20);
+  s+=arr(97,48,97,78);
+  CHECKS.forEach((c,i)=>{const y=78+i*72,last=i===4;
+    const claim=c[0]==='claim on the';
+    s+=box(12,y,170,46,last?'nw':'q',[claim?'claim live?':c[0]+' live?',...(last?[['new in this plan','sm']]:claim?[['on the same failure','sm']]:[])]);
+    s+=arr(182,y+23,220,y+23,'y')+tx(201,y+16,'yes','sm');
+    if(i<4)s+=arr(97,y+46,97,y+72)+tx(105,y+63,'no','sm','start');
+  });
+  s+=arr(97,412,97,438)+tx(105,429,'no','sm','start');
+  s+=box(12,438,170,40,'ok',['stamp: the fix runs'],20);
+  s+=box(220,78,94,334,'bd',['refuse:',['409, naming','sm'],['the task that','sm'],['holds the PR','sm']]);
+  return svg(320,486,'Overview flow, top to bottom: a CI-fix request through cifix.stamp’s five refusal checks',s);
+}
+function stepD(){
+  let s='';
+  [['scripts/ci-fix.sh',10,200],['apps/swarm-api/swarm_api/cifix.py',236,290],['refusals.py',560,190]].forEach(([f,x,w])=>{s+=tx(x+w/2,16,f,'mo sm')});
+  s+=`<line class="ll" x1="218" y1="6" x2="218" y2="238"/><line class="ll" x1="542" y1="6" x2="542" y2="238"/>`;
+  s+=box(10,34,190,44,'nd',['asks for a CI fix',['for the PR’s failure','sm']]);
+  s+=box(256,34,250,44,'nd',['cifix.stamp · ci_fix branch',['the four checks it has today','sm']]);
+  s+=box(246,104,270,72,'nw',['_refuse_if_continuation_live',['new: same tenant, non-terminal,','sm'],['continues == root, or publish_to_pr','sm']]);
+  s+=box(566,112,180,56,'nw',['a refusal reason',['for a live continuation (new)','sm']]);
+  s+=box(10,184,190,44,'nd',['prints the refusal',['naming the task to wait for','sm']]);
+  s+=arr(200,56,256,56)+arr(381,78,381,104)+arr(516,140,566,140);
+  s+=poly([[656,168],[656,206],[200,206]],'d');
+  return svg(760,240,'Step 1 schematic: the three files ci-fix-waits-on-continuation changes and how a refusal travels',s);
+}
+function seqD(){
+  const L=[[70,'ci-fix.sh'],[230,'cifix.stamp'],[400,'tasks'],[560,'continuation']];
+  let s=`<rect class="zone" x="8" y="146" width="624" height="88"/>`+tx(480,198,'the window: between','sm')+tx(480,214,'the read and the refusal','sm');
+  L.forEach(([x,n])=>{s+=box(x-62,8,124,32,'nd',[n],6)+`<line class="ll" x1="${x}" y1="40" x2="${x}" y2="296"/>`});
+  const m=(x1,x2,y,t,c)=>arr(x1,y,x2,y,c)+tx((x1+x2)/2,y-6,t,'sm');
+  s+=m(70,230,72,'CI-fix request')+m(230,400,106,'live continuation on root?')+m(400,230,138,'yes: task_c71… (example)','d');
+  s+=m(560,400,170,'finishes: succeeded');
+  s+=m(230,70,226,'409, naming task_c71…, no longer live','y');
+  s+=m(70,230,258,'asked again (next fix round)','d')+m(230,70,288,'no live continuation: stamped');
+  return svg(640,300,'Sequence: the continuation finishes between cifix.stamp’s read and its refusal',s);
+}
+function chatD(){
+  let s=box(8,8,160,36,'bd',['CI red on the PR'],8);
+  s+=arr(88,44,88,64)+box(8,64,160,36,'nd',['ci-fix.sh asks'],8);
+  s+=arr(88,100,88,120)+box(8,120,160,46,'nw',['plain continuation',['live?','sm']]);
+  s+=arr(168,143,196,143,'y')+tx(182,136,'yes','sm');
+  s+=box(196,114,88,58,'bd',['refused,',['naming','sm'],['the task','sm']]);
+  s+=arr(88,166,88,196)+tx(96,186,'no','sm','start')+box(8,196,160,36,'ok',['stamp: the fix runs'],8);
+  s+=arr(240,172,240,196)+box(196,196,88,58,'q',['it pushes;',['CI runs','sm'],['again','sm']]);
+  s+=poly([[240,254],[240,272],[294,272],[294,26],[168,26]],'d');
+  return svg(300,280,'Failure path: a CI fix refused while a plain continuation holds the pull request, and what follows',s);
+}
+
+/* ---------- the strip, the planner's first message, a diagram message ---------- */
+const DGS={
+  ov:{n:1,s:'Overview',t:'Overview: a CI-fix request through cifix.stamp’s checks',anc:'the plan',by:'planner · 00:02Z',draw:flowH,v:flowV},
+  st:{n:2,s:'Step 1 schematic',t:'Step 1: where the new check sits',anc:'step 1',by:'planner · 00:02Z',draw:stepD},
+  fp:{n:3,s:'Failure path, mid-check',t:'The failure path when the continuation finishes mid-check',anc:'step 1',by:'planner in the thread · 03:05Z',draw:seqD,cost:'$0.46'},
+  ch:{n:4,s:'Failure path, refused',t:'Failure path: a CI fix refused while a continuation holds the PR',anc:'the plan',by:'review agent in the chat · 03:12Z',draw:chatD,cost:'$0.21'}
+};
+function pins(keys,on,o){
+  o=o||{};
+  const d=DGS[keys[on]];
+  const tabs=keys.map((k,i)=>`<span class="${i===on?'on':''} ${o.nw===k?'nw':''}"><i>${DGS[k].n}</i>${DGS[k].s} · on ${DGS[k].anc}${o.nw===k?' · new':''}</span>`).join('');
+  return `<section class="pins"><div class="ph1"><b>Pinned to the plan</b><span class="dim sm12">${keys.length} diagrams in revision ${o.rev||1} · inside its digest</span><span class="r acts">${B('Open large','s','ext')}</span></div>`+
+    `<div class="ptabs">${tabs}</div>`+(o.fold?`<p class="sm12 dim" style="margin:0">Folded to its tabs while the chat is open, so the document keeps its width; a tab opens its diagram large (D4).</p></section>`:`<div class="dgw">${o.phone&&d.v?d.v():d.draw()}</div>`+
+    `<div class="dgc"><span class="grow"><b style="color:var(--text)">${d.n} · ${d.t}</b> · anchored to ${d.anc} · drawn by the ${d.by}${d.cost?' · cost '+d.cost:''}${o.note?' · '+o.note:''}</span><span>${B('Text alternative','s q')}${B('Source','s q')}</span></div></section>`);
+}
+const av=(k)=>k==='pl'?`<span class="av pl">PL</span>`:k==='ag'?`<span class="av ag">RA</span>`:`<span class="av">OP</span>`;
+const msg=(k,who,meta,body,cls)=>`<div class="cm ${k==='pl'?'pl':''} ${k==='me'?'me':''} ${cls||''}">${av(k)}<div><div class="who"><b>${who}</b>${meta}</div>${body}</div></div>`;
+const att=(d,inner,acts)=>`<div class="att"><div class="ah1"><b>${d.t}</b><span class="anc">on ${d.anc}</span>${d.cost?`<span class="dim">${d.cost}</span>`:''}</div>${inner}${acts?`<div class="acts">${acts}</div>`:''}</div>`;
+const pinnedRef=(d,rev)=>`<div class="att"><div class="ah1"><b>Diagram ${d.n} · ${d.t}</b></div><span class="dim sm12">${I('check')} pinned in revision ${rev}: drawn in the strip above · ${B('Show it','s q')}</span></div>`;
+function firstMsg(keys){
+  return msg('pl','planner',`<span>00:02Z · revision 1 · opens the thread</span>`,`<p>Plan ready: 1 step, 7 requirements, 5 overlaps. I drew ${keys.length} diagrams, both pinned above:</p>`+
+    `<ol class="sm12" style="margin:4px 0 0;padding-left:18px">${keys.map(k=>`<li><a href="#D1">${DGS[k].t}</a> <span class="anc">on ${DGS[k].anc}</span></li>`).join('')}</ol>`+
+    `<p class="sm12 dim" style="margin-top:4px">Why: a refusal with five checks in an order reads faster as a flow; the step diagram shows which file each part lands in. (example)</p>`);
+}
+const composer=(off)=>`<div class="compose"><div class="box">Comment on this step…</div><div class="acts">${off?'':B('Ask for a diagram','s','overview')}${B('Comment','s')}</div></div>`;
+
+/* ---------- D's decision page, with the strip and the chat button ---------- */
+const why=(t,b)=>`<div class="why"><b>${t||'Planner’s reason'}</b>${b}</div>`;
+const revbar=(revs,dig,extra)=>`<div class="revbar"><span class="dim">Revision</span><span class="revs">${revs}</span><span class="mn">${dig}</span>${extra||''}</div>`;
+function decide(rev,dig){return `<div class="decide"><span class="grow">Approve applies to revision ${rev}, <span class="mn">${dig}</span>, the plan on this page${rev>1?', its diagrams included':''}.</span>${B('Reject…','d','x')}${B('Edit','','edit')}${B('Request changes','','refresh')}${B('Approve revision '+rev,'p','check')}</div>`}
+function blkWhy(){
+  return `<section class="blk"><h5>Why it exists <small>source</small></h5><dl class="kv"><dt>Source</dt><dd>the failure-review schedule <span class="mn">${SCH}</span></dd>`+
+    `<dt>Firing</dt><dd><span class="mn">${FIRE}</span></dd><dt>Issue</dt><dd><a href="#D1">${ISS}</a>, filed by that firing</dd><dt>Run</dt><dd><span class="mn">${RUN}</span> · mode single</dd></dl></section>`;
+}
+const blkSum=()=>`<section class="blk"><h5>Summary</h5><p>${SUMMARY}</p><div class="fold">${I('chevd')}Show the whole summary</div></section>`;
+const blkReq=()=>`<section class="blk"><h5>Requirements <small>7 · what the review checks, and what decides Closes</small></h5><ol><li>${REQ1}</li></ol><div class="fold">${I('chevd')}Requirements 2 to 7</div></section>`;
+const blkOv=()=>`<section class="blk"><h5>Overlaps with work in flight <small>5</small></h5><p>First: open PR <a href="#D1" class="mn">SwarmCloud#2226</a>, which edits <code>cifix.py</code>, the file this plan changes.</p><div class="fold">${I('chevd')}Overlaps 2 to 5</div></section>`;
+function blkStep(o){
+  o=o||{};
+  return `<section class="blk"><h5>Steps <small>1 · then a review and a fix, gated on its verdict</small></h5><div class="stp"><div class="sh">${C('step 1','ln')}<b><code>${STEP}</code></b><span class="dim sm12">2 agent-hours · runs as claude-code</span>${o.dg?`<span style="margin-left:auto">${C(o.dg,'in','overview')}</span>`:''}</div>`+
+    `<dl class="kv"><dt>Files</dt><dd>${fileList(FILES)}</dd><dt>Prompt</dt><dd><div class="fold" style="margin-top:0">${I('chevd')}Show the prompt</div></dd></dl></div></section>`;
+}
+const blkRisk=()=>`<section class="blk"><h5>Risk paths <small>what the step’s files touch</small></h5><div>${C('none touched','ok','check')} <span class="dim sm12">credentials, IAM, .github/workflows, the frozen contract, the deny-list, tenancy, cost</span></div></section>`;
+const chatBtn=(n)=>B('Chat with the review agent'+(n?` · ${n}`:''),'','info');
+const P2HEAD=(o)=>({cr:'Automate › Approvals › plan',h:'Issue #2583 · plan from failure review',right:chatBtn(o&&o.chatN),age:(o&&o.age)||'read 03:00Z'});
+function pdoc(o){
+  o=o||{};
+  const stepMg=o.stepMg||`<div class="mg">${why('Planner’s reason for one step · example','Why these three files and this estimate.')}${composer(o.off)}</div>`;
+  return `<div class="pdoc"><div class="row">${blkWhy()}<div class="mg">${o.first||''}</div></div>`+
+    `<div class="row">${blkSum()}<div class="mg">${why('Planner’s reason · example','“#2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order.”')}</div></div>`+
+    `<div class="row">${blkReq()}<div class="mg"><div class="dim sm12">No comments on the requirements.</div></div></div>`+
+    `<div class="row">${blkOv()}<div class="mg"></div></div>`+
+    `<div class="row">${blkStep({dg:o.stepDg})}${stepMg}</div>`+
+    `<div class="row">${blkRisk()}<div class="mg"></div></div></div>`;
+}
+function d1a(){
+  return desk({},P2HEAD(),LEAD('Waiting on you · expires in 21 h','Plan revision 1, from the failure-review schedule','1 step, 7 requirements, 5 overlaps, 2 diagrams. No risk path touched.')+
+    revbar('<span class="on">revision 1 · planner · 00:02Z · 2 diagrams</span>',DIG,'<span class="dim">no earlier revision</span>')+
+    pins(['ov','st'],0)+decide(1,DIG)+pdoc({first:firstMsg(['ov','st']),stepDg:'diagram 2'}));
+}
+const d1b=()=>solo(pins(['ov','st'],1),840);
+
+/* ---------- D2 ---------- */
+function d2a(){
+  const tf='terraform/environments/dev/dev.tfvars';
+  const first=msg('pl','planner','<span>00:40Z · revision 1 · opens the thread</span>','<p>Plan ready: 1 step, 2 requirements, no overlaps.</p><p class="sm12"><b>No diagram: a one-line value change.</b></p>');
+  return desk({short:true},{cr:'Automate › Approvals › plan',h:'Issue #2590 · plan from the issue sweep (example)',right:chatBtn(),age:'read 03:00Z'},
+    LEAD('Waiting on you · expires in 44 h','Plan revision 1, from the nightly issue sweep','1 step, 2 requirements, no overlaps, no diagram.')+
+    revbar('<span class="on">revision 1 · planner · 00:40Z · no diagrams</span>','sha256:5d0e93ab17c4… (example)')+
+    `<section class="pins"><div class="ph1"><b>Pinned to the plan</b><span class="dim sm12">none in revision 1</span></div><div class="bn">${I('info')}<div><b>The planner drew none</b>Its reason, from its first message and carried on the plan: “a one-line value change”. Diagrams are on for this schedule, so you can still ask for one in the thread or the chat.</div></div></section>`+
+    decide(1,'sha256:5d0e93ab17c4… (example)')+
+    `<div class="pdoc"><div class="row"><section class="blk"><h5>Summary</h5><p>Raise <code>max_concurrent_tasks</code> in <code>${tf}</code> from 8 to 12, so the dev pool matches the ceiling #2590 asks for. (example)</p></section><div class="mg">${first}</div></div>`+
+    `<div class="row"><section class="blk"><h5>Requirements <small>2 · what the review checks, and what decides Closes</small></h5><ol><li><code>max_concurrent_tasks</code> in the dev tfvars is 12. (example)</li><li><code>terraform plan</code> for dev changes that value and nothing else. (example)</li></ol></section><div class="mg"></div></div>`+
+    `<div class="row"><section class="blk"><h5>Steps <small>1</small></h5><div class="stp"><div class="sh">${C('step 1','ln')}<b><code>dev-pool-ceiling</code></b><span class="dim sm12">0.5 agent-hours · runs as claude-code</span></div><dl class="kv"><dt>Files</dt><dd>${fileList([tf])}</dd><dt>Change</dt><dd><div class="diff"><div class="d">max_concurrent_tasks = 8</div><div class="a">max_concurrent_tasks = 12</div></div></dd></dl></div></section><div class="mg">${composer()}</div></div></div>`);
+}
+
+/* ---------- D3 ---------- */
+const ASK=msg('me','Operator','<span class="anc">on step 1</span><span>03:04Z · revision 1</span>','<p>Show the failure path when the continuation finishes mid-check.</p><p class="sm12 dim">asked for a diagram</p>');
+const WORK_PL=(t,c)=>msg('pl','planner',`<span class="anc">on step 1</span><span>drawing</span>`,`<div class="wkl"><span class="dots"><i></i><i></i><i></i></span><span>reading cifix.py and drawing · ${t} · ${c} so far</span>${B('Stop','s q','x')}</div><div class="skel"><span style="width:70%"></span><span style="width:90%"></span><span style="width:55%"></span><p>A sequence diagram, anchored to step 1, will appear here.</p></div>`,'wk');
+const ANS_TXT='<p>If the continuation finishes between the read and the refusal, the request is refused naming a task that has just ended. The next fix round asks again and stamps. No two writers ever hold the branch, so the plan needs no change.</p>';
+const ANS=(inner)=>msg('pl','planner','<span class="anc">on step 1</span><span>03:05Z · 52 s · $0.46</span>',ANS_TXT+inner);
+function d3a(){return solo(`<div class="mg" style="margin:0">${ASK}${WORK_PL('0:34','$0.31')}${composer()}</div>`,520)}
+function d3b(){return solo(`<div class="mg" style="margin:0">${ASK}${ANS(att(DGS.fp,`<div class="dgw">${seqD()}</div>`,B('Pin to the plan','s p','plus')+B('Open large','s','ext')+B('Text alternative','s q')))}${composer()}</div>`,790)}
+function d3c(){
+  return desk({},P2HEAD({age:'read 03:07Z'}),LEAD('Waiting on you · expires in 21 h','Revision 2: revision 1 with the thread’s diagram pinned','Same step, requirements and overlaps; 3 diagrams. Approve applies to revision 2.')+
+    revbar('<span>revision 1 · planner · 2 diagrams</span><span class="on">revision 2 · Operator · 03:06Z · diagrams only</span>',DIG2,'<span class="dim">from '+DIG+' · diff: diagrams[2] added</span>')+
+    pins(['ov','st','fp'],2,{rev:2,nw:'fp',note:'pinned by Operator 03:06Z'})+decide(2,DIG2)+
+    pdoc({first:firstMsg(['ov','st']),stepDg:'diagrams 2 and 3',stepMg:`<div class="mg">${ASK}${ANS(pinnedRef(DGS.fp,2))}${composer()}</div>`}));
+}
+
+/* ---------- D4 ---------- */
+const SRC_OV=['flowchart LR','  req([CI-fix request · ci-fix.sh]) --> merge{merge step live?}','  merge -- no --> issue{issue run live?}','  issue -- no --> conflict{conflict fix live?}','  conflict -- no --> claim{claim on the failure live?}','  claim -- no --> cont{plain continuation live?}','  cont -- no --> stamp([stamp: the fix runs])','  merge -- yes --> refuse[refuse: 409, naming the task]','  issue -- yes --> refuse','  conflict -- yes --> refuse','  claim -- yes --> refuse','  cont -- yes --> refuse','  class cont new'];
+const ALT_OV=['A CI-fix request from ci-fix.sh reaches cifix.stamp.','It checks, in order: is a merge step live, an issue run, a conflict fix, a claim on the same failure, and, new in this plan, a plain continuation.','Any yes refuses the request with 409, naming the task that holds the pull request.','Five noes stamp the request and the fix runs.'];
+const srcPre=(lines,er)=>`<pre class="src">${lines.map((l,i)=>`<span class="${i===er?'er':''}">${String(i+1).padStart(2,' ')}  ${l.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`).join('')}</pre>`;
+function d4a(){
+  const big=flowH().replace('width="928" height="244"','width="1160" height="305"');
+  const over=`<div class="lbx"><div class="lh"><div class="tt"><span class="sm12 dim">Diagram 1 of 2 · revision 1 · pinned</span><b>Overview: a CI-fix request through cifix.stamp’s checks</b><span class="sm12 dim">drawn by the planner 00:02Z · anchored to the plan · flow</span></div>`+
+    `<div class="acts">${SG(['−','125%','+'],1)}${B('Fit','s')}${B('Full screen','s','ext')}${B('Close','s','x')}</div></div>`+
+    `<div class="lb"><div class="dgw" style="cursor:grab">${big}</div><div class="hint">At 125% the flow is wider than the view, so its right end (the plain-continuation check and stamp) is past the edge: drag to pan, scroll or pinch to zoom, Fit shows it whole. Esc closes; arrow keys move between the strip’s diagrams.</div>`+
+    `<div class="g2"><section class="blk" style="margin:0"><h5>Text alternative <small>required, written by the planner</small></h5><ol class="alt">${ALT_OV.map(a=>`<li>${a}</li>`).join('')}</ol></section>`+
+    `<section class="blk" style="margin:0"><h5>Source <small>Mermaid · in the digest</small></h5>${srcPre(SRC_OV,-1)}<div class="acts" style="margin-top:6px">${B('Copy source','s')}</div></section></div></div></div>`;
+  return desk({},P2HEAD(),LEAD('Waiting on you · expires in 21 h','Plan revision 1, from the failure-review schedule','1 step, 7 requirements, 5 overlaps, 2 diagrams.')+revbar('<span class="on">revision 1</span>',DIG)+`<div style="height:620px"></div>`,over);
+}
+
+/* ---------- D5 ---------- */
+function d5a(){
+  const card=`<section class="cd"><div class="ch"><b>Plan diagrams</b><span class="r">${C('on · default','ok')}</span></div>`+
+    `<div class="setrow"><span class="sw on" role="switch" aria-checked="true" aria-label="Plan diagrams"></span><div><b>Planners draw flow diagrams and schematics in plans</b><small>On (default): for coding, design, research, issue and failure fixes the planner draws what helps and says why it drew none for a small change; reviewers can ask for a diagram in a plan’s thread or chat. Off: no diagrams, and no way to ask.</small></div></div>`+
+    `<div class="setrow"><span>${I('cal')}</span><div><b>Overridden by 1 of 8 schedules</b><small>Terraform tidy (example): off. Each schedule’s Gates and approvers card says which it follows.</small></div>${B('Show them','s q')}</div>`+
+    `<div class="setrow"><span>${I('github')}</span><div><b>Issues submitted by hand</b><small>Start at this default; the submitter can turn it off on Submit › From a GitHub issue.</small></div></div>`+
+    `<div class="foot"><span class="grow sm12 dim">Changed by Operator, Oct 27 16:20Z (example). Applies to plans drawn after the change.</span>${B('Turn off…','s')}</div></section>`;
+  return desk({sec:'config',short:true},{cr:'Config',h:'Workspace Settings',age:'read 03:00Z'},
+    `<div class="g2"><section class="cd"><div class="ch"><b>Per-agent budget</b></div><p>Today’s card, unchanged.</p></section><section class="cd"><div class="ch"><b>Visual QA</b></div><p>Today’s card, unchanged.</p></section></div>`+card);
+}
+function d5b(){
+  return solo(`<section class="dsheet" style="width:100%"><div class="shh"><div class="tt"><span class="cr">Automate › Schedules</span><h4>Terraform tidy (example)</h4><span class="sm12 dim">issue-sweep · plans issues labelled infra</span></div></div>`+
+    `<div class="shs"><h5>Gates and approvers</h5><dl class="kv"><dt>Run</dt><dd>automatic</dd><dt>Plan</dt><dd>approve</dd><dt>Merge</dt><dd>approve</dd><dt>Who approves</dt><dd>members</dd><dt>Expiry</dt><dd>an approval nobody decides expires after 48 h</dd>`+
+    `<dt>Diagrams</dt><dd><div class="col4"><span class="inp v" style="justify-content:space-between">off · overrides the workspace default (on) ${I('chevd')}</span><span class="hint">Workspace default (on now) · on · off. Off here because its plans are one-line value changes (example). Changed by Operator, Oct 27 16:22Z.</span></div></dd></dl></div></section>`,560);
+}
+function d5c(){
+  return solo(`<section class="cd"><div class="ch"><b>3 · Decide what it may do on its own</b></div>`+
+    `<div class="setrow"><span class="sg"><span class="on">Required</span><span>Auto</span></span><div><b>Plan approval</b><small>Required (default): the run waits, planned and holding no capacity, until someone in this workspace approves, edits or rejects the plan.</small></div></div>`+
+    `<div class="setrow"><span class="sw"></span><div><b>Merge the pull request when it is ready</b><small>Off (default): a person merges the run’s pull request.</small></div></div>`+
+    `<div class="setrow"><span class="sw on" role="switch" aria-checked="true" aria-label="Diagrams in the plan"></span><div><b>Diagrams in the plan</b><small>On (the workspace default): the planner draws where it helps, and you can ask for one while you review.</small></div></div></section>`,560);
+}
+function d5d(){
+  return solo(LEAD('Waiting on you','Plan revision 1, from the Terraform tidy schedule (example)','1 step; this cut shows the line and the step.')+
+    `<div class="bn">${I('eye-off')}<div><b>Diagrams are off for this plan</b>Its schedule, Terraform tidy, turns them off on its Gates and approvers card. No diagram was drawn and none can be asked for. ${B('Open the schedule','s q','chev')}</div></div>`+
+    `<section class="blk"><h5>Steps <small>1</small></h5><div class="stp"><div class="sh">${C('step 1','ln')}<b><code>staging-log-retention</code></b><span class="dim sm12">0.5 agent-hours</span></div></div></section>`+
+    `<div class="compose"><div class="box">Comment on this step…</div><div class="acts">${B('Comment','s')}</div></div>`,560);
+}
+function d5e(){
+  return solo(`<section class="cd"><div class="ch"><b>One order, most specific first</b></div><ol class="prec">`+
+    `<li><b>The issue submission’s switch</b>, for an issue run submitted by hand.</li><li><b>The schedule’s Diagrams</b>, when it is on or off; <i>workspace default</i> passes down.</li><li><b>The workspace default</b> in Workspace Settings: on when never set.</li></ol>`+
+    `<p style="margin-top:8px">When the result is on, the planner still decides per plan (D2). There is no per-plan override: a reviewer cannot switch diagrams on for one plan whose schedule has them off. The run records which switch decided (<code>diagrams_effective</code>).</p></section>`,480);
+}
+
+/* ---------- D6 ---------- */
+function d6a(){
+  const bad=SRC_OV.slice();bad[11]='  cont -- yes -> refuse';
+  return solo(`<section class="pins"><div class="ph1"><b>Pinned to the plan</b><span class="dim sm12">2 diagrams in revision 1</span></div><div class="ptabs"><span class="on"><i>1</i>Overview · on the plan · did not render</span><span><i>2</i>Step 1 schematic · on step 1</span></div>`+
+    `<div class="bn bd">${I('warn')}<div><b>Diagram 1 did not render</b>The renderer answered: line 12, expected <code>--&gt;</code> after <code>cont -- yes</code>. Its text alternative and source are below; the plan still carries it as source.</div></div>`+
+    `<div class="g2 fail2" style="margin-top:10px"><div><h5 style="margin:0 0 6px;font-size:13.5px">Text alternative</h5><ol class="alt">${ALT_OV.map(a=>`<li>${a}</li>`).join('')}</ol></div><div><h5 style="margin:0 0 6px;font-size:13.5px">Source <small class="dim" style="font-size:12px">line 12 marked</small></h5>${srcPre(bad,11)}</div></div>`+
+    `<div class="acts" style="margin-top:8px">${B('Ask the planner to redraw it','s','refresh')}<span class="sm12 dim">a planner turn, with its cost, as in D3</span></div></section>`,860);
+}
+function d6b(){
+  return solo(LEAD('This server does not render diagrams','The plan carries 2 diagrams; they are shown as text','<code>POST /v1/diagrams:render</code> answered 404 at 03:00Z: this server predates it. Approve, Edit and Reject work as before.','','wn')+
+    `<section class="pins"><div class="ph1"><b>Pinned to the plan</b><span class="dim sm12">2 diagrams · drawn: — not served</span></div>`+
+    `<div class="ptabs"><span class="on"><i>1</i>Overview · on the plan</span><span><i>2</i>Step 1 schematic · on step 1</span></div><ol class="alt">${ALT_OV.map(a=>`<li>${a}</li>`).join('')}</ol><div class="acts" style="margin-top:8px">${B('Source','s q')}</div></section>`+
+    `<p class="sm12 dim" style="margin:0">Ask for a diagram and the chat’s Draw are hidden until the server renders: an answer nobody can see is not offered.</p>`,560);
+}
+function d6c(){
+  const q=msg('me','Operator','<span>03:20Z</span>','<p>Draw the failure path.</p>');
+  const a=msg('ag','review agent','<span>03:20Z · 6 s · $0.04</span>','<p><b>I can’t draw here:</b> diagrams are off for this plan’s schedule, Terraform tidy (its Gates and approvers card). In words: if <code>terraform plan</code> shows more than the one value change, the step stops and says so; nothing is applied from this run, so a failure leaves the environment as it was.</p><p class="sm12 dim">Whoever may edit the schedule can turn diagrams on; the change applies to plans drawn after it.</p>');
+  return solo(`<section class="chat"><div class="chh"><div class="tt"><b>Chat with the review agent</b><small>reads this plan and the repository at its base · writes nothing</small></div>${B('Close','s','x')}</div><div class="cbody">${q}${a}</div>`+
+    `<div class="cfoot"><div class="box">Ask about this plan…</div><div class="acts" style="justify-content:flex-end">${B('Send','s p')}</div><div class="meter"><span>this chat $0.04 of its $2.00 cap</span>${BAR(2)}</div></div></section>`,560);
+}
+
+/* ---------- D8: the chat ---------- */
+const CQ1=msg('me','Operator','<span>03:10Z</span>','<p>Why does the check read <code>metadata.dispatch.continues</code> and not just the branch name?</p>');
+const CA1=msg('ag','review agent','<span>03:10Z · 9 s · $0.09</span>','<p>Because a merge step and a review name the branch too, and they must not block a fix. The plan refuses only on a writer: requirement 1 says “a non-terminal plain continues_task task of the same tenant continues the same root (metadata.dispatch.continues == root)”, and a <code>publish_to_pr</code> workflow naming the same branch task is the other writer.</p>');
+const CQ2=msg('me','Operator','<span>03:11Z</span>','<p>Draw the failure path.</p>');
+const CWORK=(t,c)=>msg('ag','review agent','<span>drawing</span>',`<p>A CI fix refused while a continuation holds the PR, and what follows:</p><div class="wkl"><span class="dots"><i></i><i></i><i></i></span><span>drawing · ${t} · ${c} so far</span>${B('Stop','s q','x')}</div><div class="skel"><span style="width:60%"></span><span style="width:85%"></span><span style="width:45%"></span><p>A flow diagram will appear here.</p></div>`,'wk');
+const CTYPE=msg('ag','review agent','<span>typing</span>',`<p>Because a merge step and a review name the branch too, and they must not block a…</p><div class="wkl"><span class="dots"><i></i><i></i><i></i></span><span>typing · 4 s · $0.05 so far</span>${B('Stop','s q','x')}</div>`,'wk');
+const CA2=(inner)=>msg('ag','review agent','<span>03:12Z · 24 s · $0.21</span>','<p>A CI fix refused while a continuation holds the PR, and what follows:</p>'+inner);
+function chatCol(body,cost,pct,o){
+  o=o||{};
+  return `<section class="chat"><div class="chh"><div class="tt"><b>Chat with the review agent</b><small>review agent · claude-code · sonnet (example) · reads this plan and the repository at its base, writes nothing</small></div>${o.phone?'':B('Close','s','x')}</div>`+
+    `<div class="cbody">${body}</div><div class="cfoot"><div class="box">Ask about this plan…</div><div class="acts" style="justify-content:flex-end">${B('Draw','s','overview')}${B('Send','s p')}</div>`+
+    `<div class="meter"><span>this chat ${cost} of its $2.00 cap</span>${BAR(pct)}</div></div></section>`;
+}
+const CA2_FULL=()=>CA2(att(DGS.ch,`<div class="dgw">${chatD()}</div>`,B('Pin to the plan','s p','plus')+B('Open large','s','ext')));
+function d8a(){
+  const doc=`<div class="pdoc">${blkSum()}<div class="inl">${why('Planner’s reason · example','“#2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order.”')}</div>${blkReq()}${blkStep({dg:'diagrams 2 and 3'})}<div class="inl"><span class="dim sm12">Thread on step 1: 2 messages, 1 diagram, pinned. ${B('Show','s q')}</span></div></div>`;
+  return desk({},{cr:'Automate › Approvals › plan',h:'Issue #2583 · plan from failure review',right:B('Chat open','','info'),age:'read 03:12Z'},
+    LEAD('Waiting on you · expires in 21 h','Revision 2, from the failure-review schedule','1 step, 7 requirements, 5 overlaps, 3 diagrams.')+
+    revbar('<span>revision 1</span><span class="on">revision 2 · Operator · diagrams only</span>',DIG2)+decide(2,DIG2)+
+    `<div class="withchat"><div>${pins(['ov','st','fp'],0,{rev:2,fold:true})}<div style="height:12px"></div>${doc}</div>${chatCol(CQ1+CA1+CQ2+CA2_FULL(),'$0.30',15)}</div>`);
+}
+const d8b=()=>solo(chatCol(CQ1+CTYPE,'$0.05',3)+chatCol(CQ1+CA1+CQ2+CWORK('0:14','$0.12'),'$0.21',11),460);
+function d8c(){
+  return solo(revbar('<span>revision 2 · 3 diagrams</span><span class="on">revision 3 · Operator · 03:13Z · diagrams only</span>',DIG3,'<span class="dim">diff: diagrams[3] added</span>')+
+    pins(['ov','st','fp','ch'],3,{rev:3,nw:'ch',note:'pinned from the chat by Operator 03:13Z'})+
+    chatCol(CQ2+CA2(pinnedRef(DGS.ch,3)),'$0.30',15),720);
+}
+
+/* ---------- D7: phone ---------- */
+function d7a(){
+  return phone('Plan · #2583',`<span class="back">${I('back')}Approvals</span>`+head({cr:'Automate › Approvals › plan',h:'Issue #2583 · plan from failure review'})+
+    `<div class="acts">${chatBtn()}</div>`+LEAD('Waiting on you · 21 h left','Plan revision 1, failure review','1 step · 7 requirements · 5 overlaps · 2 diagrams')+
+    revbar('<span class="on">revision 1</span>',DIG)+pins(['ov','st'],0,{phone:true})+
+    `<div class="pdoc">${firstMsg(['ov','st'])}${blkSum()}${blkStep({dg:'diagram 2'})}${composer()}</div>`+
+    `<div class="decide"><span class="grow">Approve revision 1, <span class="mn">${DIG}</span></span>${B('Reject…','d s')}${B('Edit','s')}${B('Request changes','s')}${B('Approve revision 1','p s','check')}</div>`);
+}
+function d7b(){
+  const seqNote=`<div class="att"><div class="ah1"><b>${DGS.fp.t}</b><span class="anc">on step 1</span><span class="dim">$0.46</span></div><div class="dgw">${seqD()}</div><span class="hint">Wider than the phone: the diagram scrolls inside its box, never the page; ${B('Open large','s q','ext')} opens it full screen.</span><div class="acts">${B('Pin to the plan','s p','plus')}</div></div>`;
+  return phone('Plan · #2583',`<span class="back">${I('back')}Plan</span>`+blkStep()+ASK+WORK_PL('0:34','$0.31')+
+    `<p class="hint" style="margin:0">52 s later:</p>`+msg('pl','planner','<span class="anc">on step 1</span><span>03:05Z · $0.46</span>',ANS_TXT+seqNote)+composer());
+}
+function d7c(){
+  return phone('Chat · #2583',`<div class="sheet-grab"></div><span class="hint">The chat covers the plan as a sheet; swipe down to read the plan again.</span>`+chatCol(CQ1+CA1+CQ2+CA2_FULL(),'$0.30',15,{phone:true}));
+}
+
+const FR={d1a,d1b,d2a,d3a,d3b,d3c,d4a,d5a,d5b,d5c,d5d,d5e,d6a,d6b,d6c,d7a,d7b,d7c,d8a,d8b,d8c};
+let drawn=0;
+document.querySelectorAll('[data-f]').forEach(el=>{const f=FR[el.dataset.f];if(!f){el.textContent='Missing frame: '+el.dataset.f;return}el.innerHTML='<div class="F">'+f()+'</div>';drawn++});
+document.documentElement.dataset.frames=String(drawn);
+/* A diagram a little wider than its box is fitted to it; one much wider keeps its size (12px text) and scrolls inside the box, and says so, never the page. */
+function fitDiagrams(){
+  document.querySelectorAll('.dgw').forEach(d=>{
+    const g=d.querySelector('svg');if(!g)return;
+    g.style.width='';
+    const over=d.scrollWidth-d.clientWidth;
+    if(over>2&&d.scrollWidth<=d.clientWidth*1.15){g.style.width='100%';g.style.height='auto'}
+    const wide=d.scrollWidth>d.clientWidth+2,n=d.nextElementSibling,own=n&&n.classList.contains('wide-h'),said=n&&n.classList.contains('hint')&&!own;
+    if(wide&&!own&&!said){const h=document.createElement('span');h.className='hint wide-h';h.textContent='Wider than this box: the diagram scrolls sideways inside it; Open large shows it whole.';d.after(h)}
+    if(!wide&&own)n.remove();
+  });
+}
+fitDiagrams();addEventListener('resize',fitDiagrams);
+
+const root=document.documentElement;
+function apply(t){
+  if(t==='system')delete root.dataset.theme;else root.dataset.theme=t;
+  document.querySelectorAll('[data-theme-set]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.themeSet===t)));
+  try{localStorage.setItem('plans-diagrams-c-theme',t)}catch(e){}
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-theme-set]');if(b)apply(b.dataset.themeSet)});
+let saved='system';try{saved=localStorage.getItem('plans-diagrams-c-theme')||'system'}catch(e){}
+apply(saved);
+})();
+</script>
+</body>
+</html>

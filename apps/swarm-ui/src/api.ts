@@ -18,6 +18,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
+import { summaryTaskById, type StepTaskSummary } from './stepviews'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
 import { noteProfile, revisionAfterZoneSaves } from './timezone'
@@ -218,17 +219,17 @@ export async function loadTasks(
 }
 
 /**
- * Workflows plus the task documents their steps point at.
+ * Workflows plus the step tasks' states, from ONE read.
  *
- * Two requests, because `GET /v1/workflows` returns steps with NO state
- * (codec.py:354-365) -- a step's state only exists on the task it created. The
- * list endpoint does not join for us the way `GET /v1/workflows/{id}` does, so
- * the join happens here, once.
+ * `GET /v1/workflows?view=summary` serves, on each step, what the board draws
+ * of its task (`task_summary`, #2993): its state, title and unit, its times,
+ * its cost and time over every attempt, and its error's first line. The join
+ * is built from those blocks (`summaryTaskById`, stepviews.ts), so the board
+ * no longer reads `GET /v1/tasks?limit=200` (328 KB and 3.8 s in the owner's
+ * browser, 2026-11-01) nor any workflow or attempts by id.
  *
- * The second request is allowed to fail on its own. When it does the board
- * still renders -- the DAG shape, the dependencies and the step names are all
- * in the first response -- but `taskById` is null and every node says its state
- * could not be read. That is the point: a failed join must not look like a
+ * A step whose task the route did not read carries no block, stays out of
+ * `taskById` and reads `state unknown`: a missing join must not look like a
  * workflow full of idle steps.
  */
 export interface WorkflowBoard {
@@ -254,47 +255,26 @@ export interface WorkflowBoard {
  */
 export const WORKFLOW_LIST_VIEW = 'view=summary'
 
-export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
+export async function loadWorkflowBoard(limit: number = 100): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
-  const [wf, tasks] = await Promise.all([
-    read<WorkflowPage>(route('/v1/workflows?limit=100', {}, WORKFLOW_LIST_VIEW), (d) => d.workflows.length === 0),
-    read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
-  ])
-
-  // The workflow read decides whether there is a screen at all.
-  if (wf.status === 'loading' || wf.status === 'error') return wf
-  if (wf.status === 'stale') {
-    return { status: 'stale', data: emptyBoard(wf.data.workflows), fetchedAt: wf.fetchedAt, error: wf.error }
+  // One registry route, `/v1/workflows`, whatever the page size: the workflow
+  // page asks for fewer, the workflows it draws around itself.
+  const wf = await read<WorkflowPage>(
+    limit === 100
+      ? route('/v1/workflows?limit=100', {}, WORKFLOW_LIST_VIEW)
+      : route('/v1/workflows', {}, `limit=${limit}&${WORKFLOW_LIST_VIEW}`),
+    (d) => d.workflows.length === 0,
+  )
+  if (wf.status === 'loading' || wf.status === 'error' || wf.status === 'empty') return wf
+  const data: WorkflowBoard = {
+    workflows: wf.data.workflows,
+    taskById: summaryTaskById(wf.data.workflows),
+    statesDetail: null,
+    nextPageToken: wf.data.next_page_token ?? null,
   }
-  if (wf.status === 'empty') return wf
-
-  // A task read that did not produce rows is not the same as one that failed.
-  // `empty` is a real answer -- no tasks exist -- so the join is complete and
-  // every step is legitimately "not started". Only a FAILURE leaves states
-  // unknown, and only that sets statesDetail.
-  if (tasks.status === 'error' || tasks.status === 'stale') {
-    return {
-      status: 'ok',
-      fetchedAt: wf.fetchedAt,
-      serverAt: wf.serverAt,
-      data: {
-        workflows: wf.data.workflows,
-        taskById: null,
-        statesDetail: tasks.error.message,
-        nextPageToken: wf.data.next_page_token ?? null,
-      },
-    }
-  }
-
-  const taskById = new Map<string, Task>()
-  if (tasks.status === 'ok') for (const t of tasks.data.tasks) taskById.set(t.id, t)
-  return {
-    status: 'ok',
-    fetchedAt: wf.fetchedAt,
-    serverAt: wf.serverAt,
-    data: { workflows: wf.data.workflows, taskById, statesDetail: null, nextPageToken: wf.data.next_page_token ?? null },
-  }
+  if (wf.status === 'stale') return { status: 'stale', data, fetchedAt: wf.fetchedAt, error: wf.error }
+  return { status: 'ok', fetchedAt: wf.fetchedAt, serverAt: wf.serverAt, data }
 }
 
 /**
@@ -302,8 +282,8 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
  * The list read only its newest 100 and offered no way past them, while its
  * counts and its "oldest first" read as the tenant's whole history:
  * `Failed 15` against 52 failed workflows. `token` is the previous read's
- * `next_page_token`. No task join: the list reads each older row's steps by
- * id as it scrolls in (`useRowReads`), as it already does for the first 100.
+ * `next_page_token`. Each older row's steps carry their task blocks too, and
+ * the list joins them as it joins the first 100 (`summaryTaskById`).
  */
 export async function loadOlderWorkflows(token: string): Promise<Result<WorkflowPage>> {
   if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { workflows: [], next_page_token: null } }
@@ -313,15 +293,11 @@ export async function loadOlderWorkflows(token: string): Promise<Result<Workflow
   )
 }
 
-function emptyBoard(workflows: Workflow[]): WorkflowBoard {
-  return { workflows, taskById: null, statesDetail: 'The agent read did not complete.' }
-}
-
 /**
  * The workflow LIST alone -- no join, for the landing screen.
  *
- * `loadWorkflowBoard` above exists to draw the graph, so it pays for a second
- * request to learn each step's state. Overview does not draw a graph: it asks
+ * `loadWorkflowBoard` above exists to draw the graph, so it joins each step's
+ * task block into a task map. Overview does not draw a graph: it asks
  * whether anything has stopped moving, and `GET /v1/workflows` already answers
  * that without help. Every row carries `rollup.counts`, which the route derived
  * server-side from the step tasks it read (routes/workflows.py:64-84), so the
@@ -552,7 +528,7 @@ function fixtureGit(task: Task): Record<string, unknown> {
     ],
     commit_count: 1, insertions: 61, deletions: 12,
     dirty: [], patch: 'diff.patch', patch_bytes: 91233,
-    repository: 'bogdan-alexandrescu/SwarmCloud',
+    repository: 'example-org/agent-swarm-infra',
   }
   const d = task.dispatch
   if (d?.strategy === 'collect' || d === undefined || d === null) {
@@ -584,7 +560,7 @@ function fixtureGit(task: Task): Record<string, unknown> {
     default_branch: 'main', can_push: true,
     branch: `swarm/${task.id}`, pushed_head: '9b1c7f00aa', auto_committed: false,
     published: true,
-    pull_request: { number: 412, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/412', state: 'open', created: true },
+    pull_request: { number: 412, url: 'https://github.com/example-org/agent-swarm-infra/pull/412', state: 'open', created: true },
     ...(d.role === 'integrator'
       ? { integrated: { merged: d.integrates, conflicted: [], missing: [], complete: true } }
       : {}),
@@ -638,6 +614,10 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
     detail,
   })
   const events = []
+  // THE SUBMITTED EVENT IS WRITTEN WITH THE TASK (QA1 overview-agents-58), so
+  // a task nothing has admitted still has one: without it a READY agent's
+  // Progress drew the events read as answering with none.
+  if (span === undefined) events.push(ev('submitted', Date.parse(task.created_at)))
   if (span !== undefined) {
     // Admission to start: a few seconds each, never back past the end of the
     // attempt before it, or the submission (`fixtureSpans` leaves a gap).
@@ -1078,7 +1058,11 @@ async function fixtureTaskLogs(
       redaction_count: 0,
       tail_window: source === 'live' && size > 0 ? { object_offset: 0, stream_size: size, published_at: new Date(last - 3_000).toISOString() } : null,
       object_updated_at: new Date(source === 'live' ? last - 3_000 : last).toISOString(),
-      age_seconds: Math.max(0, Math.round((FIXTURE_NOW - (source === 'live' ? last - 3_000 : last)) / 1000)),
+      // AGED AGAINST THE BROWSER'S CLOCK (QA2 overview-agents-39): the console
+      // adds the time since the read to `age_seconds` and ages an attempt's end
+      // by its own clock, so an age measured at FIXTURE_NOW read `34m ago` on
+      // an object whose attempt the picker said ended days ago.
+      age_seconds: Math.max(0, Math.round((Date.now() - (source === 'live' ? last - 3_000 : last)) / 1000)),
     }
   }
   return {
@@ -1596,7 +1580,7 @@ export async function editPlan(runId: string, planDigest: string, plan: RunPlan)
 
 /** Turn the plan down. The shown digest is sent, so a plan edited since is not rejected unseen. */
 export async function rejectPlan(runId: string, planDigest: string | null, reason: string): Promise<Result<IssueRunRead>> {
-  if (USE_FIXTURES) return fixturePlanAction(runId, 'reject')
+  if (USE_FIXTURES) return fixturePlanAction(runId, 'reject', undefined, reason)
   const body: Record<string, string> = {}
   if (planDigest !== null) body.plan_digest = planDigest
   if (reason.trim() !== '') body.reason = reason.trim()
@@ -1624,7 +1608,7 @@ function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
   }
   const at = new Date(FIXTURE_NOW - 6 * 60_000).toISOString()
   return {
-    id, tenant_id: 'eng', state: 'PLANNED', terminal: false, issue,
+    id, tenant_id: 'u-bogdan', state: 'PLANNED', terminal: false, issue,
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner_fixture',
     // The digest is computed text in the live API; the fixture's is built, not a literal.
     plan: FIXTURE_PLAN, plan_digest: `sha256:${'9f2c41'.padEnd(64, '0')}`, plan_revision: 1, plan_edited_by: null,
@@ -1632,42 +1616,81 @@ function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
     approved_by: null, approved_at: null, approved_digest: null, rejected_by: null, rejection_reason: null,
     error: null,
     history: [{ at, from: null, to: 'PLANNING', by: 'operator@example.com' }, { at, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' }],
+    // THE ISSUE AS THE RUN READ IT AT SUBMISSION (QA2-FIX-20, runs2-03): the
+    // list leads each row with its title, as the live API's runs carry it.
+    issue_read: {
+      title: "The workflow list shows no cost column, so a finished workflow's spend needs opening every step",
+      labels: ['enhancement', 'ui'], state: 'open', comments: 4, url: issue.url,
+      body: 'See what a finished workflow cost without opening each step.', body_truncated: false, body_redacted: false, read_at: at,
+    },
+    issue_read_error: null,
     ...over,
   }
 }
 
+/**
+ * THE FIXTURE RUNS REMEMBER WHAT WAS DONE TO THEM (QA1-FIX-24, part of
+ * #2596): a run planned from Submit is a new run created now (runs-submit-15),
+ * and an approval or a rejection is still there on the next read
+ * (runs-submit-03), as the live API's would be. Kept for the page's life.
+ */
+const fixtureRunsMade: IssueRun[] = []
+const fixtureRunsDecided = new Map<string, Partial<IssueRun>>()
+
 function fixtureIssueRuns(): IssueRun[] {
+  const planned = new Date(FIXTURE_NOW - 40 * 60_000).toISOString()
+  const approved = new Date(FIXTURE_NOW - 30 * 60_000).toISOString()
+  const created = new Date(FIXTURE_NOW - 50 * 60_000).toISOString()
   return [
+    ...fixtureRunsMade,
     fixtureIssueRun('run_4c1e09d2'),
+    // The workflow it started is one the workflow fixture holds (QA1-FIX-22, runs-submit-04).
     fixtureIssueRun('run_19ab77e0', {
-      state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com',
-      approved_at: new Date(FIXTURE_NOW - 30 * 60_000).toISOString(),
-      created_at: new Date(FIXTURE_NOW - 50 * 60_000).toISOString(),
+      state: 'RUNNING', workflow_id: 'wf_audit_01', approved_by: 'operator@example.com',
+      approved_at: approved, created_at: created,
+      // Every transition to its state (runs-submit-06): the approval and the start too.
+      history: [
+        { at: created, from: null, to: 'PLANNING', by: 'operator@example.com' },
+        { at: planned, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' },
+        { at: approved, from: 'PLANNED', to: 'APPROVED', by: 'operator@example.com' },
+        { at: approved, from: 'APPROVED', to: 'RUNNING', by: 'swarm-api' },
+      ],
     }),
-  ]
+  ].map((r) => ({ ...r, ...(fixtureRunsDecided.get(r.id) ?? {}) }))
+}
+
+/** The issue the fixture reads for `owner/repo#N` or its URL, or null for anything else. */
+function fixtureIssueDoc(issue: string): IssuePreviewRead['issue'] | null {
+  const m = /([\w.-]+)\/([\w.-]+)(?:#|\/issues\/)(\d+)/.exec(issue)
+  if (m === null) return null
+  const [, owner, repo, num] = m as unknown as [string, string, string, string]
+  const ref = `${owner}/${repo}#${num}`
+  const url = `https://github.com/${owner}/${repo}/issues/${num}`
+  return {
+        ref, owner, repo, number: Number(num), url, repository_url: `https://github.com/${owner}/${repo}`,
+        title: 'The workflow list shows no cost column, so a finished workflow\'s spend needs opening every step',
+        body: 'What are you trying to do?\nSee what a finished workflow cost without opening each step.\n\nWhat would you like to see?\nA cost column on Work › Workflows, with a dash and a reason when a step\'s spend was not recorded.',
+        body_truncated: false, body_redacted: false, labels: ['enhancement', 'ui'], state: 'open', comments: 4,
+  }
 }
 
 async function fixtureIssuePreview(issue: string): Promise<Result<IssuePreviewRead>> {
   await new Promise((r) => setTimeout(r, 60))
   noteFixtureProbe(route('/v1/issues/preview', {}, new URLSearchParams({ issue })), 60, true)
-  const m = /([\w.-]+)\/([\w.-]+)(?:#|\/issues\/)(\d+)/.exec(issue)
-  if (m === null) {
+  const doc = fixtureIssueDoc(issue)
+  if (doc === null) {
     return { status: 'error', error: { kind: 'invalid', httpStatus: 422, code: 'validation_failed',
       message: 'issue must name an issue: owner/repo#N or its URL' } }
   }
-  const [, owner, repo, num] = m as unknown as [string, string, string, string]
-  const ref = `${owner}/${repo}#${num}`
-  const url = `https://github.com/${owner}/${repo}/issues/${num}`
   return {
     status: 'ok', fetchedAt: Date.now(),
     data: {
-      tenant_id: 'eng',
-      issue: {
-        ref, owner, repo, number: Number(num), url, repository_url: `https://github.com/${owner}/${repo}`,
-        title: 'The workflow list shows no cost column, so a finished workflow\'s spend needs opening every step',
-        body: 'What are you trying to do?\nSee what a finished workflow cost without opening each step.\n\nWhat would you like to see?\nA cost column on Work › Workflows, with a dash and a reason when a step\'s spend was not recorded.',
-        body_truncated: false, body_redacted: false, labels: ['enhancement', 'ui'], state: 'open', comments: 4,
-      },
+      // THE CAPACITY FIXTURE'S TENANT, and the merge step's answer as the live
+      // API serves it since contract request 47 (QA1-FIX-12 runs-submit-13,
+      // chrome-C29).
+      tenant_id: 'u-bogdan',
+      auto_merge: { available: true, requires: '#295', reason: null },
+      issue: doc,
     },
   }
 }
@@ -1676,7 +1699,7 @@ async function fixtureRuns(pageToken: string | null): Promise<Result<IssueRunPag
   await new Promise((r) => setTimeout(r, 60))
   noteFixtureProbe(route('/v1/runs'), 60, true)
   const runs = pageToken === null ? fixtureIssueRuns() : []
-  return { status: 'ok', fetchedAt: Date.now(), data: { runs, next_page_token: null, tenant_id: 'eng' } }
+  return { status: 'ok', fetchedAt: Date.now(), data: { runs, next_page_token: null, tenant_id: 'u-bogdan' } }
 }
 
 async function fixtureRun(runId: string): Promise<Result<IssueRunRead>> {
@@ -1692,13 +1715,31 @@ async function fixtureRun(runId: string): Promise<Result<IssueRunRead>> {
 async function fixtureCreateRun(body: RunCreateBody): Promise<Result<IssueRunRead>> {
   await new Promise((r) => setTimeout(r, 60))
   noteFixtureProbe(route('/v1/runs'), 60, true)
-  return { status: 'ok', fetchedAt: Date.now(), data: { run: fixtureIssueRun('run_4c1e09d2', {
-    state: 'PLANNING', plan: null, plan_digest: null, plan_revision: 0,
-    plan_approval: body.plan_approval, fix_rounds: body.fix_rounds,
-  }) } }
+  const at = new Date().toISOString()
+  const id = `run_${Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('')}`
+  // THE RUN KEEPS THE ISSUE IT WAS PLANNED FROM, AND THE READ (QA2-FIX-07,
+  // runs2-06): created after the read, so "older than the issue snapshot"
+  // was never true of it. Read as the route reads it, at creation.
+  const doc = fixtureIssueDoc(body.issue)
+  const issued: Partial<IssueRun> = doc === null ? {} : {
+    issue: { ref: doc.ref, owner: doc.owner, repo: doc.repo, number: doc.number, url: doc.url, repository_url: doc.repository_url },
+    issue_read: {
+      title: doc.title, labels: doc.labels, state: doc.state === 'closed' ? 'closed' : 'open', comments: doc.comments, url: doc.url, body: doc.body,
+      body_truncated: doc.body_truncated, body_redacted: doc.body_redacted, read_at: at,
+    },
+    issue_read_error: null,
+  }
+  const run = fixtureIssueRun(id, {
+    ...issued,
+    state: 'PLANNED', plan_approval: body.plan_approval, fix_rounds: body.fix_rounds, auto_merge: body.auto_merge,
+    created_at: at, updated_at: at,
+    history: [{ at, from: null, to: 'PLANNING', by: 'operator@example.com' }, { at, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' }],
+  })
+  fixtureRunsMade.unshift(run)
+  return { status: 'ok', fetchedAt: Date.now(), data: { run } }
 }
 
-async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 'reject', plan?: RunPlan): Promise<Result<IssueRunRead>> {
+async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 'reject', plan?: RunPlan, reason = ''): Promise<Result<IssueRunRead>> {
   await new Promise((r) => setTimeout(r, 60))
   // Spelled out per action, not `plan:${action}`: tests/unit/control_plane
   // test_every_v1_path_the_ui_calls_is_served_by_this_api reads these literals
@@ -1706,12 +1747,33 @@ async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 're
   const planPath = action === 'approve' ? '/v1/runs/{id}/plan:approve'
     : action === 'edit' ? '/v1/runs/{id}/plan:edit' : '/v1/runs/{id}/plan:reject'
   noteFixtureProbe(route(planPath, { id: runId }), 60, true)
+  const now = new Date().toISOString()
+  const was = fixtureIssueRuns().find((r) => r.id === runId) ?? fixtureIssueRun(runId)
+  // AN APPROVED PLAN STARTS A WORKFLOW OF ITS OWN STEPS, just queued
+  // (QA2-FIX-07, runs2-24): it linked wf_audit_01, five other steps, two of
+  // them succeeded nine days before the approval.
+  const started = action === 'approve'
+    ? fixtureMakeWorkflow(
+        (was.plan ?? FIXTURE_PLAN).steps.map((st, i, all) => ({
+          step_id: st.step_id,
+          // A plan step with no `depends_on` runs as a chain (PlanStepDoc).
+          depends_on: st.depends_on ?? (i === 0 ? [] : [all[i - 1]?.step_id ?? '']),
+          runner_profile: 'claude-code',
+        })),
+        'operator@example.com',
+        0,
+      )
+    : null
   const over: Partial<IssueRun> = action === 'approve'
-    ? { state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com', approved_at: new Date(FIXTURE_NOW).toISOString() }
+    ? { state: 'RUNNING', workflow_id: started?.workflow_id ?? null, approved_by: 'operator@example.com', approved_at: now, updated_at: now,
+        history: [...was.history, { at: now, from: 'PLANNED', to: 'APPROVED', by: 'operator@example.com' }, { at: now, from: 'APPROVED', to: 'RUNNING', by: 'swarm-api' }] }
     : action === 'reject'
-      ? { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com' }
+      // The reason typed is kept, trimmed as the live write sends it (QA2-FIX-07, runs2-20).
+      ? { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com', rejection_reason: reason.trim() === '' ? null : reason.trim(), updated_at: now,
+          history: [...was.history, { at: now, from: 'PLANNED', to: 'REJECTED', by: 'operator@example.com' }] }
       : { plan: plan ?? FIXTURE_PLAN, plan_revision: 2, plan_edited_by: 'operator@example.com' }
-  return { status: 'ok', fetchedAt: Date.now(), data: { run: fixtureIssueRun(runId, over) } }
+  fixtureRunsDecided.set(runId, { ...(fixtureRunsDecided.get(runId) ?? {}), ...over })
+  return { status: 'ok', fetchedAt: Date.now(), data: { run: { ...was, ...over } } }
 }
 
 /**
@@ -1873,12 +1935,23 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
   // BROWSER AGENT, task_f523c160 (FIXTURE-BROWSER-DONE, part of #2423), has
   // a short one, six actions and its result: its Browser tab is reviewed
   // for the end time, the links and the recordings, not for a long log.
+  const browserInput = (action: string, i: number): Record<string, string> =>
+    action === 'browser_navigate'
+      ? { url: `https://example.com/page-${i + 1}` }
+      : action === 'browser_click'
+        ? { element: `Link ${i + 1} in the page's list`, ref: `e${i + 10}` }
+        : action === 'browser_type'
+          ? { element: 'Search box', ref: `e${i + 10}`, text: `query ${i + 1}` }
+          : {}
   const browserSteps = (from: number, count: number): TranscriptStep[] =>
     Array.from({ length: count }, (_, i) => {
       const id = `toolu_b${String(i).padStart(2, '0')}`
       const action = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type'][i % 4]!
       return [
-        step(from + 2 * i, { kind: 'tool_call', tool: { id, name: action, input: `{\n  "step": ${i + 1}\n}` } }),
+        // THE INPUTS A BROWSER TOOL CARRIES (QA2 overview-agents-31): `{ "step": n }`
+        // held no address, element or text, so the transcript's one-line gist
+        // (Artifacts.tsx `inputGist`) had nothing to show beside the tool's name.
+        step(from + 2 * i, { kind: 'tool_call', tool: { id, name: action, input: JSON.stringify(browserInput(action, i), null, 2) } }),
         step(from + 2 * i + 1, { kind: 'tool_result', role: 'user', tool_result: { tool_use_id: id, is_error: false, content: `Step ${i + 1}: ${action} done; the page says "Example Domain".`, images: 0 } }),
       ]
     }).flat()
@@ -1915,7 +1988,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
           ? `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/logs/${finished ? 'final' : 'live'}/agent_stdout${finished ? '' : '.tail'}.log`
           : null,
         object_updated_at: started ? new Date(at).toISOString() : null,
-        age_seconds: started ? Math.max(0, Math.round((FIXTURE_NOW - at) / 1000)) : null,
+        age_seconds: started ? Math.max(0, Math.round((Date.now() - at) / 1000)) : null,
         total_bytes: started ? size : null,
         offset: 0,
         returned_bytes: size,
@@ -1948,7 +2021,12 @@ async function fixtureWorkflowRead(workflowId: string): Promise<Result<WorkflowR
     }
   }
   const page = await fixtureTasks()
-  const tasks = page.status === 'ok' ? page.data.tasks.filter((t) => t.workflow_id === workflowId) : []
+  // THE STEPS' OWN TASKS (review of QA2-FIX-16 runs2-36): the fixture tasks
+  // carry no workflow_id, so a filter on it alone served a read with no step
+  // task and Outcomes could not name the workflow Work › Workflows names.
+  const stepTasks = new Set(workflow.steps.map((s) => s.task_id).filter((id): id is string => !!id))
+  const tasks =
+    page.status === 'ok' ? page.data.tasks.filter((t) => t.workflow_id === workflowId || stepTasks.has(t.id)) : []
   return { status: 'ok', fetchedAt: Date.now(), data: { workflow, tasks } }
 }
 
@@ -2867,7 +2945,10 @@ export interface NotificationFeed {
  */
 export async function loadNotifications(): Promise<Result<NotificationFeed>> {
   const target = route('/v1/notifications')
-  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { items: [{ id: 'admin:ws:wsr_c4r0l', group: 'admin', needs_you: true, title: 'Carol asked for a workspace', detail: null, href: '/admin/people', at: new Date(Date.now() - 40 * 60_000).toISOString(), read: false }], unread_needs_you: 1, unread_updates: 0, admin_pending: 1, tenants_waiting: null, platform_secrets_unset: null, read_at: new Date().toISOString() } } as Result<NotificationFeed>
+  // The fixture item is Carol's workspace request (`wsr_c4r0l`), dated from
+  // its own `requested_at` as the API dates it (notifications.py), so the bell
+  // and Admin › People and roles give one age for one request (QA1 admin-shell-06).
+  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { items: [{ id: 'admin:ws:wsr_c4r0l', group: 'admin', needs_you: true, title: 'Carol asked for a workspace', detail: null, href: '/admin/people', at: fixtureAgo(40 * 60_000), read: false }], unread_needs_you: 1, unread_updates: 0, admin_pending: 1, tenants_waiting: null, platform_secrets_unset: null, read_at: new Date().toISOString() } } as Result<NotificationFeed>
   const r = await read<NotificationFeed>(target, () => false, { frame: true })
   // A 200 with no list is not an empty feed, and drawing "Nothing needs you"
   // over an answer nobody could read would be a claim; it is a failure.
@@ -2957,22 +3038,43 @@ function fixtureTenantChoices(): TenantChoice[] {
   ]
 }
 
+/**
+ * THE WORKSPACE THE FIXTURE ACTS IN, as the API honours `X-Swarm-Tenant`: `eng`
+ * when it is picked by a persona `/v1/tenants/mine` lists it for, else the
+ * personal one. Every fixture read that names the acting workspace asks this
+ * (QA2-FIX-07, admin-shell-01: `/v1/tenants/me` honoured the pick, but
+ * `/v1/profile` and `/v1/access` did not, so Workspace Settings and GitHub
+ * access still described u-bogdan after the eng card's link picked eng).
+ */
+function fixtureActingTenant(): string {
+  return chosenTenant() === FIXTURE_GROUP.tenant_id && (fixtureIsAdmin || fixtureIsWorkspaceAdmin) ? FIXTURE_GROUP.tenant_id : 'u-bogdan'
+}
+
 async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
   await new Promise((r) => setTimeout(r, 150))
   noteFixtureProbe(route('/v1/tenants/me'), 150, true, undefined, { frame: options.frame === true })
+  // THE PICK IS HONOURED, AS THE API HONOURS `X-Swarm-Tenant` (QA1-FIX-32,
+  // admin-shell-01): Admin › Workspaces you admin selects `eng` and opens
+  // Workspace Settings, which read this and drew the personal workspace. A
+  // persona that `/v1/tenants/mine` lists `eng` for reads it when it is picked.
+  const id = fixtureActingTenant()
+  const group = id === FIXTURE_GROUP.tenant_id
   return {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
       tenant: {
-        tenant_id: 'u-bogdan', kind: 'user', principal: 'alice@example.com',
-        display_name: 'Bogdan', created_at: new Date(FIXTURE_NOW - 86_400_000 * 9).toISOString(),
+        tenant_id: id, kind: group ? 'group' : 'user', principal: group ? FIXTURE_GROUP.principal : 'alice@example.com',
+        // THE PERSONAL WORKSPACE IS THE SIGNED-IN PERSON'S (QA2-FIX-07, config2-06):
+        // alice@example.com's, so named Alice. 'Bogdan' read as someone else's
+        // workspace that alice administered, which a personal one never is.
+        display_name: group ? FIXTURE_GROUP.principal : 'Alice', created_at: new Date(FIXTURE_NOW - 86_400_000 * 9).toISOString(),
         max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
         credentials: [
           'anthropic',
         ],
-        service_account: 'swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com',
-        gcs_prefix: 'gs://swarm-artifacts-dev/u-bogdan', namespace: 'swarm-tenant-u-bogdan',
+        service_account: `swarm-agent-worker-${id}@example-project.iam.gserviceaccount.com`,
+        gcs_prefix: `gs://swarm-artifacts-dev/${id}`, namespace: `swarm-tenant-${id}`,
       },
       principal: {
         email: 'alice@example.com', domain: 'example.com',
@@ -3022,7 +3124,7 @@ function fixtureRoster(): Tenant[] {
     gcs_prefix: `gs://swarm-artifacts-dev/${tenant_id}`, namespace: `swarm-tenant-${tenant_id}`,
   })
   return [
-    t('u-bogdan', 'user', 'alice@example.com', 'Bogdan', 9, 2, 40, ['anthropic']),
+    t('u-bogdan', 'user', 'alice@example.com', 'Alice', 9, 2, 40, ['anthropic']),
     t(FIXTURE_GROUP.tenant_id, 'group', FIXTURE_GROUP.principal, 'Engineering', 30, 4, 10, ['anthropic', 'openai']),
     t('smoke', 'group', 'smoke@example.com', 'Smoke tests', 60, 1, 2, []),
   ]
@@ -3154,6 +3256,14 @@ async function fixtureEventsPage(taskId: string, order: 'asc' | 'desc'): Promise
   return { status: 'ok', fetchedAt: Date.now(), data: { events, next_page_token: null } }
 }
 
+/** The fixture leases' tasks: holding-capacity tasks `fixtureTasks` serves. */
+const FIXTURE_LEASE_TASKS: Readonly<Record<string, string>> = {
+  d1: 'task_a073aff5',
+  c1: 'task_8ea5c26d',
+  b1: 'task_19d91b82',
+  a1: 'task_460409cd',
+}
+
 async function fixtureLeases(): Promise<Result<LeasePage>> {
   await new Promise((r) => setTimeout(r, 180))
   noteFixtureProbe(route('/v1/admin/leases'), 180, true)
@@ -3164,7 +3274,10 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
     extra: Partial<LeaseRow> = {},
   ): LeaseRow => ({
     lease_id: id,
-    task_id: `task_${id}`,
+    // A TASK THE AGENT FIXTURE KNOWS (QA1-FIX-12 chrome-C25): Holders names a
+    // holder by its task read, and `task_d1` is not one, so every row fell
+    // back to its short id on the fixture console.
+    task_id: FIXTURE_LEASE_TASKS[id] ?? `task_${id}`,
     attempt_id: `att_${id}`,
     tenant_id: 'u-bogdan',
     generation: 1,
@@ -3194,8 +3307,15 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
       leases: [
         row('d1', 400, { expired: true, expires_at: iso(60) }),
         row('c1', 140),
-        row('b1', 20),
+        // LEASED AFTER SUBMITTED (visual QA pass 2, ovag2-03, 2026-10-29): every
+        // row was leased 10 min ago, before `task_19d91b82` (3 min) and
+        // `task_460409cd` (1 min) were submitted, so Overview's held-since-lease
+        // age ran longer than Agents' since-submitted one. Each is leased after
+        // its task, its dispatch deadline after its lease.
+        row('b1', 20, { created_at: iso(160), dispatch_deadline: iso(130) }),
         row('a1', 0, {
+          created_at: iso(40),
+          dispatch_deadline: iso(10),
           dispatch_state: 'LEASED',
           dispatch_overdue: true,
           heartbeat_ever: false,
@@ -4382,7 +4502,7 @@ const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
  * demanding a key fails that test here rather than teaching the screen a rule
  * production does not apply.
  *
- * `inputs` ON claude-code, codex AND claude-code-large, the profiles that take
+ * `inputs` ON claude-code, codex, claude-code-large AND claude-code-lightpanda, the profiles that take
  * MCP servers and declare nothing else a form draws (QAFIX6-FIXTURE f, run 6
  * overview-automate-019, box 6343758363): with no profile serving `inputs`,
  * `mcpProfiles` (McpServers.tsx) read the fixture as an API too old to say,
@@ -4413,7 +4533,9 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "indexer": {"required_keys": ["prompt"]},
   "claude-code-browser": {"required_keys": ["prompt"]},
   "claude-code-large": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
-  "await-input": {"required_keys": []}
+  "claude-code-lightpanda": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
+  "await-input": {"required_keys": []},
+  "fix-loop": {"required_keys": []}
 }
 
 /**
@@ -4440,7 +4562,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "mock": {"available": true, "disabled_reason": ""},
   "generic": {"available": true, "disabled_reason": ""},
   "claude-code": {"available": true, "disabled_reason": ""},
-  "codex": {"available": false, "disabled_reason": "codex is disabled on this platform. The provider refused the registered credential and the platform is focused on Claude. Use claude-code."},
+  "codex": {"available": false, "disabled_reason": "codex is disabled until the ChatGPT-plan pool lands: the quota broker leasing OpenAI plan accounts and the codex runner using them. A follow-up turns it on once both have merged. Use claude-code."},
   "browser": {"available": true, "disabled_reason": ""},
   "merge": {"available": true, "disabled_reason": ""},
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
@@ -4448,7 +4570,9 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "indexer": {"available": true, "disabled_reason": ""},
   "claude-code-browser": {"available": true, "disabled_reason": ""},
   "claude-code-large": {"available": true, "disabled_reason": ""},
-  "await-input": {"available": true, "disabled_reason": ""}
+  "claude-code-lightpanda": {"available": true, "disabled_reason": ""},
+  "await-input": {"available": true, "disabled_reason": ""},
+  "fix-loop": {"available": false, "disabled_reason": "fix-loop is not available yet: it ships unavailable until its acceptance run passes, as docs/design/fix-loop.md says."}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -4723,7 +4847,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     })
   }
   const checks = ['checkov', 'ci-gate', 'python (unit)', 'ui (typecheck + component)', 'integration (emulator)']
-  const pr = { number: 1779, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/1779' }
+  const pr = { number: 1779, url: 'https://github.com/example-org/agent-swarm-infra/pull/1779' }
   return [
     one(
       'CI_PENDING',
@@ -5001,7 +5125,7 @@ function fixtureBudgetTasks(listed: Task[]): Task[] {
         budget: { limit: { usd: 1 }, used: { tokens: 1_020_000, usd: 1.02 }, warned: true, end_cause: 'budget_exceeded', stopped: 'turn_boundary' },
         git: {
           ...fixtureGit(exceeded),
-          pull_request: { number: 2470, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/2470', state: 'open', created: true },
+          pull_request: { number: 2470, url: 'https://github.com/example-org/agent-swarm-infra/pull/2470', state: 'open', created: true },
         },
         runner: {
           usage: {
@@ -5227,7 +5351,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
   return {
     status: 'ok',
     fetchedAt: Date.now(),
-    data: { tasks: fixtureTaskRows(), next_page_token: null, tenant_id: 'u-bogdan' },
+    data: { tasks: [...fixtureTasksMade, ...fixtureTaskRows()], next_page_token: null, tenant_id: 'u-bogdan' },
   }
 }
 
@@ -5258,7 +5382,10 @@ function fixtureTaskRows(): Task[] {
     started_at: null,
     completed_at: null,
     submitted_by: 'alice@example.com',
-    attempt_count: state === 'FAILED' ? 3 : 1,
+    // A NEVER-ADMITTED TASK COUNTS NO ATTEMPT (QA1 overview-agents-58): the
+    // generation below is 0 for QUEUED and READY, and `fixtureSpans` serves
+    // them no attempt, so a counter of 1 drew `counts 1 · returned 0`.
+    attempt_count: state === 'FAILED' ? 3 : state === 'QUEUED' || state === 'READY' ? 0 : 1,
     max_attempts: 3,
     park_reason: null,
     blocked_by: null,
@@ -5266,7 +5393,7 @@ function fixtureTaskRows(): Task[] {
     step_id: null,
     depends_on: null,
     cancel_requested: false,
-    repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
+    repository_url: 'https://github.com/example-org/agent-swarm-infra',
     model: profile === 'mock' ? null : 'claude-opus-5',
     timeout_seconds: 3600,
     // Only a PARKED task has one. Left null elsewhere on purpose: a date here
@@ -5356,13 +5483,38 @@ function fixtureTaskRows(): Task[] {
     // with every fixture row at generation == attempt_count, a glyph that
     // never fires and a glyph that is not wired look identical.
     mk('task_19d91b82', 'DISPATCHED', 'claude-code', 3, {
+      input: { prompt: 'Make the reconciler release a lease whose generation is stale.' },
       current_generation: 2,
       current_lease_id: 'lease_723362a25968460aae35',
     }),
-    mk('task_92eb4807', 'STARTING', 'claude-code', 2),
-    mk('task_460409cd', 'LEASED', 'claude-code', 1),
-    mk('task_950b8e4a', 'READY', 'claude-code', 1),
-    mk('task_e7d210b6', 'QUEUED', 'claude-code', 0),
+    // WHAT EACH OF THE FIVE NEWEST LONE AGENTS DID (visual QA pass 2,
+    // runs2-10): with no title and no prompt, Submit's "Start from a recent
+    // one" listed all five as `claude-code agent · <hex>`. Each has the
+    // prompt a person would have typed; the list reads its first line.
+    mk('task_92eb4807', 'STARTING', 'claude-code', 2, {
+      input: { prompt: 'Add a test for a park that outlives its provider wait.' },
+    }),
+    mk('task_460409cd', 'LEASED', 'claude-code', 1, {
+      input: { prompt: 'Show the queue depth per pool on the Capacity page.' },
+    }),
+    // A READY ROW SAYS WHICH POOL REFUSES IT (visual QA pass 1,
+    // overview-agents-56): the sidebar named `anthropic · u-bogdan` full and
+    // this row named nothing. Its `waiting_for` is the capacity fixture's own
+    // claude-code blocker, the per-tenant anthropic slice at 5 of 5.
+    mk('task_950b8e4a', 'READY', 'claude-code', 1, {
+      input: { prompt: 'Rename the dispatch strategies in the API docs.' },
+      waiting_for: {
+        as_of: new Date(FIXTURE_NOW).toISOString(),
+        admissible_now: false,
+        holds_capacity: false,
+        lead: { pool: 'provider:anthropic:tenant:u-bogdan', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' },
+        pools: [{ pool: 'provider:anthropic:tenant:u-bogdan', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' }],
+        complete: true,
+      },
+    }),
+    mk('task_e7d210b6', 'QUEUED', 'claude-code', 0, {
+      input: { prompt: 'Write the runbook for rotating a tenant git secret.' },
+    }),
     // THE FAILED TASK WHOSE CLI REPORTED SUCCESS (QA-115, kept as built):
     // its transcript ends `result · success` and the task still failed
     // after it, which is the case Logs explains. The only one: every other
@@ -5435,7 +5587,7 @@ function fixtureTaskRows(): Task[] {
       park_reason: 'DEPENDENCY_INCOMPLETE',
       // The listing row's `waiting` (#1782, WAIT-API), in the sentence
       // `swarm_api/waiting_detail.py` writes, so the Waiting tab's short
-      // reason ("upstream: 1 step") is reachable in development.
+      // reason ("waiting on scan-terraform") is reachable in development.
       waiting: { reason: 'DEPENDENCY_INCOMPLETE', summary: 'Waiting on 1 upstream steps: scan-terraform (RUNNING)' },
       dispatch: {
         strategy: 'integrate', carrier: 'checkpoints', role: 'integrator',
@@ -5498,18 +5650,55 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   // development instead of only in production.
   noteFixtureProbe(route('/v1/admin/dispatch'), 120, false)
 
-  // Reuse the task fixture so the join is a REAL join: if a step_id or task_id
-  // stops matching, the fixture shows "state unknown" exactly as production
-  // would, instead of quietly carrying a state of its own.
-  const tasks = await fixtureTasks()
-  const taskById = new Map<string, Task>()
-  if (tasks.status === 'ok') for (const t of tasks.data.tasks) taskById.set(t.id, t)
-
+  // ONE READ, AS IN PRODUCTION: each step carries its task's block, built off
+  // the task fixture, and the join is built from those blocks by the same
+  // `summaryTaskById` -- so a step_id or task_id that stops matching shows
+  // "state unknown" exactly as production would.
+  const tasks = [...fixtureTasksMade, ...fixtureTaskRows()]
+  const workflows = withTaskSummaries(fixtureWorkflowRows(tasks), tasks)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
-    data: { taskById, statesDetail: null, workflows: fixtureWorkflowRows(tasks.status === 'ok' ? tasks.data.tasks : undefined) },
+    data: { taskById: summaryTaskById(workflows), statesDetail: null, workflows },
   }
+}
+
+/** Each fixture step's `task_summary`, as `codec.step_task_summary` serves it off the step's task. */
+function withTaskSummaries(workflows: Workflow[], tasks: readonly Task[]): Workflow[] {
+  const byId = new Map(tasks.map((t) => [t.id, t]))
+  return workflows.map((w) => ({
+    ...w,
+    steps: w.steps.map((s) => {
+      const t = s.task_id ? byId.get(s.task_id) : undefined
+      if (t === undefined) return { ...s, task_summary: null }
+      const meta = t.metadata ?? {}
+      // THE TOTALS OVER THE FIXTURE'S OWN ATTEMPTS (`fixtureAttemptRows`,
+      // newest first), as `attempt_totals.totals_for` sums the documents: the
+      // same rows a step's page reads, so the list and the page agree.
+      const rows = fixtureAttemptRows(t)
+      const costs = rows.map((a) => a.cost_usd).filter((c): c is number => typeof c === 'number' && Number.isFinite(c))
+      const last = rows[0]?.cost_usd
+      const task_summary: StepTaskSummary = {
+        state: t.state,
+        title: typeof meta.title === 'string' ? meta.title : null,
+        unit: typeof meta.unit === 'string' ? meta.unit : null,
+        started_at: t.started_at,
+        completed_at: t.completed_at,
+        attempts: rows.length,
+        attempts_with_cost: costs.length,
+        cost_usd_total: costs.length > 0 ? costs.reduce((a, b) => a + b, 0) : null,
+        cost_incomplete: costs.length < rows.length,
+        duration_s_total: null,
+        duration_incomplete: rows.length > 0,
+        first_started_at: t.started_at,
+        last_attempt_cost_usd: typeof last === 'number' && Number.isFinite(last) ? last : null,
+        last_attempt_duration_s: null,
+        attempts_read: 'ok',
+        last_error_line: t.last_error ? (t.last_error.split('\n')[0] ?? null) : null,
+      }
+      return { ...s, task_summary }
+    }),
+  }))
 }
 
 /**
@@ -5542,6 +5731,9 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
     // a fixture that disagrees with the response is a development screen that
     // renders correctly and a production one that does not.
     input_from: Record<string, string> = {},
+    // The step's input as the workflow route serves it, masked by its task's
+    // masker (QA2-FIX-13, overview-agents-50): the prompt the workflow gave it.
+    input: Record<string, unknown> = {},
   ) => ({
     step_id,
     runner_profile: 'claude-code',
@@ -5550,6 +5742,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
     input_from,
     timeout_seconds: 3600,
     task_id,
+    input,
   })
 
   const workflows: Workflow[] = [
@@ -5639,7 +5832,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
           step('cold-start', [], 'task_fan_0'),
           step('fencing', [], 'task_fan_1'),
           step('allornothing', [], 'task_fan_2'),
-          step('checkpoints', [], 'task_fan_3'),
+          step('checkpoints', [], 'task_fan_3', {}, { prompt: 'Audit the checkpoint writer: every running attempt checkpoints on its period, and a parked one before it exits.' }),
           step('absentzero', [], 'task_fan_4'),
           // `input_from` MIRRORS `depends_on` here, and it is a MAP -- upstream
           // step_id to artifact filename -- because that is what the API serves
@@ -5688,7 +5881,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
   // wf_audit_01's were typed as one succeeded beside two step tasks the
   // Timeline drew as succeeded. Counted here as `rollup.py` counts them: each
   // step's task state, `unstarted` for a step with no task yet.
-  return workflows.map((w) => {
+  return [...fixtureWorkflowsMade, ...workflows].map((w) => {
     if (w.rollup === undefined || w.rollup === null) return w
     const counts: Record<string, number> = {}
     for (const st of w.steps) {
@@ -5697,6 +5890,102 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
     }
     return { ...w, rollup: { ...w.rollup, counts } }
   })
+}
+
+/**
+ * THE WORKFLOWS MADE IN THIS PAGE'S LIFE (QA2-FIX-07, runs2-02 and runs2-24):
+ * by Submit a workflow and by an approved plan, newest first. No step has a
+ * task yet, so each reads QUEUED with every step unstarted, as `rollup.py`
+ * derives a workflow none of whose steps has started (`steps_not_started`).
+ */
+const fixtureWorkflowsMade: Workflow[] = []
+
+type FixtureStepAsked = { step_id: string; depends_on: string[]; runner_profile: string; resource_class?: string; input_from?: Record<string, string> }
+
+function fixtureMakeWorkflow(steps: FixtureStepAsked[], by: string, priority: number, onStepFailure = 'FAIL_WORKFLOW'): Workflow {
+  const at = new Date().toISOString()
+  const id = `wf_${Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => b.toString(16).padStart(2, '0')).join('')}`
+  const workflow: Workflow = {
+    workflow_id: id, tenant_id: fixtureActingTenant(),
+    state: 'QUEUED', stored_state: 'QUEUED', state_source: 'derived',
+    rollup: {
+      state: 'QUEUED', complete: true, reason: 'steps_not_started', counts: {},
+      unreadable_steps: [], unstarted_steps: steps.map((st) => st.step_id), steps_read: 0,
+    },
+    created_at: at, updated_at: at, submitted_by: by, priority, on_step_failure: onStepFailure, cancel_requested: false,
+    steps: steps.map((st) => ({
+      step_id: st.step_id, runner_profile: st.runner_profile, resource_class: st.resource_class ?? 'standard',
+      depends_on: st.depends_on, input_from: st.input_from ?? {}, timeout_seconds: 3600, task_id: null,
+    })),
+  }
+  fixtureWorkflowsMade.unshift(workflow)
+  return workflow
+}
+
+/** SubmitWorkflow.tsx's `DispatchEcho`: what the create says it will do with the steps' work. */
+type FixtureDispatchEcho = { strategy: string; carrier: string; integrator_step_id: string | null }
+
+/**
+ * `POST /v1/workflows` in the fixture build (QA2-FIX-07, runs2-02): the
+ * workflow the body asks for, created now and readable by its id after, as
+ * the 201 serves it (`state_source: 'stored'` on the create response). The
+ * fixture checks nothing the form has not; the live route is the gate.
+ */
+export async function fixtureSubmitWorkflow(body: Record<string, unknown>): Promise<{ workflow: Workflow; dispatch: FixtureDispatchEcho }> {
+  await new Promise((r) => setTimeout(r, 120))
+  noteFixtureProbe(route('/v1/workflows'), 120, true)
+  const asked = Array.isArray(body.steps) ? (body.steps as Record<string, unknown>[]) : []
+  const made = fixtureMakeWorkflow(
+    asked.map((st, i) => ({
+      step_id: typeof st.step_id === 'string' ? st.step_id : `step-${i + 1}`,
+      depends_on: Array.isArray(st.depends_on) ? st.depends_on.filter((d): d is string => typeof d === 'string') : [],
+      runner_profile: typeof st.runner_profile === 'string' ? st.runner_profile : 'claude-code',
+      resource_class: typeof st.resource_class === 'string' ? st.resource_class : undefined,
+      input_from: typeof st.input_from === 'object' && st.input_from !== null && !Array.isArray(st.input_from) ? (st.input_from as Record<string, string>) : undefined,
+    })),
+    'alice@example.com',
+    typeof body.priority === 'number' ? body.priority : 0,
+    typeof body.on_step_failure === 'string' ? body.on_step_failure : 'FAIL_WORKFLOW',
+  )
+  const { rollup: _rollup, ...stored } = made
+  // The create's echo (`DispatchEcho`), not a task's dispatch block.
+  const echo = {
+    strategy: typeof body.strategy === 'string' ? body.strategy : 'collect',
+    carrier: typeof body.carrier === 'string' ? body.carrier : 'checkpoints',
+    integrator_step_id: null,
+  }
+  return { workflow: { ...stored, state_source: 'stored' }, dispatch: echo }
+}
+
+/**
+ * THE AGENTS STARTED IN THIS PAGE'S LIFE (QA2-FIX-07, runs2-01): Start one
+ * agent answered a 404 in the fixture build. Listed first and readable by id,
+ * QUEUED and never admitted, as a 201 leaves a task.
+ */
+const fixtureTasksMade: Task[] = []
+
+/** `POST /v1/tasks` in the fixture build: the task the body asks for, as the 201 serves it. */
+export async function fixtureSubmitTask(body: Record<string, unknown>): Promise<{ task: Task; scheduler_woken: boolean }> {
+  await new Promise((r) => setTimeout(r, 120))
+  noteFixtureProbe(route('/v1/tasks'), 120, true)
+  const at = new Date().toISOString()
+  const id = `task_${Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('')}`
+  // A never-admitted row of the list, so every field the list serves is there.
+  const like = fixtureTaskRows().find((t) => t.state === 'QUEUED' && t.workflow_id === null) ?? fixtureTaskRows()[0]
+  const profile = typeof body.runner_profile === 'string' ? body.runner_profile : 'claude-code'
+  const task: Task = {
+    ...(like as Task),
+    id, tenant_id: fixtureActingTenant(), state: 'QUEUED', runner_profile: profile,
+    created_at: at, updated_at: at, started_at: null, completed_at: null,
+    submitted_by: 'alice@example.com', attempt_count: 0, current_generation: 0, current_lease_id: null,
+    park_reason: null, blocked_by: null, workflow_id: null, step_id: null, depends_on: null, cancel_requested: false,
+    priority: typeof body.priority === 'number' ? body.priority : 0,
+    input: typeof body.input === 'object' && body.input !== null ? (body.input as Task['input']) : null,
+    repository_url: typeof body.repository_url === 'string' ? body.repository_url : like?.repository_url ?? null,
+    next_eligible_at: null, metadata: null, last_error: null, result_summary: null, latest_checkpoint: null,
+  }
+  fixtureTasksMade.unshift(task)
+  return { task, scheduler_woken: true }
 }
 
 /**
@@ -6557,7 +6846,8 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
       // or refreshable from here, and the fixture is what makes that path
       // visible in development.
       page: {
-        accounts: fixtureAccounts.map((a) => ({ ...a })),
+        // On the page's clock, as the board reads them on the fixture's (cap2-06).
+        accounts: fixtureAccounts.map((a) => fixtureOnClock({ ...a }, Date.now())),
         tenant_id: FIXTURE_TENANT,
         // A document this tenant owns and the store could not parse. The rows
         // above are six; the pool is seven. Development has to be able to see
@@ -6652,13 +6942,15 @@ function fixturePoolHealth(): PoolHealth {
       [-30 * H, 'overloaded'], [-30 * H + 8 * M, 'overloaded'],
     ],
     'u-bogdan:weekly-burn': [
-      [-3 * H, 'rate_limit', { w: 'seven_day', r: 20 * H }],
+      // Its reset is the one Accounts draws (seven_day resets_at, ISO(70 h)): QA1-FIX-01 capacity-04.
+      [-3 * H, 'rate_limit', { w: 'seven_day', r: 70 * H }],
       [-2 * H, 'assign_refused', { w: 'seven_day', m: 'not assigned: its 7-day window is under its floor' }],
       [-27 * H, 'exhausted'],
     ],
     'u-bogdan:five-hour-floor': [
-      [-90 * M, 'rate_limit', { w: 'five_hour', r: 50 * M }],
-      [-70 * M, 'rate_limit', { w: 'five_hour', r: 50 * M }],
+      // Its reset is the one Accounts draws (five_hour resets_at, ISO(40 min)): QA1-FIX-01 capacity-04.
+      [-90 * M, 'rate_limit', { w: 'five_hour', r: 40 * M }],
+      [-70 * M, 'rate_limit', { w: 'five_hour', r: 40 * M }],
       [-52 * H, 'rate_limit', { w: 'five_hour', r: -48 * H }],
       [-120 * H, 'rate_limit', { w: 'five_hour', r: -117 * H }],
     ],
@@ -6730,27 +7022,31 @@ async function fixtureAccountHealthBoard(): Promise<Result<AccountHealthBoard>> 
   await new Promise((r) => setTimeout(r, 180))
   noteFixtureProbe(route('/v1/accounts'), 180, true)
   noteFixtureProbe(route('/v1/accounts/health'), 120, true)
-  const pool = fixturePoolHealth()
+  // ONE CLOCK FOR EVERY CAPACITY FIXTURE (QA2-FIX-07 review, cap2-06): the
+  // board, the Accounts list and the account sheet are all moved onto the
+  // browser's clock, so weekly-burn's limit ends at the same instant on each.
+  const now = Date.now()
+  const pool = fixtureOnClock(fixturePoolHealth(), now)
   const byId = new Map(pool.accounts.map((r) => [r.account_id, r]))
   return {
     status: 'ok',
-    fetchedAt: Date.now(),
+    fetchedAt: now,
     data: {
       page: {
-        accounts: fixtureAccounts.map((a) => ({
+        accounts: fixtureAccounts.map((a) => fixtureOnClock({
           ...a,
           health_status: byId.get(a.account_id)?.status ?? null,
           health_24h: byId.get(a.account_id)?.counts.last_24h ?? null,
-        })),
+        }, now)),
         tenant_id: FIXTURE_TENANT,
         unreadable_documents: [],
         unreadable_document_count: 0,
       },
       health: { kind: 'ok', pool },
-      // The fixture's events are dated off FIXTURE_NOW, so that is when it was
-      // read: the page's clock is the read's, and a real clock would show every
-      // limit as long cleared and every incident closed.
-      readAt: FIXTURE_NOW,
+      // The fixture's events are dated off FIXTURE_NOW and moved onto `now` by
+      // the same span, so `now` is when it was read: the page's clock is the
+      // read's, and no limit reads as long cleared nor incident as closed.
+      readAt: now,
     },
   }
 }
@@ -6945,12 +7241,12 @@ async function fixtureName(accountId: string, displayName: string | null): Promi
 }
 
 /**
- * THE HEALTH RECORD THE FIXTURE SERVES (#2302): one account per state the
- * Health section draws, so a local render shows each without a deployment.
- * `primary` has a week of events and a closed 5-hour limit; `five-hour-floor`
- * is limited now; `retired-laptop` needs re-auth; `never-polled` was read and
- * is empty; `eng:shared` is a deployment whose broker predates the record (a
- * 404). Every other account is a quiet healthy one with a single event.
+ * THE HEALTH RECORD THE FIXTURE SERVES (#2302): the account's own record off
+ * the health board (`fixturePoolHealth`), so the sheet, the board and the list
+ * tell one story (QA2-FIX-07, cap2-06: the sheet had a plan of its own on the
+ * browser's clock, and drew weekly-burn Healthy with no event in 24 h beside a
+ * board that drew it Limited with two). `eng:shared` is a deployment whose
+ * broker predates the record (a 404).
  */
 async function fixtureAccountHealth(accountId: string): Promise<Result<AccountHealth>> {
   await new Promise((r) => setTimeout(r, 160))
@@ -6960,108 +7256,40 @@ async function fixtureAccountHealth(accountId: string): Promise<Result<AccountHe
   if (accountId === 'eng:shared') {
     return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'Not Found' } }
   }
+  const record = fixturePoolHealth().accounts.find((r) => r.account_id === accountId)
+  if (record === undefined) {
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: `no account '${accountId}'` } }
+  }
   const now = Date.now()
-  const H = 3_600_000
-  const at = (hoursAgo: number) => new Date(now - hoursAgo * H).toISOString()
-  const task = () => `task_${Math.random().toString(16).slice(2, 12)}${Math.random().toString(16).slice(2, 12)}`
-  type Ev = [number, AccountHealthKind, Partial<AccountHealthEvent>?]
-  const ev = (list: Ev[]): AccountHealthEvent[] =>
-    list.map(([h, kind, over]) => ({
-      // Another workspace's event is floored to its hour, as the route floors it.
-      at: over?.own === false ? new Date(now - h * H - ((now - h * H) % H)).toISOString() : at(h),
-      kind,
-      tenant_id: 'u-bogdan',
-      task_id: task(),
-      window: null,
-      reset_at: null,
-      message: FIXTURE_HEALTH_MESSAGES[kind],
-      own: true,
-      ...over,
-    }))
-  let status: AccountHealthStatus = 'healthy'
-  let limitedUntil: string | null = null
-  let events: AccountHealthEvent[]
-  if (accountId === 'u-bogdan:never-polled') {
-    events = []
-  } else if (accountId === 'u-bogdan:primary') {
-    events = ev([
-      [0.4, 'overloaded'],
-      [3.2, 'network'],
-      [26, 'rate_limit', { window: 'five_hour', reset_at: at(23) }],
-      [25.5, 'exhausted'],
-      [25, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
-      [24.6, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
-      [52, 'server_error'],
-      [52.2, 'overloaded'],
-      [98, 'network', { tenant_id: null, task_id: null, message: null, own: false }],
-      [140, 'overloaded'],
-    ])
-  } else if (accountId === 'u-bogdan:five-hour-floor') {
-    status = 'limited'
-    limitedUntil = at(-40 / 60)
-    events = ev([
-      [0.2, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
-      [1.1, 'assign_refused', { window: 'five_hour', message: 'not assigned: window under its floor' }],
-      [2.6, 'exhausted'],
-      [2.8, 'rate_limit', { window: 'five_hour', reset_at: limitedUntil }],
-      [74, 'rate_limit', { window: 'five_hour', reset_at: at(71) }],
-      [73.6, 'exhausted'],
-    ])
-  } else if (accountId === 'u-bogdan:retired-laptop') {
-    status = 'reauth_needed'
-    events = ev([
-      [0.3, 'assign_refused', { message: 'not assigned: account marked reauth_needed' }],
-      [0.9, 'assign_refused', { message: 'not assigned: account marked reauth_needed' }],
-      [1.4, 'reauth'],
-      [1.41, 'auth'],
-      [1.6, 'refresh_failed'],
-      [2.1, 'refresh_failed'],
-    ])
-  } else {
-    events = ev([[61, 'network']])
-  }
-  events.sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
-  const span = (hours: number): AccountHealthCounts => {
-    const c = {} as AccountHealthCounts
-    for (const k of ACCOUNT_HEALTH_KINDS) c[k] = 0
-    for (const e of events) if (now - Date.parse(e.at) <= hours * H) c[e.kind] += 1
-    return c
-  }
-  const byHour = new Map<string, AccountHealthHour>()
-  for (const e of events) {
-    const t = Date.parse(e.at)
-    const hour = new Date(t - (t % H)).toISOString()
-    const row = byHour.get(hour) ?? { hour, counts: {}, total: 0 }
-    row.counts[e.kind] = (row.counts[e.kind] ?? 0) + 1
-    row.total += 1
-    byHour.set(hour, row)
-  }
+  // The sheet measures on the browser's clock, so the record is moved onto it whole.
+  const r = fixtureOnClock(record, now)
   return {
     status: 'ok',
     fetchedAt: now,
     data: {
-      account_id: accountId,
-      status,
-      limited_until: limitedUntil,
-      counts: { last_1h: span(1), last_24h: span(24), last_7d: span(168) },
-      hourly: [...byHour.values()].sort((x, y) => Date.parse(x.hour) - Date.parse(y.hour)),
-      events,
-      observed_at: new Date(now).toISOString(),
-    },
+      account_id: r.account_id, status: r.status, limited_until: r.limited_until, counts: r.counts,
+      hourly: r.hourly.filter((h) => h.total > 0), events: r.events, observed_at: r.observed_at,
+    } as AccountHealth,
   }
 }
 
-/** What the worker and broker write for each kind, already redacted (mock-up A's `msgOf`). */
-const FIXTURE_HEALTH_MESSAGES: Record<AccountHealthKind, string> = {
-  rate_limit: 'rate_limit_event status=rejected',
-  exhausted: 'PROVIDER_QUOTA_EXHAUSTED · parked at checkpoint 4, capacity released',
-  assign_refused: 'not assigned: window under its floor',
-  overloaded: '529 overloaded_error: Overloaded',
-  server_error: '503 service unavailable, retry later',
-  network: 'connect ECONNRESET api.anthropic.com:443',
-  auth: '401 authentication_error: OAuth access expired · credential [redacted]',
-  refresh_failed: 'refresh failed: invalid_grant · credential [redacted]',
-  reauth: 'marked reauth_needed by the worker after a 401',
+const FIXTURE_ISO_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/
+
+/**
+ * A fixture document dated off FIXTURE_NOW, every time in it moved by the same
+ * span onto `now`: what a page that measures on the browser's clock reads, so
+ * "4 min ago" on the fixture's clock is still 4 min ago on the page's
+ * (QA2-FIX-07, cap2-06: the Accounts list read every account "read 10d ago").
+ */
+function fixtureOnClock<T>(doc: T, now: number): T {
+  const shift = now - FIXTURE_NOW
+  const move = (v: unknown): unknown => {
+    if (typeof v === 'string') return FIXTURE_ISO_AT.test(v) ? new Date(Date.parse(v) + shift).toISOString() : v
+    if (Array.isArray(v)) return v.map(move)
+    if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, move(x)]))
+    return v
+  }
+  return move(doc) as T
 }
 
 async function fixtureMaxAgents(accountId: string, maxAgents: number): Promise<Result<unknown>> {
@@ -7660,11 +7888,14 @@ export async function loadRunnerProfiles(): Promise<Result<string[]>> {
 // still answered as not served, exactly as an API without it.
 // ---------------------------------------------------------------------------
 
-function repoNotServed<T>(target: ApiRoute): Result<T> {
+// THE ANSWER NAMES THE ROUTE IT WAS ASKED FOR (QA2-FIX-07, admin2-08): it
+// said "no repository or git-token routes" after Approve, Roles in workspaces
+// and Runner sizes Save too, none of which is either.
+function repoNotServed<T>(target: ApiRoute, method = 'GET'): Result<T> {
   noteFixtureProbe(target, 0, false)
   return {
     status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no repository or git-token routes.', template: target.template },
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: `The fixture build does not serve this route (${method} ${target.template}).`, template: target.template },
   }
 }
 
@@ -7742,6 +7973,9 @@ function fixtureRepositories(): unknown {
       index_credential: { source: 'tenant', secret_name: `swarm-tenant-${FIXTURE_TENANT}-git` },
       agents_may_file_issues: fixtureFileIssues.get(r.repo_id) ?? false,
       workflow_files: fixtureWorkflowFiles.get(r.repo_id) ?? false,
+      // Two of three open to agents, so Submit's Additional repositories picker
+      // draws a list and the gate both (QA1-FIX-10, runs-submit-16).
+      readable_by_tasks: i < 2, archived: false,
     })).filter((x) => !fixtureRemoved.has(x.repo_id)),
   }
 }
@@ -7752,6 +7986,71 @@ function fixtureRepoIndex(repoId: string): unknown {
   if (r === undefined) return undefined
   const modules = Array.from({ length: r.modules }, (_v, i) => ({ path: `src/module_${i + 1}`, files: 4 + i, lines: 300 + 40 * i, language: 'typescript' }))
   return { index: { commit_sha: fixtureSha(r.sha), truncated: [] }, document: { modules, truncated: [] } }
+}
+
+/**
+ * `GET /v1/repositories/{repo_id}/graph-cache` for a fixture repository
+ * (CACHE-4-CONSOLE): two replicas read and ONE NOT READ (a peer that timed
+ * out), so the fixture build draws the hard case of §5.3, and no `carried`
+ * count, so the reuse tile is its dash. `shards=1` adds a page of the list,
+ * changed shards first. Digests are built here, never written out whole.
+ */
+function fixtureGraphCache(url: string): unknown {
+  const repoId = fixtureSegment(url, 3)
+  const r = FIXTURE_REPOS.find((x) => x.repo_id === repoId)
+  if (r === undefined) return undefined
+  const MiB = 1024 * 1024
+  const digest = (seed: string) => `sha256:${seed.repeat(Math.ceil(64 / seed.length)).slice(0, 64)}`
+  const current = digest(`${r.sha}c`)
+  const warm = { digest: current, ms: 2140, shards: 46, replayed: 200 }
+  const replicas = [
+    {
+      replica: 'swarm-graph-0', state: 'read', started_at: fixtureAgo(3 * 24 * FIXTURE_HOUR), uptime_seconds: 3 * 24 * 3600,
+      result_bytes: 61 * MiB, result_bound: 256 * MiB, shard_bytes: 188 * MiB, shard_bound: 512 * MiB,
+      answers_hot: 412, shards_hot: 31, last_warm: warm,
+    },
+    {
+      replica: 'swarm-graph-1', state: 'read', started_at: fixtureAgo(5 * FIXTURE_HOUR), uptime_seconds: 5 * 3600,
+      result_bytes: 23 * MiB, result_bound: 256 * MiB, shard_bytes: 97 * MiB, shard_bound: 512 * MiB,
+      answers_hot: 140, shards_hot: 18, last_warm: { ...warm, ms: 1870 },
+    },
+    { replica: 'swarm-graph-2', state: 'not_read', reason: 'timeout' },
+  ]
+  const layers = ['symbols', 'callers', 'callees', 'tests', 'signatures', 'files', 'terms']
+  const rows = Array.from({ length: r.modules * layers.length }, (_v, i) => {
+    const layer = layers[i % layers.length]!
+    const mod = `src/module_${Math.floor(i / layers.length) + 1}`
+    const changed = i % 5 === 0
+    const hits = changed ? 3 + i : 40 + ((i * 37) % 300)
+    return {
+      layer, module: mod, blob: digest(`${(i + 11).toString(16)}e`), raw_bytes: 4096 + i * 1531,
+      last_merge: changed ? 'changed' : 'unchanged',
+      replicas: [{ replica: 'swarm-graph-0', hot: i % 3 !== 0 }, { replica: 'swarm-graph-1', hot: i % 4 === 0 }],
+      hits_24h: hits, last_read: fixtureAgo((i % 9) * 6 * 60_000 + 40_000),
+    }
+  }).sort((a, b) => Number(b.last_merge === 'changed') - Number(a.last_merge === 'changed') || b.hits_24h - a.hits_24h)
+  const page = Math.max(1, Number(new URLSearchParams(url.split('?')[1] ?? '').get('page') ?? '1') || 1)
+  const withShards = (url.split('?')[1] ?? '').includes('shards=1')
+  return {
+    repo_id: repoId,
+    index: { commit_sha: fixtureSha(r.sha), manifest_digest: current, previous_sha: fixtureSha(`${r.sha}p`), previous_digest: digest(`${r.sha}p`) },
+    // swarm-graph-1 restarted 5 h ago, so the window covers 5 h, not 24.
+    facts: {
+      window_hours: 5, answers: 1284, hit: 1168, carried: null, miss: 116, hit_rate: 1168 / 1284,
+      reused_share: null, served_p95_ms: 38, last_warm: warm,
+    },
+    replicas,
+    stats: { state: 'read' },
+    latency: { p50_ms: 61, p95_ms: 152, max_ms: 410, reference_ms: 20.5, symbols: 9120 },
+    ...(withShards
+      ? {
+          shards: {
+            state: 'read', comparison: 'read', total: rows.length, changed: rows.filter((x) => x.last_merge === 'changed').length,
+            page, page_rows: 100, rows: rows.slice((page - 1) * 100, page * 100),
+          },
+        }
+      : {}),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -7799,15 +8098,27 @@ function fixtureAccessGrants(): Record<string, unknown>[] {
   })
 }
 
+/**
+ * When Hide was pressed in this page's life, or null (QA2-FIX-07,
+ * overview-agents-04): `POST /v1/onboarding/dismiss` is answered as the route
+ * answers it and the next read says so, as the server keeps it per person.
+ */
+let fixtureOnboardingHiddenAt: string | null = null
+
 /** `GET /v1/onboarding`: seven steps as `derive` serves them with the workspace gate off, in mixed states. */
 function fixtureOnboarding(): unknown {
+  // THE PICKED WORKSPACE'S CHECKLIST (QA2-FIX-07 review, admin-shell-01): the
+  // read names the acting workspace, and eng, a group, has people to invite;
+  // the strip drew u-bogdan's 'a personal workspace has nobody to invite'.
+  const acting = fixtureActingTenant()
+  const group = acting === FIXTURE_GROUP.tenant_id
   const checked = fixtureAgo(4 * 60_000)
   const step = (name: string, state: string, evidence: Record<string, unknown>, issues: unknown[] = []) => ({
     step: name, state, code: null, copy: null, checked_at: state === 'todo' ? null : checked, evidence, issues,
   })
   const ssoUrl = 'https://github.com/orgs/example-labs/sso'
   const steps = [
-    step('signed_in', 'done', { email: 'alice@example.com', tenant_id: FIXTURE_TENANT }),
+    step('signed_in', 'done', { email: 'alice@example.com', tenant_id: acting }),
     step('github_connected', 'done', { via: 'user', kind: 'app_user', forge_login: 'alice-example', token_state: 'active' }),
     step('app_installed', 'done', { needed: true, read: true, source: 'github', login: 'alice-example', installed: ['example-org'], not_installed: ['example-labs'], install_url: null, app_name: null }),
     {
@@ -7831,8 +8142,24 @@ function fixtureOnboarding(): unknown {
     step('ready', 'todo', { waiting_for: 'orgs_enabled' }),
   ]
   return {
-    tenant_id: FIXTURE_TENANT, user: 'alice@example.com', user_hash: '5a1ce0e8a3b7c912', derived_at: new Date(FIXTURE_NOW).toISOString(),
-    steps, next_step: 'orgs_enabled', complete: false, dismissed: false, dismissed_at: null, source: 'derived on this read',
+    tenant_id: acting, user: 'alice@example.com', user_hash: '5a1ce0e8a3b7c912', derived_at: new Date(FIXTURE_NOW).toISOString(),
+    steps, next_step: 'orgs_enabled', complete: false, dismissed: fixtureOnboardingHiddenAt !== null, dismissed_at: fixtureOnboardingHiddenAt, source: 'derived on this read',
+    // config_setup.py's field, which the live read carries and the strip's
+    // Secrets set and People invited are drawn from (QA1-FIX-10, config-09).
+    // It agrees with `fixtureSecretsOverview`'s workspace scope: MCP server
+    // kb's credential is the one thing needed and not stored.
+    config_setup: {
+      secrets: {
+        needed: 1, done: false,
+        items: [{ kind: 'mcp_server', name: 'kb', needed_by: 'kb', where: 'config/secrets' }],
+        sources: { mcp_servers: { needed: 1, reason: null }, qa_targets: { needed: 0, reason: null }, provider_key: { needed: 0, reason: null } },
+      },
+      // config_setup.people_step's two answers: eng's only role holder is the
+      // reader (`fixtureAdminWorkspacesRoles`), so nobody else is in it yet.
+      people: group
+        ? { applies: true, done: false, holders: 0, admins: 0, pending: null, reason: null, pending_reason: 'this workspace takes no requests to join; its people come from its group' }
+        : { applies: false, done: null, holders: null, admins: null, pending: null, reason: 'a personal workspace has nobody to invite', pending_reason: null },
+    },
   }
 }
 
@@ -7879,7 +8206,7 @@ function fixtureAccess(): unknown {
     }],
     requested: [],
     grants: fixtureAccessGrants(),
-    tenant_id: FIXTURE_TENANT,
+    tenant_id: fixtureActingTenant(),
   }
 }
 
@@ -7918,14 +8245,16 @@ function fixtureIdentity(): Record<string, unknown> {
  * fixture describes, and the Claude accounts fixtureAccounts holds.
  */
 function fixtureProfile(): unknown {
+  const acting = fixtureActingTenant()
   const workspaces: Record<string, unknown>[] = [{
     tenant_id: FIXTURE_TENANT, display_name: `Your workspace (${FIXTURE_TENANT})`, kind: 'user',
-    role: { name: 'admin', source: 'personal', via: 'personal' }, state: 'ready', selectable: true, is_acting: true, is_default: true,
+    role: { name: 'admin', source: 'personal', via: 'personal' }, state: 'ready', selectable: true, is_acting: acting === FIXTURE_TENANT, is_default: true,
   }]
-  if (fixtureIsAdmin) {
+  // Every persona `/v1/tenants/mine` lists eng for, and acting in it once it is picked (admin-shell-01).
+  if (fixtureIsAdmin || fixtureIsWorkspaceAdmin) {
     workspaces.push({
       tenant_id: FIXTURE_GROUP.tenant_id, display_name: FIXTURE_GROUP.principal, kind: 'group',
-      role: { name: 'admin', source: 'override', via: 'member' }, state: 'ready', selectable: true, is_acting: false, is_default: false,
+      role: { name: 'admin', source: 'override', via: 'member' }, state: 'ready', selectable: true, is_acting: acting === FIXTURE_GROUP.tenant_id, is_default: false,
     })
   }
   const github = workspaces.map((w, i) => ({
@@ -7940,7 +8269,7 @@ function fixtureProfile(): unknown {
       github,
       typesafe: {
         personal: { set: true, set_at: fixtureAgo(5 * 24 * FIXTURE_HOUR), set_by: 'alice@example.com', version: 2 },
-        acting_workspace: { tenant_id: FIXTURE_TENANT, set: false, set_at: null, set_by: null, version: null },
+        acting_workspace: { tenant_id: acting, set: false, set_at: null, set_by: null, version: null },
         uses: 'user',
       },
     },
@@ -8194,6 +8523,10 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
     const body = fixtureRepoIndex(fixtureSegment(url, 3))
     return body === undefined ? undefined : { body }
   },
+  '/v1/repositories/{repo_id}/graph-cache': (url) => {
+    const body = fixtureGraphCache(url)
+    return body === undefined ? undefined : { body }
+  },
   '/v1/provider-keys/{provider}': (url) => ({ body: fixtureProviderKeys(fixtureSegment(url, 3)) }),
   '/v1/judgment': () => ({ body: fixtureJudgment() }),
   '/v1/code-intelligence': () => ({ body: fixtureCodeIntelligence() }),
@@ -8233,8 +8566,19 @@ async function readAs<T>(target: ApiRoute, norm: (raw: unknown) => T, isEmpty: (
   return r
 }
 
+/**
+ * A fixture read's raw body, through the same table and probe as `readAs`,
+ * for a reader that walks pages and filters rows itself (Dispatch.tsx's
+ * `loadTaskReadableRepositories`). In the fixture build `fetch.read` asks the
+ * dev server, which serves no API, so that reader drew a 404 over a route
+ * this table answers.
+ */
+export function fixtureRead(target: ApiRoute): Promise<Result<unknown>> {
+  return readAs(target, (raw) => raw)
+}
+
 async function writeTo(target: ApiRoute, method: 'POST' | 'PUT' | 'DELETE', body?: unknown): Promise<Result<unknown>> {
-  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  if (USE_FIXTURES) return repoNotServed<unknown>(target, method)
   return write(target, method, body)
 }
 
@@ -8288,6 +8632,216 @@ export async function loadRepositoryIndex(repoId: string): Promise<Result<IndexD
 /** `GET /v1/repositories/{repo_id}/graph`: the module dependency graph, aggregated for drawing (Graph A). */
 export async function loadRepositoryGraph(repoId: string): Promise<Result<ModuleGraph | null>> {
   return readAs(route('/v1/repositories/{repo_id}/graph', { repo_id: repoId }), normModuleGraph)
+}
+
+// ---------------------------------------------------------------------------
+// The Cache section (docs/design/graph-answer-cache.md §5.2-§5.5, lane
+// CACHE-4-CONSOLE): `GET /v1/repositories/{repo_id}/graph-cache`, as
+// swarm-api's `routes/graph_cache.py` answers it. Every figure the route
+// leaves null stays null here: a replica that was not read is its reason,
+// never a panel of zeros, and `carried` is null until carry forward exists.
+// ---------------------------------------------------------------------------
+
+/** Why swarm-graph, or one replica of it, was not read (graph_cache.py's reasons). */
+export type GraphCacheReason = string
+
+export interface GraphCacheWarm {
+  digest: string
+  ms: number | null
+  shards: number | null
+  replayed: number | null
+}
+
+export type GraphCacheReplica =
+  | {
+      replica: string
+      state: 'read'
+      started_at: string | null
+      uptime_seconds: number | null
+      result_bytes: number | null
+      result_bound: number | null
+      shard_bytes: number | null
+      shard_bound: number | null
+      answers_hot: number | null
+      shards_hot: number | null
+      last_warm: GraphCacheWarm | null
+    }
+  | { replica: string; state: 'not_read'; reason: GraphCacheReason }
+
+/** §5.2's tiles, summed over the replicas read; null where nothing was read. */
+export interface GraphCacheFacts {
+  window_hours: number | null
+  answers: number | null
+  hit: number | null
+  /** Null until carry forward exists (BGD Q4): never a 0 that says it ran. */
+  carried: number | null
+  miss: number | null
+  hit_rate: number | null
+  reused_share: number | null
+  served_p95_ms: number | null
+  last_warm: GraphCacheWarm | null
+}
+
+/**
+ * The current version's `answer_latency` (§1.2): the uncached p95 and the
+ * reference workload's time, or why it was not measured.
+ */
+export type GraphCacheLatency =
+  | { state: 'measured'; p95_ms: number; reference_ms: number | null }
+  | { state: 'unmeasured'; cause: string }
+
+export interface GraphCacheShardRow {
+  layer: string
+  module: string
+  blob: string
+  raw_bytes: number | null
+  /** Null when there is no previous version to compare with. */
+  last_merge: 'changed' | 'unchanged' | null
+  replicas: { replica: string; hot: boolean }[]
+  hits_24h: number | null
+  last_read: string | null
+}
+
+export type GraphCacheShards =
+  | {
+      state: 'read'
+      comparison: string
+      total: number
+      changed: number | null
+      page: number
+      page_rows: number
+      rows: GraphCacheShardRow[]
+    }
+  | { state: 'not_read'; reason: string }
+
+export interface GraphCacheDoc {
+  repo_id: string
+  index: { commit_sha: string | null; manifest_digest: string | null; previous_sha: string | null; previous_digest: string | null } | null
+  facts: GraphCacheFacts
+  replicas: GraphCacheReplica[]
+  /** Whether swarm-graph itself answered; `not_read` with `replicas: []` when it did not. */
+  stats: { state: 'read' } | { state: 'not_read'; reason: GraphCacheReason }
+  latency: GraphCacheLatency | null
+  /** Present only on a `shards=1` read. */
+  shards: GraphCacheShards | null
+}
+
+const gcRec = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+const gcNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null)
+const gcStr = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+
+function normGraphCacheWarm(v: unknown): GraphCacheWarm | null {
+  const w = gcRec(v)
+  const digest = gcStr(w.digest)
+  return digest === null ? null : { digest, ms: gcNum(w.ms), shards: gcNum(w.shards), replayed: gcNum(w.replayed) }
+}
+
+function normGraphCacheReplica(v: unknown): GraphCacheReplica | null {
+  const r = gcRec(v)
+  const replica = gcStr(r.replica)
+  if (replica === null) return null
+  // Anything but a replica the route says it read is one it did not read.
+  if (r.state !== 'read') return { replica, state: 'not_read', reason: gcStr(r.reason) ?? 'bad_response' }
+  return {
+    replica,
+    state: 'read',
+    started_at: gcStr(r.started_at),
+    uptime_seconds: gcNum(r.uptime_seconds),
+    result_bytes: gcNum(r.result_bytes),
+    result_bound: gcNum(r.result_bound),
+    shard_bytes: gcNum(r.shard_bytes),
+    shard_bound: gcNum(r.shard_bound),
+    answers_hot: gcNum(r.answers_hot),
+    shards_hot: gcNum(r.shards_hot),
+    last_warm: normGraphCacheWarm(r.last_warm),
+  }
+}
+
+/**
+ * `answer_latency` as §1.2 records it: the median run's `p95_ms` and its
+ * `reference_ms`, at the top or under `run`; `{state: "unmeasured", cause}`,
+ * or the route's `not_recorded`, otherwise.
+ */
+function normGraphCacheLatency(v: unknown): GraphCacheLatency | null {
+  if (typeof v !== 'object' || v === null) return null
+  const l = gcRec(v)
+  if (l.state === 'unmeasured') return { state: 'unmeasured', cause: gcStr(l.cause) ?? 'not_recorded' }
+  const run = gcNum(l.p95_ms) !== null ? l : gcRec(l.run)
+  const p95 = gcNum(run.p95_ms)
+  if (p95 === null) return { state: 'unmeasured', cause: 'malformed' }
+  return { state: 'measured', p95_ms: p95, reference_ms: gcNum(run.reference_ms) ?? gcNum(l.reference_ms) }
+}
+
+function normGraphCacheShards(v: unknown): GraphCacheShards | null {
+  if (typeof v !== 'object' || v === null) return null
+  const s = gcRec(v)
+  if (s.state !== 'read') return { state: 'not_read', reason: gcStr(s.reason) ?? 'bad_response' }
+  const rows = (Array.isArray(s.rows) ? s.rows : []).map((x): GraphCacheShardRow => {
+    const r = gcRec(x)
+    const merge = r.last_merge === 'changed' || r.last_merge === 'unchanged' ? r.last_merge : null
+    return {
+      layer: gcStr(r.layer) ?? '',
+      module: gcStr(r.module) ?? '',
+      blob: gcStr(r.blob) ?? '',
+      raw_bytes: gcNum(r.raw_bytes),
+      last_merge: merge,
+      replicas: (Array.isArray(r.replicas) ? r.replicas : []).flatMap((m) => {
+        const name = gcStr(gcRec(m).replica)
+        return name === null ? [] : [{ replica: name, hot: gcRec(m).hot === true }]
+      }),
+      hits_24h: gcNum(r.hits_24h),
+      last_read: gcStr(r.last_read),
+    }
+  })
+  return {
+    state: 'read',
+    comparison: gcStr(s.comparison) ?? 'read',
+    total: gcNum(s.total) ?? rows.length,
+    changed: gcNum(s.changed),
+    page: gcNum(s.page) ?? 1,
+    page_rows: gcNum(s.page_rows) ?? 100,
+    rows,
+  }
+}
+
+/** The route's body, held to the fields §5.2 draws. */
+export function normGraphCache(raw: unknown): GraphCacheDoc {
+  const d = gcRec(raw)
+  const f = gcRec(d.facts)
+  const ix = typeof d.index === 'object' && d.index !== null ? gcRec(d.index) : null
+  const stats = gcRec(d.stats)
+  return {
+    repo_id: gcStr(d.repo_id) ?? '',
+    index:
+      ix === null
+        ? null
+        : { commit_sha: gcStr(ix.commit_sha), manifest_digest: gcStr(ix.manifest_digest), previous_sha: gcStr(ix.previous_sha), previous_digest: gcStr(ix.previous_digest) },
+    facts: {
+      window_hours: gcNum(f.window_hours),
+      answers: gcNum(f.answers),
+      hit: gcNum(f.hit),
+      carried: gcNum(f.carried),
+      miss: gcNum(f.miss),
+      hit_rate: gcNum(f.hit_rate),
+      reused_share: gcNum(f.reused_share),
+      served_p95_ms: gcNum(f.served_p95_ms),
+      last_warm: normGraphCacheWarm(f.last_warm),
+    },
+    replicas: (Array.isArray(d.replicas) ? d.replicas : []).map(normGraphCacheReplica).filter((r): r is GraphCacheReplica => r !== null),
+    stats: stats.state === 'read' ? { state: 'read' } : { state: 'not_read', reason: gcStr(stats.reason) ?? 'bad_response' },
+    latency: normGraphCacheLatency(d.latency),
+    shards: normGraphCacheShards(d.shards),
+  }
+}
+
+/**
+ * `GET /v1/repositories/{repo_id}/graph-cache[?shards=1&page=N]`: the Cache
+ * section's one read (§5.3). `shardsPage` null asks for no shard list, so a
+ * folded list costs nothing (§5.2).
+ */
+export async function loadRepositoryGraphCache(repoId: string, shardsPage: number | null = null): Promise<Result<GraphCacheDoc>> {
+  const q = shardsPage === null ? undefined : new URLSearchParams({ shards: '1', page: String(shardsPage) })
+  return readAs(route('/v1/repositories/{repo_id}/graph-cache', { repo_id: repoId }, q), normGraphCache)
 }
 
 /** `GET /v1/repositories/{repo_id}/symbols?q=`: symbols whose id contains `q`. */
@@ -9505,7 +10059,7 @@ function fixtureSecretsOverview(url: string): unknown {
   const base = { section: 'agents', store: 'workspace_secrets', consumers: ['profile:claude-code'], shadowed_by: [], shadows: [], can_manage: true }
   const github = (scopeOf: string) => ({
     section: 'github', store: 'git_tokens', name: `swarm-tenant-${FIXTURE_TENANT}-git`, scope: scopeOf, kind: 'app_user',
-    status: 'active', forge_login: 'operator', verified_at: at(0.002), expires_at: new Date(Date.parse(FIXTURE_CLOCK) + 7 * 3_600_000).toISOString(),
+    status: 'active', forge_login: 'alice-example', verified_at: at(0.002), expires_at: new Date(Date.parse(FIXTURE_CLOCK) + 7 * 3_600_000).toISOString(),
     set_at: at(3), set_by: 'alice@example.com', consumers: [], can_manage: false, page: '/repositories/tokens',
   })
   if (scope === 'repository') {
@@ -9542,7 +10096,7 @@ function fixtureSecretsOverview(url: string): unknown {
     rows: [
       { ...base, name: 'typesafe-key', scope: 'workspace', kind: 'api_key', status: 'set', set_at: at(2), set_by: 'alice@example.com',
         shadowed_by: [{ scope: 'personal', where: 'agents of alice@example.com', person: 'alice@example.com', slot: 'typesafe' }] },
-      { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'unset', set_at: null, set_by: null, consumers: [], can_manage: true },
+      { section: 'keys', store: 'provider_keys', name: 'typesafe', status: 'set', set_at: at(5), set_by: 'alice@example.com', consumers: [], can_manage: true },
       { section: 'keys', store: 'runner_provider_keys', name: 'anthropic', status: 'set', set_at: null, set_by: null, consumers: ['profile:claude-code'], can_manage: true },
       { section: 'keys', store: 'mcp_servers', name: 'kb', consumer: 'mcp:kb', secrets: [], status: 'unset', set_at: null, set_by: null, consumers: ['mcp:kb'], can_manage: true },
       { section: 'accounts', store: 'pool_accounts', name: 'subscription accounts', status: 'elsewhere', consumers: [], can_manage: false, page: '/capacity/accounts' },
@@ -10229,7 +10783,7 @@ export function normRepoContext(raw: unknown): RepoContext {
 /** `PATCH /v1/repositories/{repo_id}` with `context`: on, off, or inherit to clear it. */
 export async function patchRepositoryContext(repoId: string, context: RepoContext): Promise<Result<unknown>> {
   const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
-  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  if (USE_FIXTURES) return repoNotServed<unknown>(target, 'PATCH')
   return write(target, 'PATCH', { context })
 }
 
@@ -10240,7 +10794,7 @@ export async function patchRepositoryContext(repoId: string, context: RepoContex
  */
 export async function patchRepositoryTrigger(repoId: string, onChange: 'poll' | 'webhook' | 'off'): Promise<Result<unknown>> {
   const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
-  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  if (USE_FIXTURES) return repoNotServed<unknown>(target, 'PATCH')
   return write(target, 'PATCH', { index: { on_change: onChange } })
 }
 
@@ -10251,7 +10805,7 @@ export async function patchRepositoryTrigger(repoId: string, onChange: 'poll' | 
  */
 export async function patchRepositoryKeepVersions(repoId: string, keepVersions: number): Promise<Result<unknown>> {
   const target = route('/v1/repositories/{repo_id}', { repo_id: repoId })
-  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  if (USE_FIXTURES) return repoNotServed<unknown>(target, 'PATCH')
   return write(target, 'PATCH', { index: { keep_versions: keepVersions } })
 }
 
@@ -10339,6 +10893,17 @@ export async function storeOwnerToken(owner: string, token: string): Promise<Res
 
 /** `POST /v1/onboarding/dismiss`: hide the caller's checklist (`true`), or show it again. Steps keep their state. */
 export async function dismissOnboarding(dismissed = true): Promise<Result<OnboardingDismissal>> {
+  if (USE_FIXTURES) {
+    const target = route('/v1/onboarding/dismiss')
+    await new Promise((r) => setTimeout(r, 80))
+    noteFixtureProbe(target, 80, true)
+    fixtureOnboardingHiddenAt = dismissed ? new Date().toISOString() : null
+    const doc = fixtureOnboarding() as { tenant_id: string; user_hash: string }
+    return {
+      status: 'ok', fetchedAt: Date.now(),
+      data: { tenant_id: doc.tenant_id, user_hash: doc.user_hash, dismissed, dismissed_at: fixtureOnboardingHiddenAt },
+    }
+  }
   return writeTo(route('/v1/onboarding/dismiss'), 'POST', { dismissed }) as Promise<Result<OnboardingDismissal>>
 }
 
@@ -11435,6 +12000,22 @@ export async function loadSchedules(): Promise<Result<{ schedules: Schedule[]; t
 async function fixtureSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
   await new Promise((r) => setTimeout(r, 110))
   noteFixtureProbe(route('/v1/schedules'), 110, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: { schedules: fixtureScheduleRows(), tenant_id: FIXTURE_TENANT } }
+}
+
+/**
+ * `schedules.state_word`, first match wins, as the route serves it beside each
+ * row (QA2-FIX-07, automate2-13: every State cell read "not served", the
+ * paused row too). No approval waits in the fixture, so never
+ * `waiting_on_approval`.
+ */
+function fixtureStateWord(s: Schedule): string {
+  if (s.state !== 'enabled') return s.state === 'auto_paused' && s.pause?.code === 'RUN_OVER_BUDGET' ? 'paused_by_tripwire' : 'paused'
+  if ((s.consecutive_failures ?? 0) > 0) return 'failing'
+  return s.last_firing === null ? 'never_fired' : 'active'
+}
+
+function fixtureScheduleRows(): Schedule[] {
   const day = new Date(FIXTURE_NOW).toISOString().slice(0, 10)
   const at = (h: number) => new Date(FIXTURE_NOW + h * FIXTURE_HOUR).toISOString()
   const base = {
@@ -11457,11 +12038,29 @@ async function fixtureSchedules(): Promise<Result<{ schedules: Schedule[]; tenan
       created_at: fixtureAgo(30 * 24 * FIXTURE_HOUR), next_run_at: null, revision: 5,
     },
   ]
-  return { status: 'ok', fetchedAt: Date.now(), data: { schedules, tenant_id: FIXTURE_TENANT } }
+  return schedules.map((row) => ({ ...row, state_word: fixtureStateWord(row) }))
+}
+
+/**
+ * One listed schedule and no firings, as the route serves a schedule that has
+ * not fired (QA2-FIX-07, automate2-12: a row opened a 404 under its raw id).
+ * Any other id is the route's own 404.
+ */
+async function fixtureSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
+  const target = route('/v1/schedules/{id}', { id: scheduleId })
+  await new Promise((r) => setTimeout(r, 90))
+  const schedule = fixtureScheduleRows().find((s) => s.schedule_id === scheduleId)
+  if (schedule === undefined) {
+    noteFixtureProbe(target, 90, false)
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: `schedule '${scheduleId}' not found`, template: target.template } }
+  }
+  noteFixtureProbe(target, 90, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: { schedule, firings: [] } }
 }
 
 /** `GET /v1/schedules/{id}`: one schedule and its last 50 firings, newest first. */
 export async function loadSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
+  if (USE_FIXTURES) return fixtureSchedule(scheduleId)
   return read(route('/v1/schedules/{id}', { id: scheduleId }), () => false)
 }
 
@@ -11476,15 +12075,24 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
  * The development fixtures serve no inbox, and say so by being empty rather
  * than by inventing items.
  */
-export async function loadApprovals(options: { frame?: boolean; kind?: string } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
+export async function loadApprovals(
+  options: { frame?: boolean; kind?: string; state?: 'pending' | 'all' | 'decided' | 'expired' } = {},
+): Promise<Result<{ approvals: ApprovalItem[] }>> {
   if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
   // The frame reads this on every page. A 200 without an `approvals` list is
   // not a measured empty inbox, and passing it on as one would draw "nothing
   // waiting" over an answer nobody read; it is a failure, as an unreadable
   // body is. `kind` is the route's own filter (`?kind=`, §4.5).
-  const kind = options.kind === undefined || options.kind === '' ? undefined : new URLSearchParams({ kind: options.kind })
+  //
+  // `state` is the route's too, and it DEFAULTS TO `pending` (QA2-FIX-07,
+  // automate2-01): the Approvals list asks `all` so its Decided and Expired
+  // cards can be drawn from what the server holds; the frame's badge and the
+  // Schedules card keep the inbox by sending none.
+  const query = new URLSearchParams()
+  if (options.kind !== undefined && options.kind !== '') query.set('kind', options.kind)
+  if (options.state !== undefined && options.state !== 'pending') query.set('state', options.state)
   const r = await read<{ approvals: ApprovalItem[] }>(
-    route('/v1/approvals', {}, kind),
+    route('/v1/approvals', {}, query.toString() === '' ? undefined : query),
     (d) => Array.isArray(d.approvals) && d.approvals.length === 0,
     { frame: options.frame === true },
   )
@@ -11677,6 +12285,50 @@ export interface ScheduleCreateBody {
 /** The edit body: what changed, and the revision it was read at. `type` is not editable. */
 export type ScheduleEditBody = Partial<Omit<ScheduleCreateBody, 'type' | 'state' | 'client_request_id'>> & { revision: number }
 
+/**
+ * The catalogue rows of the two types the fixture's schedules are
+ * (scheduletypes.py: their descriptions, gates, caps and parameters), so New
+ * schedule and an edit can be walked in the fixture build (QA2-FIX-07,
+ * automate2-12: it opened "serves no schedule routes" over a list it had just
+ * served).
+ */
+function fixtureScheduleTypes(): ScheduleTypeRow[] {
+  return [
+    {
+      name: 'issue-plan-only',
+      description: 'Plan the ready open issues and wait: nothing executes until a person approves each plan.',
+      params_schema: {
+        properties: {
+          max_pending_plans: { type: 'integer', title: 'Max Pending Plans', default: 5, minimum: 1, maximum: 20 },
+          fix_rounds: { type: 'integer', title: 'Fix Rounds', default: 3, minimum: 1, maximum: 5 },
+        },
+      },
+      default_gate: { run: 'auto', plan: 'approve', merge: 'approve' },
+      floor_gate: { run: 'auto', plan: 'approve', merge: 'approve' },
+      min_interval_minutes: 15,
+      budget_caps: { per_run_usd: 3, per_day_usd: 30, max_concurrent: 5 },
+      scopes: ['repos', 'all'], creatable_scopes: ['repos', 'all'], gate_notes: null,
+      available: true, disabled_reason: null,
+    },
+    {
+      name: 'cost-report',
+      description: 'Sum reported cost over the window by schedule, repository, profile and person, with coverage.',
+      params_schema: {
+        properties: {
+          window: { type: 'string', title: 'Window', default: 'day', enum: ['day', 'week'] },
+          post_to_issue: { type: 'string', title: 'Post To Issue', default: null },
+        },
+      },
+      default_gate: { run: 'auto', plan: 'auto', merge: 'off' },
+      floor_gate: { run: 'auto', plan: 'auto', merge: 'off' },
+      min_interval_minutes: 24 * 60,
+      budget_caps: null,
+      scopes: ['repos', 'all', 'platform'], creatable_scopes: fixtureIsAdmin ? ['repos', 'all', 'platform'] : ['repos', 'all'], gate_notes: null,
+      available: true, disabled_reason: null,
+    },
+  ]
+}
+
 function scheduleNotServed<T>(target: ApiRoute): Result<T> {
   noteFixtureProbe(target, 0, false)
   return {
@@ -11693,7 +12345,11 @@ async function scheduleWrite(target: ApiRoute, method: 'POST' | 'PATCH', body: u
 
 /** `GET /v1/schedule-types`: the types this caller may create, with their gates. */
 export async function loadScheduleTypes(): Promise<Result<{ types: ScheduleTypeRow[] }>> {
-  if (USE_FIXTURES) return scheduleNotServed(route('/v1/schedule-types'))
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 90))
+    noteFixtureProbe(route('/v1/schedule-types'), 90, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { types: fixtureScheduleTypes() } }
+  }
   return read(route('/v1/schedule-types'), () => false)
 }
 
@@ -12357,5 +13013,902 @@ function liveNotServed<T>(target: ApiRoute): Result<T> {
   return {
     status: 'error',
     error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no live browser.' },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN › SETUP AND HEALTH (DAYONE-SETUP-UI-1; part of #2688; plan §5.1-§5.4).
+//
+// The client of swarm-api's Admin › Setup routes (SETUP-API-1,
+// `apps/swarm-api/swarm_api/routes/setup.py`). Every route is a platform
+// admin's, so a 403 is information, as every Admin read here treats it. The
+// shapes are the routes' own; each read is normalised once, here, so a panel
+// never guards a field the server may leave out. No answer of these routes
+// carries a secret (the conversion answers `{id, slug}` only, a link's token
+// is in its URL and nowhere else), and nothing here reads one.
+// ---------------------------------------------------------------------------
+
+/** The engine document's `verify` field (D26): the console's verify row. Times are epoch seconds, the engine's clock. */
+export interface SetupVerify {
+  check: string | null
+  done: number
+  total: number
+  started: number | null
+  expected_end: number | null
+  deadline: number | null
+  /** `passed`, `failed`, or null while verify runs. */
+  result: string | null
+}
+
+/** `stages[n]` of the engine document: `{state, at, by}`, or null for a stage not started. */
+export interface SetupStage {
+  state: string
+  at: string | null
+  by: string | null
+}
+
+/** The engine document `swarm-install/<env>`: the CLI's, read here and never written. */
+export interface SetupEngine {
+  release: string | null
+  hostname: string | null
+  stages: Array<SetupStage | null>
+  lease: { holder: string | null; heartbeat: string | null } | null
+  verify: SetupVerify | null
+  hand_off_at: string | null
+  ready_at: string | null
+  /**
+   * The first team's group stage 8 created (`state.outputs["workspace_groups"]`,
+   * N20): the team form starts from it. Null before stage 8, and for one person.
+   */
+  workspace_groups: { team: string } | null
+}
+
+/** `console/github_app`, without its state hash (the route drops it). */
+export interface SetupGitHubApp {
+  /** A manifest was issued, or the App exists. */
+  started: boolean
+  id: string | null
+  slug: string | null
+  installed_on: string | null
+  secrets_written_at: string | null
+  self_check: SetupSelfCheck | null
+}
+
+/** The sign-in client's three states as `GET /v1/admin/setup` serves them (issue #2964). */
+export type SetupSignInClientState = 'waiting' | 'saved' | 'applied'
+
+/**
+ * `sign_in_client` (issue #2964, owner's pick 2026-11-01): the Desktop OAuth
+ * client `sc` signs in with, which no Google API creates since the IAP OAuth
+ * Admin API shut down on 2026-03-19. `waiting`: nothing saved yet; `saved`:
+ * the id and the secret are stored; `applied`: IAP's programmatic-clients
+ * list holds the id (the infra pass ran). `links` are the deployment's own
+ * Google Cloud console pages, built by swarm-api from its project id; a link
+ * that is not a console.cloud.google.com page is null. The secret is never
+ * served.
+ */
+export interface SetupSignInClient {
+  state: SetupSignInClientState
+  client_id: string | null
+  saved_at: string | null
+  saved_by: string | null
+  links: { branding: string | null; audience: string | null; create_client: string | null }
+}
+
+/**
+ * The route's self-check states (`routes/setup.py` `self_check_view`, audit
+ * finding 28): before swarm install's infra pass 3 gives swarm-api the App's
+ * id, `check_app_key` answers `app_id_not_configured`, which is a wait for
+ * that pass, never a failure.
+ */
+export type SetupSelfCheckState = 'passed' | 'failed' | 'waiting_for_infra_pass_3'
+
+/** The `check_app_key` reasons that mean infra pass 3 has not landed yet (`BEFORE_PASS_3`). */
+const BEFORE_PASS_3 = new Set(['app_id_not_configured', 'app_slug_not_configured'])
+
+export interface SetupSelfCheck {
+  ok: boolean
+  reason: string | null
+  at: string | null
+  state: SetupSelfCheckState
+}
+
+/** A self-check as the route served it; one recorded before its `state` existed is read by its reason, the route's way. */
+export function normSelfCheck(raw: unknown): SetupSelfCheck | null {
+  const c = objOf(raw)
+  if (c === null) return null
+  const ok = c.ok === true
+  const reason = strOf(c.reason)
+  const state: SetupSelfCheckState = ok ? 'passed' : c.state === 'waiting_for_infra_pass_3' || (reason !== null && BEFORE_PASS_3.has(reason)) ? 'waiting_for_infra_pass_3' : 'failed'
+  return { ok, reason, at: strOf(c.at), state }
+}
+
+/**
+ * The first team's team-level grant over the repositories the GitHub App
+ * installation covers (`teams/<id>.grant`, decision 3): `granted`, or
+ * `waiting_for_app` / `waiting_for_repositories` until the App covers one.
+ */
+export interface SetupGrant {
+  state: string
+  account: string | null
+  /** `all` or `selected`: what the installation was given on GitHub. */
+  selection: string | null
+  repositories: string[]
+}
+
+/** One invitee's (or the first admin's) membership of the team's group, per the Groups API; null when it did not answer. */
+export interface SetupMember {
+  email: string
+  member: boolean | null
+}
+
+/**
+ * The first workspace's smoke (`teams/<id>.smoke`, or `personal.smoke` for one
+ * person): `running`, then `succeeded` or `failed`, the words the route
+ * writes (`routes/setup.py` SUCCEEDED/FAILED). `detail` is the route's
+ * `reason` when it failed to start.
+ */
+export interface SetupSmoke {
+  state: string
+  detail: string | null
+  url: string | null
+}
+
+/** The route's word for a smoke that passed; `finish` waits for exactly this. */
+export const SMOKE_SUCCEEDED = 'succeeded'
+
+/** `console/teams/<id>`, as the status route reads it live. `smoke` is the team's smoke agent, once it has one. */
+export interface SetupTeam {
+  id: string
+  group: string
+  workspace: string
+  first_admin: string | null
+  invites: string[]
+  /** The record's progress, with the workspace's live `workspace_state` the route reads beside it. */
+  progress: Record<string, unknown>
+  smoke: SetupSmoke | null
+  grant: SetupGrant | null
+  members: SetupMember[]
+  /** The labels of the pool accounts the route found in the team's own pool, read live. */
+  pool_accounts: string[]
+  /** The workspace record's `w-` id: a failed workspace is retried with `retryWorkspace(workspace_id)` (audit 5b, M6). */
+  workspace_id: string | null
+  /** The group's members page in Google Admin, served on every row so every invite keeps its link (audit 5b, M5). */
+  add_members_url: string | null
+}
+
+/**
+ * `personal` (decision 7): a one-person install's first workspace, the
+ * installer's personal workspace, in the first team's place. `reason` is the
+ * route's code when it could not be filed on this read.
+ */
+export interface SetupPersonal {
+  owner: string | null
+  workspace: string | null
+  reason: string | null
+  progress: Record<string, unknown>
+  grant: SetupGrant | null
+  smoke: SetupSmoke | null
+  pool_accounts: string[]
+}
+
+/** One of the steps the route says are needed or not (`steps_view`): `first_team`, `invites`. */
+export interface SetupStepNeed {
+  needed: boolean
+  state: string
+  reason: string | null
+}
+
+/** `console/verify_runs` (SETUP-API-2): the console's two verification runs, once Admin › Setup started them. */
+export interface SetupVerifyRuns {
+  task: string | null
+  workflow: string | null
+  repository: string | null
+  /** Each run's fresh starts so far, as the route counts them in the document's `retries` (0 when it serves none). */
+  retries: { task: number; workflow: number }
+}
+
+/**
+ * How many fresh starts the verify-runs route gives a failed console run
+ * (swarm-api's `MAX_VERIFY_RETRIES`); past them it answers 409 and starts none.
+ */
+export const VERIFY_RUN_RETRIES = 2
+
+/**
+ * `sizing` (INTERFACE SHEET; stage 0's SIZING-ASK, served by the status
+ * route): one person or a team, and the capacity numbers the person accepted.
+ * The `pool_limits` keys are terraform/infra's `pool_limits` variable.
+ */
+export interface SetupSizing {
+  mode: 'individual' | 'team'
+  members: number | null
+  pool_limits: { global: number | null; default_tenant: number | null; provider_tenant: number | null }
+  service_max_instances: Record<string, number>
+  pool_accounts: number | null
+  budget_usd: number | null
+}
+
+/** One pool account's row of `console/accounts`; the link's hash is never served. */
+export interface SetupAccount {
+  label: string
+  owner: string | null
+  link_expires: string | null
+  signed_in_at: string | null
+}
+
+export interface SetupAddon {
+  name: string
+  /** The CLI line that enables it: enabling needs a Terraform switch. */
+  enable: string
+  secret_link: boolean
+}
+
+/** `GET /v1/admin/setup`: the page's whole state. */
+export interface SetupState {
+  env: string
+  engine: SetupEngine | null
+  /** False when the install lease's heartbeat is over 2 minutes old: swarm install is not running. */
+  cli_running: boolean
+  /** The Desktop sign-in client step; null until the route serves it: drawn as not read yet, never as done. */
+  sign_in_client: SetupSignInClient | null
+  github_app: SetupGitHubApp | null
+  teams: SetupTeam[]
+  accounts: SetupAccount[]
+  finished: { at: string | null; by: string | null } | null
+  addons: SetupAddon[]
+  hostname: string | null
+  github_org: string | null
+  verify_runs: SetupVerifyRuns | null
+  sizing: SetupSizing | null
+  /** `individual` for one person (decision 7), else `team`; the route's `mode`, else the sizing's. */
+  mode: 'individual' | 'team'
+  /** The personal workspace's row for one person; null for a team. */
+  personal: SetupPersonal | null
+  /** Whether the first-team and invites steps are needed, as the route says; null from a route that serves none. */
+  steps: { first_team: SetupStepNeed | null; invites: SetupStepNeed | null } | null
+}
+
+const objOf = (v: unknown): Record<string, unknown> | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
+const strOf = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : null)
+const numOf = (v: unknown): number | null => {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  // A time the record stored as a timestamp reaches JSON as ISO text: read it as epoch seconds too.
+  if (typeof v === 'string' && v !== '') {
+    const ms = Date.parse(v)
+    return Number.isNaN(ms) ? null : ms / 1000
+  }
+  return null
+}
+
+/** A Google Cloud console page, or null: the only pages the sign-in client step links. */
+const cloudConsolePage = (v: unknown): string | null => (typeof v === 'string' && v.startsWith('https://console.cloud.google.com/') ? v : null)
+
+/** `sign_in_client`, or null when the route serves none (a swarm-api before #2964) or a state it never writes. */
+export function normSignInClient(raw: unknown): SetupSignInClient | null {
+  const d = objOf(raw)
+  if (d === null || (d.state !== 'waiting' && d.state !== 'saved' && d.state !== 'applied')) return null
+  const links = objOf(d.links) ?? {}
+  return {
+    state: d.state,
+    client_id: strOf(d.client_id),
+    saved_at: strOf(d.saved_at),
+    saved_by: strOf(d.saved_by),
+    links: { branding: cloudConsolePage(links.branding), audience: cloudConsolePage(links.audience), create_client: cloudConsolePage(links.create_client) },
+  }
+}
+
+function normVerify(raw: unknown): SetupVerify | null {
+  const v = objOf(raw)
+  if (v === null) return null
+  return {
+    check: strOf(v.check),
+    done: numOf(v.done) ?? 0,
+    total: numOf(v.total) ?? 0,
+    started: numOf(v.started),
+    expected_end: numOf(v.expected_end),
+    deadline: numOf(v.deadline),
+    result: strOf(v.result),
+  }
+}
+
+/**
+ * An engine time as ISO text. The engine writes `lease.heartbeat`,
+ * `hand_off_at`, `ready_at` and `stages[].at` as epoch seconds (audit 3, A7);
+ * a route that converts them serves ISO text. Both read as the same instant,
+ * and anything that is neither is null, so no field renders Invalid Date.
+ */
+function timeOf(v: unknown): string | null {
+  const seconds = typeof v === 'number' ? v : typeof v === 'string' && /^\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : null
+  if (seconds !== null) {
+    const at = new Date(seconds * 1000)
+    return Number.isFinite(seconds) && !Number.isNaN(at.getTime()) ? at.toISOString() : null
+  }
+  if (typeof v !== 'string' || v === '') return null
+  return Number.isNaN(Date.parse(v)) ? null : v
+}
+
+function normEngine(raw: unknown): SetupEngine | null {
+  const e = objOf(raw)
+  if (e === null) return null
+  const stages = Array.isArray(e.stages)
+    ? e.stages.map((s) => {
+        const o = objOf(s)
+        return o === null || strOf(o.state) === null ? null : { state: strOf(o.state) as string, at: timeOf(o.at), by: strOf(o.by) }
+      })
+    : []
+  const lease = objOf(e.lease)
+  const teamGroup = strOf(objOf(e.workspace_groups)?.team)
+  return {
+    release: strOf(e.release),
+    hostname: strOf(e.hostname),
+    stages,
+    lease: lease === null ? null : { holder: strOf(lease.holder), heartbeat: timeOf(lease.heartbeat) },
+    verify: normVerify(e.verify),
+    hand_off_at: timeOf(e.hand_off_at),
+    ready_at: timeOf(e.ready_at),
+    workspace_groups: teamGroup === null ? null : { team: teamGroup },
+  }
+}
+
+function normGitHubApp(raw: unknown): SetupGitHubApp | null {
+  const g = objOf(raw)
+  if (g === null) return null
+  return {
+    started: g.started === true || strOf(g.id) !== null,
+    id: strOf(g.id),
+    slug: strOf(g.slug),
+    installed_on: strOf(g.installed_on),
+    secrets_written_at: strOf(g.secrets_written_at),
+    self_check: normSelfCheck(g.self_check),
+  }
+}
+
+function normSmoke(raw: unknown): SetupSmoke | null {
+  const smoke = objOf(raw)
+  return smoke === null ? null : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail) ?? strOf(smoke.reason), url: strOf(smoke.url) }
+}
+
+function normGrant(raw: unknown): SetupGrant | null {
+  const grant = objOf(raw)
+  return grant === null || strOf(grant.state) === null
+    ? null
+    : {
+        state: strOf(grant.state) as string,
+        account: strOf(grant.account),
+        selection: strOf(grant.selection),
+        repositories: Array.isArray(grant.repositories) ? grant.repositories.filter((r): r is string => typeof r === 'string' && r !== '') : [],
+      }
+}
+
+const labelsOf = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : [])
+
+function normPersonal(raw: unknown): SetupPersonal | null {
+  const p = objOf(raw)
+  if (p === null) return null
+  const progress = objOf(p.progress) ?? {}
+  // The route reads the workspace's state live and serves it beside the record, as `workspace_state`.
+  const live = strOf(p.workspace_state)
+  return {
+    owner: strOf(p.owner),
+    workspace: strOf(p.workspace),
+    reason: strOf(p.reason),
+    progress: live === null ? progress : { ...progress, workspace_state: live },
+    grant: normGrant(p.grant),
+    smoke: normSmoke(p.smoke),
+    pool_accounts: labelsOf(p.pool_accounts),
+  }
+}
+
+function normStepNeed(raw: unknown): SetupStepNeed | null {
+  const s = objOf(raw)
+  return s === null ? null : { needed: s.needed !== false, state: strOf(s.state) ?? '', reason: strOf(s.reason) }
+}
+
+function normTeam(raw: unknown): SetupTeam | null {
+  const t = objOf(raw)
+  const id = t === null ? null : strOf(t.id)
+  if (t === null || id === null) return null
+  const progress = objOf(t.progress) ?? {}
+  // The route reads the workspace's state live and serves it beside the record, as `workspace_state`.
+  const live = strOf(t.workspace_state)
+  return {
+    id,
+    group: strOf(t.group) ?? '',
+    workspace: strOf(t.workspace) ?? id,
+    first_admin: strOf(t.first_admin),
+    invites: Array.isArray(t.invites) ? t.invites.filter((x): x is string => typeof x === 'string') : [],
+    progress: live === null ? progress : { ...progress, workspace_state: live },
+    smoke: normSmoke(t.smoke),
+    grant: normGrant(t.grant),
+    members: (Array.isArray(t.members) ? t.members : [])
+      .map(objOf)
+      .filter((m): m is Record<string, unknown> => m !== null && strOf(m.email) !== null)
+      .map((m) => ({ email: strOf(m.email) as string, member: typeof m.member === 'boolean' ? m.member : null })),
+    pool_accounts: labelsOf(t.pool_accounts),
+    workspace_id: strOf(t.workspace_id),
+    add_members_url: adminMembersPage(t.add_members_url),
+  }
+}
+
+/** `console/verify_runs` as the status route serves it: `{verify_runs: {console_task, console_workflow}, retries, repository}`. */
+function normVerifyRuns(raw: unknown): SetupVerifyRuns | null {
+  const doc = objOf(raw)
+  const ids = objOf(doc?.verify_runs)
+  if (doc === null || ids === null) return null
+  const task = strOf(ids.console_task)
+  const workflow = strOf(ids.console_workflow)
+  // The route's `retries` field; a document written before it kept `<key>_retries` beside each id.
+  const counts = objOf(doc.retries)
+  const count = (key: string): number => {
+    const n = counts?.[key] ?? ids[`${key}_retries`]
+    return typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0
+  }
+  return task === null && workflow === null
+    ? null
+    : { task, workflow, repository: strOf(doc.repository), retries: { task: count('console_task'), workflow: count('console_workflow') } }
+}
+
+/** `sizing`, or null until stage 0 recorded one. A mode other than the two is not a sizing. */
+export function normSizing(raw: unknown): SetupSizing | null {
+  const d = objOf(raw)
+  if (d === null || (d.mode !== 'individual' && d.mode !== 'team')) return null
+  const limits = objOf(d.pool_limits) ?? {}
+  const services = objOf(d.service_max_instances) ?? {}
+  const max: Record<string, number> = {}
+  for (const [name, v] of Object.entries(services)) if (typeof v === 'number' && Number.isFinite(v)) max[name] = v
+  const n = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  return {
+    mode: d.mode,
+    members: n(d.members),
+    pool_limits: { global: n(limits.global), default_tenant: n(limits.default_tenant), provider_tenant: n(limits.provider_tenant) },
+    service_max_instances: max,
+    pool_accounts: n(d.pool_accounts),
+    budget_usd: n(d.budget_usd),
+  }
+}
+
+/** One normaliser for `GET /v1/admin/setup`, exported so a panel's fixture is read the way the live answer is. */
+export function normSetupState(raw: unknown): SetupState {
+  const d = objOf(raw) ?? {}
+  const accounts = objOf(d.accounts) ?? {}
+  const finished = objOf(d.finished)
+  const sizing = normSizing(d.sizing)
+  const mode = d.mode === 'individual' || d.mode === 'team' ? d.mode : (sizing?.mode ?? 'team')
+  const steps = objOf(d.steps)
+  return {
+    env: strOf(d.env) ?? '',
+    engine: normEngine(d.engine),
+    cli_running: d.cli_running === true,
+    sign_in_client: normSignInClient(d.sign_in_client),
+    github_app: normGitHubApp(d.github_app),
+    teams: Array.isArray(d.teams) ? d.teams.map(normTeam).filter((t): t is SetupTeam => t !== null) : [],
+    accounts: Object.keys(accounts)
+      .sort()
+      .map((label) => {
+        const a = objOf(accounts[label]) ?? {}
+        return { label, owner: strOf(a.owner), link_expires: strOf(a.link_expires), signed_in_at: strOf(a.signed_in_at) }
+      }),
+    finished: finished === null ? null : { at: strOf(finished.at), by: strOf(finished.by) },
+    addons: Array.isArray(d.addons)
+      ? d.addons
+          .map(objOf)
+          .filter((a): a is Record<string, unknown> => a !== null && strOf(a.name) !== null)
+          .map((a) => ({ name: strOf(a.name) as string, enable: strOf(a.enable) ?? `swarm addon enable ${strOf(a.name)}`, secret_link: a.secret_link === true }))
+      : [],
+    hostname: strOf(d.hostname),
+    github_org: strOf(d.github_org),
+    verify_runs: normVerifyRuns(d.verify_runs),
+    sizing,
+    mode,
+    personal: mode === 'individual' ? normPersonal(d.personal) : null,
+    steps: steps === null ? null : { first_team: normStepNeed(steps.first_team), invites: normStepNeed(steps.invites) },
+  }
+}
+
+/** `POST /v1/admin/setup/github-app/manifest`: the App manifest and the github.com form it posts to. */
+export interface GitHubAppManifestStart {
+  manifest: Record<string, unknown>
+  /** `https://github.com/organizations/<org>/settings/apps/new?state=…` */
+  action: string
+}
+
+/** `GET /v1/admin/setup/github-app/installation`. */
+export interface GitHubAppInstallation {
+  installed: boolean
+  org: string | null
+  slug: string | null
+}
+
+/** `POST /v1/admin/setup/links`: a one-time link. Its URL carries the token: shown once, never stored here. */
+export interface SetupLink {
+  kind: string
+  label: string
+  owner: string
+  url: string | null
+  path: string
+  expires_at: string | null
+}
+
+export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret'
+
+/**
+ * One check's last result in `health/latest`, read from the row
+ * swarm-doctor writes (`doctor.Finding.to_json`: `{id, status, detail, step,
+ * fix, cause, repair}`). "Not checked" is its own result, never a pass.
+ */
+export interface HealthCheck {
+  /** The manifest entry's id; the doctor writes no other title. */
+  id: string
+  /** `passed` (met), `failed` (unmet), or `not_checked` (unknown, or anything unread). */
+  result: HealthResult
+  detail: string | null
+  /** The install step that satisfies the entry, when one does. */
+  step: string | null
+}
+
+export type HealthResult = 'passed' | 'failed' | 'not_checked'
+
+/** One doctor finding (a check that is not met): what the probe saw, why, and how to repair it. */
+export interface HealthFinding {
+  id: string
+  /** `failed` (unmet: it drifted) or `not_checked` (unknown: the probe could not say). */
+  result: Exclude<HealthResult, 'passed'>
+  /** What the probe saw. */
+  detail: string | null
+  step: string | null
+  /** The doctor's fix, in words: what the entry is for and what repairs it. */
+  fix: string | null
+  /** Why a probe saw a 403: `propagating` or `missing_grant`; null otherwise. */
+  cause: string | null
+  /** `swarm install --repair <id>`, or null when no install step makes the entry. */
+  repair: string | null
+}
+
+export interface SetupHealth {
+  run_at: string | null
+  checks: HealthCheck[]
+  findings: HealthFinding[]
+}
+
+/**
+ * The doctor's `status` (swarm_install/exitcodes.py's MET, UNMET, UNKNOWN) as
+ * the console's result. Only the doctor's own words are read: a row in any
+ * other shape (a `result: passed` the doctor never writes) is not checked,
+ * so a fake in the console's own shape cannot draw a clean page.
+ */
+const HEALTH_RESULT_OF_STATUS: Record<string, HealthResult> = { met: 'passed', unmet: 'failed', unknown: 'not_checked' }
+
+const healthResultOf = (status: unknown): HealthResult => {
+  const s = strOf(status)
+  return (s !== null && Object.prototype.hasOwnProperty.call(HEALTH_RESULT_OF_STATUS, s) ? HEALTH_RESULT_OF_STATUS[s] : undefined) ?? 'not_checked'
+}
+
+const doctorRows = (rows: unknown): Record<string, unknown>[] =>
+  (Array.isArray(rows) ? rows : []).map(objOf).filter((r): r is Record<string, unknown> => r !== null && strOf(r.id) !== null)
+
+/** `GET /v1/admin/setup/health`'s `latest`, or null when no doctor run is recorded. */
+export function normSetupHealth(raw: unknown): SetupHealth | null {
+  const latest = objOf(objOf(raw)?.latest)
+  if (latest === null) return null
+  const checks = doctorRows(latest.checks).map((c) => ({
+    id: strOf(c.id) as string,
+    result: healthResultOf(c.status),
+    detail: strOf(c.detail),
+    step: strOf(c.step),
+  }))
+  // The doctor lists every finding that is not met; a met row here is not a finding.
+  const findings = doctorRows(latest.findings).flatMap((f): HealthFinding[] => {
+    const result = healthResultOf(f.status)
+    if (result === 'passed') return []
+    return [{ id: strOf(f.id) as string, result, detail: strOf(f.detail), step: strOf(f.step), fix: strOf(f.fix), cause: strOf(f.cause), repair: strOf(f.repair) }]
+  })
+  return { run_at: strOf(latest.run_at), checks, findings }
+}
+
+/** A write's answer as T, or the write's own error. */
+async function setupWrite<T>(target: ApiRoute, method: 'POST' | 'PUT', body: unknown, norm: (raw: unknown) => T, fixture: () => T): Promise<Result<T>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<T>(target, 120)
+    noteFixtureProbe(target, 120, true)
+    return { status: 'ok', data: fixture(), fetchedAt: Date.now() }
+  }
+  const r = await write(target, method, body)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r as Result<T>
+}
+
+/** `GET /v1/admin/setup`. */
+export async function loadSetup(): Promise<Result<SetupState>> {
+  const target = route('/v1/admin/setup')
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<SetupState>(target, 120)
+    noteFixtureProbe(target, 120, true)
+    return { status: 'ok', data: normSetupState(fixtureSetupState()), fetchedAt: Date.now() }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normSetupState(r.data) }
+  return r as Result<SetupState>
+}
+
+/** `POST /v1/admin/setup/github-app/manifest`. */
+export function startGitHubApp(): Promise<Result<GitHubAppManifestStart>> {
+  return setupWrite(
+    route('/v1/admin/setup/github-app/manifest'),
+    'POST',
+    {},
+    (raw) => ({ manifest: objOf(objOf(raw)?.manifest) ?? {}, action: strOf(objOf(raw)?.action) ?? '' }),
+    () => ({ manifest: { name: 'SwarmCloud prod' }, action: 'https://github.com/organizations/example-org/settings/apps/new' }),
+  )
+}
+
+/**
+ * `POST /v1/admin/setup/github-app/conversion` with `{code, state}`. The
+ * answer is read for `id` and `slug` ONLY: GitHub's secrets went straight to
+ * Secret Manager, and were the server ever to answer more, nothing past those
+ * two fields reaches a screen.
+ */
+export function convertGitHubApp(code: string, state: string): Promise<Result<{ id: string | null; slug: string | null }>> {
+  return setupWrite(
+    route('/v1/admin/setup/github-app/conversion'),
+    'POST',
+    { code, state },
+    (raw) => ({ id: strOf(objOf(raw)?.id), slug: strOf(objOf(raw)?.slug) }),
+    () => ({ id: '4242', slug: 'swarmcloud-prod' }),
+  )
+}
+
+/**
+ * `POST /v1/admin/setup/sign-in-client` with exactly `{client_id, client_secret}`
+ * (issue #2964). swarm-api adds the secret as a new version of
+ * `swarm-iap-desktop-client-secret` and answers the `sign_in_client` object,
+ * which never carries the secret; nothing here keeps it past the request.
+ */
+export function saveSignInClient(clientId: string, clientSecret: string): Promise<Result<SetupSignInClient | null>> {
+  return setupWrite(
+    route('/v1/admin/setup/sign-in-client'),
+    'POST',
+    { client_id: clientId, client_secret: clientSecret },
+    normSignInClient,
+    () => normSignInClient({ ...fixtureSignInClient(), state: 'saved', client_id: clientId }),
+  )
+}
+
+/** `GET /v1/admin/setup/github-app/installation`: is the App on the org yet (polled). */
+export async function checkGitHubAppInstallation(): Promise<Result<GitHubAppInstallation>> {
+  const target = route('/v1/admin/setup/github-app/installation')
+  const norm = (raw: unknown): GitHubAppInstallation => ({ installed: objOf(raw)?.installed === true, org: strOf(objOf(raw)?.org), slug: strOf(objOf(raw)?.slug) })
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<GitHubAppInstallation>(target, 120)
+    noteFixtureProbe(target, 120, true)
+    return { status: 'ok', data: { installed: true, org: 'example-org', slug: 'swarmcloud-prod' }, fetchedAt: Date.now() }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r as Result<GitHubAppInstallation>
+}
+
+/** `POST /v1/admin/setup/github-app/self-check`: the `/admin/forge/app` check, recorded. */
+export function runGitHubAppSelfCheck(): Promise<Result<SetupSelfCheck>> {
+  return setupWrite(
+    route('/v1/admin/setup/github-app/self-check'),
+    'POST',
+    undefined,
+    (raw) => normSelfCheck(raw) ?? { ok: false, reason: null, at: null, state: 'failed' },
+    () => ({ ok: true, reason: null, at: new Date(FIXTURE_NOW).toISOString(), state: 'passed' }),
+  )
+}
+
+/**
+ * `POST /v1/admin/setup/smoke` (audit finding 20): the first workspace's
+ * smoke (the first team's; for one person the personal workspace's) started
+ * again after it failed. A running or passed smoke is answered as it stands.
+ */
+export function restartSetupSmoke(): Promise<Result<{ workspace: string | null; smoke: SetupSmoke | null }>> {
+  return setupWrite(
+    route('/v1/admin/setup/smoke'),
+    'POST',
+    undefined,
+    (raw) => ({ workspace: strOf(objOf(raw)?.workspace), smoke: normSmoke(objOf(raw)?.smoke) }),
+    () => ({ workspace: 'engineering', smoke: { state: 'running', detail: null, url: null } }),
+  )
+}
+
+/**
+ * `POST /v1/admin/setup/teams`: the same call `swarm team add` makes. It
+ * answers each invite with the group's Google Admin members page (#26), kept
+ * so the form opens it; a page that is not Google Admin's is dropped.
+ */
+export function createSetupTeam(body: { group: string; display_name?: string; first_admin?: string; invites: string[] }): Promise<Result<{ team: string | null; invites: SetupInvite[] }>> {
+  return setupWrite(
+    route('/v1/admin/setup/teams'),
+    'POST',
+    body,
+    (raw) => {
+      const d = objOf(raw) ?? {}
+      return { team: strOf(d.team), invites: (Array.isArray(d.invites) ? d.invites : []).map(normInvite).filter((i): i is SetupInvite => i !== null) }
+    },
+    () => ({ team: body.group.split('@')[0] ?? null, invites: body.invites.map((email) => ({ email, add_members_url: 'https://admin.google.com/ac/groups', member: false })) }),
+  )
+}
+
+/** `POST /v1/admin/setup/links`: a one-time link for one named person. */
+export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner: string }): Promise<Result<SetupLink>> {
+  return setupWrite(
+    route('/v1/admin/setup/links'),
+    'POST',
+    body,
+    (raw) => {
+      const d = objOf(raw) ?? {}
+      return { kind: strOf(d.kind) ?? body.kind, label: strOf(d.label) ?? body.label, owner: strOf(d.owner) ?? body.owner, url: strOf(d.url), path: strOf(d.path) ?? '', expires_at: strOf(d.expires_at) }
+    },
+    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + 24 * 3_600_000).toISOString() }),
+  )
+}
+
+/** `POST /v1/admin/setup/teams/{id}/invites`'s answer: the Google Admin page that adds them to the group, and whether they are in yet. */
+export interface SetupInvite {
+  email: string
+  add_members_url: string | null
+  member: boolean | null
+}
+
+/** A members page as the setup routes serve it: kept only when it is Google Admin's. */
+function adminMembersPage(raw: unknown): string | null {
+  const url = strOf(raw)
+  return url !== null && url.startsWith('https://admin.google.com/') ? url : null
+}
+
+/** One invite as the team routes answer it; only a Google Admin page is kept as its members page. */
+function normInvite(raw: unknown): SetupInvite | null {
+  const d = objOf(raw)
+  const email = d === null ? null : strOf(d.email)
+  if (d === null || email === null) return null
+  return { email, add_members_url: adminMembersPage(d.add_members_url), member: typeof d.member === 'boolean' ? d.member : null }
+}
+
+/**
+ * `POST /v1/admin/setup/teams/{id}/invites` (decision 4): records the invite
+ * and answers the Google Admin members page. swarm-api holds Groups Reader
+ * only, so it adds no one; the status route then polls the membership.
+ */
+export function inviteToSetupTeam(teamId: string, email: string): Promise<Result<SetupInvite>> {
+  return setupWrite(
+    route('/v1/admin/setup/teams/{id}/invites', { id: teamId }),
+    'POST',
+    { email },
+    (raw) => {
+      const d = objOf(raw) ?? {}
+      return normInvite({ ...d, email: strOf(d.email) ?? email }) ?? { email, add_members_url: null, member: null }
+    },
+    () => ({ email, add_members_url: 'https://admin.google.com/ac/groups', member: false }),
+  )
+}
+
+/**
+ * `POST /v1/admin/setup/verify-runs` (SETUP-API-2): the console's two
+ * verification runs, a task and a workflow, as the first team on a repository
+ * of its grant. Called again it answers the runs already started.
+ */
+export function startSetupVerifyRuns(): Promise<Result<SetupVerifyRuns>> {
+  return setupWrite(
+    route('/v1/admin/setup/verify-runs'),
+    'POST',
+    undefined,
+    (raw) => normVerifyRuns(raw) ?? { task: null, workflow: null, repository: strOf(objOf(raw)?.repository), retries: { task: 0, workflow: 0 } },
+    () => ({ task: 'task_fixture_verify', workflow: 'wf_fixture_verify', repository: 'example-org/app', retries: { task: 0, workflow: 0 } }),
+  )
+}
+
+/** `POST /v1/admin/setup/finish`: `console/finished`, once every console step is done; the CLI then runs verify. */
+export function finishSetup(): Promise<Result<{ at: string | null }>> {
+  return setupWrite(
+    route('/v1/admin/setup/finish'),
+    'POST',
+    undefined,
+    (raw) => ({ at: strOf(objOf(objOf(raw)?.finished)?.at) }),
+    () => ({ at: new Date(FIXTURE_NOW).toISOString() }),
+  )
+}
+
+/** `GET /v1/admin/setup/health`: the latest scheduled doctor run, or null. */
+export async function loadSetupHealth(): Promise<Result<SetupHealth | null>> {
+  const target = route('/v1/admin/setup/health')
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 120))
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<SetupHealth | null>(target, 120)
+    noteFixtureProbe(target, 120, true)
+    return { status: 'ok', data: normSetupHealth(fixtureSetupHealth()), fetchedAt: Date.now() }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normSetupHealth(r.data) }
+  return r as Result<SetupHealth | null>
+}
+
+/** The fixture build's sign-in client before anything is saved: the example project's three console pages. */
+function fixtureSignInClient(): Record<string, unknown> {
+  const page = (path: string) => `https://console.cloud.google.com/auth/${path}?project=example`
+  return { state: 'waiting', client_id: null, saved_at: null, saved_by: null, links: { branding: page('branding'), audience: page('audience'), create_client: page('clients/create') } }
+}
+
+/** The fixture build's install, mid-verify: every console step done, verify on its third check. */
+function fixtureSetupState(): Record<string, unknown> {
+  const at = (minAgo: number) => new Date(FIXTURE_NOW - minAgo * 60_000).toISOString()
+  const t0 = FIXTURE_NOW / 1000 - 240
+  return {
+    env: 'prod',
+    engine: {
+      release: 'v1.0.0',
+      hostname: 'console.example.com',
+      stages: Array.from({ length: 16 }, (_, i) => (i <= 13 ? { state: i === 9 ? 'switches_on' : 'done', at: at(40 - i), by: 'ana@example.com' } : null)),
+      lease: { holder: 'ana@example.com laptop', heartbeat: at(0) },
+      verify: { check: 'digests', done: 2, total: 8, started: t0, expected_end: t0 + 600, deadline: t0 + 1800, result: null },
+      hand_off_at: at(30),
+      ready_at: null,
+    },
+    cli_running: true,
+    sign_in_client: { ...fixtureSignInClient(), state: 'applied', client_id: 'fixture-desktop-client.apps.googleusercontent.com', saved_at: at(38), saved_by: 'ana@example.com' },
+    github_app: { started: true, id: 4242, slug: 'swarmcloud-prod', installed_on: 'example-org', secrets_written_at: at(25), self_check: { ok: true, reason: null, at: at(20) } },
+    teams: [
+      {
+        id: 'engineering',
+        group: 'engineering@example.com',
+        workspace: 'engineering',
+        first_admin: 'ana@example.com',
+        invites: ['ravi@example.com', 'lea@example.com'],
+        progress: { workspace_state: 'ready', created_at: at(18) },
+        smoke: { state: 'succeeded', detail: 'green in 2 min 48 s', url: null },
+        grant: { state: 'granted', account: 'example-org', selection: 'selected', repositories: ['example-org/app', 'example-org/web'] },
+        members: [
+          { email: 'ana@example.com', member: true },
+          { email: 'lea@example.com', member: false },
+          { email: 'ravi@example.com', member: true },
+        ],
+      },
+    ],
+    accounts: {
+      ravi: { owner: 'ravi@example.com', link_expires: at(-1400), signed_in_at: at(12) },
+      lea: { owner: 'lea@example.com', link_expires: at(-1430), signed_in_at: null },
+    },
+    finished: { at: at(5), by: 'ana@example.com' },
+    addons: [
+      { name: 'brave-search', enable: 'swarm addon enable brave-search', secret_link: true },
+      { name: 'ci', enable: 'swarm addon enable ci', secret_link: false },
+    ],
+    hostname: 'console.example.com',
+    github_org: 'example-org',
+    sizing: {
+      mode: 'team',
+      members: 12,
+      pool_limits: { global: 40, default_tenant: 20, provider_tenant: 20, resource_classes: {}, runner_profiles: {}, backends: {} },
+      service_max_instances: { 'swarm-api': 4, 'swarm-scheduler': 2, 'swarm-quota-broker': 1, 'swarm-reconciler': 1 },
+      pool_accounts: 3,
+      budget_usd: 900,
+    },
+  }
+}
+
+/**
+ * The fixture build's latest doctor run, in the shape swarm-doctor writes
+ * (`scheduled_doctor.report()`: every row is `doctor.Finding.to_json()`, and
+ * `findings` repeats each row that is not met): two met, one unmet, one
+ * unknown. AdminSetupHealth.test.tsx holds these rows to the writer's keys.
+ */
+export function fixtureSetupHealth(): Record<string, unknown> {
+  const fix = (why: string, step: string, id: string) => `${why} Fix: the install's step ${step} makes it: swarm install --repair ${id}.`
+  const rows = [
+    { id: 'api.artifactregistry', status: 'met', detail: 'artifactregistry.googleapis.com is enabled', step: 'foundations.apis', fix: fix('The registry the images are pulled from.', 'foundations.apis', 'api.artifactregistry'), cause: '', repair: 'swarm install --repair api.artifactregistry' },
+    { id: 'api.cloudkms', status: 'unmet', detail: 'cloudkms.googleapis.com is not enabled', step: 'foundations.apis', fix: fix('The keys the state bucket and the secrets are encrypted with.', 'foundations.apis', 'api.cloudkms'), cause: '', repair: 'swarm install --repair api.cloudkms' },
+    { id: 'api.cloudbuild', status: 'met', detail: 'cloudbuild.googleapis.com is enabled', step: 'foundations.apis', fix: fix('The builds the release images come from.', 'foundations.apis', 'api.cloudbuild'), cause: '', repair: 'swarm install --repair api.cloudbuild' },
+    { id: 'quota.cloud-run-jobs', status: 'unknown', detail: 'missing grant: swarm-doctor@example.iam.gserviceaccount.com lacks serviceusage.quotas.get on projects/example, so this could not be checked', step: null, fix: 'Fix: no install step makes this; see the entry\'s check: quota.cloud-run-jobs.', cause: 'missing_grant', repair: null },
+  ]
+  return {
+    latest: {
+      run_at: new Date(FIXTURE_NOW - 2 * 60_000).toISOString(),
+      checks: rows,
+      findings: rows.filter((r) => r.status !== 'met'),
+    },
   }
 }

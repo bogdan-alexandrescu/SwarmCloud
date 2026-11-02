@@ -43,15 +43,16 @@ variables {
   # Every image by digest, because the root refuses to plan without one. See
   # image_refs.tftest.hcl.
   image_refs = {
-    "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -157,8 +158,15 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 12
-    error_message = "twelve runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input and contract request 113's claude-code-large"
+    condition     = length(output.runner_backends) == 14
+    error_message = "fourteen runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input, contract request 113's claude-code-large, contract request 124's fix-loop and contract request 127's claude-code-lightpanda"
+  }
+
+  # Contract request 127 (owner, 2026-10-31): claude-code on the Lightpanda
+  # image runs on Autopilot, as claude-code does, on the standard class.
+  assert {
+    condition     = output.runner_backends["claude-code-lightpanda"] == "GKE_AUTOPILOT"
+    error_message = "claude-code-lightpanda runs on GKE Autopilot (contract request 127)"
   }
 
   # Contract request 94: await-input is a control_plane profile (request 93)
@@ -168,6 +176,13 @@ run "runner_backends_match_resolve_backend" {
   assert {
     condition     = output.runner_backends["await-input"] == "CLOUD_RUN_JOB"
     error_message = "await-input states CLOUD_RUN_JOB in the catalogue (contract request 94); it is never run there or anywhere"
+  }
+
+  # Contract request 124: fix-loop is the second control_plane profile, on the
+  # same terms as await-input: CLOUD_RUN_JOB in the catalogue, run nowhere.
+  assert {
+    condition     = output.runner_backends["fix-loop"] == "CLOUD_RUN_JOB"
+    error_message = "fix-loop states CLOUD_RUN_JOB in the catalogue (contract request 124); it is never run there or anywhere"
   }
 }
 
@@ -206,6 +221,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
         "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
         "runner:merge", "runner:post-verdict", "runner:claude-code-review",
         "runner:indexer", "runner:claude-code-browser", "runner:await-input",
+        "runner:fix-loop",
       ] :
       contains(output.pool_names, r)
     ])
@@ -346,6 +362,15 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "await-input is a control_plane profile (contract request 93); no tenant may get a Cloud Run Job for it"
   }
 
+  # Contract request 124: fix-loop is a control_plane profile too, and needs
+  # no provider either, so `profiles_without_a_job` alone keeps it Job-less.
+  assert {
+    condition = !anytrue([
+      for name in output.job_names : endswith(name, "-fix-loop")
+    ])
+    error_message = "fix-loop is a control_plane profile (contract request 124); no tenant may get a Cloud Run Job for it"
+  }
+
   # Cloud Run only exposes memory-medium ephemeral volumes, so a workspace sized
   # at the full memory limit would OOM-kill the agent instead of failing a write.
   assert {
@@ -423,8 +448,8 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 12
-    error_message = "expected 12 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input); the parser read a different number"
+    condition     = length(output.runner_profiles) == 14
+    error_message = "expected 14 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, claude-code-lightpanda, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input, fix-loop); the parser read a different number"
   }
 
   # claude-code's and indexer's entries carry a comment above their backend;
@@ -436,12 +461,19 @@ run "the_python_catalogue_is_readable" {
     error_message = "the parser misread profiles.py: claude-code (contract request 53), indexer (63) and merge (66) must read GKE_AUTOPILOT, post-verdict must keep CLOUD_RUN_JOB, and claude-code-browser (67) must read the browser image and class"
   }
 
-  # await-input (contract request 94) is now the dict's last entry: the parser
-  # must read its own timeout and its absent provider, and not run on past
-  # the dict into the statements after it.
+  # await-input (contract request 94) is read on its own terms: its own
+  # timeout and its absent provider.
   assert {
     condition     = output.runner_profiles["await-input"].timeout_seconds == 300 && output.runner_profiles["await-input"].provider == "" && length(output.runner_profiles["await-input"].secret_env_names) == 0
     error_message = "the parser misread await-input (contract request 94): timeout 300, no provider and no secrets"
+  }
+
+  # fix-loop (contract request 124) is now the dict's last entry: the parser
+  # must read its own timeout, its absent provider and its empty secrets, and
+  # not run on past the dict into the statements after it.
+  assert {
+    condition     = output.runner_profiles["fix-loop"].timeout_seconds == 300 && output.runner_profiles["fix-loop"].provider == "" && length(output.runner_profiles["fix-loop"].secret_env_names) == 0 && output.runner_profiles["fix-loop"].backend == "CLOUD_RUN_JOB"
+    error_message = "the parser misread fix-loop (contract request 124): CLOUD_RUN_JOB, timeout 300, no provider and no secrets"
   }
 
   assert {
@@ -510,14 +542,15 @@ run "the_mirror_carries_each_profiles_model_classes" {
     source = "../../terraform/infra"
   }
 
-  # Q3: the three claude-code-family profiles accept all four, opus by default.
+  # Q3: the claude-code-family profiles accept all four, opus by default;
+  # claude-code-lightpanda (contract request 127) is claude-code's classes too.
   assert {
     condition = alltrue([
-      for name in ["claude-code", "claude-code-browser", "indexer"] :
+      for name in ["claude-code", "claude-code-browser", "indexer", "claude-code-lightpanda"] :
       local.runner_profiles[name].model_classes == ["opus", "fable", "sonnet", "haiku"]
       && local.runner_profiles[name].default_model_class == "opus"
     ])
-    error_message = "claude-code, claude-code-browser and indexer must accept opus, fable, sonnet and haiku, opus by default (owner decision Q3, 2026-10-17)"
+    error_message = "claude-code, claude-code-browser, indexer and claude-code-lightpanda must accept opus, fable, sonnet and haiku, opus by default (owner decision Q3, 2026-10-17; contract request 127)"
   }
 
   # Retired under contract request 50: it keeps the pin it has and gains nothing.
@@ -527,13 +560,14 @@ run "the_mirror_carries_each_profiles_model_classes" {
   }
 
   # Every other profile starts no Claude model: no classes, no default. The
-  # count is the control that this statement is about seven profiles.
+  # count is the control that this statement is about eight profiles; fix-loop
+  # (contract request 124) is the eighth.
   assert {
     condition = length([
       for name, p in local.runner_profiles : name
       if length(p.model_classes) == 0 && p.default_model_class == null
-    ]) == 7
-    error_message = "mock, generic, codex, browser, merge, post-verdict and await-input must carry no model class and no default"
+    ]) == 8
+    error_message = "mock, generic, codex, browser, merge, post-verdict, await-input and fix-loop must carry no model class and no default"
   }
 
   # A default is always one of the profile's own classes.

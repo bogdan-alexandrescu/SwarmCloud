@@ -58,6 +58,7 @@ from agent_worker import expected_outputs as expected_mod
 from agent_worker import gitops, lifecycle, merge as merge_mod
 
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     _attempt,
     _the_agent_titles_its_pull_request,
     assert_only_the_worker_wrote,
@@ -130,6 +131,9 @@ def _fixer(worker_factory, monkeypatch, origin: Path):
     )
     cloned = worker._maybe_clone(task)
     assert cloned["commit"], "the clone did not land"
+    # The fence a replay reads again before its push (#1821): this harness
+    # writes no task document, so it holds here unless a test says otherwise.
+    monkeypatch.setattr(worker.control, "validate_generation", lambda: None)
     return worker, config, worker.ws.work / lifecycle.REPO_DIR_NAME
 
 
@@ -233,21 +237,28 @@ def _merge_of_a_side_branch(origin: Path, tmp: Path, branch: str) -> str:
 
 @pytest.mark.parametrize("mover", [_ordinary_commit, _merge_of_a_side_branch],
                          ids=["ordinary_commit", "merge_not_of_the_default_branch"])
-def test_a_branch_moved_by_anything_else_is_left_as_it_was(
+def test_a_branch_moved_by_anything_else_is_not_a_base_merge_but_is_built_on(
     worker_factory, monkeypatch, origin, red, local_urls, forge, pushes, tmp_path, mover
 ):
-    worker, _, repo = _fixer(worker_factory, monkeypatch, origin)
+    """Not a base merge, so nothing of the tip's supersedes the round's; since
+    #1821 (owner decision 2026-10-27) the round's commits still go on top of
+    such a mover as a fast-forward (test_publish_onto_moved_branch.py), and
+    the mover's commits are never replaced."""
+    worker, config, repo = _fixer(worker_factory, monkeypatch, origin)
     (repo / "feature.py").write_text("def broken():\n    return 2\n")
     theirs = mover(origin, tmp_path, red)
 
     out = worker._harvest_git(publish=True)
 
-    assert out["published"] is False
-    assert out[lifecycle.PUBLISH_FAILED_FIELD] is True
-    assert "rejected" in out["publish_reason"]
-    assert refs(origin)[red] == theirs, "the branch someone else moved was changed"
-    assert [call.get("lease") for call in pushes] == [None]
-    assert forge.pulls == []
+    assert out["published"] is True, out.get("publish_reason")
+    landed = refs(origin)[red]
+    assert _is_ancestor(origin, theirs, landed), "the branch someone else moved was replaced"
+    added = pushed_commits(origin, red, since=theirs)
+    assert len(added) == 1 and added[0]["parents"] == [theirs]
+    assert_only_the_worker_wrote(added, config)
+    assert [call.get("lease") for call in pushes] == [None, None]
+    assert out[lifecycle.MOVED_TIP_FIELD] == theirs
+    assert not out.get("base_merge_tip")
 
 
 def test_a_round_whose_file_the_base_merge_rewrote_ends_superseded_by_base(
@@ -415,6 +426,9 @@ def _conflict_fixer(worker_factory, monkeypatch, origin: Path):
     )
     cloned = worker._maybe_clone(task)
     assert cloned["commit"], "the clone did not land"
+    # The fence a replay reads again before its push (#1821): this harness
+    # writes no task document, so it holds here unless a test says otherwise.
+    monkeypatch.setattr(worker.control, "validate_generation", lambda: None)
     return worker, config, worker.ws.work / lifecycle.REPO_DIR_NAME
 
 

@@ -42,6 +42,7 @@ from swarm_common.models import (
     WorkflowStep,
     new_id,
     pool_names_for,
+    reserved_pool_units,
     utcnow,
 )
 from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backend
@@ -59,7 +60,7 @@ from .continuation import (
     resolve_merge_pr,
     with_merge_pr_label,
 )
-from .access import MODES, grant_id_for, org_id_for, via_token
+from .access import MODES, grant_id_for, org_id_for, person_grant_from_workspace, via_token
 from .extrarepos import Limits, Resolver, refuse_unless_enabled, requested_any, runs_an_agent
 from . import refusals
 from .errors import ApiError, BrowserToolUnavailable, Forbidden, NotFound, ValidationFailed
@@ -67,6 +68,7 @@ from .browser_logins import refuse_unless_personal
 from .qa_identity import refuse_unless_granted
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import (
+    GIT_PROVIDER,
     FirestoreSlotIndex,
     ForgeSlot,
     NoForgeCredential,
@@ -74,6 +76,7 @@ from .forge import (
     service_slot,
 )
 from .forgeapp import GRANTS, ORGS, Caller
+from .forge_installation import APP_INSTALLATION_SOURCE, installation_record_in
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .mcp_credentials import (
     OWNER_TASK,
@@ -118,6 +121,7 @@ from .validation import (
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_MAX_ATTEMPTS,
+    REVIEW_GATE_DEFAULT_BLOCK,
     REVIEW_GATE_METADATA_KEY,
     RUNTIME_METADATA_KEY,
     RuntimePolicyInvalid,
@@ -130,7 +134,11 @@ from .validation import (
     MergePlan,
     SinglePrPlan,
     StepSpec,
+    IssueRef,
     check_repository_ref,
+    ref_needs_lookup,
+    repository_ref_not_found,
+    swarm_task_of_ref,
     is_merge_step,
     is_mergeable_forge,
     merge_repository,
@@ -138,6 +146,7 @@ from .validation import (
     merge_step_for,
     mcp_server_names,
     plan_merge,
+    reader_step_ids,
     refuse_control_plane_integrator,
     refuse_control_plane_outside_workflow,
     refuse_missing_mcp_credentials,
@@ -155,6 +164,8 @@ from .validation import (
     resolve_merge_choice,
     resolve_fix_rounds,
     resolve_merge_fix_rounds,
+    default_review_gate_steps,
+    requirements_check_steps,
     resolve_review_gate,
     resolve_runtime_policy,
     AFTER_PRS_METADATA_KEY,
@@ -173,6 +184,7 @@ from .validation import (
     validate_runner_profile,
     validate_step_routing,
     validate_storable,
+    timeout_asked,
     validate_timeout,
     workflow_label,
 )
@@ -180,6 +192,18 @@ from .waker import SchedulerWaker, ring
 from .workspaces import Workspaces
 
 log = logging.getLogger(__name__)
+
+
+def _recorded_pull_request(task: Task) -> int | None:
+    """The pull request a task opened, from the worker's record
+    (`result_summary.git.pull_request.number`), else None."""
+    summary = task.result_summary if isinstance(task.result_summary, Mapping) else {}
+    git = summary.get("git")
+    pull = git.get("pull_request") if isinstance(git, Mapping) else None
+    number = pull.get("number") if isinstance(pull, Mapping) else None
+    if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+        return number
+    return None
 
 
 @dataclass(frozen=True)
@@ -300,7 +324,16 @@ class SubmissionService:
         GitHub connection (INDEX-CRED: an index run in a personal workspace
         clones with what the owner's Try it checked, not a `-git` slot the
         workspace never had). Which one is recorded in
-        `metadata.forge_credential_source`, so the task says so. A personal
+        `metadata.forge_credential_source`, so the task says so. When the
+        submitter is a platform service account and the repository's owner
+        has the deployment's GitHub App installed for this tenant (`_app_installed`), the source is `app_installation`
+        instead, and the slot is the tenant's `-git` (the frozen
+        `forge_credential` shape has no other name for a minted run; a
+        personal tenant's owner's user slot would park it, as a `git-u-`
+        slot is held to its own person: DAYONE-SERVICE-SLOT-APP), and the broker mints
+        that run an installation token for its one repository at release
+        (`credbroker`, DAYONE-SERVICE-APP-TOKEN; lesson 43), recomputing
+        the decision from the signed fields, never from this label. A personal
         workspace with no credential at all has its task on a repository
         registered as private refused up front (`no_github_credential`)
         rather than dispatched to a clone that cannot succeed. Only a
@@ -320,18 +353,36 @@ class SubmissionService:
         uncredentialed: list[str] = []
         resolved: list[ForgeSlot] = []
 
-        def on_tenants_behalf(task: Task, owner: str, repo: str) -> None:
+        installed: dict[str, bool] = {}
+
+        def app_installed(owner: str) -> bool:
+            # Once per owner per submission, as the slot is once per batch.
+            key = owner.lower()
+            if key not in installed:
+                installed[key] = self._app_installed(tenant_id, owner)
+            return installed[key]
+
+        def on_tenants_behalf(task: Task, owner: str, repo: str, *, app: bool = False) -> None:
             if not resolved:
                 # Resolved once per submission: one rule, one answer per batch.
                 resolved.append(service_slot(tenant, FirestoreSlotIndex(self._store.db)))
             slot = resolved[0]
-            if (not slot.known and tenant.kind == "user"
+            minted = app and app_installed(owner)
+            if (not minted and not slot.known and tenant.kind == "user"
                     and self._registered_private(tenant_id, owner, repo)):
                 uncredentialed.append(f"{owner}/{repo}")
                 return
-            task.forge_credential = slot.provider
+            # A minted run names the tenant's `-git` slot, never a personal
+            # tenant's owner's user slot (DAYONE-SERVICE-SLOT-APP): the
+            # scheduler and the worker hold a `git-u-` slot to its own person,
+            # and a service account is nobody's, so the owner's slot parked
+            # the one-person install's smoke and verify runs for good. If the
+            # broker cannot mint at release, the worker reads `-git`: the
+            # tenant's own, or none, never another person's.
+            task.forge_credential = GIT_PROVIDER if minted else slot.provider
             task.forge_access = SERVICE_FORGE_ACCESS
-            task.metadata[FORGE_SOURCE_METADATA_KEY] = slot.source
+            task.metadata[FORGE_SOURCE_METADATA_KEY] = (
+                APP_INSTALLATION_SOURCE if minted else slot.source)
 
         for task in tasks:
             named = github_repository(task.repository_url)
@@ -339,7 +390,11 @@ class SubmissionService:
                 continue
             owner, repo = named
             if service:
-                on_tenants_behalf(task, owner, repo)
+                # Only a platform service account's own submission: an index
+                # run submitted as the person who registered the repository
+                # (`service_submission`) keeps the slot, as the broker would.
+                on_tenants_behalf(task, owner, repo,
+                                  app=is_service_submitter(task.submitted_by))
                 continue
             mode = self._grant_mode(tenant_id, task.submitted_by or "",
                                     repo_id_for(tenant_id, owner, repo))
@@ -432,6 +487,23 @@ class SubmissionService:
                          tenant.tenant_id, exc.code)
             raise
 
+    def _app_installed(self, tenant_id: str, owner: str) -> bool:
+        """Whether this tenant's own `forge_orgs` say the deployment's GitHub
+        App is installed on `owner` (`forge_installation.installation_record_in`,
+        never a `method: pat` owner): then a service submission's run gets an
+        installation token minted for it at release (DAYONE-SERVICE-APP-TOKEN).
+        False -- today's service rule -- when FORGE_INSTALLATION_READS is off,
+        which is also when the broker has no minter, or when the read fails."""
+        if getattr(self._settings, "forge_installation_reads", False) is not True:
+            return False
+        try:
+            return installation_record_in(self._store.db, tenant_id, owner) is not None
+        except Exception as exc:  # noqa: BLE001 -- the type is enough; fall back
+            log.warning("app installation lookup failed tenant=%s owner=%s (%s); "
+                        "the service rule's slot is used", tenant_id, owner.lower(),
+                        type(exc).__name__)
+            return False
+
     def _registered_private(self, tenant_id: str, owner: str, repo: str) -> bool:
         """Whether the tenant registered `owner/repo` and its registration
         says GitHub served it as private (or internal): read by the id it is
@@ -465,6 +537,14 @@ class SubmissionService:
         checks it: another person's or another tenant's grant is no grant
         (invariant 9). A mode that is neither `read` nor `write` is no grant
         either, so a damaged document refuses rather than writes.
+
+        With no grant of their own, the workspace's grant answers
+        (`access.workspace_grant_mode`): Admin › Setup's team-level grant over
+        the repositories the GitHub App installation covers (decision 3), held
+        by everyone the request was resolved into `tenant_id` as, so a
+        teammate's first task is not refused (DAYONE-SETUP-API-6, N11). It is
+        then recorded as the person's own grant, which the worker re-reads
+        before each clone and push.
         """
         if not email:
             return None
@@ -472,9 +552,11 @@ class SubmissionService:
         snap = self._store.db.collection(GRANTS).document(
             grant_id_for(tenant_id, email, repo_id)).get()
         doc = snap.to_dict() if snap.exists else None
+        if not doc:
+            return person_grant_from_workspace(self._store.db, tenant_id, email, repo_id,
+                                               at=self._now())
         if (
-            not doc
-            or doc.get("tenant_id") != tenant_id
+            doc.get("tenant_id") != tenant_id
             or doc.get("user") != caller.key
             or doc.get("repo_id") != repo_id
         ):
@@ -818,6 +900,15 @@ class SubmissionService:
             # before classes existed; a stored class is signed at the format
             # that covers it (`specsign.signing_format`).
             model_class=stored_model_class(profile, model_class),
+            # Contract request 131: what the spec asked when every timeout
+            # stored for it is lower (its own and, on a `browser_if_ui` step,
+            # its `code` alternate's). A record only: the limit stays
+            # `timeout_seconds`, and nothing reads this as one (invariant 10).
+            timeout_seconds_asked=timeout_asked(
+                spec.timeout_seconds, timeout,
+                *((metadata[RUNTIME_METADATA_KEY]["alternate"]["timeout_seconds"],)
+                  if runtime is not None else ()),
+            ),
         )
 
     def _runtime_alternate(
@@ -1052,6 +1143,17 @@ class SubmissionService:
         now = self._now()
         budget_scope = self.budget_scope(tenant.tenant_id)
         try:
+            # Each distinct (repository, ref) asked of the forge once, before
+            # any task is built (#2726). A `publish_to_pr` task's ref is the
+            # pull request's head, and one beside it is refused in the build.
+            asked: set[tuple[str | None, str | None]] = set()
+            for spec in specs:
+                pair = (spec.repository_url, spec.repository_ref)
+                if spec.publish_to_pr is not None or pair in asked:
+                    continue
+                asked.add(pair)
+                check_repository_ref(spec.repository_ref)
+                self._check_ref_exists(tenant, *pair, person=ctx.email)
             # Inside the try so a refused dispatch is counted like every other
             # rejected submission rather than being invisible to the metric.
             tasks = [
@@ -1070,6 +1172,7 @@ class SubmissionService:
                             # batch is at task scale, not workflow scale.
                             scale="task",
                             repository_url=spec.repository_url,
+                            switches=spec.dispatch,
                         ),
                         tenant, spec, person=ctx.email,
                     ),
@@ -1171,6 +1274,13 @@ class SubmissionService:
             # Every step clones it, so refused once, here and counted, rather
             # than by `_build_task` on the first step (F4).
             check_repository_ref(spec.repository_ref)
+            # And asked of the forge once, here, not per step (#2726). A
+            # continuation, `merge_pr` or `publish_to_pr` supplies the ref
+            # itself and refuses one beside it below, so it is not asked.
+            if (spec.continues_task is None and spec.merge_pr is None
+                    and spec.publish_to_pr is None):
+                self._check_ref_exists(tenant, spec.repository_url, spec.repository_ref,
+                                       person=ctx.email)
             # Inside the try, because resolving each step's `input_layout`
             # (#75) can refuse, and a refusal is counted like every other.
             step_specs = self._step_specs(spec)
@@ -1212,6 +1322,7 @@ class SubmissionService:
                 carrier=spec.carrier,
                 scale="workflow",
                 repository_url=repository_url,
+                switches=spec.dispatch,
             )
             # Lane SPEED-D3: the pull requests of the workflow's own
             # repository it waits for, once that repository is known.
@@ -1317,6 +1428,11 @@ class SubmissionService:
                 integrator_step_id=integrator_step_id,
                 rereview=rereview_step_id,
             )
+            # A `direct-pr` step that only feeds a dependant (#2662): stored
+            # with `allow_empty_diff`, so a read-only review that changes
+            # nothing succeeds `no_change` instead of failing
+            # `published_nothing:` and sweeping the step that reads it.
+            readers = reader_step_ids(step_specs, strategy=dispatch.strategy)
             merge_plan = plan_merge(
                 step_specs, dispatch.strategy,
                 continuation.task_id if continuation else None,
@@ -1394,6 +1510,14 @@ class SubmissionService:
         not_integrated: frozenset[str] = frozenset(control_plane_steps)
         if integrator_step_id is not None and by_id[integrator_step_id].when is not None:
             not_integrated |= {by_id[integrator_step_id].when.step}
+        # An issue run's requirements check (#2524) is read-only: when it
+        # runs it writes requirements.json, and when the review runs it runs
+        # no agent and pushes nothing at all.
+        not_integrated |= requirements_check_steps(spec.steps)
+        # Every review step names a gate by default (#2524, BGD 2026-10-28):
+        # one that names none is stored with the platform's default block,
+        # which swarm-api resolves against the workspace's setting.
+        default_gated = default_review_gate_steps(spec.steps, spec.metadata)
         now = self._now()
         workflow_id = new_id("wf")
 
@@ -1454,7 +1578,7 @@ class SubmissionService:
                 builds_on=step_task_id[source.builds_on] if source.builds_on else None,
                 gate_task_id=step_task_id[source.when.step] if source.when else None,
                 gate_verdicts=source.when.verdict_in if source.when else (),
-                allow_empty_diff=source.allow_empty_diff,
+                allow_empty_diff=source.allow_empty_diff or step_id in readers,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
                 # Not on the re-review, which is gated on the same review
@@ -1548,6 +1672,8 @@ class SubmissionService:
                 runtime_block["inherit"] = {
                     "step": source.when.step, "task_id": step_task_id[source.when.step],
                 }
+            if step_id in default_gated:
+                task.metadata[REVIEW_GATE_METADATA_KEY] = dict(REVIEW_GATE_DEFAULT_BLOCK)
             step_task_id[step_id] = task.id
             step_model_class[step_id] = task.model_class
             tasks.append(task)
@@ -1976,6 +2102,86 @@ class SubmissionService:
         branch = self._registration(tenant_id, repository_url).get("default_branch")
         return branch if isinstance(branch, str) and branch else None
 
+    def _check_ref_exists(self, tenant: Tenant, repository_url: str | None,
+                          ref: str | None, *, person: str | None) -> None:
+        """Refuse a `repository_ref` the forge has neither as a branch nor as
+        a tag (#2726), once per submission, before any task exists.
+
+        wf_81c4f2da named `swarm/task_77d63ca8...`, a branch deleted after its
+        pull request merged; its step took a lease, waited for a pod and
+        failed in the clone. Asked here with the slot `forge.resolve_forge_slot`
+        picks for `person` -- the tenant's own read, as `_named_pull` -- and
+        refused with `RepositoryRefNotFound` only when GitHub says no such
+        branch, no such tag, AND reads the repository itself -- and only while
+        the `repository_ref_not_found` switch is on (refusals.py); off, the
+        refusal is logged and the submission admitted.
+
+        FAILS OPEN. No forge reader or credential, 401/403, a timeout, a 5xx,
+        a rate limit or an unreadable repository admit as before: the clone
+        still finds a missing ref, and a GitHub outage must not stop
+        admission. A full sha is fetched by sha and never asked about; a
+        repository off GitHub is not asked either.
+        """
+        if self._forge_tokens is None or self._forge_writer is None:
+            return
+        if not ref_needs_lookup(ref):
+            return
+        named = merge_repository(repository_url)
+        if named is None:
+            return
+        assert ref is not None
+        owner, repo = named
+        target = IssueRef(owner=owner, repo=repo, number=0)
+        writer = self._forge_writer
+        task_id = swarm_task_of_ref(ref)
+        task: Task | None = None
+        if task_id is not None:
+            try:
+                # The caller's own tenant only: another tenant's task is
+                # neither named nor read about (the generic refusal).
+                task = self._store.get_task(tenant.tenant_id, task_id, submitted_by=None)
+            except NotFound:
+                task = None
+        pull_request: int | None = None
+        pull_state: str | None = None
+        try:
+            token = self._forge_tokens.token_for(tenant, person=person)
+            try:
+                if writer.branch_head(target, ref, token) is not None:
+                    return
+                if writer.tag_head(target, ref, token) is not None:
+                    return
+                # Neither: a 404 is also what a token that cannot see the
+                # repository reads, so the repository itself must answer.
+                default_branch = writer.default_branch(target, token)
+                if task is not None:
+                    pull_request = _recorded_pull_request(task)
+                    if pull_request is not None:
+                        try:
+                            pull = writer.read_pull(target, pull_request, token)
+                            pull_state = ("merged" if pull.merged
+                                          else "closed" if pull.state != "open" else "open")
+                        except (ApiError, OSError):
+                            pull_state = None
+            finally:
+                del token
+        except (ApiError, OSError) as exc:
+            log.info(
+                "repository_ref %r of %s/%s not checked (%s); admitted",
+                ref, owner, repo, type(exc).__name__,
+                extra={"tenant_id": tenant.tenant_id},
+            )
+            return
+        # A new refusal ships report-only (refusals.py): off, it is logged and
+        # the submission goes on, as before this check.
+        refusals.refuse(repository_ref_not_found(
+            ref, f"{owner}/{repo}",
+            task_id=task.id if task is not None else None,
+            pull_request=pull_request, pull_state=pull_state,
+            default_branch=self._registered_base(tenant.tenant_id, repository_url)
+            or default_branch,
+        ))
+
     @staticmethod
     def _step_dispatch(
         dispatch: DispatchOptions,
@@ -2201,6 +2407,11 @@ class SubmissionService:
                 "disabled_reason": profile.disabled_reason,
                 "units": units,
                 "pools": required,
+                # What one agent of this profile takes in each pool: `units`
+                # in the compute pools, 1 in each provider pool (contract
+                # request 129, #2950). A client dividing a pool's room by
+                # `units` in every pool undercounts the provider pools.
+                "pool_units": reserved_pool_units(required, units),
                 # What this profile's RUNNER refuses to start without, so a
                 # submit form can refuse locally instead of spending a slot on
                 # an attempt that cannot succeed. Served as data for the same

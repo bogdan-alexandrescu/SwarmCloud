@@ -164,7 +164,7 @@ describe('#98: one read age per screen', () => {
     // head beside the control.
     render(<FrameAge.Provider value={true}>{screenOf({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() })}</FrameAge.Provider>)
     await waitFor(() => expect(note()).toBe('1 rows'))
-    expect(refresh(), 'the refresh control went without its age').toMatch(/^⟳ read \d+ s ago$/)
+    expect(refresh(), 'the refresh control went without its age').toMatch(/^⟳ read once · \d+ s ago$/)
     expect(document.querySelectorAll('.c-phead .c-refresh')).toHaveLength(1)
     expect(document.querySelector('.ctl-head-age'), 'a second age in the head').toBeNull()
     // Per text node: the body's textContent runs `⟳ read 0 s ago` into
@@ -181,7 +181,7 @@ describe('#98: one read age per screen', () => {
     // MUTATION: drop the age outside the frame, or stop marking an aged read
     // -- a read older than AGED_AFTER_MS is said to be one, in words.
     const first = render(screenOf({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() }))
-    await waitFor(() => expect(refresh()).toMatch(/^⟳ read \d+ s ago$/))
+    await waitFor(() => expect(refresh()).toMatch(/^⟳ read once · \d+ s ago$/))
     first.unmount()
 
     render(

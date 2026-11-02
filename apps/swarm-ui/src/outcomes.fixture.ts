@@ -45,6 +45,7 @@ const ZERO_CLASSES: Record<FailureClassKey, number> = {
   merge_failed: 0,
   publish_refused: 0,
   budget_exceeded: 0,
+  fix_loop_exhausted: 0,
   other: 0,
   no_reason: 0,
   intended: 0,
@@ -182,7 +183,7 @@ function cannedLedger(): Outcomes {
   const cancel = (k: keyof CancelSplit) => sum((b) => b.cancelled?.[k] ?? 0)
   const bucket: LedgerBucketSize = 'day'
   return {
-    scope: { kind: 'tenant', tenant_id: 'eng' },
+    scope: { kind: 'tenant', tenant_id: 'u-bogdan' },
     tz: 'Europe/Bucharest',
     requested: { span: '14d', since: null, until: null, bucket: 'auto' },
     since: '2026-09-12T00:00:00+03:00',
@@ -207,6 +208,7 @@ function cannedLedger(): Outcomes {
         { key: 'merge_failed', label: 'merge failed' },
         { key: 'publish_refused', label: 'publish refused' },
         { key: 'budget_exceeded', label: 'budget exceeded' },
+        { key: 'fix_loop_exhausted', label: 'fix loop exhausted' },
         { key: 'other', label: 'other' },
         { key: 'no_reason', label: 'no reason recorded' },
         { key: 'intended', label: 'failed on purpose' },
@@ -361,19 +363,19 @@ function cannedLedger(): Outcomes {
       rows_total: 3,
       rows: [
         {
-          workflow_id: 'wf_bcdc9180e4fb4a209f31', tenant_id: 'eng', submitted_by: 'engineer-a@example.com',
+          workflow_id: 'wf_bcdc9180e4fb4a209f31', tenant_id: 'u-bogdan', submitted_by: 'engineer-a@example.com',
           first_failed: { step_id: 'synthesis', task_id: 'task_0123456789abcdef0001', failure_class: 'lost_worker', ended_at: '2026-09-25T08:10:00Z' },
           cascade_cancelled: 2, last_ended_at: '2026-09-25T08:12:00Z', state: 'FAILED',
           steps: { total: 4, succeeded: 1, failed: 1, dead_lettered: 0, cancelled: 2, open: 0, unreadable: 0 },
         },
         {
-          workflow_id: 'wf_71aa000000000000002c1', tenant_id: 'eng', submitted_by: 'engineer-b@example.com',
+          workflow_id: 'wf_71aa000000000000002c1', tenant_id: 'u-bogdan', submitted_by: 'engineer-b@example.com',
           first_failed: { step_id: 'review', task_id: 'task_0123456789abcdef0002', failure_class: 'dispatch_failed', ended_at: '2026-09-22T10:00:00Z' },
           cascade_cancelled: 0, last_ended_at: '2026-09-22T10:05:00Z', state: 'FAILED',
           steps: { total: 4, succeeded: 3, failed: 1, dead_lettered: 0, cancelled: 0, open: 0, unreadable: 0 },
         },
         {
-          workflow_id: 'wf_0c3e0000000000000077b0', tenant_id: 'eng', submitted_by: 'verify-sa@example.com',
+          workflow_id: 'wf_0c3e0000000000000077b0', tenant_id: 'u-bogdan', submitted_by: 'verify-sa@example.com',
           first_failed: { step_id: 'build', task_id: 'task_0123456789abcdef0003', failure_class: 'lost_worker', ended_at: '2026-09-23T09:00:00Z' },
           cascade_cancelled: 1, last_ended_at: '2026-09-23T09:01:00Z', state: 'UNKNOWN', steps: null,
         },

@@ -424,7 +424,9 @@ describe('O1: Recent failures', () => {
     expect(rows[0]!.querySelector<HTMLAnchorElement>('a.ov-name')!.getAttribute('href')).toBe('/agents/recent/tsk_fail_1')
     expect(rows[0]!.querySelector('.sk-st')?.getAttribute('data-mark')).toBe('failed')
     expect(rows[1]!.querySelector('.sk-st')?.getAttribute('data-mark')).toBe('dead')
-    expect(text(el.querySelector('#ov-failures .ctl-card-note'))).toMatch(/last 24h · 1 failed · 1 dead-lettered/)
+    // The page is every agent, so the head names the check's window, which
+    // the view `stateView` returns carries (overview-agents-01).
+    expect(text(el.querySelector('#ov-failures .ctl-card-note'))).toMatch(/of the \d+ newest · 1 failed · 1 dead-lettered/)
   })
 })
 

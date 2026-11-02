@@ -232,6 +232,17 @@ interface Cadence {
   base: number
   /** The wait actually in force: the cadence, or longer while backing off. */
   wait: number
+  /**
+   * Why the cadence is what it is, where it differs by size: a capacity
+   * screen's `every 1 min on a phone` (capacityPoll `note`, admin-shell-19).
+   */
+  note?: string | null
+}
+
+/** A poll's own words for its cadence (`capacityPoll`'s `note`), or null. */
+function cadenceNote<T>(poll: ScreenPoll<T> | undefined): string | null {
+  const note = typeof poll === 'function' ? (poll as { note?: unknown }).note : undefined
+  return typeof note === 'function' ? ((note as () => string | null)() ?? null) : null
 }
 
 /**
@@ -251,6 +262,17 @@ const INPUT_EVENTS = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchst
 
 function noteInput(): void {
   lastInput = Date.now()
+}
+
+/**
+ * Input that is not a key, a pointer or a wheel: speech. Voice it's Talk pane
+ * calls this on every final caption from either side while a session is live
+ * (docs/design/voice-it.md §3.10), so a person who is only talking is not
+ * taken for someone who left. When the session ends nothing calls it, and the
+ * fifteen-minute rule applies again.
+ */
+export function noteActivity(): void {
+  noteInput()
 }
 
 /** One set of listeners for the whole tab, installed by the first poller. */
@@ -474,11 +496,13 @@ export function RefreshControl({
       ? null
       : cadence.wait > cadence.base
         ? `every ${spacedAge(cadence.wait)}, backing off`
-        : `every ${spacedAge(cadence.base)}`
+        : `every ${spacedAge(cadence.base)}${cadence.note ? ` ${cadence.note}` : ''}`
   const lead = [stale ? 'not refreshed' : null, every].filter((p): p is string => p !== null)
   // A screen read once still says what the age is (V092): a bare `⟳ 0 s` beside
   // siblings that say `every 30 s · read 0 s ago` reads as a counter, not an age.
-  const said = lead.length === 0 ? `read ${age} ago` : `${lead.join(' · ')} · read ${age} ago`
+  // A screen that does not poll says so (visual QA pass 1 overview-agents-79,
+  // #2596): `read 1 min ago` alone, ageing, read as a cadence that had stalled.
+  const said = lead.length === 0 ? `read once · ${age} ago` : `${lead.join(' · ')} · read ${age} ago`
   return (
     <button
       ref={buttonRef}
@@ -676,7 +700,7 @@ export function Screen<T>({
         pauseUntil === null ? 0 : pauseUntil - Date.now(),
       )
       dueAt.current = Date.now() + wait
-      setCadence({ base, wait })
+      setCadence({ base, wait, note: cadenceNote(pollRef.current) })
       arm()
     },
     [arm, disarm],
@@ -815,17 +839,13 @@ export function Screen<T>({
     resume()
     retry()
   }, [resume, retry])
-  // THE FAILURE PANEL'S `Try again` UNMOUNTS WITH ITS PANEL (a11y-keyboard-001):
-  // the read it starts puts the screen back to `loading`, and focus went to
-  // <body> with the button. It is handed to the head's refresh first, which
-  // stays mounted through the read (`⟳ reading…`) and is the same press. The
-  // one failure that draws no head refresh, an admin gate, draws no Try again
-  // either (`FailedPanel`), so there is always a refresh to hand it to.
+  // ONE RETRY CONTROL PER PAGE (QA2 automate2-11): a failed read drew `⟳
+  // refresh · not read` in the head and `Try again` in the panel under it,
+  // two controls for one press. The head's stays: it is mounted through the
+  // read it starts (`⟳ reading…`), so a keyboard reader keeps focus on it
+  // (a11y-keyboard-001), where the panel's `Try again` unmounted with its
+  // panel. The page's panel draws none (`offerRetry={false}`).
   const headRefresh = useRef<HTMLButtonElement>(null)
-  const retryFromPanel = useCallback(() => {
-    headRefresh.current?.focus()
-    retry()
-  }, [retry])
 
   const data =
     state.status === 'ok' ? state.data : state.status === 'stale' ? state.data : null
@@ -851,8 +871,16 @@ export function Screen<T>({
       <PageHead title={title} help={help}>
         {/* An admin gate is not a read to renew: the panel says `admin only`
             (#138). The head keeps its height without it (`.c-phead`'s
-            min-height, visual QA V064), so the title does not move. */}
-        {!(state.status === 'error' && state.error.kind === 'admin_required') && (
+            min-height, visual QA V064), so the title does not move. NOR IS
+            AN ANSWER (QA1 automate-25): a 404 or a 403 on a read is the
+            API's answer, and the panel under it says "Reading it again gets
+            the same answer" and offers no Try again (`FailedPanel`'s
+            `answered`), so `⟳ refresh` above it offered the press the page
+            had just said could not help. */}
+        {!(
+          state.status === 'error' &&
+          (state.error.kind === 'admin_required' || (!isWriteFailure(state.error) && (state.error.kind === 'not_found' || state.error.kind === 'forbidden')))
+        ) && (
           <RefreshControl
             readAt={
               state.status === 'ok' || state.status === 'empty'
@@ -881,7 +909,7 @@ export function Screen<T>({
       )}
 
       {state.status === 'loading' && (skeleton ?? <SkeletonRows shape={shape} />)}
-      {state.status === 'error' && <FailedPanel error={state.error} onRetry={retryFromPanel} page />}
+      {state.status === 'error' && <FailedPanel error={state.error} onRetry={retry} offerRetry={false} page />}
 
       {/* THE SHARED EMPTY STATE (CH-10), where this was a hand-built `.state`
           box: no mark, so a real zero told itself from a failed read by
@@ -1077,10 +1105,16 @@ function StaleBanner({ error, fetchedAt, now }: { error: ApiError; fetchedAt: nu
 export function FailedPanel({
   error,
   onRetry,
+  offerRetry = true,
   page = false,
 }: {
   error: ApiError
   onRetry: () => void
+  /**
+   * Whether the panel draws its own `Try again`. A `Screen`'s does not: the
+   * head's refresh is the page's one retry (QA2 automate2-11).
+   */
+  offerRetry?: boolean
   /**
    * The panel IS the page: a `Screen` whose read failed. Its sentences keep
    * the lead size. Everywhere else the panel sits in a card, a pane or the
@@ -1160,7 +1194,7 @@ export function FailedPanel({
         <p className="checked-at">
           paused {error.retryAfterSeconds ?? 'a few'}s — the API asked us to wait
         </p>
-      ) : writeRefused(error) || answered ? null : (
+      ) : writeRefused(error) || answered || !offerRetry ? null : (
         <Button onClick={onRetry}>Try again</Button>
       )}
     </div>

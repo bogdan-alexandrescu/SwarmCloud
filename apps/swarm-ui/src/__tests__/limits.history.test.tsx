@@ -39,7 +39,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen } = await import('../AdminSettings')
+const { AdminSettingsScreen, poolSpoken } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 
@@ -51,6 +51,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   window.location.hash = ''
+  window.history.replaceState(null, '', '/')
 })
 
 function ok<T>(data: T): Result<T> {
@@ -102,7 +103,7 @@ async function rows(cap: Capacity): Promise<void> {
 
 function open(name: string): HTMLElement {
   const row = document.getElementById(`limit-${name}`)!
-  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${name}` }))
+  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` }))
   return document.querySelector<HTMLElement>('aside.adm-side')!
 }
 
@@ -173,25 +174,27 @@ describe('the live preview names the binding pool and links it to its row (#133)
   it('says which pool the moved ceiling binds on, as a link to that row', async () => {
     await rows(capacity(POOLS()))
     const side = open('runner:claude-code')
-    fireEvent.change(within(side).getByLabelText('Hard limit for runner:claude-code'), { target: { value: '10' } })
+    fireEvent.change(within(side).getByLabelText('Hard limit for claude-code (runner profile)'), { target: { value: '10' } })
     const impact = side.querySelector('.adm-impact')!
     expect(impact.textContent).toContain('claude-code 20 → 10, binds on')
     const link = within(impact as HTMLElement).getByRole('link', { name: 'runner:claude-code' })
-    expect(link.getAttribute('href')).toBe('#admin/limits?pool=runner:claude-code')
+    // A path, not the legacy hash (QA2 admin2-21).
+    expect(link.getAttribute('href')).toBe('/admin/limits?pool=runner%3Aclaude-code')
   })
 
   it('links the pool that holds an unchanged profile, and following it marks that row', async () => {
     await rows(capacity(POOLS()))
     const side = open('tenant:eng')
     // tenant:eng 30 -> 25 moves nothing: runner:claude-code at 20 still binds.
-    fireEvent.change(within(side).getByLabelText('Hard limit for tenant:eng'), { target: { value: '25' } })
+    fireEvent.change(within(side).getByLabelText('Hard limit for eng (workspace)'), { target: { value: '25' } })
     const impact = side.querySelector('.adm-impact')!
     expect(impact.textContent).toContain('Unchanged: claude-code (')
     const link = within(impact as HTMLElement).getByRole('link', { name: 'runner:claude-code' })
-    expect(link.getAttribute('href')).toBe('#admin/limits?pool=runner:claude-code')
+    // A path, not the legacy hash (QA2 admin2-21).
+    expect(link.getAttribute('href')).toBe('/admin/limits?pool=runner%3Aclaude-code')
 
-    window.location.hash = link.getAttribute('href')!
-    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    window.history.pushState(null, '', link.getAttribute('href')!)
+    window.dispatchEvent(new PopStateEvent('popstate'))
     await waitFor(() =>
       expect(document.getElementById('limit-runner:claude-code')!.classList.contains('is-target')).toBe(true),
     )

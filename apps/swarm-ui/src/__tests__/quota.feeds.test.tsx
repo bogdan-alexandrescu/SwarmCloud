@@ -64,10 +64,12 @@ describe('Provider quota links each row to the pool its cap feeds (#128)', () =>
 })
 
 describe('setBy names the zero a quota state forces (#128)', () => {
-  it('calls a state-forced 0 a quota state, not a provider quota', () => {
+  it('calls a state-forced 0 a closed provider quota, not a provider quota cap', () => {
     const by = setBy(pool('provider:anthropic:tenant:eng', { quota_derived_limit: 0, effective_limit: 0, available: 0 }))
-    expect(by.term).toBe('quota state')
-    expect(by.detail).toMatch(/EXHAUSTED, DISABLED or COOLDOWN/)
+    expect(by.term).toBe('provider quota closed')
+    expect(by.detail).toMatch(/used up, turned off or cooling down/)
+    // MUTATION (QA2-FIX-14, capacity-21): put `quota state` back as the term and this goes red.
+    expect(by.detail).not.toMatch(/EXHAUSTED|quota state/)
     expect(by.detail).toContain('20')
   })
 
@@ -89,7 +91,7 @@ describe('setBy names the zero a quota state forces (#128)', () => {
         (t) => t.getAttribute('title') === 'provider:anthropic:tenant:eng',
       )
       expect(th).toBeTruthy()
-      expect(th!.closest('tr')!.querySelector('td[data-label="Set by"]')!.textContent).toBe('quota state')
+      expect(th!.closest('tr')!.querySelector('td[data-label="Set by"]')!.textContent).toBe('provider quota closed')
     }, WAIT)
   })
 })

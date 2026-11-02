@@ -257,8 +257,20 @@ def resolve_git_token(
     provider: str = GIT_PROVIDER,
     broker: Any | None = None,
     write: bool = False,
+    app_installation: bool = False,
 ) -> str | None:
     """The task's forge token, or None when the tenant has not registered one.
+
+    `app_installation` (DAYONE-SERVICE-APP-TOKEN): the task's SIGNED
+    submitter is a platform service account (`Worker._service_run`), so the
+    broker is asked first, whatever FORGE_BROKER says, for an App
+    installation token minted for this run alone. Its refusal `app_installation_unavailable`, or this
+    worker's own `forge_broker_unconfigured` / `attempt_key_unregistered`
+    (nothing was asked), falls through to the slot read below: today's
+    service rule. Any other refusal -- a superseded attempt, a write on a task
+    signed for read -- raises as it would for a person's slot. swarm-api
+    decides from the same signed fields, and a rewritten one fails its
+    signature check.
 
     `provider` is the suffix `forge_suffix` read from the task's SIGNED
     `forge_credential` (contract request 54): `git`, the tenant's own token,
@@ -304,6 +316,18 @@ def resolve_git_token(
     """
     if not FORGE_CREDENTIAL.fullmatch(provider or ""):
         raise SecretError(f"{provider!r} is not a forge credential suffix")
+    if app_installation and broker is not None:
+        from .forgebroker import (
+            APP_INSTALLATION_UNAVAILABLE, NO_ATTEMPT_KEY, NO_BROKER, ForgeCredentialRefused,
+        )
+
+        try:
+            return broker.fetch(tenant, provider, write=write)
+        except ForgeCredentialRefused as exc:
+            if exc.code not in (APP_INSTALLATION_UNAVAILABLE, NO_BROKER, NO_ATTEMPT_KEY):
+                raise
+            logger.info("no installation token minted for this run; reading its slot",
+                        secret=tenant.secret_name(provider), decision=exc.code)
     if user_slot_hash(provider) is not None:
         from .forgebroker import ForgeCredentialRefused, NO_BROKER
 
@@ -340,6 +364,39 @@ def resolve_git_token(
     logger.register_secret(token)
     logger.info("tenant git credential resolved", secret=secret_name)
     return token
+
+
+#: What `result_summary.forge_credential.kind` may say (lesson 43, stage 14 of
+#: `swarm install`): the KIND of GitHub credential a run cloned and pushed
+#: with. `unknown` is a value of no shape GitHub documents a prefix for (never
+#: taken for an App token); `mixed` is an attempt whose reads were of two
+#: kinds (`kinds` lists them).
+FORGE_CREDENTIAL_KINDS = frozenset({"app_installation", "app_user", "pat", "none", "unknown", "mixed"})
+
+#: GitHub's documented token prefixes (as `swarm_api.gittokens.token_kind`
+#: reads them), to this record's coarser kinds: `ghs_` an App installation
+#: token, `ghu_` an App user access token, `github_pat_` a fine-grained PAT,
+#: `ghp_` a classic one and `gho_` an OAuth app's, which carries classic scopes.
+_KIND_BY_PREFIX = (
+    ("ghs_", "app_installation"),
+    ("ghu_", "app_user"),
+    ("github_pat_", "pat"),
+    ("ghp_", "pat"),
+    ("gho_", "pat"),
+)
+
+
+def forge_credential_kind(token: str | None) -> str:
+    """The token's kind, read in memory from its prefix: one of
+    `FORGE_CREDENTIAL_KINDS` and nothing else. The value, its prefix and any
+    piece or hash of it are never returned, stored or logged."""
+    value = (token or "").strip()
+    if not value:
+        return "none"
+    for prefix, kind in _KIND_BY_PREFIX:
+        if value.startswith(prefix):
+            return kind
+    return "unknown"
 
 
 def git_token_from_payload(payload: str, secret_name: str) -> str:

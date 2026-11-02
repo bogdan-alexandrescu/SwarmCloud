@@ -130,6 +130,35 @@ _UA = "swarmcloud-agent-worker"
 #: for a credential it has no variable to put.
 ACCOUNT_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 
+#: The variables a ChatGPT PLAN account fills (part of #2688; BGD, 2026-11-01:
+#: codex runs on a shared pool of ChatGPT-plan accounts the way claude-code
+#: runs on the pool of Claude subscriptions). The plan's current ACCESS token
+#: (about an hour) and its account id; codex reads both from the auth.json the
+#: runner writes (`runners.codex`). Never the refresh token: the broker is the
+#: only writer of the plan's sign-in, because each refresh REPLACES it.
+PLAN_TOKEN_ENV = "CODEX_PLAN_ACCESS_TOKEN"
+PLAN_ACCOUNT_ENV = "CODEX_PLAN_ACCOUNT_ID"
+
+#: THE PROVIDER CHOICE: which variables an account of each provider's pool
+#: fills. A profile can run on a provider's pool only when it declares every
+#: one of them (`takes_account`); a profile that declares none of them wants a
+#: metered API key, which the pool does not hold.
+ACCOUNT_ENVS: dict[str, tuple[str, ...]] = {
+    "anthropic": (ACCOUNT_TOKEN_ENV,),
+    "openai": (PLAN_TOKEN_ENV, PLAN_ACCOUNT_ENV),
+}
+
+#: Providers whose pool serves a tenant only when the tenant supplies no API
+#: key of its own. For "openai" the brief is explicit (BGD, 2026-11-01): a
+#: codex step leases a plan when the tenant has no OPENAI_API_KEY, so a tenant
+#: paying for metered access keeps running on it. "anthropic" stays pool-first.
+TENANT_KEY_FIRST: frozenset[str] = frozenset({"openai"})
+
+#: The refused-credential marker of the codex runner's own stop before its
+#: plan token's hour (`runners.codex.ExpiryStop`). The worker reads it as a
+#: SCHEDULED reload of the account, not as the provider refusing it.
+PLAN_EXPIRY_MARKER = "codex plan access token nears its expiry"
+
 #: The broker's answer when this tenant has NO account it may use -- not one
 #: that is busy, not one that is paused: none at all. The pool is not how this
 #: deployment runs, so the caller must fall back to the per-tenant secret. Every
@@ -653,11 +682,20 @@ def _has_reset(reading: dict[str, Any], now: datetime) -> bool:
     return at <= now
 
 
+def takes_account(provider: str | None, secret_env_names: Any) -> bool:
+    """Whether a profile of `provider` declaring `secret_env_names` can run on
+    an account of that provider's pool: it declares every name one fills."""
+    wanted = ACCOUNT_ENVS.get(provider or "")
+    declared = tuple(secret_env_names or ())
+    return bool(wanted) and all(name in declared for name in wanted)
+
+
 def credential_env_from_account(
     payload: str,
     *,
     secret_env_names: tuple[str, ...],
     secret_name: str,
+    provider: str = "anthropic",
 ) -> dict[str, str]:
     """Shape an account secret's payload into the child's environment.
 
@@ -674,11 +712,17 @@ def credential_env_from_account(
     The two names claude-code declares are interchangeable inputs, not copies:
     projecting a subscription token into ANTHROPIC_API_KEY as well would hand
     the metered API a credential it refuses.
+
+    `provider` "openai" is a ChatGPT PLAN account (`_plan_env`): its own one
+    shape, into PLAN_TOKEN_ENV and PLAN_ACCOUNT_ENV alone, never
+    OPENAI_API_KEY, which the plan's token is not.
     """
     stripped = (payload or "").strip()
     if not stripped:
         raise ValueError(f"account secret {secret_name} is empty")
 
+    if provider == "openai":
+        return _plan_env(stripped, secret_env_names=secret_env_names, secret_name=secret_name)
     if ACCOUNT_TOKEN_ENV not in secret_env_names:
         raise ValueError(
             f"this runner does not accept a subscription token: it declares "
@@ -688,8 +732,49 @@ def credential_env_from_account(
     return {ACCOUNT_TOKEN_ENV: stripped}
 
 
+def _plan_env(
+    payload: str, *, secret_env_names: tuple[str, ...], secret_name: str
+) -> dict[str, str]:
+    """A ChatGPT plan account's `{base}`: `{"access_token", "account_id"}`.
+
+    ONE SHAPE, as for a Claude account: a JSON object holding the current
+    access token and the plan's account id, both non-empty strings, written by
+    the broker alone. A bare string is refused (a plan needs its account id
+    beside the token), and so is an object carrying a `refresh_token`: the
+    refresh half belongs in `{base}-refresh`, readable by the broker alone, and
+    a `{base}` holding one would hand this pod the power to sign every other
+    holder of the account out. Neither value is ever put in the message.
+    """
+    if not takes_account("openai", secret_env_names):
+        raise ValueError(
+            f"this runner does not accept a ChatGPT plan: it declares "
+            f"{', '.join(secret_env_names) or 'no credential variables'} and an "
+            f"account supplies {PLAN_TOKEN_ENV} and {PLAN_ACCOUNT_ENV}"
+        )
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        raise ValueError(
+            f"account secret {secret_name} is not the plan's JSON object"
+        ) from None
+    if not isinstance(data, dict):
+        raise ValueError(f"account secret {secret_name} is not the plan's JSON object")
+    if "refresh_token" in data:
+        raise ValueError(
+            f"account secret {secret_name} carries a refresh token; only the broker "
+            "may hold it"
+        )
+    token, account = data.get("access_token"), data.get("account_id")
+    if not isinstance(token, str) or not token.strip():
+        raise ValueError(f"account secret {secret_name} holds no access token")
+    if not isinstance(account, str) or not account.strip():
+        raise ValueError(f"account secret {secret_name} holds no plan account id")
+    return {PLAN_TOKEN_ENV: token.strip(), PLAN_ACCOUNT_ENV: account.strip()}
+
+
 __all__ = [
     "ACCOUNTS_FULL",
+    "ACCOUNT_ENVS",
     "ACCOUNT_TOKEN_ENV",
     "ACCOUNT_UNREADABLE",
     "BROKER_REFUSED",
@@ -697,8 +782,12 @@ __all__ = [
     "NO_ACCOUNTS_REGISTERED",
     "NO_ACCOUNT_AVAILABLE",
     "NO_RECENT_READING",
+    "PLAN_ACCOUNT_ENV",
+    "PLAN_EXPIRY_MARKER",
+    "PLAN_TOKEN_ENV",
     "POOL_PAUSED",
     "REFUSAL_STATUSES",
+    "TENANT_KEY_FIRST",
     "AccountBroker",
     "AccountUnreadable",
     "Assignment",
@@ -710,4 +799,5 @@ __all__ = [
     "ReadingForwarder",
     "credential_env_from_account",
     "fetch_identity_token",
+    "takes_account",
 ]

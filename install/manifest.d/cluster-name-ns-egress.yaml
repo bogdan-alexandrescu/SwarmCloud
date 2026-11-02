@@ -1,0 +1,27 @@
+# Lane DAYONE-CLUSTER-FIX (part of #2688): terraform/infra creates no
+# Kubernetes namespace, and the workload manifests that declare swarm-system
+# are applied by cluster.workloads, after the ingress policies that need it.
+# cluster.swarm-system now creates the namespace itself, so its entry's apply
+# text is restated with replace: true.
+version: 1
+entries:
+- id: cluster.swarm-system-namespace
+  kind: namespace-object
+  scope: core
+  stage: 10
+  provider: engine
+  check: kubectl --kubeconfig ~/.config/swarmcloud/install/$P.kubeconfig --context $E get namespace swarm-system, and kubectl diff -f - of steps/cluster.py's SWARM_SYSTEM_NAMESPACE shows no difference
+  apply: steps/cluster.py cluster.swarm-system, once the admission policies match the release, applies Namespace swarm-system server-side (managed-by=swarm-terraform, pod-security restricted, the labels every kubernetes/swarm-system/*.yaml copy declares) and then swarm-system's ingress policies; the workload manifests' own copies of the Namespace, applied later by cluster.workloads, change nothing
+  verify: kubectl get ns swarm-system
+  explain: the one shared system namespace for the five platform workloads below
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - cluster.autopilot
+  evidence:
+  - apps/swarm-install/swarm_install/steps/cluster.py
+  - kubernetes/swarm-system/swarm-live.yaml:60
+  - kubernetes/swarm-system/swarm-graph.yaml:62
+  notes: 'null'
+  step: cluster.swarm-system
+  replace: true

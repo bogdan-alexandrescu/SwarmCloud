@@ -93,15 +93,16 @@ variables {
   }
 
   image_refs = {
-    "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -171,16 +172,10 @@ run "on_both_services_read_the_key_and_workers_may_call" {
     source = "../../terraform/infra"
   }
 
-  # swarm_api_url is left empty: under the mock provider swarm-api's URL is
-  # unknown at plan, so the swarm_api_url_is_wired check could not be
-  # evaluated for a declared one. Empty is itself the case worth holding:
-  # switched on with no address, the plan says so.
   variables {
     enable_child_tasks         = true
     child_key_previous_version = "3"
   }
-
-  expect_failures = [check.child_tasks_have_an_address]
 
   assert {
     condition     = output.child_tasks_service_wiring.secret_env["swarm-api"] == tolist(["SWARM_CHILD_KEY", "SWARM_CHILD_KEY_PREVIOUS"])
@@ -195,6 +190,14 @@ run "on_both_services_read_the_key_and_workers_may_call" {
   assert {
     condition     = output.child_tasks_service_wiring.worker_invokers == tolist(["worker-eng", "worker-smoke"])
     error_message = "every tenant's worker must be able to invoke swarm-api's child routes, keyed by tenant"
+  }
+
+  # MUTATION: hand the scheduler var.swarm_api_url again, or swarm-api's
+  # module output, and this fails: the address is built from the project
+  # number, so no first apply and no copy into tfvars is needed (DAYONE-TF-1).
+  assert {
+    condition     = output.child_tasks_service_wiring.scheduler_api_url == "https://swarm-api-${data.google_project.this.number}.us-central1.run.app"
+    error_message = "the scheduler hands workers swarm-api's deterministic URL, computed from the project number"
   }
 
   # Dev's case: child tasks on does not turn the broker on (#1041).
@@ -216,8 +219,6 @@ run "the_forge_broker_switch_reaches_both_services" {
     enable_child_tasks = true
     forge_broker       = true
   }
-
-  expect_failures = [check.child_tasks_have_an_address]
 
   assert {
     condition     = output.child_tasks_service_wiring.forge_broker == { "swarm-api" = "true", "swarm-scheduler" = "true" }

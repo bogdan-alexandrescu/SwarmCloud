@@ -326,7 +326,26 @@ const NAV_CHROME_HAIRLINES: Exemption = {
     f.kind === 'divider-under-floor' && classesOf(f).some((c) => NAV_CHROME_HAIRLINE_CLASSES.includes(c)),
 }
 
-const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES]
+/**
+ * THE BAD BANNER'S HAIRLINE ON DARK: a measurement the probe gets wrong, not
+ * a border that is faint. `.c-banner.is-bad` draws `color-mix(in srgb,
+ * var(--s-bad) 35%, transparent)`; CSS Color 5 premultiplies, interpolates
+ * and un-premultiplies, so the border is #ff8a80 at 0.35 alpha, about 1.97:1
+ * on the dark page (rgb 12 26 46), over the 1.15 hairline floor. The probe's
+ * `colour()` leaves the mix premultiplied (rgba 89 48 45 / 0.35) and then
+ * composites the alpha a second time, which reads 1.12. Admin › Health
+ * (DAYONE-SETUP-UI-23) is the first swept route to draw a bad banner: its
+ * fixture's doctor run has a finding. Exactly that selector, and only its
+ * divider contrast; correcting `colour()` moves every swept colour-mix
+ * border, so it is its own change.
+ */
+const BAD_BANNER_HAIRLINE: Exemption = {
+  name: 'bad banner hairline',
+  why: "the probe composites color-mix(..., transparent)'s alpha twice; the drawn border is 1.97:1",
+  matches: (f) => f.kind === 'divider-under-floor' && f.where === 'div.c-banner.is-bad',
+}
+
+const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE]
 
 function lines(r: Report): string[] {
   return r.findings
@@ -440,6 +459,7 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.
+  // Setup and Health (DAYONE-SETUP-UI-3; part of #2688) follow it, as in the rail.
   // THE FALLBACK TOKEN CARD'S `?` (QAFIX4-ADMIN, visual QA run 4 admin-009).
   // Pool limits' GitHub fallback token card draws HelpCard's 14px disc after
   // its <h2> in the card head, where a ghost Button with a bordered box used
@@ -452,12 +472,25 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // (13px, weight 600). A wide capital ("W", "M") advances about 12px there,
   // so the ink clears the border by (24 - 2 - 12) / 2 = 5px a side, over the
   // 4px `textInset` floor; a typical initial clears it by more.
+  //
+  // ADMIN IS TWO SLICES (PR #2815's CI, 2026-10-30). With Setup and Health
+  // added, the one admin slice walked nine routes and ran 958 s in a loaded
+  // shard 1/4 (470 s and 582 s in the 2026-10-26 incident's shards), past the
+  // 900 s timeout with its findings complete. The rail's order is kept: the
+  // first five tabs here, Setup onwards in `admin-setup`. The fallback token
+  // card is on Pool limits and the People rows on People, so each disc's
+  // centring is kept by the slice that renders it.
   {
-    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets', 'admin/people', 'admin/workspaces'], floor: 120,
-    centred: [
-      'button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred',
-      'span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred',
-    ],
+    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets'], floor: 70,
+    centred: ['button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred'],
+    persona: 'platform-admin',
+  },
+  // Voice it's three panes ride Admin › Setup's slice: they render their body
+  // only for the person Voice it is open to, a platform admin until swarm-api's
+  // session routes say otherwise (voice/Section.tsx `voiceItOpen`).
+  {
+    name: 'admin-setup', routes: ['admin/setup', 'admin/health', 'admin/people', 'admin/workspaces', 'voice/talk', 'voice/projects', 'voice/preferences'], floor: 50,
+    centred: ['span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred'],
     persona: 'platform-admin',
   },
 ]

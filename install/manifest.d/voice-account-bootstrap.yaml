@@ -1,0 +1,30 @@
+# Lane VOICE-ACCOUNT-BOOTSTRAP (part of #2688): swarm-voice is on
+# terraform/modules/service_account_ids, so terraform/bootstrap creates it and
+# grants the CI deployer roles/iam.serviceAccountAdmin on it in the same apply
+# (deployer_service_accounts.tf). terraform/infra/voice.tf reads it as a data
+# source and grants its own roles.
+version: 1
+entries:
+- id: sa.swarm-voice
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-voice@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/bootstrap/platform_service_accounts.tf:119 google_service_account.voice, applied by
+    terraform/bootstrap (VOICE-ACCOUNT-BOOTSTRAP)
+  verify: account exists with managed-by=swarm-terraform in its description
+  explain: 'Runs the swarm-voice StatefulSet (Voice it) on GKE through Workload Identity. It holds no
+    role from bootstrap; terraform/infra/voice.tf grants its own.'
+  guards: 'no create_ignore_already_exists (#334): a 409 fails the apply rather than adopting someone
+    else''s account'
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:119
+  - terraform/modules/service_account_ids/main.tf
+  refs:
+    terraform:
+    - bootstrap/google_service_account.voice

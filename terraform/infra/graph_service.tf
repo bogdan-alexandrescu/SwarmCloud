@@ -16,7 +16,14 @@
 #   * swarm-api's side: SWARM_GRAPH_TICKET_KEY by reference, once served;
 #   * the service's manifest, kubernetes/swarm-system/swarm-graph.yaml,
 #     rendered as `swarm_graph_manifest` with the image, the key's version
-#     reference, the bucket and the setting (the kill switch).
+#     reference, the bucket and the setting (the kill switch);
+#   * the stats port's way in (docs/design/graph-answer-cache.md §5.3; lane
+#     CACHE-2-NETWORK), once served: the reserved INTERNAL address
+#     `graph_stats` the manifest's `swarm-graph-stats` load balancer sits on,
+#     swarm-api's egress range in the manifest's ingress policy (8081 only),
+#     and SWARM_GRAPH_STATS_URL=http://<that address>:8081 on swarm-api.
+#     No new IAM: the stats ticket is minted under swarm-graph-ticket-key,
+#     which swarm-api already reads (graph_ticket_key_accessor).
 #
 # WHO READS WHAT.
 #
@@ -131,6 +138,24 @@ locals {
   }
   graph_service_config_json = jsonencode(local.graph_service_config)
 
+  # The stats load balancer's address exists exactly when the manifest that
+  # names it renders, so swarm-api is never given an address nothing listens
+  # on.
+  graph_stats_serving = local.graph_service_serving && local.graph_service_image != ""
+
+  # swarm-api's Direct VPC egress range, admitted to 8081 by the manifest's
+  # ingress policy: the same local, so the same range, as swarm-live-ingress
+  # admits (live.tf; kubernetes/apply.sh holds it to swarm-api's service).
+  graph_stats_swarm_api_cidr = local.live_swarm_api_egress_cidr
+
+  # Where swarm-api's GET /v1/repositories/{repo_id}/graph-cache reads the
+  # stats (apps/swarm-api/swarm_api/routes/graph_cache.py stats_url): plain
+  # http to the reserved address, on swarm_graph.stats.STATS_PORT. Empty while
+  # not served, which the route answers as a 200 with stats not_read.
+  api_graph_stats_env = {
+    SWARM_GRAPH_STATS_URL = local.graph_stats_serving ? "http://${google_compute_address.graph_stats[0].address}:8081" : ""
+  }
+
   # swarm-graph-ticket-key for swarm-api, BY REFERENCE, once served (see the
   # deviation above).
   graph_ticket_key_secret_env = local.graph_service_serving ? {
@@ -194,6 +219,33 @@ resource "google_secret_manager_secret_iam_binding" "graph_ticket_key_accessor" 
   ]
 }
 
+# swarm-api's address for the stats port (graph-answer-cache.md §5.3), as
+# live.tf's live_relay is the relay's: swarm-api is Cloud Run, reaches the VPC
+# by Direct VPC egress on module.network.subnetwork_id and cannot resolve a
+# cluster Service, so one replica's 8081 is fronted by an internal passthrough
+# load balancer (`swarm-graph-stats` in the manifest) on this address, in that
+# subnet. Reserved rather than ephemeral so a redeploy cannot move it from
+# under SWARM_GRAPH_STATS_URL.
+#
+# NOT MEASURED here, as live_relay's path was not: this lane has no cluster.
+# The path relies on what live.tf records for the relay's: allow_internal
+# (modules/network/firewall.tf) admits the subnet to the nodes, and the
+# Service's externalTrafficPolicy Cluster keeps the health check on the node.
+resource "google_compute_address" "graph_stats" {
+  count = local.graph_stats_serving ? 1 : 0
+
+  project      = var.project_id
+  region       = var.region
+  name         = "${var.name_prefix}-graph-stats"
+  address_type = "INTERNAL"
+  subnetwork   = module.network.subnetwork_id
+  description  = "Internal load balancer address of swarm-graph's stats port, 8081 (docs/design/graph-answer-cache.md section 5.3)."
+
+  labels = merge(local.labels, {
+    "component" = "graph-stats"
+  })
+}
+
 check "graph_service_needs_gke" {
   assert {
     condition     = !var.enable_graph_service || var.enable_gke_autopilot
@@ -235,6 +287,11 @@ output "graph_service" {
     config          = local.graph_service_config
     # What an agent pod's shim dials (design §2.2): the headless Service.
     url = "http://swarm-graph.swarm-system.svc.cluster.local:8080/mcp"
+    # swarm-api's SWARM_GRAPH_STATS_URL (graph-answer-cache.md §5.3); "" while
+    # not served.
+    stats_url = local.api_graph_stats_env.SWARM_GRAPH_STATS_URL
+    # What the manifest's ingress policy admits to 8081.
+    swarm_api_egress_cidr = local.graph_stats_swarm_api_cidr
   }
 }
 
@@ -243,11 +300,13 @@ output "graph_service" {
 # apply.
 output "swarm_graph_manifest" {
   description = "The graph service's Kubernetes objects, rendered. Apply to swarm-autopilot only (never agents-staging). Null until graph_service.serve is set and the image has a digest."
-  value = local.graph_service_serving && local.graph_service_image != "" ? replace(replace(replace(replace(replace(
+  value = local.graph_stats_serving ? replace(replace(replace(replace(replace(replace(replace(
     file("${path.module}/../../kubernetes/swarm-system/swarm-graph.yaml"),
     "__SWARM_GRAPH_IMAGE__", local.graph_service_image),
     "__GRAPH_TICKET_KEY_VERSION__", local.graph_ticket_key_version_name),
     "__GRAPH_BUCKET__", module.storage.artifact_bucket_name),
     "__GRAPH_CONFIG_SHA256__", sha256(local.graph_service_config_json)),
-  "__GRAPH_CONFIG_JSON__", local.graph_service_config_json) : null
+    "__GRAPH_CONFIG_JSON__", local.graph_service_config_json),
+    "__GRAPH_STATS_ADDRESS__", google_compute_address.graph_stats[0].address),
+  "__SWARM_API_EGRESS_CIDR__", local.graph_stats_swarm_api_cidr) : null
 }

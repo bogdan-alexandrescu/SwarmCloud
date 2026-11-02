@@ -37,6 +37,7 @@ comes back at its limit, the task gets every figure null and
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Sequence
 
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -54,6 +55,9 @@ IN_LIMIT = 30
 #: task's attempts are bounded by its `max_attempts`, which is far below this;
 #: a chunk that reaches it is reported unread rather than summed short.
 PER_TASK_CAP = 50
+
+#: Chunk queries in flight at once: seven covers a full 200-row page.
+MAX_CONCURRENT_CHUNKS = 8
 
 
 def _seconds(attempt: Attempt) -> float | None:
@@ -121,36 +125,50 @@ def totals_for(db: Any, tenant_id: str, task_ids: Sequence[str]) -> dict[str, di
     serve -- the read `outcomes.Outcomes._attempts` already makes. Every task
     asked for gets an entry: its totals, or `unread_totals()` when its chunk
     could not be read whole.
+
+    THE CHUNKS ARE READ AT ONCE (#2688, LOAD-SPEED): a 200-row page is seven
+    independent queries, and run one after another they were the longest
+    chain of round trips in `GET /v1/tasks`. Each chunk keeps its own failure
+    rule, so one chunk that fails marks only its own tasks unread.
     """
     wanted = list(dict.fromkeys(t for t in task_ids if t))
+    chunks = [wanted[start : start + IN_LIMIT] for start in range(0, len(wanted), IN_LIMIT)]
     out: dict[str, dict[str, Any]] = {}
-    for start in range(0, len(wanted), IN_LIMIT):
-        chunk = wanted[start : start + IN_LIMIT]
-        limit = PER_TASK_CAP * len(chunk)
-        try:
-            query = (
-                db.collection(ATTEMPTS)
-                .where(filter=FieldFilter("tenant_id", "==", tenant_id))
-                .where(filter=FieldFilter("task_id", "in", chunk))
-                .limit(limit)
-            )
-            docs = [snap.to_dict() or {} for snap in query.stream()]
-            if len(docs) >= limit:
-                raise OverflowError(f"{len(docs)} attempt documents for {len(chunk)} task(s)")
-            by_task: dict[str, list[Attempt]] = {t: [] for t in chunk}
-            members = set(chunk)
-            for doc in docs:
-                # The query filters both; restated where a fake or an index
-                # mistake cannot move the tenant boundary.
-                if doc.get("tenant_id") != tenant_id or doc.get("task_id") not in members:
-                    continue
-                by_task[doc["task_id"]].append(attempt_from_dict(doc))
-        except Exception as exc:  # the tasks were read; only their attempts were not
-            log.warning("attempt totals read failed: %s", type(exc).__name__)
-            out.update({t: unread_totals() for t in chunk})
-            continue
-        out.update({t: {**attempt_totals(rows), "attempts_read": "ok"} for t, rows in by_task.items()})
+    if len(chunks) <= 1:
+        for chunk in chunks:
+            out.update(_chunk_totals(db, tenant_id, chunk))
+        return out
+    with ThreadPoolExecutor(max_workers=min(len(chunks), MAX_CONCURRENT_CHUNKS)) as pool:
+        for found in pool.map(lambda chunk: _chunk_totals(db, tenant_id, chunk), chunks):
+            out.update(found)
     return out
+
+
+def _chunk_totals(db: Any, tenant_id: str, chunk: list[str]) -> dict[str, dict[str, Any]]:
+    """One chunk of at most 30 tasks: their totals, or every one unread."""
+    limit = PER_TASK_CAP * len(chunk)
+    try:
+        query = (
+            db.collection(ATTEMPTS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("task_id", "in", chunk))
+            .limit(limit)
+        )
+        docs = [snap.to_dict() or {} for snap in query.stream()]
+        if len(docs) >= limit:
+            raise OverflowError(f"{len(docs)} attempt documents for {len(chunk)} task(s)")
+        by_task: dict[str, list[Attempt]] = {t: [] for t in chunk}
+        members = set(chunk)
+        for doc in docs:
+            # The query filters both; restated where a fake or an index
+            # mistake cannot move the tenant boundary.
+            if doc.get("tenant_id") != tenant_id or doc.get("task_id") not in members:
+                continue
+            by_task[doc["task_id"]].append(attempt_from_dict(doc))
+    except Exception as exc:  # the tasks were read; only their attempts were not
+        log.warning("attempt totals read failed: %s", type(exc).__name__)
+        return {t: unread_totals() for t in chunk}
+    return {t: {**attempt_totals(rows), "attempts_read": "ok"} for t, rows in by_task.items()}
 
 
 def with_totals(row: dict[str, Any], totals: dict[str, dict[str, Any]]) -> dict[str, Any]:

@@ -433,10 +433,12 @@ describe('Agents, with every help card closed', () => {
     // beyond this page. Counts and grouping above describe only what is
     // loaded." were two sentences. Both are now one `.ctl-card-note`-shaped
     // qualifier carrying the two figures, with the full sentence in its
-    // accessible name.
+    // accessible name. The figure itself, `N loaded`, is the header's alone
+    // since visual QA pass 1 (overview-agents-13); the qualifier is drawn for
+    // what the header does not say: that rows exist beyond this page.
     const note = el.querySelector('.ag-scope')
     expect(note, 'the client-side scope qualifier is gone').not.toBeNull()
-    expect(note!.textContent).toMatch(/\d/)
+    expect(note!.textContent).toBe('more beyond')
     expect(note!.getAttribute('aria-label') ?? '').toMatch(/loaded/i)
   })
 
@@ -597,11 +599,13 @@ describe('AgentDetail, with every help card closed', () => {
     expectAllCardsClosed()
     // WHAT MOVED: nothing. The detail sentence IS the fact -- which read failed
     // and how -- and §8.4 keeps it as the empty state's one sentence. What is
-    // asserted is the encoding beside it: the mark says `not read`, and no
-    // figure from the attempt read appears.
+    // asserted is the encoding beside it: the mark is the unread silhouette
+    // with its sentence as its name (an empty state's mark is an icon since
+    // automate2-17), and no figure from the attempt read appears.
     const mark = el.querySelector('.ctl-mark.is-unread')
     expect(mark, 'a failed read is not marked as unread').not.toBeNull()
-    expect(mark!.textContent).toMatch(/not read/i)
+    expect(mark!.getAttribute('role')).toBe('img')
+    expect(mark!.getAttribute('aria-label')).toMatch(/\S/)
     const peak = [...el.querySelectorAll('.dt-sc')].find((t) =>
       (t.textContent ?? '').toLowerCase().includes('peak memory'),
     )

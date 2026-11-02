@@ -38,6 +38,7 @@ from agent_worker import forge as forge_mod
 from agent_worker import lifecycle, workspace as workspace_mod
 from agent_worker.forge import PullRequest, RepoAccess, RepoRef
 
+from test_strategy_end_to_end import _the_fence_holds  # noqa: F401 -- fixture
 from test_continue_swarm_branch import (  # noqa: F401 - fixtures are used by name
     FIX,
     ROOT,

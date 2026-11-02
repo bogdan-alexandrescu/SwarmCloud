@@ -79,7 +79,9 @@
 #
 # BUILDS READ THE PROJECT'S MIRRORS, NOT GHCR.IO, DOCKER HUB OR GITHUB
 # (OPS-MIRROR, lib/build-mirror.sh, docs/runbooks/build-mirror.md). Every
-# FROM names a remote Artifact Registry repository; agent-runtime-base's
+# FROM, and the `# syntax=` frontend, is pulled through a remote Artifact
+# Registry repository of the project being built for, which this script
+# passes (mirror_build_args_yaml; no Dockerfile names a project); agent-runtime-base's
 # release files come from gs://${BUILD_MIRROR_BUCKET}, copied in by a
 # `tool-mirror` step this script puts first in that image's Cloud Build, and
 # a missing object fails that step by name. `--local` reads upstream instead,
@@ -166,7 +168,21 @@ source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 # reasons: terraform/infra/github_hooks.tf deploys the Cloud Run service only
 # once image_refs has its digest (docs/design/graph-service.md §6.2). It
 # copies apps/common and apps/redaction in, and nothing of the worker.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks workspace-apply)
+#
+# agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS, part of #2688) is
+# agent-runtime-base by digest plus Lightpanda, images/agent-runtime-lightpanda
+# (docs/design/lightpanda-runtime.md 5.D and 6.4). Beside agent-runtime-indexer,
+# the other image its checked-in recipe builds FROM the base, so it is built
+# after the base (build_after) and rebuilt with it (affected_images). No
+# runner profile names it until contract request 127 is applied; until then it
+# is built and promoted, and never dispatched.
+# swarm-voice (VOICE-STATEFULSET, part of #2688) is Voice it's GPT-Live
+# session holder, apps/swarm-voice/Dockerfile, beside its app as swarm-live's
+# recipe is: the nearest precedent, a swarm-system service on GKE holding
+# long-lived sockets. terraform/infra/voice.tf renders swarm_voice_manifest
+# only once image_refs has its digest (docs/design/voice-it.md section 10,
+# phase one). It copies apps/common in, and nothing else of ours.
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built
@@ -212,7 +228,8 @@ find_recipe() {
 # agent-runtime-base-nocodex:<tag> in its first step and builds FROM that
 # digest, so submitting it before that base has been pushed fails with
 # manifest-unknown. images/agent-runtime-indexer/cloudbuild.yaml does the same
-# with agent-runtime-base:<tag> (#625). When builds ran one at a
+# with agent-runtime-base:<tag> (#625), and so does
+# images/agent-runtime-lightpanda/cloudbuild.yaml (LIGHTPANDA-IMAGE). When builds ran one at a
 # time this was satisfied by ALL_TARGETS happening to list the base first --
 # which a targeted `build-images.sh agent-runtime-browser agent-runtime-base`
 # did not, and which concurrency would not either.
@@ -224,6 +241,7 @@ build_after() {
   case "$1" in
     agent-runtime-browser) printf '%s' "agent-runtime-base-nocodex" ;;
     agent-runtime-indexer) printf '%s' "agent-runtime-base" ;;
+    agent-runtime-lightpanda) printf '%s' "agent-runtime-base" ;;
     *) : ;;
   esac
 }
@@ -620,6 +638,22 @@ apt_build_args() {
   if upgrades_os_packages "$1"; then
     printf '%s\n' "      - --build-arg" "      - APT_REFRESH=${APT_REFRESH}"
   fi
+}
+
+# The same for a checked-in recipe, which is submitted as it is: Cloud Build
+# substitutions `_MIRROR_DOCKER_HUB=...,_MIRROR_GHCR=...,_BUILDKIT_SYNTAX=...`
+# (no leading comma) for its `docker build` to pass on. Every recipe here sets
+# ALLOW_LOOSE, so one it does not reference is ignored.
+recipe_mirror_subs() {
+  local df name repo syntax out=""
+  df="$(recipe_dockerfile "$1")" || die "$1: no Dockerfile beside its recipe to pass the build mirrors to"
+  for name in "${MIRROR_BUILD_ARGS[@]}"; do
+    repo="$(mirror_repository "${name}")"
+    out+="${out:+,}_${name}=${repo}"
+  done
+  syntax="$(mirror_syntax_ref "${df}")"
+  if [[ -n "${syntax}" ]]; then out+=",_BUILDKIT_SYNTAX=${syntax}"; fi
+  printf '%s' "${out}"
 }
 
 # target_build_args' values, one KEY=VALUE a line: what an image bakes in
@@ -1072,8 +1106,9 @@ mirror_step_for() {
 # A Dockerfile that bind-mounts the tool mirror is built with BuildKit
 # explicitly: `RUN --mount` is BuildKit's, and the legacy builder refuses it.
 generate_config() {
-  local dockerfile="$1" image="$2" out="$3" target="${4:-}" mirror_step buildkit=""
+  local dockerfile="$1" image="$2" out="$3" target="${4:-}" mirror_step mirror_args buildkit=""
   mirror_step="$(mirror_step_for "${dockerfile}")" || exit 1
+  mirror_args="$(mirror_build_args_yaml "${dockerfile}")" || exit 1
   if dockerfile_uses_tool_mirror "${dockerfile}"; then
     buildkit="    env:
       - DOCKER_BUILDKIT=1"
@@ -1109,6 +1144,7 @@ ${buildkit}
       - GIT_SHA=${TAG}
       - --build-arg
       - BUILD_TIME=$(iso_now)
+${mirror_args}
 $(target_build_args "${target}")
 $(apt_build_args "${target}")
       - .
@@ -1123,12 +1159,14 @@ YAML
 # breaks the base's self-tests is caught by either image's build. The second
 # image takes the first as BASE_IMAGE, as the checked-in recipe passes it.
 generate_chain_config() {
-  local target="$1" prereq="$2" out="$3" base_df target_df base_image mirror_step
+  local target="$1" prereq="$2" out="$3" base_df target_df base_image mirror_step base_mirror_args target_mirror_args
   base_df="$(recipe_dockerfile "${prereq}")" \
     || die "${target} is built FROM ${prereq}, which has no Dockerfile to build it from here"
   target_df="$(recipe_dockerfile "${target}")" \
     || die "${target}: no Dockerfile beside its recipe to build without pushing"
   mirror_step="$(mirror_step_for "${base_df}" "${target_df}")" || exit 1
+  base_mirror_args="$(mirror_build_args_yaml "${base_df}")" || exit 1
+  target_mirror_args="$(mirror_build_args_yaml "${target_df}")" || exit 1
   base_image="${LOCAL_IMAGE}/${prereq}:${TAG}"
   cat >"${out}" <<YAML
 # Generated by scripts/build-images.sh --build-only on $(iso_now). Pushes
@@ -1156,6 +1194,7 @@ ${mirror_step}
       - GIT_SHA=${TAG}
       - --build-arg
       - BUILD_TIME=$(iso_now)
+${base_mirror_args}
 $(target_build_args "${prereq}")
 $(apt_build_args "${prereq}")
       - .
@@ -1177,6 +1216,7 @@ $(apt_build_args "${prereq}")
       - GIT_SHA=${TAG}
       - --build-arg
       - BUILD_TIME=$(iso_now)
+${target_mirror_args}
 $(target_build_args "${target}")
 $(apt_build_args "${target}")
       - .
@@ -1302,6 +1342,10 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
       strip_push "${REPO_ROOT}/${path}" "${config}"
       subs="_IMAGE=${image},_TAG=${TAG},_TARGET=${target}"
       if upgrades_os_packages "${target}"; then subs+=",_APT_REFRESH=${APT_REFRESH}"; fi
+      if [[ "${LOCAL_BUILD}" -eq 0 ]]; then
+        mirror_subs="$(recipe_mirror_subs "${target}")" || exit 1
+        subs+=",${mirror_subs}"
+      fi
       info "${target}: checked-in ${path}, without its push"
     else
       generate_config "${path}" "${image}" "${config}" "${target}"
@@ -1331,6 +1375,8 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
       # instruction: TIMEOUT:"). The config declares its own _DOCKERFILE default.
       subs="_IMAGE=${image},_TAG=${TAG},_TARGET=${target}"
       if upgrades_os_packages "${target}"; then subs+=",_APT_REFRESH=${APT_REFRESH}"; fi
+      mirror_subs="$(recipe_mirror_subs "${target}")" || exit 1
+      subs+=",${mirror_subs}"
       info "${target}: using checked-in ${path}"
       ;;
     dockerfile)
@@ -1602,7 +1648,7 @@ PY
 
 build_locally() {
   local i target log why state report python builder rc failed=() notes=()
-  local prereq t df need_mirror=0
+  local prereq t df syntax need_mirror=0
   python="${SWARM_PYTHON:-python3}"
   "${python}" -c 'import yaml' 2>/dev/null \
     || die "--local reads each build config with PyYAML; ${python} cannot import yaml (set SWARM_PYTHON to one that can)"
@@ -1642,8 +1688,15 @@ build_locally() {
     why="${state}/${target}.why"
     info "${target}: building $(basename "${T_CONFIG[$i]}") with docker buildx"
     rc=0
+    # A checked-in recipe's mirror substitutions (recipe_mirror_subs) name
+    # the upstream registries here, and its frontend as the Dockerfile
+    # writes it: this runner reads no mirror.
+    syntax=""
+    if df="$(recipe_dockerfile "${target}")"; then syntax="$(dockerfile_syntax_ref "${df}")"; fi
     LOCAL_SUBS="$(jq -cn --arg i "${LOCAL_IMAGE}/${target}" --arg t "${TAG}" --arg n "${target}" --arg a "${APT_REFRESH}" \
-      '{_IMAGE: $i, _TAG: $t, _TARGET: $n, _APT_REFRESH: $a}')" \
+      --arg s "${syntax}" --argjson u "${MIRROR_UPSTREAMS_JSON}" \
+      '{_IMAGE: $i, _TAG: $t, _TARGET: $n, _APT_REFRESH: $a, _BUILDKIT_SYNTAX: $s}
+       + ($u | to_entries | map({("_" + .key): .value.upstream}) | add)')" \
       MIRROR_UPSTREAMS_JSON="${MIRROR_UPSTREAMS_JSON}" \
       "${python}" -c "${LOCAL_REPLAY}" "${T_CONFIG[$i]}" "${REPO_ROOT}" "${target}" "${builder}" \
         "${state}" "${report}" "${why}" 2>&1 \

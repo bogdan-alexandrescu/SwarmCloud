@@ -48,6 +48,7 @@ Three reasons, in the order they cost the most:
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
+| `publish-release.yml` | **manual dispatch on `main` only**, with a release name and a main commit whose `release` run succeeded (BGD 2026-10-30, "Move publishing into CI now"; [runbooks/release.md](runbooks/release.md)) — never on a push, a pull request or a schedule. `publish` waits in the GitHub environment `release` (a required reviewer) and authenticates as the deployer, which is why the file is on `wif.tf`'s `deployer_workflows`; in `swarmcloud-prod` that identity holds only the three roles `scripts/release-home.sh --ci-publisher` grants. It publishes; it never promotes | `check the version and the commit` · `publish <version> to the release home` |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -2530,7 +2531,11 @@ fixer by hand and push the fix-up from a laptop.
    restates other jobs, comes last. The whole is 16 KiB at most
    (`LOG_EXCERPT_MAX_BYTES`). The merge step's own fix rounds build their
    excerpt by the same rules in Python (`swarm_api/issueci.py`,
-   `_check_section`; CIFIX-EXCERPT, part of #1914). `redact` is a pattern list
+   `_check_section`; CIFIX-EXCERPT, part of #1914), and go further: a red
+   gate's workflow run is read and its failed leaf jobs are excerpted ahead
+   of it, each section names the events it failed on, and a job red on push
+   but green on pull_request at one sha is called out as a branch behind a
+   fix on main: merge main (#2937). `redact` is a pattern list
    and not a boundary (its own header says so); what makes a leak survivable
    is that the excerpt is stored as an agent's input, which the API serves
    masked.
@@ -2596,6 +2601,55 @@ refusal ships **on**
 script's own attempt cap is checked before it submits, so a pull request
 already at the cap gets the stop comment even while its lane's merge step is
 live.
+
+**A plain continuation of the lane waits for its merge step too** (#2685).
+The merge-step read above held only a request with `metadata.ci_fix`; a plain
+`continues_task` workflow (no fix mark of any kind) went straight through.
+On 2026-10-28 the plain lane task_7ff30c32 (wf_85f651ab, `CIFIX-2617`) was
+admitted onto PR #2617 while that lane's merge step task_943ec5f2 was live.
+The merge step then submitted its ci-fix:1 round task_99b8e1e0 beside it, the
+plain lane pushed 5bc405a first, the round's push was rejected
+non-fast-forward, and the merge step refused `head_moved` at a head none of
+its rounds had pushed. Why: a pull request has one writer at a time. A lane
+with a merge step already has one -- the merge step submits its own CI,
+conflict and pick rounds whenever CI goes red or the branch conflicts -- so
+any other agent pushing to the branch races that round, and whichever
+pushes second loses its whole run. So `cifix.stamp` answers such a request
+409 `ci_fix_lane_owns_pr` while the continued lane's merge step is in any
+non-terminal state, before anything is written. The detail names the merge
+step (`task_id`), its `workflow_id`, the lane's `root_task_id`, the
+`pull_request` when the branch's agent recorded one, and
+`plain_continuation: true`; it carries no `metadata: ci_fix`, because the
+request had none. Resubmit once the merge step ends or is cancelled. A
+merge-only request, a request carrying a writer's own mark (`ci_fix`, the
+merge step's `merge_fix_round` and `merge_conflict_round`, pr-shepherd's
+`pr_shepherd`, an issue run's `issue_run`), an agent in no workflow, a
+workflow with no merge step and a merge step that has finished are admitted
+as before. A `publish_to_pr` workflow is not read here: its branch's agent is
+known only after `stamp`. The same switch turns it off
+(`REFUSAL_CI_FIX_LANE_OWNS_PR=off`).
+
+**A CI fix waits for another live CI fix of its pull request** (#2763). The
+claim (`ci_fix_in_flight`) keys a failure by head and run, so a red run at
+another head, or another red run at the same head, counted as another failure
+and got a second fix beside the first. On PR #2730 this fixer's attempt 1
+(task_f11210cf) was RUNNING on bb31584 when attempt 2 (task_af11c3ba) was
+admitted at 62a6fbac. Attempt 2 pushed 9e193de0 first, and attempt 1's publish
+conflicted. Why: a pull request has one writer at a time, and two CI fixes on
+one branch race exactly as a fix and a lane's round do. So `cifix.stamp`
+answers 409 `ci_fix_lane_owns_pr` while another CI fix of the same pull
+request is live -- a non-terminal agent continuing the same branch agent, or a
+claim still inside its two-minute grace whose agent is not written yet -- at
+any head and from any run, before the cap and the claim, so nothing is
+written. The detail names the live fix's `task_id`, `workflow_id` and
+`head_sha`, with `ci_fix: true`. When that fix pushes, CI runs again at its
+head, and a red run there gets its own fix. It is this refusal, not
+`ci_fix_in_flight`, because this one ships on and the script reads it as a
+skip, while `ci_fix_in_flight` is report-only and refuses nothing in
+production. A re-delivery of the very failure the live fix is on is still
+answered `ci_fix_in_flight` by the claim, as before. A finished fix, a fix of
+another pull request and another tenant's fix are passed over. The same
+switch turns it off (`REFUSAL_CI_FIX_LANE_OWNS_PR=off`).
 
 **A request that pushes to a pull request waits while a fix holds it**
 (#2535). The gates above read only a request that carries `metadata.ci_fix`.
@@ -4952,7 +5006,16 @@ is given (CLAUDE.md, and the claude-code runner's `RELATED_TESTS_NOTE` when the
 checkout carries this script): related tests through this script; never vitest
 without file arguments; never pytest over a whole directory or with `-n auto`
 across the suite; never parallel shards or background batches polled with
-sleep; `scripts/changed-guards.sh` once at the end.
+sleep. It used to end "`scripts/changed-guards.sh` once at the end". Since
+2026-11-01 (owner decision, #2981) an agent on a runner with the worker's
+pre-publish gate (claude-code, `claude-code-lightpanda` included) does not run
+`scripts/changed-guards.sh`: the gate runs it after the agent's turn and hands
+back what fails, and the note says so. Measured on the code intelligence
+experiment: on a 33-file patch the script selected 645-681 test files, the
+agents' own runs hit their 10-minute command limit (about ten minutes a
+step), and the gate then ran the same guards again for 65-77 minutes. A
+runner without the gate (codex) keeps `scripts/changed-guards.sh` once at the
+end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
 
 **What is related** (`scripts/lib/related_tests.py`, standard library only).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the

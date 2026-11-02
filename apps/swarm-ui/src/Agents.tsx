@@ -11,15 +11,16 @@ import { Em, Mark, timesRun, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
 import { BrowserUseMark, browserUseOf, browserUseSay } from './BrowserUse'
 import { BudgetRowMark, budgetRowSay, budgetStopLine, stoppedAtBudgetRow, useBudgetWarning } from './AgentBudget'
-import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
+import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
-import type { Result } from './fetch'
+import { pageReads, type Result } from './fetch'
 import { isLiveBrowser, liveBrowserRows, needsYou } from './Handoff'
 import { presetLabel } from './LiveBrowser'
 import { theaterPath } from './LiveThumb'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
+import { listMayStart, panelWaiters, wakePanelWaiters } from './agentPanel'
 import { focusSplitOnOpen } from './agent-split/focus'
 import { tabStep } from './agent-split/tabs'
 import './styles/agents.css'
@@ -36,9 +37,12 @@ import {
   WAITING_STATES,
   compareStarted,
   elapsed,
+  formatDuration,
+  poolLabel,
   rollupState,
   taskGroup,
   timeAgo,
+  waitingLine,
   whyAgent,
   whyNeedsAction,
   type Task,
@@ -128,6 +132,29 @@ const ListReadAt = createContext<number | null>(null)
  * row itself (`ownTitle`, SUMMARY-TITLE).
  */
 const RowTitleOf = createContext<((t: Task) => string | null) | null>(null)
+
+/**
+ * THE ROWS ARE UNDER THEIR WORKFLOW'S HEADING (visual QA pass 1,
+ * overview-agents-53): the group's heading is the workflow's title, so a row
+ * under it is its step alone, not the title again on every line.
+ */
+const UnderWorkflow = createContext(false)
+
+/**
+ * A STEP'S WORKFLOW TITLE, OFF ITS OWN SUMMARY ROW FIRST (visual QA pass 1,
+ * overview-agents-60): every step carries its workflow's `metadata.title`,
+ * and the summary view serves it, so the row is named on its first draw. It
+ * waited for `useRowTitles`' read, and the one row read `report` in one
+ * layout and `Audit the operator scripts… · report` in the other, depending
+ * on whether that read had landed. The read stays the fallback for an API
+ * whose summary sends no metadata.
+ */
+export function stepWorkflowTitle(t: Pick<Task, 'workflow_id' | 'step_id' | 'metadata'>, read: ((t: Task) => string | null) | null): string | null {
+  if ((t.workflow_id ?? null) === null || (t.step_id ?? null) === null) return null
+  const v = t.metadata?.title
+  if (typeof v === 'string' && v.trim() !== '') return v.trim()
+  return read?.(t as Task) ?? null
+}
 
 /** The rows that are a workflow's steps: the ones a workflow title names. */
 function isStep(t: Task): boolean {
@@ -236,6 +263,7 @@ export function pollInterval(page: TaskPage | null): number {
  * readers.
  */
 export { PHONE_PAGE_LIMIT }
+export { agentPanelGone, agentPanelOpening, agentPanelShown, listMayStart } from './agentPanel'
 
 /** A page of the list, and the page size that read asked for. */
 interface AgentsPage extends TaskPage {
@@ -300,12 +328,123 @@ function appendPage(held: readonly Task[], got: TaskPage | null, token: string |
   return { tasks: [...held, ...rows], token }
 }
 
-async function loadAgentsPage(): Promise<Result<AgentsPage>> {
+/**
+ * THE LIST'S POLL PLAN (load-speed investigation, the owner's pick 2026-11-01,
+ * part of #2688). Measured in the owner's browser, `GET /v1/tasks?limit=200&
+ * view=summary` took 5.3 s on first load and 1.1-2.1 s on every poll, almost
+ * all of it server time, and the list re-read that page every 5 s while Live
+ * held a row -- then, only once it had answered, read the live and waiting
+ * states one `?state=` read each.
+ *
+ * NOW A 5 s POLL IS ONE READ: the live and waiting states together, as one
+ * `?state=A,B,...` list (`GET /v1/tasks` takes several states in one `in`
+ * query, #2998), merged into the page already held. The 200-row page itself is
+ * re-read every `PAGE_REREAD_MS`, and when it is, the state read is started at
+ * the same instant beside it rather than after it. A live agent changes on the
+ * order of seconds and every one of them is in the state read; a finished
+ * agent's row no longer changes, so its page can be 30 s old.
+ *
+ * A ROW THAT LEFT THE LIVE AND WAITING STATES -- held as live or waiting, absent
+ * from a whole state read -- finished, or was cancelled, since the page was
+ * read. Its new row is the page's to bring, so it leaves Live at once and the
+ * next poll re-reads the page (`due`), rather than drawing a finished agent as
+ * running for up to 30 s or guessing the state it ended in.
+ */
+export const PAGE_REREAD_MS = IDLE_POLL_MS
+
+/** The page the list holds between page reads, and when that page was read. */
+export interface HeldPage {
+  page: AgentsPage
+  /** When the page read started. */
+  at: number
+  /** A row left the live and waiting states: the next poll re-reads the page. */
+  due: boolean
+}
+
+/**
+ * THE STATES ONE STATE READ ASKS FOR: every live state and every waiting state
+ * a task is ever in. QUEUED is a workflow's state and never a task's
+ * (`NEVER_WRITTEN`), so it is not asked for (VQ-012).
+ */
+const WAITING_READ: readonly TaskState[] = [...WAITING_STATES].filter((s) => !NEVER_WRITTEN.has(s))
+export const LIVE_AND_WAITING: readonly TaskState[] = [...CONCURRENCY_STATES, ...WAITING_READ]
+const IN_STATE_READ: ReadonlySet<TaskState> = new Set(LIVE_AND_WAITING)
+
+/** Whether the list must read its 200-row page on this read, rather than the states alone. */
+export function pageDue(held: HeldPage | null, now: number = Date.now()): boolean {
+  return held === null || held.due || now - held.at >= PAGE_REREAD_MS
+}
+
+/**
+ * ONE `?state=` READ OF THE LIVE AND WAITING STATES, summary rows. The route
+ * takes `state=A,B` as one `state IN [...]` query (swarm-api routes/tasks.py
+ * `_parse_states`, at most `STATE_IN_MAX` states); `loadTasksInState` sends the
+ * value it is handed as the one `state` parameter, so the comma list goes to
+ * the route as written. A FIXTURE BUILD filters its one fixture page instead,
+ * through `loadTasks`, so its request log shows the one read.
+ *
+ * A read that throws or answers nothing is a failed read, never an empty
+ * state, as the header's attempt read treats one (AgentSplit.tsx). Called
+ * WITHOUT a microtask in front of it, so the read starts inside `pageReads`
+ * (CH-2) when the page's load calls it.
+ */
+function readLiveAndWaiting(): Promise<Result<TaskPage> | null> {
+  try {
+    if (USE_FIXTURES) {
+      return loadTasks(TASK_PAGE_LIMIT, { view: 'summary' }).then(
+        (r): Result<TaskPage> | null => {
+          if (r.status !== 'ok' && r.status !== 'stale') return r
+          const tasks = r.data.tasks.filter((t) => IN_STATE_READ.has(t.state))
+          return tasks.length === 0 ? { status: 'empty', fetchedAt: r.fetchedAt } : { ...r, data: { ...r.data, tasks } }
+        },
+        () => null,
+      )
+    }
+    const states = LIVE_AND_WAITING.join(',') as TaskState
+    return loadTasksInState(states, { view: 'summary' }).then((r) => r ?? null, () => null)
+  } catch {
+    return Promise.resolve(null)
+  }
+}
+
+/** The state read as rows, and whether it holds every live and waiting task. */
+function stateRows(r: Result<TaskPage> | null): { tasks: Task[]; whole: boolean; ok: boolean } {
+  if (r !== null && r.status === 'empty') return { tasks: [], whole: true, ok: true }
+  if (r !== null && r.status === 'ok') return { tasks: r.data.tasks, whole: !r.data.next_page_token, ok: true }
+  if (r !== null && r.status === 'stale') return { tasks: r.data.tasks, whole: false, ok: false }
+  return { tasks: [], whole: false, ok: false }
+}
+
+/** `rows` with every row of `extra` whose id it does not already hold after them. */
+function joinRows(rows: readonly Task[], extra: readonly Task[]): Task[] {
+  const held = new Set(rows.map((t) => t.id))
+  return [...rows, ...extra.filter((t) => !held.has(t.id))]
+}
+
+/**
+ * READ THE LIST: the page and the state read together when the page is due,
+ * the state read alone otherwise. `held` is the screen's own (`AgentsScreen`),
+ * written here after every read, so a tenant switch -- which remounts the
+ * screen -- starts from no page.
+ */
+export async function loadAgentsPage(held: { current: HeldPage | null }): Promise<Result<AgentsPage>> {
+  const last = held.current
+  if (!pageDue(last) && last !== null) return pollStates(last, held)
+  const startedAt = Date.now()
   const asked = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
   // The summary view (#168): no row on this screen draws `input`, `metadata`
   // or `result_summary` -- the inspector reads its own task, full, through
   // `loadTask` -- and the trap in `drawer.reread.test.tsx` holds that.
-  const read = await loadTasks(asked, { view: 'summary' })
+  // BOTH READS START HERE, before the first `await`.
+  // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
+  // there is no capped page to read the states beside, and the state read would
+  // be the same fixture rows again.
+  const [read, states] = await Promise.all([
+    loadTasks(asked, { view: 'summary' }),
+    USE_FIXTURES ? Promise.resolve(null) : readLiveAndWaiting(),
+  ])
+  const fresh = stateRows(states)
+  let page: AgentsPage
   // AN EMPTY READ IS A PAGE OF NO ROWS, NOT A DIFFERENT SCREEN (V151, visual
   // QA #1038). Handed to `Screen` as `empty`, it replaced the whole body with
   // one panel: the tab strip, the search and the filters went with it, so the
@@ -313,79 +452,72 @@ async function loadAgentsPage(): Promise<Result<AgentsPage>> {
   // see a minute later. The body draws each tab's own real zero, mark and
   // all, under the same chrome it always has.
   if (read.status === 'empty') {
-    return { status: 'ok', data: { tasks: [], next_page_token: null, asked }, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
+    page = { tasks: fresh.ok ? fresh.tasks : [], next_page_token: null, asked, liveWhole: true, waitingWhole: true }
+    held.current = { page, at: startedAt, due: false }
+    return { status: 'ok', data: page, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
   }
   if (read.status !== 'ok' && read.status !== 'stale') return read
-  if (!read.data.next_page_token) return { ...read, data: { ...read.data, asked, liveWhole: true, waitingWhole: true } }
-  // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
-  // there is no capped page to read the live states beside, and its `?state=`
-  // reads are the same fixture rows again, not a second population.
-  if (USE_FIXTURES) return { ...read, data: { ...read.data, asked, liveWhole: false, waitingWhole: false } }
-  const [live, waiting] = await Promise.all([readStates([...CONCURRENCY_STATES]), readStates(WAITING_READ)])
-  const held = new Set(read.data.tasks.map((t) => t.id))
-  const extra: Task[] = []
-  for (const t of [...live.tasks, ...waiting.tasks]) {
-    if (held.has(t.id)) continue
-    held.add(t.id)
-    extra.push(t)
+  // A PAGE WITH NO TOKEN HOLDS EVERY ROW, live ones included (QA12-20). A
+  // capped one holds every live and waiting row only when the state read beside
+  // it was whole; a failed or capped state read leaves Live and Waiting lower
+  // bounds, as they were. The state read's rows are the newer of the two for
+  // a task both hold only by a hair, so the page's own row is kept.
+  const capped = Boolean(read.data.next_page_token)
+  page = {
+    ...read.data,
+    tasks: joinRows(read.data.tasks, fresh.tasks),
+    asked,
+    liveWhole: !capped || fresh.whole,
+    waitingWhole: !capped || fresh.whole,
   }
-  return {
-    ...read,
-    data: {
-      ...read.data,
-      tasks: [...read.data.tasks, ...extra],
-      asked,
-      liveWhole: live.whole,
-      waitingWhole: waiting.whole,
-    },
-  }
+  if (read.status === 'ok') held.current = { page, at: startedAt, due: false }
+  return { ...read, data: page }
 }
 
 /**
- * THE WAITING STATES, READ IN FULL TOO (VQ-012, BGD's visual QA 2026-10-26):
- * over a capped page the tab read `Waiting 38+` beside the panel's `Waiting
- * 38` -- the panel counts by state over every task (`/v1/stats`, Spine.tsx
- * D27), the tab over the newest page -- so one figure was drawn with and
- * without its `+`. Read whole, as the live states are, the tab's figure is
- * every waiting agent and needs no `+`; a failed or capped read keeps it a
- * lower bound. QUEUED is a workflow's state and never a task's
- * (`NEVER_WRITTEN`), so it is not asked for.
+ * A 5 s POLL: the state read alone, merged into the page held. A row the read
+ * holds takes the read's row; a row held as live or waiting that a WHOLE read
+ * no longer holds is dropped and the page marked `due`; every other row is the
+ * page's. A failed state read is a failed read of the list: `Screen` keeps the
+ * rows on screen, dimmed with their age, and backs off.
  */
-const WAITING_READ: readonly TaskState[] = [...WAITING_STATES].filter((s) => !NEVER_WRITTEN.has(s))
+async function pollStates(last: HeldPage, held: { current: HeldPage | null }): Promise<Result<AgentsPage>> {
+  const states = await readLiveAndWaiting()
+  const fresh = stateRows(states)
+  if (!fresh.ok) {
+    if (states !== null && states.status === 'error') return states
+    return {
+      status: 'error',
+      error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The live and waiting agents could not be read.' },
+    }
+  }
+  const byId = new Map(fresh.tasks.map((t) => [t.id, t]))
+  let left = false
+  const kept: Task[] = []
+  for (const t of last.page.tasks) {
+    const now = byId.get(t.id)
+    if (now !== undefined) kept.push(now)
+    else if (fresh.whole && IN_STATE_READ.has(t.state)) left = true
+    else kept.push(t)
+  }
+  const page: AgentsPage = {
+    ...last.page,
+    tasks: joinRows(kept, fresh.tasks),
+    liveWhole: fresh.whole,
+    waitingWhole: fresh.whole,
+  }
+  held.current = { page, at: last.at, due: last.due || left }
+  const at = states !== null && (states.status === 'ok' || states.status === 'empty') ? states : null
+  return { status: 'ok', data: page, fetchedAt: at?.fetchedAt ?? Date.now(), ...(at?.serverAt !== undefined ? { serverAt: at.serverAt } : {}) }
+}
 
 /**
- * THE LIVE STATES, READ IN FULL (live-browser QA p12, QA12-20). Live was
- * counted over the newest 200 rows, so with more beyond them it read `Live
- * 5+` with exactly five live, offered `Load 200 more` under five rows, and a
- * resumed task older than the page -- the case p12 measured -- was not on it
- * at all. A live agent holds a pool slot, so the live states are bounded by
- * concurrency (invariant 3), not by the page: one `?state=` read each, summary
- * rows, made only when the page is capped. A failed or capped read leaves
- * Live a lower bound, as it was.
+ * WHILE AN AGENT IS OPEN THE LIST POLLS AT THE IDLE CADENCE: the reader is on
+ * the agent, whose own reads keep it current, and the list beside it is
+ * context. 5 s returns when the agent is closed and Live holds a row.
  */
-async function readStates(states: readonly TaskState[]): Promise<{ tasks: Task[]; whole: boolean }> {
-  const reads = await Promise.all(
-    // A read that throws or answers nothing is a failed read, never an
-    // empty state, as the header's attempt read treats one (AgentSplit.tsx).
-    states.map((state) =>
-      Promise.resolve()
-        .then(() => loadTasksInState(state, { view: 'summary' }))
-        .then((r) => r ?? null, () => null),
-    ),
-  )
-  let whole = true
-  const tasks: Task[] = []
-  for (const r of reads) {
-    if (r !== null && r.status === 'empty') continue
-    if (r === null || r.status !== 'ok') {
-      whole = false
-      if (r !== null && r.status === 'stale') tasks.push(...r.data.tasks)
-      continue
-    }
-    tasks.push(...r.data.tasks)
-    if (r.data.next_page_token) whole = false
-  }
-  return { tasks, whole }
+export function listPollInterval(page: TaskPage | null, open: string | null): number {
+  return open !== null ? IDLE_POLL_MS : pollInterval(page)
 }
 
 /**
@@ -457,6 +589,40 @@ export function AgentsScreen({
   const [more, setMore] = useState<MorePages | null>(null)
   const [moreRead, setMoreRead] = useState<MoreRead>({ kind: 'idle' })
   const busy = useRef(false)
+  // THE PAGE HELD BETWEEN PAGE READS (`loadAgentsPage`), and the first read's
+  // wait for the agent panel (`listMayStart`). `open` is read through a ref so
+  // the wait sees the address as it is when it wakes, not when it began.
+  const held = useRef<HeldPage | null>(null)
+  const open = useRef(taskId)
+  open.current = taskId
+  const waits = useRef(new Set<() => void>())
+  useEffect(() => {
+    wakePanelWaiters()
+  }, [taskId])
+  useEffect(
+    () => () => {
+      for (const wake of waits.current) panelWaiters.delete(wake)
+      waits.current.clear()
+    },
+    [],
+  )
+  const load = async (): Promise<Result<AgentsPage>> => {
+    if (held.current === null && !listMayStart(open.current)) {
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          if (!listMayStart(open.current)) return
+          panelWaiters.delete(wake)
+          waits.current.delete(wake)
+          resolve()
+        }
+        panelWaiters.add(wake)
+        waits.current.add(wake)
+      })
+      // Past the wait the reads are still the page's (CH-2).
+      return pageReads(() => loadAgentsPage(held))
+    }
+    return loadAgentsPage(held)
+  }
   const loadMore = async (page: AgentsPage) => {
     const token = more !== null ? more.token : (page.next_page_token ?? null)
     if (token === null || busy.current) return
@@ -480,14 +646,14 @@ export function AgentsScreen({
     <>
       <Screen
         title="Agents"
-        load={loadAgentsPage}
+        load={load}
         // THE LIST RE-READS (AG-1). It read once and never again, while its
         // clock went on adding to every row: a finished agent read `running`
         // and was counted in Live. `Screen` owns the timer, the pause while the
         // tab is hidden, the back-off and the stop on an answer only a person
         // can change; this screen owns the cadence, which is a function of the
         // rows it holds.
-        pollMs={pollInterval}
+        pollMs={(page) => listPollInterval(page, open.current)}
         summary={(first) => {
           const d = withMorePages(first, more)
           const live = d.tasks.filter((t) => tabOf(t) === 'live').length
@@ -514,7 +680,7 @@ export function AgentsScreen({
             // screen hands over the last GOOD read's time, which is the one the
             // rows describe.
             readAt={reading.fetchedAt}
-            interval={reading.pollMs ?? pollInterval(d)}
+            interval={reading.pollMs ?? listPollInterval(d, taskId)}
             tab={tab}
             setTab={setTab}
             recentState={recentState}
@@ -802,6 +968,11 @@ function AgentsBody({
   // panel lit `Live 0` beside the Recent rows. The tab on screen is reported
   // first, so App writes the agent's address under it.
   const openRow = (taskId: string) => {
+    // A ROW OPENED BY A CLICK IS ALREADY IN VIEW (visual QA pass 1,
+    // overview-agents-55): the scroll below, meant for a deep link, ran on a
+    // click too, and as the split opened it scrolled the page column until
+    // the `Agents` heading sat under the sticky breadcrumb.
+    scrolledTo.current = taskId
     report({})
     onOpen(taskId)
   }
@@ -896,7 +1067,7 @@ function AgentsBody({
         ? `${sortWord}; press for oldest start first`
         : `${sortWord}; press for the list’s own order, ${ownOrder}`
   // The workflow titles of the steps on screen (VQ-009, `RowTitleOf`).
-  const titleOf = useRowTitles(rows.filter(isStep))
+  const titleOf = useRowTitles(rows.filter((t) => isStep(t) && stepWorkflowTitle(t, null) === null))
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
   return (
@@ -960,15 +1131,23 @@ function AgentsBody({
             value={query}
             placeholder="Find by name or task id"
             aria-label="Find by name or task id"
+            title={liveAll && bounded ? liveSay : scopeSay}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <span className="ag-scope" aria-label={liveAll && bounded ? liveSay : scopeSay}>
-            {liveAll && bounded
-              ? `all ${counts.live} live`
-              : phonePage
-                ? `showing the ${page.tasks.length} most recent`
-                : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
-          </span>
+          {/* `N LOADED` IS THE HEADER'S, ONCE (visual QA pass 1,
+              overview-agents-13): the subtitle reads `27 loaded · 6 live`, and
+              the same `27 loaded` stood again here. The scope stays only where
+              it says something the header does not: every live row read, the
+              phone's page, or rows beyond the page. */}
+          {(liveAll && bounded) || phonePage || page.next_page_token ? (
+            <span className="ag-scope" aria-label={liveAll && bounded ? liveSay : scopeSay}>
+              {liveAll && bounded
+                ? `all ${counts.live} live`
+                : phonePage
+                  ? `showing the ${page.tasks.length} most recent`
+                  : 'more beyond'}
+            </span>
+          ) : null}
         </div>
 
         {/* THE CONTROLS ARE ONE ITEM OF THE TOOLBAR (V147, VQA2-R13). Each was
@@ -1058,10 +1237,15 @@ function AgentsBody({
 
           {/* ⤢ THEATER ALL (§6): the first row's Browser tab in the theater,
               whose prev and next walk the live browsers from there. The first
-              row is the one waiting for a person, when one is. */}
-          {browsers && rows.length > 0 && (
+              row is the one waiting for a person, when one is. Not in the
+              fixture build, which serves no live session, actions or
+              recordings: there it opened on 'Not found' (visual QA pass 1,
+              overview-agents-17). */}
+          {browsers && rows.length > 0 && !USE_FIXTURES && (
             <a className="ag-theater-all" href={theaterPath(rows[0]!.id, null)}>
-              ⤢ theater all
+              {/* SENTENCE CASE, AND WHAT IT DOES (visual QA pass 1,
+                  overview-agents-18): it read `theater all`. */}
+              ⤢ Watch all browsers
             </a>
           )}
 
@@ -1219,7 +1403,7 @@ function AgentsBody({
           </h3>
         </div>
       ) : shown === 'waiting' ? (
-        <WaitingGroups rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} grouped={grouped} bounded={tabBounded('waiting')} />
+        <WaitingGroups rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} grouped={grouped} bounded={tabBounded('waiting')} taskById={taskById} />
       ) : grouped && shown !== 'live' ? (
         <GroupedRows rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} taskById={taskById} />
       ) : (
@@ -1432,6 +1616,7 @@ function WaitingGroups({
   classes,
   grouped,
   bounded,
+  taskById = null,
 }: {
   rows: Task[]
   now: number
@@ -1442,6 +1627,8 @@ function WaitingGroups({
   grouped: boolean
   /** More rows exist beyond the page, so a group's count is a lower bound (G2-05). */
   bounded: boolean
+  /** Every row the list read, by id: a workflow group's state is read over all of them. */
+  taskById?: ReadonlyMap<string, Task> | null
 }) {
   // A PARKED TASK IS FILED UNDER ITS OWN PARK REASON (N12, owner QA
   // 2026-10-04): `/agents/waiting` headed a step waiting on an earlier step
@@ -1452,6 +1639,7 @@ function WaitingGroups({
   const groups: { key: string; title: string; rows: Task[] }[] = [
     { key: 'needs_action', title: 'Needs action', rows: [] },
     { key: 'no_room', title: 'No room', rows: [] },
+    { key: 'not_eligible', title: 'Not yet eligible', rows: [] },
   ]
   for (const t of rows) {
     const at = taskGroup(t, classUnits(classes, t.resource_class)) === 'needs_action' ? { key: 'needs_action', title: '' } : waitGroupOf(t)
@@ -1477,7 +1665,7 @@ function WaitingGroups({
               </span>
             </h2>
             {grouped ? (
-              <GroupedRows rows={g.rows} now={now} vouched={vouched} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
+              <GroupedRows rows={g.rows} now={now} vouched={vouched} onOpen={onOpen} openTaskId={openTaskId} classes={classes} taskById={taskById} />
             ) : (
               <FlatRows rows={g.rows} now={now} vouched={vouched} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
             )}
@@ -1488,8 +1676,16 @@ function WaitingGroups({
   )
 }
 
-/** The Waiting group a task that needs no action is filed under: its park reason, or `No room`. */
+/**
+ * The Waiting group a task that needs no action is filed under: its park
+ * reason, `Not yet eligible` for a queued one, or `No room`.
+ *
+ * A QUEUED TASK IS NOT SHORT OF ROOM (visual QA pass 2, overview-agents-56):
+ * it sat under `No room` while Overview's waiting card calls it not yet
+ * eligible (`waitGroups`). Only a READY task is eligible and waits for a pool.
+ */
 export function waitGroupOf(t: Task): { key: string; title: string } {
+  if (t.state === 'QUEUED') return { key: 'not_eligible', title: 'Not yet eligible' }
   if (t.state !== 'PARKED') return { key: 'no_room', title: 'No room' }
   const r = t.park_reason ?? null
   if (r === null) return { key: 'park:none', title: 'Parked, reason not recorded' }
@@ -1500,9 +1696,19 @@ export function waitGroupOf(t: Task): { key: string; title: string } {
 /**
  * Recent's search (#99): the task id, the step id and the workflow id,
  * case-insensitively. `needle` is already trimmed and lower-cased.
+ *
+ * AND THE NAME THE ROW IS DRAWN BY (visual QA pass 1, overview-agents-15):
+ * the box says "Find by name or task id", and `flaky` found nothing beside a
+ * live `Fix flaky lease heartbeat test`. The summary row's `metadata.title`
+ * -- a lone agent's own title, a step's workflow title -- and `agentName`'s
+ * `claude-code agent · a073aff5` are searched too, so what the row says is
+ * what the search finds.
  */
-function matchesQuery(t: Task, needle: string): boolean {
-  return [t.id, t.step_id, t.workflow_id].some((v) => v != null && v.toLowerCase().includes(needle))
+export function matchesQuery(t: Task, needle: string): boolean {
+  const title = t.metadata?.title
+  return [t.id, t.step_id, t.workflow_id, typeof title === 'string' ? title : null, agentName(t)].some(
+    (v) => v != null && v.toLowerCase().includes(needle),
+  )
 }
 
 /**
@@ -1555,13 +1761,46 @@ function rowReason(
   // sentence is `full`. The ink is still `whyNeedsAction`'s: the reason got
   // specific, not more urgent. An API that sends no `waiting` keeps today's
   // line.
-  const short = tabOf(task) === 'waiting' && task.waiting ? waitingShort(task.waiting) : null
+  const short = tabOf(task) === 'waiting' && task.waiting ? poolWords(waitingShort(task.waiting)) : null
   if (short !== null) return { text: short, warn, full: task.waiting!.summary.trim() }
+  // A READY ROW WITH ONLY `waiting_for` NAMES ITS POOL TOO (QA2-FIX-12
+  // review, overview-agents-56): `waitingLine` read `waiting for:
+  // provider:anthropic:tenant:u-bogdan 5/5 units` under `No room`. The line
+  // names the pool by `poolLabel`; the raw key stays in the row's title.
+  const raw = waitingLine(task)
+  const pool = task.waiting_for?.lead?.pool
+  if (raw !== null && pool) return { text: raw.replace(pool, poolLabel(pool)), warn, full: raw }
   // A CASCADE CANCEL NAMES THE STEP THAT FAILED (visual QA run 4, N23) when
   // that step is among the rows the list read; the meta line keeps its
   // `to cancel` span note (U10a D20) and the cause is said here.
-  return { text: whyAgent(task, units, taskById), warn }
+  const text = whyAgent(task, units, taskById)
+  // A ROW UNDER `NO ROOM` WITH NO REASON SAYS SO (visual QA pass 1,
+  // overview-agents-56): a queued or ready row the scheduler recorded no
+  // blocker for drew no line at all, so the reader could not tell a pool
+  // that was full from a reason that was never written. A row that carries
+  // one (`blocked_by`, `waiting`) names its pool above.
+  if (text === '' && (task.state === 'READY' || task.state === 'QUEUED')) return { text: NO_BLOCKER, warn }
+  return { text, warn }
 }
+
+/**
+ * A capacity short line's pool in words (visual QA pass 2, overview-agents-56):
+ * `capacity: runner:merge full` named the raw key; `poolLabel` is the name
+ * every other pool on the console is drawn by. The whole sentence, raw key
+ * and all, stays the row's title.
+ */
+export function poolWords(short: string | null): string | null {
+  if (short === null) return null
+  return short.replace(/^capacity: (\S+)/, (_, pool: string) => `capacity: ${poolLabel(pool)}`)
+}
+
+/**
+ * The why line of a waiting row the scheduler recorded no blocker for. It is
+ * also a grouped list's line for every such row, after their count (`2 no
+ * pool named…`), so it names no one row: it read `2 No pool named: … this one
+ * waits` (QA1-FIX-07 re-review).
+ */
+export const NO_BLOCKER = 'no pool named: the scheduler recorded no reason for the wait'
 
 /**
  * THE LIST'S SILENT-WORKER LINE (#179), or null. AG-14 (#82) names a stuck or
@@ -1690,11 +1929,23 @@ function GroupedRows({
       a === '' ? 1 : b === '' ? -1 : a.localeCompare(b),
     )
   }, [rows])
+  const titleOf = useContext(RowTitleOf)
 
   return (
     <>
       {groups.map(([wf, tasks]) => {
-        const roll = rollupState(tasks.map((t) => t.state))
+        // THE WORKFLOW'S STATE, NOT THIS TAB'S (visual QA pass 1,
+        // overview-agents-54): rolled up over this tab's rows, one workflow
+        // read `succeeded` on Recent and `waiting` on Waiting while
+        // Workflows said `running`. It is rolled up over every step of it the
+        // list read, whichever tab each is on, as Workflows rolls up its
+        // steps. "No workflow" is no workflow, so it has no state.
+        const steps = wf === '' ? [] : taskById !== null ? [...taskById.values()].filter((t) => t.workflow_id === wf) : tasks
+        const roll = wf === '' ? null : rollupState((steps.length > 0 ? steps : tasks).map((t) => t.state))
+        // THE HEADING IS THE WORKFLOW'S TITLE (overview-agents-53): it was
+        // the raw id in large mono, over rows that each repeated the title.
+        // The id is the link's hover; an untitled workflow keeps its id.
+        const wfName = wf === '' ? null : stepWorkflowTitle(tasks[0]!, titleOf)
         const said = groupReasons(tasks.map((t) => rowReason(t, classes, vouched, taskById)))
         return (
           <section className="section group" key={wf || 'standalone'}>
@@ -1707,6 +1958,10 @@ function GroupedRows({
                   per-workflow read exists. */}
               {wf === '' ? (
                 'No workflow'
+              ) : wfName !== null ? (
+                <a className="ctl-link" href={workflowHref(wf)} title={wf}>
+                  {wfName}
+                </a>
               ) : (
                 <a className="ctl-link" href={workflowHref(wf)}>
                   <Id>{wf}</Id>
@@ -1719,7 +1974,7 @@ function GroupedRows({
                   same kind of fact as every other state here, so it is drawn
                   the same way. `.roll`'s four rules went with it; nothing else
                   rendered them. */}
-              <ToneMark tone={rollTone(roll)}>{roll}</ToneMark>
+              {roll !== null && <ToneMark tone={rollTone(roll)}>{roll}</ToneMark>}
               {/* THE FIGURE IS THE FACT. "3 steps in this page" said `3` and
                   then re-said, in four more words, the thing the toolbar's
                   scope qualifier already says once for the whole screen. A
@@ -1743,6 +1998,7 @@ function GroupedRows({
                 <b>{r.count}</b> {r.text}
               </p>
             ))}
+            <UnderWorkflow.Provider value={wf !== ''}>
             <div className="rows">
               {tasks.map((t, i) => (
                 <TaskRow
@@ -1758,6 +2014,7 @@ function GroupedRows({
                 />
               ))}
             </div>
+            </UnderWorkflow.Provider>
           </section>
         )
       })}
@@ -1811,13 +2068,32 @@ export function attemptsUsed(
 }
 
 /**
+ * The attempt documents each row last read, by task id (`useRuns`), the oldest
+ * dropped past `RUNS_HELD`. It outlives a tenant or workspace switch in one
+ * session. That is deliberate: an entry is found only by a row with that
+ * exact task id, and it only seeds the figure drawn while that row's own read
+ * is in flight; the read's answer replaces it.
+ */
+const RUNS_READ = new Map<string, { key: string; attempts: readonly unknown[] }>()
+/** A page's worth of rows and its next: more than one list ever draws. */
+const RUNS_HELD = 500
+
+/**
  * HOW MANY TIMES A ROW'S TASK RAN, read as the task header reads it
- * (`timesRun` over `GET /v1/tasks/{id}/attempts`, QA12-12). Only for a row
- * that shows the figure -- live, or over its cap -- and re-read only when the
+ * (`timesRun` over `GET /v1/tasks/{id}/attempts`, QA12-12). Only for THE ROW
+ * THE INSPECTOR HAS OPEN, when it shows the figure -- live, or over its cap --
+ * and re-read only when the
  * task says its attempts changed (its generation, its counter or its state),
  * the header's own key, never on every list poll. Until the documents are
  * read, or when the read fails, the task's own counter, as the header falls
  * back to it.
+ *
+ * EVERY OTHER ROW TAKES ITS TOTAL FROM THE ROW (load-speed investigation, the
+ * owner's pick 2026-11-01): one `/attempts` read per live row made a list of
+ * twelve live agents twelve more requests on every key change, beside the
+ * page. The row's `attempt_count` is the task's own counter, the figure the
+ * header falls back to; the open row is the one drawn beside that header, so
+ * it alone reads the documents and cannot contradict it.
  *
  * UNTIL THE FIRST READ LANDS, NULL (visual QA QA-026): the counter is the
  * figure only once a read has FAILED, never while one is in flight -- in
@@ -1828,7 +2104,16 @@ export function attemptsUsed(
  */
 function useRuns(task: Task, shows: boolean): number | null {
   const key = `${task.id}:${task.current_generation}:${task.attempt_count}:${task.state}`
-  const [got, setGot] = useState<{ id: string; key: string; attempts: readonly unknown[] | null } | null>(null)
+  // A ROW DRAWN AGAIN KEEPS ITS FIGURE (visual QA pass 1, overview-agents-16):
+  // a search that changes the list mounts its rows afresh, and each read
+  // `attempt … of 3` for one read cycle though `1` was already known. The
+  // documents a row last read are kept by task id, so a new row starts from
+  // them while its own read is in flight; `timesRun` still takes the larger
+  // of them and the task's counter, as a re-read for a changed key does.
+  const [got, setGot] = useState<{ id: string; key: string; attempts: readonly unknown[] | null } | null>(() => {
+    const held = RUNS_READ.get(task.id)
+    return held === undefined ? null : { id: task.id, key: held.key, attempts: held.attempts }
+  })
   useEffect(() => {
     if (!shows) return
     let live = true
@@ -1840,6 +2125,11 @@ function useRuns(task: Task, shows: boolean): number | null {
         if (!live) return
         const attempts = r === null ? null : r.status === 'ok' || r.status === 'stale' ? r.data.attempts : r.status === 'empty' ? [] : null
         setGot({ id: task.id, key, attempts })
+        if (attempts !== null) {
+          RUNS_READ.delete(task.id)
+          RUNS_READ.set(task.id, { key, attempts })
+          if (RUNS_READ.size > RUNS_HELD) RUNS_READ.delete(RUNS_READ.keys().next().value!)
+        }
       })
     return () => {
       live = false
@@ -1853,8 +2143,12 @@ function useRuns(task: Task, shows: boolean): number | null {
 
 /** The qualifier on a CANCELLED row's elapsed figure (#163); `TaskRow` says why. */
 export const CANCEL_SPAN = '(last start to cancel, may include parked time)'
-/** The mark line two carries for it; the sentence is its title (U10a D20). */
-export const CANCEL_NOTE = 'to cancel'
+/**
+ * The mark line two carries for it; the sentence is its title (U10a D20).
+ * Past tense, after `ran 6m 32s` (visual QA pass 2, ovag2-10): `to cancel`
+ * said neither who cancelled nor what the figure spanned.
+ */
+export const CANCEL_NOTE = 'cancelled by request'
 
 /**
  * ONE ROW OF THE LIST, AND IT IS ALWAYS THE COMPACT ROW (agents.html V1).
@@ -1993,29 +2287,58 @@ function CompactRow({
   const finished = TERMINAL_STATES.has(task.state)
   const endedAt = finished ? (task.completed_at ?? task.updated_at) : null
   const wordOnly = !finished && el.phase === 'waiting' && !el.ticking
-  const whenText = endedAt !== null ? timeAgo(endedAt, now) : wordOnly ? '' : el.text
+  // AN AGE FOR THE ROWS WITH NO START (visual QA pass 1, overview-agents-19):
+  // a leased or dispatched row's column was blank beside every other live
+  // row's `8d 21h`. Nothing records when it was leased, so its age is from
+  // when it was SUBMITTED, and the cell's title says that is what it counts.
+  const submitted = wordOnly ? Date.parse(task.created_at ?? '') : NaN
+  const sinceSubmit = Number.isFinite(submitted) ? formatDuration(now - submitted) : null
+  const whenText = endedAt !== null ? timeAgo(endedAt, now) : wordOnly ? (sinceSubmit ?? '') : el.text
   const whenTitle =
     endedAt !== null
       ? `ended ${new Date(endedAt).toLocaleString()}`
-      : undefined
+      : wordOnly && sinceSubmit !== null
+        ? `${sinceSubmit} since it was submitted at ${new Date(submitted).toISOString().slice(0, 16).replace('T', ' ')}Z: nothing records when it was ${task.state.toLowerCase()}`
+        : undefined
   const ran = finished && el.phase !== 'unknown' ? (el.phase === 'ran' ? `ran ${el.text}` : el.text) : null
-  const tries = attemptsUsed(task, useRuns(task, live || task.attempt_count > task.max_attempts))
+  const tries = attemptsUsed(task, useRuns(task, open && (live || task.attempt_count > task.max_attempts)))
+  // EVERY LIVE AND WAITING ROW SAYS ITS STATE IN WORDS (visual QA pass 1,
+  // overview-agents-11, -56): a running row was told only by its dot, and a
+  // waiting row's `queued` or `ready` was in its accessible name and nowhere
+  // on screen, beside two marks (ring, dotted ring) a reader cannot name.
+  const waitingRow = tabOf(task) === 'waiting'
+  const stateWord = live
+    ? wordOnly
+      ? el.text
+      : task.state === 'STARTING'
+        ? 'starting'
+        : task.state.toLowerCase()
+    : waitingRow
+      ? task.state.toLowerCase()
+      : null
   // NAMED FROM WHAT IT IS (walkthrough G): its step, else `browser check ·
   // 02e9705a` -- it was the bare hash. `agentName`'s rule, drawn below.
   // A STEP LEADS WITH ITS WORKFLOW'S TITLE (VQ-009), once it is read:
   // `<title> · implement`, Overview's `rowLabel`.
   const titleOf = useContext(RowTitleOf)
-  const wfTitle = isStep(task) ? (titleOf?.(task) ?? null) : null
+  const underWorkflow = useContext(UnderWorkflow)
+  const wfFull = stepWorkflowTitle(task, titleOf)
+  const wfTitle = underWorkflow ? null : wfFull
   // A LONE AGENT LEADS WITH ITS OWN TITLE (SUMMARY-TITLE), off the row itself.
   const loneTitle = ownTitle(task)
-  const name = loneTitle ?? rowLabel(task, wfTitle)
+  const name = loneTitle ?? rowLabel(task, wfFull)
   const owner = task.submitted_by?.split('@')[0] ?? null
   const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
   // WHETHER ITS BROWSER WAS USED (BROWSER-USE-UI, #2322): an ended agent on a
   // browser runtime only. A live one has no verdict yet, and its row already
   // carries the browser's thumbnail; the inspector says "recorded when it ends".
   const browserUse = browserUseOf(task)
-  const browserMark = browserUse !== null && browserUse.ended ? browserUse : null
+  const browserEnded = browserUse !== null && browserUse.ended ? browserUse : null
+  // AN UNKNOWN VERDICT DRAWS NOTHING ON THE ROW (visual QA pass 2,
+  // overview-agents-27): `claude-opus-5 · browser — · alice` said nothing
+  // between the model and the owner. The row's name keeps the reason (#100),
+  // and the inspector draws the dash with it.
+  const browserMark = browserEnded !== null && browserEnded.kind !== 'unknown' ? browserEnded : null
   // A BROWSER AGENT WHOSE BROWSER IS NOT UP YET (QA12-20): listed under
   // Browsers with the running ones, and marked, so it is not read as a
   // browser to watch.
@@ -2056,7 +2379,7 @@ function CompactRow({
     endedAt !== null ? `ended ${whenText}` : whenText === '' ? null : whenText,
     ran,
     profile,
-    browserMark !== null ? browserUseSay(browserMark) : null,
+    browserEnded !== null ? browserUseSay(browserEnded) : null,
     owner ?? 'no owner recorded',
     live || tries.over ? tries.say : null,
     startingBrowser ? 'browser starting' : null,
@@ -2074,14 +2397,14 @@ function CompactRow({
   // `… · claude-opus-5-5 · b…` named nobody. Its facts in the line's order,
   // with the owner's whole address where the line prints the name before @.
   const subSaid = [
-    live && (wordOnly || task.state === 'STARTING') ? (startingBrowser ? 'starting' : wordOnly ? el.text : 'starting') : null,
+    stateWord,
     live ? tries.text : null,
     budgetSay,
     profile,
     browserMark !== null ? browserUseSay(browserMark) : null,
     task.submitted_by ?? 'no owner recorded',
     ran,
-    !live && wordOnly ? el.text : null,
+    !live && !waitingRow && wordOnly ? el.text : null,
     !live && tries.over ? tries.text : null,
     cancelling ? 'cancelling' : null,
     waitsForYou ? 'needs you' : null,
@@ -2122,7 +2445,11 @@ function CompactRow({
         onOpen(task.id)
       }}
       onFocus={(e) => {
-        if (e.target === e.currentTarget) e.currentTarget.querySelector<HTMLElement>(':scope > .cr-open')?.focus()
+        // The row already has focus where it sits, so handing it to the opener
+        // scrolls nothing (overview-agents-55): a plain `focus()` here nudged the
+        // page column as the split opened beside the list.
+        if (e.target === e.currentTarget)
+          e.currentTarget.querySelector<HTMLElement>(':scope > .cr-open')?.focus({ preventScroll: true })
       }}
       onMouseEnter={(e) => show(e.currentTarget)}
       onMouseLeave={hide}
@@ -2159,13 +2486,10 @@ function CompactRow({
             {loneTitle}
           </b>
         ) : (
-          <b title={task.id}>
-            {task.step_id ?? (
-              <>
-                {agentKind(task.runner_profile)} · <span className="id" title={task.id}>{shortTaskId(task.id)}</span>
-              </>
-            )}
-          </b>
+          // THE ID ONCE (visual QA pass 1, overview-agents-14): an untitled
+          // row read `claude-code agent · 460409cd` over `task_460409cd`.
+          // The whole id is the line under the name, so the name is the kind.
+          <b title={task.id}>{task.step_id ?? agentKind(task.runner_profile)}</b>
         )}
         {/* THE WHOLE ID, PRINTED, under the name (#94): it was a hover
             title, and an id read off the screen had to be hovered for. */}
@@ -2193,14 +2517,14 @@ function CompactRow({
             the same half-filled mark, led with their word. A browser agent's
             `starting` is the same word, marked as the browser not up yet
             (QA12-20), so it leads once and is not repeated at the end. */}
-        {live && (wordOnly || task.state === 'STARTING') && (
+        {stateWord !== null && (
           <>
             {startingBrowser ? (
               <span className="cr-state cr-starting" title="The browser is starting: there is nothing to watch yet">
                 <ToneMark tone="unknown">starting</ToneMark>
               </span>
             ) : (
-              <span className="cr-state">{wordOnly ? el.text : 'starting'}</span>
+              <span className="cr-state">{stateWord}</span>
             )}
             {' · '}
           </>
@@ -2241,7 +2565,7 @@ function CompactRow({
             </span>
           </>
         )}
-        {!live && wordOnly && (
+        {!live && !waitingRow && wordOnly && (
           <>
             {' · '}
             <span className="cr-state">{el.text}</span>

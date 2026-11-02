@@ -390,10 +390,14 @@ def test_a_staged_plan_compiles_to_one_review_after_every_step_and_one_integrato
     assert [s.step_id for s in workflow.steps].count(issueruns.FIX_STEP) == 1
     assert [s.step_id for s in workflow.steps].count(REREVIEW_STEP_ID) == 1
     impl = ["impl-sort-key", "impl-ui", "impl-wire"]
+    # The plan lists requirements, so the requirements check (#2524) stands
+    # before the review, which waits for it too.
     assert [s.step_id for s in workflow.steps] == [
-        *impl, issueruns.REVIEW_STEP, issueruns.FIX_STEP, REREVIEW_STEP_ID,
+        *impl, issueruns.REQUIREMENTS_CHECK_STEP, issueruns.REVIEW_STEP, issueruns.FIX_STEP,
+        REREVIEW_STEP_ID,
     ]
-    assert sorted(by_id[issueruns.REVIEW_STEP].depends_on) == sorted(impl)
+    assert sorted(by_id[issueruns.REVIEW_STEP].depends_on) == sorted(
+        [*impl, issueruns.REQUIREMENTS_CHECK_STEP])
     assert by_id[issueruns.FIX_STEP].depends_on == [issueruns.REVIEW_STEP]
     # After the fix, and on everything it stages: the review's verdict and
     # the review's own diffs (`rereview_step_for`).

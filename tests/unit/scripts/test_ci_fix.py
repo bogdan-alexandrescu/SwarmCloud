@@ -992,6 +992,58 @@ def test_a_lane_owns_pr_409_naming_a_plain_continuation_is_a_skip_with_no_commen
     assert "abc123secret" not in logged
 
 
+LIVE_FIX = "task_eeeeeeeeeeeeeeeeeeee"
+LIVE_FIX_HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _live_ci_fix(head_sha: object = LIVE_FIX_HEAD) -> str:
+    """#2763: the API's 409 while another CI fix of this pull request is live
+    at another head or run (cifix._refuse_if_ci_fix_live)."""
+    answer = json.loads(_lane_owns_pr(task_id=LIVE_FIX))
+    answer["detail"]["ci_fix"] = True
+    answer["detail"]["head_sha"] = head_sha
+    return json.dumps(answer)
+
+
+def test_a_lane_owns_pr_409_naming_a_live_ci_fix_is_a_skip_with_no_comment(fake):
+    """#2763: a second CI fix of one pull request raced the first for its
+    branch. The API refuses it; the log names the live fix, not a merge step."""
+    _, state = fake
+    (state / "api_status").write_text("409")
+    (state / "api_response").write_text(_live_ci_fix())
+
+    out = _run(fake, "run")
+
+    # MUTATION: drop the `ci_fix_lane_owns_pr` branch -- reported as a refusal, red.
+    assert out.returncode == 0, out.stderr
+    assert _comments(state) == []
+    logged = out.stdout + out.stderr
+    assert LIVE_FIX in logged and LANE_WORKFLOW in logged
+    # MUTATION: read `.detail.ci_fix` with `// true` or not at all -- the skip
+    # is logged as a live merge step.
+    assert "a CI fix" in logged
+    assert "no second fix" in logged
+    assert LIVE_FIX_HEAD[:12] in logged
+    assert "merge step" not in logged
+    assert "abc123secret" not in logged
+
+
+def test_a_live_ci_fix_head_that_is_not_a_sha_is_not_printed(fake):
+    _, state = fake
+    (state / "api_status").write_text("409")
+    (state / "api_response").write_text(_live_ci_fix(head_sha="0123$(whoami) token=abc123secret"))
+
+    out = _run(fake, "run")
+
+    assert out.returncode == 0, out.stderr
+    assert _comments(state) == []
+    logged = out.stdout + out.stderr
+    # MUTATION: drop the `^[0-9a-f]{40}$` shape check on detail.head_sha.
+    assert "whoami" not in logged
+    assert "abc123secret" not in logged
+    assert "no second fix" in logged
+
+
 def test_the_script_makes_no_read_of_its_own_the_api_decides(fake):
     """One source of truth: CI-FIXER-ONE's task and workflow reads, which the
     fixer's identity is never served, are gone."""

@@ -31,6 +31,7 @@ from agent_worker.gitops import GitError, verify_worker_authorship
 from agent_worker.logs import build_logger
 
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     _commit_as_claude,
     _the_agent_titles_its_pull_request,
     agent_commits_with_claude_attribution,

@@ -35,7 +35,8 @@ TABLE: dict[TaskState, frozenset[TaskState]] = {
     S.QUEUED: frozenset({S.READY, S.PARKED, S.CANCELLED, S.FAILED}),
     S.PARKED: frozenset({S.READY, S.CANCELLED, S.DEAD_LETTERED, S.SUCCEEDED, S.FAILED}),
     S.READY: frozenset({S.LEASED, S.PARKED, S.CANCELLED, S.FAILED}),
-    S.LEASED: frozenset({S.DISPATCHED, S.READY, S.FAILED, S.CANCELLED}),
+    # LEASED -> PARKED: a dispatch the platform refused (contract request 123).
+    S.LEASED: frozenset({S.DISPATCHED, S.READY, S.PARKED, S.FAILED, S.CANCELLED}),
     S.DISPATCHED: frozenset({S.STARTING, S.READY, S.FAILED, S.CANCELLED}),
     S.STARTING: frozenset({S.RUNNING, S.READY, S.FAILED, S.CANCELLED}),
     S.RUNNING: frozenset({S.SUCCEEDED, S.FAILED, S.CANCELLED, S.PARKED, S.READY}),

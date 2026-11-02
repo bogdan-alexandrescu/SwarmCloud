@@ -24,6 +24,10 @@
 // Nothing here is credential-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+// These hand the submit real responses, so the fixture build's answer to the
+// submit (QA2-FIX-07, runs2-01 and runs2-02) is turned off here.
+vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), USE_FIXTURES: false }))
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { SubmitScreen, byteWords, inputBytes, inputSizeProblem } from '../Submit'
@@ -188,6 +192,8 @@ describe('SUB-5: the workflow card is a way back to the workflow', () => {
 describe('SUB-6: the hub reads your recent submissions, not the tenant\'s whole history', () => {
   it('asks /v1/tasks for submitted_by=me, and every list for a small window', async () => {
     vi.stubEnv('VITE_LIVE', '1')
+    // A mock outlives resetModules: the live api is the real module, read afresh.
+    vi.doUnmock('../api')
     vi.resetModules()
     const urls: string[] = []
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {

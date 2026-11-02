@@ -207,22 +207,23 @@ describe('VQ-013: the list is compact rows under one note', () => {
     expect(notes).toHaveLength(1)
     expect(notes[0]!.textContent).toBe(
       'Counts and order are of the 2 newest workflows; older ones are on the server and not read yet · ' +
-        '1 of 2 rows have their steps read; older rows show ids only until they scroll into view',
+        "1 of 2 rows have their steps read; the list read did not serve the rest's, which each one's page reads",
     )
     // No margin of its own on top of the list's gap.
     expect(painted(notes[0]!, 'margin', { width: 1440 })).toBe('0')
   })
 
-  // MUTATION: put the id or the runner mix back on lines of their own.
-  it('draws the name, its id and its runners on one line, and the current step as the one line under it', async () => {
+  // MUTATION: put the runner mix back on a line of its own. The id is the
+  // line under the name since visual QA pass 1 (overview-agents-61, #2596).
+  it('draws the name and its runners on one line, the id under it, and the current step as the one line under that', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(row('wf_chain')).toBeTruthy())
     const name = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
     const line = name.querySelector<HTMLElement>(':scope > .wfl-line')!
     expect(line, 'no name line').toBeTruthy()
-    expect([...line.children].map((c) => c.className)).toEqual(['', 'id', 'wfl-mix'])
+    expect([...line.children].map((c) => c.className)).toEqual(['', 'wfl-mix'])
     expect(line.querySelector(':scope > a')!.textContent).toBe('JOIN-UI-PERSON')
-    expect(line.querySelector(':scope > .id')!.textContent).toBe('wf_chain')
+    expect(name.querySelector(':scope > .id')!.textContent).toBe('wf_chain')
     // The current step is outside the line: the row's only second line, cut with its title.
     const why = name.querySelector<HTMLElement>(':scope > .wfl-why')!
     expect(why.textContent).toBe('build running')
@@ -240,7 +241,7 @@ describe('VQ-013: the list is compact rows under one note', () => {
 
   // MUTATION: put back `flex: 1 0 0; min-width: 56px`, which left the mix
   // 56px beside the name at 1440 and cut every row's runners to 'clau…'.
-  it('keeps room on the name’s line for one whole runner chip, and cuts the id and the name instead', async () => {
+  it('keeps room on the name’s line for one whole runner chip, and cuts the name instead', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(row('wf_chain')).toBeTruthy())
     const line = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"] > .wfl-line')!
@@ -257,10 +258,9 @@ describe('VQ-013: the list is compact rows under one note', () => {
     expect(grow).toBe('1')
     expect(shrink, 'the mix gives way before the id and the name').toBe('0')
     expect(px(basis!)).toBeGreaterThanOrEqual(oneChip)
-    // The id gives way first, then the name, down to its floor.
-    const [, idShrink] = (painted(line.querySelector(':scope > .id')!, 'flex', { width: 1440 }) ?? '').split(/\s+/)
+    // The name gives way, down to its floor; the id is not on this line (overview-agents-61).
+    expect(line.querySelector(':scope > .id')).toBeNull()
     const [, nameShrink] = (painted(line.querySelector(':scope > a')!, 'flex', { width: 1440 }) ?? '').split(/\s+/)
-    expect(Number(idShrink)).toBeGreaterThan(Number(nameShrink))
     expect(Number(nameShrink)).toBeGreaterThan(0)
   })
 })
@@ -334,10 +334,11 @@ describe('VQ-015: one back path, by name, and Stop step', () => {
       { timeout: 5000 },
     )
     expect(group.getAttribute('aria-label')).toBe('Stop step')
-    const stop = within(group).getByRole('button', { name: 'Stop step' })
+    // `Stop`, and the head's `Stop workflow`: one verb (visual QA pass 1 overview-agents-83, #2596).
+    const stop = within(group).getByRole('button', { name: 'Stop' })
     const head = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')!
-    const cancel = within(head).getByRole('button', { name: 'Cancel workflow' })
-    // The head's Cancel workflow: the danger outline at the default size.
+    const cancel = within(head).getByRole('button', { name: 'Stop workflow' })
+    // The head's Stop workflow: the danger outline at the default size.
     expect(cancel.classList.contains('is-danger')).toBe(true)
     expect(stop.classList.contains('is-danger'), 'Stop step is not the danger outline').toBe(true)
     expect(stop.classList.contains('is-sm'), 'Stop step is the small button').toBe(false)
@@ -371,12 +372,12 @@ function lineIs(px: number): void {
 }
 
 describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
-  /** The line's width the name keeps beside a mix on the line: less the mix's basis and the two gaps (id, mix). */
+  /** The line's width the name keeps beside a mix on the line: less the mix's basis and its one gap (the id is the line under, overview-agents-61). */
   const nameBesideMix = (line: number, mix: Element) => {
     const basis = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)[2]!
     const m = /^([\d.]+)rem$/.exec(basis)
     expect(m, `the mix's basis is not a rem length: ${basis}`).not.toBeNull()
-    return line - Number(m![1]) * 16 - 2 * 8
+    return line - Number(m![1]) * 16 - 8
   }
 
   // MUTATION: keep the mix on the name's line whatever the line's width: at
@@ -390,7 +391,7 @@ describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
     const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
     const line = td.querySelector<HTMLElement>(':scope > .wfl-line')!
     await waitFor(() => expect(line.querySelector(':scope > .wfl-mix'), 'the mix is still on the name’s line').toBeNull())
-    expect([...line.children].map((c) => c.className)).toEqual(['', 'id'])
+    expect([...line.children].map((c) => c.className)).toEqual([''])
     // The second line: the runners, then the current step.
     const sub = td.querySelector<HTMLElement>(':scope > .wfl-sub')!
     expect(sub, 'no second line').toBeTruthy()
@@ -437,10 +438,10 @@ describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
   it('moves the runners at the width the sheet’s own basis and gap give, not at a restated one', async () => {
     viewport(1440)
     // The threshold from the sheet: the floor, the mix's basis, and the line's
-    // column gap twice (the id's and the mix's).
+    // column gap once (the mix's; the id is the line under the name, overview-agents-61).
     const host = document.createElement('table')
     host.className = 'wfl'
-    host.innerHTML = '<tbody><tr><td class="wfl-name"><span class="wfl-line"><a>n</a><span class="id">i</span><span class="wfl-mix"></span></span></td></tr></tbody>'
+    host.innerHTML = '<tbody><tr><td class="wfl-name"><span class="wfl-line"><a>n</a><span class="wfl-mix"></span></span></td></tr></tbody>'
     const probe = document.createElement('div')
     probe.className = 'wfl'
     probe.appendChild(host)
@@ -452,7 +453,7 @@ describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
     const gap = Number.parseFloat(gaps[gaps.length - 1]!)
     probe.remove()
     expect(Number.isFinite(gap)).toBe(true)
-    const edge = 200 + Number(basisRem![1]) * 16 + 2 * gap
+    const edge = 200 + Number(basisRem![1]) * 16 + gap
     for (const [px, under] of [
       [edge, false],
       [edge - 1, true],
@@ -562,13 +563,28 @@ describe('VQ-WORKFLOWS re-review minors', () => {
   })
 
   // MUTATION: print `drift.stored` and `drift.derived` as they come (QUEUED, RUNNING).
-  it('says the state drift in words, not capitals', async () => {
+  it('says the state drift in words, not capitals, on the board card and never on the page', async () => {
     const drifted: Workflow = {
       ...chain,
       drift: { stored: 'QUEUED', derived: 'RUNNING', agrees: false, reason: 'test', steps_read: 3, unreadable_steps: [], repaired: false },
     }
     serve([drifted], chainTasks)
-    render(<Routed initial="wf=wf_chain" />)
+    const routed = render(<Routed initial="wf=wf_chain" />)
+    await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
+    // MUTATION: draw `StateDrift` on the page again: `stored as queued · steps
+    // running` beside a head that says running (visual QA pass 1 overview-agents-81, #2596).
+    expect(document.querySelector('.wf-drift'), 'the page prints the stored state').toBeNull()
+    routed.unmount()
+    render(
+      <WorkflowCard
+        workflow={drifted}
+        taskById={chainTasks}
+        usage={{ kind: 'ready', usage: null }}
+        openStages={{}}
+        onToggleStage={() => {}}
+        reload={() => {}}
+      />,
+    )
     const drift = await waitFor(() => {
       const d = document.querySelector<HTMLElement>('.wf-drift')
       expect(d).toBeTruthy()

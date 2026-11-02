@@ -417,7 +417,7 @@ jobs:
   # -------------------------------------------------------------------------
   sandbox:
     name: put the deployed commit's fixtures on the sandbox
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # The sandbox token (SWARM_SANDBOX_GITHUB_TOKEN) lives in environment
     # `repo-secrets`, whose deployment branches are `main` only (BGD,
     # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
@@ -451,6 +451,8 @@ jobs:
       - name: put the fixtures on the sandbox
         env:
           SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+          # The CI add-on's sandbox (swarm addon enable ci); unset, config.sh's default.
+          SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL: ${{ vars.SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL }}
         run: ./scripts/acceptance/sandbox-sync.sh
 
   # -------------------------------------------------------------------------
@@ -672,7 +674,7 @@ jobs:
   # -------------------------------------------------------------------------
   sandbox-results:
     name: read back and sweep the sandbox
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # The main-only environment that holds the secret: see the comment on
     # `sandbox` above (REPO-SECRETS-ENV).
     environment:
@@ -691,6 +693,8 @@ jobs:
       - name: read the suite's pull requests back from the sandbox
         env:
           SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+          # The CI add-on's sandbox (swarm addon enable ci); unset, config.sh's default.
+          SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL: ${{ vars.SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL }}
           SWARM_ACCEPTANCE_SINCE: ${{ needs.sandbox.outputs.since }}
         run: ./scripts/acceptance/github-verify.sh
 
@@ -698,6 +702,8 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+          # The CI add-on's sandbox (swarm addon enable ci); unset, config.sh's default.
+          SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL: ${{ vars.SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL }}
         run: ./scripts/acceptance/github-cleanup.sh
 
   # -------------------------------------------------------------------------
@@ -839,7 +845,7 @@ jobs:
   # says nothing about the group.
   live-browser-report:
     name: report the scheduled live-browser group
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: [live-browser]
     if: ${{ !cancelled() && needs.live-browser.result != 'skipped' }}
     concurrency:

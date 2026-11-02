@@ -1,4 +1,4 @@
-# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # agent-runtime-indexer -- agent-runtime-base plus the repository index's
 # toolchain: the tree-sitter extractor (`swarm-repo-index`), the graph shard
@@ -46,7 +46,12 @@ ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
+# No default, so this file names no project (DAYONE-DESAGA-1,
+# docs/design/day-one-install.md section 7): scripts/build-images.sh passes
+# the mirror of the project it builds for (lib/build-mirror.sh
+# mirror_build_args), and the `# syntax=` frontend through the same mirror as
+# BUILDKIT_SYNTAX. A `docker build` given neither fails on its first FROM.
+ARG MIRROR_DOCKER_HUB=
 ARG BASE_IMAGE
 
 # ---------------------------------------------------------------------------
@@ -57,12 +62,15 @@ ARG BASE_IMAGE
 # ---------------------------------------------------------------------------
 FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS languageservers
 
-# Go 1.27.1 (2026-10-05, the newest stable on https://go.dev/dl/?mode=json,
-# whose sha256 for go1.27.1.linux-amd64.tar.gz this is). gopls needs the
+# Go 1.27.3 (the newest stable on https://go.dev/dl/?mode=json on 2026-10-31,
+# whose sha256 for go1.27.3.linux-amd64.tar.gz this is). Raised from 1.27.1,
+# whose standard library carries CVE-2026-78667, CVE-2026-78669 and
+# CVE-2026-97031 (fixed in 1.27.2) and CVE-2026-111943 (fixed in 1.27.3), in
+# the toolchain this image ships and in the gopls and terraform-ls it links. gopls needs the
 # toolchain at run time, not only to build: it loads packages through
 # `go list`, so the runtime stage carries /usr/local/go too.
-ARG GO_VERSION=1.27.1
-ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+ARG GO_VERSION=1.27.3
+ARG GO_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
 # gopls 0.23.0 (2026-07-07, proxy.golang.org's @latest on 2026-10-05) and
 # terraform-ls 0.39.0 (checkpoint-api.hashicorp.com's current_version on
 # 2026-10-05) are both COMPILED HERE from their module source, not taken as

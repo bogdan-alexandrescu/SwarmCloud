@@ -93,8 +93,17 @@ _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     ),
     # A lease can be lost before dispatch (reconciler reclaim, limit reduction,
     # cancellation) which returns the task to READY without an attempt.
+    # LEASED -> PARKED: the platform refused the dispatch (ParkReason
+    # PLATFORM_REFUSED, contract request 123). Only the scheduler writes it,
+    # releasing the lease in the same transaction, so the park holds nothing.
     TaskState.LEASED: frozenset(
-        {TaskState.DISPATCHED, TaskState.READY, TaskState.FAILED, TaskState.CANCELLED}
+        {
+            TaskState.DISPATCHED,
+            TaskState.READY,
+            TaskState.PARKED,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        }
     ),
     TaskState.DISPATCHED: frozenset(
         {TaskState.STARTING, TaskState.READY, TaskState.FAILED, TaskState.CANCELLED}
@@ -233,6 +242,22 @@ class ParkReason(str, Enum):
     #: cancel. Holds no capacity (invariant 1). Contract request 92 (HW-CONTRACT,
     #: human steps request A), accepted by the owner 2026-10-17 (Q1).
     AWAITING_INPUT = "AWAITING_INPUT"
+    #: A workflow's `fix-loop` step (a `control_plane` profile) while its
+    #: review-fix rounds run as steps of their own (docs/design/fix-loop.md).
+    #: Never promoted to READY by the scheduler: swarm-api ends it PARKED ->
+    #: SUCCEEDED / FAILED / CANCELLED, and moves it to HUMAN_REQUIRED with a
+    #: `park_phase` when a person is needed -- a field write on a PARKED
+    #: task, not a transition. Holds no capacity (invariant 1). Contract
+    #: request 125 (FL-CONTRACT, fix loop request B), accepted by BGD
+    #: 2026-10-27 (Q2).
+    FIX_ROUNDS_RUNNING = "FIX_ROUNDS_RUNNING"
+    #: The platform refused this task's dispatch -- a cluster admission
+    #: policy or webhook, or the tenant namespace's ResourceQuota
+    #: (`gke_admission_refused`, `gke_job_quota_exceeded`). Written by the
+    #: scheduler's failed-dispatch path with the lease released; promoted by
+    #: the scheduler once `next_eligible_at` passes. Holds no capacity
+    #: (invariant 1). Contract request 123, accepted by BGD 2026-10-28.
+    PLATFORM_REFUSED = "PLATFORM_REFUSED"
 
 
 class BlockedReason(str, Enum):

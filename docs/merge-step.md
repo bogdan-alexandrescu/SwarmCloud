@@ -31,13 +31,59 @@ instead of a six-hour wait for checks -- the third section below.**
 bounded fix rounds by itself, two by default, re-running a flaky job before
 it spends an agent -- the second section below.**
 **Revised 2026-10-27: a person's push to the pull request ends the step
-`superseded_by_person_push`, which failure-review does not file -- the first
+`superseded_by_person_push`, which failure-review does not file -- the second
 section below.**
 **Revised 2026-10-26: a merge woken by the owner's answers does not merge an
 option its branch did not build -- it starts a bounded pick-fix round that
 builds it, and compares every answered question that names `built` -- and a
 merge held on owner questions whose pull request was merged or closed
-outside the workflow finishes on its own -- the second and third sections below.**
+outside the workflow finishes on its own -- the third and fourth sections below.**
+**Revised 2026-10-29: the merge step's CI, conflict and pick rounds wait while a
+plain continuation of the lane is live on the same branch -- the first section
+below.**
+
+## Revised 2026-10-29: a plain continuation of the lane holds the merge's rounds (part of #2685)
+
+**One writer per pull request, at any head (#2577)** already held the tick:
+before a re-run, a budget check or a claim, `mergewake._live_writer` waits on
+any live CI, conflict or pick round of this merge, and on any live writer
+`cifix.live_pr_writer` finds on the pull request. `live_pr_writer` reads only
+writers that carry a mark -- a PR-side fix's `metadata.ci_fix`, a round's
+`merge_fix_round` / `merge_conflict_round`, pr-shepherd's `pr_shepherd`. A
+**plain** continuation of the lane carries none: a `continues_task` workflow
+with no `metadata.ci_fix`, or a `publish_to_pr` lane aimed at the root. It
+pushes to the same `swarm/<root>` branch all the same.
+
+What happened. On 2026-10-28, on PR #2617, the plain lane task_7ff30c32
+(CIFIX-2617, wf_85f651ab) was RUNNING on the branch when the merge step of
+wf_f20546f4 read red and submitted ci-fix:1 (task_99b8e1e0, 13:50:24Z, from
+e80b3f8) beside it. The lane pushed 5bc405a first, the round's push was
+rejected non-fast-forward (f-046), and the merge step refused `head_moved` at
+a head none of its rounds had pushed (f-045). Two agents fixed one failure,
+and both the round and the step were lost.
+
+The rule. After the `live_pr_writer` read, `_live_writer` asks
+`cifix.live_plain_continuation` for the lane's root: a non-terminal agent of
+the tenant whose `metadata.dispatch.continues`, or signed
+`metadata.dispatch.publish_to_pr.task_id`, names the root, that is not a
+merge step and carries no writer's mark nor `metadata.issue_run`. While there
+is one, `_on_red`, `_on_conflict` and the pick path claim nothing and submit
+nothing. The merge stays parked on `CI_PENDING`, and the tick logs the lane as
+a `plain_continuation` writer. The lane's push moves the head, CI runs again
+there, and the next red reading at that head gets its round.
+
+* **The merge never waits on itself.** Every round the tick submits (CI,
+  conflict, pick) carries `merge_fix_round` or `merge_conflict_round`, and
+  `live_plain_continuation` skips both. A terminal lane, another tenant's
+  lane, and a lane continuing another root hold nothing.
+* **No new timeout.** The wait is the same park as #2577's, bounded by the
+  worker's `MERGE_CI_MAX_SECONDS`. Nothing sleeps: the tick returns `waiting`
+  and exits (invariant 4).
+* **Tenant isolation.** `live_plain_continuation` checks the tenant again in
+  the application on every row it reads, so an index mistake cannot move the
+  boundary (invariant 9).
+* **The other order** -- a plain continuation admitted while the merge step
+  is live -- is `cifix.stamp`'s gate (part 1 of #2685, docs/ci.md).
 
 ## Revised 2026-10-27: a person's push supersedes the merge step (PERSON-PUSH-END, part of #2505)
 
@@ -307,10 +353,24 @@ defaulted to 0. What this lane changed, and why:
   mergeable at all, so 0 does not turn them off.
 * **A flake costs no agent.** The first red reading at a head whose every
   failing check is an Actions job asks GitHub to
-  re-run exactly those jobs (`POST actions/jobs/<id>/rerun`, `actions:
-  write`, the tenant's own `-git` token) and spends no round. It is recorded
-  in `metadata.merge_fix.reruns`, claimed under the guard a round is claimed
-  under, once per head. The re-run's check runs are the latest of their name,
+  re-run the failed jobs of each workflow run those checks belong to (`POST
+  actions/runs/<run_id>/rerun-failed-jobs`, once per distinct run, `actions:
+  write`, the tenant's own `-git` token) and spends no round. The run, not
+  the job, because the failing required check is usually the fan-in
+  `ci-gate`, whose `needs:` are every other job: `POST
+  actions/jobs/<id>/rerun` re-runs a job and its dependents, never its
+  needs, so on PR 2790 at d6548f96 the gate alone re-ran, the flaky `unit
+  tests (1/1)` it aggregates never did, the gate read red again and the one
+  re-run was spent (#2841). A run's failed-jobs re-run re-runs every failed
+  job and its dependents, the gate with them. The run id comes from the
+  failing check run itself -- its `workflow_run_id`, stamped from the
+  Actions runs the reading already holds, else the digits of its
+  `details_url` (`.../actions/runs/<run>/job/<the check's own id>`) -- never
+  from a caller; a failing check whose run neither gives is re-run as its
+  own job, as before. It is recorded in `metadata.merge_fix.reruns` (`jobs`,
+  the failing check ids the merge step's `_rerun_settling` matches; `runs`,
+  the runs asked), claimed under the guard a round is claimed under, once
+  per head. The re-run's check runs are the latest of their name,
   so the next reading is the re-run's: green wakes the step to merge, red
   goes to a round if one is left, else wakes the step `red`. The re-run comes
   before the round budget and the branch check, so a merge granted zero
@@ -323,6 +383,19 @@ defaulted to 0. What this lane changed, and why:
   `actions: write` is recorded as the re-run's `error`, and the round is
   claimed, or the step woken, in the same tick: the refusal costs one
   request, not a wait.
+  A CI-fix round that ended at the red head having found nothing to change
+  (`result_summary.no_change`) gets that one re-run too before the step
+  refuses `checks_failed` (#2684). A round that reads its failure as a flake
+  says so by pushing nothing and asking for a re-run; before #2684 the step
+  refused at once on the round's end, so task_d2698b60's flaky Python shard
+  on PR #2603 (a TypeScript-only change) refused the merge task_69eb7362,
+  and the re-run that later passed was run by hand. The tick asks for the
+  re-run before it wakes the step `fix_round_ended`; the worker
+  (`merge._red`) parks `ci_rerun_pending` while it settles and
+  `ci_rerun_due` once when none is recorded at the head, and refuses after
+  the round on its red answer. It is still one re-run per head: a head the
+  tick re-ran before the round refuses as before. A round that pushed,
+  failed, was cancelled or ended without `no_change` refuses as before.
   While GitHub still serves the very runs that were re-run, the tick waits,
   at most `RERUN_SETTLE_SECONDS` (10 min). A wake inside that window parks
   the step `ci_rerun_pending` only while EVERY failing check is a job the
@@ -331,6 +404,27 @@ defaulted to 0. What this lane changed, and why:
   another still settles -- is a failure no waiting changes, so it is
   `checks_failed` at once rather than up to 10 min of parked wakes later
   (PR 2268 re-review).
+  Only an answered re-run is the head's re-run (#3006). Both sides used to
+  read "one free re-run per head" as "any re-run record at the head", so a
+  re-run GitHub refused (the record carries `error`; nothing re-ran) and an
+  accepted re-run whose fixed 10-minute window ran out before its workflow
+  run finished both counted as answered, and the step refused
+  `checks_failed` with no re-run answer: PR #2971 (a1e16b2c) and PR #2973
+  (22ef10c2), the second under a fan-in `ci-gate` whose run was still
+  running. Now, after a no_change round, a head whose every re-run GitHub
+  refused is asked once more (`mergewake._rerun_first`; the worker parks
+  `ci_rerun_due` for it), and the second refusal (`RERUN_REFUSALS_MAX`)
+  wakes the step to refuse naming the last re-run error: a credential
+  without `actions: write` costs one extra request, never a loop. An
+  accepted re-run past `RERUN_SETTLE_SECONDS` still holds the step
+  (`ci_rerun_pending`, the tick waiting) while a workflow run it recorded
+  in `runs` reads not `completed` (`GitHubWriter.read_run`, the latest
+  attempt's status), bounded as every park is by `MERGE_CI_MAX_SECONDS`;
+  when that status cannot be read the 10-minute window is the floor, as
+  before. This is not the wider "more re-runs per head" #2684 left to the
+  owner: it is still one answered re-run per head, with at most one retry of
+  a refusal, and waiting for an accepted re-run's own answer is still that
+  one re-run.
 * **Each round is a step of the lane's workflow.** The round is still its
   own one-step continuation workflow (it must be: it is submitted, signed and
   admitted like any other). After it is submitted the tick appends a step to
@@ -3147,7 +3241,8 @@ review**, or **the merge credential**.
     `attribute.job_workflow_ref` = `<repo>/.github/workflows/<file>@refs/heads/main`
     for exactly the files that authenticate as it (`release.yml`,
     `application.yml`, `terraform.yml`, `security.yml`,
-    `iam-refusal-probe.yml` and, since 2026-10-08, `hotfix.yml`;
+    `iam-refusal-probe.yml`, since 2026-10-08 `hotfix.yml` and, since
+    2026-10-30, `publish-release.yml`;
     `terraform/bootstrap/wif.tf`
     `deployer_workflows`), so a workflow added later is refused whatever it
     grants itself.

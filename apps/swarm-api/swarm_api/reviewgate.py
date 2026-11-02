@@ -10,8 +10,29 @@ SUCCEEDED on a wake." `swarm_common.states` says of PARKED -> SUCCEEDED
 
 THE BLOCK. A workflow step may carry `metadata.review_gate = {"min_lines":
 300, "risk_paths": [...]}` (`validation.resolve_review_gate`, a 422 for an
-unknown key or a bad type); the issue run's compiled review carries it by
-default (`issueruns.review_gate_block`).
+unknown key or a bad type), or `false` to switch the gate off for it.
+
+EVERY REVIEW STEP BY DEFAULT (BGD 2026-10-28, page M8: "every review step").
+A review step -- one another step's `when` reads a verdict from, the issue
+run's compiled review among them -- that names no block is stored with
+`validation.REVIEW_GATE_DEFAULT_BLOCK` (`is_default`), and its policy is
+read when it is decided: the workspace's `workspace_settings/{tenant}.
+review_gate` (`min_lines`, `risk_paths`, `enabled: false` to switch the
+default off) where set, else the platform's (`DEFAULT_MIN_LINES`,
+`DEFAULT_RISK_PATHS`). Whatever list a step or a workspace names, the
+platform's risk paths stay in it (`_gate_from`): a risk path always runs the
+review, never skipped on line count.
+
+THE REQUIREMENTS CHECK (BGD 2026-10-28 ~18:25Z, "Gate + cheap requirements
+check"). An issue run's `requirements-check` step carries
+`review_gate.requirements_check` (`is_requirements_check`) and is held like
+the review it stands beside, then decided the other way round: it runs only
+when that review would be skipped. When the review is then skipped, the
+check's requirements.json `requirements` list -- and nothing else from it
+(`requirements_from`) -- is folded into the skipped review's inline verdict,
+whose `verdict` stays the gate's MERGE; `issueruns.requirements_finding`
+reads it exactly as after a full review. The check's own change is not
+counted by `resolve`: it is read-only.
 
 THE HOLD AND THE DECISION. A gated step whose parents all SUCCEEDED is held
 PARKED by the scheduler exactly as `integrate`'s gated integrator is
@@ -78,7 +99,15 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Callable, Mapping
 
-from .validation import REVIEW_GATE_DEFAULT_MIN_LINES, REVIEW_GATE_METADATA_KEY
+from .validation import (
+    REVIEW_GATE_DEFAULT_BLOCK,
+    REVIEW_GATE_DEFAULT_MIN_LINES,
+    REVIEW_GATE_MAX_MIN_LINES,
+    REVIEW_GATE_MAX_PATH_CHARS,
+    REVIEW_GATE_MAX_RISK_PATHS,
+    REVIEW_GATE_METADATA_KEY,
+    REVIEW_GATE_REQUIREMENTS_CHECK,
+)
 
 log = logging.getLogger(__name__)
 
@@ -116,7 +145,28 @@ DEFAULT_RISK_PATHS: tuple[str, ...] = (
     "terraform/**/iam*",
     "terraform/bootstrap/",
     "scripts/iam-*",
+    # CI: what runs with the repository's tokens (BGD 2026-10-28, #2524).
+    ".github/workflows/",
+    ".github/actions/",
 )
+
+#: The marker `validation.REVIEW_GATE_DEFAULT_BLOCK` stores on a review step
+#: that named no gate: its policy is the workspace's, else the platform's.
+DEFAULT_MARKER = next(iter(REVIEW_GATE_DEFAULT_BLOCK))
+#: The field of `workspace_settings/{tenant_id}` a workspace's default lives
+#: in: `{"enabled": bool, "min_lines": int, "risk_paths": [glob, ...]}`,
+#: every key optional. `enabled: false` switches the default off for the
+#: workspace: a review step that names no gate then always runs.
+WORKSPACE_SETTINGS = "workspace_settings"
+WORKSPACE_FIELD = "review_gate"
+WORKSPACE_KEYS = ("enabled", "min_lines", "risk_paths")
+
+#: What an issue run's requirements check writes, and the most of it read.
+REQUIREMENTS_FILE = "requirements.json"
+MAX_REQUIREMENTS_BYTES = 64 * 1024
+#: The note kept per requirement when they are folded into a skipped
+#: review's inline verdict, which must stay under `MAX_INLINE_BYTES`.
+FOLDED_NOTE_CHARS = (200, 60, 0)
 
 #: The artifact a review writes and every dependant reads.
 VERDICT_FILE = "verdict.json"
@@ -146,6 +196,7 @@ REASON_SMALL = "small_change"
 REASON_UNREADABLE = "change_unreadable"
 REASON_CUT = "file_list_cut"
 REASON_NO_PARENTS = "no_parent_changes"
+REASON_OFF = "review_gate_off"
 
 
 
@@ -189,26 +240,88 @@ class Gate:
     risk_paths: tuple[str, ...]
 
 
-def policy_of(metadata: Any) -> Gate | None:
-    """The step's gate, or None for a step with none.
+def _gate_from(block: Mapping[str, Any]) -> Gate | None:
+    """`min_lines` and `risk_paths` read from a block; None when they cannot be.
 
-    The document is tenant-writable, so a block this reader cannot make sense
-    of is no gate at all: the review runs, as it did before gates existed.
+    The platform's risk paths are ALWAYS among the gate's (BGD 2026-10-28):
+    a step or a workspace naming its own list adds to them, and never
+    narrows them, so a change to credentials, IAM, redaction, tenant
+    isolation, `.github/workflows/` or the frozen contract is never skipped
+    on its line count.
     """
-    block = metadata.get(REVIEW_GATE_METADATA_KEY) if isinstance(metadata, Mapping) else None
-    if not isinstance(block, Mapping) or "resolved" in block:
-        return None
     min_lines = block.get("min_lines", DEFAULT_MIN_LINES)
-    if isinstance(min_lines, bool) or not isinstance(min_lines, int) or min_lines < 0:
+    if (isinstance(min_lines, bool) or not isinstance(min_lines, int)
+            or not 0 <= min_lines <= REVIEW_GATE_MAX_MIN_LINES):
         return None
     paths = block.get("risk_paths")
     if paths is None:
         risk = DEFAULT_RISK_PATHS
-    elif isinstance(paths, list) and paths and all(isinstance(p, str) and p for p in paths):
-        risk = tuple(paths)
+    elif (isinstance(paths, list) and paths and len(paths) <= REVIEW_GATE_MAX_RISK_PATHS
+          and all(isinstance(p, str) and p and len(p) <= REVIEW_GATE_MAX_PATH_CHARS
+                  for p in paths)):
+        risk = tuple(dict.fromkeys([*DEFAULT_RISK_PATHS, *paths]))
     else:
         return None
     return Gate(min_lines, risk)
+
+
+def is_default(metadata: Any) -> bool:
+    """Whether the step's gate is the default one (`REVIEW_GATE_DEFAULT_BLOCK`)."""
+    return _mapping(_mapping(metadata).get(REVIEW_GATE_METADATA_KEY)).get(DEFAULT_MARKER) is True
+
+
+def is_requirements_check(metadata: Any) -> bool:
+    """Whether the step is an issue run's requirements check, not a review.
+
+    Held like a gated review, and decided the other way round: it runs only
+    when the review it stands beside would be skipped.
+    """
+    block = _mapping(_mapping(metadata).get(REVIEW_GATE_METADATA_KEY))
+    return block.get(REVIEW_GATE_REQUIREMENTS_CHECK) is True
+
+
+#: The ends of a requirements check that confirm nothing and fail nothing.
+CHECK_ENDS_WITHOUT_LIST = ("FAILED", "DEAD_LETTERED")
+
+
+def check_ended_without_list(task: Mapping[str, Any]) -> bool:
+    """A requirements check that FAILED or was DEAD_LETTERED (#2524).
+
+    A FAILED CHECK IS NOT A FAILED RUN. It times out, runs out of attempts or
+    its agent errors: then it confirmed nothing, and reads as "no list". The
+    review beside it still ends as the gate decides, so a skipped review
+    publishes "part of #N" as it did before the check existed. The scheduler
+    agrees (`scheduler.reviewgate.check_ended_without_list`): it neither
+    cancels the review over it nor fails the workflow. A check somebody
+    CANCELLED is a stop, and still takes the review with it.
+    """
+    return (is_requirements_check(_mapping(task).get("metadata"))
+            and _mapping(task).get("state") in CHECK_ENDS_WITHOUT_LIST)
+
+
+def workspace_enabled(setting: Any) -> bool:
+    """False only when the workspace switched the default gate off (`enabled: false`)."""
+    return _mapping(setting).get("enabled") is not False
+
+
+def policy_of(metadata: Any, workspace: Any = None) -> Gate | None:
+    """The step's gate, or None for a step with none.
+
+    The document is tenant-writable, so a block this reader cannot make sense
+    of is no gate at all: the review runs, as it did before gates existed.
+    A default block (`is_default`) takes the workspace's `min_lines` and
+    `risk_paths` (`workspace`, `workspace_settings/{tenant}.review_gate`)
+    when it sets them, else the platform's; a workspace value this reader
+    cannot make sense of is no gate either. Whether the workspace switched
+    the default off is `workspace_enabled`'s, asked first.
+    """
+    block = metadata.get(REVIEW_GATE_METADATA_KEY) if isinstance(metadata, Mapping) else None
+    if not isinstance(block, Mapping) or "resolved" in block:
+        return None
+    if block.get(DEFAULT_MARKER) is True:
+        setting = workspace if isinstance(workspace, Mapping) else {}
+        return _gate_from({k: setting[k] for k in ("min_lines", "risk_paths") if k in setting})
+    return _gate_from(block)
 
 
 @dataclass(frozen=True)
@@ -238,6 +351,8 @@ class Decision:
                     f"{self.min_lines}")
         if self.reason == REASON_CUT:
             return "review runs: a parent's file list was cut, so the change cannot be told"
+        if self.reason == REASON_OFF:
+            return "review runs: the workspace's default review gate is off"
         if self.reason == REASON_NO_PARENTS:
             return "review runs: no parent change was read"
         return "review runs: what the parents changed cannot be read"
@@ -346,6 +461,11 @@ def resolve(
         if document is None:
             unknown.append(task_id)
             continue
+        if is_requirements_check(_mapping(document).get("metadata")):
+            # An issue run's requirements check is read-only and changes
+            # nothing the review would read; it builds on a parent read anyway.
+            visited.pop()
+            continue
         paths, lines, truncated = change_of(document)
         for path in paths:
             if any(matches(path, glob) for glob in gate.risk_paths):
@@ -374,21 +494,70 @@ def resolve(
     return Decision(False, REASON_SMALL, **common)
 
 
-def verdict_text(reason: str) -> str:
-    """The verdict.json a skipped review leaves: a MERGE naming why."""
-    return json.dumps({"verdict": "MERGE", "findings": [], "skipped": reason},
-                      sort_keys=True) + "\n"
+def verdict_text(reason: str, requirements: list[dict[str, Any]] | None = None) -> str:
+    """The verdict.json a skipped review leaves: a MERGE naming why.
+
+    With the requirements check's `requirements` (an issue run, #2524), the
+    list is carried as a review's is, so `issueruns.requirements_finding`
+    reads it exactly as after a full review. The verdict is always the
+    gate's MERGE: the check confirms requirements, it never reviews.
+    """
+    document: dict[str, Any] = {"verdict": "MERGE", "findings": [], "skipped": reason}
+    if requirements is not None:
+        document["requirements"] = requirements
+    return json.dumps(document, sort_keys=True) + "\n"
 
 
+def requirements_from(text: str | None) -> list[dict[str, Any]] | None:
+    """The `requirements` list of a requirements check's requirements.json, or None.
+
+    Only that list is taken, and only entries of the shape a review writes
+    (`index`, `met`, `note`); a `verdict`, `findings` or any other key the
+    file holds is ignored, so nothing the check writes is read as a verdict.
+    Whether the list is complete is `issueruns.requirements_finding`'s to
+    judge, strictly, as for a review's.
+    """
+    if not isinstance(text, str):
+        return None
+    try:
+        document = json.loads(text)
+    except ValueError:
+        return None
+    entries = _mapping(document).get("requirements")
+    if not isinstance(entries, list):
+        return None
+    kept: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping) or set(entry) - {"index", "met", "note"}:
+            return None
+        kept.append({k: entry[k] for k in ("index", "met", "note") if k in entry})
+    return kept
 
 
-def skip_summary(decision: Decision) -> dict[str, Any]:
+def _fitted(reason: str, requirements: list[dict[str, Any]] | None) -> str:
+    """`verdict_text`, the notes shortened until it fits `MAX_INLINE_BYTES`;
+    without the list when even no note fits, which reads as not all met."""
+    if requirements is None:
+        return verdict_text(reason)
+    for chars in FOLDED_NOTE_CHARS:
+        cut = [{**entry, **({"note": entry["note"][:chars]}
+                            if isinstance(entry.get("note"), str) else {})}
+               for entry in requirements]
+        text = verdict_text(reason, cut)
+        if len(text.encode("utf-8")) <= MAX_INLINE_BYTES:
+            return text
+    return verdict_text(reason)
+
+
+def skip_summary(decision: Decision,
+                 requirements: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """The `result_summary` a skipped review is ended with.
 
     The platform's only: the step never ran, so there is nothing of a
-    worker's in it to keep.
+    worker's in it to keep. `requirements`, an issue run's requirements
+    check's list, is folded into the verdict (`verdict_text`).
     """
-    text = verdict_text(decision.text)
+    text = _fitted(decision.text, requirements)
     return {
         REVIEW_SKIPPED_KEY: decision.text,
         REVIEW_GATE_METADATA_KEY: decision.to_detail(),
@@ -400,6 +569,20 @@ def skip_summary(decision: Decision) -> dict[str, Any]:
             "content_type": "application/json",
         }],
     }
+
+
+#: `result_summary` key of a requirements check the review made unneeded.
+REQUIREMENTS_CHECK_KEY = "requirements_check"
+
+
+def check_summary(decision: Decision | None, text: str) -> dict[str, Any]:
+    """The `result_summary` of a requirements check ended without an agent:
+    the review runs, and answers the requirements itself. Not
+    `result_summary.skipped`, for the reason `skip_summary` gives."""
+    return {REQUIREMENTS_CHECK_KEY: {
+        "needed": False, "text": text,
+        **({REVIEW_GATE_METADATA_KEY: decision.to_detail()} if decision is not None else {}),
+    }}
 
 
 def with_resolved(metadata: Mapping[str, Any], decision: Decision, at: Any) -> dict[str, Any]:
@@ -439,3 +622,125 @@ def inline_verdict(result_summary: Any, entry: Mapping[str, Any]) -> str | None:
     if not isinstance(_mapping(result_summary).get(REVIEW_SKIPPED_KEY), str):
         return None
     return text if len(text.encode("utf-8")) <= MAX_INLINE_BYTES else None
+
+
+# ---------------------------------------------------------------------------
+# The workspace's default, settable as the other workspace defaults are
+# (`qasettings`): `workspace_settings/{tenant}.review_gate`, read by
+# `verdictpublish` when it decides a review step stored with the default.
+# ---------------------------------------------------------------------------
+
+#: The audit row of a change.
+AUDIT_ACTION = "workspace_review_gate_set"
+SET_AT = "review_gate_set_at"
+SET_BY = "review_gate_set_by"
+
+
+def stored_setting(doc: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The workspace's block as this module could have written it, else {}.
+
+    Range-checked as it is read, because the document has other writers:
+    a value `policy_of` could not use is no setting, and the platform's
+    default applies.
+    """
+    block = _mapping(_mapping(doc).get(WORKSPACE_FIELD))
+    if set(block) - set(WORKSPACE_KEYS):
+        return {}
+    if "enabled" in block and not isinstance(block["enabled"], bool):
+        return {}
+    if _gate_from({k: block[k] for k in ("min_lines", "risk_paths") if k in block}) is None:
+        return {}
+    return dict(block)
+
+
+def checked_setting(body: Mapping[str, Any]) -> dict[str, Any]:
+    """A PUT body as stored: `enabled`, `min_lines`, `risk_paths`, each optional;
+    a 422 (`invalid_review_gate`) for anything a step's own block would be
+    refused for (`validation.resolve_review_gate`'s rules)."""
+    from .validation import ReviewGateInvalid, _checked_review_gate
+
+    unknown = sorted(set(body) - set(WORKSPACE_KEYS))
+    if unknown:
+        raise ReviewGateInvalid(
+            f"a workspace's review gate takes only {list(WORKSPACE_KEYS)}",
+            detail={"field": WORKSPACE_FIELD, "unknown": unknown})
+    out: dict[str, Any] = {}
+    if body.get("enabled") is not None:
+        if not isinstance(body["enabled"], bool):
+            raise ReviewGateInvalid("review_gate.enabled must be true or false",
+                                    detail={"field": f"{WORKSPACE_FIELD}.enabled"})
+        out["enabled"] = body["enabled"]
+    policy = {k: body[k] for k in ("min_lines", "risk_paths") if body.get(k) is not None}
+    if policy:
+        checked = _checked_review_gate({REVIEW_GATE_METADATA_KEY: policy}, step_id=None,
+                                       workflow_step=True) or {}
+        out.update({k: checked[k] for k in policy})
+    return out
+
+
+def setting_view(tenant_id: str, doc: Mapping[str, Any], *, editable: bool) -> dict[str, Any]:
+    """What GET and PUT answer: the policy in force, the platform's, who set it."""
+    stored = stored_setting(doc)
+    set_at = doc.get(SET_AT) if stored else None
+    set_by = doc.get(SET_BY) if stored else None
+    return {
+        "tenant_id": tenant_id,
+        WORKSPACE_FIELD: {
+            "enabled": workspace_enabled(stored),
+            "min_lines": stored.get("min_lines", DEFAULT_MIN_LINES),
+            "risk_paths": list(stored.get("risk_paths") or []),
+        },
+        "defaults": {"enabled": True, "min_lines": DEFAULT_MIN_LINES,
+                     "risk_paths": list(DEFAULT_RISK_PATHS)},
+        "set_at": set_at.isoformat() if hasattr(set_at, "isoformat") else None,
+        "set_by": set_by if isinstance(set_by, str) else None,
+        "can_edit": editable,
+    }
+
+
+class ReviewGateSettingsStore:
+    """`workspace_settings/{tenant}.review_gate`, read and audited write."""
+
+    def __init__(self, db: Any, *, now: Callable[[], Any]) -> None:
+        self._db = db
+        self._now = now
+
+    def _ref(self, tenant_id: str) -> Any:
+        return self._db.collection(WORKSPACE_SETTINGS).document(tenant_id)
+
+    def document(self, tenant_id: str) -> dict[str, Any]:
+        snap = self._ref(tenant_id).get()
+        return (snap.to_dict() or {}) if snap.exists else {}
+
+    def put(self, tenant_id: str, value: dict[str, Any], *, by: str) -> None:
+        """Store `value` and its audit in one transaction; the same value again writes nothing."""
+        from google.cloud import firestore
+        from swarm_common.admission import _snapshot
+
+        from .admins import AUDIT_COLLECTION
+
+        ref = self._ref(tenant_id)
+        audit = self._db.collection(AUDIT_COLLECTION).document()
+        now = self._now()
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _write(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            previous = stored_setting(snap.to_dict() if snap.exists else None)
+            if previous == value:
+                return
+            fields = {"tenant_id": tenant_id, WORKSPACE_FIELD: value, SET_AT: now, SET_BY: by}
+            # `update` replaces the whole map, where a merging `set` would
+            # keep a key the new value leaves out; the document's other
+            # fields are other features' and are kept either way.
+            if snap.exists:
+                txn.update(ref, fields)
+            else:
+                txn.set(ref, fields)
+            txn.set(audit, {
+                "action": AUDIT_ACTION, "target_tenant_id": tenant_id, "by": by, "at": now,
+                "detail": {"tenant_id": tenant_id, "from": previous, "to": value},
+            })
+
+        _write(transaction)

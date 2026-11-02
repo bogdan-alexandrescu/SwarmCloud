@@ -1174,8 +1174,10 @@ export function ChangesMatrix({
                     </button>
                     {named.has(path) && <span className="chg-fd-named">named by the review</span>}
                   </th>
+                  {/* EACH CELL NAMES ITS STEP (visual QA pass 2, overview-agents-78): on a phone the table stacks,
+                      one file a block and one step a line (styles/changes.css), and the line says whose it is. */}
                   {drawn.map(({ c, i }) => (
-                    <td key={c.key}>
+                    <td key={c.key} data-label={c.integrator ? `integrate · ${c.label}` : c.label}>
                       <Cell cell={cellOf(facts[i]!, path)} />
                     </td>
                   ))}

@@ -547,7 +547,7 @@ def test_the_gate_job_is_named_ci_gate_and_always_runs():
     """The required context is the job's name, and the job must report on
     every pull request, push to main and queue entry.
     MUTATION: rename the job, give application.yml's pull_request trigger a
-    path filter again, drop `if: always()`, or leave ci-gate.yml beside it."""
+    path filter again, put `if: always()` back, or leave ci-gate.yml beside it."""
     wf = _workflow(GATE_WORKFLOW)
     on = wf["on"]
     # Every pull request, with no filter: a filtered gate is the problem it
@@ -558,9 +558,11 @@ def test_the_gate_job_is_named_ci_gate_and_always_runs():
     assert on["push"] == {"branches": ["main", "swarm/**"]}, on
     job = gate_job()
     assert job.get("name") == "ci-gate", job
-    # Skipped would read as passed; always() runs it when something it needs
-    # failed, so it can say so.
-    assert job.get("if") == "always()", job.get("if")
+    # Skipped would read as passed; !cancelled() runs it when something it
+    # needs failed, so it can say so, and not in a run that was cancelled,
+    # where always() made it conclude `failure` over needs that only
+    # stopped (#2582).
+    assert job.get("if") == "${{ !cancelled() }}", job.get("if")
     # Exactly one producer of the context, so two checks of one name never
     # disagree. ci-gate.yml is gone.
     assert not (WORKFLOWS / "ci-gate.yml").exists()

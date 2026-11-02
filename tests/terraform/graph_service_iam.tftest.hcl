@@ -24,7 +24,14 @@
 #   * served without a digest renders nothing and fails its check; served or
 #     switched on without the layer below it is refused by its check;
 #   * every labelable resource carries managed-by=swarm-terraform; the IAM
-#     member says it in its condition's description.
+#     member says it in its condition's description;
+#   * served, the stats port (docs/design/graph-answer-cache.md §5.3; lane
+#     CACHE-2-NETWORK): ONE reserved INTERNAL address, `graph_stats`, on the
+#     subnet swarm-api egresses from, labelled managed-by=swarm-terraform;
+#     rendered as the swarm-graph-stats load balancer's address with
+#     swarm-api's range in the ingress policy, and swarm-api's
+#     SWARM_GRAPH_STATS_URL is http://<that address>:8081. Off, neither the
+#     address nor the URL exists, which swarm-api reads as stats not_read.
 #
 # The infra root's setup is typesafe_fwd.tftest.hcl's, with a swarm-graph
 # digest added to image_refs.
@@ -63,6 +70,17 @@ override_data {
   override_during = plan
   values = {
     number = "209012342332"
+  }
+}
+
+# The stats load balancer's address is computed by GCE; a fixed one lets the
+# rendered manifest and swarm-api's URL be read at plan (live.tftest.hcl does
+# the same for the relay's).
+override_resource {
+  target          = google_compute_address.graph_stats
+  override_during = plan
+  values = {
+    address = "10.10.0.81"
   }
 }
 
@@ -110,19 +128,20 @@ variables {
   ]
 
   image_refs = {
-    "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "swarm-live"            = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-    "swarm-egress"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-    "swarm-typesafe-fwd"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
-    "swarm-graph"           = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-graph@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "swarm-egress"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    "swarm-graph"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-graph@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -160,6 +179,14 @@ run "off_by_default_nothing_exists" {
   assert {
     condition     = local.graph_service_config == { enabled = false }
     error_message = "the graph service's kill switch ships OFF, and is exactly {enabled}"
+  }
+
+  assert {
+    condition = (
+      length(google_compute_address.graph_stats) == 0
+      && local.service_env["swarm-api"].SWARM_GRAPH_STATS_URL == ""
+    )
+    error_message = "with the graph service off no stats address is reserved and swarm-api's SWARM_GRAPH_STATS_URL is empty (read as stats not_read)"
   }
 }
 
@@ -320,6 +347,48 @@ run "served_swarm_api_mints_and_the_manifest_renders" {
     condition     = output.graph_service.url == "http://swarm-graph.swarm-system.svc.cluster.local:8080/mcp"
     error_message = "the URL an agent's shim dials is the headless Service's, on 8080, at /mcp"
   }
+
+  # The stats port's address (graph-answer-cache.md §5.3): reserved, INTERNAL,
+  # on swarm-api's egress subnet, labelled.
+  assert {
+    condition = (
+      length(google_compute_address.graph_stats) == 1
+      && google_compute_address.graph_stats[0].address_type == "INTERNAL"
+      && google_compute_address.graph_stats[0].labels["managed-by"] == "swarm-terraform"
+      && google_compute_address.graph_stats[0].labels["component"] == "graph-stats"
+      && google_compute_address.graph_stats[0].region == "us-central1"
+      && google_compute_address.graph_stats[0].name == "${var.name_prefix}-graph-stats"
+    )
+    error_message = "served, the stats load balancer's address is one reserved INTERNAL google_compute_address labelled managed-by=swarm-terraform"
+  }
+
+  assert {
+    condition     = local.service_env["swarm-api"].SWARM_GRAPH_STATS_URL == "http://10.10.0.81:8081"
+    error_message = "swarm-api's SWARM_GRAPH_STATS_URL is http://<the reserved stats address>:8081"
+  }
+
+  # The manifest puts the internal load balancer on that address, on 8081
+  # only, and the ingress policy admits swarm-api's range on 8081 only.
+  assert {
+    condition = length([
+      for d in [for s in split("\n---\n", output.swarm_graph_manifest) : yamldecode(s)] : d
+      if d.kind == "Service" && try(d.spec.type, "ClusterIP") == "LoadBalancer"
+      && try(d.metadata.name, "") == "swarm-graph-stats"
+      && try(d.metadata.annotations["networking.gke.io/load-balancer-type"], "") == "Internal"
+      && try(d.spec.loadBalancerIP, "") == "10.10.0.81"
+      && try([for p in d.spec.ports : p.port], []) == [8081]
+    ]) == 1
+    error_message = "the rendered swarm-graph-stats Service is an internal load balancer on the reserved address, port 8081 only"
+  }
+
+  assert {
+    condition = [
+      for d in [for s in split("\n---\n", output.swarm_graph_manifest) : yamldecode(s)] : [
+        for r in try(d.spec.ingress, []) : [for p in r.ports : p.port] if anytrue([for f in r.from : try(f.ipBlock.cidr, "") == var.subnet_cidr])
+      ] if d.kind == "NetworkPolicy"
+    ] == [[[8081]]]
+    error_message = "swarm-graph-ingress admits swarm-api's egress range (var.subnet_cidr, as swarm-live-ingress) on 8081 only"
+  }
 }
 
 run "switched_on_the_manifest_carries_the_switch" {
@@ -418,18 +487,19 @@ run "served_without_a_digest_renders_no_manifest_and_fails_its_check" {
       serve = true
     }
     image_refs = {
-      "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "swarm-live"            = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-      "swarm-egress"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-      "swarm-typesafe-fwd"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
-      "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "swarm-live"               = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      "swarm-egress"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      "swarm-typesafe-fwd"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 

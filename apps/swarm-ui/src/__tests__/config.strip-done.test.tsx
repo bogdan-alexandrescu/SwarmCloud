@@ -174,7 +174,7 @@ describe('the finished strip folds to one line', () => {
     serve(ME(), [PERSONAL, GROUP], onboarding({ secrets: SECRETS_ONE }))
     await app('/config/secrets')
     const list = await screen.findByRole('list', { name: 'Workspace setup steps' })
-    await waitFor(() => expect(document.querySelector('.cfg-count b')?.textContent).toBe('3 of 4 done'))
+    await waitFor(() => expect(document.querySelector('.cfg-count b')?.textContent).toBe('3 of 4 steps done'))
     // MUTATION: fold on `done >= of - 1` -> fails.
     expect(document.querySelector('.cfg-done')).toBeNull()
     expect(within(list).getAllByRole('listitem')).toHaveLength(4)

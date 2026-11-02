@@ -307,12 +307,25 @@
      keeps the rounded corners and lets the axis stick to the page scroller. */
   overflow: clip;
   position: relative;
+  /* A ROW SCROLLED TO LANDS BELOW THE AXIS, NOT UNDER IT (visual QA pass 2,
+     runs2-28, 2026-10-29): scrolled to the workflow group, the sticky axis
+     covered the top half of 'Audit the operator scripts and t…'. Every row's
+     scroll edge sits the axis's height lower, so a jump, a find or a Tab to a
+     group's link stops with the whole header in view. The height is the
+     axis's tallest: its label cell of three lines (a lane count that wraps,
+     then the zone) in 5px padding, 3 x 12px x 1.45 + 2 x 1px gap + 10px = 64.2,
+     over the 30px track beside it. The phone stacks the two (below). */
+  --tl-axis-h: 65px;
 }
 .tl-row {
   display: grid;
   grid-template-columns: var(--tl-labw, 240px) minmax(0, 1fr);
   border-top: 1px solid var(--line-soft);
   align-items: stretch;
+  /* runs2-28: below the sticky axis (`--tl-axis-h`, on `.tl` above). The
+     fallback is the desktop value, as `--tl-labw` carries one: a token set
+     outside `:root` needs one for the sheet probes that resolve `:root` only. */
+  scroll-margin-top: var(--tl-axis-h, 65px);
 }
 .tl-row:first-child { border-top: 0; }
 .tl-lab {
@@ -339,9 +352,21 @@
 /* A LONE AGENT KEEPS ITS ID (VQA2 V212, 2026-10-16): `claude-code task ·
    a073aff5` lost its id to the ellipsis, and the id is all that tells two
    standalone lanes apart. The kind gives way; the id never wraps or cuts. */
-.tl-lab .tl-name.is-split { display: inline-flex; align-items: baseline; flex: 0 1 auto; }
+.tl-lab .tl-name.is-split { display: inline-flex; align-items: last baseline; flex: 0 1 auto; }
 .tl-name-k { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tl-name-id { flex: none; white-space: pre; }
+/* A LONE AGENT'S NAME IS READ WHOLE (pass 2 review, runs2-27): on one nowrap
+   line with its mark and time held, the 240 px column left the kind
+   `claude-c…` and a title `Researc…`. The line wraps, the name takes its own
+   line when it needs it, and the kind wraps to two lines before it cuts. */
+.tl-lab b.is-split { flex-wrap: wrap; row-gap: 0; white-space: normal; }
+.tl-name.is-split .tl-name-k {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .tl-lab .tl-dur { flex: none; font: var(--t-micro) / var(--lh-micro) var(--mono); font-weight: 400; color: var(--text-dim); white-space: pre; }
 .tl-lab small {
   font: var(--t-micro) / var(--lh-micro) var(--mono);
@@ -701,6 +726,9 @@
      The phone stacks a row's label above its track, so the count is the
      sticky head's first line, above the axis. */
   .tl-axis .tl-lab { padding-bottom: 2px; }
+  /* The axis's label above its track (runs2-28): 6px + 2px padding, two
+     lines of 12px x 1.45 and their 1px gap, then the 30px track = 73.8. */
+  .tl { --tl-axis-h: 74px; }
   .tl-detail {
     position: fixed;
     left: 0;

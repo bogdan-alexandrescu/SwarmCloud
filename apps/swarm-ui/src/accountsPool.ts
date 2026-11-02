@@ -156,8 +156,15 @@ export function isWithheldDuplicate(a: PoolAccount): boolean {
  * is "for a tenant it serves that has not reported it unreadable", so the
  * per-tenant half (`unreadable_now`) is applied here, as `choose()` applies it.
  * Null: the broker did not say (it predates the field).
+ *
+ * A STATE A PERSON SET WINS OVER THE FLAG (visual QA pass 2, cap2-01; part of
+ * #2694). `choose()` hands out only an AVAILABLE account, so a paused,
+ * draining or signed-out one is a known No whatever the flag says: the flag
+ * read before a Pause (or served by a broker that has not re-read it) kept
+ * the row and the verdict at "Yes · 6 free" after the account was paused.
  */
 export function canTake(a: PoolAccount, scope: string | null): boolean | null {
+  if (a.state !== 'AVAILABLE') return false
   if (typeof a.can_take_new_agent !== 'boolean') return null
   return a.can_take_new_agent && !unreadableFor(a, scope)
 }
@@ -205,6 +212,21 @@ export function clockOf(a: PoolAccount): number | null {
     .map((b) => Date.parse(b.resets_at))
     .filter(Number.isFinite)
   return resets.length > 0 ? Math.min(...resets) : null
+}
+
+/**
+ * A CLOCK THAT HAS GONE (visual QA pass 1 capacity-03): the reset it names is
+ * already past and no reading has come in since it, so it is not when the
+ * account clears -- the next reading is. The fixture's frozen clock showed it
+ * ("Clears Oct 19 12:40Z · now" on Oct 28), and a broker whose poll stalled
+ * serves the same shape. A reading taken after the reset that still blocks is
+ * the broker's own word, so that clock stands.
+ */
+export function clockPassed(a: PoolAccount, now: number): boolean {
+  const at = clockOf(a)
+  if (at === null || at > now) return false
+  const read = a.observed_at ? Date.parse(a.observed_at) : Number.NaN
+  return !(Number.isFinite(read) && read >= at)
 }
 
 /** The share left on the binding window, 0-1; a reset window is full again. */
@@ -322,13 +344,19 @@ function blockingWindowAt(a: PoolAccount, at: number): string | null {
   return w === undefined ? null : w.window
 }
 
-export function verdictOf(accounts: readonly PoolAccount[], scope: string | null, shortfall: number): Verdict {
+export function verdictOf(
+  accounts: readonly PoolAccount[],
+  scope: string | null,
+  shortfall: number,
+  now: number = Date.now(),
+): Verdict {
   const ranked = rankAccounts(accounts, scope)
   const group = (k: GroupKey) => ranked.find((g) => g.key === k)?.accounts ?? []
   // An empty pool is a known zero; a pool the broker said nothing about is not.
   const known = accounts.length === 0 || accounts.some((a) => typeof a.can_take_new_agent === 'boolean')
   const open = group('now')
-  const clocked = group('clock')
+  // A clock that has gone names no time anything frees (capacity-03).
+  const clocked = group('clock').filter((a) => !clockPassed(a, now))
   const timed = (a: PoolAccount | undefined) => {
     if (a === undefined) return null
     const at = clockOf(a)

@@ -129,9 +129,11 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     expect(row.querySelector('.sk-st')?.textContent).toMatch(/running/i)
     expect(row.querySelector('.cr-name b')?.textContent).toBe('fix-heartbeat')
     expect(row.querySelector('.when')?.textContent).toMatch(/\d/)
-    // A lone task is named by the id prefix, with the whole id in its title.
+    // A lone task is named by its kind, with the whole id in its title and
+    // printed once, on the line under it (QA1-FIX-07, overview-agents-14).
     const lone = rowOf(c, 'bbbbbbbb')
-    expect(lone.querySelector('.cr-name .id')?.getAttribute('title')).toBe(LONE.id)
+    expect(lone.querySelector('.cr-name b')?.getAttribute('title')).toBe(LONE.id)
+    expect(lone.querySelector('.cr-name .tid-text')?.textContent).toBe(LONE.id)
   })
 
   it('puts profile, owner and try on line two of a live row', async () => {
@@ -170,7 +172,7 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     // row's opener (visual QA QA-032).
     const current = open.querySelectorAll('.row > .cr-open[aria-current]')
     expect(current).toHaveLength(1)
-    expect(current[0]!.closest('.row')!.querySelector('.id')?.getAttribute('title')).toBe(LONE.id)
+    expect(current[0]!.closest('.row')!.querySelector('.tid-text')?.textContent).toBe(LONE.id)
   })
 
   // #503: "with no agent open, the list is a full-width ten-column table";

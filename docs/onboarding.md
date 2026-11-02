@@ -33,6 +33,11 @@ call guard. §2.7 says what a person sees; the design is
 [workspaces.md](workspaces.md) (#847), and how it is operated is
 [multi-tenancy §7](multi-tenancy.md#7-a-persons-personal-workspace).
 
+Everything here happens inside a deployment that already exists. A new
+deployment, from an empty Google Cloud project to READY, is installed with
+`swarm install` and finished in the console's Admin › Setup:
+[install.md](install.md).
+
 What it settles, one line each:
 
 * **Mechanism: a SwarmCloud GitHub App with user access tokens (B)**, a

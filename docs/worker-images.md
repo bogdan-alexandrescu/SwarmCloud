@@ -1,20 +1,21 @@
 # Worker images: what each carries, and what it costs every start
 
-Three images run agents. Each is built from the repository root by
+Four images run agents. Each is built from the repository root by
 `scripts/build-images.sh`, promoted by digest by `scripts/push-images.sh`, and
 scanned (trivy, HIGH and CRITICAL) before promotion and weekly after it.
 
 | image | built from | carries | runs |
 |---|---|---|---|
-| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI, the CodeRabbit CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser`, `claude-code-browser` and `indexer`: `mock`, `generic`, `claude-code`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
+| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI, the CodeRabbit CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser`, `claude-code-browser`, `indexer` and `claude-code-lightpanda`: `mock`, `generic`, `claude-code`, `claude-code-large`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
 | `agent-runtime-browser` | `agent-runtime-base` by digest | Playwright and Chromium | `browser` and `claude-code-browser` (contract request 67, accepted by the owner 2026-10-11), both on GKE Autopilot |
 | `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls (compiled from module source, #661), pyright and typescript-language-server | `indexer` (contract request 48, accepted by the owner 2026-10-05) |
+| `agent-runtime-lightpanda` | `agent-runtime-base` by digest | the Lightpanda 1.0.2 headless browser, at `/opt/swarm/lightpanda/lightpanda`, and its licence notices; no Chromium | `claude-code-lightpanda` (contract request 127, accepted by the owner 2026-10-31), on GKE Autopilot ([below](#the-agent-runtime-lightpanda-image-contract-request-127)) |
 
-The two derived images are built only after the base has finished in the same
+The three derived images are built only after the base has finished in the same
 run (`build_after()` in `scripts/build-images.sh`), from a `cloudbuild.yaml`
 beside their Dockerfile that pulls `agent-runtime-base:<tag>` and passes its
-digest as `BASE_IMAGE`. The indexer's Dockerfile has no default `BASE_IMAGE`
-and refuses one without a digest.
+digest as `BASE_IMAGE`. The indexer's and the Lightpanda image's Dockerfiles
+have no default `BASE_IMAGE` and refuse one without a digest.
 
 ## Why the repository index has its own image (#625)
 
@@ -168,6 +169,7 @@ fails when a profile's backend moves and this table does not.
 | `browser` | `GKE_AUTOPILOT` | none: Chromium needs the `/dev/shm` GKE gives it |
 | `claude-code-browser` | `GKE_AUTOPILOT` | none: it runs the browser image, for the same `/dev/shm` (contract request 67) |
 | `claude-code-large` | `GKE_AUTOPILOT` | none: born on GKE (contract request 113, 2026-10-22), `claude-code` on the `large` class (8 CPU, 32 GiB) with a 14,400 s timeout, so it has no rollback Job |
+| `claude-code-lightpanda` | `GKE_AUTOPILOT` | none: born on GKE (contract request 127, 2026-10-31), `claude-code` on the `agent-runtime-lightpanda` image and the `standard` class, so it has no rollback Job |
 | `mock` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
 | `generic` | `GKE_AUTOPILOT` | none used: since contract request 64 (2026-10-10, #939 option A); each tenant's old Job (one per tenant, no provider) is kept idle as the rollback |
 | `indexer` | `GKE_AUTOPILOT` | none used: since contract request 63 (2026-10-10, the canary for #939); each tenant's old Job (one per tenant that registers `anthropic`) is kept idle as the rollback |
@@ -176,6 +178,7 @@ fails when a profile's backend moves and this table does not.
 | `post-verdict` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); disabled |
 | `claude-code-review` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); retired |
 | `await-input` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): a `control_plane` profile that nothing runs on any backend, so the backend is the catalogue's statement only (contract requests 93 and 94, docs/design/human-steps.md); available since request D (contract request 105, HW-ENABLE) |
+| `fix-loop` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`): the second `control_plane` profile, on the same terms as `await-input` (contract request 124, docs/design/fix-loop.md); shipped unavailable until FL-ACCEPT passes |
 
 So `mock` is the one enabled profile still started on Cloud Run: it reaches no
 internet, so #939's option A left it there, and `post-verdict` and
@@ -228,6 +231,85 @@ behind its own build argument, `INSTALL_TOFU` and `INSTALL_TFLINT`, so whichever
 ships a clean release first can join the default build alone, as trivy did.
 Turning both on adds about 52 MB (tofu 1.13.1 34.7, tflint 0.64.0 16.8). Why each still fails the scan (last re-scanned 2026-10-09) is recorded beside
 its pin in the Dockerfile.
+
+## The `agent-runtime-lightpanda` image (contract request 127)
+
+`images/agent-runtime-lightpanda/Dockerfile` is `agent-runtime-base` by
+digest plus one layer, for the `claude-code-lightpanda` profile
+([design](design/lightpanda-runtime.md) §5.D and §6.4; which profile to pick
+is [browser-qa.md §2](browser-qa.md#2-which-one-for-which-job)).
+
+**Why its own image.** Lightpanda is AGPL-3.0-only. Whoever ships the binary
+conveys it, and so owes its notices and its source. In `agent-runtime-base`
+or `agent-runtime-browser` that duty, and 76 MB, would ride along in every
+agent of those profiles, most of which never start Lightpanda. In an image of
+its own only the agents that asked for Lightpanda carry it, and an image no
+profile named would be built but never dispatched.
+
+**What it carries, and the pins.**
+
+* `ARG LIGHTPANDA_VERSION=1.0.2`, `LIGHTPANDA_SHA256_AMD64`,
+  `LIGHTPANDA_SHA256_ARM64`, `LIGHTPANDA_COMMIT` (the commit the tag points
+  at) and `LIGHTPANDA_SOURCE_SHA256` (the tag's source archive), in full in
+  the Dockerfile. The binary and the source archive are read from the build's
+  tool mirror and `sha256sum -c`-checked; an architecture with no pin fails
+  the build. `images/agent-runtime-base/tool-mirror.sha256` lists all three
+  objects at the same sha256s, and `tests/unit/worker/test_lightpanda_image.py`
+  and `tests/unit/scripts/test_build_mirror_switch.py` hold the two equal.
+* The binary at `/opt/swarm/lightpanda/lightpanda`, root-owned and 0755, so
+  the agent's uid cannot replace what the runner starts.
+* `ENV LIGHTPANDA_DISABLE_TELEMETRY=true` and `LIGHTPANDA_DISABLE_CORE_DUMP=1`.
+  Telemetry is on upstream by default and would report from inside a
+  tenant's pod; a core dump of a page process could hold page data. An image
+  `ENV` does not reach the agent's CLI (its environment is built from scratch),
+  so the runner sets both again on every Lightpanda process it starts
+  (`FIXED_ENV` in `apps/agent-worker/agent_worker/lightpanda.py`).
+* No Chromium. The base has none and this image adds none, so a
+  `claude-code-lightpanda` agent cannot start one by accident.
+* A build-time self-test, `selftest.py` (bind-mounted, not shipped), run as
+  the agent's uid in one RUN: the binary's owner and mode, `lightpanda
+  version` equal to `LIGHTPANDA_VERSION`, the two switches, the notices below,
+  no Chromium anywhere in the image, and the `claude` CLI on `PATH`.
+
+**The licence duty, and how it is met.**
+
+1. **Notices in the image** (AGPL §4), under `/usr/share/doc/lightpanda/`,
+   each root-owned 0644: `LICENSE` and `LICENSING.md` taken from the tag's own
+   source archive (nothing of Lightpanda's source is kept in this
+   repository), `FONTS-LICENSE` for the fonts the binary embeds,
+   `THIRD_PARTY` (beside the Dockerfile: the components statically linked
+   into the binary, each with its SPDX licence) and `SOURCE`, which names the
+   tag, the upstream commit, the Corresponding Source's URL and its sha256.
+   The design listed `LICENSE`, `SOURCE` and `THIRD_PARTY`; the build adds
+   `LICENSING.md` and `FONTS-LICENSE`.
+2. **The Corresponding Source, offered by whoever conveys** (§6(d)). A link to
+   GitHub is not enough, because the obligation stays with the distributor.
+   `scripts/release/assemble.sh` stages the tag's source archive
+   (`lightpanda_source_stage` in `scripts/lib/build-mirror.sh`, checked
+   against the Dockerfile's sha256) and `scripts/release/publish.sh` puts it
+   at the release bucket's root,
+   `https://storage.googleapis.com/swarmcloud/third-party/lightpanda/1.0.2/source.tar.gz`,
+   the URL `SOURCE` names. It stays there for as long as the image is offered.
+3. **Unmodified**, so §13's network clause never applies: SwarmCloud runs
+   the release binary as is.
+4. **Not linked.** The runner starts it as a separate process and talks to it
+   over CDP and MCP stdio, so §5's aggregate clause keeps the AGPL off
+   SwarmCloud's own MIT code.
+
+**Build, scan and promotion.** The image is in `ALL_TARGETS` of
+`scripts/build-images.sh` and `scripts/push-images.sh`, built after the base
+like the other derived images, trivy-scanned by `push-images.sh` before
+promotion like every target, and in `RUNNER_IMAGES` of `scripts/warm-jobs.sh`.
+`terraform/infra` pins its digest through the profile's `image` in
+`locals.tf`. **The weekly scan does not cover it yet**: the `for image in`
+list in `.github/workflows/security.yml` has no `agent-runtime-lightpanda`,
+and that workflow line is held for the owner (design §6.7, lane L7).
+
+**Updating it.** One PR changes the Dockerfile's ARGs and the three mirror
+rows together (`scripts/lib/build-mirror.sh` refuses a disagreement between
+them). Bump when SwarmCloud needs a fix, not on Lightpanda's one-to-three-week
+cadence: iframes and the screenshot crash are the two to watch. Accept a bump
+on the self-test, the probe tests and a rerun of the design's `bench.py`.
 
 ## Where an agent's caches go (CACHE-SCRATCH)
 

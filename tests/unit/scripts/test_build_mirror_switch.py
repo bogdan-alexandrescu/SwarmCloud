@@ -82,13 +82,15 @@ def test_no_dockerfile_fetches_from_ghcr_docker_hub_or_github(dockerfile: Path) 
 @pytest.mark.parametrize("dockerfile", DOCKERFILES, ids=_rel)
 def test_the_dockerfile_frontend_comes_from_the_mirror_by_digest(dockerfile: Path) -> None:
     # `# syntax=docker/dockerfile:1.7` is a Docker Hub pull BuildKit makes
-    # before reading a single instruction.
+    # before reading a single instruction. The line names no project
+    # (DAYONE-DESAGA-1): the build passes the same reference through the
+    # project's Docker Hub mirror as BUILDKIT_SYNTAX
+    # (test_build_mirror.py::test_the_build_passes_the_mirror_of_the_project_it_builds_for).
     syntax = _syntax(dockerfile.read_text())
     if syntax is None:
         return
-    hub = MIRRORS["MIRROR_DOCKER_HUB"][0]
-    assert syntax.startswith(f"{hub}/docker/dockerfile:"), (
-        f"{_rel(dockerfile)}'s # syntax= frontend is {syntax}, not {hub}/docker/dockerfile"
+    assert syntax.startswith("docker/dockerfile:"), (
+        f"{_rel(dockerfile)}'s # syntax= frontend is {syntax}, not docker/dockerfile"
     )
     assert re.search(r"@sha256:[0-9a-f]{64}$", syntax), f"{_rel(dockerfile)}: {syntax} has no digest"
 
@@ -97,9 +99,13 @@ def test_the_dockerfile_frontend_comes_from_the_mirror_by_digest(dockerfile: Pat
 def test_every_base_is_pulled_from_a_mirror_by_digest(dockerfile: Path) -> None:
     text = dockerfile.read_text()
     args = _global_args(text)
+    # The defaults are empty (DAYONE-DESAGA-1,
+    # test_build_mirror.py::test_no_dockerfile_names_a_project); the build
+    # passes the mirror of the project it builds for, which for the live
+    # project is MIRRORS.
     for name, (want, _) in MIRRORS.items():
-        if name in args:
-            assert args[name] == want, f"{_rel(dockerfile)}: {name}={args[name]}, want {want}"
+        if re.search(rf"^[ \t]*ARG[ \t]+{name}(=|[ \t]*$)", text, re.M):
+            args[name] = want
     stages: set[str] = set()
     froms = 0
     for line in _code_lines(text):
@@ -139,8 +145,14 @@ def test_every_base_is_pulled_from_a_mirror_by_digest(dockerfile: Path) -> None:
 
 #: The Dockerfiles that read the tool mirror. agent-runtime-browser joined the
 #: base on 2026-10-14 for the pinned dev-browser binary (DEVB-INSTALL, part of
-#: #1030); the manifest is still one file, listing what all of them read.
-MIRROR_READERS = (BASE_DOCKERFILE, REPO / "images" / "agent-runtime-browser" / "Dockerfile")
+#: #1030), and agent-runtime-lightpanda on 2026-10-31 for the Lightpanda
+#: binaries and the tag's source archive (LIGHTPANDA-IMAGE, part of #2688);
+#: the manifest is still one file, listing what all of them read.
+MIRROR_READERS = (
+    BASE_DOCKERFILE,
+    REPO / "images" / "agent-runtime-browser" / "Dockerfile",
+    REPO / "images" / "agent-runtime-lightpanda" / "Dockerfile",
+)
 
 
 def test_the_mirror_readers_are_every_dockerfile_that_bind_mounts_it() -> None:
@@ -419,9 +431,9 @@ def test_a_local_build_reads_upstream_at_the_same_sha256_and_overrides_the_mirro
     args = _build_args(builds[0])
     for name, (_, upstream) in MIRRORS.items():
         assert args.get(name) == upstream, (name, args)
-    syntax = _syntax(BASE_DOCKERFILE.read_text())
-    hub = MIRRORS["MIRROR_DOCKER_HUB"][0]
-    assert args.get("BUILDKIT_SYNTAX") == "docker.io" + syntax[len(hub):], args
+    # The Dockerfile's own `# syntax=` line already names Docker Hub, so a
+    # local build passes no BUILDKIT_SYNTAX to override it.
+    assert "BUILDKIT_SYNTAX" not in args, args
 
 
 def test_a_local_build_refuses_an_upstream_file_with_the_wrong_sha256(tmp_path: Path) -> None:
@@ -443,8 +455,11 @@ def test_a_local_build_of_an_image_without_tools_fetches_nothing(tmp_path: Path)
 
 
 def test_the_refresh_check_names_a_mirror_image_that_is_not_cached(tmp_path: Path) -> None:
+    # The refresh expands the Dockerfiles' pulls with PROJECT_ID's mirrors
+    # (_env: swarm-test-project, us-central1), not with their empty defaults.
+    host = "us-central1-docker.pkg.dev/swarm-test-project"
     api = _global_args((REPO / "images/swarm-api/Dockerfile").read_text())
-    uv = f"{api['MIRROR_GHCR']}/{api['UV_IMAGE']}"
+    uv = f"{host}/swarm-mirror-ghcr/{api['UV_IMAGE']}"
     # gcloud takes a tag or a digest, not both: the digest is what is pinned.
     name, digest = uv.split("@")
     by_digest = f"{name.rsplit(':', 1)[0]}@{digest}"
@@ -454,7 +469,7 @@ def test_the_refresh_check_names_a_mirror_image_that_is_not_cached(tmp_path: Pat
     described = {c[4] for c in calls if c[:4] == ["artifacts", "docker", "images", "describe"]}
     assert by_digest in described
     # Every mirror reference in every Dockerfile, the frontend included.
-    hub = MIRRORS["MIRROR_DOCKER_HUB"][0]
+    hub = f"{host}/swarm-mirror-dockerhub"
     assert any(d.startswith(f"{hub}/docker/dockerfile@sha256:") for d in described), sorted(described)
     assert any(d.startswith(f"{hub}/library/python@sha256:") for d in described), sorted(described)
 

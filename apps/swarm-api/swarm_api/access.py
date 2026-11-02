@@ -309,6 +309,157 @@ def grant_id_for(tenant_id: str, email: str, repo_id: str) -> str:
     return f"{tenant_id}__{user_hash(email)}__{repo_id}"
 
 
+# --------------------------------------------------------------------------
+# a workspace's own grant (decision 3, DAYONE-SETUP-API-6)
+# --------------------------------------------------------------------------
+
+#: Admin › Setup's team-level grant: the first team (for one person, the
+#: personal workspace) may use the repositories the GitHub App installation
+#: covers. One document per (workspace, repository), in a collection of its
+#: own, so no per-person read of `GRANTS` (Access, the members view, the
+#: last-grant unregister) ever sees it as a person's grant. Swarm-api cannot
+#: list a Google group's members (it holds Groups Reader, decision 4), so the
+#: grant is the workspace's: whoever the submission path already resolved
+#: into that workspace holds it. Their task still runs on their own GitHub
+#: connection (`SubmissionService._person_slot`). The worker and the attempt
+#: state route re-read the PERSON's grant before a clone or a push, so the
+#: first use records it as theirs (`person_grant_from_workspace`).
+WORKSPACE_GRANTS = "workspace_repository_grants"
+
+
+def workspace_grant_id_for(tenant_id: str, repo_id: str) -> str:
+    return f"{tenant_id}__{repo_id}"
+
+
+def write_workspace_grants(db: Any, tenant_id: str, repositories: list[str], *,
+                           mode: str, by: str, at: datetime, source: str) -> list[str]:
+    """Record `tenant_id`'s grant on each `owner/repo` of `repositories`; the
+    repo ids written are returned. Written whole on every call (`set`), so a
+    second call is the same documents."""
+    if mode not in MODES:
+        raise ValidationFailed(f"a grant's mode is one of {', '.join(MODES)}")
+    written: list[str] = []
+    for full in repositories:
+        try:
+            owner, repo = parse_repository(full)
+        except ValueError:
+            log.warning("workspace grant: %r is not owner/repo; skipped", full)
+            continue
+        repo_id = repo_id_for(tenant_id, owner, repo)
+        db.collection(WORKSPACE_GRANTS).document(workspace_grant_id_for(tenant_id, repo_id)).set({
+            "tenant_id": tenant_id, "repo_id": repo_id, "repository": f"{owner}/{repo}",
+            "owner": owner.lower(), "mode": mode, "granted_at": at, "granted_by": by,
+            "source": source,
+        })
+        written.append(repo_id)
+    log.info("workspace grant tenant=%s repositories=%d mode=%s source=%s",
+             tenant_id, len(written), mode, source)
+    return written
+
+
+def record_workspace_installation(db: Any, tenant_id: str, *, owner: str, installation_id: int,
+                                  owner_type: str | None, selection: str | None, by: str,
+                                  at: datetime) -> str | None:
+    """Record that the deployment's GitHub App installation on `owner` is
+    enabled in `tenant_id`, as Admin › Setup's grant finds it (audit 3, A4):
+    the document `AccessService.enable` writes (`_installed_doc`), in the
+    same shape and under the id it is read by (`org_id_for`), with the
+    admin who set the workspace up as the one who enabled it. Then
+    `forge_installation.installation_record_in` finds it, so a service
+    submission for this workspace is minted an installation token. Keyed by
+    `tenant_id` alone; it names no other tenant (invariant 9). The id
+    written is returned, or None when `owner` or the installation is not
+    usable, or when the admin already reaches `owner` here through their own
+    token (`via_token`), which is left as it is."""
+    if not owner or not isinstance(installation_id, int) or isinstance(installation_id, bool) \
+            or installation_id <= 0:
+        log.warning("workspace installation: owner or installation id unusable tenant=%s", tenant_id)
+        return None
+    key = by.strip().lower()
+    doc_id = org_id_for(tenant_id, key, owner)
+    ref = db.collection(ORGS).document(doc_id)
+    snap = ref.get()
+    previous = (snap.to_dict() or {}) if snap.exists else {}
+    if via_token(previous):
+        # The admin reaches this owner through their own token here: that
+        # was their choice, and only `AccessService.enable` revokes it.
+        log.info("workspace installation: kept the owner reached by a token tenant=%s owner=%s",
+                 tenant_id, owner.lower())
+        return None
+    doc = {
+        "tenant_id": tenant_id,
+        "user": key,
+        "user_hash": user_hash(key),
+        "owner": owner.lower(),
+        "owner_login": owner,
+        "owner_type": owner_type,
+        "installation_id": installation_id,
+        "repository_selection": selection,
+        "pull_requests": previous.get("pull_requests"),
+        "install_state": INSTALLED,
+        "sso": previous.get("sso") or "unknown",
+        "enabled_at": previous.get("enabled_at") or at,
+        "enabled_by": key,
+        "checked_at": at,
+    }
+    if previous.get("requested_at") is not None:
+        doc["requested_at"] = previous["requested_at"]
+    ref.set(doc)
+    log.info("workspace installation recorded tenant=%s owner=%s installation=%s",
+             tenant_id, owner.lower(), installation_id)
+    return doc_id
+
+
+def workspace_grant_mode(db: Any, tenant_id: str, repo_id: str) -> str | None:
+    """The mode of `tenant_id`'s own grant on `repo_id`, or None. Read by
+    the id it is stored under and checked again on its own fields: another
+    workspace's grant is no grant (invariant 9), and a mode that is neither
+    `read` nor `write` is none either."""
+    snap = db.collection(WORKSPACE_GRANTS).document(
+        workspace_grant_id_for(tenant_id, repo_id)).get()
+    doc = snap.to_dict() if snap.exists else None
+    if not doc or doc.get("tenant_id") != tenant_id or doc.get("repo_id") != repo_id:
+        return None
+    mode = doc.get("mode")
+    return mode if mode in MODES else None
+
+
+def person_grant_from_workspace(db: Any, tenant_id: str, email: str, repo_id: str, *,
+                                at: datetime) -> str | None:
+    """`email`'s grant on `repo_id`, recorded from `tenant_id`'s own grant
+    (`workspace_grant_mode`), or None when the workspace holds none. The
+    document is the one `AccessService.grant` writes, under the id it is
+    read by (`grant_id_for`), so the submission, the worker's re-read before
+    each clone and push, and Access all see it; `via` says where it came
+    from. The caller has already found no grant of the person's own."""
+    mode = workspace_grant_mode(db, tenant_id, repo_id)
+    if mode is None or not email:
+        return None
+    workspace = db.collection(WORKSPACE_GRANTS).document(
+        workspace_grant_id_for(tenant_id, repo_id)).get().to_dict() or {}
+    key = email.strip().lower()
+    db.collection(GRANTS).document(grant_id_for(tenant_id, key, repo_id)).set({
+        "tenant_id": tenant_id,
+        "user": key,
+        "user_hash": user_hash(key),
+        "repo_id": repo_id,
+        "repository": workspace.get("repository"),
+        "owner": workspace.get("owner"),
+        "mode": mode,
+        "can_push": mode == "write",
+        "archived": False,
+        "granted_at": at,
+        "granted_by": workspace.get("granted_by"),
+        "updated_at": at,
+        "checks": {},
+        "verified_at": None,
+        "via": WORKSPACE_GRANTS,
+    })
+    log.info("access grant from the workspace's tenant=%s user_hash=%s repo_id=%s mode=%s",
+             tenant_id, user_hash(key), repo_id, mode)
+    return mode
+
+
 def check_owner(owner: str) -> str:
     if not _OWNER.match(owner or ""):
         raise ValidationFailed("owner must be a GitHub user or organisation login")

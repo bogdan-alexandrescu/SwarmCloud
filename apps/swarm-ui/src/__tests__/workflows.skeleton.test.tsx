@@ -129,7 +129,7 @@ function Routed({ initial, onView }: { initial: string; onView?: (v: string) => 
 }
 
 const tabLabels = (root: ParentNode) =>
-  [...within(root as HTMLElement).getByRole('navigation', { name: 'Views of this workflow' }).querySelectorAll('.c-tab-label')].map(
+  [...within(root as HTMLElement).getByRole('tablist', { name: 'Views of this workflow' }).querySelectorAll('.c-tab-label')].map(
     (s) => s.textContent,
   )
 
@@ -149,8 +149,9 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     expect(order).toEqual(['wfp-head', 'c-tabs', 'wfp-skel-body'])
     const head = page!.querySelector<HTMLElement>('.wfp-head')!
     const actions = within(head).getAllByRole('button')
-    // No Cancel workflow before the state is read (WF-18a): it may have ended, or not exist.
-    expect(actions.map((b) => b.textContent)).toEqual(['Copy link'])
+    // No Stop workflow before the state is read (WF-18a): it may have ended, or not exist.
+    // Copy id is reserved beside Copy link, as the loaded head draws them (overview-agents-80, #2596).
+    expect(actions.map((b) => b.textContent)).toEqual(['Copy id', 'Copy link'])
     expect(head.querySelector('.wfp-skel-act')).not.toBeNull()
     expect(actions.every((b) => (b as HTMLButtonElement).disabled)).toBe(true)
     // The chips are bars, not words: a skeleton answers nothing.
@@ -159,7 +160,7 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     expect(chips.textContent).toBe('')
     // The tabs are the address's, the current one already marked; no count
     // is drawn for a read that has not landed.
-    expect(tabLabels(page!)).toEqual(['Graph', 'Table', 'Timeline', 'Changes'])
+    expect(tabLabels(page!)).toEqual(['Graph', 'Table', 'Steps over time', 'Changes'])
     expect(page!.querySelector('.c-tabs [aria-current="page"] .c-tab-label')!.textContent).toBe('Table')
     expect(page!.querySelector('.c-tabs em')).toBeNull()
     const body = page!.querySelector('.wfp-skel-body')
@@ -178,16 +179,16 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
       'disabled',
       true,
     )
-    expect(tabLabels(loaded)).toEqual(['Graph', 'Table', 'Timeline', 'Changes'])
+    expect(tabLabels(loaded)).toEqual(['Graph', 'Table', 'Steps over time', 'Changes'])
   })
 
   it('lets a tab be chosen during the load: each view is an address, not a control the data drives', () => {
     api.loadWorkflowBoard.mockReturnValue(new Promise<Result<WorkflowBoard>>(() => {}))
     const views: string[] = []
     render(<Routed initial="wf=wf_one" onView={(v) => views.push(v)} />)
-    fireEvent.click(screen.getByRole('link', { name: 'Timeline' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Steps over time' }))
     expect(views.at(-1)).toMatch(/tab=timeline/)
-    expect(document.querySelector('.wfp.is-loading .c-tabs [aria-current="page"] .c-tab-label')!.textContent).toBe('Timeline')
+    expect(document.querySelector('.wfp.is-loading .c-tabs [aria-current="page"] .c-tab-label')!.textContent).toBe('Steps over time')
   })
 })
 

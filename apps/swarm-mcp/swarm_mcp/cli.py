@@ -13,6 +13,9 @@ Exit codes are meant to be read by a script:
     1  it did not
     2  it happened, with conflicts a human has to resolve
 
+`swarm install` and the installer's other verbs exit with the installer's codes
+(docs/design/day-one-install.md §2.1); there, 2 is a usage error.
+
 Anywhere a command takes task ids -- `status`, `tail`, `follow` -- a workflow
 id (wf_...) stands for every step of that workflow.
 """
@@ -69,6 +72,7 @@ from .follow import (
 )
 from .invocation import help_command
 from .patches import (
+    PatchRefused,
     apply_patch,
     describe_task,
     download,
@@ -79,6 +83,7 @@ from .patches import (
     masked_words,
     object_size,
     patch_uri,
+    read_patch,
 )
 from .render import (
     PLAIN,
@@ -93,6 +98,9 @@ from .render import (
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_CONFLICT = 2
+#: An installer verb that cannot run here because the engine is not installed
+#: (`_delegate_to_install`); the installer's own codes follow design §2.1.
+EXIT_USAGE = 2
 
 
 def _artifact_bucket() -> str:
@@ -926,7 +934,16 @@ def cmd_apply(client: SwarmClient, args) -> int:
     if uri is None:
         print(f"nothing to apply: {explain_absence(task)}", file=sys.stderr)
         return EXIT_FAIL
-    result = apply_patch(download(client, uri), repo, task_id=args.task_id)
+    # Through swarm-api's artifact route with this CLI's API credential, never
+    # Cloud Storage with the developer's gcloud login (#2834). A patch the API
+    # masked or could not serve byte for byte is refused with the reason, and
+    # nothing is applied.
+    try:
+        patch = read_patch(client, task)
+    except PatchRefused as exc:
+        print(f"{args.task_id}: not applied: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    result = apply_patch(patch, repo, task_id=args.task_id)
     print(f"{args.task_id}: {result.detail}")
     for path in result.conflicted:
         print(f"  {path}")
@@ -1054,6 +1071,8 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         # An existing pull request to push onto (#2183); `read_spec` refused
         # it beside a merge.
         publish_to_pr=spec["publish_to_pr"],
+        # The workflow switches (2026-11-01), as the spec named them.
+        dispatch=spec["dispatch"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
@@ -1304,6 +1323,74 @@ def cmd_sc(_client, args) -> int:
     return _delegate_to_sc(prefix + [args.command] + list(args.argv))
 
 
+# -- the installer ---------------------------------------------------------
+#
+# `swarm install` and its siblings run the Day One engine, which lives in its
+# own package, `swarm_install` (docs/design/day-one-install.md §2.1). A
+# teammate's `swarm` is this package alone (plan R6: the engine's wheel is
+# separate, so the Google clients it needs never reach a developer's bridge),
+# so the engine is imported only when one of these verbs runs, and without it
+# the verb says the one line that installs it.
+#
+# Routed on the first token, like `sc`'s: `swarm_install` builds its own
+# parser from the verb modules it discovers, so the line is handed over
+# verbatim and no flag of theirs is restated here. `status` is NOT one of them:
+# `swarm status` stays the one-line-per-task command, and an install's status
+# is `swarm install --status` (plan review finding 13).
+
+#: The installer's verbs (design §2.1). Only their names live here, because the
+#: hint for a missing engine has to be printed without importing it.
+INSTALL_VERBS = ("install", "uninstall", "upgrade", "team", "addon", "doctor")
+
+#: Installer verbs this command also answers WITHOUT the installer: `swarm
+#: doctor`'s client tier (`cmd_doctor`) is what every teammate runs when
+#: nothing works, and a teammate's `swarm` has no `swarm_install`. With the
+#: installer, `swarm doctor` goes to it, which runs this client tier first and
+#: then the platform tier (DAYONE-DOCTOR-1); without it, it stays the client
+#: tier and never prints the install line.
+CLIENT_TIER_VERBS = ("doctor",)
+
+
+def _installer_present() -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("swarm_install") is not None
+    except (ImportError, ValueError):
+        return False
+
+#: How the engine is installed: the release home's installer script (design
+#: §6.3), which installs both wheels (plan R6).
+INSTALL_LINE = "curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | sh"
+
+
+def _delegate_to_install(raw: list[str]) -> int:
+    try:
+        from swarm_install import cli as _install_cli
+    except ImportError as exc:
+        # The engine itself absent, or present without one of its dependencies:
+        # either way the fix is the same line, and the second names what broke.
+        missing = getattr(exc, "name", None) or ""
+        why = (
+            "which is not installed here"
+            if missing.split(".")[0] in ("", "swarm_install")
+            else f"which cannot load here ({missing} is missing)"
+        )
+        print(
+            f"swarm {raw[0]} needs the SwarmCloud installer, {why}; install it with: {INSTALL_LINE}",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    return _install_cli.main(raw)
+
+
+def cmd_install(_client, args) -> int:
+    """The argparse route into `swarm_install`, which `main()` normally gets to
+    first; it exists so `swarm --help` lists the verbs, and runs the same
+    delegation (see `cmd_sc`)."""
+    return _delegate_to_install([args.command] + list(args.argv))
+
+
 # -- setup and diagnosis ---------------------------------------------------
 #
 # These three exist because of how this platform fails for a NEWCOMER. Every
@@ -1389,6 +1476,71 @@ def cmd_profiles(_client, args) -> int:
                     break_long_words=False,
                 )
             )
+    return EXIT_OK
+
+
+def cmd_graph_index(client: SwarmClient, args) -> int:
+    """The code graph's own record of a registered repository's index:
+    `GET /v1/repositories/{repo_id}/graph-cache`'s `index` (`commit_sha`,
+    `manifest_digest`), which only swarm-graph's promotion writes, never an
+    agent. The installer's verify compares an agent's `freshness.index_sha`
+    with it. Read-only; the tenant is the caller's (`tenant_scope`) and the
+    repo_id the API's own registration (`secrets.resolve_repository`).
+
+    Exit 1 when the repository has no promoted index: `index` is null."""
+    from .secrets import resolve_repository
+
+    repo_id = resolve_repository(client, args.repository)
+    body = client.request("GET", f"/v1/repositories/{repo_id}/graph-cache")
+    index = body.get("index") if isinstance(body, dict) else None
+    index = index if isinstance(index, dict) and index.get("commit_sha") else None
+    found = {"repository": args.repository, "repo_id": repo_id,
+             "index": {"commit_sha": str(index["commit_sha"]),
+                       "manifest_digest": index.get("manifest_digest")} if index else None}
+    if args.json:
+        print(json.dumps(found, indent=2))
+    elif index:
+        print(f"{args.repository}  indexed at {found['index']['commit_sha']}")
+    else:
+        print(f"{args.repository}  no promoted index", file=sys.stderr)
+    return EXIT_OK if index else EXIT_FAIL
+
+
+def cmd_repo_index(client: SwarmClient, args) -> int:
+    """Register `owner/repo` in the selected workspace when it is not yet
+    (`POST /v1/repositories`, a member's write, on the caller's own GitHub
+    connection, as the console's Repositories page does), then ask for an
+    index run of it (`POST /v1/repositories/{repo_id}/index`, "Index now").
+    The installer's verify runs it before its code-intelligence check, which
+    needs the code graph's own record (`graph-index`) of a repository nobody
+    has registered on a new deployment. Run twice, it registers nothing new
+    and the API coalesces the second run into the first."""
+    from .secrets import REPO_ID, REPO_SLUG
+
+    match = REPO_SLUG.fullmatch(args.repository.strip())
+    if match is None:
+        raise SwarmError("repository must be owner/repo; nothing was sent")
+    repository = f"{match.group(1)}/{match.group(2)}"
+    row = client.registration(match.group(1), match.group(2))
+    registered = row is None
+    if registered:
+        body = client.request("POST", "/v1/repositories", payload={"repository": repository})
+        row = body.get("repository") if isinstance(body, dict) else None
+    repo_id = row.get("repo_id") if isinstance(row, dict) else None
+    if not isinstance(repo_id, str) or not REPO_ID.fullmatch(repo_id):
+        raise SwarmError(f"{repository}: the API answered no repo_id for its registration")
+    answer = client.request("POST", f"/v1/repositories/{repo_id}/index")
+    answer = answer if isinstance(answer, dict) else {}
+    run = answer.get("run") if isinstance(answer.get("run"), dict) else None
+    found = {"repository": repository, "repo_id": repo_id, "registered": registered,
+             "task_id": str((run or {}).get("task_id") or "") or None,
+             "coalesced": bool(answer.get("coalesced")), "skipped": answer.get("skipped")}
+    if args.json:
+        print(json.dumps(found, indent=2))
+    else:
+        said = ("already indexed at its head" if found["skipped"]
+                else "joined the index run already going" if found["coalesced"] else "index run requested")
+        print(f"{repository}  {'registered; ' if registered else ''}{said}")
     return EXIT_OK
 
 
@@ -2010,6 +2162,15 @@ def build_parser() -> argparse.ArgumentParser:
         alias_parser.add_argument("argv", nargs=argparse.REMAINDER)
         alias_parser.set_defaults(func=cmd_sc, no_client=True)
 
+    for verb in INSTALL_VERBS:
+        if verb in CLIENT_TIER_VERBS:
+            continue  # its own parser below: the client tier, installer or not
+        verb_parser = sub.add_parser(
+            verb, help=f"the installer: `swarm {verb} --help` (needs the SwarmCloud installer)"
+        )
+        verb_parser.add_argument("argv", nargs=argparse.REMAINDER)
+        verb_parser.set_defaults(func=cmd_install, no_client=True)
+
     # `no_client=True` for the same reason `doctor` and `init` carry it: the
     # catalogue is the frozen contract, held in this process, so asking for a
     # client would make the one command that works without a cluster require one.
@@ -2018,6 +2179,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prof.add_argument("--json", action="store_true")
     prof.set_defaults(func=cmd_profiles, no_client=True)
+
+    gi = sub.add_parser(
+        "graph-index", help="the code graph's own record of a registered repository's index (its commit)"
+    )
+    gi.add_argument("repository", help="owner/repo, registered in the selected workspace")
+    gi.add_argument("--json", action="store_true")
+    gi.set_defaults(func=cmd_graph_index)
+
+    ri = sub.add_parser(
+        "repo-index",
+        help="register a repository in the selected workspace when it is not, and request an index run of it",
+    )
+    ri.add_argument("repository", help="owner/repo, one the workspace's GitHub access reaches")
+    ri.add_argument("--json", action="store_true")
+    ri.set_defaults(func=cmd_repo_index)
 
     ten = sub.add_parser("tenants", help="the tenants you may act as, the current one marked")
     ten.add_argument("--json", action="store_true")
@@ -2040,6 +2216,8 @@ def main(argv: list[str] | None = None) -> int:
         # `sc` owns its own error handling and exit codes (3 means "something
         # is down"), so this hands the whole line over rather than wrapping it.
         return _delegate_to_sc(raw)
+    if raw and raw[0] in INSTALL_VERBS and (raw[0] not in CLIENT_TIER_VERBS or _installer_present()):
+        return _delegate_to_install(raw)
 
     args = build_parser().parse_args(argv)
     try:

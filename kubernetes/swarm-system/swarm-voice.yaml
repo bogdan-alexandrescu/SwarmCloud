@@ -1,0 +1,206 @@
+# swarm-voice: Voice it's GPT-Live session holder (docs/design/voice-it.md
+# §3.2, §3.4, §7, section 10 phase one; lane VOICE-STATEFULSET, part of
+# #2688). It answers the browser's WebRTC offer through OpenAI and holds each
+# live session's sideband WebSocket for the length of the conversation, which
+# no request-shaped service can.
+#
+# A TEMPLATE. Its double-underscore placeholders are filled by
+# terraform/infra/voice.tf, and the result -- this file followed by
+# kubernetes/network-policies/swarm-system-voice.yaml -- is its
+# `swarm_voice_manifest` output:
+#
+#   terraform -chdir=terraform/infra output -raw swarm_voice_manifest
+#
+# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# another team's cluster (CLAUDE.md rule 2).
+#
+# WHY A ONE-REPLICA STATEFULSET (§3.4). Every live session's sideband is a
+# socket in this one process. A Deployment's rolling update runs the new pod
+# beside the old one; a StatefulSet of one is at most one pod through a
+# rollout, so no session is ever split across two copies. A restart costs the
+# turn in flight, not the conversation (§3.4).
+#
+# WHO IT RUNS AS. The KSA `swarm-voice` in `swarm-system`, impersonating the
+# Google service account `swarm-voice@<project>` through Workload Identity
+# (voice.tf). A GSA, not swarm-live's bare principal, because swarm-voice must
+# MINT A GOOGLE ID TOKEN to call swarm-api (§3.6: "the caller is swarm-voice's
+# own service account"), and the metadata server mints ID tokens only for a
+# KSA that impersonates a GSA. The GSA holds exactly: read and add-version on
+# the platform owner's own OpenAI secret, and run.invoker on swarm-api. No
+# Firestore role, no storage role (§3.6). No Kubernetes RBAC, no API token.
+#
+# WHO REACHES IT, AND WHAT IT REACHES: the NetworkPolicies in
+# kubernetes/network-policies/swarm-system-voice.yaml. swarm-api's egress
+# range on 8080 in; DNS, the metadata server, OpenAI, Anthropic, swarm-api and
+# the two Google endpoints its credential and caller check need out. No tenant
+# pod can reach it (invariant 9).
+#
+# RESOURCES (CONTRACT.md invariant 7). Memory and ephemeral storage: request
+# equals limit. CPU: request 500m, limit 1 -- within CPU_BURST_MAX_RATIO (2)
+# times the request, so the pod is Burstable on CPU alone. NOT MEASURED: the
+# sizes. A session is two sockets and a few JSON events a second; one vCPU
+# and 1 GiB are a starting point for BGD's one session at a time (version one
+# is BGD's only), to be read from the pod's metrics. On-demand capacity in
+# swarm-system: no Spot selector or toleration (invariant 6).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    # The same labels as swarm-live.yaml's copy of this object: every
+    # swarm-system manifest creates the namespace, so any may be applied
+    # first, and they must not fight over it.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: swarm-voice
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-voice
+  annotations:
+    # Workload Identity: the GSA this KSA acts as (voice.tf's
+    # workloadIdentityUser binding admits exactly this KSA).
+    iam.gke.io/gcp-service-account: __SWARM_VOICE_GSA__
+automountServiceAccountToken: false
+---
+# The StatefulSet's governing Service. Headless: nothing in the cluster calls
+# swarm-voice by name; swarm-api reaches it through the internal load
+# balancer below.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-voice
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-voice
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: swarm-voice
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+# swarm-api's address for swarm-voice. swarm-api is Cloud Run: it reaches the
+# VPC by Direct VPC egress on the cluster's subnet and cannot resolve a
+# cluster Service, so swarm-voice is fronted, as swarm-live is, by an internal
+# passthrough load balancer on an address voice.tf reserves. That address is
+# swarm-api's SWARM_VOICE_URL (locals.tf) and swarm-voice's audience.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-voice-internal
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-voice
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  loadBalancerIP: __SWARM_VOICE_ILB_IP__
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: swarm-voice
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: swarm-voice
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-voice
+spec:
+  # ONE. A second replica would hold half the sessions and answer an end for
+  # a session it never started (§3.4).
+  replicas: 1
+  serviceName: swarm-voice
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-voice
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-terraform
+        app.kubernetes.io/name: swarm-voice
+    spec:
+      serviceAccountName: swarm-voice
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The sidebands close on SIGTERM (tini forwards it); 30 s is the
+      # session's end call and OpenAI's close, with room.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: voice
+          image: __SWARM_VOICE_IMAGE__
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: PROJECT_ID
+              value: __PROJECT_ID__
+            - name: PORT
+              value: "8080"
+            - name: LOG_LEVEL
+              value: INFO
+            # The ID token's audience swarm-api mints for: swarm-api's
+            # SWARM_VOICE_URL, since it sets no SWARM_VOICE_AUDIENCE.
+            - name: SWARM_VOICE_AUDIENCE
+              value: __SWARM_VOICE_AUDIENCE__
+            # Who may call: swarm-api's service account, and no one else.
+            - name: SWARM_VOICE_CALLERS
+              value: __SWARM_VOICE_CALLERS__
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

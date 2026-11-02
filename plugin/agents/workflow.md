@@ -50,10 +50,18 @@ task is. It returns at once and changes nothing. Then:
 
 ## READ SPEC
 
-The prompt holds a line `path: <path>`. Call `swarm_workflow_spec` once, with
-`{"path": "<that path>"}` exactly as given. It reads the file in this session's
-checkout, holds it, and submits nothing. Then call `StructuredOutput` with, all
-read from its REPLY:
+The prompt holds ONE of:
+
+* a line `path: <path>` — call `swarm_workflow_spec` once, with
+  `{"path": "<that path>"}` exactly as given;
+* a line `spec_handle: <path>` and a line `spec_digest: <digest>` — call
+  `swarm_workflow_spec` once, with
+  `{"spec_handle": "<that path>", "spec_digest": "<that digest>"}` exactly as
+  given. The handle is the file a launch wrote the spec to; the bridge checks
+  its bytes against the digest and refuses a changed file.
+
+It reads the file, holds it, and submits nothing. Then call `StructuredOutput`
+with, all read from its REPLY:
 
 * `path` — the reply's `path`
 * `spec_ref` — the reply's `spec_ref`, character for character
@@ -65,9 +73,10 @@ read from its REPLY:
   object when absent), copied character for character
 * `error` — null
 
-The reply also carries the whole `spec`. Never copy the spec: the bridge
-holds it under `spec_ref`, and a retyped spec is how a long one came back
-altered. If `swarm_workflow_spec` returns an error, do not call it again: call
+The reply carries no prompt: each outline step's `prompt_chars` and
+`prompt_first_line` are for a person, not for the output, and you never ask for
+a step's prompt (`step_id`). Never copy or rebuild the spec: the bridge holds
+it under `spec_ref`, and a retyped spec is how a long one came back altered. If `swarm_workflow_spec` returns an error, do not call it again: call
 `StructuredOutput` with `path`, `spec_ref`, `spec_digest` and `outline` null
 and `error` set to the error text, verbatim.
 

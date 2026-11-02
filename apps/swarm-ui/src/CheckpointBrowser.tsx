@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 
 import { Mark } from './AgentDetail'
-import { USE_FIXTURES } from './api'
+import { USE_FIXTURES, loadCheckpoints } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
 import { Button, ButtonLink } from './components'
+import { useEscapeLayer } from './escape'
 import { encoded, errorHeading, noteFixtureProbe, read, route, tenantQuery, type ApiError, type Result } from './fetch'
 import { bytesLabel, timeAgo, type ArtifactContent } from './types'
 
@@ -339,6 +340,52 @@ export function CheckpointBrowser({
     void load()
   }, [load])
 
+  // THE PANEL COMES INTO VIEW WHEN IT OPENS (QA1-FIX-09, overview-agents-46):
+  // the list draws every open browser below its table, so `files` on the
+  // first of several checkpoints opened this one under the LAST card, off a
+  // phone's screen, and nothing in view changed -- the button read as dead.
+  // It mounts only when opened, so on mount it scrolls itself into view and
+  // takes focus (`tabIndex={-1}`: focusable by script, not a tab stop), and a
+  // keyboard reader lands on the panel the button opened. `start`, not
+  // `nearest`: the panel is taller than the room left under the list, and
+  // `nearest` brought only its top edge into view (heading and download
+  // button, the `entries` line under the pane's bottom edge at phone-390).
+  // AND AGAIN ONCE THE LISTING HAS DRAWN (QA1-FIX-09-FIX): at mount the panel
+  // is its 106 px loading state, so the scroll container's maximum is
+  // computed from that short panel and the scroll clamps there (phone-390:
+  // scrollTop 354 of the 705 the loaded panel allows); the listing grows it
+  // to 457 px and nothing scrolled again, leaving its top at y=666 of 844.
+  // Focus moves once, at mount; the scroll follows the panel's size.
+  const regionRef = useRef<HTMLDivElement>(null)
+  // ESCAPE CLOSES THIS PANEL FIRST (QA2-FIX-14, overview-agents-48). It was
+  // not a layer, so Escape on the files panel reached the agent pane's own
+  // listener and closed the whole pane. Registered only while it is SHOWN
+  // (QA2-FIX-14 review): the Checkpoints pane stays mounted, `hidden`, on the
+  // agent's other tabs, and a layer registered while mounted closed the
+  // invisible panel on Escape there instead of the agent pane. And not while
+  // a file opened from it (`ArtifactViewer`, its own layer) is open: the
+  // viewer closes first, and the panel registers again once it has, so the
+  // order holds when the panel is hidden and shown again under an open file.
+  const [shown, setShown] = useState(false)
+  const [viewerOpen, setViewerOpen] = useState(false)
+  useEffect(() => {
+    const el = regionRef.current
+    if (el === null) return
+    const check = () => setShown(el.closest('[hidden]') === null)
+    check()
+    const watch = new MutationObserver(check)
+    watch.observe(document.body, { attributes: true, attributeFilter: ['hidden'], subtree: true })
+    return () => watch.disconnect()
+  }, [])
+  useEscapeLayer(shown && !viewerOpen, onClose)
+  const settled = state.status !== 'loading'
+  useEffect(() => {
+    regionRef.current?.focus({ preventScroll: true })
+  }, [])
+  useEffect(() => {
+    regionRef.current?.scrollIntoView?.({ block: 'start' })
+  }, [settled])
+
   // THE TWO WAYS THE SERVER SAYS "NO ARCHIVE" (AG-10). A listing whose
   // `status` is `absent` is one; a 404 is the other -- the checkpoint, or its
   // attempt, is not there to list -- and it was drawn as a FAILED read, with
@@ -350,7 +397,7 @@ export function CheckpointBrowser({
     (state.status === 'error' && state.error.kind === 'not_found')
 
   return (
-    <div className="ckb" role="region" aria-label={`Checkpoint ${checkpointId} files`}>
+    <div ref={regionRef} tabIndex={-1} className="ckb" role="region" aria-label={`Checkpoint ${checkpointId} files`}>
       <div className="ckb-head">
         <h3 className="mono">{checkpointId}</h3>
         <span className="ckb-meta">attempt {attemptId}</span>
@@ -383,6 +430,7 @@ export function CheckpointBrowser({
         attemptId={attemptId}
         checkpointId={checkpointId}
         loaders={loaders}
+        onViewer={setViewerOpen}
       />
     </div>
   )
@@ -395,6 +443,7 @@ function Body({
   attemptId,
   checkpointId,
   loaders,
+  onViewer,
 }: {
   state: Result<CheckpointFiles>
   onRetry: () => void
@@ -402,6 +451,7 @@ function Body({
   attemptId: string
   checkpointId: string
   loaders: CheckpointLoaders
+  onViewer: (open: boolean) => void
 }) {
   switch (state.status) {
     case 'loading':
@@ -442,6 +492,7 @@ function Body({
           attemptId={attemptId}
           checkpointId={checkpointId}
           loaders={loaders}
+          onViewer={onViewer}
         />
       )
   }
@@ -515,12 +566,15 @@ function Listing({
   attemptId,
   checkpointId,
   loaders,
+  onViewer,
 }: {
   data: CheckpointFiles
   taskId: string
   attemptId: string
   checkpointId: string
   loaders: CheckpointLoaders
+  /** Told when a file's viewer opens and closes: the panel's Escape layer steps aside for it. */
+  onViewer: (open: boolean) => void
 }) {
   const members = data.files
   const tree = useMemo(() => buildTree(members ?? []), [members])
@@ -528,6 +582,11 @@ function Listing({
     (members?.length ?? 0) <= EXPAND_ALL_UNDER ? allDirs(tree.root) : new Set(),
   )
   const [selected, setSelected] = useState<CheckpointMember | null>(null)
+  const viewing = selected !== null
+  useEffect(() => {
+    onViewer(viewing)
+    return () => onViewer(false)
+  }, [onViewer, viewing])
 
   const toggle = useCallback((path: string) => {
     setOpen((cur) => {
@@ -573,7 +632,19 @@ function Listing({
       <ul className="ctl-facts ckb-facts">
         <li className={`ctl-fact${data.truncated ? ' is-absent' : ''}`}>
           <b>entries</b>
-          {data.count}
+          {/* A CUT LISTING SAYS N OF M (QA1-FIX-09, overview-agents-47):
+              `entries 8 · entry cap` beside `manifest 184 files` did not say
+              that 8 of 184 were shown. The manifest counts FILES, so the
+              comparison is the listing's non-directory members against it,
+              said alone (`7 of 184 files shown`, not `8 shown · 7 of 184
+              files`: two numbers side by side, the first counting the
+              directory); with no readable manifest count there is no M, and
+              none is claimed. */}
+          {!data.truncated
+            ? data.count
+            : data.manifest.status === 'present' && data.manifest.file_count !== null
+              ? `${members.filter((m) => m.type !== 'dir').length} of ${data.manifest.file_count} files shown`
+              : `${data.count} shown`}
           {data.truncated && (
             <>
               {' '}
@@ -919,6 +990,16 @@ async function fixtureFiles(
   noteFixtureProbe(route('/v1/tasks/{id}/checkpoints/{n}/files', { id: taskId, n: checkpointId }), 60, true)
   const prefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/checkpoints/${checkpointId}`
   const absent = checkpointId === 'ckpt_0001'
+  // ONE AGE FOR ONE ARCHIVE (QA1-FIX-09, overview-agents-47): the archive was
+  // stamped `now - 4m` while the checkpoint listing dated the same checkpoint
+  // days earlier, so the row said `9d ago` and its panel `written 4m ago`.
+  // The bucket writes the archive when the worker writes the checkpoint, so
+  // the fixture takes the listing's own time for it.
+  const listed = await loadCheckpoints(taskId)
+  const writtenAt =
+    listed.status === 'ok' || listed.status === 'stale'
+      ? (listed.data.checkpoints.find((c) => c.checkpoint_id === checkpointId && c.attempt_id === attemptId)?.created_at ?? null)
+      : null
   const files: CheckpointMember[] = [
     { path: 'progress', size: 0, mode: 0o755, type: 'dir', link: null, unsafe: false, undecodable: false },
     { path: 'progress/step-0001.md', size: 612, mode: 0o644, type: 'file', link: null, unsafe: false, undecodable: false },
@@ -943,7 +1024,7 @@ async function fixtureFiles(
         key: `${prefix}/archive.tar.gz`,
         uri: `gs://swarm-artifacts/${prefix}/archive.tar.gz`,
         bytes: absent ? null : 18_442_240,
-        object_updated_at: absent ? null : new Date(Date.now() - 4 * 60_000).toISOString(),
+        object_updated_at: absent ? null : writtenAt,
       },
       manifest: {
         status: absent ? 'unreadable' : 'present',

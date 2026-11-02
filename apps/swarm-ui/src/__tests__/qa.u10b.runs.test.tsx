@@ -126,11 +126,13 @@ describe('D3: no id runs past its card', () => {
       expect(painted(c, 'overflow-wrap', WIDE) ?? 'normal').not.toBe('anywhere')
     }
     // The issue ref wraps at its safe points instead (U12 A, 2026-10-04); only
-    // the single-token ids, the planner task and the workflow, are cut.
+    // the single-token ids, the planner task and the workflow, are cut. The
+    // planner's id is the note after its `planner agent` link since QA1B-11
+    // (runs-submit-27), so it is any `.rn-id`, not only a link.
     const ref = linked.querySelector<HTMLElement>('.ctl-fact > a.rn-ref')!
     expect(ref.getAttribute('title')).toBe(REF)
     expect(painted(ref, 'overflow-wrap', WIDE) ?? 'normal').toBe('normal')
-    const ids = [...linked.querySelectorAll<HTMLElement>('.ctl-fact > a.rn-id')]
+    const ids = [...linked.querySelectorAll<HTMLElement>('.ctl-fact > .rn-id')]
     expect(ids.length).toBe(2)
     for (const a of ids) {
       expect(a.getAttribute('title'), a.textContent!).toBe(a.textContent)

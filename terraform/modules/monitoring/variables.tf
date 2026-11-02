@@ -107,12 +107,18 @@ variable "fencing_alert_excluded_tenants" {
     Tenants whose generation_fenced events the generation-fencing policy does
     not count: the verification and acceptance tenants, whose own runs fence
     at startup by design (#1817: 215 of 270 fences in 7 days were
-    verify-remote's). `smoke` is release acceptance's tenant and `u-sw-c90291`
-    is swarm-verify's personal tenant (dev.tfvars says why the id is a digest).
+    verify-remote's). `smoke` is release acceptance's tenant; swarm-verify's
+    personal tenant is the other, an id derived from its project
+    (swarm_common.identity), so it differs per install.
     The metric still counts them; only the alert ignores them.
+
+    EMPTY BY DEFAULT: the default used to name the live deployment's own
+    verify tenant (DAYONE-TF-1, plan R9). terraform/infra always passes the
+    value, derived from its declared tenants; [] here only means a caller of
+    this module alone excludes nobody.
   EOT
   type        = list(string)
-  default     = ["smoke", "u-sw-c90291"]
+  default     = []
 
   validation {
     condition     = alltrue([for t in var.fencing_alert_excluded_tenants : can(regex("^[a-z0-9-]+$", t))])

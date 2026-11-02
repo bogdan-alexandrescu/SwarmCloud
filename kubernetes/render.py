@@ -791,6 +791,7 @@ def swarm_system_values(args: argparse.Namespace) -> dict[str, str]:
 
 def tenant_values(args: argparse.Namespace) -> dict[str, str]:
     tenant = args.tenant
+    project = project_of(args)
     namespace = args.namespace or f"{NAMESPACE_PREFIX}{tenant}"
     # AN OVERRIDE MAY RENAME THE NAMESPACE; IT MAY NOT MOVE IT OUT OF THE
     # PLATFORM'S PREFIX. `kubernetes/apply.sh` forwards every argument it does
@@ -823,50 +824,142 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         # tenant_files() includes only where this name is bound.
         "LEGACY_KSA_NAME": LEGACY_KSA_NAME,
         "GSA_EMAIL": args.gsa
-        or f"swarm-agent-worker-{tenant}@{args.project}.iam.gserviceaccount.com",
+        or f"swarm-agent-worker-{tenant}@{project}.iam.gserviceaccount.com",
         # The control-plane identities, as RBAC subjects. Derived rather than
         # passed: they are fixed per project, and a flag for them would be a
         # way to bind the wrong identity into a tenant's namespace.
-        "SCHEDULER_GSA": f"swarm-scheduler@{args.project}.iam.gserviceaccount.com",
-        "RECONCILER_GSA": f"swarm-reconciler@{args.project}.iam.gserviceaccount.com",
+        "SCHEDULER_GSA": f"swarm-scheduler@{project}.iam.gserviceaccount.com",
+        "RECONCILER_GSA": f"swarm-reconciler@{project}.iam.gserviceaccount.com",
         # The numeric uniqueId of each, which is the subject GKE presents for a
         # service account reaching the API with an OAuth access token. NOT
         # derivable from the project id -- it is assigned by IAM at creation --
         # so unlike the emails above these have to be passed in. apply.sh looks
-        # them up; when nothing is passed they fall back to the email, which
-        # renders an inert duplicate subject rather than a fabricated identity.
+        # them up. A render given the cluster network is refused without them
+        # (require_cluster_inputs); offline, each falls back to its email, an
+        # inert duplicate subject rather than a fabricated identity.
         # See _VALUE_PATTERNS for the measurement that made this necessary.
         "SCHEDULER_UID": args.scheduler_uid
-        or f"swarm-scheduler@{args.project}.iam.gserviceaccount.com",
+        or f"swarm-scheduler@{project}.iam.gserviceaccount.com",
         "RECONCILER_UID": args.reconciler_uid
-        or f"swarm-reconciler@{args.project}.iam.gserviceaccount.com",
+        or f"swarm-reconciler@{project}.iam.gserviceaccount.com",
         # The verification gate, the subject of rbac/verify-rbac.yaml: derived
         # like the two emails above, and its uniqueId passed in like theirs --
         # but with no fallback, because without it the read is not rendered.
-        "VERIFY_GSA": f"swarm-verify@{args.project}.iam.gserviceaccount.com",
+        "VERIFY_GSA": f"swarm-verify@{project}.iam.gserviceaccount.com",
         **({"VERIFY_UID": args.verify_uid} if args.verify_uid else {}),
-        "PROJECT_ID": args.project,
+        "PROJECT_ID": project,
         "REGION": args.region,
         "PSS_ENFORCE": args.pss_enforce,
         **network_values(args),
-        "QUOTA_PODS": str(args.quota_pods),
-        "QUOTA_JOBS": str(args.quota_jobs),
-        "QUOTA_CPU": str(args.quota_cpu),
+        "QUOTA_PODS": str(offline_quota(args, "quota_pods")),
+        "QUOTA_JOBS": str(offline_quota(args, "quota_jobs")),
+        "QUOTA_CPU": str(offline_quota(args, "quota_cpu")),
         # CPU bursts to at most CPU_BURST_MAX_RATIO x its request on every
         # container the dispatcher renders (contract request RS-1), so the
         # limits line is that multiple of the requests line: equal, it refused
         # pods at half the ceiling. Derived, not a flag, like the cache's.
-        "QUOTA_CPU_LIMIT": str(args.quota_cpu * CPU_BURST_MAX_RATIO),
-        "QUOTA_MEMORY": args.quota_memory,
-        "QUOTA_EPHEMERAL": args.quota_ephemeral,
+        "QUOTA_CPU_LIMIT": str(offline_quota(args, "quota_cpu") * CPU_BURST_MAX_RATIO),
+        "QUOTA_MEMORY": str(offline_quota(args, "quota_memory")),
+        "QUOTA_EPHEMERAL": str(offline_quota(args, "quota_ephemeral")),
         # The cache's network disks (CACHE-PVC): one claim per Job, because the
         # claim is the pod's and a finished Job keeps its pod for
-        # ttlSecondsAfterFinished. Derived, not a flag: it is a consequence of
+        # ttlSecondsAfterFinished (ten minutes). Derived, not a flag: it is a consequence of
         # the jobs quota and the dispatcher's CACHE_VOLUME_GIB, never a third
         # number to keep in step with them.
-        "QUOTA_CACHE_STORAGE": f"{args.quota_jobs * CACHE_VOLUME_GIB}Gi",
+        "QUOTA_CACHE_STORAGE": f"{offline_quota(args, 'quota_jobs') * CACHE_VOLUME_GIB}Gi",
         "CACHE_STORAGE_CLASS": CACHE_STORAGE_CLASS,
     }
+
+
+#: A TERRAFORM TENANT'S ResourceQuota (eng, smoke, ...), FLAT, which has no
+#: workspace record. Owner decision 2026-10-07 (contract request 53, moving
+#: claude-code to GKE), flat over per-tenant: 100 pods matches the GKE_AUTOPILOT
+#: backend ceiling of 100, and 400 vCPU / 800Gi / 1000Gi let that many pods
+#: fit. The platform's admission ceilings (the Firestore slot pools, invariants
+#: 1-3) remain the real limit; this quota is the second line of defence for
+#: when that accounting is wrong. It was pods=8, cpu=64, memory=128Gi,
+#: ephemeral-storage=320Gi, which capped a tenant at 8 GKE pods however much
+#: the pools admitted. jobs (count/jobs.batch) was not part of that decision:
+#: owner 2026-10-07 -- 100 running pods plus the finished Jobs awaiting
+#: ttlSecondsAfterFinished; at 32 the quota refused new Jobs while pods were
+#: still free. The TTL was 3600 s when this was set and is 600 s (ten minutes)
+#: since BGD's decision of 2026-10-28, after finished Jobs filled eng's quota
+#: of 240 and refused dispatches (#1820); the value is unchanged, so the same
+#: quota now covers six times the Jobs an hour.
+#:
+#: NOT A DEFAULT (DAYONE-K8S-1, #2039). These numbers were the --quota-*
+#: defaults, and kubernetes/apply.sh run by hand rendered them for every
+#: tenant, which on 2026-10-23 failed u-bogdan's workspace (lesson 32). A
+#: WORKSPACE tenant's quota is its record's (`workspace_quota`). apply.sh asks
+#: `render.py terraform-quota` for these by name, for a Terraform tenant only,
+#: and passes them as flags; an offline render (no cluster network: lint)
+#: renders them too.
+TERRAFORM_TENANT_QUOTA = {
+    "quota_pods": 100,
+    "quota_cpu": 400,
+    "quota_memory": "800Gi",
+    "quota_jobs": 200,
+    "quota_ephemeral": "1000Gi",
+}
+
+#: THE PROJECT AN OFFLINE RENDER NAMES (DAYONE-K8S-1, design §7). `--project`
+#: has no default: it was `saga-agents-staging`, so a render for any other
+#: project bound that project's scheduler, reconciler and deployer -- and
+#: kubernetes/apply.sh's tenant mode never passed it. A render that can reach a
+#: cluster is refused without it (`require_cluster_inputs`); `render.py
+#: policies`, `job` and an offline tenant render keep working without it for
+#: the lint callers (`make lint`, security.yml, the worker's pre-publish
+#: checkov), and name THIS. It fits PROJECT_ID's pattern so the templates
+#: render, and it is no project at all: Google Cloud refuses a project id
+#: containing the restricted string `google`, so nobody can own it, and an
+#: identity rendered from it authorises nothing anywhere.
+OFFLINE_PROJECT = "offline-render-google"
+
+
+def offline_quota(args: argparse.Namespace, key: str) -> int | str:
+    """The quota value given, or TERRAFORM_TENANT_QUOTA's for an offline render.
+
+    `require_cluster_inputs` has already refused a cluster-bound render that
+    lacks one, so the fallback is only ever reached offline.
+    """
+    value = getattr(args, key, None)
+    return TERRAFORM_TENANT_QUOTA[key] if value is None else value
+
+
+def project_of(args: argparse.Namespace) -> str:
+    """The project given, or OFFLINE_PROJECT (see there) when none was."""
+    return str(getattr(args, "project", "") or "") or OFFLINE_PROJECT
+
+
+def require_cluster_inputs(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Refuse, exit 2, a tenant render that can reach a cluster without the
+    inputs only its caller knows: the project, both control-plane uniqueIds and
+    all five quota numbers.
+
+    A render "can reach a cluster" when it is given the cluster network, which
+    kubernetes/apply.sh reads from the cluster it applies to; without one it is
+    an offline render, marked OFFLINE_NETWORK_SOURCE, which apply.sh refuses to
+    apply. Each refused input used to default: the project to the live one
+    (every subject bound in another project's identities), each uniqueId to its
+    email (the RoleBinding GKE never matches, lesson 29: eight months of
+    `jobs.batch is forbidden`), the quota to flat numbers (#2039, lesson 32).
+    """
+    if network_values(args)["NETWORK_SOURCE"] == OFFLINE_NETWORK_SOURCE:
+        return
+    missing = []
+    if not getattr(args, "project", ""):
+        missing.append("--project")
+    for role in ("scheduler", "reconciler"):
+        if not re.fullmatch(r"[0-9]{15,25}", str(getattr(args, f"{role}_uid", "") or "")):
+            missing.append(f"--{role}-uid (the numeric uniqueId)")
+    missing += [f"--{key.replace('_', '-')}" for key in TERRAFORM_TENANT_QUOTA if getattr(args, key, None) is None]
+    if missing:
+        parser.error(
+            "a render given the cluster network is for that cluster, and needs "
+            f"{', '.join(missing)} from its caller; none has a default. kubernetes/apply.sh "
+            "passes all of them: the project it applies to, the uniqueIds it resolves, and "
+            "the tenant record's quota."
+        )
 
 
 def add_policy_arguments(parser: argparse.ArgumentParser) -> None:
@@ -877,7 +970,11 @@ def add_policy_arguments(parser: argparse.ArgumentParser) -> None:
     kubernetes/apply.sh looks them up and passes them, and without them each
     falls back to its email -- an inert duplicate, never a fabricated subject.
     """
-    parser.add_argument("--project", default="saga-agents-staging")
+    parser.add_argument(
+        "--project",
+        default="",
+        help=f"the project whose identities the RBAC names; omitted, {OFFLINE_PROJECT} (no project)",
+    )
     parser.add_argument("--scheduler-uid", default="")
     parser.add_argument("--reconciler-uid", default="")
     parser.add_argument("--workspace-deployer-uid", default="")
@@ -903,7 +1000,7 @@ def policy_values(args: argparse.Namespace) -> dict[str, str]:
     they are spelled exactly as `tenant_values` spells them for the bindings
     that policy judges.
     """
-    project = args.project
+    project = project_of(args)
     scheduler = f"swarm-scheduler@{project}.iam.gserviceaccount.com"
     reconciler = f"swarm-reconciler@{project}.iam.gserviceaccount.com"
     deployer = f"{WORKSPACE_DEPLOYER_ACCOUNT}@{project}.iam.gserviceaccount.com"
@@ -1329,7 +1426,7 @@ def render_job(args: argparse.Namespace) -> str:
             "JOB_NAME": args.job_name
             or sanitize_name("swarm", args.task.replace("task_", ""), generation),
             "IMAGE": args.image
-            or f"{args.region}-docker.pkg.dev/{args.project}/"
+            or f"{args.region}-docker.pkg.dev/{project_of(args)}/"
             f"{args.registry}/{profile.image}:{args.tag}",
             # The CPU request and its burst limit, in millicores, from the
             # dispatcher's own `cpu_quantity` so the YAML renders what runs:
@@ -1368,7 +1465,7 @@ def render_job(args: argparse.Namespace) -> str:
             "CHECKPOINT_INTERVAL_SECONDS": str(profile.checkpoint_interval_seconds),
             "MAX_IN_WORKER_RETRY_DELAY_SECONDS": str(args.max_in_worker_retry_delay_seconds),
             "FIRESTORE_DATABASE": args.firestore_database,
-            "ARTIFACT_BUCKET": args.bucket or f"{args.project}-swarm-artifacts",
+            "ARTIFACT_BUCKET": args.bucket or f"{project_of(args)}-swarm-artifacts",
             "ACCOUNT_LABEL": getattr(args, "account", "") or "unassigned",
         }
     )
@@ -1504,7 +1601,14 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "and for a Terraform tenant's, which render as they always have."
         ),
     )
-    parser.add_argument("--project", default="saga-agents-staging")
+    parser.add_argument(
+        "--project",
+        default="",
+        help=(
+            "the project whose identities the namespace binds. Required with the cluster "
+            f"network; an offline render names {OFFLINE_PROJECT}, which is no project"
+        ),
+    )
     parser.add_argument("--region", default="us-central1")
     parser.add_argument(
         "--pss-enforce",
@@ -1594,32 +1698,18 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "swarm-<env>-specs/step-spec. kubernetes/apply.sh passes its ${ENVIRONMENT}."
         ),
     )
-    # THE TENANT NAMESPACE'S ResourceQuota, FLAT FOR EVERY TENANT. Owner
-    # decision 2026-10-07 (contract request 53, moving claude-code to GKE),
-    # flat over per-tenant: 100 pods matches the GKE_AUTOPILOT backend ceiling
-    # of 100, and 400 vCPU / 800Gi / 1000Gi let that many pods fit. The
-    # platform's admission ceilings (the Firestore slot pools, invariants 1-3)
-    # remain the real limit; this quota is the second line of defence for when
-    # that accounting is wrong. It was pods=8, cpu=64, memory=128Gi,
-    # ephemeral-storage=320Gi, which capped a tenant at 8 GKE pods however much
-    # the pools admitted. Applied per tenant by scripts/register-tenant.sh ->
-    # kubernetes/apply.sh; an existing namespace keeps its old quota until it
-    # is re-applied. --quota-jobs (count/jobs.batch) was not part of that
-    # decision; it was 32 and is now 200 (see below).
-    #
-    # THESE DEFAULTS ARE A TERRAFORM TENANT'S (eng, smoke, ...), which has no
-    # workspace record. A WORKSPACE tenant's quota is its record's
-    # (`workspace_quota`, QUOTA-ONE #2039): the job's A7 passes all five
-    # flags, and kubernetes/apply.sh run by hand reads the record and passes
-    # them, so these numbers never reach a workspace namespace.
-    parser.add_argument("--quota-pods", type=int, default=100)
-    # owner 2026-10-07 -- 100 running pods plus an hour of finished Jobs awaiting
-    # ttlSecondsAfterFinished=3600. At 32 the quota refused new Jobs while pods
-    # were still free.
-    parser.add_argument("--quota-jobs", type=int, default=200)
-    parser.add_argument("--quota-cpu", type=int, default=400)
-    parser.add_argument("--quota-memory", default="800Gi")
-    parser.add_argument("--quota-ephemeral", default="1000Gi")
+    # THE TENANT NAMESPACE'S ResourceQuota, FROM ITS CALLER (DAYONE-K8S-1,
+    # #2039, lesson 32). No default: a render that can reach a cluster (one
+    # given the cluster network) is refused without all five, so a namespace's
+    # quota is always the one its caller read -- the workspace record's
+    # (`workspace-quota`) or a Terraform tenant's (`terraform-quota`, the
+    # TERRAFORM_TENANT_QUOTA numbers and why). An offline render uses
+    # TERRAFORM_TENANT_QUOTA, like its documentation network.
+    parser.add_argument("--quota-pods", type=int, default=None)
+    parser.add_argument("--quota-jobs", type=int, default=None)
+    parser.add_argument("--quota-cpu", type=int, default=None)
+    parser.add_argument("--quota-memory", default=None)
+    parser.add_argument("--quota-ephemeral", default=None)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1727,6 +1817,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     terraform_tenants_cmd.add_argument("--terraform-tfvars", required=True)
 
+    # A TERRAFORM TENANT'S QUOTA: the five --quota-* flags of
+    # TERRAFORM_TENANT_QUOTA, one per line, as `workspace-quota` prints a
+    # workspace record's. kubernetes/apply.sh passes them for a tenant its
+    # environment's tfvars declares, because the tenant render has no default.
+    sub.add_parser(
+        "terraform-quota",
+        help="the --quota-* flags for a Terraform tenant's namespace, one per line",
+        allow_abbrev=False,
+    )
+
     job = sub.add_parser("job", help="one worker Job", allow_abbrev=False)
     add_tenant_arguments(job)
     job.add_argument("--profile", required=True, choices=sorted(RUNNER_PROFILES))
@@ -1785,6 +1885,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "tenant":
+        require_cluster_inputs(tenant, args)
         values = tenant_values(args)
         if values["NETWORK_SOURCE"] == OFFLINE_NETWORK_SOURCE:
             # stderr, so the render on stdout stays a clean manifest for the
@@ -1803,7 +1904,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         # Validated BEFORE anything is written, so a bad output renders nothing.
         spec_data = (
-            spec_verify_keys_data(args.spec_verify_keys_file, args.project, args.environment)
+            spec_verify_keys_data(args.spec_verify_keys_file, project_of(args), args.environment)
             if args.spec_verify_keys_file
             else None
         )
@@ -1854,6 +1955,10 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write("\n".join(lines) + "\n")
     elif args.command == "terraform-tenants":
         sys.stdout.write("".join(f"{key}\n" for key in terraform_tenants(Path(args.terraform_tfvars))))
+    elif args.command == "terraform-quota":
+        sys.stdout.write(
+            "".join(f"--{key.replace('_', '-')}\n{value}\n" for key, value in TERRAFORM_TENANT_QUOTA.items())
+        )
     elif args.command == "job":
         sys.stdout.write(render_job(args))
     return 0

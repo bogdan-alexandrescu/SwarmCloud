@@ -11,9 +11,9 @@ WHAT THESE PIN
     tenant-scoped route -- so a tenant-id collision between two groups and an
     admin-disabled tenant are refused here too, and a body or query that says
     otherwise is ignored or refused -- never obeyed;
-  * the pool holds Claude SUBSCRIPTIONS and nothing else: there is no API-key
-    account and no credential-kind selector, so `provider` has exactly one
-    accepted value;
+  * the pool holds rotating OAuth pairs and nothing else -- Claude
+    subscriptions and ChatGPT plans: there is no API-key account, so
+    `provider` has exactly two accepted values;
   * a redirect is REFUSED rather than followed, because following one would
     hand this service's own ID token to whatever host the `Location` names;
   * a 401/403 from the broker is about THIS SERVICE's identity, never the
@@ -415,13 +415,14 @@ def test_register_returns_no_key_material_and_says_so(client, pool):
     }
 
 
-@pytest.mark.parametrize("provider", ["acme", "openai"])
-def test_the_pool_takes_subscriptions_only_so_provider_is_not_a_choice(
+@pytest.mark.parametrize("provider", ["acme", "gemini"])
+def test_the_pool_takes_rotating_pairs_only_so_provider_is_not_free(
     client, pool, provider
 ):
-    """One kind of credential, so one accepted value -- `openai` included.
+    """One kind of credential, two providers: anything else is refused.
 
-    An account here is an OAuth pair the broker rotates on a timer. There is no
+    An account here is an OAuth pair the broker rotates on a timer -- a Claude
+    subscription or, since 2026-11-01 (#2688), a ChatGPT plan. There is no
     API-key account in the pool: a provider with no subscription to refresh
     would be a pool entry nothing in the platform could ever renew, which is
     the shape that looks healthy and dies at its first expiry.
@@ -435,7 +436,7 @@ def test_the_pool_takes_subscriptions_only_so_provider_is_not_a_choice(
     assert response.status_code == 422
     body = response.json()
     assert body["code"] == "validation_failed"
-    assert body["detail"]["known_providers"] == ["anthropic"]
+    assert body["detail"]["known_providers"] == ["anthropic", "openai"]
     assert pool.registered == []
 
 

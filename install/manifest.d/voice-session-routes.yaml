@@ -1,0 +1,14 @@
+# Lane VOICE-SESSION-ROUTES (part of #2688; docs/design/voice-it.md section 10
+# phase 1): swarm-api's Voice it session routes read where swarm-voice is and
+# who may talk to it. Nothing for the install to do: swarm-voice's own lane
+# sets SWARM_VOICE_URL when it deploys, and until then the routes answer 503.
+# SWARM_VOICE_AUDIENCE, which these routes also read, is declared once, in
+# swarm-voice-session.yaml: the manifest takes one entry per variable, and
+# two lanes merged an hour apart each declared it, which stopped every
+# unit test from collecting on main (2026-11-01).
+version: 1
+env:
+  SWARM_VOICE_URL:
+    setter: terraform/infra/locals.tf:1137
+  VOICE_IT_PEOPLE:
+    setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:1127; unset on purpose, so Voice it is open to PLATFORM_OWNER alone (voice-it.md section 1: BGD only in version one)'

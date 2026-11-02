@@ -47,7 +47,10 @@
    AUTO-FIT, NOT AUTO-FILL (browser QA D18 again, 2026-10-04): one card took
    one of two tracks, ~520px, with the other half of the row empty. An empty
    track collapses now, so the cards share the whole row. */
-.ov-atts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 10px; }
+/* CARDS SIZE TO THEIR OWN CONTENT (visual QA pass 1, overview-agents-07,
+   2026-10-28): the grid's default `stretch` drew "2 leases past TTL" as tall
+   as the six-line card beside it, a large empty block under two lines. */
+.ov-atts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 10px; align-items: start; }
 .ov-att { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background-color: var(--surface); border: 1px solid var(--line); color: inherit; text-decoration: none; min-width: 0; }
 .ov-att:hover { border-color: var(--sk-acl); }
 /* A FAILED CHECK IS A ROW FORM, NOT ONLY A MARK (#96): the table row's edge
@@ -256,8 +259,14 @@
    which a flex item would drop, so the text is still the tooltip's). No clamp: names.css's Overview clamp names
    `.ov-name` alone, because names.css comes after this sheet in the bundle
    and a tie there is its. */
-.ov-prun-n { display: flex; min-width: 0; white-space: nowrap; color: var(--text); text-decoration: none; }
-.ov-prun-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* THE TITLE TAKES TWO LINES BEFORE IT IS CUT (visual QA pass 2,
+   overview-agents-08 recheck, 2026-10-29): on one line at 390, 'Audit the
+   operator scri… · scan-terraform' kept the step and lost what the work was.
+   The title wraps to two lines and only then gives way with an ellipsis; the
+   step still keeps its width (ffp-002) and sits on the title's last line, so
+   a row is at most two lines, not VQ-002's four. */
+.ov-prun-n { display: flex; align-items: flex-end; min-width: 0; white-space: nowrap; color: var(--text); text-decoration: none; }
+.ov-prun-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .ov-prun-s { flex: none; max-width: 66%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 /* STATE · PROFILE · SHORT WORKFLOW ID UNDER THE NAME (QA G1-08, 2026-10-07):
    the phone dropped all three, and two "implement" rows read alike. */
@@ -325,6 +334,9 @@
    together. The bar spans the row; the name is whole, or cut with its title. */
 .ov-pl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; }
 .ov-pl .ctl-util-track { height: 6px; grid-column: 1 / -1; grid-row: 2; }
+/* A POOL IS NAMED IN WORDS (QA2 ovag2-04): 'anthropic · u-bogdan' in the
+   page's face, as Headroom writes it; the mono key is the name's title. */
+.ov-pl .ov-pl-k { font-family: var(--font); }
 .ov-pl b { font-size: var(--t-micro); text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 /* A FULL POOL'S FIGURE CARRIES THE VERDICT (visual QA V057, owner decision
    Q3 2026-10-11). The phone block hides every utilisation track at 560px and

@@ -38,6 +38,7 @@ from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.routes import graph_cache
 from swarm_api.routes.graph_cache import StatsReader, compare_manifests
+from swarm_api.settings import ApiSettings
 from swarm_api.waker import NullWaker
 
 from .conftest import api_settings, auth_header
@@ -219,7 +220,7 @@ def test_a_refused_ticket_or_a_body_that_is_not_the_document_is_not_read(client,
 
 
 def test_the_stats_url_unset_is_a_200_not_read_with_nothing_called(client, repo):
-    # No override: the shipped dependency reads SWARM_GRAPH_STATS_URL, unset here.
+    # No override: the shipped dependency reads settings.graph_stats_url, unset here.
     answer = _get(client, repo["repo_id"])
     assert answer.status_code == 200, answer.text
     body = answer.json()
@@ -228,14 +229,33 @@ def test_the_stats_url_unset_is_a_200_not_read_with_nothing_called(client, repo)
     assert body["latency"]["p95_ms"] == 152
 
 
-def test_the_stats_url_is_read_from_the_environment(monkeypatch):
-    class Bare:
-        pass
+def test_the_stats_url_is_the_settings_graph_stats_url():
+    assert graph_cache.stats_url(api_settings(graph_stats_url=STATS_URL + "/")) == STATS_URL
+    # Not an http(s) URL is no URL at all: not_read, never a guess.
+    assert graph_cache.stats_url(api_settings(graph_stats_url="10.0.0.9:8081")) == ""
+    assert graph_cache.stats_url(api_settings()) == ""
 
-    monkeypatch.setenv("SWARM_GRAPH_STATS_URL", STATS_URL + "/")
-    assert graph_cache.stats_url(Bare()) == STATS_URL
-    monkeypatch.setenv("SWARM_GRAPH_STATS_URL", "10.0.0.9:8081")
-    assert graph_cache.stats_url(Bare()) == ""
+
+def test_api_settings_reads_swarm_graph_stats_url_from_the_environment(monkeypatch):
+    # CACHE-FOLLOWUPS (part of #1835): ApiSettings.graph_stats_url, read from
+    # SWARM_GRAPH_STATS_URL as graph_ticket_key is read from its variable.
+    monkeypatch.setenv("PROJECT_ID", "swarm-test-project")
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.delenv("SWARM_GRAPH_STATS_URL", raising=False)
+    assert ApiSettings.__dataclass_fields__["graph_stats_url"].default == ""
+    assert ApiSettings.from_env().graph_stats_url == ""
+    monkeypatch.setenv("SWARM_GRAPH_STATS_URL", " " + STATS_URL + " ")
+    assert ApiSettings.from_env().graph_stats_url == STATS_URL
+
+
+def test_the_setting_unset_is_not_read_even_with_the_variable_in_the_process(client, repo, monkeypatch):
+    # The setting is the one source: a SWARM_GRAPH_STATS_URL in swarm-api's
+    # process that ApiSettings did not read (this client's settings were built
+    # without one) is not a second way in, and the section is not_read.
+    monkeypatch.setenv("SWARM_GRAPH_STATS_URL", STATS_URL)
+    body = _get(client, repo["repo_id"]).json()
+    assert body["replicas"] == []
+    assert body["stats"] == {"state": "not_read", "reason": "not_configured"}
 
 
 # --------------------------------------------------------------------------

@@ -1,0 +1,30 @@
+# Lane DAYONE-IDENTITY-3 (part of #2688; audit #22): the Directory API that
+# stage 8 calls. apps/swarm-install/swarm_install/steps/identity.py reads the
+# customer id, lists admin roles and assigns the Groups Reader role through
+# admin.googleapis.com with the project as quota project, so the API is enabled
+# on that project. foundations.core_apis builds stage 1's API list from the
+# core `api.*` entries with a `service_enabled` probe, so this entry is the
+# whole change: foundations.apis enables it with the others.
+version: 1
+entries:
+- id: api.admin
+  kind: gcp-api
+  scope: core
+  stage: 1
+  provider: engine
+  check: gcloud services list --enabled --project=$P --filter=config.name=admin.googleapis.com
+  apply: 'NEW: added to the canonical API list'
+  verify: identity.groups and identity.groups-reader-role read the customer id and the admin roles through the Directory API instead of opening the Admin console
+  explain: Stage 8 reads the customer id and assigns the Groups Reader role through the Directory API, billed to this project (x-goog-user-project); a disabled API answers 403 and the step falls back to the Admin console.
+  guards: null
+  secret_entry: null
+  depends_on:
+  - other.billing-link
+  evidence:
+  - apps/swarm-install/swarm_install/steps/identity.py
+  notes: In none of the three API lists today; enabled by stage 1 through foundations.core_apis.
+  probe:
+    type: service_enabled
+    name: admin.googleapis.com
+  step: foundations.apis
+  new: true

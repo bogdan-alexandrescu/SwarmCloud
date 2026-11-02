@@ -82,6 +82,8 @@ END_CAUSES = [
     "child_cascade",
     # Contract request 118 (#2459): the worker stopped the agent on its budget.
     "budget_exceeded",
+    # Contract request 126 (#2509): a fix loop's rounds ended without a MERGE.
+    "fix_loop_exhausted",
 ]
 
 
@@ -136,7 +138,7 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
         "runner_error", "timeout", "lost_worker", "could_not_start", "inputs_unavailable",
         "outputs_missing", "dispatch_failed", "spec_signature_invalid",
         "verdict_refused", "verdict_failed", "merge_refused", "merge_failed",
-        "publish_refused", "budget_exceeded",
+        "publish_refused", "budget_exceeded", "fix_loop_exhausted",
         "other", "no_reason", "intended",
     ]
     # Its own class, never "other" or "runner error": every one is a tenant's
@@ -169,7 +171,19 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
     # It is served in the vocab in its fixed place, after publish_refused.
     served = [c["key"] for c in outcomes.VOCAB["failure_classes"]]
     assert served.index("budget_exceeded") == served.index("publish_refused") + 1
-    assert served.index("budget_exceeded") + 1 == served.index("other")
+    # Contract request 126, BGD 2026-10-27: a fix loop that ended without a
+    # MERGE is a failure of the work, not of the platform: its own class,
+    # never "runner error" (every round ran) or "other".
+    # MUTATION: leave FIX_LOOP_EXHAUSTED out of `_FAILURE_OF_CAUSE` and
+    # `test_every_end_cause_has_exactly_one_class` fails; map it to
+    # "runner_error" and this fails.
+    assert dict(outcomes.FAILURE_CLASSES)["fix_loop_exhausted"] == "fix loop exhausted"
+    assert outcomes._FAILURE_OF_CAUSE["fix_loop_exhausted"] == "fix_loop_exhausted"
+    assert outcomes.classify_failure(
+        "FAILED", "fix_loop_exhausted: stopped", None, end_cause="fix_loop_exhausted") == "fix_loop_exhausted"
+    # After the budget stop and before "other" in the served vocab.
+    assert served.index("fix_loop_exhausted") == served.index("budget_exceeded") + 1
+    assert served.index("fix_loop_exhausted") + 1 == served.index("other")
     assert dict(outcomes.FAILURE_CLASSES)["inputs_unavailable"] == "inputs unavailable"
     assert [k for k, _ in outcomes.CANCEL_CAUSES] == [
         "requested", "after_failure", "after_cancel", "workflow_sweep", "child_cascade", "other",

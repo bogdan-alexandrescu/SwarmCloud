@@ -48,7 +48,8 @@ describe('G: an agent is named from what it is', () => {
       expect(r).not.toBeNull()
       return r!
     })
-    expect(row.querySelector('.cr-name b')?.textContent).toBe('mock agent · 108ef29c')
+    // The kind; the id is printed once, on the line under it (QA1-FIX-07, overview-agents-14).
+    expect(row.querySelector('.cr-name b')?.textContent).toBe('mock agent')
     expect(row.querySelector('.cr-name b')?.getAttribute('title')).toBe('task_108ef29c')
   })
 

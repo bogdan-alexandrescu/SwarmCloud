@@ -111,7 +111,7 @@ async function load() {
   return import('../WorkspaceSettings')
 }
 
-const parts = () => screen.getByRole('navigation', { name: 'Workspace Settings' })
+const parts = () => screen.getByRole('tablist', { name: 'Workspace Settings' })
 const stepEl = (name: string) => document.querySelector(`[data-step="${name}"]`) as HTMLElement
 
 afterEach(() => {
@@ -135,9 +135,9 @@ describe('Config › Workspace Settings: its settings and its Workspace setup pa
     expect(visible(ws)).toContain('eng')
     expect(visible(ws)).toContain('member')
     // MUTATION: leave Workspace setup out of the page's parts, or point it at the old Work › Setup -> fails.
-    const setup = within(parts()).getByRole('link', { name: 'Workspace setup' })
+    const setup = within(parts()).getByRole('tab', { name: 'Workspace setup' })
     expect(setup.getAttribute('href')).toBe('/config/workspace/setup')
-    expect(within(parts()).getByRole('link', { name: 'Settings' }).getAttribute('aria-current')).toBe('page')
+    expect(within(parts()).getByRole('tab', { name: 'Settings' }).getAttribute('aria-current')).toBe('page')
   })
 
   it('draws the setup checklist as its Workspace setup part, with no heading of its own', async () => {
@@ -150,7 +150,7 @@ describe('Config › Workspace Settings: its settings and its Workspace setup pa
     const h1s = [...document.querySelectorAll('h1')].map((h) => visible(h))
     expect(h1s).toEqual(['Workspace Settings'])
     // MUTATION: mark the wrong part current -> fails.
-    expect(within(parts()).getByRole('link', { name: 'Workspace setup' }).getAttribute('aria-current')).toBe('page')
+    expect(within(parts()).getByRole('tab', { name: 'Workspace setup' }).getAttribute('aria-current')).toBe('page')
     // MUTATION: keep the old head's "Access" button -> fails (it named a page that is GitHub access now).
     expect(screen.queryByRole('link', { name: 'Access' })).toBeNull()
   })
@@ -221,7 +221,7 @@ describe('Add a new workspace: a platform admin\'s part only', () => {
     const { WorkspaceSettingsScreen } = await load()
     render(<WorkspaceSettingsScreen part="new" />)
     // MUTATION: drop the admin's third part -> fails.
-    const tab = await within(parts()).findByRole('link', { name: 'Add a new workspace' })
+    const tab = await within(parts()).findByRole('tab', { name: 'Add a new workspace' })
     expect(tab.getAttribute('href')).toBe('/config/workspace?part=new')
     expect(tab.getAttribute('aria-current')).toBe('page')
     // S6c: the form is on the page, beside what creating it does; no dialog to open first.
@@ -254,7 +254,7 @@ describe('Add a new workspace: a platform admin\'s part only', () => {
     await waitFor(() => expect(calls.some((c) => c.url === '/v1/profile')).toBe(true))
     await screen.findByText(/for platform admins/)
     // MUTATION: show the part to everyone -> fails.
-    expect(within(parts()).queryByRole('link', { name: 'Add a new workspace' })).toBeNull()
+    expect(within(parts()).queryByRole('tab', { name: 'Add a new workspace' })).toBeNull()
     // MUTATION: draw the form for a member who types the address -> fails.
     expect(screen.queryByRole('button', { name: 'Create workspace' })).toBeNull()
     expect(screen.queryByRole('heading', { name: 'New workspace' })).toBeNull()
@@ -268,7 +268,7 @@ describe('Add a new workspace: a platform admin\'s part only', () => {
     const { WorkspaceSettingsScreen } = await load()
     render(<WorkspaceSettingsScreen part="settings" />)
     // MUTATION: draw the part before the read says the caller is a platform admin -> fails.
-    expect(within(parts()).queryByRole('link', { name: 'Add a new workspace' })).toBeNull()
+    expect(within(parts()).queryByRole('tab', { name: 'Add a new workspace' })).toBeNull()
   })
 })
 

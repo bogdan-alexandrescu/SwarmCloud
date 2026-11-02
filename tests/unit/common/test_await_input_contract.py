@@ -135,7 +135,7 @@ def test_a_control_plane_profile_refuses_what_only_a_runner_reads(field_name, ov
 
 def test_every_profile_that_runs_is_not_control_plane():
     """The default is False, and no existing profile changed."""
-    assert {name for name, p in RUNNER_PROFILES.items() if p.control_plane} == {"await-input"}
+    assert {name for name, p in RUNNER_PROFILES.items() if p.control_plane} == {"await-input", "fix-loop"}
     assert next(f for f in dataclasses.fields(RunnerProfile) if f.name == "control_plane").default is False
 
 

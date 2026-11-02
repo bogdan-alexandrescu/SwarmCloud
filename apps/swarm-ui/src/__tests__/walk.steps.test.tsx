@@ -174,19 +174,13 @@ describe('A: the sampling chip is in the table head row, inside the card', () =>
     expect(wrap.closest('.wf-card')).not.toBeNull()
   })
 
-  it('heads the Steps table under the Graph with its own head row, directly above the table', async () => {
+  // MUTATION: draw the Steps table under the Graph again: the Graph tab and
+  // the Table tab show the same rows twice (visual QA pass 1 overview-agents-73, #2596).
+  it('draws no Steps table under the Graph: the rows are the Table tab’s', async () => {
     window.history.replaceState(null, '', `/workflows/${WF}`)
     render(<App />)
-    const head = await waitFor(() => {
-      const h = document.querySelector<HTMLElement>('.wf-card .wfp-steps .wf-table-head')
-      expect(h).not.toBeNull()
-      return h!
-    })
-    expect(head.querySelector('h3')?.textContent).toBe('Steps')
-    // The table sits in the box its stacked form asks about (D12), and that
-    // box is the head row's next sibling: nothing is drawn between them.
-    const box = head.nextElementSibling
-    expect(box?.classList.contains('wf-table-box')).toBe(true)
-    expect(box?.firstElementChild?.classList.contains('wf-table')).toBe(true)
+    await waitFor(() => expect(document.querySelector('.wf-card .wf-canvas')).not.toBeNull())
+    expect(document.querySelector('.wfp-steps'), 'a step table under the graph').toBeNull()
+    expect(document.querySelector('.wf-card .wf-table'), 'the graph tab draws the table').toBeNull()
   })
 })

@@ -72,7 +72,7 @@ describe('QA-004: a refresh that cannot be pressed yet is still legible', () => 
 describe('QA-031: the refresh is named with the words it shows, first', () => {
   const cases: { label: string; props: Partial<Parameters<typeof RefreshControl>[0]>; shows: string }[] = [
     { label: 'a polling screen', props: { cadence: { base: 5_000, wait: 5_000 } }, shows: 'every 5 s · read 0 s ago' },
-    { label: 'a screen read once', props: {}, shows: 'read 0 s ago' },
+    { label: 'a screen read once', props: {}, shows: 'read once · 0 s ago' },
     { label: 'a backing-off poll', props: { cadence: { base: 5_000, wait: 20_000 } }, shows: 'every 20 s, backing off · read 0 s ago' },
     { label: 'a stale poll', props: { cadence: { base: 30_000, wait: 30_000 }, stale: true }, shows: 'not refreshed · every 30 s · read 0 s ago' },
   ]

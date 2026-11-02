@@ -260,7 +260,26 @@ def resolve_runtime_policy(
 #: left out (`min_lines` 300, `risk_paths` `reviewgate.DEFAULT_RISK_PATHS`). Not a typed
 #: field, for the reason `metadata.runtime` is not: `swarm_common` is frozen.
 REVIEW_GATE_METADATA_KEY = "review_gate"
-REVIEW_GATE_KEYS = ("min_lines", "risk_paths")
+REVIEW_GATE_KEYS = ("min_lines", "risk_paths", "requirements_check")
+#: EVERY REVIEW STEP IS GATED BY DEFAULT (BGD 2026-10-28, page M8: "every
+#: review step"). A step another step's `when` reads a verdict from is a
+#: review; one whose metadata names no `review_gate` is stored with this
+#: block (`default_review_gate_steps`, stamped by `submit_workflow`), and
+#: swarm-api resolves it when it decides: the workspace's
+#: `workspace_settings/{tenant}.review_gate` when one is set, else the
+#: platform's (`min_lines` 300, `reviewgate.DEFAULT_RISK_PATHS`). Why a
+#: default and not opt-in: the #2524 week reviewed every change however
+#: small, and a review a step has to ask to have gated is one nobody gates.
+#: A step that names its own block keeps it; `"review_gate": false` switches
+#: the gate off for that step, and its review always runs. Never accepted
+#: from a caller (it is not in `REVIEW_GATE_KEYS`).
+REVIEW_GATE_DEFAULT_BLOCK: Mapping[str, Any] = MappingProxyType({"default": True})
+#: An issue run's requirements check (#2524, BGD 2026-10-28 ~18:25Z): a step
+#: carrying `review_gate.requirements_check` is held like a gated review and
+#: runs ONLY when the review it stands beside is skipped
+#: (`reviewgate.is_requirements_check`). It follows the default policy, as
+#: that review does, unless it names its own.
+REVIEW_GATE_REQUIREMENTS_CHECK = "requirements_check"
 #: BGD's value, read by `reviewgate.DEFAULT_MIN_LINES`.
 REVIEW_GATE_DEFAULT_MIN_LINES = 300
 #: Bounds on what a caller may write: a gate is a short list of globs, and
@@ -317,6 +336,10 @@ def _checked_review_gate(
             detail={**where, "field": field},
         )
     raw = metadata[REVIEW_GATE_METADATA_KEY]
+    if raw is False:
+        # The gate switched off for this step: nothing is stored, and the
+        # default is not stamped either (`default_review_gate_steps`).
+        return None
     if not isinstance(raw, Mapping) or not set(raw) <= set(REVIEW_GATE_KEYS):
         unknown = sorted(set(raw) - set(REVIEW_GATE_KEYS)) if isinstance(raw, Mapping) else None
         raise ReviewGateInvalid(
@@ -332,7 +355,18 @@ def _checked_review_gate(
             f"{REVIEW_GATE_MAX_MIN_LINES}",
             detail={**where, "field": f"{field}.min_lines"},
         )
+    check = raw.get(REVIEW_GATE_REQUIREMENTS_CHECK, False)
+    if not isinstance(check, bool):
+        raise ReviewGateInvalid(
+            "metadata.review_gate.requirements_check must be true or false",
+            detail={**where, "field": f"{field}.{REVIEW_GATE_REQUIREMENTS_CHECK}"},
+        )
+    if check and not set(raw) - {REVIEW_GATE_REQUIREMENTS_CHECK}:
+        # A check naming no policy follows the default, as its review does.
+        return {**REVIEW_GATE_DEFAULT_BLOCK, REVIEW_GATE_REQUIREMENTS_CHECK: True}
     out: dict[str, Any] = {"min_lines": min_lines}
+    if check:
+        out[REVIEW_GATE_REQUIREMENTS_CHECK] = True
     if "risk_paths" in raw:
         paths = raw["risk_paths"]
         if (not isinstance(paths, list) or not paths
@@ -347,6 +381,47 @@ def _checked_review_gate(
             )
         out["risk_paths"] = [p.strip() for p in paths]
     return out
+
+
+def default_review_gate_steps(
+    steps: Sequence[Any], workflow_metadata: Mapping[str, Any] | None = None,
+) -> frozenset[str]:
+    """The steps stored with `REVIEW_GATE_DEFAULT_BLOCK`: every review step that names no gate.
+
+    A review is a step another step's `when` reads a verdict from (#264):
+    the fix, the gated integrator, the re-review. Left out: a step whose own
+    metadata, or the workflow's, names `review_gate` at all -- its own block
+    wins, and `false` is the gate switched off. `steps` are
+    `WorkflowStepCreate`s (`step_id`, `when`, `metadata`).
+    """
+    targets = {
+        step.when.step for step in steps if getattr(step, "when", None) is not None
+    }
+    shared = REVIEW_GATE_METADATA_KEY in (workflow_metadata or {})
+    return frozenset(
+        step.step_id for step in steps
+        if step.step_id in targets and not shared
+        and REVIEW_GATE_METADATA_KEY not in (getattr(step, "metadata", None) or {})
+    )
+
+
+def requirements_check_steps(steps: Sequence[Any]) -> frozenset[str]:
+    """The steps that are an issue run's requirements check (`REVIEW_GATE_REQUIREMENTS_CHECK`).
+
+    Not merged by an integrator: the check is read-only, its deliverable is
+    `requirements.json`, and when the review runs it runs no agent and
+    pushes no branch at all.
+    """
+    return frozenset(
+        step.step_id for step in steps
+        if _mapping_or_empty(_mapping_or_empty(getattr(step, "metadata", None))
+                             .get(REVIEW_GATE_METADATA_KEY)).get(REVIEW_GATE_REQUIREMENTS_CHECK)
+        is True
+    )
+
+
+def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def validate_runner_profile(name: str) -> RunnerProfile:
@@ -1256,6 +1331,22 @@ DISPATCH_CARRIERS = ("checkpoints", "branches")
 DEFAULT_STRATEGY = "collect"
 DEFAULT_CARRIER = "checkpoints"
 
+#: The workflow switches (the owner's experiment, 2026-11-01): a spec's
+#: `dispatch` map may set any of these to `on` or `off`, and every step of the
+#: dispatch obeys them. They are on/off words that name no image, command,
+#: resource spec or backend (invariant 10), and they only NARROW what the
+#: workspace's and repository's stored settings allow, save that
+#: `code_intelligence: on` takes the step out of the graph-context A/B and
+#: `jev_judgments: on` runs the worker's Jev judgments outside a live-browser
+#: attempt, both only where the stored settings say on. Written inside the
+#: signed `dispatch` block (`swarm_common.specsign.SIGNED_METADATA_KEYS`),
+#: and only the keys the spec set: an absent map stores exactly the block it
+#: stored before. The worker spells them in `agent_worker.graphstage`
+#: (`SWITCH_CODE_INTELLIGENCE`), `agent_worker.qualitygates` (`SWITCH`) and
+#: `agent_worker.judge.attempt` (`SWITCH`).
+DISPATCH_SWITCHES = ("code_intelligence", "quality_gates", "jev_judgments")
+DISPATCH_SWITCH_VALUES = ("on", "off")
+
 #: The single key inside `task.metadata` this feature owns. One nested key
 #: rather than two flat ones because `metadata` is caller-supplied and free
 #: form: a caller who already sends `metadata.strategy` for their own purposes
@@ -1362,15 +1453,21 @@ START_PROBLEM_METADATA_KEY = "start_problem"
 OWNER_ANSWERS_METADATA_KEY = "owner_answers"
 
 #: Whose slot a service submission's task runs with (INDEX-CRED, part of
-#: #1041): `tenant` (the tenant's `-git` token) or `owner` (a personal
-#: tenant's owner's GitHub connection, `forge.service_slot`). Written only by
+#: #1041): `tenant` (the tenant's `-git` token), `owner` (a personal
+#: tenant's owner's GitHub connection, `forge.service_slot`) or
+#: `app_installation` (a platform service account's run on a repository whose
+#: owner has the GitHub App installed: the broker mints an installation token
+#: for it, SERVICE-APP-TOKEN). Written only by
 #: `SubmissionService._resolve_forge`, before the spec is signed, and read by
 #: `codec.forge_credential_source`: the slot name alone (`git-u-<hex>`) cannot
 #: tell the owner's connection run on the tenant's behalf from a person's
 #: own task, and a caller who set it would mislabel whose credential ran.
-#: Not signed (`swarm_common.specsign.SIGNED_METADATA_KEYS` is frozen): it is
-#: a label no worker acts on, and it says `owner` only beside a `git-u-`
-#: `forge_credential`, which IS signed.
+#: Not signed itself (`swarm_common.specsign.SIGNED_METADATA_KEYS` is
+#: frozen), and reserved from callers. The worker acts on it -- an
+#: `app_installation` run asks for an installation token -- but only once the
+#: task's spec signature has verified, so only a task the platform submitted
+#: and signed carries a label a worker obeys; `owner` appears only beside a
+#: `git-u-` `forge_credential`, which IS signed.
 FORGE_SOURCE_METADATA_KEY = "forge_credential_source"
 
 #: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
@@ -1492,7 +1589,11 @@ RESERVED_METADATA_KEYS = (
 #: written by no one yet: the lane that writes it (HW-API-ANSWER) decides how
 #: it is served, and moves it into that tuple with the parity test's entry.
 #: Until then nothing a caller sends can reach the store under it.
-REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY,)
+#: `timeout_seconds_asked` (contract request 131) is a top-level `Task`
+#: field written only by swarm-api, never a metadata key; it is refused here
+#: so a caller cannot plant a look-alike record under `metadata`.
+TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
+REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY, TIMEOUT_ASKED_FIELD)
 
 #: An agent's blocking question (lane AU-7, docs/design/agent-autonomy.md
 #: §3.9): the wait swarm-api adopts from the worker's park into
@@ -1689,7 +1790,10 @@ def check_repository_ref(value: str | None) -> str | None:
     F4). The worker treats 7-40 lowercase hex as a sha and only a full one can
     be fetched, so 7-39 is refused here, before anything holds capacity. A
     branch or tag name -- anything the worker passes to `--branch` -- and a
-    full sha are accepted unchanged.
+    full sha are accepted unchanged here. Whether a branch or tag name exists
+    is asked of the forge once per submission afterwards
+    (`SubmissionService._check_ref_exists`, #2726), which refuses it with
+    `RepositoryRefNotFound` and fails open.
     """
     if not value:
         return value
@@ -1701,6 +1805,80 @@ def check_repository_ref(value: str | None) -> str | None:
             detail={"field": "repository_ref", "repository_ref": value},
         )
     return value
+
+
+class RepositoryRefNotFound(ValidationFailed):
+    """422 `repository_ref_not_found`: the forge has neither a branch nor a tag
+    of that name in a repository it can read (#2726)."""
+
+    code = "repository_ref_not_found"
+
+
+#: `swarm/<task id>`: the branch a `direct-pr` task or an integrator pushed
+#: (`continuation.TASK_ID_RE`, restated: continuation imports this module).
+_SWARM_TASK_BRANCH_RE = re.compile(r"^swarm/(?P<task_id>task_[0-9a-f]{20})$")
+
+
+def ref_needs_lookup(value: str | None) -> bool:
+    """Whether `repository_ref` is a branch or tag name the forge is asked about.
+
+    Not when absent (the default branch is cloned), and not a full sha, which
+    the worker fetches by sha. An abbreviated sha never gets here:
+    `check_repository_ref` refused it first.
+    """
+    if not value:
+        return False
+    return not (_WORKER_SHA_RE.match(value) and len(value) == _FULL_SHA_LENGTH)
+
+
+def swarm_task_of_ref(value: str) -> str | None:
+    """The task id a `swarm/<task id>` branch names, else None."""
+    match = _SWARM_TASK_BRANCH_RE.match(value)
+    return match.group("task_id") if match else None
+
+
+def repository_ref_not_found(
+    value: str,
+    repository: str,
+    *,
+    task_id: str | None = None,
+    pull_request: int | None = None,
+    pull_state: str | None = None,
+    default_branch: str | None = None,
+) -> RepositoryRefNotFound:
+    """The refusal of a `repository_ref` the forge does not have.
+
+    `task_id` only for a task of the CALLER's tenant (the caller checks):
+    another tenant's task is never named, so a guess at its id learns only the
+    generic sentence. `pull_state` is "merged", "closed" or "open" when the
+    pull request was read, None when it was not.
+    """
+    base = default_branch or "the default branch"
+    detail: dict[str, Any] = {"field": "repository_ref", "repository_ref": value,
+                              "repository": repository}
+    if task_id is None:
+        return RepositoryRefNotFound(
+            f"repository_ref {value!r} is neither a branch nor a tag of {repository}; "
+            f"it may have been deleted. Send an existing branch or tag, a full "
+            f"{_FULL_SHA_LENGTH}-character sha, or no repository_ref to start from {base}.",
+            detail=detail,
+        )
+    detail["task_id"] = task_id
+    if pull_request is None:
+        what = f"the branch task {task_id!r} published"
+    else:
+        detail["pull_request"] = pull_request
+        state = {"merged": "was merged", "closed": "was closed"}.get(pull_state or "")
+        what = (f"the branch of task {task_id!r}'s pull request #{pull_request}"
+                + (f", which {state}" if state else ""))
+    return RepositoryRefNotFound(
+        f"repository_ref {value!r} is {what}, and it is no longer a branch of "
+        f"{repository} (GitHub deletes a merged pull request's branch when the "
+        f"repository is set to). To add to that work, send continues_task: "
+        f"{task_id!r} instead of repository_ref; to build on what was merged, "
+        f"start from {base} (no repository_ref).",
+        detail=detail,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1945,6 +2123,9 @@ class DispatchOptions:
     #: `publishtopr.resolve` read it from GitHub at submission; empty on every
     #: other dispatch. The worker derives the branch from the task id.
     publish_to_pr: tuple[tuple[str, Any], ...] = ()
+    #: `(switch, "on" | "off")` for each `DISPATCH_SWITCHES` key the spec's
+    #: `dispatch` map set, in that order (2026-11-01); empty when it set none.
+    switches: tuple[tuple[str, str], ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -2134,6 +2315,10 @@ class DispatchOptions:
         # spells the key `agent_worker.publishpr.FIELD`.
         if self.publish_to_pr:
             block["publish_to_pr"] = dict(self.publish_to_pr)
+        # Only the switches the spec set (2026-11-01), so a spec without a
+        # `dispatch` map stores exactly the block it stored before.
+        for name, value in self.switches:
+            block[name] = value
         return block
 
 
@@ -2296,6 +2481,13 @@ _RESERVED_BECAUSE = {
         "the platform. Declare the wait as the step's own `await_input` field "
         "(POST /v1/workflows) instead."
     ),
+    TIMEOUT_ASKED_FIELD: (
+        f"metadata.{TIMEOUT_ASKED_FIELD} is reserved: the task's "
+        f"`{TIMEOUT_ASKED_FIELD}` records the timeout a spec asked for when this "
+        "service stored a lower one, written only by the platform. Ask with the "
+        "top-level `timeout_seconds` instead; it may only shorten the runner "
+        "profile's own."
+    ),
     AFTER_PRS_METADATA_KEY: (
         f"metadata.{AFTER_PRS_METADATA_KEY} is reserved: it records the pull "
         "requests a workflow waits for, written from the spec's `after` and then "
@@ -2422,12 +2614,39 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     )
 
 
+def resolve_dispatch_switches(value: Any) -> tuple[tuple[str, str], ...]:
+    """A spec's `dispatch` map as `DispatchOptions.switches`, or a refusal
+    naming the accepted switches and values. None (no map) is no switch."""
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise DispatchOptionError(
+            "dispatch is a map of switches, each `on` or `off`; accepted switches are "
+            + ", ".join(DISPATCH_SWITCHES),
+            detail={"accepted_switches": list(DISPATCH_SWITCHES),
+                    "accepted_switch_values": list(DISPATCH_SWITCH_VALUES)},
+        )
+    unknown = sorted(str(key) for key in value if key not in DISPATCH_SWITCHES)
+    if unknown:
+        raise DispatchOptionError(
+            f"unknown dispatch switch {unknown[0]!r}; accepted switches are "
+            + ", ".join(DISPATCH_SWITCHES),
+            detail={"accepted_switches": list(DISPATCH_SWITCHES), "unknown": unknown},
+        )
+    return tuple(
+        (name, _accepted_value(f"dispatch.{name}", value[name], DISPATCH_SWITCH_VALUES,
+                               "accepted_switch_values"))
+        for name in DISPATCH_SWITCHES if name in value
+    )
+
+
 def resolve_dispatch_options(
     *,
     strategy: Any,
     carrier: Any,
     scale: str,
     repository_url: str | None,
+    switches: Any = None,
 ) -> DispatchOptions:
     """Validate the pair and return it, or refuse with the accepted values named.
 
@@ -2449,6 +2668,7 @@ def resolve_dispatch_options(
                                  "accepted_strategies"),
         carrier=_accepted_value("carrier", carrier, DISPATCH_CARRIERS,
                                 "accepted_carriers"),
+        switches=resolve_dispatch_switches(switches),
     )
     if options.strategy == SINGLE_PR and scale != "workflow":
         raise DispatchOptionError(
@@ -3004,6 +3224,53 @@ def validate_step_routing(
     return plan
 
 
+def _is_agent_step(step: StepSpec) -> bool:
+    """A step whose profile runs an agent: not a worker action (post-verdict,
+    merge) and not a control-plane step (`await-input`). An unknown profile
+    counts as an agent; `validate_runner_profile` has refused it already."""
+    profile = RUNNER_PROFILES.get(step.runner_profile or "")
+    return profile is None or (profile.worker_action is None and not profile.control_plane)
+
+
+def reader_step_ids(steps: Sequence[StepSpec], *, strategy: str) -> frozenset[str]:
+    """The `direct-pr` agent steps that are readers: stored with
+    `allow_empty_diff` so an empty diff ends them SUCCEEDED `no_change` (#2662).
+
+    Under `direct-pr` the worker holds every step to opening a pull request,
+    and only `allow_empty_diff` (or `verification.md`) lets one that committed
+    nothing succeed. A step that another agent step `depends_on` (or stages a
+    file from through `input_from`) and that no step `builds_on` is a reader:
+    its dependants consume its artifacts, never its branch. A read-only review
+    that writes `review.md` and changes nothing did its job; failing it
+    `published_nothing:` swept the fix behind it (wf_ea38b900). If it does
+    commit, it still opens its pull request: the flag covers an empty diff
+    and nothing else.
+
+    Left out, keeping today's obligation:
+
+    * a step another step `builds_on` -- its branch is the deliverable the
+      builder clones (#1225);
+    * a step nothing depends on -- its pull request is the workflow's result;
+    * a step only a worker action or a control-plane step depends on -- the
+      merge step `plan_merge` appends under `direct-pr` merges the pull
+      request this step opens, so that step must open one;
+    * every step under any other strategy, which stores the block it did.
+    """
+    if strategy != "direct-pr":
+        return frozenset()
+    agents = [step for step in steps if _is_agent_step(step)]
+    built_on = {step.builds_on for step in steps if step.builds_on}
+    read = {
+        upstream
+        for step in agents
+        for upstream in (*step.depends_on, *step.input_from)
+    }
+    return frozenset(
+        step.step_id for step in agents
+        if step.step_id in read and step.step_id not in built_on
+    )
+
+
 # --------------------------------------------------------------------------
 # The `merge` step (contract request 47)
 # --------------------------------------------------------------------------
@@ -3376,6 +3643,20 @@ def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:
     if requested <= 0:
         raise ValidationFailed("timeout_seconds must be positive")
     return min(int(requested), profile.timeout_seconds)
+
+
+def timeout_asked(asked: int | None, *granted: int) -> int | None:
+    """`Task.timeout_seconds_asked` (contract request 131, "API records the ask").
+
+    The timeout the spec asked for when it is above any timeout this service
+    stores for the step (`granted`: its own, and its `code` alternate's on a
+    `browser_if_ui` step), else None. A RECORD ONLY: `validate_timeout` stays
+    the limit, and nothing reads this value as one (invariant 10); the worker
+    compares it with the timeout it runs under and reports the clamp.
+    """
+    if asked is None or not granted:
+        return None
+    return int(asked) if int(asked) > min(granted) else None
 
 
 

@@ -23,7 +23,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen, isDrasticCut } = await import('../AdminSettings')
+const { AdminSettingsScreen, isDrasticCut, poolSpoken } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 
@@ -91,14 +91,14 @@ async function open(name: string, cap: Capacity = capacity()): Promise<HTMLEleme
     expect(r).not.toBeNull()
     return r as HTMLElement
   }, WAIT)
-  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${name}` }))
+  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` }))
   const side = document.querySelector<HTMLElement>('aside.adm-side')
   expect(side, 'edit opened no side editor').not.toBeNull()
   return side!
 }
 
 function type(side: HTMLElement, value: string): void {
-  fireEvent.change(within(side).getByLabelText('Hard limit for tenant:eng'), { target: { value } })
+  fireEvent.change(within(side).getByLabelText('Hard limit for eng (workspace)'), { target: { value } })
 }
 
 function confirmField(side: HTMLElement): HTMLInputElement | null {
@@ -294,7 +294,7 @@ describe('Pool limits locks Edit for a non-admin (decided 2026-10-01)', () => {
       expect(r).not.toBeNull()
       return r as HTMLElement
     }, WAIT)
-    const edit = within(row).getByRole('button', { name: 'Edit ceiling for tenant:eng' }) as HTMLButtonElement
+    const edit = within(row).getByRole('button', { name: 'Edit ceiling for eng (workspace)' }) as HTMLButtonElement
     expect(edit.disabled).toBe(false)
     expect(edit.getAttribute('aria-disabled')).toBeNull()
     expect(screen.queryByText(/Admins only/)).toBeNull()

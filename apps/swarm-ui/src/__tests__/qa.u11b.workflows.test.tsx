@@ -132,7 +132,8 @@ function rowFits(rows: readonly HTMLTableRowElement[], env: CascadeEnv & { conta
 }
 
 describe('N1: a step row never prints over the next one', () => {
-  for (const path of [`/workflows/${WF}/table`, `/workflows/${WF}`]) {
+  // The table is the Table tab's alone: the Graph tab draws no rows under it (visual QA pass 1 overview-agents-73, #2596).
+  for (const path of [`/workflows/${WF}/table`]) {
     it(`at 1440 the table is a table, with no sideways scroll (${path})`, async () => {
       const wrap = await stepTable(path)
       const rows = tenLongRows(wrap)
@@ -276,7 +277,10 @@ describe('the graph: a picked node\'s card is scrolled to', () => {
     // land within ~530 ms of `render`, then the graph page's own render takes
     // another ~2.3 s before a node carries `is-picked` -- 1.9-3.4 s in all, and
     // red at 2000 ms both on CI (run 38581770106) and on that box.
-    await waitFor(() => expect(document.querySelector('.wf-canvas button.node.is-picked')).not.toBeNull(), {
+    // THE ARRIVAL PICK'S CARD, NOT ITS NODE (visual QA pass 2,
+    // overview-agents-63, #2694): the page's own pick no longer opens its
+    // folded stage, so the picked node is not on the canvas; its card is.
+    await waitFor(() => expect(document.querySelector('.wf-panel')).not.toBeNull(), {
       timeout: 10_000,
     })
     const node = document.querySelector<HTMLButtonElement>('.wf-canvas button.node:not(.is-picked)')!

@@ -453,13 +453,18 @@
 /* THE META LINE: profile · class · workflow · account, then the dispatch
    chips. Sans; a `·` between facts, none before the copy
    button or the chips. */
-.ag-head-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0; list-style: none; min-width: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.ag-head-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0; list-style: none; min-width: 0; overflow-x: clip; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .ag-head-facts > li { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-/* THE SEPARATOR ENDS A FACT, IT DOES NOT START ONE (G2-20, QA 2026-10-07):
-   as each fact's `::before`, a fact that wrapped on a phone took its dot to
-   the head of the next line (`· workflow wf_…`). AgentSplit `AgHeadMeta`
-   marks every fact but the last with `data-sep`. */
-.ag-head-facts > li[data-sep]::after { content: "·"; margin-inline-start: 3px; color: var(--text-dim); }
+/* A SEPARATOR ONLY BETWEEN TWO FACTS ON ONE LINE (QA1-FIX-32,
+   overview-agents-27). As each fact's `::after` (G2-20) every wrapped line
+   ended on a dot (`account not read ·`); as a plain `::before` every wrapped
+   line began with one (`· workflow wf_…`). The dot opens every fact but the
+   first (`AgHeadMeta` marks them `data-sep`) and is hung in the 8px gap
+   before it: its width is that gap, and its margins take back the gap and
+   the fact's own 5px. A fact that opens a line has that gap outside the list,
+   which clips its inline overflow (`overflow-x: clip` above), so that dot is
+   not drawn and no line starts or ends with one. */
+.ag-head-facts > li[data-sep]::before { content: "·"; flex: none; width: 8px; margin-inline: -8px -5px; text-align: center; color: var(--text-dim); }
 /* The dispatch chips wrap as chips, and the `?` stays with the last one. */
 .ag-head-facts > li.ag-head-dispatch { flex-wrap: wrap; }
 .ag-head-dlast { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -494,8 +499,9 @@
 }
 /* NO STICKY HEADER BAND IN THE SPLIT. `.drawer::before` is a 50px strip of
    `--bg` at z-index 3, there to seat a sticky ✕ over a drawer whose content
-   scrolls under it. This column does not scroll (its pane does) and its ✕
-   is in the actions row above, so the band only covered the header's top. */
+   scrolls under it. In this column only the tab strip sticks (AGENT-HEAD-B,
+   below) and its ✕ is in the actions row, which scrolls away with the head,
+   so the band would only cover the header's top. */
 .ag-split.ctl-drawer::before { display: none; }
 .ag-parent { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
@@ -520,9 +526,10 @@
 .ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; overflow-y: hidden; }
 
 /* --- the column: header, tabs, and the open tab -------------------------- */
-/* THE COLUMN DOES NOT SCROLL; ITS PANE DOES (walkthrough B, owner
-   2026-10-03). The header and tabs keep their height and the pane takes the
-   slack and scrolls inside it. Nothing is drawn under or over the pane: the
+/* ON A PHONE'S LOGS TAB THE COLUMN DOES NOT SCROLL; ITS PANE DOES
+   (walkthrough B, owner 2026-10-03; everywhere else the column scrolls as one
+   since G2-01 and AGENT-HEAD-B, below). The header and tabs keep their height
+   and the pane takes the slack and scrolls inside it. Nothing is drawn under or over the pane: the
    log that used to dock at the column's foot is the Logs tab (U11a, owner
    decision 2026-10-04). */
 .ag-split.ctl-drawer { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
@@ -533,6 +540,30 @@
    so the drawer's own `ctl-inspector` queries keep asking the drawer. */
 .ag-split > .ag-split-pane { container: ag-pane / inline-size; }
 .ag-split > .ctl-agent-back { align-self: flex-start; }
+/* THE HEAD SCROLLS AWAY ON DESKTOP TOO; THE TAB STRIP STICKS (AGENT-HEAD-B,
+   BGD's pick AH1 B, 2026-10-28; QA pass 1 overview-agents-30, part of #2596).
+   Held still above the pane, the head -- state, title, facts, Copy link,
+   Take control, Stop -- and the strip left 569px of tab at 1440x900 and 445
+   at 1280x800 (the AGENT-HEAD-MOCKS measures). G2-01's phone rule (below)
+   now holds above the phone: the COLUMN is the one scroller, the head goes
+   up with the tab, and the strip sticks at the column's edge (-18px, the
+   drawer's top padding, as QA-019 measured on the phone). Measured on the
+   mock, once the head has gone: 750px of tab at 1440x900, 650 at 1280x800.
+   The strip's layer is over the log's bar (`.ag-logs-bar`, 5), so More's
+   menu drops over it and nothing in the pane paints over the strip.
+   Logs, Changes and Browser keep their own scroller, one column less the
+   stuck strip tall: once the head has scrolled away they fill the column,
+   and the log's Follow moves only the log's body. The strip's height is
+   measured into `--ag-tabs-h` (AgentSplit.tsx); 57px, a one-row strip, is
+   the fallback until it is. The phone keeps G2-01 as it was, Logs and all. */
+@media (min-width: 561px) {
+  .ag-split.ctl-drawer { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+  .ag-split > .ag-split-pane { flex: none; overflow: visible; }
+  .ag-split > .ag-tabs-edge { position: sticky; top: -18px; z-index: 6; background: var(--bg); }
+  .ag-split > .ag-split-pane.is-logs,
+  .ag-split > .ag-split-pane.is-changes,
+  .ag-split > .ag-split-pane.is-browser { height: calc(100% + 18px - var(--ag-tabs-h, 57px)); }
+}
 /* THE COLUMN FITS THE SCROLLPORT, NOT THE VIEWPORT (U10a D7, owner QA
    2026-10-04). It was `100vh - dock-h` tall and sticky at top 0, but the
    page's `.app` has 16px of top padding (styles.css, `.sk-main > .ctl-scroll
@@ -565,6 +596,24 @@
      scrollport's foot and the column can stay 16px down to the last pixel. */
   .sk-main > .ctl-scroll > .app.has-inspector { padding-bottom: 0; }
   .app.has-inspector > .work { padding-bottom: 48px; }
+  /* ONE SCROLLER PER COLUMN (visual QA pass 2, ovag2-11 and overview-agents-55).
+     The list ran on down the page, so with an agent open the page scrolled
+     the list while the agent scrolled itself: two scrollbars side by side at
+     the right edge, 47px apart, each moving a different column, and a scrolled
+     list put the `Agents` heading under the sticky breadcrumb with its glyph
+     tops cut. The list is the agent's height and scrolls in its own column,
+     so the page has nothing to scroll and the heading leaves at the list's
+     top edge, below the breadcrumb, never under it. It scrolls one way only:
+     `overflow-y: auto` alone computes `overflow-x` as auto too, and a row's
+     `.when-note` 11px past the list's edge drew a horizontal bar along the
+     column's foot, a second scroller in the column (QA2-FIX-12 review). */
+  .app.has-inspector > .work {
+    max-height: calc(100vh - var(--dock-h, 28px) - var(--ctl-bar-h, 0px) - 16px);
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }
 /* --- the Logs tab (U11a, owner decision 2026-10-04) ---------------------- */
 /* THE WHOLE DETAIL AREA UNDER THE HEADER, AND NOTHING BENEATH IT. The pane
@@ -698,6 +747,12 @@
   .ag-logs-streams > button > .ag-logs-short { display: inline; }
 }
 .ag-logs-bar > .ag-logs-streams { align-self: center; }
+/* ONE SELECTED STYLE UNDER THE POINTER (QA1 overview-agents-35, 2026-10-28).
+   `.c-seg > button:hover:not(:disabled)` outranks the pressed rule, so the
+   stream just clicked, still under the pointer, lost its accent colour:
+   Transcript selected read blue, stderr selected read as bold body text.
+   The pressed button keeps its colour while hovered. */
+.ag-logs-streams.c-seg > button[aria-pressed='true']:hover:not(:disabled) { color: var(--sk-ac); }
 /* THE STREAMS IN TWO ROWS UNDER 260px (BT-009, #2423). Beside the live
    browser and in the theater's Logs panel the bar is 213px at 1440 and 180px
    at 1024; the four short labels need 238px in a row, and the segmented
@@ -852,6 +907,10 @@
    the window below is flush with the log's body. */
 .ag-logmeta { margin: var(--ctl-s2) 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .ag-logmeta > summary { cursor: pointer; padding: 2px 0; }
+/* NOTHING WRITTEN, SAID ABOVE THE FOLD (QA1 overview-agents-36): the body has
+   no top padding, so the sentence `Nothing on agent stderr yet.` sat on the
+   menu's rule. It takes the step the folded card under it takes. */
+.ag-logs-body .rf-empty { margin-top: var(--ctl-s2); }
 .ag-logs-body .logwin-body { max-height: none; }
 /* THE STREAM TABLE FITS THE LOG (owner QA R7, 2026-10-04): beside the 64px
    strip the detail is wide, the table is not stacked, and the row header's
@@ -898,6 +957,16 @@
 .ag-logs-body.is-wrap .ag-logtext { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ag-logline { display: block; }
 .ag-logno { display: inline-block; min-width: 4ch; margin-inline-end: 1ch; color: var(--text-faint); text-align: right; user-select: none; }
+/* WRAPPED, THE NUMBER HANGS IN A GUTTER (QA1-FIX-06 re-review, 2026-10-28).
+   A phone opens the log wrapped (overview-agents-38), and a stream-json line
+   has no space to break at: the break after the inline-block number won, so
+   `1` and `3` sat alone on a row with their JSON pushed under them. Floated
+   into the line's padding the number leaves no break of its own, the text
+   starts beside it, and its wrapped rows stay clear of the gutter. */
+.ag-logtext.is-wrap .ag-logline,
+.ag-logs-body.is-wrap .ag-logtext .ag-logline { padding-inline-start: 5ch; }
+.ag-logtext.is-wrap .ag-logno,
+.ag-logs-body.is-wrap .ag-logtext .ag-logno { float: inline-start; margin-inline-start: -5ch; }
 .ag-logline.is-err { background: var(--s-badb); }
 .ag-logline.is-current,
 .arts-step.is-current { outline: 2px solid var(--sk-ac); outline-offset: -1px; }
@@ -1141,7 +1210,12 @@
    (`.on-logs`), so the agent's head is always above the bar, and the menu
    opens over it instead. Off Logs it still drops: on a phone the strip is
    stuck at the column's top there, with nothing above it to open into. */
-.ag-split.on-logs > .ag-tabs-edge .ag-tabs-menu { top: auto; bottom: calc(100% + 4px); }
+/* ONLY ON A PHONE (AGENT-HEAD-B): above it the column scrolls on Logs too, so
+   the head may be gone from above the stuck strip and an upward menu would
+   open past the column's top, cut off. There it drops, over the log's bar. */
+@media (max-width: 560px) {
+  .ag-split.on-logs > .ag-tabs-edge .ag-tabs-menu { top: auto; bottom: calc(100% + 4px); }
+}
 .ag-tabs-edge[data-more~='end']::after,
 .ag-tabs-edge[data-more~='start']::before {
   position: absolute;

@@ -3,7 +3,7 @@
 THE DEFECT THIS REPLACES. Until 2026-09-25 the bridge found its deployment by
 reading `terraform/environments/<env>/<env>.tfvars` out of whatever checkout it
 was installed from, so every person who installed the `sc` plugin was pointed at
-https://swarm.saga.xyz -- the owner's deployment -- and anyone outside a
+the live deployment, the owner's own, and anyone outside a
 checkout was pointed at nothing. The owner's words: "the cluster deployment is
 now set to my account but could be different for other deployments. Shouldn't
 the plugin be configured by the user with the urls and other credentials
@@ -40,6 +40,11 @@ this list, so `sc whoami` can print which layer answered:
 
 SWARM_OAUTH_CLIENT_ID and SWARM_OAUTH_CLIENT_SECRET override the client of
 whichever layer answered, so CI can supply a secret without a file.
+
+THE PLUGIN NEEDS ONE VALUE (plan §6, D28). Layer 5 with only `deployment_url`
+set reads the deployment's discovery document (`discovery.py`) for the client
+id, the IAP audience and, when served, the secret. `oauth_client_id` and
+`oauth_client_secret` stay as optional settings, and a value set there wins.
 
 THE REPOSITORY IS READ ONLY IN DEVELOPER MODE. Layer 4 exists for the owner
 working inside this checkout, and is off unless SWARM_MCP_CONFIG_FROM=repo is
@@ -324,6 +329,19 @@ class Deployment:
     front_door: bool
     current: bool = False
     client_secret: str = field(default="", repr=False)
+    #: The audience of the API's IAP backend, from the discovery document.
+    iap_audience: str = ""
+    #: How the client checks plugin/deployment version skew (`discovery.py`):
+    #: SKEW_REQUIRED when the document supplied a value the user did not
+    #: configure, SKEW_CHECKED when every value was configured, "" for none.
+    skew: str = ""
+
+
+#: `Deployment.skew`: the plugin's one-value install, which cannot work
+#: without the discovery document, and a configured install, which checks
+#: skew whenever the document can be read.
+SKEW_REQUIRED = "required"
+SKEW_CHECKED = "checked"
 
 
 def validate_name(name: str) -> str:
@@ -378,7 +396,7 @@ def is_run_app(url: str) -> bool:
 def context_name_for(url: str) -> str:
     """A context name for an address nobody named: its host (and port, and path).
 
-    `https://swarm.saga.xyz` -> `swarm.saga.xyz`. Readable, stable, and one per
+    `https://swarm.example.com` -> `swarm.example.com`. Readable, stable, and one per
     deployment, which is all a name has to be.
     """
     parsed = urllib.parse.urlsplit(url)
@@ -696,10 +714,34 @@ def _plugin(environ: Mapping[str, str]) -> _Plugin | None:
 
 
 def plugin_deployment(
-    plugin: _Plugin, config: Config, *, env_id: str = "", env_secret: str = ""
+    plugin: _Plugin,
+    config: Config,
+    *,
+    env_id: str = "",
+    env_secret: str = "",
+    cache: Any = None,
 ) -> Deployment:
+    """The plugin's deployment. ONE VALUE IS ENOUGH (plan §6, D28): when the
+    user configured no client id, the deployment's discovery document supplies
+    it, its IAP audience and (only if the operator serves it) its secret. A
+    configured value always wins. A *.run.app address is a solo deployment,
+    which has no IAP and no document, and is never asked for one."""
     known = _by_url(config, plugin.url)
-    client_id = env_id or plugin.client_id or (known.oauth_client_id if known else "")
+    client_id = env_id or plugin.client_id
+    client_secret = env_secret or plugin.client_secret
+    iap_audience = ""
+    skew = ""
+    if not is_run_app(plugin.url):
+        from . import discovery
+
+        if client_id:
+            skew = SKEW_CHECKED
+        else:
+            client_id, client_secret, iap_audience = discovery.fill(
+                plugin.url, client_id="", client_secret=client_secret, cache=cache
+            )
+            skew = SKEW_REQUIRED
+    client_id = client_id or (known.oauth_client_id if known else "")
     return Deployment(
         context=known.name if known else context_name_for(plugin.url),
         url=plugin.url,
@@ -707,7 +749,9 @@ def plugin_deployment(
         source="the sc plugin's configuration (/plugin configure)",
         front_door=_front_door_for_configured(plugin.url, client_id),
         current=bool(known) and known.name == config.current,
-        client_secret=env_secret or plugin.client_secret,
+        client_secret=client_secret,
+        iap_audience=iap_audience,
+        skew=skew,
     )
 
 
@@ -739,7 +783,18 @@ def seed_from_plugin(environ: Mapping[str, str] | None = None, *, store: Any = N
         # A different deployment already holds the derived name; keep both.
         name = validate_name(f"{name}-plugin")
     existing = config.contexts.get(name)
-    client_id = plugin.client_id or (existing.oauth_client_id if existing else "")
+    # The one-value install's client id comes from the discovery document;
+    # seeding it lets `sc login` in a terminal find it. Not seeding it when the
+    # document cannot be read is the same best effort as the write itself.
+    discovered = ""
+    if not plugin.client_id and not is_run_app(plugin.url):
+        from . import discovery
+
+        try:
+            discovered = discovery.fill(plugin.url, client_id="", client_secret="")[0]
+        except discovery.DiscoveryUnreachable:
+            discovered = ""
+    client_id = plugin.client_id or discovered or (existing.oauth_client_id if existing else "")
     config.contexts[name] = Context(name=name, url=plugin.url, oauth_client_id=client_id)
     if config.current is None:
         config.current = name

@@ -130,7 +130,15 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 120 | `models.py` / `specsign.py`: `Task.budget` and `WorkflowStep.budget`, a step's budget as a typed, signed field (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): spec format 6; submission writes `Task.budget` and `WorkflowStep.budget`, and the worker and the API read `metadata.dispatch.budget` as the fallback for one release |
 | 121 | `states.py`: `EventType.BUDGET_WARNING`, the 80% warning as its own event type (BUDGET-CAP, part of #2459) | ACCEPTED by BGD 2026-10-26 (~22:15Z, answering BUDGET-CAP's questions on PR 2466; requested by lane BUDGET-CAP as 117-120 and renumbered: CF-ACCESS-TOKEN took 117 on main first). APPLIED 2026-10-27 by the pull request that adds this line (lane BUDGET-CONTRACT, part of #2459): the worker writes it; `codec.stored_event_type` reads the old `running` form as it for one release |
 | 122 | `models.py`: `Tenant.principal`'s comment gives a fictional example on the company's real domain (EXAMPLE-IDENTITIES, part of #1647) | open |
-| 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | PROPOSED for BGD |
+| 123 | `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals`, so a dispatch the platform refuses parks instead of spending attempts (PLATFORM-REFUSED, part of #1820) | ACCEPTED by the owner (BGD) 2026-10-28 (~11:10Z, after the eng Job-quota incident) and APPLIED 2026-10-28 by the pull request that adds this line (lane PLATFORM-REFUSED-APPLY, part of #1820): the enum member, the field, `PLATFORM_REFUSED_MAX_PARKS` and the edge LEASED -> PARKED. Per BGD's brief the backoff is 30 s doubling to at most 10 min (in the scheduler) and a task past the bound stays parked as trouble, never FAILED |
+| 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
+| 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
+| 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
+| 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | ACCEPTED by the owner 2026-10-31 and APPLIED by the pull request that adds this line (lane LIGHTPANDA-CONTRACT, part of #2688; BGD: "go with the recommended options", accept contract request 127). Its `terraform/infra/locals.tf` mirror lands in the same pull request once `agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing image digest (CLD for BGD, 2026-10-31) |
+| 128 | `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS`, `("jev",)`, so the workspace's switch for the claude-code lanes' TypeSafe quality checks is signed (JEV-LANES, PR 2905; QUALITY-GATES-SETTINGS-MAC, part of #2688) | ACCEPTED by the owner 2026-10-31 ('Add it (contract request)', answering PR 2905's first question) and APPLIED by the pull request that adds this line (lane QUALITY-GATES-SETTINGS-MAC): swarm-api's `qualitygates.QualityGatesStore` signs the block it writes, and `judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)` so the re-sign pass signs stored blocks |
+| 129 | `admission.py` / `models.py`: a lease takes 1 unit in each `provider:*` pool and its resource units in every other pool, records what it took per pool (`Lease.pool_units`), and release returns exactly that (LARGE-ONE-PROVIDER-SLOT, part of #2950) | ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the expected behaviour #2950 states) and APPLIED by the pull request that adds this line (lane LARGE-ONE-PROVIDER-SLOT, part of #2950): `pool_units_for` is the one rule; a lease from before it has no `pool_units` and releases its `units` from every pool |
+| 130 | `profiles.py`: `codex` becomes available, and runs on either the tenant's `OPENAI_API_KEY` or a pool ChatGPT plan (`CODEX_PLAN_ACCESS_TOKEN`, `CODEX_PLAN_ACCOUNT_ID`), `secrets_any_of=True` (CODEX-PLAN-CONTRACT, part of #2688) | ACCEPTED IN PART: accepted by the owner (BGD) 2026-11-01 with one change, "Accept, but keep codex unavailable until the pool lanes land", and APPLIED in part by the pull request that adds this line (lane CODEX-CONTRACT-APPLY): `codex` declares `OPENAI_API_KEY`, `CODEX_PLAN_ACCESS_TOKEN` and `CODEX_PLAN_ACCOUNT_ID` with `secrets_any_of=True`, with its `terraform/infra/locals.tf` `secret_env` mirror; it stays `available=False`, its `disabled_reason` saying it waits for the ChatGPT-plan pool, and a follow-up turns it on once the broker and runner lanes have merged |
+| 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("API records the ask", answering the pre-publish gate lane's question on #2981, PR 2986; requested the same day by lane TIMEOUT-ASKED-CONTRACT) and APPLIED by the pull request that adds this line (lane TIMEOUT-ASKED-APPLY, part of #2688): the field last in `Task`, unsigned; swarm-api writes it in `_build_task` and a child's `replace`, reads and serves it in its codec and refuses it in a caller's metadata; the console's `Task` type declares it |
 
 ---
 
@@ -14777,10 +14785,38 @@ None is touched: a comment decides nothing.
 
 ## 123. `states.py` / `models.py`: `ParkReason.PLATFORM_REFUSED` and `Task.platform_refusals` (PLATFORM-REFUSED, part of #1820)
 
-**Status:** PROPOSED 2026-10-27 for BGD by lane PLATFORM-REFUSED, on BGD's
-2026-10-27 triage decision on #1820 (epic #2525). Not applied:
-`apps/common/swarm_common/` is frozen, and a dedicated contract lane applies
-it after BGD accepts. The precise codes it parks on are built without it
+**Status:** ACCEPTED by BGD 2026-10-28 (~11:10Z) and APPLIED 2026-10-28 by
+the pull request that adds this status (lane PLATFORM-REFUSED-APPLY, part of
+#1820), after swarm-tenant-eng's Job quota (`count/jobs.batch` 240) filled
+with finished Jobs on 2026-10-28 ~09:30-11:15Z and 28 steps FAILED
+`gke_job_quota_exceeded`. Applied in `apps/common/swarm_common/`:
+`ParkReason.PLATFORM_REFUSED`, `Task.platform_refusals: int = 0`,
+`models.PLATFORM_REFUSED_MAX_PARKS = 5` and the transition LEASED -> PARKED
+(the failed-dispatch path parks an agent it found LEASED; no other edge was
+needed: PARKED -> READY, CANCELLED and DEAD_LETTERED already existed).
+
+**Two points of "The scheduler, once applied" below were REPLACED by BGD's
+brief of 2026-10-28, which applies the standing rule of 2026-09-14 ("never
+fail workflows when quotas are reached. just pause them and resume them when
+new quota is refreshed"):**
+
+* the backoff is 30 s doubling, held at 10 minutes (30 s, 1, 2, 4, 8, 10,
+  10, ...), not 1-16 minutes; it is `scheduler/store.py`
+  `platform_refusal_backoff`, so no `platform_refusal_backoff` was added to
+  `models.py`;
+* past `PLATFORM_REFUSED_MAX_PARKS` consecutive refusals the agent is NOT
+  ended FAILED: it stays PARKED/`PLATFORM_REFUSED`, retried every 10 minutes,
+  logged at ERROR as trouble (and listed by `swarm_trouble`, which lists every
+  park but DEPENDENCY_INCOMPLETE). The refusal never fails an agent.
+
+The rest is as written: the lease is released in the parking transaction,
+`attempt_count` is put back, `platform_refusals` is incremented, a successful
+dispatch resets it to 0, a sweep beside `_promote_scheduled_retries`
+(`_promote_platform_refusals`) promotes a due park, and each park counts in
+`swarm_scheduler_platform_refusals_total{code}`. The finished-Job TTL was
+shortened from 3600 s to 600 s by the same pull request (BGD, 2026-10-28).
+
+The text below is the request as it was proposed. The precise codes it parks on are built without it
 (`apps/scheduler/scheduler/dispatch.py` `forbidden_code`); the design is
 [docs/design/dispatch-refusals.md](design/dispatch-refusals.md).
 
@@ -14877,3 +14913,891 @@ affected agent in about `30 s × max_attempts`.
 1, 2 and 3 as above. 5 is untouched: the park is guarded on the lease and
 generation exactly as today's return is, and a later attempt carries a new
 generation.
+
+## 124. `profiles.py`: a `fix-loop` catalogue profile, `control_plane`, shipped unavailable (FL-CONTRACT, fix loop request A)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of
+[docs/design/fix-loop.md](design/fix-loop.md) §9: the loop is its own
+control-plane step, named `fix-loop`) and APPLIED by the pull request that
+adds this line (lane FL-CONTRACT, part of #2509). "What is true today" below
+is the state before it was applied.
+
+### What is true today
+
+A workflow's review-then-fix loop has no step of its own. A review that says
+NOT_YET ends the workflow (`verdict_not_merge`), and every further fix round
+is a new workflow (#2509). The catalogue's one `control_plane` profile is
+`await-input` (contract requests 93 and 94).
+
+### The change
+
+```python
+"fix-loop": RunnerProfile(
+    name="fix-loop",
+    image="agent-runtime-base",   # never pulled: control_plane
+    resource_class="standard",    # never reserved: control_plane
+    backend=Backend.CLOUD_RUN_JOB,
+    runner_argv=(),
+    control_plane=True,
+    provider=None,
+    secrets=(),
+    timeout_seconds=300,
+    inputs={},
+    available=False,
+    disabled_reason="fix-loop is not available yet: ...",
+),
+```
+
+mirrored in `terraform/infra/locals.tf` `runner_profiles`, and listed in
+`profiles_without_a_job` so no tenant gets a Job for it.
+`tests/terraform/catalogue.tftest.hcl` counts thirteen profiles and asserts
+no `-fix-loop` Job. It ships unavailable, as `await-input` did, until every
+build lane of the design's §8 has merged and FL-ACCEPT is green on dev;
+enabling it is then `available=True` and nothing else, a request of its own.
+
+### What it would break if accepted
+
+Nothing at once. swarm-api refuses an unavailable profile by name, so no
+caller can submit one before it is enabled. A reader that lists every
+profile shows one more, disabled, with its reason. A `runner:fix-loop` pool
+document is materialised, as for every profile.
+
+### If it is declined
+
+The loop has no step to live in, and Q1's (b) or (c) would have to be
+designed instead.
+
+### Invariants
+
+**10** holds: a caller names `fix-loop` by name and sends no image, command,
+resource or backend. **1** holds: nothing runs it, so it creates no demand,
+and its class is never reserved. **6** and **7** are untouched: no pod.
+**9** is untouched: no Job, no account, no secret.
+
+## 125. `states.py`: `ParkReason.FIX_ROUNDS_RUNNING` (FL-CONTRACT, fix loop request B)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of
+[docs/design/fix-loop.md](design/fix-loop.md) §9; Q2 (a) is this request)
+and APPLIED by the pull request that adds this line (lane FL-CONTRACT, part
+of #2509). "What is true today" below is the state before it was applied.
+
+### What is true today
+
+A PARKED agent says why through `ParkReason`. None of its members says "this
+control-plane step is waiting while steps it appended run". `HUMAN_REQUIRED`
+or `AWAITING_INPUT` with a phase would tell every reader -- `/sc check`, the
+console's "needs a person" group, the notification bell -- that a running
+loop waits for a person.
+
+### The change
+
+```python
+# states.py, class ParkReason
+#: A workflow's `fix-loop` step while its review-fix rounds run. Never
+#: promoted to READY by the scheduler; swarm-api ends it PARKED ->
+#: SUCCEEDED / FAILED / CANCELLED, and moves it to HUMAN_REQUIRED with a
+#: `park_phase` when a person is needed. Holds no capacity.
+FIX_ROUNDS_RUNNING = "FIX_ROUNDS_RUNNING"
+```
+
+* **Never promoted by the scheduler.** No sweep reads it; the scheduler
+  promotes by reason (`_parked_window`), so a reason no sweep names is never
+  made READY. FL-SCHED parks a READY `fix-loop` agent and never leases it.
+* **In no capacity set.** It rides on PARKED, which is in `PENDING_STATES`
+  and not in `CONCURRENCY_STATES`, and it is in no `PREWARM_REASONS`.
+* **Ended by swarm-api**: PARKED -> SUCCEEDED, FAILED or CANCELLED, every
+  edge already in `_ALLOWED`.
+* **Moved to `HUMAN_REQUIRED` with a `park_phase`** (`fix_loop_exhausted`,
+  ...) when a person is needed. Changing a park reason is a field write on a
+  PARKED agent, not a transition. By Q3 (c) that park expires after 7 days
+  and ends the loop FAILED `fix_loop_exhausted` (see request 126 for the
+  end cause).
+
+The readers that list every `ParkReason` gain the member in the same change,
+because `scripts/lib/check-contract-parity.sh` and the unit tests hold them to
+it: the console's `ParkReason` union, `PARK_REASONS`, `PARK_CLEARS_ITSELF`
+(the rounds end on their own) and `REASON_COPY` in
+`apps/swarm-ui/src/types.ts`, `PARK_WORD` in
+`apps/swarm-ui/src/components/StatePill.tsx`, and swarm-mcp's
+`progress._PARKED_BECAUSE` and `compact._WAITS_FOR`.
+
+### What it would break if accepted
+
+Nothing that reads today's values: a new enum member. A reader that switches
+over every `ParkReason` without the member would show the raw value; the
+readers above are given a label in the same change.
+
+### If it is declined
+
+Q2's (b) or (c): a running loop reads as waiting for a person everywhere a
+park is classified.
+
+### Invariants
+
+**1** is what it keeps: a `FIX_ROUNDS_RUNNING` park holds no lease, no pool
+count and no execution, and admission never sees it. **2** and **3** are
+untouched: nothing is reserved or counted. **4** holds: the rounds are steps
+of their own, each with its own worker, and the loop's step waits parked.
+
+## 126. `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126',
+answering the question lane FL-CONTRACT put on PR 2570) and APPLIED
+2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126,
+part of #2509). Requested 2026-10-27 by lane FL-CONTRACT, because BGD's Q3
+pick (c) did not decide whether the end is a new end cause or text under an
+existing one. Applied as written below: the member is appended after
+`BUDGET_EXCEEDED`, the outcome ledger classes it `fix_loop_exhausted`, its
+own failure class after `budget_exceeded` (DERIVE_VERSION 12, so every
+stored day is re-derived), and the console's `EndCause` union, `END_CAUSES`
+and `END_CAUSE_SAY` ("its fix loop ended without a merge") carry it, held to
+the enum by `scripts/lib/check-contract-parity.sh`. "What is true today"
+below is the state before it was applied.
+
+### What is true today
+
+BGD's Q3 (c) and §4.5 of the design end a loop FAILED `fix_loop_exhausted`:
+when a person answers "stop", and when the park for a person passes 7 days.
+`EndCause` (`models.py`) has no such member. Its closest are
+`runner_error` (a runner failed, which is not what happened: every round
+ran) and `verdict_refused` (the review's post was refused on the forge,
+which is not what happened either).
+
+### The change
+
+```python
+# models.py, class EndCause
+FIX_LOOP_EXHAUSTED = "fix_loop_exhausted"   # the fix loop's rounds ended without a MERGE
+```
+
+written only by swarm-api (FL-DRIVE's "stop" route) and the scheduler's
+`_expire_human_waits` (FL-SCHED), and classed by the outcome ledger as a
+failure of the work, not of the platform.
+
+### What it would break if accepted
+
+Nothing at once: a new member. The console's end-cause list and the outcome
+ledger's classes gain it in the same change, as request 118's
+`budget_exceeded` did.
+
+### If it is declined
+
+The loop ends FAILED with `last_error` beginning `fix_loop_exhausted:` under
+an existing end cause BGD picks, and every reader that wants to tell an
+exhausted loop from a crash reads text, which is the defect request 23 was
+accepted to end.
+
+### Invariants
+
+None is touched: an end cause records why, it decides nothing.
+
+## 127. `profiles.py`: a `claude-code-lightpanda` catalogue profile, DOM-only browser work on `standard` with no live browser (LIGHTPANDA-ANALYSIS)
+
+**Status:** ACCEPTED by the owner 2026-10-31 and APPLIED by lane
+LIGHTPANDA-CONTRACT (part of #2688), in the pull request that rewrote row 127
+of the index above: one literal entry in `RUNNER_PROFILES`, right after
+`claude-code-browser`, exactly as below, held equal to `claude-code` in every
+field but its name and image by
+`tests/unit/common/test_claude_code_lightpanda.py`. Its `terraform/infra/locals.tf`
+mirror waits for the image: it lands in the same pull request once
+`agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing
+image digest (CLD for BGD, 2026-10-31). Requested 2026-10-31 by
+lane LIGHTPANDA-ANALYSIS (part of #2688), answering BGD's ask of the same day
+to analyse Lightpanda as a runtime for browser agents and, if it adds value,
+design and build it. BGD said to go with the recommended options. This is
+decision B (2) of
+[`docs/design/lightpanda-runtime.md`](design/lightpanda-runtime.md) §5.
+
+### What is true today
+
+`claude-code-browser` (`RUNNER_PROFILES` in `profiles.py`) is the only profile with a
+browser. It is `live_browser=True` on the `browser` class, so every browser
+agent is one pod with a worker and a `display` sidecar (Xvfb and a headed
+Chromium, 2 CPU / 5 GiB of the class). Each agent leases a unit from
+`resource:browser`, which is 20 in prod against 100 for `standard`
+(`pool_limits.resource_classes` in the prod tfvars). That holds even when the
+work needs no pixels: reading pages, scraping, link checks, form flows.
+
+Measured on 2026-10-31 (§3 of the design;
+`docs/design/lightpanda-runtime/results.json`), Lightpanda 1.0.2 on 17 real
+pages returned the same links as headless Chromium on 16 of 17. Its medians
+against Chromium's were:
+
+* proportional memory: 48 against 454 MiB;
+* CPU: 0.30 against 4.61 s;
+* time to DOM ready: 253 against 470 ms.
+
+Ten pages at once took 183 MiB and 3.0 CPU-s, against 1,831 MiB and
+37.3 CPU-s. Lightpanda draws no pixels and loaded no iframe content, so it
+cannot replace the live browser. It can carry DOM-only work outside the
+`browser` pool.
+
+### The change
+
+```python
+# profiles.py, RUNNER_PROFILES, immediately after "claude-code-browser"
+    # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
+    # docs/design/lightpanda-runtime.md): claude-code's runner on
+    # agent-runtime-lightpanda, a headless browser that runs JavaScript and
+    # draws no pixels, for DOM-only browser work: reading, scraping, link
+    # checks, form flows. The `standard` class and one container: no display
+    # sidecar, no live view, no take-control, so `live_browser` stays False
+    # and the task leases `resource:standard`, not the scarce
+    # `resource:browser`. A page it cannot read goes to a claude-code-browser
+    # child the agent submits. A literal, not `replace()`, so
+    # tests/terraform/catalogue_mirror sees it (request 113's reason).
+    # GKE Autopilot, on-demand only (invariant 6).
+    "claude-code-lightpanda": RunnerProfile(
+        name="claude-code-lightpanda",
+        image="agent-runtime-lightpanda",
+        resource_class="standard",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # claude-code's; no browser_tool
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+    ),
+```
+
+Nothing else in `apps/common/swarm_common/` changes:
+
+* no new resource class (a smaller class would still be 1 unit, because of
+  the `units_for` floor);
+* no new `browser_tool` choice;
+* no `RUNTIME_TOOLS` entry (that table is keyed by `browser_tool` choices,
+  and this profile declares none);
+* no state, end cause or model field.
+
+### What it would break if accepted
+
+Nothing at once. A new profile with no Job and no pool is never dispatched.
+These mirrors must follow it, all listed with their lanes in §6 and §7 of the
+design:
+
+* `terraform/infra/locals.tf` `runner_profiles` (and so the
+  `runner:claude-code-lightpanda` pool);
+* the environments' `runner_profiles` pool limits;
+* the stream-file tuples in `runners/streams.py` and `agent_streams.py`;
+* the console's `Submit.tsx` and `api.ts` mirrors;
+* the parity section in `scripts/lib/check-contract-parity.sh`.
+
+`tests/terraform/catalogue.tftest.hcl` fails until `locals.tf` mirrors it,
+and so does the parity script's catalogue comparison. They are to land in
+the same wave.
+
+### If it is declined
+
+DOM-only browser work stays on `claude-code-browser`. It queues on the 20
+`browser` units and pays for a display it never shows. An agent that needs
+tens of pages at once pays Chromium's measured ~180 MiB and 3.7 CPU-s a page
+inside the display's 3-CPU limit.
+
+The alternatives are both worse:
+
+* a fifth `browser_tool` would change the frozen `browser_tool` choices
+  instead and save no capacity;
+* a `claude-code` input would put an AGPL binary in every claude-code image.
+
+### Invariants
+
+* **2 and 3:** the lease takes `runner:claude-code-lightpanda` with the
+  other pools, all or nothing, counted from LEASED.
+* **6:** GKE on-demand, no Spot.
+* **7:** the `standard` class already holds it (memory request = limit, CPU
+  4 ≤ 8 ≤ 2 × 4). There is one container, so no split.
+* **9:** the tenant's own GSA, secrets, prefix and namespace, as `claude-code`.
+* **10:** a caller names the profile. The image, the command and Lightpanda's
+  flags come from the catalogue and the runner.
+* **1, 4, 5, 8:** unchanged; the claude-code runner's checkpointing and
+  fencing are reused as they are.
+
+## 128. `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS` (JEV-LANES, QUALITY-GATES-SETTINGS-MAC, part of #2688)
+
+**Status:** ACCEPTED by the owner 2026-10-31 and APPLIED by lane
+QUALITY-GATES-SETTINGS-MAC (part of #2688), in the pull request that adds
+row 128 of the index above. Requested 2026-10-31 by lane JEV-LANES in the
+body of PR 2905 (merged 2026-10-31T22:37Z), whose first question the owner
+answered 'Add it (contract request)'. "What is true today" below is the
+state before it was applied.
+
+### What is true today
+
+`workspace_settings/{tenant_id}.quality_gates: {jev, set_at, set_by}` is
+written by `apps/swarm-api/swarm_api/qualitygates.py::QualityGatesStore`
+(owner, workspace admin or platform admin only, audited). With `jev` true
+the worker's `qualitygates.prepare` registers jev-belay and jev-enforce on
+a claude-code lane, keyed with the workspace's own TypeSafe key. No block of
+`SETTINGS_MAC_FIELDS` covers it, so it is not signed, and the worker acts on
+a stored `jev: true` whoever wrote it.
+
+### Why
+
+[tenant-settings-integrity.md](design/tenant-settings-integrity.md) §1.3:
+any tenant worker can write `workspace_settings/<B>`. A forged "on" sends
+B's lane text (the final reply, the edits, the CLAUDE.md rule files) to
+TypeSafe under B's own key, a key B's admin set for TypeSafe, without B's
+admin having chosen it for the lanes. Bounded -- nothing goes anywhere B's
+admin had not already pointed a key at -- but it is the same kind of write
+`code_intelligence.jev` is signed against.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "quality_gates": ("jev",),
+})
+```
+
+Only `jev` is covered: `set_at` and `set_by` are a record of who changed it,
+not something any reader acts on. Nothing else in `specsign.py` changes.
+`tests/unit/common/test_settings_block.py` gains the entry.
+
+### The follow-up once it is applied
+
+In the same pull request: `QualityGatesStore.put` stores
+`quality_gates.mac` (`judgment.block_mac`) whenever it writes the block, and
+reads the stored block through `judgment.trusted_block`, as
+`codeintel.CodeIntelligenceStore` does (PR 1330's `code_intelligence.jev`);
+`judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)`, so
+`scripts/resign-workspace-settings.sh` signs the blocks stored before it.
+The worker cannot check an HMAC whose key would let it sign any tenant's
+block, so the scheduler, which holds the key, vouches for it (the owner's
+pick on PR 2955, "Scheduler hands a verdict"): at each claude-code dispatch
+`scheduler.judgment.read_quality_gates_env` reads the attempt's own tenant's
+block, and both dispatchers write `SWARM_QUALITY_GATES_JEV` ("true" only for
+a block that says on and whose MAC verifies, "false" otherwise) and, for a
+refused "on", `SWARM_QUALITY_GATES_REFUSED` into the job's environment. The
+MAC is required whatever SETTINGS_MAC_TENANTS says, and the verdict is
+given only while SETTINGS_MAC_REQUIRED is on. The worker's
+`qualitygates.GatesVerdict` acts on "true" alone, and only while the stored
+block still says on. Unsigned, mismatched, no key or the switch off is off,
+and the attempt's summary says why.
+
+### What it would break if accepted
+
+Nothing at once: a new block changes no other block's bytes. A reader that
+requires the MAC reads a stored `quality_gates` block written before the
+re-sign pass as off until the pass signs it.
+
+### If it is declined
+
+The switch stays unsigned, and a forged "on" is acted on.
+
+### Invariants
+
+**9** is what this protects: the tenant id and the block name are inside
+the signed bytes, so a block copied from another tenant's document does not
+verify. **10** holds either way: one bool, never an image, a command or a
+resource. **1-8** are untouched.
+## 129. `admission.py` / `models.py`: a lease takes 1 unit in each provider pool, whatever its size (LARGE-ONE-PROVIDER-SLOT, part of #2950)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the
+expected behaviour #2950 states) and APPLIED by lane LARGE-ONE-PROVIDER-SLOT
+(part of #2950), in the pull request that adds row 129 of the index above.
+
+### What is true today
+
+`acquire_lease_in_transaction` reserves the same `units` -- the resource
+class's: standard 1, browser 1, large 4 -- in every pool `pool_names_for`
+lists, and `release_lease_in_transaction` subtracts the lease's `units` from
+each. Two of those pools, `provider:<p>` and `provider:<p>:tenant:<t>`, stand
+for concurrent LLM sessions against the provider's accounts, and a
+claude-code-large agent runs one Claude session, like a standard one.
+
+Measured 2026-11-01 03:46Z with `swarm capacity`: ten claude-code-large agents
+in Engineering held 40 of `provider:anthropic:tenant:eng`'s 50 slots for ten
+sessions; every other Engineering agent shared the last 3.
+
+### The change
+
+* `models.pool_units_for(pool, units)`: THE rule. A `provider:*` pool takes
+  `PROVIDER_POOL_UNITS` (1); every other pool takes the resource units.
+  `reserved_pool_units` applies it to a lease's pools.
+* `Lease.pool_units: dict[str, int] | None`, written at reserve: what the
+  lease took in each pool. `held_pool_units` (and `Lease.held_units()`) reads
+  a stored lease: its `pool_units`, or -- for a lease reserved before this
+  change, which has none -- `units` in every pool, the rule it was reserved
+  under.
+* `evaluate_capacity(pools, required, units, tasks=1)` checks each pool for
+  `tasks * pool_units_for(name, units)`; `acquire_lease_in_transaction`
+  increments each pool by its share and stores `pool_units` on the lease;
+  `release_lease_in_transaction` subtracts `held_pool_units` from each pool.
+
+Each pool, and what it bounds:
+
+* `provider:<p>`, `provider:<p>:tenant:<t>`: LLM sessions against the
+  provider (the subscription accounts' concurrency, a tenant's own key's).
+  One agent is one session: **1**.
+* `resource:<c>`: the class's compute. **Units**, unchanged.
+* `global`: the platform's compute: every agent's CPU and memory land on the
+  same backends. **Units**, unchanged.
+* `tenant:<t>`: a tenant's share of compute (its namespace's quota, its
+  Cloud Run instances). **Units**, unchanged.
+* `backend:<b>`: a backend's compute capacity (Autopilot nodes, Cloud Run Job
+  quota). **Units**, unchanged.
+* `runner:<p>`: a profile's concurrency. Every agent of a profile has one
+  class, so units and agents differ by a constant factor; the configured
+  limits are written in units (`runner:claude-code-large` 100 is 25 agents),
+  so changing it would silently quadruple them. **Units**, unchanged.
+
+### Who else applies the rule
+
+Through the frozen functions: the scheduler (`acquire_lease`), the worker,
+the reconciler and swarm-api (every release goes through
+`release_lease_in_transaction`; nothing else writes `active`). Restated and
+changed in the same pull request: swarm-api's `headroom` (n agents need
+`n * pool_units_for` per pool), `waiting` (a row's `units` and the
+below-units verdict), the `/v1/capacity` profile's `pool_units`, the admin
+leases listing's per-row `pool_units` and `units_held_by_pool`;
+`scripts/lib/concurrency-judge.jq` (invariant 3's exact check) and
+`scripts/lib/pool-units.jq` (read by make pool-check). The console and
+swarm-mcp read the served per-pool figures in the same pull request (the
+owner's pick, 2026-11-01): `types.ts` weighs an agent per pool (`unitsIn`,
+`taskWeight`, `leaseHeld`) for `blockerCeiling`, `ProfileMatrix`'s `fitsIn`,
+`AdminSettings`' ceiling arithmetic, `Submit`'s cost and verdicts and
+`Holders.tsx`'s drift card; swarm-mcp's `binding_pool` divides each pool's
+room by the profile's served share. None of them restates the rule: each
+reads what the API serves, and falls back to `units` in every pool only for an
+API older than the fields, whose admission charged exactly that.
+
+### What it would break if accepted
+
+Nothing at once: an old lease releases by the old rule, and the console and
+swarm-mcp read each lease's and each profile's served share.
+
+### If it is declined
+
+Large work holds four provider slots per session and starves the workspace's
+other agents; the only relief is raising the provider caps, which over-admits
+standard work against the provider's real session limit.
+
+### Invariants
+
+* **2:** every pool's increment and the lease, with its `pool_units`, are
+  written in the one admission transaction, all or nothing, as before; release
+  is one transaction that reads every pool before any write.
+* **3:** counted from LEASED, as before: the shares are taken at reserve.
+  `concurrency-judge.jq` sums each lease's held share per pool, so its exact
+  `active == held` check stays exact across old and new leases.
+* **1, 4-10:** unchanged.
+
+---
+
+## 130. `profiles.py`: `codex` becomes available, on the tenant's key or a pool ChatGPT plan (CODEX-PLAN-CONTRACT, part of #2688)
+
+**Status:** ACCEPTED IN PART by the owner (BGD) on 2026-11-01, with one
+change: "Accept, but keep codex unavailable until the pool lanes land". The
+secrets change below is applied (lane CODEX-CONTRACT-APPLY), with its
+`secret_env` mirror; `available=False` stays, and `disabled_reason` now says
+codex waits for the ChatGPT-plan pool (the quota broker leasing OpenAI plan
+accounts and the codex runner using them) and is turned on by a follow-up once
+both have merged. That follow-up applies the rest: `available`, the console's
+fixture availability, the delegate skill's sentence and the three tests that
+pin codex refused (item 5). Requested 2026-11-01 by lane CODEX-PLAN-CONTRACT. The owner (BGD) asked on 2026-11-01 for the
+codex runner to run on ChatGPT plans from a shared pool, the way claude-code
+runs on the pool of Claude subscriptions, and accepted that this needs a
+contract request.
+
+### What is true today
+
+In `apps/common/swarm_common/profiles.py`, `RUNNER_PROFILES["codex"]`:
+
+* `available=False`, with the `disabled_reason` "codex is disabled on this
+  platform. The provider refused the registered credential and the platform
+  is focused on Claude. Use claude-code." It was turned off by request 11
+  (2026-09-23): four codex steps of a twenty-step load test failed with
+  "openai refused the credential", because the tenant's
+  `swarm-tenant-eng-openai` held one rejected version.
+* `provider="openai"`, `secrets=("OPENAI_API_KEY",)`, and `secrets_any_of`
+  left at its default, `False`.
+
+So codex authenticates only with a metered OpenAI API key, and nothing in the
+catalogue lets it name a plan's credential. claude-code already has the shape
+this needs: `secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")`,
+`secrets_any_of=True`, either one sufficing.
+
+### The change
+
+```diff
+--- a/apps/common/swarm_common/profiles.py
++++ b/apps/common/swarm_common/profiles.py
+@@ "codex": RunnerProfile(
+         runner_argv=("python", "-m", "agent_worker.runners.codex"),
+         provider="openai",
+-        secrets=("OPENAI_API_KEY",),
++        # INTERCHANGEABLE, as claude-code's are (contract request 130, owner
++        # 2026-11-01): the tenant's metered key, or a ChatGPT plan leased from
++        # the pool. The plan arrives as an access token (about an hour) and the
++        # plan's account id; the quota broker alone holds and refreshes the
++        # refresh token, which never reaches a worker.
++        secrets=("OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
++        secrets_any_of=True,
+         timeout_seconds=7200,
+         inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
+-        # DISABLED 2026-09-23 by the owner's decision: ...
+-        # ...
+-        available=False,
+-        disabled_reason=(
+-            "codex is disabled on this platform. The provider refused the "
+-            "registered credential and the platform is focused on Claude. Use "
+-            "claude-code."
+-        ),
++        # Re-enabled by contract request 130 (owner, 2026-11-01): disabled
++        # 2026-09-23 by request 11 when the one registered key was refused;
++        # it now runs on a pool ChatGPT plan as well as a tenant's key.
+         secret_slots={"files": _FILES_SLOT},   # contract request 80
+     ),
+```
+
+The exact patch against main is in the pull request's body. Nothing else in
+the catalogue changes: same image, class, backend (GKE Autopilot, request 65),
+provider, timeout, inputs and slots.
+
+`secrets_any_of=True` is what makes the three names one credential among
+alternatives: a step runs if it has `OPENAI_API_KEY`, or if it has the plan's
+pair. The pair is not two independent alternatives -- an access token without
+its account id does not reach the Codex backend -- and the flag cannot say so;
+the codex runner is what refuses a plan token without its account id
+(`agent_worker.runners.codex`, in the runner lane), exactly as claude-code's
+runner picks one of its two names.
+
+**The interface the three lanes share** (owner's brief, 2026-11-01; recorded
+here because the names are the contract's): a pool account with
+`provider: "openai"` holds a ChatGPT plan's sign-in (refresh token, account
+id). The quota broker is its ONLY writer and refreshes it serialised per
+account, because each refresh replaces the refresh token. `POST
+/v1/accounts/assign {provider: "openai", ...}` returns as `secret` a current
+access token plus the plan's `account_id`, never the refresh token, and the
+worker hands them to codex as `CODEX_PLAN_ACCESS_TOKEN` and
+`CODEX_PLAN_ACCOUNT_ID`. The sign-in is "Sign in with ChatGPT": OAuth with PKCE
+at `https://auth.openai.com`, the Codex CLI's public client; the plan's traffic
+goes to the Codex backend on the Responses wire and refuses some model names
+(measured by sagaxyz/ai-studio on a live ChatGPT Plus login, 2026-08-10).
+Measured here 2026-11-01: the codex CLI in the runtime image (`codex-cli
+0.154.0`) offers `codex login --with-api-key` and `codex login
+--with-access-token` (its help names `CODEX_ACCESS_TOKEN`), each reading stdin.
+`CODEX_PLAN_*` are the platform's names, between the broker, the worker and
+the runner; the runner turns them into whatever the CLI reads.
+
+### Who else applies the rule (every mirror, read 2026-11-01 on `bf5ca60`)
+
+Each must change with it, in the pull request that applies it unless noted:
+
+1. **`terraform/infra/locals.tf` `runner_profiles["codex"]`**:
+   `secret_env = { OPENAI_API_KEY = "openai" }` becomes the three names, each
+   mapped to `"openai"` (`{ for name in [...] : name => "openai" }`, as
+   claude-code-large writes its two). `tests/terraform/catalogue.tftest.hcl`,
+   run `the_terraform_mirror_matches_the_python_catalogue`, compares
+   `secret_env_names` to the catalogue (parsed by
+   `tests/terraform/catalogue_mirror/main.tf`) and reddens until it does.
+   Nothing in Terraform states availability. The `runner:codex` and
+   `provider:openai` pool limits (dev 20 and 100, prod 40 and 40) already exist
+   and need no change for the request; their sizing for a plan pool is the
+   pool lane's to propose.
+2. **`scripts/lib/check-contract-parity.sh`**: compares no profile's
+   `secrets`, `secrets_any_of` or `available` (its catalogue checks cover
+   inputs, model classes, image/class/backend and provider/class/backend for
+   pool units). It needs no change; it is listed because the brief named it,
+   and checked.
+3. **The console's profile list** (`apps/swarm-ui`): the live console reads
+   `available` and `disabled_reason` from `/v1/capacity` (`RunnerPicker`,
+   `ProfileMatrix`, `Submit`), so it follows the catalogue. The DEV FIXTURE
+   restates it: `src/api.ts`, `FIXTURE_AVAILABILITY`'s `"codex"` entry
+   (`available: false` and the reason), which
+   `tests/unit/control_plane/test_capacity_serves_availability.py::test_the_ui_fixture_table_is_the_catalogues_availability`
+   holds to the catalogue. Vitest files that render that fixture and expect
+   codex refused change with it: `__tests__/submit.picks.test.tsx` ("Not
+   enabled yet. Use claude-code") and `__tests__/submit.picker.test.tsx`
+   (`option('codex').disabled`).
+4. **The MCP bridge's profile list** (`apps/swarm-mcp/swarm_mcp/profiles.py`):
+   reads the BUNDLED `swarm_common.RUNNER_PROFILES`, not the API, and refuses
+   an unavailable profile in `check()`, so an installed plugin keeps refusing
+   codex until it is upgraded to a release carrying this change. No list of its
+   own to edit; comments at `profiles.py`, `workflows.py` and `cli.py` that
+   recount the 2026-09-23 disabling stay true as history.
+   `plugin/skills/delegate/SKILL.md` says "**`codex` is DISABLED.**" and
+   `tests/unit/mcp/test_profiles.py::test_the_delegation_skill_never_recommends_a_profile_the_platform_refuses`
+   holds it to `available`: the sentence changes with it.
+5. **Tests that pin codex refused**, which redden when it is applied (request
+   11's guards, doing their job):
+   `tests/unit/control_plane/test_guards.py::test_unknown_runner_profile_is_rejected`
+   (`"codex" not in known_runner_profiles`) and
+   `::test_a_disabled_profile_is_refused_as_disabled_not_as_unknown` move to a
+   profile that stays disabled (`post-verdict`, `claude-code-review`,
+   `fix-loop`); `tests/unit/docs/test_counts_mockups.py::test_the_fixture_names_a_profile_the_catalogue_marks_unavailable`
+   (`_CODEX in UNAVAILABLE`) is re-pointed the same way.
+6. **The pool's eligibility, stated in three places, all keyed to
+   `CLAUDE_CODE_OAUTH_TOKEN`** (the duplication request 22 names): the
+   scheduler's `credentials.SUBSCRIPTION_TOKEN_ENV`
+   (`PROFILE_TAKES_NO_SUBSCRIPTION`), the worker's
+   `accountlease.ACCOUNT_TOKEN_ENV` (and `lifecycle`'s "does this profile take
+   a pool account"), and swarm-api's `task_accounts.ACCOUNT_TOKEN_ENV` and
+   `service`'s pooled-profile listing. swarm-api's `SUBSCRIPTION_PROVIDER =
+   "anthropic"` refuses an openai pool account at `POST /v1/accounts`. These
+   are the broker and worker lanes' changes (a profile is pool-eligible when it
+   declares its provider's plan name: `CLAUDE_CODE_OAUTH_TOKEN` for
+   anthropic, `CODEX_PLAN_ACCESS_TOKEN` for openai); until they land, codex
+   accepted by this request runs on a tenant key only, and
+   `tests/unit/worker/test_pool_credential_parity.py` keeps the scheduler and
+   the worker agreeing either way.
+7. **The worker's credential shaping** (`agent_worker/secrets.py`,
+   `resolve_credentials`): a BARE-string tenant payload is copied into every
+   declared name. For claude-code that is harmless (the runner tells a key from
+   a token by prefix); for codex it would put an API key into
+   `CODEX_PLAN_ACCESS_TOKEN` and `CODEX_PLAN_ACCOUNT_ID`. The runner lane must
+   treat a bare payload as `OPENAI_API_KEY` only, and take the plan names from
+   a pool lease (or a JSON payload naming them), never from a copied string.
+   Likewise the scheduler's GKE/Cloud Run env (`dispatch.py`) wires every
+   declared name to `swarm-tenant-<t>-openai`, so the same rule applies to
+   what arrives through it. `agent_worker/cliagent.py` reads only `key_env`
+   and `alt_key_envs` (and registers only those for redaction), and refuses a
+   codex step that has no `OPENAI_API_KEY`: `runners/codex.py` must declare the plan
+   names so they are both handed to the child and redacted.
+8. **`/v1/runtimes` and `/v1/capacity`** (`routes/platform.py`) serve
+   `secrets`, `secrets_any_of`, `available` and `disabled_reason` straight from
+   the catalogue: no change, and `types.ts` already carries every field.
+9. **Docs** that say codex is disabled (`docs/provider-keys.md`,
+   `execution-backends.md`, `architecture.md`, `workflows.md`,
+   `worker-images.md`, `plugin/README.md`, the web-ui mockups) are corrected in
+   the applying pull request; request 11 above stays as history.
+
+### What it would break if accepted
+
+* **A tenant holding a dead key is dispatched again.** `swarm-tenant-eng-openai`
+  was the rejected key of 2026-09-23; a codex step for that tenant, with no
+  plan pool leased, fails at the provider as it did then, now as a refusal
+  against a profile that admits it. The applying lane checks each tenant's
+  registered `openai` secret (that it exists and is current, never its value)
+  or the owner rotates it first.
+* **Old plugins refuse, new API admits**, until the bridge is upgraded (item 4).
+* **Tests listed in item 5 redden** until re-pointed; that is the intended
+  signal.
+* Nothing in Firestore changes shape: the four task documents that name codex
+  still read; no lease, pool or attempt field is added.
+
+### If it is declined
+
+codex stays refused, and the owner's ChatGPT-plan pool has no runner to serve:
+the broker and worker lanes can hold and lease plan credentials, but no
+profile may name them, and the only way to run an OpenAI agent stays a metered
+key the platform cannot dispatch either.
+
+### Invariants
+
+* **3 (concurrency counts from LEASED):** unchanged. A codex step reserves
+  `provider:openai`, `provider:openai:tenant:<t>`, `runner:codex` and the
+  compute pools at LEASED in the one admission transaction (**2**), whichever
+  credential it ends up using; the pool-account lease the worker takes from
+  the broker is a separate, per-account claim that bounds a plan's own
+  concurrency and is released with the attempt, as claude-code's is.
+* **9 (per-tenant isolation):** a tenant key stays the tenant's own
+  `swarm-tenant-<t>-openai`, read by the tenant's own GSA. A pool plan is
+  served to a tenant only through the broker's assign, under the pool's
+  existing rule (`quota_broker/accounts.py`: an account belongs to exactly one
+  tenant and serves another only where its owner named it, per account), now
+  applied to `provider: "openai"` accounts too; the refresh token never leaves the
+  broker, and the access token handed to a worker lives about an hour and is
+  registered for redaction.
+* **5 (fencing):** unchanged; the worker's fencing check is its step 1, before it
+  asks the broker for an account.
+* **10:** the caller still names `codex` by name and supplies no credential,
+  image or command; which credential runs is the platform's choice.
+* **6, 7, 8:** unchanged (on-demand GKE Autopilot, the standard class,
+  periodic checkpoints). **1, 4:** unchanged.
+
+---
+
+## 131. `models.py`: `Task.timeout_seconds_asked`, the timeout a spec asked for when swarm-api stored a lower one (TIMEOUT-ASKED-CONTRACT, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-11-01 -- "API records the ask"
+-- and APPLIED by the pull request that adds this line (lane
+TIMEOUT-ASKED-APPLY, part of #2688), exactly as below: the field in
+`models.py`, `validation.timeout_asked` and the refused metadata key,
+`service._build_task`, the child's `replace` in `children.py`, the codec's
+`task_from_dict` and `task_to_api`, the console's `Task` type
+(`apps/swarm-ui/src/types.ts`), docs/workflows.md's step table and the three
+tests of item 9; pinned by `tests/unit/control_plane/test_timeout_seconds_asked.py`.
+Requested 2026-11-01 by lane TIMEOUT-ASKED-CONTRACT; that request's pull
+request edited nothing under `apps/common/swarm_common/`. The pre-publish gate lane (#2981, PR 2986, merged
+2026-11-01) asked who records a lowered timeout; the owner (BGD) answered "API
+records the ask". This entry is that answer as a contract change.
+
+### What is true today
+
+Read 2026-11-01 on `9cc20f0`.
+
+* `apps/swarm-api/swarm_api/validation.py`, `validate_timeout(profile,
+  requested)`, returns `min(requested, profile.timeout_seconds)`, and
+  `service.py` `_build_task` stores only that as `Task.timeout_seconds`. Every
+  submission goes through `_build_task`: an agent, a batch entry
+  (`submit_tasks`), a workflow step (`submit_workflow`, which passes the
+  step's own `timeout_seconds`) and a child (`children.py`). A spec asking
+  10,800 s of `claude-code` (cap 7,200 s) runs under 7,200 s, and the task
+  document says nothing of the 10,800.
+* A child is lowered twice more, in `children.py`: to its parent's
+  `timeout_seconds` before `_build_task`, and again by the `replace` after it.
+  What the child's spec asked is not kept either.
+* A `browser_if_ui` step (#2322) stores its `code` alternate's timeout in
+  `metadata.runtime.alternate.timeout_seconds` (`_runtime_alternate`), also
+  through `validate_timeout`, and the scheduler swaps it onto the task document at
+  dispatch (`scheduler/runtime.py`, `RUNTIME_SWAP_FIELDS`).
+* The workflow document's step (`WorkflowStep.timeout_seconds`) keeps what
+  the caller wrote, unlowered. The worker never reads the workflow document
+  for its limit, and a lone agent, a batch entry and a child have no such
+  record anywhere.
+* The worker already reads the record this entry asks for:
+  `apps/agent-worker/agent_worker/lifecycle.py` `TIMEOUT_ASKED_FIELD =
+  "timeout_seconds_asked"`. `Worker._timeout_asked_env` reads it from the task
+  document and, only when it is an int above the attempt's
+  `cfg.timeout_seconds`, hands it to the runner as
+  `SWARM_TIMEOUT_ASKED_SECONDS`; `runners/cliagent.py` records it in the
+  runner's `limits.clamped` and `limits.timeout_seconds_asked`
+  (`tests/unit/worker/test_prepublish_deadline.py`). No writer sets the field,
+  so today that path never fires.
+
+### The change
+
+```diff
+--- a/apps/common/swarm_common/models.py
++++ b/apps/common/swarm_common/models.py
+@@ class Task:
+     #: construction of a task changes meaning; absent on every older
+     #: document, which decodes as 0.
+     platform_refusals: int = 0
++    #: Contract request 131 (TIMEOUT-ASKED-CONTRACT, part of #2688), the
++    #: owner's "API records the ask" (2026-11-01): the `timeout_seconds` the
++    #: spec asked for, written by swarm-api at submission ONLY when it stored
++    #: a lower `timeout_seconds` (the profile's cap, or a child's parent's).
++    #: A RECORD ONLY: the limit is `timeout_seconds` alone, and nothing reads
++    #: this as one (invariant 10); the worker reports it in the runner's
++    #: `limits.clamped`. Unsigned: written at submission, it chooses nothing.
++    #: None on a task that was not lowered and on every older document. Last
++    #: in the class, after `platform_refusals`, so no positional construction
++    #: of a task changes meaning.
++    timeout_seconds_asked: int | None = None
+```
+
+That is the whole frozen change: one field, appended. No new enum member, no
+state edge, no spec format. The exact patches, against `9cc20f0`, are in the
+pull request's body: the one above, and swarm-api's.
+
+The rule swarm-api applies (its patch, outside the frozen package):
+
+* `validation.timeout_asked(requested, *granted)`: the asked value when it is
+  above ANY timeout this service stores for the step, else None.
+  `validate_timeout` is unchanged and stays the limit.
+* `service._build_task` collects every timeout it grants the step -- its own,
+  and its `code` alternate's on a `browser_if_ui` step -- and writes
+  `timeout_seconds_asked=timeout_asked(spec.timeout_seconds, *granted)`. One
+  place, so an agent, a batch entry and a workflow step are covered alike. The
+  worker compares the record with the timeout it actually runs under, so a
+  step whose primary profile was lowered and whose alternate was not reports
+  nothing when it runs as the alternate.
+* `children.py` sets it again in its `replace`, from the CHILD's spec, against
+  the final `min(task.timeout_seconds, parent.timeout_seconds)`: the
+  `TaskCreate` it hands `_build_task` is already lowered to the parent's.
+* The name is refused in a caller's metadata like every platform-written key:
+  `TIMEOUT_ASKED_FIELD` joins `REFUSED_UNWRITTEN_METADATA_KEYS` with its
+  sentence in `_RESERVED_BECAUSE` (it is a top-level field, so no one writes
+  `metadata.timeout_seconds_asked`, and it is not added to
+  `RESERVED_METADATA_KEYS`, whose members are signed or served as platform
+  metadata). As a top-level key it is refused already: `TaskCreate`, the
+  batch entry, the workflow step and the child spec are `extra="forbid"`
+  (`schemas.py`, `children.py`). In `input` it is refused already: an input
+  key the profile does not declare is refused (`validate_runner_input`,
+  contract request 25).
+
+### Who else applies the rule (every mirror, read 2026-11-01 on `9cc20f0`)
+
+1. **The store's task document codec, swarm-api** (`apps/swarm-api/swarm_api/codec.py`
+   `task_from_dict`): MUST change. `task_to_api` serves a DECODED `Task`, so
+   without the read the API can never serve the record; and swarm-api writes
+   whole task documents (`store.create_tasks`, the child's `txn.set`, both
+   through `task_to_firestore`), so any task document it builds from a decoded one
+   would drop it. It reads an int above 0, anything else as None.
+2. **The API's response codec** (`codec.task_to_api`): MUST change, to serve
+   `timeout_seconds_asked` beside `timeout_seconds`, so a caller can tell a
+   lowered step from one that asked for nothing more. **The API's schemas**
+   (`schemas.py`): no change. Responses are the codec's dicts, not a response
+   model; every request model is already `extra="forbid"`.
+3. **The scheduler's task document codec** (`apps/scheduler/scheduler/codec.py`): no
+   change. It decodes for admission and dispatch and patches a task document with
+   `txn.update` (`store.py`), never writing a whole decoded task document, so a field
+   it does not read survives. The runtime swap does not touch the field.
+4. **The worker** (`lifecycle.TIMEOUT_ASKED_FIELD`, `_timeout_asked_env`;
+   `cliagent.TIMEOUT_ASKED_ENV`): no change. It already reads the raw task
+   document and treats the value as a record. The comment above
+   `TIMEOUT_ASKED_FIELD` ("requested of swarm-api in #2981") may name this
+   request when it is applied.
+5. **The console's `Task` type** (`apps/swarm-ui/src/types.ts`, `export
+   interface Task`): SHOULD change, `timeout_seconds_asked?: number | null`,
+   optional because an older API does not serve it. Showing it (a "lowered
+   from 10,800 s" beside the timeout) is a console change of its own, not
+   required by this request. `scripts/lib/check-contract-parity.sh` section 9
+   compares only `parent_task_id` and `parent_attempt_id` of `Task`: no change.
+6. **The MCP bridge's task record rendering** (`apps/swarm-mcp/swarm_mcp/render.py`
+   `render_task`): no change required. It renders no timeout today; it passes
+   the served task record through, so the field is there for a later line. Its
+   workflow builder (`workflows.py`) forwards a step's `timeout_seconds` as
+   written and must not forward `timeout_seconds_asked` (it does not).
+7. **The Firestore-shape notes:** `docs/architecture.md` §4 lists collections,
+   not task fields: no change. `docs/workflows.md`'s step table
+   ("`timeout_seconds`: optional; may only shorten the profile's own
+   default") SHOULD add that a longer ask is lowered and recorded as
+   `timeout_seconds_asked`. `docs/web-ui/03-agents-and-workflows.md` quotes
+   an older `task_to_api` key list as a dated snapshot: no change.
+8. **The spec signature** (`specsign.canonical_step_spec`): no change, and no
+   format bump. The field is UNSIGNED: it limits nothing and selects nothing,
+   so a forged value can only add a line to the runner's report.
+9. **Tests that pin the class's tail**, which redden when it is applied and
+   change with it (each measured red with both patches applied, 2026-11-01):
+   `tests/unit/common/test_budget_contract.py`
+   (`test_120_the_fields_default_to_none_and_come_last`: the last two fields
+   are `budget` and `platform_refusals`),
+   `tests/unit/common/test_model_classes.py`
+   (`test_the_new_fields_come_last_so_no_positional_construction_moves`: the
+   last three end at `platform_refusals`), and
+   `tests/unit/common/test_specsign_covers.py`
+   (`test_every_task_field_is_signed_or_named_unsigned`: the field joins
+   `UNSIGNED_TASK_FIELDS` with its reason).
+
+### What it would break if accepted
+
+* **Nothing that reads a limit.** No reader takes the field as a timeout; the
+  worker already compares it with the timeout it runs under.
+* **The three tail and signature tests in item 9 redden** until updated in
+  the applying pull request; that is their job.
+* **Firestore shape:** one optional field on `tasks/{id}`, absent on every
+  older document and on every agent not lowered. No index, no rule, no
+  migration.
+* **An old API with a new worker, or the reverse:** no record, no report;
+  the same as today.
+
+### If it is declined
+
+A lowered timeout stays silent: a spec asking 10,800 s runs under 7,200 s,
+and neither the task document, the API nor the runner's `limits.clamped` says so. The
+worker's reader stays dead code, and an agent killed at 7,200 s looks like one
+that ran past a limit it chose. The only record left is the workflow
+document's unlowered step, and only for workflow steps.
+
+### Invariants
+
+* **10 (callers pick a profile by name; never a resource spec):** held. The
+  caller may still only SHORTEN a timeout; the ask is recorded, never
+  honoured. The field is written by swarm-api alone and refused from a caller
+  as a top-level key, a metadata key and an input key.
+* **5 (fencing):** unchanged; the worker's fencing check runs before it reads
+  the task document's timeout record.
+* **8 (periodic checkpoints):** unchanged; the attempt still ends at
+  `timeout_seconds`, checkpointed as before.
+* **1, 2, 3 (capacity):** unchanged. The field adds no state and no demand,
+  and admission never reads it.
+* **4, 6, 7, 9:** unchanged; no backend, class, resource or tenant boundary is
+  touched.

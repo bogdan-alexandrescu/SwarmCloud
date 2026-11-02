@@ -421,7 +421,7 @@ describe('the Manage drawer', () => {
     let sw = within(drawer).getByRole('switch', { name: 'Admin' }) as HTMLButtonElement
     expect(sw.getAttribute('aria-checked')).toBe('true')
     expect(sw.disabled).toBe(true)
-    expect(visible(drawer)).toContain('set by PLATFORM_OWNER')
+    expect(visible(drawer)).toContain('Platform owner: set in the deployment’s configuration')
     fireEvent.click(within(drawer).getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
     drawer = await manage('bob@example.com')

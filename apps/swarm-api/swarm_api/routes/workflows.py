@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -41,7 +42,7 @@ from swarm_common.states import TERMINAL_STATES
 from .. import sessiontag
 from ..auth import AuthContext
 from .tasks import require_member
-from ..attempt_totals import totals_for, with_totals
+from ..attempt_totals import IN_LIMIT, totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_claude_session, workflow_dispatch, workflow_to_api
 from ..waiting_detail import build_waiting, waiting_row
@@ -307,6 +308,10 @@ def list_workflows(
             session=session, repo=repo,
         )
         scope = {"claude_session": session, "repository": repo, "left_out": left_out}
+    # The summary view is the Workflows board's one read: each step carries
+    # what the board draws (`codec.step_task_summary`), its attempt totals
+    # read here in batches. The full view reads no attempts, as before.
+    step_totals = _results_totals(ctx, tenant_id, results, submitted_by) if summary else None
     payload = {
         # Each step's input is masked by its own task's masker, from the step
         # tasks the rollup already read (the PR #229 review); a step whose task
@@ -319,6 +324,7 @@ def list_workflows(
                 step_tasks=r.step_tasks,
                 console_url=ctx.settings.console_url,
                 summary=summary,
+                step_totals=step_totals,
             )
             for r in results
         ],
@@ -440,6 +446,54 @@ def _scoped_page(
     return matched, report, token, left_out
 
 
+#: Attempts queries a workflow read runs at once. Each is one `in` query of
+#: `IN_LIMIT` step tasks; a page of 100 workflows of 5 steps is 17 of them.
+TOTALS_WORKERS = 8
+
+
+def _step_totals(ctx: AppContext, tenant_id: str, task_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """`totals_for` over these step tasks, its `IN_LIMIT` chunks run CONCURRENTLY.
+
+    WHY (console load speed, owner's pick 2026-11-01). swarm-api's time per
+    request was serial Firestore round trips, not CPU (Cloud Monitoring,
+    2026-11-01: 47-68% CPU on 4-8 instances), and `totals_for` runs its
+    chunks one after another. Each chunk is the same one query it always
+    was, and each answers for its own tasks alone, so running them at once
+    changes no figure: a page's attempts cost one round trip of wall time,
+    not one per 30 step tasks.
+    """
+    wanted = list(dict.fromkeys(t for t in task_ids if t))
+    chunks = [wanted[i : i + IN_LIMIT] for i in range(0, len(wanted), IN_LIMIT)]
+    if len(chunks) <= 1:
+        return totals_for(ctx.db, tenant_id, wanted)
+    out: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=min(TOTALS_WORKERS, len(chunks)),
+                            thread_name_prefix="step-totals") as pool:
+        for part in pool.map(lambda chunk: totals_for(ctx.db, tenant_id, chunk), chunks):
+            out.update(part)
+    return out
+
+
+def _results_totals(
+    ctx: AppContext, tenant_id: str, results: list[RollupResult], submitted_by: str | None
+) -> dict[str, dict[str, Any]]:
+    """The attempt totals of every step task the rollup read for these rows.
+
+    The tasks are the ones the rollup's `get_all` already returned
+    (`RollupResult.step_tasks`); no task document is read again. Filtered by
+    submitter as `_by_ids` filters its `tasks`: a step task that is not a
+    continuation-scoped caller's gets no entry, so its step's `task_summary`
+    is null whatever workflow it claims to belong to.
+    """
+    ids = [
+        task.id
+        for r in results
+        for task in r.step_tasks.values()
+        if submitted_by is None or task.submitted_by == submitted_by
+    ]
+    return _step_totals(ctx, tenant_id, ids)
+
+
 def _named(ctx: AppContext, workflows: list[dict], tasks: list[dict]) -> None:
     """`submitted_by_name` on every workflow and step task served, from ONE
     lookup for the whole response."""
@@ -482,7 +536,7 @@ def _by_ids(
                 tasks.setdefault(task.id, task)
     step_tasks = list(tasks.values())
     accounts = accounts_for(ctx.db, tenant_id, step_tasks)
-    totals = totals_for(ctx.db, tenant_id, [t.id for t in step_tasks])
+    totals = _step_totals(ctx, tenant_id, [t.id for t in step_tasks])
     served = {w.workflow_id for w in found}
     payload = {
         "workflows": [
@@ -492,6 +546,9 @@ def _by_ids(
                 step_tasks=r.step_tasks,
                 console_url=ctx.settings.console_url,
                 summary=summary,
+                # Only the step tasks this read serves: a row that is not the
+                # caller's carries a null block, as it is left out of `tasks`.
+                step_totals=totals,
             )
             for r in results
         ],
@@ -558,7 +615,7 @@ def get_workflow(
     # read of the same documents.
     result = ctx.rollups.for_workflow_from_tasks(workflow, tasks, complete=True)
     accounts = accounts_for(ctx.db, tenant_id, tasks)
-    totals = totals_for(ctx.db, tenant_id, [t.id for t in tasks])
+    totals = _step_totals(ctx, tenant_id, [t.id for t in tasks])
 
     payload = {
         # The step copies of each input are masked by the tasks' own maskers,
@@ -569,6 +626,7 @@ def get_workflow(
             result.to_api(),
             step_tasks={t.id: t for t in tasks},
             console_url=ctx.settings.console_url,
+            step_totals=totals,
         ),
         # Read back off the tasks, which is where the options are stored; the
         # frozen `Workflow` dataclass has no metadata field to hold them. The

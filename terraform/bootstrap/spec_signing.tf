@@ -61,8 +61,8 @@ module "spec_signing_key" {
 }
 
 locals {
-  # The one identity that signs, taken from the list of accounts terraform/infra
-  # creates rather than typed, so a rename there fails here at plan instead of
+  # The one identity that signs, taken from the list of platform accounts
+  # (created by this root since DAYONE-BOOT-2) rather than typed, so a rename there fails here at plan instead of
   # granting `signer` to an account that does not exist.
   spec_signer_account_id = one([for id in keys(module.service_account_ids.platform) : id if id == "swarm-api"])
   spec_signer_member     = "serviceAccount:${local.spec_signer_account_id}@${var.project_id}.iam.gserviceaccount.com"
@@ -73,7 +73,7 @@ locals {
   # verify through KMS, or change the key's IAM policy.
   spec_deployer_reader_roles = ["roles/cloudkms.publicKeyViewer", "roles/cloudkms.viewer"]
 
-  spec_deployer_reader_grants = var.enable_github_wif ? {
+  spec_deployer_reader_grants = local.deployer_on ? {
     for pair in setproduct(sort(tolist(var.spec_signing_environments)), local.spec_deployer_reader_roles) :
     "${pair[0]} ${pair[1]}" => { environment = pair[0], role = pair[1] }
   } : {}
@@ -140,7 +140,9 @@ resource "google_kms_crypto_key_iam_member" "swarm_api_signer" {
   role          = "roles/cloudkms.signer"
   member        = local.spec_signer_member
 
-  depends_on = [google_kms_crypto_key.step_spec]
+  # The account is this root's own (platform_service_accounts.tf), so a fresh
+  # project's first apply creates it before the grant; no "later" switch.
+  depends_on = [google_kms_crypto_key.step_spec, google_service_account.platform]
 }
 
 resource "google_kms_crypto_key_iam_member" "deployer_key_readers" {

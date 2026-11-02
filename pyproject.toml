@@ -30,6 +30,8 @@ swarm-reconciler = { path = "apps/reconciler", editable = true }
 # Local-only: the operator-side bridge. It is in the workspace so its tests
 # run in `make test` like everything else, NOT because anything deploys it.
 swarm-mcp = { path = "apps/swarm-mcp", editable = true }
+# The Day One installer (docs/design/day-one-install.md §2.1).
+swarm-install = { path = "apps/swarm-install", editable = true }
 
 [dependency-groups]
 dev = [
@@ -61,6 +63,10 @@ dev = [
     "tree-sitter-typescript==0.23.2",
     "tree-sitter-go==0.25.0",
     "tree-sitter-hcl==1.2.0",
+    # The Day One installer (apps/swarm-install). In the dev group, not the
+    # root's dependencies: an operator-side tool no service image ships; each
+    # service Dockerfile's export prunes it (test_service_image_install.py).
+    "swarm-install",
 ]
 
 [tool.pytest.ini_options]

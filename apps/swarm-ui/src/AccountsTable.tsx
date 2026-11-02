@@ -28,6 +28,7 @@ import {
   blocksOf,
   canTake,
   clockOf,
+  clockPassed,
   floorOf,
   freeSlots,
   groupOf,
@@ -52,7 +53,7 @@ import './styles/accounts-ranked.css'
 // Cells
 // ---------------------------------------------------------------------------
 
-/** The can-take chip: `Yes · 6 free`, `Full · 6 of 6`, `No`. */
+/** The can-take chip: `Yes · 6 free`, `Full · 6 of 6`, `No · paused` (cap2-01), `No`. */
 export function CanTakeChip({ a, scope }: { a: PoolAccount; scope: string | null }) {
   const can = canTake(a, scope)
   if (can === null) {
@@ -71,6 +72,7 @@ export function CanTakeChip({ a, scope }: { a: PoolAccount; scope: string | null
       </span>
     )
   }
+  if (a.state === 'PAUSED') return <span className="acct-chip is-no">No &middot; paused</span>
   return <span className="acct-chip is-no">No</span>
 }
 
@@ -168,6 +170,8 @@ export function clearsOf(a: PoolAccount, scope: string | null, now: number): { h
   if (g === 'now') return { head: 'now', sub: `${freeSlots(a)} slot${freeSlots(a) === 1 ? '' : 's'}` }
   if (g === 'clock') {
     const at = clockOf(a) as number
+    // A reset already past, nothing read since (capacity-03): never "Clears <a past time> · now".
+    if (clockPassed(a, now)) return { head: 'at the next reading', sub: `reset ${utcAt(at, now)} passed, nothing read since` }
     const aged = blocksOf(a).some((b) => isWindowBlock(b) && b.aged_reading)
     return aged
       ? { head: 'at the next reading', sub: `or ${utcAt(at, now)} at the latest` }
@@ -240,7 +244,10 @@ export function WindowCell({ a, k, now }: { a: PoolAccount; k: string; now: numb
         label={`${label}: ${pct(used)} used, ${pct(left)} left; floor ${pct(floor)} left${under ? ', under it' : ''}`}
       />
       <small>{pct(used)} used</small>
-      <small>resets {utcAt(r.resetsAt, now)}</small>
+      {/* A reset already past is said as one (capacity-03), not as a time to come. */}
+      <small>
+        {Date.parse(r.resetsAt) <= now ? `reset ${utcAt(r.resetsAt, now)} passed` : `resets ${utcAt(r.resetsAt, now)}`}
+      </small>
     </div>
   )
 }
@@ -272,9 +279,14 @@ function Tags({ a, names }: { a: PoolAccount; names: ReadonlyMap<string, string>
   const dup = a.duplicate_of ? (names.get(a.duplicate_of) ?? a.duplicate_of) : null
   const possible = a.possible_duplicate
   const possibleOf = possible?.of ? (names.get(possible.of) ?? possible.of) : null
-  if (extra.length === 0 && !dup && !a.duplicate_reason && !possible) return null
+  // THE AGE IS A TAG, NOT A DIMMED ROW (visual QA pass 2, cap2-07): the
+  // window cells of an aged row were drawn at 0.6 opacity, 2.72:1 in light.
+  // The name line already says how old the reading is; the tag marks the row.
+  const aged = a.stale && a.observed_at !== null
+  if (extra.length === 0 && !dup && !a.duplicate_reason && !possible && !aged) return null
   return (
     <span className="acct-tags">
+      {aged && <span className="acct-tag is-aged">aged reading</span>}
       {dup ? (
         <span className="acct-tag is-dup">
           same subscription as <span className="acct-nm">{dup}</span>

@@ -370,14 +370,16 @@ export function breakAt(text: string, marks: RegExp = /::|[/#_]/g): ReactNode[] 
 }
 
 /** A link inside the app: an href for a new tab, `go` for a plain click. */
-function InApp({ to, href, go, children, cut = false }: {
+function InApp({ to, href, go, children, cut = false, words = false }: {
   to: string; href: string; go: (to: string) => void; children: string
   /** A single-token id: one line, cut with an ellipsis (`.rn-id`), whole in its title. */
   cut?: boolean
+  /** Words, not an id (`planner agent`, QA1 runs-submit-27): set in the page's face, not mono. */
+  words?: boolean
 }) {
   // Its whole text is its title: an id cut to its card says what it was (D3).
   return (
-    <a href={href} className={cut ? 'mono rn-id' : 'mono'} title={children} onClick={(e) => {
+    <a href={href} className={cut ? 'mono rn-id' : words ? undefined : 'mono'} title={children} onClick={(e) => {
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
       e.preventDefault()
       go(to)
@@ -512,6 +514,24 @@ function SubmitIssueLink({ go }: { go: (to: string) => void }) {
  * is the Timeline's cadence for the same kind of reading.
  */
 export const RUNS_LIST_POLL_MS = 60_000
+
+/**
+ * A ROW WITH NO ISSUE TITLE SAYS WHY (QA2-FIX-20, runs2-03). The Issue cell
+ * leads with the title the run read at submission (`issue_read`); without one
+ * the row was a bare `#512` beside a bare run id, nothing naming the work. The
+ * reason is the read's own error where it failed, else that the run kept none.
+ */
+function NoTitle({ run }: { run: Pick<IssueRun, 'issue_read_error'> }) {
+  const failed = run.issue_read_error ?? null
+  const why = failed !== null
+    ? `The issue could not be read when the run was created: ${failed.message}`
+    : 'This run kept no reading of its issue: it was created before runs kept the title they read.'
+  return (
+    <i className="ctl-em rn-cut rn-issue-none" data-why={failed !== null ? 'failed' : 'not-kept'} title={why}>
+      {failed !== null ? 'title not read · the read failed' : 'title not read · not kept on this run'}
+    </i>
+  )
+}
 
 /**
  * The Runs list's state chips (QA G2-18). `not ready` and `rejected` (live QA
@@ -713,7 +733,10 @@ function RunList({ first, go, view = null, names = null, want }: {
                           <span className="mono rn-refcut rn-issue-ref" title={r.issue.ref}><IssueRefLink run={r} /></span>
                         </>
                       ) : (
-                        <span className="mono rn-refcut" title={r.issue.ref}><IssueRefLink run={r} /></span>
+                        <>
+                          <span className="mono rn-refcut" title={r.issue.ref}><IssueRefLink run={r} /></span>
+                          <NoTitle run={r} />
+                        </>
                       )}
                     </td>
                     <td data-label="State">
@@ -1176,9 +1199,11 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                 {' '}gated on its verdict · every step runs as claude-code
               </p>
               <p className="rn-plan-facts">
-                <Chip title="The planner's call: one agent, or a workflow of several steps">
-                  {run.plan.mode === 'single' ? 'single agent' : run.plan.mode === 'workflow' ? 'workflow' : 'mode not stated'}
-                </Chip>
+                {/* A PLAN WITH NO MODE SAYS NOTHING OF IT (QA2-FIX-20, runs2-11): `mode
+                    not stated` named a field the reader cannot act on; the steps
+                    under it say what runs. */}
+                {(run.plan.mode === 'single' || run.plan.mode === 'workflow') &&
+                  <Chip title="The planner's call: one agent, or a workflow of several steps">{run.plan.mode === 'single' ? 'single agent' : 'workflow'}</Chip>}
                 {run.plan.estimate
                   ? <Chip title="The planner's estimate for the whole plan">estimate {run.plan.estimate}</Chip>
                   : <span className="sb-note">no estimate given</span>}
@@ -1242,8 +1267,13 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
               <b>Planner</b>
               {run.planner_task_id === ''
                 ? <i className="ctl-em" title="The run records no planner agent.">&mdash; not recorded</i>
-                : <InApp go={go} cut to={`work/task/${encodeURIComponent(run.planner_task_id)}`}
-                  href={`/agents/recent/${encodeURIComponent(run.planner_task_id)}`}>{run.planner_task_id}</InApp>}
+                : <InApp go={go} words to={`work/task/${encodeURIComponent(run.planner_task_id)}`}
+                  href={`/agents/recent/${encodeURIComponent(run.planner_task_id)}`}>planner agent</InApp>}
+              {/* THE LINK NAMES THE PLANNER (QA1 runs-submit-27): its raw id was the
+                  link's text. The link is words now, so it wraps; the id follows
+                  on its own row as a note, cut to the card as the link was
+                  (`.rn-id`, D3), whole in its title. */}
+              {run.planner_task_id !== '' && <span className="sb-note rn-id" title={run.planner_task_id}>{run.planner_task_id}</span>}
             </li>
             <li className={run.workflow_id === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>Workflow</b>

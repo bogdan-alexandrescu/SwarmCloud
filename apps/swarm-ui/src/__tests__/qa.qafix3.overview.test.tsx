@@ -170,8 +170,10 @@ describe('overview-automate-006: a phone keeps the 10-character head of a workfl
   it('cuts "wf_audit_01" to its head in a Recent failures row at 390, whole at 1440 and in the title', () => {
     const { container } = render(<RecentFailures tasks={page([failed('tsk_a', 'wf_audit_01')])} />)
     const name = container.querySelector('.ov-fails .ov-name')!
+    // The title holds the link's words, its short id `a` included (walk.long
+    // C, CIFIX-2632), then the whole id.
     // MUTATION: drop the id from the row's title.
-    expect(name.getAttribute('title')).toBe('scan-scripts · wf_audit_01 · tsk_a')
+    expect(name.getAttribute('title')).toBe('scan-scripts · wf_audit_01 · a · tsk_a')
     const id = name.querySelector('.ov-wf-id')!
     // MUTATION: draw the id bare, without the `.ov-wf-id` span the phone cuts.
     expect(text(id)).toBe('wf_audit_01')

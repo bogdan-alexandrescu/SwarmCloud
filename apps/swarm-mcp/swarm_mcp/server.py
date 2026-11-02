@@ -43,12 +43,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from swarm_common.models import PROVIDER_POOL_UNITS
 from swarm_common.profiles import MODEL_CLASSES, RESOURCE_CLASSES
 
 from . import artifacts, checkout, compact, config, keys, progress, qatargets, suitegate
 from . import secrets as secret_tools
 from . import profiles as catalogue
 from . import workflows
+from .awaitinput import VERDICTS
 from .client import (
     TERMINAL,
     SwarmClient,
@@ -72,14 +74,15 @@ from .follow import (
 )
 from .invocation import terminal_command
 from .patches import (
+    PatchRefused,
     apply_patch,
     describe_task,
-    download,
     explain_absence,
     explain_failure,
     integrate,
     masked_counts,
     patch_uri,
+    read_patch,
 )
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -336,6 +339,16 @@ _ACCOUNT_STATE_SCHEMA: dict[str, Any] = {
     },
     "required": ["account"],
 }
+
+#: `swarm_workflow_spec`'s window over ONE step's prompt (LAUNCH-LARGE-SPEC,
+#: #2875): its reply carries an outline, never every prompt -- a 24-step spec
+#: with ~90 KB of prompts answered 86,506 characters, over Claude Code's
+#: tool-output limit, and its run ended NOT_SUBMITTED. A prompt is read only
+#: on request, a step at a time, at most this many characters per call.
+_PROMPT_WINDOW_DEFAULT = 8000
+_PROMPT_WINDOW_MAX = 16000
+#: How much of a prompt's first line the outline shows.
+_PROMPT_FIRST_LINE_CHARS = 160
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -1328,7 +1341,11 @@ TOOLS: list[dict[str, Any]] = [
                                     "The step may end SUCCEEDED with no change "
                                     "(result_summary.no_change) instead of "
                                     "failing on an empty diff; dependants that "
-                                    "need its patch are SKIPPED."
+                                    "need its patch are SKIPPED. Under "
+                                    "direct-pr the API sets it itself for a "
+                                    "reader step (one a dependant depends on "
+                                    "and no step builds_on), so a review "
+                                    "feeding a fix need not."
                                 ),
                             },
                             "runtime": {
@@ -1435,24 +1452,30 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "swarm_workflow_spec",
         "description": (
-            "Read a workflow spec FILE from the checkout this bridge runs in, "
-            "check it as swarm_workflow would, and return it with its "
-            "`spec_digest`. Submits NOTHING and makes no request.\n"
+            "Read a workflow spec FILE from the checkout this bridge runs in -- or the "
+            "`spec_handle` swarm_workflow_launch wrote -- check it as swarm_workflow "
+            "would, and return its OUTLINE with its `spec_digest` and a `spec_ref`, "
+            "NEVER the whole spec. Submits NOTHING and makes no request.\n"
             "\n"
-            "For /sc:swarmcloud given a path: a workflow script has no filesystem, so "
-            "the bridge reads the file, and the script checks the spec relayed "
-            "back against this digest before it submits. `path` is relative to "
-            "the checkout, or absolute; either way the file must be UNDER the "
-            "checkout once symlinks are resolved -- anything outside it is "
-            "refused and not read. The reply's `path` is the file actually "
-            "read. A file that is not JSON, or not a workflow spec, is refused "
-            "without its content being repeated.\n"
+            "For /sc:swarmcloud given a path or a launch's handle: a workflow script "
+            "has no filesystem, so the bridge reads the file, and the script checks "
+            "the reply relayed back against this digest before it submits. `path` is "
+            "relative to the checkout, or absolute; either way the file must be UNDER "
+            "the checkout once symlinks are resolved -- anything outside it is "
+            "refused and not read. `spec_handle` (with the `spec_digest` the launch "
+            "wrote beside it, which is checked here: a changed file is refused) is "
+            "read from the launch's run folder only. The reply's `path` is the file "
+            "actually read. A file that is not JSON, or not a workflow spec, is "
+            "refused without its content being repeated.\n"
             "\n"
-            "The reply also carries `spec_ref`, which swarm_workflow takes in place "
-            "of the spec, and `outline` -- the title, the label, the `strategy` and "
-            "`merge`, and each step's id, `depends_on`, `stage`, `runner_profile`, "
-            "`when_step` and `input_from` -- which is all a relay needs to copy back. "
-            "Submit with `spec_ref`; never retype `spec`."
+            "The reply carries `spec_ref`, which swarm_workflow takes in place of the "
+            "spec, and `outline` -- the title, the label, the `strategy` and `merge`, "
+            "and each step's id, `depends_on`, `stage`, `runner_profile`, `when_step`, "
+            "`input_from`, `prompt_chars` and `prompt_first_line` -- which is all a "
+            "relay needs to copy back. Submit with `spec_ref` (or the handle); never "
+            "retype the spec. ONE step's prompt, and only on request: pass `step_id`, "
+            "and `offset`/`limit` (characters; at most "
+            f"{_PROMPT_WINDOW_MAX}) for a window of it; `next_offset` is null at its end."
         ),
         "inputSchema": {
             "type": "object",
@@ -1461,8 +1484,37 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "The spec file, under this checkout: relative to it, or absolute.",
                 },
+                "spec_handle": {
+                    "type": "string",
+                    "description": (
+                        "In place of `path`: the `spec_handle.path` swarm_workflow_launch "
+                        "returned, exactly as given; read only with `spec_digest`."
+                    ),
+                },
+                "spec_digest": {
+                    "type": "string",
+                    "description": (
+                        "The digest the file must have: required with `spec_handle` "
+                        "(its `spec_handle.digest`), checked with `path` when given."
+                    ),
+                },
+                "step_id": {
+                    "type": "string",
+                    "description": "Return this one step's prompt, windowed, beside the outline.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "With `step_id`: the first character of the window (default 0).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"With `step_id`: the window's length in characters (default "
+                        f"{_PROMPT_WINDOW_DEFAULT}, at most {_PROMPT_WINDOW_MAX})."
+                    ),
+                },
             },
-            "required": ["path"],
+            "required": [],
         },
     },
     {
@@ -1481,11 +1533,13 @@ TOOLS: list[dict[str, Any]] = [
             "API serves none (`Workspace: not reported` included), so clipping the "
             "description never drops the workspace; the reply's `details` is that line. "
             "Each step or task row shows its own details line when expanded: an attach's "
-            "`args` carry them, and a spec's reply carries its whole `args`: the spec, "
-            "its `spec_handle` -- the file this writes the spec to beside the copy, "
-            "`{path, digest}`, which the run submits from so no agent retypes the "
-            "spec (SC-LAUNCH-SPEC) --, `details` and `rows`; launch with those `args` "
-            "as given. Nothing credential-shaped is ever shown. A workflow "
+            "`args` carry them, and a spec's reply carries its whole `args`: its "
+            "`spec_handle` -- the file this writes the spec to beside the copy, "
+            "`{path, digest}`, which the run reads its outline from and submits "
+            "from, so no agent retypes the spec (SC-LAUNCH-SPEC) --, `details` and "
+            "`rows`, and NEVER the spec itself, so a spec of any size launches "
+            "(#2875); launch with those `args` as given. Nothing credential-shaped "
+            "is ever shown. A workflow "
             "script's name is fixed when it is launched, so "
             "this writes a copy of the plugin's run.js with that name and returns "
             "its `script_path`: launch it with the Workflow tool, "
@@ -2787,7 +2841,8 @@ TOOLS: list[dict[str, Any]] = [
                 f"{name} {resource.units}"
                 for name, resource in sorted(RESOURCE_CLASSES.items(), key=lambda kv: kv[1].units)
             )
-            + ") -- and on a shared pool it counts every tenant's."
+            + f") in a compute pool and {PROVIDER_POOL_UNITS} in a provider pool -- "
+            "and on a shared pool it counts every tenant's."
         ),
         "inputSchema": {
             "type": "object",
@@ -3974,6 +4029,12 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # `outputs`, not `produced`: a workflow read already names the whole
     # of `describe_task` `produced`, and one word for two shapes misleads.
     described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
+    # A REVIEW'S VERDICT (#2837): MERGE or NOT_YET and how many findings,
+    # from the task's own `verdict.json`. No key, and no extra read, when its
+    # artifacts hold none (`_verdict_of`).
+    shown_verdict = _verdict_of(client, task_id, listing)
+    if shown_verdict is not None:
+        described["verdict"] = shown_verdict
     # WHAT THE AGENT ASKS THE OWNER (owner decisions, 2026-10-05 and
     # 2026-10-06, observer P15): its questions.json, read back through the
     # redacted artifacts route by `progress.owner_questions` -- the one parse
@@ -4007,6 +4068,65 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
         described["browser"] = browser
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
+
+
+#: The file a review or re-review step writes (`agent_worker.expected_outputs.
+#: REVIEW_VERDICT_NAME`), and the most of it read: the worker's own bound
+#: (`agent_worker.verdict.MAX_VERDICT_BYTES`).
+VERDICT_NAME = "verdict.json"
+VERDICT_MAX_BYTES = 256 * 1024
+
+
+def _verdict_of(client: Any, task_id: str, listing: dict[str, Any] | None) -> dict[str, Any] | None:
+    """`{verdict, findings, file}` from the task's `verdict.json`, or None
+    when its artifacts hold none (#2837).
+
+    WHY. Reported 2026-10-30: a re-review's NOT_YET lived only in its
+    handoff, and nothing in `swarm_result` showed it. The worker now makes a
+    review step write the file; this shows what it says.
+
+    READ THROUGH THE ARTIFACTS ROUTE, by name, redacted by the API, and only
+    when the listing names the file: a task with none pays no read. A file
+    that does not read is `{"verdict": None, "unavailable_because": ...}`,
+    never a guessed verdict. `findings` counts the file's `findings` as the
+    worker does (`verdict.verdict_of_document`): a list's non-blank entries,
+    one for a lone non-empty value.
+    """
+    names = {
+        entry.get("name")
+        for entry in (listing or {}).get("artifacts") or []
+        if isinstance(entry, dict)
+    }
+    if VERDICT_NAME not in names:
+        return None
+
+    def unavailable(why: str) -> dict[str, Any]:
+        return {"verdict": None, "file": VERDICT_NAME, "unavailable_because": why}
+
+    try:
+        window = client.artifact_content(task_id, VERDICT_NAME, limit_bytes=VERDICT_MAX_BYTES + 1)
+    except SwarmError as exc:
+        return unavailable(f"the artifact route could not be read: {exc}")
+    if window.get("status") != "ok" or not isinstance(window.get("content"), str):
+        return unavailable(f"the artifact route says {window.get('status')}")
+    if window.get("truncated"):
+        return unavailable(f"the file is larger than the {VERDICT_MAX_BYTES} bytes the worker reads")
+    try:
+        document = json.loads(window["content"])
+    except ValueError:
+        return unavailable("the file is not JSON")
+    if not isinstance(document, dict):
+        return unavailable("the file is not a JSON object")
+    raw = document.get("verdict")
+    verdict = raw.strip().upper() if isinstance(raw, str) else None
+    if verdict not in VERDICTS:
+        return unavailable(f"its `verdict` is {raw!r}, not {' or '.join(VERDICTS)}")
+    findings = document.get("findings")
+    if isinstance(findings, list):
+        count = sum(1 for item in findings if item not in (None, "", {}, []))
+    else:
+        count = 0 if findings in (None, "") else 1
+    return {"verdict": verdict, "findings": count, "file": VERDICT_NAME}
 
 
 def _collect(client: Any, task_ids: list[str], wait_seconds: int) -> dict[str, Any]:
@@ -4305,6 +4425,101 @@ def _held_spec(ref: str) -> dict[str, Any]:
             "again with swarm_workflow_spec, or pass `spec_path`. Nothing was sent"
         )
     return held["spec"]
+
+
+def _prompt_first_line(prompt: str) -> str:
+    """A prompt's first non-blank line, cut at `_PROMPT_FIRST_LINE_CHARS`."""
+    for line in prompt.splitlines():
+        if line.strip():
+            line = line.strip()
+            return line if len(line) <= _PROMPT_FIRST_LINE_CHARS else line[: _PROMPT_FIRST_LINE_CHARS - 1] + "…"
+    return ""
+
+
+def _workflow_spec_tool(args: dict[str, Any]) -> dict[str, Any]:
+    """`swarm_workflow_spec`: a spec file or a launch's handle, read and checked,
+    answered as its OUTLINE, digest and ref -- never every prompt
+    (LAUNCH-LARGE-SPEC, #2875).
+
+    Measured 2026-10-31 (product-oracle-2f): a 24-step spec with ~90 KB of
+    prompts answered 86,506 characters here, over Claude Code's tool-output
+    limit, and the /sc:swarmcloud run that asked ended NOT_SUBMITTED. The
+    bridge holds the spec under `spec_ref`; the reply names each step's prompt
+    by its size and first line, and one step's prompt is read only when
+    `step_id` asks for it, a window of at most `_PROMPT_WINDOW_MAX`
+    characters at a time.
+
+    A HANDLE IS READ WITH ITS DIGEST, AND CHECKED HERE. `spec_handle` is the
+    file swarm_workflow_launch wrote (`launch.handle_target`: its run folders
+    only), and the digest it wrote beside it must match the bytes read now, so
+    a file changed since the launch is refused before any ref is handed out.
+    `spec_digest` beside a `path` is checked the same way."""
+    sources = sorted(k for k in ("path", "spec_handle") if args.get(k) not in (None, ""))
+    if len(sources) != 1:
+        raise SwarmError(
+            f"swarm_workflow_spec takes exactly one of `path` or `spec_handle`; it was given "
+            f"{sources or 'none'}. Nothing was read"
+        )
+    expected = args.get("spec_digest")
+    expected = expected.strip() if isinstance(expected, str) else None
+    if args.get("spec_handle") not in (None, ""):
+        if not expected:
+            raise SwarmError(
+                "`spec_handle` is read only with the `spec_digest` the launch wrote beside it "
+                "(`spec_handle.digest`): pass both, exactly as given. Nothing was read"
+            )
+        from . import launch
+
+        target = launch.handle_target(str(args["spec_handle"]))
+        read = _read_spec_file(str(target), base=target.parent)
+    else:
+        read = _read_spec_file(str(args["path"]), base=checkout.directory())
+    if expected and read["spec_digest"] != expected:
+        raise SwarmError(
+            f"{read['path']} has digest {read['spec_digest']}, and the digest given is {expected}: "
+            "the file changed after its digest was taken, so no ref was handed out. Launch the "
+            "spec again. Nothing was submitted"
+        )
+    spec = read["spec"]
+    outline = _outline(spec)
+    prompts: dict[str, str] = {}
+    for step in spec.get("steps") or []:
+        if isinstance(step, dict) and isinstance(step.get("step_id"), str):
+            prompt = step.get("prompt")
+            prompts[step["step_id"]] = prompt if isinstance(prompt, str) else ""
+    for entry in outline["steps"]:
+        prompt = prompts.get(entry["step_id"], "")
+        entry["prompt_chars"] = len(prompt)
+        entry["prompt_first_line"] = _prompt_first_line(prompt)
+    out: dict[str, Any] = {
+        "path": read["path"],
+        "spec_digest": read["spec_digest"],
+        "spec_ref": _hold_spec(spec, read["path"]),
+        "outline": outline,
+        "prompts": (
+            "not in this reply: pass `step_id` (with `offset` and `limit`) for one step's "
+            "prompt, a window at a time"
+        ),
+    }
+    if args.get("step_id") not in (None, ""):
+        step_id = str(args["step_id"]).strip()
+        if step_id not in prompts:
+            raise SwarmError(
+                f"swarm_workflow_spec: the spec has no step {step_id!r}; its steps are listed in "
+                "`outline.steps`"
+            )
+        prompt = prompts[step_id]
+        offset = max(0, _int_arg(args, "offset", 0))
+        limit = min(_PROMPT_WINDOW_MAX, max(1, _int_arg(args, "limit", _PROMPT_WINDOW_DEFAULT)))
+        end = min(len(prompt), offset + limit)
+        out["prompt"] = {
+            "step_id": step_id,
+            "offset": offset,
+            "text": prompt[offset:end],
+            "chars": len(prompt),
+            "next_offset": end if end < len(prompt) else None,
+        }
+    return out
 
 
 def _outline(spec: dict[str, Any]) -> dict[str, Any]:
@@ -5405,10 +5620,7 @@ def _call(
         return json.dumps(window, indent=2, default=str)
 
     if name == "swarm_workflow_spec":
-        read = _read_spec_file(str(args["path"]), base=checkout.directory())
-        read["spec_ref"] = _hold_spec(read["spec"], read["path"])
-        read["outline"] = _outline(read["spec"])
-        return json.dumps(read, indent=2)
+        return json.dumps(_workflow_spec_tool(args), indent=2)
 
     if name == "swarm_workflow_launch":
         from . import launch, watch
@@ -5490,7 +5702,15 @@ def _call(
             return json.dumps(
                 {"applied": False, "reason": explain_absence(task)}, indent=2
             )
-        result = apply_patch(download(client, uri), repo, task_id=args["task_id"])
+        # Through swarm-api's artifact route with the bridge's own credential,
+        # never Cloud Storage with the developer's gcloud login (#2834). A
+        # patch the API masked or could not serve byte for byte is refused
+        # with the reason, as an outcome, and nothing is applied.
+        try:
+            patch = read_patch(client, task)
+        except PatchRefused as exc:
+            return json.dumps({"applied": False, "reason": str(exc)}, indent=2)
+        result = apply_patch(patch, repo, task_id=args["task_id"])
         return json.dumps(
             {
                 "applied": result.applied,
@@ -5649,6 +5869,8 @@ def _call(
             # As named: `infer` above chose only the primary repository.
             additional_repositories=fields["additional_repositories"],
             publish_to_pr=publish_to_pr,
+            # Only a whole spec carries the workflow switches (2026-11-01).
+            dispatch=fields.get("dispatch"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,

@@ -1918,7 +1918,13 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         backend=Backend.GKE_AUTOPILOT,
         runner_argv=("python", "-m", "agent_worker.runners.codex"),
         provider="openai",
-        secrets=("OPENAI_API_KEY",),
+        # INTERCHANGEABLE, as claude-code's are (contract request 130, owner
+        # 2026-11-01): the tenant's metered key, or a ChatGPT plan leased from
+        # the pool. The plan arrives as an access token (about an hour) and the
+        # plan's account id; the quota broker alone holds and refreshes the
+        # refresh token, which never reaches a worker.
+        secrets=("OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
+        secrets_any_of=True,
         timeout_seconds=7200,
         inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
         # DISABLED 2026-09-23 by the owner's decision: the platform is focusing
@@ -1931,10 +1937,16 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # Left in the catalogue rather than deleted, so the four task documents
         # that name it stay readable and re-enabling is one word. Nothing was
         # queued or running against it when this landed.
+        #
+        # STILL DISABLED after contract request 130, by the owner's one change
+        # to it (2026-11-01): "Accept, but keep codex unavailable until the
+        # pool lanes land". A follow-up sets `available=True` once the broker
+        # leases OpenAI plan accounts and the runner uses them.
         available=False,
         disabled_reason=(
-            "codex is disabled on this platform. The provider refused the "
-            "registered credential and the platform is focused on Claude. Use "
+            "codex is disabled until the ChatGPT-plan pool lands: the quota "
+            "broker leasing OpenAI plan accounts and the codex runner using "
+            "them. A follow-up turns it on once both have merged. Use "
             "claude-code."
         ),
         secret_slots={"files": _FILES_SLOT},   # contract request 80
@@ -2113,6 +2125,32 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
     ),
+    # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
+    # docs/design/lightpanda-runtime.md), accepted by the owner 2026-10-31:
+    # claude-code's runner on agent-runtime-lightpanda, a headless browser
+    # that runs JavaScript and draws no pixels, for DOM-only browser work:
+    # reading, scraping, link checks, form flows. The `standard` class and one
+    # container: no display sidecar, no live view, no take-control, so
+    # `live_browser` stays False and the task leases `resource:standard`, not
+    # the scarce `resource:browser`. A page it cannot read goes to a
+    # claude-code-browser child the agent submits. A literal, not `replace()`,
+    # so tests/terraform/catalogue_mirror sees it (request 113's reason).
+    # GKE Autopilot, on-demand only (invariant 6).
+    "claude-code-lightpanda": RunnerProfile(
+        name="claude-code-lightpanda",
+        image="agent-runtime-lightpanda",
+        resource_class="standard",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # claude-code's; no browser_tool
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+    ),
     # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
     # docs/design/human-steps.md §5 request C): a workflow step that waits for
     # a tenant member's answer. control_plane (request 93): no container runs
@@ -2132,6 +2170,31 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         timeout_seconds=300,          # unused; the wait is await_input's (at most 24 h)
         inputs={},
         available=True,
+    ),
+    # CONTRACT REQUEST 124, accepted by BGD 2026-10-27 (FL-CONTRACT,
+    # docs/design/fix-loop.md §7 request A, Q1 and Q10): a workflow step that
+    # runs review-fix rounds until the review says MERGE or `max_rounds`.
+    # control_plane (request 93): no container runs it, swarm-api drives its
+    # rounds as steps of their own and ends it, and Terraform makes no Job for
+    # it (`profiles_without_a_job`). SHIPPED UNAVAILABLE until every build
+    # lane of the design's §8 has merged and FL-ACCEPT is green on dev, as
+    # await-input was; enabling it is `available=True` and nothing else.
+    "fix-loop": RunnerProfile(
+        name="fix-loop",
+        image="agent-runtime-base",   # never pulled: control_plane
+        resource_class="standard",    # never reserved: control_plane
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        control_plane=True,
+        provider=None,
+        secrets=(),
+        timeout_seconds=300,          # unused; the rounds are steps with their own
+        inputs={},
+        available=False,
+        disabled_reason=(
+            "fix-loop is not available yet: it ships unavailable until its "
+            "acceptance run passes, as docs/design/fix-loop.md says."
+        ),
     ),
 }
 

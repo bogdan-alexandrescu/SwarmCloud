@@ -4,8 +4,9 @@
 #
 # Five things, and only these:
 #
-#   * the Cloud Run service `swarm-github-hooks`, ingress ALL, invocable by
-#     allUsers: GitHub cannot pass IAP or mint a Google ID token, so this is
+#   * the Cloud Run service `swarm-github-hooks`, ingress ALL, its invoker
+#     check disabled (no allUsers binding since DAYONE-TF-2, Q3): GitHub
+#     cannot pass IAP or mint a Google ID token, so this is
 #     the "new unauthenticated door" docs/runbooks/github-app.md used to
 #     refuse. Its own check is the App's HMAC (X-Hub-Signature-256) over the
 #     raw body, compared in constant time; an unsigned or badly signed request
@@ -74,14 +75,15 @@
 #
 # Deployed like every Cloud Run service here: by terraform, from image_refs
 # (modules/cloud_run says why the image is not ignored). Not through
-# modules/cloud_run, whose validation refuses allUsers with ingress ALL -- for
-# the control plane, correctly. This one service is the exception, by design.
+# modules/cloud_run, whose services all keep the invoker check -- for the
+# control plane, correctly. This one service is the exception, by design.
 
 variable "enable_github_hooks" {
   description = <<-EOT
     Create the public GitHub push receiver swarm-github-hooks (ingress all,
-    allUsers run.invoker on that service only), its webhook secret container
-    swarm-github-app-webhook-secret (no version), that secret's accessor and
+    the invoker check disabled on that service only, no allUsers binding),
+    its webhook secret container swarm-github-app-webhook-secret (no
+    version), that secret's accessor and
     swarmGithubHooksDedup (datastore.entities.create only) for the rollup
     sweeper account it runs as, and the
     TTL policy on github_deliveries.expires_at
@@ -108,18 +110,13 @@ locals {
   github_hooks_deliveries     = "github_deliveries"
   github_hooks_delivery_field = "expires_at"
 
-  # THE ONE PUBLIC INVOKER IN THIS ROOT, on THIS service alone (design §6.2:
-  # "ingress all and allUsers as run.invoker"). SAID PLAINLY: it is held in a
-  # local whose name does not end in `member`, so security.yml's "no public
-  # Cloud Run services" grep -- which matches a quoted public member after
-  # `member =` and exists
-  # to stop an ACCIDENTAL public grant -- does not fail on this deliberate
-  # one. The GS-HOOKS pull request carries the workflow change that names
-  # this exact line as that check's one exemption and fails any other public
-  # assignment (a pull request may not edit .github/workflows/). Until the
-  # owner applies it, this comment and tests/terraform/github_hooks.tftest.hcl
-  # (allUsers on this service only, named once in this file) hold it.
-  github_hooks_public_invoker = "allUsers"
+  # NO PUBLIC INVOKER BINDING (Q3, DAYONE-TF-2). GitHub must reach this
+  # service without a Google credential, so the service DISABLES the invoker
+  # check (invoker_iam_disabled on the service below) instead of granting
+  # allUsers run.invoker: no allUsers member exists anywhere in this root, and
+  # Domain Restricted Sharing is not involved. The App's HMAC signature is the
+  # check, as it was. The org constraint run.managed.requireInvokerIam must be
+  # absent or excepted for this project (design §9.2).
 
   # The secret's VERSION reference the receiver reads at run time.
   github_hooks_secret_version = "projects/${var.project_id}/secrets/${local.github_hooks_secret_id}/versions/latest"
@@ -133,8 +130,11 @@ module "github_hooks_role_ids" {
   project_id = var.project_id
 }
 
+# Also under enable_console_app_setup alone: the console's App step stores the
+# webhook secret the manifest exchange returns before the receiver is on
+# (DAYONE-TF-2, review finding 2).
 resource "google_secret_manager_secret" "github_webhook_secret" {
-  count = local.github_hooks_on ? 1 : 0
+  count = (local.github_hooks_on || var.enable_console_app_setup) ? 1 : 0
 
   project   = var.project_id
   secret_id = local.github_hooks_secret_id
@@ -209,6 +209,10 @@ resource "google_cloud_run_v2_service" "github_hooks" {
   ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = var.deletion_protection
   launch_stage        = "GA"
+
+  # GitHub carries no Google credential: the invoker check is off on this
+  # service alone, instead of an allUsers run.invoker binding (Q3).
+  invoker_iam_disabled = true
 
   labels = merge(local.labels, {
     "component" = "github-hooks"
@@ -308,18 +312,6 @@ resource "google_cloud_run_v2_service" "github_hooks" {
       client_version,
     ]
   }
-}
-
-# allUsers -> run.invoker on THIS service only (see the local above).
-resource "google_cloud_run_v2_service_iam_member" "github_hooks_public" {
-  # checkov:skip=CKV_GCP_102:the public GitHub push receiver (docs/design/graph-service.md section 6.2, owner answer Q3); its check is the App's HMAC, and no other Cloud Run service is public.
-  count = local.github_hooks_serving ? 1 : 0
-
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.github_hooks[0].name
-  role     = "roles/run.invoker"
-  member   = local.github_hooks_public_invoker
 }
 
 check "github_hooks_has_an_image" {

@@ -1,4 +1,4 @@
-import { useContext, useEffect, useId, useRef, useState, type FormEvent, type MouseEvent, type MutableRefObject } from 'react'
+import { Fragment, useContext, useEffect, useId, useRef, useState, type FormEvent, type MouseEvent, type MutableRefObject } from 'react'
 import { USE_FIXTURES, loadCapacity, loadSecretsOverview, type SecretsRow } from './api'
 import { Banner, Button, ButtonLink, Card, routedClick } from './components'
 import { SetupContext } from './ConfigSetup'
@@ -545,7 +545,7 @@ function Registrations({ data, missing, registering, onChange }: {
                   <code>{s.name}</code>
                   {s.description !== '' && <div className="jb-note">{s.description}</div>}
                 </th>
-                <td data-label="URL"><code className="sbf-cut" title={s.url}>{s.url}</code></td>
+                <td data-label="URL"><code className="sbf-cut" title={s.url}><UrlBreaks url={s.url} /></code></td>
                 <td data-label="Credential">
                   {modeWords(s.auth.mode)}
                   {s.auth.mode === 'workspace_secret' && <>, granted to <code>{s.consumer}</code></>}
@@ -956,6 +956,26 @@ export function McpCredentialField({
   )
 }
 
+/**
+ * A URL that may wrap only after a `/` or a `.` (QA2 config2-19). The cell
+ * broke anywhere, so the table squeezed the column and a reader saw
+ * 'https://mcp.exampl / e.com/docs/mcp'. Each `<wbr>` is a break the browser
+ * may take; the text, its copy and its title stay the URL itself.
+ */
+function UrlBreaks({ url }: { url: string }) {
+  const parts = url.split(/(?<=[/.])(?!\/)/)
+  return (
+    <>
+      {parts.map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 && <wbr />}
+          {part}
+        </Fragment>
+      ))}
+    </>
+  )
+}
+
 export function McpServerPicker({
   list,
   profile,
@@ -1007,7 +1027,7 @@ export function McpServerPicker({
             const on = picked.includes(s.name)
             return (
               <div key={s.name} className="btp-row">
-                <label className={`btp-opt${on ? ' is-on' : ''}`} title={s.description || undefined}>
+                <label className={`btp-opt mcp-opt${on ? ' is-on' : ''}`} title={s.description || undefined}>
                   <input type="checkbox" value={s.name} checked={on} disabled={!on && picked.length >= max}
                     onChange={(e) => onPick(e.target.checked ? [...picked, s.name] : picked.filter((n) => n !== s.name))} />
                   <span><code>{s.name}</code>{s.description !== '' && <> &middot; {s.description}</>}</span>

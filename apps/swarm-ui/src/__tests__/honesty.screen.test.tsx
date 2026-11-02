@@ -77,8 +77,8 @@ describe('ok', () => {
     // also the way to read again. Both are assembled from several text nodes,
     // so they are read off the element rather than matched as one string.
     expect(document.querySelector('.c-count-note')?.textContent).toBe('2 rows')
-    expect(document.querySelector('.c-phead .c-acts .c-refresh')?.textContent).toBe('⟳ read 0 s ago')
-    expect(screen.getByRole('button', { name: 'read 0 s ago · refresh' })).toBeTruthy()
+    expect(document.querySelector('.c-phead .c-acts .c-refresh')?.textContent).toBe('⟳ read once · 0 s ago')
+    expect(screen.getByRole('button', { name: 'read once · 0 s ago · refresh' })).toBeTruthy()
     // One shape (§6.12): title left, actions right, no line under the title.
     expect(document.querySelector('.sub'), 'the sub-line under the title is back').toBeNull()
   })
@@ -108,7 +108,7 @@ describe('empty', () => {
     expect(document.querySelector('.c-count-note')).toBeNull()
     // WHEN IT WAS CHECKED is still on screen -- on the head's refresh control,
     // which is where every other state of this component puts its age (#98).
-    expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ read 0 s ago')
+    expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ read once · 0 s ago')
   })
 
   /**
@@ -133,13 +133,15 @@ describe('empty', () => {
     const panel = heading.closest('.ctl-empty')
     expect(panel, 'the empty state is not the shared .ctl-empty shape').not.toBeNull()
     expect(panel!.className, 'a real zero drew a failure or partial variant').toBe('ctl-empty')
-    expect(panel!.querySelector('h3 > .ctl-mark.is-zero')?.textContent).toBe('none')
+    // The mark is an icon in an empty state: the heading carries its words
+    // (automate2-17, qa2fix26.test.tsx), the silhouette carries the kind.
+    expect(panel!.querySelector('h3 > .ctl-mark.is-zero.is-icon')?.textContent).toBe('')
     expect(document.querySelector('.state'), 'the hand-built .state box is back').toBeNull()
     expect(
       panel!.querySelector('.ctl-empty-foot'),
       'a fresh empty state repeats the age the refresh control already carries',
     ).toBeNull()
-    expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ read 0 s ago')
+    expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ read once · 0 s ago')
   })
 
   /**
@@ -182,7 +184,7 @@ describe('empty', () => {
     )
     // The read has settled when the control carries an age; until then it
     // says `reading…`. No `empty` prop, so nothing else is drawn for it.
-    await waitFor(() => expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ read 0 s ago'))
+    await waitFor(() => expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ read once · 0 s ago'))
     expect(body().textContent).not.toContain('rows')
     expect(children).not.toHaveBeenCalled()
   })
@@ -225,10 +227,13 @@ describe('a failed read', () => {
 
   it('offers a retry, and the head does not pretend a read or a number is available', async () => {
     renderScreen({ status: 'error', error: err('server_error') })
-    expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy()
+    // ONE RETRY CONTROL (QA2 automate2-11): the head's refresh, not a second
+    // `Try again` in the panel under it.
+    // MUTATION: draw the panel's `Try again` on a Screen again and this fails.
+    const ctl = await screen.findByRole('button', { name: 'Refresh · not read' })
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
     // Nothing was read, so the head's control carries no age and no count:
     // `⟳ refresh`, named as not read.
-    const ctl = screen.getByRole('button', { name: 'Refresh · not read' })
     expect(ctl.textContent).toBe('⟳ refresh')
     expect(document.querySelector('.c-count-note')).toBeNull()
   })
@@ -442,10 +447,10 @@ describe('the age on the head’s refresh control moves on its own (CH-1, #98)',
     fakeClock()
     renderScreen(okNow())
     await advance(0)
-    expect(sub()).toBe('⟳ read 0 s ago')
+    expect(sub()).toBe('⟳ read once · 0 s ago')
     await advance(60_000)
-    expect(sub()).toBe('⟳ read 1 min ago')
-    expect(screen.getByRole('button', { name: 'read 1 min ago · refresh' })).toBeTruthy()
+    expect(sub()).toBe('⟳ read once · 1 min ago')
+    expect(screen.getByRole('button', { name: 'read once · 1 min ago · refresh' })).toBeTruthy()
   })
 
   /**
@@ -519,7 +524,7 @@ describe('the age on the head’s refresh control moves on its own (CH-1, #98)',
     expect(foot(), 'a fresh empty state repeats the control’s age').toBeNull()
     await advance(60_000)
     expect(foot(), 'a one-minute-old empty read is not stale').toBeNull()
-    expect(sub()).toBe('⟳ read 1 min ago')
+    expect(sub()).toBe('⟳ read once · 1 min ago')
     // Past the five minutes a read is trusted for: the foot speaks.
     await advance(AGED_AFTER_MS)
     expect(foot()).toBe('from 6 min ago')
@@ -741,7 +746,8 @@ describe('a screen that polls (AG-1)', () => {
     await advance(10_000)
     expect(load, 'the retry did not happen, so this proves nothing').toHaveBeenCalledTimes(2)
     expect(document.querySelector('.state.failed'), 'the retry unmounted the failure panel').not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+    // The page's one retry, the head's refresh (QA2 automate2-11), stays drawn.
+    expect(document.querySelector('.c-refresh')).not.toBeNull()
     expect(document.querySelectorAll('.skeleton')).toHaveLength(0)
   })
 

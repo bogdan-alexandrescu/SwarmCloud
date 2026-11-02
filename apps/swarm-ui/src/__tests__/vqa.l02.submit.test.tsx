@@ -32,6 +32,10 @@
 // Nothing here is credential-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+// These hand the submit real responses, so the fixture build's answer to the
+// submit (QA2-FIX-07, runs2-01 and runs2-02) is turned off here.
+vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), USE_FIXTURES: false }))
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { AddSetting, SubmitScreen } from '../Submit'

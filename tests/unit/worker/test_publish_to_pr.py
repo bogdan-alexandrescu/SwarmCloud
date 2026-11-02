@@ -37,6 +37,7 @@ from agent_worker.errors import WorkerError
 from agent_worker.forge import PullHead, PullRequest
 
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     forge,
     local_urls,
     origin,
@@ -187,6 +188,54 @@ def test_without_the_field_publishing_is_unchanged(
     assert len(forge.pulls) == 1 and forge.pulls[0]["head"] == f"swarm/{config.task_id}"
     assert pull.reads == 0 and pull.updates == []
     assert "publish_to_pr" not in out
+
+
+def test_the_clone_carries_the_pull_requests_base_deep_enough_to_merge(
+    worker_factory, monkeypatch, origin, local_urls, forge, pull, tmp_path
+):
+    """#2901: a lane asked to merge its pull request's base found a
+    one-commit clone and no credential to fetch it with. The pull request's
+    base, read with its head, is fetched as origin/<base> to a merge base and
+    named in the repository context. MUTATION: drop `pull_base=` from the
+    `clone_at_commit` call in `_maybe_clone` (the pull request's head is
+    cloned through the pin) -- origin/main is never there."""
+    _no_agent_text(monkeypatch)
+    pull.overrides["base_ref"] = "main"
+    fork = refs(origin)["main"]
+    main_tip = _push_commit(origin, tmp_path, "main", "moved-on")   # the base moves on
+    contexts: list[dict] = []
+    clone = lifecycle.Worker._maybe_clone
+    monkeypatch.setattr(lifecycle.Worker, "_maybe_clone",
+                        lambda self, task: contexts.append(clone(self, task)) or contexts[-1])
+    seen: dict[str, str] = {}
+
+    def edit(repo: Path) -> None:
+        seen["base"] = _git(repo, "rev-parse", "origin/main")
+        seen["merge_base"] = _git(repo, "merge-base", "HEAD", "origin/main")
+        _git(repo, "merge", "--quiet", "--no-edit", "origin/main")
+
+    _, _, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-merge-base",
+                            dispatch=DIRECT, edit=edit)
+    assert seen == {"base": main_tip, "merge_base": fork}
+    base = contexts[0]["publish_to_pr"]["base"]
+    assert (base["remote_ref"], base["merge_base"]) == ("origin/main", fork)
+    assert "git merge origin/main" in base["note"]
+    assert out["published"] is True, out
+    assert {"mockup.txt", "moved-on.txt"} <= tree_at(origin, refs(origin)[PR_BRANCH])
+
+
+def test_a_pull_request_that_names_no_base_clones_as_before(
+    worker_factory, monkeypatch, origin, local_urls, forge, pull
+):
+    _no_agent_text(monkeypatch)
+    contexts: list[dict] = []
+    clone = lifecycle.Worker._maybe_clone
+    monkeypatch.setattr(lifecycle.Worker, "_maybe_clone",
+                        lambda self, task: contexts.append(clone(self, task)) or contexts[-1])
+    _, _, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-no-base",
+                            dispatch=DIRECT, edit=_edit("nobase"))
+    assert out["published"] is True, out
+    assert "base" not in contexts[0]["publish_to_pr"]
 
 
 # -- refused before the agent: nothing cloned, nothing pushed -----------------
@@ -407,6 +456,7 @@ def test_read_pull_request_reads_the_head_and_the_repositories(monkeypatch):
     assert head.merged is True, "merged_at alone is a merged pull request"
     assert (head.head_ref, head.head_repo, head.base_repo, head.body) == (
         PR_BRANCH, REPO, REPO, "")
+    assert head.base_ref == "main", "the clone fetches the base it names (#2901)"
 
 
 @pytest.mark.parametrize("status", [404, 403])

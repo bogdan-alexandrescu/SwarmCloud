@@ -1,0 +1,13 @@
+# Lane DAYONE-OPEN-PAGES (part of #2688): steps.open_page opens a human step's
+# page in the browser only when one would be in front of the person. These are
+# the environment variables it reads to decide that (has_display in
+# apps/swarm-install/swarm_install/steps/__init__.py). DISPLAY is already in the
+# base manifest's env: table.
+version: 1
+env:
+  SSH_CONNECTION:
+    setter: 'internal: the operator''s shell (sshd sets it); read at apps/swarm-install/swarm_install/steps/__init__.py:144 so a Mac or Windows session reached over SSH prints the page instead of opening a browser nobody sees'
+  SSH_TTY:
+    setter: 'internal: the operator''s shell (sshd sets it); read at apps/swarm-install/swarm_install/steps/__init__.py:144, as SSH_CONNECTION'
+  WAYLAND_DISPLAY:
+    setter: 'internal: the operator''s desktop session; read at apps/swarm-install/swarm_install/steps/__init__.py:145: on Linux a browser opens only with an X or Wayland display, else a text browser would take over the terminal'

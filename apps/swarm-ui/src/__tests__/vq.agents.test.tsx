@@ -231,7 +231,7 @@ describe('VQ-009: a workflow step’s row is named by its workflow, as Overview 
     // One read names the workflow's steps; the lone agent is never read for a title.
     expect(api.loadTask).toHaveBeenCalledTimes(1)
     expect(steps.map((t) => t.id)).toContain(api.loadTask.mock.calls[0]![0])
-    expect(flat(name(lone.id))).toBe(`claude-code agent · ${lone.id.slice(5, 13)}`)
+    expect(flat(name(lone.id))).toBe('claude-code agent') // the id is the line under it (QA1-FIX-07, overview-agents-14)
   })
 })
 
@@ -295,11 +295,12 @@ describe('VQ-011: the Attempts totals say which events no attempt holds', () => 
     api.loadAgentDetail.mockResolvedValue(ok({ task: t, events } as unknown as AgentDetail))
   }
 
-  it('reads `1 attempt · 3 events, 1 before any attempt` over a card of 2', async () => {
+  it('reads `3 events, 1 before any attempt` on the toolbar over a card of 2', async () => {
     serve([ev('submitted', at(-1), null), ev('running', at(1), 'att_1'), ev('succeeded', at(10), 'att_1')])
     render(<AttemptTimelineScreen taskId="tsk_charts" />)
-    // MUTATION: drop `beforeSay` and the head reads `3 events` over a card of 2.
-    await waitFor(() => expect(screen.getByText('1 attempt · 3 events, 1 before any attempt')).toBeTruthy())
+    // MUTATION: drop `beforeSay` and the toolbar reads `3 events` over a card of 2.
+    // The head counts attempts only since QA2-FIX-13 (overview-agents-41): the toolbar says the events, once.
+    await waitFor(() => expect(screen.getByText('1 attempt')).toBeTruthy())
     expect(flat(document.querySelector('.att-ev-cap'))).toBe('3 events, 1 before any attempt · first page')
     const cards = [...document.querySelectorAll('.att-card')].map((c) => flat(c.querySelector('.ctl-card-head')))
     expect(cards.some((c) => c.startsWith('Before any attempt') && c.includes('1 event'))).toBe(true)
@@ -308,7 +309,7 @@ describe('VQ-011: the Attempts totals say which events no attempt holds', () => 
   it('says nothing more when every event is an attempt’s (control)', async () => {
     serve([ev('running', at(1), 'att_1'), ev('succeeded', at(10), 'att_1')])
     render(<AttemptTimelineScreen taskId="tsk_charts" />)
-    await waitFor(() => expect(screen.getByText('1 attempt · 2 events')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('1 attempt')).toBeTruthy())
     expect(flat(document.querySelector('.att-ev-cap'))).toBe('2 events · first page')
   })
 })
@@ -326,15 +327,18 @@ describe('VQ-012: over a capped page Waiting is counted whole, as the panel coun
   it('reads `Waiting 3`, with no `+`, when the waiting states answered whole', async () => {
     api.loadTasks.mockResolvedValue(page([...waiting, ...finished], 'next-1'))
     const all = [...waiting, old, ...finished]
+    // One state or a comma list of them, as one `in` query (#2998).
     api.loadTasksInState.mockImplementation(async (state: TaskState) => {
-      const tasks = all.filter((t) => t.state === state)
+      const asked = new Set(state.split(','))
+      const tasks = all.filter((t) => asked.has(t.state))
       return tasks.length === 0 ? { status: 'empty', fetchedAt: Date.now() } : page(tasks, null)
     })
     api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     render(<AgentsScreen onOpen={() => {}} />)
     // MUTATION: read only the live states and the tab reads `2+`.
     await waitFor(() => expect(badge(/^Waiting/)).toBe('3'))
-    expect(api.loadTasksInState.mock.calls.map(([s]) => s).sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
+    expect(api.loadTasksInState).toHaveBeenCalledTimes(1)
+    expect(String(api.loadTasksInState.mock.calls[0]![0]).split(',').sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
     // CONTROL: Recent is still the capped page's, and says so.
     expect(badge(/^Recent/)).toBe('4+')
   })

@@ -14,6 +14,7 @@ import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName,
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
+import { AdminSetupHealthScreen, AdminSetupScreen } from './AdminSetup'
 import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
@@ -31,7 +32,7 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView } from './paths'
+import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SETUP_LINK_PATH, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, isSetupLinkPath, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView, setupLinkToken } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
 import { McpServersScreen } from './McpServers'
@@ -56,6 +57,7 @@ import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
 import { WorkspacePeopleScreen } from './WorkspacePeople'
 import { JOIN_PATH, JoinWorkspaceScreen, joinCodeFrom } from './JoinWorkspace'
+import { SetupLinkScreen } from './SetupLink'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { tableMode, usePhoneTables } from './capacityPoll'
@@ -67,12 +69,13 @@ import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { QaRunGroupScreen } from './QaRunGroup'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
-import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
+import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard, useScheduleName } from './Schedules'
 import { ApprovalsScreen } from './Approvals'
 import { RepositoriesScreen } from './Repositories'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { useRecentName, WorkflowsScreen } from './Workflows'
+import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceTalkScreen } from './voice/Section'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
 
 /**
@@ -562,6 +565,15 @@ export const SECTIONS: SectionDef[] = [
       // S7): each platform secret's status from Secret Manager metadata. No
       // value and no form: the operator's script writes every one of them.
       { id: 'platform-secrets', label: 'Platform secrets', admin: true },
+      // DAYONE-SETUP-UI-3 (part of #2688; docs/design/day-one-plan.md §5.1,
+      // §5.2): Admin › Setup, the people part of an install that swarm
+      // install hands over to the console, and its Health page, the
+      // scheduled doctor's findings. Platform admins only: a workspace admin
+      // who types either address is refused in place. After Platform secrets,
+      // not first, so Admin still lands on Pool limits; the install's own URL
+      // is /admin/setup, which swarm install prints.
+      { id: 'setup', label: 'Setup', admin: true },
+      { id: 'health', label: 'Health', admin: true },
       // #847 W8 (docs/workspaces.md §6.4): who has signed in, their workspace
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
@@ -574,6 +586,26 @@ export const SECTIONS: SectionDef[] = [
       // it reads `/v1/tenants/mine`, which everyone may, and a workspace
       // admin who is not a platform admin is shown only this page.
       { id: 'workspaces', label: 'Workspaces you admin' },
+    ],
+  },
+  {
+    // VOICE IT (docs/design/voice-it.md §10, phase one's first lane; BGD's
+    // decision of 2026-11-01): a section of its own, and the owner's decision
+    // is the argument docs/web-ui/redesign.md §2 asks a new section for. Its
+    // question is none of the other five's: they each ask what the platform
+    // holds or is doing, and this one asks for a conversation that turns into
+    // work. A LITERAL id, for the reason given on Work. Its spine item is
+    // drawn only for the people Voice it is open to (`voiceItOpen`,
+    // voice/Section.tsx); last, after Admin, so nobody else's spine moves.
+    // The question asks what each tab answers, in tab order.
+    id: 'voice',
+    label: 'Voice it',
+    question:
+      'What do I want built next, can I talk it through out loud until it is planned and shipped, which of those talks can I pick up again, and what does Voice it remember about how I work?',
+    tabs: [
+      { id: 'talk', label: 'Talk' },
+      { id: 'projects', label: 'Projects' },
+      { id: 'preferences', label: 'Preferences' },
     ],
   },
 ]
@@ -626,6 +658,16 @@ const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
  * never in an address this app writes.
  */
 const JOIN = 'join'
+
+/**
+ * ADMIN › SETUP'S ONE-TIME LINK (`/admin/setup/link/<token>`, lane
+ * DAYONE-SETUP-UI-5B; part of #2688). Not a section and not a tab, and NOT
+ * behind the admin gate though its path is under Admin: the person a link
+ * names -- a Claude account's owner, a team's git admin -- is rarely a
+ * platform admin. Its token is read once by `App` (`setupLinkToken`) before
+ * the bar is rewritten to `/admin/setup/link` without it.
+ */
+const SETUP_LINK = 'setup-link'
 
 /**
  * SETTINGS (KEYS-UI, then PROFILE-NAV): the person's own pages, not a
@@ -896,7 +938,7 @@ export interface Route {
    */
   view?: string | null
   /** The Timeline's second page, Outcomes (`/timeline/outcomes`); absent is Lanes. */
-  page?: 'outcomes' | null
+  page?: 'outcomes' | typeof SETUP_CALLBACK_PAGE | null
   /** A path this console has no page for: drawn as not-found, kept in the bar (NotFound.tsx). */
   missing?: string | null
   /**
@@ -963,6 +1005,9 @@ export function fromLocation(): Route {
   // Before the legacy-hash check: the fragment on `/join` is a join code,
   // never an old `#...` address, whatever it happens to spell.
   if (pathname === JOIN_PATH || pathname === `${JOIN_PATH}/`) return { sectionId: JOIN, tab: '', taskId: null, taskPane: 'detail' }
+  // Before pathToAddress: `/admin/setup/...` would otherwise read as Admin ›
+  // Setup, the admin's page, with the token taken for a page of it.
+  if (isSetupLinkPath(pathname)) return { sectionId: SETUP_LINK, tab: '', taskId: null, taskPane: 'detail' }
   if (isLegacyHash(hash, LEGACY_HEADS, pathname)) return fromHash()
   const p = pathToAddress(pathname, search, hash)
   if (p === null) return { ...fromAddress(''), missing: pathname }
@@ -971,6 +1016,11 @@ export function fromLocation(): Route {
   // path's query names them (G2-22), so a reload closes to the same list.
   return p.agentTab === null || r.taskId === null ? r : { ...r, list: p.list ?? { tab: p.agentTab, state: null } }
 }
+
+/** Admin › Setup (DAYONE-SETUP-UI-3) and its GitHub App callback page: `/admin/setup/github-app/callback`. */
+const SETUP_TAB = 'setup'
+const SETUP_CALLBACK_PAGE = 'github-app-callback'
+const SETUP_CALLBACK = 'admin/setup/github-app/callback'
 
 /**
  * An address (paths.ts), resolved to a route: the old hash router's grammar,
@@ -1023,6 +1073,13 @@ export function fromAddress(full: string): Route {
   // further: the whole of what an old link named is the page itself.
   if (head === REFERENCE) return { sectionId: CAPACITY, tab: API_READS_TAB, ...blank }
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
+  // Admin › Setup's GitHub App callback is a page of the Setup tab, so the
+  // shell refuses it to anyone but a platform admin exactly as it refuses
+  // Setup. GitHub's `code` and `state` ride in `view`, read off the address
+  // on arrival: the bar is rewritten without them (`canonical`).
+  if (hash === SETUP_CALLBACK) {
+    return { sectionId: ADMIN_SECTION, tab: SETUP_TAB, ...blank, page: SETUP_CALLBACK_PAGE, ...(query !== '' ? { view: query } : {}) }
+  }
   // Settings › API keys and its one-time link, before LEGACY reads `settings`
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
   if (hash === `${SETTINGS}/${PROFILE_TAB}`) return { sectionId: SETTINGS, tab: PROFILE_TAB, ...blank }
@@ -1152,6 +1209,7 @@ export function fromAddress(full: string): Route {
 const ADMIN_SECTION = 'admin'
 const LIMITS_TAB = 'limits'
 const AUTOMATE = 'automate'
+const VOICE = 'voice'
 
 /**
  * The query keys a pane's address carries, and no other: the `?pool=` a link
@@ -1201,7 +1259,10 @@ export function canonical(r: Route): string {
   }
   if (r.sectionId === SUBMIT) return SUBMIT
   if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
+  // GitHub's single-use code leaves the bar: the route keeps it in `view`.
+  if (r.sectionId === ADMIN_SECTION && r.page === SETUP_CALLBACK_PAGE) return SETUP_CALLBACK
   if (r.sectionId === JOIN) return JOIN
+  if (r.sectionId === SETUP_LINK) return SETUP_LINK
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
@@ -1309,6 +1370,12 @@ export function App() {
   // only changes the fragment, so `onHash` below reads it the same way.
   const [joinCode, setJoinCode] = useState<string | null>(() =>
     typeof window === 'undefined' ? null : joinCodeFrom(window.location.pathname, window.location.hash))
+  // THE SETUP LINK'S TOKEN (`/admin/setup/link/<token>`), read here for the
+  // join code's reason, before the normalise effect rewrites the bar to
+  // `/admin/setup/link`. Held in this state alone and handed to the page,
+  // which posts it in a body: never a route, a URL, storage or a log.
+  const [setupToken] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : setupLinkToken(window.location.pathname))
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1317,6 +1384,7 @@ export function App() {
     (r: Route) => {
       if (r.missing != null) return r.missing
       if (r.sectionId === JOIN) return JOIN_PATH
+      if (r.sectionId === SETUP_LINK) return SETUP_LINK_PATH
       const list = r.list ?? lastList.current
       const path = addressToPath(canonical(r), list?.tab ?? 'live')
       // AN OPEN AGENT KEEPS ITS LIST'S STATE AND TOGGLES in its query (G2-22),
@@ -1507,6 +1575,8 @@ export function App() {
           ? 'Connect GitHub'
           : at.sectionId === JOIN
             ? 'Join a workspace'
+            : at.sectionId === SETUP_LINK
+              ? 'Your setup link'
             : at.sectionId === SETTINGS
               ? PROFILE_LABEL
               : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
@@ -1517,7 +1587,13 @@ export function App() {
   // (overview-agents-65). Its id until then, which is all anyone knows.
   const agentNamed = useAgentName(at.missing ? null : at.taskId)
   const workflowNamed = useRecentName(!at.missing && at.taskId === null && at.tab === 'workflows' ? openObjectOf(at) : null)
-  const titled = agentNamed ?? workflowNamed ?? object
+  // A schedule by the name its list read (QA2 automate2-15): "sch_a ·
+  // Schedules" named the open sheet by its id though the list under it had
+  // read its name.
+  const scheduleNamed = useScheduleName(
+    !at.missing && at.sectionId === AUTOMATE && at.tab === 'schedules' ? new URLSearchParams(at.view ?? '').get('schedule') : null,
+  )
+  const titled = agentNamed ?? workflowNamed ?? scheduleNamed ?? object
   useEffect(() => {
     document.title = documentTitleOf(title, titled)
   }, [title, titled])
@@ -1547,7 +1623,9 @@ export function App() {
           dock={<Dock />}
           // AN UNSENT FORM IS KEPT ON A TENANT SWITCH (intake-tenants.html
           // 2A): the two submit forms re-read under the new tenant in place.
-          keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
+          // The setup link's page too: it selects the link's workspace itself
+          // (SetupLink.tsx), mid sign-in, and a remount would drop the sign-in.
+          keepOnSwitch={(at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')) || at.sectionId === SETUP_LINK}
           place={pathFor(at)}
           // ADMIN IS AN ADMIN'S (CONFIG-NAV; BGD 2026-10-23): someone who
           // administers nothing, on an Admin address, lands on Overview, and
@@ -1614,6 +1692,8 @@ export function App() {
                 ) : at.sectionId === JOIN ? (
                   // Keyed by the code, so a second link pasted into the tab asks afresh.
                   <JoinWorkspaceScreen key={joinCode ?? ''} code={joinCode} />
+                ) : at.sectionId === SETUP_LINK ? (
+                  <SetupLinkScreen token={setupToken} />
                 ) : (
                   // Settings › Profile: the last page that is not a section.
                   // API keys was beside it until SSC-UI moved it to Config ›
@@ -1701,6 +1781,8 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return 'config'
     case ADMIN_SECTION:
       return 'admin'
+    case VOICE:
+      return 'voice'
     case HELP:
       return 'help'
     case GITHUB_CALLBACK:
@@ -1711,6 +1793,10 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
     // which named a page the person was not on.
     case JOIN:
       return 'profile'
+    // The link signs a Claude account into a pool: Capacity's, never Admin's,
+    // which would send a person who administers nothing to Overview.
+    case SETUP_LINK:
+      return 'capacity'
     // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
     // panel holds them. Only Profile's exact address is one since SSC-UI;
     // `#settings/<anything else>` is Pool limits (LEGACY), and lights Admin.
@@ -2014,9 +2100,11 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
   // API READS SAYS WHOSE READS ARE NOT ITS OWN (capacity-005, visual QA run 2).
   // "reads nothing" over a table of reads, every one `200 ok` and `just now`,
   // read as "no reads" -- the opposite of the page. The page lists the reads
-  // the OTHER screens made; it issues none, which is what this says.
+  // the OTHER screens made; it issues none, which is what this says. Said as
+  // what the rows ARE: "no reads of its own" over the same table still read
+  // as "no reads" (QA2 capacity-19).
   if (at.sectionId === CAPACITY && at.tab === API_READS_TAB) {
-    return <span className="ctl-em">no reads of its own</span>
+    return <span className="ctl-em">reads made by other screens</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
   // first render of a route comes before its layout effect), and a screen
@@ -2222,7 +2310,7 @@ function SectionBody({
   /** The Timeline's view, from the hash's query (#185), or null. */
   view: string | null
   /** The Timeline's page: Outcomes, or null for Lanes. */
-  page: 'outcomes' | null
+  page: 'outcomes' | typeof SETUP_CALLBACK_PAGE | null
   /** Where the Timeline writes a new view; App turns it into the route. */
   onView: (view: string) => void
   go: (to: string) => void
@@ -2343,6 +2431,11 @@ function SectionBody({
     case 'config/workspace':
       return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 
+    // DAYONE-SETUP-UI-3: Setup, its GitHub App callback page, and Health.
+    case 'admin/setup':
+      return <AdminSetupScreen callback={page === SETUP_CALLBACK_PAGE ? (view ?? '') : undefined} />
+    case 'admin/health':
+      return <AdminSetupHealthScreen />
     case 'admin/limits':
       return <AdminSettingsScreen />
     case 'admin/runner-sizes':
@@ -2357,6 +2450,15 @@ function SectionBody({
       return <AdminPlatformSecretsScreen />
     case 'admin/workspaces':
       return <WorkspacesYouAdminScreen go={go} />
+
+    // VOICE IT (voice-it.md §10): the three panes' shells; each says what it
+    // holds and when it arrives, and offers nothing that cannot work yet.
+    case 'voice/talk':
+      return <VoiceTalkScreen />
+    case 'voice/projects':
+      return <VoiceProjectsScreen />
+    case 'voice/preferences':
+      return <VoicePreferencesScreen />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash
@@ -2450,7 +2552,9 @@ function ReferenceScreen({ failuresOnly: asked = false, onFailuresOnly }: { fail
           What these mean &rarr;
         </a>
       </PageHead>
-      <CountNote>this tab only · not the API surface</CountNote>
+      {/* What the rows are, then what they are not (QA2 capacity-19): "this
+          tab only" over a table of reads read as a restriction on the reader. */}
+      <CountNote>reads this browser tab made · not the whole API</CountNote>
 
       {probes.length === 0 ? (
         // A REAL ZERO, and the one screen in the product where that is true by
@@ -2467,7 +2571,7 @@ function ReferenceScreen({ failuresOnly: asked = false, onFailuresOnly }: { fail
         </div>
       ) : (
         <section className="section">
-          {/* THE SCOPE IS SAID ONCE (#140), in the head's `this tab only`. An
+          {/* THE SCOPE IS SAID ONCE (#140), in the note's `this browser tab`. An
               h2 ("Routes called in this tab") and a caption ("N routes since
               this tab loaded") said it twice more; the count the caption
               carried is the `N of M` beside the toggle. */}

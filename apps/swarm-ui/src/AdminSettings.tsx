@@ -17,7 +17,9 @@ import {
   POOL_FAMILY_ORDER,
   poolKind,
   poolLabel,
+  poolLabelAmong,
   setBy,
+  unitsIn,
   type AdminPool,
   type Capacity,
   type Me,
@@ -31,6 +33,7 @@ import {
   type Pool,
   type PoolKind,
   type QuotaState,
+  type Weight,
 } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 // The Config pages' lead (`.ws-lead`, WS-SETTINGS-PAGE), which every Admin
@@ -221,12 +224,15 @@ export type AdminLeadTone = 'warn' | 'next' | 'ok' | 'unread'
 export function AdminLead({
   kicker,
   title,
+  sub,
   body,
   tone,
   action,
 }: {
   kicker: string
   title: string
+  /** An id under the title, in mono (`.id`): the key a title names by its label. */
+  sub?: string
   body?: ReactNode
   tone: AdminLeadTone
   action?: ReactNode
@@ -236,6 +242,7 @@ export function AdminLead({
       <div className="ws-lead-t">
         <span className="ws-lead-k">{kicker}</span>
         <b>{title}</b>
+        {sub !== undefined && <span className="ws-lead-s id">{sub}</span>}
         {body !== undefined && <span className="ws-lead-s">{body}</span>}
       </div>
       {action !== undefined && <div className="ws-lead-a">{action}</div>}
@@ -310,14 +317,22 @@ export const NEAR_CEILING = 0.8
  * ranked, nor is a ceiling of 0 with nothing in use -- nothing is waiting on
  * either.
  */
+/**
+ * `label` IS THE NAME THE TABLE GIVES THE POOL (visual QA pass 1,
+ * admin-shell-03, part of #2596): the lead read "Pool
+ * provider:anthropic:tenant:u-bogdan is at 100%" over a row named
+ * `anthropic · u-bogdan`. The key stays `pool`, for the button's target and
+ * the lead's mono sub-line.
+ */
 export type PoolLead =
-  | { kind: 'unset'; pool: string }
-  | { kind: 'near'; pool: string; active: number; ceiling: number; share: number }
+  | { kind: 'unset'; pool: string; label: string }
+  | { kind: 'near'; pool: string; label: string; active: number; ceiling: number; share: number }
   | { kind: 'clear' }
 
 export function poolLead(pools: readonly Pool[]): PoolLead {
+  const names = pools.map((p) => p.name)
   const unset = pools.find((p) => p.enabled !== false && p.effective_limit === null)
-  if (unset !== undefined) return { kind: 'unset', pool: unset.name }
+  if (unset !== undefined) return { kind: 'unset', pool: unset.name, label: poolLabelAmong(unset.name, names) }
   let top: { pool: string; active: number; ceiling: number; share: number } | null = null
   for (const p of pools) {
     if (p.enabled === false || p.effective_limit === null) continue
@@ -326,7 +341,7 @@ export function poolLead(pools: readonly Pool[]): PoolLead {
     const share = ceiling <= 0 ? Number.POSITIVE_INFINITY : p.active / ceiling
     if (top === null || share > top.share || (share === top.share && p.active > top.active)) top = { pool: p.name, active: p.active, ceiling, share }
   }
-  if (top !== null && top.share >= NEAR_CEILING) return { kind: 'near', ...top }
+  if (top !== null && top.share >= NEAR_CEILING) return { kind: 'near', ...top, label: poolLabelAmong(top.pool, names) }
   return { kind: 'clear' }
 }
 
@@ -358,15 +373,19 @@ function PoolLeadView({
   const button =
     onOpen === undefined ? undefined : (
       <Button kind="primary" disabledReason={openWhy} onClick={() => onOpen(lead.pool)}>
-        {`Open ${lead.pool}`}
+        {`Open ${lead.label}`}
       </Button>
     )
+  // The key under the name only when it adds something, as the row and the
+  // side editor draw it: `global` would read "global / global".
+  const key = lead.label === lead.pool ? undefined : lead.pool
   if (lead.kind === 'unset') {
     return (
       <AdminLead
         tone="warn"
         kicker="Needs a look"
-        title={`Pool ${lead.pool} has no ceiling set`}
+        title={`Pool ${lead.label} has no ceiling set`}
+        sub={key}
         body="Admission refuses every task that takes it until one is."
         action={button}
       />
@@ -376,7 +395,8 @@ function PoolLeadView({
     <AdminLead
       tone="warn"
       kicker="Needs a look"
-      title={`Pool ${lead.pool} is at ${percent(lead.share)} of its ceiling`}
+      title={`Pool ${lead.label} is at ${percent(lead.share)} of its ceiling`}
+      sub={key}
       body={`${lead.active} of ${lead.ceiling} units in use.`}
       action={button}
     />
@@ -561,16 +581,22 @@ function limitText(pool: Pool): string {
  * about the CEILING, which is a property of the limits alone. The two name
  * different pools whenever one pool is busier than another with a higher
  * limit, so reading the served list here would mark the wrong operand.
+ *
+ * EACH POOL'S LIMIT IS DIVIDED BY WHAT ONE AGENT TAKES IN THAT POOL
+ * (`unitsIn`, contract request 129, #2950): `units` is the profile, whose
+ * served `pool_units` puts a provider pool at 1. A provider limit of 50 is
+ * 50 large agents, not 12.
  */
 function arithmetic(
   pools: string[],
-  units: number,
+  units: Weight,
   byName: Map<string, Pool>,
 ): { operands: Operand[]; ceiling: number | null; binding: string[]; unset: boolean } {
-  const w = units > 0 ? units : 1
   const operands: Operand[] = pools.map((pool) => {
     const p = byName.get(pool)
     if (p !== undefined && p.effective_limit === null) return { pool, agents: null, unset: true }
+    const share = unitsIn(units, pool)
+    const w = share !== null && share > 0 ? share : 1
     return { pool, agents: p ? Math.floor(p.effective_limit as number / w) : null, unset: false }
   })
 
@@ -754,7 +780,7 @@ function impactOf(pool: Pool, next: number, capacity: Capacity): Sentence[] {
   const said: Sentence[] = []
 
   if (after === pool.effective_limit) {
-    said.push([`The ceiling admission applies stays ${after}: ${setBy(pool).term} holds it there.`])
+    said.push([`The ceiling admission applies stays ${after}: ${setByWords(pool).term} holds it there.`])
   }
 
   const byName = new Map(capacity.pools.map((p) => [p.name, p]))
@@ -766,8 +792,8 @@ function impactOf(pool: Pool, next: number, capacity: Capacity): Sentence[] {
     .filter(([, prof]) => prof.pools.includes(pool.name))
     .sort(([a], [b]) => a.localeCompare(b))
   for (const [name, prof] of profiles) {
-    const before = arithmetic(prof.pools, prof.units, byName).ceiling
-    const now = arithmetic(prof.pools, prof.units, changed)
+    const before = arithmetic(prof.pools, prof, byName).ceiling
+    const now = arithmetic(prof.pools, prof, changed)
     if (before !== now.ceiling) {
       const binds: Sentence = now.binding.length === 0 ? [] : [`, ${now.unset ? 'no limit set on' : 'binds on'} `, ...operands(now.binding)]
       moved.push([`${name} ${before ?? '—'} → ${now.ceiling ?? '—'}`, ...binds])
@@ -804,9 +830,34 @@ function impactOf(pool: Pool, next: number, capacity: Capacity): Sentence[] {
 /**
  * THE ADDRESS OF A POOL'S ROW, the one the Tenants roster's Enforced links
  * write (#134), so following it moves the `is-target` mark to that row.
+ * A PATH, NOT THE OLD HASH (QA2 admin2-21, 2026-10-29): `#admin/limits?pool=`
+ * worked through the redirect, but a copied or middle-clicked link was the
+ * legacy address. The pool's colons are encoded, as a query value's are.
  */
-function rowHref(pool: string): string {
-  return `#admin/limits?pool=${pool}`
+export function rowHref(pool: string): string {
+  return addressToPath(`admin/limits?pool=${encodeURIComponent(pool)}`)
+}
+
+/**
+ * A POOL AS A CONTROL'S NAME SAYS IT (QA2 admin2-20, 2026-10-29). The row
+ * shows `eng` under the Workspaces head, but its Edit button and its editor's
+ * field were named `tenant:eng`, the raw key the visible text had dropped. A
+ * control is heard without its family's head, so the kind follows the label:
+ * `eng (workspace)`. A provider's tenant pool is already two names,
+ * `anthropic · u-bogdan`; `global` is its own kind.
+ */
+const SPOKEN_KIND: Readonly<Partial<Record<PoolKind, string>>> = {
+  tenant: 'workspace',
+  resource: 'resource class',
+  runner: 'runner profile',
+  backend: 'backend',
+  provider: 'provider',
+}
+
+export function poolSpoken(name: string): string {
+  const kind = SPOKEN_KIND[poolKind(name)]
+  if (kind === undefined || name.split(':').length > 2) return poolLabel(name)
+  return `${poolLabel(name)} (${kind})`
 }
 
 function Impact({ said }: { said: readonly Sentence[] }) {
@@ -921,7 +972,11 @@ function changeOf(pool: Pool): Change | null {
   const what: string[] = []
   const since: string[] = []
   if (limit !== undefined) {
-    what.push(`${limit.from === null ? 'no limit set' : limit.from} → ${limit.to}`)
+    // A SAVE THAT CHANGED NOTHING IS NOT DRAWN AS A CHANGE (visual QA pass 1,
+    // chrome-C23, part of #2596): the live console listed `100 → 100` under
+    // Last changed. The write is still the last one recorded, so it stays,
+    // said as what it was.
+    what.push(limit.from === limit.to ? `${limit.to}, unchanged` : `${limit.from === null ? 'no limit set' : limit.from} → ${limit.to}`)
     if (pool.hard_limit !== limit.to)
       since.push(
         `The hard limit is ${pool.hard_limit === null ? 'not set' : pool.hard_limit} now, not the ${limit.to} this change wrote.`,
@@ -955,7 +1010,7 @@ export function unitsWord(n: number): string {
  * stand out in ink.
  */
 export function AdmSetBy({ pool }: { pool: Pool }) {
-  const by = setBy(pool)
+  const by = setByWords(pool)
   // A faint dot, not the word (QA G5-19, capacity.html §G): `configured` on
   // nearly every row hid the rows where something else set the ceiling.
   // NAMED FOR THE MOUSE TOO (VQA V190): the word was on `aria-label` alone,
@@ -968,13 +1023,45 @@ export function AdmSetBy({ pool }: { pool: Pool }) {
   // The word is now printed, in the dim ink at the cell's size
   // (`.adm-setby-cfg`, styles/admin.css), so the overrides in full ink still
   // stand out from it, which is what G5-19 hid the word for.
-  return by.term === 'configured' ? (
-    <span className="adm-setby-cfg" title={`configured. ${by.detail}`}>
-      configured
-    </span>
+  if (by.term === 'configured')
+    return (
+      <span className="adm-setby-cfg" title={`configured. ${by.detail}`}>
+        configured
+      </span>
+    )
+  // The cell wraps between words; `(back-off)` is one run, never cut at its
+  // hyphen (VQA V024, `.adm-setby-nb`, styles/admin.css).
+  return by.term === BACKED_OFF ? (
+    <>
+      lowered automatically <span className="adm-setby-nb">(back-off)</span>
+    </>
   ) : (
     <>{by.term}</>
   )
+}
+
+const BACKED_OFF = 'lowered automatically (back-off)'
+
+/**
+ * SET BY IN A READER'S WORDS (visual QA pass 1, admin-shell-13, part of
+ * #2596). `setBy` (types.ts) named the adaptive case `AIMD back-off`, the
+ * quota broker's algorithm (since QA1B-13 it reads `lowered automatically
+ * after errors` there); on Pool limits the eng row read it beside rows that
+ * said `configured` and nothing said what it was. Here it is what happened to
+ * the ceiling, and the cell's title (its help on hover) says why and what
+ * undoes it: the broker raises the target again as calls succeed
+ * (quota_broker/aimd.py, additive increase).
+ */
+export function setByWords(pool: Pool): { term: string; detail: string } {
+  const by = setBy(pool)
+  // `setBy`'s adaptive case: `lowered automatically after errors` since
+  // QA1B-13 (#2660), which Capacity › Pools prints; Pool limits says which
+  // errors and that the target climbs back.
+  if (by.term !== 'lowered automatically after errors') return by
+  return {
+    term: BACKED_OFF,
+    detail: `Lowered automatically to ${pool.adaptive_target} after the provider rate-limited it (back-off); configured is ${pool.hard_limit}. It climbs back as calls succeed.`,
+  }
 }
 
 /**
@@ -1144,14 +1231,21 @@ function PoolEditor({
       .sort(order)
     return rows.length === 0 ? [] : [{ kind, rows }]
   })
+  const globalPool = pools.find((p) => p.name === 'global')
 
   // TO THE ROW A LINK NAMED, once it is on screen. jsdom implements no
-  // `scrollIntoView`, hence the guard.
+  // `scrollIntoView`, hence the guard. AND FOCUS WITH IT (QA2 admin2-21,
+  // 2026-10-29): the row was marked but focus stayed on the page's H1, so a
+  // keyboard or screen reader user arrived at the top, not at the row the
+  // link named. The row takes focus (`tabIndex={-1}` while it is the
+  // target), without a second scroll.
   const landed = target !== null && pools.some((p) => p.name === target)
   useEffect(() => {
     if (!landed) return
     const row = document.getElementById(`limit-${target}`)
-    if (row !== null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+    if (row === null) return
+    if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+    row.focus({ preventScroll: true })
   }, [landed, target])
 
   // CLOSING THE EDITOR RETURNS FOCUS TO THE ROW'S EDIT CONTROL. The editor
@@ -1271,7 +1365,8 @@ function PoolEditor({
           the history. From 1280px it floats over the right of the families
           (VQA V024): it took a grid column of its own, which narrowed every
           family to ~660px and reflowed every row -- `edit` wrapped under its
-          figure and `AIMD back-off` broke in two -- the moment it opened.
+          figure and `AIMD back-off` (Set by's term then) broke in two -- the
+          moment it opened.
           Below 1280px it is drawn under the row it edits (VQA V025): placed
           after all six families, tapping `edit` on a phone's first record
           jumped ~5,000px down to it. */}
@@ -1285,6 +1380,7 @@ function PoolEditor({
             <Family
               key={kind}
               kind={kind}
+              note={familyNote(kind, pools, globalPool, capacity.pools_complete !== false)}
               pools={rows}
               saved={saved}
               outcomes={outcomes}
@@ -1323,8 +1419,42 @@ const LIMIT_COLUMNS = [
   { key: 'changed', head: 'Last changed', num: false },
 ] as const
 
+/**
+ * WHERE THE REST OF GLOBAL'S UNITS ARE (visual QA pass 1, admin-shell-14,
+ * part of #2596). Every task takes `global` and one pool of each of these
+ * kinds (`pool_names_for`), so a family's rows add up to global's units in
+ * use when every pool is configured. The fixture console read global 7 over
+ * Resource classes adding up to 5, and nothing said where the other 2 were.
+ * A unit the family's rows do not hold is in a pool of that kind nobody has
+ * configured, which this page cannot list; the family says so in one line.
+ *
+ * Not for Providers: a profile with no provider takes no provider pool, and
+ * `provider:<p>` and `provider:<p>:tenant:<t>` count the same task twice. Not
+ * when the listing was cut short (`pools_complete: false`): the missing units
+ * may be in a pool that was not served, and the line would be a guess.
+ * Summed over the whole family, not the filtered rows, so typing a filter
+ * does not move it.
+ */
+const SUMMED_FAMILIES: Readonly<Partial<Record<PoolKind, string>>> = {
+  tenant: 'workspace',
+  resource: 'class',
+  runner: 'runner profile',
+  backend: 'backend',
+}
+
+export function familyNote(kind: PoolKind, pools: readonly Pool[], global: Pool | undefined, complete: boolean): string | null {
+  const noun = SUMMED_FAMILIES[kind]
+  if (noun === undefined || global === undefined || !complete) return null
+  const sum = pools.filter((p) => poolKind(p.name) === kind).reduce((n, p) => n + p.active, 0)
+  if (sum === global.active) return null
+  if (sum > global.active) return `These pools add up to ${sum} units in use, more than global's ${global.active}.`
+  const rest = global.active - sum
+  return `These pools add up to ${sum} of global's ${global.active} units in use: ${rest} ${rest === 1 ? 'is' : 'are'} outside any ${noun}.`
+}
+
 function Family({
   kind,
+  note,
   pools,
   saved,
   outcomes,
@@ -1336,6 +1466,8 @@ function Family({
   inline,
 }: {
   kind: PoolKind
+  /** `familyNote`: where the rest of global's units in use are, or null when the rows add up. */
+  note: string | null
   pools: Pool[]
   saved: Readonly<Record<string, SaveMark>>
   outcomes: Readonly<Record<string, SaveOutcome>>
@@ -1383,6 +1515,7 @@ function Family({
             {parts[1]!.length > 0 && rows(parts[1]!, 1)}
           </>
         )}
+        {note !== null && <p className="adm-family-note">{note}</p>}
       </div>
     </section>
   )
@@ -1484,7 +1617,7 @@ function PoolRow({
   admin: boolean | null
   onOpen: () => void
 }) {
-  const by = setBy(pool)
+  const by = setByWords(pool)
   const editable = isEditable(pool)
   const refused = admin === false
   // Any reason the press would be refused (QA-037: `aria-disabled`, not `disabled`).
@@ -1498,7 +1631,7 @@ function PoolRow({
   return (
     // THE ID A LINK NAMES (#132, #134): `limit-<pool>`, the raw pool name,
     // so the Tenants roster can point at `limit-tenant:<id>`.
-    <tr role="row" id={`limit-${pool.name}`} className={classes === '' ? undefined : classes}>
+    <tr role="row" id={`limit-${pool.name}`} className={classes === '' ? undefined : classes} tabIndex={target ? -1 : undefined}>
       <th role="rowheader" scope="row" className="pool-name">
         {poolLabel(pool.name)}
         {/* The raw name, because it is what you paste into pool-limit.sh and a
@@ -1562,12 +1695,12 @@ function PoolRow({
             aria-expanded={open}
             aria-label={
               !editable
-                ? `Edit ceiling for ${pool.name}. This pool kind has no write route, so it is read-only.`
+                ? `Edit ceiling for ${poolSpoken(pool.name)}. This pool kind has no write route, so it is read-only.`
                 : refused
-                  ? `Edit ceiling for ${pool.name}. Admins only: changing a ceiling needs the platform admin group.`
+                  ? `Edit ceiling for ${poolSpoken(pool.name)}. Admins only: changing a ceiling needs the platform admin group.`
                   : locked
-                    ? `Edit ceiling for ${pool.name}. Another pool has an unsaved value: save or cancel it first.`
-                    : `Edit ceiling for ${pool.name}`
+                    ? `Edit ceiling for ${poolSpoken(pool.name)}. Another pool has an unsaved value: save or cancel it first.`
+                    : `Edit ceiling for ${poolSpoken(pool.name)}`
             }
             title={locked ? 'another pool has an unsaved value' : refused ? 'admins only' : undefined}
           >
@@ -1923,7 +2056,7 @@ function QuotaSection({
       </dl>
 
       {admin === true && (
-        <form className="adm-quota-form" onSubmit={reset} aria-label={`Reset the adaptive target for ${pool.name}`}>
+        <form className="adm-quota-form" onSubmit={reset} aria-label={`Reset the adaptive target for ${poolSpoken(pool.name)}`}>
           <div className="adm-side-field">
             <label className="adm-side-k" htmlFor={`${id}-target`}>
               Reset target (now {current}, max {q.configured_hard_max})
@@ -1936,7 +2069,7 @@ function QuotaSection({
               value={targetText}
               disabled={busy !== null}
               onChange={(e) => setTarget(e.target.value)}
-              aria-label={`New adaptive target for ${pool.name}`}
+              aria-label={`New adaptive target for ${poolSpoken(pool.name)}`}
             />
             <input
               type="text"
@@ -1946,7 +2079,7 @@ function QuotaSection({
               value={targetWhy}
               disabled={busy !== null}
               onChange={(e) => setTargetWhy(e.target.value)}
-              aria-label={`Reason for resetting the target of ${pool.name}`}
+              aria-label={`Reason for resetting the target of ${poolSpoken(pool.name)}`}
               required
             />
           </div>
@@ -1969,7 +2102,7 @@ function QuotaSection({
       )}
 
       {admin === true && (
-        <form className="adm-quota-form" onSubmit={saveMax} aria-label={`Set the configured max for ${pool.name}`}>
+        <form className="adm-quota-form" onSubmit={saveMax} aria-label={`Set the configured max for ${poolSpoken(pool.name)}`}>
           <div className="adm-side-field">
             <label className="adm-side-k" htmlFor={`${id}-max`}>
               Configured max (now {q.configured_hard_max})
@@ -1982,7 +2115,7 @@ function QuotaSection({
               value={maxText}
               disabled={busy !== null}
               onChange={(e) => setMax(e.target.value)}
-              aria-label={`New configured max for ${pool.name}`}
+              aria-label={`New configured max for ${poolSpoken(pool.name)}`}
             />
             <input
               type="text"
@@ -1992,7 +2125,7 @@ function QuotaSection({
               value={maxWhy}
               disabled={busy !== null}
               onChange={(e) => setMaxWhy(e.target.value)}
-              aria-label={`Reason for changing the max of ${pool.name}`}
+              aria-label={`Reason for changing the max of ${poolSpoken(pool.name)}`}
               required
             />
           </div>
@@ -2154,7 +2287,7 @@ function SideEditor({
           value={value}
           disabled={busy || !editable}
           onChange={(e) => onDraft(e.target.value)}
-          aria-label={`Hard limit for ${pool.name}`}
+          aria-label={`Hard limit for ${poolSpoken(pool.name)}`}
           // THE INPUT SAYS IT IS WRONG, AND WHY (AH-8): the stylesheet draws
           // the warn border off `aria-invalid`, and the range is the message
           // the field points at.
@@ -2165,9 +2298,14 @@ function SideEditor({
         {next !== null && <span className="adm-delta">{deltaWords(pool.hard_limit, next)}</span>}
       </div>
       {/* BELOW THE FIELD, ON A LINE OF ITS OWN (AH-8). */}
+      {/* THE LINE SAYS WHAT IS WRONG (QA2 admin2-19, 2026-10-29): the bare
+          range `0–100000` turned amber and Save went disabled, and nothing
+          said the value was out of range or why Save would not press. */}
       {invalid && (
         <div className="warn-text limit-message" id={messageId}>
-          0–100000
+          {value.trim() !== '' && !Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
+            ? 'A ceiling is a whole number of units, 0 to 100000.'
+            : 'A ceiling is 0 to 100000 units.'}
         </div>
       )}
 

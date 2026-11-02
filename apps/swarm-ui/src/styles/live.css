@@ -359,3 +359,14 @@
   display: inline-flex; align-items: center; gap: 4px;
   padding: 0; border: none; border-radius: 0;
 }
+
+/* NO PICTURE YET, SAID IN THE FRAME'S MIDDLE (visual QA ovag2-12,
+   2026-10-29): a connection that has not drawn a frame and is retrying or has
+   given up puts its reason over the empty screen (LiveBrowser.tsx `blank`),
+   not only in the caption under it. */
+.live-frame.has-empty { position: relative; }
+.live-frame-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 16px; text-align: center; overflow: auto;
+}
+.live-frame-empty > .c-emp { max-width: 420px; }

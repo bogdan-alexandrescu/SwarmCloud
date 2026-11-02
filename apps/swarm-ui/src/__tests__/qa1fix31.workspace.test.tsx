@@ -89,7 +89,10 @@ describe('config-29: People and roles in a personal workspace', () => {
     // MUTATION: draw the personal card as the bare sentence again and this is not found.
     const back = await screen.findByRole('link', { name: 'Open Workspace Settings' }, WAIT)
     expect(back.getAttribute('href')).toBe('/config/workspace')
-    expect(screen.getByText(/a platform admin adds one/)).toBeTruthy()
+    // MUTATION (visual QA pass 2, config2-21): put back 'a platform admin adds one' -- adds a person, or a
+    // workspace? -- and this is not found.
+    expect(screen.getByText('Only a group workspace has people and roles; a platform admin creates group workspaces.')).toBeTruthy()
+    expect(screen.queryByText(/adds one/)).toBeNull()
     // MUTATION: offer Add a new workspace to everyone and this fails.
     expect(screen.queryByRole('link', { name: 'Add a new workspace' })).toBeNull()
   })
@@ -99,6 +102,8 @@ describe('config-29: People and roles in a personal workspace', () => {
     // MUTATION: gate Add on anything but `principal.is_admin` and this is never drawn.
     const add = await screen.findByRole('link', { name: 'Add a new workspace' }, WAIT)
     expect(add.getAttribute('href')).toBe('/config/workspace?part=new')
+    // MUTATION (config2-21): put back 'You may add one.' and what the admin may add is unnamed again.
+    expect(screen.getByText('Only a group workspace has people and roles; as a platform admin, you may create one.')).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Open Workspace Settings' })).toBeTruthy()
   })
 })

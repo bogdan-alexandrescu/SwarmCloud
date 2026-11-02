@@ -878,11 +878,11 @@ describe('Inputs: the prompt, the repository, and every staged file', () => {
     const pre = inputs.querySelector('pre')
     expect(pre?.textContent, 'the prompt is not the served copy').toBe('Audit the capacity code.\n\nSay what reserve() guarantees.')
     expect(api.count(`/v1/tasks/${REF}/input`), 'the prompt was not read through the masked copy').toBeGreaterThan(0)
-    // A clean prompt is a measured zero, in plain ink, and the qualifier that
-    // said the prompt was not masked is gone because it no longer is true.
-    const count = inputs.querySelector('.art-masked')
-    expect(count?.textContent, 'the prompt carries no masked count').toBe('0')
-    expect(count!.classList.contains('is-warn')).toBe(false)
+    // A clean prompt draws no count: `masked 0` read as jargon beside it
+    // (QA1-FIX-07, overview-agents-50); a count above zero is drawn, below.
+    // The qualifier that said the prompt was not masked is gone because it
+    // no longer is true.
+    expect(inputs.querySelector('.art-masked'), 'a clean prompt says `masked 0`').toBeNull()
     expect(inputs.textContent).not.toMatch(/not masked/)
     expect(inputs.textContent).toMatch(/github\.com\/bogdan-alexandrescu\/SwarmCloud/)
     expect(inputs.textContent).toMatch(/main/)
@@ -1058,7 +1058,7 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
       fireEvent.click(b!)
     }
     choose('Agent stderr')
-    await waitFor(() => expect(row(logsSection, 'agent_stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull())
+    await waitFor(() => expect(row(logsSection, 'agent stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull())
     choose('Runner')
     await waitFor(() => expect(logsSection.querySelector('pre.logwin-body')?.textContent).toMatch(/child started/))
     // The runner's own streams, named the runner's (G2-07).
@@ -1339,7 +1339,7 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
     // #172: a live stream's Age cell leads with how long ago the tail object
     // changed, with `live` on the line under it.
     const cell = await waitFor(() => {
-      const c = row(logsSection, 'agent_stderr').querySelector<HTMLElement>('td[data-label="Age"]')
+      const c = row(logsSection, 'agent stderr').querySelector<HTMLElement>('td[data-label="Age"]')
       expect(c?.textContent).toMatch(/^\d+s ago/)
       expect(c?.querySelector('.ctl-sub')?.textContent).toBe('live')
       return c!

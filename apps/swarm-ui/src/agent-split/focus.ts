@@ -83,7 +83,12 @@ export function useSplitFocus(panel: RefObject<HTMLDivElement>, close: () => voi
     const el = panel.current
     const { el: came, rowId } = born.current ?? { el: null, rowId: null }
     opener.current = came
-    if (el !== null && isOverlay(el)) el.focus(openedByAddress(came) ? QUIET : undefined)
+    // FOCUS MOVES IN WITHOUT SCROLLING THE PAGE (visual QA pass 1,
+    // overview-agents-55): a plain `focus()` scrolled the page column `.ctl-scroll`
+    // to bring the panel into view, 37px at 1440, and the `Agents` heading went
+    // under the sticky breadcrumb. The panel is placed by its own CSS; nothing
+    // behind it needs to move.
+    if (el !== null && isOverlay(el)) el.focus(openedByAddress(came) ? { ...QUIET, ...STILL } : STILL)
     return () => {
       const back = opener.current
       opener.current = null
@@ -120,7 +125,7 @@ export function useSplitFocus(panel: RefObject<HTMLDivElement>, close: () => voi
       const from = asked.from
       asked = null
       opener.current = from
-      panel.current?.focus()
+      panel.current?.focus(STILL)
     }
     takers.add(take)
     take()
@@ -172,6 +177,9 @@ export function isModal(panel: HTMLElement): boolean {
  * element caused (focus on `<body>` or nowhere) asks for no ring.
  */
 const QUIET: FocusOptions & { focusVisible?: boolean } = { focusVisible: false }
+
+/** Focus that leaves every scroll container where it was (overview-agents-55). */
+const STILL: FocusOptions = { preventScroll: true }
 
 /** Whether the split opened with nothing focused: by its address, not from a row or a key. */
 export function openedByAddress(came: Element | null): boolean {

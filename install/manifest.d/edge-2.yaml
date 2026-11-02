@@ -1,0 +1,30 @@
+# Lane DAYONE-EDGE-2 (part of #2688; audit finding N17): the first step of
+# stage 8 waits, after infra pass 2 and bootstrap pass 2 (stage 7), until the
+# managed certificate is ACTIVE and https://$H/ answers through IAP, so stage
+# 8's first call through the hostname (identity.group-read) meets neither a TLS
+# error nor a load balancer still routing. It is in stage 8, not 7, because
+# within a stage the engine keeps registration order and both pass-2 steps are
+# registered after steps/edge.py. The entry is stage 7, what it records being
+# stage 7's product (pass 2's HTTPS front end, served and behind IAP); its step
+# is the first of stage 8, which checks it before anything else there.
+version: 1
+entries:
+- id: other.console-through-iap
+  kind: other
+  scope: core
+  stage: 7
+  provider: engine
+  check: 'GET compute/v1 projects/$P/global/sslCertificates/${name_prefix}-cert answers managed.status ACTIVE, and an anonymous GET of https://$H/ (redirects not followed) answers 302, 401 or 403, IAP''s sign-in (handoff.IAP_ANSWERS)'
+  apply: 'nothing is made: steps/edge.py edge.console-answers is a wait step (handoff.CONSOLE_ANSWERS, polled every 15 s, bounded at 60 min); past the bound the install pauses and swarm install resumes at it'
+  verify: the same check; stage 8's identity steps then reach swarm-api through https://$H
+  explain: 'Google provisions a managed certificate only once it is attached (infra pass 1) and can take up to an hour; the HTTPS load balancer and IAP take minutes more after pass 2. A call through the hostname before then fails with an SSL error or a 404, and the person would have to run swarm install again'
+  guards: null
+  secret_entry: null
+  depends_on:
+  - certificate.managed-ssl
+  - other.https-proxy-and-forwarding-rule
+  evidence:
+  - apps/swarm-install/swarm_install/steps/edge.py
+  - apps/swarm-install/swarm_install/steps/handoff.py
+  notes: 'Assumes an anonymous 302, 401 or 403 means the certificate is served and IAP fronts the backends. It cannot see whether the installer''s own IAP grant has spread yet; that is the identity steps'' to retry.'
+  step: edge.console-answers

@@ -57,6 +57,27 @@ enable_gke_autopilot        = true
 gke_release_channel         = "RAPID"
 gke_enable_private_endpoint = false
 
+# Hostname-based egress policy (FQDNNetworkPolicy), on by owner decision of
+# 2026-11-01: swarm-voice's policy in kubernetes/network-policies/ fails closed
+# without it, leaving swarm-voice only DNS and the metadata server. The owner
+# set two conditions, and both hold:
+#   * no charge -- GKE's release note of 2025-09-02 lists FQDN Network Policy
+#     among the features "included in the GKE offering at no additional cost";
+#     GKE has had no paid edition since;
+#   * in place -- the google provider (6.50.0, pinned) enables it with a cluster
+#     update. It REPLACES the cluster only on true -> false, so never set this
+#     back to false without planning a cluster rebuild.
+gke_enable_fqdn_network_policy = true
+
+# Voice it's swarm-voice (terraform/infra/voice.tf), step 1 of its three:
+# "account" reads the swarm-voice service account that terraform/bootstrap
+# created (it exists in this project, read 2026-11-02) and grants NOTHING, so
+# this needs no IAM approval. Step 3, "on", binds and grants and so waits at
+# the release's IAM gate; it follows once the owner's OpenAI credential is
+# stored in his personal scope. Set 2026-11-02, after the owner asked to make
+# more progress on Voice it.
+voice_it = "account"
+
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
 # apply time as the operator's own /32. That is no longer what this does.
 #
@@ -227,6 +248,10 @@ pool_limits = {
     # Stated rather than left to fall back to `global`, which is 180 now and
     # would say nothing about browser: resource:browser's 100.
     claude-code-browser = 100
+    # DOM-only browser agents on `standard` (contract request 127). Equal to
+    # claude-code-browser's ceiling, so moving work here never lowers the
+    # browser ceiling; resource:standard (80) still binds below it.
+    claude-code-lightpanda = 100
   }
 
   # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
@@ -316,6 +341,11 @@ settings_env = {
 
 # --- tenancy ---------------------------------------------------------------
 allowed_domains = ["saga.xyz"]
+# Admitted past the domain check beside swarm-verify: the oracle-api client
+# application (owner decision 2026-10-18, #1568), which submits as its own
+# tenant u-or-9a0792 below. A literal in terraform/infra/locals.tf until
+# DAYONE-TF-1 made it an input.
+allowed_users = ["oracle-api@saga-agents-staging.iam.gserviceaccount.com"]
 
 tenants = {
   # A Google group. swarm_common.identity turns eng@saga.xyz into `eng`.
@@ -758,32 +788,11 @@ platform_admin_reach = true
 # first. See terraform/modules/monitoring/metrics.tf.
 enable_safety_tick_alert = true
 
-# The audiences IAP mints for this deployment's two backend services. Read from
-# `terraform output frontend_iap_audiences` after the load balancer was created;
-# see the variable's description for why this is declared rather than derived
-# (deriving it is a terraform cycle).
-#
-# Without these, swarm-api has nothing to verify an IAP assertion against and
-# answers 401 to every request from the web UI -- a signed-in user, a valid
-# certificate, a healthy load balancer, and an API that cannot see any of it.
-frontend_iap_audiences = [
-  "/projects/209012342332/global/backendServices/817602226733443034",
-  "/projects/209012342332/global/backendServices/6904312892305383900",
-]
-
-# The quota broker's URL, for the SCHEDULER's environment only -- it passes it
-# through to every worker it dispatches, and a worker with no QUOTA_BROKER_URL
-# uses no account pool at all. Read from `terraform output quota_broker_url`,
-# and declared here for the same reason frontend_iap_audiences is: the
-# scheduler's environment is an input to the Cloud Run module and this URL is
-# an output of it, so referencing it is a cycle. Cloud Run JOBS do not need
-# this -- locals.tf derives the same value for them.
-#
-# Unset, the pool is INERT and nothing says so at runtime: every agent runs on
-# the one shared per-tenant subscription while the pool's own listing shows a
-# healthy, idle set of accounts. The `quota_broker_url_is_wired` check is what
-# makes that visible at plan time; this is what makes it unnecessary.
-quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
+# frontend_iap_audiences, quota_broker_url and swarm_api_url are no longer
+# set here: terraform/infra computes them (DAYONE-TF-1; the IAP audiences from
+# the frontend module, the two URLs from the project number). The audiences it
+# computes are the two this file held, "/projects/209012342332/global/
+# backendServices/817602226733443034" and ".../6904312892305383900".
 
 # CHILD TASKS ON (owner decision 2026-10-11 ~22:35 PDT), in terraform/infra/child_tasks.tf's
 # order: the swarm-child-key secret existed, `scripts/create-secrets.sh --child-key`
@@ -801,9 +810,6 @@ quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
 # can read the nonce from a pod spec or an execution's overrides.
 # Side effect, accepted: a running agent may submit depth-1 child tasks.
 enable_child_tasks = true
-# Read from Cloud Run (gcloud run services describe swarm-api), the value
-# `terraform output swarm_api_url` gives; swarm_api_url_is_wired checks it.
-swarm_api_url = "https://swarm-api-tonstldhta-uc.a.run.app"
 # SCHEDULER-MADE JOBS ON THE SWARM VPC (#1893; owner decision 2026-10-21, part
 # of re-doing isolation cutover a1). The Cloud Run Jobs swarm-scheduler creates
 # for self-service u-<email> tenants had no VPC egress, so a worker switched to
@@ -988,6 +994,9 @@ workspace_grant_attestation = {
 # decision-api-staging tcp:443). internal_decision_api_enabled follows once the
 # egress is applied with kubernetes/apply.sh --swarm-system and reaches the API.
 enable_tailscale_egress = true
+# The decision API's MagicDNS name, the forwarder's one target. No default
+# since DAYONE-TF-1: it names this deployment's tailnet.
+tailscale_egress_target = "decision-api-staging.taile0bda9.ts.net"
 
 # The GitHub push receiver swarm-github-hooks (GS-HOOKS, PR 1406;
 # terraform/infra/github_hooks.tf; docs/runbooks/github-app.md Step 9 step 3).
@@ -1083,3 +1092,31 @@ graph_service = {
 # swarm-api's viewAccessor. Two IAM rows: the release holds at dev-iam. Prod
 # stays off. Kill switch: false and release.
 swarm_workers_log_view_enabled = true
+
+# The acceptance suite's public fixture bucket (terraform/infra/acceptance_fixture.tf),
+# an addon:ci piece that defaults off since DAYONE-TF-2 so an install makes no
+# public bucket. This deployment runs the acceptance suite, so it stays on and
+# the live plan shows no change.
+enable_acceptance_fixture = true
+
+# Settings signing, step one (docs/design/tenant-settings-integrity.md; #1457). The
+# key's first version was generated 2026-11-01 by scripts/create-secrets.sh
+# --settings-mac-key, so swarm-api and the scheduler may now reference it as
+# SWARM_SETTINGS_KEY. No tenant is cut over by this: scripts/resign-workspace-settings.sh
+# runs against the deployed key first, and only then does a second change add
+# Engineering to settings_mac_tenants and turn settings_mac_required on. Owner decision
+# 2026-11-01: sign settings so the Jev quality checks can run on request for the
+# code intelligence experiment.
+settings_mac_key_ready = true
+
+# Settings signing, step two: Engineering is cut over and the scheduler refuses
+# an unsigned or badly signed setting for it. scripts/resign-workspace-settings.sh
+# --tenant eng --apply signed Engineering's two stored blocks on 2026-11-01 after
+# its dry run's covered values were read against Engineering's admin_audit rows
+# (judgment backend typesafe set 10-23, Jev on 10-23, graph delivery service
+# 10-28, both context fields never set); a second dry run found nothing left to
+# sign. Only Engineering: every other workspace stays unsigned and unverified
+# until it is re-signed and listed here. Owner decision 2026-11-01 ("Sign
+# settings; checks on request").
+settings_mac_tenants  = ["eng"]
+settings_mac_required = true

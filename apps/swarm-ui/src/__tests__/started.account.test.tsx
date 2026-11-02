@@ -36,7 +36,7 @@ vi.mock('../api', async (importOriginal) => {
 import { AgentsScreen } from '../Agents'
 import { Run } from '../AgentDetail'
 import { AgHeadMeta } from '../AgentSplit'
-import { WorkflowCard } from '../Workflows'
+import { WorkflowCard, utcStamp } from '../Workflows'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -429,6 +429,8 @@ describe('a workflow’s start, derived from its steps', () => {
 
   // The board's row is gone with the rebrand (2026-10-01); the open card's
   // `.wf-times` facts are where the derived start and the submit are stated.
+  // Both in UTC with Z (`utcStamp`) since visual QA pass 1 C-10 (#2596): the
+  // card's times stopped being the local `clockTime` the rest of this file holds.
   it('prints the derived start and the submit time in the open card', () => {
     const byId = new Map([
       ['task_wa', mk('task_wa', 'SUCCEEDED', { started_at: iso(50) })],
@@ -437,8 +439,8 @@ describe('a workflow’s start, derived from its steps', () => {
     ])
     const { container } = render(<Card workflow={wf(steps)} byId={byId} />)
     const times = container.querySelector('.wf-times') as HTMLElement
-    expect(fact(times, 'started')?.textContent).toContain(clockTime(iso(70))!.text)
-    expect(fact(times, 'submitted')?.textContent).toContain(clockTime(iso(100))!.text)
+    expect(fact(times, 'started')?.textContent).toContain(utcStamp(iso(70))!)
+    expect(fact(times, 'submitted')?.textContent).toContain(utcStamp(iso(100))!)
   })
 
   it('prints never started in the open card when every step ended without starting', () => {
@@ -448,6 +450,6 @@ describe('a workflow’s start, derived from its steps', () => {
     const { container } = render(<Card workflow={wf(steps)} byId={byId} />)
     const times = container.querySelector('.wf-times') as HTMLElement
     expect(fact(times, 'started')?.textContent).toContain('never started')
-    expect(fact(times, 'submitted')?.textContent).toContain(clockTime(iso(100))!.text)
+    expect(fact(times, 'submitted')?.textContent).toContain(utcStamp(iso(100))!)
   })
 })

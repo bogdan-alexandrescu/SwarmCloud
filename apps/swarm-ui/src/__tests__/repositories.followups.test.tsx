@@ -95,7 +95,7 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-describe('Remove on each registered card', () => {
+describe('Unregister (QA1 config-15: it was `Remove`) on each registered card', () => {
   it('needs the typed owner/name, says the secret grants go with it, calls DELETE once, re-reads, and the card is dashed again', async () => {
     const calls = live()
     // The API's own answer to a removal: 204, no body, no content-type.
@@ -106,8 +106,8 @@ describe('Remove on each registered card', () => {
     }) as unknown as typeof fetch
     await mount()
     await waitFor(() => expect(card('example-org/example-web')).not.toBeNull(), WAIT)
-    // MUTATION: drop the Remove button and this throws.
-    fireEvent.click(within(card('example-org/example-web')!).getByRole('button', { name: 'Remove' }))
+    // MUTATION: drop the Unregister button and this throws.
+    fireEvent.click(within(card('example-org/example-web')!).getByRole('button', { name: 'Unregister' }))
     const dialog = await waitFor(() => {
       const d = document.querySelector<HTMLElement>('[role="dialog"]')
       expect(d).not.toBeNull()
@@ -133,25 +133,25 @@ describe('Remove on each registered card', () => {
     expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual([`/v1/repositories/${WEB_ID}`])
     expect(calls.filter((c) => c.method === 'GET' && c.url.split('?')[0] === '/v1/repositories').length).toBeGreaterThan(readsBefore)
     expect(document.querySelector('[role="dialog"]')).toBeNull()
-    expect(visible(document.querySelector('.c-count-note'))).toContain('1 registered · 2 chosen, not registered')
+    expect(visible(document.querySelector('.c-count-note'))).toContain('Registered repositories · 1 · 2 chosen, not registered')
   })
 
-  it('a viewer sees no Remove', async () => {
+  it('a viewer sees no Unregister', async () => {
     live({ role: 'viewer' })
     await mount()
     await waitFor(() => expect(document.querySelector('[data-role-gate="member"]')).not.toBeNull(), WAIT)
     await waitFor(() => expect(card('example-org/example-api')).not.toBeNull(), WAIT)
-    // MUTATION: draw Remove for every role and the viewer has one.
-    expect(within(card('example-org/example-api')!).queryByRole('button', { name: 'Remove' })).toBeNull()
-    expect(within(card('example-org/example-web')!).queryByRole('button', { name: 'Remove' })).toBeNull()
+    // MUTATION: draw Unregister for every role and the viewer has one.
+    expect(within(card('example-org/example-api')!).queryByRole('button', { name: 'Unregister' })).toBeNull()
+    expect(within(card('example-org/example-web')!).queryByRole('button', { name: 'Unregister' })).toBeNull()
   })
 
-  it('a member sees Remove on every registered card and none on a dashed one', async () => {
+  it('a member sees Unregister on every registered card and none on a dashed one', async () => {
     live({ role: 'member' })
     await mount()
     await waitFor(() => expect(dashed()).toEqual(['example-labs/console']), WAIT)
-    expect(within(card('example-org/example-api')!).getByRole('button', { name: 'Remove' })).toBeTruthy()
-    expect(within(card('example-labs/console')!).queryByRole('button', { name: 'Remove' })).toBeNull()
+    expect(within(card('example-org/example-api')!).getByRole('button', { name: 'Unregister' })).toBeTruthy()
+    expect(within(card('example-labs/console')!).queryByRole('button', { name: 'Unregister' })).toBeNull()
   })
 })
 

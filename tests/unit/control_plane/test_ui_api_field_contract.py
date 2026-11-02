@@ -349,6 +349,11 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         # while the API served them ahead of the client. types.ts declares all
         # three now and Holders.tsx reads the first and the last, so they are
         # held by the two directions below like every other field.
+        # `units_held_by_pool`, `LeaseRow.pool_units` and
+        # `RunnerProfile.pool_units` (contract request 129, #2950) are
+        # declared in types.ts and read by the drift card, `fitsIn`, the
+        # profile arithmetic and the submit box, so they are held by the two
+        # directions below too.
     },
     # `Me.environment` and `Me.environment_declared` were excused the same way
     # and are declared the same way; Brand.tsx's badge reads both.

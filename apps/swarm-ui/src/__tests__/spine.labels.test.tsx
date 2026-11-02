@@ -73,8 +73,9 @@ describe('Admin pages do not repeat admin (#136)', () => {
     await waitFor(() => expect(document.querySelectorAll('.sk-panel .sk-pk').length).toBeGreaterThan(0))
     // The pages, not the "In Automate" links under them (S1b, CONFIG-PANEL-E), in their groups' order.
     const pages = [...document.querySelectorAll('.sk-panel .sk-pk:not(.sk-pk-out)')]
-    // Platform secrets joined last of the platform's: SSC-UI, part of #2158.
-    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'])
+    // Platform secrets joined after Platform counts: SSC-UI, part of #2158.
+    // Setup and Health joined last of the platform's: DAYONE-SETUP-UI-3, part of #2688.
+    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'])
     for (const p of pages) {
       // "Workspaces you admin" says admin in its name; what is held is the mark.
       if (p.querySelector('.sk-pl')?.textContent !== 'Workspaces you admin') expect(p.textContent ?? '').not.toMatch(/admin/i)

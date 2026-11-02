@@ -76,7 +76,9 @@ from .routes import (
     qa_identity,
     qa_settings,
     qatargets,
+    quality_gates,
     repositories,
+    review_gate_settings,
     roles,
     runs,
     schedule_tick,
@@ -96,6 +98,9 @@ from .routes import repository_secrets
 from .routes import actions_secrets
 from .routes import secrets_overview
 from .routes import join_requests
+from .routes import setup
+from .routes import addon_probe
+from .routes import voice
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -167,6 +172,17 @@ UNCAPTURED_ROUTES = frozenset({
     join_requests.LOOKUP_ROUTE,
     join_requests.ASK_ROUTE,
     join_requests.LINK_ROUTE,
+    # Admin › Setup (docs/design/day-one-plan.md §5.3, lane
+    # DAYONE-SETUP-API-1): the GitHub App manifest's one-time code, which
+    # GitHub redeems for the App's key and secrets; the one-time link a
+    # platform admin mints, in its answer; and the redemption, whose body is
+    # the link's token and the value its form carries.
+    "/v1/admin/setup/github-app/conversion",
+    "/v1/admin/setup/links",
+    "/v1/setup/links/redeem",
+    # The Desktop sign-in client's secret (day-one-plan.md §5.6, part of
+    # #2964), which the route adds to Secret Manager and nowhere else.
+    "/v1/admin/setup/sign-in-client",
 })
 
 # --------------------------------------------------------------------------
@@ -405,9 +421,15 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's visual-QA settings: how many flows one live-browser step
     # runs when a run names none (QA-FLOWS-CAP): its owner or admin, audited.
     app.include_router(qa_settings.router)
+    # A workspace's quality gates: whether its claude-code lanes run
+    # jev-belay and jev-enforce (JEV-LANES): its owner or admin, audited.
+    app.include_router(quality_gates.router)
     # A workspace's per-agent budget, which a step may only lower and the
     # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
     app.include_router(budget_settings.router)
+    # A workspace's default review gate, which every review step that names
+    # none follows (#2524, `reviewgate`): its owner or admin, audited.
+    app.include_router(review_gate_settings.router)
     # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.
@@ -554,6 +576,19 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # caller's tenant's findings from the failure review, read only, through
     # an allow-list that keeps the platform tenant's fields out.
     app.include_router(failurefindings.router)
+    # Admin › Setup and Health (docs/design/day-one-plan.md §5.3, lane
+    # DAYONE-SETUP-API-1): platform admins only, plus the deployer on the hook
+    # and groups probe and swarm-doctor on the health write; the link
+    # redemption is any signed-in person's, for their own link.
+    app.include_router(setup.router)
+    app.include_router(setup.links_router)
+    # The brave-search add-on's probe (lane DAYONE-SEARCH-PROBE): a platform
+    # admin's, one fixed search with swarm-api's own key, a count back.
+    app.include_router(addon_probe.router)
+    # Voice it's session routes (docs/design/voice-it.md §10 phase 1): the
+    # people VOICE_IT_PEOPLE names (else the platform owner) only, in the
+    # console's selected workspace; 503 while swarm-voice is not deployed.
+    app.include_router(voice.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and

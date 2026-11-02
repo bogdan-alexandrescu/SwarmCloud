@@ -1947,3 +1947,143 @@ export function stateEnteredAt(state: TaskState, events: readonly TaskEvent[]): 
   }
   return at
 }
+
+// ---------------------------------------------------------------------------
+// The list's step blocks, as the board's join
+// ---------------------------------------------------------------------------
+
+/**
+ * WHAT `GET /v1/workflows?view=summary` SERVES ON EACH STEP (console load
+ * speed, owner's pick 2026-11-01; `codec.step_task_summary`): the step task's
+ * state, its `title` and `unit`, its last attempt's start and end, the totals
+ * over every attempt, and the first line of its `last_error`. Never its input
+ * or result. Null for a step whose task the route did not read; the key is
+ * absent from an API older than #2993 and from every read that is not the
+ * summary view.
+ */
+export interface StepTaskSummary {
+  state: TaskState
+  title?: string | null
+  unit?: string | null
+  started_at?: string | null
+  completed_at?: string | null
+  attempts?: number | null
+  attempts_with_cost?: number | null
+  cost_usd_total?: number | null
+  cost_incomplete?: boolean | null
+  duration_s_total?: number | null
+  duration_incomplete?: boolean | null
+  first_started_at?: string | null
+  last_attempt_cost_usd?: number | null
+  last_attempt_duration_s?: number | null
+  attempts_read?: 'ok' | 'failed'
+  last_error_line?: string | null
+}
+
+/** A step as the summary list serves it: `WorkflowStep` plus its task's block. */
+export type SummaryStep = WorkflowStep & { task_summary?: StepTaskSummary | null }
+
+const TASK_STATES: ReadonlySet<string> = new Set<TaskState>([
+  'SUBMITTED', 'QUEUED', 'PARKED', 'READY', 'LEASED', 'DISPATCHED',
+  'STARTING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED',
+])
+
+const textOrNull = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+const numberOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+const boolOrNull = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null)
+
+/**
+ * ONE STEP'S TASK, AS THE BOARD JOINS IT, FROM THE LIST'S OWN STEP BLOCK.
+ *
+ * The board joined each step's state through `GET /v1/tasks?limit=200`, 328 KB
+ * and 3.8 s in the owner's browser, then read every row the window missed by
+ * id. The list now serves what the board draws on each step, so the join is
+ * built here and nothing else is read. The row carries what the block served
+ * and NOTHING it did not: no input, no result summary, no lease or
+ * generation (0 and null, which no list cell reads). A workflow's own page
+ * reads its whole step tasks (`GET /v1/workflows/{id}`), and they take this
+ * row's place there, so the step card never draws from it.
+ *
+ * Null when the step has no task, or the route served no block for it: the
+ * step then stays out of the join and reads `state unknown`, never "not
+ * started" (`stepState`).
+ */
+export function summaryTask(workflow: Workflow, step: WorkflowStep): Task | null {
+  const s = (step as SummaryStep).task_summary
+  if (!step.task_id || s === null || typeof s !== 'object' || !TASK_STATES.has(String(s.state))) return null
+  const state = s.state
+  const started = textOrNull(s.started_at)
+  const completed = textOrNull(s.completed_at)
+  const attempts = numberOrNull(s.attempts)
+  const metadata: Record<string, unknown> = {}
+  const title = textOrNull(s.title)
+  const unit = textOrNull(s.unit)
+  if (title !== null) metadata.title = title
+  if (unit !== null) metadata.unit = unit
+  // A PARKED STEP'S REASON is its `waiting` line's, which the list serves on
+  // the step (#1782) in the park reasons' own words.
+  const waiting = step.waiting ?? null
+  const parked = state === 'PARKED' && waiting !== null && (PARK_REASONS as readonly string[]).includes(waiting.reason)
+  return {
+    id: step.task_id,
+    tenant_id: workflow.tenant_id,
+    state,
+    runner_profile: step.runner_profile,
+    resource_class: step.resource_class,
+    provider: null,
+    priority: workflow.priority,
+    // The block serves no creation time: the workflow's, the earliest the
+    // step's task can have been made, and the last time the block names.
+    created_at: workflow.created_at,
+    updated_at: completed ?? started ?? workflow.updated_at,
+    started_at: started,
+    completed_at: completed,
+    submitted_by: workflow.submitted_by ?? null,
+    // Every attempt the totals counted; with the attempts unread, one when the
+    // step has a start and none when it has not.
+    attempt_count: attempts ?? (started !== null ? 1 : 0),
+    max_attempts: attempts ?? (started !== null ? 1 : 0),
+    park_reason: parked ? waiting.reason : null,
+    blocked_by: null,
+    workflow_id: workflow.workflow_id,
+    step_id: step.step_id,
+    depends_on: step.depends_on,
+    cancel_requested: workflow.cancel_requested ?? false,
+    repository_url: null,
+    model: null,
+    model_class: step.model_class ?? null,
+    timeout_seconds: step.timeout_seconds ?? null,
+    next_eligible_at: null,
+    metadata: Object.keys(metadata).length > 0 ? metadata : null,
+    repository_ref: null,
+    input: null,
+    last_error: textOrNull(s.last_error_line),
+    result_summary: null,
+    latest_checkpoint: null,
+    waiting,
+    attempts,
+    attempts_with_cost: numberOrNull(s.attempts_with_cost),
+    cost_usd_total: numberOrNull(s.cost_usd_total),
+    cost_incomplete: boolOrNull(s.cost_incomplete),
+    duration_s_total: numberOrNull(s.duration_s_total),
+    duration_incomplete: boolOrNull(s.duration_incomplete),
+    first_started_at: textOrNull(s.first_started_at),
+    last_attempt_cost_usd: numberOrNull(s.last_attempt_cost_usd),
+    last_attempt_duration_s: numberOrNull(s.last_attempt_duration_s),
+    attempts_read: s.attempts_read === 'failed' ? 'failed' : 'ok',
+    current_generation: 0,
+    current_lease_id: null,
+  }
+}
+
+/** Every step block of every workflow, joined by task id (`summaryTask`). */
+export function summaryTaskById(workflows: readonly Workflow[]): Map<string, Task> {
+  const out = new Map<string, Task>()
+  for (const w of workflows) {
+    for (const s of w.steps) {
+      const t = summaryTask(w, s)
+      if (t !== null) out.set(t.id, t)
+    }
+  }
+  return out
+}

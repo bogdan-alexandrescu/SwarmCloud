@@ -31,6 +31,34 @@ import { Button, CIcon, StateMark } from '../components'
 const COPY_SAID_MS = 4000
 
 /**
+ * A LONE AGENT'S OWN TITLE, read as its Agents row reads it (`ownTitle` in
+ * Agents.tsx, SUMMARY-TITLE): `metadata.title`, trimmed, and null for a step
+ * or for a title that is absent, blank or not a string. Restated here rather
+ * than imported because the head must not import the Agents screen: half the
+ * drawer's tests replace `../Agents` with a mock that has only `AgentsScreen`,
+ * and an import of `ownTitle` from it threw on every drawer they opened (50
+ * tests red on PR 2616's merge with main, CIFIX-2616).
+ */
+export function ownTitle(t: Pick<Task, 'step_id' | 'metadata'>): string | null {
+  if ((t.step_id ?? null) !== null) return null
+  const v = t.metadata?.title
+  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null
+}
+
+/**
+ * A WORKFLOW STEP'S NAME AS ITS AGENTS ROW SAYS IT (QA2 ovag2-14):
+ * `<workflow title> · <step>`. The pane was headed `checkpoints` alone, and
+ * so were its breadcrumb and the document title, while the row named the
+ * workflow too. Every step carries its workflow's `metadata.title`; without
+ * one the step alone stays, as on the row.
+ */
+export function stepTitle(t: Pick<Task, 'workflow_id' | 'step_id' | 'metadata'>): string | null {
+  if ((t.workflow_id ?? null) === null || (t.step_id ?? null) === null) return null
+  const v = t.metadata?.title
+  return typeof v === 'string' && v.trim() !== '' ? `${v.trim()} · ${t.step_id}` : null
+}
+
+/**
  * THE DETAIL'S HEADER, IN TWO LINES (agent-details-v3.html A, picked
  * 2026-10-04). Line 1: the state pill, the agent's name -- its step, or what
  * it is when it stands alone -- the headline `elapsed · attempt n of N` in
@@ -101,11 +129,20 @@ export function AgHead({
         () => setCopied('no'),
       )
   }
-  const name = task === null ? taskId : agentName(task)
+  // THE NAME THE LIST ROW GAVE IT (QA1-FIX-32, overview-agents-20): a lone
+  // agent with a title (`ownTitle`, SUMMARY-TITLE) was `Fix flaky lease
+  // heartbeat test` in its Agents row and `claude-code agent · 8ea5c26d` here
+  // and in the breadcrumb. The title leads; a step leads with its workflow's
+  // (`stepTitle`), and a step or an agent without one keeps `agentName`'s
+  // words, as the row does.
+  const title = task === null ? null : (ownTitle(task) ?? stepTitle(task))
+  const name = task === null ? taskId : (title ?? agentName(task))
   // The breadcrumb has the id and no task: it names the agent with this.
+  // A title stands in as the step name `agentName` reads; without one the
+  // task's own step, or its kind and id, are remembered.
   useEffect(() => {
-    if (task !== null) rememberAgentName(task)
-  }, [task])
+    if (task !== null) rememberAgentName(title === null ? task : { id: task.id, runner_profile: task.runner_profile, step_id: title })
+  }, [task, title])
   // NOT A <header> (axe on every task route, visual QA run 3, #1680): outside
   // a sectioning element a <header> is a banner landmark, so beside the trail
   // bar's (`.ctl-bar`, App.tsx) the page had two (landmark-no-duplicate-banner,
@@ -134,8 +171,12 @@ export function AgHead({
           <span role="status" aria-live="polite" className="ag-head-copied">
             {copied === 'yes' ? 'copied' : copied === 'no' ? 'could not copy' : ''}
           </span>
+          {/* THE REFUSAL IS THE BROWSER TAB'S LINE (BT-010, QA1-FIX-13 chrome-C06):
+              drawn here as well, a plain-HTTP page's sentence was said twice on
+              one screen, in this head and in the strip under the tabs. Here it
+              is the disabled button's title. */}
           {live.status === 'ok' && live.session !== null && (
-            <LiveControl taskId={taskId} session={live.session} reload={reloadLive} />
+            <LiveControl taskId={taskId} session={live.session} reload={reloadLive} refusal="title" />
           )}
           {task !== null && (
             <span className="ag-head-stop">
@@ -160,10 +201,15 @@ export function AgHead({
 function AgHeadline({ task, runs, now }: { task: Task; runs: number; now: number }) {
   const el = elapsed(task, now)
   const ended = clockTime(task.completed_at, now)
+  // GENERATION 0 IS NEVER ADMITTED (QA1-FIX-32, overview-agents-59): the
+  // generation is never reset, so only a task no attempt was ever leased for
+  // is at 0. A READY task there read `attempt 1 of 3` here while the Now card
+  // said `no attempt yet`; the counter is not a run when nothing ran.
+  const ran = task.current_generation === 0 ? 0 : runs
   return (
     <span className="ag-head-hl">
       <b>{el.text}</b> ·{' '}
-      {runs > 0 ? `attempt ${runs} of ${task.max_attempts}` : 'no attempt yet'}
+      {ran > 0 ? `attempt ${ran} of ${task.max_attempts}` : 'no attempt yet'}
       {ended !== null && (
         <span title={`ended ${ended.title}`}> · ended {ended.text}</span>
       )}
@@ -238,11 +284,14 @@ export function AgHeadMeta({ task, taskId = task?.id ?? null }: { task: Task | n
   // it is a fact about: used, not used (warning), or a dash with its reason,
   // the counts on a press. Nothing for a runtime with no browser.
   const browser = task === null ? null : browserUseOf(task)
-  // A WRAPPED LINE NEVER STARTS WITH A MIDDOT (G2-20, QA 2026-10-07). The
-  // separator was each fact's `::before`, so on a phone a fact that wrapped
-  // took its dot to the head of the next line (`· workflow wf_…`). It is the
-  // `::after` of every fact but the last now, so it stays at the end of the
-  // line it separates on.
+  // A WRAPPED LINE NEITHER STARTS NOR ENDS WITH A MIDDOT. G2-20 (QA
+  // 2026-10-07) moved the separator from each fact's `::before` to its
+  // `::after`, so a wrapped fact no longer took its dot to the head of the
+  // next line; then every wrapped line ended on one (`account not read ·`,
+  // QA1-FIX-32 overview-agents-27). The dot opens every fact but the first
+  // (`data-sep`), hung in the gap before it, and the list clips its inline
+  // overflow (agents.css), so the dot of a fact that opens a line falls
+  // outside the list and is not drawn.
   // THE WORKFLOW BY ITS NAME (VQ-010): the link read `wf_65e76c6a… ›`. It
   // reads the workflow's title -- every step carries its workflow's metadata,
   // the Overview's row label reads the same (`rowTitle`) -- with the id its
@@ -316,7 +365,7 @@ export function AgHeadMeta({ task, taskId = task?.id ?? null }: { task: Task | n
   return (
     <ul className="ag-head-facts">
       {facts.map((f, i) => (
-        <li key={f.key} className={f.className} title={f.title} data-sep={i < facts.length - 1 ? '' : undefined}>
+        <li key={f.key} className={f.className} title={f.title} data-sep={i > 0 ? '' : undefined}>
           {f.li}
         </li>
       ))}

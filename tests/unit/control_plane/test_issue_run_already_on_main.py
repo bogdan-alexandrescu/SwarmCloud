@@ -85,7 +85,10 @@ def test_every_build_step_allows_an_empty_diff_and_nothing_else_does(plan):
     spec = compile_plan(run)
     for step in spec.steps:
         building = step.step_id.startswith(issueruns.IMPLEMENT_PREFIX)
-        assert step.allow_empty_diff is building, step.step_id
+        # The requirements check (#2524) is read-only: an empty diff is its
+        # only correct outcome.
+        empty_ok = building or step.step_id == issueruns.REQUIREMENTS_CHECK_STEP
+        assert step.allow_empty_diff is empty_ok, step.step_id
 
 
 @pytest.mark.parametrize("plan", [FULL_PLAN, STAGED_FULL_PLAN], ids=["chain", "stages"])

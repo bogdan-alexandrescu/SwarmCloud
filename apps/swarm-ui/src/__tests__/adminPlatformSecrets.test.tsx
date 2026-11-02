@@ -78,9 +78,9 @@ describe('status only', () => {
     // MUTATION: drop the grace note -> fails.
     expect(row(/swarm-search-api-key/)).toMatch(/2.*rotation in its grace/)
     expect(row(/swarm-search-api-key/)).toMatch(/create-secrets\.sh --search-api-key/)
-    expect(row(/swarm-live-key/)).toMatch(/not declared/)
+    expect(row(/swarm-live-key/)).toMatch(/no secret/)
     // The lead names the one that needs a look.
-    expect(visible(screen.getByRole('region', { name: /needs a look/i }))).toMatch(/swarm-live-key is not declared/)
+    expect(visible(screen.getByRole('region', { name: /needs a look/i }))).toMatch(/swarm-live-key has no secret yet/)
     // MUTATION: draw each account half as its own row -> fails.
     expect(within(table).getAllByRole('row')).toHaveLength(1 + 3)
     expect(row(/swarm-account-/)).toMatch(/1 account.*all 2 set/)
@@ -148,9 +148,62 @@ describe('status only', () => {
     const { AdminPlatformSecretsScreen } = await load()
     render(<AdminPlatformSecretsScreen />)
     const lead = visible(await screen.findByRole('region', { name: /needs a look/i }))
-    expect(lead).toMatch(/swarm-live-key is not declared/)
+    expect(lead).toMatch(/swarm-live-key has no secret yet/)
     // MUTATION: fold the unread one into the missing count -> "2 platform secrets are not set" and this fails.
     expect(lead).toMatch(/1 other could not be read: Secret Manager did not answer/)
+  })
+
+  // VISUAL QA PASS 1, admin-shell-22 (part of #2596): the lead said
+  // "swarm-live-key is not declared" and then "Its name is in the catalogue",
+  // and the row's pill said "not declared" over columns that said "no secret".
+  it('a catalogue name with no secret is said as "no secret" in the lead and the pill, never "not declared"', async () => {
+    serve((_m, url) => (url === '/v1/admin/platform-secrets'
+      ? { status: 200, body: {
+        secrets: [
+          { secret_id: 'swarm-live-key', status: 'not_declared', reason: null, enabled_versions: null, newest_enabled_at: null, rotation_in_grace: false, managed_by: 'terraform', written_by: 'scripts/create-secrets.sh --live-key', family: 'platform' },
+          { secret_id: 'swarm-search-api-key', status: 'set', reason: null, enabled_versions: 1, newest_enabled_at: AT, rotation_in_grace: false, managed_by: 'terraform', written_by: 'scripts/create-secrets.sh --search-api-key', family: 'platform' },
+        ],
+        accounts_unread: false, accounts_refused: 0, accounts_truncated: false, read_at: AT,
+      } }
+      : null))
+    const { AdminPlatformSecretsScreen } = await load()
+    render(<AdminPlatformSecretsScreen />)
+    const lead = visible(await screen.findByRole('region', { name: /needs a look/i }))
+    // MUTATION: put back `${id} is ${STATUS_WORDS[status]}` -> "is not declared" and this fails.
+    expect(lead).toMatch(/swarm-live-key has no secret yet/)
+    expect(lead).toMatch(/It is in the catalogue but nothing was stored\./)
+    expect(lead).not.toMatch(/not declared|no secret exists/)
+    const table = screen.getByRole('table', { name: /platform secrets/i })
+    const pill = within(table).getByRole('row', { name: /swarm-live-key/ }).querySelector('td[data-label="Set"] .sec-chip')!
+    // MUTATION: STATUS_WORDS.not_declared back to 'not declared' -> fails.
+    expect(visible(pill as HTMLElement)).toBe('no secret')
+    expect(visible(document.body)).not.toMatch(/not declared/)
+  })
+
+  // VISUAL QA PASS 2, admin2-16 (QA2-FIX-10, part of #2694): the
+  // swarm-live-key row said "no secret" three times -- the pill, Enabled
+  // versions and Age of newest. The pill says it; the figures are a dash.
+  it('says "no secret" once, in the pill, and dashes the figures beside it', async () => {
+    serve((_m, url) => (url === '/v1/admin/platform-secrets'
+      ? { status: 200, body: {
+        secrets: [
+          { secret_id: 'swarm-live-key', status: 'not_declared', reason: null, enabled_versions: null, newest_enabled_at: null, rotation_in_grace: false, managed_by: 'terraform', written_by: 'scripts/create-secrets.sh --live-key', family: 'platform' },
+          { secret_id: 'swarm-search-api-key', status: 'not_set', reason: null, enabled_versions: 0, newest_enabled_at: null, rotation_in_grace: false, managed_by: 'terraform', written_by: 'scripts/create-secrets.sh --search-api-key', family: 'platform' },
+        ],
+        accounts_unread: false, accounts_refused: 0, accounts_truncated: false, read_at: AT,
+      } }
+      : null))
+    const { AdminPlatformSecretsScreen } = await load()
+    render(<AdminPlatformSecretsScreen />)
+    const table = await screen.findByRole('table', { name: /platform secrets/i })
+    const row = within(table).getByRole('row', { name: /swarm-live-key/ })
+    const cell = (label: string) => visible(row.querySelector(`td[data-label="${label}"]`) as HTMLElement)
+    // MUTATION: put back `'no secret'` in Enabled versions or Age of newest -> fails.
+    expect(cell('Enabled versions')).toBe('—')
+    expect(cell('Age of newest')).toBe('—')
+    expect(visible(row).match(/no secret/g)).toHaveLength(1)
+    // A declared name with no version still says so: its pill does not.
+    expect(visible(within(table).getByRole('row', { name: /swarm-search-api-key/ }).querySelector('td[data-label="Age of newest"]') as HTMLElement)).toBe('no version')
   })
 
   it('a non-admin who types the address sees the route\'s refusal, not rows', async () => {

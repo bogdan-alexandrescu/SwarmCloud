@@ -45,11 +45,13 @@ DOC = {
 }
 
 
-def test_118_the_end_cause_is_the_frozen_enums_last():
+def test_118_the_end_cause_was_appended_after_child_cascade():
     assert EndCause.BUDGET_EXCEEDED.value == "budget_exceeded"
     assert EndCause("budget_exceeded") is EndCause.BUDGET_EXCEEDED
-    # Appended, so no reader's order of the earlier causes moves.
-    assert list(EndCause)[-1] is EndCause.BUDGET_EXCEEDED
+    # Appended, so no reader's order of the earlier causes moves. Contract
+    # request 126 (`fix_loop_exhausted`) was appended after it, 2026-10-28.
+    causes = list(EndCause)
+    assert causes.index(EndCause.BUDGET_EXCEEDED) == causes.index(EndCause.CHILD_CASCADE) + 1
 
 
 def test_121_the_warning_is_its_own_event_type():
@@ -64,7 +66,12 @@ def test_120_the_fields_default_to_none_and_come_last():
                 input={}, submitted_by="alice@example.com")
     assert task.budget is None and task.to_firestore()["budget"] is None
     assert WorkflowStep(step_id="a", runner_profile="mock", input={}).budget is None
-    assert [f.name for f in fields(Task)][-1] == "budget"
+    # Contract request 123 (#1820) appended `platform_refusals` after it;
+    # `budget` keeps its position, which is what this holds.
+    # and contract request 131 (#2688) `timeout_seconds_asked` after that.
+    assert [f.name for f in fields(Task)][-3:] == [
+        "budget", "platform_refusals", "timeout_seconds_asked",
+    ]
     assert [f.name for f in fields(WorkflowStep)][-1] == "budget"
 
 

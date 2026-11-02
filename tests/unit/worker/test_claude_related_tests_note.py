@@ -7,9 +7,17 @@ out-of-memory kills from `npx vitest run --shard=$i/4 &` in a loop. So when
 the checkout carries `scripts/related-tests.sh`, the runner adds the standing
 rule to the agent's prompt: related tests through that script, never vitest
 without file arguments, never pytest over a directory or `-n auto` across the
-suite, never parallel shards or background batches polled with sleep, and
-`scripts/changed-guards.sh` once at the end. A checkout without the script
-(another tenant's repository) gets no note naming a script it does not have.
+suite, never parallel shards or background batches polled with sleep. A
+checkout without the script (another tenant's repository) gets no note naming
+a script it does not have.
+
+The guards (owner decision 2026-11-01, #2981). The note once ended "run
+scripts/changed-guards.sh once at the end". This runner has the pre-publish
+gate (`prepublish=True`), which runs that script after the agent's turn and
+hands back what fails in a fix turn; on a large patch the agent's own run hit
+its 10-minute command limit (about ten minutes a step) and the gate ran the
+same guards again. So the note now says the worker runs it, and no longer
+tells the agent to.
 """
 
 from __future__ import annotations
@@ -63,7 +71,8 @@ def _prompt_given_to_the_cli(ctx: RunnerContext, monkeypatch) -> str:
     "-n auto",
     "never start parallel shards",
     "sleep",
-    "scripts/changed-guards.sh once at the end",
+    "Do not run scripts/changed-guards.sh yourself: the worker's pre-publish "
+    "gate runs it after your turn and hands you back what fails",
 ])
 def test_the_rule_text_is_staged_in_the_agents_prompt(tmp_path, monkeypatch, rule):
     prompt = _prompt_given_to_the_cli(_ctx(tmp_path, helper=True), monkeypatch)
@@ -71,6 +80,15 @@ def test_the_rule_text_is_staged_in_the_agents_prompt(tmp_path, monkeypatch, rul
     # clause from the note -> this fails.
     assert prompt.startswith("Fix the thing.")
     assert rule in prompt
+
+
+def test_the_note_no_longer_tells_the_agent_to_run_the_guards(tmp_path, monkeypatch):
+    prompt = _prompt_given_to_the_cli(_ctx(tmp_path, helper=True), monkeypatch)
+    # MUTATION: restore "Run scripts/changed-guards.sh once at the end" -> this
+    # fails (#2981: the gate runs it after the turn; the agent's own run was
+    # a second, ten-minute run of the same guards).
+    assert "changed-guards.sh once at the end" not in prompt
+    assert "Run scripts/changed-guards.sh" not in prompt
 
 
 def test_the_note_names_the_helper_only_where_the_checkout_has_it(tmp_path, monkeypatch):

@@ -76,7 +76,9 @@ spec:
   activeDeadlineSeconds: __ACTIVE_DEADLINE_SECONDS__
   # Keep the finished Job around long enough for the reconciler's next pass and
   # for a person to read the logs, then let the cluster clean it up.
-  ttlSecondsAfterFinished: 3600
+  # Ten minutes (BGD 2026-10-28): a finished Job holds a count/jobs.batch
+  # slot until this expires. Same value as dispatch.FINISHED_JOB_TTL_SECONDS.
+  ttlSecondsAfterFinished: 600
   template:
     metadata:
       labels:

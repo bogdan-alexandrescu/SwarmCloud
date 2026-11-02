@@ -45,7 +45,7 @@ import {
   TASK_PAGE_LIMIT,
   type WorkflowRead,
 } from './api'
-import { agentName } from './agentlist'
+import { agentKind, agentName, shortTaskId } from './agentlist'
 import { HELP } from './help'
 import { eventKind } from './events'
 import type { ApiError, Result } from './fetch'
@@ -156,6 +156,16 @@ export function taskReadCovers(page: readonly Task[], since: number, prior: Read
 
 /** Past this many days the bars are slivers, and the page suggests Outcomes. */
 const SUGGEST_OUTCOMES_DAYS = 7
+
+/**
+ * The slivers note names the span on screen, "Over 30 days ...", not the
+ * threshold, which read as "the past 7 days" on a 30-day page (QA1
+ * runs-submit-34). A zoomed window is a fraction of a day long, so it is
+ * floored: "Over 7 days" is still true of 7.4.
+ */
+export function sliversNote(days: number): string {
+  return `Over ${Math.floor(days)} days the bars are slivers: counts over the span read better as a ledger.`
+}
 
 /** A drag shorter than this on the axis is a click, not a zoom. */
 const DRAG_MIN_PX = 4
@@ -691,8 +701,12 @@ export function TimelineLanesScreen({
 
   // ---- the attempts ------------------------------------------------------
   const [att, setAtt] = useState<AttemptsRead>({ key: readKey, status: 'loading' })
-  /** The last drawing, kept dimmed while a new span is read. */
-  const [drawn, setDrawn] = useState<Extract<AttemptsRead, { status: 'done' }> | null>(null)
+  /**
+   * The last drawing and the span it was read for, kept dimmed while the same
+   * span is read again (a refresh, the minute's re-read).
+   */
+  const [drawn, setDrawnRead] = useState<{ span: string; read: Extract<AttemptsRead, { status: 'done' }> } | null>(null)
+  const setDrawn = (read: Extract<AttemptsRead, { status: 'done' }>) => setDrawnRead({ span: spanKey, read })
   /** The span of the last drawing whose page chain finished. */
   const drawnSpan = useRef<string | null>(null)
   useEffect(() => {
@@ -768,8 +782,15 @@ export function TimelineLanesScreen({
     })
   }
 
-  const shown = att.status === 'done' ? att : drawn
-  const rereading = att.status === 'loading' && drawn !== null
+  // ANOTHER SPAN'S DRAWING IS NOT SHOWN UNDER THIS ONE'S AXIS (visual QA
+  // pass 2, runs2-21): switched from 14d to 24h, the 14d lanes stayed for
+  // seconds under the new dates, the head said '25 lanes' and the groups
+  // '5 of 6 steps have attempts' for a span that had one. The kept drawing
+  // belongs to its span: a re-read of the same span keeps it dimmed, a new
+  // span is 'reading…' until its own read lands, as on first load.
+  const kept = drawn !== null && drawn.span === spanKey ? drawn.read : null
+  const shown = att.status === 'done' ? att : kept
+  const rereading = att.status === 'loading' && kept !== null
   const rows = useMemo(() => shown?.rows ?? [], [shown])
   /**
    * How far back the drawing reaches when the read stopped short of the span:
@@ -1052,8 +1073,18 @@ export function TimelineLanesScreen({
       out.push(buildLane(id, tasks.get(id) ?? null, as, e?.status === 'ok' ? e.events : null, anchor))
     }
     // Workflow steps that never had an attempt, from the workflow read.
-    for (const w of workflows.values()) {
-      if (w.status !== 'ok') continue
+    // ONLY OF A WORKFLOW WITH AN ATTEMPT IN THIS SPAN (visual QA pass 2,
+    // runs2-22): a settled workflow's read is kept across reads, so 24h
+    // reached from 14d drew 14d's failed workflow as '0 of 6 steps have
+    // attempts' and a 'synthesis · never ran' lane, where 24h loaded directly
+    // drew no lane. A span draws the same lanes however it is reached.
+    const ranIn = new Set<string>()
+    for (const id of byTask.keys()) {
+      const wf = tasks.get(id)?.workflow_id ?? null
+      if (wf !== null) ranIn.add(wf)
+    }
+    for (const [wfId, w] of workflows) {
+      if (w.status !== 'ok' || !ranIn.has(wfId)) continue
       for (const t of w.read.tasks) {
         if (!byTask.has(t.id) && t.attempt_count === 0) out.push(buildLane(t.id, t, [], [], anchor))
       }
@@ -1328,7 +1359,7 @@ export function TimelineLanesScreen({
 
       {days > SUGGEST_OUTCOMES_DAYS && (
         <p className="tl-note tl-suggest">
-          <span>{`Past ${SUGGEST_OUTCOMES_DAYS} days the bars are slivers: counts over the span read better as a ledger.`}</span>{' '}
+          <span>{sliversNote(days)}</span>{' '}
           <a href={`/timeline/outcomes?${outcomesQueryFor(view)}`}>Open Outcomes ›</a>
         </p>
       )}
@@ -1416,7 +1447,16 @@ export function TimelineLanesScreen({
                       key={`${l.taskId}:detail`}
                       lane={selected}
                       events={events.get(selected.taskId) ?? null}
-                      onClose={() => select(null)}
+                      onClose={() => {
+                        // FOCUS GOES BACK TO THE LANE'S NAME (visual QA pass
+                        // 2, runs2-26): Escape left focus in the panel being
+                        // removed, and the page handed it to its h1. The
+                        // name that opened the panel takes it first.
+                        const id = selected.taskId
+                        const row = [...document.querySelectorAll<HTMLElement>('.tl-row[data-lane]')].find((el) => el.dataset.lane === id)
+                        row?.querySelector<HTMLButtonElement>('button.tl-name')?.focus()
+                        select(null)
+                      }}
                       onOlder={() => readOlder(selected.taskId)}
                       onRead={() => ensureEvents(selected.taskId)}
                       workflowName={selected.task?.workflow_id ? (wfNames.get(selected.task.workflow_id) ?? null) : null}
@@ -1426,7 +1466,7 @@ export function TimelineLanesScreen({
               </Fragment>
             ))}
           </div>
-          {rereading && <p className="tl-q">Reading the new span… the lanes above are the previous read.</p>}
+          {rereading && <p className="tl-q">Reading the span again… the lanes above are the last read.</p>}
         </div>
       )}
 
@@ -1776,6 +1816,32 @@ export function blockSpan(lanes: readonly Lane[], since: number, until: number):
   return { left, width: pct(to, since, until) - left }
 }
 
+/**
+ * A LANE'S NAME, on its row and in its panel (visual QA pass 2, runs2-27): a
+ * step is its step id (`agentName`); a lone agent is its own title when it
+ * has one, else its profile in full, then its short id. `claude-code agent ·
+ * 108ef29c` was cut to `claude-c… · 108ef29c` on every standalone row, so the
+ * part a person reads was lost and the hex kept; 'agent' says nothing a lane
+ * does not.
+ */
+export function laneName(t: Task): string {
+  if ((t.step_id ?? null) !== null) return agentName(t)
+  const title = t.metadata?.title
+  const what = typeof title === 'string' && title.trim() !== '' ? title.trim() : t.runner_profile === 'browser' ? agentKind(t.runner_profile) : t.runner_profile
+  return `${what} · ${shortTaskId(t.id)}`
+}
+
+/**
+ * A GROUP'S SPAN STOPS AT 'now', ITS RIGHT EDGE IN VIEW (visual QA pass 2,
+ * runs2-16; pass 1 runs-submit-35): a running workflow's span reached the
+ * track's right edge, under the 'now' rule and the chart's border, so its
+ * right edge was never seen and it read as an open outline. It keeps
+ * `TRACK_END_PX` clear of the edge, as a lane's bars do (`laneLayout`).
+ */
+export function bracketStyle(b: { left: number; width: number }): CSSProperties {
+  return { left: `${b.left}%`, width: `min(${b.width}%, calc(${100 - b.left}% - ${TRACK_END_PX}px))` }
+}
+
 function GroupHead({
   block,
   since,
@@ -1878,7 +1944,7 @@ function GroupHead({
       </div>
       <div className="tl-trk">
         {bracket !== null && (
-          <span className="tl-wf-span" aria-hidden="true" style={{ left: `${bracket.left}%`, width: `${bracket.width}%` }} />
+          <span className="tl-wf-span" aria-hidden="true" style={bracketStyle(bracket)} />
         )}
       </div>
     </div>
@@ -2007,7 +2073,7 @@ function LaneRow({
     if (inView && !lane.neverRan) onSeen(lane.taskId)
   }, [inView, lane.neverRan, lane.taskId, onSeen, readNonce])
   const t = lane.task
-  const name = t !== null ? agentName(t) : lane.taskId
+  const name = t !== null ? laneName(t) : lane.taskId
   const held = heldFor(lane)
   // A STEP ITS REVIEW VERDICT SKIPPED IS NOT A RUN (QA G3-02, 2026-10-07):
   // `fix ✓ · 1m 15s` read as a successful run where the graph says `agent not
@@ -2054,8 +2120,10 @@ function LaneRow({
       <div className="tl-lab">
         {/* THE NAME, THE STATE AND HOW LONG IT HELD CAPACITY -- `implement ✓
             · 1h 18m` (walkthrough G, owner 2026-10-03). The label led with
-            the task id; the id is the name's tooltip now. */}
-        <b>
+            the task id; the id is the name's tooltip now. A lone agent's
+            line wraps (pass 2 review, runs2-27): beside the mark and the time
+            held, 240 px left `claude-c… · 99284d38`. */}
+        <b className={idAt < 0 ? undefined : 'is-split'}>
           <button
             type="button"
             className={idAt < 0 ? 'tl-name' : 'tl-name is-split'}
@@ -2408,17 +2476,13 @@ function OutcomeStrip({
   // it said "Decided counts cover 20:57–20:57" over counts the route had read
   // from 22:00, so its numbers matched neither page.
   const aligned = strip.status === 'ok' ? alignedWords(strip.data) : null
+  // THE FIGURES ARE SHOWN ONLY OVER THE SPAN THEY COVER (visual QA pass 2,
+  // runs2-04; pass 1 runs-submit-10): led by their window, 'Outcomes Oct 6 –
+  // Oct 19: 91 % success' still sat beside lanes drawn over Oct 28–29, and
+  // every span button kept the same figures. When the outcomes read answered
+  // for a window more than a bucket off the span's, its figures are not this
+  // span's: their place is a dash and the window the read answered for.
   const own = strip.status === 'ok' ? decidedWindow(strip.data, since, until) : null
-  // THE WINDOW LEADS ITS FIGURES (visual QA pass 1, runs-submit-10): after
-  // them, '91 % success, 272 of 300 decided Oct 6 – Oct 19' read as the
-  // lanes' own above lanes drawn over the last 24 hours. Before them, the
-  // reader meets "Outcomes Oct 6 – Oct 19:" first.
-  const lead =
-    own === null ? null : (
-      <span className="tl-xp">
-        Outcomes <b className="tl-win">{own}</b>:{' '}
-      </span>
-    )
   return (
     <div className="tl-strip">
       {strip.status === 'loading' ? (
@@ -2429,14 +2493,16 @@ function OutcomeStrip({
         </p>
       ) : (
         <p className="tl-strip1">
-          {strip.data.totals.rate === null ? (
+          {own !== null ? (
+            <span className="tl-x tl-off">
+              outcomes <b className="tl-dash">—</b> not this span, read for <span className="tl-win">{own}</span>
+            </span>
+          ) : strip.data.totals.rate === null ? (
             <span className="tl-x">
-              {lead}
               <b className="tl-dash">—</b> success: no agent was decided in this span
             </span>
           ) : (
             <span className="tl-x">
-              {lead}
               <b>{Math.round(strip.data.totals.rate.p * 100)} %</b> success, {strip.data.totals.rate.k} of {strip.data.totals.rate.n} decided
             </span>
           )}
@@ -2449,6 +2515,7 @@ function OutcomeStrip({
               "succeeded ·" wrapped inside itself and left each "·" alone on
               a line. A part is one unbreakable `.tl-xp`; the line breaks
               only between parts, after a separator, never before one. */}
+          {own === null && (
           <span className="tl-x tl-ended">
             <span className="tl-xp">
               <b className="tl-n-ended">{strip.data.totals.ended}</b> finished:
@@ -2463,6 +2530,7 @@ function OutcomeStrip({
               <b className="tl-n-cancelled">{strip.data.totals.cancelled.total}</b> cancelled
             </span>
           </span>
+          )}
           {/* ONE CELL WHILE COUNTING, ONE WHEN SHORT (visual QA pass 1,
               runs-submit-33 and chrome-C17): the fenced and parks cells each
               printed a dash, 'reading the lanes' while the read was out and
@@ -2492,9 +2560,15 @@ function OutcomeStrip({
                   <b>{fenced}+</b> generations fenced
                 </span>
               )}
+              {/* ONE LANE COUNT, AND 'NOT COUNTED' SAID PLAINLY (visual QA
+                  pass 2, runs2-15 and runs2-25): the head said '25 lanes' and
+                  this '18 of 24', its count leaving out the workflow step
+                  drawn with no attempt, and 'events not read' read as a
+                  failure. Out of the head's lanes, the ones whose events are
+                  not counted yet; a step that never ran has nothing to count. */}
               <span className="tl-x" aria-busy={busy}>
-                {fenced > 0 ? 'parks and further fences' : 'fenced and parks'} <b className="tl-dash">—</b> events not read on {unread} of {drawn.length}{' '}
-                {drawn.length === 1 ? 'lane' : 'lanes'} · open a lane to read its events
+                {fenced > 0 ? 'parks and further fences' : 'fenced and parks'} <b className="tl-dash">—</b> not counted on {unread} of {lanes.length}{' '}
+                {lanes.length === 1 ? 'lane' : 'lanes'} · open a lane to count
               </span>
             </>
           ) : (
@@ -2514,7 +2588,12 @@ function OutcomeStrip({
       {/* WHAT IT COUNTS, IN THE READER'S WORDS (walkthrough E): where the
           counts come from is the Outcomes help topic, one click away. */}
       <p className="tl-q">
-        {strip.status === 'ok' ? (
+        {strip.status === 'ok' && own !== null ? (
+          <>
+            The lanes cover <span className="tl-lanes-range">{rangeWords(reach ?? since, until)}</span>
+            {reach !== null && ', the newest attempts of the span, with a next page unread'}. Parks and fences count only the lanes drawn.{' '}
+          </>
+        ) : strip.status === 'ok' ? (
           <>
             Decided counts cover <span className="tl-strip-range">{ledgerRange(strip.data)}</span>
             {aligned !== null && `, ${aligned} as on Outcomes`}; the lanes cover{' '}
@@ -2556,7 +2635,7 @@ function LaneDetail({
   // ESCAPE CLOSES IT (live QA RT-23, 2026-10-11): only its × did.
   useEscapeLayer(true, onClose)
   const t = lane.task
-  const name = t !== null ? agentName(t) : lane.taskId
+  const name = t !== null ? laneName(t) : lane.taskId
   const href = `/agents/recent/${encodeURIComponent(lane.taskId)}/attempts`
   const costs = lane.attempts.map((a) => a.cost_usd)
   const reported = costs.filter((c): c is number => c !== null)

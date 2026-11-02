@@ -17,7 +17,12 @@ terraform and gcloud:
   * a manifest is applied through apply.sh, then rolled, then read back;
   * a pod on another digest fails the roll; one being deleted does not count;
   * apply.sh --swarm-graph itself refuses a manifest that reaches outside
-    swarm-system, and does nothing when the output is null.
+    swarm-system, and does nothing when the output is null;
+  * after applying, apply.sh --swarm-graph --confirm reads swarm-api's egress
+    range from its service and runs `network_parity.py --graph-ingress`
+    against swarm-graph-ingress as the cluster holds it; a stale range, a
+    missing policy or a widened one fails the apply (CACHE-FOLLOWUPS, part
+    of #1835).
 
 Each refusal or failure test asserts the opposite outcome on the unmodified
 fixture first (the CONTROL), so a fixture that could never succeed cannot make
@@ -35,8 +40,9 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
-from .test_live_netpol import LEAKY
+from .test_live_netpol import LEAKY, _service
 from .test_live_relay_rollout import FAKE_GCLOUD
 
 REPO = Path(__file__).resolve().parents[3]
@@ -54,6 +60,10 @@ FOREIGN_REF = f"gke_{PROJECT}_{LOCATION}-a_agents-staging"
 DIGEST = "sha256:" + "7" * 64
 STALE_DIGEST = "sha256:" + "0" * 64
 IMAGE = f"us-central1-docker.pkg.dev/{PROJECT}/swarm-images/swarm-graph@{DIGEST}"
+#: swarm-api's Direct VPC egress: the subnet its service names, and that
+#: subnet's range -- the one _graph_manifest renders into swarm-graph-ingress.
+API_SUBNET = "swarm-fake-subnet"
+API_CIDR = "10.10.0.0/20"
 
 
 def _graph_manifest(image: str = IMAGE) -> str:
@@ -68,6 +78,8 @@ def _graph_manifest(image: str = IMAGE) -> str:
         "__GRAPH_BUCKET__": f"{PROJECT}-swarm-artifacts",
         "__GRAPH_CONFIG_SHA256__": "c" * 64,
         "__GRAPH_CONFIG_JSON__": config,
+        "__GRAPH_STATS_ADDRESS__": "10.10.0.81",
+        "__SWARM_API_EGRESS_CIDR__": API_CIDR,
     }
     text = TEMPLATE.read_text()
     for key, value in values.items():
@@ -117,6 +129,14 @@ print(json.dumps({"items": items}))
 PY
     ;;
   *"get pods"*) printf 'NAME                 READY   STATUS\nswarm-graph-new-a    0/1     CrashLoopBackOff\n' ;;
+  *"get networkpolicies"*)
+    if [[ -f "${d}/policies.json" ]]; then cat "${d}/policies.json"; exit 0; fi
+    "${py}" - "${d}/applied.yaml" <<'PY'
+import json, sys, yaml
+docs = [doc for doc in yaml.safe_load_all(open(sys.argv[1])) if doc and doc["kind"] == "NetworkPolicy"]
+print(json.dumps({"items": docs}))
+PY
+    ;;
   *"rollout status deploy/swarm-graph"*)
     if [[ -f "${d}/rollout-fails" ]]; then echo 'error: timed out waiting for the condition' >&2; exit 1; fi
     printf 'deployment "swarm-graph" successfully rolled out\n' ;;
@@ -182,6 +202,9 @@ class Cluster:
         (self.dir / "context").write_text("swarm-dev")
         (self.dir / "cluster-entry").write_text(CLUSTER_REF)
         (self.dir / "gke-cluster").write_text(CLUSTER)
+        (self.dir / "service.json").write_text(json.dumps(
+            _service(f"projects/{PROJECT}/regions/{LOCATION}/subnetworks/{API_SUBNET}")))
+        self.api_range(API_CIDR)
         (self.tmp / "tfdata").mkdir()
         self.serve(True)
 
@@ -190,6 +213,10 @@ class Cluster:
             (self.dir / "graph.yaml").write_text(manifest if manifest is not None else _graph_manifest())
         else:
             (self.dir / "graph.yaml").unlink(missing_ok=True)
+
+    def api_range(self, cidr: str) -> None:
+        """The range swarm-api's subnet reports to `subnets describe`."""
+        (self.dir / "subnet.json").write_text(json.dumps({"name": API_SUBNET, "ipCidrRange": cidr}))
 
     def run(self, *args: str, script: Path = SCRIPT) -> subprocess.CompletedProcess[str]:
         env = {k: v for k, v in os.environ.items() if k not in (*LEAKY, "PYTHON_BIN")}
@@ -201,6 +228,9 @@ class Cluster:
             SWARM_TERRAFORM=str(self.bin / "terraform"),
             TF_DATA_DIR=str(self.tmp / "tfdata"),
             SWARM_ENV_FILE=str(self.tmp / "no.env"),
+            # apply.sh has no default project (DAYONE-K8S-1): the one this fake
+            # cluster's context and identities name is given, as an operator would.
+            PROJECT_ID="saga-agents-staging",
             KUBECONFIG=str(self.tmp / "no-such-kubeconfig"),
             HOME=str(self.tmp),
             TMPDIR=str(self.tmp),
@@ -389,9 +419,8 @@ def test_apply_sh_swarm_graph_applies_terraforms_manifest_alone(tmp_path):
     out = result.stdout + result.stderr
     assert result.returncode == 0, out
     assert (cluster.dir / "applied.yaml").read_text().strip() == _graph_manifest().strip()
-    # Only the graph service's output: not the relay's, not swarm-api's range.
+    # Only the graph service's output, not the relay's.
     assert "swarm_live_manifest" not in cluster.log("terraform")
-    assert "run services describe" not in cluster.log("gcloud")
 
 
 def test_apply_sh_swarm_graph_with_a_null_output_applies_nothing(tmp_path):
@@ -443,3 +472,97 @@ def test_apply_sh_swarm_graph_takes_no_tenant(tmp_path):
     assert result.returncode != 0
     assert "--swarm-graph" in result.stderr and "--tenant" in result.stderr, result.stderr
     assert cluster.log("kubectl") == ""
+
+
+# --- apply.sh --swarm-graph --confirm compares swarm-graph-ingress (CACHE-FOLLOWUPS) ---
+
+def _apply_graph(cluster: Cluster, *extra: str) -> subprocess.CompletedProcess[str]:
+    return cluster.run("--swarm-graph", "--context", "swarm-dev", "--cluster", CLUSTER, *extra, script=APPLY)
+
+
+def _graph_ingress_policy() -> dict:
+    return next(
+        doc for doc in yaml.safe_load_all(_graph_manifest())
+        if doc and doc["kind"] == "NetworkPolicy" and doc["metadata"]["name"] == "swarm-graph-ingress"
+    )
+
+
+def test_apply_sh_swarm_graph_confirm_reads_swarm_apis_range_then_runs_the_graph_parity_check(tmp_path):
+    cluster = Cluster(tmp_path)
+    result = _apply_graph(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    # The range is READ from swarm-api's service, as --swarm-system reads it.
+    gcloud = cluster.log("gcloud")
+    assert f"run services describe swarm-api --project {PROJECT}" in gcloud, gcloud
+    assert f"compute networks subnets describe {API_SUBNET}" in gcloud, gcloud
+    # The policies are read back AFTER the apply, from swarm-system, through
+    # the checked context, and judged by --graph-ingress.
+    calls = cluster.log("kubectl").splitlines()
+    applied = _first(calls, "apply -f -")
+    read_back = _first(calls, "get networkpolicies")
+    assert applied < read_back, calls
+    assert "-n swarm-system" in calls[read_back], calls[read_back]
+    assert calls[read_back].startswith("--context swarm-dev "), calls[read_back]
+    assert calls[applied].startswith("--context swarm-dev "), calls[applied]
+    assert f"swarm-system/swarm-graph-ingress matches {API_CIDR}" in out, out
+
+
+def test_apply_sh_swarm_graph_dry_run_reads_no_range_and_compares_nothing(tmp_path):
+    cluster = Cluster(tmp_path)
+    result = _apply_graph(cluster)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "run services describe" not in cluster.log("gcloud")
+    assert "get networkpolicies" not in cluster.log("kubectl")
+    assert "--graph-ingress" in out, "the preview does not say --confirm compares the ingress"
+
+
+def test_a_stale_swarm_api_range_fails_the_graph_apply_with_its_reason(tmp_path):
+    # CONTROL: swarm-api's subnet reports the range terraform rendered; passes.
+    control = Cluster(tmp_path / "control")
+    assert _apply_graph(control, "--confirm").returncode == 0
+    cluster = Cluster(tmp_path / "stale")
+    cluster.api_range("10.20.0.0/20")
+    result = _apply_graph(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "FAIL swarm-system/swarm-graph-ingress" in out, out
+    assert "does not match swarm-api's 10.20.0.0/20" in out, out
+    assert cluster.applied(), "the parity check runs after the apply"
+
+
+def test_a_widened_graph_ingress_fails_the_apply(tmp_path):
+    # CONTROL: the policy exactly as rendered passes.
+    control = Cluster(tmp_path / "control")
+    (control.dir / "policies.json").write_text(json.dumps({"items": [_graph_ingress_policy()]}))
+    assert _apply_graph(control, "--confirm").returncode == 0
+    # A second port on the tenant rule: every widening is a failure, never
+    # "allows at least".
+    policy = _graph_ingress_policy()
+    policy["spec"]["ingress"][0]["ports"].append({"protocol": "TCP", "port": 8081})
+    cluster = Cluster(tmp_path / "widened")
+    (cluster.dir / "policies.json").write_text(json.dumps({"items": [policy]}))
+    result = _apply_graph(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "FAIL swarm-system/swarm-graph-ingress" in out, out
+
+
+def test_a_missing_graph_ingress_fails_the_apply(tmp_path):
+    cluster = Cluster(tmp_path)
+    (cluster.dir / "policies.json").write_text(json.dumps({"items": []}))
+    result = _apply_graph(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "swarm-system/swarm-graph-ingress does not exist" in out, out
+
+
+def test_an_unreadable_swarm_api_range_fails_the_graph_apply_and_says_nothing_was_compared(tmp_path):
+    cluster = Cluster(tmp_path)
+    (cluster.dir / "service.json").write_text(json.dumps(_service(None)))
+    result = _apply_graph(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "subnetwork" in out and "its ingress was not compared" in out, out
+    assert "get networkpolicies" not in cluster.log("kubectl")

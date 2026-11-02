@@ -210,10 +210,12 @@ export function PlatformOverTime({
         </span>
       </div>
       <p className="pot-note">
-        {shared && 'The page’s Run reads this too. '}
+        {/* PART OF THE PAGE'S PRICE, NOT THE PRICE (visual QA pass 1, admin-shell-15): beside the page's
+            Run this half read as the whole, ~538 under a button that says ~562. Right now's note adds the two up. */}
+        {shared && 'The page’s Run reads this too, with the snapshot below. '}
         {price.total === null
-          ? `The price is ~${int(price.perWorkspace)} reads for each workspace: one stored day for each of ${days} days, and the newest derived live. `
-          : `The price is ~${int(price.total)} reads for ${spanWords} of stored days over ${known} workspaces, and the newest derived live. `}
+          ? `${shared ? 'This view’s part' : 'The price'} is ~${int(price.perWorkspace)} reads for each workspace: one stored day for each of ${days} days, and the newest derived live. `
+          : `${shared ? 'This view’s part' : 'The price'} is ~${int(price.total)} reads for ${spanWords} of stored days over ${known} workspaces, and the newest derived live. `}
         A breakdown costs no read: it groups the same days. Nothing here refreshes on its own. Times in your zone, {tz}. Weeks start Monday.
       </p>
 

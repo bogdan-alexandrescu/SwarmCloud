@@ -98,9 +98,13 @@ printed through `redact`.
 
    - **N to add**, one `deployer_wif["<file>@<ref>"]` per (file in
      `deployer_workflows`) × (ref in `github_allowed_refs`). Today that is
-     6 × 1 = **6**: `release.yml`, `hotfix.yml`, `application.yml`,
-     `terraform.yml`, `security.yml` and `iam-refusal-probe.yml`, each at
+     7 × 1 = **7**: `release.yml`, `hotfix.yml`, `application.yml`,
+     `terraform.yml`, `security.yml`, `iam-refusal-probe.yml` and
+     `publish-release.yml` (BGD 2026-10-30, DAYONE-RELEASE-CI), each at
      `refs/heads/main`. Every `member` names `attribute.job_workflow_ref`.
+     On a root where the pin is already applied, adding one file shows only
+     its own member: `deployer_wif["publish-release.yml@refs/heads/main"]`,
+     **1 to add**, 0 to destroy.
    - **1 to destroy**, the old binding whose `member` names
      `attribute.repo_ref/...@refs/heads/main`.
    - **0 to change**, and no other resource address.
@@ -117,7 +121,7 @@ printed through `redact`.
    scripts/verify-deployer-trust.sh
    ```
 
-   Expected: exit 0, ending `checked 6 members, all pinned to workflow files`
+   Expected: exit 0, ending `checked 7 members, all pinned to workflow files`
    (N from step 2). Copy the output into the log.
 
 4. **The next push to `main` still authenticates.** IAM can take about 7
@@ -137,8 +141,9 @@ printed through `redact`.
    fails there with `Permission 'iam.serviceAccounts.getAccessToken' denied`.
    If that happens, re-run once in case it was propagation. If it fails again,
    compare step 3's output with the file the failing run came from.
-   `security.yml` `images` (scheduled) and `iam-refusal-probe.yml`
-   (owner-dispatched) are checked the next time they run.
+   `security.yml` `images` (scheduled), `iam-refusal-probe.yml`
+   (owner-dispatched) and `publish-release.yml` `publish` (dispatched, behind
+   the `release` environment's reviewer) are checked the next time they run.
 
 5. **Record and close.** Fill in a row of the log below: the date, who applied
    it, the `main` SHA applied from, both verifier outputs and the run IDs from

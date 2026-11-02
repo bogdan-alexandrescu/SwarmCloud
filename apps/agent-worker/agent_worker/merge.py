@@ -115,10 +115,23 @@ listed, in the asking task's own words, in the comment that records the
 merge -- so a merge made by `auto-merge.yml` rather than this step lists
 none.
 
+A NOT_YET VERDICT THAT NAMES `needs_owner` IS HELD TOO (#2764). A review
+may record a finding that waits only on the owner's answer as NOT_YET; the
+step refused it `verdict_not_merge` before the hold was read, so the lane
+died instead of parking. Now a NOT_YET with `needs_owner` (or unreadable
+entries) goes through the same `_ended_outside`, hold and pick-fix round as
+a MERGE verdict, and only once no question is open and no pick is left to
+build does it refuse `verdict_not_merge`: a NOT_YET is never merged without
+a review of the head, which a re-review gives. A NOT_YET with no
+`needs_owner` refuses at once, exactly as before.
+
 ANSWERED IS NOT ENOUGH: THE PICK MUST BE WHAT THE BRANCH BUILT
 (ANSWER-CONTENT-CHECK, part of #2441; owner decision 2026-10-26). Once every
 `needs_owner` question is answered, the step reads the validated
-`questions.json` of every step of its workflow it depends on and compares
+`questions.json` of every step of its workflow it depends on, and of every
+fix round appended to it since (`ci-fix:<n>`, `conflict-fix:<n>`,
+`pick-fix:<n>`, which the merge depends on none of: PR 2878 merged past a
+ci-fix:1 question's answer, #2898), and compares
 each ANSWERED question's `choice` with its `built`, the option label the
 asking agent said its branch implements -- the `needs_owner` ones and every
 other answered one, such as a question the owner answered before the review
@@ -127,7 +140,8 @@ different option, or free text that names none, is an unbuilt pick
 (`unbuilt_picks`), found before any credential. `built: null` (the answer
 changes nothing the branch builds) passes, and so does a question with no
 `built` at all, written before this check, so a lane parked on its answers is
-not stranded. On 2026-10-26 three lanes (VQ-CAPACITY, VQ-CONFIG-B,
+not stranded. A round's blocking question still unanswered holds the merge
+as a `needs_owner` one does. On 2026-10-26 three lanes (VQ-CAPACITY, VQ-CONFIG-B,
 BROWSER-POOL-100) would have merged the opposite of the owner's pick without
 it.
 
@@ -138,8 +152,10 @@ reads that park as it reads a CI or conflict park and submits a claude-code
 round on the pull request's branch whose brief names each pick. The round
 builds it, pushes to the same pull request and writes `picks-built.json`;
 the merge then runs again. A round counts only for the picks its report says
-it built, at a head it pushed; one that pushed nothing, did not succeed, or
-left a pick it was sent for unbuilt refuses `owner_pick_not_built`, and at
+it built, at a head it pushed -- or, pushing nothing, for the picks it was
+sent for that its report says the branch already builds (#2858); one that did
+not succeed, or left a pick it was sent for unbuilt, refuses
+`owner_pick_not_built`, and at
 most MERGE_PICK_ROUNDS_MAX are run, so the step never loops (`_pick_fix`).
 
 THE RULES `auto-merge.yml` ALSO STATES are the module-level functions
@@ -166,6 +182,7 @@ from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
 from . import verdict as verdict_mod
 from .errors import ExitCode, FencedError, InputUnavailable
+from .expected_outputs import NO_CHANGE_SUMMARY_KEY, left_nothing
 from .post_verdict import (
     ActionContext,
     ActionOutcome,
@@ -341,9 +358,17 @@ MERGE_FIX_ROUNDS_MAX = 5
 #: GitHub has not replaced yet, not the re-run's answer, so a wake inside it
 #: (the MERGE_CI_FALLBACK_SECONDS fallback, any other) parks rather than
 #: refusing on them: task_076d1ae89d014e4688ce refused `checks_failed` on one
-#: flaky shard a re-run would have passed (PR #2229).
+#: flaky shard a re-run would have passed (PR #2229). Past the window it
+#: still holds while a workflow run the re-run named (`runs`) has a latest
+#: attempt that has not completed (#3006: PR #2973 refused at 22ef10c2 while
+#: its re-run was still running); the window alone decides when that cannot
+#: be read. A record with `error` re-ran nothing: after a no_change round
+#: it is not the head's free re-run (`_rerun_due`).
 RERUNS_KEY = "reruns"
 RERUN_SETTLE_SECONDS = 600
+#: How many re-runs GitHub refused at one head before the step stops
+#: parking for another (#3006): the tick asks again at most once.
+RERUN_REFUSALS_MAX = 2
 
 #: The park codes of a red reading a CI-fix round may still fix: rounds are
 #: left and the tick has not claimed the next one yet, or one is running at
@@ -351,7 +376,9 @@ RERUN_SETTLE_SECONDS = 600
 CI_FIX_PENDING = "ci_fix_pending"
 CI_FIX_RUNNING = "ci_fix_running"
 #: The park code of a red reading whose failing jobs the tick re-ran at this
-#: head less than RERUN_SETTLE_SECONDS ago: the re-run has not answered yet.
+#: head less than RERUN_SETTLE_SECONDS ago, or whose re-run's workflow run
+#: attempt is still running past that (#3006): the re-run has not answered
+#: yet. MERGE_CI_MAX_SECONDS bounds it.
 CI_RERUN_PENDING = "ci_rerun_pending"
 #: The park code of a red reading with no CI-fix round left to ask for and no
 #: re-run recorded at this head (#2351, BGD 2026-10-27): swarm-api's wake
@@ -361,6 +388,13 @@ CI_RERUN_PENDING = "ci_rerun_pending"
 #: DB) refused a whole lane. Parked ONCE per head (`_rerun_due`): a red
 #: re-run, a re-run GitHub refused, or a second red reading with nothing
 #: re-run (the tick found no Actions job to re-run) refuses `checks_failed`.
+#: A CI-fix round that ended at the red head with `no_change` reaches it too
+#: (#2684): task_d2698b60 diagnosed a flaky shard on PR #2603 and asked for
+#: a re-run, and the step refused without one (task_69eb7362). There a
+#: re-run GitHub refused (`error`) re-ran nothing, so it is not the head's
+#: free re-run (#3006, PR #2971 at a1e16b2c): the step parks again while
+#: fewer than RERUN_REFUSALS_MAX refusals are recorded at the head, then
+#: refuses naming the last refusal's error.
 CI_RERUN_DUE = "ci_rerun_due"
 #: The park code of a red reading no CI-fix round can fix (#2046): the
 #: publish that wrote this head -- the opener's, or the CI-fix round's that
@@ -632,6 +666,12 @@ class ActionsSuite(NamedTuple):
     #: A newer Actions run of the same workflow and event, from the same
     #: branch, is at the sha: the run that concurrency cancelled this one.
     superseded: bool = False
+    #: The Actions run's id, and its LATEST attempt's status and number
+    #: (GitHub serves the newest attempt): what holds a re-run the tick asked
+    #: for while that run is still running (`_rerun_running`, #3006).
+    run_id: int | None = None
+    status: str | None = None
+    run_attempt: int | None = None
 
 
 _NO_SUITE = ActionsSuite(None, None)
@@ -660,7 +700,9 @@ def actions_suites(runs: Iterable[Any]) -> dict[int | None, ActionsSuite]:
             and _str(other.get("head_branch")) == branch
             and (_int(other.get("id")) or 0) > run_id
             for other in rows)
-        suites[suite] = ActionsSuite(event, branch, _str(run.get("conclusion")), superseded)
+        suites[suite] = ActionsSuite(event, branch, _str(run.get("conclusion")), superseded,
+                                     run_id, _str(run.get("status")),
+                                     _int(run.get("run_attempt")))
     return suites
 
 
@@ -987,6 +1029,10 @@ class CheckFacts:
     #: (#2582). None and False when the Actions runs were not read.
     workflow_conclusion: str | None = None
     workflow_superseded: bool = False
+    #: That Actions run's id and its latest attempt's status (#3006): None
+    #: when the Actions runs were not read.
+    workflow_run_id: int | None = None
+    workflow_status: str | None = None
 
     def as_run(self) -> dict[str, Any]:
         return {"name": self.name, "status": self.status, "conclusion": self.conclusion,
@@ -994,6 +1040,16 @@ class CheckFacts:
                 "check_suite_id": self.check_suite_id,
                 "workflow_conclusion": self.workflow_conclusion,
                 "workflow_superseded": self.workflow_superseded}
+
+
+def workflow_run_states(checks: Iterable[CheckFacts]) -> dict[int, str | None] | None:
+    """The status of each Actions run's latest attempt the checks at a head
+    were read with, by run id (#3006); None when no check carries one: the
+    Actions runs were not read (`checks_at` reads them for a red reading),
+    or a credential without `actions: read` could not read them."""
+    states = {check.workflow_run_id: check.workflow_status for check in checks
+              if check.workflow_run_id is not None}
+    return states or None
 
 
 @dataclass(frozen=True)
@@ -1333,7 +1389,8 @@ class GitHubMerger:
         if len(names) != len(set(names)) or red:
             suites = self._suite_events(sha)
             out = [replace(check, event=suite.event, workflow_conclusion=suite.conclusion,
-                           workflow_superseded=suite.superseded)
+                           workflow_superseded=suite.superseded, workflow_run_id=suite.run_id,
+                           workflow_status=suite.status)
                    for check in out
                    for suite in (suites.get(check.check_suite_id, _NO_SUITE),)
                    if not _other_branch_push(suites.get(check.check_suite_id), head_ref)]
@@ -1705,7 +1762,8 @@ class _Run:
     def wait_for_owner(self, held: list[dict[str, Any]], *, unreadable: int) -> ActionOutcome:
         """The owner's questions are a hold no tick can clear: park for a person.
 
-        `held` is each still-unanswered `needs_owner` question, `unreadable`
+        `held` is each still-unanswered `needs_owner` question, or each
+        unanswered blocking question a fix round asked (#2898), `unreadable`
         how many entries could not be read. The lifecycle writes the park in
         one fenced transaction (`handoff.park_human_required`), releases the
         lease and exits 75.
@@ -1715,8 +1773,8 @@ class _Run:
         if unreadable:
             named.append(f"{unreadable} needs_owner entr{'y' if unreadable == 1 else 'ies'} "
                          "the merge cannot read")
-        message = ("the review said these owner questions hold the merge, and they are "
-                   "unanswered: " + "; ".join(named))
+        message = ("the review, or a blocking question of a fix round, says these owner "
+                   "questions hold the merge, and they are unanswered: " + "; ".join(named))
         wait = {"code": OWNER_QUESTIONS_OPEN, "questions": held, "unreadable": unreadable}
         self.summary["wait"] = {"code": OWNER_QUESTIONS_OPEN, "message": message}
         return _outcome(
@@ -1804,11 +1862,15 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         except InputUnavailable as exc:
             return run.refuse("verdict_unreadable", str(exc))
         summary["verdict"] = verdict.verdict
-        if verdict.verdict != "MERGE":
+        found = f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""
+        # #2764: a NOT_YET that names no owner question refuses here, as it
+        # always has; one that names some is held and pick-fixed like a MERGE
+        # verdict below, and refused only after.
+        if verdict.verdict != "MERGE" and not (
+                verdict.needs_owner or verdict.needs_owner_unreadable):
             return run.refuse(
                 "verdict_not_merge",
-                f"the review's verdict is {verdict.verdict}, not MERGE"
-                + (f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""),
+                f"the review's verdict is {verdict.verdict}, not MERGE{found}",
             )
         # #2441: a hold woken because its pull request was merged or closed
         # outside the workflow ends here, before any question is read again:
@@ -1824,16 +1886,34 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # ANSWER-CONTENT-CHECK: answered is not enough; the pick must be
         # the option the asking branch built -- for every answered question
         # that names `built`, held or not (PICK-FIX-ROUND). One it did not
-        # build is a pick-fix round's to build, bounded.
+        # build is a pick-fix round's to build, bounded. #2898: the merge's
+        # own fix rounds (`ci-fix:<n>`, `conflict-fix:<n>`, `pick-fix:<n>`)
+        # ran after the review, so their questions are read here, and a
+        # blocking one still unanswered holds the merge as `needs_owner` does.
         try:
-            unbuilt = _unbuilt_picks(ctx, target, verdict.needs_owner)
+            asked_by_rounds = _round_questions(ctx, target, opener)
+            unbuilt = _unbuilt_picks(ctx, target, verdict.needs_owner, asked_by_rounds)
         except InputUnavailable as exc:
             summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
             return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
+        held = [_held_row(row) for row in asked_by_rounds
+                if row.get("blocking") is True and row.get("answer") is None]
+        if held:
+            return run.wait_for_owner(held, unreadable=0)
         if unbuilt:
             fixing = _pick_fix(run, target, opener, unbuilt)
             if fixing is not None:
                 return fixing
+        # #2764: the owner's answers are in and their picks built, but a
+        # NOT_YET verdict's findings still stand: never merged without a
+        # review of the head.
+        if verdict.verdict != "MERGE":
+            return run.refuse(
+                "verdict_not_merge",
+                f"the review's verdict is {verdict.verdict}, not MERGE{found}; its "
+                "needs_owner questions are answered and their picks built, so a "
+                "re-review must judge the head",
+            )
         still_open = _unanswered(ctx, verdict.open_questions, asked_text=True)
         if still_open:
             summary["open_questions"] = still_open
@@ -1957,7 +2037,8 @@ def _answered(doc: Mapping[str, Any], index: int) -> bool:
 
 
 def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
-                   refs: tuple[verdict_mod.OwnerQuestionRef, ...]) -> list[dict[str, Any]]:
+                   refs: tuple[verdict_mod.OwnerQuestionRef, ...],
+                   asked_by_rounds: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Each answered question whose pick is not the option its branch built.
 
     Which questions: every `refs` question -- the review's `needs_owner`,
@@ -1967,13 +2048,19 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
     task document, or from its signed target's review and opener when that
     cannot be read): one answered before the review ran is in neither of the
     review's lists, and its pick binds the merge all the same (PICK-FIX-ROUND,
-    BGD 2026-10-26). Each step's validated `questions.json` is read again
+    BGD 2026-10-26). And every answered question in `asked_by_rounds`, the
+    questions this merge's own fix rounds asked (`_round_questions`): a round
+    is a step appended to the workflow after the merge, which depends on none
+    of them (#2898). Each step's validated `questions.json` is read again
     (`owner_questions.questions_of`, which raises `InputUnavailable` for a
     counted file it cannot read, as the walk does for a parent it cannot).
 
     A question passes when its asker wrote no `built` (a file from before this
     check), `built: null` (the answer changes nothing the branch builds), or
-    the answer's `choice` is `built`. Anything else -- another option, or free
+    the answer's `choice` is `built` -- as the LATEST step that asked the same
+    question (`owner_questions.normalised` text) records it, nearest step
+    first, so a fix step that built the other option after the question was
+    asked decides it (#2858). Anything else -- another option, or free
     text with no option -- is a row naming the question, the pick (None for
     free text, with the answer's `text`) and the build.
     """
@@ -1996,18 +2083,30 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
     if not start.get("depends_on"):
         start = {"workflow_id": ctx.workflow_id,
                  "depends_on": [t for t in (target.review, target.pull_request) if t]}
-    for row in owner_questions_mod.workflow_questions(
-            start, fetch=ctx.fetch_upstream, store=ctx.store, tenant_id=ctx.tenant_id):
+    # The latest build of each question, by its text: the walk is nearest
+    # step first, so a fix step that asked the same question again after it
+    # built the other option is read before the step that first asked it
+    # (#2858: PR 2855's fix built 'apply' after implement recorded
+    # 'follow-up', and the owner's 'apply' was refused).
+    # The rounds ran after every step the merge depends on, so they are read
+    # first, newest first, as `_round_questions` orders them.
+    latest: dict[str, str] = {}
+    for row in [*asked_by_rounds, *owner_questions_mod.workflow_questions(
+            start, fetch=ctx.fetch_upstream, store=ctx.store, tenant_id=ctx.tenant_id)]:
         asked.setdefault(row["task_id"], {}).setdefault(row["question_index"], row)
         key = (row["task_id"], row["question_index"])
         if row.get("answer") is not None and key not in keys:
             keys.append(key)
+        text = owner_questions_mod.normalised(row.get("question"))
+        if text and isinstance(row.get(owner_questions_mod.BUILT_KEY), str):
+            latest.setdefault(text, row[owner_questions_mod.BUILT_KEY])
     out: list[dict[str, Any]] = []
     for task_id, index in keys:
         row = asked.get(task_id, {}).get(index)
         built = row.get(owner_questions_mod.BUILT_KEY) if row is not None else None
         if row is None or not isinstance(built, str):
             continue
+        built = latest.get(owner_questions_mod.normalised(row.get("question")), built)
         answer = _mapping(row.get("answer"))
         choice = answer.get("choice")
         if choice == built:
@@ -2024,6 +2123,62 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
             found["text"] = answer["text"]
         out.append(found)
     return out
+
+
+#: `merge_fix`'s round lists and the step each kind is appended to the
+#: workflow as (`swarm_api.mergewake.round_step_id`: `<kind>-fix:<n>`).
+_ROUND_STEP_KINDS = (("rounds", "ci"), (CONFLICT_ROUNDS_KEY, "conflict"),
+                     (PICK_ROUNDS_KEY, "pick"))
+
+
+def _round_questions(ctx: ActionContext, target: MergeTarget,
+                     opener: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every question this merge's own fix rounds asked, newest round first (#2898).
+
+    swarm-api's wake tick appends each CI-fix, conflict fix and pick-fix round
+    to the merge's workflow as a step (`ci-fix:<n>`, `conflict-fix:<n>`,
+    `pick-fix:<n>`) AFTER the merge step, so the merge depends on none of them
+    and the `depends_on` walk never reaches them: PR 2878 merged with a
+    ci-fix:1 exemption the owner had answered "forbid". The rounds are named
+    by the step's own `merge_fix` record, and each is held to what
+    `_pick_round_doc` holds any round to (the tenant-gated read, this tenant,
+    its signed spec, its signed `continues` the branch's root), so a forged
+    entry adds no question. A round that fails that, or names no task yet,
+    asked nothing this merge reads. Its validated `questions.json` is read as
+    any step's is (`owner_questions.questions_of`, raising `InputUnavailable`
+    for a counted file it cannot read); each row's `step_id` is the step the
+    round is on the workflow as.
+    """
+    assert target.pull_request is not None
+    own = _own_doc(ctx)
+    root = _branch_task(opener, target.pull_request)
+    entries: list[tuple[str, Mapping[str, Any]]] = []
+    for key, kind in _ROUND_STEP_KINDS:
+        entries += [(kind, entry) for entry in reversed(_fix_rounds(own, key))]
+    # Newest first across the kinds: the claim instants are ISO strings, and
+    # sorted() is stable, so a kind's own order holds where they tie.
+    entries.sort(key=lambda item: str(item[1].get("claimed_at") or ""), reverse=True)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for kind, entry in entries:
+        task_id = _task_id(entry.get("task_id"))
+        if task_id is None or task_id in seen:
+            continue
+        doc = _pick_round_doc(ctx, entry, root=root, target=target.pull_request)
+        if doc is None:
+            continue
+        seen.add(task_id)
+        step = f"{kind}-fix:{entry.get('round')}"
+        for row in owner_questions_mod.questions_of(
+                task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id):
+            rows.append({**row, "step_id": step})
+    return rows
+
+
+def _held_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """An unanswered blocking round question as an owner hold names it."""
+    return {"task_id": row.get("task_id"), "step_id": row.get("step_id"),
+            "question_index": row.get("question_index"), "question": row.get("question")}
 
 
 def _picks_named(rows: list[Mapping[str, Any]]) -> str:
@@ -2100,6 +2255,13 @@ def _round_pushed(doc: Mapping[str, Any], entry: Mapping[str, Any]) -> str | Non
     return pushed if pushed is not None and pushed != start else None
 
 
+def _round_picks(entry: Mapping[str, Any]) -> set[tuple[Any, Any]]:
+    """The `(task, question index)` picks round `entry` was sent for; empty if none."""
+    picks = entry.get("picks")
+    return set() if not isinstance(picks, list) else {
+        (_mapping(p).get("task_id"), _mapping(p).get("question_index")) for p in picks}
+
+
 def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
               unbuilt: list[dict[str, Any]]) -> ActionOutcome | None:
     """Picks the branch did not build: a pick-fix round's, or `owner_pick_not_built`.
@@ -2117,9 +2279,15 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
         (`owner_questions.picks_built`) says it builds THAT pick -- the
         owner's option as now answered, or the free text -- and the head it
         pushed is accepted by the merge like any round's (`_fix_round_heads`);
+      * a round that SUCCEEDED and pushed nothing counts as finding a pick
+        it was sent for ALREADY built when its `picks-built.json` says the
+        branch builds THAT pick: the merge goes on, and the summary says so
+        (`picks_already_built`, #2858) -- the question's recorded `built`
+        can be stale, a fix step having built the other option since;
       * once the last round has ended, a round that did not succeed, pushed
-        nothing, or left a pick it was sent for unbuilt, refuses: no pick is
-        sent to a second round, so the step never loops;
+        nothing and reported no pick built, or left a pick it was sent for
+        unbuilt, refuses: no pick is sent to a second round, so the step
+        never loops;
       * a pick no round was sent for (answered after the last one) parks
         OWNER_PICK_FIX_PENDING for the next round, at most
         MERGE_PICK_ROUNDS_MAX of them; past that, `owner_pick_not_built`.
@@ -2168,19 +2336,35 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
                         f"pick fix round {n} ({task_id}) is running")
 
     # Every ended round's report, oldest first, so a later round's word wins.
+    # A round that pushed nothing reports picks the branch ALREADY built at
+    # the head it started from (#2858): its finding is the build, not the
+    # question's stale `built`; it counts only for picks it was sent for.
     reports: dict[tuple[str, int], tuple[str | None, bool]] = {}
+    already: set[tuple[str, int]] = set()
     for entry in rounds:
         doc = _pick_round_doc(ctx, entry, root=root, target=target.pull_request)
-        if (doc is None or doc.get("state") != TaskState.SUCCEEDED.value
-                or _round_pushed(doc, entry) is None):
+        if doc is None or doc.get("state") != TaskState.SUCCEEDED.value:
+            continue
+        pushed = _round_pushed(doc, entry) is not None
+        sent = _round_picks(entry)
+        if not pushed and not sent:
             continue
         round_task = str(_task_id(entry.get("task_id")))
         try:
-            reports.update(owner_questions_mod.picks_built(
-                round_task, doc, store=ctx.store, tenant_id=ctx.tenant_id))
+            report = owner_questions_mod.picks_built(
+                round_task, doc, store=ctx.store, tenant_id=ctx.tenant_id)
         except Exception as exc:  # noqa: BLE001 - an unread report built nothing
             why = str(exc)[:300] if isinstance(exc, InputUnavailable) else type(exc).__name__
             summary.setdefault("pick_reports_unread", []).append(f"{round_task}: {why}")
+            continue
+        if not pushed:
+            report = {key: value for key, value in report.items() if key in sent}
+        for key, value in report.items():
+            reports[key] = value
+            if pushed:
+                already.discard(key)
+            else:
+                already.add(key)
 
     def built(row: Mapping[str, Any]) -> bool:
         reported = reports.get((row["task_id"], row["question_index"]))
@@ -2188,9 +2372,12 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
 
     still = [row for row in unbuilt if not built(row)]
     if not still:
+        done = [{"task_id": row["task_id"], "question_index": row["question_index"],
+                 "picked": row.get("picked")} for row in unbuilt]
         summary["picks_built_by_rounds"] = [
-            {"task_id": row["task_id"], "question_index": row["question_index"],
-             "picked": row.get("picked")} for row in unbuilt]
+            row for row in done if (row["task_id"], row["question_index"]) not in already]
+        summary["picks_already_built"] = [
+            row for row in done if (row["task_id"], row["question_index"]) in already]
         return None
 
     if last is not None:
@@ -2208,8 +2395,7 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
             return refuse(still, f"pick fix round {n} ({task_id}) changed nothing: it pushed "
                                  "no new head")
         picks = last.get("picks")
-        sent = None if not isinstance(picks, list) else {
-            (_mapping(p).get("task_id"), _mapping(p).get("question_index")) for p in picks}
+        sent = _round_picks(last) if isinstance(picks, list) else None
         repeated = [row for row in still
                     if sent is None or (row["task_id"], row["question_index"]) in sent]
         if repeated:
@@ -2616,7 +2802,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             failing_ids = _with_failing(failing_ids, failing_run_ids(runs, OTHER_TOLERATED))
         judged = list(by_check.values())
     if failed:
-        return _red(run, own, head=head, failed=failed, failing_ids=failing_ids, wait=wait)
+        return _red(run, own, head=head, failed=failed, failing_ids=failing_ids, wait=wait,
+                    run_states=workflow_run_states(checks))
     if pending:
         since = cancelled_since(judged)
         if since is not None:
@@ -3396,33 +3583,44 @@ def _with_failing(ids: set[int] | None, more: set[int] | None) -> set[int] | Non
     return None if ids is None or more is None else ids | more
 
 
-def _rerun_settling(own: Mapping[str, Any], head: str,
-                    failing_ids: set[int] | None) -> datetime | None:
-    """When the tick's last re-run at `head` was requested, while it settles.
+def _rerun_settling(own: Mapping[str, Any], head: str, failing_ids: set[int] | None,
+                    run_states: Mapping[int, str | None] | None = None) -> datetime | None:
+    """When the tick's last accepted re-run at `head` was requested, while it settles.
 
-    None unless GitHub accepted it (no `error`) less than
-    RERUN_SETTLE_SECONDS ago, and EVERY failing run this step reads
-    (`failing_ids`) is one of the jobs it re-ran: the reading is still the
-    one the re-run replaces. A red check it did not re-run -- another job,
-    a commit status (`failing_ids` None), or a re-run job's own red answer
-    under a new id -- is a failure no waiting changes, so it holds nothing
-    even while another re-run job settles (PR 2268 re-review; the tick's
-    `_rerunnable` likewise re-runs only a reading made wholly of Actions
-    jobs). The document is tenant-writable, so only an
-    instant the tick could have written counts: a tz-aware datetime not in
-    the future, or its ISO 8601 text, which is how swarm-api's state routes
-    serve a Firestore instant (`attemptstate.jsonable`). A forged one can at
-    most make the step wait that long.
+    None unless GitHub accepted it (the last record at `head` with no
+    `error`) and EVERY failing run this step reads (`failing_ids`) is one of
+    the jobs it re-ran: the reading is still the one the re-run replaces. A
+    red check it did not re-run -- another job, a commit status
+    (`failing_ids` None), or a re-run job's own red answer under a new id --
+    is a failure no waiting changes, so it holds nothing even while another
+    re-run job settles (PR 2268 re-review; the tick's `_rerunnable` likewise
+    re-runs only a reading made wholly of Actions jobs).
+
+    It settles for RERUN_SETTLE_SECONDS after `requested_at`, and past that
+    for as long as a workflow run it re-ran (`runs`) has a latest attempt
+    this reading says has not completed (`run_states`, `_rerun_running`):
+    PR #2973 refused at 22ef10c2 while its re-run's attempt was still
+    running (#3006). The window is the floor whenever that status cannot be
+    read -- no `runs` recorded, or no Actions runs read (403/404).
+
+    The document is tenant-writable, so only an instant the tick could have
+    written counts: a tz-aware datetime not in the future, or its ISO 8601
+    text, which is how swarm-api's state routes serve a Firestore instant
+    (`attemptstate.jsonable`). A forged instant, or forged `runs` naming a
+    run still going, can at most make the step wait, which
+    MERGE_CI_MAX_SECONDS bounds.
     """
-    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
-    if not mine or mine[-1].get("error"):
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head
+            and not r.get("error")]
+    if not mine:
         return None
-    jobs = mine[-1].get("jobs")
+    entry = mine[-1]
+    jobs = entry.get("jobs")
     asked = {j for j in jobs if isinstance(j, int) and not isinstance(j, bool)} if isinstance(
         jobs, list) else set()
     if not failing_ids or not failing_ids <= asked:
         return None
-    since = mine[-1].get("requested_at")
+    since = entry.get("requested_at")
     if isinstance(since, str):
         try:
             since = datetime.fromisoformat(since)
@@ -3431,27 +3629,60 @@ def _rerun_settling(own: Mapping[str, Any], head: str,
     if not isinstance(since, datetime) or since.tzinfo is None:
         return None
     age = (utcnow() - since).total_seconds()
-    return since if 0 <= age < RERUN_SETTLE_SECONDS else None
+    if age < 0:
+        return None
+    return since if age < RERUN_SETTLE_SECONDS or _rerun_running(entry, run_states) else None
 
 
-def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None) -> bool:
+def _rerun_running(entry: Mapping[str, Any], run_states: Mapping[int, str | None] | None) -> bool:
+    """Whether a workflow run a re-run record names (`runs`) has a latest
+    attempt that has not completed, as this reading's Actions runs say
+    (#3006). False when either is missing: the settle window decides."""
+    runs = entry.get("runs")
+    if not run_states or not isinstance(runs, list):
+        return False
+    return any(isinstance(r, int) and not isinstance(r, bool) and r in run_states
+               and run_states[r] != "completed" for r in runs)
+
+
+def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, *,
+               after_no_change: bool = False) -> bool:
     """Whether a red reading at `head` parks `CI_RERUN_DUE` for the tick's free re-run (#2351).
 
-    Only while nothing at this head has answered it: no re-run recorded at
-    `head` (answered, refused or settling -- `_rerun_settling` holds the
-    last), and this step's own last park (`merge_wait`) was not already
-    `CI_RERUN_DUE` at `head`, so a tick that found no Actions job to re-run
-    and woke the step red is answered with the refusal, not a second park.
+    Only while nothing at this head has answered it: no re-run GitHub
+    accepted is recorded at `head` (answered or settling -- `_rerun_settling`
+    holds the latter), and this step's own last park (`merge_wait`) was not
+    already `CI_RERUN_DUE` at `head`, so a tick that found no Actions job to
+    re-run and woke the step red is answered with the refusal, not a second
+    park. After a CI-fix round ended at `head` with nothing to change
+    (`after_no_change`), a re-run GitHub refused (`error`) re-ran nothing,
+    so it is not the head's free re-run (#3006, PR #2971 at a1e16b2c): the
+    step parks again while fewer than RERUN_REFUSALS_MAX refusals are
+    recorded at `head` -- the tick asks again only then -- so a credential
+    that cannot re-run costs one more request, not a loop. Without a round,
+    a refused re-run hands the red to a round or refuses, as before.
     Never for a failing run no re-run replaces (`failing_ids` None, a commit
     status): waiting changes nothing. The document is tenant-writable; a
-    forged record can at most refuse at once, as before #2351, or park once.
+    forged record can at most refuse at once, as before #2351, or park,
+    which MERGE_CI_MAX_SECONDS bounds.
     """
     if not failing_ids:
         return False
-    if any(r.get("head") == head for r in _fix_rounds(own, RERUNS_KEY)):
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
+    if not after_no_change:
+        if mine:
+            return False
+    elif any(not r.get("error") for r in mine) or len(mine) >= RERUN_REFUSALS_MAX:
         return False
     parked = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
     return not (parked.get("code") == CI_RERUN_DUE and parked.get("head") == head)
+
+
+def _rerun_refused(own: Mapping[str, Any], head: str) -> str | None:
+    """The error of the last re-run recorded at `head`, when GitHub refused it (#3006)."""
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
+    error = mine[-1].get("error") if mine else None
+    return str(error) if error else None
 
 
 def _rounds_asked(own: Mapping[str, Any]) -> int:
@@ -3751,7 +3982,8 @@ def _ended(ctx: ActionContext, task_id: str) -> bool:
 
 
 def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
-         failing_ids: set[int] | None, wait: Any) -> ActionOutcome:
+         failing_ids: set[int] | None, wait: Any,
+         run_states: Mapping[int, str | None] | None = None) -> ActionOutcome:
     """A failing required check at `head`: a CI-fix round's to fix, or `checks_failed`.
 
     docs/merge-step.md "Revised 2026-10-06" §1: with rounds left the tick
@@ -3763,15 +3995,25 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
 
     Before the budget is read, a re-run of the failing Actions jobs the tick
     asked GitHub for at this head (#2257), accepted and inside
-    RERUN_SETTLE_SECONDS, parks `CI_RERUN_PENDING` whatever the budget, even
-    none, while every failing run is one it re-ran (`failing_ids`): the
-    reading is the one the re-run replaces. Once any of it answers red -- a
-    failing run is a new id, inside the window or not -- or a check it did
-    not re-run is red, this refuses (or hands it to a round) as before.
+    RERUN_SETTLE_SECONDS -- or past it while a workflow run it re-ran is
+    still running by this reading's Actions runs (`run_states`, #3006) --
+    parks `CI_RERUN_PENDING` whatever the budget, even none, while every
+    failing run is one it re-ran (`failing_ids`): the reading is the one the
+    re-run replaces. Once any of it answers red -- a failing run is a new
+    id, inside the window or not -- or a check it did not re-run is red,
+    this refuses (or hands it to a round) as before.
 
     With no round left to ask for, the FIRST red reading at a head with no
     re-run recorded there parks once `CI_RERUN_DUE` (#2351), so the tick's
-    free re-run runs; its red answer refuses here as before.
+    free re-run runs; its red answer refuses here as before. A round that
+    ended at this head having found nothing to change (`no_change`,
+    `_round_left_nothing`) gets the same: the re-run settling parks
+    `CI_RERUN_PENDING`, none recorded at the head parks `CI_RERUN_DUE` once,
+    and anything else refuses after the round (#2684). Still one free re-run
+    per head: a head the tick re-ran before the round refuses. A re-run
+    GitHub refused re-ran nothing, so it is not that one (#3006, PR #2971 at
+    a1e16b2c): the step parks `CI_RERUN_DUE` for one more request, and a
+    second refusal refuses `checks_failed` naming its error.
 
     A head written by a publish swarm-api refused WORKFLOW_SCOPE_MISSING --
     the opener's pinned head, or the head a round ended at -- parks
@@ -3796,26 +4038,79 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
         refused = _round_refusal(run.ctx, task_id)
         if refused is not None:
             return _await_workflow_patch(run, message, task_id, refused, wait)
+        if _round_left_nothing(run.ctx, task_id):
+            parked = _rerun_wait(own, head, failing_ids, wait,
+                                 f"{message}; CI fix round {number} ({task_id}) found "
+                                 "nothing to change", run_states=run_states,
+                                 after_no_change=True)
+            if parked is not None:
+                return parked
+            rerun_error = _rerun_refused(own, head)
+            if rerun_error is not None:
+                return run.refuse("checks_failed",
+                                  f"{message}, after CI fix round {number} ({task_id}) ended at "
+                                  f"this head; its re-run was refused: {rerun_error[:300]}")
         return run.refuse("checks_failed",
                           f"{message}, after CI fix round {number} ({task_id}) ended at this head")
     if run.refused_publish is not None and run.refused_publish[1] == head:
         opener, _, refused = run.refused_publish
         return _await_workflow_patch(run, message, opener, refused, wait)
-    requested_at = _rerun_settling(own, head, failing_ids)
-    if requested_at is not None:
-        return wait(CI_RERUN_PENDING,
-                    f"{message}; the failing jobs were re-run at {requested_at.isoformat()}, "
-                    "and the re-run has not answered yet", [])
+    parked = _rerun_wait(own, head, failing_ids, wait, message, due=False,
+                         run_states=run_states)
+    if parked is not None:
+        return parked
     asked = _rounds_asked(own)
     if len(rounds) < asked:
         return wait(CI_FIX_PENDING,
                     f"{message}; CI fix round {len(rounds) + 1} of {asked} is due", [])
-    if _rerun_due(own, head, failing_ids):
-        return wait(CI_RERUN_DUE,
-                    f"{message}; the failing jobs are due their one free re-run at this head", [])
+    parked = _rerun_wait(own, head, failing_ids, wait, message, run_states=run_states)
+    if parked is not None:
+        return parked
     if asked:
         message += f", after {len(rounds)} CI fix round(s)"
     return run.refuse("checks_failed", message)
+
+
+def _rerun_wait(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, wait: Any,
+                message: str, *, due: bool = True,
+                run_states: Mapping[int, str | None] | None = None,
+                after_no_change: bool = False) -> ActionOutcome | None:
+    """The park a red reading at `head` owes the tick's free re-run, or None.
+
+    `CI_RERUN_PENDING` while a re-run at `head` settles (`_rerun_settling`);
+    then, with `due`, `CI_RERUN_DUE` once when none is recorded there
+    (`_rerun_due`). One rule for a red reading with no round at the head and
+    for a round that ended there with nothing to change (#2684). `run_states`
+    is this reading's Actions runs (`workflow_run_states`): a re-run whose
+    run is still going holds past the window (#3006).
+    """
+    requested_at = _rerun_settling(own, head, failing_ids, run_states)
+    if requested_at is not None:
+        return wait(CI_RERUN_PENDING,
+                    f"{message}; the failing jobs were re-run at {requested_at.isoformat()}, "
+                    "and the re-run has not answered yet", [])
+    if due and _rerun_due(own, head, failing_ids, after_no_change=after_no_change):
+        return wait(CI_RERUN_DUE,
+                    f"{message}; the failing jobs are due their one free re-run at this head", [])
+    return None
+
+
+def _round_left_nothing(ctx: ActionContext, task_id: str) -> bool:
+    """Whether a CI-fix round's task SUCCEEDED having found nothing to change (#2684).
+
+    Its `result_summary.no_change` is True (`expected_outputs.left_nothing`):
+    the round read the failure as a flake, or one outside the branch, and
+    pushed nothing. Only this tenant's task counts; one that cannot be read
+    did not. The round's document is tenant-writable, so a forged one can at
+    most park the step once for the re-run, which MERGE_CI_MAX_SECONDS bounds.
+    """
+    try:
+        doc = _mapping(ctx.fetch_upstream(task_id))
+    except Exception:  # noqa: BLE001 - unreadable: nothing to read
+        return False
+    if doc.get("tenant_id") != ctx.tenant_id or doc.get("state") != TaskState.SUCCEEDED.value:
+        return False
+    return left_nothing(doc.get("result_summary")) == NO_CHANGE_SUMMARY_KEY
 
 
 def _workflow_refusal(doc: Mapping[str, Any]) -> dict[str, Any] | None:

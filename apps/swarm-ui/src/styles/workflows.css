@@ -100,7 +100,10 @@
      c28 measured the text in the cell's sans face (100.8px) and saw slack
      that was not there; a browser rounding one glyph advance up wraps
      'reported'. 136px leaves one character's advance (7.2px) to spare, and
-     the name still keeps 196px at 1280 with the nav open, over D8's 168. */
+     the name still keeps 196px at 1280 with the nav open, over D8's 168.
+     The coverage is now the body face and `N of M reported` (ovag2-15,
+     below the media rules), narrower than the mono it was measured in, so
+     the 136px holds it with more to spare. */
   @media (min-width: 1280px) {
     .wfl .wfl-table th[data-col="cost"] { width: 136px; }
   }
@@ -110,8 +113,7 @@
   .wfl .wfl-table td[data-col="cost"],
   .wfl .wfl-table td[data-col="owner"] { font-size: var(--t-micro); }
   .wfl .wfl-name { min-width: 0; }
-  /* ONE LINE (VQ-013): the id beside the name is cut first, then the name,
-     and the runner mix keeps room for one whole chip. At 1440 a basis of 0
+  /* ONE LINE (VQ-013): the name is cut, and the runner mix keeps room for one whole chip. At 1440 a basis of 0
      and a 56px floor left the mix 56px beside a 247px name, and every row's
      'claude-code · 5 steps' drew as 'clau…' (VQ-013 review) -- in the band
      where the mix is the only place the runners are shown. 11rem (176px) is
@@ -119,16 +121,20 @@
      (dag.ts `mixChipW` plus `STEPS_WORD_W`). The basis is a length, not
      `auto`: the mix measures its own width to fold its chips, so its width
      comes from the line, never from what it draws. */
-  .wfl .wfl-line > a { flex: 0 1 auto; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* THE ID IS ONE LINE, CUT (QA G3-09): it broke across two and three lines
-     (`wf_37d2a419ea5a4bb / eb463`) in a 166px column. Whole in its title.
-     ONE WIDTH ON EVERY ROW (#2391 comment 58): with a shrink of 100 and a
-     floor of 0 each name length cut it somewhere else at 1440 -- `wf_aud…`,
-     `wf_b…`, and 0px under a long name. Floor and cap are both 10ch, `wf_`
-     and six characters then the ellipsis, so every row cuts it at the same
-     place and it never vanishes. It still gives way first (`mixGoesUnder`
-     counts its 10ch as it counts a tag). */
-  .wfl .wfl-line > .id { flex: 0 100 auto; min-width: 10ch; max-width: 10ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* TWO LINES, THEN CUT (visual QA pass 2, overview-agents-61, #2694): one
+     line cut `Check the five contract invariants, then write one sy…` at
+     1440. The name wraps at its spaces and is clamped at its second line,
+     with the whole name as the link's title. */
+  .wfl .wfl-line > a {
+    flex: 0 1 auto;
+    min-width: 6em;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
+  }
   .wfl .wfl-line > .wfl-mix { flex: 1 0 11rem; min-width: 11rem; }
   /* The current step is the row's one second line, cut with its title. */
   .wfl .wfl-name > .wfl-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -152,6 +158,11 @@
    column gap spaces it, and its own bottom margin (`.c-count-note`) is not
    added on top. */
 .wfl > .c-count-note { margin: 0; }
+/* A NOTE, NOT A FIGURE (visual QA pass 2 ovag2-15, #2694): the cost cell's
+   coverage is words, so at every width it is set in the body face, not the
+   figure's mono, and the list says it short (`3 of 4 reported`, Workflows.tsx
+   `Spend`) -- it was `3 of 4 / steps / that ran / reported` at 1440. */
+.wfl .wfl-table td[data-col="cost"] .wf-spend-cov { font-family: var(--font); }
 /* THE NAME'S LINE (VQ-013): the name, its id muted beside it, the runner
    mix where the Runners column is not drawn, and a row's tags. A flex row,
    so the id and the chips sit on the name's line; a table holds it to one
@@ -160,7 +171,20 @@
 .wfl .wfl-line > a { color: var(--text); font-weight: 600; text-decoration: none; }
 .wfl .wfl-line > a:hover,
 .wfl .wfl-line > a:focus-visible { text-decoration: underline; }
-.wfl .wfl-line > .id { font-size: var(--t-micro); color: var(--text-dim); }
+/* THE ID UNDER THE NAME, AT EVERY WIDTH (visual QA pass 1 overview-agents-61,
+   #2596). Beside the name it took a 10ch cut of the line, and every 45-character
+   title read `Audit the operator scripts and the Terr…` at 1440. It is the
+   name's second line now, small and muted, one line cut with its whole value
+   in its title, as the phone card already drew it (QA G3-09: never broken
+   across lines). */
+.wfl .wfl-name > .id { display: block; font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* THE PROFILE GIVES WAY, THE STEP COUNT DOES NOT (visual QA pass 1 C-11,
+   #2596): the chip was one block cut at its end, so a lone long profile read
+   `claude-code-browser …` and lost `· 1 step`. The profile is cut inside the
+   chip; the count keeps its width. */
+span.wf-mix > .c-chip { display: flex; }
+.wf-mix > .c-chip > .wf-mix-p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-mix > .c-chip > .wf-mix-n { flex: none; white-space: nowrap; }
 .wfl .wfl-line > .tag { flex: none; }
 /* THE NAME GETS ITS ROOM BELOW 1680 (QA G3-09, 2026-10-07). At 1440 the nine
    columns left the name 166px of a 1054px table: titles cut at ~20
@@ -208,7 +232,13 @@
   .wfl > .wfl-scroll > .wfl-table > thead { display: none; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    /* TWO EQUAL TRACKS (visual QA pass 2 ovag2-01, #2694). The right one was
+       `minmax(0, auto)`, and a grid grows an auto track to its content's
+       one-line width before a `1fr` gets what is left: the cost cell's
+       coverage note took ~340px of a 390 card, and State and Steps done kept
+       ~10px -- `running` a letter a line, over the progress bar, and `2/5`
+       run into `cost $0.518`. Halves cannot starve either side. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas: "name name" "state duration" "done cost" "owner submitted";
     gap: var(--ctl-s1) var(--ctl-s3);
     padding: var(--ctl-s3) var(--ctl-s3);
@@ -235,7 +265,7 @@
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row.is-failed { background: var(--s-badb); }
   .wfl > .wfl-scroll.is-scroll > .wfl-table > tbody > tr.wfl-row.is-failed > td:not([colspan]) { background: none; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] { grid-area: name; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="state"] { grid-area: state; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="state"] { grid-area: state; white-space: nowrap; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"] { grid-area: duration; text-align: right; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="done"] { grid-area: done; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="cost"] { grid-area: cost; text-align: right; }
@@ -252,6 +282,10 @@
     color: var(--text-dim);
     font-size: var(--t-micro);
   }
+  /* AN UNKNOWN STATE HAS NO DURATION (visual QA pass 2 overview-agents-62,
+     #2694): its cell says `began 10d ago`, which is not a duration, so the
+     card draws no `duration` label over it. */
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"].is-unknown::before { content: none; }
   .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] > .id { overflow-wrap: normal; word-break: keep-all; }
   .wfl .wfl-name > .wfl-line { flex-wrap: wrap; }
   .wfl .wfl-line > .wfl-mix { display: block; flex: 1 0 100%; overflow: hidden; white-space: nowrap; }
@@ -845,6 +879,7 @@
   position: absolute; z-index: 1;
   box-sizing: border-box;
   display: flex; flex-direction: column; gap: 4px;
+  /* 12px a side is `BAND_PAD_X` in Workflows.tsx, which adds the on-screen inset to it. */
   margin: 0; padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--line);

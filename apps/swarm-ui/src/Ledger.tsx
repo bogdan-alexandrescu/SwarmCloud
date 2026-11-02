@@ -29,11 +29,14 @@
 // the server's fixed order (`vocab`), with its labels; this file never sorts
 // them, so a filter can never re-rank them.
 
-import { useId, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useState, type ReactNode, type RefObject } from 'react'
 
 import { Segmented, Tag, UsageTrack } from './components'
 import { HelpNote } from './HelpCard'
-import { MoreRight, useMoreRight } from './WorkflowViews'
+import { useMoreRight } from './WorkflowViews'
+import { WORKFLOW_IDS_PER_READ, loadWorkflowsById, type WorkflowRead } from './api'
+import { listRowName, workflowLabel } from './stepviews'
+import { stepsRead } from './workflowlist'
 import { type TopicId } from './help'
 import {
   LOW_N,
@@ -59,6 +62,7 @@ import { Absent, Mark } from './primitives'
 import { staleFoot } from './Shell'
 import { OpenLink } from './TimelineRows'
 import { HatchDef, useHatchId } from './charts/parts'
+import { basisWords } from './charts/OutcomeLedger'
 import {
   CONCURRENCY_STATES,
   PARK_NEEDS_A_PERSON,
@@ -312,10 +316,14 @@ export function LedgerTable({ data }: { data: Outcomes }) {
                 Rate<Sub>k of n, 95 % range</Sub>
               </th>
               <th scope="colgroup" colSpan={4} className="ol-th-group">Cancelled</th>
-              {/* The one column on the submission-time basis says so, in the
-                  route's word, as the throughput lane's label does. */}
+              {/* The one column on the submission-time basis says so, in
+                  words, as the throughput lane's label does (runs2-17):
+                  `created_at` is "submit time", the field its title. */}
               <th scope="col" rowSpan={2} className="is-num">
-                Submitted<Sub>by {data.basis.submitted}</Sub>
+                Submitted
+                <Sub>
+                  by <span title={data.basis.submitted}>{basisWords(data.basis.submitted)}</span>
+                </Sub>
               </th>
               <th scope="col" rowSpan={2} className="is-num">Finished</th>
             </tr>
@@ -373,7 +381,7 @@ export function LedgerTable({ data }: { data: Outcomes }) {
           </tbody>
         </table>
       </div>
-      {more.on && (
+      {more.on && columns > 0 && (
         <p className="tl-note ol-table-more">
           More columns to the right: scroll the table sideways to read all {columns}.
         </p>
@@ -437,6 +445,57 @@ function shortId(id: string): string {
   return id.length > 14 ? `${id.slice(0, 7)}…${id.slice(-4)}` : id
 }
 
+/**
+ * THE FAILED WORKFLOWS' NAMES (visual QA runs2-36, 2026-10-29): the card
+ * listed "wf_bcdc…9f31" and nothing else, and the route serves no name. The
+ * name is the spec's label or title off the step tasks (`workflowLabel`, what
+ * Work › Workflows leads with), read in one `GET /v1/workflows?ids=` per card.
+ * Null until that read lands or when it fails: the row then keeps the id alone,
+ * as the workflow list does for a row whose steps are not read.
+ */
+function useWorkflowNames(ids: readonly string[]): ReadonlyMap<string, WorkflowRead> | null {
+  const [got, setGot] = useState<{ key: string; reads: ReadonlyMap<string, WorkflowRead> } | null>(null)
+  const key = ids.slice(0, WORKFLOW_IDS_PER_READ).join(',')
+  useEffect(() => {
+    if (key === '') return
+    let live = true
+    void loadWorkflowsById(key.split(',')).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale') && r.data.batched) setGot({ key, reads: r.data.reads })
+    })
+    return () => {
+      live = false
+    }
+  }, [key])
+  return got !== null && got.key === key ? got.reads : null
+}
+
+/** A failed workflow's name over its id, or the id alone while the name or its steps are not read (`listRowName`). */
+function WorkflowName({ id, read }: { id: string; read: ReadonlyMap<string, WorkflowRead> | null }) {
+  const one = read?.get(id) ?? null
+  const taskById = one === null ? null : new Map(one.tasks.map((t) => [t.id, t]))
+  const label = one === null ? null : workflowLabel(one.workflow, taskById)
+  // "Untitled workflow" only when every step's task came back, as Work ›
+  // Workflows says it (`stepsRead`): a read missing a step's task is not
+  // known to have no name, so the id stays alone (review of runs2-36).
+  const row = listRowName(id, label, one !== null && stepsRead(one.workflow, taskById))
+  if (!row.showId) {
+    return (
+      <span className="mono" title={id}>
+        {shortId(id)}
+      </span>
+    )
+  }
+  return (
+    <>
+      <span title={id}>{row.name}</span>
+      <br />
+      <span className="ol-q mono" title={id}>
+        {shortId(id)}
+      </span>
+    </>
+  )
+}
+
 export function WorkflowsFailedCard({
   data,
   spanLabel,
@@ -445,6 +504,7 @@ export function WorkflowsFailedCard({
   spanLabel: string
 }) {
   const w = data.workflows_failed
+  const names = useWorkflowNames(w.rows.map((r) => r.workflow_id))
   const classLabel = new Map(data.vocab.failure_classes.map((c) => [c.key, c.label]))
   const cov = spanCoverage(data)
   // The kind filter is a fact about the view, not a measurement, so it is
@@ -483,7 +543,7 @@ export function WorkflowsFailedCard({
       {w.rows.length === 0 ? (
         <Nothing cov={cov} heading="No workflow step failed" what="every workflow step that ended ended some other way" />
       ) : (
-        <MoreRight className="ctl-table is-scroll">
+        <MoreRightSaid>
           <table>
             {w.rows_total > w.rows.length && <caption>showing {w.rows.length} of {w.rows_total}</caption>}
             <thead>
@@ -501,9 +561,7 @@ export function WorkflowsFailedCard({
               {w.rows.map((r) => (
                 <tr key={r.workflow_id} className="is-bad">
                   <th scope="row">
-                    <span className="mono" title={r.workflow_id}>
-                      {shortId(r.workflow_id)}
-                    </span>
+                    <WorkflowName id={r.workflow_id} read={names} />
                   </th>
                   {/* The route sends '' as well as null for no submitter: both are an absence. */}
                   <td>{r.submitted_by === null || r.submitted_by === '' ? <i className="ctl-em">—</i> : <Who address={r.submitted_by} />}</td>
@@ -526,7 +584,7 @@ export function WorkflowsFailedCard({
               ))}
             </tbody>
           </table>
-        </MoreRight>
+        </MoreRightSaid>
       )}
     </Card>
   )
@@ -817,18 +875,28 @@ export function Who({ address }: { address: string }) {
   )
 }
 
+/**
+ * `190 attempts`: a cost cell's denominator, named (visual QA runs2-37,
+ * 2026-10-29). Reliability's claude-code row read "181 of 190" beside Ended
+ * 172 -- a cost counts attempts, a row counts agents, and a retried agent is
+ * two attempts -- so the bare pair read as a sum that did not add up.
+ */
+function attemptsWord(n: number): string {
+  return `${n} ${n === 1 ? 'attempt' : 'attempts'}`
+}
+
 /** A cost cell: `—` when nothing reported, `$0.00` only for a reported zero, partial when some attempts did not report. */
 export function CostFigure({ c, what }: { c: CostCell; what: string }) {
   if (c.sum_usd === null || c.reporting === 0) {
     return (
       <span className="ol-cost is-absent">
-        <i className="ctl-em">—</i> <span className="ol-q">0 of {c.attempts}</span>
+        <i className="ctl-em">—</i> <span className="ol-q">0 of {attemptsWord(c.attempts)}</span>
       </span>
     )
   }
   return (
     <span className="ol-cost">
-      {money(c.sum_usd)} <span className="ol-q">{c.reporting} of {c.attempts}</span>
+      {money(c.sum_usd)} <span className="ol-q">{c.reporting} of {attemptsWord(c.attempts)}</span>
       {c.reporting < c.attempts && (
         <>
           {' '}
@@ -860,7 +928,7 @@ function rowsWord(by: GroupBy, n: number): string {
   return pluralise(n, by === 'tenant_id' ? 'workspace' : by === 'model' ? 'model' : 'profile')
 }
 
-function RateCell({ row }: { row: GroupRow }) {
+function RateCell({ row }: { row: Pick<GroupRow, 'rate' | 'ended'> }) {
   if (row.rate === null) {
     return <span className="ol-phrase">{row.ended > 0 ? '— all cancelled' : '— nothing ended'}</span>
   }
@@ -903,7 +971,67 @@ function Spark({ series }: { series: GroupRow['series'] }) {
   )
 }
 
-/** Where a Reliability row leads: the page narrowed to that row's profile, workspace or person. */
+/**
+ * A CARD'S TABLE THAT SAYS, IN WORDS, WHEN COLUMNS ARE OFF ITS RIGHT EDGE
+ * (visual QA runs2-18, 2026-10-29): at 390 Reliability was 1047 px in a 322 px
+ * card and Workflows-that-failed 869, signposted by the fade alone. The line
+ * is the one the day-by-day table already draws (`LedgerTable`), mounted with
+ * its element as `MoreRight` is, since these tables are drawn once rows land.
+ */
+function MoreRightSaid({ children }: { children: ReactNode }) {
+  const more = useMoreRight<HTMLDivElement>()
+  // The count is read off the table's own head, so a column added to either
+  // table is counted without a second number to keep in step (review of runs2-18).
+  const [columns, setColumns] = useState(0)
+  useLayoutEffect(() => {
+    if (!more.on) return
+    const el = (more.ref as RefObject<HTMLDivElement>).current
+    setColumns(el?.querySelectorAll('thead tr:first-child > th').length ?? 0)
+  }, [more.on, more.ref])
+  return (
+    <>
+      <div ref={more.ref} className={`ctl-table is-scroll${more.on ? ' has-more' : ''}`}>
+        {children}
+      </div>
+      {more.on && columns > 0 && (
+        <p className="tl-note ol-table-more">
+          More columns to the right: scroll the table sideways to read all {columns}.
+        </p>
+      )}
+    </>
+  )
+}
+
+/**
+ * WHAT THE HEADLINE COUNTS THAT THE ROWS DO NOT (visual QA runs2-23,
+ * 2026-10-29): 14d's profiles summed to 638 ended against "716 finished", and
+ * nothing said where 78 went. The rows are capped (`rows_total`) and the route
+ * may leave work out of every group, so the difference is drawn as a row of
+ * its own -- figures only, no rate, cost or link, since no filter selects it --
+ * and null when the rows already add up. Null as well when a row count passes
+ * the headline's: that is not a remainder, and none is invented.
+ */
+export function groupRemainder(data: Outcomes): { ended: number; succeeded: number; failed: number; cancelled: number; afterFailure: number } | null {
+  const t = data.totals
+  const rows = data.groups.rows
+  const sum = (f: (r: GroupRow) => number) => rows.reduce((n, r) => n + f(r), 0)
+  const left = {
+    ended: t.ended - sum((r) => r.ended),
+    succeeded: t.succeeded - sum((r) => r.succeeded),
+    failed: t.failed + t.dead_lettered - sum((r) => r.failed + r.dead_lettered),
+    cancelled: t.cancelled.total - sum((r) => r.cancelled.total),
+    afterFailure: t.cancelled.after_failure + t.cancelled.workflow_sweep - sum((r) => r.cancelled.after_failure + r.cancelled.workflow_sweep),
+  }
+  const parts = Object.values(left)
+  if (parts.some((n) => !Number.isFinite(n) || n < 0) || parts.every((n) => n === 0)) return null
+  return left
+}
+
+/** `other profiles`, `other workspaces`, `other people`: the remainder row's name. */
+function othersWord(by: GroupBy): string {
+  return `other ${rowsWord(by, 2).replace(/^2 /, '')}`
+}
+
 /** A Reliability figure: a link to its tasks when it counts any and one is offered, else the bare number. */
 function Cell({ n, link }: { n: number; link: RowLink | null }) {
   if (n === 0 || link === null) return <>{n}</>
@@ -950,6 +1078,7 @@ export function ReliabilityCard({
     ? ['runner_profile', 'tenant_id', 'submitted_by', 'model', 'model_class']
     : ['runner_profile', 'submitted_by', 'model', 'model_class']
   const cov = spanCoverage(data)
+  const rest = groupRemainder(data)
   return (
     <Card
       title={`Reliability by ${GROUP_LABEL[g.by]}`}
@@ -966,14 +1095,18 @@ export function ReliabilityCard({
       ) : g.rows.length === 0 ? (
         <Nothing cov={cov} heading="Nothing ended" what="no agent ended under these filters" />
       ) : (
-        <MoreRight className="ctl-table is-scroll">
+        <MoreRightSaid>
           <table>
             {g.rows_total > g.rows.length && <caption>showing {g.rows.length} of {g.rows_total}</caption>}
             <thead>
               <tr>
                 <th scope="col">{GROUP_HEAD[g.by]}</th>
                 <th scope="col" className="is-num">Ended</th>
-                <th scope="col">Success rate</th>
+                {/* THE RATE BY BUCKET IS FOLDED UNDER THE RATE (visual QA
+                    runs2-18, 2026-10-29): as a column of its own it took the
+                    table to 1019 px in a 1005 px card at 1440. The line is
+                    the same rate over the span, so it sits under its figure. */}
+                <th scope="col">Success rate · by {data.bucket}</th>
                 {/* SUCCEEDED + FAILED + CANCELLED = ENDED, on every row (#123):
                     the three outcomes are printed side by side so the row adds
                     up without arithmetic. Failed is FAILED + DEAD_LETTERED, the
@@ -982,7 +1115,6 @@ export function ReliabilityCard({
                 <th scope="col" className="is-num">Failed</th>
                 <th scope="col" className="is-num">Cancelled · after a failure</th>
                 <th scope="col">Reported cost</th>
-                <th scope="col">Rate by {data.bucket}</th>
               </tr>
             </thead>
             <tbody>
@@ -1024,6 +1156,9 @@ export function ReliabilityCard({
                   <td className="is-num">{r.ended}</td>
                   <td>
                     <RateCell row={r} />
+                    <div className="ol-rate-spark">
+                      <Spark series={r.series} />
+                    </div>
                   </td>
                   <td className="is-num">
                     <Cell n={r.succeeded} link={r.key === '' ? null : (cellLink?.('succeeded', r.key) ?? null)} />
@@ -1038,15 +1173,52 @@ export function ReliabilityCard({
                   <td>
                     <CostFigure c={r.cost} what={r.key === '' ? 'The reported cost of work with no submitter recorded' : `${r.key}'s reported cost`} />
                   </td>
-                  <td>
-                    <Spark series={r.series} />
-                  </td>
                 </tr>
                 )
               })}
+              {rest !== null && (
+                <tr className="ol-rest">
+                  <th scope="row">
+                    <i className="ctl-em" title="Counted in the headline and in no row above: rows past the cap, or work the route did not break out">
+                      {othersWord(g.by)}
+                    </i>
+                  </th>
+                  <td className="is-num">{rest.ended}</td>
+                  <td>
+                    <i className="ctl-em">— not broken out</i>
+                  </td>
+                  <td className="is-num">{rest.succeeded}</td>
+                  <td className="is-num">{rest.failed}</td>
+                  <td className="is-num">
+                    {rest.cancelled} · {rest.afterFailure}
+                  </td>
+                  <td>
+                    <i className="ctl-em">— not broken out</i>
+                  </td>
+                </tr>
+              )}
+              {/* THE HEADLINE, UNDER THE ROWS IT IS THE SUM OF (runs2-23). A
+                  body row, not <tfoot>: the held first column (#222) is held
+                  on the head and the body only, and "All" must stay on screen
+                  at 390 while the figures scroll. */}
+              <tr className="ol-total">
+                <th scope="row">All</th>
+                <td className="is-num">{data.totals.ended}</td>
+                <td>
+                  <RateCell row={data.totals} />
+                </td>
+                <td className="is-num">{data.totals.succeeded}</td>
+                <td className="is-num">{data.totals.failed + data.totals.dead_lettered}</td>
+                <td className="is-num">
+                  {data.totals.cancelled.total} · {data.totals.cancelled.after_failure + data.totals.cancelled.workflow_sweep}
+                </td>
+                <td>
+                  <CostFigure c={data.totals.cost} what="The span's reported cost" />
+                </td>
+              </tr>
             </tbody>
           </table>
-        </MoreRight>
+        </MoreRightSaid>
       )}
     </Card>
   )

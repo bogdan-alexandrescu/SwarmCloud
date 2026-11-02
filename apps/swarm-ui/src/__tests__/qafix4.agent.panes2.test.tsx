@@ -200,14 +200,15 @@ describe('c05: the over-time line names the limit it counts against', () => {
     }
   }
 
-  it('reads `mean … of 2 cores (cgroup limit)`: the enforced limit, named as such', async () => {
+  it('prints no second `of N cores` on the fold’s title: the limit is named once, in Resources (QA1 overview-agents-24/25)', async () => {
     const data: UtilisationRead = { task_id: ID, read_at: at(1), attempts: [util()] }
     api.loadUtilisation.mockResolvedValue(ok(data))
     const { container } = render(<UtilisationPanel taskId={ID} live={false} />)
     await act(async () => {})
     const head = container.querySelector('[data-testid="util-headline"]')
-    // MUTATION: drop the ` (cgroup limit)` UtilisationPanel adds after `of 2 cores` -- the count is not named.
-    expect(head?.textContent).toContain('mean 1 of 2 cores (cgroup limit)')
+    // MUTATION: put back the mean and its limit on the title -- a second, differently named count.
+    expect(head?.textContent).not.toMatch(/cores|cgroup/)
+    expect(head?.textContent).toBe('CPU and memory over time · at the limit 0% of the time · throttled 0%')
   })
 })
 

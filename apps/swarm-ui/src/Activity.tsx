@@ -16,10 +16,11 @@ import {
 } from './api'
 import { IDLE_POLL_MS } from './Agents'
 import { CardFailed, CardSkeleton } from './CardSkeleton'
-import { OutcomeLedger } from './charts/OutcomeLedger'
+import { basisWords, OutcomeLedger } from './charts/OutcomeLedger'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { helpAnchor, type TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
+import { addressToPath } from './paths'
 import {
   CancelCausesCard,
   CostCard,
@@ -81,10 +82,13 @@ import { CountNote, FailedPanel, Id, PageHead, RefreshControl, Screen, useClaimP
 import { TIMELINE_POLL_MS, TimelinePages } from './TimelineLanes'
 import { EndedRowsCard } from './TimelineRows'
 import { useInView } from './useInView'
+import { useEscapeLayer } from './escape'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { AGE_TICK_MS, useNow } from './useNow'
 import type { AdminWorkspaceView, Pool, Profile, Tenant } from './types'
 import './styles/admin.css'
+import './styles/timeline.css'
+import './styles/outcomes-toolbar.css'
 
 /**
  * Where the Timeline's sentences live. Typed as `TopicId` rather than spelled
@@ -1195,9 +1199,14 @@ function LedgerSection({
   )
 }
 
-/** The time basis in words: `completed_at` is "finish time"; a basis this console does not know is its field name. */
-function basisWords(field: string): string {
-  return field === 'completed_at' ? 'finish time' : field === 'created_at' ? 'submit time' : field
+/**
+ * THE SEALED DAYS ARE UTC, SAID ONCE AS A ZONE (visual QA pass 2, runs2-17):
+ * "zone Europe/Bucharest" then "14 of 15 UTC days" read as two zones in one
+ * line. The unit stays the rollup's (`dayDocWords`: a platform view counts
+ * workspace-days), and the zone it is cut in follows it in brackets.
+ */
+function sealedDayWords(d: Outcomes, n: number): string {
+  return `${dayDocWords(d, n).replace(/^UTC /, '')} (UTC)`
 }
 
 /**
@@ -1255,12 +1264,12 @@ function LedgerFacts({
       </li>
       <li className="ctl-fact">
         {/* THE ROLLUP'S UNIT, NOT THE VIEWER'S DAYS: workspace-days on the UTC
-            calendar, so a 14-day span reads "14 of 15 UTC days" and a platform
+            calendar, so a 14-day span reads "14 of 15 days (UTC)" and a platform
             view counts every tenant's (`dayDocWords`). */}
         <b>sealed</b>
         {late.state === 'ok' ? (
           <>
-            {late.coverage.days.sealed} of {late.coverage.days.total} {dayDocWords(data, late.coverage.days.total)}
+            {late.coverage.days.sealed} of {late.coverage.days.total} {sealedDayWords(data, late.coverage.days.total)}
           </>
         ) : late.state === 'reading' ? (
           <>
@@ -1431,7 +1440,16 @@ function LedgerFailed({ error, onRetry, onMine }: { error: ApiError; onRetry: ()
 
 const KIND_LABEL: Record<Kind, string> = { all: 'all', standalone: 'standalone', steps: 'workflow steps' }
 
-/** A multi-select as a disclosure of checkboxes: every option visible, none hidden in a native control. */
+/**
+ * A multi-select as a disclosure of checkboxes: every option visible, none
+ * hidden in a native control.
+ *
+ * THE LANES CHIP (visual QA pass 2, runs2-19): Outcomes drew its own boxes
+ * (`.ol-pick`, `.ol-field`) beside Lanes' chips in the same tab. It now wears
+ * Lanes' `.tl-flt.tl-pick` and `.tl-pop` (styles/timeline.css), names its
+ * picks in the same `<i>`, wears `is-on` once narrowed, and closes on Escape
+ * or a press outside, as `TlPicker` does.
+ */
 function Picker({
   label,
   options,
@@ -1446,15 +1464,35 @@ function Picker({
   summary: string
 }) {
   const all = Array.from(new Set([...(options ?? []), ...selected])).sort()
+  const box = useRef<HTMLDetailsElement | null>(null)
+  const [isOpen, setIsOpen] = useState(false)
+  useEscapeLayer(isOpen, () => {
+    const el = box.current
+    if (el === null) return
+    el.open = false
+    setIsOpen(false)
+    el.querySelector('summary')?.focus()
+  })
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      const el = box.current
+      if (el !== null && el.open && e.target instanceof Node && !el.contains(e.target)) el.open = false
+    }
+    document.addEventListener('pointerdown', away)
+    return () => document.removeEventListener('pointerdown', away)
+  }, [])
   return (
-    <details className="ol-pick">
+    <details
+      ref={box}
+      className={selected.length > 0 ? 'tl-flt tl-pick is-on' : 'tl-flt tl-pick'}
+      onToggle={(e) => setIsOpen(e.currentTarget.open)}
+    >
       <summary>
-        {label} <b>{summary}</b>
+        {label} <i>{summary}</i>
       </summary>
-      <fieldset className="ol-pick-list">
-        <legend className="ol-q">{label}</legend>
+      <div className="tl-pop" role="group" aria-label={label}>
         {all.map((o) => (
-          <label key={o} className="ol-pick-item">
+          <label key={o}>
             <input
               type="checkbox"
               checked={selected.includes(o)}
@@ -1468,9 +1506,21 @@ function Picker({
             clear
           </button>
         )}
-      </fieldset>
+      </div>
     </details>
   )
+}
+
+/**
+ * AN UNNARROWED PICKER SAYS `all`, WITH NO COUNT (Lanes' rule, visual QA
+ * pass 1 runs-submit-37, applied here in pass 2, runs2-19): `all 4` read as a
+ * count of something. Narrowed, it names its picks; an options list still
+ * being read, or not read, says so after `all`.
+ */
+function pickSummary(selected: readonly string[], options: readonly string[] | 'failed' | null): string {
+  if (selected.length > 0) return selected.join(', ')
+  if (options === 'failed') return 'all · not read'
+  return options === null ? 'all · reading' : 'all'
 }
 
 /** A YYYY-MM-DD day, one day on: the range's inclusive "to" day is sent as an exclusive `until`. */
@@ -1527,7 +1577,7 @@ function SubmittedBy({ view, setView }: { view: LedgerView; setView: (v: LedgerV
     setView({ ...view, submitted_by: Array.from(new Set(list)).sort() })
   }
   return (
-    <label className="ol-field">
+    <label className={view.submitted_by.length > 0 ? 'tl-flt is-on' : 'tl-flt'}>
       Submitted by{' '}
       <input
         type="search"
@@ -1580,13 +1630,7 @@ function LedgerToolbar({
   const n = filtersSet(view)
   const profileOptions = profiles === 'failed' || profiles === null ? null : profiles
   const tenantSummary =
-    view.tenant.length > 0
-      ? view.tenant.join(', ')
-      : view.exclude_tenant.length > 0
-        ? `all but ${view.exclude_tenant.join(', ')}`
-        : tenants === null
-          ? 'all'
-          : `all ${tenants.length}`
+    view.tenant.length === 0 && view.exclude_tenant.length > 0 ? `all but ${view.exclude_tenant.join(', ')}` : pickSummary(view.tenant, tenants)
   // THE SPAN CONTROL, the canonical segmented control (#503 swap): every span
   // and `from–to`, at every width. On a phone it is one row that scrolls
   // sideways if it must (visual QA VQ-024, 2026-10-26): 24h and `from–to`
@@ -1626,7 +1670,8 @@ function LedgerToolbar({
           width (VQ-024): on a phone the sheet is closed when it is tapped. */}
       {(range || view.span === null) && <RangeInputs view={view} setView={setView} />}
       <div className={sheet ? 'ol-sheet is-open' : 'ol-sheet'} id="ol-sheet">
-        <label className="ol-field">
+        {/* THE LANES CHIP (runs2-19), as Lanes' own Group by draws it. */}
+        <label className={view.bucket !== 'auto' ? 'tl-flt is-on' : 'tl-flt'}>
           Group by{' '}
           <select
             value={view.bucket}
@@ -1691,15 +1736,7 @@ function LedgerToolbar({
           label="Profile"
           options={profileOptions}
           selected={view.profile}
-          summary={
-            view.profile.length > 0
-              ? view.profile.join(', ')
-              : profiles === 'failed'
-                ? 'catalogue not read'
-                : profileOptions === null
-                  ? 'all'
-                  : `all ${profileOptions.length}`
-          }
+          summary={pickSummary(view.profile, profiles)}
           onChange={(next) => setView({ ...view, profile: next.sort() })}
         />
         <SubmittedBy view={view} setView={setView} />
@@ -2319,8 +2356,13 @@ export function TenantsScreen() {
                           ) : (
                             <a
                               className="ctl-link"
-                              href={`#admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`}
-                              title={`effective limit of tenant:${t.tenant_id} · configured ${t.max_active} · ${t.capacity_units}u`}
+                              // A PATH, AND A TITLE THAT NAMES BOTH FIGURES
+                              // (QA2 admin2-21, 2026-10-29): the legacy hash was
+                              // what a copied link carried, and `configured 2 ·
+                              // 40u` beside a drawn 40 did not say which was
+                              // agents and which units.
+                              href={addressToPath(`admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`)}
+                              title={`${t.max_active} agents at once configured · ${enforcedWords(t, pools)}`}
                             >
                               <Enforced tenant={t} pools={pools} />
                             </a>
@@ -2590,6 +2632,13 @@ const TENANT_HELP: TopicId = 'tenant-fields'
 
 /** The Tenants table's help link (AH-12), as a footer index. */
 const TENANT_TOPICS: readonly TopicId[] = [TENANT_HELP]
+
+/** The Enforced link's title figure: the units drawn, or why there is none. */
+function enforcedWords(t: Tenant, pools: TenantPools): string {
+  const pool = typeof pools === 'object' ? pools[`tenant:${t.tenant_id}`] : undefined
+  if (pool === undefined) return pools === 'reading' ? 'units enforced not read yet' : 'units enforced not read'
+  return pool.effective_limit === null ? 'no units limit enforced' : `${pool.effective_limit} units enforced`
+}
 
 /**
  * THE CEILING ADMISSION APPLIES TO A TENANT (AH-12, G5-13): the tenant pool's

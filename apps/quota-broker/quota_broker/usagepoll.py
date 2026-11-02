@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from . import usage
+from . import openai_plan, usage
 from .accounts import Account
 
 
@@ -63,6 +63,7 @@ class UsagePoller:
         max_polls: int = usage.DEFAULT_MAX_POLLS_PER_SWEEP,
         now: Any = None,
         fetch: Any = None,
+        fetch_plan: Any = None,
     ) -> None:
         self._store = store
         self._accounts = account_store
@@ -72,6 +73,11 @@ class UsagePoller:
         # Injectable so the tests never reach the network, and so the adapter
         # stays the only place that knows the endpoint's shape.
         self._fetch = fetch or usage.fetch
+        # A ChatGPT plan's windows come from codex's own usage route, given
+        # what the plan's `{base}` holds (#2688). Polled by the broker itself,
+        # in the same bounded rounds, so a spent plan is seen before a worker
+        # is handed it; the worker's readings still land on the same windows.
+        self._fetch_plan = fetch_plan or openai_plan.fetch_usage
 
     def poll_round(
         self,
@@ -114,7 +120,12 @@ class UsagePoller:
                 continue
 
             try:
-                windows = self._fetch(token)
+                fetch = (
+                    self._fetch_plan
+                    if getattr(account, "provider", "") == openai_plan.PROVIDER
+                    else self._fetch
+                )
+                windows = fetch(token)
             except usage.RateLimited as exc:
                 # The budget is spent. Ending the round is the whole point: the
                 # accounts not reached keep their previous readings and sort

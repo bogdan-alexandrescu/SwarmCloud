@@ -45,6 +45,7 @@ And one about not writing for the sake of writing:
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -57,6 +58,15 @@ from .oauth import (
     parse_credential,
     refresh,
     serialise,
+)
+from .openai_plan import (
+    HttpPlanTokenEndpoint,
+    PlanTokenEndpoint,
+    is_plan_payload,
+    parse_plan_credential,
+    published_value,
+    refresh_plan,
+    serialise_plan,
 )
 from .publishledger import (
     InMemoryPublishLedger,
@@ -184,8 +194,19 @@ class CredentialRefresher:
         now: Any = None,
         ledger: PublishLedger | None = None,
         held_margin: timedelta = DEFAULT_HELD_REFRESH_MARGIN,
+        plan_endpoint: PlanTokenEndpoint | None = None,
     ) -> None:
         self._store = store
+        #: The ChatGPT token endpoint, for `openai` pool accounts (#2688). A
+        #: stored pair says which kind it is, so one refresher serves both.
+        self._plan_endpoint: PlanTokenEndpoint = plan_endpoint or HttpPlanTokenEndpoint()
+        #: secret base -> its lock. ONE EXCHANGE PER ACCOUNT AT A TIME: a
+        #: refresh REPLACES the refresh token, so the sweep and an operator's
+        #: Refresh button racing one account would each present the same token
+        #: and one would be refused -- and the loser's account marked as
+        #: needing a person. Across instances the sweep lease does the same.
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
         self._held_margin = held_margin
         self._endpoint = endpoint
         self._log = logger
@@ -229,7 +250,17 @@ class CredentialRefresher:
             self._needs_human_logged.pop(base, None)
         return outcome
 
+    def _lock_for(self, base: str) -> threading.Lock:
+        with self._locks_guard:
+            return self._locks.setdefault(base, threading.Lock())
+
     def _refresh(
+        self, base: str, *, tenant_id: str, provider: str, held: bool = False
+    ) -> RefreshOutcome:
+        with self._lock_for(base):
+            return self._refresh_locked(base, tenant_id=tenant_id, provider=provider, held=held)
+
+    def _refresh_locked(
         self, base: str, *, tenant_id: str, provider: str, held: bool = False
     ) -> RefreshOutcome:
         now = self._now()
@@ -255,14 +286,22 @@ class CredentialRefresher:
             )
             return RefreshOutcome(tenant_id, provider, False, "store_unavailable")
 
+        plan = is_plan_payload(stored)
         try:
-            credential = parse_credential(stored, now=now)
+            credential: Any = (
+                parse_plan_credential(stored, now=now) if plan else parse_credential(stored, now=now)
+            )
         except CredentialError as exc:
             self._log.warning(
                 "stored subscription credential is unusable",
                 extra={"tenant_id": tenant_id, "provider": provider, "error": str(exc)},
             )
             return RefreshOutcome(tenant_id, provider, False, "unreadable")
+
+        # WHAT THE WORKER-FACING SECRET HOLDS: a Claude account's bare access
+        # token, or a plan's access token beside its account id -- never a
+        # refresh token, for either kind.
+        published = published_value(credential) if plan else credential.access_token
 
         if (
             held
@@ -303,7 +342,7 @@ class CredentialRefresher:
             # already carry it. Compared rather than written blindly: writing
             # every sweep would add a secret version every five minutes, which
             # is 288 a day of identical values.
-            state, detail = self._base_state(base, credential.access_token)
+            state, detail = self._base_state(base, published)
             if state is _BaseState.CURRENT:
                 # Covers both "the comparison succeeded and matched" and "the
                 # comparison was refused, and the ledger says this platform put
@@ -318,7 +357,7 @@ class CredentialRefresher:
                 # (five hours here) instead of five minutes. Five minutes of
                 # healing is not worth 288 unverified writes a day, and the
                 # real fix for both is the accessor grant named below.
-                self._remember_published(base, credential.access_token)
+                self._remember_published(base, published)
                 return RefreshOutcome(
                     tenant_id, provider, False, "still_valid", credential.expires_at
                 )
@@ -360,9 +399,9 @@ class CredentialRefresher:
                 # Loud because a permanently blind guard is a misconfiguration
                 # somebody has to fix, and the only thing that ever reported it
                 # was the secret-version count.
-                self._warn_unverified(base, credential.access_token, tenant_id, provider, detail)
+                self._warn_unverified(base, published, tenant_id, provider, detail)
             try:
-                self._store.add_version(base, credential.access_token)
+                self._store.add_version(base, published)
             except Exception as exc:
                 self._log.warning(
                     "could not publish a still-valid access token",
@@ -376,7 +415,7 @@ class CredentialRefresher:
             # AFTER the write returned, never before. A note that we published
             # something we did not is how the branch above would suppress a
             # write the secret actually needs.
-            self._remember_published(base, credential.access_token)
+            self._remember_published(base, published)
             self._log.info(
                 "published an access token that was already valid",
                 extra={"tenant_id": tenant_id, "provider": provider},
@@ -393,7 +432,11 @@ class CredentialRefresher:
             )
 
         try:
-            fresh = refresh(credential, self._endpoint, now=now)
+            fresh = (
+                refresh_plan(credential, self._plan_endpoint, now=now)
+                if plan
+                else refresh(credential, self._endpoint, now=now)
+            )
         except ReauthRequired as exc:
             # Terminal. Say so once, loudly, and stop -- once per transition,
             # and once an hour while it lasts (`_needs_human_logged`).
@@ -443,7 +486,8 @@ class CredentialRefresher:
         # version here, ~4.8 a day per account, forever. The waste was never
         # the write; it was that nothing ever expired what the write
         # superseded. See `RETAINED_VERSIONS` in quota_broker.secretstore.
-        self._store.add_version(refresh_secret, serialise(fresh))
+        fresh_published = published_value(fresh) if plan else fresh.access_token
+        self._store.add_version(refresh_secret, serialise_plan(fresh) if plan else serialise(fresh))
         if fresh.refresh_token != credential.refresh_token:
             self._log.info(
                 "refresh token rotated and persisted",
@@ -451,14 +495,14 @@ class CredentialRefresher:
             )
 
         # Only now the short-lived half the worker actually mounts.
-        self._store.add_version(base, fresh.access_token)
+        self._store.add_version(base, fresh_published)
         # Recorded here too, and this is what makes the steady state cost
         # nothing even where the read-back is refused: the next ~59 sweeps in
         # this token's life find the digest of the token they were about to
         # write and stop. Without this line the blind-publish branch would fire
         # once per tick again, because nothing else ever tells it what is in
         # there.
-        self._remember_published(base, fresh.access_token)
+        self._remember_published(base, fresh_published)
 
         self._log.info(
             "subscription credential refreshed",

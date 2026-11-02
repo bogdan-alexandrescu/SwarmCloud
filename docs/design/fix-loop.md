@@ -408,14 +408,12 @@ execution. A person may then do one of three things:
 `human-ready` refuses a `fix-loop` agent with 409, as it refuses await-input.
 A READY control-plane agent would only be parked again by the scheduler.
 
-Two expiry choices for the park itself (§9 Q3):
+The park itself expires after 7 days (§9 Q3, BGD 2026-10-27: (c)). The
+scheduler's `_expire_human_waits` expires a `park_phase: fix_loop_*` park 7
+days after it opened and ends the loop FAILED `fix_loop_exhausted`, as a
+person's "stop" would, instead of sparing it as it spares `owner_questions`.
 
-* The recommendation is the owner-questions rule: **no expiry**. The
-  scheduler's `_expire_human_waits` spares `park_phase: fix_loop_*` as it
-  spares `owner_questions`.
-* The other choice is the default 25-hour dead-letter.
-
-`/sc check` flags the park as STUCK either way (§6.4).
+Until it expires, `/sc check` flags the park as STUCK (§6.4).
 
 ### 4.6 The merge step reads the loop's last review
 
@@ -686,7 +684,7 @@ FL-CONTRACT.
 | 0 | **FL-CONTRACT** (BGD applies) | `apps/common/swarm_common/states.py`, `profiles.py`, `terraform/infra/locals.tf`, `tests/terraform/catalogue.tftest.hcl`, `docs/contract-change-requests.md`, `tests/unit/common/test_fix_loop_contract.py` (new) | `fix-loop` is `control_plane`, unavailable, in `profiles_without_a_job`; the new park reason is in no capacity set; the parity script passes |
 | 1 | **FL-ROLLUP** | `apps/workflow-rollup/swarm_rollup/__init__.py`, `apps/reconciler/reconciler/model.py` (only if it restates the pattern), `tests/unit/control_plane/test_merge_auto_fix_rounds.py`, `tests/unit/control_plane/test_fix_loop_rollup.py` (new) | `re-review:2` and `review-fix:3` are rounds and `re-review` is not; a FAILED `review-fix:2` under a SUCCEEDED loop rolls up SUCCEEDED |
 | 1 | **FL-SUBMIT** | `apps/swarm-api/swarm_api/schemas.py`, `validation.py`, `service.py`, `tests/unit/control_plane/test_fix_loop_submission.py` (new) | each §4.1 refusal is a 422 naming the step; `max_rounds` 0 and 6 are refused, absent is 3; the block is in the signed dispatch and changes the digest; `on_merge_verdict` with a loop appends a merge with `review_loop` and no `re-review`; first, a measurement of a `direct-pr` no-change review with `allow_empty_diff` |
-| 1 | **FL-SCHED** | `apps/scheduler/scheduler/loop.py`, `apps/scheduler/scheduler/store.py`, `tests/unit/control_plane/test_fix_loop_scheduler.py` (new) | a READY `fix-loop` agent is parked, never leased, with any headroom; `_expire_human_waits` spares `park_phase: fix_loop_*` (if Q3 is "no expiry") |
+| 1 | **FL-SCHED** | `apps/scheduler/scheduler/loop.py`, `apps/scheduler/scheduler/store.py`, `tests/unit/control_plane/test_fix_loop_scheduler.py` (new) | a READY `fix-loop` agent is parked, never leased, with any headroom; `_expire_human_waits` expires a `park_phase: fix_loop_*` park after 7 days and ends the loop FAILED `fix_loop_exhausted` (Q3 (c)), and spares one younger than that |
 | 2 | **FL-DRIVE** | `apps/swarm-api/swarm_api/fixloop.py` (new), `mergewake.py` (move `_append_round_step` / `_submit_round` to a shared helper inside it, or export them), `cifix.py` (`ROUND_KINDS`), `routes/admin.py` (the finished hook), `routes/fix_loop.py` (new: add-round / end), `main.py`, `tests/unit/control_plane/test_fix_loop_drive.py` (new), `tests/unit/control_plane/test_fix_loop_routes.py` (new) | every row of §4.4's table; two wakes submit one round; `max_rounds` read from the signed block, not the tenant-writable list; a round refused for a submitter who left parks `round_refused`; the round step ids equal `followedStepId`'s expectation |
 | 2 | **FL-WORKER** | `apps/agent-worker/agent_worker/merge.py`, `verdict.py` (`rendered_review_paths`), `tests/unit/worker/test_fix_loop_merge.py` (new), `tests/unit/worker/test_fix_loop_rendered.py` (new) | a merge with `review_loop` merges on the final re-review's MERGE at the head it judged; refuses a `final_review` from another loop, a non-SUCCEEDED one, or one that judged another head; a re-review with UI paths in `rendered_review_paths` on `claude-code` reads NOT_YET |
 | 3 | **FL-ISSUE** | `apps/swarm-api/swarm_api/issueruns.py`, `issueci.py`, `tests/unit/control_plane/test_issue_run_fix_loop.py` (new) | a compiled plan carries a loop with `max_rounds = fix_rounds`; `Closes #N` and the CI loop's merge read the final review |
@@ -715,6 +713,8 @@ The same questions, with options, are in this lane's `questions.json`.
 **Recommended: (a).** It is the only one that serves issue runs and lanes
 without a merge step, and it costs no pod on the MERGE path (§3).
 
+BGD 2026-10-27: (a).
+
 **Q2. The park reason while rounds run** (contract request B).
 (a) a new `ParkReason.FIX_ROUNDS_RUNNING`;
 (b) `HUMAN_REQUIRED` with a `park_phase: "fix_loop_running"` from the start;
@@ -722,11 +722,19 @@ without a merge step, and it costs no pod on the MERGE path (§3).
 **Recommended: (a).** (b) and (c) tell every reader that a running loop
 waits for a person.
 
+BGD 2026-10-27: (a). Contract request B, accepted.
+
 **Q3. When the loop parks for a person, does the park expire?**
 (a) no expiry, like the owner-questions hold;
 (b) the default 25-hour `HUMAN_REQUIRED` dead-letter;
 (c) 7 days, then FAILED `fix_loop_exhausted`.
 **Recommended: (a).** It holds nothing, and a person decides.
+
+BGD 2026-10-27: (c), not the recommended (a). What changes because of it:
+§4.5's park expiry is no longer "no expiry". The scheduler's
+`_expire_human_waits` expires a `park_phase: fix_loop_*` park 7 days after
+it opened and ends the loop FAILED `fix_loop_exhausted`, instead of sparing
+it as it spares `owner_questions`; FL-SCHED's row in §8 tests that instead.
 
 **Q4. Who may add a round, and how far past `max_rounds`?**
 (a) any full member of the tenant, up to a platform ceiling of 10 rounds in
@@ -736,12 +744,16 @@ total;
 **Recommended: (a).** It matches who may cancel a workflow
 (`Store.cancel_workflow`), and the ceiling bounds cost.
 
+BGD 2026-10-27: (a).
+
 **Q5. The default `max_rounds`.**
 (a) 3, the issue run's `fix_rounds` default;
 (b) 2, `LANE_FIX_ROUNDS_DEFAULT`;
 (c) 1, today's behaviour unless asked.
 **Recommended: (a).** On 2026-10-26 Oracle's 5 fix workflows came from 14
 lanes, so most lanes converge in 1-2 rounds, and 3 leaves room.
+
+BGD 2026-10-27: (a).
 
 **Q6. A loop-level spend cap.**
 (a) none beyond the per-agent budget times `max_rounds`, and the loop shows
@@ -751,12 +763,16 @@ the sum;
 (c) a workspace-level loop cap beside the per-agent one.
 **Recommended: (a) now, (b) later if the sums show a need.**
 
+BGD 2026-10-27: (a).
+
 **Q7. Minor findings from rounds after the first.**
 (a) the loop files them on the wave epic, as the gated step does for round 1;
 (b) dropped after round 1;
 (c) kept in the loop's summary only.
 **Recommended: (a).** CLAUDE.md says minors go to the wave epic, and later
 rounds find them too.
+
+BGD 2026-10-27: (a).
 
 **Q8. `on_merge_verdict` and the loop.**
 (a) with a declared loop, append only the merge, reading the loop; without
@@ -767,6 +783,8 @@ integrator is gated;
 **Recommended: (a).** It changes nothing for workflows that do not ask, and
 (b) can follow once loops are proven.
 
+BGD 2026-10-27: (a).
+
 **Q9. Issue runs.**
 (a) compile the loop with `max_rounds = fix_rounds`;
 (b) leave issue runs at one round;
@@ -774,12 +792,16 @@ integrator is gated;
 **Recommended: (a).** The cap already says it means review-fix rounds
 (`issueruns.py`).
 
+BGD 2026-10-27: (a).
+
 **Q10. The name.**
 (a) profile `fix-loop`, block `fix_loop`;
 (b) `fix-until-merge` / `fix_until_merge`, the issue's working name;
 (c) `review-loop` / `review_loop`.
 **Recommended: (a).** It is short, and it follows `await-input` /
 `await_input`.
+
+BGD 2026-10-27: (a).
 
 ---
 

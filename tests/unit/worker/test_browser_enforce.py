@@ -194,6 +194,16 @@ def _run_body(monkeypatch, tmp_path, *, browsers: str | None, endpoint: str | No
     # attempt has `SWARM_GIT`, which a SwarmCloud container running these
     # tests does: these cases are about the browser tools alone.
     monkeypatch.delenv(claude_code.GIT_SPOOL_ENV, raising=False)
+    # Likewise `SWARM_HANDOFF`, which a SwarmCloud container on the browser
+    # runner carries: with it set, `live_browser_refusal` takes every case for
+    # a live-browser attempt and refuses the ones that model an image with no
+    # live browser. These cases name their browser and endpoint themselves.
+    monkeypatch.delenv(claude_code.HANDOFF_ENV, raising=False)
+    # And the image's browsers directory is fake here, except on a runner
+    # where `/opt/playwright` really exists: there PW-TESTRUNNER's directory
+    # is prepared and its note follows the browser note these cases read.
+    # That note is not what these cases are about.
+    monkeypatch.setattr(claude_code, "prepare_test_browsers", lambda *_a, **_k: None)
     for name, value in ((claude_code.BROWSERS_PATH_ENV, browsers), ("SWARM_CDP_ENDPOINT", endpoint)):
         if value is None:
             monkeypatch.delenv(name, raising=False)

@@ -21,7 +21,7 @@ import { accountName } from './accountName'
 import { HUMAN_PARK_MAX_MS, HandoffBanner, handoffOf, needsYou } from './Handoff'
 import { LiveControl } from './LiveBrowser'
 import { browserTabPath } from './LiveThumb'
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
   loadCapacity,
@@ -56,6 +56,7 @@ import {
   PARK_REASONS,
   ageSpan,
   bindingWindow,
+  costInWords,
   formatDuration,
   leaseLiveliness,
   elapsed,
@@ -74,6 +75,7 @@ import {
   type Task,
   type TaskPage,
   type TaskState,
+  type WorkflowPage,
 } from './types'
 
 /**
@@ -321,7 +323,7 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
       {waitingOnYou}
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
-        <NeedsALook checks={checks} />
+        <NeedsALook checks={checks} tasks={page ?? []} workflows={dataOf(workflows)?.workflows ?? []} />
         {/* THE HAND-OFF BANNER (docs/design/live-browser.md §6, lane LB-L12):
             an agent stopped until a person signs in, one card each, under
             the checks and in the same lead. Nothing at all when none is. */}
@@ -926,10 +928,74 @@ export function keepNeedsRoom(cards: number): void {
   needsHeld = Math.min(Math.max(cards, 1), NEEDS_ROOM_MAX)
 }
 
-function NeedsALook({ checks }: { checks: Check[] }) {
+/** A workflow or task id as a check's sentence prints it: `wf_…` or `task_…`. */
+const CHECK_ID = /\b(?:wf|task)_\w+/g
+
+/**
+ * EACH ID A CARD PRINTS, BY ITS TITLE (visual QA pass 2, overview-agents-02,
+ * 2026-10-29): Needs a look read 'Workflow wf_5e5ad3b6f7da4299a8…',
+ * 'wf_bcdc9180e4fb4a209f31 — …' and 'task_8ea5c26d' where the rest of the page
+ * says 'Check the five contract invariants…' and 'Fix flaky lease heartbeat
+ * test'. `checks.ts` speaks in ids (its node tests read them, and it reads no
+ * metadata); the card names each from the rows this page already holds, by
+ * `useRowTitles`' one read per workflow or lone task. A workflow is read
+ * through a step task: one on the page, else one its workflow row lists. An
+ * id with no title read stays the id; a titled one keeps it as its `title`.
+ */
+function useCheckNames(problems: readonly Problem[], tasks: readonly Task[], workflows: WorkflowPage['workflows']): (id: string) => string | null {
+  const byTask = new Map<string, Task>(tasks.map((t) => [t.id, t] as const))
+  const stepOf = new Map<string, string>()
+  for (const t of tasks) if (t.workflow_id !== null && !stepOf.has(t.workflow_id)) stepOf.set(t.workflow_id, t.id)
+  for (const w of workflows) {
+    const step = w.steps.find((x) => typeof x.task_id === 'string' && x.task_id !== '')
+    if (!stepOf.has(w.workflow_id) && step?.task_id) stepOf.set(w.workflow_id, step.task_id)
+  }
+  const keyed = new Map<string, Pick<Task, 'id' | 'workflow_id'>>()
+  for (const p of problems) {
+    for (const id of [...(p.workflows ?? []).map((w) => w.id), ...`${p.headline} ${p.detail}`.matchAll(CHECK_ID)].map((m) => (typeof m === 'string' ? m : m[0]))) {
+      if (keyed.has(id)) continue
+      if (id.startsWith('wf_')) {
+        const step = stepOf.get(id)
+        if (step !== undefined) keyed.set(id, { id: step, workflow_id: id })
+      } else {
+        keyed.set(id, { id, workflow_id: byTask.get(id)?.workflow_id ?? null })
+      }
+    }
+  }
+  // `useRowTitles` reads `id` and `workflow_id` alone.
+  const titleOf = useRowTitles([...keyed.values()] as Task[])
+  return (id) => {
+    const t = keyed.get(id)
+    return t === undefined ? null : titleOf(t as Task)
+  }
+}
+
+/** `text` with each id `name` titles drawn as its title, the id its `title`. */
+function namedIds(text: string, name: (id: string) => string | null): ReactNode[] {
+  const out: ReactNode[] = []
+  let at = 0
+  for (const m of text.matchAll(CHECK_ID)) {
+    const title = name(m[0])
+    if (title === null) continue
+    if (m.index > at) out.push(text.slice(at, m.index))
+    out.push(
+      <span key={out.length} title={m[0]}>
+        {title}
+      </span>,
+    )
+    at = m.index + m[0].length
+  }
+  if (at < text.length) out.push(text.slice(at))
+  return out
+}
+
+const NO_NAMES = (): string | null => null
+
+function NeedsALook({ checks, tasks = [], workflows = [] }: { checks: Check[]; tasks?: readonly Task[]; workflows?: WorkflowPage['workflows'] }) {
   const problems = checks
     .flatMap((c) => (c.status === 'found' ? c.problems : []))
     .sort((a, b) => (a.severity === b.severity ? b.n - a.n : a.severity === 'bad' ? -1 : 1))
+  const name = useCheckNames(problems, tasks, workflows)
   const blind = checks.filter((c): c is Extract<Check, { status: 'blind' }> => c.status === 'blind')
   const reading = checks.filter((c) => c.status === 'reading')
   const clear = checks.filter((c): c is Extract<Check, { status: 'clear' }> => c.status === 'clear')
@@ -1011,7 +1077,7 @@ function NeedsALook({ checks }: { checks: Check[] }) {
       ) : problems.length > 0 ? (
         <div className="ov-atts">
           {problems.map((p, i) => (
-            <CheckCard key={`${p.headline}-${i}`} problem={p} />
+            <CheckCard key={`${p.headline}-${i}`} problem={p} name={name} />
           ))}
         </div>
       ) : (
@@ -1233,7 +1299,7 @@ function HandoffTakeControl({ taskId }: { taskId: string }) {
  * card's last line, clamped to four at every width (overview-automate-010),
  * and its whole text is the title.
  */
-export function CheckCard({ problem }: { problem: Problem }) {
+export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name?: (id: string) => string | null }) {
   // A PARK REASON IS A WORD (visual QA VQ-003, 2026-10-26): the parked
   // checks' detail read "CI_PENDING ×2 — Waiting for the pull request
   // checks…". `checks.ts` keeps the reason token, because the node-run check
@@ -1276,11 +1342,11 @@ export function CheckCard({ problem }: { problem: Problem }) {
           <b title={p.headline}>{title}</b>
           {ids !== null && (
             <small className="ov-att-ids" title={ids}>
-              {linkedIds(keepDash(ids), workflows)}
+              {linkedIds(keepDash(ids), workflows, name)}
             </small>
           )}
           <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
-            {detail}
+            {namedIds(detail, name)}
           </small>
         </span>
         <span className="ov-att-acts">
@@ -1290,7 +1356,7 @@ export function CheckCard({ problem }: { problem: Problem }) {
               that workflow; the list's link is a plain link above it. */}
           {workflows.map((w, i) => (
             <a key={w.id} className={i === 0 ? 'ov-att-go ov-att-wf is-cover' : 'ov-att-go ov-att-wf'} href={toPath(w.href)} title={`Open workflow ${w.id}`}>
-              <span className="ov-att-wf-t">Workflow {w.id}</span> <span aria-hidden="true">&rarr;</span>
+              <span className="ov-att-wf-t">{name(w.id) ?? `Workflow ${w.id}`}</span> <span aria-hidden="true">&rarr;</span>
             </a>
           ))}
           <a className="ov-att-go" href={toPath(p.href)} aria-label={`${go}: ${p.headline}. ${p.detail}`}>
@@ -1307,11 +1373,11 @@ export function CheckCard({ problem }: { problem: Problem }) {
         <b title={p.headline}>{title}</b>
         {ids !== null && (
           <small className="ov-att-ids" title={ids}>
-            {keepDash(ids)}
+            {namedIds(keepDash(ids), name)}
           </small>
         )}
         <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
-          {detail}
+          {namedIds(detail, name)}
         </small>
       </span>
       {/* THE WORDS ARE THEIR OWN SPAN (visual QA VQ-002, 2026-10-26): a
@@ -1325,7 +1391,7 @@ export function CheckCard({ problem }: { problem: Problem }) {
 }
 
 /** The ids line with every workflow id it names drawn as a link to that workflow. */
-function linkedIds(text: string, workflows: readonly { id: string; href: string }[]): ReactNode[] {
+function linkedIds(text: string, workflows: readonly { id: string; href: string }[], name: (id: string) => string | null = NO_NAMES): ReactNode[] {
   const out: ReactNode[] = []
   let rest = text
   for (;;) {
@@ -1335,15 +1401,15 @@ function linkedIds(text: string, workflows: readonly { id: string; href: string 
       if (at >= 0 && (next === null || at < next.at)) next = { at, w }
     }
     if (next === null) break
-    if (next.at > 0) out.push(rest.slice(0, next.at))
+    if (next.at > 0) out.push(<Fragment key={out.length}>{namedIds(rest.slice(0, next.at), name)}</Fragment>)
     out.push(
       <a key={out.length} href={toPath(next.w.href)} title={`Open workflow ${next.w.id}`}>
-        {next.w.id}
+        {name(next.w.id) ?? next.w.id}
       </a>,
     )
     rest = rest.slice(next.at + next.w.id.length)
   }
-  if (rest !== '') out.push(rest)
+  if (rest !== '') out.push(<Fragment key={out.length}>{namedIds(rest, name)}</Fragment>)
   return out
 }
 
@@ -1556,8 +1622,8 @@ function PoolsBody({ state }: { state: Result<Capacity> }) {
   }
   return (
     <div className="ov-pls">
-      {busiestFirst(state.data.pools).map((p) => (
-        <PoolRow key={p.name} pool={p} />
+      {busiestFirst(state.data.pools).map((p, _i, all) => (
+        <PoolRow key={p.name} pool={p} among={all.map((o) => o.name)} />
       ))}
     </div>
   )
@@ -1647,7 +1713,7 @@ export function ProfileTile({
       ? h.basis === 'uncapped'
         ? `${name}: no pool in this profile is configured, so nothing caps it.`
         : `${name}: not measured, ${countOf(h.unread.length, 'required pool')} could not be read.`
-      : `${name}: ${countOf(h.agents, 'more agent')} can start; ${profile.units} unit(s) per agent.` +
+      : `${name}: ${countOf(h.agents, 'more agent')} can start; one agent takes ${costInWords(profile)}.` +
         (h.blockers.length > 0
           ? ` Refusing: ${h.blockers.map((b) => `${b.pool} (${b.active}/${b.limit ?? 'no limit set'})`).join(', ')}.`
           : h.binding !== null
@@ -1688,7 +1754,7 @@ export function ProfileTile({
  * figure says so rather than `/ 0`. Units, never agents: admission counts a
  * resource class's weight.
  */
-export function PoolRow({ pool: p }: { pool: Pool }) {
+export function PoolRow({ pool: p, among = [] }: { pool: Pool; among?: readonly string[] }) {
   const limit = p.effective_limit
   const known = limit !== null && limit > 0
   const ratio = known ? p.active / limit : 0
@@ -1710,10 +1776,15 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
   // threshold as the track, so the two widths agree; a paused pool keeps its
   // own tone and is not warned about.
   const near = !full && !paused && known && ratio >= 0.8
-  const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : near ? ', nearly full' : ''}${paused ? ', paused' : ''}`
+  const label = poolLabelAmong(p.name, among)
+  const say = `${label}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : near ? ', nearly full' : ''}${paused ? ', paused' : ''}`
   const name = (
-    <span className="ov-idc" title={p.name}>
-      {p.name}
+    // NAMED AS HEADROOM NAMES IT (QA2 ovag2-04): 'anthropic · u-bogdan',
+    // 'Cloud Run', never the raw 'provider:anthropic:tenant:u-bogdan' key,
+    // which stays on hover. `poolLabelAmong` qualifies two pools that would
+    // print one word.
+    <span className="ov-idc ov-pl-k" title={p.name}>
+      {label}
     </span>
   )
   return (
@@ -1905,7 +1976,7 @@ function RunningCard({
 }) {
   const now = usePageClock()
   const page = dataOf(tasks)
-  const silent = silentByTask(leases)
+  const silent = silentByTask(leases, now)
   const leased = leasedAtByTask(leases)
   const view = page === null ? null : stateView(page, HOLDING)
   // Every capacity-holding task was read: a whole page, or every state read.
@@ -2180,9 +2251,11 @@ export function RunningRow({
         <a className="ov-name" href={agentPath(task)} title={`${rowLabel(task, title)} · ${task.id}`}>
           {rowLabel(task, title)}
         </a>
-        {/* SILENT, ON THE ROW ITSELF (#92), from the lease's heartbeat age. */}
+        {/* SILENT, ON THE ROW ITSELF (#92), from the lease's heartbeat age,
+            whole: '9d 20h', the figure the agent's pane gives, not '9d'. Its
+            units are joined by a no-break space, so the chip never wraps. */}
         {silentFor !== undefined && (
-          <span className="ov-silent">silent {formatDuration(silentFor * 1000).split(' ')[0]}</span>
+          <span className="ov-silent">silent {formatDuration(silentFor * 1000).replace(/ /g, '\u00a0')}</span>
         )}
         <span className="ov-sub">
           {task.runner_profile}
@@ -2216,16 +2289,29 @@ export function RunningRow({
  * (#92). `leaseLiveliness` with the page's own thresholds, the same verdict
  * the silent-workers item and Holders draw, so a row is marked exactly when
  * the item counts it.
+ *
+ * THE FIGURE IS AGED TO `now` (QA2 ovag2-02). `silent_seconds` is the age at
+ * the read's `evaluated_at`; drawn as it came, a worker quiet for 9d 20h read
+ * "silent 2m" here while its pane, which ages its last beat to now, read
+ * "Heartbeat silent 9d 20h ago". The age is Holders' (`heartbeatAgeMs`): the
+ * served seconds plus the time since the read, or, never beaten, the time
+ * since the lease was created. The verdict stays the read's, the item's.
  */
-function silentByTask(leases: Result<LeasePage>): Map<string, number> {
+function silentByTask(leases: Result<LeasePage>, now: number): Map<string, number> {
   const out = new Map<string, number>()
   const page = dataOf(leases)
   if (page === null) return out
+  const read = Date.parse(page.evaluated_at)
   for (const l of page.leases) {
     // `starting` is a worker that has not beaten yet inside its dispatch
     // deadline (G5-01): booting, not silent, so it is not one of the item's.
     const { kind } = leaseLiveliness(l, page.thresholds)
-    if (kind === 'silent' || kind === 'presumed-dead') out.set(l.task_id, l.silent_seconds)
+    if (kind !== 'silent' && kind !== 'presumed-dead') continue
+    const created = Date.parse(l.created_at)
+    const age = !l.heartbeat_ever
+      ? Number.isFinite(created) ? Math.max(0, now - created) / 1000 : l.silent_seconds
+      : Number.isFinite(read) ? l.silent_seconds + Math.max(0, now - read) / 1000 : l.silent_seconds
+    out.set(l.task_id, age)
   }
   return out
 }
@@ -2437,7 +2523,12 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
           {/* ITS OWN CLAUSE (QA1B-06 review): every `.ctl-foot-run > *` is
               nowrap, so inside the span above it could not wrap and was cut
               off at 390 and 1440; as its own clause it wraps as a unit. */}
-          {s.tasksOnPage > s.tasksWithAttempts && <span>that have run (of the {s.tasksOnPage} newest read)</span>}
+          {/* THE WINDOW, NAMED (visual QA pass 2, overview-agents-09 recheck,
+              2026-10-29): '(of the 20 newest read)' beside Finished today's
+              'of the 27 newest' read as two reads of one page. It is one read:
+              the 27, less the agents holding capacity (`spendSample`), which
+              have no ended attempt to price. The clause says so. */}
+          {s.tasksOnPage > s.tasksWithAttempts && <span>that have run (of the {s.tasksOnPage} newest read that hold no capacity)</span>}
           {/* 2. THE HOLES: attempts that carried no cost figure... */}
           {unmeasured > 0 && <span className="ov-warn">{unmeasured} unmeasured</span>}
           {/* 3. ...and attempt reads that failed. THE COUNT OF WHAT IS

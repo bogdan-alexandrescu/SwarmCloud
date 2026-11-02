@@ -428,3 +428,64 @@ def test_with_the_switch_off_an_ungranted_workflow_is_accepted(lenient_client, d
     assert response.status_code in (200, 201, 202), response.text
     for doc in _tasks(db).values():
         assert doc["forge_credential"] == "git"
+
+
+# ---------------------------------------------------------------------------
+# The workspace's own grant (Admin › Setup's team-level grant, decision 3;
+# DAYONE-SETUP-API-6, finding N11)
+# ---------------------------------------------------------------------------
+
+
+def _workspace_grant(db, tenant_id: str, mode: str = "write") -> None:
+    from datetime import datetime, timezone
+
+    from swarm_api.access import write_workspace_grants
+
+    write_workspace_grants(db, tenant_id, [REPO], mode=mode, by="root@example.com",
+                           at=datetime.now(timezone.utc), source="admin-setup")
+
+
+def test_a_workspace_grant_admits_a_member_with_no_grant_of_their_own(client, db, signer):
+    """A teammate's first task on a repository the team was granted in
+    Admin › Setup is not refused, and still runs on their own slot."""
+    _workspace_grant(db, "eng")
+    response = client.post("/v1/tasks", headers=auth_header("alice"), json=_task())
+    assert response.status_code == 201, response.text
+    (_, doc), = _tasks(db).items()
+    assert doc["forge_credential"] == provider_suffix(Scope.USER, user=ALICE)
+    assert doc["forge_access"] == "write"
+    # Recorded as hers, under the id the worker re-reads before a clone or push.
+    from swarm_api.access import WORKSPACE_GRANTS, grant_id_for
+    from swarm_api.forgeapp import GRANTS, user_hash
+    from swarm_api.repositories import repo_id_for
+
+    repo_id = repo_id_for("eng", *REPO.split("/"))
+    mine = db.docs[f"{GRANTS}/{grant_id_for('eng', ALICE, repo_id)}"]
+    assert (mine["tenant_id"], mine["user"], mine["user_hash"], mine["repo_id"], mine["mode"]) \
+        == ("eng", ALICE, user_hash(ALICE), repo_id, "write")
+    assert mine["via"] == WORKSPACE_GRANTS
+
+
+def test_a_damaged_grant_of_ones_own_is_not_replaced_by_the_workspaces(client, db):
+    _workspace_grant(db, "eng")
+    seed_grant(db, "eng", ALICE, REPO)
+    key = next(k for k in db.docs if k.startswith("forge_grants/"))
+    db.docs[key]["user"] = "someone-else@example.com"
+    response = client.post("/v1/tasks", headers=auth_header("alice"), json=_task())
+    assert response.status_code == 403, response.text
+    assert db.docs[key]["user"] == "someone-else@example.com"
+
+
+def test_another_workspaces_grant_is_not_this_ones(client, db):
+    _workspace_grant(db, "research")
+    response = client.post("/v1/tasks", headers=auth_header("alice"), json=_task())
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == REPOSITORY_NOT_GRANTED
+
+
+def test_a_persons_own_grant_still_decides_over_the_workspaces(client, db):
+    _workspace_grant(db, "eng", mode="write")
+    seed_grant(db, "eng", ALICE, REPO, mode="read")
+    response = client.post("/v1/tasks", headers=auth_header("alice"), json=_task())
+    assert response.status_code == 201, response.text
+    assert response.json()["task"]["forge_access"] == "read"

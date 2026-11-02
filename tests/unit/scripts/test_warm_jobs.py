@@ -261,7 +261,9 @@ def test_the_release_warms_after_verifying_the_digests_and_never_fails_on_it():
 # ---------------------------------------------------------------------------
 # Nothing to warm when the runner digests did not change (observer proposal H).
 # ---------------------------------------------------------------------------
-RUNNERS = ["agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer"]
+# Every image a worker job can run, agent-runtime-lightpanda since
+# LIGHTPANDA-BUILD-SCRIPTS (docs/design/lightpanda-runtime.md 6.4).
+RUNNERS = ["agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer", "agent-runtime-lightpanda"]
 WORKER_REPO = "us-central1-docker.pkg.dev/p/swarm-images/agent-runtime-base"
 
 
@@ -295,7 +297,7 @@ def test_one_changed_runner_digest_warms_every_job(world):
     proc = _run(world, "--previous", str(before), "--manifest", str(current))
     assert proc.returncode == 0, proc.stderr
     assert len(_executed(world)) == 3
-    assert "2 of 3 runner image digest(s) unchanged" in proc.stderr, proc.stderr
+    assert "3 of 4 runner image digest(s) unchanged" in proc.stderr, proc.stderr
 
 
 def test_a_previous_manifest_that_is_missing_warms_every_job(world):

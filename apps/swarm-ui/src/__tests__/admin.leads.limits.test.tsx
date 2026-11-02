@@ -133,9 +133,11 @@ describe('Pool limits leads with the pool closest to its ceiling (S10b)', () => 
   it('leads with a pool that has no ceiling set ahead of a busy one', async () => {
     const l = await lead(ok(capacity([pool('global', 46, 50), pool('tenant:example-labs', 0, null)])))
     expect(l.dataset.lead).toBe('warn')
-    expect(text(l)).toContain('Pool tenant:example-labs has no ceiling set')
-    fireEvent.click(within(l).getByRole('button', { name: 'Open tenant:example-labs' }))
-    expect(within(document.querySelector('aside.adm-side') as HTMLElement).getByLabelText('Hard limit for tenant:example-labs')).toBeTruthy()
+    // Named as its row names it, the key on its own line (admin-shell-03).
+    expect(text(l)).toContain('Pool example-labs has no ceiling set')
+    expect(l.querySelector('.ws-lead-s.id')?.textContent).toBe('tenant:example-labs')
+    fireEvent.click(within(l).getByRole('button', { name: 'Open example-labs' }))
+    expect(within(document.querySelector('aside.adm-side') as HTMLElement).getByLabelText('Hard limit for example-labs (workspace)')).toBeTruthy()
   })
 })
 

@@ -36,6 +36,7 @@ from agent_worker import lifecycle, workspace as workspace_mod
 from test_harvest_start_sha import REVIEW, REVIEWED, IMPLEMENT, _commits, _git, _kept, _reviewed_branch
 from test_carrier_branches import BRANCHES, tree_at
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     _the_agent_titles_its_pull_request,
     assert_only_the_worker_wrote,
     forge,

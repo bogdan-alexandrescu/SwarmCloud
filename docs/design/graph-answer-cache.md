@@ -657,8 +657,11 @@ the body above follows them.
 
 BGD asked on 2026-10-27 for the cache to be visible where the repository is,
 and picked mock-up proposal **C, live replicas (v2 from the start)**: the
-section reads each swarm-graph replica live, not a daily summary. Nothing here
-is built. This section is what the build lanes of §5.6 follow.
+section reads each swarm-graph replica live, not a daily summary. This section
+is what the build lanes of §5.6 followed, and all four are built (PRs 2651,
+2656, 2673 and 2674; §5.3 names where each piece lives). The section's figures
+appear once `graph_service.serve` renders the manifest; until then swarm-api
+has no `SWARM_GRAPH_STATS_URL` and the section says swarm-graph was not read.
 
 ### 5.1 Where it appears
 
@@ -715,13 +718,22 @@ index of thousands of shards costs nothing while the list is closed.
 
 ### 5.3 Data path
 
+**Built** (2026-10-28, all four lanes of §5.6 merged): swarm-graph's stats
+endpoint in PR 2651, swarm-api's route in PR 2656, the NetworkPolicy, the
+internal load balancer and `SWARM_GRAPH_STATS_URL` in PR 2673, and the
+console section in PR 2674. Where each piece lives is named below, next to
+what it does.
+
 ```
 console ── GET /v1/repositories/{repo_id}/graph-cache[?shards=1&page=N] ──▶ swarm-api
 swarm-api ── GET http://<graph-stats ILB>:8081/v1/stats (stats ticket) ──▶ one swarm-graph replica
 that replica ── GET http://<peer pod>:8081/v1/stats/local (same ticket) ──▶ every peer, via the headless Service
 ```
 
-**swarm-graph: a new read-only stats endpoint on every replica.**
+**swarm-graph: a read-only stats endpoint on every replica** (PR 2651:
+`apps/swarm-graph/swarm_graph/stats.py`, the 8081 listener in `server.py`
+started by `main.py`, the stats ticket in `ticket.py`, the counters in
+`cache.py` and `warm.py`; `tests/unit/graphsvc/test_graphsvc_stats.py`).
 
 * `GET /v1/stats/local` answers for the replica itself. `GET /v1/stats` answers
   for the receiving replica and every peer the headless Service `swarm-graph`
@@ -755,7 +767,14 @@ that replica ── GET http://<peer pod>:8081/v1/stats/local (same ticket) ─�
   ids, digests or names. A ticket that does not verify is a 401 with no body
   beyond the reason.
 
-**swarm-api: one route the console calls.**
+**swarm-api: one route the console calls** (PR 2656:
+`apps/swarm-api/swarm_api/routes/graph_cache.py`, the stats ticket minted by
+`graph_ticket.py`; `tests/unit/control_plane/test_graph_cache_route.py`). The
+URL it calls is `ApiSettings.graph_stats_url`
+(`apps/swarm-api/swarm_api/settings.py`), read from `SWARM_GRAPH_STATS_URL`
+like `graph_ticket_key`; unset, or not an http(s) URL, the section is
+`stats: {state: "not_read", reason: "not_configured"}` and nothing is called
+(lane CACHE-FOLLOWUPS).
 
 * `GET /v1/repositories/{repo_id}/graph-cache`, tenant-scoped through the same
   authenticator as every route: the tenant is derived from the caller's token,
@@ -771,27 +790,49 @@ that replica ── GET http://<peer pod>:8081/v1/stats/local (same ticket) ─�
   a 200 with `replicas: []` and `stats: {state: "not_read", reason}`. The
   latency tile, read from Firestore, still shows.
 
-**The NetworkPolicy and service change — BGD's review, not built here:**
+**The NetworkPolicy and service change — reviewed by BGD, built in PR 2673:**
 
 * **`kubernetes/swarm-system/swarm-graph.yaml`, NetworkPolicy
-  `swarm-graph-ingress`** gains a second ingress rule:
-  `from: [{ipBlock: {cidr: __SWARM_API_EGRESS_CIDR__}}]`, `ports: [{protocol:
-  TCP, port: 8081}]`. Today the policy admits only namespaces labelled
-  `app.kubernetes.io/part-of: swarm` with `swarm-tenant` Exists, on 8080. The
-  tenant rule stays exactly as it is and does **not** gain 8081; swarm-api's
-  range does **not** gain 8080. `__SWARM_API_EGRESS_CIDR__` is the placeholder
-  `swarm-live.yaml`'s `swarm-live-ingress` already uses for the same range
-  (swarm-api's Direct VPC egress subnet), and `kubernetes/network_parity.py`
-  gains the matching check.
-* **A new Service in the same file, `swarm-graph-stats`**: `type:
-  LoadBalancer`, annotation `networking.gke.io/load-balancer-type: "Internal"`,
-  selector `app.kubernetes.io/name: swarm-graph`, port 8081 only, on a reserved
-  internal address. swarm-api is Cloud Run and cannot resolve cluster DNS, so it
-  reaches the cluster the way it reaches swarm-live: an internal load balancer
-  on a reserved address.
+  `swarm-graph-ingress`** has three ingress rules, each one peer on one port:
+  1. namespaces labelled `app.kubernetes.io/part-of: swarm` with
+     `swarm-tenant` Exists, on TCP 8080 (`/mcp`) -- the rule that was there
+     before, unchanged;
+  2. `ipBlock: {cidr: __SWARM_API_EGRESS_CIDR__}` on TCP 8081: swarm-api's
+     Direct VPC egress range, the same range and placeholder
+     `swarm-live.yaml`'s `swarm-live-ingress` uses;
+  3. **BGD's rule of 2026-10-28**: `podSelector: {matchLabels:
+     {app.kubernetes.io/name: swarm-graph}}` (the swarm-graph pods of
+     swarm-system, no namespace selector) on TCP 8081 -- the swarm-graph
+     pod-to-pod rule. Without it the receiving replica's
+     `GET /v1/stats/local` of each peer is dropped by
+     `swarm-system-default-deny-ingress`, and every peer would show as
+     `not_read`/`timeout`.
+
+  The tenant rule does **not** gain 8081 and the other two do **not** gain
+  8080: swarm-api never reaches `/mcp`, and a tenant never reaches the stats.
+* **`kubernetes/network_parity.py`**: `check_graph_ingress` holds that exact
+  shape -- a second port, a second peer, a widened selector, a different range
+  or a missing rule is a failure -- and `--graph-ingress` runs it against
+  `kubectl get networkpolicies -n swarm-system -o json`. **`kubernetes/apply.sh
+  --swarm-graph --confirm` runs it after every apply** (lane
+  CACHE-FOLLOWUPS): it reads swarm-api's egress range from its service, as
+  `--swarm-system` reads it for swarm-live, and a failed check fails the apply
+  with the checker's reason. So a subnet terraform rendered that is not the
+  one swarm-api egresses from is caught at apply time
+  (`tests/unit/scripts/test_roll_graph.py`).
+* **A Service in the same file, `swarm-graph-stats`**: `type: LoadBalancer`,
+  annotation `networking.gke.io/load-balancer-type: "Internal"`,
+  `externalTrafficPolicy: Cluster`, selector `app.kubernetes.io/name:
+  swarm-graph`, port 8081 only, on a reserved internal address. swarm-api is
+  Cloud Run and cannot resolve cluster DNS, so it reaches the cluster the way
+  it reaches swarm-live: an internal load balancer on a reserved address.
 * **`terraform/infra/graph_service.tf`**: a `google_compute_address`
-  `graph_stats` (internal, `managed-by=swarm-terraform`), rendered into the
-  manifest with the egress CIDR, and `SWARM_GRAPH_STATS_URL` on swarm-api.
+  `graph_stats` (INTERNAL, on swarm-api's subnet, `managed-by=swarm-terraform`),
+  created only while the manifest renders (`graph_service.serve` and a
+  swarm-graph digest), rendered into the manifest with the egress CIDR, and
+  `SWARM_GRAPH_STATS_URL = http://<that address>:8081` on swarm-api through
+  `local.api_graph_stats_env` in `terraform/infra/locals.tf` (`""` while not
+  served).
 * **IAM: no new grant.** swarm-api already holds `roles/secretmanager.
   secretAccessor` on `swarm-graph-ticket-key`
   (`google_secret_manager_secret_iam_binding.graph_ticket_key_accessor`), and
@@ -819,12 +860,15 @@ that replica ── GET http://<peer pod>:8081/v1/stats/local (same ticket) ─�
 ### 5.6 Build lanes
 
 Four lanes; **no file appears in two of them**. The response shapes in §5.3 are
-the interface between them, so lanes 1, 3 and 4 can run side by side; lane 2
-waits for BGD's review.
+the interface between them, so lanes 1, 3 and 4 ran side by side and lane 2
+waited for BGD's review. **All four are built and merged** (2026-10-28): lane 1
+in PR 2651, lane 3 in PR 2656, lane 2 in PR 2673, lane 4 in PR 2674. The rows
+below name the files each lane wrote, including the ones it had to add beyond
+its first list.
 
 | lane | files | tests |
 |---|---|---|
-| **1. stats endpoint, swarm-graph** | `apps/swarm-graph/swarm_graph/stats.py` (new: counters, the per-replica document, the peer fan-out); `server.py` (the 8081 routes, counting at the `graph_answer` line); `cache.py` (per-blob read buckets, per-tenant hot counts); `warm.py` (the last warm record); `ticket.py` (verify the stats ticket under its own domain) | `tests/unit/graphsvc/test_graphsvc_stats.py` (new): a second tenant's entries never appear; a peer that times out is `not_read` with its reason; an attempt ticket is refused on the stats route and a stats ticket on `/mcp` |
-| **2. NetworkPolicy and service (BGD reviews)** | `kubernetes/swarm-system/swarm-graph.yaml`; `kubernetes/network_parity.py`; `terraform/infra/graph_service.tf` | `tests/unit/scripts/test_graph_service_manifest.py`: 8081 admitted only from the swarm-api range, 8080 only from tenant namespaces; a `terraform test` case for the address's label |
-| **3. swarm-api route** | `apps/swarm-api/swarm_api/routes/graph_cache.py` (new); `apps/swarm-api/swarm_api/graph_ticket.py` (mint the stats ticket); `apps/swarm-api/swarm_api/main.py` (register the router) | `tests/unit/control_plane/test_graph_cache_route.py` (new): another tenant's `repo_id` is a 404; swarm-graph down is a 200 `not_read`; the manifest comparison marks a changed blob and a new key as changed |
-| **4. console section** (at most 3 UI files) | `apps/swarm-ui/src/RepoGraphCache.tsx` (new: the tiles, the replica panels, the shard list); `apps/swarm-ui/src/RepositoriesParts.tsx` (mounts it in the card when indexing is on); `apps/swarm-ui/src/api.ts` (the fetcher and its mock) | `apps/swarm-ui/src/__tests__/repo-graph-cache.test.tsx` (new): no read while folded or hidden; a 30 s refresh while open; a `not_read` replica shows its reason and no zeros; the reuse tile is a dash with no `carried` count |
+| **1. stats endpoint, swarm-graph** -- built, PR 2651 | `apps/swarm-graph/swarm_graph/stats.py` (new: counters, the per-replica document, the peer fan-out); `server.py` (the 8081 routes, counting at the `graph_answer` line); `cache.py` (per-blob read buckets, per-tenant hot counts); `warm.py` (the last warm record); `ticket.py` (verify the stats ticket under its own domain); `main.py` (starts the 8081 listener) | `tests/unit/graphsvc/test_graphsvc_stats.py` (new): a second tenant's entries never appear; a peer that times out is `not_read` with its reason; an attempt ticket is refused on the stats route and a stats ticket on `/mcp` |
+| **2. NetworkPolicy and service (BGD reviewed)** -- built, PR 2673 | `kubernetes/swarm-system/swarm-graph.yaml` (the three-rule `swarm-graph-ingress`, with BGD's 2026-10-28 swarm-graph pod-to-pod rule on 8081, and `swarm-graph-stats`); `kubernetes/network_parity.py` (`check_graph_ingress`, `--graph-ingress`); `terraform/infra/graph_service.tf`; `terraform/infra/locals.tf` (swarm-api's env). Run at apply time by `kubernetes/apply.sh --swarm-graph --confirm` (CACHE-FOLLOWUPS) | `tests/unit/scripts/test_graph_service_manifest.py`: 8081 admitted only from the swarm-api range and the swarm-graph pods, 8080 only from tenant namespaces; `tests/terraform/graph_service_iam.tftest.hcl` for the address's label; `tests/unit/scripts/test_roll_graph.py` for the apply-time check |
+| **3. swarm-api route** -- built, PR 2656 | `apps/swarm-api/swarm_api/routes/graph_cache.py` (new); `apps/swarm-api/swarm_api/graph_ticket.py` (mint the stats ticket); `apps/swarm-api/swarm_api/main.py` (register the router); `apps/swarm-api/swarm_api/settings.py` (`graph_stats_url`, CACHE-FOLLOWUPS) | `tests/unit/control_plane/test_graph_cache_route.py` (new): another tenant's `repo_id` is a 404; swarm-graph down is a 200 `not_read`; the manifest comparison marks a changed blob and a new key as changed |
+| **4. console section** -- built, PR 2674 | `apps/swarm-ui/src/RepoGraphCache.tsx` (new: the tiles, the replica panels, the shard list); `apps/swarm-ui/src/RepositoriesParts.tsx` (the gate that mounts it when indexing is on); `apps/swarm-ui/src/Repositories.tsx` (one line: the card draws the gate); `apps/swarm-ui/src/api.ts` (the fetcher and its mock) | `apps/swarm-ui/src/__tests__/repo-graph-cache.test.tsx` (new): no read while folded or hidden; a 30 s refresh while open; a `not_read` replica shows its reason and no zeros; the reuse tile is a dash with no `carried` count |

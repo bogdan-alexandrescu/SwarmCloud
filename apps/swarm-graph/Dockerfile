@@ -1,4 +1,4 @@
-# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # swarm-graph -- the shared, read-only graph service (docs/design/graph-service.md;
 # lane GS-SVC, part of #1384): it verifies each request's attempt graph ticket,
@@ -50,8 +50,13 @@ ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
-ARG MIRROR_GHCR=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-ghcr
+# No default, so this file names no project (DAYONE-DESAGA-1,
+# docs/design/day-one-install.md section 7): scripts/build-images.sh passes
+# the mirror of the project it builds for (lib/build-mirror.sh
+# mirror_build_args), and the `# syntax=` frontend through the same mirror as
+# BUILDKIT_SYNTAX. A `docker build` given neither fails on its first FROM.
+ARG MIRROR_DOCKER_HUB=
+ARG MIRROR_GHCR=
 
 FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
 
@@ -77,10 +82,17 @@ WORKDIR /src
 COPY apps/common/ /src/apps/common/
 COPY apps/redaction/ /src/apps/redaction/
 COPY apps/agent-worker/ /src/apps/agent-worker/
+# The worker has depended on swarm-workflow-rollup since the scheduler and the
+# direct worker began writing a workflow's derived state in the transaction that
+# moves its step. `--no-deps` below means nothing else brings it in: without it
+# here, `uv pip check` refused this image on 2026-10-31 and the release shipped
+# nothing.
+COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
 COPY apps/swarm-graph/ /src/apps/swarm-graph/
 
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
+ && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker \
  && uv build --wheel --out-dir /wheels /src/apps/swarm-graph
 
@@ -89,7 +101,7 @@ RUN uv build --wheel --out-dir /wheels /src/apps/common \
 RUN python -m venv --without-pip /opt/venv
 
 # Third-party dependencies, exported from apps/swarm-graph/uv.lock with a hash
-# for every file. `--no-emit-local` leaves our four packages out:
+# for every file. `--no-emit-local` leaves our five packages out:
 # they come from /wheels, below. `--no-hashes` must never be added here.
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
       --project /src/apps/swarm-graph > /tmp/requirements.txt
@@ -101,7 +113,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # Our own packages, from the wheelhouse ONLY: `--no-index`, so no index is ever
 # asked for a name that is ours (dependency confusion, #663).
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-redaction swarm-agent-worker swarm-graph
+      swarm-common swarm-redaction swarm-workflow-rollup swarm-agent-worker swarm-graph
 
 RUN uv pip check --python /opt/venv/bin/python
 

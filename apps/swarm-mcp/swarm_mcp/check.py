@@ -38,7 +38,9 @@ THE RULES, each with the control that is NOT flagged:
     CI_PENDING for longer than 90 minutes, or DEPENDENCY_INCOMPLETE whose
     dependency FAILED, was CANCELLED or DEAD_LETTERED. Any other park reason
     -- a provider quota window, a retry backoff -- is the platform waiting by
-    design, and is not flagged.
+    design, and is not flagged. A HUMAN_REQUIRED park whose `park_phase` is
+    `question_wait` (its agent's blocking questions) says so, and points at
+    `owner_questions`, never at the hand-off's sign-in (#2860).
     Both (b) and (c) carry `waiting_summary` in their evidence: the API's one
     line on why the task waits (#1782) -- the pull request and the checks
     still pending, the pool that binds -- left out when the API serves none.
@@ -77,7 +79,14 @@ THE RULES, each with the control that is NOT flagged:
     `progress.owner_questions` (redacted, by name) -- once per task while
     the bridge lives, since a finished task's questions never change. A
     read that fails is under `unchecked` with its reason, and tried again
-    on the next check.
+    on the next check. The tasks come from ONE server-side read,
+    `GET /v1/tasks/open-questions` (#2835), whatever the session's volume;
+    paging the session's finished tasks is only the fallback for a
+    deployment that does not serve it, and says so under `unchecked`.
+    FIRST, marked `blocking: true` (#2860): this session's tasks PARKED on
+    their agent's blocking questions (`park_phase` `question_wait`), read
+    from `GET /v1/tasks/{id}/questions` on every check, an answered question
+    left out; the finished ones carry `blocking: false`.
 
 Every age is measured from evidence and says which: the event that entered
 the state when the newest page of events holds it, else a LOWER BOUND from
@@ -499,7 +508,7 @@ def _binding(task: dict[str, Any], reads: _Reads) -> dict[str, Any]:
     if not isinstance(spec, dict):
         return {"pool": None, "source": "/v1/capacity", "note": f"the capacity read names no profile {profile!r}"}
     units = render._int_or_none(spec.get("units")) or 1
-    bound = render.binding_pool(list(spec.get("pools") or []), pools, units)
+    bound = render.binding_pool(list(spec.get("pools") or []), pools, units, spec.get("pool_units"))
     out = {"pool": bound.pool, "active": bound.active, "limit": bound.limit, "room": bound.room,
            "source": f"/v1/capacity: the pool that binds profile {profile!r} now"}
     if bound.paused:
@@ -550,6 +559,30 @@ def _waiting(task: dict[str, Any], reads: _Reads, now: datetime, window: int) ->
     }
 
 
+#: The park of a step whose agent asked the owner blocking questions
+#: (`agent_worker.lifecycle._park_for_answers`): `blocked_by[].park_phase`,
+#: and the key its validated questions ride under. Spelled again: the worker
+#: is not installed with the bridge.
+QUESTION_WAIT_PHASE = "question_wait"
+
+
+def _question_wait(task: dict[str, Any]) -> dict[str, Any] | None:
+    """The question wait a task is PARKED on, from its park's `blocked_by`
+    record (`{}` when the record carries none readable), else None."""
+    if task.get("state") != "PARKED" or task.get("park_reason") != "HUMAN_REQUIRED":
+        return None
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and block.get("park_phase") == QUESTION_WAIT_PHASE:
+            wait = block.get(QUESTION_WAIT_PHASE)
+            return wait if isinstance(wait, dict) else {}
+    return None
+
+
+def _answer_with(task: dict[str, Any]) -> str:
+    return (f"AskUserQuestion, then swarm_task_answer {{task_id: {task_id_of(task)!r}, "
+            "question_index: <its index>, choice: <the option the person picked>}")
+
+
 def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
             dependencies: dict[str, Any] | None) -> dict[str, Any] | None:
     """(c): HUMAN_REQUIRED, CI_PENDING past 90 min, or a dependency that failed.
@@ -580,6 +613,19 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         evidence["window_minutes"] = CI_PENDING_MINUTES
         text = (f"PARKED on CI_PENDING for {evidence['age_is']} {age} min (over {CI_PENDING_MINUTES}): "
                 "its pull request's checks have not finished")
+    elif _question_wait(task) is not None:
+        # ITS AGENT'S BLOCKING QUESTIONS (#2860): the question, not a generic
+        # wait. The API's line for this park is the hand-off's sign-in
+        # sentence, so it is not carried; (g) lists the questions first.
+        wait = _question_wait(task) or {}
+        blocking = len([i for i in wait.get("blocking") or [] if isinstance(i, int)])
+        evidence["park_phase"] = QUESTION_WAIT_PHASE
+        evidence["blocking_questions"] = blocking
+        text = (f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: its agent asked the owner "
+                f"{blocking} blocking question(s) and waits for the answer; they are listed first under "
+                "owner_questions")
+        return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": evidence,
+                "next": _answer_with(task)}
     else:
         # IN THE API'S OWN WORDS when it served them (#2313): a merge step held
         # by the owner's questions parks HUMAN_REQUIRED too, and "take control"
@@ -832,8 +878,9 @@ def _single_tasks(
 #: console's to show.
 OWNER_QUESTIONS_DAYS = 7
 
-#: One page of finished tasks per request, and at most this many pages per
-#: terminal state: a session's own finished work in a week, newest first.
+#: The FALLBACK walk only (`_finished_tasks`, for a deployment without
+#: `OPEN_QUESTIONS_ROUTE`): one page of finished tasks per request, and at
+#: most this many pages per terminal state, newest first.
 OWNER_QUESTIONS_PAGE = 50
 OWNER_QUESTIONS_MAX_PAGES = 10
 
@@ -910,15 +957,58 @@ def _finished_tasks(client: SwarmClient, sid: str, since: datetime) -> tuple[lis
     return list(found.values()), failures
 
 
+#: The one read (g) makes (#2835): this session's finished tasks with an
+#: owner question that has no answer, filtered on the server.
+OPEN_QUESTIONS_ROUTE = "/v1/tasks/open-questions"
+
+#: (g)'s `unchecked` line when the API does not serve `OPEN_QUESTIONS_ROUTE`
+#: and the questions were found by `_finished_tasks`' bounded walk instead.
+OPEN_QUESTIONS_FALLBACK = (f"this deployment does not serve GET {OPEN_QUESTIONS_ROUTE}, so the owner's "
+                           f"questions were found by paging this session's finished tasks, at most "
+                           f"{OWNER_QUESTIONS_MAX_PAGES} pages per state; an older task's may not be listed")
+
+
+def _asked_tasks(client: SwarmClient, sid: str, since: datetime) -> tuple[list[dict[str, Any]], list[str]]:
+    """`(tasks, failures)`: this session's tasks that ended since `since` with
+    an owner question no answer covers, from ONE server-side query (#2835).
+
+    It used to page every finished task of the session, newest first, and
+    stopped after `OWNER_QUESTIONS_MAX_PAGES`: a busy session passed that in
+    hours, and an older task's questions were never listed. That walk is
+    kept only for a deployment that does not serve the route (a 404 from the
+    API itself, not from the edge), and `failures` names it."""
+    params = urllib.parse.urlencode([("claude_session", sid), ("since", _iso(since))])
+    try:
+        data = client.request("GET", f"{OPEN_QUESTIONS_ROUTE}?{params}")
+    except SwarmError as exc:
+        if exc.status == 404 and not exc.edge:
+            tasks, failures = _finished_tasks(client, sid, since)
+            return tasks, [OPEN_QUESTIONS_FALLBACK, *failures]
+        return [], [f"reading this session's tasks with open questions failed ({exc}); "
+                    "their questions for the owner are not listed"]
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+        return [], [f"GET {OPEN_QUESTIONS_ROUTE} answered without a `tasks` list; "
+                    "this session's questions for the owner are not listed"]
+    failures = []
+    if data.get("complete") is False:
+        failures.append(f"GET {OPEN_QUESTIONS_ROUTE} reached its read bound; "
+                        "some of this session's questions for the owner may not be listed")
+    return [t for t in data["tasks"] if isinstance(t, dict)], failures
+
+
 def _owner_questions(client: SwarmClient, scope: str | None, sid: str | None, record: session.Record,
-                     now: datetime, names: dict[str, str], tenant: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """`(entries, unchecked)`: (g), this session's finished tasks in this
-    project whose questions for the owner have an index with no answer."""
+                     now: datetime, names: dict[str, str], tenant: Any,
+                     parked: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(entries, unchecked)`: (g), this session's tasks in this project
+    whose questions for the owner have an index with no answer: first the
+    ones of `parked` (its own tasks PARKED on them, `_parked_questions`),
+    marked blocking, then the finished ones, newest end first."""
+    parked = parked or []
     if not sid:
         # No session, no candidate (`session.UNKNOWN_NOTE`): nothing is read.
         return [], []
     since = now - timedelta(days=OWNER_QUESTIONS_DAYS)
-    tasks, failures = _finished_tasks(client, sid, since)
+    tasks, failures = _asked_tasks(client, sid, since)
     unchecked: list[dict[str, Any]] = [{"task_id": None, "workflow_id": None, "section": "owner_questions",
                                         "why": why} for why in failures]
     wanted: list[tuple[dict[str, Any], set[int]]] = []
@@ -967,11 +1057,76 @@ def _owner_questions(client: SwarmClient, scope: str | None, sid: str | None, re
                 "finished_at": _iso(render.parse_time(task.get("completed_at"))),
                 "open": len(open_),
                 "questions": open_,
-                "answer_with": (f"AskUserQuestion, then swarm_task_answer {{task_id: {task_id_of(task)!r}, "
-                                "question_index: <its index>, choice: <the option the person picked>}"),
+                "blocking": False,
+                "answer_with": _answer_with(task),
             })
             entries.append(entry)
     entries.sort(key=lambda e: str(e.get("finished_at") or ""), reverse=True)
+    waiting, waiting_unchecked = _parked_questions(client, parked, names, tenant)
+    unchecked.extend(waiting_unchecked)
+    return waiting + entries, unchecked
+
+
+def _parked_questions(client: SwarmClient, parked: list[dict[str, Any]], names: dict[str, str],
+                      tenant: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(entries, unchecked)`: (g)'s BLOCKING entries (#2860), this session's
+    tasks PARKED on their agent's questions (`QUESTION_WAIT_PHASE`) with one
+    still unanswered, longest-waiting first.
+
+    The open-questions route reads finished tasks only, and a parked task has
+    uploaded no `questions.json` yet: its questions ride on the park, and
+    `GET /v1/tasks/{id}/questions` serves them -- redacted, each with its
+    `blocking` flag and the stored `answer` -- so that route is read, once per
+    parked task per check and never cached, since an answer can come at any
+    time. `parked` is the caller's own tasks, already scoped."""
+    def read(task: dict[str, Any]) -> tuple[dict[str, Any], Any, str | None]:
+        tid = urllib.parse.quote(str(task_id_of(task) or ""), safe="")
+        try:
+            return task, client.request("GET", f"/v1/tasks/{tid}/questions"), None
+        except SwarmError as exc:
+            return task, None, f"its questions could not be read: {exc}"
+
+    entries: list[dict[str, Any]] = []
+    unchecked: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(parked)))) as pool:
+        for task, served, why in pool.map(read, parked):
+            where = {"task_id": task_id_of(task), "workflow_id": task.get("workflow_id")}
+            if why is None and (not isinstance(served, dict) or served.get("status") != "ok"
+                                or not isinstance(served.get("questions"), list)):
+                status = served.get("status") if isinstance(served, dict) else None
+                why = (f"its questions could not be read: the questions route says {status}"
+                       + (f" ({served.get('unavailable_because')})"
+                          if isinstance(served, dict) and served.get("unavailable_because") else ""))
+            if why is not None:
+                unchecked.append({**where, "section": "owner_questions", "why": why})
+                continue
+            open_ = [{"index": i, **{k: v for k, v in q.items() if k != "answer"}}
+                     for i, q in enumerate(served["questions"])
+                     if isinstance(q, dict) and q.get("answer") is None]
+            if not open_:
+                continue
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            name = metadata.get("title") or metadata.get("unit")
+            entry: dict[str, Any] = {"workspace": workflows.workspace_of(task, names, fallback=tenant), **where}
+            if task.get("workflow_id"):
+                entry["workflow"] = name or task.get("workflow_id")
+                entry["step_id"] = task.get("step_id")
+            else:
+                entry["title"] = name or task_id_of(task)
+            link = console_link(task)
+            if link:
+                entry["console"] = link
+            waiting = served.get("waiting") if isinstance(served.get("waiting"), dict) else {}
+            entry.update({
+                "state": task.get("state"),
+                "asked_at": waiting.get("asked_at"),
+                "open": len(open_),
+                "questions": open_,
+                "blocking": True,
+                "answer_with": _answer_with(task),
+            })
+            entries.append(entry)
+    entries.sort(key=lambda e: str(e.get("asked_at") or ""))
     return entries, unchecked
 
 
@@ -1141,13 +1296,16 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
         if flag is None:
             return None
         item = _item(flag["kind"], flag["rule"], flag["reason"], flag["evidence"], task, where)
+        if flag.get("next"):
+            item["next"] = flag["next"]
         if flag["kind"] == AWAITING_INPUT:
             item["next"] = (f"swarm_workflow_input {{workflow_id: {where.get('workflow_id')!r}, "
                             f"step_id: {where.get('step_id')!r}}}, or its console link")
             return (AWAITING_INPUT, item)
         return ("flagged", item)
 
-    asked, asked_unchecked = _owner_questions(client, scope, sid, record, now, names, tenant)
+    asked, asked_unchecked = _owner_questions(client, scope, sid, record, now, names, tenant,
+                                              parked=[job[0] for job in jobs if _question_wait(job[0]) is not None])
     unchecked.extend(asked_unchecked)
 
     awaiting: list[dict[str, Any]] = []

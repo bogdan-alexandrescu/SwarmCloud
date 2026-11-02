@@ -202,7 +202,12 @@ _CACHE_MAX_ENTRIES = 256
 #: stored day counted under 10 has no such key and counted those ends under
 #: `runner_error`, so every one is re-derived. CLASSIFIER_VERSION stays: no
 #: text rule was added, and a typed cause is read before any of them.
-DERIVE_VERSION = 11
+#: 12 (2026-10-28, contract request 126, #2509): a fix loop whose rounds
+#: ended without a MERGE (`EndCause.FIX_LOOP_EXHAUSTED`) is its own failure
+#: class, `fix_loop_exhausted`. A stored day counted under 11 has no such key,
+#: so every one is re-derived. CLASSIFIER_VERSION stays: no text rule was
+#: added, and the cause is typed from its first write.
+DERIVE_VERSION = 12
 CLASSIFIER_VERSION = 3
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
@@ -305,6 +310,11 @@ FAILURE_CLASSES: tuple[tuple[str, str], ...] = (
     # a runner's defect, so not "runner error". After the platform's other
     # refusals, because it is one: the last end the worker itself decides.
     ("budget_exceeded", "budget exceeded"),
+    # Contract request 126 (#2509): a fix loop's rounds ended without a MERGE
+    # -- a person answered "stop", or the park for one passed 7 days. A
+    # failure of the work, not of the platform: every round ran, so not
+    # "runner error". After the platform's own limits, before "other".
+    ("fix_loop_exhausted", "fix loop exhausted"),
     ("other", "other"),
     ("no_reason", "no reason recorded"),
     # #631: a runner that failed because its caller asked it to (the mock's
@@ -399,6 +409,9 @@ _FAILURE_OF_CAUSE: dict[str, str] = {
     # budget. Its own class, not `runner_error`: BGD's decision, 2026-10-27,
     # on the owner question of PR 2519 (DERIVE_VERSION 11).
     EndCause.BUDGET_EXCEEDED.value: "budget_exceeded",
+    # Contract request 126 (#2509): a fix loop ended without a MERGE. Its own
+    # class, a failure of the work (DERIVE_VERSION 12).
+    EndCause.FIX_LOOP_EXHAUSTED.value: "fix_loop_exhausted",
 }
 #: ... and as a cancel cause. The two maps partition `EndCause`.
 _CANCEL_OF_CAUSE: dict[str, str] = {

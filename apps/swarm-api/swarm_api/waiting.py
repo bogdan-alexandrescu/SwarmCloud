@@ -44,7 +44,7 @@ import logging
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
-from swarm_common.models import SlotPool, Task, pool_names_for, utcnow
+from swarm_common.models import SlotPool, Task, pool_names_for, pool_units_for, utcnow
 from swarm_common.profiles import (
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
@@ -208,8 +208,13 @@ def waiting_for(
 
     rows: list[dict[str, Any]] = []
     for name in required:
+        # What the task takes in THIS pool: 1 in a provider pool, its resource
+        # units elsewhere (contract request 129, #2950). A row's `units` and
+        # its below-units verdict are about this pool, never the task's size
+        # applied to every pool.
+        share = pool_units_for(name, units)
         if name in unread:
-            rows.append(_row(name, STATE_UNKNOWN, active_of.get(name), None, units, None))
+            rows.append(_row(name, STATE_UNKNOWN, active_of.get(name), None, share, None))
             continue
         pool = readable.get(name)
         if pool is None:
@@ -217,18 +222,18 @@ def waiting_for(
         blocker = blockers.get(name)
         limit = None if name in limit_unknown else pool.effective_limit
         if blocker is None:
-            rows.append(_row(name, STATE_OPEN, pool.active, limit, units, None))
+            rows.append(_row(name, STATE_OPEN, pool.active, limit, share, None))
             continue
         reason = str(blocker.get("reason"))
         if reason == BlockedReason.MANUAL_PAUSE.value:
             state = STATE_PAUSED
         elif blocker["limit"] == 0:
             state = STATE_ZERO
-        elif blocker["limit"] < units:
+        elif blocker["limit"] < share:
             state = STATE_BELOW_UNITS
         else:
             state = STATE_FULL
-        rows.append(_row(name, state, blocker["active"], limit, units, reason))
+        rows.append(_row(name, state, blocker["active"], limit, share, reason))
     rows.sort(key=lambda r: _TIER[r["state"]])
 
     lead = next((r for r in rows if r["state"] != STATE_OPEN), None)

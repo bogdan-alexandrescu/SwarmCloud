@@ -52,6 +52,7 @@ from agent_worker.errors import WorkerError
 from agent_worker.forge import PullRequest, RepoAccess, RepoRef
 from worker_seeds import seed_tenant
 from fakes import FakeSecretClient
+from test_strategy_end_to_end import _the_fence_holds  # noqa: F401 -- fixture
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 

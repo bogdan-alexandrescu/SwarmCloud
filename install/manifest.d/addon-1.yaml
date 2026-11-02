@@ -1,0 +1,58 @@
+# Lane DAYONE-ADDON-1 (part of #2688): `swarm addon enable|disable <name>`
+# (apps/swarm-install/swarm_install/addons.py; design §12). The add-ons' other
+# entries are in the base manifest with their `addon:<name>` scope; each
+# add-on's `satisfies` names them. These three are what the CI add-on adds:
+# its own Cloud Build account (lesson 6), the runner label and the acceptance
+# sandbox as repository variables, and the protected environments its
+# preflight requires (lesson 25). Each names `infra.pass-2`, the step the
+# base manifest's `addon.ci` entry names: `step:` must be a step some module of
+# swarm_install.steps defines (tests/unit/install/test_manifest_steps.py), and
+# the add-on's own phases in addons.py are not engine steps.
+version: 1
+entries:
+- id: sa.ci-build
+  kind: service-account
+  scope: addon:ci
+  stage: 15
+  provider: engine
+  check: gcloud iam service-accounts describe swarm-ci-build@$P.iam.gserviceaccount.com
+  apply: swarm addon enable ci creates it through the IAM API (no key, no project role)
+  verify: the CI add-on's builds run as swarm-ci-build, never <number>-compute@developer or <number>@cloudbuild
+  explain: Lesson 6, the default compute account held Editor. The CI add-on's Cloud Build runs as its own
+    account, so nothing it builds inherits a default account's grants.
+  depends_on:
+  - api.cloudbuild
+  evidence:
+  - apps/swarm-install/swarm_install/addons.py
+  step: infra.pass-2
+- id: other.ci-runner-label
+  kind: other
+  scope: addon:ci
+  stage: 15
+  provider: engine
+  check: gh variable get SWARM_CI_RUNNER_LABEL --repo <github_repository> and gh variable get
+    SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL --repo <github_repository> equal the add-on's recorded choices
+  apply: swarm addon enable ci sets both repository variables with the person's own gh sign-in
+  verify: a self-hosted job lands on the runners with that label; scripts/acceptance/config.sh resolves the sandbox
+  explain: The workflows' self-hosted runs-on read the label from SWARM_CI_RUNNER_LABEL (the lane's workflow
+    patch) and acceptance reads its private sandbox from SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL, so neither
+    names the live deployment.
+  depends_on:
+  - other.ci-environments-protected
+  evidence:
+  - scripts/acceptance/config.sh
+  step: infra.pass-2
+- id: other.ci-environments-protected
+  kind: other
+  scope: addon:ci
+  stage: 15
+  provider: human-in-console
+  check: gh api repos/<github_repository>/environments lists dev and prod, and prod has a protection rule
+  apply: the person creates them at https://github.com/<github_repository>/settings/environments (the preflight
+    names the page and what is missing)
+  verify: a prod deploy job waits for its required reviewer
+  explain: Lesson 25, a prod tag moved before approval. Promotion is the CI add-on's (D10), so its preflight,
+    not core, requires the protected environment.
+  evidence:
+  - apps/swarm-install/swarm_install/addons.py
+  step: infra.pass-2

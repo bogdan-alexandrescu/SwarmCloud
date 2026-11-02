@@ -26,6 +26,7 @@ import {
   loadTaskLogs,
   loadTasks,
   loadTranscript,
+  loadWorkflow,
   loadWorkflowBoard,
   loadWorkflowUsage,
 } from '../api'
@@ -311,7 +312,12 @@ describe('F14c (flow-workflow-graph-light-01, -03, -07, -08, -12): titled workfl
     for (const w of board.workflows) {
       // MUTATION: drop the `metadata: { title }` from the workflow step tasks -> fails: 'Untitled workflow'.
       expect(workflowLabel(w, board.taskById), `${w.workflow_id} is untitled`).not.toBeNull()
-      const tasks = w.steps.map((s) => (s.task_id ? board.taskById?.get(s.task_id) : undefined)).filter((t): t is Task => t !== undefined)
+      expect(w.steps.some((s) => s.task_id && board.taskById?.has(s.task_id)), `${w.workflow_id} joins no task`).toBe(true)
+      // THE STEP TASKS THEMSELVES from the workflow's own read: the board's
+      // join is each step's list block (console load speed, 2026-11-01),
+      // which serves no creation or update time.
+      const own = ok(await loadWorkflow(w.workflow_id), `GET /v1/workflows/${w.workflow_id}`)
+      const tasks = w.steps.map((s) => own.tasks.find((t) => t.id === s.task_id)).filter((t): t is Task => t !== undefined)
       expect(tasks.length, `${w.workflow_id} joins no task`).toBeGreaterThan(0)
       // MUTATION: type wf_5e5ad3b6f7da4299a839's `created_at` as 4 hours ago again instead of `spanOf(...)` -> fails (3h 31m matches neither interval).
       expect(w.created_at, `${w.workflow_id} starts after its first step`).toBe(new Date(Math.min(...tasks.map((t) => ms(t.created_at)))).toISOString())

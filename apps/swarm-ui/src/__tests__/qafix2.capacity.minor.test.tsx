@@ -10,7 +10,8 @@
 //   capacity-007  `← AUTO` wrapped to the start of the `runs on` row, under
 //                 the key, instead of staying with CLOUD_RUN_JOB in the value
 //                 column.
-//   capacity-008  Pools' Set by cell (`AIMD back-off`) was at the table's body
+//   capacity-008  Pools' Set by cell (`AIMD back-off` then, `lowered automatically
+//                 after errors` since QA1B-13) was at the table's body
 //                 size beside the 12px marks and links of its row.
 //
 // capacity-009 (the half-height amber rule) is the sheet's deliberate warn
@@ -184,8 +185,9 @@ describe('capacity-007: `← AUTO` stays with the backend it was resolved to', (
     // reads two items, the second of which wraps to the key's x.
     expect(values).toHaveLength(1)
     const value = values[0] as HTMLElement
-    expect(value.querySelector('.rt-backend')?.textContent).toBe('CLOUD_RUN_JOB')
-    expect(value.querySelector('.rt-declared')?.textContent).toBe('← AUTO')
+    // The words since QA2-FIX-21 (capacity-14, cap2-10).
+    expect(value.querySelector('.rt-backend')?.textContent).toBe('Cloud Run')
+    expect(value.querySelector('.rt-declared')?.textContent).toBe('chosen automatically')
     for (const env of [WIDE, PHONE]) {
       // MUTATION: drop `flex-wrap: wrap` from `.rt-runs-on-value` and
       // backend plus annotation overflow a narrow card; this reads null.
@@ -204,7 +206,7 @@ describe('capacity-008: Pools\' Set by cell is the size of the marks and links b
     const host = document.createElement('div')
     host.innerHTML =
       '<div class="ctl-table cap-pools"><table><tbody><tr>' +
-      '<td data-label="Set by">AIMD back-off</td><td data-label="Links" class="cap-links">0 holders · limit</td>' +
+      '<td data-label="Set by">lowered automatically after errors</td><td data-label="Links" class="cap-links">0 holders · limit</td>' +
       '</tr></tbody></table></div>'
     document.body.appendChild(host)
     hosts.push(host)
@@ -214,7 +216,7 @@ describe('capacity-008: Pools\' Set by cell is the size of the marks and links b
     }
   }
 
-  it('sets `AIMD back-off` at the micro size, not the figures\'', () => {
+  it('sets the Set by word at the micro size, not the figures\'', () => {
     const { setBy, links } = row()
     for (const env of [WIDE, PHONE]) {
       // MUTATION: delete the `.cap-pools td[data-label="Set by"]` rule and

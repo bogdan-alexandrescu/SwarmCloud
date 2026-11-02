@@ -43,7 +43,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { AdminSettingsScreen, FallbackTokenCard } = await import('../AdminSettings')
+const { AdminSettingsScreen, FallbackTokenCard, poolSpoken } = await import('../AdminSettings')
 const { PlatformCountsScreen, forgetLastRun } = await import('../PlatformCounts')
 const { TenantsScreen } = await import('../Activity')
 
@@ -107,7 +107,7 @@ async function limits(pools: Pool[]): Promise<void> {
 
 function edit(name: string): HTMLElement {
   const row = document.getElementById(`limit-${name}`)!
-  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${name}` }))
+  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` }))
   const side = document.querySelector<HTMLElement>('aside.adm-side')
   expect(side, 'edit opened no editor').not.toBeNull()
   return side!
@@ -181,9 +181,11 @@ describe('V024: opening the editor at 1440 reflows no row', () => {
     expect(won(side, 'grid-area', WIDE)).toBe('1 / 1')
     expect(won(side, 'justify-self', WIDE)).toBe('end')
     expect(won(side, 'position', WIDE)).toBe('sticky')
-    // `AIMD back-off` never breaks at its hyphen.
+    // The Set by term (`lowered automatically (back-off)` on Pool limits,
+    // admin-shell-13; once `AIMD back-off`) breaks only between words
+    // (QA1B-13 review: the one-line rule cut it), never anywhere.
     const by = document.getElementById('limit-tenant:eng')!.querySelector('td[data-label="Set by"]')!
-    expect(won(by, 'white-space', WIDE)).toBe('nowrap')
+    expect(won(by, 'overflow-wrap', WIDE)).toBe('normal')
   })
 })
 
@@ -291,11 +293,13 @@ describe('V077: a long pool list gets the filter at every width, and the columns
     const width = (key: string) => won(document.querySelector(`col.adm-col-${key}`)!, 'width', WIDE)
     // Pool 27% holds provider:anthropic:tenant:u-bogdan on one line, from Set
     // by's slack and Last changed's 1% (run 5b, Providers; qafix6.admin.test.tsx).
+    // Set by 15% holds `lowered automatically` (QA1B-13 review), from the
+    // Ceiling slot's slack and Last changed's 1%.
     expect(width('pool')).toBe('27%')
     expect(width('use')).toBe('15%')
-    expect(width('ceiling')).toBe('21%')
-    expect(width('by')).toBe('12%')
-    expect(width('changed')).toBe('25%')
+    expect(width('ceiling')).toBe('19%')
+    expect(width('by')).toBe('15%')
+    expect(width('changed')).toBe('24%')
   })
 })
 

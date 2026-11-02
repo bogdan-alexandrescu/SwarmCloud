@@ -93,8 +93,8 @@ function row(id: string, over: Partial<Task> = {}): Task {
   return runTask({ id, state: 'RUNNING', completed_at: null, ...over })
 }
 
-async function list(tasks: Task[], taskId: string | null = null): Promise<HTMLElement> {
-  api.loadTasks.mockResolvedValue(ok({ tasks, tenant_id: 'acme' } satisfies TaskPage))
+async function list(tasks: Task[], taskId: string | null = null, more: string | null = null): Promise<HTMLElement> {
+  api.loadTasks.mockResolvedValue(ok({ tasks, tenant_id: 'acme', ...(more !== null ? { next_page_token: more } : {}) } satisfies TaskPage))
   const { container } = render(<AgentsScreen onOpen={() => {}} taskId={taskId} />)
   await waitFor(() => expect(container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
   await act(async () => {})
@@ -131,10 +131,12 @@ describe('V151: an empty read keeps the tabs, the search and the filters', () =>
 
 describe('V147: the toolbar strands nothing and « is one glyph', () => {
   it('puts the scope at the search box’s end, and draws « without the `[` key box', async () => {
-    const c = await list([row('task_aaaaaaaa00000000000a')], 'task_aaaaaaaa00000000000a')
+    // The scope is drawn only where it says what the header does not (visual
+    // QA pass 1, overview-agents-13): here, that rows exist beyond the page.
+    const c = await list([row('task_aaaaaaaa00000000000a')], 'task_aaaaaaaa00000000000a', 'next-page')
     const scope = c.querySelector('.ag-scope')!
     expect(scope.parentElement?.classList.contains('ag-find')).toBe(true)
-    expect(scope.textContent).toBe('1 loaded')
+    expect(scope.textContent).toBe('more beyond')
     const fold = c.querySelector<HTMLButtonElement>('.ag-collapse')!
     expect(fold.textContent?.trim()).toBe('«')
     expect(fold.querySelector('kbd')).toBeNull()

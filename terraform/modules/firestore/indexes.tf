@@ -208,6 +208,22 @@ locals {
       ]
     }
 
+    # GET /v1/notifications (lane LOAD-SPEED-NOTIFICATIONS, part of #2688) --
+    # the bell's task reads in one state for one person (a personal workspace
+    # member's RUNNING and PARKED tasks), with the submitter IN the query
+    # (Store.notification_tasks), so 200 rows are 200 of theirs rather than
+    # the tenant's newest 200 filtered after. Unlabelable, as above.
+    "tasks-tenant-submitter-state-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "submitted_by", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
     # GET /v1/admin/failures (U19) -- FAILED tasks across every tenant, newest
     # first. The one task listing with no tenant filter (full admin only), so
     # no tenant-leading index can serve it. No labels possible, as above
@@ -244,6 +260,25 @@ locals {
       fields = [
         { field_path = "tenant_id", order = "ASCENDING" },
         { field_path = "completed_at", order = "ASCENDING" },
+      ]
+    }
+
+    # ---- GET /v1/tasks/open-questions: a person's unanswered questions ------
+    # swarm_api.agent_questions.open_question_tasks (#2835) reads
+    #   tasks where tenant_id == T and submitted_by == me
+    #     and completed_at >= since and result_summary.questions > 0
+    # -- two range filters, so both are in the index, in the lexicographic
+    # order Firestore orders an unordered multi-inequality query by. Only the
+    # tasks whose agent asked questions are read; the session tag and the
+    # answers are filtered from those.
+    "tasks-tenant-submitter-completed-questions" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "submitted_by", order = "ASCENDING" },
+        { field_path = "completed_at", order = "ASCENDING" },
+        { field_path = "result_summary.questions", order = "ASCENDING" },
       ]
     }
 

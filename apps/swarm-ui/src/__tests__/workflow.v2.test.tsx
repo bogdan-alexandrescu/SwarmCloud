@@ -278,7 +278,7 @@ describe('the workflow list', () => {
 // ---------------------------------------------------------------------------
 
 describe('one workflow', () => {
-  it('opens on its graph with the step that needs a look in the card under it, the step table below, and records itself in Recent', async () => {
+  it('opens on its graph with the step that needs a look in the card under it, no step table below, and records itself in Recent', async () => {
     render(<WorkflowsScreen view="wf=wf_broker&state=running&owner=priya" />)
     await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
     // The way back with the filters is the breadcrumb's list segment
@@ -289,7 +289,8 @@ describe('one workflow', () => {
     expect(screen.queryByRole('checkbox', { name: /chains only/i })).toBeNull()
     // The running step is picked into the card, stacked under the graph (#503).
     await waitFor(() => expect(document.querySelector('.wf-split.has-panel.is-stack')).toBeTruthy())
-    expect(document.querySelector('.wfp-steps table, .wfp-steps [role="table"], .wfp-steps .wf-table')).toBeTruthy()
+    // No step table under the graph: the Table tab is the rows (visual QA pass 1 overview-agents-73, #2596).
+    expect(document.querySelector('.wfp-steps')).toBeNull()
     expect(recentWorkflows()[0]).toEqual({ id: 'wf_broker', state: 'RUNNING', name: null })
   })
 
@@ -308,9 +309,10 @@ describe('one workflow', () => {
     const onView = vi.fn()
     render(<Routed initial="wf=wf_broker&owner=priya" onView={onView} />)
     await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
-    // A canonical tab: a link to the view's own address, switched in place.
-    const tab = screen.getAllByRole('link').find((b) => b.textContent === 'Timeline')
-    expect(tab, 'no Timeline tab').toBeTruthy()
+    // A canonical tab: a role=tab link to the view's own address, switched in place.
+    const tab = screen.getAllByRole('tab').find((b) => b.textContent === 'Steps over time')
+    // `Steps over time`, not the nav's Timeline (overview-agents-89, #2596); the address keeps `timeline`.
+    expect(tab, 'no Steps over time tab').toBeTruthy()
     fireEvent.click(tab!)
     expect(onView).toHaveBeenLastCalledWith('wf=wf_broker&tab=timeline&owner=priya')
   })
@@ -344,7 +346,7 @@ describe('Cancel workflow', () => {
     const cancel = vi.fn().mockResolvedValue(ok)
     const b = fixture()
     render(<CancelWorkflow workflow={b.workflows[0]!} taskById={b.taskById} onDone={vi.fn()} cancel={cancel} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stop workflow' }))
     expect(cancel).not.toHaveBeenCalled()
     // A step runs, so the ask is the canonical typed-confirm dialog (Overlay.tsx).
     const ask = screen.getByRole('dialog')
@@ -359,10 +361,10 @@ describe('Cancel workflow', () => {
     const onDone = vi.fn()
     const b = fixture()
     render(<CancelWorkflow workflow={b.workflows[0]!} taskById={b.taskById} onDone={onDone} cancel={cancel} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stop workflow' }))
     // A step runs, so the id is typed first (states.html §12; workflow.u2.test.tsx holds the lock).
     fireEvent.change(screen.getByRole('textbox', { name: 'Type wf_broker to confirm' }), { target: { value: 'wf_broker' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel the workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stop the workflow' }))
     expect(cancel).toHaveBeenCalledTimes(1)
     expect(cancel).toHaveBeenCalledWith('wf_broker')
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
@@ -372,11 +374,11 @@ describe('Cancel workflow', () => {
     const cancel = vi.fn().mockResolvedValue(ok)
     const b = fixture()
     render(<CancelWorkflow workflow={b.workflows[0]!} taskById={b.taskById} onDone={vi.fn()} cancel={cancel} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stop workflow' }))
     fireEvent.click(screen.getByRole('button', { name: 'Keep it running' }))
     expect(cancel).not.toHaveBeenCalled()
     expect(screen.queryByRole('group', { name: 'Confirm cancelling this workflow' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Cancel workflow' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Stop workflow' })).toBeTruthy()
   })
 
   it('says why when the cancel was not recorded, and does not re-read', async () => {
@@ -387,9 +389,9 @@ describe('Cancel workflow', () => {
     const onDone = vi.fn()
     const b = fixture()
     render(<CancelWorkflow workflow={b.workflows[0]!} taskById={b.taskById} onDone={onDone} cancel={cancel} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stop workflow' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Type wf_broker to confirm' }), { target: { value: 'wf_broker' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel the workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stop the workflow' }))
     expect((await screen.findByRole('alert')).textContent).toContain('not a member')
     expect(onDone).not.toHaveBeenCalled()
   })
@@ -615,9 +617,9 @@ describe('WF-15: a cancel is said to be requested only while the workflow has no
 
   it('on the list row', async () => {
     serve([live(), over(), unread()])
-    expect(tag(await listRow('wf_live'))).toBe('cancel requested')
+    expect(tag(await listRow('wf_live'))).toBe('stop requested')
     expect(tag(document.querySelector('tr[data-workflow="wf_over"]')!), 'a finished workflow still reads "cancel requested"').toBe('')
-    expect(tag(document.querySelector('tr[data-workflow="wf_unread"]')!)).toBe('cancel requested')
+    expect(tag(document.querySelector('tr[data-workflow="wf_unread"]')!)).toBe('stop requested')
   })
 
   it('on the page head', async () => {
@@ -627,7 +629,7 @@ describe('WF-15: a cancel is said to be requested only while the workflow has no
 
   it('on the page head of a live workflow', async () => {
     serve([live()])
-    expect(tag(await pageHead('wf_live'))).toBe('cancel requested')
+    expect(tag(await pageHead('wf_live'))).toBe('stop requested')
   })
 })
 
@@ -772,7 +774,9 @@ describe('the list row: shape, runners and spend', () => {
   it('never shows a partial total without its coverage', async () => {
     const cell = await spendCell([0.0642, null, null])
     expect(cell.textContent).toContain('$0.0642')
+    // Short in the list, the long form its title (visual QA pass 2 ovag2-15, #2694).
     expect(cell.querySelector('.wf-spend-cov')!.textContent).toBe('1 of 3 reported')
+    expect(cell.querySelector('.wf-spend-cov')!.getAttribute('title')).toBe('1 of 3 steps that ran reported a cost')
     expect(cell.getAttribute('title')).toContain('floor rather than the total')
   })
 })

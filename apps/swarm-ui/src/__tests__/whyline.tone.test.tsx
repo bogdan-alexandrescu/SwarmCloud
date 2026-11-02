@@ -136,7 +136,7 @@ function page(): TaskPage {
 
 /** The why line of the row that draws task `id`. */
 function whyOf(id: string): HTMLElement {
-  const cell = document.querySelector(`.row .id[title="${id}"]`)
+  const cell = document.querySelector(`.row[data-task-id="${id}"] .cr-name`)
   expect(cell, `no row draws ${id}`).not.toBeNull()
   const why = cell!.closest('.row')!.querySelector<HTMLElement>('.why')
   expect(why, `the row for ${id} has no why line`).not.toBeNull()
@@ -159,7 +159,7 @@ describe('the Agents list paints a why line --warn only when it asks for a perso
 
     for (const r of ROWS.filter((x) => x.t.state === 'READY' || x.t.state === 'PARKED')) check(r)
     fireEvent.click(screen.getByRole('tab', { name: /Recent/ }))
-    await waitFor(() => expect(document.querySelector('.row .id[title="tsk_failed00"]')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('.row[data-task-id="tsk_failed00"]')).not.toBeNull())
     for (const r of ROWS.filter((x) => x.t.state === 'FAILED' || x.t.state === 'CANCELLED')) check(r)
 
     // Every row above was looked at; a filter that dropped one would pass.

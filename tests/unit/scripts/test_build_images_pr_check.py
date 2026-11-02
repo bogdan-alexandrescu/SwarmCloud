@@ -62,7 +62,10 @@ pytestmark = pytest.mark.skipif(
 PYTHON_SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
 # agent-runtime-base-nocodex (BROWSER-NO-CODEX) is the base's Dockerfile built
 # without codex, so it takes exactly the base's inputs.
-WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer"}
+# agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base
+# by digest, as the indexer is, so whatever reaches the base reaches it.
+WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer",
+          "agent-runtime-lightpanda"}
 # workspace-apply (#847, lane W4) copies nothing from the repository: the job's
 # code is the checkout Cloud Build hands each step, so only its own directory
 # and the two ignore files reach it.
@@ -73,10 +76,11 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # and swarm-graph (GS-INFRA, apps/swarm-graph/Dockerfile), which also copies
 # the worker package in (docs/design/graph-service.md §2.4), and
 # swarm-github-hooks (GS-HOOKS, apps/swarm-github-hooks/Dockerfile), which
-# copies only the contract and redaction in.
+# copies only the contract and redaction in, and swarm-voice (VOICE-STATEFULSET,
+# apps/swarm-voice/Dockerfile), which copies only the contract in.
 ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
                                   "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks",
-                                  "workspace-apply"}
+                                  "swarm-voice", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -137,6 +141,10 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["images/agent-runtime-indexer/repo-index/lsp/servers.py"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/Dockerfile"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/cloudbuild.yaml"], {"agent-runtime-indexer"}),
+        # The Lightpanda image's own recipe reaches it alone.
+        (["images/agent-runtime-lightpanda/Dockerfile"], {"agent-runtime-lightpanda"}),
+        (["images/agent-runtime-lightpanda/cloudbuild.yaml"], {"agent-runtime-lightpanda"}),
+        (["images/agent-runtime-lightpanda/selftest.py"], {"agent-runtime-lightpanda"}),
         (["images/agent-runtime-browser/Dockerfile"], {"agent-runtime-browser"}),
         (["images/agent-runtime-browser/cloudbuild.yaml"], {"agent-runtime-browser"}),
         (["images/swarm-ui/nginx.conf"], {"swarm-ui"}),
@@ -155,7 +163,8 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         # COPY'd files outside images/.
         (["apps/common/swarm_common/models.py"],
          PYTHON_SERVICES | WORKER | {"swarm-live", "swarm-egress", "swarm-typesafe-fwd",
-                                     "swarm-graph", "swarm-github-hooks", "workspace-apply"}),
+                                     "swarm-graph", "swarm-github-hooks", "swarm-voice",
+                                     "workspace-apply"}),
         # The live relay: its recipe beside it, and its own lock.
         (["apps/swarm-live/swarm_live/main.py"], {"swarm-live"}),
         (["apps/swarm-live/uv.lock"], {"swarm-live"}),
@@ -180,6 +189,11 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-github-hooks/swarm_github_hooks/receiver.py"], {"swarm-github-hooks"}),
         (["apps/swarm-github-hooks/uv.lock"], {"swarm-github-hooks"}),
         (["apps/swarm-github-hooks/Dockerfile"], {"swarm-github-hooks"}),
+        # Voice it's session holder (VOICE-STATEFULSET): the same shape again,
+        # copying only the contract in.
+        (["apps/swarm-voice/swarm_voice/main.py"], {"swarm-voice"}),
+        (["apps/swarm-voice/uv.lock"], {"swarm-voice"}),
+        (["apps/swarm-voice/Dockerfile"], {"swarm-voice"}),
         # The quota broker redacts account health messages on write, so its
         # image and the scheduler's (which installs the broker's package)
         # copy apps/redaction in too (ACCOUNT-429-FOLLOWUP).
@@ -434,14 +448,18 @@ def test_build_only_builds_and_pushes_nothing(tmp_path):
     assert set(submits) == {"swarm-api", "swarm-verify", "agent-runtime-base", "agent-runtime-browser"}, sorted(submits)
 
     registry = "docker.pkg.dev"
+    # The build mirrors are the one registry a build-only config may name: the
+    # Dockerfiles name no project, so the build passes its project's mirror to
+    # pull through (DAYONE-DESAGA-1; scripts/lib/build-mirror.sh). Pulls only.
+    mirror = re.compile(r"[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/swarm-mirror-(?:dockerhub|ghcr)\b")
     for target, event in submits.items():
-        text = event["text"]
+        text = mirror.sub("<mirror>", event["text"])
         assert "images" not in _top_level_keys(text), f"{target}'s config pushes: {text}"
         assert "artifacts" not in _top_level_keys(text), f"{target}'s config uploads: {text}"
         assert not re.search(r"\bdocker\s+(push|pull)\b|-\s+push\b|-\s+pull\b", text), (
             f"{target}'s config talks to a registry: {text}"
         )
-        assert registry not in text and registry not in event.get("subs", ""), (
+        assert registry not in text and registry not in mirror.sub("<mirror>", event.get("subs", "")), (
             f"{target}'s config names the registry: {text}\n{event.get('subs')}"
         )
 

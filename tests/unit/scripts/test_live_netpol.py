@@ -218,7 +218,12 @@ PRE_L6_DIGESTS = {
 #: PVC per Job on the cache's StorageClass, where it held PVCs at 0.
 #: Re-read for SIZES-SCHED-1 (2026-10-20): the quota's limits.cpu is
 #: CPU_BURST_MAX_RATIO x requests.cpu and the LimitRange's CPU max is 16.
-PRE_L6_TENANT_RENDER = "9af68c41dfc58eb545d35045496c20b2f584eb5749e6c580613d8b5d03df1156"
+#: Re-read for PLATFORM-REFUSED-APPLY (2026-10-28): a comment in the tenant
+#: ResourceQuota now says the finished-Job TTL is ten minutes; no value moved.
+#: Re-read for DAYONE-K8S-1 (2026-10-29): an offline render has no default
+#: project, so its identities name render.py's OFFLINE_PROJECT where they named
+#: the live one; with that name swapped back the render is byte-identical.
+PRE_L6_TENANT_RENDER = "f79c97afab5dca95390390edf399242c9d1917f21754f16fd67b3f127fd981ad"
 
 
 def _tenant_values() -> dict[str, str]:
@@ -577,6 +582,9 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
         SWARM_TERRAFORM=str(b / "terraform"),
         TF_DATA_DIR=str(tmp_path / "tfdata"),
         SWARM_ENV_FILE=str(tmp_path / "no.env"),
+        # apply.sh has no default project (DAYONE-K8S-1): the one this fake
+        # cluster's context and identities name is given, as an operator would.
+        PROJECT_ID="saga-agents-staging",
         HOME=str(tmp_path),
     )
     return {"dir": d, "env": env}

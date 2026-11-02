@@ -1094,7 +1094,10 @@ APPLY = KUBERNETES / "apply.sh"
 
 def _apply(*args: str) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARM_", "GOOGLE_", "CLOUDSDK_"))}
-    env.update(SWARM_ENV_FILE="/nonexistent/swarm.env", NO_COLOR="1", KUBECONFIG="/nonexistent/kubeconfig")
+    # apply.sh has no default project (DAYONE-K8S-1) and refuses an unset one
+    # first; these refusals are the next ones, so a project is given.
+    env.update(SWARM_ENV_FILE="/nonexistent/swarm.env", NO_COLOR="1", KUBECONFIG="/nonexistent/kubeconfig",
+               PROJECT_ID=PROJECT)
     return subprocess.run(
         ["bash", str(APPLY), *args], cwd=REPO, env=env, capture_output=True, text=True, timeout=120, check=False
     )

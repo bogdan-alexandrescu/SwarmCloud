@@ -185,8 +185,12 @@
    `resul…` -- the one line a reader opened the card to compare with the
    error. Here the strip wraps: the line takes its own row when it has less
    than 12em beside its label, and breaks anywhere rather than running out. */
+/* AND IT TAKES ITS OWN ROW, LEFT-ALIGNED (QA2 ovag2-16): beside its label
+   and `Open logs ›` it was wrapped into a narrow centre column. The label and
+   the link share the first row; the line runs the card's width under them. */
 .dt-fail > .ag-loglast { flex-wrap: wrap; padding-block: 6px; }
-.dt-fail > .ag-loglast > .ag-loglast-line { flex: 1 1 12em; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.dt-fail > .ag-loglast > .ag-loglast-open { order: 1; margin-left: auto; }
+.dt-fail > .ag-loglast > .ag-loglast-line { order: 2; flex: 1 0 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 /* The leading Outcome card keeps the code panel's own blocks flush. */
 .dt-card.run-output > .section,
 .dt-card.run-output > .git-outcome { margin: 0; }
@@ -259,6 +263,13 @@
 @container ag-pane (min-width: 480px) and (max-width: 639px) {
   @media (min-height: 700px) {
     .dt-res-body > .dt-strip { position: sticky; top: 0; z-index: 2; }
+    /* UNDER THE STUCK TAB STRIP, IN THE SPLIT (AGENT-HEAD-B, BGD's pick AH1 B,
+       2026-10-28, part of #2596). There the column, not the pane, is the
+       scroller (agents.css), and a sticky inset is measured from its content
+       edge, 18px inside its top: at `top: 0` the strip stuck behind the tabs.
+       It sticks at the tabs' foot: their measured height (`--ag-tabs-h`,
+       AgentSplit.tsx; 57px, one row, until measured) less those 18px. */
+    .ag-split .dt-res-body > .dt-strip { top: calc(var(--ag-tabs-h, 57px) - 18px); }
   }
   /* FIVE FIGURES IN ~115px EACH, AND NO TALLER THAN THEY NEED (V058, visual
      QA #1038). In a 600px pane `Peak memory` was cut to `26.7 Mi…`, Cost's

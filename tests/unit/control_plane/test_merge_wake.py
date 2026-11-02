@@ -538,6 +538,154 @@ def test_a_round_that_ended_at_the_red_head_wakes_the_step(db, wake_client, gith
     assert len(_fix_workflows(db)) == 1, "a second round at the head the first could not fix"
 
 
+ROUND_TASK = "task_" + "2" * 20
+
+
+def _round_ended_at_head(db, github, *, no_change: bool) -> None:
+    """Round 1 claimed at HEAD and SUCCEEDED there, with no re-run asked at
+    HEAD before it: `no_change` when it found nothing to change (#2684)."""
+    fixable_merge(db, github, rounds=2)
+    task = seed_task(db, task_id=ROUND_TASK, tenant_id="eng", state="SUCCEEDED",
+                     runner_profile="claude-code")
+    task["result_summary"] = {"no_change": True, "git": {}} if no_change else {"git": {}}
+    db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
+        "rounds": [{"round": 1, "head": HEAD, "claimed_at": NOW, "task_id": ROUND_TASK}]}
+
+
+def test_a_no_change_round_at_the_red_head_gets_the_free_re_run(db, wake_client, github, clock):
+    """#2684 (PR #2603, task_d2698b60): round 1 diagnosed a flake and ended
+    no_change at the red head. The tick re-runs the failing jobs once before
+    waking the step, and wakes it fix_round_ended once the re-run answers red."""
+    _round_ended_at_head(db, github, no_change=True)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["rerun"] == 1 and body["report"]["woken"] == 0, body
+    assert len(github.reruns) == 1
+    (rerun,) = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert rerun["head"] == HEAD and "error" not in rerun
+    assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+    assert mergewake.WAKE_MARKER not in _wait(db)
+
+    github.check(HEAD, CHECK, "failure")  # the re-run's own answer: a new id, red
+    clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "fix_round_ended"
+    assert len(github.reruns) == 1, "a head is re-run once"
+    assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+
+
+def test_a_no_change_round_whose_re_run_github_refuses_wakes_the_step(db, wake_client, github,
+                                                                     clock):
+    """A refused re-run ran nothing (#3006): the first refusal is asked once
+    more on the next tick, and the second wakes the step."""
+    _round_ended_at_head(db, github, no_change=True)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 0, body
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    (rerun,) = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert rerun["head"] == HEAD and "error" in rerun
+
+    clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "fix_round_ended"
+    reruns = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert len(reruns) == mergewake.RERUN_REFUSALS_MAX
+    assert all(r["head"] == HEAD and "error" in r for r in reruns)
+
+
+def _refused_reruns_at_head(db, count: int) -> None:
+    record = db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY]
+    record[mergewake.RERUNS_KEY] = [
+        {"round": n, "head": HEAD, "claimed_at": NOW, "jobs": [1], "runs": [],
+         "error": "GitHub refused: Resource not accessible by integration"}
+        for n in range(1, count + 1)]
+
+
+def test_a_no_change_round_whose_earlier_re_run_github_refused_re_runs_again(
+        db, wake_client, github):
+    """#3006 (PR #2971, a1e16b2c): the head's re-run before round 1 was
+    refused, so nothing re-ran. After the no_change round the tick asks again
+    instead of waking the step to refuse checks_failed with no re-run answer."""
+    _round_ended_at_head(db, github, no_change=True)
+    _refused_reruns_at_head(db, 1)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["rerun"] == 1 and body["report"]["woken"] == 0, body
+    assert len(github.reruns) == 1
+    first, second = _fix_record(db)[mergewake.RERUNS_KEY]
+    assert "error" in first
+    assert second["head"] == HEAD and "error" not in second and second["requested_at"] == NOW
+    assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+    assert mergewake.WAKE_MARKER not in _wait(db)
+
+
+def test_a_no_change_round_after_two_refused_re_runs_wakes_the_step(db, wake_client, github):
+    """The bound: a head GitHub refused twice is asked no more."""
+    _round_ended_at_head(db, github, no_change=True)
+    _refused_reruns_at_head(db, mergewake.RERUN_REFUSALS_MAX)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "fix_round_ended"
+    assert github.reruns == [] and github.run_reruns == []
+    assert len(_fix_record(db)[mergewake.RERUNS_KEY]) == mergewake.RERUN_REFUSALS_MAX
+
+
+RERUN_RUN = 7_771
+
+
+@pytest.mark.parametrize("status", ["in_progress", "completed", None])
+def test_a_no_change_round_waits_while_the_accepted_re_runs_attempt_is_in_progress(
+        db, wake_client, github, status):
+    """#3006 (PR #2973, 22ef10c2): an accepted run-level re-run past
+    RERUN_SETTLE_SECONDS whose run is still re-running a fan-in gate's needs
+    holds the tick; once the run has completed, or its status cannot be read
+    (None: the read answers 404), the window alone decides, as before."""
+    _round_ended_at_head(db, github, no_change=True)
+    (failing,) = [c["id"] for c in github.check_runs[HEAD] if c["name"] == CHECK]
+    record = db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY]
+    record[mergewake.RERUNS_KEY] = [{
+        "round": 1, "head": HEAD, "claimed_at": NOW, "jobs": [failing], "runs": [RERUN_RUN],
+        "requested_at": NOW - timedelta(seconds=mergewake.RERUN_SETTLE_SECONDS + 1)}]
+    if status is not None:
+        github.runs[RERUN_RUN] = {"id": RERUN_RUN, "status": status}
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert github.reruns == [] and github.run_reruns == []
+    assert len(_fix_record(db)["rounds"]) == 1 and _fix_workflows(db) == []
+    if status == "in_progress":
+        assert body["report"]["waiting"] == 1 and body["report"]["woken"] == 0, body
+        assert mergewake.WAKE_MARKER not in _wait(db)
+    else:
+        assert body["report"]["woken"] == 1, body
+        assert _wait(db)["wake_reason"] == "fix_round_ended"
+
+
+def test_a_round_that_ended_at_the_red_head_with_changes_asks_no_re_run(db, wake_client, github):
+    _round_ended_at_head(db, github, no_change=False)
+    github.rerun_answer = 201
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "fix_round_ended"
+    assert github.reruns == [] and mergewake.RERUNS_KEY not in _fix_record(db)
+
+
 def test_a_round_claimed_and_never_recorded_wakes_the_step_once_lost(db, wake_client, github, clock):
     fixable_merge(db, github, rounds=2)
     db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
@@ -1033,3 +1181,16 @@ def test_a_clean_pull_request_is_read_as_before(db, wake_client, github):
     assert _wait(db)["wake_reason"] == "red"
     assert _check_reads(github) != []
     assert _conflict_workflows(db) == []
+
+
+def test_rerun_targets_resolve_runs_through_forgechecks_workflow_run_of():
+    # #2937 moved `_workflow_run_of` to `forgechecks.workflow_run_of`, which
+    # the CI excerpt uses too; the re-run's targets read the same.
+    from swarm_api import forgechecks
+    from swarm_api.forgechecks import RED, CiReading
+
+    assert mergewake.workflow_run_of is forgechecks.workflow_run_of
+    url = "https://github.com/acme/widgets/actions/runs/88/job/2"
+    reading = CiReading(state=RED, failing_runs=[
+        {"id": 1, "workflow_run_id": 77}, {"id": 2, "details_url": url}, {"id": 3}])
+    assert mergewake._rerun_targets(reading, [1, 2, 3]) == ([77, 88], [3])

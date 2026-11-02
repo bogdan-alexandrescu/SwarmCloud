@@ -1709,7 +1709,10 @@ def _combined_spend(
     out = dict(first)
     for key, value in second.items():
         prior = out.get(key)
-        if session and key in SESSION_SPEND_KEYS:
+        if key == ceiling_mod.UNPRICED_KEY:
+            # Per-model counts with bucket rows: merged, never replaced (#2896).
+            out[key] = ceiling_mod.merged_usage_by_model(prior, value)
+        elif session and key in SESSION_SPEND_KEYS:
             out[key] = value
         elif isinstance(prior, dict) and isinstance(value, dict):
             out[key] = _combined_spend(prior, value)
@@ -1721,6 +1724,18 @@ def _combined_spend(
         else:
             out[key] = value
     return out
+
+
+def _stopped_start_spend(watcher: ceiling_mod.CeilingWatcher, result: Any) -> dict[str, Any]:
+    """The spend of a start stopped at the context ceiling, which printed no
+    `result` event: its tokens and turns off the stream, its per-model counts
+    for the worker to price (`ceiling.UNPRICED_KEY`, #2896), and its wall
+    time as `duration_ms`, so the attempt's duration adds up every session."""
+    spend = watcher.start_spend()
+    seconds = getattr(result, "duration_seconds", None)
+    if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+        spend["duration_ms"] = int(round(seconds * 1000))
+    return spend
 
 
 def run_cli_agent(
@@ -1886,6 +1901,9 @@ def run_cli_agent(
     # capped at 128 KiB (MAX_ARG_STRLEN), which a long brief could pass.
     # Resolved before the prompt, which names the limit (#2139).
     limits = resolve_limits(payload, platform_ceilings())
+    timeout_asked = step_timeout_asked(os.environ)
+    if timeout_asked is not None and "timeout_seconds" not in limits.clamped:
+        limits = replace(limits, clamped=(*limits.clamped, "timeout_seconds"))
     # The task as a first session is given it: also what a fresh session's
     # handoff carries (#2524), so it is built on a resume as well. The
     # step's time-limit line is not in it: a fresh session is told what is
@@ -2271,9 +2289,16 @@ def run_cli_agent(
             diff_stat, commits = ceiling_mod.branch_summary(
                 cwd, env, base if base and base != EMPTY_BASE else None)
             ctx.report["context_ceiling"] = ceiling_watcher.summary() if ceiling_watcher else None
+        # The previous session's notes (#2897): its note file, the notes
+        # files it kept, its todo list and its own last words -- all of this
+        # attempt's own artifacts and stream, scrubbed of the run's secrets.
+        tail = ceiling_watcher.session_tail() if ceiling_watcher is not None else None
         return ceiling_mod.handoff_prompt(
             stop=stop, task_prompt=task_prompt, diff_stat=diff_stat, commits=commits,
             wip=wip, note=ceiling_mod.agent_note(Path(ctx.artifacts_dir)), then=then,
+            session_tail=scrub_text(tail, secrets) if tail else None,
+            todos=_scrub_json(ceiling_watcher.todos, secrets) if ceiling_watcher else None,
+            files=ceiling_mod.notes_files(Path(ctx.artifacts_dir)),
         )
 
     if ceiling_watcher is not None:
@@ -2318,7 +2343,7 @@ def run_cli_agent(
     if ceiling_stop_pending() and not spend:
         # Stopped at the ceiling before the CLI printed its totals (#2524).
         assert ceiling_watcher is not None
-        spend = ceiling_watcher.start_spend()
+        spend = _stopped_start_spend(ceiling_watcher, result)
     combined = detection_text(raw_stdout, parsed)
     if not ceiling_stop_pending():
         judge(result, watcher, spend, combined)
@@ -2384,7 +2409,7 @@ def run_cli_agent(
         pass_spend = _scrub_json(_spend_of(pass_parsed), secrets)
         if ceiling_stop_pending() and not pass_spend:
             assert ceiling_watcher is not None
-            pass_spend = ceiling_watcher.start_spend()
+            pass_spend = _stopped_start_spend(ceiling_watcher, result)
         if fresh:
             ended_spend = _combined_spend(ended_spend, session_spend, fresh=True)
             session_spend = pass_spend
@@ -2674,9 +2699,18 @@ def run_cli_agent(
         # agent's does: `duration_seconds` sums only the CLI's starts.
         gate_started, agent_before = time.monotonic(), duration_seconds
 
+        from ..prepublish import deadline_left  # lazy, as the gate's
+
         def gate_remaining() -> float:
             outside = (time.monotonic() - gate_started) - (duration_seconds - agent_before)
-            return limits.timeout_seconds - duration_seconds - max(0.0, outside)
+            counted = limits.timeout_seconds - duration_seconds - max(0.0, outside)
+            # NEVER PAST THE WORKER'S KILL (#2981). `counted` sums only the
+            # CLI's starts and the gate's own time; this runner's setup before
+            # its first start (the context pack) and the worker's after it
+            # built the limit are in neither, so on task_2518ef3904ed47d0ac52
+            # the gate believed it had ~18 minutes the worker did not give it.
+            left = deadline_left(os.environ)
+            return counted if left is None else min(counted, left)
 
         def resume_for_gate(text: str) -> bool:
             """One more turn of the session for the gate; False, and nothing
@@ -2697,6 +2731,7 @@ def run_cli_agent(
         prepublish_record = run_prepublish_gate(
             ctx, cwd=cwd, env=env, credential_env=credential_env, secrets=secrets,
             log=log, resume=resume_for_gate, remaining=gate_remaining, judge=jev,
+            staged_patches=[p for p in staged if p.endswith(STAGED_PATCH_SUFFIXES)],
         )
 
     # WHOLE OR NOT AT ALL -- see TRANSCRIPT_MAX_CHARS. The stdout capture above
@@ -2752,7 +2787,8 @@ def run_cli_agent(
             if isinstance(parsed, dict)
             else (spend or None)
         ),
-        "limits": limits.as_dict(),
+        "limits": {**limits.as_dict(),
+                   **({} if timeout_asked is None else {"timeout_seconds_asked": timeout_asked})},
         # Read by the worker into `result_summary.agent_streams`; null when the
         # transcript was written (or there was no parsed output to write).
         "transcript_skipped": transcript_skipped,
@@ -2792,6 +2828,25 @@ def run_cli_agent(
     }
 
 
+#: The `timeout_seconds` a step's spec asked for, exported by the worker only
+#: when it is above what the platform gave the step (`lifecycle`, #2981): the
+#: API lowers it to the profile's cap before the task is stored, so without it
+#: `limits.clamped` said nothing of a 10,800 s ask run under a 7,200 s cap.
+TIMEOUT_ASKED_ENV = "SWARM_TIMEOUT_ASKED_SECONDS"
+
+
+def step_timeout_asked(env: Mapping[str, str]) -> int | None:
+    """The clamped ask from `TIMEOUT_ASKED_ENV`, or None: unset or unusable."""
+    raw = str(env.get(TIMEOUT_ASKED_ENV, "")).strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+
+#: The staged inputs the gate reads as patches (#2981): an upstream step's
+#: `swarm-work.patch` is how a review, visual QA or acceptance step gets the
+#: diff it applies. Only these; a staged report is never applied.
+STAGED_PATCH_SUFFIXES = (".patch", ".diff")
+
+
 def run_prepublish_gate(
     ctx: RunnerContext,
     *,
@@ -2803,6 +2858,7 @@ def run_prepublish_gate(
     resume: Callable[[str], bool],
     remaining: Callable[[], float],
     judge: Any = None,
+    staged_patches: Sequence[str] = (),
 ) -> dict[str, Any]:
     """The pre-publish gate over the checkout (`agent_worker.prepublish.Gate`).
 
@@ -2844,6 +2900,7 @@ def run_prepublish_gate(
         repo=Path(cwd), env=check_env, secrets=secrets, resume=turn, remaining=remaining,
         log=log, artifacts_dir=Path(ctx.artifacts_dir), submit=submit,
         python=sys.executable or "python3", record=record, judge=judge,
+        staged_patches=tuple(staged_patches),
     )
     try:
         return gate.run()

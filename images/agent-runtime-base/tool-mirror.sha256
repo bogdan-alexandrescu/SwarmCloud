@@ -1,8 +1,11 @@
-bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386  github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz
-dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df  releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_linux_amd64.zip
+4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d  github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_amd64.tar.gz
+4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061  releases.hashicorp.com/terraform/1.17.1/terraform_1.17.1_linux_amd64.zip
 378ada19d4bc70c43732004e8159be771b23b9a5afdf059e5f8a2b3fa2c70a69  github.com/opentofu/opentofu/releases/download/v1.13.1/tofu_1.13.1_linux_amd64.tar.gz
 cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537  github.com/terraform-linters/tflint/releases/download/v0.64.0/tflint_linux_amd64.zip
 b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6  github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz
-c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f  github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_Linux-64bit.tar.gz
+c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0  github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz
 390dd08f8321807bca2e1e060ec031511adb0af002e871dfde3b1f6c8feac914  github.com/SawyerHood/dev-browser/releases/download/v1.0.0-rc.3/dev-browser-linux-x64
 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5  github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+ae7d01d261efb9e480e18ce3424533332883863bcf70b12a4321b5733f37e19e  github.com/lightpanda-io/browser/releases/download/1.0.2/lightpanda-x86_64-linux
+ac546dfc43c533430da92b75ab36f2a29da7d6324d5d38baf606ef2e0d849345  github.com/lightpanda-io/browser/releases/download/1.0.2/lightpanda-aarch64-linux
+6a7a274acfdbf6d87b573d1a90029d2e17f71f718f78b03099d96d48f514d64e  github.com/lightpanda-io/browser/archive/refs/tags/1.0.2.tar.gz

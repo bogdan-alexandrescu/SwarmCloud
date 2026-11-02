@@ -375,6 +375,9 @@ class Cluster:
             ),
             SWARM_KUBECTL=str(self.bin / "kubectl"),
             SWARM_ENV_FILE=str(self.tmp / "no-such.env"),
+            # apply.sh has no default project (DAYONE-K8S-1): the one this fake
+            # cluster's context and identities name is given, as an operator would.
+            PROJECT_ID="saga-agents-staging",
             KUBECONFIG=str(self.tmp / "no-such-kubeconfig"),
             PYTHON_BIN=sys.executable,
             FAKE_CLUSTER_DIR=str(self.dir),
@@ -419,11 +422,24 @@ def _ip_peers(policy: dict[str, Any]) -> set[str]:
     }
 
 
+#: What render.py takes only from its caller once it is given the cluster
+#: network (DAYONE-K8S-1): the project, both control-plane uniqueIds and the
+#: tenant's quota. kubernetes/apply.sh passes them; this stands in for it.
+CLUSTER_INPUTS = (
+    "--project", "saga-agents-staging",
+    "--scheduler-uid", "100000000000000000011",
+    "--reconciler-uid", "100000000000000000022",
+    "--quota-pods", "100", "--quota-jobs", "200", "--quota-cpu", "400",
+    "--quota-memory", "800Gi", "--quota-ephemeral", "1000Gi",
+)
+
+
 def _render(network: dict[str, str], tenant: str = "eng") -> dict[str, Any]:
     """The egress policy the real renderer produces for `network`."""
     out = subprocess.run(
         [
             sys.executable, str(REPO / "kubernetes" / "render.py"), "tenant", "--tenant", tenant,
+            *CLUSTER_INPUTS,
             "--pod-cidr", network["pod_cidr"],
             "--service-cidr", network["service_cidr"],
             "--cluster-dns-ip", network["cluster_dns_ip"],

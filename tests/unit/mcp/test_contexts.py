@@ -365,12 +365,21 @@ def test_the_client_id_and_secret_from_the_environment_override_the_files(monkey
 def test_an_unset_plugin_option_is_unset_whatever_claude_code_substituted(monkeypatch, store, unset):
     """Claude Code's docs do not say what an unset option becomes inside
     `env`: an empty string, or the reference left as written. Both must read
-    as "not set", or the literal `${user_config...}` becomes a client id."""
+    as "not set", or the literal `${user_config...}` becomes a client id.
+
+    Not set, the client id is the deployment's discovery document's
+    (DAYONE-PLUGIN-1: the plugin needs one value), served here by a fake."""
+    from swarm_mcp import discovery
+
+    served = {"schema": 1, "version": "1.0.0", "oauth_client_id": "3-c.apps.googleusercontent.com"}
+    monkeypatch.setattr(
+        discovery, "CACHE", discovery.Cache(get=lambda url, timeout: (200, json.dumps(served).encode()))
+    )
     monkeypatch.setenv("SWARM_PLUGIN_DEPLOYMENT_URL", "https://plugin.example.test")
     monkeypatch.setenv("SWARM_PLUGIN_OAUTH_CLIENT_ID", unset)
     monkeypatch.setenv("SWARM_PLUGIN_OAUTH_CLIENT_SECRET", "${user_config.oauth_client_secret}")
     resolved = _config().resolve()
-    assert resolved.client_id == ""
+    assert resolved.client_id == served["oauth_client_id"]
     assert resolved.client_secret == ""
 
 

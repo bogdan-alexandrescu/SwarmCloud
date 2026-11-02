@@ -16,7 +16,9 @@
  *     `/settings/workspace/secrets?action=add&t=..`, still opens the add form,
  *     and its token still never enters the bar.
  *   * Admin is not drawn for a person who administers nothing, and its
- *     addresses send them to Overview once both reads say so; a workspace
+ *     addresses keep their path and say the refusal in place once both
+ *     reads say so (admin-shell-23, BGD 2026-10-28, reversing CONFIG-NAV's
+ *     redirect to Overview for this case); a workspace
  *     admin who is not a platform admin is sent from a platform Admin page
  *     to Workspaces you admin (ADMIN-REDIRECT, BGD 2026-10-24).
  *   * The setup strip runs across every Config page, measured from
@@ -24,6 +26,8 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 type Json = Record<string, unknown>
 
@@ -106,7 +110,8 @@ describe('the Config section (CONFIG-NAV)', () => {
     // MUTATION: swap Secrets and Repositories, or leave Workspace Settings out -> fails.
     expect(config!.tabs.map((t) => t.label)).toEqual(CONFIG_TABS)
     // MUTATION: put Config after Admin -> fails.
-    expect(App.SECTIONS.map((s) => s.id)).toEqual(['overview', 'work', 'automate', 'capacity', 'config', 'admin'])
+    // Voice it (voice-it.md §10) follows Admin, last.
+    expect(App.SECTIONS.map((s) => s.id)).toEqual(['overview', 'work', 'automate', 'capacity', 'config', 'admin', 'voice'])
   })
 
   it('draws the same six pages in the panel, and Config on the spine between Capacity and Admin', async () => {
@@ -255,19 +260,61 @@ describe('the workspace secrets one-time link', () => {
 })
 
 describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
-  it('sends a member from /admin/limits to Overview, and draws no Admin', async () => {
+  // SOMEONE WHO ADMINISTERS NOTHING IS TOLD SO IN PLACE (visual QA pass 1
+  // admin-shell-23, part of #2596; BGD 2026-10-28 reversed CONFIG-NAV's
+  // redirect to Overview for this case): the address stays, and the page's
+  // place says which page, the role and the workspace, with a link to Overview.
+  it('refuses a member in place at /admin/limits, and draws no Admin', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')])
     await app('/admin/limits')
-    // MUTATION: drop the redirect -> the member stays on /admin/limits and this fails.
-    await waitFor(() => expect(window.location.pathname).toBe('/overview'))
+    // MUTATION: keep the redirect to Overview (or drop the refusal) -> this is not found.
+    expect(await screen.findByText('Pool limits is for platform admins')).toBeTruthy()
+    expect(document.querySelector('[data-refused="admin"]')?.textContent).toMatch(/You are a member of \S+\./)
+    expect(screen.getByRole('link', { name: 'Open Overview' })).toBeTruthy()
+    expect(window.location.pathname).toBe('/admin/limits')
     expect(document.querySelector('.sk-spine a[data-sec="admin"]')).toBeNull()
   })
 
-  it('sends a member from every Admin address, deep links included', async () => {
+  // QA1B-04 review: the owner of a personal workspace is its admin, as the
+  // panel foot says, even when `/v1/tenants/mine` carries no stored role for it.
+  // admin2-02 (visual QA pass 2, part of #2694): "You are an admin of <their own
+  // workspace>" read as if they qualified; the refusal says it is their own.
+  it('tells the personal-workspace owner it is their own workspace, with no stored role', async () => {
+    const { role: _stored, ...unroled } = PERSONAL
+    serve(ME(false, 'u-ana'), [unroled])
+    await app('/admin/limits')
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]')).not.toBeNull())
+    const said = document.querySelector('[data-refused="admin"]')!.textContent
+    // MUTATION: name the role by `roleOf` alone -> "your role in ... was not read" and this fails.
+    expect(said).not.toContain('was not read')
+    expect(said).toMatch(/You are not a platform admin\. [^.]+ is your own workspace\./)
+    expect(said).not.toContain('an admin of')
+  })
+
+  // QA1B-04 review: the refusal is drawn in the page's frame -- the gutter of
+  // `.app` and the head of `PageHead` -- not flush against the panel.
+  it('draws the refusal inside the page frame, under a head titled by the page', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'member')])
+    await app('/admin/people')
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]')).not.toBeNull())
+    const refusal = document.querySelector('[data-refused="admin"]')!
+    // MUTATION: draw `<AdminRoleRefusal/>` alone in the children's place -> no frame and this fails.
+    const work = refusal.closest('main.work')
+    expect(work).not.toBeNull()
+    expect(work!.parentElement!.classList.contains('app')).toBe(true)
+    expect(work!.querySelector('.c-phead h1')?.textContent).toBe('People and roles')
+    // The inset is `.app`'s own: a gutter on both sides at every width.
+    const css = readFileSync(join(__dirname, '..', 'styles.css'), 'utf8')
+    expect(css).toMatch(/\n\.app \{[^}]*padding: 0 var\(--app-pad\) 48px;/)
+  })
+
+  it('refuses a member in place at every Admin address, deep links included', async () => {
     for (const path of ['/admin/tenants', '/admin/people', '/admin/workspaces', '/admin']) {
       serve(ME(false), [PERSONAL])
       await app(path)
-      await waitFor(() => expect(window.location.pathname, path).toBe('/overview'))
+      await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), path).not.toBeNull())
+      // `/admin` is written as its first page; either way it stays in Admin.
+      expect(window.location.pathname, path).toBe(path === '/admin' ? '/admin/limits' : path)
       cleanup()
     }
   })
@@ -293,22 +340,28 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
   })
 })
 
-describe('a workspace admin on a platform Admin page goes to Workspaces you admin (ADMIN-REDIRECT)', () => {
+describe('a workspace admin on a platform Admin page is refused in place, and a bare /admin goes to Workspaces you admin (ADMIN-REDIRECT)', () => {
   // BGD 2026-10-24, "Redirect, in a later lane": the nav never links a
-  // workspace admin to a platform page, and a typed or bookmarked one sends
-  // them to the one Admin page they are shown, as CONFIG-NAV sends a member
-  // to Overview.
+  // workspace admin to a platform page, and a typed or bookmarked one sent
+  // them to the one Admin page they are shown. Visual QA pass 2 admin2-01
+  // (part of #2694) applies BGD 2026-10-28's admin-shell-23 rule to them
+  // too: a platform page is refused in place, with a link to Workspaces you
+  // admin; only the bare /admin, Admin itself, still lands there.
   // Not /admin/people since ADMIN-PEOPLE-ROLES (part of #2157): a workspace
   // admin has a scoped People and roles page there (the case below).
   const PLATFORM_PAGES = ['/admin/limits', '/admin/tenants', '/admin/runner-sizes', '/admin/counts', '/admin']
 
-  it('sends a workspace admin from every platform Admin address to /admin/workspaces', async () => {
+  it('refuses a workspace admin in place on every platform Admin address, and sends the bare /admin to /admin/workspaces', async () => {
     for (const path of PLATFORM_PAGES) {
       serve(ME(false), [PERSONAL, group('eng', 'admin')])
       await app(path)
-      // MUTATION: redirect only someone who administers nothing -> the
-      // workspace admin stays on the platform page and this fails.
-      await waitFor(() => expect(window.location.pathname, path).toBe('/admin/workspaces'))
+      if (path === '/admin') {
+        await waitFor(() => expect(window.location.pathname, path).toBe('/admin/workspaces'))
+      } else {
+        // MUTATION: redirect the workspace admin again -> no refusal, and the address changes.
+        await waitFor(() => expect(document.querySelector('[data-refused="admin"]')?.textContent, path).toContain('is for platform admins'))
+        expect(window.location.pathname, path).toBe(path)
+      }
       expect(document.querySelector('.sk-spine a[data-sec="admin"]'), path).not.toBeNull()
       cleanup()
     }
@@ -339,10 +392,10 @@ describe('a workspace admin on a platform Admin page goes to Workspaces you admi
     expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces')
   })
 
-  it('rewrites the bar in place, so Back does not return to the refused page', async () => {
+  it('rewrites the bare /admin in place, so Back does not return to it', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
     const push = vi.spyOn(window.history, 'pushState')
-    await app('/admin/limits')
+    await app('/admin')
     await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces'))
     // MUTATION: navigate with `go` (a push) -> Back lands on /admin/limits again.
     expect(push).not.toHaveBeenCalled()
@@ -362,12 +415,13 @@ describe('a workspace admin on a platform Admin page goes to Workspaces you admi
     }
   })
 
-  it('keeps a member and a viewer on CONFIG-NAV\'s redirect to Overview', async () => {
+  it('refuses a member and a viewer in place, never sending them to Workspaces you admin', async () => {
     for (const role of ['member', 'viewer']) {
       serve(ME(false), [PERSONAL, group('eng', role)])
       await app('/admin/tenants')
       // MUTATION: send everyone refused to /admin/workspaces -> this fails.
-      await waitFor(() => expect(window.location.pathname, role).toBe('/overview'))
+      await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), role).not.toBeNull())
+      expect(window.location.pathname, role).toBe('/admin/tenants')
       cleanup()
     }
   })
@@ -406,10 +460,10 @@ describe('the setup strip (proposal E)', () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')])
     await app('/config/secrets')
     await screen.findByRole('list', { name: 'Workspace setup steps' }, STRIP_WAIT)
-    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Repositories chosen'), STRIP_WAIT)
+    await waitFor(() => expect(document.querySelector('.cfg-compact')?.textContent ?? '').toContain('Next: Choose repositories'), STRIP_WAIT)
     const compact = document.querySelector('.cfg-compact')!
     // MUTATION: drop the compact form -> the phone shows four stacked steps and this fails.
-    expect(compact.textContent).toContain('Setup 1 of 4')
+    expect(compact.textContent).toContain('Setup 1 of 4 steps')
     // MUTATION: link the compact form to Workspace setup while a step is next -> fails.
     expect(compact.querySelector('a')?.getAttribute('href')).toBe('/config/repositories')
     cleanup()

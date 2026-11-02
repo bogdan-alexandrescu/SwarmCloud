@@ -31,6 +31,7 @@ from agent_worker import lifecycle, prepublish, workspace as workspace_mod
 
 from test_publish_scan_after_merging_main import _advance_main
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     _the_agent_titles_its_pull_request,
     forge,
     local_urls,

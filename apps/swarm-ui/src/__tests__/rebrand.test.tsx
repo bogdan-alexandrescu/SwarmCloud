@@ -298,7 +298,9 @@ describe('the Sky spine shell', () => {
     const { LiveApp } = await liveApp()
     render(<LiveApp />)
     // MUTATION: move `admin` in SPINE and it leaves its place after Capacity.
-    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Help', 'Profile']))
+    // Voice it follows Admin: a platform admin is who the identity read can name
+    // as the person Voice it is open to until swarm-api's session routes say so.
+    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Voice it', 'Help', 'Profile']))
   })
 
   it('lists the open section\'s pages in the panel, with the open page\'s children', async () => {
@@ -384,10 +386,11 @@ describe('the capacity meter', () => {
 
   it('reads the global pool, and names the first pool that is full or paused', () => {
     const cap = { pools: [pool('global', 31, 40), pool('class:browser', 4, 4)], runner_profiles: {} } as unknown as Capacity
-    // Another pool is said to be another pool, by its label (QA-040, part of #1680).
-    expect(meterOf(cap)).toEqual({ active: 31, limit: 40, warn: 'another pool is full: browser', warnPool: 'class:browser', warnLabel: 'browser' })
+    // Another pool is said to be a pool, by its label (QA-040, part of #1680;
+    // `a pool`, not `another`, since admin2-15).
+    expect(meterOf(cap)).toEqual({ active: 31, limit: 40, warn: 'a pool is full: browser', warnPool: 'class:browser', warnLabel: 'browser' })
     const paused = { pools: [pool('global', 0, 40), pool('tenant:eng', 0, 5, false)], runner_profiles: {} } as unknown as Capacity
-    expect(meterOf(paused)?.warn).toBe('another pool is paused: eng')
+    expect(meterOf(paused)?.warn).toBe('a pool is paused: eng')
   })
 
   it('draws nothing it did not read', () => {

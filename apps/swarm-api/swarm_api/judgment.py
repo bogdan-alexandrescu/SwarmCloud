@@ -257,6 +257,8 @@ WRITER_FIELDS: Mapping[str, tuple[str, ...]] = {
     "code_intelligence": ("jev", "context", "context_ab", "graph_delivery"),
     # Contract request 119 (#2459): `budget.BudgetStore.put` writes both.
     "budget": ("unit", "amount"),
+    # Contract request 128: `qualitygates.QualityGatesStore.put` writes it.
+    "quality_gates": ("jev",),
 }
 
 

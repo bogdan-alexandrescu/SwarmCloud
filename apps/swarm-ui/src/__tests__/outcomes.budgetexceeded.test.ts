@@ -14,11 +14,12 @@ import { describe, expect, it } from 'vitest'
 import { ledgerFixture } from '../outcomes.fixture'
 
 describe('the budget exceeded outcome class (contract request 118)', () => {
-  it('is in the vocabulary, after publish refused and before other', () => {
+  it('is in the vocabulary, after publish refused and before the exhausted fix loop', () => {
     const classes = ledgerFixture().vocab.failure_classes
     const keys = classes.map((c) => c.key)
     expect(keys.indexOf('budget_exceeded')).toBe(keys.indexOf('publish_refused') + 1)
-    expect(keys.indexOf('budget_exceeded')).toBe(keys.indexOf('other') - 1)
+    // Contract request 126 sits between it and `other` (BGD 2026-10-27).
+    expect(keys.indexOf('budget_exceeded')).toBe(keys.indexOf('fix_loop_exhausted') - 1)
     expect(classes.find((c) => c.key === 'budget_exceeded')?.label).toBe('budget exceeded')
   })
 

@@ -60,15 +60,19 @@ module "service_account_ids" {
 
 locals {
   # Relative to this root, or absolute: the owner points it at a copy outside
-  # the checkout.
+  # the checkout. "" is an install's (docs/design/day-one-install.md section
+  # 5.6): it declares no Terraform tenants, its workspaces are made by
+  # swarm-workspace-apply, so no file is read and the grants below are the
+  # platform accounts' alone.
   infra_tenants_tfvars_path = startswith(var.infra_tenants_tfvars, "/") ? var.infra_tenants_tfvars : "${path.module}/${var.infra_tenants_tfvars}"
-  infra_tenants_tfvars_text = file(local.infra_tenants_tfvars_path)
+  infra_tenants_tfvars_text = var.infra_tenants_tfvars == "" ? "" : file(local.infra_tenants_tfvars_path)
 
   # One match, whose one capture is the body of the top-level tenants block.
   infra_tenants_block = regexall("(?ms)^tenants[ \\t]*=[ \\t]*\\{[ \\t]*$(.*?)^\\}[ \\t]*$", local.infra_tenants_tfvars_text)
 
   # "" when there is no single tenants block; the first precondition below
-  # refuses that case, so "" never means "no tenants".
+  # refuses that case whenever a file is named, so "" means "no tenants" only
+  # for an install, which names none.
   infra_tenants_body = length(local.infra_tenants_block) == 1 ? local.infra_tenants_block[0][0] : ""
 
   infra_tenant_ids = [
@@ -90,15 +94,32 @@ locals {
 }
 
 resource "google_service_account_iam_member" "deployer_admin" {
-  for_each = var.enable_github_wif ? local.deployer_admin_accounts : toset([])
+  for_each = local.deployer_on ? local.deployer_admin_accounts : toset([])
 
   service_account_id = "projects/${var.project_id}/serviceAccounts/${each.key}@${var.project_id}.iam.gserviceaccount.com"
   role               = "roles/iam.serviceAccountAdmin"
   member             = "serviceAccount:${google_service_account.deployer[0].email}"
 
+  # service_account_id names each account by a string, which orders nothing:
+  # on a fresh project the first apply would grant before the account exists
+  # ("does not exist") and pass only on a re-run (audit 3 A10). Every
+  # resource that makes one of bootstrap_platform's accounts is listed.
+  depends_on = [
+    google_service_account.platform,
+    google_service_account.tick,
+    google_service_account.verify,
+    google_service_account.schedule_tick,
+    google_service_account.rollup_sweeper,
+    google_service_account.discovery,
+    google_service_account.doctor,
+    google_service_account.voice,
+  ]
+
   lifecycle {
+    # Only when a file is named: an install names none (section 5.6 of
+    # docs/design/day-one-install.md), and has no worker grants to drop.
     precondition {
-      condition     = length(local.infra_tenants_block) == 1 && length(local.infra_tenant_ids) > 0
+      condition     = var.infra_tenants_tfvars == "" || (length(local.infra_tenants_block) == 1 && length(local.infra_tenant_ids) > 0)
       error_message = "no top-level `tenants = { ... }` block with at least one tenant was found in ${var.infra_tenants_tfvars}. Granting on the platform accounts alone would drop every worker grant and fail the next release on a 403; run `terraform fmt` on the file, or point infra_tenants_tfvars at the tfvars the release applies."
     }
 

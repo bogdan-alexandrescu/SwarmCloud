@@ -32,7 +32,10 @@
  * a workspace admin who is not a platform admin, on a platform Admin page, goes
  * to Workspaces you admin. Since ADMIN-PEOPLE-ROLES (part of #2157) People and
  * roles is theirs too, scoped by the API to the workspaces they administer, so
- * /admin/people is no longer sent away. A platform admin is never redirected. The API's own refusal of every admin route is unchanged.
+ * /admin/people is no longer sent away. Since visual QA pass 1 (admin-shell-23)
+ * someone who administers nothing, and since pass 2 (admin2-01) a workspace
+ * admin on a platform page, is refused in place instead; only a workspace
+ * admin's bare /admin still goes to Workspaces you admin. A platform admin is never redirected. The API's own refusal of every admin route is unchanged.
  *
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
@@ -41,11 +44,13 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, use
 import { AGENT_TABS, type AgentTab } from './agentlist'
 import { USE_FIXTURES, WORKSPACE_RENAMED_EVENT, loadApprovals, loadCapacity, loadMe, loadMyTenants, loadOnboarding, loadStats, loadWorkflowsById, type NotificationFeed, type ResourceClasses, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
-import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
+import { Banner, Button, ButtonLink, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
 import { addressToPath } from './paths'
+import { PageHead } from './Shell'
+import { AdminRoleRefusal } from './WorkspaceRefusal'
 import { shortcut, typedIntoField } from './shortcuts'
 import { poolLabelAmong, type Capacity, type Me, type Stats, type TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
@@ -60,11 +65,12 @@ import { firstName } from './PersonName'
 import { NEAR_CEILING } from './AdminSettings'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
+import { voiceItOpen } from './voice/Section'
 
-export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'help' | null
+export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
 
 /** The spine sections that draw a panel of pages. */
-type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'config' | 'admin'
+type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice'
 
 /** One page in the panel: its label, its icon, the address `go()` takes, and its children. */
 interface PanelPage {
@@ -184,6 +190,11 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // status only, a platform admin's alone, so under Platform and never in
     // a workspace admin's `adminPagesFor`.
     { key: 'platform-secrets', label: 'Platform secrets', icon: 'key', to: 'admin/platform-secrets' },
+    // DAYONE-SETUP-UI-3 (part of #2688; day-one-plan §5.2): Setup and its
+    // Health page, a platform admin's alone, so never in a workspace admin's
+    // `adminPagesFor` and under Platform in the panel.
+    { key: 'setup', label: 'Setup', icon: 'admin', to: 'admin/setup' },
+    { key: 'health', label: 'Health', icon: 'admin', to: 'admin/health' },
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again. SECTIONS' label, People
@@ -195,6 +206,14 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: WORKSPACES_YOU_ADMIN_TAB, label: 'Workspaces you admin', icon: 'tenants', to: `admin/${WORKSPACES_YOU_ADMIN_TAB}` },
     // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
     // every tenant's schedules are Automate › Schedules, All tenants.
+  ],
+  // VOICE IT (docs/design/voice-it.md §10, phase one): App.tsx SECTIONS'
+  // three tabs. The section's spine item is drawn only for the people Voice
+  // it is open to (`voiceItOpen`), so this panel is theirs alone.
+  voice: [
+    { key: 'talk', label: 'Talk', icon: 'voice', to: 'voice/talk' },
+    { key: 'projects', label: 'Projects', icon: 'timeline', to: 'voice/projects' },
+    { key: 'preferences', label: 'Preferences', icon: 'gear', to: 'voice/preferences' },
   ],
 }
 
@@ -227,8 +246,8 @@ export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[
  * and roles and Workspaces you admin for a workspace admin who is not one, and
  * none for anyone else -- which is how the spine knows to draw no Admin item.
  *
- * THIS IS ADMIN-REDIRECT'S LIST: an Admin page that is not here sends a
- * workspace admin to Workspaces you admin. People and roles joined it with
+ * THIS IS ADMIN-REDIRECT'S LIST: an Admin page that is not here refuses a
+ * workspace admin in place, with a link to Workspaces you admin (admin2-01). People and roles joined it with
  * ADMIN-PEOPLE-ROLES (part of #2157, BGD "Both, by scope"): its read
  * (`GET /v1/admin/people`) answers a workspace admin with only the workspaces
  * they administer, so /admin/people is a page of theirs, not one to send them
@@ -301,7 +320,7 @@ export function configPagesFor(personal: boolean | null): readonly PanelPage[] {
 }
 
 /** Each panel's heading: its spine section's label. */
-export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', config: 'Config', admin: 'Admin' }
+export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', config: 'Config', admin: 'Admin', voice: 'Voice it' }
 
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
 function rowFor(section: PanelSection, tab: string): string {
@@ -508,13 +527,18 @@ export const OWN_WORKSPACE_LABEL = 'Your workspace'
  * two names, depending on the window. The caller's own personal workspace
  * (`kind: user` in `/v1/tenants/mine`) is `OWN_WORKSPACE_LABEL` everywhere;
  * any other is its `/v1/tenants/me` name, or its id.
+ *
+ * A PERSONAL WORKSPACE IN FORCE IS THE CALLER'S OWN, LISTED OR NOT (visual QA
+ * pass 2, admin-shell-21; part of #2694). Someone in no group is served an
+ * empty `/v1/tenants/mine`, so the test above found nothing and the member's
+ * switcher and Admin refusal drew the tenant document's own name (`Bogdan`)
+ * where the platform admin's drew `Your workspace`. `/v1/tenants/me` only
+ * answers `kind: user` for the caller's own (a platform admin's reach is
+ * group workspaces only, §4.2.2), so that kind is the own workspace too.
  */
 export function workspaceName(tenant: { tenant_id: string; display_name?: string | null; kind?: string }, choices: readonly TenantChoice[]): string {
-  const own = choices.some((c) => c.kind === 'user' && c.tenant_id === tenant.tenant_id)
+  const own = tenant.kind === 'user' || choices.some((c) => c.kind === 'user' && c.tenant_id === tenant.tenant_id)
   if (own) return OWN_WORKSPACE_LABEL
-  // A personal workspace's document may be named by its owner's address; only
-  // a group workspace's address is its registration, not its name (VQ-056).
-  if (tenant.kind === 'user') return tenant.display_name || tenant.tenant_id
   return displayNameOf(tenant.display_name) ?? tenant.tenant_id
 }
 
@@ -963,6 +987,9 @@ function dataOf<T>(r: Result<T>): T | null {
  * key. It now says whether it is this pool or another, names another by its
  * label (`poolLabelAmong`, so `resource:browser` and `runner:browser` stay
  * two), and hands the raw key over as `warnPool` for the line's title.
+ * `a pool`, not `another pool` (visual QA pass 2, admin2-15; part of #2694):
+ * `another` named no first pool -- the meter above it is a count, not a pool
+ * the reader had been told about.
  */
 export function meterOf(c: Capacity | null): {
   active: number
@@ -985,7 +1012,7 @@ export function meterOf(c: Capacity | null): {
     hot.name,
     c.pools.map((p) => p.name),
   )
-  return { active: g.active, limit: g.effective_limit, warn: `another pool is ${state}: ${label}`, warnPool: hot.name, warnLabel: label }
+  return { active: g.active, limit: g.effective_limit, warn: `a pool is ${state}: ${label}`, warnPool: hot.name, warnLabel: label }
 }
 
 /** One count beside a panel row: a measurement, or a dash with its reason. */
@@ -1180,6 +1207,20 @@ export function nearCeilingCount(pools: Capacity['pools']): number {
 }
 
 /**
+ * How many of those are FULL: at or past their ceiling (visual QA pass 2,
+ * admin2-15; part of #2694). One pool at 5 of 5 was `1 near ceiling` on the
+ * panel's badge, `full` under the meter and `at 100%` in the banner; the
+ * badge now says `full` for it, and `near ceiling` only for a pool under it.
+ */
+export function fullCount(pools: Capacity['pools']): number {
+  return pools.filter((p) => {
+    if (p.enabled === false || p.effective_limit === null) return false
+    if (p.effective_limit <= 0) return p.active > 0
+    return p.active >= p.effective_limit
+  }).length
+}
+
+/**
  * THE ADMIN PANEL'S BADGES (CONFIG-ADMIN-POLISH; part of #2157, proposal E
  * S1b, S1c), each from a read the shell already makes -- never a poll of
  * the page's own:
@@ -1223,7 +1264,14 @@ export function adminPanelCounts(
   if (pending !== null && pending > 0) out.people = { n: pending, alert: true, why: `${pending} request${pending === 1 ? '' : 's'} waiting on an admin` }
   const c = dataOf(cap)
   const near = c === null ? 0 : nearCeilingCount(c.pools)
-  if (near > 0) out.limits = { n: near, alert: true, text: `${near} near ceiling`, why: `${near} pool${near === 1 ? ' is' : 's are'} at ${Math.round(NEAR_CEILING * 100)}% of the ceiling or more` }
+  const full = c === null ? 0 : fullCount(c.pools)
+  const under = near - full
+  // Full first: it is the state that blocks a lease; the title counts both.
+  const why = [
+    full > 0 ? `${full} pool${full === 1 ? ' is' : 's are'} full` : null,
+    under > 0 ? `${under} pool${under === 1 ? ' is' : 's are'} at ${Math.round(NEAR_CEILING * 100)}% of the ceiling or more` : null,
+  ].filter((w) => w !== null).join('; ')
+  if (near > 0) out.limits = { n: near, alert: true, text: full > 0 ? `${full} full` : `${under} near ceiling`, why }
   const waiting = feedCount(feed, 'tenants_waiting')
   if (waiting !== null && waiting > 0) out.tenants = { n: waiting, alert: true, text: `${waiting} waiting`, why: `${waiting} workspace${waiting === 1 ? '' : 's'} waiting to be created` }
   const unset = feedCount(feed, 'platform_secrets_unset')
@@ -1253,6 +1301,18 @@ export function roleLine(platformAdmin: boolean, mine: Result<TenantChoice[]>, t
   // someone in no group, so `here` alone missed the finding's own case.
   if (personal || (here !== undefined && here.kind === 'user')) return 'Workspace admin'
   return here !== undefined && here.kind === 'group' && roleOf(here) === 'viewer' ? 'Viewer' : 'Member'
+}
+
+/**
+ * The role an Admin page's refusal names (admin-shell-23, QA1B-04 review): as
+ * `roleLine` reads it, the owner of a personal workspace is its admin -- its
+ * `/v1/tenants/mine` entry may carry no stored role, and the refusal said the
+ * role "was not read" beside a foot reading "Workspace admin". A group gives
+ * its stored role; no entry is null, never a role guessed.
+ */
+export function refusedRole(here: TenantChoice | undefined, personal: boolean): string | null {
+  if (personal || (here !== undefined && here.kind === 'user')) return 'admin'
+  return here === undefined ? null : roleOf(here)
 }
 
 function CountMark({ c }: { c: PanelCount | undefined }) {
@@ -1468,6 +1528,13 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
+  // Voice it: a microphone.
+  voice: (
+    <>
+      <rect x="9" y="3.5" width="6" height="11" rx="3" />
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" />
+    </>
+  ),
   search: (
     <>
       <circle cx="11" cy="11" r="6.5" />
@@ -1511,6 +1578,9 @@ const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: str
   // CONFIG-NAV (part of #2157, S1): between Capacity and Admin.
   { key: 'config', label: 'Config', to: 'config/github' },
   { key: 'admin', label: 'Admin', to: 'admin/limits' },
+  // VOICE IT (voice-it.md §10, phase one): last, and drawn only for the
+  // people it is open to (`voiceItOpen`), so nobody else's spine moves.
+  { key: 'voice', label: 'Voice it', to: 'voice/talk' },
 ]
 
 export interface ShellProps {
@@ -1645,23 +1715,46 @@ export function SkyShell({
   // Their names, for the note a workspace admin's Admin panel carries (S1c).
   const adminOf = useMemo(() => nameTenants(adminWorkspaces(dataOf(mine) ?? []), null).map((w) => w.display_name), [mine])
   const landing = adminLanding(admin, adminPages)
-  const spineItems = SPINE.flatMap((s) => (s.key !== 'admin' ? [s] : landing === null ? [] : [{ ...s, to: landing.to }]))
+  // THE BADGE'S ITEM OPENS WHERE THE BADGE'S REQUESTS ARE (visual QA pass 2,
+  // admin2-07; part of #2694): the rail's `N waiting for an admin` sat on an
+  // item that opened Pool limits, and the requests are on People and roles.
+  // The badge is drawn for a platform admin only (`sectionLink`), so only
+  // their item moves; with nothing waiting it opens Pool limits as before.
+  const pendingAt = admin && adminPending > 0 ? adminPages.find((p) => p.key === 'people') : undefined
+  const adminTo = pendingAt?.to ?? landing?.to
+  // Voice it's item waits for the identity read: unread draws none, so it never flickers in.
+  const voiceIt = voiceItOpen(who) === true
+  const spineItems = SPINE.flatMap((s) => (s.key === 'voice' ? (voiceIt ? [s] : []) : s.key !== 'admin' ? [s] : adminTo === undefined ? [] : [{ ...s, to: adminTo }]))
   // ADMIN'S ADDRESSES SEND A NON-ADMIN TO OVERVIEW (CONFIG-NAV), and only
   // once both reads have answered: an unread session is not "not an admin".
   const adminDecided = who !== null && (mine.status === 'ok' || mine.status === 'stale' || mine.status === 'empty')
   // A WORKSPACE ADMIN'S PLATFORM ADDRESS SENDS THEM TO WORKSPACES YOU ADMIN
   // (ADMIN-REDIRECT): an Admin page that is not among theirs. Only a page the
   // panel has: an address that is no page at all keeps its 404.
-  const adminRedirect = section !== 'admin' || !adminDecided
-    ? null
-    : landing === null
-      ? ''
-      : !missing && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
-        ? landing.to
-        : null
+  // SOMEONE WHO ADMINISTERS NOTHING IS TOLD SO IN PLACE (visual QA pass 1,
+  // admin-shell-23; part of #2596; BGD 2026-10-28, reversing CONFIG-NAV's
+  // redirect for this case): Overview in its place was the link silently
+  // becoming another page. The page's own address stays; the refusal names
+  // the page, the role and the workspace, and links Overview.
+  // A WORKSPACE ADMIN ON A PLATFORM PAGE IS REFUSED IN PLACE TOO (visual QA
+  // pass 2, admin2-01; part of #2694; BGD 2026-10-28's rule for admin-shell-23,
+  // "a link must not silently become another page"): ADMIN-REDIRECT swapped
+  // /admin/limits for Workspaces you admin with no word said. The refusal
+  // names the page and links Workspaces you admin. Only the bare /admin --
+  // Admin itself, which App reads as its first page -- still lands on their
+  // page, and only on the visit it was opened at (`openedAtAdmin`).
+  const [openedAtAdmin, setOpenedAtAdmin] = useState(() => /^\/admin\/?$/.test(globalThis.location?.pathname ?? '') || /^#\/?admin\/?$/.test(globalThis.location?.hash ?? ''))
+  const platformPage = section === 'admin' && adminDecided && landing !== null && !missing
+    && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
+  const adminRefused = section === 'admin' && adminDecided && !missing && (landing === null || (platformPage && !openedAtAdmin))
+  const refusedEntry = PANEL_PAGES.admin.find((p) => p.to === `admin/${tab}`)
+  const refusedPage = refusedEntry?.label ?? 'Admin'
+  const refusedHere = (dataOf(mine) ?? []).find((c) => c.tenant_id === who?.tenant.tenant_id)
+  const adminRedirect = platformPage && openedAtAdmin && landing !== null ? landing.to : null
   useEffect(() => {
     if (adminRedirect !== null) onAdminRedirect?.(adminRedirect)
-  }, [adminRedirect, onAdminRedirect])
+    if (adminRedirect !== null || section !== 'admin') setOpenedAtAdmin(false)
+  }, [adminRedirect, onAdminRedirect, section])
   // THE WORKSPACE IN HAND IS THE PERSON'S OWN (S1e): no People and roles, and
   // a three-step strip. Read off `me`'s tenant kind, which is what the People
   // page itself reads: `/v1/tenants/mine` answers empty for someone in no
@@ -2104,7 +2197,11 @@ export function SkyShell({
 
   // ONE SPINE SECTION: the five after Submit, and Profile at the foot.
   const sectionLink = (s: { key: Exclude<SpineSection, null>; label: string; to: string }) => {
-    const on = section === s.key
+    // A 404 IS NEVER LIT AS OVERVIEW (visual QA pass 1, admin-shell-12):
+    // `nearestPath` falls back to /overview for a path near nothing, and
+    // Overview's panel has nothing for a 404 (`SectionPanel` draws none), so
+    // the rail marked a section the reader is not in over an empty panel.
+    const on = section === s.key && !(missing && s.key === 'overview')
     // A LINK, NOT A BUTTON (#503): a section opens in a new tab and copies
     // as a link, like every other place in the console.
     return (
@@ -2236,6 +2333,7 @@ export function SkyShell({
         onApiFilter={onApiFilter}
         missing={missing}
         onJump={onJump}
+        sections={spineItems}
       />
     </SetupContext.Provider>
   )
@@ -2532,7 +2630,53 @@ export function SkyShell({
                   read of it made again with the new X-Swarm-Tenant -- except
                   a kept form, which re-reads in place. */}
               <Fragment key={`${keepOnSwitch ? 'kept' : (tenant ?? '')}:${attempt}`}>
-                <SetupContext.Provider value={setupRead}>{children}</SetupContext.Provider>
+                <SetupContext.Provider value={setupRead}>
+                  {adminRefused && who !== null ? (
+                    // IN THE PAGE'S FRAME (QA1B-04 review): the gutter and
+                    // the head every page has (`.app`, `main.work`,
+                    // `PageHead`), not drawn flush against the panel.
+                    <div className="app">
+                      <main className="work">
+                        <PageHead title={refusedPage} />
+                        {landing === null ? (
+                          <AdminRoleRefusal
+                            page={refusedPage}
+                            role={refusedRole(refusedHere, personal === true)}
+                            workspace={inSentence(workspaceName(who.tenant, dataOf(mine) ?? []))}
+                            // A workspace admin's own pages are refused as such (admin2-02).
+                            audience={refusedEntry !== undefined && WORKSPACE_ADMIN_PAGE_KEYS.has(refusedEntry.key) ? 'workspace' : 'platform'}
+                            personal={personal === true || refusedHere?.kind === 'user'}
+                          />
+                        ) : (
+                          // The member's refusal (AdminRoleRefusal's words),
+                          // and the way to the Admin page that is theirs
+                          // (admin2-01): the workspaces they administer, by name.
+                          <div className="ws-refusal" data-refused="admin">
+                            <Banner
+                              tone="info"
+                              role="status"
+                              title={`${refusedPage} is for platform admins`}
+                              actions={
+                                <>
+                                  <ButtonLink kind="primary" size="sm" {...routed(landing.to, () => nav(landing.to))}>
+                                    Open {landing.label}
+                                  </ButtonLink>
+                                  <ButtonLink kind="secondary" size="sm" {...routed('overview/now', () => nav('overview/now'))}>
+                                    Open Overview
+                                  </ButtonLink>
+                                </>
+                              }
+                            >
+                              {adminOf.length > 0 ? `You are not a platform admin. You administer ${listed(adminOf)}.` : 'You are not a platform admin.'}
+                            </Banner>
+                          </div>
+                        )}
+                      </main>
+                    </div>
+                  ) : (
+                    children
+                  )}
+                </SetupContext.Provider>
               </Fragment>
             </>
           )}
@@ -2719,7 +2863,8 @@ function TenantBlock({
               </button>
             </>
           ) : (
-            <>workspace {isDefault ? '· default ' : ''}</>
+            // Its kind as the switcher's list says it (admin-shell-21): the person's own is `personal`.
+            <>{who.tenant.kind === 'user' ? 'personal' : 'workspace'} {isDefault ? '· default ' : ''}</>
           )}
           {copyId}
           {back}
@@ -2797,6 +2942,17 @@ function TenantTile({
   )
 }
 
+/** The control each place opens the list from, which takes focus back when it closes. */
+const PICKER_TRIGGER: Readonly<Record<TenantPickerAt, string>> = { panel: '.sk-panel .sk-tsw', tile: 'button.sk-ttile', sheet: '.sk-pbar .sk-tchip' }
+
+const TABBABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+/** The next control after `from` in the document's order, outside `skip`. */
+function tabbableAfter(from: HTMLElement, skip: HTMLElement | null): HTMLElement | null {
+  const all = Array.from(document.querySelectorAll<HTMLElement>(TABBABLE)).filter((el) => skip === null || !skip.contains(el))
+  return all[all.indexOf(from) + 1] ?? null
+}
+
 /**
  * THE LIST OF TENANTS YOU MAY ACT AS: beside the panel's block, beside the
  * collapsed spine's tile, or, on a phone, a bottom sheet with 44px rows. A
@@ -2857,7 +3013,14 @@ function TenantPicker({
       document.removeEventListener('keydown', onKey, true)
       document.removeEventListener('pointerdown', onDown)
       document.removeEventListener('focusin', onIn)
-      if (giveBack.current) opener?.focus()
+      // BACK TO THE CONTROL THAT OPENED IT, EVEN WHEN A TAP DID NOT FOCUS IT
+      // (visual QA pass 2, admin2-06; part of #2694): a tap on the phone's
+      // workspace chip leaves focus on <body>, so the sheet's Escape handed
+      // focus back to <body> and a keyboard user restarted from `Skip to
+      // the page`. Whatever held focus is kept only if it is a control.
+      if (!giveBack.current) return
+      const held = opener !== null && opener !== document.body && opener.isConnected ? opener : null
+      ;(held ?? document.querySelector<HTMLElement>(PICKER_TRIGGER[at]))?.focus()
     }
   }, [])
   // FOCUS LEAVING CLOSES IT, AND THE ARROWS MOVE IN IT (live QA CH-7). Tab
@@ -2873,13 +3036,31 @@ function TenantPicker({
     close.current()
   }
   const onKeyDown = (e: ReactKeyboardEvent) => {
+    // TAB OUT OF THE POPOVER CONTINUES FROM ITS TRIGGER (visual QA pass 2,
+    // admin2-11; part of #2694). The popover is drawn after the spine and
+    // the panel, so Tab past its last option went on into the page and
+    // skipped the panel's `copy id`, `Back to default` and every section
+    // link. Tab goes to the control after the trigger, Shift+Tab from the
+    // first option back to the trigger. The phone sheet is modal and keeps
+    // the browser's order.
+    if (e.key === 'Tab' && at !== 'sheet') {
+      const items = Array.from(box.current?.querySelectorAll<HTMLElement>('.sk-to') ?? [])
+      const edge = e.shiftKey ? items[0] : items[items.length - 1]
+      const trigger = document.querySelector<HTMLElement>(PICKER_TRIGGER[at])
+      if (edge === undefined || document.activeElement !== edge || trigger === null) return
+      e.preventDefault()
+      giveBack.current = false
+      close.current()
+      ;(e.shiftKey ? trigger : tabbableAfter(trigger, box.current) ?? trigger).focus()
+      return
+    }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return
     const items = Array.from(box.current?.querySelectorAll<HTMLElement>('.sk-to') ?? [])
     if (items.length === 0) return
     e.preventDefault()
-    const at = items.indexOf(document.activeElement as HTMLElement)
+    const from = items.indexOf(document.activeElement as HTMLElement)
     const n = items.length
-    const next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : (at + (e.key === 'ArrowDown' ? 1 : n - 1) + n) % n
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : (from + (e.key === 'ArrowDown' ? 1 : n - 1) + n) % n
     items[next]?.focus()
   }
   // A platform admin's reach entries under their own heading, after the
@@ -3084,6 +3265,7 @@ function PanelPages({
   onApiFilter,
   missing,
   onJump,
+  sections = [],
 }: {
   section: SpineSection
   tab: string
@@ -3108,9 +3290,27 @@ function PanelPages({
   missing: boolean
   /** An Overview jump: scrolls to the section, closes the phone drawer and moves focus there. */
   onJump?: (id: string) => void
+  /** The rail's sections (`spineItems`), for a 404 that is in none of them. */
+  sections?: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[]
 }) {
-  // A 404 lit as Overview has none of Overview's cards to jump to.
-  if (section === 'overview' && missing) return null
+  // A 404 IN NO SECTION IS OFFERED THE SECTIONS (visual QA pass 2,
+  // admin-shell-12; part of #2694). It is lit as no section (`sectionLink`),
+  // and the panel under the switcher was empty: no heading, no link, no word.
+  // The rail's own list, headed `Go to`, none of it marked current.
+  if (section === 'overview' && missing) {
+    return (
+      <>
+        <div className="sk-pt">Go to</div>
+        <p className="sk-pnote">This page is not in any section.</p>
+        {sections.map((s) => (
+          <a key={s.key} className="sk-pk" {...routed(s.to, () => nav(s.to))}>
+            <Icon name={s.key} />
+            <span className="sk-pl">{s.label}</span>
+          </a>
+        ))}
+      </>
+    )
+  }
   if (section === 'overview') {
     return (
       <>
@@ -3204,7 +3404,8 @@ function PanelPages({
           platform's are not hidden behind a lock but simply not theirs. */}
       {sec === 'admin' && !platformAdmin && (
         <p className="sk-pnote">
-          {adminOf.length > 0 ? `Showing ${listed(adminOf)}, the workspaces you administer. ` : ''}The platform’s own pages are shown to platform admins only.
+          {/* One workspace is one (visual QA pass 2, admin2-18; part of #2694). */}
+          {adminOf.length > 0 ? `Showing ${listed(adminOf)}, the workspace${adminOf.length === 1 ? '' : 's'} you administer. ` : ''}The platform’s own pages are shown to platform admins only.
         </p>
       )}
       {sec === 'admin' && (
@@ -3225,6 +3426,14 @@ function PanelPages({
       )}
     </>
   )
+}
+
+/**
+ * The own workspace's one name inside a sentence (admin-shell-21): "You are
+ * an admin of your workspace.", not "of Your workspace.".
+ */
+function inSentence(name: string): string {
+  return name === OWN_WORKSPACE_LABEL ? 'your workspace' : name
 }
 
 /** "a", "a and b", "a, b and c". */
@@ -3476,7 +3685,7 @@ function Flyout({
   onBlur: (e: ReactFocusEvent) => void
   onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
-  if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'config' && section !== 'admin') return null
+  if (section !== 'profile' && section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'config' && section !== 'admin' && section !== 'voice') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
   const name = PANEL_TITLE[section]
   // The Admin rows in the panel's group order (S1b), so the two never list them differently.

@@ -14,7 +14,7 @@
  *     own workspaces only (S1c). The phone drawer holds the same panel (S1f).
  *   * Admin › Workspaces you admin draws each workspace's own progress (S10a).
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 
 type Json = Record<string, unknown>
@@ -105,6 +105,14 @@ async function steps() {
   vi.resetModules()
   return (await import('../ConfigSetup')) as typeof import('../ConfigSetup')
 }
+
+// The first import of App transforms its whole module graph, which on a loaded
+// runner took the first test that renders App past its 30s timeout. Pay it once
+// here, under its own budget: `vi.resetModules()` in app() drops the module
+// instances, not the transform cache, so every test still gets a fresh App.
+beforeAll(async () => {
+  await import('../App')
+}, 120_000)
 
 afterEach(() => {
   cleanup()
@@ -221,7 +229,7 @@ describe('the Config panel\'s row badges (S1a)', () => {
     await waitFor(() => expect(badge('Secrets')?.text).toBe('3 to set'))
     expect(badge('People and roles')?.text).toBe('5')
     const strip = await screen.findByRole('list', { name: 'Workspace setup steps' })
-    await waitFor(() => expect(document.querySelector('.cfg-count b')?.textContent).toBe('3 of 4 done'))
+    await waitFor(() => expect(document.querySelector('.cfg-count b')?.textContent).toBe('3 of 4 steps done'))
     expect(within(strip).getAllByRole('listitem')[3]!.className).toContain('is-done')
   })
 })
@@ -241,7 +249,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     const [ws, platform, automate] = groups()
     // MUTATION: draw PANEL_PAGES.admin as one list -> no groups and this fails.
     expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['People and roles', 'Workspaces you admin'] })
-    expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'] })
+    expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'] })
     // MUTATION: draw Schedules or Approvals as Admin pages -> their links leave Automate and this fails.
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules?scope=all', '/automate/approvals'] })
     // The spine's Admin still opens Pool limits.
@@ -276,9 +284,9 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     expect(seen).toEqual(expect.arrayContaining(['eng', 'ops']))
     const [eng, ops] = strips()
     expect(eng!.getAttribute('aria-label')).toBe('eng setup')
-    expect(eng!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 3 of 4')
-    expect(eng!.querySelector('.cfg-progress-next')?.textContent).toBe('Next: Secrets set, 3 to set: linear and 2 more')
-    expect(ops!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 2 of 4')
+    expect(eng!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 3 of 4 steps')
+    expect(eng!.querySelector('.cfg-progress-next')?.textContent).toBe('Next: Set secrets (3 to set: linear and 2 more)')
+    expect(ops!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 2 of 4 steps')
     expect(ops!.querySelector('.cfg-progress-next a')?.getAttribute('href')).toBe('/config/repositories')
     // MUTATION: drop the comparison -> nothing says which is behind and this fails.
     const lead = screen.getByRole('region', { name: 'Your workspaces' })

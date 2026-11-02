@@ -172,6 +172,21 @@ export function spanDays(v: LanesView, now: number): number {
   return (w.until - w.since) / DAY_MS
 }
 
+/** Past this many days the bars are slivers, and the page suggests Outcomes. */
+export const SUGGEST_OUTCOMES_DAYS = 7
+
+/**
+ * THE SUGGESTION NAMES THE SPAN SHOWN (QA1 runs-submit-34, 2026-10-28). It
+ * read "Past 7 days the bars are slivers" on a 30d span, which says "in the
+ * last 7 days" to a reader looking at 30 of them. It is only drawn past
+ * `SUGGEST_OUTCOMES_DAYS`, so it says the span on screen: whole days as
+ * such, a zoomed window to a tenth of a day.
+ */
+export function sliversNote(days: number): string {
+  const n = Number(days.toFixed(1))
+  return `Over ${n} ${n === 1 ? 'day' : 'days'} the bars are slivers: counts over the span read better as a ledger.`
+}
+
 /** A zoom to [since, until), keeping every filter, with the chip back to `v`. */
 export function zoomedTo(v: LanesView, since: number, until: number): LanesView {
   return {

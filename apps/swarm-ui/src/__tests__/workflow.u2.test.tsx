@@ -409,7 +409,7 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     expect(within(head as HTMLElement).getByRole('button', { name: 'Copy workflow id wf_broker' }).getAttribute('title')).toBe('wf_broker')
     // Copy link and Cancel workflow sit in the head's own row.
     expect(within(head as HTMLElement).getByRole('button', { name: 'Copy link' })).toBeTruthy()
-    expect(within(head as HTMLElement).getByRole('button', { name: 'Cancel workflow' })).toBeTruthy()
+    expect(within(head as HTMLElement).getByRole('button', { name: 'Stop workflow' })).toBeTruthy()
     expect(at(head, 'align-items')).toBe('center')
   })
 
@@ -419,12 +419,13 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     const tabs = await waitFor(() => {
       // The canonical underline tabs (components.html A): a link per view --
       // the loaded page's, since its skeleton draws them too, uncounted (#113).
-      const t = document.querySelector<HTMLElement>('.wfp:not(.is-loading) > nav.c-tabs[aria-label="Views of this workflow"]')
+      const t = document.querySelector<HTMLElement>('.wfp:not(.is-loading) > .c-tabs[role="tablist"][aria-label="Views of this workflow"]')
       expect(t).toBeTruthy()
       return t!
     })
     const buttons = [...tabs.querySelectorAll('a')]
-    expect(buttons.map((b) => b.textContent)).toEqual(['Graph', 'Table 4', 'Timeline', 'Changes'])
+    // `Steps over time`, not the nav's Timeline (overview-agents-89, #2596).
+    expect(buttons.map((b) => b.textContent)).toEqual(['Graph', 'Table 4', 'Steps over time', 'Changes'])
     expect(buttons[0]!.getAttribute('aria-current')).toBe('page')
     expect(buttons[1]!.getAttribute('href')).toMatch(/^\/workflows\/wf_broker\/table/)
     expect(tabs.querySelector('em')!.textContent).toBe('4')
@@ -449,9 +450,9 @@ describe('Cancel workflow asks for the id to be typed while a step runs (states.
     const cancel = vi.fn().mockResolvedValue(ok)
     const b = broker()
     render(<CancelWorkflow workflow={b.w} taskById={b.tasks} onDone={vi.fn()} cancel={cancel} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stop workflow' }))
     const input = screen.getByRole('textbox', { name: 'Type wf_broker to confirm' })
-    const go = screen.getByRole('button', { name: 'Cancel the workflow' }) as HTMLButtonElement
+    const go = screen.getByRole('button', { name: 'Stop the workflow' }) as HTMLButtonElement
     expect(go.disabled).toBe(true)
     fireEvent.change(input, { target: { value: 'wf_broke' } })
     expect(go.disabled).toBe(true)
@@ -468,9 +469,9 @@ describe('Cancel workflow asks for the id to be typed while a step runs (states.
     const tasks = new Map(b.tasks)
     tasks.set('t_core', task('t_core', 'QUEUED'))
     render(<CancelWorkflow workflow={b.w} taskById={tasks} onDone={vi.fn()} cancel={vi.fn()} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stop workflow' }))
     expect(screen.queryByRole('textbox')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Yes, cancel the workflow' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Yes, stop the workflow' })).toBeTruthy()
   })
 })
 
@@ -490,7 +491,7 @@ describe('the picked step card sits under the graph below 1280 (#503), beside it
     expect(at(panel, 'position', 1440)).toBe('sticky')
     expect(within(panel).getByText('Open agent →')).toBeTruthy()
     // StopRun's own control, in a group named for what it stops (VQ-015: `Stop step`, as workflows.html B draws it).
-    expect(within(within(panel).getByRole('group', { name: 'Stop step' })).getByRole('button', { name: 'Stop step' })).toBeTruthy()
+    expect(within(within(panel).getByRole('group', { name: 'Stop step' })).getByRole('button', { name: 'Stop' })).toBeTruthy()
   })
 
   it('keeps the same-step strip inside the card: at most 15 marks, the rest counted', async () => {
@@ -750,7 +751,13 @@ describe('a step skipped by its verdict gate never reads as one that ran', () =>
     expect(node.textContent).not.toMatch(/\bran\b/)
     const ran = document.querySelector<HTMLElement>('button.node[data-step="implement"]')!
     expect(ran.className).not.toContain('is-skipped')
-    const cell = document.querySelector<HTMLElement>('.wf-table tr[data-step="fix"] td[data-col="state"]')!
+    // The rows are the Table tab's alone (overview-agents-73, #2596).
+    fireEvent.click(screen.getByRole('tab', { name: /^Table/ }))
+    const cell = await waitFor(() => {
+      const c = document.querySelector<HTMLElement>('.wf-table tr[data-step="fix"] td[data-col="state"]')
+      expect(c).toBeTruthy()
+      return c!
+    })
     expect(cell.textContent).toBe('skipped by verdict')
   })
 })

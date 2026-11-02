@@ -1,4 +1,4 @@
-# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # swarm-quota-broker -- the provider quota owner: AIMD limits, provider state and per-tenant pools.
 #
@@ -41,8 +41,13 @@ ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
-ARG MIRROR_GHCR=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-ghcr
+# No default, so this file names no project (DAYONE-DESAGA-1,
+# docs/design/day-one-install.md section 7): scripts/build-images.sh passes
+# the mirror of the project it builds for (lib/build-mirror.sh
+# mirror_build_args), and the `# syntax=` frontend through the same mirror as
+# BUILDKIT_SYNTAX. A `docker build` given neither fails on its first FROM.
+ARG MIRROR_DOCKER_HUB=
+ARG MIRROR_GHCR=
 
 FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
 
@@ -98,12 +103,13 @@ RUN python -m venv --without-pip /opt/venv
 # Third-party dependencies, exported from uv.lock for this service alone. The
 # root project depends on every app, so the export prunes the internal packages
 # swarm-quota-broker does not depend on (`swarm-agent-worker`, `swarm-api`,
-# `swarm-mcp`, `swarm-reconciler`, `swarm-scheduler`), and
+# `swarm-install`, `swarm-mcp`, `swarm-reconciler`, `swarm-scheduler`,
+# `swarm-workflow-rollup`), and
 # the third-party packages only they need go with them. `--no-emit-local`
 # leaves our own packages out of the file: they come from /wheels, below. The
 # export carries a hash for every file; `--no-hashes` must never be added here.
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
-      --prune swarm-agent-worker --prune swarm-api --prune swarm-mcp \
+      --prune swarm-agent-worker --prune swarm-api --prune swarm-install --prune swarm-mcp \
       --prune swarm-reconciler \
       --prune swarm-scheduler --prune swarm-workflow-rollup \
       > /tmp/requirements.txt

@@ -24,6 +24,7 @@ from agent_worker.errors import WorkerError
 from agent_worker.forge import PullRequest, RepoAccess, RepoRef
 from swarm_api.validation import DISPATCH_METADATA_KEY, DispatchOptions
 from swarm_common.models import new_id
+from test_strategy_end_to_end import _the_fence_holds  # noqa: F401 -- fixture
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -199,12 +200,16 @@ def test_a_branch_that_moved_after_the_clone_is_not_overwritten(
     worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
 ):
     """Somebody else pushed while the fixer worked. The push is never forced,
-    so their commit survives and the attempt says it did not publish."""
+    so their commit survives; since #1821 (owner decision 2026-10-27) the
+    fix is replayed onto it and lands on top as a fast-forward."""
     red = f"swarm/{ROOT}"
     worker, _, task = _worker(
         worker_factory, monkeypatch, origin, {"strategy": "direct-pr", "continues": ROOT}
     )
     worker._maybe_clone(task)
+    # The fence the replay reads again before its push: this harness writes
+    # no task document, so it holds here.
+    monkeypatch.setattr(worker.control, "validate_generation", lambda: None)
     fix_the_test(worker.ws.work / lifecycle.REPO_DIR_NAME)
 
     other = tmp_path / "other"
@@ -219,8 +224,15 @@ def test_a_branch_that_moved_after_the_clone_is_not_overwritten(
     theirs = refs(origin)[red]
 
     out = worker._harvest_git(publish=True)
-    assert out["published"] is False, out
-    assert refs(origin)[red] == theirs
+    assert out["published"] is True, out
+    landed = refs(origin)[red]
+    assert landed != theirs
+    subprocess.run(["git", "merge-base", "--is-ancestor", theirs, landed], cwd=str(origin),
+                   check=True)
+    assert "return 2" in subprocess.run(
+        ["git", "show", f"{landed}:feature.py"], cwd=str(origin), capture_output=True,
+        text=True, check=True,
+    ).stdout
 
 
 def test_a_malformed_continuation_fails_the_clone_and_pushes_nothing(

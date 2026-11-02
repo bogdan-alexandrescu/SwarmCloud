@@ -187,9 +187,11 @@ import binascii
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from enum import Enum
 from types import MappingProxyType
 from typing import Annotated, Any, Callable, Literal, Mapping
@@ -219,8 +221,8 @@ from .validation import (
     MERGE_ON_VERDICT,
     MERGE_STEP_ID,
     REREVIEW_STEP_ID,
-    REVIEW_GATE_DEFAULT_MIN_LINES,
     REVIEW_GATE_METADATA_KEY,
+    REVIEW_GATE_REQUIREMENTS_CHECK,
     RUNTIME_METADATA_KEY,
     RUNTIME_POLICY_BROWSER_IF_UI,
     RUNTIME_POLICY_PROFILES,
@@ -252,11 +254,87 @@ REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
 # steps changed touches a risk path or more than 300 lines. Otherwise
 # swarm-api ends it SUCCEEDED without an agent, with a MERGE verdict.json
 # naming the reason (`reviewgate`), and the fix step publishes as for any
-# MERGE. No `risk_paths`: the default list applies, the one list BGD's
-# decision names.
-def review_gate_block() -> dict[str, Any]:
-    """The `metadata.review_gate` every compiled review step carries."""
-    return {"min_lines": REVIEW_GATE_DEFAULT_MIN_LINES}
+# MERGE. It names no gate of its own: it is a review step (the fix's `when`
+# reads it), so it is stored with the default gate (BGD 2026-10-28, "every
+# review step"; `validation.default_review_gate_steps`), which follows the
+# workspace's setting.
+#
+# A SKIPPED REVIEW STILL CONFIRMS REQUIREMENTS (BGD 2026-10-28 ~18:25Z, "Gate
+# + cheap requirements check"). Beside the review, a plan that lists
+# requirements gets `requirements-check`: held like the review and run ONLY
+# when the review is skipped (`reviewgate.is_requirements_check`), on
+# `claude-code` (no browser) and the cheap class, read-only, its time capped.
+# It reads the issue and the diff and writes only requirements.json; swarm-api
+# folds that list into the skipped review's verdict, so `Closes #N` is
+# written only when every requirement is met, as after a full review. It
+# never writes a verdict: the verdict stays the gate's MERGE.
+REQUIREMENTS_CHECK_STEP = "requirements-check"
+#: The cheap class: confirming a list against a diff needs no Opus.
+REQUIREMENTS_CHECK_MODEL_CLASS = "sonnet"
+#: Its cap. No profile field caps turns (a contract request on the pull
+#: request that built this); the step's own timeout is the cap it has.
+REQUIREMENTS_CHECK_TIMEOUT_SECONDS = 900
+def _check_class(class_models: Mapping[str, str] | None) -> dict[str, Any]:
+    """`{"model_class": "sonnet"}` where this deployment pins it, else nothing.
+
+    A class with no pin is refused at submission
+    (`validation.check_model_class_available`): naming it there would fail
+    the whole issue run. Without the pin the check runs the profile's
+    default, still read-only and capped, and the run goes ahead.
+    """
+    if class_models is not None and REQUIREMENTS_CHECK_MODEL_CLASS in class_models:
+        return {"model_class": REQUIREMENTS_CHECK_MODEL_CLASS}
+    return {}
+
+
+#: What it writes, read by `verdictpublish` (`reviewgate.REQUIREMENTS_FILE`).
+REQUIREMENTS_FILE = "requirements.json"
+
+
+def _requirements_check(
+    ref: IssueRef, plan: Mapping[str, Any], parents: list[str], builds_on: str,
+    *, by_parent: bool, class_models: Mapping[str, str] | None,
+) -> dict[str, Any] | None:
+    """The requirements check standing beside the review; None for a plan with none."""
+    if not plan.get("requirements"):
+        return None
+    staged = (", ".join(f"{sid}/{PATCH_FILE}" for sid in parents) if by_parent
+              else PATCH_FILE)
+    metadata: dict[str, Any] = {REVIEW_GATE_METADATA_KEY: {REVIEW_GATE_REQUIREMENTS_CHECK: True}}
+    if by_parent:
+        metadata[INPUT_LAYOUT_METADATA_KEY] = INPUT_LAYOUT_BY_PARENT
+    return {
+        "step_id": REQUIREMENTS_CHECK_STEP,
+        "runner_profile": STEP_PROFILE,
+        **_check_class(class_models),
+        "timeout_seconds": REQUIREMENTS_CHECK_TIMEOUT_SECONDS,
+        # Read-only: it changes nothing, and no integrator merges it.
+        "allow_empty_diff": True,
+        "metadata": metadata,
+        "depends_on": list(parents),
+        "builds_on": builds_on,
+        "input_from": {sid: PATCH_FILE for sid in parents},
+        "input": {
+            "issue": ref.number,
+            "prompt": (
+                f"Confirm, for GitHub issue {ref.short}, whether the change on this branch "
+                "delivers each requirement of the approved plan. This is a requirements "
+                "check, not a review: do not judge the code, do not write a verdict, do not "
+                "edit, commit or push anything, and use at most 30 turns. Read the issue "
+                f"file and the diff ({staged}; the whole change is this branch against the "
+                "default branch).\n\n"
+                "The issue's requirements, as the approved plan lists them:\n"
+                + "".join(f"{n}. {item}\n"
+                          for n, item in enumerate(plan["requirements"], start=1))
+                + f"\nWrite only $SWARM_ARTIFACTS_DIR/{REQUIREMENTS_FILE}: "
+                '{"requirements": [{"index": n, "met": true or false, "note": "the evidence: '
+                'the file and line, or what is missing, one line"}]} -- exactly one entry '
+                f"for each numbered requirement above, n from 1 to {len(plan['requirements'])}; "
+                "met is true only for a requirement this branch delivers in full. "
+                + NO_CLOSING_KEYWORD
+            ),
+        },
+    }
 
 
 #: The one file the planner writes, read back out of its artifacts.
@@ -583,10 +661,11 @@ class PlanStep(_PlanModel):
     @field_validator("step_id")
     @classmethod
     def _not_reserved(cls, value: str) -> str:
-        if value in (REVIEW_STEP, FIX_STEP, REREVIEW_STEP):
+        if value in (REVIEW_STEP, FIX_STEP, REREVIEW_STEP, REQUIREMENTS_CHECK_STEP):
             raise ValueError(
                 f"step_id {value!r} is reserved: the compiled workflow's {REVIEW_STEP!r}, "
-                f"{FIX_STEP!r} and {REREVIEW_STEP!r} steps are added after the plan's own"
+                f"{FIX_STEP!r}, {REREVIEW_STEP!r} and {REQUIREMENTS_CHECK_STEP!r} steps are "
+                "added after the plan's own"
             )
         return value
 
@@ -1184,12 +1263,19 @@ TENANCY_FUNCTIONS: tuple[str, ...] = ("tenant_scope", "submission_scope", "names
 _TENANCY_NAME = re.compile(r"\b(?:" + "|".join(TENANCY_FUNCTIONS) + r")\b")
 #: The deny-list itself.
 SHARED_PATTERNS: tuple[str, ...] = ("scripts/lib/common.sh",)
+#: The shared project (CLAUDE.md rule 2): the one project whose other teams'
+#: resources `SHARED_DENY_LIST` names. The list is keyed by it (plan R4,
+#: docs/design/day-one-plan.md section 0), as common.sh's is: a deployment in
+#: any other project holds no change for naming them.
+SHARED_PROJECT_ID = "saga-agents-staging"
 #: `SHARED_DENY_LIST` of scripts/lib/common.sh, where it lives once (CLAUDE.md
 #: rule 2). Restated here because swarm-api's image carries no scripts/;
 #: tests/unit/control_plane/test_hold_categories.py fails the day the two
 #: differ. Keep the order of common.sh. oracle-api@ and the bare oracle-api
 #: are off it since 2026-10-27 (#1835, BGD: both entries); common.sh says why.
-SHARED_DENY_LIST: tuple[str, ...] = (
+#: An entry naming the project is written with `{project}`, so the project's
+#: id is stated once, in SHARED_PROJECT_ID.
+_SHARED_DENY_TEMPLATES: tuple[str, ...] = (
     "agents-staging",
     "agents-staging-vpc",
     "agents-staging-subnet",
@@ -1200,39 +1286,65 @@ SHARED_DENY_LIST: tuple[str, ...] = (
     "saga-agents-terraform-state-staging",
     "ai-studio-avatars-staging",
     "promptlab-avatars-staging",
-    "saga-agents-staging_cloudbuild",
-    "api-service@saga-agents-staging.iam.gserviceaccount.com",
-    "publisher@saga-agents-staging.iam.gserviceaccount.com",
+    "{project}_cloudbuild",
+    "api-service@{project}.iam.gserviceaccount.com",
+    "publisher@{project}.iam.gserviceaccount.com",
     "209012342332-compute@developer.gserviceaccount.com",
-    "promptlab-deployer@saga-agents-staging.iam.gserviceaccount.com",
-    "promptlab-runner@saga-agents-staging.iam.gserviceaccount.com",
-    "aipipeline@saga-agents-staging.iam.gserviceaccount.com",
-    "saga-storage-ro@saga-agents-staging.iam.gserviceaccount.com",
-    "saga-storage-rw@saga-agents-staging.iam.gserviceaccount.com",
-    "external-secrets@saga-agents-staging.iam.gserviceaccount.com",
-    "staging-gke-nodes@saga-agents-staging.iam.gserviceaccount.com",
-    "crawler@saga-agents-staging.iam.gserviceaccount.com",
-    "tournament-digest@saga-agents-staging.iam.gserviceaccount.com",
-    "ai-studio-api@saga-agents-staging.iam.gserviceaccount.com",
-    "ai-studio-deployer@saga-agents-staging.iam.gserviceaccount.com",
-    "ai-studio-runner@saga-agents-staging.iam.gserviceaccount.com",
-    "oracle-ticker@saga-agents-staging.iam.gserviceaccount.com",
-    "oracle-web@saga-agents-staging.iam.gserviceaccount.com",
-    "promptlab-api@saga-agents-staging.iam.gserviceaccount.com",
+    "promptlab-deployer@{project}.iam.gserviceaccount.com",
+    "promptlab-runner@{project}.iam.gserviceaccount.com",
+    "aipipeline@{project}.iam.gserviceaccount.com",
+    "saga-storage-ro@{project}.iam.gserviceaccount.com",
+    "saga-storage-rw@{project}.iam.gserviceaccount.com",
+    "external-secrets@{project}.iam.gserviceaccount.com",
+    "staging-gke-nodes@{project}.iam.gserviceaccount.com",
+    "crawler@{project}.iam.gserviceaccount.com",
+    "tournament-digest@{project}.iam.gserviceaccount.com",
+    "ai-studio-api@{project}.iam.gserviceaccount.com",
+    "ai-studio-deployer@{project}.iam.gserviceaccount.com",
+    "ai-studio-runner@{project}.iam.gserviceaccount.com",
+    "oracle-ticker@{project}.iam.gserviceaccount.com",
+    "oracle-web@{project}.iam.gserviceaccount.com",
+    "promptlab-api@{project}.iam.gserviceaccount.com",
     "oracle-web",
 )
+SHARED_DENY_LIST: tuple[str, ...] = tuple(t.format(project=SHARED_PROJECT_ID) for t in _SHARED_DENY_TEMPLATES)
+
+
+def shared_deny_list() -> tuple[str, ...]:
+    """The deny-list for the project this swarm-api runs in: `SHARED_DENY_LIST`
+    in the shared project, empty in any other.
+
+    Keyed by PROJECT_ID, the variable `swarm_common.config.Settings` already
+    reads (`ApiSettings.project_id`), read at call time because the hold
+    functions are pure and their callers hold no settings. An unset project
+    keeps the whole list: an unknown project is not another project, and a
+    hold is cheap (a person decides) where a missed one is not.
+    """
+    project = os.environ.get("PROJECT_ID", "").strip()
+    return SHARED_DENY_LIST if project in ("", SHARED_PROJECT_ID) else ()
+
+
 #: A deny-list name, whole: not inside a longer name (`swarm-agents-staging-x`
 #: is not `agents-staging`). "default" (the shared project's default network)
 #: is also an ordinary word, so it is matched only quoted, as a resource name
 #: is written; every other entry anywhere.
 _NAME_CHAR = r"A-Za-z0-9_@"
-_SHARED_NAME = re.compile(
-    "|".join(
-        rf"""(?<=["'`]){re.escape(name)}(?=["'`])""" if name.isalpha()
-        else rf"(?<![{_NAME_CHAR}.-]){re.escape(name)}(?![{_NAME_CHAR}-])"
-        for name in sorted(SHARED_DENY_LIST, key=len, reverse=True)
+
+
+@lru_cache(maxsize=2)
+def _shared_name(names: tuple[str, ...]) -> re.Pattern[str] | None:
+    """The pattern matching any of `names`, or None for an empty list."""
+    if not names:
+        return None
+    return re.compile(
+        "|".join(
+            rf"""(?<=["'`]){re.escape(name)}(?=["'`])""" if name.isalpha()
+            else rf"(?<![{_NAME_CHAR}.-]){re.escape(name)}(?![{_NAME_CHAR}-])"
+            for name in sorted(names, key=len, reverse=True)
+        )
     )
-)
+
+
 #: Runner sizes and classes: what one agent's cpu and memory cost.
 COST_PATTERNS: tuple[str, ...] = (
     "terraform/environments/**/*.tfvars",
@@ -1319,7 +1431,11 @@ def _category_hits(
     )
     # An ADDED line: removing a reference to the other team's resources is
     # the direction CLAUDE.md rule 2 wants.
-    scan(STOP_SHARED, SHARED_PATTERNS, changed(_SHARED_NAME, removed=False), terms(_SHARED_NAME))
+    shared_name = _shared_name(shared_deny_list())
+    if shared_name is None:
+        scan(STOP_SHARED, SHARED_PATTERNS, lambda patch: False, lambda text: [])
+    else:
+        scan(STOP_SHARED, SHARED_PATTERNS, changed(shared_name, removed=False), terms(shared_name))
     scan(STOP_COST, COST_PATTERNS, changed(_COST_LINE), terms(_COST_LINE))
     return found
 
@@ -2302,7 +2418,8 @@ def verification_text(readings: list[tuple[str, str | None, str | None]]) -> str
     return redact_detail("\n\n".join(parts), limit=MAX_VERIFICATION_CHARS)
 
 
-def compile_plan(run: "IssueRun", review_context: str | None = None) -> WorkflowCreate:
+def compile_plan(run: "IssueRun", review_context: str | None = None, *,
+                 class_models: Mapping[str, str] | None = None) -> WorkflowCreate:
     """The approved plan as a workflow: implementers, review, gated fix, re-review.
 
     A plan whose steps state no `depends_on` compiles to a chain; one that
@@ -2312,14 +2429,18 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
     carries its planned files and tests; the review's carries the plan's
     requirements, in both shapes, and `review_context` when there is one:
     `reviewcontext.read_review_context`'s IMPACT block (lane KG6), already
-    delimited and bounded. None is today's review prompt.
+    delimited and bounded. None is today's review prompt. `class_models` is
+    the deployment's pinned classes (`Settings.worker_class_models`): the
+    requirements check runs the cheap class only where it is pinned
+    (`_check_class`).
     """
     refuse_auto_merge(run.auto_merge)
     if run.plan is None:
         raise InvalidPlan("this run has no plan to compile")
     plan = parse_plan(run.plan, stored=True)
     if _uses_dependencies(plan["steps"]):
-        return _workflow(run, _compile_staged(run, plan, review_context))
+        return _workflow(run, _compile_staged(run, plan, review_context,
+                                              class_models=class_models))
     ref = run.issue
     steps: list[dict[str, Any]] = []
     previous: str | None = None
@@ -2356,12 +2477,15 @@ def compile_plan(run: "IssueRun", review_context: str | None = None) -> Workflow
         previous = step_id
     last = previous
     assert last is not None  # PlanSpec has at least one step
+    check = _requirements_check(ref, plan, [last], last, by_parent=False,
+                                class_models=class_models)
+    if check is not None:
+        steps.append(check)
     steps.append({
         "step_id": REVIEW_STEP,
         "runner_profile": REVIEW_PROFILE,
-        "metadata": {RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME),
-                     REVIEW_GATE_METADATA_KEY: review_gate_block()},
-        "depends_on": [last],
+        "metadata": {RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
+        "depends_on": [last] + ([REQUIREMENTS_CHECK_STEP] if check is not None else []),
         "builds_on": last,
         "input_from": {last: PATCH_FILE},
         "input": {
@@ -2462,7 +2586,8 @@ def _review_impact(review_context: str | None) -> str:
 
 
 def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
-                    review_context: str | None = None) -> list[dict[str, Any]]:
+                    review_context: str | None = None, *,
+                    class_models: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     """Implementers wired by the plan's `depends_on`, then review and the gated fix.
 
     A step with no dependency starts from the default branch at once. A step
@@ -2540,15 +2665,18 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
         steps.append(spec)
     impl = [_impl_id(sid) for sid in order]
     last = impl[-1]
+    check = _requirements_check(ref, plan, list(impl), last, by_parent=True,
+                                class_models=class_models)
+    if check is not None:
+        steps.append(check)
     steps.append({
         "step_id": REVIEW_STEP,
         "runner_profile": REVIEW_PROFILE,
-        "depends_on": list(impl),
+        "depends_on": list(impl) + ([REQUIREMENTS_CHECK_STEP] if check is not None else []),
         "builds_on": last,
         "input_from": {sid: PATCH_FILE for sid in impl},
         "metadata": {INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,
-                     RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME),
-                     REVIEW_GATE_METADATA_KEY: review_gate_block()},
+                     RUNTIME_METADATA_KEY: dict(REVIEW_RUNTIME)},
         "input": {
             "issue": ref.number,
             "prompt": (

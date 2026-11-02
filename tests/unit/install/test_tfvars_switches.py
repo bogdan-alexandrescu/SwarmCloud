@@ -1,0 +1,274 @@
+"""Every switch the manifest counts as done is a switch the install turned on
+(DAYONE-WORKSPACE-SWITCHES, audit 3 findings A1 and A10).
+
+The engine counts a manifest `switch.*` entry met once the step its `step:`
+names is done (engine.py `_owning_step_done`). So when a Terraform pass owns
+a switch, that pass's generated inputs must set it true, or the manifest
+reports as done a switch a fresh install leaves at its default, false: the
+workspace switches were exactly that (no swarm-workspace-deployer, so
+`cluster.policies` stopped at stage 10). These render the real tfvars, in
+team mode and in one-person mode, for every switch entry whose owning step is
+a Terraform pass, read the value the pass applies (its rendered input, else
+the variable's own default) and hold it true from that pass on.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from swarm_install import manifest as manifest_mod
+from swarm_install import sizing as sizes
+from swarm_install import tfvars
+from swarm_install.steps import discover
+from swarm_install.steps.bootstrap import Deps
+from swarm_install.steps.github_switches import Pass3Step, Pass4Step
+
+from .test_terraform_runner import install_state
+from .test_tfvars import DIGEST, EVERY_ADDON_ON, EVERY_VERSION
+
+REPO = Path(__file__).resolve().parents[3]
+INSTALLER = "admin@example.com"
+
+#: Switches an owning pass leaves off on purpose, each because turning it on
+#: is the owner's decision (asked in this lane's questions.json). The guard
+#: holds them off too, so neither a silent flip nor a silent drop passes.
+OWNER_CHOICES = {
+    # Off until the owner's O1 step 3 proves IAP evaluates the attribute;
+    # bounds K1 only, which a fresh install does not grant.
+    "switch.front_door_admit_role_bound": "front_door_admit_role_bound",
+}
+#: Not a bool: a map of refusal codes, every one shipped off (report-only).
+NOT_A_BOOL = {"switch.api_refusals"}
+#: Switches the manifest gives to an earlier pass than the one that can turn
+#: them on, each held to the pass it does turn on in. Empty since
+#: DAYONE-MANIFEST-STEPS-2 moved the three WORKSPACE-SWITCHES listed here to
+#: the pass that turns them on; an entry added here is a manifest step to move.
+TURNS_ON_LATER: dict[str, str] = {}
+#: The switches DAYONE-MANIFEST-STEPS-2 moved, by the pass that turns each on.
+MOVED = {
+    # platform_roles.tf names swarm-quota-broker by a string, so it waits for the account's pass.
+    "switch.grant_broker_secret_lister": "bootstrap-2",
+    # forge_user_slots.tf names swarm-api by a string, and bootstrap pass 1
+    # creates swarm-api in the same apply: nothing orders the grant after it.
+    "switch.enable_forge_user_slots": "bootstrap-2",
+    # Publishing needs the swarm-workspace-apply job, which bootstrap pass 2
+    # makes after infra-2; infra-3 is the first infra pass after it.
+    "switch.workspace_apply_publish": "infra-3",
+}
+#: Entries counted on a moved switch (their resources' count is the switch, or
+#: their depends_on names it), so the manifest counts them met no earlier.
+COUNTED_ON = {
+    "role.custom.swarmForgeSlotCreator": "switch.enable_forge_user_slots",
+    "role.custom.swarmForgeSlotVersionManager": "switch.enable_forge_user_slots",
+    "iam-binding.swarm-api-forge-slots": "switch.enable_forge_user_slots",
+    "iam-binding.broker-secret-lister": "switch.grant_broker_secret_lister",
+    "switch.broker_secret_lister_project_wide_versions_add": "switch.grant_broker_secret_lister",
+    "switch.workspace_gate": "switch.workspace_apply_publish",
+}
+
+
+def _pass_of_step() -> dict[str, str]:
+    """The Terraform pass each step applies, from the steps themselves."""
+    found = {s.id: s.pass_name for s in discover() if getattr(s, "pass_name", "")}
+    for cls in (Pass3Step, Pass4Step):
+        step = cls(Deps(gcp=lambda: None))
+        found[step.id] = step.pass_name
+    return found
+
+
+def _owned_switches() -> list[tuple[str, str, str]]:
+    """(entry id, owning pass, scope) for every switch entry a Terraform pass owns."""
+    passes = _pass_of_step()
+    return [(e.id, passes[e.step], e.scope) for e in manifest_mod.load().entries
+            if e.id.startswith("switch.") and e.step in passes and e.id not in NOT_A_BOOL]
+
+
+def _variable(entry_id: str) -> str:
+    # switch.<variable> or switch.<variable>-<field> (an object's field).
+    return entry_id.removeprefix("switch.").replace("-", ".", 1)
+
+
+def _default(root: str, name: str) -> bool:
+    for path in (REPO / "terraform" / root).glob("*.tf"):
+        found = re.search(rf'^variable\s+"{name}"\s*\{{(.*?)^\}}', path.read_text(), flags=re.M | re.S)
+        if found:
+            default = re.search(r"^\s*default\s*=\s*(true|false)\s*$", found.group(1), flags=re.M)
+            return bool(default) and default.group(1) == "true"
+    raise AssertionError(f"terraform/{root} declares no {name}")
+
+
+def _applied(inputs: dict, root: str, variable: str) -> bool:
+    """The value the pass applies: its rendered input, else the variable's default."""
+    name, _, field = variable.partition(".")
+    if name not in inputs:
+        return _default(root, name) if not field else False
+    value = inputs[name]
+    if field:
+        return isinstance(value, dict) and value.get(field) is True
+    return value is True
+
+
+def _state(mode: str, members: int, *, addons: dict | None = None):
+    # A state as the install holds it when each pass runs for real: every
+    # release image copied (stage 4), every key with a version (stage 6), the
+    # console's GitHub App recorded (stage 9).
+    digests = {n: DIGEST for n in ("swarm-api", "workspace-apply", "swarm-graph", "swarm-live")}
+    outputs = {"image_digests": digests, "github_app": {"id": "42", "slug": "s", "client_id": "c"},
+               "sizing": dict(sizes.propose(mode, members))}
+    if addons:
+        outputs["addons"] = addons
+    return install_state(**outputs)
+
+
+def _render(state, pass_name: str) -> dict:
+    if tfvars.ROOT_OF[pass_name] == "bootstrap":
+        return tfvars.bootstrap_inputs(state, pass_name=pass_name, installer=INSTALLER)
+    return tfvars.infra_inputs(state, pass_name=pass_name, installer=INSTALLER, versions=EVERY_VERSION)
+
+
+MODES = ((sizes.TEAM, 5), (sizes.INDIVIDUAL, 1))
+
+
+def test_the_guard_reads_the_workspace_switches() -> None:
+    # The guard is only as good as what it visits: the switches audit 3 named are among them.
+    owned = {entry_id: pass_name for entry_id, pass_name, _ in _owned_switches()}
+    for entry_id in ("switch.enable_workspace_deployer", "switch.enable_forge_user_slots",
+                     "switch.enable_workspace_kinds", "switch.enable_provider_keys",
+                     "switch.enable_workspace_secrets", "switch.enable_browser_logins",
+                     "switch.enable_mcp_credentials", "switch.enable_platform_secret_status",
+                     "switch.workspace_apply_publish", "switch.platform_admin_reach",
+                     "switch.forge_broker", *OWNER_CHOICES):
+        assert entry_id in owned, f"{entry_id} is not owned by a Terraform pass"
+    assert len(owned) >= 30, len(owned)
+    for entry_id, late in TURNS_ON_LATER.items():
+        # Once the manifest names the pass that turns it on, the exception goes.
+        assert not tfvars.after(owned[entry_id], late), f"{entry_id} is owned by {late}: drop it from TURNS_ON_LATER"
+
+
+@pytest.mark.parametrize("entry_id", sorted(MOVED))
+def test_a_moved_switch_is_owned_by_the_pass_that_turns_it_on(entry_id: str) -> None:
+    owned = {e: pass_name for e, pass_name, _ in _owned_switches()}
+    assert owned[entry_id] == MOVED[entry_id], f"{entry_id} is owned by {owned[entry_id]}"
+
+
+@pytest.mark.parametrize("entry_id", sorted(COUNTED_ON))
+def test_what_a_moved_switch_counts_is_met_no_earlier(entry_id: str) -> None:
+    by_id = manifest_mod.load().by_id()
+    passes = _pass_of_step()
+    entry, switch = by_id[entry_id], COUNTED_ON[entry_id]
+    assert switch in entry.depends_on, f"{entry_id} does not depend on {switch}"
+    mine, needed = passes[entry.step], passes[by_id[switch].step]
+    assert tfvars.after(mine, needed), f"{entry_id} is met at {mine}, before {switch} at {needed}"
+
+
+@pytest.mark.parametrize("mode,members", MODES, ids=[m for m, _ in MODES])
+def test_every_pass_owned_switch_is_on_from_its_pass(mode: str, members: int) -> None:
+    off: list[str] = []
+    for entry_id, owner, scope in _owned_switches():
+        state = _state(mode, members, addons=EVERY_ADDON_ON if scope.startswith("addon:") else None)
+        root = tfvars.ROOT_OF[owner]
+        first = TURNS_ON_LATER.get(entry_id, owner)
+        for pass_name in tfvars.PASSES:
+            if tfvars.ROOT_OF[pass_name] != root or not tfvars.after(pass_name, first):
+                continue
+            applied = _applied(_render(state, pass_name), root, _variable(entry_id))
+            if entry_id in OWNER_CHOICES:
+                if applied:
+                    off.append(f"{entry_id} is on in {pass_name}, but turning it on is the owner's decision")
+            elif not applied:
+                off.append(f"{entry_id} (owned by {owner}) is off in {pass_name}")
+    assert not off, "\n".join(off)
+
+
+@pytest.mark.parametrize("mode,members", MODES, ids=[m for m, _ in MODES])
+def test_workspace_switches_wait_for_what_they_need(mode: str, members: int) -> None:
+    state = _state(mode, members)
+    # Bootstrap pass 1: swarm-api and the image's job are made in this same
+    # apply or later, and the grants name swarm-api by a string.
+    first = _render(state, "bootstrap-1")
+    for switch in ("enable_workspace_deployer", "enable_forge_user_slots", "enable_workspace_kinds",
+                   "enable_provider_keys", "enable_workspace_secrets", "enable_browser_logins",
+                   "enable_mcp_credentials", "enable_platform_secret_status"):
+        assert first.get(switch) is not True, f"{switch} is on in bootstrap-1"
+    second = _render(state, "bootstrap-2")
+    assert second["enable_workspace_deployer"] is True
+    assert second["workspace_apply_image"].endswith(f"/workspace-apply@{DIGEST}")
+    # Publishing waits for the job bootstrap pass 2 makes: off in the infra passes before it.
+    for pass_name in ("infra-1", "infra-2"):
+        assert _render(state, pass_name).get("workspace_apply_publish") is not True, pass_name
+    for pass_name in ("infra-3", "infra-4", "infra-close"):
+        assert _render(state, pass_name)["workspace_apply_publish"] is True, pass_name
+
+
+@pytest.mark.parametrize("mode,members", MODES, ids=[m for m, _ in MODES])
+def test_owner_picked_switches_go_on_from_their_pass(mode: str, members: int) -> None:
+    # PR #2854's owner picks: platform_admin_reach from infra-2, forge_broker from infra-3.
+    state = _state(mode, members)
+    for pass_name in ("infra-1",):
+        assert _render(state, pass_name)["platform_admin_reach"] is False, pass_name
+    for pass_name in ("infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _render(state, pass_name)["platform_admin_reach"] is True, pass_name
+    for pass_name in ("infra-1", "infra-2"):
+        assert _render(state, pass_name)["forge_broker"] is False, pass_name
+    for pass_name in ("infra-3", "infra-4", "infra-close"):
+        assert _render(state, pass_name)["forge_broker"] is True, pass_name
+
+
+def test_no_child_key_leaves_the_forge_broker_off() -> None:
+    # child_tasks.tf refuses forge_broker without enable_child_tasks: no child
+    # key version, no broker, in every pass.
+    state = _state(sizes.TEAM, 5)
+    versions = {k: v for k, v in EVERY_VERSION.items() if k != "swarm-child-key"}
+    for pass_name in ("infra-3", "infra-4", "infra-close"):
+        inputs = tfvars.infra_inputs(state, pass_name=pass_name, installer=INSTALLER, versions=versions)
+        assert inputs["enable_child_tasks"] is False and inputs["forge_broker"] is False, pass_name
+
+
+def test_no_workspace_apply_image_leaves_the_deployer_off() -> None:
+    # workspace_deployer.tf refuses enable_workspace_deployer without the image;
+    # a state with no digest for it renders the deployer, its kinds and publishing off.
+    state = install_state(github_app={"id": "42", "slug": "s"},
+                          image_digests={"swarm-api": DIGEST})
+    second = _render(state, "bootstrap-2")
+    assert second["enable_workspace_deployer"] is False and second["enable_workspace_kinds"] is False
+    assert "workspace_apply_image" not in second
+    assert _render(state, "infra-3")["workspace_apply_publish"] is False
+
+
+# -- A10: the first bootstrap apply never grants on an account before creating it --------------
+
+
+def _block(text: str, header: str) -> str:
+    # To the block's closing brace at the start of a line: an error message may hold a lone `{`.
+    found = re.search(re.escape(header) + r"\s*\{.*?^\}", text, flags=re.M | re.S)
+    assert found, f"no block: {header}"
+    return found.group(0)
+
+
+def _platform_account_resources() -> list[str]:
+    # Every account bootstrap_platform names is made by one of these resources
+    # (service_account_ids' bootstrap_platform: the platform map plus tick,
+    # verify, schedule_tick, rollup_sweeper, discovery, doctor and voice).
+    text = (REPO / "terraform" / "bootstrap" / "platform_service_accounts.tf").read_text()
+    found = re.findall(r'^resource "google_service_account" "([a-z_]+)"', text, flags=re.M)
+    assert {"platform", "tick", "doctor"} <= set(found), found
+    return [f"google_service_account.{name}" for name in found]
+
+
+@pytest.mark.parametrize("path,header,needs", [
+    # Grants serviceAccountAdmin on each of bootstrap_platform's accounts by a literal resource name.
+    ("deployer_service_accounts.tf", 'resource "google_service_account_iam_member" "deployer_admin"', None),
+    # Names serviceAccount:swarm-api@... (one of the platform map's) by a string in the account's policy.
+    ("qa_identity.tf", 'resource "google_service_account_iam_policy" "qa_identity"',
+     ["google_service_account.platform"]),
+])
+def test_grants_naming_platform_accounts_wait_for_them(path: str, header: str, needs: list[str] | None) -> None:
+    block = _block((REPO / "terraform" / "bootstrap" / path).read_text(), header)
+    deps = re.search(r"depends_on\s*=\s*\[([^\]]*)\]", block)
+    assert deps, f"{header} declares no depends_on, so a first apply can grant before the account exists"
+    listed = set(re.findall(r"google_service_account\.[a-z_]+", deps.group(1)))
+    missing = sorted(set(needs or _platform_account_resources()) - listed)
+    assert not missing, f"{header} can grant before these accounts exist: {missing}"

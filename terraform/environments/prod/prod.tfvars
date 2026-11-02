@@ -106,6 +106,9 @@ settings_env = {
 
 # --- tenancy ---------------------------------------------------------------
 allowed_domains = ["saga.xyz"]
+# What terraform/infra/locals.tf named as a literal until DAYONE-TF-1, kept so
+# this environment's ALLOWED_USERS is unchanged (owner decision 2026-10-18, #1568).
+allowed_users = ["oracle-api@saga-agents-staging.iam.gserviceaccount.com"]
 
 tenants = {
   eng = {
@@ -167,3 +170,9 @@ spec_signature_mode = "enforce"
 # task. While off, such a task runs with the tenant token, as before #780.
 # Asked of the owner in the OB10 lane's questions.json.
 repository_grants_enforced = false
+
+# The acceptance suite's public fixture bucket (terraform/infra/acceptance_fixture.tf),
+# an addon:ci piece that defaults off since DAYONE-TF-2 so an install makes no
+# public bucket. This deployment runs the acceptance suite, so it stays on and
+# the live plan shows no change.
+enable_acceptance_fixture = true

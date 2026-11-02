@@ -380,7 +380,10 @@ SWITCHES: dict[str, Switch] = {
     # runs its own CI-fix rounds from issueci and has no merge step), or
     # while a conflict fix (#2456) or a plain continuation of the lane --
     # `continues_task` or `publish_to_pr` onto its branch, no writer mark
-    # (#2583, `_refuse_if_continuation_live`) -- is live and pushes to it.
+    # (#2583, `_refuse_if_continuation_live`) -- is live and pushes to it,
+    # or while another CI fix of the pull request is live at another head or
+    # run (#2763, `_refuse_if_ci_fix_live`: on PR #2730 attempt 2 pushed
+    # beside a RUNNING attempt 1, whose publish conflicted).
     # SHIPS ON (default=True) by owner decision 2026-10-21 (~15:15Z, asked
     # after this lane was held), unlike a new refusal's usual report-only
     # start (the 2026-10-08 rule): about 20% of standalone ci-fix pushes were
@@ -398,7 +401,8 @@ SWITCHES: dict[str, Switch] = {
         "request (its pr_task_id is the continued root, or the root's workflow is one of its "
         "ci_fix_workflows), refused naming the run, which runs its own rounds, or while a "
         "conflict fix or a plain continuation of the lane (continues_task or publish_to_pr "
-        "onto its branch) is live and pushing to it, refused naming that task. Ships on by owner decision 2026-10-21: scripts/ci-fix.sh reads "
+        "onto its branch) is live and pushing to it, or another CI fix of the pull request is "
+        "live at another head or run, refused naming that task. Ships on by owner decision 2026-10-21: scripts/ci-fix.sh reads "
         "the 409 as a skip, and off "
         "the standalone fixer races the lane's round for the branch again",
         default=True,
@@ -544,6 +548,32 @@ SWITCHES: dict[str, Switch] = {
         "last-editor rule or the custom-prompt spec rule -- is refused 403 on :reject of it too. "
         "Ships on by BGD's decision 2026-10-26 (#2417 A5f); the console reads may_decide.reject "
         "and offers Reject only to those who may approve",
+        default=True,
+    ),
+    # #2726 (docs/workflows.md, "A `repository_ref` the forge does not have").
+    # Off, a submission on a branch GitHub says is gone is admitted, as before,
+    # and fails in the worker's clone after a lease and a pod.
+    "repository_ref_not_found": Switch(
+        code="repository_ref_not_found",
+        why="a submission whose repository_ref is neither a branch nor a tag of a repository "
+        "the submitter's forge slot can read is answered 422 repository_ref_not_found before "
+        "any task is stored. On once the report-only log shows only refs that really were gone",
+    ),
+    # Admin › Setup's first workspace before infra pass 3 (DAYONE-MANIFEST-
+    # STEPS-2, routes/setup.py "NO WORKSPACE BEFORE PUBLISHING"). Filing it
+    # approves it, and an approval while swarm-api's publisher is off is only
+    # logged workspace_stuck (publishing_off) and pages. SHIPS ON
+    # (default=True), unlike a new refusal's usual report-only start: the
+    # console never offers the step before then (its first_team step reads
+    # `waiting`), so no caller it guides can meet the 409, and off, the
+    # workspace is filed and never built. Set REFUSAL_PUBLISHING_OFF=off to
+    # file it before publishing again.
+    "publishing_off": Switch(
+        code="publishing_off",
+        why="Admin › Setup files no first workspace (a team, or one person's personal "
+        "workspace) while swarm-api's workspace publisher is off, which swarm install's "
+        "infra pass 3 turns on; the team route answers 409 publishing_off and writes nothing. "
+        "Ships on: the console shows the step waiting until then",
         default=True,
     ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part

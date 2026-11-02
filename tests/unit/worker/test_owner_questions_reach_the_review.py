@@ -199,3 +199,17 @@ def test_questions_two_steps_back_reach_a_re_review(db, store, worker_factory, r
     # or adds a row.
     assert {r["task_id"] for r in rows} == {IMPLEMENT}
     assert len(rows) == 2
+
+
+def test_the_guidance_puts_an_owner_only_finding_in_needs_owner_under_merge():
+    from agent_worker import owner_questions
+
+    text = " ".join(owner_questions.guidance(
+        "/work/owner-questions.json", [{"answer": None}]).split())
+
+    # MUTATION: drop the sentence and a review records a finding that waits only on
+    # the owner as NOT_YET, which the merge cannot hold for (#2764, wf_2a8fba8b).
+    assert ("A finding that waits only on an unanswered owner question is not a "
+            "NOT_YET finding") in text
+    assert "give MERGE if nothing else is open" in text
+    assert "give NOT_YET only for findings a fix step can act on now" in text

@@ -222,7 +222,10 @@ describe('5b:QA-014: the decided counts’ range says “now” only for a read 
 
     it('prints the canned Sep 25 read’s end, not now, in the summary', async () => {
       const d = ledgerFixture()
-      render(<TimelineLanesScreen view={null} onView={() => {}} />)
+      // Lanes zoomed to the read's own window: since QA2-FIX-05 (runs2-04) a
+      // read over another window than the lanes' prints no range of its own.
+      const q = new URLSearchParams({ since: new Date(d.since).toISOString(), until: new Date(d.until).toISOString() }).toString()
+      render(<TimelineLanesScreen view={q} onView={() => {}} />)
       const range = await waitFor(() => {
         const el = document.querySelector('.tl-strip-range')
         expect(el).not.toBeNull()

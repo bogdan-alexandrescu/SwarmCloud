@@ -38,7 +38,7 @@ vi.mock('../api', async (importOriginal) => {
 const { Run, ParkEligible, glueSeparators } = await import('../AgentDetail')
 const { AttemptTimelineScreen } = await import('../AttemptTimeline')
 const { AgentsScreen } = await import('../Agents')
-const { useSplitFocus, openedByAddress } = await import('../agent-split/focus')
+const { useSplitFocus, openedByAddress, focusSplitOnOpen } = await import('../agent-split/focus')
 
 function run(t: Task, attempts: AttemptRow[]): AgentRun {
   return {
@@ -238,7 +238,9 @@ describe('V262: a split opened by its address takes focus without a ring', () =>
     const panel = mountPanel()
     const focus = vi.spyOn(panel.current!, 'focus')
     renderHook(() => useSplitFocus(panel, () => {}))
-    expect(focus).toHaveBeenCalledWith({ focusVisible: false })
+    // MUTATION: drop `...STILL` from the address open in agent-split/focus.ts -> the
+    // panel's focus scrolls the page column under the breadcrumb (overview-agents-55).
+    expect(focus).toHaveBeenCalledWith({ focusVisible: false, preventScroll: true })
     panel.current!.remove()
   })
 
@@ -250,7 +252,24 @@ describe('V262: a split opened by its address takes focus without a ring', () =>
     const focus = vi.spyOn(panel.current!, 'focus')
     renderHook(() => useSplitFocus(panel, () => {}))
     expect(focus).toHaveBeenCalledTimes(1)
-    expect(focus.mock.calls[0]![0]).toBeUndefined()
+    // The ring is kept; the page column still does not move (overview-agents-55).
+    // MUTATION: pass `undefined` again for a row's open in agent-split/focus.ts.
+    expect(focus.mock.calls[0]![0]).toEqual({ preventScroll: true })
+    panel.current!.remove()
+    row.remove()
+  })
+
+  it('takes a key-opened focus without scrolling the page column (overview-agents-55)', () => {
+    // MUTATION: call `panel.current?.focus()` with no options in the taker in agent-split/focus.ts.
+    const row = document.createElement('button')
+    document.body.appendChild(row)
+    row.focus()
+    const panel = mountPanel()
+    const focus = vi.spyOn(panel.current!, 'focus')
+    focusSplitOnOpen('task_r13_key', row)
+    renderHook(() => useSplitFocus(panel, () => {}, 'task_r13_key'))
+    expect(focus.mock.calls.length).toBeGreaterThan(0)
+    for (const [opts] of focus.mock.calls) expect(opts).toMatchObject({ preventScroll: true })
     panel.current!.remove()
     row.remove()
   })

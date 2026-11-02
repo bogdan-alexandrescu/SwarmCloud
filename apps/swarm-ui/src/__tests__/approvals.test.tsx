@@ -285,7 +285,8 @@ describe('one item', () => {
       }),
     )
     const detail = await loaded()
-    await waitFor(() => expect(visible(detail)).toContain('Held NEEDS_SECOND_MEMBER'), WAIT)
+    // Visual QA automate2-05: the hold leads with its words, not its code.
+    await waitFor(() => expect(visible(detail)).toContain('Held for a second member.'), WAIT)
     expect(visible(detail)).toContain('terraform/iam.tf')
     fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
     const field = await within(detail).findByRole('textbox', { name: /approve it yourself/ }, WAIT)
@@ -313,6 +314,26 @@ describe('one item', () => {
     fireEvent.click(within(detail).getByRole('button', { name: 'Reject' }))
     await waitFor(() => expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:reject')).toHaveLength(1), WAIT)
     expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:reject')[0]!.body).toEqual({ reason: 'the plan touches the wrong module' })
+  })
+
+  it('puts focus on what the decision said once Reject answers (QA1 automate-15)', async () => {
+    await mount(
+      'approval=run%3Arun_8f2a',
+      routes((m, url) =>
+        m === 'POST' && url === '/v1/approvals/run%3Arun_8f2a:reject' ? { status: 200, body: { approval: { approval_id: 'run:run_8f2a', state: 'rejected' } } } : null,
+      ),
+    )
+    const detail = await loaded()
+    await within(detail).findByRole('button', { name: 'Reject' }, WAIT)
+    fireEvent.change(within(detail).getByRole('textbox', { name: /Reason/ }), { target: { value: 'the plan touches the wrong module' } })
+    const reject = within(detail).getByRole('button', { name: 'Reject' })
+    reject.focus()
+    fireEvent.click(reject)
+    const said = await screen.findByText(/Rejected\. The inbox was read again\./, undefined, WAIT)
+    // MUTATION: drop the focus effect in Approvals.tsx and focus falls to <body> as Reject turns disabled.
+    await waitFor(() => expect(document.activeElement).toBe(said), WAIT)
+    expect(said.getAttribute('tabindex')).toBe('-1')
+    expect(said.getAttribute('role')).toBe('status')
   })
 })
 
@@ -502,7 +523,8 @@ describe('live QA: automate, approvals', () => {
     // MUTATION: leave `kind` out of keptKeys and the filter is dropped from the URL.
     expect(canonical(fromAddress('automate/approvals?kind=merge'))).toBe('automate/approvals?kind=merge')
     const { calls, go } = await mount('kind=merge', routes(() => null))
-    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=merge')).toBe(true), WAIT)
+    // The list asks the inbox and its history (`state=all`, QA2-FIX-07 automate2-01).
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=merge&state=all')).toBe(true), WAIT)
     const group = screen.getByRole('group', { name: 'Kind' })
     // The chosen chip carries its count ("Merge · 2", #2417 A4).
     expect(within(group).getByRole('button', { name: /^Merge/ }).getAttribute('aria-pressed')).toBe('true')
@@ -518,7 +540,7 @@ describe('live QA: automate, approvals', () => {
 
   it('asks for the whole inbox when no kind is named', async () => {
     const { calls } = await mount('', routes(() => null))
-    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals')).toBe(true), WAIT)
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?state=all')).toBe(true), WAIT)
     expect(calls.some((c) => c.url.startsWith('/v1/approvals?kind'))).toBe(false)
   })
 })

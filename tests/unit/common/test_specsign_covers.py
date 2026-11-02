@@ -417,6 +417,14 @@ UNSIGNED_TASK_FIELDS = {
     "spec_key_version",
     "spec_format",
     "human_wait",
+    # Contract request 123: the scheduler counts refused dispatches after
+    # submission, so it cannot be inside a signature made at it.
+    "platform_refusals",
+    # Contract request 131: a record of the timeout a spec asked for when
+    # swarm-api stored a lower one. It limits nothing and selects nothing
+    # (the limit is the signed `timeout_seconds`), so a forged value can only
+    # add a line to the runner's report.
+    "timeout_seconds_asked",
 }
 
 

@@ -254,7 +254,7 @@ def test_the_jev_client_runners_are_the_workers():
 def test_the_map_in_the_pr_body_is_the_catalogues():
     carrying = {n for n, p in RUNNER_PROFILES.items() if runs_jev_client(p)}
     assert carrying == {"claude-code", "codex", "claude-code-review", "claude-code-browser",
-                        "claude-code-large"}
+                        "claude-code-large", "claude-code-lightpanda"}
     on_cloud_run = {n for n in carrying
                     if resolve_backend(RUNNER_PROFILES[n]) is Backend.CLOUD_RUN_JOB}
     assert on_cloud_run == {"claude-code-review"}

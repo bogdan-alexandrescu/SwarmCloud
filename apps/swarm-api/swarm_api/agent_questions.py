@@ -142,17 +142,24 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import TaskEvent, new_id
-from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
+from swarm_common.states import TERMINAL_STATES, EventType, ParkReason, TaskState, assert_transition
 
 from . import refusals, roles
 from .agent_output import AgentOutputService
-from .codec import event_to_firestore, owner_answer_to_api, owner_answers_by_index, task_from_dict
+from .codec import (
+    claude_session_of,
+    event_to_firestore,
+    owner_answer_to_api,
+    owner_answers_by_index,
+    task_from_dict,
+)
 from .errors import Conflict, Forbidden, NotFound, RoleMemberRequired, ValidationFailed
 from .handoff import ready_writes
 from .redaction import redact
 from .store import EVENTS, TASKS, Store
 from .task_input import masking_for
 from .validation import (
+    CONFLICT_ROUND_METADATA_KEY,
     OWNER_ANSWERS_METADATA_KEY,
     QUESTION_WAIT_METADATA_KEY,
     QUESTION_WAITS_EARLIER_METADATA_KEY,
@@ -224,6 +231,16 @@ OWNER_QUESTIONS_ANSWERED = "owner_questions_answered"
 #: one merge step, and a merge-only continuation another; past this the rest
 #: wait for a person's `human-ready`, never for a read nobody bounded.
 MAX_HELD_MERGES = 10
+#: The blocks a merge's fix round carries in its task's metadata, each naming
+#: the merge it serves as `merge_task` (`mergewake._on_red` / `_on_pick`:
+#: `merge_fix_round`; `_on_conflict`: `validation.CONFLICT_ROUND_METADATA_KEY`).
+ROUND_METADATA_KEYS = ("merge_fix_round", CONFLICT_ROUND_METADATA_KEY)
+#: The merge's own record of its rounds (`mergewake.MERGE_FIX_METADATA_KEY`)
+#: and its round lists: CI, conflict and pick (`mergewake.ROUND_KIND`).
+#: Spelled again, as `mergewake` brings the forge clients with it; held
+#: equal by tests/unit/control_plane/test_answer_wakes_the_merge_round.py.
+MERGE_FIX_METADATA_KEY = "merge_fix"
+MERGE_ROUND_LISTS = ("rounds", "conflict_rounds", "pick_rounds")
 #: The most distinct asking tasks one hold may name before it is read as
 #: unreadable (it waits for a person): every one is read in the answer's
 #: transaction, and the document is tenant-writable.
@@ -357,33 +374,83 @@ def owner_questions_hold(data: dict[str, Any]) -> list[tuple[str, int]] | None:
     return None
 
 
-def _held_merges(txn: Any, db: Any, data: dict[str, Any]) -> list[dict[str, Any]]:
-    """The parked merges in the answered task's workflow whose owner-question hold names it.
+def _round_merge(data: dict[str, Any]) -> str | None:
+    """The merge task a fix round's task names in its metadata, else None."""
+    metadata = data.get("metadata")
+    for key in ROUND_METADATA_KEYS:
+        block = metadata.get(key) if isinstance(metadata, dict) else None
+        merge = block.get("merge_task") if isinstance(block, dict) else None
+        if isinstance(merge, str) and merge:
+            return merge
+    return None
 
-    Read in the answer's transaction, before any write. Each one's
-    workflow and tenant are checked again on the document, as the query
-    alone is not trusted to say them.
+
+def _is_round_of(doc: dict[str, Any], merge: dict[str, Any]) -> bool:
+    """Whether task `doc` is one of `merge`'s own fix rounds (#2913).
+
+    A round runs as a workflow of its own, so it is not a step of the
+    merge's workflow. Both documents are tenant-writable, so BOTH sides must
+    say it: the same tenant, the round's metadata naming the merge, and the
+    merge's `merge_fix` record listing the round's task in the round's own
+    workflow -- as `agent_worker.merge._round_questions` reads the rounds
+    from that record.
+    """
+    if doc.get("tenant_id") != merge.get("tenant_id") or _round_merge(doc) != merge.get("id"):
+        return False
+    task_id, workflow_id = doc.get("id"), doc.get("workflow_id")
+    if not isinstance(task_id, str) or not task_id or task_id == merge.get("id"):
+        return False
+    metadata = merge.get("metadata")
+    record = metadata.get(MERGE_FIX_METADATA_KEY) if isinstance(metadata, dict) else None
+    if not isinstance(record, dict):
+        return False
+    for key in MERGE_ROUND_LISTS:
+        entries = record.get(key)
+        for entry in entries if isinstance(entries, list) else ():
+            if (isinstance(entry, dict) and entry.get("task_id") == task_id
+                    and entry.get("workflow_id") == workflow_id):
+                return True
+    return False
+
+
+def _held_merges(txn: Any, db: Any, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """The parked merges whose owner-question hold names the answered task.
+
+    Those in the answered task's workflow, and -- when the answered task is a
+    merge's fix round, which runs as a workflow of its own (#2913) -- the
+    merge its metadata names, when that merge is the same tenant's and its
+    `merge_fix` record lists the round (`_is_round_of`). Read in the
+    answer's transaction, before any write. Each one's workflow and tenant
+    are checked again on the document, as the query alone is not trusted to
+    say them.
     """
     workflow_id, tenant_id, task_id = data.get("workflow_id"), data.get("tenant_id"), data.get("id")
-    if not isinstance(workflow_id, str) or not workflow_id:
-        return []
-    query = (
-        db.collection(TASKS)
-        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
-        .where(filter=FieldFilter("workflow_id", "==", workflow_id))
-        .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
-        .where(filter=FieldFilter("park_reason", "==", ParkReason.HUMAN_REQUIRED.value))
-        .limit(MAX_HELD_MERGES)
-    )
     held: list[dict[str, Any]] = []
-    for snap in txn.get(query):
-        doc = {"id": snap.id, **(snap.to_dict() or {})}
-        if (doc.get("tenant_id") != tenant_id or doc.get("workflow_id") != workflow_id
-                or doc.get("id") == task_id):
-            continue
-        named = owner_questions_hold(doc)
-        if named is not None and any(task == task_id for task, _ in named):
-            held.append(doc)
+    if isinstance(workflow_id, str) and workflow_id:
+        query = (
+            db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("workflow_id", "==", workflow_id))
+            .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+            .where(filter=FieldFilter("park_reason", "==", ParkReason.HUMAN_REQUIRED.value))
+            .limit(MAX_HELD_MERGES)
+        )
+        for snap in txn.get(query):
+            doc = {"id": snap.id, **(snap.to_dict() or {})}
+            if (doc.get("tenant_id") != tenant_id or doc.get("workflow_id") != workflow_id
+                    or doc.get("id") == task_id):
+                continue
+            named = owner_questions_hold(doc)
+            if named is not None and any(task == task_id for task, _ in named):
+                held.append(doc)
+    merge_id = _round_merge(data)
+    if merge_id is not None and merge_id != task_id and all(m["id"] != merge_id for m in held):
+        snap = _snapshot(txn.get(db.collection(TASKS).document(merge_id)))
+        merge = {**(snap.to_dict() or {}), "id": merge_id} if snap.exists else None
+        if merge is not None and _is_round_of(data, merge):
+            named = owner_questions_hold(merge)
+            if named is not None and any(task == task_id for task, _ in named):
+                held.append(merge)
     return held
 
 
@@ -394,9 +461,11 @@ def _hold_cleared(txn: Any, db: Any, merge: dict[str, Any], answered: dict[str, 
     `answered` is the task just answered, with the answer it is being
     given; every other named task is read in the transaction (`docs`
     caches the reads, and every read precedes the transaction's writes).
-    FAIL CLOSED: a named task that cannot be read, or is not a step of the
-    merge's own workflow and tenant, answers nothing -- as the merge's own
-    re-read (`agent_worker.merge._unanswered`) holds it.
+    A named task counts when it is a step of the merge's own workflow and
+    tenant, or one of the merge's own fix rounds (`_is_round_of`, #2913).
+    FAIL CLOSED: a named task that cannot be read, or is neither, answers
+    nothing -- as the merge's own re-read (`agent_worker.merge._unanswered`,
+    `_round_questions`) holds it.
     """
     named = owner_questions_hold(merge) or []
     if not named:
@@ -407,10 +476,13 @@ def _hold_cleared(txn: Any, db: Any, merge: dict[str, Any], answered: dict[str, 
         else:
             if task_id not in docs:
                 snap = _snapshot(txn.get(db.collection(TASKS).document(task_id)))
-                docs[task_id] = snap.to_dict() if snap.exists else None
+                docs[task_id] = {**(snap.to_dict() or {}), "id": task_id} if snap.exists else None
             doc = docs[task_id]
-        if (doc is None or doc.get("tenant_id") != merge.get("tenant_id")
-                or doc.get("workflow_id") != merge.get("workflow_id")):
+        if doc is None:
+            return False
+        step = (doc.get("tenant_id") == merge.get("tenant_id")
+                and doc.get("workflow_id") == merge.get("workflow_id"))
+        if not step and not _is_round_of(doc, merge):
             return False
         if index not in owner_answers_by_index(doc.get("metadata")):
             return False
@@ -498,6 +570,62 @@ def unanswered(count: int, metadata: dict[str, Any] | None) -> int:
     """How many of the `count` questions have no stored answer."""
     answered = owner_answers_by_index(metadata)
     return sum(1 for index in range(count) if index not in answered)
+
+
+#: `GET /v1/tasks/open-questions` (#2835): how far back `since` may reach, its
+#: default, and the most documents one request reads. The sc plugin's check
+#: raises a finished task's questions for 7 days (`swarm_mcp.check.
+#: OWNER_QUESTIONS_DAYS`); 31 lets a reader ask for a month and no more. The
+#: query reads only the caller's tasks that ended in the window AND whose
+#: agent asked questions -- answered or not -- so 2,000 is many weeks of a
+#: busy person's asking; a read that reaches it says so (`complete: false`).
+OPEN_QUESTIONS_DEFAULT_DAYS = 7
+OPEN_QUESTIONS_MAX_DAYS = 31
+OPEN_QUESTIONS_SCAN = 2000
+
+
+def open_question_tasks(
+    db: Any, tenant_id: str, submitted_by: str, session: str, since: datetime,
+) -> tuple[list[Any], bool]:
+    """`(tasks, complete)`: `submitted_by`'s tasks in `tenant_id`, tagged with
+    the Claude Code `session`, that ended at or after `since` with at least
+    one question the worker validated (`result_summary.questions`) and no
+    stored answer for it (`metadata.owner_answers`), newest end first.
+
+    ONE QUERY, NOT A WALK OF EVERY FINISHED TASK (#2835). The sc plugin's
+    check paged the session's SUCCEEDED tasks to find these and stopped
+    after 10 pages, so a busy session's older questions were never listed.
+    The worker writes the count only for a file it validated, so
+    `result_summary.questions > 0` with `completed_at >= since` (index
+    tasks-tenant-submitter-completed-questions) reads exactly the tasks that
+    asked; the session tag and the answers, which no index can hold, are
+    filtered from those few. `complete` is False only when the read reached
+    `OPEN_QUESTIONS_SCAN` documents."""
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("submitted_by", "==", submitted_by))
+        .where(filter=FieldFilter("completed_at", ">=", since))
+        .where(filter=FieldFilter(f"result_summary.{QUESTIONS_KEY}", ">", 0))
+        .limit(OPEN_QUESTIONS_SCAN)
+    )
+    found: list[Any] = []
+    read = 0
+    for snap in query.stream():
+        read += 1
+        task = task_from_dict(snap.to_dict() or {})
+        if task.tenant_id != tenant_id or task.submitted_by != submitted_by:
+            continue
+        if task.state not in TERMINAL_STATES:
+            continue
+        if claude_session_of(task, masking_for(task, warm=False)) != session:
+            continue
+        if unanswered(question_count(task.result_summary), task.metadata) == 0:
+            continue
+        found.append(task)
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    found.sort(key=lambda t: (t.completed_at or epoch, t.id), reverse=True)
+    return found, read < OPEN_QUESTIONS_SCAN
 
 
 def answer_refusal(submitted_by: str | None, email: str, *, is_admin: bool) -> str | None:

@@ -44,6 +44,7 @@ from swarm_common.states import (
     TaskState,
     assert_transition,
 )
+from swarm_rollup import derived_state_write
 
 from .codec import task_from_dict
 
@@ -301,7 +302,17 @@ def cancel_child(
                     "last_error": f"cancelled because of its parent {parent_task_id}: {why}",
                 }
             )
+        # A child that is a workflow's step moves that workflow's derived
+        # state: written in this transaction, read before its first write
+        # (#2838). No `workflow_id`, no read.
+        workflow = (
+            derived_state_write(txn, db, tenant_id=tenant_id, workflow_id=data.get("workflow_id"),
+                                now=now, changed={child_id: {**data, **patch}})
+            if immediate else None
+        )
         txn.update(ref, patch)
+        if workflow is not None:
+            txn.update(*workflow)
         event_id = new_id("ev")
         txn.set(
             ref.collection(EVENTS).document(event_id),

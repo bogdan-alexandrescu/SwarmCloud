@@ -1,0 +1,108 @@
+/* VOICE IT, TALK: the presence direction (docs/design/voice-it.md §11), phase
+   one. Every colour is a console token; glow and glass are those tokens mixed
+   with transparency, never a new hue, so both themes hold. Depth is blur,
+   glow and scale only: nothing is 3D. */
+
+.vt {
+  --glass: color-mix(in srgb, var(--surface) 70%, transparent);
+  --glass-dim: color-mix(in srgb, var(--surface) 52%, transparent);
+  --glass-line: color-mix(in srgb, var(--info) 22%, var(--line));
+  --ring: 340px;
+  position: relative; isolation: isolate; overflow: clip;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-areas: "hud hud hud" "left core right" "subs subs subs" "mic mic mic" "cards cards cards";
+  gap: 14px; min-width: 0; padding: 14px 18px 16px;
+  border: 1px solid var(--line-soft); border-radius: var(--r-dlg); background: var(--bg);
+}
+.vt-sky {
+  position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(ellipse 36% 48% at 50% 34%, color-mix(in srgb, var(--info) 18%, transparent), transparent 72%),
+    radial-gradient(ellipse 30% 30% at 96% 4%, color-mix(in srgb, var(--paused) 8%, transparent), transparent 70%);
+}
+
+/* ---- heads-up edge: where the call stands, Start or End ------------------ */
+.vt-hud { grid-area: hud; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; min-width: 0;
+  border-bottom: 1px solid var(--glass-line); padding-bottom: 8px; }
+.vt-status { margin: 0; display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.vt-hud-actions { margin-left: auto; display: inline-flex; gap: 8px; }
+.vt-note { margin: 0; flex-basis: 100%; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.vt-problem { margin: 0; flex-basis: 100%; padding: 6px 10px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--bad) 55%, var(--line)); border-left: 3px solid var(--bad); border-radius: var(--r-card);
+  background: color-mix(in srgb, var(--bad) 7%, var(--glass)); }
+
+/* ---- the ring ------------------------------------------------------------ */
+.vt-presence { display: contents; }
+.vt-core { grid-area: core; display: flex; justify-content: center; align-items: center; min-width: 0; min-height: 340px; }
+.vt-ring { margin: 0; position: relative; width: var(--ring); max-width: 100%; aspect-ratio: 1; color: var(--info); }
+.vt-ring svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.vt-ring-halo { opacity: 0; transition: opacity 240ms ease; }
+.vt-ring.is-speaking .vt-ring-halo, .vt-ring.is-listening .vt-ring-halo { opacity: 1; }
+.vt-ring-base { fill: none; stroke: currentColor; stroke-opacity: 0.22; stroke-width: 1; }
+.vt-ring-still { fill: none; stroke: currentColor; stroke-opacity: 0.5; stroke-width: 1.6; }
+.vt-ring.is-speaking .vt-ring-still { stroke-opacity: 0; }
+.vt-ring-wave { fill: color-mix(in srgb, currentColor 6%, transparent); stroke: currentColor; stroke-width: 2.4; stroke-linejoin: round; }
+.vt-ring-glow { fill: none; stroke: currentColor; stroke-width: 9; opacity: 0.5; }
+.vt-ring-mic { fill: color-mix(in srgb, var(--text) 5%, transparent); stroke: var(--text); stroke-opacity: 0.7; stroke-width: 1.6; stroke-linejoin: round; }
+.vt-ring.is-listening { color: var(--text-dim); }
+.vt-ring.is-connecting { color: var(--paused); }
+.vt-ring.is-connecting .vt-ring-still { stroke-dasharray: 46 18; transform-origin: 200px 200px; animation: vt-spin 6s linear infinite; }
+.vt-ring.is-idle { color: var(--text-faint); }
+@keyframes vt-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .vt-ring.is-connecting .vt-ring-still { animation: none; } }
+.vt-ring-word { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  text-align: center; padding: 0 22%; pointer-events: none; }
+.vt-ring-name { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.vt-ring-state { font-size: var(--t-title); line-height: var(--lh-lead); font-weight: 600; color: var(--text); }
+/* With reduced motion the ring is still, and the voice is a level bar under it. */
+.vt-ring-level { position: absolute; left: 30%; right: 30%; bottom: 18%; height: 6px; border-radius: 3px;
+  background: color-mix(in srgb, currentColor 22%, transparent); overflow: hidden; }
+.vt-ring-level-fill { --level: 0%; display: block; height: 100%; width: var(--level); background: currentColor; }
+
+/* ---- subtitles ----------------------------------------------------------- */
+.vt-subs-band {
+  grid-area: subs; min-width: 0; padding: 10px 16px;
+  border: 1px solid var(--glass-line); border-radius: var(--r-card); background: var(--glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+.vt-subs { display: flex; flex-direction: column; gap: 4px; max-height: 13.5em; overflow-y: auto; }
+.vt-captions { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.vt-cap { margin: 0; display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; align-items: baseline;
+  font-size: var(--t-lead); line-height: var(--lh-lead); }
+.vt-cap-who { font-size: var(--t-meta); font-weight: 600; color: var(--text); }
+.vt-cap.is-agent .vt-cap-who { color: var(--info-ink, var(--text)); }
+.vt-cap-text { color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.vt-cap.is-partial .vt-cap-text { color: var(--text-dim); }
+.vt-cap-more { color: var(--text-faint); }
+.vt-cap-empty { margin: 0; color: var(--text-dim); }
+
+/* ---- mic, on the bottom edge --------------------------------------------- */
+.vt-mic { grid-area: mic; display: flex; justify-content: center; min-width: 0; }
+.vt-mic-group { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 6px 10px;
+  border: 1px solid var(--glass-line); border-radius: var(--r-pill); background: var(--glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.vt-mic-state { font-size: var(--t-meta); color: var(--text-dim); }
+.vt-mic-group .c-btn[aria-pressed="true"] { touch-action: none; }
+
+/* ---- the card area: empty until phase two -------------------------------- */
+.vt-cards { grid-area: cards; min-width: 0; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px;
+  border: 1px dashed var(--glass-line); border-radius: var(--r-card); background: var(--glass-dim); }
+.vt-cards > p { margin: 0; }
+.vt-cards-h { font-size: var(--t-meta); color: var(--text-dim); }
+.vt-cards-none { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
+
+/* The agent's voice plays from this element; nothing of it is drawn. */
+.vt-voice { display: none; }
+
+/* ---- phone: one column --------------------------------------------------- */
+@media (max-width: 760px) {
+  .vt { padding: 10px 10px 12px; gap: 10px; border-radius: var(--r-card);
+    grid-template-columns: minmax(0, 1fr); grid-template-areas: "hud" "core" "subs" "cards" "mic"; }
+  .vt-core { min-height: 0; }
+  .vt-ring { width: 210px; }
+  .vt-subs-band { padding: 8px 10px; }
+  .vt-cap { grid-template-columns: minmax(0, 1fr); gap: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+  .vt-mic { position: sticky; bottom: 8px; z-index: 2; }
+  .vt-mic-group { flex-wrap: nowrap; gap: 6px; padding: 5px 6px; background: color-mix(in srgb, var(--surface) 88%, transparent); }
+  .vt-mic-state { display: none; }
+}

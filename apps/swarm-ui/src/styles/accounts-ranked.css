@@ -112,8 +112,6 @@
 /* The muted clauses keep 4.5:1 on the selection (G5-17), as the list's did. */
 .acct-rank-row.is-chosen > td small,
 .acct-rank-row.is-chosen > td .acct-dash { color: var(--text-dim-on-selected); }
-.acct-rank-row.is-stale .acct-fig > .acct-win,
-.acct-card.is-stale .acct-card-w2 { opacity: 0.6; }
 
 /* Borderless: its `border: 0` is also inline (AccountsTable.tsx `OpenName`, why there). */
 .acct-rank-name {
@@ -166,7 +164,10 @@
   overflow-wrap: anywhere;
 }
 .acct-tag.is-dup { color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 10%, transparent); }
-.acct-tag.is-unk { color: var(--text-dim); background: var(--surface-2); border: 1px dashed var(--line); }
+/* An aged reading (cap2-07) wears the unknown-window tag's look: a reading
+   that may have moved, said at full contrast instead of a dimmed row. */
+.acct-tag.is-unk,
+.acct-tag.is-aged { color: var(--text-dim); background: var(--surface-2); border: 1px dashed var(--line); }
 
 /* A window against its floor: the shared track, and the floor as a tick at
    100% minus the floor. At 560px and below styles.css's phone block hides

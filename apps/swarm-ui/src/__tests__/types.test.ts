@@ -8,6 +8,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  ageSpan,
+  formatDuration,
   timeAgo,
   elapsed,
   headroomFor,
@@ -230,9 +232,9 @@ describe('setBy', () => {
     expect(by.detail).toContain('10')
   })
 
-  it('names AIMD when back-off is the binding value', () => {
+  it('says lowered automatically when the adaptive target is the binding value', () => {
     const by = setBy(pool({ hard_limit: 10, adaptive_target: 3, effective_limit: 3 }))
-    expect(by.term).toBe('AIMD back-off')
+    expect(by.term).toBe('lowered automatically after errors')
   })
 
   it('prefers the quota when quota and AIMD agree', () => {
@@ -392,6 +394,14 @@ describe('timeAgo reports the right unit and the right number', () => {
     // The exact mutation that went undetected: h/12 would make this '8d ago'.
     expect(ago(4 * 24 * 3_600_000)).toBe('4d ago')
     expect(ago(10 * 24 * 3_600_000)).toBe('10d ago')
+  })
+
+  it('floors days as formatDuration does, so one instant has one day count (overview-agents-42)', () => {
+    const span = (9 * 24 + 21) * 3_600_000
+    // MUTATION: round the days again and this reads '10d ago' beside '9d 21h'.
+    expect(ago(span)).toBe('9d ago')
+    expect(formatDuration(span)).toBe('9d 21h')
+    expect(ageSpan(span)).toBe('9d')
   })
 
   it('refuses to invent a time it cannot read', () => {

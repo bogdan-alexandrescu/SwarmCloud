@@ -226,7 +226,8 @@ describe('V263: Recent failures names the whole workflow id at desktop width (ow
     })
     const link = el.querySelector('#ov-failures .ov-fails .ov-name')!
     expect(link, 'no failure row').not.toBeNull()
-    expect(link.getAttribute('title')).toBe(`synthesis · ${LONG_WF} · tsk_f1`)
+    // The link's words, its short id `f1` included (walk.long C), then the whole id.
+    expect(link.getAttribute('title')).toBe(`synthesis · ${LONG_WF} · f1 · tsk_f1`)
     const id = link.querySelector('.ov-wf-id')!
     expect(text(id)).toBe(LONG_WF)
     // Whole at desktop width: nothing cuts it.

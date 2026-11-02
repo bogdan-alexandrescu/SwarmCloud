@@ -1,9 +1,12 @@
-# The ids of the service accounts terraform/infra manages, spelled once for
+# The ids of the service accounts terraform/infra deploys as, spelled once for
 # both roots.
 #
-# terraform/infra CREATES these accounts, and CI applies it. terraform/bootstrap
-# grants the CI deployer roles/iam.serviceAccountAdmin ON EACH OF THEM, and the
-# owner applies that. The two roots share no state, so the only thing that
+# terraform/bootstrap CREATES the platform accounts (platform_service_accounts.tf,
+# DAYONE-BOOT-2, design Q7), so its own grants never name an account that does
+# not exist yet; terraform/infra reads them as data sources. The tenants'
+# worker accounts are still created by terraform/infra (modules/tenancy).
+# terraform/bootstrap grants the CI deployer roles/iam.serviceAccountAdmin ON
+# EACH OF THEM, and the owner applies that. The two roots share no state, so the only thing that
 # keeps "the accounts infra makes" and "the accounts bootstrap grants on" the
 # same list is that both read it from here (docs/mirrored-values.md, answer
 # (a): derived, nothing to compare) -- the pattern modules/custom_role_ids set
@@ -61,6 +64,24 @@ locals {
   # admits this address to POST /v1/admin/schedules/tick alone
   # (auth.SCHEDULE_TICK_ROUTES) and the sweeper's route set is not widened.
   schedule_tick_id = "swarm-schedule-tick"
+  # swarm-discovery serves the unauthenticated /.well-known/swarmcloud document
+  # (terraform/infra/discovery.tf, design §9.2 (c)). It holds no role unless the
+  # deployment chooses to serve the Desktop client secret.
+  discovery_id = "swarm-discovery"
+  # swarm-doctor runs the scheduled read-only doctor (terraform/infra/doctor.tf,
+  # D27). Read-only roles from terraform/bootstrap/doctor_roles.tf, and
+  # run.invoker on swarm-api to post its findings.
+  doctor_id = "swarm-doctor"
+  # swarm-voice is the identity of the one-replica Voice it StatefulSet in
+  # swarm-system (docs/design/voice-it.md section 3.4; terraform/infra/voice.tf,
+  # behind its voice_it switch). terraform/infra binds on it -- Workload
+  # Identity, and its actAs -- which needs the deployer's serviceAccountAdmin
+  # on it, so it is on this list (owner decision 2026-11-01: a follow-up here,
+  # not a hand-made binding). Created by terraform/bootstrap like every account
+  # on bootstrap_platform, so the grant is made in the same apply as the account
+  # and a fresh install's first bootstrap pass never grants on an account that
+  # does not exist yet. It holds no role until voice.tf gives it its own.
+  voice_id = "swarm-voice"
 
   # scripts/register-tenant.sh and kubernetes/render.py spell this too; they
   # are not Terraform and cannot read it.
@@ -68,9 +89,17 @@ locals {
 
   worker_ids = { for t in var.tenant_ids : t => "${local.tenant_worker_prefix}${t}" }
 
-  infra_managed = sort(concat(
+  # The platform accounts terraform/bootstrap creates (platform_service_accounts.tf).
+  bootstrap_platform = sort(concat(
     keys(local.platform),
-    [local.tick_id, local.verify_id, local.rollup_sweeper_id, local.schedule_tick_id],
+    [local.tick_id, local.verify_id, local.rollup_sweeper_id, local.schedule_tick_id, local.discovery_id, local.doctor_id, local.voice_id],
+  ))
+
+  # Every account terraform/infra deploys as or grants on: bootstrap's platform
+  # accounts and the workers. The name is kept for bootstrap's deployer grants
+  # (deployer_service_accounts.tf), which read it.
+  infra_managed = sort(concat(
+    local.bootstrap_platform,
     values(local.worker_ids),
   ))
 }

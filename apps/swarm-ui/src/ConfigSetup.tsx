@@ -29,7 +29,9 @@ import './styles/config.css'
  * `config_setup` field (CONFIG-SETUP-READ, read through configSetupApi.ts;
  * CONFIG-PANEL-E): Secrets set is done when nothing registered is needed and
  * not stored, and otherwise names the count and the first item; People
- * invited is done when someone other than the reader holds a role. A source
+ * invited is left while requests to join wait on the reader, and is not
+ * drawn where the server says it does not apply (a group workspace whose
+ * people come from its group, with nothing waiting). A source
  * the server could not read is UNKNOWN, drawn with the server's reason, and
  * never counts as done; a step the read did not carry is unknown the same way.
  *
@@ -132,7 +134,13 @@ export function setupSteps(doc: OnboardingDoc | null, personal: boolean): SetupS
     },
     { key: 'secrets', label: 'Secrets set', to: 'config/secrets', ...secretsState(doc, setup) },
   ]
-  if (!personal) steps.push({ key: 'people', label: 'People invited', to: 'config/people', ...peopleState(doc, setup) })
+  // People invited is drawn where the server says it applies: a group
+  // workspace's people come from its group, so it applies only while
+  // requests to join wait on the reader (config_setup.py people_step). One
+  // that does not apply is left out as a personal one's is, never drawn
+  // unknown, so the meter, the strip and the spine's dot all read "nothing
+  // left" (the Config dot that never cleared, 2026-11-01).
+  if (!personal && !peopleNotApplying(setup)) steps.push({ key: 'people', label: 'People invited', to: 'config/people', ...peopleState(doc, setup) })
   return steps
 }
 
@@ -153,15 +161,19 @@ function secretsState(doc: OnboardingDoc | null, setup: ConfigSetup | null): Pic
   return { state: 'todo', line: toSet(s.needed, first === undefined ? null : itemName(first)) }
 }
 
-/** Step 4 from `config_setup.people`: done when someone besides the reader holds a role. */
+/** Whether the server read People invited and says it does not apply here (its reason says why). */
+function peopleNotApplying(setup: ConfigSetup | null): boolean {
+  return setup?.people?.applies === false
+}
+
+/** Step 4 from `config_setup.people`, where it applies: left while requests to join wait on the reader. */
 function peopleState(doc: OnboardingDoc | null, setup: ConfigSetup | null): Pick<SetupStep, 'state' | 'line'> {
   if (doc === null) return { state: 'unknown', line: 'not read' }
   const p = setup?.people ?? null
   if (p === null) return { state: 'unknown', line: 'not in the setup read' }
-  // The server judged this workspace personal while `me` said group: say so rather than guess.
-  if (!p.applies) return { state: 'unknown', line: p.reason ?? 'does not apply here' }
   if (p.done === null) return { state: 'unknown', line: p.reason ?? 'the roles could not be read' }
-  if (!p.done) return { state: 'todo', line: 'only you so far' }
+  // The server's reason counts the requests waiting ("2 requests to join are waiting for you").
+  if (!p.done) return { state: 'todo', line: p.reason ?? 'only you so far' }
   const n = p.holders ?? 0
   return { state: 'done', line: n === 1 ? '1 other person holds a role' : `${n} other people hold a role` }
 }
@@ -236,6 +248,8 @@ export function configBadges(doc: OnboardingDoc | null, personal: boolean): Read
   const holders = setup?.people?.holders ?? null
   const peopleBadge = stepBadge(people, 'only you', holders === null ? null : { tone: 'count', text: String(holders), why: `People invited: ${people?.line ?? ''}` })
   put('people', peopleBadge !== null && people?.state === 'todo' ? { ...peopleBadge, tone: 'note' } : peopleBadge)
+  // A group workspace with nothing waiting: no step, and the row says why, dimly.
+  if (!personal && peopleNotApplying(setup)) put('people', { tone: 'note', text: 'via group', why: `People invited: ${setup?.people?.reason ?? 'does not apply here'}` })
   return out
 }
 
@@ -253,6 +267,26 @@ export function ConfigBadgeMark({ badge }: { badge: ConfigBadge | undefined }) {
       {badge.text}
     </span>
   )
+}
+
+/**
+ * A STEP STILL TO DO IS NAMED AS A TASK (visual QA pass 2 admin2-03,
+ * config2-04, 2026-10-29). The label is the done state ("GitHub connected"),
+ * so "Next: GitHub connected, Enable orgs failed" read as if GitHub were
+ * connected over the failure. A "Next:" line names what to do instead, and a
+ * failed or stale step 1 (held by GitHub access's checklist steps) is a fix.
+ */
+export function stepAction(step: Pick<SetupStep, 'key' | 'state'>): string {
+  switch (step.key) {
+    case 'github':
+      return step.state === 'failed' || step.state === 'stale' ? 'Fix GitHub access' : 'Connect GitHub'
+    case 'repositories':
+      return 'Choose repositories'
+    case 'secrets':
+      return 'Set secrets'
+    case 'people':
+      return 'Invite people'
+  }
 }
 
 /** The first measured step not done: the one the strip calls next, for a page's lead to name. */
@@ -347,15 +381,17 @@ function writeShowSteps(shown: boolean) {
 }
 
 /**
- * THE CHECKLIST'S OWN COUNT, NAMED (config-08, chrome-C20): "Workspace setup:
- * 4 of 7 done", Workspace setup's checklist count in its own words
+ * THE CHECKLIST'S OWN COUNT, NAMED (config-08, chrome-C20): "Setup
+ * checklist: 4 of 7 done", Workspace setup's checklist count in its own words
  * (Onboarding's `countLabel`), on the strip's link to it. The strip counts
- * its three or four steps; without this the two counts on one screen read as
- * one count that disagrees with itself. Null while the read has no steps.
+ * its three or four steps, and says "steps"; without this the two counts on
+ * one screen read as one count that disagrees with itself. It said
+ * "Workspace setup: 4 of 7 done" beside "1 of 3 done", which named neither
+ * list (pass 2 config2-03, admin-shell-10). Null while the read has no steps.
  */
 export function checklistCount(doc: OnboardingDoc | null): string | null {
   if (doc === null || !Array.isArray(doc.steps) || doc.steps.length === 0) return null
-  return `Workspace setup: ${countLabel(doc)}`
+  return `Setup checklist: ${countLabel(doc)}`
 }
 
 /**
@@ -435,11 +471,11 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
       <div className="cfg-compact">
         <div className="cfg-compact-h">
           <b>
-            Setup {done} of {of}
+            Setup {done} of {of} steps
           </b>
           {hide ?? (
             <a className="ctl-link" {...link(nextStep === null ? WORKSPACE_SETUP_ADDRESS : nextStep.to)}>
-              {nextStep === null ? 'Workspace setup' : nextStep.label} ›
+              {nextStep === null ? 'Workspace setup' : stepAction(nextStep)} ›
             </a>
           )}
         </div>
@@ -449,7 +485,7 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
           ))}
         </div>
         <small>
-          {nextStep !== null ? `Next: ${nextStep.label}, ${nextStep.line}` : unknown > 0 ? `${unknown} not measured` : 'Every step done'}
+          {nextStep !== null ? `Next: ${stepAction(nextStep)} (${nextStep.line})` : unknown > 0 ? `${unknown} not measured` : 'Every step done'}
           {age !== null && (
             <>
               {' · '}
@@ -463,8 +499,10 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
           <li key={s.key} className={`cfg-step is-${s.state}${s.key === next ? ' is-next' : ''}`}>
             <StepMark state={s.state} />
             <a className="cfg-step-main" {...link(s.to)}>
+              {/* A FAILED STEP IS TITLED AS ITS TASK (review of QA2-FIX-15):
+                  "1. GitHub connected" in red over its failure read as done. */}
               <b>
-                {i + 1}. {s.label}
+                {i + 1}. {s.state === 'failed' || s.state === 'stale' ? stepAction(s) : s.label}
               </b>
               <small>{s.key === next ? `Next: ${s.line}` : s.line}</small>
               {/* Its own line, so the step's line stays word for word what the panel's badge names.
@@ -480,7 +518,7 @@ export function SetupStrip({ go }: { go: (to: string) => void }) {
       </ol>
       <div className="cfg-count">
         <b>
-          {done} of {of} done
+          {done} of {of} steps done
         </b>
         {unknown > 0 && <small>{unknown} not measured</small>}
         {hide}
@@ -502,8 +540,9 @@ export function SetupMeter() {
     <div className="sk-meter cfg-meter" title={why}>
       <div className="cfg-meter-h">
         <span>Setup</span>
+        {/* THE UNIT, AS THE STRIP NAMES IT (review of QA2-FIX-15). */}
         <b>
-          {done} of {of}
+          {done} of {of} steps
         </b>
       </div>
       <div className="cfg-meter-bar" aria-hidden="true">
@@ -531,7 +570,7 @@ export function SetupProgress({ name, steps, onNext }: { name: string; steps: re
     <div className="cfg-progress" role="group" aria-label={`${name} setup`}>
       <div className="cfg-progress-h">
         <b className={`cfg-progress-n${done === of ? ' is-done' : ''}`}>
-          Setup {done} of {of}
+          Setup {done} of {of} steps
         </b>
         {unknown > 0 && <small>{unknown} not measured</small>}
       </div>
@@ -545,9 +584,9 @@ export function SetupProgress({ name, steps, onNext }: { name: string; steps: re
           <>
             Next:{' '}
             <a href={addressToPath(nextStep.to)} onClick={(e) => onNext?.(nextStep, e)}>
-              {nextStep.label}
-            </a>
-            , {nextStep.line}
+              {stepAction(nextStep)}
+            </a>{' '}
+            ({nextStep.line})
           </>
         ) : done === of ? (
           'Setup complete'

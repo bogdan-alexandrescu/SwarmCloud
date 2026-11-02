@@ -113,7 +113,7 @@ describe('Config › Repositories: what SwarmCloud may reach as you, then the re
     expect(cards().map((c) => visible(c.querySelector('h2')))).toEqual(['example-org/example-api', 'example-org/example-web'])
     expect(within(cards()[0]!).getByRole('button', { name: 'Index now' })).toBeTruthy()
     // MUTATION: drop the QA targets tab and this is null.
-    const tabs = document.querySelector<HTMLElement>('nav[aria-label="Repositories pages"]')
+    const tabs = document.querySelector<HTMLElement>('[role="tablist"][aria-label="Repositories pages"]')
     expect(tabs).not.toBeNull()
     expect(document.querySelector('.c-phead')!.compareDocumentPosition(tabs!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(Array.from(tabs!.querySelectorAll('a')).map((a) => [visible(a), a.getAttribute('href'), a.getAttribute('aria-current')])).toEqual([
@@ -125,7 +125,7 @@ describe('Config › Repositories: what SwarmCloud may reach as you, then the re
   it('QA targets is the second tab of the same strip, current on its page', async () => {
     serve(() => null)
     await mount('page=qa-targets')
-    const tabs = document.querySelector<HTMLElement>('nav[aria-label="Repositories pages"]')
+    const tabs = document.querySelector<HTMLElement>('[role="tablist"][aria-label="Repositories pages"]')
     // MUTATION: draw the strip on the list only and the QA targets page loses its way back.
     expect(tabs).not.toBeNull()
     expect(tabs!.querySelector('a[aria-current="page"]')?.textContent).toBe('QA targets')
@@ -148,7 +148,7 @@ describe('the page is led by what is missing (proposal E)', () => {
     // MUTATION: match the registry by repo name alone and the registered one is drawn dashed too.
     expect(document.querySelectorAll('.ur-cards > .ur-card.is-chosen')).toHaveLength(1)
     // MUTATION: count the dashed card as registered, or leave it uncounted, and the note disagrees with the grid.
-    expect(visible(document.querySelector('.c-count-note'))).toContain('1 registered · 1 chosen, not registered')
+    expect(visible(document.querySelector('.c-count-note'))).toContain('Registered repositories · 1 · 1 chosen, not registered')
     const lead = document.querySelector<HTMLElement>('section[aria-label="Next step"]')
     expect(lead).not.toBeNull()
     expect(visible(lead!)).toContain('example-labs/console is chosen but not registered')

@@ -31,11 +31,13 @@ from pathlib import Path
 
 import pytest
 
+from agent_worker import control as control_mod
 from agent_worker import lifecycle
 from agent_worker import workspace as workspace_mod
 from agent_worker.errors import WorkerError
 
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     forge,
     local_urls,
     origin,
@@ -130,8 +132,13 @@ def test_the_amender_fast_forwards_the_authors_branch_and_opens_nothing(
 def test_the_amender_never_forces_over_a_branch_that_moved(
     worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
 ):
-    """The push is never forced: a branch that moved after the clone refuses it."""
+    """The push is never forced: a branch that moved after the clone keeps the
+    mover's commit. Since #1821 (owner decision 2026-10-27) the refused push
+    is replayed onto the moved tip and pushed once more as a fast-forward."""
     _author(worker_factory, monkeypatch, origin, forge)
+    # The fence the replay reads again before its push: this harness writes
+    # no task document, so it holds here.
+    monkeypatch.setattr(control_mod.ControlPlane, "validate_generation", lambda self: None)
 
     def edit_then_move_the_branch(repo: Path) -> None:
         _edit("fix")(repo)
@@ -146,9 +153,11 @@ def test_the_amender_never_forces_over_a_branch_that_moved(
 
     worker, _, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-fix",
                                  dispatch=AMENDER, edit=edit_then_move_the_branch)
-    moved_before = refs(origin)["swarm/t-author"]
-    assert out["published"] is False, out
-    assert "fix.txt" not in tree_at(origin, moved_before)
+    landed = refs(origin)["swarm/t-author"]
+    assert out["published"] is True, out
+    assert {"fix.txt", "elsewhere.txt"} <= tree_at(origin, landed)
+    assert subprocess.run(["git", "log", "--format=%s", landed], cwd=str(origin),
+                          capture_output=True, text=True, check=True).stdout.count("moved") == 1
 
 
 @pytest.mark.parametrize("bad", ["../main", "main; rm -rf", "", None, 7])

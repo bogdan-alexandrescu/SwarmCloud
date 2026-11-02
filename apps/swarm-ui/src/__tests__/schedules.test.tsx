@@ -33,6 +33,7 @@ import { SECTIONS, fromAddress, canonical, spineOf } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
 import { PANEL_PAGES, approvalsBadge } from '../Spine'
 import { HISTORY_VIEW_KEY } from '../ScheduleHistoryTimeline'
+import SCHEDULE_DETAIL_TSX from '../ScheduleDetail.tsx?raw'
 
 const WAIT = { timeout: 4000 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -344,7 +345,7 @@ describe("a schedule's page head", () => {
     await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(1), WAIT)
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(posts(calls, '/v1/schedules/sch_a:run')[0]!.body).toEqual({ dry_run: true })
-    expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('Dry run recorded: nothing was created')
+    expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('Schedule sch_a recorded a dry run: nothing was created')
     await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(2), WAIT)
     await screen.findByTestId('sc-acts-head', undefined, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Pause' }))
@@ -462,6 +463,13 @@ describe("the sheet's Spend today", () => {
     expect(visible(bar)).toContain('a new firing is skipped')
   })
 
+  it('says its day as the console writes a day, "Oct 11", not as served (QA1 automate-21)', async () => {
+    await budgetTab(USE)
+    const sub = document.querySelector<HTMLElement>('aside.as-sheet [data-sec="spend"] small')!
+    // MUTATION: put back `${s.spend_today.day}` in ScheduleDetail.tsx's Spend and it reads "2026-10-11".
+    expect(visible(sub)).toBe('Oct 11 · the schedule’s own day')
+  })
+
   it('draws no bar and invents no figure when the read did not serve the reservation', async () => {
     await budgetTab(undefined)
     await screen.findByTestId('sc-budget', undefined, WAIT)
@@ -504,7 +512,8 @@ describe('one schedule', () => {
     const cost = rows[0]!.querySelector('td[data-label="Cost"]')!
     expect(cost.querySelector('.ctl-mark.is-partial')).not.toBeNull()
     expect(visible(cost)).toContain('1 attempt unreported')
-    expect(visible(rows[1]!)).toContain('OVERLAP')
+    // In words since QA2-FIX-21 (automate2-03), never the raw code.
+    expect(visible(rows[1]!)).toContain('skipped: the last firing was still running')
   })
 
   it('says in plain words why a refused run was not started, under a firing that still succeeded', async () => {
@@ -626,6 +635,10 @@ describe('one schedule', () => {
     expect(stops).toMatch(/protected path/)
     expect(stops).toMatch(/frozen contract/)
     expect(stops).toMatch(/\b3 failed runs in a row pause/)
+    // QA1 automate-09: the sheet draws the form's own `HardStops`, so the two cannot drift apart.
+    // MUTATION: write the sentence out again in ScheduleDetail.tsx.
+    expect(SCHEDULE_DETAIL_TSX).toContain('<HardStops />')
+    expect(SCHEDULE_DETAIL_TSX).not.toMatch(/held for a second member, or in a platform/)
     const budget = await screen.findByTestId('sc-budget', undefined, WAIT)
     expect(visible(budget)).toContain('$15.00')
     expect(visible(budget)).toContain('$120.00')
