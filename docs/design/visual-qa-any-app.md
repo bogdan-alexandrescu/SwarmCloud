@@ -667,6 +667,29 @@ from `CdpProxy.qa_refusals`); a gate holding no QA target answers 404, and
 whenever the record cannot be read the capture writes `gate_refused: null` and
 the manifest says so, never an empty list.
 
+**A leg that never got past sign-in is not reviewed (part of #2688).** On
+2026-11-02 an AI Studio staging run captured the app's "Couldn't check your
+session" card on every screen. The gate had refused the app's `POST` to its
+Keycloak token endpoint 83 times, and the run still read green: its review,
+report and file steps succeeded and filed a contrast finding about the
+card. Writing `gate_refused` was not enough, because nothing turned "every
+screen is the error card" into "nothing was reviewed". The capture can
+establish two facts on its own. First, the gate's record holds a refused
+`POST` to another origin whose path ends in `/token`: that is the sign-in
+provider's token request, and without it the app cannot keep its session.
+Second, at least two different routes were captured and every one read the
+same body text: that is one page, whatever its address. Either fact makes
+the manifest `reviewable: false`, with `sign_in_blocked.why` saying which,
+and the verdict line carries the same sentence. The review then opens no
+image. The report writes `findings.json` with `reviewed: false` and that
+reason, and its first line says "Not reviewed:". The file step files nothing,
+and `qaspec.validate_findings` accepts no finding from such a report. This
+changes nothing the gate admits. The token refresh is let through only where
+a platform admin approved the exact `idp_token_path` with the extra origin
+(§1.2, §3), once the gate's own sign-in has completed. A leg approved
+without that path will keep showing the card, and it is now reported as not
+reviewed rather than as reviewed.
+
 ### 4.3 The review checklist
 
 Stated in the rendered prompt, one finding per defect: layout overflow and
