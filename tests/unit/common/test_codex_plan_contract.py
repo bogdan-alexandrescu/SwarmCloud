@@ -1,17 +1,17 @@
-"""Contract request 130, accepted in part: codex names a ChatGPT plan's credential (part of #2688).
+"""Contract request 130: codex names a ChatGPT plan's credential and is available (part of #2688).
 
 The owner accepted request 130 on 2026-11-01 with one change: "Accept, but
-keep codex unavailable until the pool lanes land". What is held here:
+keep codex unavailable until the pool lanes land", and chose on 2026-11-02 to
+turn codex on once the pool lanes had merged. What is held here:
 
   * `codex` declares three interchangeable credential names, the tenant's
     metered `OPENAI_API_KEY` or a pool ChatGPT plan's access token and account
     id, with `secrets_any_of=True` (claude-code's shape);
-  * it stays `available=False`, and its `disabled_reason` says it waits for
-    the ChatGPT-plan pool (the broker leasing OpenAI plan accounts and the
-    runner using them), not the 2026-09-23 refusal;
+  * it is `available=True` with no `disabled_reason`: the broker leasing
+    OpenAI plan accounts and the runner using them have merged;
   * the Terraform mirror's `secret_env` names the same three, each read from
     the tenant's `openai` secret slot;
-  * docs/contract-change-requests.md records request 130 as accepted in part,
+  * docs/contract-change-requests.md records request 130 as applied in full,
     on a line carrying "accepted by the owner", which is what
     scripts/lib/check-frozen-contract.sh admits a `swarm_common` change on.
 
@@ -20,7 +20,6 @@ No cloud, no emulator: the catalogue is pure and the rest is text.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from swarm_common.profiles import RUNNER_PROFILES
@@ -43,22 +42,16 @@ def test_codex_takes_the_tenant_key_or_a_pool_plan():
     assert codex.provider == "openai"
 
 
-def test_codex_stays_refused_until_the_plan_pool_lands():
+def test_codex_is_available_once_the_plan_pool_has_landed():
+    """The rest of contract request 130 (owner, 2026-11-02): the broker leasing
+    OpenAI plan accounts and the codex runner using them have merged, so codex
+    is offered, on the tenant's key or a pool ChatGPT plan."""
     codex = RUNNER_PROFILES["codex"]
-    # MUTATION: `available=True` -- the owner's change to the request.
-    assert codex.available is False
-    reason = codex.disabled_reason
-    # MUTATION: keep request 11's reason and the console still blames a refused
-    # key nobody is asked to fix.
-    assert "focused on Claude" not in reason
-    assert "ChatGPT-plan pool" in reason
-    assert "broker" in reason and "runner" in reason
-    assert "follow-up" in reason
-    # The console's picker turns this into "Not enabled yet. Use claude-code"
-    # (RunnerPicker.shortReason): it needs "disabled" or "until" and the
-    # closing "Use claude-code."
-    assert re.search(r"\b(disabled|until)\b", reason)
-    assert reason.endswith("Use claude-code.")
+    # MUTATION: `available=False` -- the hold the owner's 2026-11-01 change put on it.
+    assert codex.available is True
+    # MUTATION: keep the "until the ChatGPT-plan pool lands" reason and the
+    # console still draws codex refused beside an enabled checkbox.
+    assert codex.disabled_reason == ""
 
 
 def test_the_terraform_mirror_names_the_same_three_secrets():
@@ -72,13 +65,17 @@ def test_the_terraform_mirror_names_the_same_three_secrets():
     assert '=> "openai"' in block
 
 
-def test_request_130_is_recorded_as_accepted_in_part():
+def test_request_130_is_recorded_as_applied_in_full():
     text = REQUESTS.read_text(encoding="utf-8")
     (row,) = [line for line in text.splitlines() if line.startswith("| 130 |")]
     # MUTATION: leave row 130 reading "open" and the index says the catalogue
     # lacks a change it carries.
     assert not row.rstrip().endswith("| open, REQUESTED 2026-11-01 by lane CODEX-PLAN-CONTRACT for the owner's shared ChatGPT-plan pool |")
-    assert "accepted in part" in row.lower()
+    # MUTATION: leave row 130 "ACCEPTED IN PART" and the index says codex is
+    # still held unavailable.
+    assert "accepted in part" not in row.lower()
+    assert "applied in full" in row.lower()
+    assert "2026-11-02" in row
     assert "keep codex unavailable until the pool lanes land" in row
     # MUTATION: drop "accepted by the owner" and check-frozen-contract.sh
     # refuses this pull request's swarm_common diff.

@@ -18,6 +18,11 @@ Routes:
   `201 {voice_session_id, live_session_id, answer}`. 403 for a credential
   outside the person's scope, 409 when the voice session already has a live
   one, 502 when OpenAI or Secret Manager refused (the status only).
+  Optionally, together, `project_id` and `grant`: the session grant
+  (grant.py, docs/design/voice-it.md §3.6), held in memory on the live session
+  until it ends and presented only to swarm-api. A grant without a project, a
+  grant for another session or one swarm-api did not mint is 422, and the
+  refusal never carries it.
 * `POST /internal/sessions/{voice_session_id}/end` -- closes the GPT-Live
   session and its sideband, which stops OpenAI's per-second billing.
   `200 {voice_session_id, ended, usage_seconds, reason}`, 404 for a session
@@ -51,9 +56,10 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from .credential import VERSION_REF, CredentialError, CredentialFactory, CredentialRefused, SecretManagerStore
+from .grant import GrantInvalid, SessionGrant
 from .live import MAX_OFFER_BYTES, LiveApi, LiveError, SessionExists, Sessions
 
 log = logging.getLogger("swarm_voice")
@@ -68,6 +74,26 @@ class StartRequest(BaseModel):
     person: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
     credential: str = Field(max_length=512, pattern="^" + VERSION_REF.pattern + "$")
     offer: str = Field(min_length=4, max_length=MAX_OFFER_BYTES, pattern=r"^v=0\r?\n")
+    #: The session grant and its project (grant.py). A SecretStr with no
+    #: constraint, so neither its repr nor a validation error carries it: its
+    #: shape is checked by `SessionGrant`, whose refusal names no value.
+    project_id: str | None = Field(default=None, max_length=64)
+    grant: SecretStr | None = None
+
+
+def session_grant(body: StartRequest) -> SessionGrant | None:
+    """The start call's grant, or None when swarm-api sent none; 422 when it is
+    incomplete, for another session, or not one swarm-api mints."""
+    if body.grant is None and body.project_id is None:
+        return None
+    if body.grant is None or body.project_id is None:
+        raise HTTPException(422, "a session grant needs both project_id and grant")
+    try:
+        grant = SessionGrant(project_id=body.project_id, session_id=body.voice_session_id,
+                             value=body.grant.get_secret_value())
+    except GrantInvalid as exc:
+        raise HTTPException(422, str(exc)) from None
+    return grant
 
 
 def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
@@ -151,9 +177,11 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
 
     @app.post("/internal/sessions", status_code=201)
     async def start(body: StartRequest, _caller: str = Depends(caller)) -> dict:
+        grant = session_grant(body)
         try:
             session = await app.state.sessions.start(
-                body.voice_session_id, person=body.person, credential_ref=body.credential, offer=body.offer)
+                body.voice_session_id, person=body.person, credential_ref=body.credential, offer=body.offer,
+                grant=grant)
         except SessionExists:
             raise HTTPException(409, "this voice session already has a live session") from None
         except CredentialRefused as exc:

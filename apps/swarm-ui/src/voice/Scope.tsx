@@ -132,7 +132,7 @@ export function Ring({ state, voice, mic }: { state: ScopeState; voice: MediaStr
       if (v !== null) {
         v.analyser.getFloatTimeDomainData(v.buf)
         if (still) {
-          if (bar.current) bar.current.style.setProperty('--level', `${Math.min(100, Math.round(rms(v.buf) * 400))}%`)
+          if (bar.current) bar.current.style.setProperty('--vt-level', `${Math.min(100, Math.round(rms(v.buf) * 400))}%`)
         } else {
           const d = speaking ? radial(smooth(pick(v.buf, VOICE_POINTS), 3), R, 92) : ''
           wave.current?.setAttribute('d', d)

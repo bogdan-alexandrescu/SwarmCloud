@@ -506,8 +506,10 @@ see is a field a session will eventually offer to set.
 A name the catalogue refuses is refused **before anything is dispatched**, and
 the two refusals are kept apart because they need different answers — an unknown
 name is a typo and lists the real names, while a known-but-disabled one quotes
-the catalogue's own reason. `codex` is the live example: disabled rather than
-deleted, so the runs that name it stay readable.
+the catalogue's own reason. `post-verdict` is the live example: disabled
+rather than deleted, so the runs that name it stay readable. (`codex` was the
+example until contract request 130 turned it on, 2026-11-02: it runs on the
+tenant's OpenAI key, else a ChatGPT plan from the pool.)
 
 **Beside the prompt, a caller may send only the inputs a profile declares.**
 `mock` declares its test knobs — `sleep_seconds`, `steps`, `fail`,

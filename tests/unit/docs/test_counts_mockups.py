@@ -251,39 +251,41 @@ def profile_series(html: str) -> list[str]:
 # --- the checker catches what proposal E drew ---------------------------------
 
 # Built from the catalogue rather than written out, so the fixture names an
-# unavailable profile however the catalogue changes. `codex` is the one the
-# brief names; the assertion below holds it to being unavailable.
-_CODEX = "codex"
+# unavailable profile however the catalogue changes. `codex` was the one the
+# brief named until contract request 130 re-enabled it (owner, 2026-11-02);
+# `post-verdict` stays disabled until the merge chain ships, and the assertion
+# below holds it to being unavailable.
+_UNAVAILABLE_PROFILE = "post-verdict"
 _FIXTURE = f"""<!doctype html><html><head><style>.acct-action{{color:red}}</style></head><body>
 <figure><table class="legend"><thead><tr><th>Profile</th><th>Oct 2026</th></tr></thead><tbody>
 <tr><td><i class="sw" style="background:var(--s1)"></i>claude-code</td><td>177</td></tr>
-<tr><td><i class="sw" style="background:var(--s2)"></i>{_CODEX}</td><td>12</td></tr>
+<tr><td><i class="sw" style="background:var(--s2)"></i>{_UNAVAILABLE_PROFILE}</td><td>12</td></tr>
 <tr><td><i class="sw" style="background:var(--s3)"></i>live-browser</td><td>4</td></tr>
 </tbody></table></figure>
 <table><thead><tr><th>Month</th><th>Profile</th><th>Agents</th></tr></thead><tbody>
-<tr><td>Oct 2026</td><td>{_CODEX}</td><td>12</td></tr></tbody></table>
+<tr><td>Oct 2026</td><td>{_UNAVAILABLE_PROFILE}</td><td>12</td></tr></tbody></table>
 <table><tbody>
 <tr><td><i class="sw" style="background:var(--s1)"></i>acct-claude-01</td><td>9</td></tr>
 <tr><td><i class="sw" style="background:var(--s2)"></i>acct-codex-a</td><td>3</td></tr>
 </tbody></table>
-<p class="note">No {_CODEX} series: the profile is disabled (<code>available=False</code>).</p>
+<p class="note">No {_UNAVAILABLE_PROFILE} series: the profile is disabled (<code>available=False</code>).</p>
 <div class="acct-action">acct-claude-02 drains at the window's end.</div>
-<script>var p = "acct-script-only {_CODEX}";</script>
+<script>var p = "acct-script-only {_UNAVAILABLE_PROFILE}";</script>
 Loose text: acct-loose-1 ran.
 </body></html>"""
 
 
 def test_the_fixture_names_a_profile_the_catalogue_marks_unavailable() -> None:
-    assert _CODEX in RUNNER_PROFILES, "the fixture's profile left the catalogue: pick another"
-    assert _CODEX in UNAVAILABLE, "the fixture's profile is available now: pick an unavailable one"
+    assert _UNAVAILABLE_PROFILE in RUNNER_PROFILES, "the fixture's profile left the catalogue: pick another"
+    assert _UNAVAILABLE_PROFILE in UNAVAILABLE, "the fixture's profile is available now: pick an unavailable one"
 
 
-def test_codex_in_an_october_bucket_is_refused() -> None:
+def test_an_unavailable_profile_in_an_october_bucket_is_refused() -> None:
     problems = check_page(_FIXTURE)
     # Once as a series, and once as a plain cell in the October row: a cell
     # holds no "disabled", and the note that does is not around it.
-    assert any(f"{_CODEX!r} drawn as a series" in p for p in problems), problems
-    assert f"unavailable profile {_CODEX!r} named as one that ran agents: {_CODEX!r}" in problems, problems
+    assert any(f"{_UNAVAILABLE_PROFILE!r} drawn as a series" in p for p in problems), problems
+    assert f"unavailable profile {_UNAVAILABLE_PROFILE!r} named as one that ran agents: {_UNAVAILABLE_PROFILE!r}" in problems, problems
 
 
 def test_a_codex_pool_account_is_refused() -> None:
@@ -300,7 +302,7 @@ def test_a_name_outside_the_catalogue_in_a_profile_breakdown_is_refused() -> Non
 
 def test_a_disabled_note_attributes_and_scripts_are_not_refused() -> None:
     problems = check_page(_FIXTURE)
-    assert not any("No codex series" in p for p in problems), problems
+    assert not any(f"No {_UNAVAILABLE_PROFILE} series" in p for p in problems), problems
     assert not any("acct-action" in p or "acct-script-only" in p for p in problems), problems
     assert not any(p.startswith(f"pool account '{_POOL_PREFIX}") for p in problems), problems
     assert not any("'claude-code'" in p for p in problems), problems
@@ -311,7 +313,7 @@ def test_a_page_that_keeps_every_rule_passes() -> None:
         '<table><tbody><tr><td><i class="sw"></i>claude-code</td><td>1</td></tr>'
         '<tr><td><i class="sw"></i>mock</td><td>2</td></tr></tbody></table>'
         '<table><tbody><tr><td><i class="sw"></i>acct-claude-01</td></tr></tbody></table>'
-        f"<ul><li>{_CODEX} and claude-code-review are disabled, so neither is drawn.</li></ul>"
+        f"<ul><li>{_UNAVAILABLE_PROFILE} and claude-code-review are disabled, so neither is drawn.</li></ul>"
     )
     assert check_page(clean) == []
 
