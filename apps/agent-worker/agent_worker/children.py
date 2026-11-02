@@ -80,7 +80,9 @@ REQUEST_ID = re.compile(r"^[a-z0-9-]{1,64}$")
 #: and by the route's strict model.
 CHILD_FIELDS = frozenset(
     {"kind", "runner_profile", "resource_class", "input", "provider", "model",
-     "timeout_seconds", "repository_ref", "model_class"}
+     "timeout_seconds", "repository_ref", "model_class",
+     # Contract request 133: the child's turn cap, a limit like its timeout.
+     "max_turns"}
 )
 #: The child kinds, `swarm_api.children.KIND_*` restated (docs/design/agent-
 #: autonomy.md §3.6): an agent (no `kind` is an agent), an issue run of this
@@ -132,12 +134,13 @@ writing the same id again never makes a second child.
 
 `runner_profile` is required and names a profile, never an image or a
 command. `input` is the child's input, `{"prompt": ...}` for the CLI agents.
-`resource_class`, `provider`, `model`, `timeout_seconds`, `repository_ref`
-and `model_class` are optional; nothing else is accepted. `model_class` names
-the model a claude-code child runs, `opus`, `fable`, `sonnet` or `haiku`;
-without it the child runs its own profile's default, never this task's. A
-child works on this task's repository, runs no longer than this task, and is
-at most 256 KiB as a file.
+`resource_class`, `provider`, `model`, `timeout_seconds`, `repository_ref`,
+`model_class` and `max_turns` are optional; nothing else is accepted.
+`model_class` names the model a claude-code child runs, `opus`, `fable`,
+`sonnet` or `haiku`; without it the child runs its own profile's default,
+never this task's. `max_turns` caps a claude-code child's turns, and is
+never above this task's own cap. A child works on this task's repository,
+runs no longer than this task, and is at most 256 KiB as a file.
 
 ## Read the answer
 

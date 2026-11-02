@@ -713,6 +713,11 @@ RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
 #: test_prepublish_deadline.py).
 TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
 TIMEOUT_ASKED_ENV = "SWARM_TIMEOUT_ASKED_SECONDS"
+#: The verified task's resolved turn cap (contract request 133, `Task.max_turns`)
+#: and the runner's name for it (`claude_code.MAX_TURNS_ENV`, held equal by
+#: tests/unit/worker/test_runners.py).
+MAX_TURNS_FIELD = "max_turns"
+MAX_TURNS_ENV = "SWARM_MAX_TURNS"
 PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
 PREPUBLISH_SECTION_MAX_CHARS = 20000
 #: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
@@ -9916,6 +9921,17 @@ class Worker:
             return {}
         return {TIMEOUT_ASKED_ENV: str(asked)} if asked > self.cfg.timeout_seconds else {}
 
+    def _max_turns_env(self) -> dict[str, str]:
+        """`MAX_TURNS_ENV` from the VERIFIED task's `max_turns` (contract request
+        133), signed at spec format 7, so a cap raised or removed after
+        submission failed `verify_spec` before this runs. Empty when the task
+        has none: no cap, today's behaviour. Never from `input`, which a
+        caller writes (invariant 10)."""
+        cap = (self._task or {}).get(MAX_TURNS_FIELD)
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+            return {}
+        return {MAX_TURNS_ENV: str(cap)}
+
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
         assert ws is not None
@@ -9958,6 +9974,7 @@ class Worker:
             # worker and its runner share the container's clock.
             RUNNER_DEADLINE_ENV: f"{time.time() + self._runner_deadline - time.monotonic():.3f}",
             **self._timeout_asked_env(),
+            **self._max_turns_env(),
             GRACE_ENV: str(self.cfg.termination_grace_seconds),
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
