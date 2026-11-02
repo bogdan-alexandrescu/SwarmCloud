@@ -143,6 +143,20 @@ RELEASE_WAIT_MAX_RESUMES = 4
 #: (`control.QUOTA_MAX_RESUMES`) for its direct path and sends no number here.
 QUOTA_PARK_RESUMES = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
+#: A step stopped at its time limit with its checkpoint uploaded (BGD,
+#: 2026-11-02, "continue at the time limit"): a SCHEDULED_RETRY park whose
+#: detail carries a `time_limit` block is a CONTINUATION, not a failure: its
+#: attempt is refunded, and counted in `metadata.time_limit_continuations`,
+#: while fewer than TIME_LIMIT_MAX_CONTINUATIONS were, so a step with
+#: `max_attempts` 1 still continues; past the bound it spends an attempt. 2 BECAUSE the 14 days to 2026-11-02 lost
+#: 75 hours to 46 tasks killed at a 1 or 2 hour limit: two more limits give a
+#: step three times the time it asked for, and a step that needs a fourth is
+#: looping, not finishing. The worker restates it
+#: (`control.TIME_LIMIT_MAX_CONTINUATIONS`), stops continuing at it and fails
+#: the task saying it ran out of continuations; it sends no number here.
+TIME_LIMIT = "time_limit"
+TIME_LIMIT_CONTINUATIONS = "time_limit_continuations"
+TIME_LIMIT_MAX_CONTINUATIONS = 2
 #: `mergeslot.MERGE_SLOT_WAIT` and `mergetrain.TRAIN_WAITING`: the CI-park
 #: codes counted on their own counters and off the CI clock.
 MERGE_SLOT_WAIT = "merge_slot_wait"
@@ -494,6 +508,17 @@ def _end_cause(value: str | None) -> EndCause | None:
 
 def _count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def park_attempt_error(reason: ParkReason, event_detail: Mapping[str, Any]) -> str:
+    """The parked attempt's `error`: the park reason, and for a continuation
+    at the time limit what the attempt list says of it (BGD, 2026-11-02)."""
+    count = event_detail.get(TIME_LIMIT_CONTINUATIONS)
+    if (reason is ParkReason.SCHEDULED_RETRY and isinstance(event_detail.get(TIME_LIMIT), Mapping)
+            and isinstance(count, int)):
+        return (f"{reason.value}: continued at the time limit "
+                f"({count} of {TIME_LIMIT_MAX_CONTINUATIONS})")
+    return reason.value
 
 
 def cancel_end_cause(task: Mapping[str, Any]) -> EndCause:
@@ -1375,8 +1400,9 @@ class AttemptState:
             payload, event_kind, event_detail, release_reason = self._park_payload(
                 task, reason, body, detail, attempt, now)
             # Contract request 132: the end counted, in the end's own commit.
+            error = park_attempt_error(reason, event_detail)
             totals = self._totals(attempt, {"completed_at": now, "exit_code": 75,
-                                            "error": reason.value})
+                                            "error": error})
             if totals is not None:
                 payload["attempt_totals"] = totals
             if event_kind is EventType.READY and not worker_may_transition(current,
@@ -1394,7 +1420,7 @@ class AttemptState:
             if uploads:
                 self._record_carry(txn, attempt, index_ref, index, uploads, now)
             txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
-                "completed_at": now, "exit_code": 75, "error": reason.value,
+                "completed_at": now, "exit_code": 75, "error": error,
                 "tenant_id": attempt.tenant_id}, merge=True)
             for event in events:
                 txn.set(*event)
@@ -1420,6 +1446,8 @@ class AttemptState:
         refund = False
         release_wait = (reason is ParkReason.DEPENDENCY_INCOMPLETE
                         and isinstance(detail.get(RELEASE_WAIT), Mapping))
+        time_limit = (reason is ParkReason.SCHEDULED_RETRY
+                      and isinstance(detail.get(TIME_LIMIT), Mapping))
         if reason is ParkReason.CHILDREN_INCOMPLETE:
             used = _count(metadata.get(CHILD_AWAIT_RESUMES))
             refund = used < CHILD_AWAIT_MAX_RESUMES and attempt_count > 0
@@ -1461,13 +1489,30 @@ class AttemptState:
             refund = counts[counter] < bound and attempt_count > 0
             if refund:
                 counts[counter] += 1
+            # The CI clock, as the direct path keeps it
+            # (`control.ControlPlane.park_ci_pending`, #3033): started by the
+            # first CI park of a wait, carried at the same head, restarted
+            # only once the head moved; a slot or train wait PAUSES it
+            # (`ci_paused_at`) rather than clearing it, so neither a queue
+            # reads as `checks_timeout` nor a queue between two CI parks
+            # restarts the 6 h.
             first = last.get("first_parked_at")
+            paused = last.get("ci_paused_at")
+            if not isinstance(first, datetime) or (last.get("head") or ci.head) != ci.head:
+                first, paused = None, None
+            if not isinstance(paused, datetime):
+                paused = None
+            if not ci_clock:
+                paused = (paused or now) if first is not None else None
+            elif first is None:
+                first = now
+            elif paused is not None:
+                first, paused = first + max(now - paused, timedelta(0)), None
             names = [str(n)[:256] for n in ci.pending]
             metadata[MERGE_WAIT] = {
                 "code": ci.code, "head": ci.head, "pull_request": ci.pull_request,
                 "pending": names, **counts, "updates": _count(last.get("updates")),
-                "first_parked_at": (first if isinstance(first, datetime) else now)
-                if ci_clock else None,
+                "first_parked_at": first, "ci_paused_at": paused,
                 "parked_at": now,
             }
             payload["metadata"] = metadata
@@ -1489,12 +1534,22 @@ class AttemptState:
                     metadata[QUOTA_PARK_RESUMES] = used + 1
                     payload["metadata"] = metadata
                 extra = {QUOTA_PARK_RESUMES: used + (1 if refund else 0)}
+            elif time_limit:
+                # A continuation at the time limit: counted on every park,
+                # refunded within the server's bound.
+                used = _count(metadata.get(TIME_LIMIT_CONTINUATIONS))
+                refund = used < TIME_LIMIT_MAX_CONTINUATIONS and attempt_count > 0
+                if refund:
+                    metadata[TIME_LIMIT_CONTINUATIONS] = used + 1
+                    payload["metadata"] = metadata
+                extra = {TIME_LIMIT_CONTINUATIONS: used + (1 if refund else 0),
+                         "max_continuations": TIME_LIMIT_MAX_CONTINUATIONS}
         if refund:
             payload["attempt_count"] = attempt_count - 1
         kind = EventType.PARKED
         event_detail: dict[str, Any] = {
             "reason": reason.value, "next_eligible_at": payload["next_eligible_at"],
-            **({"attempt_refunded": refund} if release_wait or reason in (
+            **({"attempt_refunded": refund} if release_wait or time_limit or reason in (
                 ParkReason.CHILDREN_INCOMPLETE, ParkReason.CI_PENDING,
                 ParkReason.HUMAN_REQUIRED, ParkReason.PROVIDER_QUOTA_EXHAUSTED) else {}),
             **extra, **detail}

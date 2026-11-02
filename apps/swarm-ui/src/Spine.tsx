@@ -162,6 +162,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
         { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
       ],
     },
+    // JEV-USAGE-PAGE (part of #2688): Jev's calls, tokens and dollars per day.
+    { key: 'jev-usage', label: 'Jev usage', icon: 'counts', to: 'capacity/jev-usage' },
     // NAV-FOOT (#1672, owner 2026-10-20): API reads left the spine's foot to
     // be Capacity's last page. Its "Every read / Failures only" pair is drawn
     // under it while it is the open page (`PanelPages`).

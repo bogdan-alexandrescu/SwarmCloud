@@ -1529,6 +1529,13 @@ RELEASE_WAIT_RESUMES_METADATA_KEY = "release_wait_resumes"
 #: (`control.QUOTA_PARK_RESUMES_METADATA_KEY`).
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 
+#: The continuations at the time limit whose attempt was refunded (BGD,
+#: 2026-11-02), counted against `attemptstate.TIME_LIMIT_MAX_CONTINUATIONS`.
+#: A caller who set it would choose how many more time limits the task may
+#: run past. The worker restates it
+#: (`control.TIME_LIMIT_CONTINUATIONS_METADATA_KEY`).
+TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
+
 #: The pull requests a workflow's root step waits for before it may start
 #: (`after`, lane SPEED-D3, `swarm_api.prgate`): written by `submit_workflow`
 #: from the spec's `after` and then only by the wake tick. A caller who set
@@ -1579,6 +1586,7 @@ RESERVED_METADATA_KEYS = (
     QA_TARGET_METADATA_KEY,
     RELEASE_WAIT_RESUMES_METADATA_KEY,
     QUOTA_PARK_RESUMES_METADATA_KEY,
+    TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
 )
 
 #: Reserved like every key above, and refused by the same function in the
@@ -2454,6 +2462,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{QUOTA_PARK_RESUMES_METADATA_KEY} is reserved: it is set only "
         "by the worker's quota park, to count the provider-quota parks whose "
         "attempt was refunded. Drop the key from metadata."
+    ),
+    TIME_LIMIT_CONTINUATIONS_METADATA_KEY: (
+        f"metadata.{TIME_LIMIT_CONTINUATIONS_METADATA_KEY} is reserved: it is set "
+        "only by the worker's park at the time limit, to count the continuations "
+        "whose attempt was refunded. Drop the key from metadata."
     ),
     OWNER_ANSWERS_METADATA_KEY: (
         f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "
@@ -3643,6 +3656,48 @@ def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:
     if requested <= 0:
         raise ValidationFailed("timeout_seconds must be positive")
     return min(int(requested), profile.timeout_seconds)
+
+
+def validate_max_turns(
+    profile: RunnerProfile, requested: int | None, *, step_id: str | None = None,
+) -> int | None:
+    """`Task.max_turns` (contract request 133): the step's turn cap, resolved.
+
+    A step may LOWER its profile's `max_turns`, never raise it, as
+    `validate_timeout` holds a timeout: min(ask, ceiling), the ceiling when
+    the step asks none, and None (no cap, today's behaviour) when neither
+    sets one. Refused for a profile whose runner passes no cap to its agent
+    CLI (`supports_max_turns=False`): a cap nothing enforces is a promise
+    nothing keeps. A limit on the step, never an execution detail
+    (invariant 10)."""
+    where = {"step_id": step_id} if step_id is not None else {}
+    if requested is not None:
+        if isinstance(requested, bool) or not isinstance(requested, int) or requested < 1:
+            raise ValidationFailed("max_turns must be a positive integer",
+                                   detail={"max_turns": requested, **where})
+        if not profile.supports_max_turns:
+            raise ValidationFailed(
+                f"runner_profile {profile.name!r} does not cap an agent's turns, so a "
+                "step on it names no max_turns",
+                detail={"runner_profile": profile.name, "max_turns": requested,
+                        "supports_max_turns": False, **where},
+            )
+    if not profile.supports_max_turns:
+        return None
+    ceiling = profile.max_turns
+    if requested is None:
+        return ceiling
+    return int(requested) if ceiling is None else min(int(requested), ceiling)
+
+
+def lower_turn_cap(*caps: int | None) -> int | None:
+    """The lowest of the turn caps that are set; None when none is.
+
+    A `browser_if_ui` step's one cap against its two profiles', and a
+    child's against its parent's (contract request 133): None is no cap, so
+    it never wins over a set one."""
+    set_caps = [int(cap) for cap in caps if cap is not None]
+    return min(set_caps) if set_caps else None
 
 
 def timeout_asked(asked: int | None, *granted: int) -> int | None:

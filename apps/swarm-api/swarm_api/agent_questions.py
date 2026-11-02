@@ -134,7 +134,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from collections.abc import Iterator
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -245,6 +245,26 @@ MERGE_ROUND_LISTS = ("rounds", "conflict_rounds", "pick_rounds")
 #: unreadable (it waits for a person): every one is read in the answer's
 #: transaction, and the document is tenant-writable.
 MAX_HOLD_TASKS = 25
+#: ADVISORY QUESTIONS DO NOT HOLD A MERGE (owner decision, 2 November 2026).
+#: A merge step goes ahead past an unanswered non-blocking question with a
+#: recommended option its branch built, about nothing sensitive, and lists
+#: it in its `result_summary` under this key (`agent_worker.merge.
+#: ADVISORY_MERGED_PAST_KEY`, held equal by
+#: tests/unit/worker/test_merge_advisory_questions.py): `{task_id, step_id,
+#: question_index, question, recommended, built}`. The question stays open.
+ADVISORY_MERGED_PAST_KEY = "advisory_merged_past"
+#: The merge task's metadata record of the pick-fix rounds later answers to
+#: those questions started against the default branch: one `{task_id,
+#: question_index, picked, text, built, by, at}` per pick, then the round's
+#: `round_workflow_id` and `round_task_id`, or its `error`. Claimed in the answer's
+#: transaction, so one pick starts one round however often it is answered.
+ADVISORY_PICK_FIX_KEY = "advisory_pick_fix"
+#: The most rounds one merge's advisory questions start: past this, a pick
+#: is stored as an answer and starts nothing, as a record bound.
+MAX_ADVISORY_PICK_ROUNDS = 10
+#: The runner profile of a merge step (`validation.MERGE_STEP_ID`).
+MERGE_PROFILE = "merge"
+
 #: Parks read per page by `parked_human_snapshots`: the sweep pages through
 #: every PARKED(HUMAN_REQUIRED) task, so this bounds one read, not the sweep.
 EXPIRY_SCAN = 200
@@ -487,6 +507,104 @@ def _hold_cleared(txn: Any, db: Any, merge: dict[str, Any], answered: dict[str, 
         if index not in owner_answers_by_index(doc.get("metadata")):
             return False
     return True
+
+
+def _merges_past(txn: Any, db: Any, data: dict[str, Any], index: int) -> list[dict[str, Any]]:
+    """The SUCCEEDED merges of the answered task's workflow that went past question `index`.
+
+    Read in the answer's transaction, before any write. The tenant and the
+    workflow are checked again on each document, and the merge's record of
+    the question must name the answered task and index.
+    """
+    workflow_id, tenant_id, task_id = data.get("workflow_id"), data.get("tenant_id"), data.get("id")
+    if not isinstance(workflow_id, str) or not workflow_id:
+        return []
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("workflow_id", "==", workflow_id))
+        .where(filter=FieldFilter("state", "==", TaskState.SUCCEEDED.value))
+        .where(filter=FieldFilter("runner_profile", "==", MERGE_PROFILE))
+        .limit(MAX_HELD_MERGES)
+    )
+    merges: list[dict[str, Any]] = []
+    for snap in txn.get(query):
+        doc = {**(snap.to_dict() or {}), "id": snap.id}
+        if (doc.get("tenant_id") == tenant_id and doc.get("workflow_id") == workflow_id
+                and doc.get("id") != task_id and merged_past_row(doc, task_id, index) is not None):
+            merges.append(doc)
+    return merges
+
+
+def merged_past_row(merge: dict[str, Any], task_id: Any, index: int) -> dict[str, Any] | None:
+    """The merge's record that it went past question `index` of `task_id`, else None."""
+    summary = merge.get("result_summary")
+    rows = summary.get(ADVISORY_MERGED_PAST_KEY) if isinstance(summary, dict) else None
+    for row in rows if isinstance(rows, list) else ():
+        if (isinstance(row, dict) and row.get("task_id") == task_id
+                and row.get("question_index") == index and not isinstance(index, bool)):
+            return row
+    return None
+
+
+def advisory_pick_due(merge: dict[str, Any], task_id: str, index: int,
+                      choice: str | None, text: str | None) -> dict[str, Any] | None:
+    """The pick-fix claim an answer to a merged-past question makes, else None.
+
+    Owner decision, 2 November 2026: an answer whose pick is not what the
+    merged branch builds -- its `built`, else its `recommended` option --
+    starts a pick-fix round against the default branch; free text with no
+    option is such a pick too, as the merge's own check reads it. The same
+    pick (the recommended one, or one a round was already started for)
+    starts nothing, and a question whose `built` is null changes nothing
+    the branch builds. Never an answer: the owner's stays theirs.
+    """
+    row = merged_past_row(merge, task_id, index)
+    if row is None or ("built" in row and row["built"] is None):
+        return None
+    built = row.get("built") if isinstance(row.get("built"), str) else row.get("recommended")
+    if not isinstance(built, str) or (choice is not None and choice == built):
+        return None
+    metadata = merge.get("metadata") if isinstance(merge.get("metadata"), dict) else {}
+    started = [e for e in metadata.get(ADVISORY_PICK_FIX_KEY) or () if isinstance(e, dict)]
+    if len(started) >= MAX_ADVISORY_PICK_ROUNDS:
+        return None
+    for entry in started:
+        if (entry.get("task_id") == task_id and entry.get("question_index") == index
+                and entry.get("picked") == choice
+                and (choice is not None or entry.get("text") == text)):
+            return None
+    return {"task_id": task_id, "step_id": row.get("step_id"), "question_index": index,
+            "question": row.get("question"), "picked": choice,
+            "text": text if choice is None else None, "built": built}
+
+
+#: Starts one pick-fix round against the default branch for a merge's
+#: advisory claim: `(merge document, claim) -> {round_workflow_id, round_task_id}`;
+#: raises when the round is refused (`mergewake.advisory_pick_fix`).
+StartPickFix = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
+
+
+def _record_advisory_round(db: Any, merge_id: str, claim: dict[str, Any],
+                           patch: dict[str, Any]) -> None:
+    """Write a started (or refused) round onto its claim in the merge's metadata."""
+    ref = db.collection(TASKS).document(merge_id)
+
+    @firestore.transactional
+    def _apply(txn: Any) -> None:
+        snap = _snapshot(txn.get(ref))
+        data = snap.to_dict() if snap.exists else None
+        if data is None:
+            return
+        metadata = dict(data.get("metadata") or {})
+        entries = [dict(e) for e in metadata.get(ADVISORY_PICK_FIX_KEY) or () if isinstance(e, dict)]
+        for entry in entries:
+            if all(entry.get(k) == claim.get(k) for k in ("task_id", "question_index", "picked", "at")):
+                entry.update(patch)
+        metadata[ADVISORY_PICK_FIX_KEY] = entries
+        txn.update(ref, {"metadata": metadata})
+
+    _apply(db.transaction())
 
 
 def blocking_unanswered(wait: dict[str, Any], metadata: dict[str, Any] | None) -> list[int]:
@@ -829,8 +947,16 @@ def answer_question(
     email: str,
     is_admin: bool,
     now: datetime,
+    start_pick_fix: StartPickFix | None = None,
 ) -> dict[str, Any]:
-    """Store the owner's answer to one question on the task; serve the questions as they now read."""
+    """Store the owner's answer to one question on the task; serve the questions as they now read.
+
+    An answer to a question a merge went past (`ADVISORY_MERGED_PAST_KEY`)
+    whose pick is not what the merged branch builds is claimed on that merge
+    in the same transaction (`advisory_pick_due`), and then started through
+    `start_pick_fix` as a pick-fix round against the default branch. Without
+    `start_pick_fix` the claim is recorded with an error naming why.
+    """
     # The tenant boundary first, as on the read: another tenant's task is a 404.
     task = store.get_task(tenant_id, task_id, submitted_by=submitted_by)
     refusal = answer_refusal(task.submitted_by, email, is_admin=is_admin)
@@ -924,6 +1050,13 @@ def answer_question(
         docs: dict[str, dict[str, Any] | None] = {}
         woken = [merge for merge in _held_merges(txn, db, moved)
                  if _hold_cleared(txn, db, merge, moved, docs) and _resumable(merge)]
+        # 2 November 2026: a merge that went past this question while it was
+        # advisory; a pick it did not build is claimed here, once.
+        claims: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for merge in _merges_past(txn, db, moved, index):
+            claim = advisory_pick_due(merge, task_id, index, choice, text)
+            if claim is not None:
+                claims.append((merge, {**claim, "by": email, "at": now.isoformat()}))
         if wait is not None and not blocking_unanswered(wait, metadata) and _resumable(data):
             # The last blocking answer: PARKED(HUMAN_REQUIRED) -> READY in
             # this same transaction, as `human-ready` makes it. Nothing is
@@ -940,9 +1073,32 @@ def answer_question(
             # before it merges. Nothing is leased here (invariants 1, 2, 5).
             ready_writes(txn, db, merge, email=email, now=now, reason=OWNER_QUESTIONS_ANSWERED)
             promoted.setdefault("merges", []).append(merge["id"])
+        for merge, claim in claims:
+            merge_metadata = dict(merge.get("metadata") or {})
+            merge_metadata[ADVISORY_PICK_FIX_KEY] = [
+                *(e for e in merge_metadata.get(ADVISORY_PICK_FIX_KEY) or () if isinstance(e, dict)),
+                claim,
+            ]
+            txn.update(db.collection(TASKS).document(merge["id"]), {"metadata": merge_metadata})
+            promoted.setdefault("claims", []).append((merge, claim))
         return previous is not None
 
     replaced = _apply(db.transaction())
+    started: list[str] = []
+    for merge, claim in promoted.get("claims", []):
+        # After the transaction: a submission is not a Firestore write. A
+        # refusal is recorded on the claim, never retried by another answer.
+        try:
+            if start_pick_fix is None:
+                raise RuntimeError("this answer path starts no pick-fix round")
+            patch = start_pick_fix(merge, claim)
+            started.append(str(patch.get("round_workflow_id")))
+        except Exception as exc:  # recorded, and the answer still stands
+            reason = exc.message if hasattr(exc, "message") else (
+                str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__)
+            patch = {"error": redact(str(reason)).text[:300]}
+            log.warning("advisory pick fix for merge %s not started: %s", merge["id"], patch["error"])
+        _record_advisory_round(db, merge["id"], claim, patch)
     # The audit line names who and which question, never the answer's words.
     log.info(
         "owner answer stored",
@@ -957,6 +1113,7 @@ def answer_question(
             "via": body.via,
             "resumed": "by" in promoted,
             "merges_resumed": promoted.get("merges", []),
+            "pick_fix_rounds_started": started,
         },
     )
     return read_questions(

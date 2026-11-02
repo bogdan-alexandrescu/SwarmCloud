@@ -78,11 +78,11 @@ resource "google_cloud_run_v2_job" "doctor" {
 
         env {
           name  = "API_URL"
-          value = module.cloud_run.service_urls["swarm-api"]
+          value = module.cloud_run_api.service_urls["swarm-api"]
         }
         env {
           name  = "API_AUDIENCE"
-          value = module.cloud_run.service_urls["swarm-api"]
+          value = module.cloud_run_api.service_urls["swarm-api"]
         }
         env {
           name  = "PROJECT_ID"

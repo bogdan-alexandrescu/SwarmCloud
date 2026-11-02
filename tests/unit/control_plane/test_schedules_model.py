@@ -55,6 +55,10 @@ CATALOGUE = [
     # tools; its floor is daily, as dependency-cve-refresh's, the type it follows.
     # MUTATION: drop the entry, or give it a 6 h minimum, and this list differs.
     ("image-tool-rescan", timedelta(hours=24)),
+    # The owner's request of 2026-11-02: the leftover-branch sweep, created
+    # daily; a firing reads every page, so no more often than six-hourly.
+    # MUTATION: drop the entry, or give it a 1 h minimum, and this list differs.
+    ("branch-sweep", timedelta(hours=6)),
 ]
 
 

@@ -157,6 +157,12 @@
         "ready": "main h1"
       },
       {
+        "id": "jev-usage",
+        "address": "capacity/jev-usage",
+        "path": "/capacity/jev-usage",
+        "ready": "main h1"
+      },
+      {
         "id": "api-reads",
         "address": "capacity/api-reads",
         "path": "/capacity/api-reads",
