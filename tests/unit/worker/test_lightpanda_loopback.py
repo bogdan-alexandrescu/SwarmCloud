@@ -5,10 +5,10 @@
 Both Lightpanda commands keep `--block-private-networks` and exempt exactly
 127.0.0.1 and ::1 from it, so the metadata server, 10/8, 172.16/12,
 192.168/16, 100.64/10 and the pod and service ranges stay refused. The
-platform's own loopback listeners are refused by port: the live gate's CDP
-(9222), Lightpanda's own CDP (9223), test-services Postgres (5432) and every
-port that already listens on loopback when the runner starts Lightpanda (the
-TypeSafe shim, the MCP relay: they start before the runner). A refused port
+platform's own loopback listeners are refused by port: Lightpanda's own CDP
+(9223), test-services Postgres (5432) and every port that already listens on
+loopback when the runner starts Lightpanda (the TypeSafe shim, the MCP relay:
+they start before the runner). A refused port
 that is a scheme's default port (80, 443) cannot be refused by URL, so then no
 loopback exemption is given at all.
 
@@ -82,7 +82,7 @@ def test_the_metadata_server_and_every_private_range_stay_refused(name):
 @pytest.mark.parametrize("name", ["serve", "mcp"])
 def test_the_platforms_fixed_loopback_ports_are_refused(name):
     args = _commands()[name]
-    for port in (9222, 9223, 5432):
+    for port in (9223, 5432):
         assert f"*:{port}/*" in _pairs(args, "--block-urls")
 
 
@@ -120,7 +120,7 @@ def test_loopback_listeners_reads_only_listening_loopback_and_wildcard_sockets(t
         _tcp_line(1, "00000000:1538", "0A"),   # 0.0.0.0:5432, listening
         _tcp_line(2, "622C2C0A:1F90", "0A"),   # 10.44.44.98:8080, the pod IP only
         _tcp_line(3, "0100007F:C350", "01"),   # 127.0.0.1:50000, established
-        _tcp_line(4, "0200007F:2710", "0A"),   # 127.0.0.2:10000, listening
+        _tcp_line(4, "0200007F:2710", "0A"),   # 127.0.0.2:10000: not exempted, refused anyway
     ]) + "\n")
     (net / "tcp6").write_text("\n".join([
         head,
@@ -129,7 +129,7 @@ def test_loopback_listeners_reads_only_listening_loopback_and_wildcard_sockets(t
         _tcp_line(2, "0000000000000000FFFF00000100007F:9C42", "0A"),  # [::ffff:127.0.0.1]
         _tcp_line(3, "000080FE00000000FF00000001000000:9C43", "0A"),  # fe80::, not loopback
     ]) + "\n")
-    assert lightpanda.loopback_listeners(net) == [5432, 10000, 40000, 40001, 40002, 41138]
+    assert lightpanda.loopback_listeners(net) == [5432, 40000, 40001, 40002, 41138]
 
 
 def test_loopback_listeners_without_proc_is_empty(tmp_path):

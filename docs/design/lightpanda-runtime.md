@@ -626,7 +626,21 @@ helpers so they are testable without the CLI.
     Lightpanda or by a page.
   * `--block-private-networks` keeps a page's script off the metadata server
     and the pod network. The agent's own process can still reach them, as
-    today, so this narrows only what a hostile page can reach.
+    today, so this narrows only what a hostile page can reach. Both commands
+    exempt exactly `127.0.0.1` and `::1` from it (`--block-cidrs
+    -127.0.0.1/32 --block-cidrs -::1/128`), so a builder can read the console
+    it serves itself; the metadata server, the rest of 127/8, 10/8,
+    172.16/12, 192.168/16, 100.64/10 and the pod and service ranges stay
+    refused. Why only that: an audit of what listens on loopback in this pod
+    (owner's pick, 2 November 2026) found Lightpanda's own CDP (9223, which
+    drives every page and its cookies), and, when the task uses them, the
+    TypeSafe shim and the MCP relay (each can spend a credential for a
+    caller holding its local token) and test-services Postgres (5432, trust
+    auth). Each is refused by port, `--block-urls '*:<port>/*'`: 9223 and
+    5432 always, and every port that listens on loopback when the runner
+    starts Lightpanda, before the CLI exists (`lightpanda.network_args`,
+    `loopback_listeners`). A URL pattern cannot refuse a scheme's default
+    port, so a platform listener on 80 or 443 withdraws the exemption.
 * Port 9223, not 9222, so nothing written for the live gate's endpoint
   connects to Lightpanda by mistake.
 * The runner supervises the process. When it exits it is restarted, at most
