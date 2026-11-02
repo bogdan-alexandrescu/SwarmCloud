@@ -3901,10 +3901,10 @@ run; `main` keeps its own push runs (they build the images, record the tested
 tree and start the release), and a merge-queue entry keeps `merge_group`.
 
 **Why.** Measured on 2 November 2026 over the 14 days before, in the
-Engineering workspace: 1,126 tasks finished after 2 hours or more. Along each
+Engineering workspace: 1,126 agents finished after 2 hours or more. Along each
 workflow's slowest chain, 352 hours went to merge steps parked on
 `CI_PENDING`, 265 to waiting for the owner, and 75 to runs killed at their 1
-or 2 hour limit (46 tasks, ending 37 workflows). A lane head ran about 100
+or 2 hour limit (46 agents, ending 37 workflows). A lane head ran about 100
 checks, nearly all twice -- once on `push` and once on `pull_request` -- and
 the merge step held both (`required_check_state`: every event's latest run
 must be green). On 28 October, with 23 to 28 merges queued, one head's checks
