@@ -27,7 +27,7 @@ import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './ca
 import { micWord, useMic, type MicMode } from './mic'
 import { connectTalk, endVoiceSession, TalkError, type TalkCall } from './rtc'
 import { Ring, type ScopeState } from './Scope'
-import './talk-pane.css'
+import '../styles/talk-pane.css'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
 

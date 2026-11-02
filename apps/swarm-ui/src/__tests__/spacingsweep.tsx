@@ -169,36 +169,12 @@ function merge(parts: Report[]): Report {
  * Resolved like the main sheet and placed BEFORE it -- the order the app loads
  * them, since main.tsx imports App (and so every screen's sheet) first. The
  * resolved copy comes after the injected one in the document, so it is the
- * one the cascade picks. Voice it's Talk pane keeps its sheet beside it
- * (`voice/talk-pane.css`); since Voice it › Talk mounts the pane, the
- * admin-setup slice draws it, and its radii read as unresolved without it.
+ * one the cascade picks.
  */
 const SECTION_SHEETS = Object.values(
   import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true }),
 )
-
-/**
- * A PANE'S SHEET THAT KEEPS ITS OWN TOKENS ON ITS ROOT (`.vt { --glass: ...;
- * --ring: 340px }` in voice/talk-pane.css). The resolver reads `:root` tokens
- * only, so each name such a sheet declares is hoisted into a `:root` block of
- * its own, at its first (desktop) value, for the resolved copy alone; the
- * shipped sheet is not changed. Names the console's own `:root` declares are
- * left to it.
- */
-function hoistScopedTokens(css: string): string {
-  const own = new Map<string, string>()
-  const re = /(--[A-Za-z0-9_-]+)\s*:\s*([^;}]+)/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(stripComments(css))) !== null) if (!own.has(m[1]!)) own.set(m[1]!, m[2]!.trim())
-  const declared = tokenTables(STYLES).dark
-  const hoisted = [...own].filter(([k]) => !declared.has(k)).map(([k, v]) => `${k}: ${v};`)
-  return hoisted.length === 0 ? css : `:root { ${hoisted.join(' ')} }\n${css}`
-}
-
-const PANE_SHEETS = Object.values(
-  import.meta.glob<string>('../voice/*.css', { query: '?raw', import: 'default', eager: true }),
-).map(hoistScopedTokens)
-const SHEET = [...SECTION_SHEETS, ...PANE_SHEETS, STYLES].join('\n')
+const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
 
 async function sweep(routes: readonly string[], Shown: typeof App = App): Promise<Record<Theme, Report>> {
   const sheets: Record<Theme, string> = {
@@ -372,7 +348,7 @@ const BAD_BANNER_HAIRLINE: Exemption = {
 /**
  * THE TALK PANE'S MIC CONTROLS ON GLASS, the same artefact in the light pass.
  * `.vt-mic-group` is `--surface` at 70% over the pane's opaque `--bg`
- * (voice/talk-pane.css), so the drawn ground is about #fbfcfd and the
+ * (styles/talk-pane.css), so the drawn ground is about #fbfcfd and the
  * controls' boundary, rgb(125 142 163), is about 3.3:1 on it; the probe,
  * compositing the glass's alpha twice, measures a grey rgb(198 199 200) and
  * 1.97:1. Keyed on that measured ground so a real finding on these controls
