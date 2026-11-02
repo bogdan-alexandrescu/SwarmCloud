@@ -46,6 +46,19 @@
 #         stray `internal` aimed at TypeSafe's URL makes the patched jev()
 #         refuse the call rather than send the reshaped body there.
 #
+# Every request body the server sends goes through the OUTBOUND FILTER first
+# (lane jev-outbound-redaction, owner decision 2026-11-02): path deny, the
+# redaction rule families (the image's own swarm_redaction, in /opt/venv),
+# the key and registered-secret scrub, and the never-sent keys, a matching
+# string DROPPED, never masked, as the worker's judgments are
+# (docs/jev-data-flow.md). The filter is the gate launcher's, which
+# agent-runtime-base installs and this image is built FROM: `node --import`
+# runs its `installBrowserFilter` before the server's first module, so the
+# global `fetch` upstream src/jev.mjs calls for every Jev request is the
+# filtered one. Without the launcher the wrapper refuses to start: page text
+# never leaves unfiltered. SWARM_JEV_REDACTION_PYTHON is always the image's
+# interpreter, never a value the caller brought.
+#
 # This is guidance, not a sandbox: the agent can run node on the package by
 # its path, and the pod and the gate are the boundary
 # (docs/design/live-browser.md §3.2).
@@ -53,6 +66,8 @@ set -euo pipefail
 
 NODE="/usr/local/bin/node"
 SERVER="/opt/swarm/jev-browser/node_modules/jev-browser/bin/jev-browser-mcp.mjs"
+GATE="/opt/swarm/jev-gates/bin/swarm-jev-gate.mjs"
+REDACTION_PYTHON="/opt/venv/bin/python"
 
 endpoint="${SWARM_CDP_ENDPOINT:-}"
 if [[ -z "${endpoint}" ]]; then
@@ -112,4 +127,9 @@ export JEV_BROWSER_CDP_ENDPOINT="${endpoint}"
 export JEV_BROWSER_NO_INSTALL=1
 export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
-exec "${NODE}" "${SERVER}" "$@"
+if [[ ! -r "${GATE}" ]]; then
+  refuse_backend "the outbound filter (${GATE}) is not installed, so page text would leave with no redaction."
+fi
+export SWARM_JEV_REDACTION_PYTHON="${REDACTION_PYTHON}"
+
+exec "${NODE}" --import "data:text/javascript,import{installBrowserFilter}from'file://${GATE}';installBrowserFilter();" "${SERVER}" "$@"

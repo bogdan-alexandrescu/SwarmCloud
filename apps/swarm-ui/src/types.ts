@@ -909,6 +909,12 @@ export interface Task {
    * API does not send it.
    */
   timeout_seconds_asked?: number | null
+  /**
+   * Contract request 133: the task's resolved turn cap, which the worker
+   * passes to the agent CLI, or null for none. OPTIONAL: an older API does
+   * not send it.
+   */
+  max_turns?: number | null
   /** When a PARKED task becomes eligible again. Null unless it is parked. */
   next_eligible_at: string | null
   /**

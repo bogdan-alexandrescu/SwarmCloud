@@ -1804,6 +1804,7 @@ class Store:
         limit: int = 200,
         page_token: str | None = None,
         descending: bool = False,
+        task: Task | None = None,
     ) -> Page:
         """One page of a task's events, oldest first unless `descending`.
 
@@ -1819,8 +1820,14 @@ class Store:
         `event_id`) -- made explicit, not changed.
 
         `descending` is the end of the run in one request.
+
+        `task` is the task a caller has ALREADY read inside this tenant (the
+        events route reads it for its masker): the tenant check is then made
+        on it rather than by reading the same document a second time, a round
+        trip on every page (#2688, WORK-READS-SPEED).
         """
-        self.get_task(tenant_id, task_id, submitted_by=None)  # tenant check before any read
+        if task is None or task.id != task_id or task.tenant_id != tenant_id:
+            self.get_task(tenant_id, task_id, submitted_by=None)  # tenant check before any read
         order = "desc" if descending else "asc"
         # Bound to the task: a token from another task's history would be a
         # timestamp that means nothing here, served as though it did.
@@ -1838,6 +1845,24 @@ class Store:
                 scope=scope, order=order, at=at, doc_id=doc_id
             ),
         )
+
+    def newest_events(self, task: Task, *, limit: int) -> list[TaskEvent]:
+        """The newest `limit` events of `task`, newest first.
+
+        For a route that reads MANY tasks' heads at once (`GET
+        /v1/tasks/digests`): `task` was read inside its tenant by the caller, in
+        one batched read for all of them, so there is no per-task tenant read
+        here. The same query `list_events(descending=True)` makes for its first
+        page, served by the same single-field index.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .document(task.id)
+            .collection(EVENTS)
+            .order_by("at", direction=firestore.Query.DESCENDING)
+            .limit(limit)
+        )
+        return [event_from_dict(snap.to_dict()) for snap in query.stream()]
 
     @staticmethod
     def artifact_manifest(task: Task) -> "ArtifactManifest":

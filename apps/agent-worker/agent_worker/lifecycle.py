@@ -212,6 +212,9 @@ from .control import (
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     QUOTA_PARK_RESUMES_METADATA_KEY,
     RELEASE_WAIT_MAX_RESUMES,
+    TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
+    TIME_LIMIT_DETAIL_KEY,
+    TIME_LIMIT_MAX_CONTINUATIONS,
     ControlPlane,
     ControlSignals,
     recorded_checkpoint_digests,
@@ -313,6 +316,7 @@ from .runners.cliagent import (
     RESUME_REASON_ENV,
     RESUME_RELOADED,
     RESUME_SESSION_ENV,
+    RESUME_TIME_LIMIT,
     SESSION_FILE_ENV,
     STOP_DRAIN,
     STOP_EXHAUSTED,
@@ -713,6 +717,36 @@ RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
 #: test_prepublish_deadline.py).
 TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
 TIMEOUT_ASKED_ENV = "SWARM_TIMEOUT_ASKED_SECONDS"
+
+#: CONTINUING AT THE TIME LIMIT (BGD, 2026-11-02). In the 14 days to that date
+#: 46 tasks were killed at their 1 or 2 hour limit, 75 hours of work, and each
+#: failure ended its workflow. An attempt that reaches its step's limit and
+#: whose final checkpoint uploaded now parks SCHEDULED_RETRY at once (the
+#: SIGTERM park's shape, `_handle_interruption`) instead of failing: the
+#: scheduler promotes it (`_promote_scheduled_retries`), admission leases a
+#: NEW attempt at a new fencing generation, and that attempt restores the
+#: checkpoint and resumes the agent's session with `TIME_LIMIT_RESUME_PROMPT`.
+#: At most `control.TIME_LIMIT_MAX_CONTINUATIONS` (2) times per task, counted
+#: by the park in `metadata.time_limit_continuations`; the stop after that,
+#: an attempt with no uploaded final checkpoint, a requested cancel, or a
+#: next attempt the task's budget would not hold fails as before.
+#:
+#: The note the stopped attempt leaves in `work/` for the attempt after it:
+#: the session to resume, and which continuation it is. It is written before
+#: the final checkpoint, so the checkpoint carries it, and read and removed
+#: by the next attempt after its restore, which acts on it only when the
+#: task's own counter says that continuation happened.
+CONTINUATION_NOTE_NAME = ".swarm-continuation.json"
+#: Why an attempt stopped at its limit does not continue, as its error says.
+NO_CONTINUATION_CHECKPOINT = "no_checkpoint"
+NO_CONTINUATION_CAP = "out_of_continuations"
+NO_CONTINUATION_BUDGET = "budget"
+NO_CONTINUATION_CANCEL = "cancel_requested"
+#: The verified task's resolved turn cap (contract request 133, `Task.max_turns`)
+#: and the runner's name for it (`claude_code.MAX_TURNS_ENV`, held equal by
+#: tests/unit/worker/test_runners.py).
+MAX_TURNS_FIELD = "max_turns"
+MAX_TURNS_ENV = "SWARM_MAX_TURNS"
 PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
 PREPUBLISH_SECTION_MAX_CHARS = 20000
 #: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
@@ -1253,6 +1287,9 @@ class Worker:
         # the moves so far; and whether the last start followed a swap.
         self._session_id: str | None = None
         self._resume_session: str | None = None
+        #: Which continuation at the time limit this attempt is, once its
+        #: restore found the note (`_read_continuation_note`); 0 otherwise.
+        self._continued_at_time_limit = 0
         #: Why the session is resumed (RESUME_MOVED / RESUME_RELOADED), which
         #: decides what the resumed CLI is told.
         self._resume_reason: str | None = None
@@ -4524,7 +4561,16 @@ class Worker:
         ws = self.ws
         assert ws is not None
 
-        self._checkpoint("final")
+        if result.timed_out:
+            # Before the final checkpoint, so it carries the note (BGD, 2026-11-02).
+            self._write_continuation_note()
+        final = self._checkpoint("final")
+        # Whether this stop at the limit continues: decided before the
+        # publish, which a continued attempt withholds (`_publish_withheld`'s
+        # rule: an attempt that runs again publishes nothing).
+        no_continuation = (
+            self._time_limit_refusal(final) if result.timed_out else None
+        )
         # A runner that finished cleanly, by the same three tests the SUCCEEDED
         # branch below applies: the one outcome a missing expected output turns
         # into a retryable failure (#149). Anything else fails, or ends, on its
@@ -4584,6 +4630,9 @@ class Worker:
             # the file.
             missing = self._report_missing_outputs(summary, fails_the_attempt=ran_clean)
             withheld = self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused)
+            if result.timed_out and no_continuation is None:
+                withheld = ("this attempt continues at the time limit; the attempt "
+                            "that finishes the step publishes")
             self._publish_checked(summary, withheld)
             if (
                 ran_clean
@@ -4639,6 +4688,7 @@ class Worker:
 
             runner_result = self._add_runner_block(summary)
             self._record_quality_gates(summary)
+            self._settle_jev()
 
         if self.budget is not None:
             # The limits, what the attempt used and, when it stopped the
@@ -4657,8 +4707,20 @@ class Worker:
             )
             return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
+        if result.timed_out and no_continuation is None:
+            return self._continue_at_time_limit(final, summary)
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
+            if no_continuation == NO_CONTINUATION_CAP:
+                error += (
+                    f"; it ran out of continuations: it had already continued at the "
+                    f"time limit {self._time_limit_continuations()} of "
+                    f"{TIME_LIMIT_MAX_CONTINUATIONS} times"
+                )
+            elif no_continuation == NO_CONTINUATION_BUDGET:
+                error += "; it was not continued, because another attempt would exceed its budget"
+            elif no_continuation == NO_CONTINUATION_CHECKPOINT:
+                error += "; it was not continued, because its final checkpoint did not upload"
             self._finish_terminal(
                 state=TaskState.FAILED,
                 exit_code=result.exit_code,
@@ -5370,6 +5432,7 @@ class Worker:
             )
             return
         self._restored_from = record
+        self._read_continuation_note()
         self.control.emit(
             EventType.CHECKPOINT_RESTORED,
             {
@@ -9916,6 +9979,17 @@ class Worker:
             return {}
         return {TIMEOUT_ASKED_ENV: str(asked)} if asked > self.cfg.timeout_seconds else {}
 
+    def _max_turns_env(self) -> dict[str, str]:
+        """`MAX_TURNS_ENV` from the VERIFIED task's `max_turns` (contract request
+        133), signed at spec format 7, so a cap raised or removed after
+        submission failed `verify_spec` before this runs. Empty when the task
+        has none: no cap, today's behaviour. Never from `input`, which a
+        caller writes (invariant 10)."""
+        cap = (self._task or {}).get(MAX_TURNS_FIELD)
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+            return {}
+        return {MAX_TURNS_ENV: str(cap)}
+
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
         assert ws is not None
@@ -9958,6 +10032,7 @@ class Worker:
             # worker and its runner share the container's clock.
             RUNNER_DEADLINE_ENV: f"{time.time() + self._runner_deadline - time.monotonic():.3f}",
             **self._timeout_asked_env(),
+            **self._max_turns_env(),
             GRACE_ENV: str(self.cfg.termination_grace_seconds),
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
@@ -10073,6 +10148,7 @@ class Worker:
                 # Off the pool, a CLI that can resume still names its session
                 # for the credential reload (#626).
                 base.update(self._session_channel_env())
+        base.update(self._continuation_env())
         # The child-task spool, when this attempt has a child path: the one
         # variable an agent needs to submit and await helpers (child tasks,
         # §3.1). And the git tools' spool, when it is offered them
@@ -10093,9 +10169,10 @@ class Worker:
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
-        base.update(self._graph_context_env(ws, clone_base))
-        # `work/repos`, when the task reads additional repositories: a path.
-        base.update(extrarepos_mod.child_env(ws, self._extra_checkouts))
+        # BEFORE THE GRAPH CONTEXT, whose `judge.attempt.setup` reads the key
+        # file this writes (`attempt.TYPESAFE_KEY_FILE`): after it, a live-
+        # browser attempt's judge on TypeSafe found no key and read `no_key`
+        # (lane JEV-JUDGMENTS-RUN, 2026-11-02).
         # The jev MCP server's TypeSafe key, on a live-browser attempt with a
         # key (JEV-RUNNER, `jevkey`): the PATH of a 0600 file in private/,
         # never the key, which reaches only that server's process. Never
@@ -10113,6 +10190,9 @@ class Worker:
             inject=self.typesafe.on,
             shim_file=self.typesafe.shim_file,
         ))
+        base.update(self._graph_context_env(ws, clone_base))
+        # `work/repos`, when the task reads additional repositories: a path.
+        base.update(extrarepos_mod.child_env(ws, self._extra_checkouts))
         # The lane quality gates (JEV-LANES, `qualitygates`): on a claude-code
         # attempt whose workspace turned `quality_gates.jev` on, the PATH of a
         # 0600 config naming the workspace key's 0600 file in private/, never
@@ -10190,6 +10270,29 @@ class Worker:
                                                  **({"switch": record} if record else {})}
         if qualitygates_mod.worth_an_event(counts):
             self._emit_startup_mark(qualitygates_mod.EVENT_CAUSE, dict(counts or {}))
+
+    def _settle_jev(self) -> None:
+        """After the agent, before any terminal write: this attempt's Jev calls
+        and tokens into `jev_usage` (`judge.attempt.settle`), one row per
+        attempt and the workspace's month, in one transaction fenced by this
+        attempt's generation as every guarded write is (invariant 5): a
+        superseded attempt writes nothing. The next attempt of the task counts
+        these calls, and the month's total is what `code_intelligence
+        .jev_monthly_cap_tokens` is held to. Never raises; no output changes."""
+        from .judge import attempt as judge_attempt
+
+        if not self._graph_env:
+            return
+        try:
+            judge_attempt.settle(
+                self._graph_env, db=self.db,
+                run_transaction=self.control._run_transaction,
+                tenant_id=self.cfg.tenant_id, task_id=self.cfg.task_id,
+                generation=self.cfg.generation,
+                fence=lambda txn: self.control._fenced_task(txn, write="jev usage"),
+                log=self.log)
+        except Exception as exc:  # noqa: BLE001 -- accounting is never worth the attempt
+            self.log.warning("jev_settle_failed", error=type(exc).__name__)
 
     def _record_switches(self, summary: dict[str, Any]) -> None:
         """The workflow switches' record (`graphstage.switches_summary`), only
@@ -11578,6 +11681,144 @@ class Worker:
             # READY, lease released all the same (LB-RETURN).
             self.log.info("a person returned control as the hold ended; re-queued")
             return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
+    # -- continuing at the time limit (BGD, 2026-11-02) ---------------------
+    def _time_limit_continuations(self) -> int:
+        """The continuations at the time limit this task has had: the park's
+        count on the task this attempt verified when it started."""
+        metadata = (self._task or {}).get("metadata")
+        value = metadata.get(TIME_LIMIT_CONTINUATIONS_METADATA_KEY) if isinstance(
+            metadata, Mapping) else None
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+    def _time_limit_refusal(self, final: CheckpointRecord | None) -> str | None:
+        """Why this attempt, stopped at its time limit, does NOT continue; None
+        when it does. Never raises.
+
+        * no final checkpoint uploaded: the next attempt would start from an
+          older tree, or none, so the stop fails as it always did;
+        * a requested cancel: somebody stopped the task, and a park would put
+          it back in line;
+        * the cap: `TIME_LIMIT_MAX_CONTINUATIONS` continuations already;
+        * the budget: the attempt spent its budget, or the task's next attempt
+          would take it past it. The budget is pinned per attempt, so the
+          projection assumes every attempt of the chain spends what this one
+          did: the attempts so far, this one and the next, against the
+          limit, in each unit the task has one.
+        """
+        if final is None:
+            return NO_CONTINUATION_CHECKPOINT
+        if self._cancel_requested_now():
+            return NO_CONTINUATION_CANCEL
+        used = self._time_limit_continuations()
+        if used >= TIME_LIMIT_MAX_CONTINUATIONS:
+            return NO_CONTINUATION_CAP
+        guard = self.budget
+        if guard is not None:
+            if guard.exceeded:
+                return NO_CONTINUATION_BUDGET
+            attempts = used + 2
+            if guard.limits.tokens is not None and guard.tokens * attempts > guard.limits.tokens:
+                return NO_CONTINUATION_BUDGET
+            usd = guard.usd
+            if guard.limits.usd is not None and usd is not None and usd * attempts > guard.limits.usd:
+                return NO_CONTINUATION_BUDGET
+        return None
+
+    def _continuation_note_path(self) -> Path:
+        assert self.ws is not None
+        return self.ws.work / CONTINUATION_NOTE_NAME
+
+    def _write_continuation_note(self) -> None:
+        """Leave the session to resume in `work/`, for the final checkpoint to
+        carry to the next attempt. Never raises: without the note the next
+        attempt starts the task again in the restored tree, told why."""
+        try:
+            if self._account is None:
+                self._note_session(self._read_session_file())
+            body = {
+                "continuation": self._time_limit_continuations() + 1,
+                "session_id": self._session_id,
+            }
+            self._continuation_note_path().write_text(json.dumps(body))
+        except OSError as exc:
+            self.log.warning("could not leave the continuation note", error=str(exc))
+
+    def _read_continuation_note(self) -> None:
+        """After a restore: resume the session the attempt stopped at the time
+        limit left, when this task's own count says it continued. Removed
+        either way, so it never reaches the agent's tree or a publish."""
+        path = self._continuation_note_path()
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return
+        finally:
+            path.unlink(missing_ok=True)
+        if not isinstance(data, dict):
+            return
+        continuation = data.get("continuation")
+        used = self._time_limit_continuations()
+        if not used or continuation != used:
+            # A note from a stop that did not continue (it failed, or a
+            # person retried the task): nothing to resume.
+            return
+        self._continued_at_time_limit = used
+        session = data.get("session_id")
+        if isinstance(session, str) and session:
+            self._note_session(session)
+            self._resume_session = session
+            self._resume_reason = RESUME_TIME_LIMIT
+        self.log.info(
+            "continuing after the time limit",
+            continuation=used,
+            max_continuations=TIME_LIMIT_MAX_CONTINUATIONS,
+            resumes_session=self._resume_session is not None,
+        )
+
+    def _continuation_env(self) -> dict[str, str]:
+        """The runner's note that this attempt continues after a time limit,
+        when there is no session to resume (a resumed one is told by the
+        channel's own RESUME_REASON_ENV)."""
+        if not self._continued_at_time_limit or self._resume_session:
+            return {}
+        return {RESUME_REASON_ENV: RESUME_TIME_LIMIT}
+
+    def _continue_at_time_limit(
+        self, final: CheckpointRecord | None, summary: dict[str, Any]
+    ) -> Outcome:
+        """Park SCHEDULED_RETRY, now: the stop at the time limit continues in a
+        new attempt (BGD, 2026-11-02). The park is the SIGTERM park's
+        (`_handle_interruption`): one fenced transaction that parks, releases
+        the lease and the pools and ends the attempt, so nothing holds
+        capacity while the task waits (invariant 1) and nothing sleeps
+        (invariant 4). The scheduler's `_promote_scheduled_retries` returns
+        it to READY, and admission leases the next attempt at a new
+        generation. A fence is raised to `run`, which stands down."""
+        continuation = self._time_limit_continuations() + 1
+        self.log.warning(
+            "the step reached its time limit with its checkpoint uploaded; "
+            "continuing in a new attempt",
+            timeout_seconds=self.cfg.timeout_seconds,
+            continuation=continuation,
+            max_continuations=TIME_LIMIT_MAX_CONTINUATIONS,
+        )
+        block: dict[str, Any] = {
+            "continuation": continuation,
+            "max_continuations": TIME_LIMIT_MAX_CONTINUATIONS,
+            "timeout_seconds": self.cfg.timeout_seconds,
+            "checkpoint_id": final.checkpoint_id if final is not None else None,
+        }
+        if self.budget is not None:
+            block["budget"] = self.budget.summary()
+        with self._metrics_after_the_record():
+            self.control.park(
+                reason=ParkReason.SCHEDULED_RETRY,
+                next_eligible_at=utcnow(),
+                detail={"cause": "time_limit_continuation", TIME_LIMIT_DETAIL_KEY: block,
+                        **summary},
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_for_quota(self, decision: QuotaDecision, *, source: str) -> Outcome:
@@ -20486,6 +20727,7 @@ REFUNDED_RESUME_METADATA_KEYS = (
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY,
     QUOTA_PARK_RESUMES_METADATA_KEY,
+    TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
 )
 
 

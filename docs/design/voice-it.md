@@ -316,6 +316,25 @@ Voice it, because it is the same route.
   reads its key (`terraform/infra/live.tf`). It never writes them, logs
   them, or sends them to the browser.
 
+**How a session reaches the OpenAI credential (owner, 2026-11-02).** The
+OpenAI secret's first version is the ChatGPT sign-in the person makes under
+Voice it › Preferences (`swarm_api/voice/signin.py`). swarm-api's start call
+sends swarm-voice's `StartRequest` field for field: `voice_session_id`,
+`person`, `offer`, the grant and its project, and as `credential` the
+version reference `ChatGPTSignIn.stored_version` names. It reads swarm-voice's
+`201 {voice_session_id, live_session_id, answer}` and keeps the live id on the
+session document. Only the reference travels, never the value. swarm-api
+sends it only when it is a numbered version of the caller's own personal
+secret in this deployment's project, and swarm-voice's `check_scope` checks
+the same again. A person with no stored sign-in is refused with a 403 that
+tells them to sign in under Voice it › Preferences. That happens before a
+session is written or swarm-voice is called. swarm-voice refreshes the
+credential the way the ChatGPT-plan pool refreshes the same Codex client's
+tokens (`quota_broker.openai_plan`, measured live). It sends a form POST to
+`https://auth.openai.com/oauth/token` with `grant_type`, `client_id` and
+`refresh_token`, and no `resource`. That address is stated once, as
+`swarm_voice.credential.TOKEN_URL`.
+
 **Why not the account pool.** The pool holds Claude subscriptions, which the
 quota broker refreshes and hands to workers with leases. Their five-hour
 windows are the lanes' capacity, and a planner drawing on them would compete

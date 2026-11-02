@@ -3,7 +3,10 @@
 **Read 2026-10-18 at `9c5726f`** (main), for the security pass (#476) and
 #1336; rule 4 and rule 6 updated the same day by lane JEV-SCRUB, which
 threaded the agent profile's registered secrets into Jev's config and
-amended §5.4 to say where the audit lands. Every `path::Symbol` below is checked by
+amended §5.4 to say where the audit lands. "When a call may be made" added
+2026-11-02 at `5117e12` by lane JEV-JUDGMENTS-RUN, which made the judgments
+run (the decision API's address, the signed opt-in, the setup order, the
+monthly cap and the per-agent count). Every `path::Symbol` below is checked by
 `tests/unit/worker/test_jev_data_flow.py`, which fails when a cited function,
 name or test no longer exists. The rules are those of
 [context-quality.md §5.4](design/context-quality.md#54-what-is-sent-and-what-never-is-even-when-opted-in);
@@ -40,6 +43,24 @@ The client's sanitizer can only deny a path it can see: an object carrying a
 `path` or `file` key. Two shapes carry content with no path beside it -- J3's
 top-level `diff_hunk` and J4's `changed: [{symbol, hunk}]` -- so their call
 sites withhold the hunk themselves. Those are rows 1b and 1c.
+
+## When a call may be made
+
+Lane JEV-JUDGMENTS-RUN (the owner chose on 2026-11-02 to build every
+improvement proposal in CLD's Jev report). Before it, the rules below were
+held by tests and exercised by no traffic: no attempt but a live browser's
+had the decision API's address, the opt-in was read unsigned, and the budget
+was per attempt with no monthly cap. Every refusal here is a skip or "off":
+the attempt's outputs stay byte-identical to the local-only run (§5.6).
+
+| Condition | What holds it | Test that fails when it is removed |
+|---|---|---|
+| **The signed opt-in.** `code_intelligence.jev` counts only when swarm-api's MAC over the `code_intelligence` block verifies (tenant-settings-integrity.md row 7). The worker holds no settings key, so the scheduler checks the block at dispatch and writes the verdict, `SWARM_JEV_JUDGMENTS` (`true`/`false`, and `SWARM_JEV_JUDGMENTS_REFUSED` with why), into every claude-code and codex job on both backends, as it does the quality gates'. The worker reads anything but `true` -- unsigned, mismatched, SETTINGS_MAC_REQUIRED off, no verdict at all -- as not opted in, and sets nothing up. | `apps/scheduler/scheduler/judgment.py::judgments_verdict`, `apps/scheduler/scheduler/dispatch.py::read_jev_judgments`, `apps/scheduler/scheduler/dispatch.py::jev_judgments_reading`, `apps/agent-worker/agent_worker/judge/attempt.py::unverified`, `apps/agent-worker/agent_worker/judge/attempt.py::setup` | `tests/unit/control_plane/test_judge_address.py::test_unsigned_or_mismatched_is_off`, `tests/unit/control_plane/test_judge_address.py::test_build_router_wires_the_reader_into_both_dispatchers`, `tests/unit/control_plane/test_judge_address.py::test_the_cloud_run_job_carries_the_verdict`, `tests/unit/worker/test_jev_judgments_run.py::test_unsigned_settings_turn_judgments_off` |
+| **The decision API's address.** A claude-code or codex pod on GKE whose signed opt-in is on, or whose signed dispatch block says `jev_judgments: on` (never `off`), on `internal-jev` or `internal-laya` with the tailnet egress on, gets `SWARM_JUDGE_INTERNAL_URL` (the backend's `/v1/decide` by the tailnet name), the `swarm-judge: internal` label `kubernetes/network-policies/allow-judge-egress.yaml` selects, and the hostAliases entry: from `jev_dispatch`, the live browser's code path. A Cloud Run Job cannot reach the egress Service and gets no URL: there an internal backend still reads `no_internal_url`. | `apps/scheduler/scheduler/judgment.py::judge_dispatch`, `apps/scheduler/scheduler/dispatch.py::judges_internally`, `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._with_judge_address`, `apps/agent-worker/agent_worker/judge/settings.py::resolve_backend` | `tests/unit/control_plane/test_judge_address.py::test_an_opted_in_internal_backend_attempt_gets_the_address_and_the_label`, `tests/unit/control_plane/test_judge_address.py::test_no_address_and_no_label_otherwise`, `tests/unit/control_plane/test_judge_address.py::test_the_url_variable_is_the_worker_judges` |
+| **The setup order.** `jevkey.prepare` writes `private/jev-typesafe.key` before the graph context runs `judge.attempt.setup`, which reads it (`_read_key`): before, a live-browser attempt on TypeSafe without the forwarder read `no_key`. | `apps/agent-worker/agent_worker/lifecycle.py::Worker._build_child_env`, `apps/agent-worker/agent_worker/judge/attempt.py::_read_key` | `tests/unit/worker/test_jev_judgments_run.py::test_the_typesafe_key_file_exists_before_the_judge_is_set_up` |
+| **The per-agent count.** At setup the ledger starts with the calls and tokens of the agent's settled attempts (their `jev_usage` rows, this tenant's only), created as already settled so they are never charged twice: 8 calls and 120k tokens per agent, not per attempt. | `apps/agent-worker/agent_worker/judge/attempt.py::_carried`, `apps/agent-worker/agent_worker/judge/budget.py::FirestoreMonthlyLedger.task_spend`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.create` | `tests/unit/worker/test_jev_judgments_run.py::test_a_tasks_second_attempt_counts_the_first_attempts_calls` |
+| **The monthly cap.** With `code_intelligence.jev_monthly_cap_tokens` set, setup reads the month's total (`jev_usage/<tenant>_<YYYY-MM>`, UTC); a call that would take the month past the cap is `skipped:budget_monthly`. | `apps/agent-worker/agent_worker/judge/attempt.py::_carried`, `apps/agent-worker/agent_worker/judge/budget.py::FirestoreMonthlyLedger.used`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.admit` | `tests/unit/worker/test_jev_judgments_run.py::test_a_month_over_its_cap_skips_with_budget_monthly_and_changes_nothing`, `tests/unit/worker/test_jev_judgments_run.py::test_with_no_cap_the_month_is_not_read` |
+| **The settle.** After the agent, before any terminal write, the lifecycle settles the attempt: in ONE transaction, fenced by the generation through the control plane's own `_fenced_task` (invariant 5), the attempt's row `jev_usage/<tenant>_<task>_g<generation>` (`kind: attempt`, its calls and tokens) and the month's total are added to. A superseded attempt writes nothing; a failed settle is logged by type, left unsettled, and changes no output. | `apps/agent-worker/agent_worker/lifecycle.py::Worker._settle_jev`, `apps/agent-worker/agent_worker/judge/attempt.py::settle`, `apps/agent-worker/agent_worker/judge/budget.py::settle_attempt`, `apps/agent-worker/agent_worker/judge/budget.py::FirestoreMonthlyLedger.settle_attempt` | `tests/unit/worker/test_jev_judgments_run.py::test_settle_writes_one_jev_usage_row_per_attempt_and_the_month`, `tests/unit/worker/test_jev_judgments_run.py::test_a_stale_generation_settles_nothing`, `tests/unit/worker/test_jev_judgments_run.py::test_the_lifecycle_settles_the_attempt_after_the_agent` |
 
 ## The rules
 
@@ -106,16 +127,22 @@ records are the authority on what was sent.
 
 * **The runner process**, for J1-J5. `judge.attempt.load` builds the client
   from `SWARM_JUDGE_CONFIG` (a path, never a key) inside the runner:
-  J1 in `contextpack.prepare` before the agent starts, J4 in the gate
+  J0 and J1 in `contextpack.prepare` before the agent starts (J0 only for a
+  step the local rules leave `implement`, and it sends the brief alone, as
+  `{task: {brief}}`, which J1 already sends), J4 in the gate
   (`prepublish.Gate._advise`) after it has exited, J2/J3/J5 in
-  `runners/cliagent._jev_post_steps` after it has exited. The agent's process
+  `runners/cliagent._jev_post_steps` after it has exited (J3 for a review
+  and for a re-review, `contextpack/tasktype.py::classify`). The agent's process
   tree does not exist yet or no longer runs while these calls are made.
 * **The worker process** (`agent_worker.judge.attempt.setup`, inside
   `graphstage.prepare`) makes **no call**. It reads
-  `workspace_settings/{tenant}` and the repository's registration, then
+  `workspace_settings/{tenant}`, the scheduler's verdict on it, the
+  repository's registration and, when Jev is on, the agent's earlier
+  attempts' `jev_usage` rows and the month's total (with a cap set), then
   writes `<attempt>/judge/config.json` (with the agent profile's registered
   secret names, never their values) and the ledger, or nothing when Jev is
-  off.
+  off. After the agent it settles the ledger into `jev_usage`
+  (`judge.attempt.settle`).
 * **Not the agent, today.** `register.register_jev_tool` (the agent's
   `jev_decide` MCP tool, §5.1's owner override) exists but no runner calls it
   (§5.6, "Not built here"). When it is wired, the tool process is the agent's
@@ -136,8 +163,10 @@ Chosen by the workspace's judgment backend (`judge.settings.resolve_backend`):
   forwarder adds it.
 * **TypeSafe** otherwise: the workspace's key, read only from the
   `private/jev-typesafe.key` the worker already wrote for a live-browser
-  attempt, copied to `<attempt>/private/jev-key` (0600) for the config to
-  name. Any other attempt reads `no_key` and makes no call.
+  attempt (since JEV-JUDGMENTS-RUN, before the judge's setup reads it),
+  copied to `<attempt>/private/jev-key` (0600) for the config to name, or,
+  under the signed workflow switch `jev_judgments: on`, the workspace's key
+  resolved for the step. Any other attempt reads `no_key` and makes no call.
 
 In every case the key is in no config, MCP entry, environment variable, log
 line or audit row (`Backend.__repr__` omits it; rule 6's test checks the
@@ -157,10 +186,46 @@ holding it is dropped.
 * **TypeSafe direct** (`https://api.typesafe.ai/v1/systemone`) and **the
   Internal URL** (`SWARM_JUDGE_INTERNAL_URL`, the decision API over the
   tailnet) are opened with `urllib.request.urlopen`, which honours the runner
-  process's `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`. Beyond that the call takes
-  the attempt's ordinary network egress: no Jev-specific egress rule exists
-  in this repository, and this record does not establish which network path
-  a deployed worker's traffic takes past the process.
+  process's `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`. The Internal URL is set
+  by the scheduler on a GKE pod that judges internally ("When a call may be
+  made"), with the `swarm-judge: internal` label that
+  `kubernetes/network-policies/allow-judge-egress.yaml` opens the
+  decision API's egress Service to, and the hostAliases entry that resolves
+  the tailnet name to that Service. TypeSafe direct takes the pod's egress,
+  below.
+
+**The TypeSafe egress allowlist** (2026-11-02, the owner's choice to build
+every proposal in CLD's Jev report; [the runbook](runbooks/typesafe-egress.md)).
+Two GKE FQDNNetworkPolicies name `api.typesafe.ai`, and nothing else in
+`kubernetes/` does:
+
+* **The forwarder**, `kubernetes/network-policies/swarm-system-typesafe-fwd.yaml`:
+  `swarm-typesafe-fwd`, the one process that holds workspaces' TypeSafe keys,
+  is put under egress isolation and reaches DNS, the metadata server, and TCP
+  443 to `api.typesafe.ai` and `secretmanager.googleapis.com` by name only.
+* **A direct pod**, `kubernetes/network-policies/fqdn/allow-typesafe-direct.yaml`:
+  TCP 443 to `api.typesafe.ai` for a tenant pod the dispatcher labelled
+  `swarm-jev: typesafe-direct`
+  (`apps/scheduler/scheduler/dispatch.py::TYPESAFE_DIRECT_POD_LABEL`, set by
+  `apps/scheduler/scheduler/dispatch.py::with_typesafe_direct` and
+  `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._with_judgments_forwarder`):
+  a TypeSafe-backed live browser, quality gates on, or a `jev_judgments: on`
+  step on the TypeSafe backend, whenever the pod is not labelled
+  `swarm-typesafe: inject`.
+
+A pod labelled `swarm-typesafe: inject` has no TypeSafe allow: it reaches
+TypeSafe only through the forwarder, on TCP 8080 (`allow-typesafe-fwd.yaml`).
+An unlabelled pod has none either. Held by
+`tests/unit/scripts/test_typesafe_egress_allowlist.py` (every FQDN policy
+under `kubernetes/` judged against an unlabelled, a forwarded and a direct
+pod and the forwarder) and
+`tests/unit/control_plane/test_dispatch_typesafe_direct_label.py::test_a_forwarded_pod_has_no_direct_label`.
+
+**What the allowlist does not do**: deny. `allow-egress.yaml` rule 4 still
+admits every tenant pod to the public internet on TCP 443, and policies are
+allow-only unions, so an unlabelled pod's packets to `api.typesafe.ai` are
+not dropped (Known gaps). Both files are applied by the owner by hand
+(the runbook); no render applies them yet.
 
 ## The lane hooks
 
@@ -201,25 +266,47 @@ per Jev call, `{model, state, questions}`):
 | jev-enforce, first run in a checkout | once per rule set, cached in the data directory | the rule texts | what each rule constrains |
 | jev-enforce, Edit/Write | **never**: in `end` mode it only records the edit's text in the data directory (`private/jev-gates-data`) for the Stop hook | -- | -- |
 
-**The redaction applied.** Before any send, the launcher
-(`swarm-jev-gate.mjs` `guardedFetch` and `scrub`) parses the body and
-replaces, in every string and every key at every depth, the workspace key
-itself and the value of every secret the agent profile registered
-(`secret_env_names`, read from the hook's own environment) with
-`<redacted>`; a value shorter than 8 characters is not scrubbed, the same
-line the judge's sanitizer draws. That is the redaction: rules 1 to 3 and
-5 of the table above (path deny, credential scan, the redaction families,
-never-sent keys)
-are `JudgeClient`'s and do **not** apply to these hooks, see Known gaps.
+**The redaction applied: the outbound filter.** Lane
+jev-outbound-redaction (owner decision 2026-11-02, CLD's Jev report). Before
+any send, the launcher (`swarm-jev-gate.mjs` `guardedFetch`, which runs
+`filterBody`) parses the body and applies the worker's rules to every string
+and every key at every depth, a matching string **dropped, never masked**, as
+`JudgeClient` does:
+
+| # | Rule | Enforced by (`images/agent-runtime-base/jev-gates/bin/swarm-jev-gate.mjs`) | Test that fails when it is removed |
+|---|---|---|---|
+| G1 | **Path deny.** An object whose `path` or `file` is `.env*`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `*.tfstate*`, under `secrets/` or `credentials/`, or one of the repository's hard-stop paths (the config's `hard_stop_paths`, tried repository-relative too) keeps its identity keys only. jev-enforce sends each edit as `{kind, file, text}`, so an edited `.env` goes as its name. The globs, directories and keys are `sanitize.py`'s, held equal. | `isDeniedPath`, `walk`, `DENIED_NAME_GLOBS` | `tests/unit/worker/test_jev_outbound_filter.py::test_an_edited_env_files_text_never_reaches_the_fake_jev_from_jev_enforce`, `tests/unit/worker/test_jev_outbound_filter.py::test_the_repositorys_hard_stop_paths_are_denied_when_the_config_names_them`, `tests/unit/worker/test_jev_outbound_filter.py::test_the_path_deny_and_never_sent_keys_are_the_workers`, `tests/unit/worker/test_jev_outbound_filter.py::test_the_launchers_path_deny_agrees_with_the_workers` |
+| G2 | **The redaction rule families, then drop.** A string any rule of `swarm_redaction.rules` would mask is removed from its object or list. The rules are asked of the image's own module (`/opt/venv/bin/python -I`, one batched call per request), not ported: the key/value rule is built on conditional groups (`(?(name)...)`) that a JavaScript `RegExp` cannot spell, and a hand-written second definition would drift. If the rules cannot be asked, nothing is sent. | `credentialFlags`, `filterBody` | `tests/unit/control_plane/test_log_redaction.py::test_the_jev_outbound_filter_flags_exactly_what_the_rules_mask` (the parity fixture, every case), `tests/unit/worker/test_jev_outbound_filter.py::test_a_credential_in_an_edit_is_dropped_and_a_registered_secret_is_still_scrubbed`, `tests/unit/worker/test_jev_outbound_filter.py::test_without_its_redaction_python_the_filter_sends_nothing` |
+| G3 | **The key and the registered secrets** (`secret_env_names`, read from the hook's own environment) are replaced with `<redacted>` (`scrub`), first; a value shorter than 8 characters is not scrubbed, the same line the judge's sanitizer draws. | `scrub`, `secretValues` | `tests/unit/worker/test_quality_gates.py::test_the_launcher_sends_only_to_typesafe_scrubbed_and_counted`, `tests/unit/worker/test_jev_outbound_filter.py::test_a_credential_in_an_edit_is_dropped_and_a_registered_secret_is_still_scrubbed` |
+| G4 | **Never sent:** `author(s)`, `email(s)`, `user`, `login`, `env`, `environ`, `environment`, `transcript`, removed wherever they appear. | `walk`, `NEVER_SENT_KEYS` | `tests/unit/worker/test_jev_outbound_filter.py::test_the_filter_drops_never_sent_keys_and_credentials_at_every_depth` |
+| G5 | **JSON text is filtered as its structure** (the browser's internal backend sends `state` as JSON text). | `walk` | `tests/unit/worker/test_jev_outbound_filter.py::test_a_state_sent_as_json_text_is_filtered_as_its_structure` |
+
 `guardedFetch` also refuses any URL but TypeSafe's, and sends to the URL
 the worker's config chose (TypeSafe, or the loopback shim) with the
 config's key, whatever `JEV_BASE_URL` or `CLAUDE_PLUGIN_OPTION_*` the
 environment holds; the launcher removes those and `JEV_BELAY_LOG`, so
-neither tool writes a text log.
+neither tool writes a text log. The publish gate's own predicate
+(`lifecycle._credential_in`, rule 2 of the table above) is not asked here:
+it lives in the worker package, whose import would cost each hook seconds.
+
+**The Jev browser takes the same filter.** `images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp`
+starts the server as `node --import` of the launcher's `installBrowserFilter`
+(the launcher is installed in agent-runtime-base, which the browser image is
+built FROM), so the global `fetch` upstream `src/jev.mjs` calls for every Jev
+request is the filtered one: page text, element labels and any JSON-text
+`state` go through G1 to G5, with the TypeSafe key it was given scrubbed. The
+wrapper refuses to start when the launcher is missing, and always sets the
+interpreter it asks (`SWARM_JEV_REDACTION_PYTHON`) itself. Held by
+`tests/unit/worker/test_jev_outbound_filter.py::test_a_page_holding_a_github_token_never_reaches_the_fake_jev_from_the_browser`
+and `tests/unit/worker/test_jev_browser_image.py::test_without_the_outbound_filter_the_wrapper_refuses_to_start`.
 
 **Where the audit lands.** Each hook run appends one line of counts to
 `private/jev-gates.counts` -- which hook, how many Jev calls, whether it
-blocked, how many rules it flagged; never text. After the agent,
+blocked, how many rules it flagged, and the outbound filter's `dropped`,
+`denied` and `withheld` counts; never text. The browser writes one such line
+per Jev call (`hook: "browser"`) to its stderr, which the CLI keeps as the
+MCP server's log, and to `SWARM_JEV_BROWSER_COUNTS` when the runner names a
+file. After the agent,
 `apps/agent-worker/agent_worker/qualitygates.py::finish` sums them, removes
 the key file, and `apps/agent-worker/agent_worker/lifecycle.py::Worker._record_quality_gates`
 puts them in the attempt's summary under `quality_gates` and records one
@@ -227,11 +314,13 @@ RUNNING event, cause `quality_gate`, with the same counts when belay blocked
 a stop or enforce flagged a rule. There is no per-call ledger row like rule
 6's; TypeSafe's own records are the authority on what was sent.
 
-**Egress.** The same path the jev browser tools' direct calls take: no host
-allowlist exists for TypeSafe; `kubernetes/network-policies/allow-egress.yaml`
-rule 4 (the internet minus every private range, TCP 443) applies to every
-worker pod, and the forwarder's path (`allow-typesafe-fwd.yaml`) to a pod
-labelled `swarm-typesafe: inject`. No new rule was needed.
+**Egress.** The same path the jev browser tools' direct calls take
+(Which egress path): a gates-on pod without the forwarder is labelled
+`swarm-jev: typesafe-direct`, which the TypeSafe allowlist's direct FQDN rule
+selects; with the forwarder, the hooks use the loopback shim and the pod's
+`swarm-typesafe: inject` path (`allow-typesafe-fwd.yaml`).
+`kubernetes/network-policies/allow-egress.yaml` rule 4 (the internet minus
+every private range, TCP 443) still applies to every worker pod.
 
 Held by `tests/unit/worker/test_quality_gates.py` (switch, key, config,
 hooks, launcher redaction and URL pin, counts and event) and
@@ -239,24 +328,90 @@ hooks, launcher redaction and URL pin, counts and event) and
 
 ## Known gaps
 
-* **The lane hooks get only the registered-secret scrub.** jev-enforce sends
-  an edited file's text whatever its path, so an edit to a `.env` or `*.pem`
-  file the agent writes reaches TypeSafe with only the profile's registered
-  secrets and the key replaced; rule 1a's path deny, rule 2's credential
-  scan and rule 3's redaction families are `JudgeClient`'s and do not run
-  in the launcher. Turning `quality_gates.jev` on accepts that; it is off
-  by default.
-* **Nothing sets `SWARM_JUDGE_INTERNAL_URL`** (context-quality.md §5.6). The
-  scheduler sends `JEV_API_URL` to live-browser attempts only. So an
-  opted-in workspace on the default Internal Jev backend reads
-  `no_internal_url` and **makes no call**: today the rules above are held by
-  tests, not exercised by traffic. Not fixed here.
+* **The outbound filter's drop counts reach no summary yet.** They are in
+  each line of `private/jev-gates.counts` and the browser's log, but
+  `apps/agent-worker/agent_worker/qualitygates.py::finish` sums only calls,
+  blocks and flags, and nothing hands the browser a `SWARM_JEV_BROWSER_COUNTS`
+  file or the worker's `hard_stop_paths`; those are the worker's files, asked
+  for in the lane's PR.
+* **A Cloud Run Job judges on TypeSafe only.** The decision API's egress is
+  a cluster Service, so a claude-code or codex attempt routed to Cloud Run
+  gets no Internal URL and an internal backend reads `no_internal_url` there.
+* **The state routes carry no Jev usage.** A tenant switched to them holds no
+  Firestore client: with a monthly cap set its month counts as spent (every
+  call `skipped:budget_monthly`), its earlier attempts are not carried, and
+  nothing is settled.
+* **Only an attempt that reaches the harvest is settled.** A park, a crash or
+  a cancellation ends before `_settle_jev`, so that attempt's calls (at most
+  J1's, which run before the agent) are neither charged to the month nor
+  carried to the next attempt.
+* **The opt-in needs SETTINGS_MAC_REQUIRED on.** As for the quality gates,
+  the scheduler verifies nothing while that switch is off, so every stored
+  `code_intelligence.jev: true` reads as off (`settings_mac_off`) until lane
+  ISO-SETTINGS-MAC's re-sign job has signed the documents and the switch is on.
 * **Rule 5a is by key name.** An email address or an environment value
   pasted into free text (an issue body, an excerpt, the agent's `state`) is
   not removed unless rules 2-4 catch it.
 * **Rule 5c holds for J3 by a check, and for J1 and J4 by construction**: their
   rows are read from the attempt's checkout, with no separate guard that would
   refuse a path leaving it.
+
+* **The TypeSafe allowlist names, it does not deny.** An unlabelled tenant
+  pod can still reach `api.typesafe.ai` through `allow-egress.yaml` rule 4:
+  NetworkPolicies cannot subtract a host from an allow, and the host's
+  addresses are shared Cloudflare ones no `except` may pin. What stops such a
+  pod's call doing anything is that it holds no workspace key. Closing it (a
+  hostname sinkhole on unlabelled pods, or the general internet behind a
+  proxy that refuses the host) is an owner question, in
+  [the runbook](runbooks/typesafe-egress.md).
+
+### Closed by lane jev-outbound-redaction (2026-11-02)
+
+* **The lane hooks got only the registered-secret scrub**, so jev-enforce
+  could send an edited `.env` or `*.pem` file's text, and **the Jev browser
+  sent page text and element labels with no SwarmCloud-side redaction.** Both
+  launchers now run every request body through the outbound filter (G1 to G5
+  under "The lane hooks").
+
+### Closed by the Jev report's classifier proposals (2026-11-02)
+
+The owner chose on 2026-11-02 to build every improvement proposal in CLD's
+Jev report; two were in the classifier that picks a step's type.
+
+* **A re-review got no J3 triage.** `tasktype.classify` typed any step that
+  staged `verdict.json` a fix, and a re-review stages the review it re-reads,
+  so `_jev_post_steps` never ran J3 over the verdict the re-review wrote. A
+  step that stages the patch and the verdict AND owes `verdict.json` in its
+  own `expected_outputs` (written from its signed `step_id`,
+  `apps/agent-worker/agent_worker/expected_outputs.py::is_review_step`) is now
+  a review; a fix, which owes no verdict, stays a fix. Held by
+  `tests/unit/worker/test_jev_wiring.py::test_cli_runner_triages_a_re_review_s_own_verdict`
+  and `tests/unit/worker/test_contextpack.py::test_a_fix_that_stages_a_verdict_stays_a_fix`.
+  J3 sends what it sent for a review: no new data flow.
+* **J0 was defined and never called.** `apps/agent-worker/agent_worker/judge/shapes.py::j0_classify` is now
+  called by `apps/agent-worker/agent_worker/contextpack/tasktype.py::classify_with_jev`
+  from `contextpack.prepare`, only where the local rules fall back to
+  `implement` and the attempt has a Jev client. Its state is the brief J1
+  already sends, through the same client, sanitizer and ledger (one audit row,
+  `kind` J0, counted in the agent's eight calls). Held by
+  `tests/unit/worker/test_jev_wiring.py::test_j0_types_an_ad_hoc_step_the_local_rules_left_implement`
+  and `tests/unit/worker/test_jev_wiring.py::test_j0_failure_leaves_the_pack_byte_identical_to_local_only`.
+
+### Closed by lane JEV-JUDGMENTS-RUN (2026-11-02)
+
+* **Nothing set `SWARM_JUDGE_INTERNAL_URL`** (context-quality.md §5.6). The
+  scheduler sent `JEV_API_URL` to live-browser attempts only, so an opted-in
+  workspace on the default Internal Jev backend read `no_internal_url` and
+  made no call. A judging claude-code or codex pod on GKE now gets the URL,
+  the label and the hostAliases entry: "When a call may be made", second row.
+* **The worker read `code_intelligence.jev` unsigned.** It now acts only on
+  the scheduler's verdict: first row.
+* **The judge's setup ran before `jevkey.prepare`**, so the key file it reads
+  did not exist yet: third row.
+* **The budget was per attempt and the monthly cap never enforced**:
+  `budget.settle` and `FirestoreMonthlyLedger` had no production caller, and
+  `attempt.setup` passed no `month_used_tokens` or `task_calls`. Rows four
+  to six.
 
 ### Closed by lane JEV-SCRUB (2026-10-18)
 
