@@ -633,7 +633,7 @@ helpers so they are testable without the CLI.
     172.16/12, 192.168/16, 100.64/10 and the pod and service ranges stay
     refused. Why only that: an audit of what listens on loopback in this pod
     (owner's pick, 2 November 2026) found Lightpanda's own CDP (9223, which
-    drives every page and its cookies), and, when the task uses them, the
+    drives every page and its cookies), and, when the agent uses them, the
     TypeSafe shim and the MCP relay (each can spend a credential for a
     caller holding its local token) and test-services Postgres (5432, trust
     auth). Each is refused by port, `--block-urls '*:<port>/*'`: 9223 and
