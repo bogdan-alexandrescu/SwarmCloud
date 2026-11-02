@@ -336,6 +336,10 @@ from ..handoff import AGENT_PASSTHROUGH_ENV, EGRESS_NOTICE_NAME, HANDOFF_ENV, RE
 from ..jevkey import BACKEND_ENV as JEV_BACKEND_ENV
 from ..jevkey import INTERNAL_BACKENDS as JEV_INTERNAL_BACKENDS
 from ..jevkey import KEY_FILE_ENV as JEV_KEY_FILE_ENV
+from ..judge.attempt import CONFIG_ENV as JUDGE_CONFIG_ENV
+from ..judge.mcp import SERVER_NAME as JEV_DECIDE_SERVER_NAME
+from ..judge.mcp import TOOL_NAME as JEV_DECIDE_TOOL
+from ..judge.register import server_entry as jev_decide_entry
 from ..logs import StructuredLogger
 from ..qa_identity import NOTICE_NAME as _QA_NOTICE_NAME
 from ..qa_identity import requested as qa_identity_requested
@@ -427,6 +431,32 @@ EXPLORATION_CHILDREN_CLAUSE = (
     "send broad exploration to a child task through .swarm-children "
     "($SWARM_CHILDREN) with `model_class` \"sonnet\" or \"haiku\" rather "
     "than reading the tree yourself"
+)
+
+#: AGENTS-USE-TOOLS (owner's choice, 2026-11-02; part of #2688). The first
+#: experiment batch offered `swarm-graph` in all 42 steps with code
+#: intelligence on and no agent called it: its tools sat behind the CLI's
+#: tool search and nothing said when to use them. Now its `--mcp-config`
+#: entry carries `alwaysLoad` (`ALWAYS_LOAD`) and the prompt this line, only
+#: when the graph is registered.
+GRAPH_FIRST_NOTE = (
+    "Code graph: the swarm-graph tools are loaded for this task and answer "
+    "who calls a function, where a symbol is defined and what a change touches "
+    "(callers, tests, docs) better than a text search: use them first for those "
+    "questions (`search`, `call_graph`, `impact`, `tests_for`)."
+)
+#: Claude Code's per-server `--mcp-config` field: "all tools from this server
+#: are always included in the prompt and never deferred behind tool search"
+#: (the CLI's schema, 2.1.283). Set on the servers a step is told to use
+#: first: swarm-graph, jev-browser and swarm-jev.
+ALWAYS_LOAD = "alwaysLoad"
+#: The agent's own `jev_decide` (`judge/mcp.py`), registered only on a step
+#: whose workspace opted in to Jev judgments (`judge.attempt.CONFIG_ENV`).
+JEV_DECIDE_NOTE = (
+    f"Jev decision: the `{JEV_DECIDE_TOOL}` tool is loaded for this task: for a "
+    "judgement call (which option fits, whether something meets criteria), ask it "
+    "typed questions first and weigh its advisory answer; it shares this task's "
+    "Jev budget, and credential-shaped text is removed before anything is sent."
 )
 
 #: Set by the dispatcher on the worker container only with the live browser's
@@ -712,6 +742,16 @@ BROWSER_TOOL_LEAD = {
         "tools. Use them first; the browser_* tools are the fallback."
     ),
 }
+
+#: The `auto` lead when jev is ready (AGENTS-USE-TOOLS, owner's choice
+#: 2026-11-02): the first batch offered jev on every rendered step of the Jev
+#: groups and Playwright did every call. jev's tools load up front
+#: (`ALWAYS_LOAD`); Playwright stays registered as the fallback.
+BROWSER_TOOL_LEAD_JEV_FIRST = (
+    "Browser tools for this task (auto, chosen at submission): jev is ready, so "
+    "use the jev MCP tools first on every rendered page; the browser_* tools "
+    "(Playwright) are the fallback, for what jev cannot do."
+)
 
 #: Each tool's strength, appended in the choice's order.
 BROWSER_TOOL_STRENGTH = {
@@ -1128,6 +1168,7 @@ def write_mcp_config(
     relay: tuple[str, list[RelayServer]] | None = None,
     screenshots_dir: str | None = None,
     lightpanda_server: dict[str, Any] | None = None,
+    judge_config: str | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
     browser when `endpoint` is given (writing what it names itself into
@@ -1144,7 +1185,14 @@ def write_mcp_config(
     LOCAL token, never the caller's credential (module docstring), and
     `lightpanda_server` (`lightpanda.mcp_server`) as the `lightpanda` server
     when it is given: claude-code-lightpanda's, which has no `endpoint` and so
-    no `playwright` server (docs/design/lightpanda-runtime.md §6.2).
+    no `playwright` server (docs/design/lightpanda-runtime.md §6.2), and
+    `swarm-jev`, the agent's `jev_decide`, when `judge_config` (the worker's
+    `judge/config.json`, `judge.register.server_entry`) is.
+
+    swarm-graph, jev and swarm-jev carry `ALWAYS_LOAD`: their tools are in
+    the prompt from the session's start, never behind tool search, because
+    the agent is told to use them first (AGENTS-USE-TOOLS). Playwright and
+    the rest load as the CLI chooses.
 
     Playwright MCP connects with its client tag on the endpoint
     (`browser_tools.tag_endpoint`), so the gate can say which tool drove the
@@ -1178,9 +1226,11 @@ def write_mcp_config(
                     "command": sys.executable,
                     "args": ["-I", str(JEV_LAUNCH), jev_key_file, JEV_MCP_BIN],
                     "env": {CDP_ENDPOINT_ENV: endpoint, JEV_NO_INSTALL_ENV: "1"},
+                    ALWAYS_LOAD: True,
                 }
             else:
-                servers[JEV_MCP_SERVER_NAME] = {"type": "stdio", "command": JEV_MCP_BIN, "args": []}
+                servers[JEV_MCP_SERVER_NAME] = {"type": "stdio", "command": JEV_MCP_BIN, "args": [],
+                                                ALWAYS_LOAD: True}
     if lightpanda_server:
         servers[lightpanda.MCP_SERVER_NAME] = lightpanda_server
     if git_spool:
@@ -1196,10 +1246,13 @@ def write_mcp_config(
         pin, ticket_file, url = graph_served
         command, *args = graphstage.shim_argv(pin, ticket_file, graph_workdir)
         servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args,
-                                           "env": {graphstage.URL_ENV: url}}
+                                           "env": {graphstage.URL_ENV: url}, ALWAYS_LOAD: True}
     elif graph_snapshot:
         command, *args = graphstage.server_argv(graph_snapshot, graph_workdir)
-        servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+        servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args,
+                                           ALWAYS_LOAD: True}
+    if judge_config:
+        servers[JEV_DECIDE_SERVER_NAME] = jev_decide_entry(Path(judge_config))
     if relay:
         token, attached = relay
         for server in attached:
@@ -1314,12 +1367,16 @@ SPEC = CliAgentSpec(
 def live_browser_note(choice: browser_tools.Choice, *, search: bool,
                       jev_internal: bool = False, qa_identity: str | None = None) -> str:
     """The note an agent with the live browser is given: the selected tool
-    first, then the live browser's rules, the QA identity's when the task
+    first (jev under `auto` when it is ready), then the live browser's rules, the QA identity's when the task
     named one, then each tool's strength."""
-    parts = [BROWSER_TOOL_LEAD[choice.selected], LIVE_BROWSER_NOTE]
+    jev_first = choice.selected == browser_tools.AUTO and choice.jev_enabled
+    lead = BROWSER_TOOL_LEAD_JEV_FIRST if jev_first else BROWSER_TOOL_LEAD[choice.selected]
+    parts = [lead, LIVE_BROWSER_NOTE]
     if qa_identity:
         parts.append(QA_IDENTITY_NOTE)
-    for tool in choice.tools:
+    # jev's strength first when it is first (AGENTS-USE-TOOLS).
+    tools = (("jev", *(t for t in choice.tools if t != "jev")) if jev_first else choice.tools)
+    for tool in tools:
         if tool == "jev" and jev_internal:
             parts.append(BROWSER_TOOL_STRENGTH_JEV_INTERNAL)
         else:
@@ -1422,6 +1479,51 @@ def browser_calls(events: Any) -> dict[str, int]:
                 if isinstance(text, str) and BROWSER_COMMAND.search(text):
                     command += 1
     return {"tool": tool, "command": command}
+
+
+#: AGENTS-USE-TOOLS (part of #2688): the families a session's tool calls are
+#: counted by, so an experiment reads whether the agent used the tools
+#: switched on for it without parsing transcripts. A `tool_use` name is
+#: `mcp__<server>__<tool>` for an MCP tool; anything else is the CLI's own.
+TOOL_FAMILIES = ("code_graph", "jev_browser", "playwright", "jev_decision", "built_in", "other_mcp")
+_FAMILY_OF_SERVER = {
+    graphstage.SERVER_NAME: "code_graph",
+    JEV_MCP_SERVER_NAME: "jev_browser",
+    MCP_SERVER_NAME: "playwright",
+    JEV_DECIDE_SERVER_NAME: "jev_decision",
+}
+#: Where the runner reports them: the CLI's `metrics`, which the worker
+#: copies whole into the attempt's `result_summary.runner.metrics`.
+TOOL_CALLS_METRIC = "tool_calls"
+
+
+def tool_family(name: str) -> str:
+    """The `TOOL_FAMILIES` member a `tool_use` named `name` counts under."""
+    if not name.startswith("mcp__"):
+        return "built_in"
+    server = name[len("mcp__"):].split("__", 1)[0]
+    return _FAMILY_OF_SERVER.get(server, "other_mcp")
+
+
+def tool_calls_by_family(events: Any) -> dict[str, int]:
+    """How many `tool_use` blocks the CLI's stream-json carries per family.
+    Counts only, never a name's input."""
+    counts = dict.fromkeys(TOOL_FAMILIES, 0)
+    for event in events if isinstance(events, list) else []:
+        for block in _blocks(event):
+            if block.get("type") == "tool_use":
+                counts[tool_family(str(block.get("name") or ""))] += 1
+    return counts
+
+
+def tool_use(stream: Path, *, complete: bool = True) -> dict[str, Any]:
+    """The session's calls per family, as the runner reports them
+    (`TOOL_CALLS_METRIC`). `families` is None when the stream could not be
+    read -- not a session with no calls -- and a lower bound when `complete`
+    is false (the capture was cut)."""
+    events = _stream_events(stream)
+    return {"read": events is not None, "complete": complete,
+            "families": tool_calls_by_family(events) if events is not None else None}
 
 
 def produced_images(directory: Path) -> int:
@@ -1613,6 +1715,21 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if scratch and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{scratch}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
+    # The graph, loaded up front, and what to ask it first (AGENTS-USE-TOOLS):
+    # only when it is registered below.
+    if (graph_snapshot or graph_served) and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{GRAPH_FIRST_NOTE}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # The agent's own `jev_decide` (AGENTS-USE-TOOLS): the worker writes this
+    # config only for a workspace opted in to Jev judgments, under the signed
+    # setting and the step's switch (`judge.attempt.setup`). Registered over
+    # the SAME config, so its calls and the worker's share one ledger.
+    judge_config = os.environ.get(JUDGE_CONFIG_ENV, "").strip()
+    if judge_config and not Path(judge_config).is_file():
+        judge_config = ""
+    if judge_config and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{JEV_DECIDE_NOTE}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
     # Where to explore first, naming only the tools this attempt has (LANE CAPS).
     explore = exploration_note(graph=bool(graph_snapshot or graph_served),
                                children=env.get(CHILDREN_ENV, ""))
@@ -1703,7 +1820,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
     # ONE `--mcp-config` for every server this attempt has (module docstring).
     if (live_endpoint or git_spool or search_spool or state_spool or graph_snapshot
-            or graph_served or relay[1] or lightpanda_env):
+            or graph_served or relay[1] or lightpanda_env or judge_config):
         mcp = write_mcp_config(
             Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
             git_spool=git_spool or None, search_spool=search_spool or None,
@@ -1715,7 +1832,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             graph_served=graph_served, relay=relay if relay[1] else None,
             screenshots_dir=(str(Path(ctx.artifacts_dir) / SCREENSHOTS_DIR_NAME)
                              if live_endpoint else None),
-            lightpanda_server=lightpanda.mcp_server(lightpanda_env) if lightpanda_env else None)
+            lightpanda_server=lightpanda.mcp_server(lightpanda_env) if lightpanda_env else None,
+            judge_config=judge_config or None)
         # BROWSER-START: the live browser's tool is in the config the CLI
         # reads, or the agent does not start.
         if env.get(HANDOFF_ENV) and MCP_SERVER_NAME not in json.loads(mcp.read_text())["mcpServers"]:
@@ -1733,6 +1851,14 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 log=StructuredLogger(stream=sys.stderr, component="claude-code-runner").warning)
             supervisor.start()
         result = run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
+        if isinstance(result, dict):
+            # AGENTS-USE-TOOLS: the session's calls per tool family, on every
+            # step, in the metrics the worker copies whole into the summary.
+            metrics = result.get("metrics")
+            result["metrics"] = {**(metrics if isinstance(metrics, dict) else {}),
+                                 TOOL_CALLS_METRIC: tool_use(
+                                     Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout,
+                                     complete=not result.get("stdout_truncated"))}
         if live_endpoint and isinstance(result, dict):
             # QA-KIT: what the model was given of its screenshots, read off the
             # stream, so a report can say what it saw. `complete` is false when
