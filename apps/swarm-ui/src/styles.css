@@ -9453,6 +9453,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   position: sticky; top: var(--ctl-s3);
   max-height: calc(100vh - var(--ctl-s3) * 2);
   overflow-y: auto; overscroll-behavior: contain;
+  /* Above every layer the canvas paints (the cards at auto, `.node-stop` at
+     2, the sticky rail and a focused card's full note at 3): at `auto` those
+     numbered layers drew over the panel wherever the two met (#2688, the
+     owner's browser at 1280-1512, 2026-11-02). Below the 35 of the phone's
+     bottom sheet and of the console's own overlays. */
+  z-index: 4;
 }
 .wf-panel:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .wf-panel > .wf-inspect { margin-top: 0; }
