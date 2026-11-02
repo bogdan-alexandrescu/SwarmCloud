@@ -20,6 +20,9 @@ ROLES = ("implement", "review", "fix", "test", "design", "plan")
 CLASSIFY_MIN_CONFIDENCE = 0.6
 #: J2: a requirement whose best step is under this is flagged.
 PLAN_COVERAGE_MIN_P = 0.5
+#: J2: a flag's `coverage` in `plan-advisory.json` (swarm-api serves it as is).
+PLAN_COVERAGE_NONE = "none"
+PLAN_COVERAGE_WEAK = "weak"
 #: J3: a finding under this reaches the fixer marked "verify before acting".
 FINDING_VERIFY_BELOW = 0.15
 #: J5: owner decision 2026-10-14 (§8 Q5 A): hold an auto-approved sweep plan
@@ -121,14 +124,20 @@ def j2_plan_coverage(requirements: Sequence[str],
     return {"requirements": list(requirements), "steps": rows}, questions
 
 
-def read_plan_coverage(answers: Mapping[str, Any]) -> list[int]:
-    """The requirement indices no step covers with p >= 0.5."""
+def read_plan_coverage(answers: Mapping[str, Any]) -> list[tuple[int, str]]:
+    """`(index, coverage)` for each requirement no step covers with p >= 0.5.
+
+    `coverage` is `none` when the answer is `none` (or no step), and `weak`
+    when it names a step under p 0.5: the plan reaches for it, unsurely.
+    """
     flagged = []
     for name in sorted((n for n in answers if n.startswith("r") and n[1:].isdigit()),
                        key=lambda n: int(n[1:])):
         choice, p = _choice(answers, name)
-        if choice is None or choice == NONE or p < PLAN_COVERAGE_MIN_P:
-            flagged.append(int(name[1:]))
+        if choice is None or choice == NONE:
+            flagged.append((int(name[1:]), PLAN_COVERAGE_NONE))
+        elif p < PLAN_COVERAGE_MIN_P:
+            flagged.append((int(name[1:]), PLAN_COVERAGE_WEAK))
     return flagged
 
 
