@@ -306,6 +306,15 @@ MERGE_CI_FALLBACK_SECONDS = 900
 #: traffic: a burst of hand merges during one CI run should not fail a
 #: step, while five of them, each costing a CI run (10-20 min here) with the
 #: slot held and the queue behind it waiting, is a question for a person.
+#: Read again on 2026-11-02, when main's ruleset began requiring branches to
+#: be up to date (#2999): every lane behind now takes the catch-up, which is
+#: not counted. Even if all of main's ~54 merges a day landed outside the
+#: slot (Poisson, one per ~27 min), a held update is behind again after one
+#: CI run (median 944 s, plus about two minutes for the wake tick and the
+#: attempt) with p ~= 1 - exp(-54 * 1124 / 86400) ~= 0.5, so six in a row,
+#: the refusal, is p^6 ~= 1.6% of steps at worst; merges the slot serialises
+#: never count. Raising it would hold the slot, and the queue, longer for a
+#: base that is outrunning CI. Kept at 5.
 MERGE_MAX_BRANCH_UPDATES = 5
 
 #: How many of GitHub's base merges the first-parent walk accepts on top of
@@ -1040,6 +1049,60 @@ class CheckFacts:
                 "check_suite_id": self.check_suite_id,
                 "workflow_conclusion": self.workflow_conclusion,
                 "workflow_superseded": self.workflow_superseded}
+
+
+#: What an Actions run may conclude and not have FAILED (`unreported_failure`):
+#: a run that passed produced every check it would, and a cancelled one waits
+#: for its re-run (#1778).
+RUN_NOT_FAILED = OTHER_TOLERATED | {CANCELLED_CONCLUSION}
+
+
+def unreported_failure(checks: Iterable[CheckFacts]) -> list[CheckFacts] | None:
+    """For a required check NO check run at the head reports: the failing jobs
+    of the finished Actions runs that would have reported it, or None while
+    it may still report (#2999).
+
+    PR #2959 at 5a5d673b7: both `application` runs concluded `failure` on a
+    red shard and ended without a `ci-gate` check run, so the absent check
+    read pending and this step parked 13 hours on CI_PENDING for a check no
+    run would produce. Which workflow produces a check is read from the runs
+    (`checks_at` stamps each check run with its Actions run, read whenever a
+    check finished red): a run superseded by a newer run of its workflow,
+    event and branch decides nothing; while any other run has no conclusion
+    (queued, in progress, a re-run's attempt under way) the check may still
+    come, None. Once every one has concluded, those that concluded other
+    than `success`, `skipped`, `neutral` or `cancelled` would have produced
+    it, and their finished jobs not green are what is red. None when no run
+    failed, the Actions runs were not read, or a failed run left no failing
+    job to name. swarm-api's `forgechecks.unreported_failure` is the same
+    rule, held equal by tests/unit/control_plane/test_unreported_required_check.py.
+    """
+    by_run: dict[int, list[CheckFacts]] = {}
+    for check in checks:
+        if check.workflow_run_id is not None:
+            by_run.setdefault(check.workflow_run_id, []).append(check)
+    failing: list[CheckFacts] = []
+    for jobs in by_run.values():
+        if any(job.workflow_superseded for job in jobs):
+            continue
+        conclusion = jobs[0].workflow_conclusion
+        if not conclusion:
+            return None
+        if conclusion in RUN_NOT_FAILED:
+            continue
+        failing += [job for job in jobs
+                    if check_run_finished(job.as_run()) and not cancelled_run(job.as_run())
+                    and (job.conclusion or "") not in OTHER_TOLERATED]
+    return failing or None
+
+
+def unreported_label(context: str, jobs: list[CheckFacts]) -> str:
+    """What a required check no run reported is failed as: the Actions runs
+    that ended without it and their failing jobs (`unreported_failure`)."""
+    runs = sorted({job.workflow_run_id for job in jobs if job.workflow_run_id is not None})
+    names = sorted({job.name for job in jobs})
+    return (f"{context} (not reported: Actions run {', '.join(str(r) for r in runs)} "
+            f"concluded failure; failing jobs: {', '.join(names)})")
 
 
 def workflow_run_states(checks: Iterable[CheckFacts]) -> dict[int, str | None] | None:
@@ -2765,22 +2828,33 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     #: The runs of each check the decision judges, for `cancelled_since`.
     judged: list[list[dict[str, Any]]] = []
     if required.checks:
-        run.reading = (head, *latest_reading(
+        read_pending, read_failed = latest_reading(
             {check.context: [c for c in checks if c.name == check.context
                              and (check.app_id is None or c.app_id == check.app_id)]
              for check in required.checks},
             REQUIRED_GREEN,
-        ))
+        )
         for check in required.checks:
             mine = [c.as_run() for c in checks if c.name == check.context
                     and (check.app_id is None or c.app_id == check.app_id)]
             judged.append(mine)
             state = required_check_state(mine)
-            if state == "pending":
+            # Reported by nothing at all: failed once every Actions run at
+            # the head has finished and one that failed ended without it
+            # (#2999), so the round and the free re-run go to its failing jobs.
+            jobs = None if mine else unreported_failure(checks)
+            if jobs is not None:
+                failed.append(unreported_label(check.context, jobs))
+                ids = {job.run_id for job in jobs if job.run_id is not None}
+                failing_ids = _with_failing(failing_ids, ids if len(ids) == len(jobs) else None)
+                read_pending = [n for n in read_pending if n != check.context]
+                read_failed = sorted({*read_failed, check.context})
+            elif state == "pending":
                 pending.append(check.context)
             elif state == "failed":
                 failed.append(f"{check.context} ({required_check_label(mine)})")
                 failing_ids = _with_failing(failing_ids, failing_run_ids(mine, REQUIRED_GREEN))
+        run.reading = (head, read_pending, read_failed)
     else:
         # No protection, or protection that requires no check, or a plan that
         # has neither rulesets nor protection to read (`required.source`
