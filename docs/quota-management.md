@@ -72,7 +72,7 @@ means the second data point arrives as a wall of 429s.
 
 **Recovery also runs on the clock, up to the pool's ceiling (owner,
 2026-11-02).** Counting successes alone, a workspace halved from 40 to 7 needed
-about 660 clean task finishes to climb back, which is days. So, on top of the
+about 660 clean agent finishes to climb back, which is days. So, on top of the
 success-based climb, the target rises by one for every
 `AIMD_RECOVERY_INTERVAL_SECONDS` (300) without a workspace-wide refusal. No
 timer does it: the climb is worked out whenever the target is read, from the
