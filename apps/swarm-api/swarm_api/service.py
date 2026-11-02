@@ -32,8 +32,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
+
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.models import (
     SlotPool,
@@ -2453,29 +2455,78 @@ class SubmissionService:
 
         Empty when the ceiling applies or is unknown. An input is named when it
         is below `hard_limit` and equal to `effective_limit`, the minimum the
-        contract's `SlotPool` takes, so two at the same value are both named.
-        `set_at` is the broker's quota document's `updated_at` for a per-tenant
-        provider pool -- the broker writes the pool's inputs in that document's
-        transaction -- and null for any other pool, which has no such record.
-        One document read, and only for a pool that is lowered. Only numbers,
-        a state word and instants are copied from the quota document.
+        contract's `SlotPool` takes, so two at the same value are both named;
+        an admin override (`quota_audit`) is named when it set that value after
+        the last rate limit. The same rule, and the same record, as the
+        scheduler's `scheduler.limits.lowered_by`; a test holds the two equal.
+
+        `set_at` is when the value was set, with `set_by` saying what set it:
+        the override's audit instant, else the rate limit that last cut the
+        target (`last_429_at`), else null. NOT the quota document's
+        `updated_at`: the broker rewrites that on every success and refresh,
+        so it is served apart as `quota_written_at`. Only a per-tenant
+        provider pool has a quota document; every other pool's instants are
+        null. Read only for a pool that is lowered. Only numbers, a state word
+        and instants are copied, never an audit row's caller or reason.
         """
         applied, ceiling = pool.effective_limit, pool.hard_limit
         if applied is None or ceiling is None or applied >= ceiling:
             return []
+
+        def moment(value: Any) -> datetime | None:
+            if isinstance(value, str):
+                try:
+                    value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+            if not isinstance(value, datetime):
+                return None
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+        def instant(value: Any) -> str | None:
+            parsed = moment(value)
+            return parsed.isoformat() if parsed is not None else None
+
         quota: dict[str, Any] = {}
+        override: tuple[int, datetime, str] | None = None
         parts = pool.name.split(":")
         if len(parts) == 4 and parts[0] == "provider" and parts[2] == "tenant":
+            db = self._store.db
             try:
-                snap = self._store.db.collection("quota").document(f"{parts[1]}:{parts[3]}").get()
+                snap = db.collection("quota").document(f"{parts[1]}:{parts[3]}").get()
                 quota = (snap.to_dict() or {}) if getattr(snap, "exists", False) else {}
+                # Bounded and unordered, as the scheduler reads it: ordering by
+                # `at` behind two equality filters needs an undeclared index.
+                rows = (
+                    db.collection("quota_audit")
+                    .where(filter=FieldFilter("provider", "==", parts[1]))
+                    .where(filter=FieldFilter("tenant_id", "==", parts[3]))
+                    .limit(50)
+                    .stream()
+                )
+                for row_snap in rows:
+                    row = row_snap.to_dict() or {}
+                    target, at = row.get("to_target"), moment(row.get("at"))
+                    if (row.get("action") not in ("adaptive_target_reset", "hard_max_set")
+                            or isinstance(target, bool) or not isinstance(target, int)
+                            or at is None):
+                        continue
+                    if override is None or at > override[1]:
+                        override = (target, at, str(row["action"]))
             except Exception as exc:  # noqa: BLE001 - the pool row is still served
                 log.warning("quota document for %s unreadable: %s", pool.name, type(exc).__name__)
 
-        def instant(value: Any) -> str | None:
-            return value.isoformat() if isinstance(value, datetime) else (
-                value if isinstance(value, str) else None
-            )
+        last_cut = moment(quota.get("last_429_at"))
+        override_holds = (
+            override is not None and override[0] == applied
+            and (last_cut is None or override[1] >= last_cut)
+        )
+        if override_holds and override is not None:
+            set_at, set_by = override[1].isoformat(), "override"
+        elif last_cut is not None:
+            set_at, set_by = last_cut.isoformat(), "rate_limit"
+        else:
+            set_at, set_by = None, None
 
         out: list[dict[str, Any]] = []
         for name, value in (
@@ -2485,13 +2536,17 @@ class SubmissionService:
             if value is None or value >= ceiling or max(0, value) != applied:
                 continue
             entry: dict[str, Any] = {
-                "input": name, "value": value, "set_at": instant(quota.get("updated_at")),
+                "input": name, "value": value, "set_at": set_at, "set_by": set_by,
+                "quota_written_at": instant(quota.get("updated_at")),
             }
-            if name == "adaptive_target" and quota.get("last_429_at") is not None:
-                entry["last_rate_limited_at"] = instant(quota.get("last_429_at"))
+            if name == "adaptive_target" and last_cut is not None:
+                entry["last_rate_limited_at"] = last_cut.isoformat()
             if name == "quota_derived_limit" and isinstance(quota.get("state"), str):
                 entry["provider_state"] = quota["state"]
             out.append(entry)
+        if override_holds and override is not None:
+            out.append({"input": "override", "value": override[0],
+                        "set_at": override[1].isoformat(), "action": override[2]})
         return out
 
     def providers(

@@ -3,8 +3,9 @@
 // On 24 October admission refused steps on the provider limit while 6 or 7
 // agents ran against a ceiling of 40, and nothing said why. Capacity › Pools
 // draws the applied value with `/40` beside it; the `/40`'s title now says
-// which input lowered it and when the broker last set it, from the
-// `lowered_by` /v1/capacity serves.
+// which input lowered it and the rate limit or override that dates it, from
+// the `lowered_by` /v1/capacity serves -- never the quota document's last
+// write (`quota_written_at`), which every success bumps.
 //
 // BREAK IT: go back to the title `Configured hard limit is 40` -- the input
 // and its instant are gone.
@@ -33,8 +34,8 @@ function lowered(): Pool {
     effective_limit: 7, active: 7, available: 0, enabled: true,
     updated_at: '2026-10-24T10:31:00Z',
     lowered_by: [
-      { input: 'adaptive_target', value: 7, set_at: '2026-10-24T10:31:00+00:00',
-        last_rate_limited_at: '2026-10-24T10:30:00+00:00' },
+      { input: 'adaptive_target', value: 7, set_at: '2026-10-24T10:30:00+00:00', set_by: 'rate_limit',
+        quota_written_at: '2026-10-24T15:58:00+00:00', last_rate_limited_at: '2026-10-24T10:30:00+00:00' },
     ],
   }
 }
@@ -42,8 +43,16 @@ function lowered(): Pool {
 describe('#3047: the Capacity page says what lowered a ceiling, and when', () => {
   it('words the applied value, the ceiling, the input and its instant', () => {
     expect(ceilingTitle(lowered())).toBe(
-      'Configured hard limit is 40; 7 applies, lowered by the adaptive target (7), set 2026-10-24T10:31:00+00:00.',
+      'Configured hard limit is 40; 7 applies, lowered by the adaptive target (7), since the rate limit at 2026-10-24T10:30:00+00:00.',
     )
+    expect(ceilingTitle({ ...lowered(), lowered_by: [
+      { input: 'adaptive_target', value: 7, set_at: '2026-10-24T11:00:00+00:00', set_by: 'override' },
+      { input: 'override', value: 7, set_at: '2026-10-24T11:00:00+00:00', action: 'adaptive_target_reset' },
+    ] })).toBe(
+      'Configured hard limit is 40; 7 applies, lowered by the adaptive target (7), set 2026-10-24T11:00:00+00:00'
+      + ' and an admin override (7), set 2026-10-24T11:00:00+00:00.',
+    )
+    expect(ceilingTitle(lowered())).not.toContain('15:58')
     expect(ceilingTitle({ ...lowered(), lowered_by: [] })).toBe('Configured hard limit is 40; 7 applies.')
   })
 
@@ -56,6 +65,6 @@ describe('#3047: the Capacity page says what lowered a ceiling, and when', () =>
     await waitFor(() => expect(document.querySelector('.cap-families tbody tr .cap-was')).not.toBeNull(), WAIT)
     const was = document.querySelector('.cap-was')!
     expect(was.textContent).toBe('/40')
-    expect(was.getAttribute('title')).toContain('lowered by the adaptive target (7), set 2026-10-24T10:31:00+00:00')
+    expect(was.getAttribute('title')).toContain('lowered by the adaptive target (7), since the rate limit at 2026-10-24T10:30:00+00:00')
   })
 })

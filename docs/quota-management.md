@@ -464,8 +464,14 @@ the transaction's own `effective_limit`), the configured ceiling (`ceiling`,
 the pool's `hard_limit`), the units in use (`in_use`), and, when `applied` is
 below `ceiling`, `lowered_by`: each input that holds it there (`adaptive_target`,
 `quota_derived_limit`, or `override` for a target an admin set after the last
-rate limit) with its value and when the broker last set it (`set_at`, the quota
-document's `updated_at`; `last_rate_limited_at` for the 429 that cut a target).
+rate limit) with its value and what dates it: `set_at` is the override's audit
+instant when an override still holds the value, else the 429 that last cut the
+target (`last_rate_limited_at`), and `set_by` says which. It is never the quota
+document's `updated_at`: the broker rewrites that on every success and refresh,
+so for a target that has held 7 for hours it reads minutes ago; it is kept
+apart as `quota_written_at`. The broker records no "target last changed"
+instant, so a target the +1-per-successes step has raised since the cut is
+still dated by the cut.
 The ceiling and inputs are read just after the refusal, outside the admission
 transaction, so recording them cannot change who is admitted. The `drain
 finished` log line sums the same per limit (`limits`: refusals, the lowest

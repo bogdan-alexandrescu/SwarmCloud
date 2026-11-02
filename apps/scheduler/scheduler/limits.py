@@ -42,6 +42,11 @@ QUOTA_AUDIT = "quota_audit"
 
 #: How many audit rows of one (provider, tenant) are read to find the newest
 #: target an admin set. Admin changes are rare; the read is bounded anyway.
+#: THE BOUND CAN MISS THE NEWEST OVERRIDE: the read is unordered (ordering by
+#: `at` behind the two equality filters needs a composite index this repository
+#: does not declare), so once a (provider, tenant) has more than this many
+#: audit rows the newest may not be among those read. The record then names no
+#: override, or an older one -- it still never changes an admission decision.
 AUDIT_READ_CAP = 50
 
 #: The admin actions in `quota_audit` that set a working target by hand.
@@ -78,12 +83,28 @@ class PoolReading:
     quota_derived_limit: int | None
     read_at: str | None
     #: The broker's quota document for a per-tenant provider pool, reduced to
-    #: the instants that say when each input was last set.
+    #: its instants and state word. `quota_updated_at` is the document's last
+    #: write (any success or refresh), not when an input changed.
     quota_updated_at: str | None = None
     last_rate_limited_at: str | None = None
     provider_state: str | None = None
     #: The newest admin override of the target: (target, instant, action).
     override: tuple[int, str | None, str] | None = None
+
+
+def _override_holds(reading: PoolReading, applied: int) -> bool:
+    """Whether the newest admin override is still what holds `applied`.
+
+    It is when it set that value and no rate limit has cut the target since.
+    The instants are compared as datetimes, not as ISO strings, so two
+    instants written with different UTC offsets still order correctly.
+    """
+    override = reading.override
+    if override is None or override[0] != applied:
+        return False
+    at = as_datetime(override[1])
+    last_cut = as_datetime(reading.last_rate_limited_at)
+    return last_cut is None or (at is not None and at >= last_cut)
 
 
 def lowered_by(reading: PoolReading, applied: int | None) -> list[dict[str, Any]]:
@@ -92,38 +113,49 @@ def lowered_by(reading: PoolReading, applied: int | None) -> list[dict[str, Any]
     Empty when nothing lowers it: the ceiling applies, or it is unknown. An
     input is named when it is below the ceiling and equal to the applied value
     -- the minimum `SlotPool.effective_limit` takes -- so two inputs at the same
-    value are both named. `set_at` is when the broker last wrote the input: its
-    quota document's `updated_at`, which the broker writes in the same
-    transaction as the pool's inputs (`QuotaBroker._mutate`); a shared
-    `provider:<p>` pool has no quota document of its own, so its `set_at` is
-    null rather than a guess.
+    value are both named.
+
+    WHEN AN INPUT WAS SET (`set_at`, with `set_by` saying what it is): the
+    override's audit instant when an admin override still holds the value
+    (`set_by: "override"`), else the rate limit that last cut the target
+    (`set_by: "rate_limit"`, the quota document's `last_429_at`), else null.
+    It is NOT the quota document's `updated_at`: the broker rewrites that on
+    every success and refresh while the target holds, so it reads minutes ago
+    for a target that has held 7 for hours. That last write is served apart,
+    as `quota_written_at`. The broker keeps no "target last changed" instant,
+    so a target the +1-per-successes step raised since the cut is dated by the
+    cut. A shared `provider:<p>` pool has no quota document of its own, so its
+    instants are null rather than a guess.
     """
     ceiling = reading.ceiling
     if ceiling is None or applied is None or applied >= ceiling:
         return []
     out: list[dict[str, Any]] = []
-    override = reading.override
+    override_holds = _override_holds(reading, applied)
+    if override_holds and reading.override is not None:
+        set_at, set_by = reading.override[1], "override"
+    elif reading.last_rate_limited_at is not None:
+        set_at, set_by = reading.last_rate_limited_at, "rate_limit"
+    else:
+        set_at, set_by = None, None
     for name, value in (
         ("adaptive_target", reading.adaptive_target),
         ("quota_derived_limit", reading.quota_derived_limit),
     ):
         if value is None or value >= ceiling or max(0, value) != applied:
             continue
-        entry: dict[str, Any] = {"input": name, "value": value, "set_at": reading.quota_updated_at}
+        entry: dict[str, Any] = {
+            "input": name, "value": value, "set_at": set_at, "set_by": set_by,
+            "quota_written_at": reading.quota_updated_at,
+        }
         if name == "adaptive_target" and reading.last_rate_limited_at is not None:
-            # A target falls only on a rate limit or by hand; this is the rate
-            # limit's instant, the override's is below.
             entry["last_rate_limited_at"] = reading.last_rate_limited_at
         if name == "quota_derived_limit" and reading.provider_state is not None:
             entry["provider_state"] = reading.provider_state
         out.append(entry)
-    if override is not None and override[0] == applied:
-        target, at, action = override
-        # AN OVERRIDE IS NAMED ONLY WHEN IT IS STILL WHAT HOLDS THE VALUE: set
-        # after the last rate limit (which would have moved the target since).
-        last_cut = reading.last_rate_limited_at
-        if last_cut is None or (at is not None and at >= last_cut):
-            out.append({"input": "override", "value": target, "set_at": at, "action": action})
+    if override_holds and reading.override is not None:
+        target, at, action = reading.override
+        out.append({"input": "override", "value": target, "set_at": at, "action": action})
     return out
 
 

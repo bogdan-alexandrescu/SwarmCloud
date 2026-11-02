@@ -7,11 +7,12 @@ nothing recorded the limit it had applied. Pinned here, against the production
 
   L-1  A refusal under an adaptive target of 7 and a ceiling of 40 writes, on
        the task's `blocked_by`, the limit's name, the value applied (7), the
-       ceiling (40), the units in use and the input that lowered it, with when
-       the broker last set it and the rate limit that cut it.
+       ceiling (40), the units in use and the input that lowered it, dated by
+       the rate limit that cut it -- never by the quota document's last write,
+       which every success bumps and which is served as `quota_written_at`.
   L-2  The drain report sums the same per limit, and `drain finished` logs it.
   L-3  An override (an admin's target reset after the last rate limit) is
-       named as such.
+       named as such and dates the target; instants are compared as datetimes.
   L-4  A limit at its ceiling names no input; the keys admission wrote are kept.
   L-5  Admission is unchanged by the recording: the same tasks are leased and
        refused, the pools' `active` counts are the ones admission wrote, and a
@@ -51,8 +52,10 @@ from scheduler.store import SchedulerStore  # noqa: E402
 TENANT = "eng"
 PROVIDER = "anthropic"
 POOL = f"provider:{PROVIDER}:tenant:{TENANT}"
-SET_AT = datetime(2026, 10, 24, 10, 31, tzinfo=timezone.utc)
 CUT_AT = datetime(2026, 10, 24, 10, 30, tzinfo=timezone.utc)
+#: The broker's last write, hours after the cut: a success that left the target
+#: at 7 still bumps `updated_at`.
+WRITTEN_AT = datetime(2026, 10, 24, 15, 58, tzinfo=timezone.utc)
 
 
 def _db(*, target: int | None = 7, in_use: int = 7, ceiling: int = 40, tasks: int = 2) -> FakeFirestore:
@@ -67,7 +70,7 @@ def _db(*, target: int | None = 7, in_use: int = 7, ceiling: int = 40, tasks: in
         "state": "available",
         "configured_hard_max": 50,
         "adaptive_target": target,
-        "updated_at": SET_AT,
+        "updated_at": WRITTEN_AT,
         "last_429_at": CUT_AT,
     }
     base = datetime.now(timezone.utc) - timedelta(minutes=5)
@@ -112,7 +115,9 @@ def test_a_refusal_under_an_adaptive_target_of_7_records_it_beside_the_ceiling_o
         {
             "input": "adaptive_target",
             "value": 7,
-            "set_at": SET_AT.isoformat(),
+            "set_at": CUT_AT.isoformat(),
+            "set_by": "rate_limit",
+            "quota_written_at": WRITTEN_AT.isoformat(),
             "last_rate_limited_at": CUT_AT.isoformat(),
         }
     ]
@@ -169,6 +174,24 @@ def test_an_admin_target_set_after_the_last_rate_limit_is_named_an_override():
         "input": "override", "value": 7, "set_at": reset_at.isoformat(),
         "action": "adaptive_target_reset",
     }
+    # The target is dated by the override that set it, not by the cut.
+    assert inputs["adaptive_target"]["set_at"] == reset_at.isoformat()
+    assert inputs["adaptive_target"]["set_by"] == "override"
+
+
+def test_an_override_and_a_cut_written_with_different_offsets_are_ordered_as_instants():
+    # 10:20 at UTC-05:00 is 15:20 UTC, AFTER the 10:30 UTC cut; as strings
+    # "2026-10-24T10:20:00-05:00" sorts before "2026-10-24T10:30:00+00:00".
+    reading = limits_mod.PoolReading(
+        ceiling=40, adaptive_target=7, quota_derived_limit=None, read_at=None,
+        last_rate_limited_at=CUT_AT.isoformat(),
+        override=(7, "2026-10-24T10:20:00-05:00", "adaptive_target_reset"),
+    )
+
+    inputs = {e["input"]: e for e in limits_mod.lowered_by(reading, 7)}
+
+    assert inputs["override"]["set_at"] == "2026-10-24T10:20:00-05:00"
+    assert inputs["adaptive_target"]["set_by"] == "override"
 
 
 def test_an_override_a_later_rate_limit_moved_is_not_named():
@@ -205,7 +228,8 @@ def test_a_quota_derived_zero_is_named_with_the_provider_state():
     block = _blocker(db, "task_l0")
     assert block["applied"] == 0
     assert block["lowered_by"] == [
-        {"input": "quota_derived_limit", "value": 0, "set_at": SET_AT.isoformat(),
+        {"input": "quota_derived_limit", "value": 0, "set_at": CUT_AT.isoformat(),
+         "set_by": "rate_limit", "quota_written_at": WRITTEN_AT.isoformat(),
          "provider_state": "cooldown"}
     ]
 
