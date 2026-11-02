@@ -60,28 +60,35 @@ def test_unknown_runner_profile_is_rejected(client):
     assert body["code"] == "validation_failed"
     # THE SUGGESTION LIST IS WHAT YOU CAN SEND, not what exists. It used to be
     # the whole catalogue, which meant a caller who mistyped was handed a list
-    # containing `codex` -- a profile that is refused on submit for a different
+    # containing `codex` -- then a profile refused on submit for a different
     # reason. A suggestion you would also refuse is not a suggestion.
+    # `post-verdict` is the disabled profile now: codex was re-enabled by
+    # contract request 130 (owner, 2026-11-02).
     assert set(body["detail"]["known_runner_profiles"]) == {
         n for n, p in RUNNER_PROFILES.items() if p.available
     }
-    assert "codex" not in body["detail"]["known_runner_profiles"]
+    assert not RUNNER_PROFILES["post-verdict"].available
+    assert "post-verdict" not in body["detail"]["known_runner_profiles"]
+    assert "codex" in body["detail"]["known_runner_profiles"]
 
 
 def test_a_disabled_profile_is_refused_as_disabled_not_as_unknown(client):
-    """`codex` is spelled correctly and the platform will not run it.
+    """`post-verdict` is spelled correctly and the platform will not run it.
 
     Collapsing this into "unknown runner_profile" sends a caller hunting for a
-    typo that is not there. The reason is the only part they can act on: on
-    2026-09-23 four codex steps of a twenty-step run failed with "openai
-    refused the credential", and the platform was focused on Claude.
+    typo that is not there. The reason is the only part they can act on. This
+    was `codex` (disabled 2026-09-23, when four codex steps of a twenty-step
+    run failed with "openai refused the credential") until contract request
+    130 re-enabled it; `post-verdict` stays disabled until the merge chain
+    ships.
     """
-    response = submit(client, "alice", runner_profile="codex")
+    assert not RUNNER_PROFILES["post-verdict"].available
+    response = submit(client, "alice", runner_profile="post-verdict")
     assert response.status_code == 422
     body = response.json()
     detail = body["detail"]
     assert detail["disabled"] is True
-    assert detail["runner_profile"] == "codex"
+    assert detail["runner_profile"] == "post-verdict"
     assert detail["reason"], "a disabled profile must say why"
     assert "unknown" not in body["message"].lower(), (
         "a known-but-refused profile must not be reported as unknown"
