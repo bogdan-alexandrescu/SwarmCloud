@@ -25,6 +25,7 @@ const api = vi.hoisted(() => ({
   loadWorkflow: vi.fn(),
   cancelWorkflow: vi.fn(),
   loadAttempts: vi.fn(),
+  loadArtifactContent: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
@@ -801,6 +802,29 @@ describe('the verdict card on a review step (agent-detail-2.html A3)', () => {
     expect(card.textContent).toContain('Not graded')
     expect(card.querySelector('b b'), 'a finding was rendered as markup').toBeNull()
     expect(card.textContent).toContain('<b>not markup</b>')
+  })
+})
+
+describe("Jev's triage on the verdict card's findings (CLD's Jev report, 2026-11-02)", () => {
+  it('chips each judged finding from the review\'s verdict.json, and none on a finding Jev did not judge', async () => {
+    const mark = '[verify before acting: Jev judged this unlikely to be real] '
+    const verdict = JSON.stringify({
+      verdict: 'NOT_YET',
+      findings: [{ summary: 'the lease leaks', p_real: 0.62 }, { summary: 'a typo', p_real: 0.08, triage: 'verify before acting' }, 'no judgement'],
+    })
+    api.loadArtifactContent.mockImplementation(async (id: string, name: string) =>
+      id === 't_rev' && name === 'verdict.json'
+        ? { status: 'ok', fetchedAt: Date.now(), data: { status: 'ok', content: verdict, truncated: false } }
+        : { status: 'empty', fetchedAt: Date.now() },
+    )
+    const { w, tasks } = chain({ result_summary: gateSummary(true, 'NOT_YET', ['the lease leaks', `${mark}a typo`, 'no judgement']) })
+    serve([w], tasks)
+    await page('wf=wf_pr')
+    await pickNode('review')
+    await waitFor(() => expect(document.querySelector('.wf-verdict')?.textContent).toContain('likely real 62%'))
+    const rows = [...document.querySelectorAll<HTMLElement>('.wf-verdict .wf-finding')]
+    expect(rows.map((r) => r.querySelector('.triage-chip')?.textContent ?? null)).toEqual(['likely real 62%', 'verify before acting', null])
+    expect(rows[1]?.textContent).not.toContain('Jev judged this unlikely')
   })
 })
 

@@ -11,11 +11,20 @@ WHAT OPENAI DOCUMENTS (read 2026-11-01, developers.openai.com):
   the resource `https://api.openai.com/v1`, plus `offline_access` for a refresh
   token (/siwc/quickstart). The access token is a one-hour bearer JWT; the
   refresh token lives 30 days and is REPLACED on every refresh
-  (/siwc/token-sharing-open-source/token-reference). A refresh is a form POST to
-  `https://auth.openai.com/api/accounts/oauth/token` with `grant_type`,
-  `client_id`, `refresh_token` and `resource`, without `scope`, and refreshes
-  of one session must be serialised "so two processes do not race a rotating
-  token" (/siwc/token-sharing-open-source/profiles-and-sessions).
+  (/siwc/token-sharing-open-source/token-reference). Refreshes of one session
+  must be serialised "so two processes do not race a rotating token"
+  (/siwc/token-sharing-open-source/profiles-and-sessions). Those pages give the
+  refresh as a POST to `/api/accounts/oauth/token` carrying a `resource`; that
+  address is NOT the one used here (below).
+* THE REFRESH FOLLOWS THE POOL'S MEASURED ENDPOINT (owner, 2026-11-02: "Follow
+  the pool's measured endpoint"). The person's credential is minted by Voice it
+  › Preferences with the Codex CLI's public client, the same sign-in the
+  ChatGPT-plan pool makes (swarm_api/voice/signin.py), so it is refreshed the
+  way `quota_broker.openai_plan` refreshes that client's tokens, measured live:
+  a form POST to `TOKEN_URL`, `https://auth.openai.com/oauth/token`, with
+  `grant_type`, `client_id` and `refresh_token`, and no `resource` or `scope`.
+  `TOKEN_URL` is the one place this package states the address;
+  tests/unit/voice/test_live_session.py holds it equal to the pool's.
 * Every page describes it for the Responses API, in a limited trial for
   selected partners, and no page says it covers `v1/live/sessions`; the Live
   pages show a project API key. Whether a plan's token opens a GPT-Live session
@@ -56,9 +65,9 @@ import httpx
 from swarm_common.identity import tenant_id_for_user
 
 SECRET_MANAGER = "https://secretmanager.googleapis.com/v1/"
-TOKEN_URL = "https://auth.openai.com/api/accounts/oauth/token"
-#: The resource a plan's token is minted for (/siwc/quickstart).
-RESOURCE = "https://api.openai.com/v1"
+#: The refresh address: `quota_broker.openai_plan.TOKEN_ENDPOINT`, the pool's measured
+#: endpoint for the same Codex client (module docstring). Its form carries no `resource`.
+TOKEN_URL = "https://auth.openai.com/oauth/token"
 #: Refresh this long before the access token's own expiry, so a session create
 #: never races the last seconds of a token.
 REFRESH_EARLY_SECONDS = 120
@@ -255,7 +264,6 @@ class SubscriptionCredential:
                 "grant_type": "refresh_token",
                 "client_id": stored["client_id"],
                 "refresh_token": stored["refresh_token"],
-                "resource": RESOURCE,
             }, timeout=30)
         except httpx.HTTPError as exc:
             raise CredentialError(f"the OpenAI credential could not be refreshed ({type(exc).__name__})") from None

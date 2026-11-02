@@ -68,17 +68,18 @@ def test_120_the_fields_default_to_none_and_come_last():
     assert WorkflowStep(step_id="a", runner_profile="mock", input={}).budget is None
     # Contract request 123 (#1820) appended `platform_refusals` after it,
     # contract request 131 (#2688) `timeout_seconds_asked` after that, and
-    # request 132 the two read-side views; `budget` keeps its position, which
-    # is what this holds.
-    assert [f.name for f in fields(Task)][-5:] == [
+    # request 132 the two read-side views, and request 133 `max_turns`;
+    # `budget` keeps its position, which is what this holds.
+    assert [f.name for f in fields(Task)][-6:] == [
         "budget", "platform_refusals", "timeout_seconds_asked",
-        "attempt_totals", "current_account",
+        "attempt_totals", "current_account", "max_turns",
     ]
-    assert [f.name for f in fields(WorkflowStep)][-1] == "budget"
+    assert [f.name for f in fields(WorkflowStep)][-2:] == ["budget", "max_turns"]
 
 
 def test_120_a_budget_is_signed_at_format_6_and_only_a_budget_is():
-    assert specsign.SPEC_FORMAT == 6 and 6 in specsign.SPEC_FORMATS
+    # Contract request 133 added format 7 (`Task.max_turns`) above it.
+    assert 6 in specsign.SPEC_FORMATS and specsign.SPEC_FORMAT >= 6
     # MUTATION: leave `signing_format` at 5 and this is 1.
     assert signing_format({**DOC, "budget": {"usd": 1.0}}) == 6
     assert signing_format({**DOC, "budget": {"tokens": 10}, "model_class": "opus"}) == 6
