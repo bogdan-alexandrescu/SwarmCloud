@@ -26,6 +26,7 @@ test_roll_typesafe_fwd.py.
 from __future__ import annotations
 
 import contextlib
+import functools
 import importlib.util
 import io
 import shutil
@@ -49,7 +50,9 @@ NAMESPACE = "swarm-tenant-eng"
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
 
-def _load_renderer() -> Any:
+@functools.cache
+def _renderer() -> Any:
+    """render.py imports quota_broker and scheduler, so it loads on first use, not at collection."""
     spec = importlib.util.spec_from_file_location("swarm_k8s_render_tswired", KUBERNETES / "render.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -57,13 +60,11 @@ def _load_renderer() -> Any:
     return module
 
 
-render = _load_renderer()
-
 
 def _render(*extra: str) -> str:
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(io.StringIO()):
-        assert render.main(["tenant", "--tenant", "eng", *extra]) == 0
+        assert _renderer().main(["tenant", "--tenant", "eng", *extra]) == 0
     return buffer.getvalue()
 
 
@@ -97,9 +98,9 @@ def test_a_render_with_the_flag_holds_the_one_policy_last_and_changes_nothing_be
 def test_the_resource_apply_sh_asks_for_is_the_renderers():
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
-        assert render.main(["fqdn-resource"]) == 0
+        assert _renderer().main(["fqdn-resource"]) == 0
     assert buffer.getvalue() == f"{RESOURCE}\n"
-    assert render.TENANT_FQDN_FILES == ("network-policies/fqdn/allow-typesafe-direct.yaml",)
+    assert _renderer().TENANT_FQDN_FILES == ("network-policies/fqdn/allow-typesafe-direct.yaml",)
 
 
 # ---------------------------------------------------------------------------
