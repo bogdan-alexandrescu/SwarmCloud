@@ -306,3 +306,130 @@ def test_the_switch_reaches_only_a_profile_that_carries_the_jev_client():
     mock = RUNNER_PROFILES["mock"]
     assert not typesafe_forwarder_on(settings, tenant_id="eng", profile=mock,
                                      backend="typesafe", judgments_switched_on=True)
+
+
+# --- the quality gates (the owner's pick "Label quality-gate pods too", 2026-11-02) ---
+#
+# jev-belay and jev-enforce call TypeSafe with the WORKSPACE's key. With the
+# forwarder serving the tenant on the TypeSafe backend, a claude-code pod whose
+# signed `quality_gates.jev` the scheduler vouched for carries the label and
+# the worker's switch, so `qualitygates.prepare` names the shim and writes no
+# key file. The verdict is the scheduler's own reading of the task's tenant's
+# signed block (`judgment.read_quality_gates_env`), never the pod's.
+
+
+def _gated_pod(tenant: Tenant, *, verdict: str, dispatch: dict[str, Any] | None = None,
+               profile: str = "claude-code", backend: str = "typesafe", forwarder: bool = True,
+               tenants: tuple[str, ...] = ("eng",), asked: list[str] | None = None
+               ) -> dict[str, Any]:
+    settings = _settings(forwarder=forwarder, tenants=tenants, live=True)
+
+    def gates(tenant_id: str) -> dict[str, str]:
+        if asked is not None:
+            asked.append(tenant_id)
+        return {"SWARM_QUALITY_GATES_JEV": verdict}
+
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=object(), judgment=lambda tenant_id: backend,
+                                  quality_gates=gates)
+    task = make_task(profile)
+    if dispatch is not None:
+        task = dataclasses.replace(task, metadata={"dispatch": dispatch})
+    job = dispatcher._manifest(task=task, lease=make_lease(task),
+                               profile=RUNNER_PROFILES[profile], tenant=tenant)
+    return job["spec"]["template"]
+
+
+@pytest.mark.parametrize("verdict, dispatch", [
+    pytest.param("true", None, id="signed-true"),
+    pytest.param("true", {"quality_gates": "on"}, id="signed-true-switch-on"),
+    pytest.param("on_request", {"quality_gates": "on"}, id="signed-on-request-switch-on"),
+])
+def test_signed_quality_gates_label_a_claude_code_pod_and_switch_its_worker(
+        tenant, verdict, dispatch):
+    asked: list[str] = []
+    template = _gated_pod(tenant, verdict=verdict, dispatch=dispatch, asked=asked)
+    # MUTATION: drop the quality gates from the forwarder decision and this
+    # pod is unlabelled, so the worker writes private/jev-gates.key.
+    assert template["metadata"]["labels"]["swarm-typesafe"] == "inject"
+    assert _switch_entries(_worker(template)["env"]) == [
+        {"name": SWITCH[0], "value": SWITCH[1]}]
+    # The setting read is the task's own tenant's, and only that.
+    assert asked == ["eng"]
+
+
+@pytest.mark.parametrize("verdict, dispatch, change", [
+    pytest.param("false", None, {}, id="verdict-off"),
+    pytest.param("on_request", None, {}, id="on-request-without-the-switch"),
+    pytest.param("on_request", {"quality_gates": "off"}, {}, id="on-request-switch-off"),
+    pytest.param("true", {"quality_gates": "off"}, {}, id="switch-off-narrows"),
+    pytest.param("TRUE", None, {}, id="not-the-schedulers-word"),
+    pytest.param("true", None, {"backend": "internal-jev"}, id="internal-backend"),
+    pytest.param("true", None, {"forwarder": False}, id="forwarder-off"),
+    pytest.param("true", None, {"tenants": ("research",)}, id="tenant-not-served"),
+    pytest.param("true", None, {"profile": "codex"}, id="no-gates-on-codex"),
+])
+def test_any_gate_condition_off_leaves_the_pod_on_todays_path(tenant, verdict, dispatch, change):
+    template = _gated_pod(tenant, verdict=verdict, dispatch=dispatch, **change)
+    assert "swarm-typesafe" not in template["metadata"]["labels"]
+    assert _switch_entries(_worker(template)["env"]) == []
+
+
+def test_gates_and_judgments_together_switch_the_worker_once(tenant):
+    template = _gated_pod(tenant, verdict="true", dispatch={"jev_judgments": "on"})
+    assert template["metadata"]["labels"]["swarm-typesafe"] == "inject"
+    assert _switch_entries(_worker(template)["env"]) == [
+        {"name": SWITCH[0], "value": SWITCH[1]}]
+
+
+def test_a_live_browser_pod_with_the_gates_is_switched_once(tenant):
+    settings = _settings(forwarder=True, tenants=("eng",), live=True)
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=object(), judgment=lambda tenant_id: "typesafe",
+                                  quality_gates=lambda t: {"SWARM_QUALITY_GATES_JEV": "true"})
+    task = make_task(LIVE)
+    template = dispatcher._manifest(task=task, lease=make_lease(task),
+                                    profile=RUNNER_PROFILES[LIVE], tenant=tenant)["spec"]["template"]
+    assert template["metadata"]["labels"]["swarm-typesafe"] == "inject"
+    assert _switch_entries(_worker(template)["env"]) == [
+        {"name": SWITCH[0], "value": SWITCH[1]}]
+
+
+def test_the_gates_reach_only_the_claude_code_runner():
+    settings = _settings(forwarder=True, tenants=("eng",), live=False)
+    assert typesafe_forwarder_on(settings, tenant_id="eng", profile=RUNNER_PROFILES["claude-code"],
+                                 backend="typesafe", quality_gates_on=True)
+    assert not typesafe_forwarder_on(settings, tenant_id="eng", profile=RUNNER_PROFILES["codex"],
+                                     backend="typesafe", quality_gates_on=True)
+    assert not typesafe_forwarder_on(settings, tenant_id="eng",
+                                     profile=RUNNER_PROFILES["claude-code"],
+                                     backend="internal-jev", quality_gates_on=True)
+
+
+@pytest.mark.parametrize("env, dispatch, on", [
+    ({"SWARM_QUALITY_GATES_JEV": "true"}, None, True),
+    ({"SWARM_QUALITY_GATES_JEV": "true"}, {"quality_gates": "off"}, False),
+    ({"SWARM_QUALITY_GATES_JEV": "on_request"}, {"quality_gates": "on"}, True),
+    ({"SWARM_QUALITY_GATES_JEV": "on_request"}, {"quality_gates": True}, False),
+    ({"SWARM_QUALITY_GATES_JEV": "on_request"}, None, False),
+    ({"SWARM_QUALITY_GATES_JEV": "false", "SWARM_QUALITY_GATES_REFUSED": "unsigned"}, None, False),
+    ({}, None, False),
+])
+def test_the_gates_run_exactly_where_the_worker_runs_them(env, dispatch, on):
+    """`quality_gates_run` is the worker's `qualitygates.decide` over the
+    scheduler's verdict: the switch only narrows."""
+    from scheduler.dispatch import quality_gates_run
+
+    task = make_task("claude-code")
+    if dispatch is not None:
+        task = dataclasses.replace(task, metadata={"dispatch": dispatch})
+    assert quality_gates_run(env, task) is on
+
+
+def test_the_gates_switch_is_the_one_the_worker_reads():
+    from agent_worker import qualitygates
+    from scheduler.dispatch import QUALITY_GATES_SWITCH
+
+    assert QUALITY_GATES_SWITCH == qualitygates.SWITCH
+    assert (qualitygates.ON, qualitygates.OFF) == ("on", "off")
+    assert qualitygates.ON_REQUEST == "on_request"

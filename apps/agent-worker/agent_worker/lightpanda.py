@@ -12,6 +12,13 @@ pure helpers, so each is testable without the CLI:
     `--block-private-networks` keeps a page's script off the metadata server
     and the pod network. Port 9223, never the live gate's 9222, so nothing
     written for the live browser's endpoint reaches Lightpanda by mistake;
+  * `network_args`, on both commands: the private-network block exempts
+    exactly 127.0.0.1 and ::1, so a page can read a server the step itself
+    serves on loopback (owner's pick of 2 November 2026, after an audit of
+    what listens there), and refuses the platform's own loopback listeners by
+    port: `PLATFORM_PORTS` plus every port `loopback_listeners` finds when the
+    runner starts Lightpanda, before the CLI exists (the TypeSafe shim and the
+    MCP relay, which can use a credential, start before the runner);
   * `Supervisor`: restarts `serve` when it exits, at most `MAX_RESTARTS` times
     per attempt with `RESTART_FLOOR_SECONDS` between starts, one log line per
     exit and never the environment. It is started by the runner, which the
@@ -34,6 +41,7 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -71,6 +79,25 @@ HOME_DIR_NAME = "lightpanda"
 SERVE_ARGS = ("serve", "--host", HOST, "--port", str(CDP_PORT), "--cdp-max-connections", "64",
               "--block-private-networks", "--log-level", "warn")
 MCP_ARGS = ("mcp", "--block-private-networks")
+
+#: The private-network block's only exemptions: the pod's loopback addresses.
+#: 127.0.0.0/8 beyond .1, the metadata server, 10/8, 172.16/12, 192.168/16,
+#: 100.64/10 and the pod and service ranges stay refused.
+LOOPBACK_EXEMPT = ("127.0.0.1/32", "::1/128")
+#: Loopback ports a page is always refused, listening or not: this child's
+#: own CDP (`CDP_PORT`: driving it reads every page's cookies) and
+#: test-services Postgres (`--auth=trust`). The live gate's 9222 runs only on
+#: live-browser pods; were it here, `loopback_listeners` would find it.
+PLATFORM_PORTS = (CDP_PORT, 5432)
+#: Ports a URL may leave unwritten (http, https, ws, wss): a pattern on
+#: `:<port>/` cannot refuse them, so refusing one withdraws the exemption.
+DEFAULT_PORTS = frozenset({80, 443})
+#: The netns-wide TCP tables; every container of the pod shares them.
+PROC_NET = Path("/proc/net")
+_LISTEN = "0A"
+_LOOPBACK_V4 = ("0100007F", "00000000")
+_LOOPBACK_V6 = ("00000000000000000000000001000000", "00000000000000000000000000000000",
+                "0000000000000000FFFF00000100007F", "0000000000000000FFFF000000000000")
 
 DISALLOWED_TOOLS = (
     f"mcp__{MCP_SERVER_NAME}__screenshot",
@@ -143,20 +170,66 @@ def child_env(environ: Mapping[str, str], cache_home: Path) -> dict[str, str]:
     }
 
 
+def loopback_listeners(proc_net: Path = PROC_NET) -> list[int]:
+    """Ports listening on 127.0.0.1, ::1, a v4-mapped 127.0.0.1 or a wildcard
+    address, from `<proc_net>/tcp` and `tcp6`; [] when neither can be read.
+    Called before the CLI starts, so each is the platform's, not the agent's."""
+    ports: set[int] = set()
+    for name, loopback in (("tcp", _LOOPBACK_V4), ("tcp6", _LOOPBACK_V6)):
+        try:
+            lines = (proc_net / name).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != _LISTEN:
+                continue
+            address, _, port = fields[1].rpartition(":")
+            if address.upper() in loopback:
+                try:
+                    ports.add(int(port, 16))
+                except ValueError:
+                    continue
+    return sorted(ports)
+
+
+def network_args(refused_ports: Iterable[int] = ()) -> list[str]:
+    """The block both commands run under (module docstring): private networks
+    refused, `LOOPBACK_EXEMPT` exempted, `PLATFORM_PORTS` and `refused_ports`
+    refused by URL. A refused default port keeps loopback refused whole."""
+    return ["--block-private-networks", *_exemptions(refused_ports)]
+
+
+def _exemptions(refused_ports: Iterable[int]) -> list[str]:
+    """`network_args` after `--block-private-networks`, which `SERVE_ARGS` and
+    `MCP_ARGS` already carry."""
+    ports = sorted({*PLATFORM_PORTS, *(int(port) for port in refused_ports)})
+    args: list[str] = []
+    if not DEFAULT_PORTS.intersection(ports):
+        for cidr in LOOPBACK_EXEMPT:
+            args += ["--block-cidrs", f"-{cidr}"]
+    for port in ports:
+        args += ["--block-urls", f"*:{port}/*"]
+    return args
+
+
 def _env_args(env: Mapping[str, str]) -> list[str]:
     return ["-i", *(f"{name}={env[name]}" for name in CHILD_ENV_NAMES)]
 
 
-def serve_argv(env: Mapping[str, str], binary: str = BINARY) -> list[str]:
-    """`env -i <allow-list> lightpanda serve ...`."""
-    return [ENV_BIN, *_env_args(env), binary, *SERVE_ARGS]
+def serve_argv(env: Mapping[str, str], binary: str = BINARY, *,
+               refused_ports: Iterable[int] = ()) -> list[str]:
+    """`env -i <allow-list> lightpanda serve ... <network_args>`."""
+    return [ENV_BIN, *_env_args(env), binary, *SERVE_ARGS, *_exemptions(refused_ports)]
 
 
-def mcp_server(env: Mapping[str, str], binary: str = BINARY) -> dict[str, Any]:
+def mcp_server(env: Mapping[str, str], binary: str = BINARY, *,
+               refused_ports: Iterable[int] = ()) -> dict[str, Any]:
     """The `--mcp-config` entry for `lightpanda mcp`, under the same `env -i`.
     No `env` key: the CLI's environment, which holds the provider token, is
     dropped by `env -i` before Lightpanda starts."""
-    return {"type": "stdio", "command": ENV_BIN, "args": [*_env_args(env), binary, *MCP_ARGS]}
+    return {"type": "stdio", "command": ENV_BIN,
+            "args": [*_env_args(env), binary, *MCP_ARGS, *_exemptions(refused_ports)]}
 
 
 def disallowed_tools_args() -> list[str]:

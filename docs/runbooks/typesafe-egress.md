@@ -1,10 +1,11 @@
-# The TypeSafe egress allowlist: which pods may name api.typesafe.ai, and how to apply it
+# The TypeSafe egress allowlist: which pods may name api.typesafe.ai, and how it is applied
 
-**When:** the owner, once per cluster that has FQDN network policy
-(`gke_enable_fqdn_network_policy`, on in dev since 2026-11-01), after the
-release carrying `kubernetes/network-policies/swarm-system-typesafe-fwd.yaml`;
-again for a tenant whose TypeSafe-backed pods call TypeSafe without the
-forwarder; and to roll either back.
+**When:** nobody applies these by hand any more. Read this to know where the
+two policies come from, to check one cluster's state, or to roll one back.
+Since 2026-11-02 (the owner's pick "Wire behind a cluster check") the code that
+applies each policy's neighbours applies it too, and only on a cluster whose
+API serves `fqdnnetworkpolicies.networking.gke.io` -- today only dev
+(`gke_enable_fqdn_network_policy`, on since 2026-11-01).
 
 Built 2026-11-02 because the owner chose to build every improvement proposal
 in CLD's Jev report, this one included: "no host allowlist exists for
@@ -68,55 +69,100 @@ credential: such a pod holds no workspace TypeSafe key (the worker writes one
 only for a TypeSafe-backed live browser, quality gates or a `jev_judgments`
 step, which are exactly the labelled pods), and a forwarded pod's worker holds only a loopback-shim token.
 
-Closing the gap is an owner decision, asked in this lane's `questions.json`:
-a hostname sinkhole for `api.typesafe.ai` on every pod not labelled direct
-(the dispatcher's `hostAliases`, which stops resolution through the ordinary
-resolver but not a client that dials an address), or moving rule 4's general
-internet behind an egress proxy that refuses the host by name.
+Closing the gap was put to the owner -- a hostname sinkhole for
+`api.typesafe.ai` on every pod not labelled direct (the dispatcher's
+`hostAliases`, which stops resolution through the ordinary resolver but not a
+client that dials an address), or moving rule 4's general internet behind an
+egress proxy that refuses the host by name -- and on 2026-11-02 the owner
+picked **"Leave it named, not denied"**: no deny for unlabelled pods is built.
+The gap above stands, stated, and the credential is what holds it.
 
-## Apply it
+## How they are applied: no hand command is needed
 
-Both files are applied by hand today: neither is in `kubernetes/render.py`,
-so neither `apply.sh --swarm-system` nor `scripts/apply-tenant-network-policies.sh`
-applies it. They render NetworkPolicies only, into every cluster, and an
-FQDNNetworkPolicy is refused where FQDN network policy is off; the workspace
-deployer's RBAC and scope policy admit `networkpolicies` only. Wiring them in
-behind a cluster check is the second question in this lane's
-`questions.json`.
+The hand commands this section used to hold are no longer needed. Each policy
+rides with what it belongs to, behind a check that the cluster serves the
+kind; a cluster that does not is left exactly as it was before the policies
+existed, and says so.
 
-Use the context of `swarm-autopilot`, never `agents-staging` (CLAUDE.md
-rule 2), and a current `kubectl` (`kubectl_bin` in `scripts/lib/common.sh`:
-an old client silently drops manifest fields).
+**The forwarder's policy** (both objects in
+`kubernetes/network-policies/swarm-system-typesafe-fwd.yaml`) is part of
+terraform/infra's `swarm_typesafe_fwd_manifest` (`terraform/infra/typesafe_fwd.tf`),
+as swarm-voice's policy rides in `swarm_voice_manifest`, so the release's
+`scripts/roll-typesafe-fwd.sh` -- `kubernetes/apply.sh --swarm-typesafe-fwd` --
+applies the forwarder and its egress policy in one apply. Only where the
+environment's tfvars set `gke_enable_fqdn_network_policy = true`, and then
+both objects or neither: the NetworkPolicy without the FQDNNetworkPolicy would
+isolate the forwarder with no host to reach. Where the variable is off the
+manifest carries neither and the forwarder keeps the egress it had. If the
+manifest carries the policy and the cluster's API does not serve
+`fqdnnetworkpolicies.networking.gke.io` (a tfvars that says on for a cluster
+that is off), `apply.sh --swarm-typesafe-fwd` refuses the whole manifest and
+applies nothing.
+
+**The tenant's policy** (`kubernetes/network-policies/fqdn/allow-typesafe-direct.yaml`,
+`swarm-allow-typesafe-direct`) is rendered by `kubernetes/render.py tenant`
+only with `--fqdn-network-policy`, after every other document, and
+`kubernetes/apply.sh --tenant` passes that flag only when the cluster's API
+serves the kind (`kubectl api-resources --api-group=networking.gke.io -o
+name`, a discovery read every authenticated caller may make). The flag is read
+from the cluster and refused on apply.sh's command line. Otherwise apply.sh
+prints one line --
+
+```
+==> hostname policy  skipped: the cluster does not serve fqdnnetworkpolicies.networking.gke.io (FQDN network policy is off); swarm-allow-typesafe-direct is not rendered
+```
+
+-- and the tenant's onboarding goes on with everything else. A cluster that
+cannot answer discovery gets a warning and the same skip. So every tenant
+namespace the release or an operator applies on dev carries the policy;
+`scripts/apply-tenant-network-policies.sh` renders NetworkPolicies only and
+does not.
+
+**The workspace deployer** (`swarm-workspace-deployer`, the identity that
+makes a person's, group's or service's namespace) is granted the kind for the
+one policy name: `get` and `patch` with `resourceNames:
+[swarm-allow-typesafe-direct]` in `kubernetes/rbac/provisioner-rbac.yaml`, and
+`create`, which RBAC cannot narrow by name, bounded by
+`kubernetes/policies/workspace-provisioner-scope.yaml`, which admits that one
+name and refuses every other. Both are applied by `kubernetes/apply.sh
+--policies`. **What the workspace job still does not do:** its call guard
+(`scripts/lib/workspace-calls.json`) admits neither the discovery read nor the
+kind, and a refused call stops the job, so `apply.sh --tenant` under the guard
+(`SWARM_CALL_GUARD` set) skips the policy with a line saying so. A namespace
+the job made carries no `swarm-allow-typesafe-direct` until the guard admits
+both; that change is the owner's question in this lane's pull request.
+
+Neither policy is applied to `agents-staging`: every path above goes through
+apply.sh's cluster check (CLAUDE.md rule 2).
+
+### Checking one cluster by hand
+
+Use the context of `swarm-autopilot`, never `agents-staging`, and a current
+`kubectl` (`kubectl_bin` in `scripts/lib/common.sh`: an old client silently
+drops manifest fields).
 
 ```bash
 CTX=gke_saga-agents-staging_us-central1_swarm-autopilot
 
-# 0. The cluster admits FQDNNetworkPolicy. No output means it does not:
-#    stop, and do not apply step 1 (the forwarder would reach only DNS and
-#    the metadata server, and every forwarded Jev call would fail).
-kubectl --context "$CTX" get crd fqdnnetworkpolicies.networking.gke.io -o name
+# Does the cluster serve the kind? No output means it does not, and neither
+# policy is applied there.
+kubectl --context "$CTX" api-resources --api-group=networking.gke.io -o name \
+  | grep -x fqdnnetworkpolicies.networking.gke.io
 
-# 1. The forwarder: egress isolation and its two hosts, in ONE apply.
-kubectl --context "$CTX" apply -f kubernetes/network-policies/swarm-system-typesafe-fwd.yaml
+kubectl --context "$CTX" -n swarm-system get networkpolicy,fqdnnetworkpolicy | grep swarm-typesafe-fwd
+kubectl --context "$CTX" get fqdnnetworkpolicy -A | grep swarm-allow-typesafe-direct
 ```
 
-What step 1 changes: `swarm-typesafe-fwd`'s pods go from unrestricted egress
-to DNS (the kube-dns pods, and `169.254.20.10` on 53), the metadata server
-(`169.254.169.254` on 80 and 8080) and TCP 443 to `api.typesafe.ai` and
-`secretmanager.googleapis.com`. Nothing else in `swarm-system` is selected.
+What the forwarder's policy changes: `swarm-typesafe-fwd`'s pods go from
+unrestricted egress to DNS (the kube-dns pods, and `169.254.20.10` on 53), the
+metadata server (`169.254.169.254` on 80 and 8080) and TCP 443 to
+`api.typesafe.ai` and `secretmanager.googleapis.com`. Nothing else in
+`swarm-system` is selected.
 
-```bash
-# 2. Per tenant whose pods call TypeSafe directly (a TypeSafe-backed workspace
-#    the forwarder does not serve, or quality gates on without it):
-TENANT=eng
-sed -e "s/__NAMESPACE__/swarm-tenant-${TENANT}/" -e "s/__TENANT_ID__/${TENANT}/" \
-  kubernetes/network-policies/fqdn/allow-typesafe-direct.yaml \
-  | kubectl --context "$CTX" apply -f -
-```
-
-What step 2 changes today: nothing a packet notices (rule 4 above). It names
-the host for pods labelled `swarm-jev: typesafe-direct`, and is the rule that
-keeps them working on the day rule 4 stops covering `api.typesafe.ai`.
+What the tenant policy changes today: nothing a packet notices (rule 4 above).
+It names the host for pods labelled `swarm-jev: typesafe-direct`, and is the
+rule that keeps them working on the day rule 4 stops covering
+`api.typesafe.ai`.
 
 ## Verify
 
@@ -141,6 +187,12 @@ browser in a tenant the forwarder serves) succeeds, and the forwarder's log
 shows the upstream status.
 
 ## Roll back
+
+Turn `gke_enable_fqdn_network_policy` off only with a cluster rebuild planned
+(turning it off replaces the cluster). To take the policies out of one cluster
+without that, delete them; the next release's apply puts them back while the
+cluster serves the kind, so a lasting roll-back is a change to
+`terraform/infra/typesafe_fwd.tf` or `kubernetes/render.py`, reviewed.
 
 ```bash
 kubectl --context "$CTX" -n swarm-system delete \

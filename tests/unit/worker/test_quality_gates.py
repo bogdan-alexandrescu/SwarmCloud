@@ -469,7 +469,8 @@ def test_finish_sums_the_counts_and_removes_the_key_file(tmp_path):
     ])
     counts = qualitygates.finish(env)
     assert counts == {"belay_runs": 3, "belay_calls": 1, "belay_blocks": 1,
-                      "enforce_runs": 2, "enforce_calls": 2, "enforce_flags": 1, "enforce_rules_flagged": 3}
+                      "enforce_runs": 2, "enforce_calls": 2, "enforce_flags": 1, "enforce_rules_flagged": 3,
+                      "filter_dropped": 0, "filter_denied": 0, "filter_withheld": 0}
     assert not (tmp_path / "p" / "jev-gates.key").exists()
     assert qualitygates.worth_an_event(counts)
 
@@ -814,3 +815,147 @@ def test_without_a_readable_key_the_launcher_runs_nothing_and_lets_the_turn_end(
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 0
     assert not counts.exists()
+
+
+# --- the outbound filter's inputs and counts (follow-up lane, owner 2026-11-02) ---------
+
+REPO_URL = "https://github.com/acme/app"
+
+
+def _registration(db: _Db, tenant_id: str, stops: Any) -> None:
+    from agent_worker import indexrun
+
+    where = indexrun.target("eng", REPO_URL)
+    db.docs[f"{indexrun.REPOSITORIES_COLLECTION}/{where.repo_id}"] = {
+        "tenant_id": tenant_id, "hard_stop_paths": stops}
+
+
+def test_the_config_carries_the_repositorys_hard_stop_paths(tmp_path):
+    db, client = _world(tenant_key=_fake_key())
+    _registration(db, "eng", ["infra/prod/**", "", 7, "deploy/keys.yaml"])
+    env, _log, _private = _prepare(tmp_path, db, client, repository_url=REPO_URL)
+    config = json.loads(Path(next(iter(env.values()))).read_text())
+    # MUTATION: leave the field out and the launcher's path deny sees no
+    # hard-stop path, so an edited infra/prod file is sent as its text.
+    assert config["hard_stop_paths"] == ["infra/prod/**", "deploy/keys.yaml"]
+
+
+def test_the_hard_stop_paths_are_the_tasks_own_tenants_registration(tmp_path):
+    db, client = _world(tenant_key=_fake_key())
+    _registration(db, "research", ["secret-of-another-tenant/**"])
+    env, _log, _private = _prepare(tmp_path, db, client, repository_url=REPO_URL)
+    config = json.loads(Path(next(iter(env.values()))).read_text())
+    assert config["hard_stop_paths"] == []
+
+
+def test_without_a_repository_the_config_has_no_hard_stop_paths(tmp_path, monkeypatch):
+    monkeypatch.delenv("REPOSITORY_URL", raising=False)
+    db, client = _world(tenant_key=_fake_key())
+    env, _log, _private = _prepare(tmp_path, db, client)
+    config = json.loads(Path(next(iter(env.values()))).read_text())
+    assert config["hard_stop_paths"] == []
+
+
+def test_the_job_repository_url_is_read_when_none_is_given(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPOSITORY_URL", REPO_URL)
+    db, client = _world(tenant_key=_fake_key())
+    _registration(db, "eng", ["infra/prod/**"])
+    env, _log, _private = _prepare(tmp_path, db, client)
+    config = json.loads(Path(next(iter(env.values()))).read_text())
+    assert config["hard_stop_paths"] == ["infra/prod/**"]
+
+
+def test_an_unreadable_registration_costs_the_hard_stops_not_the_gates(tmp_path):
+    db, client = _world(tenant_key=_fake_key())
+
+    class _Flaky(_Db):
+        def collection(self, name: str) -> _Coll:
+            if name == "repositories":
+                raise RuntimeError("unavailable")
+            return super().collection(name)
+
+    flaky = _Flaky(db.docs)
+    env, _log, _private = _prepare(tmp_path, flaky, client, repository_url=REPO_URL)
+    config = json.loads(Path(next(iter(env.values()))).read_text())
+    assert config["hard_stop_paths"] == []
+
+
+def test_finish_sums_the_filters_counts_from_the_hooks_and_the_browser(tmp_path):
+    from agent_worker import qualitygates
+
+    env = _counts_world(tmp_path, [
+        json.dumps({"hook": "belay", "calls": 1, "blocked": False, "rules": 0,
+                    "dropped": 2, "denied": 1, "withheld": 0}),
+        json.dumps({"hook": "enforce", "calls": 1, "blocked": False, "rules": 0,
+                    "dropped": 0, "denied": 3, "withheld": 4}),
+        json.dumps({"hook": "enforce", "calls": 1, "blocked": False, "rules": 0,
+                    "dropped": "many", "denied": -1, "withheld": True}),
+    ])
+    browser = tmp_path / "p" / qualitygates.BROWSER_COUNTS_FILE_NAME
+    browser.write_text("".join(json.dumps(row) + "\n" for row in [
+        {"hook": "browser", "calls": 1, "dropped": 5, "denied": 0, "withheld": 1},
+        {"hook": "browser", "calls": 1, "dropped": 0, "denied": 2, "withheld": 0},
+    ]) + "not json\n")
+    counts = qualitygates.finish(env)
+    # MUTATION: leave the filter's counts out of `tally` and the summary says
+    # nothing of what the filter kept from TypeSafe.
+    assert counts is not None
+    assert (counts["filter_dropped"], counts["filter_denied"], counts["filter_withheld"]) == (7, 6, 5)
+    assert counts["belay_runs"] == 1 and counts["enforce_runs"] == 2
+    # Counts only: no row's text reaches the summary.
+    assert set(counts) == {"belay_runs", "belay_calls", "belay_blocks", "enforce_runs",
+                           "enforce_calls", "enforce_flags", "enforce_rules_flagged",
+                           "filter_dropped", "filter_denied", "filter_withheld"}
+
+
+def test_the_browser_counts_file_is_the_one_the_browser_launch_names():
+    from agent_worker import qualitygates
+    from agent_worker.runners import jev_launch
+
+    assert jev_launch.BROWSER_COUNTS_FILE_NAME == qualitygates.BROWSER_COUNTS_FILE_NAME
+
+
+def test_a_gated_pod_the_forwarder_serves_writes_no_key_file(tmp_path, monkeypatch):
+    """Both halves joined: the scheduler's pod for a tenant the forwarder
+    serves, with signed gates on, switches the worker (`typesafe_shim
+    .switched_on` over the pod's env), and `prepare` under that switch names
+    the shim and writes no private/jev-gates.key. A tenant it does not serve
+    keeps the key file."""
+    from agent_worker import typesafe_shim
+    from scheduler.dispatch import GkeJobDispatcher, GkeTarget
+    from swarm_common.models import Tenant
+    from swarm_common.profiles import RUNNER_PROFILES
+
+    from control_plane.conftest import PROJECT, scheduler_settings
+    from control_plane.test_dispatch_manifests import NOW, make_lease, make_task
+
+    def pod_env(served: tuple[str, ...]) -> dict[str, str]:
+        settings = scheduler_settings(typesafe_forwarder_enabled=True,
+                                      typesafe_forwarder_tenants=served)
+        tenant = Tenant(
+            tenant_id="eng", kind="group", principal="eng@example.com", created_at=NOW,
+            service_account=f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",
+            gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
+            namespace="swarm-tenant-eng")
+        dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                      batch_api=object(), judgment=lambda _t: "typesafe",
+                                      quality_gates=lambda _t: {"SWARM_QUALITY_GATES_JEV": "true"})
+        task = make_task("claude-code")
+        job = dispatcher._manifest(task=task, lease=make_lease(task),
+                                   profile=RUNNER_PROFILES["claude-code"], tenant=tenant)
+        (worker,) = [c for c in job["spec"]["template"]["spec"]["containers"]
+                     if c["name"] == "worker"]
+        return {e["name"]: e["value"] for e in worker["env"] if "value" in e}
+
+    shim = tmp_path / "jev-typesafe.shim"
+    shim.write_text(json.dumps({"shim_url": "http://127.0.0.1:5000/v1/systemone",
+                                "token": secrets.token_hex(8)}))
+    for served, keyed in ((("eng",), False), (("research",), True)):
+        inject = typesafe_shim.switched_on(pod_env(served), typesafe_shim.GKE_BACKEND)
+        db, client = _world(tenant_key=_fake_key())
+        run = tmp_path / ("served" if not keyed else "unserved")
+        run.mkdir()
+        env, _log, private = _prepare(run, db, client, inject=inject, shim_file=shim)
+        assert env, served
+        assert (private / "jev-gates.key").exists() is keyed, served
+        assert (client.reads == []) is not keyed, served

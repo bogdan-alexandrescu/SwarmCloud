@@ -1007,6 +1007,40 @@ GATE_REVIEW = (
     "null means the gate's record could not be read: say so in `about_run`."
 )
 
+#: NOT-REVIEWABLE (part of #2688). On 2026-11-02 a run on an own-login target
+#: captured only the app's "Couldn't check your session" card, because the
+#: gate refused the app's token request to its sign-in provider, and its
+#: review, report and file steps read green and filed a finding about the
+#: card. The capture's manifest now says `reviewable` and, when false, why
+#: (`sign_in_blocked.why`); these sentences carry that to every later step,
+#: and `validate_findings` refuses to file from a report marked not reviewed.
+NOT_REVIEWABLE_CAPTURE = (
+    "The tool's last line, and its manifest.json, say `reviewable`. When it is false, the capture shows "
+    "a sign-in or error state and not the app: open your answer with \"NOT REVIEWABLE:\" and the line's "
+    "`not_reviewable` sentence, and do not try to work around it."
+)
+NOT_REVIEWABLE_REVIEW = (
+    "Read manifest.json's `reviewable` first. When it is false, the capture never got past sign-in: open no "
+    "image and write no finding; write findings-{group}.json with `\"reviewed\": 0`, `\"not_reviewed\"` set "
+    "to the manifest's `sign_in_blocked.why`, an empty `findings` list and one `about_run` entry saying the "
+    "same, and open your answer with \"Not reviewed:\" and that reason. The sign-in or error card is never "
+    "the app's defect."
+)
+
+
+def _not_reviewable_report_line() -> str:
+    return (
+        "Before anything else, read every capture manifest's `reviewable`. A group whose manifest says "
+        "false was not reviewed: its review's shortfall is that, not a missing review, and none of its "
+        "screens is the app. When every capture manifest says false, the leg was not reviewed: write "
+        "findings.json with `\"reviewed\": false`, `\"not_reviewed\"` set to the manifests' "
+        "`sign_in_blocked.why` (naming each group), an empty `findings` list and that reason in `about_run`; "
+        "open report.md with a line \"Not reviewed:\" and the reason, before the gate's refusals, and open "
+        "your answer with the same line. When only some say false, write `\"reviewed\": true`, name the "
+        "groups not reviewed and why on report.md's first line, and move every finding from those groups "
+        "into `about_run`."
+    )
+
 
 def _gate_report_line() -> str:
     return (
@@ -1117,7 +1151,7 @@ def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Ma
         f"{crawl} --out {out} --bundle {out}.tar`. It writes the tarball whatever happens: a route that failed is "
         f"listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 "
         f"lines in your answer and still make sure capture-{group}.tar exists under $SWARM_ARTIFACTS_DIR. "
-        f"{GATE_CAPTURE} {_safety(target, _origin(base))} {NO_CHANGE}"
+        f"{GATE_CAPTURE} {NOT_REVIEWABLE_CAPTURE} {_safety(target, _origin(base))} {NO_CHANGE}"
     )
 
 
@@ -1137,7 +1171,8 @@ def _review_prompt(target: Mapping[str, Any], base: str, group: str, design_docs
         f"`severity` is one of {', '.join(SEVERITIES)}; `width` is a preset name; `evidence` lists the "
         f"crop and the capture image it came from, by their paths in the tars, and a finding without "
         f"evidence is refused. Quote no more of the page's text than the few words that name the defect. "
-        f"{_dark_theme_line(target)} {GATE_REVIEW} Bundle findings-{group}.json and the crops into review-{group}.tar under $SWARM_ARTIFACTS_DIR. "
+        f"{_dark_theme_line(target)} {GATE_REVIEW} {NOT_REVIEWABLE_REVIEW.format(group=group)} "
+        f"Bundle findings-{group}.json and the crops into review-{group}.tar under $SWARM_ARTIFACTS_DIR. "
         f"{NO_CHANGE}"
     )
 
@@ -1214,7 +1249,7 @@ def _report_prompt(target: Mapping[str, Any], groups: Sequence[tuple[str, Sequen
         f"none, or one no tar holds, moves to `about_run` with what was missing. `about_run` entries are "
         f"{{id, title, actual}} and are never filed in the application's repository. Copy every evidence "
         f"file to $SWARM_ARTIFACTS_DIR next to findings.json, keeping its path, so the console shows it. "
-        f"{_dark_theme_line(target)} {_gate_report_line()} Then, in report.md, one line saying the flows are reported apart, in "
+        f"{_dark_theme_line(target)} {_not_reviewable_report_line()} {_gate_report_line()} Then, in report.md, one line saying the flows are reported apart, in "
         f"flow-report's flows.md; then a table of findings by severity and by screen, then each finding, severity first, with its "
         f"crop embedded by relative link. {_coverage_line(_leg_name(target))} {NO_CHANGE}"
     )
@@ -1277,7 +1312,10 @@ def _file_prompt(target: Mapping[str, Any], settings: Mapping[str, Any],
             "the defect fully in words, so the issue stands without the image."
         )
     return (
-        f"File the visual QA findings of {target['name']} in this repository. Read findings.json. File the "
+        f"File the visual QA findings of {target['name']} in this repository. Read findings.json. When its "
+        f"`reviewed` is false, the leg was not reviewed: file and comment nothing, write filed.json as "
+        f"{{\"filed\": [], \"not_reviewed\": <its not_reviewed>}}, open your answer with \"Not reviewed:\" and "
+        f"that reason, and stop. Otherwise file the "
         f"findings whose severity is one of {', '.join(order)}, most severe first, at most "
         f"{settings['max_issues']} issues; list the rest, one line each, in one roll-up issue titled "
         f"\"Visual QA of {target['name']}, <today's date>: <n> further findings\", so nothing is silently "
@@ -1681,6 +1719,10 @@ def browser_steps(spec: Mapping[str, Any]) -> list[str]:
 # --------------------------------------------------------------------------
 
 
+#: Why every finding of a report marked `reviewed: false` is refused.
+NOT_REVIEWED = "the leg was not reviewed: its captures never got past sign-in"
+
+
 @dataclass
 class FindingsCheck:
     """A findings document, split. `accepted` may be filed; `refused` each
@@ -1691,6 +1733,9 @@ class FindingsCheck:
     accepted: list[dict[str, Any]] = field(default_factory=list)
     refused: list[dict[str, Any]] = field(default_factory=list)
     about_run: list[dict[str, Any]] = field(default_factory=list)
+    #: The report's `not_reviewed` when it says `reviewed: false` (NOT-REVIEWABLE):
+    #: then nothing is accepted, whatever `findings` holds.
+    not_reviewed: str | None = None
 
 
 def _one_line(value: Any, limit: int) -> bool:
@@ -1749,7 +1794,9 @@ def validate_findings(document: Any, *, available: Collection[str] | None = None
     `available`, when given, is every file name the staged tars hold: a
     finding whose evidence names one they do not is refused, as one with no
     evidence is. A document that is not format 1 with a `findings` list is
-    `qa_findings_invalid`."""
+    `qa_findings_invalid`. One that says `reviewed: false` (NOT-REVIEWABLE)
+    accepts nothing: every finding is refused as NOT_REVIEWED, and its reason
+    is `not_reviewed`."""
     if not isinstance(document, Mapping) or document.get("format") != 1 or not isinstance(
         document.get("findings"), list
     ):
@@ -1758,6 +1805,11 @@ def validate_findings(document: Any, *, available: Collection[str] | None = None
     if not isinstance(about, list):
         raise QaSpecError("qa_findings_invalid", "about_run must be a list")
     check = FindingsCheck()
+    if document.get("reviewed") is False:
+        # NOT-REVIEWABLE: the captures never got past sign-in, so nothing in
+        # this document is the app's; every finding is refused, named.
+        reason = document.get("not_reviewed")
+        check.not_reviewed = redact(reason).text if _one_line(reason, 2000) else NOT_REVIEWED
     seen: set[str] = set()
     for index, finding in enumerate(document["findings"]):
         fid = finding.get("id") if isinstance(finding, Mapping) else None
@@ -1770,6 +1822,8 @@ def validate_findings(document: Any, *, available: Collection[str] | None = None
         if named and fid in seen:
             problems.append("id repeats an earlier finding's")
         problems += _problems(finding, available)
+        if check.not_reviewed is not None:
+            problems.append(NOT_REVIEWED)
         if problems:
             check.refused.append({"id": label, "problems": [redact(p).text for p in problems]})
             continue

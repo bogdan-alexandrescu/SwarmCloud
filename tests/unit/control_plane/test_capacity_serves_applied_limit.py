@@ -104,3 +104,64 @@ def test_a_pool_at_its_ceiling_is_lowered_by_nothing(client, db):
     assert pools[POOL]["effective_limit"] == 40
     assert pools[POOL]["lowered_by"] == []
     assert pools["global"]["lowered_by"] == []
+
+
+# -- target_changed_at (owner, 2026-11-02) ----------------------------------
+
+#: A climb after the cut: the broker stamps `target_changed_at` when the target
+#: moves, and only then.
+CLIMBED_AT = datetime(2026, 10, 24, 13, 15, tzinfo=timezone.utc)
+
+
+def test_capacity_dates_a_climbed_target_by_target_changed_at(client, db):
+    _seed(db, target=7)
+    db.docs[f"quota/anthropic:{TENANT}"]["target_changed_at"] = CLIMBED_AT
+
+    [entry] = _pools(client)[POOL]["lowered_by"]
+
+    assert entry["set_at"] == CLIMBED_AT.isoformat()
+    assert entry["set_by"] == "climb"
+    # The cut is still served for what it is.
+    assert entry["last_rate_limited_at"] == CUT_AT.isoformat()
+    assert entry["quota_written_at"] == WRITTEN_AT.isoformat()
+
+
+def test_capacity_names_the_cut_when_the_target_last_changed_at_it(client, db):
+    _seed(db, target=7)
+    db.docs[f"quota/anthropic:{TENANT}"]["target_changed_at"] = CUT_AT
+
+    [entry] = _pools(client)[POOL]["lowered_by"]
+
+    assert (entry["set_at"], entry["set_by"]) == (CUT_AT.isoformat(), "rate_limit")
+
+
+def test_a_max_raise_that_left_the_target_alone_is_not_an_override(client, db):
+    """Every pool raise through the admin route now writes a `hard_max_set`
+    row; one that left the target at 7 did not set it."""
+    _seed(db, target=7)
+    db.docs["quota_audit/audit_1"] = {
+        "action": "hard_max_set", "provider": "anthropic", "tenant_id": TENANT,
+        "from_target": 7, "to_target": 7,
+        "at": datetime(2026, 10, 24, 14, 0, tzinfo=timezone.utc),
+    }
+
+    lowered = _pools(client)[POOL]["lowered_by"]
+
+    assert [(e["input"], e["set_at"], e["set_by"]) for e in lowered] == [
+        ("adaptive_target", CUT_AT.isoformat(), "rate_limit"),
+    ]
+
+
+def test_capacity_and_the_scheduler_date_a_climbed_target_the_same(client, db):
+    _seed(db, target=7)
+    db.docs[f"quota/anthropic:{TENANT}"]["target_changed_at"] = CLIMBED_AT
+    db.docs["quota_audit/audit_1"] = {
+        "action": "hard_max_set", "provider": "anthropic", "tenant_id": TENANT,
+        "from_target": 7, "to_target": 7,
+        "at": datetime(2026, 10, 24, 14, 0, tzinfo=timezone.utc),
+    }
+    served = _pools(client)[POOL]["lowered_by"]
+
+    reading = read_pool(db, POOL, datetime.now(timezone.utc))
+    assert reading is not None
+    assert served == lowered_by(reading, 7)

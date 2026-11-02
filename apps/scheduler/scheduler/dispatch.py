@@ -1035,7 +1035,8 @@ def jev_judgments_switched_on(task: Any) -> bool:
 
 
 def typesafe_forwarder_on(settings: Any, *, tenant_id: str, profile: Any, backend: str,
-                          judgments_switched_on: bool = False) -> bool:
+                          judgments_switched_on: bool = False,
+                          quality_gates_on: bool = False) -> bool:
     """Whether this attempt's TypeSafe key is delivered by the forwarder, so its
     pod is labelled `swarm-typesafe: inject` (design §3.5).
 
@@ -1044,6 +1045,17 @@ def typesafe_forwarder_on(settings: Any, *, tenant_id: str, profile: Any, backen
     on a profile that carries the Jev client (`runs_jev_client`), live
     browser or not: the worker then resolves the workspace's TypeSafe key for
     its judgments, so the forwarder serves it as it serves the browser's.
+
+    Also, since 2026-11-02 (the owner's pick "Label quality-gate pods too"),
+    an attempt whose quality gates run (`quality_gates_on`, `quality_gates_run`
+    over this service's verdict on the tenant's SIGNED `quality_gates.jev`)
+    on the runner that registers them (`runs_quality_gates`): jev-belay and
+    jev-enforce call TypeSafe with the workspace's key, so with the forwarder
+    serving the tenant the worker names the shim and writes no key file
+    (`agent_worker.qualitygates.prepare`). The backend must still be
+    `typesafe`: swarm-api mints the shim's ticket for no other backend
+    (`swarm_api.typesafe_ticket`, `typesafe_backend_off`), so a gated pod of
+    a tenant on an internal backend keeps today's key file.
 
     All four, FROM CONFIGURATION ONLY (invariant 10): the forwarder switched on,
     the tenant listed by exact name, a live-browser pod (the profile and the
@@ -1061,7 +1073,8 @@ def typesafe_forwarder_on(settings: Any, *, tenant_id: str, profile: Any, backen
         return False
     live = (getattr(profile, "live_browser", False)
             and getattr(settings, "live_browser_sidecar", False))
-    if not live and not (judgments_switched_on and runs_jev_client(profile)):
+    if not live and not (judgments_switched_on and runs_jev_client(profile)) \
+            and not (quality_gates_on and runs_quality_gates(profile)):
         return False
     return backend == TYPESAFE_BACKEND
 
@@ -1134,6 +1147,31 @@ def quality_gates_dispatch_env(gates: Callable[[str], dict[str, str]] | None,
     if gates is None:
         return quality_gates_env(False, None)
     return dict(gates(tenant_id))
+
+
+#: The workflow switch in the task's signed `metadata.dispatch` block that
+#: narrows the quality gates (`agent_worker.qualitygates.SWITCH`, 2026-11-01):
+#: `on` | `off`, an on/off word that names no backend (invariant 10).
+QUALITY_GATES_SWITCH = "quality_gates"
+
+
+def quality_gates_run(gates_env: Mapping[str, str], task: Any) -> bool:
+    """Whether this attempt's quality gates run, as the worker decides it
+    (`agent_worker.qualitygates.decide` over `GatesVerdict`): this service's
+    verdict on the tenant's signed block says exactly "true", or exactly
+    "on_request" with the step's signed switch `quality_gates: on`; the
+    switch `off` runs none. The dispatch block is covered by the spec
+    signature the worker verifies, so an altered one costs at most a pod
+    label, never a gate run or a key."""
+    word = gates_env.get(QUALITY_GATES_JEV_ENV)
+    metadata = getattr(task, "metadata", None)
+    block = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
+    switch = block.get(QUALITY_GATES_SWITCH) if isinstance(block, Mapping) else None
+    if switch == "off":
+        return False
+    if word == "true":
+        return True
+    return word == QUALITY_GATES_ON_REQUEST and switch == "on"
 
 
 def judge_backend(doc: Any) -> str:
@@ -3202,8 +3240,8 @@ class GkeJobDispatcher:
         env = [{"name": k, "value": v} for k, v in
                gke_worker_env(task=task, lease=lease, tenant=tenant,
                               settings=self._settings).items()]
-        env.extend({"name": k, "value": v} for k, v in quality_gates_dispatch_env(
-            self._quality_gates, tenant.tenant_id, profile).items())
+        gates_env = quality_gates_dispatch_env(self._quality_gates, tenant.tenant_id, profile)
+        env.extend({"name": k, "value": v} for k, v in gates_env.items())
         judgments = jev_judgments_reading(self._jev_judgments, tenant.tenant_id, profile)
         if judgments is not None:
             env.extend({"name": k, "value": v} for k, v in judgments.env.items())
@@ -3453,10 +3491,14 @@ class GkeJobDispatcher:
             if browser_egress_on(self._settings, tenant_id=tenant.tenant_id, profile=profile):
                 job = with_browser_egress(
                     job, bypass=getattr(self._settings, "browser_egress_bypass", ()))
-        elif jev_judgments_switched_on(task):
-            # The signed workflow switch `jev_judgments: on` (2026-11-01):
-            # the TypeSafe forwarder's label and variable only, nothing else.
-            self._with_judgments_forwarder(job, tenant, profile)
+        elif jev_judgments_switched_on(task) or quality_gates_run(gates_env, task):
+            # The signed workflow switch `jev_judgments: on` (2026-11-01), or
+            # quality gates this service vouched for (2026-11-02): the
+            # TypeSafe forwarder's label and variable only, nothing else.
+            self._with_judgments_forwarder(
+                job, tenant, profile,
+                judgments=jev_judgments_switched_on(task),
+                gates=quality_gates_run(gates_env, task))
         if judges_internally(judgments, task):
             assert judgments is not None
             self._with_judge_address(job, judgments.backend)
@@ -3509,22 +3551,29 @@ class GkeJobDispatcher:
             template["spec"].setdefault("hostAliases", []).extend(host_aliases)
 
     def _with_judgments_forwarder(self, job: dict[str, Any], tenant: Tenant,
-                                  profile: Any) -> None:
+                                  profile: Any, *, judgments: bool = True,
+                                  gates: bool = False) -> None:
         """A pod with no live browser whose signed workflow switch says
-        `jev_judgments: on` (2026-11-01): the `swarm-typesafe: inject` label
-        and SWARM_TYPESAFE_INJECT=on when the forwarder serves its tenant on
-        the TypeSafe backend (`typesafe_forwarder_on`), so the worker's
-        judgments use the shim as the quality checks do. Nothing else of
-        `_with_judgment`: every other pod is returned exactly as built.
+        `jev_judgments: on` (2026-11-01, `judgments`), or whose quality gates
+        run (2026-11-02, `gates`, `quality_gates_run`): the `swarm-typesafe:
+        inject` label and SWARM_TYPESAFE_INJECT=on when the forwarder serves
+        its tenant on the TypeSafe backend (`typesafe_forwarder_on`), so the
+        worker's judgments and the gates' hooks use the shim and no key file
+        is written. Nothing else of `_with_judgment`: every other pod is
+        returned exactly as built.
 
-        Without the forwarder, a TypeSafe-backed pod that carries the Jev
-        client gets TYPESAFE_DIRECT_POD_LABEL instead: its worker resolves the
-        workspace's key and calls TypeSafe itself (`jevkey.resolve_workspace`)."""
+        Without the forwarder, a TypeSafe-backed pod whose judgments are
+        switched on and that carries the Jev client gets
+        TYPESAFE_DIRECT_POD_LABEL instead: its worker resolves the workspace's
+        key and calls TypeSafe itself (`jevkey.resolve_workspace`). A gated pod
+        without the forwarder is labelled from its rendered environment by
+        `with_typesafe_direct`."""
         backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
         if not typesafe_forwarder_on(self._settings, tenant_id=tenant.tenant_id,
                                      profile=profile, backend=backend,
-                                     judgments_switched_on=True):
-            if backend == TYPESAFE_BACKEND and runs_jev_client(profile):
+                                     judgments_switched_on=judgments,
+                                     quality_gates_on=gates):
+            if backend == TYPESAFE_BACKEND and judgments and runs_jev_client(profile):
                 labels = job["spec"]["template"]["metadata"]["labels"]
                 labels[TYPESAFE_DIRECT_POD_LABEL[0]] = TYPESAFE_DIRECT_POD_LABEL[1]
             return

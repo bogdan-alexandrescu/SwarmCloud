@@ -362,3 +362,57 @@ run "served_without_a_digest_renders_no_manifest_and_fails_its_check" {
     error_message = "with no swarm-typesafe-fwd digest there is no manifest to apply, never one naming an empty image"
   }
 }
+
+# The forwarder's egress policy rides with its manifest only where the cluster
+# admits hostname policy (docs/runbooks/typesafe-egress.md; the owner's pick
+# "Wire behind a cluster check", 2026-11-02): both objects, named exactly.
+run "served_on_a_cluster_with_fqdn_policy_the_manifest_carries_its_egress_policy" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_typesafe_forwarder      = true
+    gke_enable_fqdn_network_policy = true
+    typesafe_forwarder = {
+      serve = true
+    }
+  }
+
+  assert {
+    condition = (
+      strcontains(output.swarm_typesafe_fwd_manifest, "kind: Deployment")
+      && strcontains(output.swarm_typesafe_fwd_manifest, "\n  name: swarm-typesafe-fwd-egress\n")
+      && strcontains(output.swarm_typesafe_fwd_manifest, "kind: FQDNNetworkPolicy")
+      && strcontains(output.swarm_typesafe_fwd_manifest, "\n  name: swarm-typesafe-fwd-egress-hosts\n")
+      && length(regexall("__[A-Z0-9_]+__", output.swarm_typesafe_fwd_manifest)) == 0
+    )
+    error_message = "with gke_enable_fqdn_network_policy the forwarder's manifest carries swarm-typesafe-fwd-egress and swarm-typesafe-fwd-egress-hosts"
+  }
+}
+
+run "served_on_a_cluster_without_fqdn_policy_the_manifest_carries_neither" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_typesafe_forwarder = true
+    typesafe_forwarder = {
+      serve = true
+    }
+  }
+
+  assert {
+    condition = (
+      strcontains(output.swarm_typesafe_fwd_manifest, "kind: Deployment")
+      && !strcontains(output.swarm_typesafe_fwd_manifest, "FQDNNetworkPolicy")
+      && !strcontains(output.swarm_typesafe_fwd_manifest, "swarm-typesafe-fwd-egress")
+    )
+    error_message = "without gke_enable_fqdn_network_policy the forwarder's manifest carries no egress policy: a NetworkPolicy alone would isolate it with no host to reach"
+  }
+}

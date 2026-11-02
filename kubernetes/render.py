@@ -430,6 +430,27 @@ TENANT_FILES = (
     "network-policies/allow-typesafe-fwd.yaml",
 )
 
+#: The tenant's hostname policies (docs/runbooks/typesafe-egress.md): GKE
+#: FQDNNetworkPolicies, rendered ONLY with `--fqdn-network-policy`, which
+#: kubernetes/apply.sh passes only when the cluster's API serves
+#: FQDN_NETWORK_POLICY_RESOURCE. A cluster without FQDN network policy (every
+#: cluster but dev, dev.tfvars `gke_enable_fqdn_network_policy`) refuses the
+#: kind, so in TENANT_FILES it would refuse every tenant's onboarding there.
+#: After everything else, so every document before it renders as it did.
+#: Its one object's name is the one kubernetes/rbac/provisioner-rbac.yaml and
+#: the scope policy grant the workspace deployer.
+TENANT_FQDN_FILES = ("network-policies/fqdn/allow-typesafe-direct.yaml",)
+
+#: What the cluster's API must serve for TENANT_FQDN_FILES to be applied, as
+#: `kubectl api-resources -o name` prints it. kubernetes/apply.sh asks here.
+FQDN_NETWORK_POLICY_RESOURCE = "fqdnnetworkpolicies.networking.gke.io"
+
+
+def tenant_fqdn_files(args: argparse.Namespace) -> tuple[str, ...]:
+    """TENANT_FQDN_FILES where the caller says the cluster admits them, else none."""
+    return TENANT_FQDN_FILES if getattr(args, "fqdn_network_policy", False) else ()
+
+
 #: The older worker identity -- LEGACY_KSA_NAME's ServiceAccount and the
 #: RoleBinding that ties it to the empty worker Role -- in one file, so it is
 #: included whole or not at all. See LEGACY_KSA_NAME for when.
@@ -1705,6 +1726,18 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     # (`workspace-quota`) or a Terraform tenant's (`terraform-quota`, the
     # TERRAFORM_TENANT_QUOTA numbers and why). An offline render uses
     # TERRAFORM_TENANT_QUOTA, like its documentation network.
+    # WHETHER THE CLUSTER ADMITS HOSTNAME POLICY: kubernetes/apply.sh passes
+    # this only when the cluster's API serves FQDN_NETWORK_POLICY_RESOURCE,
+    # read from the cluster and refused on its command line. Without it the
+    # render holds no FQDNNetworkPolicy, as before (TENANT_FQDN_FILES).
+    parser.add_argument(
+        "--fqdn-network-policy",
+        action="store_true",
+        help=(
+            "render the tenant's FQDNNetworkPolicies (TENANT_FQDN_FILES): only for a "
+            f"cluster whose API serves {FQDN_NETWORK_POLICY_RESOURCE}"
+        ),
+    )
     parser.add_argument("--quota-pods", type=int, default=None)
     parser.add_argument("--quota-jobs", type=int, default=None)
     parser.add_argument("--quota-cpu", type=int, default=None)
@@ -1882,6 +1915,14 @@ def main(argv: list[str] | None = None) -> int:
     )
 
 
+    # THE RESOURCE A CLUSTER MUST SERVE for TENANT_FQDN_FILES, on one line:
+    # kubernetes/apply.sh asks here rather than spelling it a second time.
+    sub.add_parser(
+        "fqdn-resource",
+        help="the API resource a cluster must serve for the tenant's hostname policies",
+        allow_abbrev=False,
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "tenant":
@@ -1908,8 +1949,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.spec_verify_keys_file
             else None
         )
-        files = tenant_files(bound_ksas(args)) + verify_read_files(
-            values["TENANT_ID"], values["NAMESPACE"], args.verify_uid, args.workspace_id
+        files = (
+            tenant_files(bound_ksas(args))
+            + verify_read_files(values["TENANT_ID"], values["NAMESPACE"], args.verify_uid, args.workspace_id)
+            + tenant_fqdn_files(args)
         )
         manifest = render_files(files, values)
         if args.workspace_id:
@@ -1959,6 +2002,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(
             "".join(f"--{key.replace('_', '-')}\n{value}\n" for key, value in TERRAFORM_TENANT_QUOTA.items())
         )
+    elif args.command == "fqdn-resource":
+        sys.stdout.write(f"{FQDN_NETWORK_POLICY_RESOURCE}\n")
     elif args.command == "job":
         sys.stdout.write(render_job(args))
     return 0

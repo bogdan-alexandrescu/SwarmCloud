@@ -169,6 +169,22 @@ the worker's `$SWARM_HANDOFF/qa-target.json` (part of #2688: a sign-in that
 landed on a page without its `signed_in_selector` ended `failed`, and every
 screen's token exchange was refused while the pages showed signed in).
 
+A LEG THAT NEVER GOT PAST SIGN-IN IS NOT REVIEWABLE (part of #2688). On
+2026-11-02 a run on an own-login target captured only the app's "Couldn't
+check your session" card on every screen, because the gate refused the app's
+POST to its sign-in provider's token endpoint, and the review, report and
+file steps read green and filed a finding about the card. So the manifest
+says `reviewable` and, when false, `sign_in_blocked: {idp_token_refused,
+same_screen, why}`, from two facts this tool can establish: the gate's own
+record holds a refused POST to another origin's token endpoint
+(`idp_token_refusals`: a path whose last segment is IDP_TOKEN_SEGMENT), or
+at least two different routes were captured and every one read the same body
+text (`same_screen`). The verdict line carries `reviewable` and, when false,
+`not_reviewable`; the review, report and file steps read it (swarm_api's
+qaspec) and mark the leg not reviewed instead of reviewing the card. It
+changes nothing the gate admits, and the exit code is unchanged: the
+tarball is still the evidence of what the leg showed.
+
 EVERY SHOT MASKS THE QA TARGET'S CREDENTIAL (QA-SHOT-MASK, part of #2055).
 The live gate replaces a QA target's configured credential (its password,
 its challenge bypass value, and their URL and base64 forms) with
@@ -340,6 +356,19 @@ _SIGN_IN_STATES = frozenset({"ready", "signing_in", "signed_in", "challenge", "f
 _SIGN_IN_CAUSE = re.compile(r"[a-z0-9_]{1,64}")
 #: What a failed request the gate refused is marked with in `failed_requests`.
 GATE_MARK = "refused by the live gate ({code}): the gate's answer, not the app's"
+#: The gate's code for a write it answered itself (livegate/qatarget.py
+#: `WRITE_REFUSED`, restated for the reason GATE_REFUSALS_PATH is).
+GATE_WRITE_REFUSED = "qa_write_refused"
+#: The last path segment of an OAuth 2.0 / OpenID Connect token endpoint
+#: (Keycloak's `/protocol/openid-connect/token`, `/oauth2/v1/token`,
+#: `/oauth/token`): a refused POST there, to an origin not the base's, is the
+#: sign-in provider's token refresh, and the app behind it renders signed out.
+IDP_TOKEN_SEGMENT = "token"
+#: Why a leg is not reviewable (`sign_in_blocked`), in the manifest's words.
+IDP_REFUSED_WHY = ("the live gate refused the sign-in provider's token request ({calls}), so the app "
+                   "could not keep its session and its screens behind sign-in were not captured")
+SAME_SCREEN_WHY = ("every one of the {routes} routes captured shows the same page, so the capture holds "
+                   "one state of the app (a sign-in or error card), not its screens")
 #: Where the Dockerfile puts axe-core's browser bundle.
 AXE_SCRIPT = "/opt/swarm/axe-core/axe.min.js"
 
@@ -1300,6 +1329,58 @@ class _GateRefusals:
         return out
 
 
+def idp_token_refusals(records: Any, base: str) -> list[dict]:
+    """The gate's refusals of a sign-in provider's token request (module
+    docstring, A LEG THAT NEVER GOT PAST SIGN-IN): each refused POST to an
+    origin other than `base`'s whose path ends in IDP_TOKEN_SEGMENT, by
+    method, origin and path, with its count."""
+    parts = urlsplit(base)
+    own = f"{parts.scheme}://{parts.netloc}".lower()
+    counts: dict[tuple[str, str, str], int] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        method, origin, path = record.get("method"), record.get("origin"), record.get("path")
+        if (record.get("code") != GATE_WRITE_REFUSED or method != "POST" or not isinstance(origin, str)
+                or not isinstance(path, str) or origin.lower() == own
+                or path.rstrip("/").rsplit("/", 1)[-1] != IDP_TOKEN_SEGMENT):
+            continue
+        key = (method, origin, path)
+        counts[key] = counts.get(key, 0) + 1
+    return [{"method": m, "origin": o, "path": p, "count": c} for (m, o, p), c in sorted(counts.items())]
+
+
+def same_screen(entries: list[dict], out: Path) -> bool:
+    """True when at least two different routes were captured and every one
+    of them read the same body text: one page, whatever the address."""
+    paths: set[str] = set()
+    texts: set[str] = set()
+    for entry in entries:
+        try:
+            text = (out / entry["text"]).read_text(encoding="utf-8")
+        except (KeyError, OSError):
+            return False
+        paths.add(str(entry.get("path")))
+        texts.add(" ".join(text.split()))
+    return len(paths) >= 2 and len(texts) == 1 and texts != {""}
+
+
+def sign_in_blocked(entries: list[dict], out: Path, base: str, records: Any) -> dict | None:
+    """The manifest's `sign_in_blocked`: None when the capture shows the app,
+    else what shows it does not and why, read from the gate's own record."""
+    refused = idp_token_refusals(records, base)
+    same = same_screen(entries, out)
+    if not refused and not same:
+        return None
+    why = []
+    if refused:
+        calls = ", ".join(f"{r['count']} {r['method']} to {r['origin']}{r['path']}" for r in refused)
+        why.append(IDP_REFUSED_WHY.format(calls=calls))
+    if same:
+        why.append(SAME_SCREEN_WHY.format(routes=len({str(e.get('path')) for e in entries})))
+    return {"idp_token_refused": refused, "same_screen": same, "why": "; ".join(why)}
+
+
 class _Errors:
     """What the page reported while one route was on screen."""
 
@@ -2001,6 +2082,9 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                 pass
         playwright.stop()
         manifest["gate_refusals"] = gate.summary()
+        blocked = sign_in_blocked(manifest["routes"], out, base, list(gate.seen.values()))
+        manifest["sign_in_blocked"] = blocked
+        manifest["reviewable"] = blocked is None
         if crawl is not None:
             if found is None:
                 # Aborted before the crawl was read: what it had, never
@@ -2967,6 +3051,9 @@ def _capture_command(args) -> int:
                                  "failed": len(manifest["failed"]),
                                  "truncated": sum(1 for r in manifest["routes"] if r.get("truncated")),
                                  "aborted": manifest.get("aborted"), "bundle": str(bundle),
+                                 "reviewable": manifest["reviewable"],
+                                 **({"not_reviewable": manifest["sign_in_blocked"]["why"]}
+                                    if manifest["sign_in_blocked"] else {}),
                                  **({"crawl": manifest["crawl"]} if "crawl" in manifest else {})}) + "\n")
     return EXIT_OK if images else EXIT_NOTHING_CAPTURED
 

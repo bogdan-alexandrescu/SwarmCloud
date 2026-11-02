@@ -114,6 +114,13 @@ spec:
         apiVersions: ["*"]
         operations: ["CREATE", "UPDATE", "DELETE"]
         resources: ["networkpolicies"]
+      # The tenant's hostname policy (render.py TENANT_FQDN_FILES), on a
+      # cluster that serves the kind; a rule for a kind the cluster does not
+      # serve matches nothing.
+      - apiGroups: ["networking.gke.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["fqdnnetworkpolicies"]
       - apiGroups: ["rbac.authorization.k8s.io"]
         apiVersions: ["*"]
         operations: ["CREATE", "UPDATE", "DELETE"]
@@ -157,7 +164,8 @@ spec:
         'swarm.saga.xyz/workspace' in namespaceObject.metadata.labels &&
         namespaceObject.metadata.labels['swarm.saga.xyz/workspace'].matches('^w-[0-9a-f]{6}$')
     # What the tenant render produces, by `group/resource`: render.py's
-    # TENANT_FILES and LEGACY_KSA_FILES. Not the spec-verify-keys ConfigMap:
+    # TENANT_FILES, LEGACY_KSA_FILES and TENANT_FQDN_FILES (the one hostname
+    # policy, rendered only where the cluster serves the kind). Not the spec-verify-keys ConfigMap:
     # the workspace job renders without it, and the ClusterRole grants none.
     - name: names
       expression: >-
@@ -165,6 +173,7 @@ spec:
         "/resourcequotas": ["swarm-tenant-quota"],
         "/limitranges": ["swarm-worker-limits"],
         "networking.k8s.io/networkpolicies": ["swarm-default-deny", "swarm-deny-cross-tenant-ingress", "swarm-allow-worker-egress", "swarm-allow-live-egress", "swarm-allow-egress-proxy", "swarm-allow-judge-egress", "swarm-allow-graph-service", "swarm-allow-typesafe-fwd"],
+        "networking.gke.io/fqdnnetworkpolicies": ["swarm-allow-typesafe-direct"],
         "rbac.authorization.k8s.io/roles": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
         "rbac.authorization.k8s.io/rolebindings": ["swarm-worker", "swarm-worker-legacy", "swarm-dispatcher", "swarm-reaper"]}
   validations:
