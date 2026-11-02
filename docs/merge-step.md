@@ -714,6 +714,24 @@ things on the agent:
 * the pending check names, in `blocked_by`;
 * `metadata.merge_wait`: `first_parked_at`, `wakes`, `updates`.
 
+**The CI clock is the wait's, not the park's (#3033).** On 2026-11-01 a merge
+step (task_5c00c810495e4f949212) parked `checks_pending` 56 times at one head
+over 13 hours, and the 6 h `MERGE_CI_MAX_SECONDS` never ended it. Its tenant
+was on the state routes. There the step reads its own document through
+swarm-api's `GET state/upstream`, which serves it as JSON, so
+`first_parked_at` arrived as an ISO string. The limit read only a
+datetime and found nothing on every wake. Now the limit reads either shape,
+on every path that parks for CI again: the CI wait, the merge queue, the CI-fix,
+conflict and pick-fix rounds. Both parks, the worker's and swarm-api's, keep
+one clock. The first CI park of a wait starts it, and every later park at
+the same head carries it. A park at another head starts it again: the old
+wait ended when a fix round or a branch update moved the head. A merge-slot
+or merge-train wait **pauses** the clock (`ci_paused_at`) instead of
+clearing it, and the next CI park moves `first_parked_at` on by the pause.
+Clearing it let a step that kept alternating the two waits wait for CI
+without bound. Running it through a pause would count a queue as slow CI.
+The waiting detail serves `first_parked_at` as `waiting.since`.
+
 It refunds the attempt that admission counted, up to `MERGE_CI_MAX_WAKES`
 (proposed 60). Then it releases the lease and exits 75.
 
