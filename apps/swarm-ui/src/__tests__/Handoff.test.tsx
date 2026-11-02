@@ -17,9 +17,9 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import type { Result } from '../fetch'
 import type { Task, TaskPage, TaskState } from '../types'
 
-const api = vi.hoisted(() => ({ loadTasks: vi.fn(), loadTaskEventsPage: vi.fn() }))
+const api = vi.hoisted(() => ({ loadTasks: vi.fn(), loadTasksInStates: vi.fn(), loadTaskEventsPage: vi.fn() }))
 
-// The real api module, with the two reads stubbed and the fixture switch off,
+// The real api module, with the three reads stubbed and the fixture switch off,
 // so a write in this file goes to `fetch` -- which each test stubs -- rather
 // than to the development fixtures.
 vi.mock('../api', async (importOriginal) => {
@@ -279,6 +279,12 @@ describe('the Live browsers filter (the All | Browsers N switch)', () => {
       data: { tasks: rows(), tenant_id: 'u-ada' },
       fetchedAt: Date.now(),
     } satisfies Result<TaskPage>)
+    // The live and waiting states' one read answers from the same rows.
+    api.loadTasksInStates.mockImplementation(async (states: readonly TaskState[]) => ({
+      status: 'ok',
+      data: { tasks: rows().filter((t) => states.includes(t.state)), tenant_id: 'u-ada' },
+      fetchedAt: Date.now(),
+    }) satisfies Result<TaskPage>)
     const { container } = render(<AgentsScreen onOpen={() => {}} />)
     await waitFor(() => expect(container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
     // The "All | Browsers N" switch (LB-UX3; it was a "Live browsers"

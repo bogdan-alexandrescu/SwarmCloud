@@ -16,7 +16,7 @@ import { task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
-  loadTasksInState: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadTask: vi.fn(),
   loadAttempts: vi.fn(),
   loadResourceClasses: vi.fn(),
