@@ -212,12 +212,19 @@ SETTINGS_DOC = "settings"
 #:                     "off until an admin sets one" (2026-10-26), and a
 #:                     ceiling alone limits nothing until a workspace or a
 #:                     step sets a budget. A malformed unit reads as unset.
+#:   jev_token_rates   Jev's price, `{input, output}` in USD per million
+#:                     tokens, that Capacity › Jev usage prices its calls at
+#:                     (`jevusage`, JEV-USAGE-PAGE). `{}`, no rate, by
+#:                     default: nobody has recorded Jev's price, so the page
+#:                     shows "rate not set" and blank dollars rather than an
+#:                     invented figure. A malformed unit reads as unset.
 PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {
     "merge_by_default": False,
     "max_additional_repositories": 5,
     "additional_repositories_budget_gib": 6,
     "model_prices": modelprices.SEED,
     "agent_budget_ceiling": {},
+    "jev_token_rates": {},
 }
 
 #: The accepted range of each integer setting, inclusive. A stored value
@@ -240,6 +247,11 @@ def _platform_setting(key: str, data: dict[str, Any]) -> Any:
         from .budget import ceiling_of  # lazy: budget imports auth, which imports this module
 
         return ceiling_of(data.get(key)).as_dict()
+    if key == "jev_token_rates":
+        from .jevusage import rates_of
+
+        rates = rates_of(data.get(key))
+        return {unit: rate for unit, rate in rates.items() if rate is not None}
     default = PLATFORM_SETTINGS_DEFAULTS[key]
     if key not in data:
         return default
@@ -2742,6 +2754,17 @@ class Store:
             ceiling = changes["agent_budget_ceiling"]
             changes = {**changes, "agent_budget_ceiling": {
                 unit: ceiling.get(unit) for unit in ("usd", "tokens")}}
+        if "jev_token_rates" in changes:
+            from .jevusage import rate_problem
+
+            why = rate_problem(changes["jev_token_rates"])
+            if why is not None:
+                raise ValueError(why)
+            # Both units, the one not named as null, for the reason above:
+            # the rate is replaced whole, so `{}` clears it.
+            rates = changes["jev_token_rates"]
+            changes = {**changes, "jev_token_rates": {
+                unit: rates.get(unit) for unit in ("input", "output")}}
         payload = {**changes, "updated_at": self._now(), "updated_by": by}
         self._db.collection(CONTROL).document(SETTINGS_DOC).set(payload, merge=True)
         return self.get_platform_settings()

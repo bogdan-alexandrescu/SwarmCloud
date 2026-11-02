@@ -136,6 +136,9 @@ def test_every_metadata_key_the_worker_reads_is_signed():
         # The quota parks refunded so far (#2350), read by the quota park the
         # same way.
         "quota_park_resumes",
+        # The continuations at the time limit so far (BGD, 2026-11-02), read
+        # by the stop at the limit the same way.
+        "time_limit_continuations",
     }
     assert not unsigned, (
         f"agent_worker reads metadata keys {sorted(unsigned)} that the step-spec signature "
@@ -171,6 +174,8 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: And the release waits refunded so far (AU7-REFUND), written by the
 #: worker's release-wait park between attempts, as `child_await_resumes` is.
 #: And the quota parks refunded so far (#2350), written by the quota park.
+#: And the continuations at the time limit so far (BGD, 2026-11-02), written
+#: by the park at the time limit.
 UNSIGNED_PLATFORM_KEYS = {
     "schedule",
     "human_wait_resumes",
@@ -190,6 +195,7 @@ UNSIGNED_PLATFORM_KEYS = {
     "qa_target",
     "release_wait_resumes",
     "quota_park_resumes",
+    "time_limit_continuations",
 }
 
 
@@ -215,6 +221,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         QA_TARGET_METADATA_KEY,
         RELEASE_WAIT_RESUMES_METADATA_KEY,
         QUOTA_PARK_RESUMES_METADATA_KEY,
+        TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
     )
 
     # MUTATION: drop QA_TARGET_METADATA_KEY from RESERVED_METADATA_KEYS and this is red.
@@ -239,6 +246,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         QA_TARGET_METADATA_KEY,
         RELEASE_WAIT_RESUMES_METADATA_KEY,
         QUOTA_PARK_RESUMES_METADATA_KEY,
+        TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS
 
 
@@ -280,6 +288,8 @@ _DOCS_BY_FORMAT: dict[int, dict[str, Any]] = {
     5: {**_DOC, "model_class": "sonnet"},
     # Contract request 120 (#2459): the resolved budget.
     6: {**_DOC, "budget": {"usd": 1.0}},
+    # Contract request 133: the resolved turn cap.
+    7: {**_DOC, "max_turns": 30},
 }
 
 

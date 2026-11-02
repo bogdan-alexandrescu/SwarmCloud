@@ -167,8 +167,13 @@ def _argv_recording_cli(tmp_path: Path) -> Path:
 
 
 def _prompt_the_agent_received(tmp_path: Path, monkeypatch, payload: dict[str, Any]) -> tuple[str, Path]:
-    from agent_worker.runners.cliagent import CliAgentSpec, run_cli_agent
+    from agent_worker.runners.cliagent import RESUME_REASON_ENV, CliAgentSpec, run_cli_agent
 
+    # The prompt is read from the environment as well as the payload: an
+    # agent container running this test exports SWARM_CHILDREN (and a
+    # continuation SWARM_RESUME_REASON), which would add their lines to it.
+    monkeypatch.delenv("SWARM_CHILDREN", raising=False)
+    monkeypatch.delenv(RESUME_REASON_ENV, raising=False)
     monkeypatch.setenv("FAKE_KEY", "sk-value-0123456789")
     monkeypatch.setenv("FAKE_BIN", str(_argv_recording_cli(tmp_path)))
     # A worker's own child-task spool adds its line to the prompt (#3024's

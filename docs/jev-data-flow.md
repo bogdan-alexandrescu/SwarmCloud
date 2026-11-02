@@ -143,12 +143,66 @@ records are the authority on what was sent.
   secret names, never their values) and the ledger, or nothing when Jev is
   off. After the agent it settles the ledger into `jev_usage`
   (`judge.attempt.settle`).
-* **Not the agent, today.** `register.register_jev_tool` (the agent's
-  `jev_decide` MCP tool, §5.1's owner override) exists but no runner calls it
-  (§5.6, "Not built here"). When it is wired, the tool process is the agent's
-  child and runs the same client, sanitizer and ledger.
+* **The agent's `jev_decide` tool, on claude-code steps** (§5.1's owner
+  override; wired by lane AGENTS-USE-TOOLS on 2026-11-02, when the owner chose
+  that agents must use the tools switched on for them). The claude-code runner
+  registers `swarm-jev` only when the worker handed it `SWARM_JUDGE_CONFIG`,
+  that is, only for a workspace opted in to Jev judgments under the signed
+  setting and the step's `jev_judgments` switch; the entry is
+  `register.server_entry` over the worker's own config, so the tool's calls
+  go through the same `JudgeClient`, sanitizer (every rule above) and ledger
+  as J1-J5 and count against the same per-agent and monthly budget. The entry
+  carries Claude Code's `alwaysLoad`, so the tool is in the prompt from the
+  session's start, and the prompt has one line saying when to ask it. The
+  tool process is the agent's child, running as the agent's user: on the
+  TypeSafe backend it reads the key from the file the config names
+  (`private/jev-key`, or the shim's local token on GKE), exactly as the lane
+  hooks reach theirs, the residual the owner accepted; the key is never in the
+  MCP config, the prompt, a log or the summary. Its calls are counted in the
+  attempt's `result_summary.runner.metrics.tool_calls` as `jev_decision`.
+  Codex steps do not register it.
 * **Never swarm-api.** swarm-api reads `plan-advisory.json` (the J2/J5
   result) and never holds a Jev client.
+
+**Which verdict files J3 reads** (owner, 2 November 2026). A review step's
+verdict is not always one `verdict.json` with a `findings` list: the first
+experiment batch's reviews wrote `code-verdict.json` and `ui-verdict.json`
+with `blockers`, `majors` and `minors`, and no finding carried `p_real`.
+`poststeps.review_post_step` therefore reads every declared output named
+`*verdict.json` and every `*verdict.json` the step wrote, takes a finding from
+any of the four lists (a string or an object, its text from `summary` or the
+briefs' `problem`), and asks about blockers before majors and minors under the
+same five-call cap, so it spends no more of the agent's eight calls than before.
+Each finding is sent through `shapes.j3_finding` and the client's sanitizer
+like any other; the answer goes onto it as `p_real` and nothing else in the
+file changes, `verdict` least of all. The step's summary (`jev.review`) names
+how many findings each file had and how many were scored, and names every file
+it could not read, which is left byte for byte. One failed call still leaves
+every file as the review wrote it.
+
+**What a person can see of it (lane JEV-USAGE-PAGE, 2026-11-02).** The owner
+chose that day to build a Jev usage and cost page, because no one could see
+how many calls, tokens or dollars Jev used and its price was recorded
+nowhere. swarm-api's `GET /v1/jev-usage` (`swarm_api.jevusage`, drawn by the
+console's Capacity › Jev usage) sums the selected workspace's `jev_usage`
+attempt rows per UTC day and kind over 30 days, with the month's total
+against `code_intelligence.jev_monthly_cap_tokens`. It reads counts only --
+calls, input and output tokens, and outcomes (`ok`, `failed`,
+`skipped:<reason>`) -- so nothing this record forbids sending can reach the
+page: every query filters on `tenant_id` and a row filed under another
+tenant is dropped again in code (per-tenant isolation), and the task id, the
+generation and any field not counted never leave swarm-api. Dollars come from
+the platform setting `jev_token_rates` (USD per million tokens, in and out),
+which has no default: until a platform admin sets it the page says "rate not
+set" and prints no figure, never $0. **The gap:** the worker's attempt rows
+carry `calls` and `input_tokens` only, so today every call is shown as
+"not split by kind", on the day of the row's last write, with its outcomes
+"not recorded" (null, never 0 ok and 0 failed; the 30-day total counts those
+calls as `unrecorded`) and no output tokens; the read sums `settled_at` and the per-kind split
+(`by_kind: {kind: {calls, input_tokens, output_tokens, outcomes}}`) once the
+worker's settle writes them from its ledger's audit rows, a change asked of
+the owner in that lane's PR. The quality gates' jev-belay and jev-enforce
+hooks and the Jev browser record nothing in `jev_usage` yet.
 
 ## Which key
 
@@ -328,12 +382,24 @@ hooks, launcher redaction and URL pin, counts and event) and
 
 ## Known gaps
 
-* **The outbound filter's drop counts reach no summary yet.** They are in
-  each line of `private/jev-gates.counts` and the browser's log, but
-  `apps/agent-worker/agent_worker/qualitygates.py::finish` sums only calls,
-  blocks and flags, and nothing hands the browser a `SWARM_JEV_BROWSER_COUNTS`
-  file or the worker's `hard_stop_paths`; those are the worker's files, asked
-  for in the lane's PR.
+* **The filter's counts and hard-stop paths, and what is still open**
+  (follow-up lane, owner 2026-11-02). `apps/agent-worker/agent_worker/qualitygates.py::finish`
+  now sums the filter's `dropped`, `denied` and `withheld` from the hooks'
+  lines and from the browser's `private/jev-browser.counts`, which
+  `apps/agent-worker/agent_worker/runners/jev_launch.py::filter_env` names to
+  the browser as `SWARM_JEV_BROWSER_COUNTS` with the registered secrets'
+  names as `SWARM_JEV_SECRET_ENV_NAMES`, into the summary's `quality_gates`
+  as `filter_dropped`, `filter_denied` and `filter_withheld`; and `prepare`
+  writes the repository's `hard_stop_paths` into the gates' config
+  (`apps/agent-worker/agent_worker/qualitygates.py::hard_stop_paths`, this
+  tenant's registration only). Still open: the browser's counts reach the
+  summary only on an attempt whose gates run, an internal-backend browser
+  (started without `jev_launch.py`) gets neither variable, and `prepare`
+  learns the repository from the job's `REPOSITORY_URL` until the lifecycle
+  passes its own `repository_url` (asked for in the lane's PR). With the
+  forwarder serving the tenant on the TypeSafe backend, a gated claude-code
+  pod is labelled `swarm-typesafe: inject` and no `private/jev-gates.key` is
+  written (`apps/scheduler/scheduler/dispatch.py::quality_gates_run`).
 * **A Cloud Run Job judges on TypeSafe only.** The decision API's egress is
   a cluster Service, so a claude-code or codex attempt routed to Cloud Run
   gets no Internal URL and an internal backend reads `no_internal_url` there.

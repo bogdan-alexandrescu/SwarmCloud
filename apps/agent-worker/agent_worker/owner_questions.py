@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -89,6 +90,84 @@ MAX_ANCESTORS: int = next(
 )
 
 Fetch = Callable[[str], dict[str, Any]]
+
+#: ADVISORY QUESTIONS DO NOT HOLD A MERGE (owner decision, 2 November 2026).
+#: Over the 14 days before, 251 hours of finished merges waited on a lane's
+#: questions, 86 of them ending only in a cancellation. A merge step now
+#: merges past an unanswered question (`merges_past`) that is
+#: - not blocking (`"blocking"` is not true);
+#: - has a `recommended` option, one of its labels;
+#: - was built as recommended: its `built` is that label, or null (the answer
+#:   changes nothing the branch builds), or absent (a file from before
+#:   `built`, read as "the lane built the recommended option, as told");
+#: - and is about none of IAM, secrets or credentials, tenant isolation, the
+#:   frozen contract, cost or quota limits, or workflow files: no
+#:   `SENSITIVE_TOPICS` match in its text, context, recommended label or any
+#:   option's label or description.
+#: Anything else still holds. The match is deliberately broad ("token",
+#: "tenant", "contract", "cost", ".github"): a false hold costs an answer, a
+#: false pass merges a decision that was the owner's. The question stays
+#: open for the owner; an answer other than the recommended option, given
+#: after the merge, starts a pick-fix round against the default branch
+#: (`swarm_api.agent_questions`, `swarm_api.mergewake.advisory_pick_fix`).
+SENSITIVE_TOPICS: dict[str, re.Pattern[str]] = {
+    "iam": re.compile(
+        r"\biam\b|\broles?\b|\bpermissions?\b|\bservice[ _-]?accounts?\b|\bgsa\b|\bksa\b"
+        r"|workload identity|\bgrant(s|ed|ing)?\b|\bpolicy bindings?\b|\bacl\b"
+        r"|\bprivilege|\bimpersonat|\badmin\b|\boauth\b", re.I),
+    "secrets": re.compile(
+        r"\bsecrets?\b|secret manager|\bcredentials?\b|\btokens?\b|\bpasswords?\b"
+        r"|private key|\bapi[ _-]?keys?\b|\bpat\b|\bpats\b|\bsigning key|\bkms\b"
+        r"|\bredact", re.I),
+    "tenant isolation": re.compile(
+        r"\btenants?\b|\bisolation\b|\bcross[ -]tenant|\bnamespaces?\b|\bmulti[ -]tenan",
+        re.I),
+    "frozen contract": re.compile(
+        r"\bfrozen\b|\bcontract\b|swarm_common|contract\.md|contract change", re.I),
+    "cost or quota": re.compile(
+        r"\bcosts?\b|\bbudgets?\b|\bbilling\b|\bquotas?\b|\bpric(e|es|ing)\b|\bspend"
+        r"|\bpool[ _]limits?\b|\bmax[ _]instances\b|\bconcurrency (limit|cap)"
+        r"|\bcapacity\b|\bspot\b", re.I),
+    "workflow files": re.compile(
+        r"\.github\b|\bworkflow[ -]files?\b|github actions?\b|workflow-lines|\bci workflows?\b"
+        r"|\bactions/", re.I),
+}
+
+
+def sensitive_topics(row: Mapping[str, Any]) -> list[str]:
+    """The `SENSITIVE_TOPICS` a question's own words touch, in table order."""
+    parts = [row.get("question"), row.get("context"), row.get("recommended")]
+    for option in row.get("options") or ():
+        if isinstance(option, Mapping):
+            parts += [option.get("label"), option.get("description")]
+    text = "\n".join(p for p in parts if isinstance(p, str))
+    return [topic for topic, pattern in SENSITIVE_TOPICS.items() if pattern.search(text)]
+
+
+def hold_reason(row: Mapping[str, Any]) -> str | None:
+    """Why an unanswered question holds a merge, or None when it is advisory.
+
+    `row` is a `questions_of` row. The rule is the comment above
+    `SENSITIVE_TOPICS`; this reads only the question's own fields.
+    """
+    if row.get("blocking") is True:
+        return "blocking"
+    labels = [o.get("label") for o in row.get("options") or () if isinstance(o, Mapping)]
+    recommended = row.get("recommended")
+    if not isinstance(recommended, str) or recommended not in labels:
+        return "no recommended option"
+    if BUILT_KEY in row and row[BUILT_KEY] is not None and row[BUILT_KEY] != recommended:
+        return f"the branch built {row[BUILT_KEY]!r}, not the recommended {recommended!r}"
+    topics = sensitive_topics(row)
+    if topics:
+        return "about " + ", ".join(topics)
+    return None
+
+
+def merges_past(row: Mapping[str, Any]) -> bool:
+    """Whether a merge goes ahead with this unanswered question open (`hold_reason`)."""
+    return row.get("answer") is None and hold_reason(row) is None
+
 
 
 def is_review(metadata: Any) -> bool:
@@ -289,7 +368,9 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
         f"question, in the same shape, in `{OPEN_QUESTIONS_KEY}`, so the pull request "
         f"lists it. The merge step will not merge while a `{NEEDS_OWNER_KEY}` question "
         "is unanswered, nor once its answer picks an option other than its `built`; "
-        "it merges past the others. An answered question goes in neither. "
+        "it merges past the others, and past an unanswered non-blocking one with a "
+        "recommended option the branch built that touches nothing sensitive (it stays "
+        "open for the owner). An answered question goes in neither. "
         "A finding that waits only on an unanswered owner question is not a NOT_YET "
         f"finding: put that question in `{NEEDS_OWNER_KEY}` (the merge step holds for "
         "its answer and builds the owner's pick in a pick-fix round) and give MERGE if "

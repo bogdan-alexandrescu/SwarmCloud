@@ -101,6 +101,7 @@ class FakeOpenAI:
         self.refresh_token = "rt_" + secrets.token_hex(16)
         self.access_tokens: list[str] = []
         self.token_requests: list[dict] = []
+        self.token_urls: list[str] = []
         self.creates: list[dict] = []
         self.live_ids: list[str] = []
         self.answers: dict[str, str] = {}
@@ -116,6 +117,7 @@ class FakeOpenAI:
         if request.url.host == "auth.openai.com":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             self.token_requests.append(form)
+            self.token_urls.append(str(request.url))
             if self.refuse_refresh or form.get("refresh_token") != self.refresh_token:
                 # An error body that quotes the request, as some servers do.
                 return httpx.Response(400, json={"error": "invalid_grant", "echo": form})
@@ -374,8 +376,9 @@ def test_an_expired_credential_is_refreshed_and_the_rotated_token_stored_as_a_ne
         request = h.openai.token_requests[0]
         assert request["grant_type"] == "refresh_token"
         assert request["client_id"] == h.openai.client_id
-        assert request["resource"] == "https://api.openai.com/v1"
-        assert "scope" not in request
+        # The pool's measured endpoint and form (quota_broker.openai_plan), no `resource`.
+        assert h.openai.token_urls == ["https://auth.openai.com/oauth/token"]
+        assert set(request) == {"grant_type", "client_id", "refresh_token"}
         # The rotated refresh token went back to the person's own secret as a new version.
         newest = f"{_secret(PERSON)}/versions/2"
         assert json.loads(h.store.versions[newest])["refresh_token"] == h.openai.refresh_token
@@ -464,3 +467,11 @@ def test_nothing_is_built_at_import_and_a_start_without_a_project_refuses(monkey
     monkeypatch.delenv("PROJECT_ID", raising=False)
     with pytest.raises(RuntimeError, match="PROJECT_ID"):
         build_sessions(http=None)
+
+
+def test_the_refresh_address_is_the_account_pools():
+    from quota_broker import openai_plan
+
+    # Stated once in credential.py; equal to the ChatGPT-plan pool's, for the same Codex client.
+    assert cred.TOKEN_URL == openai_plan.TOKEN_ENDPOINT == "https://auth.openai.com/oauth/token"
+    assert not hasattr(cred, "RESOURCE")

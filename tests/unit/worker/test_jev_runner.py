@@ -346,7 +346,7 @@ def test_internal_jev_with_no_key_registers_jev_and_writes_no_key_file(monkeypat
     jev = servers["jev"]
     # The wrapper itself, started directly: no launcher, no key, no env block
     # (it reads the CLI's environment, which carries the backend and URL).
-    assert jev == {"type": "stdio", "command": str(jev_bin), "args": []}
+    assert jev == {"type": "stdio", "command": str(jev_bin), "args": [], "alwaysLoad": True}
     assert "TYPESAFE_API_KEY" not in json.dumps(jev)
     assert seen["prompt"].count(claude_code.BROWSER_TOOL_STRENGTH_JEV_INTERNAL) == 1
     assert claude_code.BROWSER_TOOL_STRENGTH["jev"] not in seen["prompt"]
@@ -495,3 +495,61 @@ def test_the_status_route_names_jev_as_what_reads_the_key():
     from swarm_api.routes.provider_keys import CONSUMERS
 
     assert CONSUMERS["typesafe"] == ["jev"]
+
+
+# --- the outbound filter's inputs (follow-up lane, owner 2026-11-02) ------------------
+
+
+@pytest.fixture
+def env_bin(tmp_path):
+    """A server that prints the two filter variables it was started with."""
+    server = tmp_path / "bin" / "jev-browser-env"
+    server.parent.mkdir(exist_ok=True)
+    server.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os\n"
+        "print(json.dumps({k: os.environ.get(k) for k in"
+        " ('SWARM_JEV_BROWSER_COUNTS', 'SWARM_JEV_SECRET_ENV_NAMES')}))\n"
+    )
+    server.chmod(0o755)
+    return server
+
+
+def test_the_browser_launch_names_the_counts_file_and_the_secret_names(tmp_path, env_bin):
+    from agent_worker.runners import claude_code
+
+    key = _fake_key()
+    path = _key_file(tmp_path, key)
+    config = tmp_path / "private" / "jev-gates.json"
+    config.write_text(json.dumps({"secret_env_names": ["MY_PASSPHRASE", "not a name"]}))
+    value = secrets.token_hex(16)
+    env = {"PATH": os.environ.get("PATH", ""), "SWARM_RUNNER_PROFILE": "claude-code-browser",
+           "SWARM_JEV_GATES_CONFIG": str(config), "MY_PASSPHRASE": value}
+    done = subprocess.run([sys.executable, "-I", str(claude_code.JEV_LAUNCH), path, str(env_bin)],
+                          env=env, capture_output=True, text=True, timeout=30, check=True)
+    out = json.loads(done.stdout)
+    # MUTATION: drop `filter_env` and the wrapper's filter counts nothing and
+    # scrubs only the key, not the registered secrets.
+    assert out["SWARM_JEV_BROWSER_COUNTS"] == str(Path(path).parent / "jev-browser.counts")
+    assert out["SWARM_JEV_SECRET_ENV_NAMES"] == \
+        "ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,MY_PASSPHRASE"
+    # Names and a path only: never the key or a secret's value.
+    assert key not in done.stdout and value not in done.stdout
+
+
+def test_the_browser_launch_sets_both_variables_in_shim_mode_too(tmp_path, env_bin):
+    from agent_worker.runners import claude_code, jev_launch
+
+    shim = tmp_path / "private" / "jev-typesafe.shim"
+    shim.parent.mkdir()
+    shim.write_text(json.dumps({"shim_url": "http://127.0.0.1:5000/v1/systemone",
+                                "token": secrets.token_hex(8)}))
+    server = env_bin.read_text() + f"# {jev_launch.SHIM_PASSTHROUGH_MARKER}\n"
+    env_bin.write_text(server)
+    done = subprocess.run([sys.executable, "-I", str(claude_code.JEV_LAUNCH), str(shim),
+                           str(env_bin)],
+                          env={"PATH": os.environ.get("PATH", "")},
+                          capture_output=True, text=True, timeout=30, check=True)
+    out = json.loads(done.stdout)
+    assert out["SWARM_JEV_BROWSER_COUNTS"] == str(shim.parent / "jev-browser.counts")
+    assert out["SWARM_JEV_SECRET_ENV_NAMES"] == ""
