@@ -178,7 +178,7 @@ def test_a_new_talk_gets_an_untitled_project_and_the_answer_comes_back(client, d
     # The offer went to swarm-voice unchanged, with the grant whose hash
     # alone is stored; the grant is never returned to the browser.
     (call,) = voice.starts
-    assert call.offer == OFFER and call.project_id == body["project_id"]
+    assert call.offer == OFFER and call.tenant_id == "eng" and call.project_id == body["project_id"]
     assert call.credential == _version("alice@example.com")
     assert session["live_session_id"] == "live_" + body["session_id"][3:13]
     assert session["grant_hash"] == hashlib.sha256(call.grant.encode()).hexdigest()
@@ -540,7 +540,7 @@ def test_the_http_client_sends_the_offer_and_grant_with_an_id_token(swarm_voice)
     grant = secrets.token_urlsafe(32)
     session_id = "vs_" + secrets.token_hex(16)
     credential = _version("alice@example.com", 3)
-    call = vs.StartCall(session_id=session_id, project_id="vp_" + secrets.token_hex(16),
+    call = vs.StartCall(session_id=session_id, project_id="vp_" + secrets.token_hex(16), tenant_id="eng",
                         person="alice@example.com", credential=credential, offer=OFFER, grant=grant)
 
     # swarm-voice answers 201 with the session's id, its live id and the SDP answer.
@@ -565,7 +565,7 @@ def test_the_http_client_reads_an_answer_for_another_session_as_unreachable(swar
     url, _, state = swarm_voice
     state["voice_session_id"] = "vs_" + secrets.token_hex(16)
     client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
-    call = vs.StartCall(session_id="vs_" + secrets.token_hex(16), project_id="vp_1",
+    call = vs.StartCall(session_id="vs_" + secrets.token_hex(16), project_id="vp_1", tenant_id="eng",
                         person="alice@example.com", credential=_version("alice@example.com"),
                         offer=OFFER, grant=secrets.token_urlsafe(32))
 
@@ -577,7 +577,7 @@ def test_the_http_client_reads_a_refusal_as_unreachable(swarm_voice):
     url, _, state = swarm_voice
     state["status"] = state["end_status"] = 500
     client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
-    call = vs.StartCall(session_id="vs_1", project_id="vp_1", person="alice@example.com",
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="alice@example.com",
                         credential=_version("alice@example.com"), offer=OFFER, grant="g")
 
     with pytest.raises(vs.VoiceUnreachable):
