@@ -264,7 +264,7 @@ hooks, launcher redaction and URL pin, counts and event) and
 ### Closed by the Jev report's classifier proposals (2026-11-02)
 
 The owner chose on 2026-11-02 to build every improvement proposal in CLD's
-Jev report; two were in the task classifier.
+Jev report; two were in the classifier that picks a step's type.
 
 * **A re-review got no J3 triage.** `tasktype.classify` typed any step that
   staged `verdict.json` a fix, and a re-review stages the review it re-reads,
