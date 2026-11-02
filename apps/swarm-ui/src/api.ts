@@ -707,6 +707,9 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
                         },
                       },
                     }),
+                // A Jev agent's own record (its verdict gate, its quality
+                // gates, the review's verdict.json in its manifest) on top.
+                ...(FIXTURE_JEV_IDS.has(task.id) ? task.result_summary : {}),
               }
             : task.result_summary,
       },
@@ -2256,6 +2259,8 @@ async function fixtureArtifactContent(
       2,
     ),
   }
+  // The Jev review's verdict file, with `p_real` on its findings.
+  if (taskId === FIXTURE_JEV_REVIEW) bodies['verdict.json'] = FIXTURE_JEV_VERDICT
   const content = bodies[name] ?? `fixture artifact ${name}\n`
   const bytes = new TextEncoder().encode(content).length
   return {
@@ -5334,12 +5339,117 @@ function fixtureOtherSubmitterTasks(listed: Task[]): Task[] {
   ]
 }
 
-/** A task a per-task read answers and no list returns: a waiting one (#1782), a budget one (#2459), or another user's (#1857). */
+/**
+ * THE JEV AGENTS (CLD's Jev report, "make it visible"; the owner's pick on
+ * PR #3032, 2026-11-02: "Add a fixture"). The finding triage chips and the
+ * Quality gates line had no task in the fixture build to draw them, so neither
+ * could be seen without live data. Two finished claude-code agents:
+ *
+ *   * `task_jev_review`, a review whose `verdict.json` (served by
+ *     `fixtureArtifactContent`) carries Jev's `p_real` the way
+ *     `agent_worker/verdict.py` `annotate_findings` writes it: one likely
+ *     real, one under 0.15 marked "verify before acting", one Jev did not
+ *     judge (no chip, never 0%).
+ *   * `task_jev_gated`, the step gated on it: its `result_summary.verdict_gate`
+ *     keeps the findings as TEXT, the low one with the worker's mark, as
+ *     `verdict._finding_text` does, so its Decision card lays the file's
+ *     numbers over them; and its `quality_gates` say the hooks ran, with
+ *     counts, so its Details draws the Quality gates line.
+ *
+ * Reached BY ID AND KEPT OFF THE LISTS, as the budget agents are, so every
+ * list and count other tests pin stays where it was.
+ */
+const FIXTURE_JEV_REVIEW = 'task_jev_review'
+const FIXTURE_JEV_GATED = 'task_jev_gated'
+const FIXTURE_JEV_IDS: ReadonlySet<string> = new Set([FIXTURE_JEV_REVIEW, FIXTURE_JEV_GATED])
+
+/** The review's findings, in its verdict.json's order. */
+const FIXTURE_JEV_FINDINGS = [
+  { severity: 'major', file: 'apps/swarm-scheduler/lease.py', summary: 'the lease is released twice when the attempt is reclaimed', p_real: 0.62 },
+  {
+    severity: 'minor',
+    file: 'apps/swarm-scheduler/admission.py',
+    summary: 'the concurrency cap counts RUNNING rather than LEASED',
+    p_real: 0.08,
+    triage: VERIFY_BEFORE_ACTING,
+  },
+  { severity: 'minor', file: 'docs/api.md', summary: 'the docstring names the wrong route' },
+] as const
+
+/** The review's `verdict.json` as Jev's post-step left it. */
+const FIXTURE_JEV_VERDICT = JSON.stringify({ verdict: 'NOT_YET', findings: FIXTURE_JEV_FINDINGS }, null, 2)
+
+/**
+ * `result_summary.quality_gates` as `agent_worker/lifecycle.py`
+ * `_record_quality_gates` writes it when the hooks ran.
+ */
+function fixtureJevGates(blocks: number, rules: number, belay: number, enforce: number): Record<string, unknown> {
+  return { jev: true, belay_blocks: blocks, enforce_rules_flagged: rules, belay_calls: belay, enforce_calls: enforce }
+}
+
+function fixtureJevTasks(listed: Task[]): Task[] {
+  const base = listed.find((t) => t.state === 'SUCCEEDED' && t.runner_profile === 'claude-code') ?? listed[0]
+  if (base === undefined) return []
+  const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
+  const one = (id: string, title: string, since: number, last: number, summary: Record<string, unknown>, over: Partial<Task> = {}): Task =>
+    fixtureTimed({
+      ...base,
+      id,
+      state: 'SUCCEEDED',
+      runner_profile: 'claude-code',
+      metadata: { title },
+      input: null,
+      workflow_id: null,
+      step_id: null,
+      depends_on: null,
+      attempt_count: 1,
+      current_generation: 1,
+      current_lease_id: null,
+      created_at: at(since),
+      // Its end: `fixtureTimed` derives the start and the completion from it.
+      updated_at: at(last),
+      end_cause: null,
+      last_error: null,
+      dispatch: { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [] },
+      result_summary: summary as Task['result_summary'],
+      ...over,
+    })
+  const gated = { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [], verdict_gate: { task_id: FIXTURE_JEV_REVIEW, verdict_in: ['NOT_YET'] } }
+  return [
+    one(FIXTURE_JEV_REVIEW, 'Review the lease release path', 120, 100, {
+      artifacts: [{ name: 'verdict.json', bytes: new TextEncoder().encode(FIXTURE_JEV_VERDICT).length, uri: 'gs://swarm-artifacts-dev/u-bogdan/verdict.json' }],
+      quality_gates: fixtureJevGates(0, 0, 4, 2),
+    }),
+    one(
+      FIXTURE_JEV_GATED,
+      'Fix what the lease review found',
+      98,
+      70,
+      {
+        verdict_gate: {
+          task_id: FIXTURE_JEV_REVIEW,
+          file: 'verdict.json',
+          verdict: 'NOT_YET',
+          verdict_in: ['NOT_YET'],
+          agent_ran: true,
+          // As `verdict._finding_text` keeps them: text, the low one marked.
+          findings: FIXTURE_JEV_FINDINGS.map((f) => `${'triage' in f ? VERIFY_TEXT_MARK : ''}${f.file}: ${f.summary}`),
+          findings_dropped: 0,
+        },
+        quality_gates: fixtureJevGates(1, 2, 9, 3),
+      },
+      { dispatch: gated as unknown as Task['dispatch'] },
+    ),
+  ]
+}
+
+/** A task a per-task read answers and no list returns: a waiting one (#1782), a budget one (#2459), another user's (#1857), or a Jev one. */
 function fixtureOffList(listed: Task[], taskId: string): Task | undefined {
   return (
     fixtureWaitingTasks(listed).find((t) => t.id === taskId) ??
     fixtureBudgetTasks(listed).find((t) => t.id === taskId) ??
-    fixtureOtherSubmitterTasks(listed).find((t) => t.id === taskId)
+    fixtureOtherSubmitterTasks(listed).find((t) => t.id === taskId) ??
+    fixtureJevTasks(listed).find((t) => t.id === taskId)
   )
 }
 
