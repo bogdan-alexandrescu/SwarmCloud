@@ -1543,6 +1543,232 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
 
 
 # --------------------------------------------------------------------------
+# Jev usage (part of #2688)
+# --------------------------------------------------------------------------
+
+#: The route the console's Capacity › Jev usage reads, and `sc capacity` with it.
+JEV_USAGE_ROUTE = "/v1/jev-usage"
+
+#: Each kind's group, in the console's words (`swarm-ui/src/jevUsage.ts`
+#: `JEV_GROUP_LABEL`). A worker judgment is named by its question as well.
+JEV_GROUP_LABEL = {
+    "worker_judgment": "Worker judgment",
+    "quality_gate": "Quality gate",
+    "decision_tool": "Agent decision tool",
+    "jev_browser": "Jev browser",
+    "unattributed": "Not split by kind",
+    "other": "Other",
+}
+
+#: Why the worker skipped a Jev call, in the console's words
+#: (`swarm-ui/src/jevUsage.ts` `JEV_SKIP_LABEL`); an unknown one is its code's.
+JEV_SKIP_LABEL = {
+    "breaker_open": "Jev unavailable",
+    "budget_calls": "call budget spent",
+    "budget_tokens": "token budget spent",
+    "budget_monthly": "monthly cap reached",
+    "oversize": "question too large",
+    "empty_state": "nothing to ask",
+}
+
+#: What is absent, worded as the console words it: never a zero.
+RATE_NOT_SET = "rate not set"
+NOT_RECORDED = "not recorded"
+
+
+def _count_or_none(value: Any) -> int | None:
+    """A served count, or None when it is absent or not a count."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _rate_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        return None
+    return float(value)
+
+
+def _plain_number(value: float) -> str:
+    """`3` for 3.0 and `0.8` for 0.8, as the console prints a rate."""
+    return f"{value:g}"
+
+
+def jev_dollars(usd: Any, rate_set: bool) -> str:
+    """Dollars as the console prints them, or why there are none: never $0
+    for "not priced" (`JevUsagePage.tsx` `Dollars`)."""
+    value = _rate_or_none(usd)
+    if value is None:
+        return RATE_NOT_SET if not rate_set else "needs the output rate, which is not set"
+    return f"${value:.4f}" if value < 1 else f"${value:.2f}"
+
+
+def jev_tokens(value: Any) -> str:
+    count = _count_or_none(value)
+    return NOT_RECORDED if count is None else f"{count:,}"
+
+
+def jev_outcomes(outcomes: Any, style: Style) -> str:
+    """`2 ok · 1 failed · 3 skipped (call budget spent 1, question too large 2)
+    · 2 not recorded`, or "not recorded" when no row recorded an outcome
+    (`JevUsagePage.tsx` `outcomeText`): never "0 ok · 0 failed"."""
+    if not isinstance(outcomes, dict):
+        return NOT_RECORDED
+    parts = [
+        f"{_count_or_none(outcomes.get('ok')) or 0:,} ok",
+        f"{_count_or_none(outcomes.get('failed')) or 0:,} failed",
+        f"{_count_or_none(outcomes.get('skipped')) or 0:,} skipped",
+    ]
+    text = style.sep.join(parts)
+    by_reason = outcomes.get("skipped_by_reason")
+    reasons = [
+        f"{JEV_SKIP_LABEL.get(str(reason), str(reason).replace('_', ' '))} {n:,}"
+        for reason, n in sorted((by_reason or {}).items() if isinstance(by_reason, dict) else [])
+        if (_count_or_none(n) or 0) > 0
+    ]
+    if reasons:
+        text = f"{text} ({', '.join(reasons)})"
+    unrecorded = _count_or_none(outcomes.get("unrecorded")) or 0
+    if unrecorded:
+        text = f"{text}{style.sep}{unrecorded:,} {NOT_RECORDED}"
+    return text
+
+
+def jev_kind_label(row: dict[str, Any]) -> str:
+    """A kind as the console names it (`JevUsagePage.tsx` `kindLabel`)."""
+    group = row.get("group") if row.get("group") in JEV_GROUP_LABEL else "other"
+    label = JEV_GROUP_LABEL[group]
+    return f"{label} {row.get('kind')}" if group == "worker_judgment" else label
+
+
+def jev_rate_line(rate: Any) -> str:
+    """What the dollars were priced at, as the console says it."""
+    rate = rate if isinstance(rate, dict) else {}
+    given = _rate_or_none(rate.get("input_usd_per_million"))
+    if rate.get("set") is not True or given is None:
+        return (f"Jev's price: {RATE_NOT_SET}. Dollars stay blank until a platform admin "
+                "sets Jev's per-token rate.")
+    out = _rate_or_none(rate.get("output_usd_per_million"))
+    tail = " (output rate not set)" if out is None else f", ${_plain_number(out)} out"
+    return f"Priced at ${_plain_number(given)} per million tokens in{tail}."
+
+
+def jev_month_line(month: Any) -> str:
+    """The month's use against its cap."""
+    month = month if isinstance(month, dict) else {}
+    name = month.get("month") or "this month"
+    used = _count_or_none(month.get("used_tokens"))
+    cap = _count_or_none(month.get("cap_tokens"))
+    used_text = f"{used:,}" if used is not None else NOT_RECORDED
+    if cap is None:
+        return (f"{name}: {used_text} tokens in this month; no monthly cap is set "
+                "for this workspace")
+    share = f" ({round(used * 100 / cap)}%)" if cap and used is not None else ""
+    return f"{name}: {used_text} of {cap:,} tokens in this month{share}"
+
+
+def render_jev_usage(
+    usage: dict[str, Any] | None,
+    style: Style,
+    *,
+    error: str | None = None,
+    absent: bool = False,
+) -> list[str]:
+    """`GET /v1/jev-usage` as Capacity › Jev usage draws it: the 30-day total,
+    by kind, with its outcomes, and the month's use against its cap.
+
+    ABSENT IS ONE LINE. An API older than the route answers 403 or 404, and
+    that is not a broken capacity view: the line says the route is not served
+    and nothing else changes. A route that FAILED says so with its reason.
+    """
+    if usage is None:
+        if absent:
+            return [section("jev usage", "", style),
+                    "  " + style.paint(f"Jev usage: this API does not serve {JEV_USAGE_ROUTE} "
+                                       "(an older swarm-api)", "dim")]
+        return [section("jev usage", "", style),
+                f"  {style.paint(style.dash + ' Jev usage could not be read', 'bad')}"] + \
+            detail(error or "no reason reported", style)
+
+    rate_set = isinstance(usage.get("rate"), dict) and usage["rate"].get("set") is True
+    window = usage.get("window") if isinstance(usage.get("window"), dict) else {}
+    days = _count_or_none(window.get("days")) or 30
+    total = usage.get("total") if isinstance(usage.get("total"), dict) else {}
+    calls = _count_or_none(total.get("calls"))
+    lines = [section("jev usage", f"last {days} days", style)]
+
+    facts = [
+        ("calls", NOT_RECORDED if calls is None else f"{calls:,}"),
+        ("tokens in", jev_tokens(total.get("input_tokens"))),
+        ("tokens out", jev_tokens(total.get("output_tokens"))),
+        ("dollars", jev_dollars(total.get("usd"), rate_set)),
+        ("outcomes", jev_outcomes(total.get("outcomes"), style)),
+        ("monthly cap", jev_month_line(usage.get("month"))),
+    ]
+    label_width = max(len(label) for label, _ in facts)
+    for label, value in facts:
+        head = f"  {style.paint(label.ljust(label_width), 'dim')}  "
+        body = textwrap.wrap(value, width=max(20, style.usable - label_width - 4)) or [""]
+        lines.append(head + body[0])
+        lines += [" " * (label_width + 4) + more for more in body[1:]]
+    lines += detail(jev_rate_line(usage.get("rate")), style, indent=2)
+
+    kinds = [k for k in total.get("by_kind") or [] if isinstance(k, dict)]
+    if not kinds and not calls:
+        lines += detail(f"No Jev calls were recorded for this workspace in the last {days} days.",
+                        style, indent=2)
+    if kinds:
+        # Outcomes are not a column: a skip's reason is never truncated away,
+        # so each kind's outcomes are a wrapped line under the table.
+        lines += [""] + render_table(
+            [
+                Column("kind", "KIND", flex=True),
+                Column("calls", "CALLS", align="right"),
+                Column("in", "TOKENS IN", align="right", drop=3),
+                Column("out", "TOKENS OUT", align="right", drop=2),
+                Column("usd", "DOLLARS", align="right", drop=1),
+            ],
+            [
+                {
+                    "kind": Cell(jev_kind_label(k)),
+                    "calls": Cell(jev_tokens(k.get("calls"))),
+                    "in": Cell(jev_tokens(k.get("input_tokens"))),
+                    "out": Cell(jev_tokens(k.get("output_tokens")),
+                                "dim" if _count_or_none(k.get("output_tokens")) is None else None),
+                    "usd": Cell(jev_dollars(k.get("usd"), rate_set),
+                                "dim" if _rate_or_none(k.get("usd")) is None else None),
+                }
+                for k in kinds
+            ],
+            style,
+        )
+        lines += [f"  {style.paint('outcomes', 'dim')}"]
+        for k in kinds:
+            lines += detail(f"{jev_kind_label(k)}: {jev_outcomes(k.get('outcomes'), style)}",
+                            style, tone=None)
+
+    undated = usage.get("undated")
+    if isinstance(undated, dict):
+        lines += detail(
+            f"Also {jev_tokens(undated.get('calls'))} calls and "
+            f"{jev_tokens(undated.get('input_tokens'))} tokens in whose records carry no day.",
+            style, indent=2)
+    return lines
+
+
+def render_capacity_view(snap: "Snapshot", style: Style) -> list[str]:
+    """`sc capacity` and the bridge's `swarm_capacity`: the pools and
+    profiles, then Jev's usage, from one function so the two cannot drift."""
+    return (
+        [section("capacity", capacity_subtitle(snap.capacity, style), style)]
+        + render_capacity(snap.capacity, style, error=snap.capacity_error)
+        + [""]
+        + render_jev_usage(snap.jev_usage, style, error=snap.jev_usage_error,
+                           absent=snap.jev_usage_absent)
+    )
+
+
+# --------------------------------------------------------------------------
 # Agents
 # --------------------------------------------------------------------------
 
@@ -2121,6 +2347,14 @@ class Snapshot:
     #: Workflows check reads it (#616). None when not fetched or not read.
     workflows: dict[str, Any] | None = None
     workflows_error: str | None = None
+    #: `GET /v1/jev-usage`, the console's Capacity › Jev usage read, for `sc
+    #: capacity`'s Jev usage block (part of #2688). None when not fetched or
+    #: not read.
+    jev_usage: dict[str, Any] | None = None
+    jev_usage_error: str | None = None
+    #: True when an API older than the route answered 403 or 404: one line on
+    #: screen, never a failed capacity view.
+    jev_usage_absent: bool = False
     api_url: str = ""
     tier: str = ""
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

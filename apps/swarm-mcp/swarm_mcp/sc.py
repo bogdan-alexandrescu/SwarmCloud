@@ -214,6 +214,26 @@ def fetch_capacity(client: SwarmClient) -> dict[str, Any]:
     return client.request("GET", "/v1/capacity")
 
 
+class JevUsageRouteAbsent(SwarmError):
+    """The API refused `/v1/jev-usage` with a 403 or 404: an API older than
+    the route. One line in `sc capacity`, never a failed capacity view."""
+
+
+def fetch_jev_usage(client: SwarmClient) -> dict[str, Any]:
+    """The console's Capacity › Jev usage read, for `sc capacity` (part of #2688)."""
+    try:
+        data = client.request("GET", render.JEV_USAGE_ROUTE)
+    except SwarmError as via_api:
+        # A 404 from Google's edge is the ingress refusing this caller, not
+        # an absent route, as in `fetch_accounts`.
+        if via_api.status in (403, 404) and not via_api.edge:
+            raise JevUsageRouteAbsent(str(via_api), status=via_api.status) from None
+        raise
+    if not isinstance(data, dict):
+        raise SwarmError("the jev-usage response was not an object")
+    return data
+
+
 #: One page of `/v1/tasks`. The API clamps it to its own `max_page_size`, and
 #: `next_page_token` carries on from wherever that left it.
 TASK_PAGE = 100
@@ -471,7 +491,7 @@ NEEDS = {
     "overview": ("tenant", "stats", "capacity", "accounts", "tasks", "leases"),
     "accounts": ("accounts",),
     "agents": ("tasks",),
-    "capacity": ("capacity",),
+    "capacity": ("capacity", "jev_usage"),
     "trouble": ("tenant", "stats", "capacity", "accounts", "tasks", "leases", "workflows"),
 }
 
@@ -505,6 +525,8 @@ def collect(client: SwarmClient, wanted: tuple[str, ...]) -> Snapshot:
         jobs["leases"] = lambda: fetch_leases(client)
     if "workflows" in wanted:
         jobs["workflows"] = lambda: fetch_workflows(client)
+    if "jev_usage" in wanted:
+        jobs["jev_usage"] = lambda: fetch_jev_usage(client)
 
     if jobs:
         with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
@@ -521,6 +543,8 @@ def collect(client: SwarmClient, wanted: tuple[str, ...]) -> Snapshot:
                     snap.accounts_absent = True
                 if name == "leases" and isinstance(error, LeasesRefused):
                     snap.leases_refused = True
+                if name == "jev_usage" and isinstance(error, JevUsageRouteAbsent):
+                    snap.jev_usage_absent = True
     return snap
 
 
@@ -615,17 +639,16 @@ def cmd_agents(client: SwarmClient, args, out) -> int:
 def cmd_capacity(client: SwarmClient, args, out) -> int:
     style = style_for(out, width=args.width, color=args.color, ascii_only=args.ascii)
     snap = collect(client, NEEDS["capacity"])
-    # This view is ABOUT one area, so that area being unreadable is the whole
+    # This view is ABOUT the pools, so the pools being unreadable is the whole
     # command failing -- whatever the reason, including a route this
-    # deployment does not have: there is nothing else on the screen.
+    # deployment does not have. The Jev usage block under them is not: an
+    # unreadable or unserved /v1/jev-usage is said on screen and the code
+    # stays the pools' (part of #2688).
     code = EXIT_FAIL if snap.capacity is None else EXIT_OK
     if args.json:
         _dump(snap, out)
         return code
-    lines = [
-        render.section("capacity", render.capacity_subtitle(snap.capacity, style), style)
-    ] + render.render_capacity(snap.capacity, style, error=snap.capacity_error)
-    _emit(lines, out)
+    _emit(render.render_capacity_view(snap, style), out)
     return code
 
 
@@ -1616,6 +1639,11 @@ def _dump(snap: Snapshot, out) -> None:
         "stats_error": snap.stats_error,
         "capacity": snap.capacity,
         "capacity_error": snap.capacity_error,
+        # Jev's 30-day usage, as `sc capacity` draws it; `jev_usage_absent`
+        # says an older API does not serve the route (part of #2688).
+        "jev_usage": snap.jev_usage,
+        "jev_usage_error": snap.jev_usage_error,
+        "jev_usage_absent": snap.jev_usage_absent,
         "accounts": (
             None if snap.accounts is None
             else [
