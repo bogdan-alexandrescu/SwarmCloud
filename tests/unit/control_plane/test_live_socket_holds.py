@@ -36,6 +36,7 @@ from .test_live_api import (  # noqa: F401  (fixtures)
     SOCKET,
     Attempt,
     FakeLink,
+    audit,
     FakeRelay,
     bearer,
     clock,
@@ -117,6 +118,12 @@ def test_a_failed_session_read_does_not_close_the_viewer(ldb, people, groups, ob
             relay.release.set()
         # Still the same socket: the relay's frame reaches the viewer.
         assert ws.receive_bytes() == relay.frame
+        # Inside the session: leaving the `with` cancels the app's task, and
+        # under load that cancelled `_Proxy.run`'s teardown mid-await
+        # (CancelledError at this `with`, as test_live_api's socket-hold test
+        # records). Its last write is the `viewer_left` row: wait for it.
+        ws.close(1000)
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1, seconds=30.0)
     assert len(relay.links) == 1
 
 
@@ -137,3 +144,6 @@ def test_a_session_that_cannot_be_read_for_long_still_closes(ldb, people, groups
         assert ws.receive_json()["open"] is True
         with pytest.raises(WebSocketDisconnect):
             ws.receive_bytes()
+        # The app writes `viewer_left` after the close; wait for it before
+        # leaving the `with` cancels the app's task (as above).
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1, seconds=30.0)
