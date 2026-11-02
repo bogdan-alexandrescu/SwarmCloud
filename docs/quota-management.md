@@ -458,7 +458,7 @@ original state on every exit path.
 limit while 6 or 7 agents ran against a configured ceiling of 40, and nothing
 recorded the limit applied: the adaptive target and the quota-derived limit are
 current values only, so "about 7" had to be inferred from the agents running.
-Now the scheduler writes, on each refused task's `blocked_by` entry, the
+Now the scheduler writes, on each refused agent's `blocked_by` entry, the
 limit's name (`limit_name`, the pool), the value admission applied (`applied`,
 the transaction's own `effective_limit`), the configured ceiling (`ceiling`,
 the pool's `hard_limit`), the units in use (`in_use`), and, when `applied` is
@@ -475,7 +475,7 @@ applied value with `/ceiling` beside it, its title naming the input and when it
 was set; `sc capacity` prints a CEILING column (`40 adaptive`). Note that AIMD
 clamps to the quota document's `configured_hard_max` (default 50), not to the
 pool's `hard_limit`: three tenant-scoped 429s take a target 50 -> 25 -> 12 ->
-6, and one more slot needs `AIMD_SUCCESS_THRESHOLD` (20) successful tasks.
+6, and one more slot needs `AIMD_SUCCESS_THRESHOLD` (20) successful agents.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
