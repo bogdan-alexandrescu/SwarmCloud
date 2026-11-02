@@ -241,7 +241,8 @@ def test_another_person_cannot_finish_someones_sign_in(client, db, writer, token
     refused = _finish(client, "bob", started["state"], _callback(started, code))
 
     assert refused.status_code == 403, refused.text
-    assert refused.json()["code"] == vsi.SignInRefused.code
+    assert refused.json()["code"] == "forbidden"
+    assert "started by someone else" in refused.json()["message"]
     assert tokens.redeemed == [] and writer.versions == {}
     # Left exactly as it was, so Alice can still finish her own.
     mine = _finish(client, "alice", started["state"], _callback(started, code))

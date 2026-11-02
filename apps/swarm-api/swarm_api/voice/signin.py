@@ -109,7 +109,7 @@ INSTRUCTIONS = (
 
 
 class SignInRefused(Forbidden):
-    code = "chatgpt_sign_in_not_yours"
+    """Another person's pending sign-in: the established `forbidden` code."""
 
 
 class SignInFailed(ApiError):
