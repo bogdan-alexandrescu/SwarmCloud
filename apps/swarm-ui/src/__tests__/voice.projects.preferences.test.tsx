@@ -108,7 +108,9 @@ describe('Voice it › Projects', () => {
       'Billing export',
     ])
     expect(within(rowOf('Postgres migration plan')).getByText('3')).toBeTruthy()
-    expect(within(rowOf('Postgres migration plan')).getByText(/Nov 1/)).toBeTruthy()
+    expect(within(rowOf('Postgres migration plan')).getAllByText(/Nov 1/)).toHaveLength(2)
+    // A project with no session or card count served draws a dash, never a 0.
+    expect(within(rowOf('Billing export')).queryByText('0')).toBeNull()
     expect(screen.getByRole('columnheader', { name: 'Open cards' })).toBeTruthy()
     expect(screen.getByRole('columnheader', { name: 'Last session' })).toBeTruthy()
   })
@@ -245,7 +247,7 @@ function servePreferences(data: unknown): void {
 }
 
 function prefRow(label: string): HTMLElement {
-  const row = screen.getByText(label, { selector: 'dt' }).closest('div')
+  const row = screen.getByText(label, { selector: 'td > b' }).closest('tr')
   if (row === null) throw new Error(`no row for ${label}`)
   return row
 }
