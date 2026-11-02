@@ -668,10 +668,22 @@ class VoiceStore:
 
     # ---- delete ----------------------------------------------------------
 
-    def delete_project(self, *, tenant_id: str, person: str, project_id: str) -> dict[str, Any]:
+    def delete_project(self, *, tenant_id: str, person: str, project_id: str,
+                       confirm: str | None) -> dict[str, Any]:
         """Remove the project's objects, then every document under it, then
-        the project. 409 while one of its sessions is live."""
+        the project. 409 while one of its sessions is live.
+
+        The delete is typed (owner pick, PR #3019): `confirm` must be the
+        project's title as listed, so a stray or replayed DELETE cannot take a
+        project's transcripts and plans. The check follows the ownership
+        check, so another tenant's project is still the same 404 as a missing
+        one and the 422 never reveals a title it would not show."""
         data = self._owned(tenant_id, person, project_id)
+        title = str(data.get("title") or vs.UNTITLED)
+        if (confirm or "").strip() != title.strip():
+            raise ValidationFailed(
+                "Type the project's title to delete it.",
+                detail={"field": "confirm", "reason": "confirmation_required"})
         project_ref = self._project_ref(project_id)
         sessions = list(project_ref.collection(SESSIONS).stream())
         for snap in sessions:
@@ -705,8 +717,7 @@ class VoiceStore:
         batch.delete(project_ref)
         self._audit(batch, action=AUDIT_DELETED, tenant_id=tenant_id, person=person,
                     project_id=project_id,
-                    detail={"documents": documents, "objects": objects,
-                            "title": data.get("title") or vs.UNTITLED})
+                    detail={"documents": documents, "objects": objects, "title": title})
         batch.commit()
         log.info("voice project deleted tenant=%s project=%s documents=%d objects=%d",
                  tenant_id, project_id, documents, objects)

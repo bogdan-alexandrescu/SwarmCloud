@@ -273,7 +273,8 @@ def test_deleting_a_project_removes_its_documents_and_its_prefix(client, db, blo
           person="bob@example.com")
     before = dict(blobs.objects)
 
-    response = client.delete(f"/v1/voice/projects/{project}", headers=auth_header("alice"))
+    response = client.request("DELETE", f"/v1/voice/projects/{project}",
+                              json={"confirm": "T"}, headers=auth_header("alice"))
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -298,7 +299,8 @@ def test_a_failed_bucket_delete_keeps_the_documents_for_a_retry(db, blobs):
     blobs.fail = True
 
     with pytest.raises(vstore.VoiceBlobFailed):
-        store.delete_project(tenant_id="eng", person="alice@example.com", project_id=project)
+        store.delete_project(tenant_id="eng", person="alice@example.com", project_id=project,
+                             confirm="T")
 
     assert f"{vs.PROJECTS}/{project}" in db.docs
 
@@ -306,11 +308,42 @@ def test_a_failed_bucket_delete_keeps_the_documents_for_a_retry(db, blobs):
 def test_deleting_a_project_with_a_live_session_is_409(client, db, blobs):
     started = _start(client, "alice").json()
 
-    response = client.delete(f"/v1/voice/projects/{started['project_id']}",
-                             headers=auth_header("alice"))
+    title = client.get(f"/v1/voice/projects/{started['project_id']}",
+                       headers=auth_header("alice")).json()["title"]
+
+    response = client.request("DELETE", f"/v1/voice/projects/{started['project_id']}",
+                              json={"confirm": title}, headers=auth_header("alice"))
 
     assert response.status_code == 409, response.text
     assert f"{vs.PROJECTS}/{started['project_id']}" in db.docs
+
+
+@pytest.mark.parametrize("body", [None, {}, {"confirm": ""}, {"confirm": "t"},
+                                  {"confirm": "Another"}])
+def test_deleting_a_project_without_its_typed_title_is_422_and_keeps_it(client, db, blobs, body):
+    project, session = "vp_" + "b" * 32, "vs_" + "b" * 32
+    _seed(db, blobs, project, session)
+    before_docs, before_objects = dict(db.docs), dict(blobs.objects)
+
+    response = client.request("DELETE", f"/v1/voice/projects/{project}", json=body,
+                              headers=auth_header("alice"))
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == {"field": "confirm", "reason": "confirmation_required"}
+    # Nothing went: not an object, not a document.
+    assert blobs.objects == before_objects
+    assert db.docs == before_docs
+
+
+def test_the_typed_title_is_compared_without_surrounding_space(client, db, blobs):
+    project, session = "vp_" + "c" * 32, "vs_" + "c" * 32
+    _seed(db, blobs, project, session)
+
+    response = client.request("DELETE", f"/v1/voice/projects/{project}",
+                              json={"confirm": "  T \n"}, headers=auth_header("alice"))
+
+    assert response.status_code == 200, response.text
+    assert f"{vs.PROJECTS}/{project}" not in db.docs
 
 
 # ---- preferences -----------------------------------------------------------

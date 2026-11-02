@@ -8,7 +8,7 @@
     GET    /v1/voice/projects                 -> {projects: [...]}, newest first
     GET    /v1/voice/projects/{project_id}    -> the project
     PATCH  /v1/voice/projects/{project_id}    {title} -> the project
-    DELETE /v1/voice/projects/{project_id}    -> {project_id, deleted, documents, objects}
+    DELETE /v1/voice/projects/{project_id}    {confirm} -> {project_id, deleted, documents, objects}
     GET    /v1/voice/preferences              -> {preferences, revision, can_undo, previous}
     PATCH  /v1/voice/preferences              {changes, revision?} -> the same, plus changed
     POST   /v1/voice/preferences/undo         {revision?} -> the same
@@ -19,7 +19,8 @@ project is read only when its tenant is the selected workspace and its person
 is the caller, so another tenant's project, or another person's, is the same
 404 as a missing one. Deleting a project removes its objects under
 `tenants/<tenant>/voice/<project>/` and then its documents; it is 409 while one
-of its sessions is live. Preferences are the person's own, keyed by an HMAC of
+of its sessions is live, and 422 unless the body's `confirm` is the
+project's title, typed. Preferences are the person's own, keyed by an HMAC of
 the verified email, never by a field of the body. None of these routes needs
 swarm-voice, so none answers 503 for its absence.
 
@@ -149,6 +150,13 @@ class RenameProject(BaseModel):
     title: str = Field(min_length=1, max_length=vstore.TITLE_MAX)
 
 
+class DeleteProject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: The project's title, typed: the delete's confirmation.
+    confirm: str | None = Field(default=None, max_length=vstore.TITLE_MAX)
+
+
 class EditPreferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -226,6 +234,7 @@ async def rename_project(
 @router.delete("/projects/{project_id}")
 async def delete_project(
     project_id: str,
+    body: DeleteProject | None = None,
     person: str = Depends(allowed_person),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -234,7 +243,7 @@ async def delete_project(
     _check_id(project_id, "vp_", "project_id")
     return await run_in_threadpool(
         _store(ctx, blobs).delete_project, tenant_id=tenant_id, person=person,
-        project_id=project_id)
+        project_id=project_id, confirm=body.confirm if body else None)
 
 
 @router.get("/preferences")
