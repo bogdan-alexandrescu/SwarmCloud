@@ -1117,7 +1117,9 @@ def test_the_same_answers_give_the_same_bytes(tool: Any, lsp: Any, tmp_path: Pat
         work = tmp_path / f"run{n}"
         work.mkdir()
         repo = fx.build_repo(work / "repo", fx.PYTHON_APP)
-        spec = _fake(lsp, work, scenario)
+        # One install for both runs: the row records the server's build
+        # (`server_build`), and the fake's is its scenario file.
+        spec = _fake(lsp, tmp_path, scenario)
         out.append(tool.dumps(tool.graph_document(tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec)))))
     assert out[0] == out[1]
 
@@ -1459,7 +1461,8 @@ def test_a_language_with_nothing_to_ask_keeps_its_answers_from_the_same_server_v
         lsp, _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS,
                                    "server_info": {"name": "fake-lsp", "version": "1.0.0"}})))
     carry = facts["extractor"]["lsp_carry"]
-    # The server is started to learn its version, and asked nothing.
+    # The base ran another fake install (its own scenario file), so the
+    # server is started to learn its version, and asked nothing.
     assert (carry["carried_files"], carry["asked_files"], carry["not_carried"]) == (5, 0, {})
     assert _definition_files(tmp_path) == []
     assert len(_asked(_log(tmp_path), "initialize")) == 1
@@ -1504,3 +1507,137 @@ def test_a_previous_answer_stands_only_for_the_same_server_at_a_reported_version
     # MUTATION: compare the pair alone and an unreported version matches itself.
     assert not lsp.answers_kept(lsp.Answered("pyright", "unknown"), "pyright", "unknown")
     assert not lsp.answers_kept(answered, "pyright", None)
+
+
+# --------------------------------------------------------------------------
+# A language whose files are all carried (owner 2026-11-02, part of #2991).
+# Its server used to be started, asked nothing, only to read its version. A
+# server is pinned in the image, so when the base recorded its version with
+# the same install (`server_build`), the version is read from the base and
+# nothing is started; with no version known, or another install, it is.
+# --------------------------------------------------------------------------
+
+
+def _carried_only(tool: Any, lsp: Any, tmp_path: Path, *, build: str | None) -> tuple[Any, Any]:
+    """A base whose every file is covered by fake 1.0.0 with the install
+    `build`, a commit that touches no Python file, and the run's server spec."""
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    base = _covered_base(tool, lsp, tmp_path, repo, uncovered="", version="1.0.0")
+    spec = _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS,
+                                 "server_info": {"name": "fake-lsp", "version": "1.0.0"}})
+    for row in base.graph["languages"]:
+        if row["language"] == "python":
+            row["lsp"]["cost_seconds"] = 340
+            row["lsp"].pop("server_build", None)
+            if build is not None:
+                row["lsp"]["server_build"] = build
+    _commit(repo, {"README.md": "# readme\n"})
+    return tool.extract(repo, tool.Budget(), base=base, base_lsp_only=True,
+                        lsp=_options(lsp, spec)), spec
+
+
+def test_a_carried_only_language_with_a_known_version_starts_nothing(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    spec = _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS,
+                                 "server_info": {"name": "fake-lsp", "version": "1.0.0"}})
+    build = lsp.driver.server_build(spec, lsp.DEFAULT_BIN_DIR)
+    assert build is not None and build.startswith("sha256:")
+    facts, _ = _carried_only(tool, lsp, tmp_path, build=build)
+    # MUTATION: start every server with carried files to read its version,
+    # and the fake logs an initialize.
+    assert _log(tmp_path) == []
+    carry = facts["extractor"]["lsp_carry"]
+    assert (carry["carried_files"], carry["asked_files"], carry["not_carried"]) == (5, 0, {})
+    python = _language(facts, "python")
+    # The row is as truthful as a started server's: the version and install
+    # it answered with, nothing asked, every file covered from the base.
+    assert (python["status"], python["fallback"], python["files_covered"]) == ("ok", None, 5)
+    assert python["lsp"]["server_version"] == "1.0.0"
+    assert python["lsp"]["server_build"] == build
+    assert python["lsp"]["requests"] == 0
+    # MUTATION: record no cost, and the next run's shares fall back to the
+    # equal split for a server that was measured before.
+    assert python["lsp"]["cost_seconds"] == 340
+    assert facts["extractor"]["lsp"]["servers"] == {"fake": "1.0.0"}
+    assert _edge(facts, "src/c.py#third", "src/b.py#helper")["evidence"] == "lsp"
+
+
+def test_a_carried_only_language_of_another_install_starts_its_server_once(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # MUTATION: compare the version alone and a rebuilt image's server is
+    # trusted to be the one the base recorded.
+    facts, spec = _carried_only(tool, lsp, tmp_path, build="sha256:" + "0" * 64)
+    assert len(_asked(_log(tmp_path), "initialize")) == 1
+    assert _definition_files(tmp_path) == []
+    python = _language(facts, "python")
+    assert python["lsp"]["server_build"] == lsp.driver.server_build(spec, lsp.DEFAULT_BIN_DIR)
+    assert facts["extractor"]["lsp_carry"]["carried_files"] == 5
+
+
+def test_a_carried_only_language_with_no_recorded_install_starts_its_server_once(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # A base written before `server_build` existed: no version is known with
+    # this install, so the server is started to read it.
+    # MUTATION: treat a missing build as matching and nothing is started.
+    facts, _ = _carried_only(tool, lsp, tmp_path, build=None)
+    assert len(_asked(_log(tmp_path), "initialize")) == 1
+    assert _language(facts, "python")["lsp"]["server_version"] == "1.0.0"
+
+
+def test_the_driver_reads_a_known_version_instead_of_starting_the_server(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    facts = tool.extract(repo, tool.Budget())
+    files = {path: "python" for path in CARRY_APP}
+    spec = _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS})
+    build = lsp.driver.server_build(spec, lsp.DEFAULT_BIN_DIR)
+    every = frozenset(CARRY_APP)
+    known = lsp.Answered("fake", "0.0.1", every, build=build, cost_seconds=120)
+    result = lsp.run_pass(repo, files, facts["symbols"], [], _options(
+        lsp, spec, asked_paths=frozenset(), answered={"python": known}))
+    assert _log(tmp_path) == []
+    python = result.languages["python"]
+    assert (python.status, python.server, python.covered) == ("ok", "fake", frozenset())
+    assert python.counts["server_version"] == "0.0.1" and python.counts["cost_seconds"] == 120
+    assert result.servers == {"fake": "0.0.1"}
+    # A version the server never reported matches nothing: it is started.
+    unknown = lsp.Answered("fake", "unknown", every, build=build)
+    result = lsp.run_pass(repo, files, facts["symbols"], [], _options(
+        lsp, spec, asked_paths=frozenset(), answered={"python": unknown}))
+    assert len(_asked(_log(tmp_path), "initialize")) == 1
+    assert result.languages["python"].counts["server_version"] == "0.0.1"
+    # A file to ask starts it whatever is known.
+    (tmp_path / "fake.log").unlink()
+    lsp.run_pass(repo, files, facts["symbols"], [], _options(
+        lsp, spec, asked_paths=frozenset({"src/a.py"}), answered={"python": known}))
+    assert len(_asked(_log(tmp_path), "initialize")) == 1
+
+
+def test_a_server_build_is_its_installed_files_not_its_name(lsp: Any, tmp_path: Path) -> None:
+    # The image links an npm server's command to its package's entry file,
+    # which does not change between versions: the package's manifest and the
+    # lock beside node_modules do.
+    servers = tmp_path / "servers"
+    package = servers / "node_modules" / "pyright"
+    package.mkdir(parents=True)
+    (package / "langserver.index.js").write_text("require('./dist/pyright-langserver')\n")
+    (package / "package.json").write_text('{"name": "pyright", "version": "1.1.414"}\n')
+    (servers / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+    bin_dir = servers / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "pyright-langserver").symlink_to(package / "langserver.index.js")
+    (package / "langserver.index.js").chmod(0o755)
+    spec = lsp.ServerSpec(name="pyright", command=("pyright-langserver", "--stdio"),
+                          languages=("python",), language_ids={".py": "python"})
+    first = lsp.driver.server_build(spec, bin_dir)
+    assert first is not None and first == lsp.driver.server_build(spec, bin_dir)
+    # MUTATION: hash the entry file alone and a pyright upgrade keeps its build.
+    (package / "package.json").write_text('{"name": "pyright", "version": "1.1.415"}\n')
+    second = lsp.driver.server_build(spec, bin_dir)
+    assert second not in (None, first)
+    (servers / "package-lock.json").write_text('{"lockfileVersion": 3, "x": 1}\n')
+    assert lsp.driver.server_build(spec, bin_dir) not in (None, first, second)
+    # Not installed: no build, so no version is ever taken as known.
+    missing = lsp.ServerSpec(name="gopls", command=("gopls",), languages=("go",),
+                             language_ids={".go": "go"})
+    assert lsp.driver.server_build(missing, bin_dir) is None

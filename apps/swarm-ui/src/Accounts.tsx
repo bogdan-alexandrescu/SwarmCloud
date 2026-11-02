@@ -25,7 +25,7 @@ import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
-import { AccountsTable } from './AccountsTable'
+import { AccountsTable, ProviderName } from './AccountsTable'
 import { AcctState } from './AccountState'
 import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
 import { agoPastDay, utcAt, type PoolAccount } from './accountsPool'
@@ -1345,8 +1345,10 @@ function Detail({
         <NameHead account={account} owned={owned} reload={reload} />
         <div className="acct-dhead-row">
           <AcctState state={account.state} />
+          {/* The provider in words (#2688): `ChatGPT plan`, `Claude
+              subscription`, or an unknown provider's own id -- never a guess. */}
           <Chip>
-            {account.provider} &middot; {lent ? 'lending on' : 'lending off'}
+            <ProviderName provider={account.provider} /> &middot; {lent ? 'lending on' : 'lending off'}
           </Chip>
         </div>
         {/* AN ID IS ONE WORD (visual QA V070): `u-bogdan` broke at its hyphen
@@ -4483,6 +4485,72 @@ function SignInDone({
 // Sign in again, on a row that already exists
 // ---------------------------------------------------------------------------
 
+/** routes/accounts.py's ChatGPT-plan provider (#2688): codex runs on it. */
+const PLAN_PROVIDER = 'openai'
+
+/** A word a POSIX shell reads as itself; anything else is single-quoted. */
+function shellWord(word: string): string {
+  return /^[A-Za-z0-9._:@/-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * THE COMMAND THAT SIGNS A PLAN IN AGAIN: `sc account add`, aimed at this
+ * label, with the provider and every loan. Re-registering a label REPLACES
+ * `lend_to` rather than merging it (the reason `Reauth` sends it back), so
+ * a command without each `--lend-to` would revoke every loan as a side effect.
+ */
+export function planSignInCommand(account: Pick<Account, 'label' | 'lend_to'>): string {
+  const loans = (account.lend_to ?? []).map((t) => ` --lend-to ${shellWord(t)}`).join('')
+  return `sc account add --label ${shellWord(account.label)} --provider ${PLAN_PROVIDER}${loans}`
+}
+
+/**
+ * The sign-in section of a ChatGPT plan: what happens, and the command.
+ *
+ * THE STATE NEEDS NO SECOND CALL HERE. The broker clears REAUTH_REQUIRED
+ * itself when a sign-in registers a working pair (`_provision_and_register`
+ * in quota_broker/main.py), and this page reads the pool on its own poll, so
+ * the account's new state appears here without anyone saying they are done.
+ */
+function PlanReauth({ account, broken }: { account: Account; broken: boolean }) {
+  return (
+    <div className="acct-action" data-replace={account.account_id} data-plan-sign-in="">
+      <h4>{broken ? 'Sign in again' : 'Replace the credential'}</h4>
+      <p className="muted small">
+        {broken ? (
+          <>
+            <strong>Only a person can replace this.</strong> The refresh token
+            behind <Id className="mono">{account.account_id}</Id> is gone or unreadable.
+          </>
+        ) : (
+          <>
+            Replaces the credential behind <Id className="mono" after=".">{account.account_id}</Id>{' '}
+            Nothing here needs doing on a healthy account.
+          </>
+        )}
+      </p>
+      <p className="muted small">
+        A ChatGPT plan&rsquo;s sign-in finishes on your own computer, not in this browser
+        tab: the plan sends its code to <span className="mono">localhost:1455</span>, where{' '}
+        <span className="mono">sc</span> listens. Run this in a terminal on the computer
+        this browser runs on:
+      </p>
+      <p>
+        <code className="acct-hs-msg" data-cmd="">
+          {planSignInCommand(account)}
+        </code>
+      </p>
+      <p className="muted small">
+        It opens the sign-in page and registers the plan under the same label, with the same
+        loans.{' '}
+        {broken
+          ? 'The account leaves REAUTH_REQUIRED as soon as it registers, and this page shows it on its next read.'
+          : 'This page shows the new credential’s expiry on its next read.'}
+      </p>
+    </div>
+  )
+}
+
 /**
  * The same sign-in, aimed at a label that is already in the pool.
  *
@@ -4515,12 +4583,24 @@ function Reauth({
     patch((p) => ({ ...p, reauth: { ...p.reauth, [account.account_id]: next } }))
   const broken = needsAHuman(account)
 
-  // A CONTROL THAT WOULD REWRITE A FIELD IT CANNOT SEND. The sign-in swarm-api
-  // performs produces a `SUBSCRIPTION_PROVIDER` credential and its request body
-  // has no provider field, so re-registering a row that says anything else
-  // would file the account under a provider nobody chose on this screen -- the
-  // silent rewrite the removed `provider: account.provider` argument existed to
-  // prevent. Refused and named, rather than offered and surprising.
+  // A CHATGPT PLAN SIGNS IN ON THE PERSON'S OWN MACHINE (#2688). swarm-api's
+  // sign-in start takes `provider: "openai"` now, but the plan's OAuth client
+  // has one registered redirect, `http://localhost:1455/auth/callback`
+  // (quota_broker/openai_plan.py, measured), and only `sc account add` listens
+  // there. A browser control would open a page whose code lands on a port
+  // nothing is listening on, so this section says so and gives the command
+  // instead -- and posts nothing, least of all a Claude sign-in.
+  if (account.provider === PLAN_PROVIDER) {
+    return <PlanReauth account={account} broken={broken} />
+  }
+
+  // A CONTROL THAT WOULD REWRITE A FIELD IT CANNOT SEND. The sign-in below
+  // produces a `SUBSCRIPTION_PROVIDER` credential and its request body carries
+  // no provider, so re-registering a row that says anything else -- a provider
+  // the API cannot sign in at all -- would file the account under a provider
+  // nobody chose on this screen, the silent rewrite the removed
+  // `provider: account.provider` argument existed to prevent. Refused and
+  // named, rather than offered and surprising.
   if (account.provider !== SUBSCRIPTION_PROVIDER) {
     return (
       <div className="acct-action">
@@ -4560,14 +4640,11 @@ function Reauth({
   const start = async () => {
     set({ kind: 'starting' })
     const res = await beginAccountSignIn({
-      // NEITHER THE TENANT NOR THE PROVIDER IS OURS TO SEND. swarm-api resolves
-      // the tenant from the verified token -- and this control renders only on
-      // a row this tenant owns -- and it fixes the provider itself;
-      // `AccountSignInStart` has a field for neither and forbids extra keys, so
-      // sending `account.owner_tenant` and `account.provider`, which this call
-      // used to do, is a 422 from validation rather than a sign-in. The
-      // provider that used to be sent here is now checked above instead: a row
-      // carrying anything else is refused rather than quietly re-registered.
+      // NEITHER THE TENANT NOR THE PROVIDER IS SENT. swarm-api resolves the
+      // tenant from the verified token -- and this control renders only on a
+      // row this tenant owns -- and a sign-in with no provider is a Claude
+      // sign-in, which is the only kind that reaches this call: a plan is
+      // sent to `PlanReauth` above and any other provider is refused.
       label: account.label,
       lend_to: account.lend_to,
     })
