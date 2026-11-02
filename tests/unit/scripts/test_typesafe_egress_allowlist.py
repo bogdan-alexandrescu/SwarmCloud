@@ -100,6 +100,11 @@ def _fqdn_allows(namespace: str, labels: dict[str, str], host: str = TYPESAFE) -
     return found
 
 
+def _forwarder_namespace() -> str:
+    (deploy,) = [d for d in _docs(FORWARDER) if d["kind"] == "Deployment"]
+    return str(deploy["metadata"]["namespace"])
+
+
 def _forwarder_pod_labels() -> dict[str, str]:
     (deploy,) = [d for d in _docs(FORWARDER) if d["kind"] == "Deployment"]
     return dict(deploy["spec"]["template"]["metadata"]["labels"])
@@ -187,7 +192,8 @@ def test_the_forwarder_policies_select_the_forwarders_pods():
     pod = _forwarder_pod_labels()
     for kind in ("NetworkPolicy", "FQDNNetworkPolicy"):
         doc = _forwarder_policy(kind)
-        assert doc["metadata"]["namespace"] == "swarm-system"
+        # The forwarder's own namespace, read from its manifest.
+        assert doc["metadata"]["namespace"] == _forwarder_namespace()
         assert doc["metadata"]["labels"]["managed-by"] == "swarm-terraform"
         assert doc["spec"]["podSelector"] == {"matchLabels": {"app.kubernetes.io/name": "swarm-typesafe-fwd"}}
         assert _selects(doc["spec"]["podSelector"], pod)
