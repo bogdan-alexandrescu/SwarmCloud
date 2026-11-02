@@ -2962,7 +2962,7 @@ commit is the App's.
 
 ### 5.5 The pull request's branch is deleted after the merge
 
-The owner asked on 2026-11-02 for a task's branch to go once its changes are
+The owner asked on 2026-11-02 for an agent's branch to go once its changes are
 merged: the repository held 4,756 branches, and merges are squashed, so `git
 branch --merged` recognises almost none of them. A merged branch is known by
 its pull request. After a merge (or on the retry that finds the pull request
