@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import dataclasses
+
 import pytest
 
 from swarm_common.models import Tenant
@@ -54,7 +56,8 @@ def tenant() -> Tenant:
 
 
 def _template(tenant: Tenant, *, profile: str = LIVE, backend: str = "typesafe",
-              forwarder: bool = False, gates: str | None = None) -> dict[str, Any]:
+              forwarder: bool = False, gates: str | None = None,
+              dispatch: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = scheduler_settings(
         live_browser_sidecar=True,
         typesafe_forwarder_enabled=forwarder,
@@ -66,6 +69,8 @@ def _template(tenant: Tenant, *, profile: str = LIVE, backend: str = "typesafe",
                                   batch_api=object(), judgment=lambda tenant_id: backend,
                                   quality_gates=verdict)
     task = make_task(profile)
+    if dispatch is not None:
+        task = dataclasses.replace(task, metadata={"dispatch": dispatch})
     job = dispatcher._manifest(task=task, lease=make_lease(task),
                                profile=RUNNER_PROFILES[profile], tenant=tenant)
     return job["spec"]["template"]
@@ -111,6 +116,20 @@ def test_a_pod_whose_quality_gates_are_on_is_labelled_direct(tenant, word):
     (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
     assert {"name": QUALITY_GATES_JEV_ENV, "value": word} in worker["env"]
     assert template["metadata"]["labels"]["swarm-jev"] == "typesafe-direct"
+
+
+def test_judgments_switched_on_without_the_forwarder_label_the_pod_direct(tenant):
+    """The worker resolves the workspace's key for the step's judgments
+    (`jevkey.resolve_workspace`) and calls TypeSafe itself."""
+    switched = {"jev_judgments": "on"}
+    assert _labels(tenant, profile="claude-code", dispatch=switched)["swarm-jev"] == "typesafe-direct"
+    forwarded = _labels(tenant, profile="claude-code", dispatch=switched, forwarder=True)
+    assert forwarded["swarm-typesafe"] == "inject"
+    assert "swarm-jev" not in forwarded
+    internal = _labels(tenant, profile="claude-code", dispatch=switched, backend="internal-jev")
+    assert "swarm-jev" not in internal
+    # A profile without the Jev client asks nothing (`runs_jev_client`).
+    assert "swarm-jev" not in _labels(tenant, profile="mock", dispatch=switched)
 
 
 def test_gates_on_a_forwarded_pod_still_get_no_direct_label(tenant):
