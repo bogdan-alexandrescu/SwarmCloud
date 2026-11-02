@@ -743,20 +743,29 @@ def adds_nothing(repo: Path, base: str, patches: Sequence[str | Path], *,
 def _sharded_guards(argv: Sequence[str], parts: int, remaining: Callable[[], float]
                     ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
     """The guard script as `parts` commands, `--shard 1/n` ... `--shard n/n`,
-    each under the check limit: how a timed-out run runs again."""
+    each under the check limit: how a timed-out run runs again.
+
+    A passing part is one summary line, its last; the failing and timed-out
+    parts follow in full, then the budget note. `clean_output` keeps only
+    the END of the output for the fix prompt and the pull request, so a long
+    passing part after a failing one cut the failure away (#2927)."""
     def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
-        status, outputs = PASSED, []
+        status, passed, failed = PASSED, [], []
         for k in range(1, parts + 1):
             left = remaining()
             if left < MIN_GATE_SECONDS:
-                outputs.append(f"[the step's budget ran out before part {k} of {parts}]")
-                return ERROR, "\n".join(outputs)
+                note = f"[the step's budget ran out before part {k} of {parts}]"
+                return ERROR, "\n".join([*passed, *failed, note])
             ran = runner([*argv, "--shard", f"{k}/{parts}"], repo, env,
                          max(MIN_CHECK_SECONDS, min(timeout, left - CHECK_MARGIN_SECONDS)))
-            outputs.append(f"--- part {k}/{parts} ---\n{ran.output}")
             if ran.code != 0 or ran.timed_out:
                 status = FAILED
-        return status, "\n".join(outputs)
+                failed.append(f"--- part {k}/{parts} ---\n{ran.output}")
+            else:
+                last = next((line.strip() for line in reversed(ran.output.splitlines())
+                             if line.strip()), "")
+                passed.append(f"--- part {k}/{parts} passed --- {last}".rstrip())
+        return status, "\n".join([*passed, *failed])
     return run
 
 
