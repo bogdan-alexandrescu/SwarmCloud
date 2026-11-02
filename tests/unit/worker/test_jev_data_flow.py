@@ -185,9 +185,19 @@ def test_the_record_states_what_the_lane_hooks_send_and_where_their_audit_lands(
         assert (path, name) in cites, (path, name)
     for path, name in cites:
         assert _resolves(path, name), f"{path}::{name}"
-    # The gap is said, not hidden.
+    # The outbound filter (lane jev-outbound-redaction): the launcher's
+    # functions the record names exist, and the gap it closed is said closed.
+    for name in ("filterBody", "credentialFlags", "isDeniedPath", "installBrowserFilter"):
+        assert f"`{name}`" in hooks, name
+        assert re.search(rf"export function {name}\(", launcher), name
+    for rule in ("G1", "G2", "G3", "G4", "G5"):
+        assert f"\n| {rule} | " in hooks, rule
+    assert ("tests/unit/control_plane/test_log_redaction.py",
+            "test_the_jev_outbound_filter_flags_exactly_what_the_rules_mask") in cites
     gaps = text.split("\n## Known gaps", 1)[1]
-    assert "lane hooks get only the registered-secret scrub" in gaps
+    still_open = gaps.split("\n### ", 1)[0]
+    assert "lane hooks get only the registered-secret scrub" not in still_open
+    assert "### Closed by lane jev-outbound-redaction" in gaps
 
 
 def test_context_quality_links_the_record() -> None:

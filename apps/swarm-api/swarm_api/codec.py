@@ -185,6 +185,11 @@ def _timeout_asked(value: Any) -> int | None:
     return value
 
 
+def _stored_max_turns(value: Any) -> int | None:
+    """A stored `max_turns` (contract request 133): an int above 0, else None."""
+    return _timeout_asked(value)
+
+
 def task_from_dict(data: dict[str, Any]) -> Task:
     park = data.get("park_reason")
     return Task(
@@ -211,6 +216,9 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # Contract request 131: absent on every older document and on a task
         # not lowered. A record only, never a limit (invariant 10).
         timeout_seconds_asked=_timeout_asked(data.get("timeout_seconds_asked")),
+        # Contract request 133: the resolved turn cap, absent on every older
+        # document and on a task without one (no cap). Signed at format 7.
+        max_turns=_stored_max_turns(data.get("max_turns")),
         next_eligible_at=as_datetime(data.get("next_eligible_at")),
         park_reason=ParkReason(park) if park else None,
         blocked_by=list(data.get("blocked_by") or []),
@@ -698,6 +706,8 @@ def task_to_api(
         # lower `timeout_seconds`, else null. A record only: the limit is
         # `timeout_seconds` (invariant 10).
         "timeout_seconds_asked": task.timeout_seconds_asked,
+        # Contract request 133: the resolved turn cap, or null for none.
+        "max_turns": task.max_turns,
         # Contract request 120 (#2459): the attempt's resolved budget, or
         # null for none. A task stored before the field serves what its
         # dispatch block pinned (`served_budget`).
@@ -1542,6 +1552,7 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
                 resource_class=s.get("resource_class"),
                 input_from=dict(s.get("input_from") or {}),
                 timeout_seconds=s.get("timeout_seconds"),
+                max_turns=_stored_max_turns(s.get("max_turns")),
                 task_id=s.get("task_id"),
                 model_class=s.get("model_class") or None,
                 budget=_budget_map(s.get("budget")),
@@ -1760,6 +1771,9 @@ def _step_to_api(
         "depends_on": step.depends_on,
         "input_from": {key: masker.name(value)[0] for key, value in step.input_from.items()},
         "timeout_seconds": step.timeout_seconds,
+        # Contract request 133: the turn cap the step asked for; its task's
+        # `max_turns` is what that resolved to. Null: it asked for none.
+        "max_turns": step.max_turns,
         "task_id": step.task_id,
         # Contract request 102: the class the step runs, resolved as its
         # task's is (`served_model_class`).

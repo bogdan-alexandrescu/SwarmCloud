@@ -23,11 +23,18 @@ untrusted-ish code lives here:
   group is reniced as it starts, and everything it forks inherits it, so an
   agent compiling on every core cannot starve the worker's heartbeat (#426).
 * **No zombies.** Every exit path waits on the process and joins the readers.
+* **Nothing outlives its leader, and no pipe holds the step.** When the child
+  exits, what it left in its process group -- the CLI's stdio tool servers,
+  `swarm-graph` among them, which inherit its stderr -- is stopped (SIGTERM,
+  then SIGKILL), and a reader whose pipe is still held by a process outside
+  the group is told to stop instead of being waited on. See `finish`.
 """
 
 from __future__ import annotations
 
+import io
 import os
+import select
 import signal
 import subprocess
 import tempfile
@@ -60,6 +67,13 @@ TAIL_PENDING_NOTICE = (
 #: and a few KB: the answer, the usage, the cost -- and 1 MiB holds it with
 #: room for the last turns before it.
 TAIL_KEEP_BYTES = 1024 * 1024
+
+#: How long the readers get, once the child has exited and its group has been
+#: sent SIGTERM, before what is left of the group is killed; and again, once
+#: it has been, before a reader whose pipe is still held is told to stop.
+LEFTOVER_GRACE_SECONDS = 2.0
+#: How often a reader waiting on a quiet pipe looks at its stop flag.
+READ_POLL_SECONDS = 0.2
 
 
 @dataclass
@@ -98,6 +112,29 @@ class StreamCapture:
     #: Bytes of the stream that are in no file.
     dropped: int = 0
     _thread: threading.Thread | None = field(default=None, repr=False)
+    #: Set by `ChildProcess.finish` when the child has exited and its pipe is
+    #: still held open by a process outside its group: the stream is over for
+    #: this capture, which writes its kept end and closes its own end.
+    _stop: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _wait_readable(self, poller: Any) -> bool:
+        """Wait until the pipe has bytes or end-of-file; False when told to stop first.
+
+        A read is never started that could block past `stop`: a blocked read
+        cannot be interrupted, and closing the pipe under it waits for it.
+        """
+        if poller is None:
+            return True
+        while not self._stop.is_set():
+            try:
+                if poller.poll(int(READ_POLL_SECONDS * 1000)):
+                    return True
+            except (OSError, ValueError):
+                return True  # the read reports what is wrong with the pipe
+        return False
 
     def pump(self, source: Any) -> None:
         """Drain `source` into `path`, writing at most `limit` bytes of it.
@@ -123,6 +160,11 @@ class StreamCapture:
         one read dropped the rest of the stream without a word.
         """
         reader = getattr(source, "read1", None) or source.read
+        try:
+            poller: Any = select.poll()
+            poller.register(source.fileno(), select.POLLIN | select.POLLHUP | select.POLLERR)
+        except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+            poller = None  # a stream with no descriptor (a test's) is read as it was
         tail_room = min(TAIL_KEEP_BYTES, self.limit // 2) if self.keep_tail else 0
         head_limit = self.limit - tail_room
         held: deque[bytes] = deque()
@@ -131,6 +173,8 @@ class StreamCapture:
         with self.path.open("wb") as sink:
             try:
                 while True:
+                    if not self._wait_readable(poller):
+                        break  # `stop`: the child is gone and someone else holds the pipe
                     try:
                         chunk = reader(65536)
                     except (OSError, ValueError):
@@ -440,6 +484,75 @@ class ChildProcess:
         self._timed_out = True
 
     # -- finalisation ------------------------------------------------------
+    def _signal_leftovers(self, sig: int) -> bool:
+        """Signal what is left of the exited child's process group; False if nothing is.
+
+        The child led its own group (`start_new_session`), so the group's id is
+        its pid, which no new process can take while the group has a member.
+        "Left" counts a member that has exited and awaits its reaper too: a
+        signal to it is harmless.
+        """
+        assert self._proc is not None
+        try:
+            os.killpg(self._proc.pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+        return True
+
+    def _join_readers(self, seconds: float) -> bool:
+        """Join the reader threads within `seconds` in all; True when every one ended."""
+        end = time.monotonic() + seconds
+        for thread in self._threads:
+            thread.join(timeout=max(0.0, end - time.monotonic()))
+        return not any(thread.is_alive() for thread in self._threads)
+
+    def _release_streams(self) -> None:
+        """Stop what the exited child left behind, and end its captures within seconds.
+
+        WHY (owner, 2026-11-02). Review steps with code intelligence held their
+        pod 6 to 31 minutes after the agent's last turn. The agent CLI's stdio
+        tool servers (`swarm-graph` and the other MCP shims) inherit its stderr,
+        so one that outlived the CLI kept the write end of the pipe this
+        process captures: the reader never saw end-of-file, the join below gave
+        up after 10 s, and the `close()` that followed blocked on the buffered
+        reader's lock, held by the reader blocked in its read, until the server
+        exited. The step waited exactly as long as the server lived.
+
+        So, once the child has exited: SIGTERM what is left of its group, give
+        the readers `LEFTOVER_GRACE_SECONDS` to reach end-of-file, SIGKILL the
+        rest, and if a process outside the group (`setsid`) still holds a pipe,
+        tell the reader to stop: it writes its kept end and closes its own end
+        of the pipe. A pipe a live reader is blocked on is never closed here.
+        Nothing is cut off that the result needs: the child has exited, so its
+        own output is all in the pipe, and the readers drain it first.
+        """
+        assert self._proc is not None
+        if self._signal_leftovers(signal.SIGTERM):
+            if not self._join_readers(LEFTOVER_GRACE_SECONDS):
+                self._log.warning(
+                    "the child exited and processes it started still hold its output; "
+                    "killing what is left of its process group",
+                    pid=self._proc.pid,
+                )
+            self._signal_leftovers(signal.SIGKILL)
+        if not self._join_readers(LEFTOVER_GRACE_SECONDS):
+            self._log.warning(
+                "a process outside the child's group still holds its output; the capture "
+                "ends here; the pre-publish reap, or the pod's end, stops that process",
+                pid=self._proc.pid,
+            )
+            self._stdout.stop()
+            self._stderr.stop()
+            self._join_readers(LEFTOVER_GRACE_SECONDS)
+        for thread, stream in zip(self._threads, (self._proc.stdout, self._proc.stderr)):
+            if thread.is_alive():
+                continue  # closing under a blocked read waits for the read
+            try:
+                if stream is not None and not stream.closed:
+                    stream.close()
+            except Exception:
+                pass
+
     def finish(self) -> ChildResult:
         """Reap the child and join the reader threads. Safe to call twice."""
         if self._proc is None:
@@ -447,14 +560,7 @@ class ChildProcess:
         code = self._proc.poll()
         if code is None:
             code = self._proc.wait()
-        for thread in self._threads:
-            thread.join(timeout=10)
-        for stream in (self._proc.stdout, self._proc.stderr):
-            try:
-                if stream is not None and not stream.closed:
-                    stream.close()
-            except Exception:
-                pass
+        self._release_streams()
         term_signal = -code if code is not None and code < 0 else None
         return ChildResult(
             exit_code=code,

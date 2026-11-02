@@ -37,6 +37,7 @@ import {
   isDuplicateBlock,
   isFirstReadingBlock,
   isWindowBlock,
+  matchedOnWords,
   maxAgentsOf,
   organisationLine,
   pct,
@@ -120,12 +121,17 @@ export function whyOf(
   if (unreadableFor(a, scope)) return <><b>Skipped here</b>: this workspace could not read its secret</>
   const dup = blocksOf(a).find(isDuplicateBlock)
   if (dup !== undefined) {
+    // THE REASON AND THE IDENTITY KIND THAT MATCHED (#3046): the broker
+    // withholds only on the provider's organisation AND seat, and says so in
+    // `matched_on`; an older broker's block, without it, reads as it did.
+    const kind = matchedOnWords(dup)
     return (
       <>
         <b>One subscription twice</b>:{' '}
         {dup.duplicate_of
-          ? `registered on the same organisation as ${names.get(dup.duplicate_of) ?? dup.duplicate_of}`
+          ? `registered on the same ${kind ?? 'organisation'} as ${names.get(dup.duplicate_of) ?? dup.duplicate_of}`
           : (dup.reason ?? 'registered on an organisation another account holds')}
+        {kind !== null && ` (matched on the provider’s ${kind})`}
         . The pool hands out only the other
       </>
     )

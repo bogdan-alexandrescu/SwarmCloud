@@ -51,6 +51,10 @@ NOT_CREDENTIALS = frozenset({
     # IdP's token endpoint the gate lets a POST through to (QA-IDP-POST,
     # qatargets.py `ApproveBody`), a path like `/oauth2/token`, not a token.
     "idp_token_path",
+    # `PUT /v1/admin/settings`: Jev's price in USD per million tokens, per
+    # direction (JEV-USAGE-PAGE; schemas.py `JevTokenRatesRequest`), two
+    # numbers, not a token.
+    "jev_token_rates",
 })
 
 

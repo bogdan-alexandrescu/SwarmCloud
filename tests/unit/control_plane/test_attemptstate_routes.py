@@ -192,6 +192,59 @@ def test_a_ci_park_counts_a_slot_wait_on_its_own_counter(client, db):
     assert wait["slot_waits"] == 1 and wait["wakes"] == 0 and wait["first_parked_at"] is None
 
 
+HEAD = "d" * 40
+
+
+def _ci_park(client, db, *, last: dict, code: str = "checks_pending",
+             head: str = HEAD) -> dict:
+    """swarm-api's CI park (the state routes) over a task whose last park left
+    `last` as its `merge_wait`; the record the park writes."""
+    worker = Worker()
+    opened(client, db, worker, metadata={"merge_wait": last})
+    body = {"request_id": "ci", "reason": "CI_PENDING",
+            "ci": {"code": code, "head": head, "pull_request": 7, "pending": ["ci-gate"]}}
+    response = worker.post(client, "park", body)
+    assert response.status_code == 200, response.text
+    return db.docs[f"tasks/{TASK}"]["metadata"]["merge_wait"]
+
+
+def _last_ci(first: datetime, **more) -> dict:
+    return {"code": "checks_pending", "head": HEAD, "wakes": 4, "updates": 0,
+            "first_parked_at": first, "parked_at": first, **more}
+
+
+def test_a_swarm_api_ci_re_park_keeps_the_first_time(client, db):
+    first = datetime.now(timezone.utc) - timedelta(hours=5)
+    wait = _ci_park(client, db, last=_last_ci(first))
+    assert wait["first_parked_at"] == first and wait["ci_paused_at"] is None
+
+
+def test_a_swarm_api_slot_wait_pauses_the_ci_clock_rather_than_clearing_it(client, db):
+    """#3033: a slot wait between two CI parks must not restart the 6 h."""
+    first = datetime.now(timezone.utc) - timedelta(hours=5)
+    wait = _ci_park(client, db, last=_last_ci(first), code="merge_slot_wait")
+    # MUTATION: the slot wait clears `first_parked_at` (before #3033) -> fails.
+    assert wait["first_parked_at"] == first
+    assert wait["ci_paused_at"] == wait["parked_at"]
+
+
+def test_a_swarm_api_ci_park_after_a_slot_wait_resumes_the_clock(client, db):
+    first = datetime.now(timezone.utc) - timedelta(hours=5)
+    paused = datetime.now(timezone.utc) - timedelta(hours=1)
+    wait = _ci_park(client, db, last=_last_ci(first, code="merge_slot_wait",
+                                               ci_paused_at=paused))
+    # Moved on by the pause: the hour queued for the slot is not CI time.
+    assert wait["first_parked_at"] == first + (wait["parked_at"] - paused)
+    assert wait["ci_paused_at"] is None
+
+
+def test_a_swarm_api_ci_park_at_a_new_head_starts_fresh(client, db):
+    first = datetime.now(timezone.utc) - timedelta(hours=7)
+    wait = _ci_park(client, db, last=_last_ci(first), head="e" * 40)
+    # MUTATION: carry the old head's clock over a head that moved -> fails.
+    assert wait["first_parked_at"] == wait["parked_at"]
+
+
 def test_merge_slot_acquire_then_release_hands_on_and_wakes_the_waiter(client, db):
     worker = Worker()
     opened(client, db, worker)

@@ -143,12 +143,66 @@ records are the authority on what was sent.
   secret names, never their values) and the ledger, or nothing when Jev is
   off. After the agent it settles the ledger into `jev_usage`
   (`judge.attempt.settle`).
-* **Not the agent, today.** `register.register_jev_tool` (the agent's
-  `jev_decide` MCP tool, §5.1's owner override) exists but no runner calls it
-  (§5.6, "Not built here"). When it is wired, the tool process is the agent's
-  child and runs the same client, sanitizer and ledger.
+* **The agent's `jev_decide` tool, on claude-code steps** (§5.1's owner
+  override; wired by lane AGENTS-USE-TOOLS on 2026-11-02, when the owner chose
+  that agents must use the tools switched on for them). The claude-code runner
+  registers `swarm-jev` only when the worker handed it `SWARM_JUDGE_CONFIG`,
+  that is, only for a workspace opted in to Jev judgments under the signed
+  setting and the step's `jev_judgments` switch; the entry is
+  `register.server_entry` over the worker's own config, so the tool's calls
+  go through the same `JudgeClient`, sanitizer (every rule above) and ledger
+  as J1-J5 and count against the same per-agent and monthly budget. The entry
+  carries Claude Code's `alwaysLoad`, so the tool is in the prompt from the
+  session's start, and the prompt has one line saying when to ask it. The
+  tool process is the agent's child, running as the agent's user: on the
+  TypeSafe backend it reads the key from the file the config names
+  (`private/jev-key`, or the shim's local token on GKE), exactly as the lane
+  hooks reach theirs, the residual the owner accepted; the key is never in the
+  MCP config, the prompt, a log or the summary. Its calls are counted in the
+  attempt's `result_summary.runner.metrics.tool_calls` as `jev_decision`.
+  Codex steps do not register it.
 * **Never swarm-api.** swarm-api reads `plan-advisory.json` (the J2/J5
   result) and never holds a Jev client.
+
+**Which verdict files J3 reads** (owner, 2 November 2026). A review step's
+verdict is not always one `verdict.json` with a `findings` list: the first
+experiment batch's reviews wrote `code-verdict.json` and `ui-verdict.json`
+with `blockers`, `majors` and `minors`, and no finding carried `p_real`.
+`poststeps.review_post_step` therefore reads every declared output named
+`*verdict.json` and every `*verdict.json` the step wrote, takes a finding from
+any of the four lists (a string or an object, its text from `summary` or the
+briefs' `problem`), and asks about blockers before majors and minors under the
+same five-call cap, so it spends no more of the agent's eight calls than before.
+Each finding is sent through `shapes.j3_finding` and the client's sanitizer
+like any other; the answer goes onto it as `p_real` and nothing else in the
+file changes, `verdict` least of all. The step's summary (`jev.review`) names
+how many findings each file had and how many were scored, and names every file
+it could not read, which is left byte for byte. One failed call still leaves
+every file as the review wrote it.
+
+**What a person can see of it (lane JEV-USAGE-PAGE, 2026-11-02).** The owner
+chose that day to build a Jev usage and cost page, because no one could see
+how many calls, tokens or dollars Jev used and its price was recorded
+nowhere. swarm-api's `GET /v1/jev-usage` (`swarm_api.jevusage`, drawn by the
+console's Capacity › Jev usage) sums the selected workspace's `jev_usage`
+attempt rows per UTC day and kind over 30 days, with the month's total
+against `code_intelligence.jev_monthly_cap_tokens`. It reads counts only --
+calls, input and output tokens, and outcomes (`ok`, `failed`,
+`skipped:<reason>`) -- so nothing this record forbids sending can reach the
+page: every query filters on `tenant_id` and a row filed under another
+tenant is dropped again in code (per-tenant isolation), and the task id, the
+generation and any field not counted never leave swarm-api. Dollars come from
+the platform setting `jev_token_rates` (USD per million tokens, in and out),
+which has no default: until a platform admin sets it the page says "rate not
+set" and prints no figure, never $0. **The gap:** the worker's attempt rows
+carry `calls` and `input_tokens` only, so today every call is shown as
+"not split by kind", on the day of the row's last write, with its outcomes
+"not recorded" (null, never 0 ok and 0 failed; the 30-day total counts those
+calls as `unrecorded`) and no output tokens; the read sums `settled_at` and the per-kind split
+(`by_kind: {kind: {calls, input_tokens, output_tokens, outcomes}}`) once the
+worker's settle writes them from its ledger's audit rows, a change asked of
+the owner in that lane's PR. The quality gates' jev-belay and jev-enforce
+hooks and the Jev browser record nothing in `jev_usage` yet.
 
 ## Which key
 
@@ -191,8 +245,41 @@ holding it is dropped.
   made"), with the `swarm-judge: internal` label that
   `kubernetes/network-policies/allow-judge-egress.yaml` opens the
   decision API's egress Service to, and the hostAliases entry that resolves
-  the tailnet name to that Service. TypeSafe direct takes the attempt's
-  ordinary egress (`allow-egress.yaml` rule 4).
+  the tailnet name to that Service. TypeSafe direct takes the pod's egress,
+  below.
+
+**The TypeSafe egress allowlist** (2026-11-02, the owner's choice to build
+every proposal in CLD's Jev report; [the runbook](runbooks/typesafe-egress.md)).
+Two GKE FQDNNetworkPolicies name `api.typesafe.ai`, and nothing else in
+`kubernetes/` does:
+
+* **The forwarder**, `kubernetes/network-policies/swarm-system-typesafe-fwd.yaml`:
+  `swarm-typesafe-fwd`, the one process that holds workspaces' TypeSafe keys,
+  is put under egress isolation and reaches DNS, the metadata server, and TCP
+  443 to `api.typesafe.ai` and `secretmanager.googleapis.com` by name only.
+* **A direct pod**, `kubernetes/network-policies/fqdn/allow-typesafe-direct.yaml`:
+  TCP 443 to `api.typesafe.ai` for a tenant pod the dispatcher labelled
+  `swarm-jev: typesafe-direct`
+  (`apps/scheduler/scheduler/dispatch.py::TYPESAFE_DIRECT_POD_LABEL`, set by
+  `apps/scheduler/scheduler/dispatch.py::with_typesafe_direct` and
+  `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._with_judgments_forwarder`):
+  a TypeSafe-backed live browser, quality gates on, or a `jev_judgments: on`
+  step on the TypeSafe backend, whenever the pod is not labelled
+  `swarm-typesafe: inject`.
+
+A pod labelled `swarm-typesafe: inject` has no TypeSafe allow: it reaches
+TypeSafe only through the forwarder, on TCP 8080 (`allow-typesafe-fwd.yaml`).
+An unlabelled pod has none either. Held by
+`tests/unit/scripts/test_typesafe_egress_allowlist.py` (every FQDN policy
+under `kubernetes/` judged against an unlabelled, a forwarded and a direct
+pod and the forwarder) and
+`tests/unit/control_plane/test_dispatch_typesafe_direct_label.py::test_a_forwarded_pod_has_no_direct_label`.
+
+**What the allowlist does not do**: deny. `allow-egress.yaml` rule 4 still
+admits every tenant pod to the public internet on TCP 443, and policies are
+allow-only unions, so an unlabelled pod's packets to `api.typesafe.ai` are
+not dropped (Known gaps). Both files are applied by the owner by hand
+(the runbook); no render applies them yet.
 
 ## The lane hooks
 
@@ -233,25 +320,47 @@ per Jev call, `{model, state, questions}`):
 | jev-enforce, first run in a checkout | once per rule set, cached in the data directory | the rule texts | what each rule constrains |
 | jev-enforce, Edit/Write | **never**: in `end` mode it only records the edit's text in the data directory (`private/jev-gates-data`) for the Stop hook | -- | -- |
 
-**The redaction applied.** Before any send, the launcher
-(`swarm-jev-gate.mjs` `guardedFetch` and `scrub`) parses the body and
-replaces, in every string and every key at every depth, the workspace key
-itself and the value of every secret the agent profile registered
-(`secret_env_names`, read from the hook's own environment) with
-`<redacted>`; a value shorter than 8 characters is not scrubbed, the same
-line the judge's sanitizer draws. That is the redaction: rules 1 to 3 and
-5 of the table above (path deny, credential scan, the redaction families,
-never-sent keys)
-are `JudgeClient`'s and do **not** apply to these hooks, see Known gaps.
+**The redaction applied: the outbound filter.** Lane
+jev-outbound-redaction (owner decision 2026-11-02, CLD's Jev report). Before
+any send, the launcher (`swarm-jev-gate.mjs` `guardedFetch`, which runs
+`filterBody`) parses the body and applies the worker's rules to every string
+and every key at every depth, a matching string **dropped, never masked**, as
+`JudgeClient` does:
+
+| # | Rule | Enforced by (`images/agent-runtime-base/jev-gates/bin/swarm-jev-gate.mjs`) | Test that fails when it is removed |
+|---|---|---|---|
+| G1 | **Path deny.** An object whose `path` or `file` is `.env*`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `*.tfstate*`, under `secrets/` or `credentials/`, or one of the repository's hard-stop paths (the config's `hard_stop_paths`, tried repository-relative too) keeps its identity keys only. jev-enforce sends each edit as `{kind, file, text}`, so an edited `.env` goes as its name. The globs, directories and keys are `sanitize.py`'s, held equal. | `isDeniedPath`, `walk`, `DENIED_NAME_GLOBS` | `tests/unit/worker/test_jev_outbound_filter.py::test_an_edited_env_files_text_never_reaches_the_fake_jev_from_jev_enforce`, `tests/unit/worker/test_jev_outbound_filter.py::test_the_repositorys_hard_stop_paths_are_denied_when_the_config_names_them`, `tests/unit/worker/test_jev_outbound_filter.py::test_the_path_deny_and_never_sent_keys_are_the_workers`, `tests/unit/worker/test_jev_outbound_filter.py::test_the_launchers_path_deny_agrees_with_the_workers` |
+| G2 | **The redaction rule families, then drop.** A string any rule of `swarm_redaction.rules` would mask is removed from its object or list. The rules are asked of the image's own module (`/opt/venv/bin/python -I`, one batched call per request), not ported: the key/value rule is built on conditional groups (`(?(name)...)`) that a JavaScript `RegExp` cannot spell, and a hand-written second definition would drift. If the rules cannot be asked, nothing is sent. | `credentialFlags`, `filterBody` | `tests/unit/control_plane/test_log_redaction.py::test_the_jev_outbound_filter_flags_exactly_what_the_rules_mask` (the parity fixture, every case), `tests/unit/worker/test_jev_outbound_filter.py::test_a_credential_in_an_edit_is_dropped_and_a_registered_secret_is_still_scrubbed`, `tests/unit/worker/test_jev_outbound_filter.py::test_without_its_redaction_python_the_filter_sends_nothing` |
+| G3 | **The key and the registered secrets** (`secret_env_names`, read from the hook's own environment) are replaced with `<redacted>` (`scrub`), first; a value shorter than 8 characters is not scrubbed, the same line the judge's sanitizer draws. | `scrub`, `secretValues` | `tests/unit/worker/test_quality_gates.py::test_the_launcher_sends_only_to_typesafe_scrubbed_and_counted`, `tests/unit/worker/test_jev_outbound_filter.py::test_a_credential_in_an_edit_is_dropped_and_a_registered_secret_is_still_scrubbed` |
+| G4 | **Never sent:** `author(s)`, `email(s)`, `user`, `login`, `env`, `environ`, `environment`, `transcript`, removed wherever they appear. | `walk`, `NEVER_SENT_KEYS` | `tests/unit/worker/test_jev_outbound_filter.py::test_the_filter_drops_never_sent_keys_and_credentials_at_every_depth` |
+| G5 | **JSON text is filtered as its structure** (the browser's internal backend sends `state` as JSON text). | `walk` | `tests/unit/worker/test_jev_outbound_filter.py::test_a_state_sent_as_json_text_is_filtered_as_its_structure` |
+
 `guardedFetch` also refuses any URL but TypeSafe's, and sends to the URL
 the worker's config chose (TypeSafe, or the loopback shim) with the
 config's key, whatever `JEV_BASE_URL` or `CLAUDE_PLUGIN_OPTION_*` the
 environment holds; the launcher removes those and `JEV_BELAY_LOG`, so
-neither tool writes a text log.
+neither tool writes a text log. The publish gate's own predicate
+(`lifecycle._credential_in`, rule 2 of the table above) is not asked here:
+it lives in the worker package, whose import would cost each hook seconds.
+
+**The Jev browser takes the same filter.** `images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp`
+starts the server as `node --import` of the launcher's `installBrowserFilter`
+(the launcher is installed in agent-runtime-base, which the browser image is
+built FROM), so the global `fetch` upstream `src/jev.mjs` calls for every Jev
+request is the filtered one: page text, element labels and any JSON-text
+`state` go through G1 to G5, with the TypeSafe key it was given scrubbed. The
+wrapper refuses to start when the launcher is missing, and always sets the
+interpreter it asks (`SWARM_JEV_REDACTION_PYTHON`) itself. Held by
+`tests/unit/worker/test_jev_outbound_filter.py::test_a_page_holding_a_github_token_never_reaches_the_fake_jev_from_the_browser`
+and `tests/unit/worker/test_jev_browser_image.py::test_without_the_outbound_filter_the_wrapper_refuses_to_start`.
 
 **Where the audit lands.** Each hook run appends one line of counts to
 `private/jev-gates.counts` -- which hook, how many Jev calls, whether it
-blocked, how many rules it flagged; never text. After the agent,
+blocked, how many rules it flagged, and the outbound filter's `dropped`,
+`denied` and `withheld` counts; never text. The browser writes one such line
+per Jev call (`hook: "browser"`) to its stderr, which the CLI keeps as the
+MCP server's log, and to `SWARM_JEV_BROWSER_COUNTS` when the runner names a
+file. After the agent,
 `apps/agent-worker/agent_worker/qualitygates.py::finish` sums them, removes
 the key file, and `apps/agent-worker/agent_worker/lifecycle.py::Worker._record_quality_gates`
 puts them in the attempt's summary under `quality_gates` and records one
@@ -259,11 +368,13 @@ RUNNING event, cause `quality_gate`, with the same counts when belay blocked
 a stop or enforce flagged a rule. There is no per-call ledger row like rule
 6's; TypeSafe's own records are the authority on what was sent.
 
-**Egress.** The same path the jev browser tools' direct calls take: no host
-allowlist exists for TypeSafe; `kubernetes/network-policies/allow-egress.yaml`
-rule 4 (the internet minus every private range, TCP 443) applies to every
-worker pod, and the forwarder's path (`allow-typesafe-fwd.yaml`) to a pod
-labelled `swarm-typesafe: inject`. No new rule was needed.
+**Egress.** The same path the jev browser tools' direct calls take
+(Which egress path): a gates-on pod without the forwarder is labelled
+`swarm-jev: typesafe-direct`, which the TypeSafe allowlist's direct FQDN rule
+selects; with the forwarder, the hooks use the loopback shim and the pod's
+`swarm-typesafe: inject` path (`allow-typesafe-fwd.yaml`).
+`kubernetes/network-policies/allow-egress.yaml` rule 4 (the internet minus
+every private range, TCP 443) still applies to every worker pod.
 
 Held by `tests/unit/worker/test_quality_gates.py` (switch, key, config,
 hooks, launcher redaction and URL pin, counts and event) and
@@ -271,13 +382,12 @@ hooks, launcher redaction and URL pin, counts and event) and
 
 ## Known gaps
 
-* **The lane hooks get only the registered-secret scrub.** jev-enforce sends
-  an edited file's text whatever its path, so an edit to a `.env` or `*.pem`
-  file the agent writes reaches TypeSafe with only the profile's registered
-  secrets and the key replaced; rule 1a's path deny, rule 2's credential
-  scan and rule 3's redaction families are `JudgeClient`'s and do not run
-  in the launcher. Turning `quality_gates.jev` on accepts that; it is off
-  by default.
+* **The outbound filter's drop counts reach no summary yet.** They are in
+  each line of `private/jev-gates.counts` and the browser's log, but
+  `apps/agent-worker/agent_worker/qualitygates.py::finish` sums only calls,
+  blocks and flags, and nothing hands the browser a `SWARM_JEV_BROWSER_COUNTS`
+  file or the worker's `hard_stop_paths`; those are the worker's files, asked
+  for in the lane's PR.
 * **A Cloud Run Job judges on TypeSafe only.** The decision API's egress is
   a cluster Service, so a claude-code or codex attempt routed to Cloud Run
   gets no Internal URL and an internal backend reads `no_internal_url` there.
@@ -299,6 +409,23 @@ hooks, launcher redaction and URL pin, counts and event) and
 * **Rule 5c holds for J3 by a check, and for J1 and J4 by construction**: their
   rows are read from the attempt's checkout, with no separate guard that would
   refuse a path leaving it.
+
+* **The TypeSafe allowlist names, it does not deny.** An unlabelled tenant
+  pod can still reach `api.typesafe.ai` through `allow-egress.yaml` rule 4:
+  NetworkPolicies cannot subtract a host from an allow, and the host's
+  addresses are shared Cloudflare ones no `except` may pin. What stops such a
+  pod's call doing anything is that it holds no workspace key. Closing it (a
+  hostname sinkhole on unlabelled pods, or the general internet behind a
+  proxy that refuses the host) is an owner question, in
+  [the runbook](runbooks/typesafe-egress.md).
+
+### Closed by lane jev-outbound-redaction (2026-11-02)
+
+* **The lane hooks got only the registered-secret scrub**, so jev-enforce
+  could send an edited `.env` or `*.pem` file's text, and **the Jev browser
+  sent page text and element labels with no SwarmCloud-side redaction.** Both
+  launchers now run every request body through the outbound filter (G1 to G5
+  under "The lane hooks").
 
 ### Closed by the Jev report's classifier proposals (2026-11-02)
 
