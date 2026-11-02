@@ -36,6 +36,7 @@ const api = vi.hoisted(() => ({
   loadTasksInStates: vi.fn(),
   loadAttempts: vi.fn(),
   loadLiveSession: vi.fn(),
+  loadTaskDigests: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -189,6 +190,7 @@ describe('QA12-20: the browser switch inside Live', () => {
     statesFrom(rows())
     api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     api.loadLiveSession.mockResolvedValue(session(null))
+    api.loadTaskDigests.mockResolvedValue(ok({ digests: [], presets: [] }))
     await mount()
     return screen.getByRole('group', { name: /browser agents/i })
   }
@@ -224,7 +226,13 @@ describe('QA12-29: the device outline follows a switch', () => {
     statesFrom([b])
     api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     let device: LiveSession['device'] = { preset: 'iphone-15', orientation: 'portrait', touch: true }
-    api.loadLiveSession.mockImplementation(async () => session(device))
+    // The rows' devices come from ONE digests read per list read (#2688,
+    // WORK-READS-SPEED), not a session read per row.
+    api.loadTaskDigests.mockImplementation(async (ids: readonly string[]) => {
+      const s = session(device)
+      const presets = s.status === 'ok' ? s.data.session!.presets : []
+      return ok({ digests: ids.map((id) => ({ task_id: id, state: 'RUNNING', live: { live_browser: true, session_state: 'open', device } })), presets })
+    })
     render(<AgentsScreen onOpen={() => {}} />)
     await advance(0)
     await advance(0)

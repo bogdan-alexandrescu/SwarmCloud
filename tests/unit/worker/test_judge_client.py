@@ -313,8 +313,9 @@ def test_j2_flags_uncovered_requirements() -> None:
     assert set(questions["r0"]["criteria"]) == {"s1", "none"}
     flagged = shapes.read_plan_coverage({
         "r0": {"choice": "s1", "probabilities": {"s1": 0.9}, "confidence": 0.9},
-        "r1": {"choice": "none", "probabilities": {"none": 0.7}, "confidence": 0.7}})
-    assert flagged == [1]
+        "r1": {"choice": "none", "probabilities": {"none": 0.7}, "confidence": 0.7},
+        "r2": {"choice": "s1", "probabilities": {"s1": 0.4}, "confidence": 0.4}})
+    assert flagged == [(1, "none"), (2, "weak")]
 
 
 def test_j5_holds_only_at_or_above_085() -> None:

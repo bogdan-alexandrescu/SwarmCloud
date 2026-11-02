@@ -491,3 +491,84 @@ run "the_infra_root_boosts_swarm_api_and_nothing_else" {
     error_message = "only swarm-api sets startup_cpu_boost in terraform/infra/main.tf; every other service keeps the module's false"
   }
 }
+
+# SWARM-API ROLLS FIRST (owner's pick, 2026-11-02, #3041). terraform/infra
+# calls this module once for swarm-api and once for the rest, the second
+# waiting on the first; swarm-api's run.invoker grants stay in the second call,
+# at the addresses they always had, through `invokers_elsewhere`.
+# tests/unit/scripts/test_cloud_run_api_first.py holds the root's side.
+run "a_grant_on_a_service_another_call_creates_keeps_its_address" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-scheduler" = {
+        service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler:test"
+        max_instances         = 3
+        concurrency           = 1
+        invokers              = { tick = "serviceAccount:swarm-tick@saga-agents-staging.iam.gserviceaccount.com" }
+      }
+    }
+    invokers_elsewhere = {
+      "swarm-api" = {
+        eng = "group:eng@example.com"
+        iap = "serviceAccount:service-123@gcp-sa-iap.iam.gserviceaccount.com"
+      }
+    }
+  }
+
+  # MUTATION: drop invokers_elsewhere from the invokers for_each and this fails.
+  assert {
+    condition = (
+      !contains(keys(google_cloud_run_v2_service.this), "swarm-api")
+      && google_cloud_run_v2_service_iam_member.invokers["swarm-api:iap"].name == "swarm-api"
+      && google_cloud_run_v2_service_iam_member.invokers["swarm-api:iap"].member == "serviceAccount:service-123@gcp-sa-iap.iam.gserviceaccount.com"
+      && google_cloud_run_v2_service_iam_member.invokers["swarm-api:eng"].name == "swarm-api"
+    )
+    error_message = "a grant in invokers_elsewhere must be planned at invokers[\"<service>:<label>\"] on the service it names, without this call creating that service"
+  }
+
+  # A service this call creates still grants on its own resource.
+  assert {
+    condition     = google_cloud_run_v2_service_iam_member.invokers["swarm-scheduler:tick"].name == "swarm-scheduler"
+    error_message = "a service's own invokers must still grant on it"
+  }
+}
+
+run "a_service_granted_both_here_and_elsewhere_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    invokers_elsewhere = {
+      "swarm-api" = { iap = "serviceAccount:service-123@gcp-sa-iap.iam.gserviceaccount.com" }
+    }
+  }
+
+  expect_failures = [var.invokers_elsewhere]
+}
+
+run "allauthenticatedusers_is_refused_elsewhere_too" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {}
+    invokers_elsewhere = {
+      "swarm-api" = { everyone = "allAuthenticatedUsers" }
+    }
+  }
+
+  expect_failures = [var.invokers_elsewhere]
+}

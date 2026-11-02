@@ -1034,8 +1034,8 @@ class AccountStore:
 
         A NEW SIGN-IN WRITES ITS SEAT EVEN WHEN IT IS None: the credential was
         replaced, possibly by another login, so the old seat no longer says
-        anything about it. A seatless account pairs only by identical
-        readings (`accounts.one_subscription`).
+        anything about it. A seatless account is in no pair until a refresh
+        records its seat (#3046, `accounts.one_subscription`).
         """
         ref = self._db.collection(COLLECTION).document(account_id)
         if not getattr(ref.get(), "exists", False):
