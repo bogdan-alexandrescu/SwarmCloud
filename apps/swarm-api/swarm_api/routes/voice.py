@@ -12,6 +12,14 @@
     GET    /v1/voice/preferences              -> {preferences, revision, can_undo, previous}
     PATCH  /v1/voice/preferences              {changes, revision?} -> the same, plus changed
     POST   /v1/voice/preferences/undo         {revision?} -> the same
+    GET    /v1/voice/sessions/{session_id}/ledger
+        -> {session_id, date, time_zone, session, day, not_counted}
+
+THE LEDGER (§3.8; swarm_api/voice/ledger.py) is computed on every read from
+the session's seconds, its turns' usage and what Voice it started, against
+$100 for the session and $300 for the person's day in their saved time zone.
+The same who-guard and workspace: another tenant's session, or another
+person's, is the same 404 as a missing one. It needs no swarm-voice.
 
 PROJECTS AND PREFERENCES (§3.7, §3.11, §10 phase 2; swarm_api/voice/store.py
 and voice/preferences.py). The same who-guard and the same workspace: a
@@ -59,6 +67,9 @@ from starlette.concurrency import run_in_threadpool
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ValidationFailed
+from .profile import preferences_store
+from ..preferences import Preferences
+from ..voice import ledger as vledger
 from ..voice import preferences as vprefs
 from ..voice import sessions as vs
 from ..voice import store as vstore
@@ -271,3 +282,31 @@ async def undo_preferences(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     return await run_in_threadpool(_preferences(ctx).undo, person, revision=body.revision)
+
+
+# --------------------------------------------------------------------------
+# The ledger (§3.8, §10 phase 3)
+# --------------------------------------------------------------------------
+
+
+def _ledger(ctx: AppContext, prefs: Preferences, request: Request) -> vledger.VoiceLedger:
+    return vledger.VoiceLedger(
+        ctx.db, now=ctx.now,
+        prices=lambda: ctx.store.get_platform_settings()["model_prices"],
+        time_zone=lambda email: prefs.read(email).time_zone,
+        work=getattr(request.app.state, "voice_work", None))
+
+
+@router.get("/sessions/{session_id}/ledger")
+async def read_ledger(
+    session_id: str,
+    request: Request,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    prefs: Preferences = Depends(preferences_store),
+) -> dict:
+    _check_id(session_id, "vs_", "session_id")
+    return await run_in_threadpool(
+        _ledger(ctx, prefs, request).compute, tenant_id=tenant_id, person=person,
+        session_id=session_id)
