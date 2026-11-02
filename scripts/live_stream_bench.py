@@ -58,7 +58,6 @@ import os
 import secrets
 import socket
 import statistics
-import struct
 import sys
 import time
 from pathlib import Path
