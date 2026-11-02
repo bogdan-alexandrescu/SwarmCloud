@@ -266,8 +266,37 @@ const LIVE_POLL_MAX_MS = 30_000
  * a poll, doubling per failure, never past `LIVE_POLL_MAX_MS`. A failure
  * slows the reads; it never ends them.
  */
-export function liveRereadDelay(failures: number): number {
-  return Math.min(LIVE_POLL_MAX_MS, LIVE_POLL_MS * 2 ** Math.min(Math.max(failures, 0), 4))
+export function liveRereadDelay(failures: number, streaming = false): number {
+  const base = streaming ? LIVE_STREAMING_POLL_MS : LIVE_POLL_MS
+  return Math.min(Math.max(LIVE_POLL_MAX_MS, base), base * 2 ** Math.min(Math.max(failures, 0), 4))
+}
+
+/**
+ * How often the session is read again WHILE THIS TAB'S VIEWER SOCKET IS
+ * CONNECTED (LIVE-STREAM-SPEED, part of #2688). MEASURED 2026-11-02 in the
+ * owner's Chrome: a 3 s full session read per open viewer, on an API whose
+ * reads ran at p95 16.67 s, beside the stream itself. While connected,
+ * swarm-api's status frames on the socket already say at once when control
+ * moves or the session closes (`onControlChange`, which reads again), and a
+ * device the person asked for is read on `DEVICE_CONFIRM_MS`; what is left
+ * to this read is the page's address, the device the agent chose and the
+ * hand-off, which a 10 s read still shows before the person looks for them.
+ * Without a connected socket the read stays at `LIVE_POLL_MS`.
+ */
+export const LIVE_STREAMING_POLL_MS = 10_000
+
+/** Connected viewer sockets, per task: set by `LiveScreen` on noVNC's connect, cleared on its disconnect. */
+const streamingSockets = new Map<string, number>()
+
+/** Whether a viewer socket of this task's live browser is connected in this tab. */
+export function liveStreaming(taskId: string): boolean {
+  return (streamingSockets.get(taskId) ?? 0) > 0
+}
+
+function markStreaming(taskId: string, on: boolean): void {
+  const n = (streamingSockets.get(taskId) ?? 0) + (on ? 1 : -1)
+  if (n > 0) streamingSockets.set(taskId, n)
+  else streamingSockets.delete(taskId)
 }
 
 function pageHidden(): boolean {
@@ -374,7 +403,7 @@ export function useLiveSession(
         if (!stopped) draw(r)
       }
       busy = false
-      if (!stopped) timer = setTimeout(() => void run(), liveRereadDelay(failures.current))
+      if (!stopped) timer = setTimeout(() => void run(), liveRereadDelay(failures.current, inFlight && liveStreaming(taskId)))
     }
     const onVisible = () => {
       if (pageHidden() || busy) return
@@ -2028,6 +2057,14 @@ function LiveScreen({
     let stopped = false
     let tries = 0
     let timer: ReturnType<typeof setTimeout> | null = null
+    // This canvas's socket is connected: the session re-read slows to
+    // `LIVE_STREAMING_POLL_MS` while it is (`liveStreaming`).
+    let streaming = false
+    const stream = (on: boolean) => {
+      if (on === streaming) return
+      streaming = on
+      markStreaming(taskId, on)
+    }
     // swarm-api's status frames (LB-STREAM): never noVNC's, which reads only
     // the binary RFB stream. A change of controller, of whether this viewer
     // holds control, or of the session closing re-reads the session.
@@ -2173,6 +2210,7 @@ function LiveScreen({
             noVncClose?.call(ws, ev)
           }
           r.addEventListener('connect', () => {
+            if (!stopped) stream(true)
             tries = 0
             restarting = false
             setWhy(null)
@@ -2186,6 +2224,7 @@ function LiveScreen({
             if (!stopped) saysRef.current?.(gateReason((e as CustomEvent<{ name?: unknown }>).detail?.name))
           })
           r.addEventListener('disconnect', () => {
+            stream(false)
             setHasFocus(typing())
             if (rfb.current === r) rfb.current = null
             if (!stopped) saysRef.current?.(null)
@@ -2201,6 +2240,7 @@ function LiveScreen({
     void connect()
     return () => {
       stopped = true
+      stream(false)
       if (timer !== null) clearTimeout(timer)
       const r = rfb.current
       rfb.current = null

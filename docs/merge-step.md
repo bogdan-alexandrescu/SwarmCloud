@@ -752,6 +752,24 @@ things on the agent:
 * the pending check names, in `blocked_by`;
 * `metadata.merge_wait`: `first_parked_at`, `wakes`, `updates`.
 
+**The CI clock is the wait's, not the park's (#3033).** On 2026-11-01 a merge
+step (task_5c00c810495e4f949212) parked `checks_pending` 56 times at one head
+over 13 hours, and the 6 h `MERGE_CI_MAX_SECONDS` never ended it. Its tenant
+was on the state routes. There the step reads its own document through
+swarm-api's `GET state/upstream`, which serves it as JSON, so
+`first_parked_at` arrived as an ISO string. The limit read only a
+datetime and found nothing on every wake. Now the limit reads either shape,
+on every path that parks for CI again: the CI wait, the merge queue, the CI-fix,
+conflict and pick-fix rounds. Both parks, the worker's and swarm-api's, keep
+one clock. The first CI park of a wait starts it, and every later park at
+the same head carries it. A park at another head starts it again: the old
+wait ended when a fix round or a branch update moved the head. A merge-slot
+or merge-train wait **pauses** the clock (`ci_paused_at`) instead of
+clearing it, and the next CI park moves `first_parked_at` on by the pause.
+Clearing it let a step that kept alternating the two waits wait for CI
+without bound. Running it through a pause would count a queue as slow CI.
+The waiting detail serves `first_parked_at` as `waiting.since`.
+
 It refunds the attempt that admission counted, up to `MERGE_CI_MAX_WAKES`
 (proposed 60). Then it releases the lease and exits 75.
 
@@ -2997,6 +3015,26 @@ In two places, because they fail differently:
 
 No line in either one carries `Co-Authored-By` or any other attribution. The
 commit is the App's.
+
+### 5.5 The pull request's branch is deleted after the merge
+
+The owner asked on 2026-11-02 for an agent's branch to go once its changes are
+merged: the repository held 4,756 branches, and merges are squashed, so `git
+branch --merged` recognises almost none of them. A merged branch is known by
+its pull request. After a merge (the direct merge call, a landing by the
+merge train or by GitHub's merge queue, or the retry that finds the pull request
+already merged at an accepted head), `_delete_head_branch` deletes the pull
+request's head branch only when it is the workflow's own `swarm/<task>`
+branch in this repository and GitHub still has it at the merged commit. It
+never deletes the default branch, a protected branch, a `keep/` branch, or a
+branch another open pull request is from; a head that moved after the merge
+is kept, because someone pushed work there that the merge did not take. A
+branch already gone (GitHub's auto-delete of merged head branches is on, so
+the delete answers 404 or 422 "Reference does not exist") counts as deleted.
+The merge record carries `branch_deleted` and `branch_cleanup` (`{branch,
+head, outcome, reason}`); a failed delete is `outcome: "failed"`, the step
+still ends SUCCEEDED, and the hand-off sweep retries it once the workflow
+has finished ([workflows.md](workflows.md#a-finished-workflows-hand-off-branches-are-deleted)).
 
 ---
 

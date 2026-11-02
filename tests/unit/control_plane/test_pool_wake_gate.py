@@ -6,7 +6,8 @@ container". Measured that morning: at 10:10Z one 5-hour reset was the
 cloned, checkpointed about 49 MB and asked the broker, to be told there was no
 account and park again. What is held here:
 
-  * a finish wakes at most as many parks as there are free slots;
+  * a wake wakes at most as many parks as there are free slots, and as many
+    as there are (BGD's pick on PR #3044, "free slots only");
   * admission asks the broker's `choose()` BEFORE the lease and parks what no
     account can take, PROVIDER_QUOTA_EXHAUSTED at `account_assign`, holding
     nothing (invariant 1);
@@ -127,7 +128,8 @@ def test_a_finish_wakes_no_more_parks_than_the_account_has_free_slots(
     report = _scheduler(make_scheduler).release_dependants("task_done")
 
     # MUTATION: without the claim after each promotion, one freed slot
-    # answers yes for all five and all five start a container.
+    # answers yes for every park, and five start a container for two slots.
+    # MUTATION: a one-park-per-release budget wakes one for two free slots.
     assert report.promoted_account_waits == 2, report.to_dict()
     still = [i for i in range(5) if _state(db, f"task_p{i}") == ("PARKED", "PROVIDER_QUOTA_EXHAUSTED")]
     assert len(still) == 3

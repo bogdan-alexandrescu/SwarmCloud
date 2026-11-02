@@ -328,6 +328,7 @@ from swarm_common.states import TERMINAL_STATES
 from swarm_rollup import is_fix_round_step
 
 from . import gitidentity
+from . import handoffbranches
 from .auth import AuthContext
 from .cifix import (
     BRANCH_PREFIX, PR_WRITER_KINDS, live_claim, live_plain_continuation, live_pr_writer,
@@ -562,6 +563,9 @@ class WakeReport:
     owner_visited: int = 0
     owner_woken: int = 0
     owner_waiting: int = 0
+    #: The finished workflows' hand-off branches (`handoffbranches`), when
+    #: this tick swept them.
+    branches: handoffbranches.SweepReport | None = None
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -580,6 +584,8 @@ class WakeReport:
                              "waiting": self.release_waiting}} if self.release_visited else {}),
             **({"owner_holds": {"visited": self.owner_visited, "woken": self.owner_woken,
                                 "waiting": self.owner_waiting}} if self.owner_visited else {}),
+            **({"branches": self.branches.to_api()}
+               if self.branches is not None and self.branches.workflows else {}),
         }
 
     def fail(self, task_id: str, code: str) -> None:
@@ -2532,6 +2538,14 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
         halted = wake_owner_holds(ctx, tenant, tenant_id, limit=limit, report=report,
                                   halted=halted)
         wake_release_waits(ctx, tenant, tenant_id, limit=limit, report=report, halted=halted)
+        # A finished workflow's step hand-off branches (the owner,
+        # 2026-11-02), under the same hold; never what fails the tick.
+        if halted is None:
+            try:
+                report.branches = handoffbranches.sweep_tenant(ctx, tenant, tenant_id, now=now)
+            except Exception as exc:  # noqa: BLE001 - the code only
+                code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+                log.warning("hand-off branches tenant=%s: not swept (%s)", tenant_id, code)
     finally:
         token = reading_token = ""
     return report

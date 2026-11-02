@@ -22,18 +22,24 @@ is a label; the submitter filter and every check here keep using the email.
 
 from __future__ import annotations
 
+import logging
+import math
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
+from google.cloud.firestore_v1.base_query import FieldFilter
 from starlette.concurrency import run_in_threadpool
 
+from swarm_common.models import Attempt, Task
 from swarm_common.states import TaskState
 
 from .. import agent_questions, mergewake, roles
 from ..agent_output import AgentOutputService
+from ..attempt_totals import IN_LIMIT as ATTEMPTS_IN_LIMIT
+from ..attempt_totals import PER_TASK_CAP as ATTEMPTS_PER_TASK_CAP
 from ..attempt_totals import totals_for, totals_for_page, with_totals
 from ..children import (
     PARENT_CANCELLED,
@@ -44,7 +50,7 @@ from ..children import (
 )
 from ..auth import AuthContext
 from .. import sessiontag
-from ..codec import attempt_to_api, claude_session_of, task_to_api
+from ..codec import attempt_from_dict, attempt_to_api, claude_session_of, task_to_api
 from ..deps import (
     AppContext,
     current_auth,
@@ -57,9 +63,10 @@ from ..errors import Forbidden, ValidationFailed
 from ..handoff import HandoffService
 from .children import child_service
 from ..heartbeats import heartbeats_for_page
+from ..live import LIVE_PRESETS, LIVE_SESSIONS, clean_device, profile_is_live, session_id_for
 from ..people import add_names, name_lookup
 from ..schemas import TaskBatchCreate, TaskCreate
-from ..store import STATE_IN_MAX, TASK_SUMMARY_FIELDS, Page, task_listing_token
+from ..store import ATTEMPTS, LEASES, STATE_IN_MAX, TASK_SUMMARY_FIELDS, Page, task_listing_token
 from ..startup import startup_of
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
@@ -68,6 +75,8 @@ from ..utilisation import utilisation_of
 from ..waiting import waiting_for_page
 from ..waiting_detail import build_waiting, read_inputs, waiting_row
 from ..waker import TASK_FINISHED, ring
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
 
@@ -537,6 +546,253 @@ def list_open_questions(
     return payload
 
 
+#: The most task ids one `GET /v1/tasks/digests` serves: a workflow's steps
+#: and an Agents list page fit (the list's browser rows are a subset of its
+#: page), and a bound keeps one read from becoming a scan.
+DIGEST_MAX_IDS = 100
+#: The newest events read per waiting task: the page the console's
+#: `stateEnteredAt` was given by each per-step read (`EVENT_PAGE_LIMIT`).
+DIGEST_EVENT_PAGE = 200
+#: Per-task event reads in flight at once.
+DIGEST_EVENT_READS = 8
+#: What `include` may name. `live` is opt-in: it costs a lease and a session
+#: read per browser task, which a workflow page's poll does not draw.
+DIGEST_PARTS: tuple[str, ...] = ("entered", "usage", "live")
+#: The event each clocked wait is entered by (the console's `ENTRY_EVENT`).
+ENTRY_EVENT: dict[TaskState, str] = {
+    TaskState.PARKED: "parked",
+    TaskState.LEASED: "lease_acquired",
+    TaskState.DISPATCHED: "dispatched",
+}
+#: The events that move a task between states; heartbeats and checkpoints do not.
+TRANSITION_EVENTS: frozenset[str] = frozenset({
+    "submitted", "queued", "parked", "ready", "lease_acquired", "lease_released", "dispatched",
+    "starting", "running", "retrying", "succeeded", "failed", "cancelled", "dead_lettered",
+})
+#: The token figures a `usage` sums, as the attempt rows name them.
+USAGE_TOKENS: tuple[str, ...] = (
+    "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+)
+
+
+def entered_at(state: TaskState, events: list) -> datetime | None:
+    """When the task entered `state`, from its newest events, or None.
+
+    The console's rule (`stepviews.stateEnteredAt`), made where the events
+    are: newest first, skip what is not a transition, take the run of entry
+    events at the head -- a re-park while parked keeps the first park's time
+    -- and stop at the first other transition. A head whose newest transition
+    is something else describes an older state than the record's, and gives
+    no time rather than an earlier one.
+    """
+    entry = ENTRY_EVENT.get(state)
+    if entry is None:
+        return None
+    found: datetime | None = None
+    for event in sorted(events, key=lambda e: e.at, reverse=True):
+        kind = event.type.value
+        if kind not in TRANSITION_EVENTS:
+            continue
+        if kind != entry:
+            break
+        found = event.at
+    return found
+
+
+def _finite(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def step_usage(attempts: list[Attempt]) -> dict:
+    """The console's `StepUsage` over one task's attempts.
+
+    Each figure is summed SEPARATELY and stays null until some attempt carried
+    it: `record_spend` writes only the keys the runner reported, so a missing
+    half is unmeasured, not zero. `attempts` and `checkpoints` are counts.
+    """
+
+    def total(field: str) -> float | int | None:
+        seen = [getattr(a, field) for a in attempts if _finite(getattr(a, field, None))]
+        return sum(seen) if seen else None
+
+    cost = total("cost_usd")
+    return {
+        "attempts": len(attempts),
+        "attempts_with_cost": sum(1 for a in attempts if _finite(a.cost_usd)),
+        "attempts_with_tokens": sum(
+            1 for a in attempts if any(_finite(getattr(a, f, None)) for f in USAGE_TOKENS)
+        ),
+        "checkpoints": sum(len(a.checkpoints or []) for a in attempts),
+        "cost_usd": round(cost, 6) if cost is not None else None,
+        **{field: total(field) for field in USAGE_TOKENS},
+    }
+
+
+def _usage_chunk(ctx: AppContext, tenant_id: str, chunk: list[str]) -> dict[str, list[Attempt] | None]:
+    """One `in` query for at most 30 tasks' attempts; every task None when it fails."""
+    limit = ATTEMPTS_PER_TASK_CAP * len(chunk)
+    try:
+        query = (
+            ctx.db.collection(ATTEMPTS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("task_id", "in", chunk))
+            .limit(limit)
+        )
+        docs = [snap.to_dict() or {} for snap in query.stream()]
+        if len(docs) >= limit:
+            raise OverflowError(f"{len(docs)} attempt documents for {len(chunk)} task(s)")
+        members = set(chunk)
+        by_task: dict[str, list[Attempt] | None] = {t: [] for t in chunk}
+        for doc in docs:
+            # The query filters both; restated so a fake or an index mistake
+            # cannot move the tenant boundary.
+            if doc.get("tenant_id") != tenant_id or doc.get("task_id") not in members:
+                continue
+            by_task[doc["task_id"]].append(attempt_from_dict(doc))  # type: ignore[union-attr]
+        return by_task
+    except Exception as exc:  # the tasks were read; only their attempts were not
+        log.warning("digest attempt read failed: %s", type(exc).__name__)
+        return {t: None for t in chunk}
+
+
+def _live_states(ctx: AppContext, tasks: list[Task]) -> dict[str, dict]:
+    """Each task's current-attempt live session, as a list row draws it.
+
+    The lease names the attempt and the attempt names the session
+    (`live.session_id_for`), as `LiveSessionService._load` resolves it -- two
+    batched reads for the whole page instead of one transaction per row.
+    State and device only: who may control, and the viewer's ticket, stay
+    the open viewer's own `GET /v1/tasks/{id}/live/session`.
+    """
+    out: dict[str, dict] = {
+        t.id: {"live_browser": profile_is_live(t.runner_profile), "session_state": None, "device": None}
+        for t in tasks
+    }
+    holding = [t for t in tasks if out[t.id]["live_browser"] and t.current_lease_id]
+    if not holding:
+        return out
+    leases = {
+        snap.id: snap.to_dict() or {}
+        for snap in ctx.db.get_all([ctx.db.collection(LEASES).document(t.current_lease_id) for t in holding])
+        if snap.exists
+    }
+    session_of: dict[str, str] = {}
+    for t in holding:
+        lease = leases.get(str(t.current_lease_id)) or {}
+        if lease.get("task_id") not in (None, t.id) or not lease.get("attempt_id"):
+            continue
+        session_of[t.id] = session_id_for(str(lease["attempt_id"]))
+    if not session_of:
+        return out
+    sessions = {
+        snap.id: snap.to_dict() or {}
+        for snap in ctx.db.get_all(
+            [ctx.db.collection(LIVE_SESSIONS).document(sid) for sid in dict.fromkeys(session_of.values())]
+        )
+        if snap.exists
+    }
+    by_id = {t.id: t for t in holding}
+    for task_id, sid in session_of.items():
+        session = sessions.get(sid)
+        if session is None or session.get("tenant_id") not in (None, by_id[task_id].tenant_id):
+            continue
+        out[task_id] = {
+            "live_browser": True,
+            "session_state": "open" if session.get("state") == "open" else "closed",
+            "device": clean_device(session.get("device")),
+        }
+    return out
+
+
+@router.get("/digests")
+def list_digests(
+    ids: str = Query(..., description="Comma-separated task ids, at most 100"),
+    include: str = Query(default="entered,usage", description="Any of entered, usage, live"),
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """What a page draws for MANY tasks, in ONE read (#2688, WORK-READS-SPEED).
+
+    The owner's workflow page (40 browser steps, 2026-11-02) made 61 requests
+    on load: 24 `GET /v1/tasks/{id}/events` pages to time each waiting step
+    from its entry event, and 12 `GET /v1/tasks/{id}/attempts` reads to sum
+    each step's tokens and cost; the Agents list read one live session per
+    browser row on every refresh. Each row here carries, per `include`:
+
+      * `entered`: `entered_at`, when a PARKED, LEASED or DISPATCHED task
+        entered that state (`entered_at`), else null;
+      * `usage`: the task's attempts rolled up (`step_usage`), with
+        `usage_read` `"ok"` or `"failed"` -- a failed read is null figures,
+        never a zero;
+      * `live`: the current attempt's live session state and device, and the
+        gate's `presets` once beside the rows.
+
+    Tenant-scoped as `GET /v1/tasks/{id}`: a task of another tenant, a
+    missing one, and one a continuation-scoped caller did not submit are all
+    simply absent -- the same absence, so the answer confirms no id. Reads
+    only: nothing here writes, leases or admits.
+    """
+    wanted = list(dict.fromkeys(i.strip() for i in ids.split(",") if i.strip()))
+    if len(wanted) > DIGEST_MAX_IDS:
+        raise ValidationFailed(
+            f"at most {DIGEST_MAX_IDS} task ids per digest read",
+            detail={"ids": len(wanted), "max": DIGEST_MAX_IDS},
+        )
+    parts = {p.strip() for p in include.split(",") if p.strip()}
+    unknown = parts - set(DIGEST_PARTS)
+    if unknown:
+        raise ValidationFailed(
+            f"include names {sorted(unknown)!r}; it may name {list(DIGEST_PARTS)!r}",
+            detail={"allowed": list(DIGEST_PARTS)},
+        )
+    found = ctx.store.tasks_by_id(tenant_id, wanted)
+    tasks = [
+        found[i] for i in wanted
+        if i in found and (submitted_by is None or found[i].submitted_by == submitted_by)
+    ]
+    rows: dict[str, dict] = {t.id: {"task_id": t.id, "state": t.state.value} for t in tasks}
+
+    if "entered" in parts:
+        waiting = [t for t in tasks if t.state in ENTRY_EVENT]
+        for t in tasks:
+            rows[t.id]["entered_at"] = None
+
+        def head(task: Task) -> datetime | None:
+            try:
+                return entered_at(task.state, ctx.store.newest_events(task, limit=DIGEST_EVENT_PAGE))
+            except Exception as exc:  # one task's events unread: its lower bound stays
+                log.warning("digest event read failed: %s", type(exc).__name__)
+                return None
+
+        if waiting:
+            with ThreadPoolExecutor(max_workers=min(len(waiting), DIGEST_EVENT_READS)) as pool:
+                for task, at in zip(waiting, pool.map(head, waiting)):
+                    rows[task.id]["entered_at"] = at
+
+    if "usage" in parts:
+        chunks = [
+            [t.id for t in tasks[start : start + ATTEMPTS_IN_LIMIT]]
+            for start in range(0, len(tasks), ATTEMPTS_IN_LIMIT)
+        ]
+        read: dict[str, list[Attempt] | None] = {}
+        if chunks:
+            with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+                for got in pool.map(lambda chunk: _usage_chunk(ctx, tenant_id, chunk), chunks):
+                    read.update(got)
+        for t in tasks:
+            attempts = read.get(t.id)
+            rows[t.id]["usage"] = step_usage(attempts) if attempts is not None else None
+            rows[t.id]["usage_read"] = "ok" if attempts is not None else "failed"
+
+    payload: dict = {"tenant_id": tenant_id, "read_at": ctx.now(), "digests": list(rows.values())}
+    if "live" in parts:
+        for task_id, live in _live_states(ctx, tasks).items():
+            rows[task_id]["live"] = live
+        payload["presets"] = [dict(p) for p in LIVE_PRESETS]
+    return payload
+
+
 @router.get("/{task_id}")
 def get_task(
     task_id: str,
@@ -777,16 +1033,22 @@ def list_events(
     `Store._keyset_page` for why events that share a timestamp are neither
     dropped nor repeated at a page boundary.
 
-    Each `detail` is masked by the task's masker, so the task is read first --
-    which `Store.list_events` does anyway for its tenant check.
+    Each `detail` is masked by the task's masker, so the task is read first,
+    and ONCE: `Store.list_events` makes its tenant check on the task read
+    here rather than reading the document again. The masker is built cold
+    (`warm=False`): this page serves no input and no metadata, and warming
+    masked both whole on every first read of a task -- a long prompt's
+    redaction pass on a route that never shows it (#2688, WORK-READS-SPEED).
     """
-    masking = masking_for(ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by))
+    task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+    masking = masking_for(task, warm=False)
     page = ctx.store.list_events(
         tenant_id,
         task_id,
         limit=paged_limit(ctx, limit),
         page_token=page_token,
         descending=order == "desc",
+        task=task,
     )
     return {
         "task_id": task_id,

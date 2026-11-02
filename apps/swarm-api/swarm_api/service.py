@@ -184,7 +184,9 @@ from .validation import (
     validate_runner_profile,
     validate_step_routing,
     validate_storable,
+    lower_turn_cap,
     timeout_asked,
+    validate_max_turns,
     validate_timeout,
     workflow_label,
 )
@@ -775,6 +777,10 @@ class SubmissionService:
                    if resource_class_override is not None else None),
         )
         timeout = validate_timeout(profile, spec.timeout_seconds)
+        # THE TURN CAP (contract request 133), beside the timeout and for the
+        # same doors: refused for a profile whose runner passes no cap, and
+        # only lowered by the profile's own `max_turns`.
+        max_turns = validate_max_turns(profile, spec.max_turns, step_id=step_id)
         # THE BUDGET (#2459), for a task, a batch entry, a workflow step and a
         # child alike: the step's own may only LOWER the limit, and the
         # attempt's is min(step, workspace, ceiling), each unit on its own.
@@ -832,15 +838,17 @@ class SubmissionService:
             # None for no block, and for a malformed one the switch let past.
             metadata.pop(REVIEW_GATE_METADATA_KEY, None)
         if runtime is not None:
-            metadata[RUNTIME_METADATA_KEY] = {
-                **runtime,
-                "alternate": self._runtime_alternate(
-                    runtime, spec, tenant=tenant, step_id=step_id,
-                    resource_class_override=resource_class_override,
-                    repository_url=repository_url, mcp_credentials=mcp_credentials,
-                    mcp_whole_submission=mcp_whole_submission, mcp_inherited=mcp_inherited,
-                ),
-            }
+            alternate = self._runtime_alternate(
+                runtime, spec, tenant=tenant, step_id=step_id,
+                resource_class_override=resource_class_override,
+                repository_url=repository_url, mcp_credentials=mcp_credentials,
+                mcp_whole_submission=mcp_whole_submission, mcp_inherited=mcp_inherited,
+            )
+            # Contract request 133: the `code` profile's cap is resolved (and
+            # refused) as its timeout is, but `max_turns` is not a swap field:
+            # the task carries ONE cap, the lower of its two profiles'.
+            max_turns = lower_turn_cap(max_turns, alternate.pop("max_turns"))
+            metadata[RUNTIME_METADATA_KEY] = {**runtime, "alternate": alternate}
         # Who the agent's commits name (P37, `gitidentity`): the authenticated
         # caller unless the caller of this method resolved someone else (a
         # child's parent, a service account's continued task). Inside the
@@ -891,6 +899,10 @@ class SubmissionService:
             timeout_seconds=timeout,
             max_attempts=spec.max_attempts or 3,
             budget=resolved_budget.as_dict() if resolved_budget is not None else None,
+            # Contract request 133: the RESOLVED turn cap, signed at format 7
+            # when set. One field for both profiles of a `browser_if_ui` step
+            # (it is not a swap field), so it is the lower of the two.
+            max_turns=max_turns,
             park_reason=park_reason,
             workflow_id=workflow_id,
             step_id=step_id,
@@ -947,6 +959,10 @@ class SubmissionService:
             "runner_profile": code.name,
             "resource_class": resource_class,
             "timeout_seconds": validate_timeout(code, spec.timeout_seconds),
+            # Contract request 133: refused here when the `code` profile does
+            # not cap turns, as its timeout is checked here. Not a swap field:
+            # `_build_task` pops it and folds it into the task's one cap.
+            "max_turns": validate_max_turns(code, spec.max_turns, step_id=step_id),
             "provider": code.provider,
             "model": resolve_task_model(code, model_class, spec.model, class_models,
                                         step_id=step_id),
@@ -1615,6 +1631,7 @@ class SubmissionService:
                            and step_id == merge_plan.merge_step else {}),
                     },
                     timeout_seconds=source.timeout_seconds,
+                    max_turns=source.max_turns,
                     budget=source.budget,
                     model_class=source.model_class,
                     # A merge step waits for CI by failing its attempt while a
@@ -1688,6 +1705,9 @@ class SubmissionService:
                     resource_class=source.resource_class,
                     input_from=dict(source.input_from),
                     timeout_seconds=source.timeout_seconds,
+                    # What the step ASKED for (contract request 133); its
+                    # task's `max_turns` is what that resolved to.
+                    max_turns=source.max_turns,
                     task_id=step_task_id[source.step_id],
                     # Its task's stored class: None for the profile's default.
                     model_class=step_model_class[source.step_id],

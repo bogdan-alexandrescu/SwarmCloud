@@ -2719,9 +2719,21 @@ class ControlPlane:
 
         A wait for the repository's merge slot (`mergeslot.MERGE_SLOT_WAIT`,
         merge race #295) is refunded on its own `counter`, `slot_waits`,
-        with its own `max_wakes`, and stops the CI clock (`ci_clock` False):
-        its `first_parked_at` is cleared, so the next CI wait starts it
-        afresh and a long queue never reads as `checks_timeout`.
+        with its own `max_wakes`, and PAUSES the CI clock (`ci_clock` False).
+
+        THE CI CLOCK (#3033). `first_parked_at` is set by the first CI park
+        of a wait and carried by every park after it at the same head. It
+        restarts only when the wait truly ended: the last record is at
+        another head (a fix round or a branch update moved it), or there is
+        no record. A slot or train wait PAUSES it rather than clearing it:
+        `ci_paused_at` records the pause, `merge._ci_wait_age` counts only to
+        it, and the next CI park moves `first_parked_at` on by the pause, so
+        a long queue never reads as `checks_timeout` AND a slot wait between
+        two CI parks never restarts the 6 h. Pause, not reset, because a
+        reset let a step that alternates the two wait for CI without bound;
+        pause, not run, because a queue for the slot is not slow CI.
+        swarm-api's park (`attemptstate`, the state routes) keeps the same
+        clock.
 
         There is no checkpoint and no upload: a worker action keeps no
         workspace (invariant 8's exception, CR 36), and its durable state is
@@ -2757,7 +2769,21 @@ class ControlPlane:
             if refund:
                 counts[counter] += 1
             wakes = counts[counter]
+            # The CI clock (#3033, the docstring): a record at another head
+            # is a wait that ended, so its clock and pause go with it.
             first = last.get("first_parked_at")
+            paused = last.get("ci_paused_at")
+            if not isinstance(first, datetime) or (last.get("head") or head) != head:
+                first, paused = None, None
+            if not isinstance(paused, datetime):
+                paused = None
+            if not ci_clock:
+                # Paused at the first queue park; a clock never started stays off.
+                paused = (paused or now) if first is not None else None
+            elif first is None:
+                first = now
+            elif paused is not None:
+                first, paused = first + max(now - paused, timedelta(0)), None
             metadata[MERGE_WAIT_METADATA_KEY] = {
                 "code": code,
                 "head": head,
@@ -2765,9 +2791,8 @@ class ControlPlane:
                 "pending": names,
                 **counts,
                 "updates": _count(last.get("updates")),
-                "first_parked_at": (
-                    (first if isinstance(first, datetime) else now) if ci_clock else None
-                ),
+                "first_parked_at": first,
+                "ci_paused_at": paused,
                 "parked_at": now,
                 **recorded,
             }

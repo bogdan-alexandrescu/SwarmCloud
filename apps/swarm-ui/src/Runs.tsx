@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { approvePlan, editPlan, loadRun, loadRuns, loadSchedules, rejectPlan } from './api'
+import type { AdvisedIssueRun, PlanAdvisory } from './api'
 import type { ApiError, Result } from './fetch'
 import { InlineText as RnText, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
@@ -1209,7 +1210,9 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                   : <span className="sb-note">no estimate given</span>}
               </p>
               <PlanBody plan={run.plan} unmet={run.requirements_unmet ?? []}
-                live={approved ? { read, rows, go } : null} />
+                live={approved ? { read, rows, go } : null}
+                advisory={(run as AdvisedIssueRun).plan_advisory ?? null} revision={run.plan_revision}
+                waiting={run.state === 'PLANNED'} />
             </>
           )}
           {/* THE CONFIRM OPENS IN FLOW (QA1-FIX-24, runs-submit-29, part of
@@ -1440,7 +1443,9 @@ function oneEllipsis(lead: string): string {
 /** What a plan step needs to draw its live state once the run is approved; null before. */
 type PlanLive = { read: RunWorkflows; rows: StepRow[]; go: (to: string) => void } | null
 
-function PlanBody({ plan, unmet, live }: { plan: RunPlan; unmet: string[]; live: PlanLive }) {
+function PlanBody({ plan, unmet, live, advisory, revision, waiting }: {
+  plan: RunPlan; unmet: string[]; live: PlanLive; advisory: PlanAdvisory | null; revision: number | null; waiting: boolean
+}) {
   const { lead, cut } = planLead(plan.summary)
   // "READ MORE" BESIDE THE CUT (owner QA F, 2026-10-04): the lead ended in
   // `…` and the rest was behind "Show the full plan", under the steps.
@@ -1459,6 +1464,7 @@ function PlanBody({ plan, unmet, live }: { plan: RunPlan; unmet: string[]; live:
         )}
       </p>
       <Requirements plan={plan} unmet={unmet} />
+      <PlanCheck advisory={advisory} revision={revision} waiting={waiting} />
       <ol className="rn-steps">
         {plan.steps.map((s, i) => (
           <PlanStep key={s.step_id} step={s} n={i + 1} live={live} />
@@ -1470,6 +1476,55 @@ function PlanBody({ plan, unmet, live }: { plan: RunPlan; unmet: string[]; live:
         <pre className="rn-raw-json">{JSON.stringify(plan, null, 2)}</pre>
       </details>
     </>
+  )
+}
+
+/**
+ * THE PLANNER'S CHECK, ABOVE THE STEPS (CLD's Jev report: plan coverage; owner
+ * 2026-11-02). The planner's worker judged its own plan: each requirement no
+ * step covers, or covers only weakly (J2), and the work in flight it likely
+ * duplicates (J5), which holds an auto-approved plan for a person. Served on
+ * the run read as `plan_advisory`; nothing is drawn when there is none or it
+ * flagged nothing. It is the planner's text: drawn as text, and the duplicate
+ * is a link only to github.com.
+ */
+function PlanCheck({ advisory, revision, waiting }: { advisory: PlanAdvisory | null; revision: number | null; waiting: boolean }) {
+  const flagged = advisory?.coverage?.flagged ?? []
+  const duplicate = advisory?.duplicate ?? null
+  if (advisory === null || (flagged.length === 0 && duplicate === null)) return null
+  const url = duplicate?.url && duplicate.url.startsWith('https://github.com/') ? duplicate.url : null
+  const likely = typeof duplicate?.p === 'number' ? `${Math.round(duplicate.p * 100)}% likely` : null
+  const name = duplicate?.title ?? duplicate?.ref ?? 'work in flight'
+  return (
+    <div className="rn-reqs-wrap rn-advisory" role="group" aria-label="The planner's check">
+      <b className="rn-sub">The planner&rsquo;s check · advisory</b>
+      <ul className="rn-reqs">
+        {flagged.map((f, i) => (
+          <li key={`${i}-${f.requirement}`}>
+            {f.index !== null && `${f.index + 1}. `}<RnText text={f.requirement} />
+            <i className="sbf-bad"> · {f.coverage === 'weak' ? 'weakly covered' : 'no step covers this'}</i>
+          </li>
+        ))}
+        {duplicate !== null && (
+          <li>
+            Likely duplicates{' '}
+            {url === null ? <RnText text={name} /> : <a href={url} target="_blank" rel="noreferrer">{name}</a>}
+            {duplicate.ref !== null && duplicate.title !== null && <> <span className="mono">{duplicate.ref}</span></>}
+            {likely !== null && <i className="sbf-bad"> · {likely}</i>}
+          </li>
+        )}
+      </ul>
+      {duplicate !== null && advisory.hold_for_human && (
+        <p className="sb-note">
+          {waiting
+            ? <>This plan waits for a person&rsquo;s approval because it likely duplicates work already in flight: approve it only if it does not.</>
+            : <>This plan was held for a person&rsquo;s approval because it likely duplicates work already in flight.</>}
+        </p>
+      )}
+      {revision !== null && revision > advisory.judged_revision && (
+        <p className="sb-note">Judged on revision {advisory.judged_revision}, before the plan was edited.</p>
+      )}
+    </div>
   )
 }
 
