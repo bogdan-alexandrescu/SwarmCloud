@@ -128,10 +128,31 @@ function attempt(taskId: string, costUsd: number | null) {
   }
 }
 
+/** One task's digest as the route serves it: its `attemptsByTask` rows summed, a sum null until a row reported it. */
+function digest(taskId: string) {
+  const rows = attemptsByTask[taskId] as ReturnType<typeof attempt>[]
+  const costs = rows.map((r) => r.cost_usd).filter((c): c is number => c !== null)
+  return {
+    task_id: taskId, state: 'RUNNING', usage_read: 'ok',
+    usage: {
+      attempts: rows.length, attempts_with_cost: costs.length, attempts_with_tokens: 0, checkpoints: 0,
+      cost_usd: costs.length === 0 ? null : costs.reduce((a, b) => a + b, 0),
+      input_tokens: null, output_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null,
+    },
+  }
+}
+
 function serve(body: unknown, workflows: Record<string, unknown> = {}) {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     if (url === `/v1/runs/${RUN_ID}`) return new Response(JSON.stringify({ run: body }), { status: 200, headers: JSON_HEADERS })
+    // The step cost reads every step's attempts at once through the digests
+    // route (#2688): it sums the same rows; a task not named is not in `digests`.
+    if (url.startsWith('/v1/tasks/digests?')) {
+      const ids = (new URL(url, 'http://ui.test').searchParams.get('ids') ?? '').split(',')
+      return new Response(JSON.stringify({ tenant_id: 'eng', digests: ids.filter((id) => id in attemptsByTask).map((id) => digest(id)) }),
+        { status: 200, headers: JSON_HEADERS })
+    }
     for (const [id, rows] of Object.entries(attemptsByTask)) {
       if (url.startsWith(`/v1/tasks/${id}/attempts`)) {
         return new Response(JSON.stringify({ attempts: rows }), { status: 200, headers: JSON_HEADERS })
