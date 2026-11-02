@@ -8,8 +8,16 @@ only on `pull_request`, so nothing was tested until then, and the merge step
 spent 40 % of a workflow waiting for CI (20.5 h in the sample).
 
 The required workflows -- application.yml (ci-gate), security.yml (four
-checks) and terraform.yml (which ci-gate waits for) -- now also run on a push
-to `swarm/**`, the whole of each, while review and fix happen.
+checks) and terraform.yml (which ci-gate waits for) -- also ran on a push to
+`swarm/**`, the whole of each, while review and fix happened.
+
+SUPERSEDED FOR THE TRIGGERS (owner decision 2026-11-02, CI once per head,
+part of #2688): a lane head ran every check twice, and merges queued behind
+both runs, so a lane branch no longer runs them on push;
+test_ci_once_per_head.py holds that. What stays here holds what a lane push
+would do if one ran (a workflow_dispatch on a lane ref, a push run at a
+shared sha): never build, plan or release, and the merge step's per-event
+rule.
 
 WHY PUSH TRIGGERS AND NOT AN EARLY DRAFT PULL REQUEST. The merge step reads
 every run of a required check at the head commit and holds the check green
@@ -41,7 +49,6 @@ from .test_release_reuses_ci_images import _evaluate, _render
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
-LANE_BRANCHES = "swarm/**"
 MAIN_TIP = "c" * 40
 
 
@@ -53,14 +60,6 @@ def _on(name: str) -> dict:
     # PyYAML reads the bare key `on` as True.
     data = _workflow(name)
     return data.get("on", data.get(True))
-
-
-@pytest.mark.parametrize("name", ["application.yml", "security.yml", "terraform.yml"])
-def test_a_push_to_a_lane_branch_runs_every_required_workflow(name):
-    """MUTATION: drop `swarm/**` from any required workflow's push branches."""
-    push = _on(name).get("push") or {}
-    assert push.get("branches") == ["main", LANE_BRANCHES], push
-    assert "paths" not in push and "paths-ignore" not in push, push
 
 
 def test_a_lane_push_never_releases():

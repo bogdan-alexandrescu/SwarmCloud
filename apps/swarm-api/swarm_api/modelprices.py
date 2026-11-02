@@ -366,3 +366,41 @@ def estimate_cost(
 ) -> float | None:
     """`estimate`'s USD alone."""
     return estimate(by_model, prices)[0]
+
+
+# --------------------------------------------------------------------------
+# The per-minute form: a model billed by the minute of conversation, not by
+# the token (Voice it's talk line, docs/design/voice-it.md §3.8 and §6).
+# --------------------------------------------------------------------------
+
+#: USD per minute, billed per second, silence included. Code, not a platform
+#: setting: one model, read by one ledger; it moves to `model_prices` when a
+#: second per-minute model or an admin's edit needs it.
+#:
+#: `gpt-live-1`: $0.05 a minute, billed per second. Source: OpenAI API
+#: pricing (https://developers.openai.com/api/docs/pricing) and the
+#: `gpt-live-1` model page
+#: (https://developers.openai.com/api/docs/models/gpt-live-1), read
+#: 2026-10-31 for the Voice it research (voice-it.md §13 [1][2]).
+PER_MINUTE: dict[str, dict[str, Any]] = {
+    "gpt-live-1": {
+        "per_minute": 0.05,
+        "currency": CURRENCY,
+        "billed": "per_second",
+        "source": "https://developers.openai.com/api/docs/pricing",
+        "as_of": "2026-10-31",
+    },
+}
+
+
+def per_minute_cost(model: Any, seconds: Any,
+                    prices: Mapping[str, Mapping[str, Any]] = PER_MINUTE) -> float | None:
+    """USD for `seconds` of `model` at its per-minute price, billed per
+    second; None when the model has no per-minute price (nothing is
+    invented). Negative or non-numeric seconds price as zero seconds."""
+    price = price_for(model, prices)
+    if price is None:
+        return None
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds):
+        seconds = 0.0
+    return round(max(float(seconds), 0.0) * float(price["per_minute"]) / 60.0, 10)

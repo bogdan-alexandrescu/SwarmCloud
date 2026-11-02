@@ -17,6 +17,10 @@
  * live calls Shell.tsx's `noteActivity`, so the console's fifteen-minute idle
  * stop does not pause the screens of someone who is only talking. When the
  * session ends the call is hung up and nothing calls it.
+ *
+ * THE METER (Meter.tsx) sits beside the cards once a session has started:
+ * the session's and the day's spent and reserved lines against $100 and
+ * $300, as swarm-api's ledger computes them.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -25,6 +29,7 @@ import { Button, Segmented, ToneMark } from '../components'
 import { noteActivity } from '../Shell'
 import { CardList } from './CardList'
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
+import { BudgetMeter } from './Meter'
 import { micWord, useMic, type MicMode } from './mic'
 import { connectTalk, endVoiceSession, TalkError, type TalkCall } from './rtc'
 import { Ring, type ScopeState } from './Scope'
@@ -122,6 +127,8 @@ export function TalkPane() {
   const [micStream, setMicStream] = useState<MediaStream | null>(null)
   const [track, setTrack] = useState<MediaStreamTrack | null>(null)
   const [voicePlaying, setVoicePlaying] = useState(false)
+  // The last session's id: its meter stays on the pane after it ends.
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const call = useRef<TalkCall | null>(null)
   const mounted = useRef(true)
   const audio = useRef<HTMLAudioElement | null>(null)
@@ -182,6 +189,7 @@ export function TalkPane() {
         return
       }
       call.current = c
+      setSessionId(c.sessionId)
       setMicStream(c.micStream)
       setTrack(c.mic)
       setPhase('live')
@@ -290,6 +298,8 @@ export function TalkPane() {
         <p className="vt-cards-h">Cards</p>
         <CardList sessionId={call.current?.sessionId ?? null} />
       </section>
+
+      {sessionId !== null && <BudgetMeter sessionId={sessionId} live={live} />}
 
       <audio ref={audio} autoPlay className="vt-voice" />
     </div>
