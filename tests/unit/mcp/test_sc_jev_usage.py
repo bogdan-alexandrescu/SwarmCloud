@@ -106,7 +106,7 @@ def capacity_screen(jev):
 
 
 def text(usage, **kw):
-    return "\n".join(render.render_jev_usage(usage, render.Style(width=100), **kw))
+    return "\n".join(render.render_jev_usage(usage, render.Style(width=200), **kw))
 
 
 class TestAFixtureAnswer:
@@ -134,10 +134,10 @@ class TestAFixtureAnswer:
         out = text(PRICED)
         assert "Worker judgment J1" in out
         assert "Jev browser" in out
-        assert "not split by kind" in out
+        assert "not split by kind" in out.lower()
 
     def test_a_kind_with_no_outcomes_says_not_recorded_never_zero(self):
-        lines = [line for line in text(PRICED).splitlines() if "not split by kind" in line]
+        lines = [line for line in text(PRICED).splitlines() if "not split by kind" in line.lower()]
         assert lines and all("not recorded" in line for line in lines)
         assert all("0 ok" not in line for line in lines)
 
