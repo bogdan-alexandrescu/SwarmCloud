@@ -17,7 +17,7 @@
 // marking the socket connected in LiveScreen (2 fails); tear the connection
 // down on a session re-read (1 fails).
 
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LiveRead, LiveSession } from '../api'

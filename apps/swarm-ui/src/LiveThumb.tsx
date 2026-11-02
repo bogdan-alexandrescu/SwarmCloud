@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 import { USE_FIXTURES, loadLiveSession, mintLiveTicket, openLiveChannel, type LiveChannel } from './api'
 import { route } from './fetch'
@@ -6,6 +6,7 @@ import { addressToPath } from './paths'
 import { StartupBar } from './StartupProgress'
 import type { LiveAgentRef } from './Theater'
 import { stepState, type Task, type TaskState, type Workflow } from './types'
+import { useInView } from './useInView'
 
 /**
  * THE WORKFLOW GRAPH'S LIVE THUMBNAIL (docs/design/live-browser.md §6, lanes
@@ -26,6 +27,8 @@ import { stepState, type Task, type TaskState, type Workflow } from './types'
  * rate (§5.10): a thumbnail on a graph does not cost the pod a full-rate
  * stream. noVNC is not used for the thumbnail because it requests as fast as
  * it can draw; that is right for the Browser tab and wrong for a card.
+ * With three or fewer cards on screen the floor is 250 ms instead, and a card
+ * scrolled away asks for nothing (`THUMB_FEW_VISIBLE`).
  *
  * VIEW ONLY. This client never sends a key, a pointer or a cut-text message:
  * the only client messages it writes are SetPixelFormat, SetEncodings and
@@ -47,6 +50,41 @@ import { stepState, type Task, type TaskState, type Workflow } from './types'
 
 /** §6: "a low-rate (about 1 fps) live thumbnail". The floor between two requests. */
 export const THUMB_MIN_INTERVAL_MS = 1000
+
+/**
+ * FASTER WHEN FEW ARE ON SCREEN, NOTHING WHEN OFF IT (owner request
+ * 2026-11-02, part of #2688). With at most `THUMB_FEW_VISIBLE` cards in view a
+ * card asks for a frame every `THUMB_FEW_INTERVAL_MS` (four a second); with
+ * more it keeps the 1 s floor above, so forty running browser steps still cost
+ * the pods at most one raw frame a second each. A card scrolled out of view
+ * keeps its socket but asks for no frame until it is back, so a long graph
+ * costs what is on screen, not what is running.
+ */
+export const THUMB_FEW_VISIBLE = 3
+export const THUMB_FEW_INTERVAL_MS = 250
+
+/** The floor between two requests when `visible` cards are on screen. */
+export function thumbIntervalMs(visible: number): number {
+  return visible <= THUMB_FEW_VISIBLE ? THUMB_FEW_INTERVAL_MS : THUMB_MIN_INTERVAL_MS
+}
+
+/** The thumbnails on screen now, by mount; each card re-reads the count when it schedules. */
+const onScreen = new Set<object>()
+const onScreenListeners = new Set<() => void>()
+export function thumbsOnScreen(): number {
+  return onScreen.size
+}
+function setOnScreen(card: object, shown: boolean): void {
+  const had = onScreen.has(card)
+  if (shown === had) return
+  if (shown) onScreen.add(card)
+  else onScreen.delete(card)
+  for (const l of onScreenListeners) l()
+}
+function subscribeOnScreen(l: () => void): () => void {
+  onScreenListeners.add(l)
+  return () => onScreenListeners.delete(l)
+}
 
 /**
  * After the socket closes (Cloud Run ends a viewer's socket at its request
@@ -288,7 +326,10 @@ export interface RfbThumbOptions {
   now: () => number
   /** Run `fn` after `ms`; the client's own pacing timer, cleared by `stop`. */
   later: (fn: () => void, ms: number) => () => void
-  minIntervalMs?: number
+  /** The floor between two requests, read again before each one (`thumbIntervalMs`). */
+  minIntervalMs?: number | (() => number)
+  /** True while the card is off screen: no request is sent until `resume`. */
+  paused?: () => boolean
 }
 
 type Rect = { x: number; y: number; w: number; h: number; row: number }
@@ -319,14 +360,24 @@ export class RfbThumb {
   private full = true
   private cancel: (() => void) | null = null
   private stopped = false
-  private readonly min: number
+  /** A request came due while paused; `resume` sends it. */
+  private held = false
+  private readonly min: () => number
   /** FramebufferUpdates fully received and drawn. */
   frames = 0
   /** When each FramebufferUpdateRequest was sent, by `now()`. */
   readonly requests: number[] = []
 
   constructor(private readonly o: RfbThumbOptions) {
-    this.min = o.minIntervalMs ?? THUMB_MIN_INTERVAL_MS
+    const m = o.minIntervalMs ?? THUMB_MIN_INTERVAL_MS
+    this.min = typeof m === 'function' ? m : () => m
+  }
+
+  /** The card is back on screen: send the request that came due while it was away. */
+  resume(): void {
+    if (this.stopped || !this.held) return
+    this.held = false
+    this.request()
   }
 
   stop(): void {
@@ -488,11 +539,13 @@ export class RfbThumb {
   private updateDone(): Phase {
     this.frames += 1
     this.o.sink.draw(this.pixels, this.width, this.height)
-    const wait = Math.max(0, this.lastRequestAt + this.min - this.o.now())
+    const wait = Math.max(0, this.lastRequestAt + this.min() - this.o.now())
     this.cancel?.()
     this.cancel = this.o.later(() => {
       this.cancel = null
-      if (!this.stopped) this.request()
+      if (this.stopped) return
+      if (this.o.paused?.() === true) this.held = true
+      else this.request()
     }, wait)
     return { k: 'message' }
   }
@@ -568,6 +621,11 @@ const STATUS_WORD: Record<Status, string> = {
   unavailable: 'live view unavailable',
 }
 
+/** The live label and note while few cards are on screen (`THUMB_FEW_VISIBLE`). */
+export const LIVE_FAST_WORD = 'live · ≤4 fps'
+export const LIVE_FAST_NOTE =
+  'The live view of this step’s browser, at most four frames a second while few live cards are on screen. Open the Browser tab for the full view.'
+
 export const STATUS_NOTE: Record<Status, string> = {
   connecting: 'Opening the live view of this step’s browser.',
   live: 'The live view of this step’s browser, at most one frame a second. Open the Browser tab for the full view.',
@@ -591,6 +649,18 @@ export function LiveThumb({
   const [frames, setFrames] = useState(0)
   // Bumped to open a new connection: a reconnect, or Retry.
   const [generation, setGeneration] = useState(0)
+  // On screen or not (`THUMB_FEW_VISIBLE`): read by the client before each request.
+  const [section, inView] = useInView<HTMLElement>()
+  const shown = useRef(inView)
+  shown.current = inView
+  const client = useRef<RfbThumb | null>(null)
+  const visible = useSyncExternalStore(subscribeOnScreen, thumbsOnScreen)
+  useEffect(() => {
+    const card = {}
+    setOnScreen(card, inView)
+    if (inView) client.current?.resume()
+    return () => setOnScreen(card, false)
+  }, [inView])
 
   useEffect(() => {
     const sock = open(taskId)
@@ -617,7 +687,7 @@ export function LiveThumb({
         setStatus('live')
       },
     }
-    const client = new RfbThumb({
+    const rfb = new RfbThumb({
       send: (b) => sock.send(b),
       sink,
       now: () => Date.now(),
@@ -625,11 +695,14 @@ export function LiveThumb({
         const t = setTimeout(fn, ms)
         return () => clearTimeout(t)
       },
+      minIntervalMs: () => thumbIntervalMs(thumbsOnScreen()),
+      paused: () => !shown.current,
     })
+    client.current = rfb
     const finish = (why?: unknown) => {
       if (ended) return
       ended = true
-      client.stop()
+      rfb.stop()
       sock.onmessage = null
       sock.onclose = null
       sock.onerror = null
@@ -655,7 +728,7 @@ export function LiveThumb({
       const bytes = bytesOf(ev.data)
       try {
         if (bytes === null) throw new RfbThumbError('a text message on a binary stream')
-        client.feed(bytes)
+        rfb.feed(bytes)
       } catch {
         finish()
       }
@@ -666,9 +739,10 @@ export function LiveThumb({
       // Unmount (the step finished, the card closed, another step was picked):
       // the stream ends here and does not reconnect.
       if (reconnect !== null) clearTimeout(reconnect)
+      if (client.current === rfb) client.current = null
       if (ended) return
       ended = true
-      client.stop()
+      rfb.stop()
       sock.onmessage = null
       sock.onclose = null
       sock.onerror = null
@@ -676,18 +750,21 @@ export function LiveThumb({
     }
   }, [taskId, open, generation])
 
+  const fast = status === 'live' && visible <= THUMB_FEW_VISIBLE
+  const note = fast ? LIVE_FAST_NOTE : STATUS_NOTE[status]
+
   return (
     // A FIXED BOX: `.wf-live` fills the node's `.node-live` slot, whose height
     // is `LIVE_CARD_H` (dag.ts) less the gap; the canvas letterboxes into what
     // the head and link rows leave (styles/workflows.css).
-    <section className="wf-live" aria-label="Live browser" data-status={status}>
+    <section ref={section} className="wf-live" aria-label="Live browser" data-status={status} data-on-screen={visible}>
       <div className="wf-live-head">
         <span className="ctl-eyebrow">live browser</span>{' '}
         <span
           className={`ctl-mark ${
             status === 'live' ? 'is-live' : status === 'unavailable' ? 'is-unread' : status === 'none' ? 'is-absent' : 'is-pending'
-          }`} title={STATUS_NOTE[status]}>
-          {STATUS_WORD[status]}
+          }`} title={note}>
+          {fast ? LIVE_FAST_WORD : STATUS_WORD[status]}
         </span>
         {status === 'unavailable' && (
           <>
@@ -713,7 +790,7 @@ export function LiveThumb({
         ref={canvas}
         className="wf-live-thumb"
         role="img"
-        aria-label={`${STATUS_NOTE[status]} Frames shown: ${frames}.`}
+        aria-label={`${note} Frames shown: ${frames}.`}
         data-frames={frames}
       />
       <div className="wf-live-links">
