@@ -35,9 +35,14 @@ def _manifest() -> dict:
     return json.loads(_MANIFEST.read_text())
 
 
-def _newest_entry() -> str:
+def _release_entry() -> str:
+    """The 0.5.76 entry, the version that released the profile: a later bump
+    adds its own entry above it (0.5.77 for codex, contract request 130) and
+    must not need the profile named again."""
     sections = re.split(r"^## ", _CHANGELOG.read_text(), flags=re.MULTILINE)
-    return sections[1]
+    entry = next((s for s in sections if s.startswith("0.5.76 ")), None)
+    assert entry is not None, "no `## 0.5.76` entry in plugin/CHANGELOG.md"
+    return entry
 
 
 def test_the_catalogue_the_bridge_ships_holds_the_profile():
@@ -55,9 +60,8 @@ def test_the_bridge_pin_names_the_plugins_own_version():
     assert re.findall(r"@sc-v([0-9.]+)#", pinned) == [manifest["version"]]
 
 
-def test_the_newest_changelog_entry_is_the_version_and_names_the_profile():
-    entry = _newest_entry()
-    assert entry.startswith(_manifest()["version"] + " "), entry.splitlines()[0]
+def test_the_releasing_changelog_entry_names_the_profile():
+    entry = _release_entry()
     text = " ".join(entry.split())
     assert "claude-code-lightpanda" in text
     for tool in ("swarm_dispatch", "swarm_workflow", "swarm_profiles"):

@@ -94,6 +94,22 @@ MAX_CONCURRENT_CHUNKS = 8
 #: asks the pool for an account (`_lease_account`'s second branch).
 ACCOUNT_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 
+#: The worker's `accountlease.ACCOUNT_ENVS`: which variables an account of
+#: each provider's pool fills. An openai account is a ChatGPT plan (contract
+#: request 130), its access token and account id; codex declares both.
+ACCOUNT_ENVS: dict[str, tuple[str, ...]] = {
+    "anthropic": (ACCOUNT_TOKEN_ENV,),
+    "openai": ("CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
+}
+
+
+def takes_pool_account(profile: Any) -> bool:
+    """Whether a profile can run on an account of its provider's pool: it
+    declares every variable one fills (`accountlease.takes_account`)."""
+    wanted = ACCOUNT_ENVS.get(getattr(profile, "provider", None) or "")
+    declared = tuple(getattr(profile, "secrets", None) or ())
+    return bool(wanted) and all(name in declared for name in wanted)
+
 STATUS_ASSIGNED = "assigned"
 STATUS_NOT_ASSIGNED_YET = "not_assigned_yet"
 STATUS_NOT_ASSIGNED = "not_assigned"
@@ -183,7 +199,7 @@ def _static(task: Task) -> dict[str, Any] | None:
     profile = RUNNER_PROFILES.get(task.runner_profile)
     if profile is not None and profile.provider is None:
         return _account(STATUS_NO_MODEL_CALL)
-    if profile is not None and ACCOUNT_TOKEN_ENV not in (profile.secrets or ()):
+    if profile is not None and not takes_pool_account(profile):
         return _account(STATUS_NOT_POOLED, provider=profile.provider)
     if task.current_generation <= 0:
         # Never admitted: no worker has run, so no account was ever asked for.
@@ -339,7 +355,7 @@ def could_hold_account(task: Mapping[str, Any]) -> bool:
     profile = RUNNER_PROFILES.get(str(task.get("runner_profile")))
     if profile is not None and profile.provider is None:
         return False
-    if profile is not None and ACCOUNT_TOKEN_ENV not in (profile.secrets or ()):
+    if profile is not None and not takes_pool_account(profile):
         return False
     try:
         generation = int(task.get("current_generation") or 0)

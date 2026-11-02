@@ -106,7 +106,7 @@ from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
 from .store import Store, derived_service_account
-from .task_accounts import ACCOUNT_TOKEN_ENV
+from .task_accounts import takes_pool_account
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     AWAIT_STEP_REFUSED_FIELDS,
@@ -2457,9 +2457,11 @@ class SubmissionService:
         ran. It is now true when either serves, and `credential_source` says
         which, in admission's own words: `tenant_key` (asked first, as there)
         or `account_pool`. `runnable_profiles` narrows it the same way: an
-        account is a Claude subscription and runs only a profile whose
-        `secrets` take `CLAUDE_CODE_OAUTH_TOKEN`, so `browser` is not runnable
-        on one however many a tenant is lent.
+        anthropic account is a Claude subscription and runs only a profile
+        whose `secrets` take `CLAUDE_CODE_OAUTH_TOKEN`, an openai account a
+        ChatGPT plan and only a profile that takes its two names (`codex`,
+        contract request 130), so `browser` is not runnable on one however
+        many a tenant is lent.
 
         WHICH ACCOUNTS COUNT: one this tenant owns or is lent, for this
         provider, in any state -- `quota_broker.accounts.accounts_serving`,
@@ -2492,7 +2494,7 @@ class SubmissionService:
             on_account = sorted(
                 p.name
                 for p in RUNNER_PROFILES.values()
-                if p.provider == name and ACCOUNT_TOKEN_ENV in (p.secrets or ())
+                if p.provider == name and takes_pool_account(p)
             )
             if name in keyed:
                 source, runnable = "tenant_key", profiles
