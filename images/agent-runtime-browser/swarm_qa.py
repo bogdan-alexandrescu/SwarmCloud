@@ -162,6 +162,12 @@ one timeout, not one a route. The record's `allowed` list (QA-IDP-POST, part
 of #2067: a target's IdP token refresh, let through after the gate's sign-in)
 is not a refusal: the manifest names it apart, as `gate_refusals.allowed`, by
 label, method, origin and path, and no screen carries it as `gate_refused`.
+The gate lets that token path through only while its own sign-in reads
+`signed_in`, so the manifest says which state the sign-in is in, as
+`gate_refusals.sign_in: {state, cause}` (null with no QA target), read from
+the worker's `$SWARM_HANDOFF/qa-target.json` (part of #2688: a sign-in that
+landed on a page without its `signed_in_selector` ended `failed`, and every
+screen's token exchange was refused while the pages showed signed in).
 
 A LEG THAT NEVER GOT PAST SIGN-IN IS NOT REVIEWABLE (part of #2688). On
 2026-11-02 a run on an own-login target captured only the app's "Couldn't
@@ -339,6 +345,15 @@ HANDOFF = "swarm-handoff"
 GATE_REFUSALS_PATH = "/json/swarm/qa-refusals"
 GATE_TIMEOUT_SECONDS = 5
 MAX_GATE_BYTES = 1 << 20
+#: The hand-off spool (swarm_browser.HANDOFF_ENV) and the worker's file in it
+#: that says which state the gate's QA sign-in is in (agent_worker.qa_target
+#: `STATUS_NAME`, restated: this image does not carry agent_worker; the tests
+#: hold them equal).
+HANDOFF_ENV = "SWARM_HANDOFF"
+QA_TARGET_STATUS_NAME = "qa-target.json"
+#: The states the gate's sign-in reads as (livegate/qatarget.py), and a cause's shape.
+_SIGN_IN_STATES = frozenset({"ready", "signing_in", "signed_in", "challenge", "failed"})
+_SIGN_IN_CAUSE = re.compile(r"[a-z0-9_]{1,64}")
 #: What a failed request the gate refused is marked with in `failed_requests`.
 GATE_MARK = "refused by the live gate ({code}): the gate's answer, not the app's"
 #: The gate's code for a write it answered itself (livegate/qatarget.py
@@ -1213,6 +1228,24 @@ def _gate_document() -> dict:
     return document
 
 
+def _gate_sign_in() -> dict | None:
+    """The gate's QA sign-in state and cause, from the worker's file in the
+    hand-off spool (module docstring); None when there is none or it does not read."""
+    spool = os.environ.get(HANDOFF_ENV, "").strip()
+    if not spool:
+        return None
+    try:
+        document = json.loads((Path(spool) / QA_TARGET_STATUS_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    state = document.get("state") if isinstance(document, dict) else None
+    if state not in _SIGN_IN_STATES:
+        return None
+    cause = document.get("cause")
+    return {"state": state,
+            "cause": cause if isinstance(cause, str) and _SIGN_IN_CAUSE.fullmatch(cause) else None}
+
+
 def _refusal(raw: Any) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -1288,6 +1321,9 @@ class _GateRefusals:
                      "by": [{"method": m, "origin": o, "count": c} for (m, o), c in sorted(counts.items())],
                      "allowed": [{"label": lb, "method": m, "origin": o, "path": p, "count": c}
                                  for (lb, m, o, p), c in sorted(allowed.items())]}
+        # Why an approved token refresh was refused: the gate lets it through
+        # only while its own sign-in reads `signed_in`.
+        out["sign_in"] = _gate_sign_in()
         if self.why is not None:
             out["why"] = self.why
         return out
