@@ -1,4 +1,4 @@
-"""The schedule job-type catalogue: seventeen types, picked BY NAME (docs/schedules.md §3).
+"""The schedule job-type catalogue: eighteen types, picked BY NAME (docs/schedules.md §3).
 
 A schedule names a type from this catalogue and nothing else: no image, no
 command, no profile, no resource class, no backend parameter (invariant 10).
@@ -278,6 +278,31 @@ class DocsDriftParams(Params):
 class CostReportParams(Params):
     window: Literal["day", "week"] = "day"
     post_to_issue: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]{0,9}$")
+
+
+class BranchSweepParams(Params):
+    """§3.19 (the owner's request of 2026-11-02): delete what merged pull requests left behind."""
+
+    #: `owner/repo` names narrowing the schedule's scope; empty is every
+    #: repository the scope holds (with scope `all`, every one registered in
+    #: the workspace). A name the scope does not hold is refused, never read.
+    repositories: list[str] = Field(default_factory=list, max_length=50)
+    #: Deletes per firing, across its repositories. 300 is half the firing's
+    #: 600-request budget (`branch_sweep.MAX_REQUESTS`): with GitHub's
+    #: auto-delete on since 2026-11-02 a day leaves a handful, and a backlog
+    #: (2,223 were cleared by hand that night) is worked down 300 a day.
+    max_deletes: int = Field(default=300, ge=1, le=500)
+    #: Report only: the same report, `would_delete` in place of `deleted`.
+    dry_run: StrictBool = False
+
+    @field_validator("repositories")
+    @classmethod
+    def _repositories(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value) \
+                    or {".", ".."} & set(value.split("/")):
+                raise ValueError(f"{value!r} is not owner/repo")
+        return _unique([v.lower() for v in values], "repositories")
 
 
 class ModelPricesRefreshParams(Params):
@@ -761,6 +786,33 @@ TYPES: tuple[ScheduleType, ...] = (
         lane="IMAGE-TOOL-RESCAN",
         phase=2,
         forge_permissions=("contents:read", *_PR_PUSH),
+    ),
+    # The owner's request of 2026-11-02: "a scheduled job that comes and
+    # double checks for leftovers or zombie branches left behind and failed to
+    # delete", as a SwarmCloud schedule. It deletes only a branch whose pull
+    # request MERGED and whose head is still that pull request's head (§3.19).
+    ScheduleType(
+        name="branch-sweep",
+        description="Delete each branch whose pull request merged and whose head has not moved since; count every other branch by why it is kept.",
+        executor="api",
+        params_model=BranchSweepParams,
+        # Created daily; one firing reads every page of branches and pull
+        # requests, so more often than six-hourly spends the owner's quota on nothing new.
+        min_interval=timedelta(hours=6),
+        default_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        floor_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        budget=None,
+        catch_up="skip",
+        # A ref delete changes no code: the pull request keeps the commits and
+        # GitHub's "Restore branch" undoes it.
+        risk=_fixed("R1"),
+        # Deleting a branch is a `contents: write` on the repository (§5.4).
+        pushes=lambda params: not params.dry_run,
+        creators={"repos": "member", "all": "member"},
+        profile=None,
+        lane="BRANCH-SWEEP-SCHEDULE",
+        phase=2,
+        forge_permissions=("contents:write", "pull_requests:read"),
     ),
 )
 

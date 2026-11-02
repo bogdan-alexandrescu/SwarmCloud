@@ -22,6 +22,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -685,7 +686,7 @@ const counter = {{ calls: 0 }};
 const key = {json.dumps(key)};
 const secrets = gate.secretValues(key, ["MY_PASSPHRASE", "UNSET_NAME"], {{ MY_PASSPHRASE: {json.dumps(passphrase)} }});
 const f = gate.guardedFetch(async (url, init) => {{ sent.push({{ url, init }}); return {{ ok: true }}; }},
-                            {{ url: gate.TYPESAFE_URL, key, secrets, counter }});
+                            {{ url: gate.TYPESAFE_URL, key, secrets, counter, python: {json.dumps(sys.executable)} }});
 const body = JSON.stringify({{ state: {{ task: "use " + {json.dumps(passphrase)}, nested: [{{ k: "x" + key }}] }},
                               questions: {{ q: {{ instructions: {json.dumps(passphrase)} }} }} }});
 await f(gate.TYPESAFE_URL, {{ method: "POST", body, headers: {{ Authorization: "Bearer other" }} }});
@@ -783,7 +784,8 @@ def test_the_launcher_runs_the_tool_against_the_shim_and_counts_the_block(node, 
         counts = tmp_path / "counts"
         config = tmp_path / "config.json"
         config.write_text(json.dumps({"key_file": str(shim), "counts_file": str(counts),
-                                      "data_dir": str(tmp_path), "secret_env_names": ["MY_PASSPHRASE"]}))
+                                      "data_dir": str(tmp_path), "secret_env_names": ["MY_PASSPHRASE"],
+                                      "redaction_python": sys.executable}))
         env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), "MY_PASSPHRASE": passphrase,
                "JEV_BASE_URL": "https://elsewhere.example.com"}
         done = subprocess.run([node, str(root / "bin" / LAUNCHER.name), str(config), "belay"],
@@ -797,7 +799,8 @@ def test_the_launcher_runs_the_tool_against_the_shim_and_counts_the_block(node, 
     assert passphrase not in seen["body"] and "<redacted>" in seen["body"]
     assert token not in seen["body"]
     (line,) = counts.read_text().splitlines()
-    assert json.loads(line) == {"hook": "belay", "calls": 1, "blocked": True, "rules": 0}
+    assert json.loads(line) == {"hook": "belay", "calls": 1, "blocked": True, "rules": 0,
+                                "dropped": 0, "denied": 0, "withheld": 0}
 
 
 def test_without_a_readable_key_the_launcher_runs_nothing_and_lets_the_turn_end(node, tmp_path):
