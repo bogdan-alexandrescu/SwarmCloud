@@ -54,10 +54,23 @@ config names the worker's shim file instead, and the launcher sends to the
 loopback shim with its local token.
 
 THE COUNTS. Each hook run appends one line of counts -- which hook, how many
-Jev calls, whether it blocked, how many rules it flagged; never text -- to
-the counts file. After the agent, `finish` sums them for the attempt's
-summary, removes the key file, and the lifecycle records one RUNNING mark,
-cause `quality_gate`, when belay blocked a stop or enforce flagged a rule.
+Jev calls, whether it blocked, how many rules it flagged, and what the
+launcher's outbound filter kept back (strings dropped, objects denied, keys
+withheld); never text -- to the counts file. After the agent, `finish` sums
+them for the attempt's summary, with the Jev browser's own filter counts
+(`BROWSER_COUNTS_FILE_NAME`, which `runners/jev_launch.py` names to the
+browser's wrapper as SWARM_JEV_BROWSER_COUNTS) under the same
+`filter_dropped`, `filter_denied` and `filter_withheld`, removes the key
+file, and the lifecycle records one RUNNING mark, cause `quality_gate`, when
+belay blocked a stop or enforce flagged a rule.
+
+THE HARD-STOP PATHS (follow-up lane, owner 2026-11-02). The config carries
+the repository's `hard_stop_paths` from its registration in THIS tenant
+(`repositories/<repo_id>`, or `state/repository` on the state routes), as the
+worker's judge reads them (`judge.attempt`), so the launcher's path deny
+sends an edited hard-stop file as its name only. A registration of another
+tenant, none, or one that cannot be read is no hard-stop path: the
+secret-shaped names are still denied, and the gates still run.
 
 THE WORKFLOW SWITCH (the owner's experiment, 2026-11-01). A spec's signed
 dispatch block may carry `quality_gates: on|off` (`SWITCH`), which every
@@ -111,10 +124,22 @@ KEY_FILE_FIELD = "key_file"
 COUNTS_FILE_FIELD = "counts_file"
 DATA_DIR_FIELD = "data_dir"
 SECRET_NAMES_FIELD = "secret_env_names"
+HARD_STOP_FIELD = "hard_stop_paths"
+#: The Jev browser's filter counts, beside the gates' in `private/`
+#: (`runners/jev_launch.BROWSER_COUNTS_FILE_NAME`, restated there: that file
+#: runs with the standard library alone).
+BROWSER_COUNTS_FILE_NAME = "jev-browser.counts"
+#: The job's repository, when the caller names none (`config.WorkerConfig`).
+REPOSITORY_URL_ENV = "REPOSITORY_URL"
 
 #: The hooks the counts name (the launcher's modes).
 BELAY = "belay"
 ENFORCE = "enforce"
+#: The Jev browser's rows (`swarm-jev-gate.mjs` `guardBrowserFetch`): filter
+#: counts only, summed with the hooks'.
+BROWSER = "browser"
+#: The outbound filter's counts on every row, and their summary keys.
+FILTER_COUNTS = ("dropped", "denied", "withheld")
 #: The summary's key, and the RUNNING mark's `cause`.
 SUMMARY_KEY = "quality_gates"
 EVENT_CAUSE = "quality_gate"
@@ -215,6 +240,29 @@ def read_settings(db: Any, tenant_id: str, *,
     return (snap.to_dict() or {}) if snap.exists else {}
 
 
+def hard_stop_paths(db: Any, tenant_id: str, repository_url: str | None, *,
+                    call_options: Mapping[str, Any] | None = None) -> list[str]:
+    """The repository's `hard_stop_paths` from its registration in THIS
+    tenant, as `judge.attempt` reads them; [] when there is no github.com
+    repository, no registration of this tenant, or nothing stored. Raises
+    what a read raises."""
+    where = indexrun.target(tenant_id, repository_url)
+    if isinstance(where, str):
+        return []
+    state = indexrun.state_routes(db)
+    if state is not None:
+        found = indexrun.route_repository(state, where)
+        registration = None if isinstance(found, str) else found[0]
+    else:
+        snap = db.collection(indexrun.REPOSITORIES_COLLECTION).document(where.repo_id).get(
+            **dict(call_options or {}))
+        registration = (snap.to_dict() or {}) if snap.exists else None
+    if not isinstance(registration, Mapping) or registration.get("tenant_id") != tenant_id:
+        return []
+    stored = registration.get(HARD_STOP_FIELD)
+    return [p for p in stored if isinstance(p, str) and p] if isinstance(stored, list) else []
+
+
 def _write_private(path: Path, text: str) -> None:
     if path.is_symlink() or path.exists():
         path.unlink()
@@ -228,7 +276,8 @@ def prepare(*, db: Any, client: Any, tenant_id: str, private_dir: Path, logger: 
             secret_env_names: Iterable[str] = (), inject: bool = False,
             shim_file: Path | None = None,
             verdict: GatesVerdict | None = None,
-            switch: str | None = None) -> dict[str, str]:
+            switch: str | None = None,
+            repository_url: str | None = None) -> dict[str, str]:
     """`{CONFIG_ENV: path}` when this workspace turned the gates on, the
     scheduler vouched at dispatch that swarm-api signed that "on" (`verdict`),
     and a key (or, with the forwarder, the shim) is available; else {}.
@@ -237,7 +286,11 @@ def prepare(*, db: Any, client: Any, tenant_id: str, private_dir: Path, logger: 
     `switch` is the signed dispatch block's `quality_gates` (`SWITCH`), None
     when unset (`decide`). A stored `ON_REQUEST` runs the gates only under
     `on`; `off` runs none. What was decided is left in `verdict.record` when
-    the switch is set or the workspace stored `ON_REQUEST`. Never raises."""
+    the switch is set or the workspace stored `ON_REQUEST`.
+
+    `repository_url` is the attempt's repository, whose registration's
+    `hard_stop_paths` the config carries (`hard_stop_paths`); None reads the
+    job's REPOSITORY_URL. Never raises."""
     if db is None:
         return {}
     switch = switch if switch in (ON, OFF) else None
@@ -286,12 +339,20 @@ def prepare(*, db: Any, client: Any, tenant_id: str, private_dir: Path, logger: 
         data_dir = private / DATA_DIR_NAME
         data_dir.mkdir(mode=0o700, exist_ok=True)
         names = sorted({n for n in secret_env_names if isinstance(n, str) and n})
+        try:
+            stops = hard_stop_paths(db, tenant_id,
+                                    repository_url or os.environ.get(REPOSITORY_URL_ENV),
+                                    call_options=call_options)
+        except Exception as exc:  # noqa: BLE001 -- the names are still denied
+            logger.warning("jev_gates_hard_stops_unread", error=type(exc).__name__)
+            stops = []
         config = private / CONFIG_FILE_NAME
         _write_private(config, json.dumps({
             KEY_FILE_FIELD: str(key_file),
             COUNTS_FILE_FIELD: str(counts),
             DATA_DIR_FIELD: str(data_dir),
             SECRET_NAMES_FIELD: names,
+            HARD_STOP_FIELD: stops,
         }, indent=2) + "\n")
     except Exception as exc:  # noqa: BLE001 -- never fatal, said by type
         logger.warning("jev_gates_unavailable", reason="error", error=type(exc).__name__)
@@ -304,28 +365,41 @@ def _count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 10_000 else 0
 
 
-def tally(counts_file: Path) -> dict[str, int] | None:
-    """The hooks' counts summed, or None when no hook ran. Lines that are not
-    the launcher's are skipped; only integers are read, never text."""
+def _rows(counts_file: Path) -> list[str]:
     path = Path(counts_file)
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_COUNTS_BYTES:
-            return None
-        lines = path.read_text(encoding="utf-8").splitlines()
+            return []
+        return path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
-        return None
+        return []
+
+
+def tally(counts_file: Path, browser_counts_file: Path | None = None) -> dict[str, int] | None:
+    """The hooks' counts summed, with the outbound filter's from every row,
+    the Jev browser's (`browser_counts_file`) included, or None when neither
+    a hook nor the browser wrote one. Lines that are not the launcher's are
+    skipped; only integers are read, never text."""
+    lines = _rows(counts_file)
+    if browser_counts_file is not None:
+        lines += _rows(browser_counts_file)
     out = {"belay_runs": 0, "belay_calls": 0, "belay_blocks": 0,
-           "enforce_runs": 0, "enforce_calls": 0, "enforce_flags": 0, "enforce_rules_flagged": 0}
+           "enforce_runs": 0, "enforce_calls": 0, "enforce_flags": 0, "enforce_rules_flagged": 0,
+           **{f"filter_{name}": 0 for name in FILTER_COUNTS}}
     seen = False
     for line in lines:
         try:
             row = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(row, dict) or row.get("hook") not in (BELAY, ENFORCE):
+        if not isinstance(row, dict) or row.get("hook") not in (BELAY, ENFORCE, BROWSER):
             continue
         seen = True
+        for name in FILTER_COUNTS:
+            out[f"filter_{name}"] += _count(row.get(name))
         hook = row["hook"]
+        if hook == BROWSER:
+            continue
         out[f"{hook}_runs"] += 1
         out[f"{hook}_calls"] += _count(row.get("calls"))
         if row.get("blocked") is True:
@@ -336,8 +410,9 @@ def tally(counts_file: Path) -> dict[str, int] | None:
 
 
 def finish(env: Mapping[str, str]) -> dict[str, int] | None:
-    """After the agent: the counts, and the key file removed. `env` is the
-    runner's environment as built; without the gates' config it is None."""
+    """After the agent: the counts, the outbound filter's included, and the
+    key file removed. `env` is the runner's environment as built; without the
+    gates' config it is None."""
     config_path = env.get(CONFIG_ENV)
     if not config_path:
         return None
@@ -355,7 +430,11 @@ def finish(env: Mapping[str, str]) -> dict[str, int] | None:
         except OSError:
             pass
     counts_file = config.get(COUNTS_FILE_FIELD)
-    return tally(Path(counts_file)) if isinstance(counts_file, str) else None
+    if not isinstance(counts_file, str):
+        return None
+    # The browser's file is the one `runners/jev_launch.py` names, in the
+    # same `private/` as the config this module wrote.
+    return tally(Path(counts_file), Path(config_path).parent / BROWSER_COUNTS_FILE_NAME)
 
 
 def worth_an_event(counts: Mapping[str, int] | None) -> bool:
@@ -365,6 +444,8 @@ def worth_an_event(counts: Mapping[str, int] | None) -> bool:
 
 __all__ = [
     "BELAY",
+    "BROWSER",
+    "BROWSER_COUNTS_FILE_NAME",
     "CONFIG_ENV",
     "ENFORCE",
     "EVENT_CAUSE",
@@ -378,6 +459,7 @@ __all__ = [
     "SWITCH",
     "decide",
     "finish",
+    "hard_stop_paths",
     "prepare",
     "read_settings",
     "stored_value",

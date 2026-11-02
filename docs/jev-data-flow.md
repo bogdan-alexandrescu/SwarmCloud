@@ -293,12 +293,24 @@ hooks, launcher redaction and URL pin, counts and event) and
 
 ## Known gaps
 
-* **The outbound filter's drop counts reach no summary yet.** They are in
-  each line of `private/jev-gates.counts` and the browser's log, but
-  `apps/agent-worker/agent_worker/qualitygates.py::finish` sums only calls,
-  blocks and flags, and nothing hands the browser a `SWARM_JEV_BROWSER_COUNTS`
-  file or the worker's `hard_stop_paths`; those are the worker's files, asked
-  for in the lane's PR.
+* **The filter's counts and hard-stop paths, and what is still open**
+  (follow-up lane, owner 2026-11-02). `apps/agent-worker/agent_worker/qualitygates.py::finish`
+  now sums the filter's `dropped`, `denied` and `withheld` from the hooks'
+  lines and from the browser's `private/jev-browser.counts`, which
+  `apps/agent-worker/agent_worker/runners/jev_launch.py::filter_env` names to
+  the browser as `SWARM_JEV_BROWSER_COUNTS` with the registered secrets'
+  names as `SWARM_JEV_SECRET_ENV_NAMES`, into the summary's `quality_gates`
+  as `filter_dropped`, `filter_denied` and `filter_withheld`; and `prepare`
+  writes the repository's `hard_stop_paths` into the gates' config
+  (`apps/agent-worker/agent_worker/qualitygates.py::hard_stop_paths`, this
+  tenant's registration only). Still open: the browser's counts reach the
+  summary only on an attempt whose gates run, an internal-backend browser
+  (started without `jev_launch.py`) gets neither variable, and `prepare`
+  learns the repository from the job's `REPOSITORY_URL` until the lifecycle
+  passes its own `repository_url` (asked for in the lane's PR). With the
+  forwarder serving the tenant on the TypeSafe backend, a gated claude-code
+  pod is labelled `swarm-typesafe: inject` and no `private/jev-gates.key` is
+  written (`apps/scheduler/scheduler/dispatch.py::quality_gates_run`).
 * **A Cloud Run Job judges on TypeSafe only.** The decision API's egress is
   a cluster Service, so a claude-code or codex attempt routed to Cloud Run
   gets no Internal URL and an internal backend reads `no_internal_url` there.
