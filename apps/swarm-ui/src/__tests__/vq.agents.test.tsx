@@ -327,15 +327,18 @@ describe('VQ-012: over a capped page Waiting is counted whole, as the panel coun
   it('reads `Waiting 3`, with no `+`, when the waiting states answered whole', async () => {
     api.loadTasks.mockResolvedValue(page([...waiting, ...finished], 'next-1'))
     const all = [...waiting, old, ...finished]
+    // One state or a comma list of them, as one `in` query (#2998).
     api.loadTasksInState.mockImplementation(async (state: TaskState) => {
-      const tasks = all.filter((t) => t.state === state)
+      const asked = new Set(state.split(','))
+      const tasks = all.filter((t) => asked.has(t.state))
       return tasks.length === 0 ? { status: 'empty', fetchedAt: Date.now() } : page(tasks, null)
     })
     api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     render(<AgentsScreen onOpen={() => {}} />)
     // MUTATION: read only the live states and the tab reads `2+`.
     await waitFor(() => expect(badge(/^Waiting/)).toBe('3'))
-    expect(api.loadTasksInState.mock.calls.map(([s]) => s).sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
+    expect(api.loadTasksInState).toHaveBeenCalledTimes(1)
+    expect(String(api.loadTasksInState.mock.calls[0]![0]).split(',').sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
     // CONTROL: Recent is still the capped page's, and says so.
     expect(badge(/^Recent/)).toBe('4+')
   })
