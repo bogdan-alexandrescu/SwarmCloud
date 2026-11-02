@@ -209,6 +209,7 @@ def test_the_runner_registers_the_choice_and_names_it_first(monkeypatch, tmp_pat
     assert set(seen["mcp"]) == servers
     # Playwright MCP connects with its client tag; jev's wrapper adds its own.
     assert seen["mcp"]["playwright"]["args"] == ["--cdp-endpoint", ENDPOINT + "/client/playwright",
+                                                 "--image-responses", "omit",
                                                  "--output-dir", str(tmp_path / "artifacts" / "screenshots")]
     if "jev" in servers:
         # With the key file, the launcher starts the wrapper; the config holds the
