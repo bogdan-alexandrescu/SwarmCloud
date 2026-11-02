@@ -34,7 +34,7 @@ from swarm_common.states import TaskState
 
 from .. import agent_questions, roles
 from ..agent_output import AgentOutputService
-from ..attempt_totals import totals_for, with_totals
+from ..attempt_totals import totals_for, totals_for_page, with_totals
 from ..children import (
     PARENT_CANCELLED,
     PROOF_HEADER,
@@ -253,7 +253,13 @@ def list_tasks(
     page's current leases (`swarm_api.heartbeats`).
 
     Every row, in both views, carries its task's attempt totals
-    (`swarm_api.attempt_totals`), from one batched attempts read per 30 rows.
+    (`swarm_api.attempt_totals`) and its account (`swarm_api.task_accounts`):
+    the task document's STORED copies where they are its current attempt's
+    (contract request 132, accepted 2026-11-01), so a page whose rows carry
+    them costs the page, its leases and its pools -- three round trips for
+    200 rows, where it was about sixteen. A row without one (written before
+    the fields, or a retry not yet started) is derived as before: one
+    batched attempts read and one account-event read per 30 such rows.
 
     `state` names one state or several (#2688, LOAD-SPEED): `state=A&state=B`
     or `state=A,B`, at most `STATE_IN_MAX`, is ONE `state IN [...]` query, so
@@ -403,11 +409,13 @@ def _enrich(ctx: AppContext, tenant_id: str, tasks: list) -> tuple[dict, dict, d
         30 rows (Firestore's `in` cap), capped at 64 event documents per task,
         and none for a row whose profile calls no model, never asks the pool,
         or was never admitted; a finished task's answer is cached per process
-        (`swarm_api.task_accounts`);
+        (`swarm_api.task_accounts`); a row whose stored `current_account`
+        is its current attempt's (contract request 132) costs no read;
       * #179: the lease-holding rows' current leases, one `get_all` per 100;
-      * EVERY ATTEMPT'S SPEND AND TIME (owner decision 2026-10-05): one
+      * EVERY ATTEMPT'S SPEND AND TIME (owner decision 2026-10-05): the
+        task's stored copy where current (contract request 132), else one
         batched attempts query per 30 rows, never one per task
-        (`swarm_api.attempt_totals.totals_for`);
+        (`swarm_api.attempt_totals.totals_for_page`);
       * the submitters' display names, from one lookup (`people.add_names`).
 
     The Firestore client is safe to share across threads. A read that raises
@@ -420,7 +428,7 @@ def _enrich(ctx: AppContext, tenant_id: str, tasks: list) -> tuple[dict, dict, d
         waiting = pool.submit(waiting_for_page, ctx.db, tasks, as_of=now)
         accounts = pool.submit(accounts_for, ctx.db, tenant_id, tasks)
         beats = pool.submit(heartbeats_for_page, ctx.db, tenant_id, tasks, core=ctx.settings.core)
-        totals = pool.submit(totals_for, ctx.db, tenant_id, [task.id for task in tasks])
+        totals = pool.submit(totals_for_page, ctx.db, tenant_id, tasks)
         names = pool.submit(lookup, emails) if emails else None
         return (
             waiting.result(),
