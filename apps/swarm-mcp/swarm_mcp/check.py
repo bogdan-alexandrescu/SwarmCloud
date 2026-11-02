@@ -35,7 +35,9 @@ THE RULES, each with the control that is NOT flagged:
     shows). A READY task is invariant 1 working -- it holds nothing -- and is
     flagged only for its age, never as a fault.
 (c) `parked` (STUCK): PARKED with HUMAN_REQUIRED (only a person promotes it),
-    CI_PENDING for longer than 90 minutes, or DEPENDENCY_INCOMPLETE whose
+    CI_PENDING for longer than 90 minutes (the CI wait's age across its
+    re-parks, `_ci_entered`, #2999; its last reading is the evidence), or
+    DEPENDENCY_INCOMPLETE whose
     dependency FAILED, was CANCELLED or DEAD_LETTERED. Any other park reason
     -- a provider quota window, a retry backoff -- is the platform waiting by
     design, and is not flagged. A HUMAN_REQUIRED park whose `park_phase` is
@@ -402,6 +404,54 @@ def _entered(events: list[dict[str, Any]], state: str, created: datetime | None)
     return {"since": created, "exact": False, "source": "its creation (no later event entered the state)"}
 
 
+def _ci_entered(task: dict[str, Any], events: list[dict[str, Any]],
+                created: datetime | None) -> dict[str, Any]:
+    """When a CI_PENDING park's CI wait began, across its re-parks (#2999).
+
+    Every re-check of a merge step's CI is a promotion, an attempt and a new
+    `parked` event, so the newest `parked` event (`_entered`) is never more
+    than one re-check old: PR #2959's merge step parked 13 hours, re-checked
+    56 times, and never aged past 90 minutes here. The wait's start is the
+    EARLIER of:
+
+      * the API's `waiting.since` for a CI_PENDING wait: the park's own
+        `merge_wait.first_parked_at`, carried over every re-park and cleared
+        only when a merge-slot wait stops the CI clock;
+      * the oldest `parked` event of the unbroken run of CI_PENDING parks
+        (the event's `detail.reason`) on the newest events: exact when a park
+        for another reason, or the end of the history, bounds it; a lower
+        bound when the page was full.
+
+    `_entered` when neither says: an API that serves no `waiting` and events
+    that name no reason.
+    """
+    found: list[dict[str, Any]] = []
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    since = render.parse_time(waiting.get("since")) if waiting.get("reason") == "CI_PENDING" else None
+    if since is not None:
+        found.append({"since": since, "exact": True,
+                      "source": "its CI wait's first park (the API's `waiting.since`)"})
+    start: datetime | None = None
+    bounded = False
+    for event in events:
+        if str(event.get("type") or "").lower() != "parked":
+            continue
+        detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+        at = render.parse_time(event.get("at"))
+        if detail.get("reason") != "CI_PENDING" or at is None:
+            bounded = True
+            break
+        start = at
+    if start is not None:
+        full = len(events) >= EVENT_PAGE and not bounded
+        found.append({"since": start, "exact": not full,
+                      "source": "the first of its unbroken CI_PENDING parks"
+                                + (f" on its newest {EVENT_PAGE} events" if full else "")})
+    if not found:
+        return _entered(events, "PARKED", created)
+    return min(found, key=lambda entry: entry["since"])
+
+
 def _age_evidence(entered: dict[str, Any], now: datetime) -> dict[str, Any]:
     since = entered["since"]
     if since is None:
@@ -603,7 +653,9 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
     if reason not in ("HUMAN_REQUIRED", "CI_PENDING"):
         return None
     created = render.parse_time(task.get("created_at"))
-    entered = _entered(_need(reads.events(str(task_id_of(task)))), "PARKED", created)
+    events = _need(reads.events(str(task_id_of(task))))
+    entered = (_ci_entered(task, events, created) if reason == "CI_PENDING"
+               else _entered(events, "PARKED", created))
     evidence = _age_evidence(entered, now)
     evidence["park_reason"] = reason
     age = evidence["age_minutes"]
@@ -611,6 +663,7 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         if age is None or age <= CI_PENDING_MINUTES:
             return None
         evidence["window_minutes"] = CI_PENDING_MINUTES
+        evidence.update(_ci_reading(task))
         text = (f"PARKED on CI_PENDING for {evidence['age_is']} {age} min (over {CI_PENDING_MINUTES}): "
                 "its pull request's checks have not finished")
     elif _question_wait(task) is not None:
@@ -636,6 +689,20 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
                else "only a person promotes it -- open its console and take control")
         text = f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: {why}"
     return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": _with_summary(evidence, task)}
+
+
+def _ci_reading(task: dict[str, Any]) -> dict[str, Any]:
+    """What the CI wait last read, as evidence: the API's `waiting.detail` for
+    a CI_PENDING wait -- the head, the checks pending and failed, the
+    re-checks so far and when the checks were last read. Only what was
+    served; nothing when the API served no detail."""
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    if waiting.get("reason") != "CI_PENDING":
+        return {}
+    keys = {"head": "head", "pending": "checks_pending", "failed": "checks_failed",
+            "wakes": "re_checks", "last_checked_at": "checks_read_at"}
+    return {name: detail[key] for key, name in keys.items() if detail.get(key) is not None}
 
 
 def _clock(value: datetime | None) -> str:
