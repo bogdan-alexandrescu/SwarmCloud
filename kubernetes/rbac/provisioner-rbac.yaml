@@ -57,7 +57,8 @@
 #
 # THE RESIDUAL, so it is not mistaken for zero: `get` is cluster-wide, so this
 # identity can read, by name, a Namespace, ServiceAccount, quota, LimitRange,
-# NetworkPolicy, Role or RoleBinding in any namespace of this cluster. Reads do
+# NetworkPolicy, Role or RoleBinding in any namespace of this cluster, and the
+# FQDNNetworkPolicy swarm-allow-typesafe-direct in any namespace. Reads do
 # not pass through admission, so no policy narrows them. None of those kinds
 # holds a secret, and without ConfigMap none holds configuration either.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -91,6 +92,21 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "create", "patch"]
+  # The tenant's one hostname policy, swarm-allow-typesafe-direct
+  # (kubernetes/render.py TENANT_FQDN_FILES), which the render holds only on a
+  # cluster whose API serves the kind (docs/runbooks/typesafe-egress.md). `get`
+  # and `patch` BY NAME, so no other FQDNNetworkPolicy can be read or changed.
+  # `create` cannot carry resourceNames (a create is a POST to the collection,
+  # which has no name, as `escalate` below), so it is a rule of its own and the
+  # scope policy refuses any name but this one. On a cluster without the kind
+  # both rules grant nothing.
+  - apiGroups: ["networking.gke.io"]
+    resources: ["fqdnnetworkpolicies"]
+    verbs: ["get", "patch"]
+    resourceNames: ["swarm-allow-typesafe-direct"]
+  - apiGroups: ["networking.gke.io"]
+    resources: ["fqdnnetworkpolicies"]
+    verbs: ["create"]
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
     verbs: ["get", "create", "patch"]

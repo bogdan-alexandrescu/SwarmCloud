@@ -204,6 +204,13 @@ LIVE_FLAGS=(--swarm-api-egress-cidr --swarm-api-egress-source)
 # eng and smoke namespaces' Job read.
 VERIFY_FLAGS=(--verify-uid)
 
+# WHETHER THE CLUSTER ADMITS HOSTNAME POLICY IS READ, NOT PASSED
+# (docs/runbooks/typesafe-egress.md). `--fqdn-network-policy` makes render.py
+# add the tenant's FQDNNetworkPolicy; this script passes it only when the
+# cluster's API serves the kind. Typed by hand it would send a kind the cluster
+# refuses, and refuse the tenant's whole apply with it.
+FQDN_FLAGS=(--fqdn-network-policy)
+
 # THE PROJECT IS PROJECT_ID, NOT PASSED: every render below is given
 # `--project "${PROJECT_ID}"`, the project whose cluster, uniqueIds and network
 # this script reads. A forwarded `--project` would come after it and win, and
@@ -289,6 +296,11 @@ while [[ $# -gt 0 ]]; do
         die "'${1%%=*}' would reach the renderer as ${PROJECT_FLAG}; the project is PROJECT_ID
        (${PROJECT_ID}), the one whose cluster and identities this script reads. Set
        PROJECT_ID instead."
+      fi
+      if FQDN_FLAG="$(derived_flag_for "$1" "${FQDN_FLAGS[@]}")"; then
+        die "'${1%%=*}' would reach the renderer as ${FQDN_FLAG}, which this script decides
+       from the cluster itself (whether its API serves FQDNNetworkPolicy); it cannot be
+       passed, in full or abbreviated."
       fi
       if VERIFY_FLAG="$(derived_flag_for "$1" "${VERIFY_FLAGS[@]}")"; then
         die "'${1%%=*}' would reach the renderer as ${VERIFY_FLAG}, which this script resolves
@@ -946,6 +958,30 @@ elif [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
     redact <"${TSF_WORK}/fwd-foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
     die "the swarm-typesafe-fwd manifest names a namespace other than swarm-system (above); nothing was applied."
   fi
+  # THE EGRESS POLICY RIDES WITH THE FORWARDER where terraform/infra was told
+  # the cluster admits hostname policy (gke_enable_fqdn_network_policy;
+  # docs/runbooks/typesafe-egress.md): a NetworkPolicy that isolates the
+  # forwarder and an FQDNNetworkPolicy that admits its two hosts. A cluster
+  # that does not serve the kind would refuse the second and keep the first,
+  # and every forwarded Jev call would fail at the forwarder. So that render
+  # goes only to a cluster whose API serves the kind, and is refused whole
+  # anywhere else.
+  if grep -Eq '^kind:[[:space:]]*FQDNNetworkPolicy[[:space:]]*$' "${TSF_WORK}/fwd.yaml"; then
+    FQDN_RESOURCE="$("${PYTHON}" "${HERE}/render.py" fqdn-resource)" \
+      || die "could not ask render.py which resource the hostname policy needs (above)"
+    if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" api-resources \
+        --api-group=networking.gke.io -o name >"${TSF_WORK}/resources" 2>"${TSF_WORK}/resources.err"; then
+      redact <"${TSF_WORK}/resources.err" | sed -n '1,3p' | sed 's/^/     /' >&2
+      die "could not read whether the cluster serves ${FQDN_RESOURCE} (above), which the forwarder's
+       egress policy needs; nothing was applied."
+    fi
+    grep -Fxq "${FQDN_RESOURCE}" "${TSF_WORK}/resources" \
+      || die "the swarm-typesafe-fwd manifest carries its hostname egress policy, but this cluster does
+       not serve ${FQDN_RESOURCE}: the forwarder would be isolated with no host to reach.
+       Set gke_enable_fqdn_network_policy only where the cluster has FQDN network policy
+       (terraform/environments/<env>/<env>.tfvars). Nothing was applied."
+    info "hostname policy  the cluster serves ${FQDN_RESOURCE}: the forwarder's egress policy is applied with it"
+  fi
   MANIFEST="$(cat "${TSF_WORK}/fwd.yaml")"
   rm -rf "${TSF_WORK}"
   info "rendering the TypeSafe forwarder  terraform output swarm_typesafe_fwd_manifest"
@@ -1242,8 +1278,49 @@ else
     dim "  no --spec-verify-keys: swarm-spec-verify-keys is not rendered; an existing one is left as it is"
   fi
 
+  # THE TENANT'S HOSTNAME POLICY, ONLY WHERE THE CLUSTER SERVES THE KIND
+  # (docs/runbooks/typesafe-egress.md; owner's pick "Wire behind a cluster
+  # check", 2026-11-02). swarm-allow-typesafe-direct is a GKE
+  # FQDNNetworkPolicy, which a cluster without FQDN network policy refuses --
+  # and with it the whole apply. So render.py renders it only with
+  # --fqdn-network-policy, passed here only when this cluster's API serves
+  # fqdnnetworkpolicies.networking.gke.io (dev.tfvars turns it on; no other
+  # environment does). Discovery, which every authenticated caller may read
+  # (GKE's system:discovery): no grant is needed to ask.
+  #
+  # Skipped, with a line saying so, when the cluster does not serve it, when the
+  # question cannot be answered, and under the workspace job's call guard
+  # (SWARM_CALL_GUARD): scripts/lib/workspace-calls.json admits neither this
+  # read nor the kind, and a refused call stops the job. The policy only names
+  # a host rule 4 of allow-egress.yaml already admits, so a namespace without
+  # it loses nothing a packet notices today; onboarding never waits on it.
+  FQDN_ARGS=()
+  FQDN_RESOURCE="$("${PYTHON}" "${HERE}/render.py" fqdn-resource)" \
+    || die "could not ask render.py which resource the hostname policy needs (above)"
+  if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then
+    info "hostname policy  skipped: the workspace call guard admits no ${FQDN_RESOURCE} read; swarm-allow-typesafe-direct is not rendered"
+  else
+    FQDN_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-fqdn-probe.XXXXXX")"
+    # To files, not $(...): the status and the error are both kept.
+    if "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" api-resources \
+        --api-group=networking.gke.io -o name >"${FQDN_WORK}/resources" 2>"${FQDN_WORK}/err"; then
+      if grep -Fxq "${FQDN_RESOURCE}" "${FQDN_WORK}/resources"; then
+        FQDN_ARGS=(--fqdn-network-policy)
+        info "hostname policy  the cluster serves ${FQDN_RESOURCE}: rendering swarm-allow-typesafe-direct"
+      else
+        info "hostname policy  skipped: the cluster does not serve ${FQDN_RESOURCE} (FQDN network policy is off); swarm-allow-typesafe-direct is not rendered"
+      fi
+    else
+      warn "hostname policy  skipped: could not read whether the cluster serves ${FQDN_RESOURCE}:"
+      redact <"${FQDN_WORK}/err" | sed -n '1,3p' | sed 's/^/     /' >&2
+      dim "  swarm-allow-typesafe-direct is not rendered; re-run once the cluster answers discovery."
+    fi
+    rm -rf "${FQDN_WORK}"
+  fi
+
   MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" --project "${PROJECT_ID}" \
     ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
+    ${FQDN_ARGS[@]+"${FQDN_ARGS[@]}"} \
     --scheduler-uid "${SCHEDULER_UID}" \
     --reconciler-uid "${RECONCILER_UID}" \
     ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"} \

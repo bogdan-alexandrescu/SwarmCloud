@@ -614,7 +614,21 @@ def test_the_deployer_rbac_is_exactly_what_a_run_asks_for(created: dict) -> None
     cluster_role = next(d for d in docs if d["kind"] == "ClusterRole")
     granted: set[tuple[str, str, str]] = set()
     bind_names: set[str] = set()
+    # The tenant's hostname policy (kubernetes/render.py TENANT_FQDN_FILES,
+    # docs/runbooks/typesafe-egress.md) is granted for its one name, but the
+    # job never sends it: kubernetes/apply.sh skips it under the call guard,
+    # which admits neither the kind nor the discovery read. Held apart here,
+    # exactly, and the run is held to sending none.
+    hostname = [r for r in cluster_role["rules"] if r["resources"] == ["fqdnnetworkpolicies"]]
+    assert [(r["apiGroups"], sorted(r["verbs"]), r.get("resourceNames")) for r in hostname] == [
+        (["networking.gke.io"], ["get", "patch"], ["swarm-allow-typesafe-direct"]),
+        (["networking.gke.io"], ["create"], None),
+    ], hostname
+    assert not [n for n in world["k8s"] if n.split("/", 1)[0] == "FQDNNetworkPolicy"]
+    assert not [c for c in calls if "api-resources" in c], "the job asked the cluster's discovery under the guard"
     for rule in cluster_role["rules"]:
+        if rule in hostname:
+            continue
         triples = {(g, r, v) for g in rule["apiGroups"] for r in rule["resources"] for v in rule["verbs"]}
         if "resourceNames" in rule:
             assert {v for _, _, v in triples} == {"bind"}, rule

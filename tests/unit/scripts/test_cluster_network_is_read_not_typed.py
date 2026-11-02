@@ -170,6 +170,14 @@ case "$*" in
   *"config current-context"*) cat "${d}/context" ;;
   *"config view"*) cat "${d}/cluster-ref" ;;
   *"get service kube-dns"*) cat "${d}/kube-dns-ip" ;;
+  # Discovery: the networking.gke.io resources the cluster serves, one per
+  # line (kubernetes/apply.sh asks before it renders a hostname policy).
+  # None, unless the test wrote them.
+  *"api-resources --api-group=networking.gke.io -o name"*)
+    if [[ -f "${d}/api-resources-fails" ]]; then
+      printf 'error: unable to retrieve the complete list of server APIs\n' >&2; exit 1
+    fi
+    if [[ -f "${d}/api-resources" ]]; then cat "${d}/api-resources"; fi ;;
   *"get daemonset node-local-dns"*) cat "${d}/node-local-dns.json" ;;
   # Scoped, the parity check reads the one policy by name: the object, or
   # NotFound -- never the list document.

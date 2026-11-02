@@ -3892,54 +3892,66 @@ run going from **935 s to ~835 s**. By class:
 The first runs after this lands are the measurement: re-read them with the
 same two calls and correct this table.
 
-## CI starts when the implement step pushes
+## A lane head runs CI once, on its pull request
 
-**Why (LANE CI-EARLY, part of #1694, owner decision 2026-10-20).** A read of
-117 workflows found the merge step spending 40 % of a workflow waiting for CI
-— 20.5 h in the sample — because nothing was tested until the fix step opened
-the pull request. Under the integrate strategy the implement step is a
-`contributor`: it pushes `swarm/<task id>` and opens no pull request
-(`agent_worker/lifecycle.py`, the contributor's early return); the
-`integrator` (the fix step) pushes its own branch and opens the pull request
-after review. Measured CI then took a median 14.5 min (p90 20.9).
+**Owner decision, 2 November 2026 (part of #2688).** A lane branch
+(`swarm/**`) no longer runs `application.yml`, `security.yml` or
+`terraform.yml` on `push`. A lane head is tested once, by its pull request's
+run; `main` keeps its own push runs (they build the images, record the tested
+tree and start the release), and a merge-queue entry keeps `merge_group`.
 
-**What runs.** `application.yml`, `security.yml` and `terraform.yml` — every
-workflow behind a required check, `terraform.yml` because `ci-gate` waits for
-it — also run on a push to `swarm/**`. A lane push runs the whole of each, as
-`main` does: the `changes` job treats any event but `pull_request` as "run
-everything". It never builds or pushes an image (`build images` is held to
-`main` and dispatch by its `if:`), never plans (`plan` likewise;
-`plan-not-run` says so in the run), and never releases (`release.yml` is
-`main`-only). `trivy (repo)` compares a lane push with `main`'s tip, the base
-its pull request will have; with no base every finding `main` already carries
-would fail it. The CI fixer acts only on a pull request's run, so one red
-head does not start two fixers.
+**Why.** Measured on 2 November 2026 over the 14 days before, in the
+Engineering workspace: 1,126 agents finished after 2 hours or more. Along each
+workflow's slowest chain, 352 hours went to merge steps parked on
+`CI_PENDING`, 265 to waiting for the owner, and 75 to runs killed at their 1
+or 2 hour limit (46 agents, ending 37 workflows). A lane head ran about 100
+checks, nearly all twice -- once on `push` and once on `pull_request` -- and
+the merge step held both (`required_check_state`: every event's latest run
+must be green). On 28 October, with 23 to 28 merges queued, one head's checks
+took 1.5 to 4 hours although no job ran over about 20 minutes: the queue for
+the runners, not the jobs, was the wait, and half of what was queued was the
+second copy.
 
-**Why push triggers and not an early draft pull request.** The owner offered
-both; the merge step's rule — every required check green at the head — is
-exact only under push triggers:
+**What a lane head runs.** Before (CI-EARLY, 2026-10-20): every job of
+`application.yml` (17, the whole suite on the push, the selection on the pull
+request) and of `security.yml` (6) on both events, and `terraform.yml` (6) on
+the push always and on the pull request when its paths matched -- two runs of
+every required check at the head. After: each of those workflows once, on
+`pull_request`; `terraform.yml` only when the pull request's paths reach it,
+which `ci-gate` already models (`scripts/ci-gate.sh expected`). A lane branch
+with no pull request yet runs nothing until the pull request opens.
 
-* `agent_worker/merge.py` reads every check run at the head commit, from any
-  event, and holds a required check green only when **all** its runs are
-  (`required_check_state`: any run in progress is pending, any red one is
-  red). A push run at the head is one more run that must be green. Nothing is
-  relaxed, and the pull request's own run still happens on every head.
-* A draft opened at implement would be a *different* pull request from the
-  one merged: the integrator pushes `swarm/<its own task id>`, merging the
-  contributors' branches. Keeping one pull request would mean changing which
-  branch the integrator publishes to, in the worker and in swarm-api.
-* The merge step refuses a draft (`merge.py`, refusal `draft`), so the fix
-  step would have to mark it ready, and a red draft would start `ci-fix.yml`
-  on a branch the fix step is about to write.
+**What still holds.**
 
-**What it costs.** A lane branch's runs, cancelled by the next push to the same
-branch (the concurrency group is the ref everywhere but `main`). The
-integrator's head is pushed *and* opened as a pull request, so it carries two
-runs, and the merge step waits for both: the pull request's selected run and
-the push's full one. Whether the push run should narrow to what the pull
-request would select, or the pull request's run reuse a lane push of the
-identical tree (as `main` does, below), was put to the owner in the lane's
-pull request.
+* Every check the ruleset requires (`secret scan`, `trivy (repo)`,
+  `checkov (terraform + kubernetes)`, `platform policy assertions`,
+  `ci-gate`) is a job of a workflow that runs on every pull request with no
+  path filter and on `synchronize`, so under the up-to-date rule a pull
+  request brought up to date with a moved `main` is re-tested at its new head.
+* The merge step (`agent_worker/merge.py`) and swarm-api's check reading
+  (`swarm_api/forgechecks.py`) never required a push run: they decide each
+  required check by the latest run of each event present at the head, so a
+  head with only `pull_request` runs is decided by those. A stale push run at
+  a shared sha still counts by the same rule, unchanged.
+* The CI fixer already acted only on a pull request's run (`ci-fix.yml`).
+* `ci_reuse.py`'s pull-request reuse of a lane push of the same tree
+  ([below](#a-pull-request-reuses-its-lane-push-of-the-same-tree)) now finds
+  no lane push and runs the selection itself; `main`'s reuse of a pull
+  request's tested tree is unchanged.
+
+**What it costs.** CI no longer starts while review and fix run on the
+implement step's branch (the reason CI-EARLY added the push triggers: 40 % of
+a workflow waited for CI in its sample). It starts when the pull request
+opens, and each head is then tested once, not twice, behind half the queue.
+
+`tests/unit/scripts/test_ci_once_per_head.py` reads every workflow and holds
+that no workflow a lane head's pull request runs is also triggered by a push
+to that lane branch, that `main` keeps its push runs, that every required
+check (read from the ruleset body [above](#owner-step-require-ci-gate-once-it-is-on-main))
+is produced on every pull request, and that both readers decide a head with
+only `pull_request` runs. The workflow change itself is held for the owner
+(the platform may not push `.github/workflows/`); the operator applies it
+from the pull request's quoted patch.
 
 ### shellcheck runs in parallel, and on a pull request over what it reaches
 

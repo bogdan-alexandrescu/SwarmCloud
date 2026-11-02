@@ -14,8 +14,8 @@ launch of an attempt -- a pending-work resume, a repair turn, an account move
 has finished (`claude_code.body`), and it lives in `private/`, which is never
 checkpointed and is destroyed with the workspace.
 
-Standard library only, run with the runner's own interpreter in isolated
-mode. A missing or empty file is a one-line refusal naming the file, never
+Standard library only (but for the profile catalogue, below), run with
+the runner's own interpreter in isolated mode. A missing or empty file is a one-line refusal naming the file, never
 its content.
 
 THE FORWARDER (SEC-MIGRATE-TYPESAFE, lane TS-MIGRATE-WORKER). With the
@@ -31,6 +31,19 @@ the TypeSafe backend unless it passes the shim's URL through, which a wrapper
 says by carrying SHIM_PASSTHROUGH_MARKER; against an older wrapper jev would
 send to api.typesafe.ai with no key, so this refuses to start rather than
 send anything. A key file -- the switch off -- is read exactly as before.
+
+THE OUTBOUND FILTER'S INPUTS (follow-up lane, owner 2026-11-02). The image's
+wrapper runs every request body through the outbound filter
+(`swarm-jev-gate.mjs` `guardBrowserFetch`), which reads two variables this
+sets on the server's environment, both names and paths, never a value:
+SWARM_JEV_BROWSER_COUNTS, `jev-browser.counts` beside the key (or shim) file
+in `private/`, where the wrapper appends one line of counts per call and
+`agent_worker.qualitygates.finish` sums them into the attempt's summary; and
+SWARM_JEV_SECRET_ENV_NAMES, the comma-separated NAMES of the registered
+secrets whose values the filter scrubs: the profile's declared secrets
+(`swarm_common.profiles`, by SWARM_RUNNER_PROFILE, the one import outside
+the standard library and skipped when it fails) and the quality gates'
+config's `secret_env_names` when the gates run.
 """
 
 from __future__ import annotations
@@ -52,6 +65,18 @@ SHIM_URL = re.compile(r"http://127\.0\.0\.1:[0-9]{1,5}/v1/systemone")
 #: What the image's `bin/jev-browser-mcp` carries once it passes the shim's
 #: URL through for the TypeSafe backend (the patch in this lane's PR body).
 SHIM_PASSTHROUGH_MARKER = "swarm-typesafe-shim-passthrough/v1"
+#: The wrapper's outbound filter's variables (`swarm-jev-gate.mjs`).
+COUNTS_ENV = "SWARM_JEV_BROWSER_COUNTS"
+SECRET_NAMES_ENV = "SWARM_JEV_SECRET_ENV_NAMES"
+#: `qualitygates.BROWSER_COUNTS_FILE_NAME`, restated (standard library);
+#: tests/unit/worker/test_quality_gates.py holds them equal.
+BROWSER_COUNTS_FILE_NAME = "jev-browser.counts"
+#: Where the names come from: the worker's profile variable
+#: (`cliagent.RUNNER_PROFILE_ENV`) and the gates' config
+#: (`qualitygates.CONFIG_ENV`, field `secret_env_names`).
+PROFILE_ENV = "SWARM_RUNNER_PROFILE"
+GATES_CONFIG_ENV = "SWARM_JEV_GATES_CONFIG"
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 
 def _shim(text: str) -> tuple[str, str] | None:
@@ -78,6 +103,38 @@ def _passes_shim_url(server: str) -> bool:
         return False
 
 
+def secret_env_names(environ: dict[str, str]) -> str:
+    """The registered secrets' NAMES, comma-separated and sorted: the
+    profile's declared ones and the gates' config's. Never a value."""
+    names: set[str] = set()
+    profile = environ.get(PROFILE_ENV, "")
+    if profile:
+        try:
+            from swarm_common.profiles import RUNNER_PROFILES
+
+            found = RUNNER_PROFILES.get(profile)
+            names.update(getattr(found, "secrets", ()) or ())
+        except Exception:  # noqa: BLE001 -- the gates' names and the key are still scrubbed
+            pass
+    config = environ.get(GATES_CONFIG_ENV, "")
+    if config:
+        try:
+            with open(config, encoding="utf-8") as handle:
+                listed = json.load(handle).get("secret_env_names")
+            if isinstance(listed, list):
+                names.update(n for n in listed if isinstance(n, str))
+        except (OSError, ValueError, AttributeError):
+            pass
+    return ",".join(sorted(n for n in names if _ENV_NAME.fullmatch(n)))
+
+
+def filter_env(env: dict[str, str], key_file: str) -> None:
+    """The outbound filter's two variables, on the server's `env`."""
+    env[COUNTS_ENV] = os.path.join(os.path.dirname(os.path.abspath(key_file)),
+                                   BROWSER_COUNTS_FILE_NAME)
+    env[SECRET_NAMES_ENV] = secret_env_names(env)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         sys.stderr.write("jev_launch: usage: jev_launch.py KEY_FILE SERVER [ARGS...]\n")
@@ -94,6 +151,7 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(f"jev_launch: the TypeSafe key file {key_file} is empty\n")
         return 1
     env = dict(os.environ)
+    filter_env(env, key_file)
     shim = _shim(key)
     if shim is not None:
         url, token = shim
