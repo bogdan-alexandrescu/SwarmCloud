@@ -109,8 +109,12 @@ def test_a_failed_session_read_does_not_close_the_viewer(ldb, people, groups, ob
     with client.websocket_connect(SOCKET, headers=bearer("alice")) as ws:
         ws.send_text(json.dumps({"ticket": ticket}))
         assert ws.receive_json()["open"] is True
-        assert wait_until(lambda: len(calls) >= 6)
-        relay.release.set()
+        # Generous: under a loaded parallel run the 0.02 s ticker's reads go
+        # through a busy threadpool, and 3 s saw only four of them.
+        try:
+            assert wait_until(lambda: len(calls) >= 6, seconds=30.0)
+        finally:
+            relay.release.set()
         # Still the same socket: the relay's frame reaches the viewer.
         assert ws.receive_bytes() == relay.frame
     assert len(relay.links) == 1
