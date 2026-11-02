@@ -2960,6 +2960,26 @@ In two places, because they fail differently:
 No line in either one carries `Co-Authored-By` or any other attribution. The
 commit is the App's.
 
+### 5.5 The pull request's branch is deleted after the merge
+
+The owner asked on 2026-11-02 for an agent's branch to go once its changes are
+merged: the repository held 4,756 branches, and merges are squashed, so `git
+branch --merged` recognises almost none of them. A merged branch is known by
+its pull request. After a merge (the direct merge call, a landing by the
+merge train or by GitHub's merge queue, or the retry that finds the pull request
+already merged at an accepted head), `_delete_head_branch` deletes the pull
+request's head branch only when it is the workflow's own `swarm/<task>`
+branch in this repository and GitHub still has it at the merged commit. It
+never deletes the default branch, a protected branch, a `keep/` branch, or a
+branch another open pull request is from; a head that moved after the merge
+is kept, because someone pushed work there that the merge did not take. A
+branch already gone (GitHub's auto-delete of merged head branches is on, so
+the delete answers 404 or 422 "Reference does not exist") counts as deleted.
+The merge record carries `branch_deleted` and `branch_cleanup` (`{branch,
+head, outcome, reason}`); a failed delete is `outcome: "failed"`, the step
+still ends SUCCEEDED, and the hand-off sweep retries it once the workflow
+has finished ([workflows.md](workflows.md#a-finished-workflows-hand-off-branches-are-deleted)).
+
 ---
 
 ## 6. Every failure mode, and its end cause

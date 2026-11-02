@@ -550,6 +550,8 @@ PURE_BASE_MERGES_KEY = "pure_base_merges"
 _OUT_OF_DATE = re.compile(r"out of date|not up to date|is behind", re.IGNORECASE)
 #: A 405/422 (merge) or 422 (update-branch) that names a merge conflict.
 _CONFLICT = re.compile(r"conflict", re.IGNORECASE)
+#: A 422 from a branch delete that means the branch is already gone.
+_REF_GONE = re.compile(r"reference does not exist", re.IGNORECASE)
 #: A 405/422 from the merge call that means the base merges only through a
 #: merge queue: GitHub's "Changes must be made through the merge queue",
 #: alone (405) or under "Repository rule violations found" (422).
@@ -1216,6 +1218,14 @@ class EnqueueAnswer:
     message: str = ""
 
 
+@dataclass(frozen=True)
+class BranchFacts:
+    """A branch as GitHub reads it: its head commit and whether it is protected."""
+
+    sha: str | None
+    protected: bool
+
+
 class ForgeMerger(Protocol):
     """What the merge step asks of a forge. One implementation: `GitHubMerger`."""
 
@@ -1252,6 +1262,12 @@ class ForgeMerger(Protocol):
     def closing_issues(self, number: int) -> ClosingReferences: ...
 
     def close_issue(self, number: int, *, comment: str) -> bool: ...
+
+    def branch_facts(self, name: str) -> BranchFacts | None: ...
+
+    def open_pulls_from(self, name: str) -> int: ...
+
+    def delete_branch(self, name: str) -> bool: ...
 
 
 class UnsupportedForge(ValueError):
@@ -1636,6 +1652,38 @@ class GitHubMerger:
             payload={"state": "closed", "state_reason": "completed"},
         )
         return commented and answer.status == 200
+
+    def branch_facts(self, name: str) -> BranchFacts | None:
+        """The branch's head and protection; None when the branch is gone."""
+        answer = self._client.get(f"{self._base}/branches/{quote(name, safe='')}")
+        if answer.status == 404:
+            return None
+        if answer.status != 200:
+            raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/branches",
+                                          forge_mod._message_of(answer.data))
+        data = _mapping(answer.data)
+        return BranchFacts(sha=_str(_mapping(data.get("commit")).get("sha")),
+                           protected=data.get("protected") is True)
+
+    def open_pulls_from(self, name: str) -> int:
+        """How many open pull requests have `name`, in this repository, as their head."""
+        pulls = self._client.get_ok(f"{self._base}/pulls",
+                                    query={"state": "open", "head": f"{self.owner}:{name}"})
+        return len(pulls) if isinstance(pulls, list) else 0
+
+    def delete_branch(self, name: str) -> bool:
+        """Delete the branch: True when this call deleted it, False when it was
+        already gone (after GitHub's auto-delete of merged head branches a
+        delete answers 404, or 422 "Reference does not exist"). Raises on any
+        other answer."""
+        path = f"{self._base}/git/refs/heads/{quote(name, safe='/')}"
+        answer = self._client.request("DELETE", path)
+        message = forge_mod._message_of(answer.data)
+        if answer.status == 204:
+            return True
+        if answer.status == 404 or (answer.status == 422 and _REF_GONE.search(message)):
+            return False
+        raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/git/refs/heads", message)
 
 
 def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
@@ -2716,6 +2764,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                         train_provenance(ctx, merger, number=number, head=pr.head_sha,
                                          base=default, train=landed.get("train_id")))
                 _close_issues(run, merger, number)
+                _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                    default=default)
                 return _outcome(TaskState.SUCCEEDED, None, summary, "")
             if _queued_by_this_step(own):
                 # The merge queue merged what this step enqueued (C3H): this
@@ -2727,6 +2777,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                         queued_provenance(ctx, merger, number=number, head=pr.head_sha,
                                           base=default))
                 _close_issues(run, merger, number)
+                _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                    default=default)
                 return _outcome(TaskState.SUCCEEDED, None, summary, "")
             # A lost attempt that merged, or another merger after this step's
             # update: the merge stands, and the issues it closes are closed
@@ -2734,6 +2786,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             summary["already_merged"] = True
             summary["merge_commit"] = pr.merge_commit_sha
             _close_issues(run, merger, number)
+            _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                default=default)
             return _outcome(TaskState.SUCCEEDED, None, summary, "")
         return run.refuse("merged_at_other_head",
                           f"pull request #{number} was merged at {pr.head_sha}, not {pinned}")
@@ -2984,6 +3038,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     # answer; each failure is recorded, never raised.
     _record(summary, merger, number, message)
     _close_issues(run, merger, number)
+    _delete_head_branch(summary, merger, pr, head=head, branch=branch, default=default)
     return _outcome(TaskState.SUCCEEDED, None, summary, "")
 
 
@@ -3068,6 +3123,69 @@ def _record(summary: dict[str, Any], merger: ForgeMerger, number: int, message: 
     except forge_mod.ForgeError as exc:
         summary["recorded_on_pull_request"] = False
         summary["recorded_on_pull_request_reason"] = str(exc)[:300]
+
+
+#: The merge record's key: whether the pull request's head branch is gone
+#: after the merge (deleted by this step, or already gone).
+BRANCH_DELETED_KEY = "branch_deleted"
+#: The merge record's key: what the step did with the head branch and why
+#: (`_delete_head_branch`). `outcome` "failed" is retried by swarm-api's
+#: hand-off branch sweep (`swarm_api.handoffbranches`) once the workflow ends.
+BRANCH_CLEANUP_KEY = "branch_cleanup"
+#: The prefix of a branch the owner keeps: never deleted.
+KEEP_BRANCH_PREFIX = "keep/"
+
+
+def _delete_head_branch(summary: dict[str, Any], merger: ForgeMerger, pr: PullRequestFacts, *,
+                        head: str | None, branch: str | None, default: str | None) -> None:
+    """After a merge, delete the pull request's head branch under the owner's
+    rule (2026-11-02): only a branch the platform created (the workflow's own
+    `swarm/<task>` branch, in this repository), only while its head is still
+    the merged commit (nothing pushed after the merge), never the default
+    branch, a protected branch, a `keep/` branch or one another open pull
+    request is from. A branch already gone (GitHub's auto-delete) counts as
+    deleted. The merge stands whatever this answers: a failure is recorded
+    as `outcome` "failed", for swarm-api's hand-off branch sweep to retry,
+    never raised."""
+    name = pr.head_ref
+    record: dict[str, Any] = {"branch": name, "head": head}
+    summary[BRANCH_CLEANUP_KEY] = record
+    summary[BRANCH_DELETED_KEY] = False
+
+    def kept(reason: str) -> None:
+        record.update(outcome="kept", reason=reason)
+
+    if name is None or branch is None or name != branch:
+        return kept("not_platform_branch")
+    if pr.head_repo is None or pr.head_repo.lower() != (pr.base_repo or "").lower():
+        return kept("not_platform_branch")
+    if name == default or name.startswith(KEEP_BRANCH_PREFIX):
+        return kept("kept_branch")
+    if head is None:
+        return kept("head_unknown")
+    try:
+        facts = merger.branch_facts(name)
+        if facts is None:
+            summary[BRANCH_DELETED_KEY] = True
+            record["outcome"] = "already_deleted"
+            return None
+        if facts.protected:
+            return kept("protected")
+        if facts.sha != head:
+            record["branch_head"] = facts.sha
+            return kept("head_moved")
+        if merger.open_pulls_from(name) > 0:
+            return kept("open_pull_request")
+        deleted = merger.delete_branch(name)
+    except forge_mod.ForgeError as exc:
+        record.update(outcome="failed", reason=str(exc)[:300])
+        return None
+    except Exception as exc:  # noqa: BLE001 - the merge stands; the type is enough
+        record.update(outcome="failed", reason=type(exc).__name__)
+        return None
+    summary[BRANCH_DELETED_KEY] = True
+    record["outcome"] = "deleted" if deleted else "already_deleted"
+    return None
 
 
 # ---------------------------------------------------------------------------

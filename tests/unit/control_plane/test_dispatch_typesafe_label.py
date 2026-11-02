@@ -180,9 +180,13 @@ def test_the_switch_changes_nothing_else_in_the_worker_env(tenant):
 
 def test_the_label_changes_nothing_else_on_the_pod(tenant):
     """The forwarder's label is added and nothing else moves: the same pod
-    with the forwarder off differs by that one label."""
+    with the forwarder off differs by that one label, which it trades for
+    the direct one (its worker then calls TypeSafe itself;
+    test_dispatch_typesafe_direct_label.py)."""
     on = _labels(tenant, **ON)
     off = _labels(tenant, **{**ON, "forwarder": False})
+    assert off.pop("swarm-jev") == "typesafe-direct"
+    assert "swarm-jev" not in on
     assert {k: v for k, v in on.items() if k != "swarm-typesafe"} == off
 
 
