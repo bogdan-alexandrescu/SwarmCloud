@@ -154,6 +154,10 @@ class GitHubWrites:
         #: asked of (`actions/runs/<id>/rerun-failed-jobs`), in order; that
         #: route answers `rerun_answer` too.
         self.run_reruns: list[int] = []
+        #: The Actions workflow runs `GET actions/runs/<id>` reads, by id
+        #: (#3006: a re-run's latest attempt still `in_progress`); an
+        #: unknown run answers 404.
+        self.runs: dict[int, dict[str, Any]] = {}
         #: The files each pull request changes, and the files its base
         #: changed since the branch left it (`compare/<head>...<base>`).
         self.pull_file_names: dict[int, list[str]] = {}
@@ -294,6 +298,11 @@ class GitHubWrites:
                 return self.rerun_answer, json.dumps({"message": "refused"}).encode()
             self.reruns.append(int(rest[2]))
             return 201, b"{}"
+        if rest[:2] == ["actions", "runs"] and len(rest) == 3 and method == "GET":
+            run = self.runs.get(int(rest[2]))
+            if run is None:
+                return 404, json.dumps({"message": "Not Found"}).encode()
+            return 200, json.dumps(run).encode()
         if (rest[:2] == ["actions", "runs"] and len(rest) == 4
                 and rest[3] == "rerun-failed-jobs"):
             if method != "POST":
