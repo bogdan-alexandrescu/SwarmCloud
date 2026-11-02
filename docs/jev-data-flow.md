@@ -147,6 +147,29 @@ records are the authority on what was sent.
 * **Never swarm-api.** swarm-api reads `plan-advisory.json` (the J2/J5
   result) and never holds a Jev client.
 
+**What a person can see of it (lane JEV-USAGE-PAGE, 2026-11-02).** The owner
+chose that day to build a Jev usage and cost page, because no one could see
+how many calls, tokens or dollars Jev used and its price was recorded
+nowhere. swarm-api's `GET /v1/jev-usage` (`swarm_api.jevusage`, drawn by the
+console's Capacity › Jev usage) sums the selected workspace's `jev_usage`
+attempt rows per UTC day and kind over 30 days, with the month's total
+against `code_intelligence.jev_monthly_cap_tokens`. It reads counts only --
+calls, input and output tokens, and outcomes (`ok`, `failed`,
+`skipped:<reason>`) -- so nothing this record forbids sending can reach the
+page: every query filters on `tenant_id` and a row filed under another
+tenant is dropped again in code (per-tenant isolation), and the task id, the
+generation and any field not counted never leave swarm-api. Dollars come from
+the platform setting `jev_token_rates` (USD per million tokens, in and out),
+which has no default: until a platform admin sets it the page says "rate not
+set" and prints no figure, never $0. **The gap:** the worker's attempt rows
+carry `calls` and `input_tokens` only, so today every call is shown as
+"not split by kind", on the day of the row's last write, with no outcomes and
+no output tokens; the read sums `settled_at` and the per-kind split
+(`by_kind: {kind: {calls, input_tokens, output_tokens, outcomes}}`) once the
+worker's settle writes them from its ledger's audit rows, a change asked of
+the owner in that lane's PR. The quality gates' jev-belay and jev-enforce
+hooks and the Jev browser record nothing in `jev_usage` yet.
+
 ## Which key
 
 Chosen by the workspace's judgment backend (`judge.settings.resolve_backend`):
