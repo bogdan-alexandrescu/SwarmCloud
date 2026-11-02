@@ -361,46 +361,6 @@ async def session_events(
 
 
 # --------------------------------------------------------------------------
-# The card catalogue and the card stream (§3.5, §4, §10 phase 2)
-# --------------------------------------------------------------------------
-
-
-@router.get("/cards/schema")
-async def card_schema(person: str = Depends(allowed_person)) -> dict:
-    return vcards.catalogue()
-
-
-def stream_timing(request: Request) -> dict[str, Any]:
-    """`app.state.voice_stream_timing` when one is set (a test's fake clock
-    and sleep), else the real ones."""
-    return dict(getattr(request.app.state, "voice_stream_timing", None) or {})
-
-
-@router.get("/sessions/{session_id}/events", response_model=None)
-async def session_events(
-    session_id: str,
-    request: Request,
-    after: int | None = Query(default=None, ge=0),
-    person: str = Depends(allowed_person),
-    auth: AuthContext = Depends(current_auth),
-    ctx: AppContext = Depends(get_context),
-    timing: dict[str, Any] = Depends(stream_timing),
-) -> Response:
-    _check_id(session_id, "vs_", "session_id")
-    start_after = vstream.resume_after(request.headers.get("last-event-id"), after)
-    found = await run_in_threadpool(
-        vstream.find_session, ctx.db, person=person, session_id=session_id,
-        tenants=vstream.tenants_of(auth))
-    stream = vstream.CardStream(vstore.VoiceStore(ctx.db, now=ctx.now), ctx.db,
-                                found=found, person=person, after=start_after, **timing)
-    if found.state == vs.ENDED and not await run_in_threadpool(stream.pending):
-        # Ended and fully sent: 204 tells EventSource not to reconnect.
-        return Response(status_code=204)
-    return StreamingResponse(stream, media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-
-# --------------------------------------------------------------------------
 # The ledger (§3.8, §10 phase 3)
 # --------------------------------------------------------------------------
 
