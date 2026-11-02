@@ -26,7 +26,8 @@ import {
   type Workflow,
 } from './types'
 import { stateWord } from './words'
-import { SEVERITY_LABEL, placeFinding, reviewFindings, type Placement, type ReviewFinding, type ShownPatch } from './wfreview'
+import { SEVERITY_LABEL, placeFinding, reviewFindings, withVerdictTriage, type Placement, type ReviewFinding, type ShownPatch } from './wfreview'
+import { TriageChip, useVerdictTriages } from './DecisionCard'
 import './styles/changes.css'
 
 /**
@@ -1241,6 +1242,10 @@ function ReviewFindings({
   rows: readonly string[]
   onOpen: (path: string, key: string | null) => void
 }) {
+  // Jev's triage, from each review's own verdict file (CLD's Jev report,
+  // 2026-11-02): one read per review, laid over the gate's record by index.
+  const triage = useVerdictTriages(findings.map((f) => ({ review: f.review, file: f.verdictFile })))
+  const shown = findings.map((f) => withVerdictTriage([f], triage.get(f.review))[0]!)
   const count = (k: Placement['kind']) => placements.filter((p) => p.kind === k).length
   const pinned = count('pinned')
   const earlier = count('earlier')
@@ -1256,12 +1261,17 @@ function ReviewFindings({
         {unplaced > 0 && <span>{unplaced} not placed</span>}
       </p>
       <ol className="chg-fd-list">
-        {findings.map((f, i) => {
+        {shown.map((f, i) => {
           const p = placements[i]!
           const where = f.file === null ? null : f.line === null ? f.file : `${f.file} · ${f.side} ${f.line}`
           return (
             <li key={f.id} className={`chg-fd-item is-${p.kind}`} data-finding={f.id}>
               <span className={`chg-fd-sev is-${TONE[f.severity]}`}>{SEVERITY_LABEL[f.severity]}</span> <span className="chg-fd-text">{f.summary}</span>{' '}
+              {f.triage !== null && (
+                <>
+                  <TriageChip triage={f.triage} />{' '}
+                </>
+              )}
               <span className="chg-fd-where">
                 {p.kind === 'pinned' ? (
                   <button type="button" className="chg-mx-file" onClick={() => onOpen(p.file, p.key)}>

@@ -330,6 +330,32 @@ describe('keyboard access', () => {
   })
 })
 
+describe("Jev's triage on each finding (CLD's Jev report, 2026-11-02)", () => {
+  it('shows "likely real 62%" and "verify before acting" from the review\'s verdict.json, and no chip on a finding Jev did not judge', async () => {
+    const verdict = JSON.stringify({
+      verdict: 'NOT_YET',
+      findings: [
+        { summary: 'the loop never ends', p_real: 0.62 },
+        { summary: 'rename this', p_real: 0.08, triage: 'verify before acting' },
+        'two is wrong',
+      ],
+    })
+    api.loadArtifactContent.mockImplementation(async (id: string, name: string) =>
+      ok(id === 't_rev' && name === 'verdict.json' ? served(id, verdict) : served(id, PATCHES[id] ?? '')),
+    )
+    const mark = '[verify before acting: Jev judged this unlikely to be real] '
+    render(<Tab ts={tasks({ findings: ['the loop never ends', `${mark}rename this`, 'two is wrong'] })} />)
+    await waitFor(() => expect(findingsPanel().textContent).toContain('likely real 62%'))
+    const items = within(findingsPanel()).getAllByRole('listitem')
+    expect(items[0]?.textContent).toContain('likely real 62%')
+    expect(items[1]?.textContent).toContain('verify before acting')
+    expect(items[1]?.textContent).not.toContain('Jev judged this unlikely')
+    expect(items[2]?.querySelector('.triage-chip')).toBeNull()
+    expect(items[2]?.textContent).not.toMatch(/likely real|verify before acting|0%/)
+    expect(api.loadArtifactContent).toHaveBeenCalledWith('t_rev', 'verdict.json')
+  })
+})
+
 describe('files named by the review sort first', () => {
   it('puts a named file above the rest and tags it, with no score', async () => {
     const ts = tasks({ findings: ['two is wrong'], locations: [{ finding: 0, file: 'src/app/two.ts', line: 3, side: 'new' }] })

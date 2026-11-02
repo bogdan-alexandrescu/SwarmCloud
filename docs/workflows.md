@@ -2515,6 +2515,28 @@ there are more. Request #7 in
 [contract-change-requests.md](contract-change-requests.md) is the alternative
 that would have put this write on the scheduler's own tick.
 
+### A finished workflow's hand-off branches are deleted
+
+A workflow with `carrier: branches` leaves one `swarm/<task_id>` branch per
+step, and none of them has a pull request: on 2026-11-02 they made up most of
+the repository's 2,066 agent branches with no pull request. The merge wake
+tick (`swarm_api/handoffbranches.py`, at most hourly per tenant, fenced by a
+transaction on `branch_sweeps/<tenant>`) deletes them once the workflow is
+SUCCEEDED or CANCELLED and every step's agent is terminal, so no step can read
+them again. FAILED is not finished here, because a retried step starts from
+its parent's hand-off. The work is not lost: the pull request a workflow
+publishes is on a branch built on every hand-off before it (a carrier push is
+a fast-forward), and a workflow that ended without one has nothing left that
+reads them. Each branch is deleted only while GitHub's head is still the one
+the step recorded; one that moved, is protected, is the default branch, is
+under `keep/`, has a pull request that did not merge at that head (open,
+closed without merging, or merged at another head: a continuation can publish
+on a continued step's branch), or is continued by a live agent is kept and
+counted. Only workflows created in the last seven days are read. A step's pull-request branch is left to the merge step
+([merge-step.md §5.5](merge-step.md)). What happened is recorded in
+`branch_cleanups/<workflow_id>`; a failed delete leaves it not `done`, and the
+next sweep retries it.
+
 ## Inspecting
 
 ```bash

@@ -19,6 +19,7 @@ import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
 import { AccountHealthScreen } from './AccountHealthPage'
+import { JevUsageScreen } from './JevUsagePage'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
@@ -457,6 +458,10 @@ export const SECTIONS: SectionDef[] = [
       // this answers "what went wrong", so the two are two pages, side by side.
       { id: 'account-health', label: 'Account health' },
       { id: 'quota', label: 'Provider quota', admin: true },
+      // JEV USAGE (JEV-USAGE-PAGE, part of #2688; the owner's pick of
+      // 2026-11-02): Jev's calls, tokens, outcomes and dollars per day, beside
+      // the other pages that say what this workspace uses.
+      { id: 'jev-usage', label: 'Jev usage' },
       // API READS, A PAGE OF CAPACITY SINCE NAV-FOOT (#1672, owner 2026-10-20).
       // It sat at the spine's foot as a utility, "deliberately NOT one of the
       // sections" (REFERENCE, below); the owner moved it here, last, and the
@@ -2410,6 +2415,8 @@ function SectionBody({
       return <AccountsScreen />
     case 'capacity/account-health':
       return <AccountHealthScreen />
+    case 'capacity/jev-usage':
+      return <JevUsageScreen />
     case 'capacity/api-reads':
       return <ReferenceScreen failuresOnly={apiFailuresOnly} onFailuresOnly={onApiFilter} />
     case 'capacity/quota':

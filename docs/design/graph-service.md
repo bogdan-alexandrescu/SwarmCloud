@@ -540,6 +540,21 @@ The prompt line naming the tool, in
 not change. The agent is offered the same server with the same tools, plus
 §2.3's two new ones.
 
+**The shim ends with the agent's session (2026-11-02).** The CLI starts its
+stdio servers in its own process group, and they inherit its stderr, which
+the runner captures through a pipe. In the 2026-11-01 code intelligence batch,
+review steps with the graph switched on held their pod 6 to 31 minutes after
+the agent's last turn, against under 10 seconds without it: a server that
+outlived the CLI kept the pipe's write end open, and
+`procman.ChildProcess.finish` closed the pipe under its blocked reader, which
+waits for the read, so the step waited as long as the server lived. Now,
+once the CLI exits, `finish` sends SIGTERM to what is left of its group, then
+SIGKILL after two seconds, and a reader whose pipe a process outside the
+group still holds is told to stop rather than waited on. The step ends within
+seconds of the CLI, with all of the CLI's output: the CLI has exited, so its
+last line is already in the pipe and the reader drains it first
+(`tests/unit/worker/test_session_helpers_released.py`).
+
 ### 4.3 One git call per answer, and the stale guarantee
 
 knowledge-graph.md §5.2 requires that a row on a path changed since the

@@ -52,6 +52,8 @@ from .usagepoll import UsagePoller
 from .accounts import (
     ASSIGNABLE_STATES,
     DEFAULT_HOLD_TTL,
+    DUPLICATE_MATCHED_ON,
+    DUPLICATE_REASON,
     DEFAULT_STALE_AFTER,
     HOLD_END_ACCOUNT_REMOVED,
     HOLD_END_EXPIRED,
@@ -81,11 +83,13 @@ from .accounts import (
     hold_log_entry,
     max_agents_from_firestore,
     secret_name,
+    subscription_identity,
     validate_label,
     validate_display_name,
     validate_max_agents,
     validate_model_classes,
     window_floor,
+    withheld_mark,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
@@ -828,22 +832,29 @@ def account_to_api(
             "assigned": len(live_holds(now)) if callable(live_holds) else account.assigned,
             "max_before_reading": MAX_AGENTS_BEFORE_READING,
         })
-    # A LATER REGISTRATION OF AN ORGANISATION ANOTHER ACCOUNT HOLDS (#2222):
+    # A LATER REGISTRATION OF A SUBSCRIPTION ANOTHER ACCOUNT HOLDS (#2222):
     # one subscription, handed out once, through the older registration.
     # NAMED ONLY TO ITS OWN TENANT (BGD, Q2): another workspace's account
     # reads as "already registered in another workspace", and nothing else.
+    # ONLY ON A RECORDED IDENTITY (#3046): a stored mark on an account whose
+    # organisation or seat is not recorded is one an older rule wrote, which
+    # `choose()` no longer honours (`withheld_mark`) and the next sweep
+    # clears, so it is not shown. `matched_on` is the identity's KIND, never
+    # its value.
     reader = viewer if viewer is not None else account.owner_tenant
-    proven = getattr(account, "duplicate_of", None)
+    proven = (getattr(account, "duplicate_of", None)
+              if subscription_identity(account) is not None else None)
     duplicate_of = proven if _names(proven, reader, platform_wide) else None
     duplicate_reason = None
     if proven is not None:
         duplicate_reason = (
-            f"registered on the same organisation as {duplicate_of}"
+            f"{DUPLICATE_REASON} {duplicate_of}"
             if duplicate_of is not None
             else ANOTHER_WORKSPACE
         )
-    if getattr(account, "duplicate_withheld", False) is True:
-        blocked_by.append({"duplicate_of": duplicate_of, "reason": duplicate_reason})
+    if proven is not None and withheld_mark(account):
+        blocked_by.append({"duplicate_of": duplicate_of, "reason": duplicate_reason,
+                           "matched_on": DUPLICATE_MATCHED_ON})
     # IDENTICAL READINGS ON TWO POLLS (#2222, BGD Q1): an inferred pair,
     # shown here and in `blocked_by` the way a proven one is, but ADVISORY --
     # `choose()` still hands it out, so it does not make `can_take_new_agent`
@@ -902,13 +913,16 @@ def account_to_api(
         #: (#2222): its display name and plan as the provider gave them, or
         #: null when the provider has not said. NEVER the identity itself.
         "organisation": _organisation_to_api(account),
-        #: The other account registered on the same organisation, or null.
+        #: The other account registered on the same organisation and seat, or null.
         #: Both of a pair carry it; the newer one is also in `blocked_by`.
         #: NULL ALSO WHEN THE OTHER SIDE IS ANOTHER TENANT'S, unless this is
         #: the platform-wide listing: `duplicate_reason` then says so in words.
         "duplicate_of": duplicate_of,
         #: Why this account is one of a pair, in words, or null for none.
         "duplicate_reason": duplicate_reason,
+        #: Which identity the pair matched on -- its kind, never its value
+        #: (#3046): "organisation_and_seat", or null for no pair.
+        "duplicate_matched_on": DUPLICATE_MATCHED_ON if proven is not None else None,
         #: `{of, reason}` when this account read identically to another on
         #: two consecutive polls and no pair of organisations tells them
         #: apart, else null. `of` is null for another tenant's account.
@@ -1021,10 +1035,11 @@ def refuse_duplicate_organisation(
     ONLY THE SAME SEAT (BGD, 2026-10-25): a second seat of a Team
     organisation has its own limits and registers normally. A sign-in whose
     seat the provider did not name, or an existing account whose seat is not
-    recorded yet, is never refused on the organisation alone: the broker's
-    sweep pairs such accounts by identical readings (`accounts.duplicates`)
-    and withholds the newer, so a true double registration is still handed
-    out once.
+    recorded yet, is never refused on the organisation alone, and is never
+    withheld either (#3046): an unknown identity is not a duplicate. Its seat
+    is recorded at its next refresh, and from then on the sweep pairs it
+    (`accounts.duplicates`) if it is one; until then identical readings only
+    flag it (`possible_duplicate`).
 
     THE EXISTING ACCOUNT IS NAMED ONLY WITHIN `owner_tenant` (BGD, 2026-10-24
     17:26Z, "Name it only within the same tenant"). Another tenant's is
@@ -1688,9 +1703,15 @@ def _raw_assignable(data: dict[str, Any], tenant_id: str) -> bool:
     return (
         data.get("state", AccountState.AVAILABLE.value) == AccountState.AVAILABLE.value
         and _raw_may_serve(data, tenant_id)
-        # A later registration of an organisation another account holds
-        # (#2222): never handed out, re-checked where the hold commits.
-        and data.get("duplicate_withheld") is not True
+        # A later registration of a subscription another account holds
+        # (#2222): never handed out, re-checked where the hold commits. Only
+        # on a recorded organisation AND seat (#3046, `withheld_mark`): a mark
+        # on an account whose identity is unknown is an older rule's.
+        and not (
+            data.get("duplicate_withheld") is True
+            and bool(data.get("organisation_id"))
+            and bool(data.get("seat_id"))
+        )
     )
 
 

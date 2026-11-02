@@ -1,8 +1,11 @@
 """Set up an attempt's Jev: the shared ledger, and the agent's `jev_decide` tool.
 
-Lane CTXQ-JW wires this into the runners (`runners/claude_code.py`'s
-`write_mcp_config` takes the `servers` mapping this adds to); this lane only
-exposes it.
+The worker calls `prepare` at attempt setup (`judge.attempt.setup`). The
+claude-code runner registers the agent's tool from the config that wrote
+(`server_entry`, `runners/claude_code.write_mcp_config`; lane
+AGENTS-USE-TOOLS, owner's choice 2026-11-02), loaded at the session's start
+rather than behind the CLI's tool search, so the agent's calls and the
+worker's share the attempt's one ledger.
 
 * `prepare` resolves the backend from the stored settings and creates the
   attempt's ledger. The worker's own calls (§5.2's J0-J5) go through
@@ -122,13 +125,22 @@ def server_argv(config_path: Path, python: str = sys.executable) -> list[str]:
     return [python, "-I", "-m", MODULE, "--config", str(config_path)]
 
 
+def server_entry(config_path: Path) -> dict[str, Any]:
+    """The `swarm-jev` entry of the CLI's `--mcp-config`: `server_argv`, no
+    `env` (the key, when there is one, is read from the file the config
+    names, never written here), and `alwaysLoad`, Claude Code's per-server
+    field that puts a server's tools in the prompt from the session's start
+    instead of deferring them behind tool search."""
+    command, *args = server_argv(config_path)
+    return {"type": "stdio", "command": command, "args": args, "alwaysLoad": True}
+
+
 def register_jev_tool(servers: dict[str, Any], **kwargs: Any) -> Registered:
     """`prepare`, then add `swarm-jev` to `servers` (the `mcpServers` mapping).
     Leaves `servers` untouched when Jev is off for this task."""
     done = prepare(**kwargs)
     if done.registered and done.config_path is not None:
-        command, *args = server_argv(done.config_path)
-        servers[SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+        servers[SERVER_NAME] = server_entry(done.config_path)
     return done
 
 
