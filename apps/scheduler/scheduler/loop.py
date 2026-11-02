@@ -81,12 +81,12 @@ from . import sizes as sizes_mod
 from .awaitinput import is_control_plane
 from .codec import as_datetime
 from .credentials import (
-    SUBSCRIPTION_TOKEN_ENV,
     AccountPool,
     CredentialAnswer,
     CredentialSource,
     ForgeConnections,
     credential_for,
+    takes_pool_account,
     task_model_class,
 )
 from .mcp_admission import (
@@ -2931,7 +2931,7 @@ class Scheduler:
         provider = getattr(profile, "provider", None)
         if not provider or not self._pool.configured:
             return None
-        if SUBSCRIPTION_TOKEN_ENV not in (getattr(profile, "secrets", None) or ()):
+        if not takes_pool_account(profile):
             return None
         model_class = task_model_class(profile, task)
         candidates = accounts_serving(

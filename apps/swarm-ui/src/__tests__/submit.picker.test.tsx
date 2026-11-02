@@ -21,7 +21,7 @@
 // The hand-built cases render `RunnerPicker` with arguments, as
 // submit.room.test.tsx renders `ProfileFacts`; the form cases run against the
 // development fixture (mock 15, generic 10, claude-code 0, browser 0; codex
-// disabled; anthropic key registered, openai not).
+// enabled since contract request 130; anthropic key registered, openai not).
 
 import { describe, expect, it } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -134,11 +134,13 @@ describe('both Submit forms pick a runner from the same picker', () => {
     expect(visible(row(container, 'claude-code').querySelector('.sbf-runner-room'))).toMatch(/^0 can start now/)
     expect(visible(row(container, 'mock').querySelector('.sbf-runner-room'))).toBe('15 more can start now')
     expect(visible(row(container, 'mock').querySelector('.sbf-runner-key'))).toBe('no key needed')
+    // codex is offered since contract request 130 (owner, 2026-11-02): no
+    // refusal, and its row carries room and key like every enabled runner.
     const codex = row(container, 'codex')
-    // A refused runner names no key (visual QA QA-105): its reason is the one line.
-    expect(codex.querySelector('.sbf-runner-key')).toBeNull()
-    expect(codex.querySelector('input')!.disabled).toBe(true)
-    expect(visible(codex.querySelector('.sbf-runner-off'))).toMatch(/Use claude-code/)
+    expect(codex.querySelector('input')!.disabled).toBe(false)
+    expect(codex.querySelector('.sbf-runner-off')).toBeNull()
+    expect(visible(codex.querySelector('.sbf-runner-room'))).toMatch(/can start now/)
+    expect(codex.querySelector('.sbf-runner-key')).not.toBeNull()
   })
 
   // G1 (submit.html, picked 2026-10-01; #503): a step picks from a select,
@@ -154,7 +156,7 @@ describe('both Submit forms pick a runner from the same picker', () => {
     const option = (n: string) => [...select.options].find((o) => o.value === n)!
     expect(option('mock').textContent).toBe('mock · 15 more can start now')
     expect(option('claude-code').textContent).toBe('claude-code · 0 can start now')
-    expect(option('codex').disabled).toBe(true)
+    expect(option('codex').disabled).toBe(false)
     fireEvent.change(select, { target: { value: 'claude-code' } })
     expect(visible(step.querySelector('.wfb-cost'))).toMatch(/^standard · 1 unit/)
     await waitFor(() => expect(visible(step.querySelector('.wfb-cost .sbf-runner-key'))).toBe('anthropic key present'), WAIT)

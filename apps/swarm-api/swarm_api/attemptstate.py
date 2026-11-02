@@ -66,6 +66,7 @@ from swarm_common.states import (
 )
 
 from .access import grant_id_for
+from .attempt_totals import stored_totals, task_attempt_docs
 from .childkey import PURPOSE_STATE, AttemptTuple, state_request_message, verify_proof
 from .children import (
     ChildService,
@@ -81,6 +82,7 @@ from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
 from .repositories import parse_repository, repo_id_for
 from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLECTION
 from .rollup import derived_state_write
+from .task_accounts import account_after
 from .store import EVENTS, LEASES, TASKS
 from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
@@ -941,6 +943,35 @@ class AttemptState:
     def _answer(task: Mapping[str, Any] | None, **extra: Any) -> dict[str, Any]:
         return {"ok": True, "task": fence_view(task), **extra}
 
+    # -- the task's read-side views (contract request 132) -------------------
+
+    def _totals(self, attempt: AttemptTuple, own: Mapping[str, Any]) -> dict[str, Any] | None:
+        """`Task.attempt_totals` with `own` -- what this write puts on its own
+        attempt document -- counted, or None when the attempts cannot be read.
+
+        A READ-SIDE VIEW ONLY: the read is outside the transaction (only this
+        attempt's document changes under a live fence, and `own` carries that
+        change), and a failed read writes no copy rather than failing the end:
+        `GET /v1/tasks` then derives the row as it always has."""
+        try:
+            docs = task_attempt_docs(self._db, attempt.tenant_id, attempt.task_id)
+        except Exception as exc:  # a view never fails the write it rides on
+            log.warning("attempt totals not stored: %s", type(exc).__name__)
+            return None
+        return stored_totals(docs, attempt_id=attempt.attempt_id,
+                             generation=attempt.generation, own=own)
+
+    def _current_task(self, txn: Any, attempt: AttemptTuple) -> dict[str, Any] | None:
+        """The task through `txn` when this attempt is still its current one,
+        else None: an unfenced write (an end, a spend) stores no view for a
+        task a newer attempt now owns."""
+        snap = _snapshot(txn.get(self._task_ref(attempt)))
+        task = (snap.to_dict() or {}) if snap.exists else None
+        if (task is None or task.get("tenant_id") != attempt.tenant_id
+                or task.get("current_generation") != attempt.generation):
+            return None
+        return task
+
     # -- state/open (§4.3) -------------------------------------------------
 
     def open(self, attempt_id: str, raw: bytes, *, authorization: str | None) -> dict[str, Any]:
@@ -1102,7 +1133,7 @@ class AttemptState:
 
         def _apply(txn: Any) -> dict[str, Any]:
             task = self._fenced(txn, attempt)
-            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
+            record = {
                 "attempt_id": attempt.attempt_id,
                 "task_id": attempt.task_id,
                 "tenant_id": attempt.tenant_id,
@@ -1119,7 +1150,13 @@ class AttemptState:
                 "peak_disk_bytes": None,
                 "oom_near_miss": False,
                 "checkpoints": [],
-            })
+            }
+            # Contract request 132: the running attempt counted, so a running
+            # row is served from the task document too.
+            totals = self._totals(attempt, record)
+            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), record)
+            if totals is not None:
+                txn.update(self._task_ref(attempt), {"attempt_totals": totals})
             return self._answer(task)
 
         return self._run(_apply)
@@ -1214,7 +1251,13 @@ class AttemptState:
 
         def _apply(txn: Any) -> dict[str, Any]:
             self._attempt_doc_ok(txn, attempt)
+            # Contract request 132: spend lands after the end's commit (the
+            # worker's teardown), so the stored totals follow it.
+            task = self._current_task(txn, attempt) if body.kind == "spend" else None
+            totals = self._totals(attempt, doc) if task is not None else None
             txn.set(self._ref(ATTEMPTS, attempt.attempt_id), doc, merge=True)
+            if totals is not None:
+                txn.update(self._task_ref(attempt), {"attempt_totals": totals})
             return {"ok": True}
 
         return self._run(_apply)
@@ -1226,9 +1269,14 @@ class AttemptState:
 
         def _apply(txn: Any) -> dict[str, Any]:
             self._attempt_doc_ok(txn, attempt)
-            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
-                "completed_at": now, "exit_code": body.exit_code, "error": body.error,
-                "tenant_id": attempt.tenant_id}, merge=True)
+            end = {"completed_at": now, "exit_code": body.exit_code, "error": body.error,
+                   "tenant_id": attempt.tenant_id}
+            # Contract request 132: the end counted in the task's totals.
+            task = self._current_task(txn, attempt)
+            totals = self._totals(attempt, end) if task is not None else None
+            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), end, merge=True)
+            if totals is not None:
+                txn.update(self._task_ref(attempt), {"attempt_totals": totals})
             return {"ok": True}
 
         return self._run(_apply)
@@ -1326,6 +1374,11 @@ class AttemptState:
                     raise StateConflict("the task's carry index is another tenant's")
             payload, event_kind, event_detail, release_reason = self._park_payload(
                 task, reason, body, detail, attempt, now)
+            # Contract request 132: the end counted, in the end's own commit.
+            totals = self._totals(attempt, {"completed_at": now, "exit_code": 75,
+                                            "error": reason.value})
+            if totals is not None:
+                payload["attempt_totals"] = totals
             if event_kind is EventType.READY and not worker_may_transition(current,
                                                                            TaskState.READY):
                 raise TransitionRefused(f"a worker may not requeue a task that is {current.value}")
@@ -1516,6 +1569,11 @@ class AttemptState:
             }
             if summary is not None:
                 payload["result_summary"] = summary
+            # Contract request 132: the end counted, in the end's own commit.
+            totals = self._totals(attempt, {"completed_at": now, "exit_code": body.exit_code,
+                                            "error": body.error})
+            if totals is not None:
+                payload["attempt_totals"] = totals
             events = [self._event(attempt, kind, {"exit_code": body.exit_code,
                                                   "error": body.error,
                                                   "request_id": body.request_id},
@@ -1587,6 +1645,11 @@ class AttemptState:
                 release_reason = f"terminal:{target.value}"
             kind = {TaskState.READY: EventType.RETRYING, TaskState.FAILED: EventType.FAILED,
                     TaskState.CANCELLED: EventType.CANCELLED}[target]
+            # Contract request 132: the end counted, in the end's own commit.
+            totals = self._totals(attempt, {"completed_at": now, "exit_code": body.exit_code,
+                                            "error": body.error})
+            if totals is not None:
+                payload["attempt_totals"] = totals
             events = [self._event(attempt, kind, {
                 "exit_code": body.exit_code, "error": body.error, "cause": body.cause,
                 **detail, "to_state": target.value, "attempt_count": attempt_count,
@@ -1628,6 +1691,12 @@ class AttemptState:
             if _snapshot(txn.get(ref)).exists:
                 return {"ok": True, "repeat": True}
             txn.set(ref, document)
+            # Contract request 132: an account event moves the task's stored
+            # current account in the same write, while this attempt is the
+            # task's current one; a READ-SIDE VIEW ONLY.
+            account = account_after(task.get("current_account"), document)
+            if account is not None and task.get("current_generation") == attempt.generation:
+                txn.update(self._task_ref(attempt), {"current_account": account})
             return {"ok": True}
 
         return self._run(_apply)
