@@ -80,3 +80,34 @@ def test_the_report_names_the_idp_token_refreshes_the_gate_let_through_separatel
     tail = report.split("allowed: IdP token refresh", 1)[1]
     # They are not refusals, and never count toward N.
     assert "not" in tail[:300] and "refus" in tail[:300]
+
+
+def _sign_in_sentence(report: str) -> str:
+    """The report prompt's sentence about the gate's own sign-in, from where it
+    names `gate_refusals.sign_in.state` to the end of that instruction."""
+    assert "gate_refusals.sign_in.state" in report
+    return report.split("gate_refusals.sign_in.state", 1)[1][:900]
+
+
+def test_the_report_says_a_refused_token_refresh_followed_a_gate_sign_in_that_did_not_end_signed_in():
+    """Part of #2688: a manifest whose `gate_refusals.sign_in` ended `failed`
+    (the test account signed in, but its landing page drew no
+    `signed_in_selector`) has every IdP token refresh refused. report.md says
+    so in one sentence, with the state and the cause, and says what brings
+    the gate's sign-in to `signed_in`."""
+    report = _prompts()["report"]
+    # MUTATION: drop the sign-in sentence from _gate_report_line and a refused refresh reads as the gate's rule.
+    sentence = _sign_in_sentence(report)
+    assert "is not `signed_in`" in sentence
+    assert "one sentence" in sentence
+    assert "token refreshes were refused because the gate's own sign-in ended <state> (<cause>)" in sentence
+    # What brings it to signed in: the leg's marker must be an element the post-sign-in page draws.
+    assert "`sign_in.signed_in_selector`" in sentence
+    assert "page the app draws after sign-in" in sentence
+
+
+def test_the_report_adds_nothing_for_a_gate_sign_in_that_ended_signed_in():
+    report = _prompts()["report"]
+    sentence = _sign_in_sentence(report)
+    # MUTATION: report every sign-in state and a healthy run grows a sentence blaming its marker.
+    assert "when it is `signed_in`, or `gate_refusals.sign_in` is null, add nothing" in sentence
