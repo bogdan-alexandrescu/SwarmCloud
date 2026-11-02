@@ -462,10 +462,11 @@ def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
     assert servers == {graphstage.SERVER_NAME: {
         "type": "stdio", "command": sys.executable,
         "args": ["-I", "-m", "agent_worker.graphmcp", "--snapshot", snapshot,
-                 "--workdir", str(work / "repo")]}}
+                 "--workdir", str(work / "repo")], "alwaysLoad": True}}
     assert seen["env"][graphstage.CONTEXT_ENV] == str(work / ".swarm-context")
-    # Its one line on using the graph first (LANE CAPS, part of #2524), and nothing else.
-    assert seen["prompt"] == ("Implement it.\n\n"
+    # What to ask the graph first (AGENTS-USE-TOOLS, 2026-11-02), then its
+    # exploration line (LANE CAPS, part of #2524), and nothing else.
+    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.GRAPH_FIRST_NOTE + "\n\n"
                               + claude_code.exploration_note(graph=True, children=""))
 
     # The control: nothing staged, no server and no config at all.

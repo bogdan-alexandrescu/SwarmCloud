@@ -212,12 +212,19 @@ SETTINGS_DOC = "settings"
 #:                     "off until an admin sets one" (2026-10-26), and a
 #:                     ceiling alone limits nothing until a workspace or a
 #:                     step sets a budget. A malformed unit reads as unset.
+#:   jev_token_rates   Jev's price, `{input, output}` in USD per million
+#:                     tokens, that Capacity › Jev usage prices its calls at
+#:                     (`jevusage`, JEV-USAGE-PAGE). `{}`, no rate, by
+#:                     default: nobody has recorded Jev's price, so the page
+#:                     shows "rate not set" and blank dollars rather than an
+#:                     invented figure. A malformed unit reads as unset.
 PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {
     "merge_by_default": False,
     "max_additional_repositories": 5,
     "additional_repositories_budget_gib": 6,
     "model_prices": modelprices.SEED,
     "agent_budget_ceiling": {},
+    "jev_token_rates": {},
 }
 
 #: The accepted range of each integer setting, inclusive. A stored value
@@ -240,6 +247,11 @@ def _platform_setting(key: str, data: dict[str, Any]) -> Any:
         from .budget import ceiling_of  # lazy: budget imports auth, which imports this module
 
         return ceiling_of(data.get(key)).as_dict()
+    if key == "jev_token_rates":
+        from .jevusage import rates_of
+
+        rates = rates_of(data.get(key))
+        return {unit: rate for unit, rate in rates.items() if rate is not None}
     default = PLATFORM_SETTINGS_DEFAULTS[key]
     if key not in data:
         return default
@@ -1804,6 +1816,7 @@ class Store:
         limit: int = 200,
         page_token: str | None = None,
         descending: bool = False,
+        task: Task | None = None,
     ) -> Page:
         """One page of a task's events, oldest first unless `descending`.
 
@@ -1819,8 +1832,14 @@ class Store:
         `event_id`) -- made explicit, not changed.
 
         `descending` is the end of the run in one request.
+
+        `task` is the task a caller has ALREADY read inside this tenant (the
+        events route reads it for its masker): the tenant check is then made
+        on it rather than by reading the same document a second time, a round
+        trip on every page (#2688, WORK-READS-SPEED).
         """
-        self.get_task(tenant_id, task_id, submitted_by=None)  # tenant check before any read
+        if task is None or task.id != task_id or task.tenant_id != tenant_id:
+            self.get_task(tenant_id, task_id, submitted_by=None)  # tenant check before any read
         order = "desc" if descending else "asc"
         # Bound to the task: a token from another task's history would be a
         # timestamp that means nothing here, served as though it did.
@@ -1838,6 +1857,24 @@ class Store:
                 scope=scope, order=order, at=at, doc_id=doc_id
             ),
         )
+
+    def newest_events(self, task: Task, *, limit: int) -> list[TaskEvent]:
+        """The newest `limit` events of `task`, newest first.
+
+        For a route that reads MANY tasks' heads at once (`GET
+        /v1/tasks/digests`): `task` was read inside its tenant by the caller, in
+        one batched read for all of them, so there is no per-task tenant read
+        here. The same query `list_events(descending=True)` makes for its first
+        page, served by the same single-field index.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .document(task.id)
+            .collection(EVENTS)
+            .order_by("at", direction=firestore.Query.DESCENDING)
+            .limit(limit)
+        )
+        return [event_from_dict(snap.to_dict()) for snap in query.stream()]
 
     @staticmethod
     def artifact_manifest(task: Task) -> "ArtifactManifest":
@@ -2717,6 +2754,17 @@ class Store:
             ceiling = changes["agent_budget_ceiling"]
             changes = {**changes, "agent_budget_ceiling": {
                 unit: ceiling.get(unit) for unit in ("usd", "tokens")}}
+        if "jev_token_rates" in changes:
+            from .jevusage import rate_problem
+
+            why = rate_problem(changes["jev_token_rates"])
+            if why is not None:
+                raise ValueError(why)
+            # Both units, the one not named as null, for the reason above:
+            # the rate is replaced whole, so `{}` clears it.
+            rates = changes["jev_token_rates"]
+            changes = {**changes, "jev_token_rates": {
+                unit: rates.get(unit) for unit in ("input", "output")}}
         payload = {**changes, "updated_at": self._now(), "updated_by": by}
         self._db.collection(CONTROL).document(SETTINGS_DOC).set(payload, merge=True)
         return self.get_platform_settings()

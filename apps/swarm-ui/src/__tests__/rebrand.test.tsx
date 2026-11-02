@@ -309,7 +309,7 @@ describe('the Sky spine shell', () => {
     const panel = document.querySelector('.sk-panel')!
     const pages = [...panel.querySelectorAll('.sk-pk .sk-pl')].map((e) => e.textContent)
     // MUTATION: drop API reads from PANEL_PAGES.capacity (NAV-FOOT, #1672).
-    expect(pages).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts', 'API reads'])
+    expect(pages).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts', 'Jev usage', 'API reads'])
     const kids = [...panel.querySelectorAll('.sk-kid')].map((e) => e.textContent)
     expect(kids).toEqual(['Ceilings', 'By runner profile'])
     expect(panel.querySelector('.sk-kid.is-on')?.textContent).toBe('By runner profile')

@@ -189,6 +189,20 @@ RELEASE_WAIT_MAX_RESUMES = 4
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
 
+#: A continuation at the time limit (BGD, 2026-11-02): a SCHEDULED_RETRY park
+#: whose detail carries a `TIME_LIMIT_DETAIL_KEY` block, written by
+#: `lifecycle._continue_at_time_limit`. Such a park refunds its attempt, and
+#: adds one to `metadata.time_limit_continuations`, while fewer than
+#: TIME_LIMIT_MAX_CONTINUATIONS were; past it the park spends an attempt. Restated as
+#: `swarm_api.attemptstate.TIME_LIMIT_CONTINUATIONS` and
+#: `TIME_LIMIT_MAX_CONTINUATIONS`, which say why 2, and reserved from callers
+#: by `swarm_api.validation`; tests/unit/worker/test_time_limit_continuation.py
+#: holds them equal. The lifecycle continues no further than the bound: the
+#: third stop at the limit fails the task.
+TIME_LIMIT_DETAIL_KEY = "time_limit"
+TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
+TIME_LIMIT_MAX_CONTINUATIONS = 2
+
 #: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
 #: §1): `metadata.merge_wait` on the task, written by `park_ci_pending`. Read by
 #: swarm-api's wake tick (`swarm_api.mergewake`), which adds the marker below,
@@ -360,6 +374,13 @@ def _as_state(value: Any) -> TaskState:
         return TaskState(value)
     except (ValueError, TypeError) as exc:
         raise ControlPlaneError(f"task document holds an unknown state {value!r}") from exc
+
+
+def time_limit_attempt_error(continuation: int) -> str:
+    """A continued attempt's `error`, as the attempt list shows it; the same
+    words as `swarm_api.attemptstate.park_attempt_error`."""
+    return (f"{ParkReason.SCHEDULED_RETRY.value}: continued at the time limit "
+            f"({continuation} of {TIME_LIMIT_MAX_CONTINUATIONS})")
 
 
 def _count(value: Any) -> int:
@@ -2432,6 +2453,8 @@ class ControlPlane:
         uploads = uploads if isinstance(uploads, list) else None
         announced = [self._event_write(kind, d) for kind, d in announce]
         quota = reason is ParkReason.PROVIDER_QUOTA_EXHAUSTED
+        time_limit = (reason is ParkReason.SCHEDULED_RETRY
+                      and isinstance((detail or {}).get(TIME_LIMIT_DETAIL_KEY), Mapping))
         parked = self._event_write(
             EventType.PARKED,
             {"reason": reason.value, "next_eligible_at": next_eligible_at, **(detail or {})},
@@ -2453,6 +2476,29 @@ class ControlPlane:
             }
             refund = False
             event = parked
+            error = reason.value
+            if time_limit:
+                metadata = dict(task.get("metadata") or {})
+                used = _count(metadata.get(TIME_LIMIT_CONTINUATIONS_METADATA_KEY))
+                attempt_count = _count(task.get("attempt_count"))
+                refund = used < TIME_LIMIT_MAX_CONTINUATIONS and attempt_count > 0
+                if refund:
+                    metadata[TIME_LIMIT_CONTINUATIONS_METADATA_KEY] = used + 1
+                    payload["metadata"] = metadata
+                    payload["attempt_count"] = attempt_count - 1
+                error = time_limit_attempt_error(used + 1)
+                event = self._filled(
+                    parked,
+                    EventType.PARKED,
+                    {
+                        "reason": reason.value,
+                        "next_eligible_at": next_eligible_at,
+                        "attempt_refunded": refund,
+                        TIME_LIMIT_CONTINUATIONS_METADATA_KEY: used + (1 if refund else 0),
+                        "max_continuations": TIME_LIMIT_MAX_CONTINUATIONS,
+                        **(detail or {}),
+                    },
+                )
             if quota:
                 metadata = dict(task.get("metadata") or {})
                 used = _count(metadata.get(QUOTA_PARK_RESUMES_METADATA_KEY))
@@ -2479,7 +2525,7 @@ class ControlPlane:
                 payload=payload,
                 release=release,
                 exit_code=ExitCode.PARKED,
-                error=reason.value,
+                error=error,
                 events=[*announced, event],
                 released_slot=released_slot,
                 now=now,
@@ -2719,9 +2765,21 @@ class ControlPlane:
 
         A wait for the repository's merge slot (`mergeslot.MERGE_SLOT_WAIT`,
         merge race #295) is refunded on its own `counter`, `slot_waits`,
-        with its own `max_wakes`, and stops the CI clock (`ci_clock` False):
-        its `first_parked_at` is cleared, so the next CI wait starts it
-        afresh and a long queue never reads as `checks_timeout`.
+        with its own `max_wakes`, and PAUSES the CI clock (`ci_clock` False).
+
+        THE CI CLOCK (#3033). `first_parked_at` is set by the first CI park
+        of a wait and carried by every park after it at the same head. It
+        restarts only when the wait truly ended: the last record is at
+        another head (a fix round or a branch update moved it), or there is
+        no record. A slot or train wait PAUSES it rather than clearing it:
+        `ci_paused_at` records the pause, `merge._ci_wait_age` counts only to
+        it, and the next CI park moves `first_parked_at` on by the pause, so
+        a long queue never reads as `checks_timeout` AND a slot wait between
+        two CI parks never restarts the 6 h. Pause, not reset, because a
+        reset let a step that alternates the two wait for CI without bound;
+        pause, not run, because a queue for the slot is not slow CI.
+        swarm-api's park (`attemptstate`, the state routes) keeps the same
+        clock.
 
         There is no checkpoint and no upload: a worker action keeps no
         workspace (invariant 8's exception, CR 36), and its durable state is
@@ -2757,7 +2815,21 @@ class ControlPlane:
             if refund:
                 counts[counter] += 1
             wakes = counts[counter]
+            # The CI clock (#3033, the docstring): a record at another head
+            # is a wait that ended, so its clock and pause go with it.
             first = last.get("first_parked_at")
+            paused = last.get("ci_paused_at")
+            if not isinstance(first, datetime) or (last.get("head") or head) != head:
+                first, paused = None, None
+            if not isinstance(paused, datetime):
+                paused = None
+            if not ci_clock:
+                # Paused at the first queue park; a clock never started stays off.
+                paused = (paused or now) if first is not None else None
+            elif first is None:
+                first = now
+            elif paused is not None:
+                first, paused = first + max(now - paused, timedelta(0)), None
             metadata[MERGE_WAIT_METADATA_KEY] = {
                 "code": code,
                 "head": head,
@@ -2765,9 +2837,8 @@ class ControlPlane:
                 "pending": names,
                 **counts,
                 "updates": _count(last.get("updates")),
-                "first_parked_at": (
-                    (first if isinstance(first, datetime) else now) if ci_clock else None
-                ),
+                "first_parked_at": first,
+                "ci_paused_at": paused,
                 "parked_at": now,
                 **recorded,
             }

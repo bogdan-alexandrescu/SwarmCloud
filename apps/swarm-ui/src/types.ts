@@ -31,6 +31,32 @@ export interface Pool {
   available: number | null
   enabled: boolean
   updated_at: string
+  /**
+   * Which input holds `effective_limit` (the applied value) below `hard_limit`
+   * (the ceiling), and what dates it (#3047). Empty when the ceiling applies.
+   * Served by /v1/capacity only.
+   */
+  lowered_by?: PoolLoweredBy[]
+}
+
+/** One input that lowers a pool's applied limit (#3047). */
+export interface PoolLoweredBy {
+  input: 'adaptive_target' | 'quota_derived_limit' | 'override'
+  value: number
+  /**
+   * When the value was set: the override's audit instant, else the rate limit
+   * that last cut it (`set_by` says which); null where no record dates it.
+   */
+  set_at: string | null
+  set_by?: 'override' | 'rate_limit' | null
+  /** The broker's quota document's last write: any success bumps it. */
+  quota_written_at?: string | null
+  /** The override's audit action (`adaptive_target_reset`, `hard_max_set`). */
+  action?: string
+  /** The adaptive target's last rate limit, the instant that cut it. */
+  last_rate_limited_at?: string | null
+  /** The provider state behind a quota-derived value. */
+  provider_state?: string
 }
 
 /** One field of a pool's last admin change: the value before and after (#133). */
@@ -883,6 +909,12 @@ export interface Task {
    * API does not send it.
    */
   timeout_seconds_asked?: number | null
+  /**
+   * Contract request 133: the task's resolved turn cap, which the worker
+   * passes to the agent CLI, or null for none. OPTIONAL: an older API does
+   * not send it.
+   */
+  max_turns?: number | null
   /** When a PARKED task becomes eligible again. Null unless it is parked. */
   next_eligible_at: string | null
   /**

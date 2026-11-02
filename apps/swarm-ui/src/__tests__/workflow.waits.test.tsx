@@ -14,11 +14,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 
+import type { TaskDigests } from '../api'
 import type { Result } from '../fetch'
-import type { Task, TaskEvent, TaskEventsPage, TaskState, Workflow, WorkflowStep } from '../types'
+import type { Task, TaskEvent, TaskState, Workflow, WorkflowStep } from '../types'
 
 const api = vi.hoisted(() => ({
   loadTaskEventsPage: vi.fn(),
+  loadTaskDigests: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
@@ -257,9 +259,16 @@ describe('the graph reads the waiting steps’ events and draws their real state
   it('says ≥ from the last write until the events land, then the event’s time, and never queued', async () => {
     let land: () => void = () => {}
     const landed = new Promise<void>((r) => (land = r))
-    api.loadTaskEventsPage.mockImplementation(async (id: string): Promise<Result<TaskEventsPage>> => {
+    // THE DIGESTS ROUTE (#2688, WORK-READS-SPEED) applies `stateEnteredAt`'s
+    // rule to each task's newest events page; the double does exactly that.
+    api.loadTaskDigests.mockImplementation(async (ids: readonly string[]): Promise<Result<TaskDigests>> => {
       await landed
-      return { status: 'ok', fetchedAt: T0, data: { events: pages[id] ?? [], next_page_token: null } }
+      const digests = ids.map((id) => {
+        const state = tasks.get(id)!.state
+        const at = stateEnteredAt(state, pages[id] ?? [])
+        return { task_id: id, state, entered_at: at === null ? null : new Date(at).toISOString() }
+      })
+      return { status: 'ok', fetchedAt: T0, data: { digests } }
     })
     const { container } = render(<Harness w={workflow('wf_waits', 'RUNNING', steps)} tasks={tasks} />)
 
@@ -273,15 +282,17 @@ describe('the graph reads the waiting steps’ events and draws their real state
     await waitFor(() => expect(nodeDur(container, 'sent')).toBe('dispatched 3m 0s'))
     for (const n of ['held', 'leased', 'sent']) expect(nodeDur(container, n)).not.toMatch(/queued/)
 
-    // Only the three waits are read, once each: a finished step has no wait to time.
-    const asked = api.loadTaskEventsPage.mock.calls.map((c) => c[0] as string).sort()
-    expect(asked).toEqual(['t_held', 't_leased', 't_sent'])
+    // Only the three waits are read, in ONE request: a finished step has no
+    // wait to time, and no step reads its own events page.
+    expect(api.loadTaskDigests).toHaveBeenCalledTimes(1)
+    expect([...(api.loadTaskDigests.mock.calls[0]![0] as string[])].sort()).toEqual(['t_held', 't_leased', 't_sent'])
+    expect(api.loadTaskEventsPage).not.toHaveBeenCalled()
   })
 
   it('keeps the lower bound when the events read fails', async () => {
-    api.loadTaskEventsPage.mockResolvedValue({ status: 'error', error: { kind: 'network', message: 'down' } })
+    api.loadTaskDigests.mockResolvedValue({ status: 'error', error: { kind: 'network', message: 'down' } })
     const { container } = render(<Harness w={workflow('wf_waits', 'RUNNING', steps)} tasks={tasks} />)
-    await waitFor(() => expect(api.loadTaskEventsPage).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(api.loadTaskDigests).toHaveBeenCalledTimes(1))
     expect(nodeDur(container, 'held')).toBe('parked ≥1m 0s')
     expect(nodeDur(container, 'leased')).toBe('leased ≥2m 50s')
   })
