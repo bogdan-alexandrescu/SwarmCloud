@@ -273,7 +273,8 @@ describe('N14: the paused stamp is the page’s one clock, and says what paused 
     })
     // jsdom's default locale draws `toLocaleTimeString()` on a 12-hour clock.
     // MUTATION: print `new Date(frozen.at).toLocaleTimeString()` again (AgentLogs.tsx) -- `9:25:53 PM`.
-    expect(stamp.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+    // The person's zone, UTC by default, labelled (TZ-CLOCKTIME, part of #2391).
+    expect(stamp.textContent).toMatch(/^\d{2}:\d{2}:\d{2} UTC$/)
     expect(stamp.textContent).not.toMatch(/AM|PM/i)
     // MUTATION: drop the title -- the hover no longer carries the ISO time and its age.
     expect(stamp.getAttribute('title')).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)

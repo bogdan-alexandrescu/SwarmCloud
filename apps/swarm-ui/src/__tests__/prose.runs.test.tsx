@@ -347,10 +347,15 @@ describe('the run group carries data, not prose', () => {
    * and that has its own ceiling: `detailShown`, every word outside a closed
    * disclosure (its summary kept). Measured on the fixture: 163 before the
    * change, 87 after.
+   *
+   * 405 became 409 with TZ-CLOCKTIME (part of #2391): `clockTime` prints the
+   * person's zone label and an older day by name, so the head's `since` and
+   * `submitted` instants grew from `09-23 10:00` to `Sep 23 10:00 UTC`, two
+   * words each. A label, not prose.
    */
   const CEILING: Record<string, number> = {
     agents: 30,
-    detail: 405,
+    detail: 409,
     detailShown: 110,
     timeline: 100,
     viewer: 35,
