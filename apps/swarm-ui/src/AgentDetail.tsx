@@ -688,7 +688,13 @@ export function QualityGatesLine({ task }: { task: Task }) {
   }
   return (
     <section className="dt-card dt-gates" aria-label="Quality gates" data-testid="quality-gates">
-      <DtCardHead title="Quality gates">{body}</DtCardHead>
+      <DtCardHead title="Quality gates" />
+      {/* A wrapping row of its own, not the head's inline slot (`.dt-card-r`
+          does not wrap): on a phone the three chips go to a second line
+          instead of pushing the page sideways. */}
+      <div className="dt-phases" data-testid="quality-gates-body">
+        {body}
+      </div>
     </section>
   )
 }

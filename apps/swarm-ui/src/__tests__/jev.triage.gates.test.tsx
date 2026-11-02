@@ -214,6 +214,16 @@ describe("the agent's Quality gates line", () => {
     expect(line.textContent).toContain('9 Jev calls')
   })
 
+  it('on a phone the counts wrap: they sit in a wrapping row of their own, not in the head\'s inline slot', async () => {
+    const gates = { jev: true, belay_runs: 3, belay_calls: 5, belay_blocks: 1, enforce_runs: 2, enforce_calls: 4, enforce_flags: 1, enforce_rules_flagged: 2 }
+    render(<Run run={run(plainTask({ quality_gates: gates }))} />)
+    const line = await screen.findByRole('region', { name: 'Quality gates' })
+    expect(line.querySelector('.dt-card-r')).toBeNull()
+    const counts = line.querySelector('[data-testid="quality-gates-body"]')
+    expect(counts?.classList.contains('dt-phases')).toBe(true)
+    expect(counts?.textContent).toContain('9 Jev calls')
+  })
+
   it('refused: says they did not run, and why, in words', async () => {
     render(<Run run={run(plainTask({ quality_gates: { jev: false, refused: 'mac_mismatch' } }))} />)
     const line = await screen.findByRole('region', { name: 'Quality gates' })
