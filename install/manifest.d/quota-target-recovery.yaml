@@ -1,0 +1,8 @@
+# Lane QUOTA-TARGET-RECOVERY (part of #2688): the AIMD target's time-based
+# recovery interval the quota broker reads (owner, 2026-11-02). Like the other
+# AIMD_* settings in the base manifest's env: table, nothing renders it; the
+# reader's default (300 s, the quota sweep's tick) is the deployed value.
+version: 1
+env:
+  AIMD_RECOVERY_INTERVAL_SECONDS:
+    setter: 'internal: read at apps/quota-broker/quota_broker/settings.py:86; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
