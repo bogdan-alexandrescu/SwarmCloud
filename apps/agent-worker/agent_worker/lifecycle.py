@@ -3869,6 +3869,11 @@ class Worker:
         self._start_sampler(child)
         # After `start`, so the event's `at` is when the agent process exists.
         self._mark_agent_started()
+        # Contract request 132: the start's task totals, held back through
+        # the startup window so that a SIGTERM exit from it writes only the
+        # attempt's own document. Made now, under its mid-run budget; nothing
+        # once the first start has made it.
+        self.control.store_pending_attempt_totals()
 
         now = time.monotonic()
         if self._lease_live_until is None:

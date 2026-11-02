@@ -38,15 +38,19 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Iterable, Sequence
+from datetime import datetime, timezone
+from typing import Any, Iterable, Mapping, Sequence
 
 from google.cloud.firestore_v1.base_query import FieldFilter
-from swarm_common.models import Attempt
+from swarm_common.models import Attempt, Task
 
 from .codec import attempt_from_dict
 from .store import ATTEMPTS
 
 log = logging.getLogger(__name__)
+
+#: A creation time for an attempt document a merge-only write left without one.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 #: Firestore's ceiling on the values of one `in` filter.
 IN_LIMIT = 30
@@ -100,6 +104,21 @@ def attempt_totals(attempts: Iterable[Attempt]) -> dict[str, Any]:
         "last_attempt_cost_usd": last.cost_usd if last is not None else None,
         "last_attempt_duration_s": round(last_seconds, 1) if last_seconds is not None else None,
     }
+
+
+#: The figures `attempt_totals` returns, in order: what a stored copy must
+#: carry, every one, to be served.
+TOTAL_KEYS: tuple[str, ...] = (
+    "attempts",
+    "attempts_with_cost",
+    "cost_usd_total",
+    "cost_incomplete",
+    "duration_s_total",
+    "duration_incomplete",
+    "first_started_at",
+    "last_attempt_cost_usd",
+    "last_attempt_duration_s",
+)
 
 
 def unread_totals() -> dict[str, Any]:
@@ -176,3 +195,112 @@ def with_totals(row: dict[str, Any], totals: dict[str, dict[str, Any]]) -> dict[
     row.update(totals.get(str(row.get("id")), unread_totals()))
     return row
 
+
+
+# --------------------------------------------------------------------------
+# The stored copy (contract request 132, accepted 2026-11-01)
+# --------------------------------------------------------------------------
+#
+# `Task.attempt_totals` is a READ-SIDE VIEW ONLY: `attempt_totals()` over the
+# task's attempt documents, plus `as_of`, the attempt whose write stored it.
+# Rewritten by whoever owns the task's current attempt when that attempt
+# starts, records its spend and ends (the worker's `control.py` on the direct
+# path, `attemptstate.py` on the state API), each time from the documents
+# themselves, so a lost write is corrected by the next. `GET /v1/tasks`
+# serves it when it is the CURRENT attempt's (`served_totals`) and derives the
+# rest as above. Nothing that admits, leases or counts capacity reads it.
+
+
+def task_attempt_docs(db: Any, tenant_id: str, task_id: str) -> list[dict[str, Any]]:
+    """Every attempt document of one task, in its tenant: one bounded query.
+
+    Raises `OverflowError` at `PER_TASK_CAP`, so a writer never stores a total
+    summed short; a writer that cannot read stores nothing, and the reader
+    derives.
+    """
+    query = (
+        db.collection(ATTEMPTS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("task_id", "==", task_id))
+        .limit(PER_TASK_CAP)
+    )
+    docs = [snap.to_dict() or {} for snap in query.stream()]
+    if len(docs) >= PER_TASK_CAP:
+        raise OverflowError(f"{len(docs)} attempt documents for one task")
+    return [d for d in docs if d.get("tenant_id") == tenant_id and d.get("task_id") == task_id]
+
+
+def stored_totals(
+    docs: Iterable[Mapping[str, Any]],
+    *,
+    attempt_id: str,
+    generation: int,
+    own: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`Task.attempt_totals` as a writer stores it.
+
+    `docs` are the task's attempt documents as read; `own` is what THIS
+    write puts on the writer's own attempt (its end, its spend), merged over
+    the document read, because the write commits beside the stored copy.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    for doc in docs:
+        rows[str(doc.get("attempt_id"))] = dict(doc)
+    if own is not None:
+        rows[attempt_id] = {
+            "attempt_id": attempt_id, "generation": generation,
+            **rows.get(attempt_id, {}), **dict(own),
+        }
+    attempts = [attempt_from_dict(_with_defaults(d, attempt_id, generation)) for d in rows.values()]
+    return {**attempt_totals(attempts),
+            "as_of": {"attempt_id": attempt_id, "generation": generation}}
+
+
+def _with_defaults(doc: Mapping[str, Any], attempt_id: str, generation: int) -> dict[str, Any]:
+    """An attempt document `attempt_from_dict` can decode, however partial a
+    merge-only write left it (the end landing before the start)."""
+    out = dict(doc)
+    out.setdefault("attempt_id", attempt_id)
+    out.setdefault("generation", generation)
+    out.setdefault("task_id", "")
+    out.setdefault("tenant_id", "")
+    out.setdefault("lease_id", "")
+    out.setdefault("backend", "")
+    if out.get("created_at") is None:
+        out["created_at"] = out.get("started_at") or out.get("completed_at") or _EPOCH
+    return out
+
+
+def served_totals(task: Task) -> dict[str, Any] | None:
+    """The stored copy, as a row serves it, or None when the reader must derive.
+
+    Served only when it is the CURRENT attempt's (`as_of.generation ==
+    current_generation`): a newer attempt the scheduler has leased since has a
+    document the copy does not count. None too for an older document, one with
+    no copy, or a malformed one.
+    """
+    stored = task.attempt_totals
+    if not isinstance(stored, Mapping):
+        return None
+    as_of = stored.get("as_of")
+    if not isinstance(as_of, Mapping) or as_of.get("generation") != task.current_generation:
+        return None
+    if any(key not in stored for key in TOTAL_KEYS):
+        return None
+    return {**{key: stored[key] for key in TOTAL_KEYS}, "attempts_read": "ok"}
+
+
+def totals_for_page(db: Any, tenant_id: str, tasks: Sequence[Task]) -> dict[str, dict[str, Any]]:
+    """Each task's totals: its stored copy where current, else `totals_for`'s
+    batched read for only the tasks without one."""
+    out: dict[str, dict[str, Any]] = {}
+    pending: list[str] = []
+    for task in tasks:
+        served = served_totals(task) if task.tenant_id == tenant_id else None
+        if served is not None:
+            out[task.id] = served
+        else:
+            pending.append(task.id)
+    if pending:
+        out.update(totals_for(db, tenant_id, pending))
+    return out

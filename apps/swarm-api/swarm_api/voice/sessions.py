@@ -30,8 +30,9 @@ ago no longer holds it.
 THE GRANT (§3.6). Each session gets a random 256-bit grant. Only its SHA-256
 is stored, on the session document; the grant itself goes to swarm-voice in
 the start call and nowhere else, and is never logged or returned to the
-browser. The grant is not accepted by any route yet: the grant lane
-(§10 phase 2, `swarm_api/voice/grant.py`) adds that check.
+browser. `swarm_api/voice/grant.py` accepts it from swarm-voice on the
+allowlisted routes while the session is live; ending a session removes the
+hash, so the grant dies with it.
 
 SWARM-VOICE'S INTERNAL CALLS. swarm-api POSTs, with a Google ID token for
 `voice_audience` (else the URL) as its bearer:
@@ -412,7 +413,10 @@ class VoiceSessions:
             if data.get("state") == ENDED:
                 return None
             now = self._now()
-            txn.update(session_ref, {"state": ENDED, "ended_at": now, "end_cause": cause})
+            # The grant dies with the session (§3.6): its hash goes, so no
+            # presented grant can match it again, whatever the state reads.
+            txn.update(session_ref, {"state": ENDED, "ended_at": now, "end_cause": cause,
+                                     "grant_hash": None})
             marker = marker_snap.to_dict() if marker_snap.exists else None
             if marker and marker.get("session_id") == session_id \
                     and marker.get("project_id") == project_id:

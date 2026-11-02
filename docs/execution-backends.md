@@ -78,7 +78,7 @@ backend.
 | `mock` | `agent-runtime-base` | standard | Cloud Run Job | none |
 | `generic` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 64, #939 option A; its Cloud Run Jobs kept, idle, as the rollback) | none |
 | `claude-code` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 53; its Cloud Run Jobs kept, idle, until 2026-10-15 as the rollback) | anthropic |
-| `codex` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 65, #939 option A; its Cloud Run Jobs kept, idle, as the rollback; disabled) | openai |
+| `codex` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 65, #939 option A; its Cloud Run Jobs kept, idle, as the rollback; available again since contract request 130, 2026-11-02) | openai |
 | `browser` | `agent-runtime-browser` | browser | **GKE Autopilot** | anthropic |
 | `indexer` | `agent-runtime-indexer` | standard | **GKE Autopilot** (contract request 63, the canary for #939; its Cloud Run Jobs kept, idle, as the rollback) | anthropic |
 | `claude-code-browser` | `agent-runtime-browser` | browser | **GKE Autopilot** (contract request 67: Cloud Run cannot size Chromium's `/dev/shm`) | anthropic |

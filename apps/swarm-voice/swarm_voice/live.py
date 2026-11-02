@@ -51,6 +51,7 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import WebSocketException
 
 from .credential import Credential, CredentialError
+from .grant import SessionGrant
 
 log = logging.getLogger("swarm_voice.live")
 #: The websockets library logs every handshake header at DEBUG, the bearer among
@@ -168,6 +169,9 @@ class LiveSession:
         self._closed = asyncio.Event()
         self._lock = asyncio.Lock()
         self.answer = ""
+        #: swarm-api's session grant (grant.py), in memory only; None once the
+        #: session ends or when swarm-api sent none.
+        self.grant: SessionGrant | None = None
         self.usage_seconds: float | None = None
         self.reason: str | None = None
 
@@ -285,10 +289,13 @@ class Sessions:
         return {"sessions": len(self._live), "attached": sum(1 for s in self._live.values() if s.attached)}
 
     def _forget(self, session: LiveSession) -> None:
+        # The grant dies with the session (§3.6): an ended session presents none.
+        session.grant = None
         if self._live.get(session.voice_id) is session:
             del self._live[session.voice_id]
 
-    async def start(self, voice_id: str, *, person: str, credential_ref: str, offer: str) -> LiveSession:
+    async def start(self, voice_id: str, *, person: str, credential_ref: str, offer: str,
+                    grant: SessionGrant | None = None) -> LiveSession:
         """Create the GPT-Live session for `offer`, attach its sideband, and hold it.
         Raises SessionExists, CredentialRefused, CredentialError or LiveError."""
         if voice_id in self._live or voice_id in self._starting:
@@ -300,6 +307,7 @@ class Sessions:
             session = LiveSession(voice_id, live_id, credential, self.api,
                                   on_event=self._on_event, on_closed=self._forget)
             session.answer = answer
+            session.grant = grant
             # Attached BEFORE the answer goes back: a session this process cannot end
             # must never be handed to a browser to start talking (and billing) on.
             await session.attach()
