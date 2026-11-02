@@ -363,7 +363,28 @@ const TALK_MIC_ON_GLASS: Exemption = {
     f.detail.endsWith('on rgb(198 199 200)'),
 }
 
-const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE, TALK_MIC_ON_GLASS]
+/**
+ * THE TALK PANE'S CARDS ON GLASS, the same artefact one layer deeper. A
+ * `.vt-card > .c-card` is `--vt-glass` (`--surface` at 70%) over the card
+ * area's `--vt-glass-dim` (`--surface` at 52%) over the pane's opaque `--bg`
+ * (styles/talk-pane.css), so the drawn ground in the light pass is about
+ * #fdfeff: the card's `--vt-glass-line` hairline, rgb(168 198 218), is about
+ * 1.64:1 on it, over the 1.15 floor, and an `Open …` button's boundary,
+ * rgb(125 142 163), about 3.3:1. The probe, compositing each glass's alpha
+ * twice, measures greys rgb(186 187 188) and rgb(181 181 181). Keyed on those
+ * measured grounds so a real finding on a card or a button elsewhere still
+ * fails.
+ */
+const TALK_CARDS_ON_GLASS: Exemption = {
+  name: 'talk cards on glass',
+  why: "the probe composites the cards' nested color-mix(--surface, transparent) glass twice; the drawn hairline is about 1.64:1, the buttons' boundary about 3.3:1",
+  matches: (f) =>
+    f.kind === 'divider-under-floor' &&
+    ((f.where === 'section.c-card' && f.detail.endsWith('on rgb(186 187 188)')) ||
+      (f.where === 'a.c-btn.is-sm' && f.detail.endsWith('on rgb(181 181 181)'))),
+}
+
+const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE, TALK_MIC_ON_GLASS, TALK_CARDS_ON_GLASS]
 
 function lines(r: Report): string[] {
   return r.findings
@@ -473,7 +494,8 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   // Account health (ACCOUNT-HEALTH-PAGE; part of #2302) sits beside Accounts, as in the rail.
-  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/api-reads'], floor: 160 },
+  // Jev usage (JEV-USAGE-PAGE; part of #2688) sits after Provider quota, as in the rail.
+  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 160 },
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.

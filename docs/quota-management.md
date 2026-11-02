@@ -70,6 +70,23 @@ minutes of under-use.
 one pool account's window is that account's, below. Waiting for a second data point
 means the second data point arrives as a wall of 429s.
 
+**Recovery also runs on the clock, up to the pool's ceiling (owner,
+2026-11-02).** Counting successes alone, a workspace halved from 40 to 7 needed
+about 660 clean agent finishes to climb back, which is days. So, on top of the
+success-based climb, the target rises by one for every
+`AIMD_RECOVERY_INTERVAL_SECONDS` (300) without a workspace-wide refusal. No
+timer does it: the climb is worked out whenever the target is read, from the
+time of the last cut or the last climb, kept on the quota document as
+`recovery_clock_at`, and the quota sweep's existing five-minute tick is the
+read that commits it for a quiet workspace; each time-based climb is recorded in
+`quota_audit` as `adaptive_target_recovered`. A refusal still halves at once and
+restarts the clock, so 5 back to 40 takes 35 quiet intervals, just under three
+hours. The ceiling every target is clamped to is the LOWER of the quota
+document's `configured_hard_max` and the per-tenant pool's own `hard_limit`
+(`provider:<p>:tenant:<t>`, the number the console shows), so halving starts
+from that number; setting the hard max (`PUT /v1/quota/<p>/<t>/hard-max`) moves
+the pool's `hard_limit` to the same value in the same transaction.
+
 ```
        target
          |          .-'|        .-'|
@@ -199,6 +216,7 @@ so a new signal cannot be added that forgets to clamp.
 | `AIMD_ADDITIVE_INCREASE` | 1 | slots added per successful run |
 | `AIMD_MULTIPLICATIVE_DECREASE` | 0.5 | factor applied on a 429 |
 | `AIMD_SUCCESS_THRESHOLD` | 20 | successes required before an increase |
+| `AIMD_RECOVERY_INTERVAL_SECONDS` | 300 | quiet seconds per time-based +1; 0 turns it off |
 | `AIMD_MIN_TARGET` | 1 | never throttle to zero on 429s alone |
 | `AIMD_DEFAULT_COOLDOWN_SECONDS` | 30 | when the provider gives no `Retry-After` |
 | `AIMD_MAX_COOLDOWN_SECONDS` | 900 | ceiling on backoff |
@@ -489,6 +507,36 @@ original state on every exit path.
 ---
 
 ## 7. What to look at when it misbehaves
+
+**Every refusal on a limit says which value it applied, and why (#3047).** On
+24 October 2026 admission refused up to 48 steps on the provider concurrency
+limit while 6 or 7 agents ran against a configured ceiling of 40, and nothing
+recorded the limit applied: the adaptive target and the quota-derived limit are
+current values only, so "about 7" had to be inferred from the agents running.
+Now the scheduler writes, on each refused agent's `blocked_by` entry, the
+limit's name (`limit_name`, the pool), the value admission applied (`applied`,
+the transaction's own `effective_limit`), the configured ceiling (`ceiling`,
+the pool's `hard_limit`), the units in use (`in_use`), and, when `applied` is
+below `ceiling`, `lowered_by`: each input that holds it there (`adaptive_target`,
+`quota_derived_limit`, or `override` for a target an admin set after the last
+rate limit) with its value and what dates it: `set_at` is the override's audit
+instant when an override still holds the value, else the 429 that last cut the
+target (`last_rate_limited_at`), and `set_by` says which. It is never the quota
+document's `updated_at`: the broker rewrites that on every success and refresh,
+so for a target that has held 7 for hours it reads minutes ago; it is kept
+apart as `quota_written_at`. The broker records no "target last changed"
+instant, so a target the +1-per-successes step has raised since the cut is
+still dated by the cut.
+The ceiling and inputs are read just after the refusal, outside the admission
+transaction, so recording them cannot change who is admitted. The `drain
+finished` log line sums the same per limit (`limits`: refusals, the lowest
+value applied, the most units in use, the ceiling and what lowered it), so a
+busy period can be read back from Cloud Logging. Capacity › Pools draws the
+applied value with `/ceiling` beside it, its title naming the input and when it
+was set; `sc capacity` prints a CEILING column (`40 adaptive`). Note that AIMD
+clamps to the quota document's `configured_hard_max` (default 50), not to the
+pool's `hard_limit`: three tenant-scoped 429s take a target 50 -> 25 -> 12 ->
+6, and one more slot needs `AIMD_SUCCESS_THRESHOLD` (20) successful agents.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
