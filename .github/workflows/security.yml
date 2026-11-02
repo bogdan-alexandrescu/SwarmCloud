@@ -12,12 +12,11 @@ name: security
 
 on:
   pull_request:
-  # A lane branch too (LANE CI-EARLY, part of #1694, owner decision
-  # 2026-10-20): four of the ruleset's required checks are this workflow's,
-  # and CI now starts when the implement step pushes `swarm/<task id>`, not
-  # when the fix step opens the pull request (application.yml says why).
+  # Main only, never a lane branch (owner decision 2026-11-02, CI once per
+  # head, part of #2688): a lane head's four required checks of this workflow
+  # report from its pull request's run, once (application.yml says why).
   push:
-    branches: [main, "swarm/**"]
+    branches: [main]
   # MAIN MERGES THROUGH A MERGE QUEUE (owner decision 2026-10-06, docs/ci.md
   # "Merging through the merge queue"). Four of the ruleset's required
   # checks are this workflow's, and a queue entry waits for them on its own
