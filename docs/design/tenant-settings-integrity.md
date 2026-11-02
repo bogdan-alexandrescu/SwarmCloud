@@ -743,6 +743,22 @@ the budget is spent. A 404 swarm-api answers with a code stays final, and a
 `tests/unit/worker/test_statecall.py`, so a commit cannot ship a worker call
 without the route that serves it.
 
+**One release rolls swarm-api before the scheduler (owner's pick, #3041).**
+Every Cloud Run service used to roll in parallel from one `for_each`, so a
+release that added a state route and its first worker call in one commit
+could have the scheduler, whose `WORKER_IMAGE_REFS` picks every new
+dispatch's image, hand a worker the new image while the serving swarm-api
+revision still lacked the route. `terraform/infra/main.tf` now creates
+swarm-api in its own call of the module, `module.cloud_run_api`, and
+`module.cloud_run` (every other service) `depends_on` it: one apply of the
+one reviewed plan waits for swarm-api's new revision to be Ready before it
+touches the scheduler. The service carries over by one `moved` block
+(`terraform/infra/cloud_run_api_moved.tf`), so the release that ships this
+updates it in place rather than recreating it; swarm-api's run.invoker
+grants stay in `module.cloud_run` (`invokers_elsewhere`) at the addresses
+they always had, because their keys are per tenant and no `moved` block can
+list them. The bare-404 retry above still covers a revision's own rollout.
+
 ### 4.8 What this does not do
 
 * **It does not make the agent unable to act as its own attempt** if
