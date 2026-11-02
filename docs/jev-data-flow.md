@@ -127,9 +127,12 @@ records are the authority on what was sent.
 
 * **The runner process**, for J1-J5. `judge.attempt.load` builds the client
   from `SWARM_JUDGE_CONFIG` (a path, never a key) inside the runner:
-  J1 in `contextpack.prepare` before the agent starts, J4 in the gate
+  J0 and J1 in `contextpack.prepare` before the agent starts (J0 only for a
+  step the local rules leave `implement`, and it sends the brief alone, as
+  `{task: {brief}}`, which J1 already sends), J4 in the gate
   (`prepublish.Gate._advise`) after it has exited, J2/J3/J5 in
-  `runners/cliagent._jev_post_steps` after it has exited. The agent's process
+  `runners/cliagent._jev_post_steps` after it has exited (J3 for a review
+  and for a re-review, `contextpack/tasktype.py::classify`). The agent's process
   tree does not exist yet or no longer runs while these calls are made.
 * **The worker process** (`agent_worker.judge.attempt.setup`, inside
   `graphstage.prepare`) makes **no call**. It reads
@@ -296,6 +299,30 @@ hooks, launcher redaction and URL pin, counts and event) and
 * **Rule 5c holds for J3 by a check, and for J1 and J4 by construction**: their
   rows are read from the attempt's checkout, with no separate guard that would
   refuse a path leaving it.
+
+### Closed by the Jev report's classifier proposals (2026-11-02)
+
+The owner chose on 2026-11-02 to build every improvement proposal in CLD's
+Jev report; two were in the classifier that picks a step's type.
+
+* **A re-review got no J3 triage.** `tasktype.classify` typed any step that
+  staged `verdict.json` a fix, and a re-review stages the review it re-reads,
+  so `_jev_post_steps` never ran J3 over the verdict the re-review wrote. A
+  step that stages the patch and the verdict AND owes `verdict.json` in its
+  own `expected_outputs` (written from its signed `step_id`,
+  `apps/agent-worker/agent_worker/expected_outputs.py::is_review_step`) is now
+  a review; a fix, which owes no verdict, stays a fix. Held by
+  `tests/unit/worker/test_jev_wiring.py::test_cli_runner_triages_a_re_review_s_own_verdict`
+  and `tests/unit/worker/test_contextpack.py::test_a_fix_that_stages_a_verdict_stays_a_fix`.
+  J3 sends what it sent for a review: no new data flow.
+* **J0 was defined and never called.** `apps/agent-worker/agent_worker/judge/shapes.py::j0_classify` is now
+  called by `apps/agent-worker/agent_worker/contextpack/tasktype.py::classify_with_jev`
+  from `contextpack.prepare`, only where the local rules fall back to
+  `implement` and the attempt has a Jev client. Its state is the brief J1
+  already sends, through the same client, sanitizer and ledger (one audit row,
+  `kind` J0, counted in the agent's eight calls). Held by
+  `tests/unit/worker/test_jev_wiring.py::test_j0_types_an_ad_hoc_step_the_local_rules_left_implement`
+  and `tests/unit/worker/test_jev_wiring.py::test_j0_failure_leaves_the_pack_byte_identical_to_local_only`.
 
 ### Closed by lane JEV-JUDGMENTS-RUN (2026-11-02)
 

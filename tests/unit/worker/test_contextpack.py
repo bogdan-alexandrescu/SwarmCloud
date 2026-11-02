@@ -202,6 +202,42 @@ def test_the_task_type_comes_from_the_step_s_role_never_a_guess(work):
     assert tasktype.classify({"prompt": "Make fetch return a copy."}, work) == "implement"
 
 
+def _owes(step_id: str) -> list[str]:
+    """`input.expected_outputs` as the worker writes it for a step with this id."""
+    from agent_worker import expected_outputs
+
+    return list(expected_outputs.declared_outputs({}, step_id=step_id).names)
+
+
+def test_a_re_review_is_a_review_though_it_stages_the_earlier_verdict(work):
+    # The re-review stages the patch AND the earlier review's verdict, and
+    # owes its own verdict.json by its step id (`expected_outputs.is_review_step`).
+    rereview = {"prompt": "Re-review the change after the fix. Write "
+                          "$SWARM_ARTIFACTS_DIR/verdict.json",
+                "staged_inputs": [{"path": "inputs/swarm-work.patch"},
+                                  {"path": "inputs/verdict.json"}],
+                "expected_outputs": _owes("dod-data-rereview")}
+    assert rereview["expected_outputs"] == ["verdict.json"]
+    assert tasktype.classify(rereview, work) == "review"
+    assert tasktype.classify({**rereview, "expected_outputs": _owes("re-review-2")}, work) \
+        == "review"
+
+
+def test_a_fix_that_stages_a_verdict_stays_a_fix(work):
+    staged = [{"path": "inputs/verdict.json"}]
+    fix = {"prompt": "Fix every finding in verdict.json for GitHub issue o/r#7.",
+           "staged_inputs": staged, "expected_outputs": _owes("dod-data-fix")}
+    assert fix["expected_outputs"] == []
+    assert tasktype.classify(fix, work) == "fix"
+    # With the patch staged too, it is still a fix: it owes no verdict.
+    with_patch = {**fix, "staged_inputs": [*staged, {"path": "inputs/swarm-work.patch"}]}
+    assert tasktype.classify(with_patch, work) == "fix"
+    # Owing a verdict without a patch to review is not a review either.
+    assert tasktype.classify({**fix, "expected_outputs": ["verdict.json"]}, work) == "fix"
+    # A caller-shaped value that is not a list of names is no claim at all.
+    assert tasktype.classify({**with_patch, "expected_outputs": "verdict.json"}, work) == "fix"
+
+
 # --- per type, the seeds produce the expected rows ------------------------------
 
 def test_implement_lists_callers_two_hops_tests_guards_rules_history_and_cannot_push(work):
