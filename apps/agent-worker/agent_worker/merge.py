@@ -3125,7 +3125,8 @@ def _record(summary: dict[str, Any], merger: ForgeMerger, number: int, message: 
 #: after the merge (deleted by this step, or already gone).
 BRANCH_DELETED_KEY = "branch_deleted"
 #: The merge record's key: what the step did with the head branch and why
-#: (`_delete_head_branch`). `outcome` "failed" is the daily sweep's to retry.
+#: (`_delete_head_branch`). `outcome` "failed" is retried by swarm-api's
+#: hand-off branch sweep (`swarm_api.handoffbranches`) once the workflow ends.
 BRANCH_CLEANUP_KEY = "branch_cleanup"
 #: The prefix of a branch the owner keeps: never deleted.
 KEEP_BRANCH_PREFIX = "keep/"
@@ -3140,7 +3141,8 @@ def _delete_head_branch(summary: dict[str, Any], merger: ForgeMerger, pr: PullRe
     branch, a protected branch, a `keep/` branch or one another open pull
     request is from. A branch already gone (GitHub's auto-delete) counts as
     deleted. The merge stands whatever this answers: a failure is recorded
-    as `outcome` "failed", for the daily sweep to retry, never raised."""
+    as `outcome` "failed", for swarm-api's hand-off branch sweep to retry,
+    never raised."""
     name = pr.head_ref
     record: dict[str, Any] = {"branch": name, "head": head}
     summary[BRANCH_CLEANUP_KEY] = record

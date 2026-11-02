@@ -296,3 +296,34 @@ def test_the_merge_wake_tick_sweeps_the_tenant(ctx, db, github):
 
     assert github.deleted() == ["swarm/task_a"]
     assert report.to_api()["branches"]["deleted"] == 1
+
+
+def _merge_step(db, task_id: str, *, outcome: str, head: str = HEAD_B) -> None:
+    db.collection("tasks").document(task_id).set({
+        "id": task_id, "tenant_id": "eng", "state": "SUCCEEDED", "repository_url": URL,
+        "result_summary": {"merge": {"merged_by_this_task": True, "branch_deleted": False,
+                                     "branch_cleanup": {"branch": "swarm/task_int",
+                                                        "head": head, "outcome": outcome}}},
+    })
+
+
+def test_a_merge_steps_failed_delete_is_retried_by_the_sweep(ctx, db, github):
+    _merge_step(db, "task_merge", outcome="failed")
+    _workflow(db, "wf_1", ["task_merge"])
+    github.heads["swarm/task_int"] = HEAD_B
+
+    report = _sweep(ctx, db)
+
+    assert github.deleted() == ["swarm/task_int"]
+    assert report.deleted == 1
+
+
+@pytest.mark.parametrize("outcome, head", [("kept", HEAD_B), ("failed", MOVED)])
+def test_a_merge_steps_kept_branch_or_moved_head_is_not_retried(ctx, db, github, outcome, head):
+    _merge_step(db, "task_merge", outcome=outcome)
+    _workflow(db, "wf_1", ["task_merge"])
+    github.heads["swarm/task_int"] = head
+
+    _sweep(ctx, db)
+
+    assert github.deleted() == []

@@ -5,9 +5,10 @@ The owner's rule: a branch is deleted only when a pull request from it merged
 and its head is still that pull request's head commit. Never the default
 branch, a protected branch, a branch another open pull request is from, or a
 `keep/` branch. A branch already gone (GitHub's auto-delete) counts as
-deleted; a failed delete never fails the merge, it is recorded for the daily
-sweep. `merge_world.MergeWorld`'s pull request is from `swarm/task_int`, the
-opener's own branch.
+deleted; a failed delete never fails the merge, it is recorded for swarm-api's
+hand-off branch sweep (`swarm_api.handoffbranches`) to retry.
+`merge_world.MergeWorld`'s pull request is from `swarm/task_int`, the opener's
+own branch.
 """
 
 from __future__ import annotations

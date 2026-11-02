@@ -27,6 +27,11 @@ live continuation pushes to or reads (`metadata.dispatch.continues` or
 counted. A branch already gone (404, or 422 "Reference does not exist")
 counts as deleted.
 
+THE MERGE STEP'S RETRY. A merge step whose delete of its merged pull
+request's branch failed (`result_summary.merge.branch_cleanup.outcome`
+"failed") is retried here, under the same rule, at the merged head it
+recorded.
+
 WHERE AND HOW OFTEN. The merge wake tick (`mergewake.wake_tenant`) calls
 `sweep_tenant` once per tick; it runs at most once per `SWEEP_SECONDS` per
 tenant, fenced by a transaction on the tenant's `branch_sweeps` document, so
@@ -83,6 +88,8 @@ FINISHED_STATES = (TaskState.SUCCEEDED.value, TaskState.CANCELLED.value)
 BRANCH_PREFIX = "swarm/"
 KEEP_PREFIX = "keep/"
 PUBLISH_TO_PR_FIELD = "publish_to_pr"
+#: The merge step's record of its delete (`agent_worker.merge.BRANCH_CLEANUP_KEY`).
+MERGE_CLEANUP_KEY = "branch_cleanup"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _GITHUB_REPOSITORY = re.compile(
@@ -199,8 +206,21 @@ def _step_tasks(db: Any, tenant_id: str, workflow: Mapping[str, Any]) -> list[tu
 
 def _candidate(task_id: str, doc: Mapping[str, Any]) -> _Candidate | None:
     """The task's own hand-off branch, when it pushed one and opened no pull
-    request from it."""
+    request from it; or, for a merge step whose delete of its merged pull
+    request's branch failed, that branch at the merged head (the retry)."""
     summary = _mapping(doc.get("result_summary"))
+    merge = _mapping(summary.get("merge"))
+    cleanup = _mapping(merge.get(MERGE_CLEANUP_KEY))
+    if cleanup:
+        name, head = cleanup.get("branch"), cleanup.get("head")
+        merged = merge.get("merged_by_this_task") is True or merge.get("already_merged") is True
+        if (not merged or cleanup.get("outcome") != "failed" or not isinstance(name, str)
+                or not name.startswith(BRANCH_PREFIX)
+                or not isinstance(head, str) or not _SHA.match(head)):
+            return None
+        ref = _repository(doc.get("repository_url"))
+        return None if ref is None else _Candidate(task_id=task_id, branch=name, head=head,
+                                                   ref=ref)
     branch = _mapping(summary.get("branch"))
     name, head = branch.get("name"), branch.get("head")
     if name != f"{BRANCH_PREFIX}{task_id}" or not isinstance(head, str) or not _SHA.match(head):
