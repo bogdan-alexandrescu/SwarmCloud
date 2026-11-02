@@ -244,6 +244,67 @@ acc_submit() {
   printf -v "${__acc_var}" '%s' "${__acc_id}"
 }
 
+# acc_api_as SA TENANT METHOD PATH BODY OUT -> one API request as the service
+# account SA (its ID token minted by impersonation: the caller needs
+# roles/iam.serviceAccountTokenCreator on it) with `X-Swarm-Tenant: TENANT`.
+# Inside Cloud Run (swarm-verify, where accept.yml runs the roles probe) the
+# image has no gcloud, so _acc_mint_id_token mints it over REST instead.
+# The response body goes to OUT, the HTTP status to OUT.status (0 when no
+# request was made) and anything the request printed to OUT.err. Never fails.
+#
+# In a subshell, so the identity, the tenant and the cached token are this
+# request's only: the suite's own calls keep the job's identity. The token
+# stays in that shell's memory and the header file api_request removes.
+# Inside Cloud Run an API reached through its front door takes the metadata
+# server's ACCESS token before any impersonation (common.sh access_token), so
+# a caller checks who the API saw (`me.email` of GET /v1/workspace/roles)
+# rather than trusting that SA was used.
+acc_api_as() {
+  local out="$6"
+  printf '0' >"${out}.status"
+  # A subshell as well as locals: a credential that cannot be minted ends
+  # api_request with `exit`, which must end this request, not the suite.
+  ( _acc_api_as_one "$@" ) 2>"${out}.err" || true
+}
+
+_acc_api_as_one() {
+  local sa="$1" tenant="$2" method="$3" path="$4" body="$5" out="$6"
+  local _ID_TOKEN="" _ACCESS_TOKEN="" SWARM_ID_TOKEN="" API_STATUS=0
+  local SWARM_IMPERSONATE_SA="${sa}" SWARM_API_TENANT="${tenant}"
+  # Through the *.run.app address api_credential takes an ID token, and
+  # common.sh's id_token mints SWARM_IMPERSONATE_SA's with gcloud, which the
+  # swarm-verify image does not have (images/swarm-verify/Dockerfile). Minted
+  # here first, id_token returns this one. The front door takes the metadata
+  # server's access token instead, as the comment above says.
+  if [[ -n "${K_SERVICE:-}${CLOUD_RUN_JOB:-}" ]] && ! api_is_front_door; then
+    _acc_mint_id_token "${sa}"
+  fi
+  api_request "${method}" "${API_PREFIX}${path}" "${body}" >"${out}" || true
+  printf '%s' "${API_STATUS}" >"${out}.status"
+}
+
+# _acc_mint_id_token SA -> sets _ID_TOKEN (the caller's local) to an ID token
+# for SA, audience the API's, from the IAM Credentials API's generateIdToken,
+# authorised by the metadata server's access token for the job's own identity.
+# No gcloud. Neither token reaches argv or a log: the Authorization header goes
+# to curl in a 0600 file, the reply through a pipe to jq. Exits on failure.
+_acc_mint_id_token() {
+  local sa="$1" aud header reply request token
+  aud="${API_AUDIENCE:-$(api_url)}"
+  request="$(jq -cn --arg aud "${aud}" '{audience: $aud, includeEmail: true}')"
+  token="$(access_token)" || exit 1
+  header="$(mktemp "${TMPDIR:-/tmp}/swarm-auth.XXXXXX")"
+  chmod 600 "${header}"
+  printf '%s %s\n' "${_API_AUTH_PREFIX}" "${token}" >"${header}"
+  reply="$(curl -sS -f -m "${HTTP_TIMEOUT:-30}" -H @"${header}" \
+    -H "Content-Type: application/json" -X POST --data-binary "${request}" \
+    "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${sa}:generateIdToken" \
+    2>/dev/null)" || { rm -f "${header}"; die "could not mint an ID token for ${sa} (generateIdToken); the job's identity needs roles/iam.serviceAccountTokenCreator on it"; }
+  rm -f "${header}"
+  _ID_TOKEN="$(printf '%s' "${reply}" | jq -r '.token // empty')"
+  [[ -n "${_ID_TOKEN}" ]] || die "generateIdToken returned no ID token for ${sa}"
+}
+
 # acc_record_task TASK -> TASK is cancelled at exit, in the tenant this
 # shell's API calls select now: ACC_TASKS for ACC_TENANT, ACC_OTHER_TASKS for
 # any other.
