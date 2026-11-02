@@ -30,8 +30,8 @@ pattern the scheduler's admission and the account holds use.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from google.cloud import firestore
@@ -43,12 +43,15 @@ from .aimd import (
     AimdConfig,
     # Re-exported: the route maps it to a 409 and imports it from here.
     TargetResetRefused as TargetResetRefused,
+    ceiling_of,
     current_target,
     initial_state,
     quota_derived_limit_for,
     record_exhausted,
     record_rate_limit,
     record_success,
+    recover_over_time,
+    recovery_clock,
     refresh,
     reset_target,
 )
@@ -64,8 +67,16 @@ TENANTS = "tenants"
 #: the change's own transaction (`_mutate(audit=...)`): a target reset
 #: (`adaptive_target_reset`, QUOTA-RESET) and a configured-max change
 #: (`hard_max_set`, ACCOUNT-429-FOLLOWUP). Every other write here is a
-#: provider's signal rather than a person's decision.
+#: provider's signal rather than a person's decision -- except a time-based
+#: climb (`adaptive_target_recovered`, owner 2026-11-02), recorded here too so
+#: every rise of a target that is not a success run's has a record.
 QUOTA_AUDIT = "quota_audit"
+
+#: The quota document's field holding the time of the last cut or the last
+#: climb, from which `aimd.recover_over_time` counts quiet intervals. Kept
+#: beside the frozen `QuotaState` fields rather than in them: the clock is this
+#: store's, and `quota_from_dict` and every other reader ignore it.
+RECOVERY_CLOCK = "recovery_clock_at"
 
 #: Every provider state that means "start nothing new right now".
 _STOP_STATES = (ProviderState.EXHAUSTED, ProviderState.DISABLED, ProviderState.COOLDOWN)
@@ -81,12 +92,30 @@ def quota_to_firestore(state: QuotaState) -> dict[str, Any]:
     return payload
 
 
+def _dt(value: Any) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        return value
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed
+
+
+def recovery_clock_of(data: dict[str, Any] | None) -> datetime | None:
+    """The stored recovery clock, or None for a document written before it."""
+    return _dt((data or {}).get(RECOVERY_CLOCK))
+
+
+def pool_hard_limit_of(snap: Any) -> int | None:
+    """The per-tenant pool's `hard_limit`, or None when there is no pool or no
+    usable number on it -- then the quota document's maximum is the ceiling."""
+    if not getattr(snap, "exists", False):
+        return None
+    value = (snap.to_dict() or {}).get("hard_limit")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(0, int(value))
+
+
 def quota_from_dict(data: dict[str, Any]) -> QuotaState:
-    def _dt(value: Any) -> datetime | None:
-        if value is None or isinstance(value, datetime):
-            return value
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed
 
     return QuotaState(
         provider=data["provider"],
@@ -157,9 +186,16 @@ class QuotaBroker:
         return quota_from_dict(snap.to_dict())
 
     def current(self, provider: str, tenant_id: str) -> QuotaState:
-        """State with expired cooldowns already retired."""
-        state = refresh(self.get(provider, tenant_id), now=self._now(), config=self._config)
-        return state
+        """State with expired cooldowns retired and the time-based climb applied.
+
+        Read-only: the climb shown here is the one the next write of the
+        document (a report, or the sweep's tick) commits and audits.
+        """
+        snap = self._db.collection(QUOTA).document(doc_id(provider, tenant_id)).get()
+        if not snap.exists:
+            return self.get(provider, tenant_id)
+        data = snap.to_dict() or {}
+        return self._as_read(quota_from_dict(data), recovery_clock_of(data))
 
     def list(self, tenant_id: str | None = None, provider: str | None = None,
              limit: int = 500) -> list[QuotaState]:
@@ -169,10 +205,29 @@ class QuotaBroker:
         if provider is not None:
             query = query.where(filter=FieldFilter("provider", "==", provider))
         query = query.limit(limit)
-        return [
-            refresh(quota_from_dict(snap.to_dict()), now=self._now(), config=self._config)
-            for snap in query.stream()
-        ]
+        out: list[QuotaState] = []
+        for snap in query.stream():
+            data = snap.to_dict() or {}
+            out.append(self._as_read(quota_from_dict(data), recovery_clock_of(data)))
+        return out
+
+    def _as_read(self, state: QuotaState, clock_at: datetime | None) -> QuotaState:
+        """`refresh`, then `recover_over_time` against the tenant pool's ceiling."""
+        pool_limit = pool_hard_limit_of(
+            self._db.collection(POOLS)
+            .document(f"provider:{state.provider}:tenant:{state.tenant_id}")
+            .get()
+        )
+        recovered, _clock, _spent = recover_over_time(
+            state,
+            clock_at=clock_at,
+            now=self._now(),
+            config=self._config,
+            pool_hard_limit=pool_limit,
+        )
+        return refresh(
+            recovered, now=self._now(), config=self._config, pool_hard_limit=pool_limit
+        )
 
     # -- writes -----------------------------------------------------------
 
@@ -180,22 +235,38 @@ class QuotaBroker:
         self,
         provider: str,
         tenant_id: str,
-        change: Callable[[QuotaState], QuotaState | None],
+        change: Callable[[QuotaState, int | None], QuotaState | None],
         *,
         reassert_pool: bool = False,
         recompute_shared: bool = True,
         audit: Callable[[QuotaState, QuotaState], dict[str, Any]] | None = None,
+        set_pool_hard_limit: int | None = None,
     ) -> QuotaState:
         """Apply `change` to the stored state inside one transaction.
 
         The quota document and the tenant's provider pool are read and written
         together, so the pool's cap cannot be left derived from a state that a
         concurrent report has since replaced. `change` sees the COMMITTED
-        state and may be run more than once: Firestore re-runs the body when
-        another writer touched what it read. Returning None means "nothing to
-        write", which the sweep uses so an unchanged document is not rewritten;
-        with `reassert_pool` the tenant pool's cap is still written, from the
+        state and the pool's `hard_limit` (None when there is no pool), and
+        may be run more than once: Firestore re-runs the body when another
+        writer touched what it read. Returning None means "nothing to write",
+        which the sweep uses so an unchanged document is not rewritten; with
+        `reassert_pool` the tenant pool's cap is still written, from the
         committed state.
+
+        THE TIME-BASED CLIMB IS APPLIED FIRST (owner, 2026-11-02). The stored
+        state goes through `aimd.recover_over_time` before `change` sees it,
+        so a 429 halves from the target the quiet time has earned, and a
+        climb is committed even when `change` has nothing to write -- the
+        sweep's tick is what carries a quiet workspace back up. The clock is
+        written with the document (`RECOVERY_CLOCK`), restarted by any cut or
+        climb (`aimd.recovery_clock`), and each time-based climb gets its own
+        `adaptive_target_recovered` record in `quota_audit`, in this
+        transaction.
+
+        `set_pool_hard_limit` writes the pool's `hard_limit` in the same
+        transaction, and the pool's cap is then derived against it: the one
+        caller is `set_hard_max`, which keeps the two ceilings equal.
 
         The shared provider pool follows in its own transaction once this one
         has committed (`_recompute_provider_pool`), unless `recompute_shared`
@@ -211,6 +282,7 @@ class QuotaBroker:
         pool_name = f"provider:{provider}:tenant:{tenant_id}"
         pool_ref = self._db.collection(POOLS).document(pool_name)
         audit_ref = self._db.collection(QUOTA_AUDIT).document() if audit else None
+        recovery_ref = self._db.collection(QUOTA_AUDIT).document()
         transaction = self._db.transaction()
 
         @firestore.transactional
@@ -219,9 +291,11 @@ class QuotaBroker:
             # write inside one transaction.
             snap = txn_snapshot(txn.get(ref))
             pool_snap = txn_snapshot(txn.get(pool_ref))
+            exists = bool(getattr(snap, "exists", False))
+            data = (snap.to_dict() or {}) if exists else {}
             stored = (
-                quota_from_dict(snap.to_dict() or {})
-                if getattr(snap, "exists", False)
+                quota_from_dict(data)
+                if exists
                 else initial_state(
                     provider,
                     tenant_id,
@@ -229,30 +303,72 @@ class QuotaBroker:
                     now=self._now(),
                 )
             )
-            changed = change(stored)
+            pool_limit = pool_hard_limit_of(pool_snap)
+            stored_clock = recovery_clock_of(data)
+            recovered, clock, spent = recover_over_time(
+                stored,
+                clock_at=stored_clock,
+                now=self._now(),
+                config=self._config,
+                pool_hard_limit=pool_limit,
+            )
+            # Where the quiet time was counted from: the clock before it moved.
+            since = (
+                clock - timedelta(seconds=spent * self._config.recovery_interval_seconds)
+                if spent and clock is not None
+                else stored_clock
+            )
+            changed = change(recovered, pool_limit)
+            if changed is None and spent:
+                changed = recovered
+            if set_pool_hard_limit is not None:
+                pool_limit = max(0, int(set_pool_hard_limit))
             if changed is None:
-                if reassert_pool and getattr(snap, "exists", False):
+                if reassert_pool and exists:
                     self._pool_write(
                         txn,
                         pool_ref,
                         pool_snap,
                         pool_name,
-                        quota_derived_limit=quota_derived_limit_for(stored, self._config),
+                        quota_derived_limit=quota_derived_limit_for(
+                            stored, self._config, pool_hard_limit=pool_limit
+                        ),
                         adaptive_target=stored.adaptive_target,
                         default_hard_limit=stored.configured_hard_max,
                     )
                 return stored, False
-            txn.set(ref, quota_to_firestore(changed))
+            clock = recovery_clock(
+                recovered,
+                changed,
+                clock_at=clock,
+                now=self._now(),
+                config=self._config,
+                pool_hard_limit=pool_limit,
+            )
+            payload = quota_to_firestore(changed)
+            payload[RECOVERY_CLOCK] = clock
+            txn.set(ref, payload)
             if audit is not None and audit_ref is not None:
-                txn.set(audit_ref, audit(stored, changed))
+                txn.set(audit_ref, audit(recovered, changed))
+            if spent:
+                txn.set(
+                    recovery_ref,
+                    self._recovery_record(
+                        stored, recovered, spent, since=since,
+                        pool_limit=pool_hard_limit_of(pool_snap),
+                    ),
+                )
             self._pool_write(
                 txn,
                 pool_ref,
                 pool_snap,
                 pool_name,
-                quota_derived_limit=quota_derived_limit_for(changed, self._config),
+                quota_derived_limit=quota_derived_limit_for(
+                    changed, self._config, pool_hard_limit=pool_limit
+                ),
                 adaptive_target=changed.adaptive_target,
                 default_hard_limit=changed.configured_hard_max,
+                hard_limit=set_pool_hard_limit,
             )
             return changed, True
 
@@ -271,6 +387,52 @@ class QuotaBroker:
                     str(exc)[:300],
                 )
         return state
+
+    def _recovery_record(
+        self,
+        stored: QuotaState,
+        recovered: QuotaState,
+        intervals: int,
+        *,
+        since: datetime | None,
+        pool_limit: int | None,
+    ) -> dict[str, Any]:
+        """The `quota_audit` record of one time-based climb.
+
+        Shaped like a target reset's, so one reader of `quota_audit` reads
+        the target and the ceiling the same way from both; no person asked
+        for it, so `requested_by` and `caller` are None and `reason` says
+        what earned it.
+        """
+        interval = int(self._config.recovery_interval_seconds)
+        from_target = current_target(stored, self._config, pool_hard_limit=pool_limit)
+        log.info(
+            "adaptive target for %s:%s recovered from %s to %s after %d quiet interval(s)",
+            stored.provider,
+            stored.tenant_id,
+            from_target,
+            recovered.adaptive_target,
+            intervals,
+        )
+        return {
+            "action": "adaptive_target_recovered",
+            "provider": stored.provider,
+            "tenant_id": stored.tenant_id,
+            "requested_by": None,
+            "caller": None,
+            "reason": (
+                f"{intervals} interval(s) of {interval} s with no workspace-wide refusal"
+            ),
+            "from_target": from_target,
+            "to_target": recovered.adaptive_target,
+            "intervals": intervals,
+            "interval_seconds": interval,
+            "since": since,
+            "configured_hard_max": recovered.configured_hard_max,
+            "pool_hard_limit": pool_limit,
+            "ceiling": ceiling_of(recovered, pool_limit),
+            "at": self._now(),
+        }
 
     def set_hard_max(
         self,
@@ -299,19 +461,25 @@ class QuotaBroker:
         if hard_max < 0:
             raise ValueError("configured_hard_max cannot be negative")
 
-        # `_change` edits the committed state IN PLACE, so `stored` and
-        # `changed` are one object by the time `_audit` runs: the values
-        # before are taken here, on each run of the transaction.
+        # The values before are taken here, on each run of the transaction,
+        # together with the pool's own hard limit, which this change moves to
+        # the same number (owner, 2026-11-02: the two ceilings must not
+        # disagree, or halving starts from one the console does not show).
         before: dict[str, Any] = {}
 
-        def _change(state: QuotaState) -> QuotaState:
+        def _change(state: QuotaState, pool_limit: int | None) -> QuotaState:
             before["hard_max"] = state.configured_hard_max
             before["target"] = state.adaptive_target
-            state.configured_hard_max = int(hard_max)
-            if state.adaptive_target is not None:
-                state.adaptive_target = min(state.adaptive_target, int(hard_max))
-            state.updated_at = self._now()
-            return state
+            before["pool_hard_limit"] = pool_limit
+            target = state.adaptive_target
+            if target is not None:
+                target = min(target, int(hard_max))
+            return replace(
+                state,
+                configured_hard_max=int(hard_max),
+                adaptive_target=target,
+                updated_at=self._now(),
+            )
 
         def _audit(stored: QuotaState, changed: QuotaState) -> dict[str, Any]:
             return {
@@ -328,10 +496,14 @@ class QuotaBroker:
                 "configured_hard_max": changed.configured_hard_max,
                 "from_target": before.get("target"),
                 "to_target": changed.adaptive_target,
+                "from_pool_hard_limit": before.get("pool_hard_limit"),
+                "to_pool_hard_limit": int(hard_max),
                 "at": self._now(),
             }
 
-        state = self._mutate(provider, tenant_id, _change, audit=_audit)
+        state = self._mutate(
+            provider, tenant_id, _change, audit=_audit, set_pool_hard_limit=int(hard_max)
+        )
         log.info(
             "configured hard max for %s:%s set to %s by %s",
             provider,
@@ -371,13 +543,16 @@ class QuotaBroker:
             raise ValueError("a reason is required to reset an adaptive target")
         recorded: list[dict[str, Any]] = []
 
-        def _change(state: QuotaState) -> QuotaState:
+        def _change(state: QuotaState, pool_limit: int | None) -> QuotaState:
             return reset_target(
-                refresh(state, now=self._now(), config=self._config),
+                refresh(
+                    state, now=self._now(), config=self._config, pool_hard_limit=pool_limit
+                ),
                 target,
                 now=self._now(),
                 config=self._config,
                 clear_cooldown=clear_cooldown,
+                pool_hard_limit=pool_limit,
             )
 
         def _audit(stored: QuotaState, changed: QuotaState) -> dict[str, Any]:
@@ -430,11 +605,14 @@ class QuotaBroker:
         tokens_remaining: int | None = None,
         reset_at: datetime | None = None,
     ) -> QuotaState:
-        def _change(state: QuotaState) -> QuotaState:
+        def _change(state: QuotaState, pool_limit: int | None) -> QuotaState:
             return record_success(
-                refresh(state, now=self._now(), config=self._config),
+                refresh(
+                    state, now=self._now(), config=self._config, pool_hard_limit=pool_limit
+                ),
                 now=self._now(),
                 config=self._config,
+                pool_hard_limit=pool_limit,
                 requests_remaining=requests_remaining,
                 tokens_remaining=tokens_remaining,
                 reset_at=reset_at,
@@ -450,11 +628,12 @@ class QuotaBroker:
         retry_after_seconds: int | None = None,
         reset_at: datetime | None = None,
     ) -> QuotaState:
-        def _change(state: QuotaState) -> QuotaState:
+        def _change(state: QuotaState, pool_limit: int | None) -> QuotaState:
             return record_rate_limit(
                 state,
                 now=self._now(),
                 config=self._config,
+                pool_hard_limit=pool_limit,
                 retry_after_seconds=retry_after_seconds,
                 reset_at=reset_at,
             )
@@ -469,11 +648,12 @@ class QuotaBroker:
         retry_after_seconds: int | None = None,
         reset_at: datetime | None = None,
     ) -> QuotaState:
-        def _change(state: QuotaState) -> QuotaState:
+        def _change(state: QuotaState, pool_limit: int | None) -> QuotaState:
             return record_exhausted(
                 state,
                 now=self._now(),
                 config=self._config,
+                pool_hard_limit=pool_limit,
                 retry_after_seconds=retry_after_seconds,
                 reset_at=reset_at,
             )
@@ -503,9 +683,11 @@ class QuotaBroker:
             providers.add(listed.provider)
             retired: list[bool] = []
 
-            def _change(state: QuotaState) -> QuotaState | None:
+            def _change(state: QuotaState, pool_limit: int | None) -> QuotaState | None:
                 retired.clear()
-                refreshed = refresh(state, now=self._now(), config=self._config)
+                refreshed = refresh(
+                    state, now=self._now(), config=self._config, pool_hard_limit=pool_limit
+                )
                 if (
                     refreshed.state is state.state
                     and refreshed.quota_derived_limit == state.quota_derived_limit
@@ -631,6 +813,7 @@ class QuotaBroker:
         quota_derived_limit: int | None,
         adaptive_target: int | None = None,
         default_hard_limit: int | None = None,
+        hard_limit: int | None = None,
     ) -> None:
         """Write the cap onto one pool, IN the caller's transaction.
 
@@ -639,7 +822,7 @@ class QuotaBroker:
         the scheduler could create and admit against the pool between the read
         and the `set`, and the `set` replaced its count. Inside the transaction
         that interleaving re-runs the body, which then sees the pool and only
-        patches the two fields this module owns.
+        patches the fields this module owns.
         """
         now = self._now()
         if not getattr(snap, "exists", False):
@@ -648,7 +831,9 @@ class QuotaBroker:
                 {
                     "name": name,
                     "hard_limit": int(
-                        default_hard_limit
+                        hard_limit
+                        if hard_limit is not None
+                        else default_hard_limit
                         if default_hard_limit is not None
                         else self._settings.default_hard_max
                     ),
@@ -666,4 +851,8 @@ class QuotaBroker:
         }
         if adaptive_target is not None:
             patch["adaptive_target"] = adaptive_target
+        if hard_limit is not None:
+            # `set_hard_max` only: the pool's ceiling moved with the quota
+            # document's, in the same transaction.
+            patch["hard_limit"] = int(hard_limit)
         txn.update(ref, patch)
