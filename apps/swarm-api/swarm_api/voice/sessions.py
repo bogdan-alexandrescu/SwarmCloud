@@ -38,10 +38,24 @@ SWARM-VOICE'S INTERNAL CALLS. swarm-api POSTs, with a Google ID token for
 `voice_audience` (else the URL) as its bearer:
 
   {SWARM_VOICE_URL}/internal/sessions
-      {"session_id", "project_id", "tenant_id", "person", "offer", "grant"}
-      -> 200 {"answer": "<SDP>"}
+      {"voice_session_id", "project_id", "person", "credential", "offer", "grant"}
+      -> 201 {"voice_session_id", "live_session_id", "answer": "<SDP>"}
   {SWARM_VOICE_URL}/internal/sessions/{session_id}/end
       {"session_id", "cause"} -> 200
+
+The start body is swarm-voice's `StartRequest` (apps/swarm-voice/swarm_voice/
+main.py) field for field (owner, 2026-11-02: "swarm-api follows swarm-voice").
+An answer for another session id is read as a refusal; the live session's id
+is kept on the session document.
+
+THE CREDENTIAL (owner, 2026-11-02: "Session lane sends stored_version"). The
+start's `credential` is the Secret Manager VERSION reference of the person's
+own ChatGPT sign-in, `ChatGPTSignIn.stored_version` (voice/signin.py), never
+its value: swarm-voice reads the value itself. A person with no stored
+sign-in, or whose stored reference is not a numbered version of their own
+personal secret in this deployment's project (invariant 9), is refused with
+`VoiceNotSignedIn`, which names Voice it › Preferences, before anything is
+written or sent. The reference is kept out of every repr and log line.
 
 A start swarm-voice refuses or does not answer ends the session at once with
 the cause `voice_unreachable` and frees the person's marker, so the next try
@@ -70,6 +84,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 
 from ..errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable
+from .signin import personal_secret_id
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +139,10 @@ class VoiceUnavailable(UpstreamUnavailable):
     code = "voice_unavailable"
 
 
+class VoiceNotSignedIn(Forbidden):
+    pass
+
+
 class VoiceSessionLive(Conflict):
     pass
 
@@ -143,6 +162,24 @@ def unavailable() -> VoiceUnavailable:
     return VoiceUnavailable(
         "Voice it is unavailable: swarm-voice is not deployed here "
         "(SWARM_VOICE_URL is unset). Nothing was started.")
+
+
+def not_signed_in() -> VoiceNotSignedIn:
+    return VoiceNotSignedIn(
+        "Voice it talks on your own ChatGPT plan, and no ChatGPT sign-in of yours is "
+        "stored. Open Voice it › Preferences, press Sign in with ChatGPT, then start "
+        "again. Nothing was started.")
+
+
+def own_credential(ref: str | None, *, person: str, project: str) -> bool:
+    """Whether `ref` is a numbered version of `person`'s own OpenAI secret in this
+    deployment's project, the only reference swarm-voice is sent (invariant 9)."""
+    if not isinstance(ref, str) or not project:
+        return False
+    prefix = f"projects/{project}/secrets/{personal_secret_id(person)}/versions/"
+    version = ref[len(prefix):] if ref.startswith(prefix) else ""
+    return version.isascii() and version.isdigit() and not version.startswith("0") \
+        and len(version) <= 9
 
 
 def is_allowed(people: tuple[str, ...], email: str) -> bool:
@@ -180,8 +217,11 @@ def _aware(value: Any) -> datetime | None:
 class StartCall:
     session_id: str
     project_id: str
+    #: Kept for the caller's own record; swarm-voice's body has no tenant.
     tenant_id: str
     person: str
+    #: The version reference of the person's own OpenAI secret (module docstring).
+    credential: str
     offer: str
     #: Excluded from the repr: it is the session's credential.
     grant: str
@@ -191,9 +231,17 @@ class StartCall:
                 f"tenant_id={self.tenant_id!r})")
 
 
+@dataclass(frozen=True)
+class StartAnswer:
+    """What swarm-voice's 201 carries besides the session id it echoes."""
+
+    answer: str
+    live_session_id: str
+
+
 class VoiceClient(Protocol):
-    def start(self, call: StartCall) -> str:
-        """swarm-voice's SDP answer, or `VoiceUnreachable`."""
+    def start(self, call: StartCall) -> StartAnswer:
+        """swarm-voice's answer, or `VoiceUnreachable`."""
         ...
 
     def end(self, session_id: str, *, cause: str) -> bool:
@@ -233,9 +281,9 @@ class HttpVoiceClient:
         except urllib.error.HTTPError as exc:
             return exc.code, b""
 
-    def start(self, call: StartCall) -> str:
-        body = {"session_id": call.session_id, "project_id": call.project_id,
-                "tenant_id": call.tenant_id, "person": call.person,
+    def start(self, call: StartCall) -> StartAnswer:
+        body = {"voice_session_id": call.session_id, "project_id": call.project_id,
+                "person": call.person, "credential": call.credential,
                 "offer": call.offer, "grant": call.grant}
         try:
             status, raw = self._post("/internal/sessions", body, START_TIMEOUT_SECONDS)
@@ -243,16 +291,20 @@ class HttpVoiceClient:
             log.warning("voice start for session=%s did not reach swarm-voice (%s)",
                         call.session_id, type(exc).__name__)
             raise VoiceUnreachable("swarm-voice could not be reached; the session was ended.") from None
-        if status != 200:
+        if status != 201:
             log.warning("swarm-voice refused the start for session=%s (HTTP %s)", call.session_id, status)
             raise VoiceUnreachable(f"swarm-voice refused the session (HTTP {status}); it was ended.")
         try:
-            answer = json.loads(raw.decode("utf-8")).get("answer")
-        except (ValueError, AttributeError):
-            answer = None
-        if not isinstance(answer, str):
+            started = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            started = None
+        if not isinstance(started, dict) or started.get("voice_session_id") != call.session_id:
+            log.warning("swarm-voice answered the start for session=%s for another session", call.session_id)
+            raise VoiceUnreachable("swarm-voice answered for another session; the session was ended.")
+        answer, live_id = started.get("answer"), started.get("live_session_id")
+        if not isinstance(answer, str) or not isinstance(live_id, str) or not live_id:
             raise VoiceUnreachable("swarm-voice answered without an SDP answer; the session was ended.")
-        return answer
+        return StartAnswer(answer=answer, live_session_id=live_id)
 
     def end(self, session_id: str, *, cause: str) -> bool:
         path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/end"
@@ -297,10 +349,12 @@ class VoiceSessions:
     """Starts and ends one person's sessions in one tenant."""
 
     def __init__(self, db: Any, client: VoiceClient, *, marker_key: str = "",
-                 now: Callable[[], datetime]) -> None:
+                 project: str = "", now: Callable[[], datetime]) -> None:
         self._db = db
         self._client = client
         self._marker_key = marker_key
+        #: This deployment's project: the only one a credential reference may name.
+        self._project = project
         self._now = now
 
     def _project_ref(self, project_id: str) -> Any:
@@ -337,9 +391,13 @@ class VoiceSessions:
                 self._now() - created < timedelta(seconds=STARTING_STALE_SECONDS)
         return False
 
-    def start(self, *, tenant_id: str, person: str, offer: str,
-              project_id: str | None) -> dict[str, Any]:
+    def start(self, *, tenant_id: str, person: str, offer: str, project_id: str | None,
+              credential: str | None) -> dict[str, Any]:
+        """`credential` is `ChatGPTSignIn.stored_version(person)`: refused before
+        anything is written unless it is the person's own (module docstring)."""
         person = person.strip().lower()
+        if credential is None or not own_credential(credential, person=person, project=self._project):
+            raise not_signed_in()
         session_id = "vs_" + secrets.token_hex(16)
         new_project = project_id is None
         project_id = project_id or "vp_" + secrets.token_hex(16)
@@ -380,20 +438,21 @@ class VoiceSessions:
         _open(self._db.transaction())
 
         call = StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
-                         person=person, offer=offer, grant=grant)
+                         person=person, credential=credential, offer=offer, grant=grant)
         try:
-            answer = self._client.start(call)
-            if not isinstance(answer, str) or not _valid_answer(answer):
+            started = self._client.start(call)
+            if not isinstance(started, StartAnswer) or not _valid_answer(started.answer):
                 raise VoiceUnreachable("swarm-voice's answer is not an SDP answer; the session was ended.")
         except VoiceUnreachable:
             self._close(tenant_id=tenant_id, person=person, project_id=project_id,
                         session_id=session_id, cause=END_VOICE_UNREACHABLE)
             raise
-        self._session_ref(project_id, session_id).update({"state": LIVE, "live_at": self._now()})
+        self._session_ref(project_id, session_id).update(
+            {"state": LIVE, "live_at": self._now(), "live_session_id": started.live_session_id})
         log.info("voice session started tenant=%s project=%s session=%s new_project=%s",
                  tenant_id, project_id, session_id, new_project)
         return {"project_id": project_id, "session_id": session_id, "state": LIVE,
-                "new_project": new_project, "answer_sdp": answer}
+                "new_project": new_project, "answer_sdp": started.answer}
 
     def _close(self, *, tenant_id: str, person: str, project_id: str, session_id: str,
                cause: str) -> dict[str, Any] | None:

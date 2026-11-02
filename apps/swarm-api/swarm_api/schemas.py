@@ -167,6 +167,9 @@ class TaskCreate(StrictModel):
     repository_ref: str | None = Field(default=None, max_length=256)
     #: May only SHORTEN the profile's timeout; a longer value is clamped.
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    #: May only LOWER the profile's turn cap (contract request 133): refused
+    #: on a profile without `supports_max_turns`, lowered to its `max_turns`.
+    max_turns: int | None = Field(default=None, ge=1)
     #: May only LOWER the attempt's spend limit (#2459): see `StepBudget`.
     budget: StepBudget | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=10)
@@ -262,6 +265,9 @@ class WorkflowStepCreate(StrictModel):
     #: upstream step_id -> artifact filename staged into this step's workspace.
     input_from: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    #: This step's turn cap, as `TaskCreate.max_turns` (contract request 133).
+    #: Stored as asked on `WorkflowStep.max_turns`, resolved on its task.
+    max_turns: int | None = Field(default=None, ge=1)
     #: This step's spend limit, which may only LOWER the workspace's (#2459):
     #: see `StepBudget`. Pinned, resolved, in the step task's signed
     #: `metadata.dispatch.budget`.

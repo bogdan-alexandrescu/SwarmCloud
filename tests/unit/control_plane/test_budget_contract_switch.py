@@ -98,7 +98,8 @@ def test_a_budgeted_task_pins_the_typed_field_and_signs_it_at_format_6(client, d
     assert budget.DISPATCH_KEY not in dispatch, "the dispatch key is written no more"
     assert dispatch[budget.PROVENANCE_KEY] == {
         "step": {"tokens": 40_000}, "workspace": {}, "ceiling": {}}
-    assert task["spec_format"] == 6 == specsign.SPEC_FORMAT
+    # Format 6 covers the budget; a task without a turn cap stays below 7.
+    assert task["spec_format"] == 6 == specsign.signing_format(task)
     assert signer.verifies(task, task["id"])
     # Inside the signed bytes: raising or removing it fails verification.
     assert not signer.verifies({**task, "budget": {"tokens": 4_000_000}}, task["id"])
