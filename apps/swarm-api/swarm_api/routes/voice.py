@@ -13,6 +13,20 @@
     PATCH  /v1/voice/preferences              {changes, revision?} -> the same, plus changed
     POST   /v1/voice/preferences/undo         {revision?} -> the same
 
+    GET    /v1/voice/cards/schema             -> the card catalogue and the planner's tools
+    GET    /v1/voice/sessions/{session_id}/events[?after=N]
+                                              -> text/event-stream, resumes by sequence
+
+CARDS AND THE STREAM (§3.5, §4; swarm_api/voice/cards.py and voice/stream.py).
+The schema route serves the one catalogue every card write is validated
+against, with each kind as a strict `draw_<kind>` tool for the planner. The
+stream takes NO tenant guard: `EventSource` sends no header, so the tenant is
+the one the session document names, answered only when it is one the caller
+belongs to on this request; another tenant's session, another person's, and a
+missing one are the same 404. It ends itself before 600 seconds, under the
+660-second request timeout, and the browser resumes from `Last-Event-ID`; once
+the session has ended and everything is sent, a reconnect is 204.
+
 PROJECTS AND PREFERENCES (§3.7, §3.11, §10 phase 2; swarm_api/voice/store.py
 and voice/preferences.py). The same who-guard and the same workspace: a
 project is read only when its tenant is the selected workspace and its person
@@ -52,16 +66,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ValidationFailed
+from ..voice import cards as vcards
 from ..voice import preferences as vprefs
 from ..voice import sessions as vs
 from ..voice import store as vstore
+from ..voice import stream as vstream
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
@@ -271,3 +288,44 @@ async def undo_preferences(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     return await run_in_threadpool(_preferences(ctx).undo, person, revision=body.revision)
+
+
+
+# --------------------------------------------------------------------------
+# The card catalogue and the card stream (§3.5, §4, §10 phase 2)
+# --------------------------------------------------------------------------
+
+
+@router.get("/cards/schema")
+async def card_schema(person: str = Depends(allowed_person)) -> dict:
+    return vcards.catalogue()
+
+
+def stream_timing(request: Request) -> dict[str, Any]:
+    """`app.state.voice_stream_timing` when one is set (a test's fake clock
+    and sleep), else the real ones."""
+    return dict(getattr(request.app.state, "voice_stream_timing", None) or {})
+
+
+@router.get("/sessions/{session_id}/events", response_model=None)
+async def session_events(
+    session_id: str,
+    request: Request,
+    after: int | None = Query(default=None, ge=0),
+    person: str = Depends(allowed_person),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    timing: dict[str, Any] = Depends(stream_timing),
+) -> Response:
+    _check_id(session_id, "vs_", "session_id")
+    start_after = vstream.resume_after(request.headers.get("last-event-id"), after)
+    found = await run_in_threadpool(
+        vstream.find_session, ctx.db, person=person, session_id=session_id,
+        tenants=vstream.tenants_of(auth))
+    stream = vstream.CardStream(vstore.VoiceStore(ctx.db, now=ctx.now), ctx.db,
+                                found=found, person=person, after=start_after, **timing)
+    if found.state == vs.ENDED and not await run_in_threadpool(stream.pending):
+        # Ended and fully sent: 204 tells EventSource not to reconnect.
+        return Response(status_code=204)
+    return StreamingResponse(stream, media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
