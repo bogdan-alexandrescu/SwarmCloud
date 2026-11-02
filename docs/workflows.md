@@ -2529,8 +2529,10 @@ publishes is on a branch built on every hand-off before it (a carrier push is
 a fast-forward), and a workflow that ended without one has nothing left that
 reads them. Each branch is deleted only while GitHub's head is still the one
 the step recorded; one that moved, is protected, is the default branch, is
-under `keep/`, has an open pull request, or is continued by a live agent is
-kept and counted. A step's pull-request branch is left to the merge step
+under `keep/`, has a pull request that did not merge at that head (open,
+closed without merging, or merged at another head: a continuation can publish
+on a continued step's branch), or is continued by a live agent is kept and
+counted. Only workflows created in the last seven days are read. A step's pull-request branch is left to the merge step
 ([merge-step.md §5.5](merge-step.md)). What happened is recorded in
 `branch_cleanups/<workflow_id>`; a failed delete leaves it not `done`, and the
 next sweep retries it.

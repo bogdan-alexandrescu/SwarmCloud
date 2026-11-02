@@ -814,6 +814,21 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
         return _pull(ref, entries[0], what) if entries else None
 
+    def pulls_from(self, ref: IssueRef, head: str, token: str) -> list[PullSnapshot]:
+        """Every pull request from `head` (a branch of this repository), in any
+        state, newest first: one page of `PAGE_SIZE`. GitHub's list answer
+        carries `merged_at` but not `merged`, so a merged one is read by
+        `merged_at`."""
+        what = f"the pull requests from {head} in {ref.repository}"
+        query = (f"head={quote(ref.owner, safe='')}:{quote(head, safe='/')}"
+                 f"&state=all&per_page={PAGE_SIZE}")
+        entries = self._call(
+            "GET", f"{self._url(ref, 'pulls')}?{query}", token, what, needs=PULLS_WRITE,
+        )
+        if not isinstance(entries, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+        return [_pull(ref, entry, what) for entry in entries]
+
     def open_pull(
         self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str,
         draft: bool = False,

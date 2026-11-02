@@ -21,8 +21,10 @@ THE OWNER'S RULE, held per branch. Only a step's OWN hand-off branch
 branch is the merge step's, `agent_worker.merge._delete_head_branch`, or
 GitHub's auto-delete); only while GitHub's head is still the head the task
 recorded (nothing pushed after); never the default branch, a protected
-branch, a `keep/` branch, a branch an open pull request is from, or one a
-live continuation pushes to or reads (`metadata.dispatch.continues` or
+branch, a `keep/` branch, a branch any pull request is from unless every
+one of them MERGED at exactly the recorded head (a continuation can publish
+on a continued step's branch, `publish_to_pr`, and that step records no pull
+request: one closed without merging keeps it), or one a live continuation pushes to or reads (`metadata.dispatch.continues` or
 `publish_to_pr.task_id` naming the task). Everything else is KEPT and only
 counted. A branch already gone (404, or 422 "Reference does not exist")
 counts as deleted.
@@ -39,7 +41,8 @@ two swarm-api instances never sweep one tenant at once. A workflow's outcome
 is recorded in `branch_cleanups/<workflow_id>`; one recorded `done` is not
 read again (idempotent), one with a failed delete is retried next sweep. Only
 workflows created in the last `LOOKBACK` are read, newest first, through the
-`workflows-tenant-state-created` index; older ones are the daily sweep's.
+`workflows-tenant-state-created` index; a workflow created earlier is not
+read, its branches (and a merge step's failed delete in it) are kept.
 
 INVARIANTS. No lease, pool count or fencing generation is read or written
 here. The forge token is read once per sweep with work to do
@@ -62,7 +65,7 @@ from swarm_common.states import TERMINAL_STATES, TaskState
 
 from . import forge_limits
 from .errors import ApiError
-from .forgewrite import ForgeRateLimited, ForgeWriteError, GitHubWriter
+from .forgewrite import PAGE_SIZE, ForgeRateLimited, ForgeWriteError, GitHubWriter
 from .repositories import parse_repository
 from .validation import DISPATCH_METADATA_KEY, IssueRef
 
@@ -275,8 +278,21 @@ def _one(db: Any, writer: GitHubWriter, tenant_id: str, candidate: _Candidate, t
         return kept("default_branch")
     if writer.branch_protected(ref, candidate.branch, token):
         return kept("protected")
-    if writer.find_open_pull(ref, candidate.branch, token) is not None:
-        return kept("open_pull_request")
+    # Any pull request from the branch, in any state: a continuation can
+    # publish on a continued step's branch (`publish_to_pr`), and its task
+    # records no pull request. Only one that MERGED at exactly this head lets
+    # the branch go; an open one, one closed without merging, one merged at
+    # another head, or a full page (more than were read) keeps it.
+    pulls = writer.pulls_from(ref, candidate.branch, token)
+    if len(pulls) >= PAGE_SIZE:
+        return kept("pull_requests_unread")
+    for pull in pulls:
+        if pull.state == "open":
+            return kept("open_pull_request")
+        if not (pull.merged or pull.merged_at):
+            return {**kept("closed_unmerged"), "pull_request": pull.number}
+        if pull.head_sha != candidate.head:
+            return {**kept("merged_at_other_head"), "pull_request": pull.number}
     deleted = writer.delete_branch(ref, candidate.branch, token)
     return {**row, "outcome": "deleted" if deleted else "already_deleted"}
 

@@ -2764,6 +2764,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                         train_provenance(ctx, merger, number=number, head=pr.head_sha,
                                          base=default, train=landed.get("train_id")))
                 _close_issues(run, merger, number)
+                _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                    default=default)
                 return _outcome(TaskState.SUCCEEDED, None, summary, "")
             if _queued_by_this_step(own):
                 # The merge queue merged what this step enqueued (C3H): this
@@ -2775,6 +2777,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                         queued_provenance(ctx, merger, number=number, head=pr.head_sha,
                                           base=default))
                 _close_issues(run, merger, number)
+                _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                    default=default)
                 return _outcome(TaskState.SUCCEEDED, None, summary, "")
             # A lost attempt that merged, or another merger after this step's
             # update: the merge stands, and the issues it closes are closed

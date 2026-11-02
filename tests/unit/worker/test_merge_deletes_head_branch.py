@@ -17,11 +17,11 @@ import json
 
 import pytest
 
-from agent_worker import merge
+from agent_worker import merge, mergetrain
 from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
-from merge_world import API, OPENER, OTHER, PINNED, PR, MergeWorld
+from merge_world import API, MERGED, OPENER, OTHER, PINNED, PR, TASK, TENANT, MergeWorld
 
 BRANCH = f"swarm/{OPENER}"
 BRANCH_PATH = f"{API}/branches/swarm%2F{OPENER}"
@@ -159,3 +159,38 @@ def test_an_already_merged_pull_request_still_deletes_its_unmoved_branch(tmp_pat
     assert outcome.summary["already_merged"] is True
     assert len(_deletes(world)) == 1
     assert outcome.summary["branch_deleted"] is True
+
+
+def test_a_pull_request_the_merge_train_landed_deletes_its_unmoved_branch(tmp_path):
+    world = _world(tmp_path)
+    world.target["merge_mode"] = mergetrain.TRAIN
+    first = merge.run_merge(world.context())
+    world.docs[TASK]["metadata"][merge.MERGE_WAIT_METADATA_KEY] = {
+        "code": first.ci_wait["code"], "head": first.ci_wait["head"],
+        "pull_request": first.ci_wait["pull_request"]}
+    world.slot_db.documents[
+        f"{mergetrain.ENTRIES_COLLECTION}/{mergetrain.entry_id_for(TENANT, TASK)}"
+    ].update(state=mergetrain.LANDED, merge_commit=MERGED)
+    world.pr.update(merged=True, state="closed", merge_commit_sha=MERGED)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert outcome.summary["merged_through_train"] is True
+    assert len(_deletes(world)) == 1
+    assert outcome.summary["branch_deleted"] is True
+    assert outcome.summary["branch_cleanup"]["outcome"] == "deleted"
+
+
+def test_a_pull_request_the_merge_queue_merged_deletes_its_unmoved_branch(tmp_path):
+    world = _world(tmp_path)
+    world.docs[TASK]["metadata"] = {merge.MERGE_WAIT_METADATA_KEY: {
+        "code": merge.MERGE_QUEUED, "head": PINNED, "pull_request": world.pr["number"],
+        "pending": [], "wakes": 1, "updates": 0}}
+    world.pr.update(merged=True, state="closed", merge_commit_sha=MERGED)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert outcome.summary["merged_through_queue"] is True
+    assert len(_deletes(world)) == 1
+    assert outcome.summary["branch_deleted"] is True
+    assert outcome.summary["branch_cleanup"]["outcome"] == "deleted"

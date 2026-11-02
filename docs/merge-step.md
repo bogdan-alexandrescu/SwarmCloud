@@ -2965,7 +2965,8 @@ commit is the App's.
 The owner asked on 2026-11-02 for an agent's branch to go once its changes are
 merged: the repository held 4,756 branches, and merges are squashed, so `git
 branch --merged` recognises almost none of them. A merged branch is known by
-its pull request. After a merge (or on the retry that finds the pull request
+its pull request. After a merge (the direct merge call, a landing by the
+merge train or by GitHub's merge queue, or the retry that finds the pull request
 already merged at an accepted head), `_delete_head_branch` deletes the pull
 request's head branch only when it is the workflow's own `swarm/<task>`
 branch in this repository and GitHub still has it at the merged commit. It

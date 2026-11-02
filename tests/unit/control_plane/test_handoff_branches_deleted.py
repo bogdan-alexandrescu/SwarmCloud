@@ -4,8 +4,9 @@
 SUCCEEDED or CANCELLED and every step is terminal, each step's own
 `swarm/<task_id>` hand-off branch is deleted while its head is still the one
 the step recorded. A running workflow's are not; a moved head, a protected
-branch, one with an open pull request or one a live continuation reads is
-kept; a branch already gone is fine; a failed delete is recorded and retried.
+branch, one with a pull request that did not merge at the recorded head
+(open, closed without merging, merged at another head) or one a live
+continuation reads is kept; a branch already gone is fine; a failed delete is recorded and retried.
 GitHub is a fake transport under the real `forgewrite.GitHubWriter`.
 """
 
@@ -39,6 +40,8 @@ class Branches:
         self.heads: dict[str, str] = {}
         self.protected: set[str] = set()
         self.open_pulls: set[str] = set()
+        #: Closed pull requests by head branch: (number, merged, head sha).
+        self.closed_pulls: dict[str, list[tuple[int, bool, str]]] = {}
         self.delete_answer: tuple[int, Any] | None = None
         self.calls: list[tuple[str, str]] = []
 
@@ -68,14 +71,22 @@ class Branches:
                 return answer(404, {"message": "Branch not found"})
             return answer(200, {"name": name, "protected": name in self.protected})
         if method == "GET" and path == f"{BASE}/pulls":
-            head = parse_qs(parsed.query)["head"][0].split(":", 1)[1]
+            query = parse_qs(parsed.query)
+            head = query["head"][0].split(":", 1)[1]
+            repo = {"full_name": f"{OWNER}/{REPO}"}
+            rows = []
             if head in self.open_pulls:
-                return answer(200, [{"number": 7, "state": "open", "html_url": "x",
-                                     "head": {"ref": head, "sha": self.heads[head],
-                                              "repo": {"full_name": f"{OWNER}/{REPO}"}},
-                                     "base": {"ref": "main",
-                                              "repo": {"full_name": f"{OWNER}/{REPO}"}}}])
-            return answer(200, [])
+                rows.append({"number": 7, "state": "open", "html_url": "x",
+                             "head": {"ref": head, "sha": self.heads[head], "repo": repo},
+                             "base": {"ref": "main", "repo": repo}})
+            if query["state"] == ["all"]:
+                # GitHub's list answer has `merged_at`, never `merged`.
+                rows += [{"number": number, "state": "closed", "html_url": "x",
+                          "merged_at": "2026-11-01T00:00:00Z" if merged else None,
+                          "head": {"ref": head, "sha": sha, "repo": repo},
+                          "base": {"ref": "main", "repo": repo}}
+                         for number, merged, sha in self.closed_pulls.get(head, [])]
+            return answer(200, rows)
         if method == "DELETE" and path.startswith(f"{BASE}/git/refs/heads/"):
             name = unquote(path[len(f"{BASE}/git/refs/heads/"):])
             if self.delete_answer is not None:
@@ -327,3 +338,38 @@ def test_a_merge_steps_kept_branch_or_moved_head_is_not_retried(ctx, db, github,
     _sweep(ctx, db)
 
     assert github.deleted() == []
+
+
+@pytest.mark.parametrize("merged, sha, reason", [
+    (False, HEAD_A, "closed_unmerged"),
+    (True, MOVED, "merged_at_other_head"),
+])
+def test_a_continued_steps_branch_whose_pull_request_did_not_merge_at_its_head_is_kept(
+        ctx, db, github, merged, sha, reason):
+    """A continuation published on the continued step's branch (`publish_to_pr`):
+    that step records no pull request, and one closed without merging keeps it."""
+    _task(db, "task_a", head=HEAD_A)
+    _task(db, "task_cont", state="SUCCEEDED", publish_to_pr={"task_id": "task_a"})
+    _workflow(db, "wf_1", ["task_a", "task_cont"], state="CANCELLED")
+    github.heads["swarm/task_a"] = HEAD_A
+    github.closed_pulls["swarm/task_a"] = [(43, merged, sha)]
+
+    report = _sweep(ctx, db)
+
+    assert github.deleted() == []
+    assert report.kept == 1
+    (row,) = _record(db, "wf_1")["branches"]
+    assert row["outcome"] == "kept" and row["reason"] == reason
+    assert row["pull_request"] == 43
+
+
+def test_a_branch_whose_pull_request_merged_at_its_head_is_deleted(ctx, db, github):
+    _merge_step(db, "task_merge", outcome="failed")
+    _workflow(db, "wf_1", ["task_merge"])
+    github.heads["swarm/task_int"] = HEAD_B
+    github.closed_pulls["swarm/task_int"] = [(41, True, HEAD_B)]
+
+    report = _sweep(ctx, db)
+
+    assert github.deleted() == ["swarm/task_int"]
+    assert report.deleted == 1
