@@ -3698,6 +3698,11 @@ class RemoteControlPlane(ControlPlane):
         self._post("attempt-end", {"exit_code": exit_code, "error": _bounded_error(error)},
                    call="attempt")
 
+    def store_pending_attempt_totals(self) -> None:
+        """Nothing: this worker writes through swarm-api's routes, and its
+        `record_attempt_start` defers no task totals (contract request 132),
+        so there is none to store and no Firestore transaction to make."""
+
     # -- heartbeat -----------------------------------------------------------------
 
     def heartbeat(self) -> bool:
