@@ -99,10 +99,11 @@ class Remote:
 
     def __init__(self) -> None:
         self.db = ApiFirestore()
-        seed_remote_attempt(self.db, state="RUNNING", generation=2)
+        seed_remote_attempt(self.db, generation=2)
         self.db.docs["attempts/att_earlier"] = _earlier_attempt(self.task_id)
         self.control = remote_control(RoutesOpener(api_client(self.db)), generation=2)
         self.control.validate_generation()
+        self.control.advance_to_running()
 
     def task(self) -> dict:
         return self.db.docs[f"tasks/{self.task_id}"]
@@ -138,7 +139,8 @@ def _stored(path) -> dict:
 def test_a_finish_writes_the_tasks_attempt_totals_in_its_own_commit(path):
     path.control.record_attempt_start(backend="cloud_run_job", execution_name=None)
     path.control.record_spend({"total_cost_usd": 0.25})
-    assert path.task().get("attempt_totals") is None
+    # Still running: its duration is not in yet.
+    assert path.task()["attempt_totals"]["duration_incomplete"] is True
 
     path.control.finish(state=TaskState.SUCCEEDED, exit_code=0)
 
@@ -150,6 +152,20 @@ def test_a_finish_writes_the_tasks_attempt_totals_in_its_own_commit(path):
     assert stored["cost_incomplete"] is False
     assert stored["duration_incomplete"] is False
     # Exactly what swarm-api derives from the same attempt documents.
+    assert _stored(path) == _derived_totals(path)
+
+
+def test_an_attempt_start_counts_the_running_attempt(path):
+    """So a running row is served from the task document too."""
+    assert path.task().get("attempt_totals") is None
+
+    path.control.record_attempt_start(backend="cloud_run_job", execution_name=None)
+
+    stored = path.task()["attempt_totals"]
+    assert stored["as_of"] == {"attempt_id": path.attempt_id, "generation": 2}
+    assert stored["attempts"] == 2
+    assert stored["cost_incomplete"] is True and stored["duration_incomplete"] is True
+    assert stored["cost_usd_total"] == 0.5
     assert _stored(path) == _derived_totals(path)
 
 

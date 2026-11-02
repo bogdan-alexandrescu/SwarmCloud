@@ -389,10 +389,116 @@ def derive(task: Task, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return _from_rows(current, live=task.state not in TERMINAL_STATES)
 
 
+# --------------------------------------------------------------------------
+# The stored copy (contract request 132, accepted 2026-11-01)
+# --------------------------------------------------------------------------
+#
+# `Task.current_account` is a READ-SIDE VIEW ONLY of the events above: the
+# answer `derive` gives, kept on the task document by the writer of each
+# account event, in that event's own write (`account_after`). The worker's
+# direct path restates the rule (`agent_worker.control`, a separate image)
+# and a test holds the two equal. Nothing that admits, leases or counts
+# capacity reads it: the broker's holds are an account's capacity.
+
+#: The causes that move a task's current account.
+ACCOUNT_CAUSES = (ACCOUNT_ASSIGNED, ACCOUNT_UNREADABLE)
+
+
+def account_after(prev: Any, event: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`Task.current_account` once `event` is written over `prev`, or None
+    when `event` is not an account event (nothing to write).
+
+    `_walk`'s rule, one event at a time: an assignment holds its account; an
+    unreadable account is a swap, and gives back the account held when it is
+    that one. A newer generation starts from nothing.
+    """
+    detail = event.get("detail") or {}
+    cause = detail.get("cause")
+    account_id = detail.get("account_id")
+    if cause not in ACCOUNT_CAUSES or not isinstance(account_id, str) or not account_id:
+        return None
+    generation = event.get("generation")
+    same = isinstance(prev, Mapping) and prev.get("generation") == generation
+    swaps = _stored_swaps(prev.get("swaps")) if same else []
+    if cause == ACCOUNT_ASSIGNED:
+        provider = detail.get("provider")
+        return _account(
+            STATUS_ASSIGNED,
+            account_id=account_id,
+            provider=provider if isinstance(provider, str) else None,
+            attempt_id=event.get("attempt_id"),
+            generation=generation,
+            swaps=swaps,
+        )
+    swaps.append({"account_id": account_id, "cause": _SWAP_CAUSE[cause]})
+    if same and prev.get("status") == STATUS_ASSIGNED and prev.get("account_id") != account_id:
+        return _account(
+            STATUS_ASSIGNED,
+            account_id=prev.get("account_id"),
+            provider=prev.get("provider"),
+            attempt_id=prev.get("attempt_id"),
+            generation=generation,
+            swaps=swaps,
+        )
+    return _account(
+        STATUS_NOT_ASSIGNED_YET,
+        attempt_id=prev.get("attempt_id") if same else event.get("attempt_id"),
+        generation=generation,
+        swaps=swaps,
+    )
+
+
+def _stored_swaps(value: Any) -> list[dict[str, str]]:
+    """A stored `swaps` list, only its well-formed entries."""
+    if not isinstance(value, list):
+        return []
+    return [
+        {"account_id": s["account_id"], "cause": s["cause"]}
+        for s in value
+        if isinstance(s, Mapping)
+        and isinstance(s.get("account_id"), str)
+        and isinstance(s.get("cause"), str)
+    ]
+
+
+_STORED_STATUSES = (STATUS_ASSIGNED, STATUS_NOT_ASSIGNED_YET, STATUS_NOT_ASSIGNED)
+
+
+def served_account(task: Task) -> dict[str, Any] | None:
+    """The stored copy, as `derive` would serve it, or None when the reader
+    must derive: no copy, a malformed one, or one from an earlier attempt
+    (a retry not yet assigned an account)."""
+    stored = task.current_account
+    if not isinstance(stored, Mapping) or stored.get("generation") != task.current_generation:
+        return None
+    status = stored.get("status")
+    account_id = stored.get("account_id")
+    if status not in _STORED_STATUSES:
+        return None
+    if (status == STATUS_ASSIGNED) != (isinstance(account_id, str) and bool(account_id)):
+        return None
+    if status == STATUS_NOT_ASSIGNED_YET and task.state in TERMINAL_STATES:
+        status = STATUS_NOT_ASSIGNED
+    provider = stored.get("provider")
+    attempt_id = stored.get("attempt_id")
+    return _account(
+        status,
+        account_id=account_id if status == STATUS_ASSIGNED else None,
+        provider=provider if isinstance(provider, str) else None,
+        attempt_id=attempt_id if isinstance(attempt_id, str) else None,
+        generation=task.current_generation,
+        swaps=_stored_swaps(stored.get("swaps")),
+    )
+
+
 def accounts_for(
     db: Any, tenant_id: str, tasks: Sequence[Task], *, cache: FinishedAccounts | None = None
 ) -> dict[str, dict[str, Any]]:
-    """`task.account` for every task of one page, in at most ceil(n / 30) queries."""
+    """`task.account` for every task of one page, in at most ceil(n / 30) queries.
+
+    A task carrying a current stored copy (`served_account`, contract request
+    132) is served from it and costs no read.
+    """
     cache = FINISHED if cache is None else cache
     out: dict[str, dict[str, Any]] = {}
     pending: list[Task] = []
@@ -403,6 +509,10 @@ def accounts_for(
         static = _static(task)
         if static is not None:
             out[task.id] = static
+            continue
+        stored = served_account(task)
+        if stored is not None:
+            out[task.id] = stored
             continue
         hit = cache.get(task)
         if hit is not None:
