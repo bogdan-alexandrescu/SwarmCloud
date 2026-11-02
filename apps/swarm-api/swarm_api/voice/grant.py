@@ -105,6 +105,7 @@ ALLOWED_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/v1/failure-findings"),
     ("GET", "/v1/failure-findings/{finding_id}"),
     ("GET", "/v1/runtimes"),
+    ("GET", "/v1/voice/cards/schema"),
 })
 
 
