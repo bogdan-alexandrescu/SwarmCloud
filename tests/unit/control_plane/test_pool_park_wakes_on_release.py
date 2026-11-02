@@ -15,7 +15,7 @@ pool parks the freed accounts can serve, so the wake reaches the step within
 one pass of the release. What is held here:
 
     two steps parked for a full pool and one released account wake exactly the oldest one
-    ... and one release wakes one park even when the account has room for two
+    ... and one release wakes both when the account has room for two
     ... and the finish event wakes the oldest one too
     a paused pool's park is not woken
     another tenant's release wakes nothing here
@@ -120,7 +120,7 @@ def test_one_released_account_wakes_exactly_the_oldest_of_two_full_pool_parks(
     assert [d["task_id"] for d in dispatcher.dispatched] == ["task_z_old"]
 
 
-def test_one_release_wakes_one_park_even_when_the_account_has_room_for_two(
+def test_one_release_wakes_both_parks_when_the_account_has_room_for_two(
     db, make_scheduler, dispatcher
 ):
     _world(db)
@@ -135,10 +135,12 @@ def test_one_release_wakes_one_park_even_when_the_account_has_room_for_two(
 
     report = _scheduler(make_scheduler).drain()
 
-    # MUTATION: dropping the per-release budget wakes both: one account freed
-    # one slot, whatever room the readings show.
+    # BGD's pick on PR #3044, "free slots only": a release wakes as many parks
+    # as the pool has free slots, each gated by `choose()` and a claim.
+    # MUTATION: a one-park-per-release budget leaves the newer one PARKED.
     assert db.docs["tasks/task_z_old"]["state"] != "PARKED", report.to_dict()
-    assert db.docs["tasks/task_a_new"]["state"] == "PARKED"
+    assert db.docs["tasks/task_a_new"]["state"] != "PARKED", report.to_dict()
+    assert report.promoted_account_waits == 2, report.to_dict()
 
 
 def test_the_finish_event_wakes_the_oldest_full_pool_park(db, make_scheduler, dispatcher):

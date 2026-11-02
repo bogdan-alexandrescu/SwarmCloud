@@ -1139,7 +1139,7 @@ class Scheduler:
         one place such a park returns to READY -- and nothing happened when an
         account came free. So this runs on the finish event: the accounts the
         ended task held (`accounts_held_by`), and `_wake_for_accounts` over
-        them, one freed slot per account. The pass after it reads the same
+        them, up to the pool's free slots. The pass after it reads the same
         releases from `account_holds` (`_wake_on_releases`); the ended task is
         remembered so that pass does not spend them a second time.
         """
@@ -1169,12 +1169,13 @@ class Scheduler:
         one pass of the release.
 
         A record the finish event already spent -- its task's, or the same
-        record -- is skipped (`_woken_for`), so one release wakes one park.
-        The first pass of a process reads back `RELEASE_LOOKBACK_SECONDS`; a
-        second scheduler instance reading the same release can wake one park
-        more, whose worker asks the broker and parks again: a container, not
-        a double lease, because the lease is still the all-or-nothing
-        admission transaction.
+        record -- is skipped (`_woken_for`), so one release triggers one
+        wake, which promotes as many parks as the pool has free slots
+        (`_wake_for_accounts`). The first pass of a process reads back
+        `RELEASE_LOOKBACK_SECONDS`; a second scheduler instance reading the
+        same release can wake one park more, whose worker asks the broker
+        and parks again: a container, not a double lease, because the lease
+        is still the all-or-nothing admission transaction.
 
         Never raises: a read that fails leaves the cursor where it was, and
         the parks wake at their own instant as before this existed.
@@ -1239,7 +1240,7 @@ class Scheduler:
     def _wake_for_accounts(
         self, freed: dict[str, int], report: DrainReport, *, cause: dict[str, Any]
     ) -> list[str]:
-        """Promote the oldest pool parks the `freed` accounts serve, one per freed slot.
+        """Promote the oldest pool parks the `freed` accounts serve, up to the pool's free slots.
 
         `freed` is account id -> holds released. The tenants each serves are
         its owner and the tenants it is lent to (`Account.may_serve`); a park
@@ -1255,10 +1256,14 @@ class Scheduler:
         again. Promoting only when an account would be handed over costs a
         container only when one runs.
 
-        AT MOST ONE PARK PER RELEASED HOLD, and each promotion `claim`s the
-        account `choose()` named (#2222), so the next park is asked about one
-        slot fewer: a release never wakes more parks than it freed slots,
-        however much room the readings show.
+        AS MANY PARKS AS THE POOL HAS FREE SLOTS (the #2222 rule; BGD's pick
+        on PR #3044, "free slots only"): a release is the trigger, not the
+        count. Each promotion `claim`s the account `choose()` named (#2222),
+        so the next park is asked about one slot fewer, and a wake never
+        promotes more parks than the readings show room for. A slot that was
+        free before the release (an administrator raised `max_agents`, a
+        first reading arrived) is used at the next release rather than at
+        the park's own instant.
 
         Invariant 1 holds: a park this leaves alone holds nothing, a park it
         promotes becomes READY, which holds nothing either, and only the
@@ -1277,12 +1282,9 @@ class Scheduler:
                     served.add((tenant_id, account.provider))
         if not served:
             return []
-        budget = sum(freed.values())
         now = self._now()
         woken: list[str] = []
         for task in self._pool_parks_oldest_first():
-            if len(woken) >= budget:
-                break
             provider = account_park_provider(task)
             if provider is None or (task.tenant_id, provider) not in served:
                 continue

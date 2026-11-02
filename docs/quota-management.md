@@ -409,8 +409,9 @@ that let go ended, parked or failed back to `READY`. Each scheduler
 pass (the one-minute tick and every wake) reads the records closed since the
 last pass (`apps/scheduler/scheduler/loop.py::Scheduler._wake_on_releases`). It
 returns to `READY` the oldest parks of the tenants the freed account serves,
-for its provider, at most one per release, and only when the broker's own
-`choose()` would hand that agent an account. The finish event does the same for
+for its provider, as many as the pool has free slots (each one claims the
+account it would get, so the next is asked about one slot fewer), and only
+when the broker's own `choose()` would hand that agent an account. The finish event does the same for
 the account of an agent that ended. Only the pool's own reasons wake this way:
 `accounts_full`, `no_recent_reading` and `no_account_available`. A paused pool,
 or a grant an administrator has to fix, waits for a person. The wake changes

@@ -6,8 +6,8 @@ container". Measured that morning: at 10:10Z one 5-hour reset was the
 cloned, checkpointed about 49 MB and asked the broker, to be told there was no
 account and park again. What is held here:
 
-  * a wake wakes at most as many parks as there are free slots (and, since
-    #3042, at most one per released hold);
+  * a wake wakes at most as many parks as there are free slots, and as many
+    as there are (BGD's pick on PR #3044, "free slots only");
   * admission asks the broker's `choose()` BEFORE the lease and parks what no
     account can take, PROVIDER_QUOTA_EXHAUSTED at `account_assign`, holding
     nothing (invariant 1);
@@ -121,15 +121,6 @@ def test_a_finish_wakes_no_more_parks_than_the_account_has_free_slots(
 ):
     _world(db, max_agents=2)
     _finished(db)
-    # Two more holds given back since the last pass (#3042): three releases,
-    # so the one-park-per-release bound allows three and only the two free
-    # slots stop the third.
-    for extra in ("task_gone_1", "task_gone_2"):
-        db.docs[f"account_holds/asg_{extra}"] = {
-            "account_id": TEAM, "tenant_id": OWNER, "task_id": extra,
-            "attempt_id": "att_1", "end": "released",
-            "released_at": _now() - timedelta(seconds=5),
-        }
     far = _now() + timedelta(hours=46)
     for i in range(5):
         _no_account_park(db, f"task_p{i}", eligible_at=far)
@@ -137,8 +128,8 @@ def test_a_finish_wakes_no_more_parks_than_the_account_has_free_slots(
     report = _scheduler(make_scheduler).release_dependants("task_done")
 
     # MUTATION: without the claim after each promotion, one freed slot
-    # answers yes for every park the releases allow, and three start a
-    # container for two slots.
+    # answers yes for every park, and five start a container for two slots.
+    # MUTATION: a one-park-per-release budget wakes one for two free slots.
     assert report.promoted_account_waits == 2, report.to_dict()
     still = [i for i in range(5) if _state(db, f"task_p{i}") == ("PARKED", "PROVIDER_QUOTA_EXHAUSTED")]
     assert len(still) == 3
