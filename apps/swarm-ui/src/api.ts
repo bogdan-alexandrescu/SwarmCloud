@@ -4740,7 +4740,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "mock": {"available": true, "disabled_reason": ""},
   "generic": {"available": true, "disabled_reason": ""},
   "claude-code": {"available": true, "disabled_reason": ""},
-  "codex": {"available": false, "disabled_reason": "codex is disabled until the ChatGPT-plan pool lands: the quota broker leasing OpenAI plan accounts and the codex runner using them. A follow-up turns it on once both have merged. Use claude-code."},
+  "codex": {"available": true, "disabled_reason": ""},
   "browser": {"available": true, "disabled_reason": ""},
   "merge": {"available": true, "disabled_reason": ""},
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},

@@ -66,11 +66,13 @@ def test_120_the_fields_default_to_none_and_come_last():
                 input={}, submitted_by="alice@example.com")
     assert task.budget is None and task.to_firestore()["budget"] is None
     assert WorkflowStep(step_id="a", runner_profile="mock", input={}).budget is None
-    # Contract request 123 (#1820) appended `platform_refusals` after it;
-    # `budget` keeps its position, which is what this holds.
-    # and contract request 131 (#2688) `timeout_seconds_asked` after that.
-    assert [f.name for f in fields(Task)][-3:] == [
+    # Contract request 123 (#1820) appended `platform_refusals` after it,
+    # contract request 131 (#2688) `timeout_seconds_asked` after that, and
+    # request 132 the two read-side views; `budget` keeps its position, which
+    # is what this holds.
+    assert [f.name for f in fields(Task)][-5:] == [
         "budget", "platform_refusals", "timeout_seconds_asked",
+        "attempt_totals", "current_account",
     ]
     assert [f.name for f in fields(WorkflowStep)][-1] == "budget"
 

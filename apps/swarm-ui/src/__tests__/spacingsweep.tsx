@@ -345,7 +345,25 @@ const BAD_BANNER_HAIRLINE: Exemption = {
   matches: (f) => f.kind === 'divider-under-floor' && f.where === 'div.c-banner.is-bad',
 }
 
-const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE]
+/**
+ * THE TALK PANE'S MIC CONTROLS ON GLASS, the same artefact in the light pass.
+ * `.vt-mic-group` is `--surface` at 70% over the pane's opaque `--bg`
+ * (styles/talk-pane.css), so the drawn ground is about #fbfcfd and the
+ * controls' boundary, rgb(125 142 163), is about 3.3:1 on it; the probe,
+ * compositing the glass's alpha twice, measures a grey rgb(198 199 200) and
+ * 1.97:1. Keyed on that measured ground so a real finding on these controls
+ * anywhere else still fails.
+ */
+const TALK_MIC_ON_GLASS: Exemption = {
+  name: 'talk mic on glass',
+  why: "the probe composites the mic group's color-mix(--surface 70%, transparent) twice; the drawn boundary is about 3.3:1",
+  matches: (f) =>
+    f.kind === 'divider-under-floor' &&
+    (f.where === 'button.c-btn' || f.where === 'div.c-seg.is-sm') &&
+    f.detail.endsWith('on rgb(198 199 200)'),
+}
+
+const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE, TALK_MIC_ON_GLASS]
 
 function lines(r: Report): string[] {
   return r.findings

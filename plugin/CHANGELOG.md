@@ -6,6 +6,16 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.77 (2026-11-02)
+
+* The bridge's catalogue offers `codex` (contract request 130, part of
+  #2688): `swarm_dispatch` and a `swarm_workflow` step accept it instead of
+  refusing it as disabled, and `swarm_profiles` lists it available. It runs on
+  the tenant's OpenAI key, else on a ChatGPT plan leased from the account pool;
+  `claude-code` stays the default.
+* The `delegate` skill and the plugin README say so, and name `post-verdict`
+  as the example of a known profile the catalogue refuses.
+
 ## 0.5.76 (2026-10-31)
 
 * The bridge's catalogue holds `claude-code-lightpanda` (contract request
