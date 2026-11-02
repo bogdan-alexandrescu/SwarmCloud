@@ -1,0 +1,50 @@
+# TCP 443 to api.typesafe.ai, by name, from a tenant pod that calls TypeSafe
+# itself, and from no other pod (the TypeSafe egress allowlist,
+# docs/runbooks/typesafe-egress.md; part of #2688).
+#
+# WHO IS LABELLED. `swarm-jev: typesafe-direct` is set by the dispatcher
+# (scheduler.dispatch TYPESAFE_DIRECT_POD_LABEL) on a GKE pod that will call
+# TypeSafe itself -- the live browser's SWARM_JEV_BACKEND is `typesafe`, or the
+# quality gates' verdict SWARM_QUALITY_GATES_JEV is on (`with_typesafe_direct`),
+# or a `jev_judgments: on` step on the TypeSafe backend
+# (`_with_judgments_forwarder`) -- and that is NOT labelled
+# `swarm-typesafe: inject`. A forwarded pod reaches TypeSafe only through
+# swarm-typesafe-fwd (allow-typesafe-fwd.yaml); this policy never selects it.
+# Never set by a caller (invariant 10).
+#
+# WHAT IT CHANGES TODAY, stated plainly: nothing a packet notices.
+# allow-egress.yaml rule 4 already admits every tenant pod to the public
+# internet on 443, and policies are unions, so a labelled pod could reach
+# api.typesafe.ai before this policy and an unlabelled one still can. What it
+# does is name the host for the pods meant to use it, so the day rule 4 stops
+# covering api.typesafe.ai (the owner's question in the runbook) this is the
+# rule that keeps those pods working, and `kubectl get fqdnnetworkpolicy`
+# answers "which pods may call TypeSafe?" from the cluster itself.
+#
+# WHY IN fqdn/, NOT BESIDE THE OTHER TENANT POLICIES. Every file in
+# network-policies/ with a `__NAMESPACE__` object is rendered into EVERY tenant
+# namespace (render.py TENANT_FILES; test_tenant_netpol_apply.py holds the
+# set), and that render is NetworkPolicies only, applied to every cluster. An
+# FQDNNetworkPolicy is refused by a cluster without FQDN network policy (only
+# dev has it, dev.tfvars), and the workspace deployer's scope policy does not
+# admit the kind, so wiring it there would refuse onboarding on every other
+# cluster. Until render.py and apply.sh render it only where the cluster
+# admits it, the owner applies it per namespace (the runbook's command).
+apiVersion: networking.gke.io/v1alpha1
+kind: FQDNNetworkPolicy
+metadata:
+  name: swarm-allow-typesafe-direct
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  podSelector:
+    matchLabels:
+      swarm-jev: "typesafe-direct"
+  egress:
+    - matches:
+        - name: api.typesafe.ai
+      ports:
+        - protocol: TCP
+          port: 443
