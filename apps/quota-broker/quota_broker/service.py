@@ -78,6 +78,17 @@ QUOTA_AUDIT = "quota_audit"
 #: store's, and `quota_from_dict` and every other reader ignore it.
 RECOVERY_CLOCK = "recovery_clock_at"
 
+#: The quota document's field holding when `adaptive_target` last changed: a
+#: cut, a climb (successes or quiet time), an admin override or a max's clamp
+#: (owner, 2026-11-02). Written by `_mutate` only when the committed target
+#: differs from the stored one, and carried forward unchanged otherwise, so a
+#: success that leaves the target alone does not move it -- unlike
+#: `updated_at`, which every write moves. Kept beside the frozen `QuotaState`
+#: fields, as `RECOVERY_CLOCK` is; the readers that date a lowered target
+#: (`scheduler.limits.lowered_by`, swarm-api's pool `lowered_by`) prefer it
+#: and fall back to the cut or override for a document written before it.
+TARGET_CHANGED_AT = "target_changed_at"
+
 #: Every provider state that means "start nothing new right now".
 _STOP_STATES = (ProviderState.EXHAUSTED, ProviderState.DISABLED, ProviderState.COOLDOWN)
 
@@ -264,6 +275,10 @@ class QuotaBroker:
         `adaptive_target_recovered` record in `quota_audit`, in this
         transaction.
 
+        `TARGET_CHANGED_AT` is written only when the committed target differs
+        from the stored one (a cut, a climb, an override, the clamp), and is
+        otherwise carried forward as it was.
+
         `set_pool_hard_limit` writes the pool's `hard_limit` in the same
         transaction, and the pool's cap is then derived against it: the one
         caller is `set_hard_max`, which keeps the two ceilings equal.
@@ -347,6 +362,13 @@ class QuotaBroker:
             )
             payload = quota_to_firestore(changed)
             payload[RECOVERY_CLOCK] = clock
+            # Against the STORED target, before the time-based climb: a climb
+            # is a change too. `txn.set` replaces the whole document, so an
+            # unchanged target keeps the instant it already had.
+            if changed.adaptive_target != stored.adaptive_target:
+                payload[TARGET_CHANGED_AT] = changed.updated_at
+            elif data.get(TARGET_CHANGED_AT) is not None:
+                payload[TARGET_CHANGED_AT] = data[TARGET_CHANGED_AT]
             txn.set(ref, payload)
             if audit is not None and audit_ref is not None:
                 txn.set(audit_ref, audit(recovered, changed))

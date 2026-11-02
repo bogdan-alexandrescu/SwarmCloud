@@ -205,6 +205,67 @@ def test_an_override_a_later_rate_limit_moved_is_not_named():
     assert [e["input"] for e in _blocker(db, "task_l0")["lowered_by"]] == ["adaptive_target"]
 
 
+def test_a_refusal_dates_a_climbed_target_by_target_changed_at():
+    """The owner's follow-up of 2026-11-02: the broker writes
+    `target_changed_at` only when the target moves, so a target a climb raised
+    since the cut is dated by the climb, not by the cut."""
+    db = _db()
+    climbed_at = CUT_AT + timedelta(hours=2)
+    db.docs[f"quota/{PROVIDER}:{TENANT}"]["target_changed_at"] = climbed_at
+    _scheduler(SchedulerStore(db)).drain()
+
+    assert _blocker(db, "task_l0")["lowered_by"] == [
+        {
+            "input": "adaptive_target",
+            "value": 7,
+            "set_at": climbed_at.isoformat(),
+            "set_by": "climb",
+            "quota_written_at": WRITTEN_AT.isoformat(),
+            "last_rate_limited_at": CUT_AT.isoformat(),
+        }
+    ]
+
+
+def test_a_target_last_changed_by_the_cut_is_dated_by_it():
+    db = _db()
+    db.docs[f"quota/{PROVIDER}:{TENANT}"]["target_changed_at"] = CUT_AT
+    _scheduler(SchedulerStore(db)).drain()
+
+    [entry] = _blocker(db, "task_l0")["lowered_by"]
+    assert (entry["set_at"], entry["set_by"]) == (CUT_AT.isoformat(), "rate_limit")
+
+
+def test_an_override_still_holding_the_target_names_it_at_target_changed_at():
+    db = _db()
+    reset_at = CUT_AT + timedelta(minutes=5)
+    changed_at = reset_at + timedelta(microseconds=40)
+    db.docs[f"quota/{PROVIDER}:{TENANT}"]["target_changed_at"] = changed_at
+    db.docs["quota_audit/audit_1"] = {
+        "action": "adaptive_target_reset", "provider": PROVIDER, "tenant_id": TENANT,
+        "to_target": 7, "at": reset_at,
+    }
+    _scheduler(SchedulerStore(db)).drain()
+
+    inputs = {e["input"]: e for e in _blocker(db, "task_l0")["lowered_by"]}
+    assert inputs["adaptive_target"]["set_at"] == changed_at.isoformat()
+    assert inputs["adaptive_target"]["set_by"] == "override"
+    assert inputs["override"]["set_at"] == reset_at.isoformat()
+
+
+def test_a_max_raise_that_left_the_target_alone_is_not_an_override():
+    """A pool raise through swarm-api moves the broker's maximum and writes a
+    `hard_max_set` row; one that left the target at 7 did not set it."""
+    db = _db()
+    db.docs["quota_audit/audit_1"] = {
+        "action": "hard_max_set", "provider": PROVIDER, "tenant_id": TENANT,
+        "from_target": 7, "to_target": 7, "at": CUT_AT + timedelta(hours=1),
+    }
+    _scheduler(SchedulerStore(db)).drain()
+
+    [entry] = _blocker(db, "task_l0")["lowered_by"]
+    assert (entry["input"], entry["set_by"]) == ("adaptive_target", "rate_limit")
+
+
 # --------------------------------------------------------------------------
 # L-4
 # --------------------------------------------------------------------------
