@@ -404,6 +404,27 @@ defaulted to 0. What this lane changed, and why:
   another still settles -- is a failure no waiting changes, so it is
   `checks_failed` at once rather than up to 10 min of parked wakes later
   (PR 2268 re-review).
+  Only an answered re-run is the head's re-run (#3006). Both sides used to
+  read "one free re-run per head" as "any re-run record at the head", so a
+  re-run GitHub refused (the record carries `error`; nothing re-ran) and an
+  accepted re-run whose fixed 10-minute window ran out before its workflow
+  run finished both counted as answered, and the step refused
+  `checks_failed` with no re-run answer: PR #2971 (a1e16b2c) and PR #2973
+  (22ef10c2), the second under a fan-in `ci-gate` whose run was still
+  running. Now, after a no_change round, a head whose every re-run GitHub
+  refused is asked once more (`mergewake._rerun_first`; the worker parks
+  `ci_rerun_due` for it), and the second refusal (`RERUN_REFUSALS_MAX`)
+  wakes the step to refuse naming the last re-run error: a credential
+  without `actions: write` costs one extra request, never a loop. An
+  accepted re-run past `RERUN_SETTLE_SECONDS` still holds the step
+  (`ci_rerun_pending`, the tick waiting) while a workflow run it recorded
+  in `runs` reads not `completed` (`GitHubWriter.read_run`, the latest
+  attempt's status), bounded as every park is by `MERGE_CI_MAX_SECONDS`;
+  when that status cannot be read the 10-minute window is the floor, as
+  before. This is not the wider "more re-runs per head" #2684 left to the
+  owner: it is still one answered re-run per head, with at most one retry of
+  a refusal, and waiting for an accepted re-run's own answer is still that
+  one re-run.
 * **Each round is a step of the lane's workflow.** The round is still its
   own one-step continuation workflow (it must be: it is submitted, signed and
   admitted like any other). After it is submitted the tick appends a step to
