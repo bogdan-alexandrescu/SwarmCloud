@@ -815,6 +815,7 @@ holds for schedules exactly as for agents.
 | 15 | `failure-review` | one `claude-code` investigator, then API and issue runs | R3 with `merge: auto`, else R2 | yes (fix runs) | plan auto · **approve merge** | plan auto · merge auto, reached only through the audited switch (Q8) | **owner**, platform scope only | 6 h | 3 |
 | 16 | `visual-qa` | workflow: a QA target's `:run` | R1 | no (issues) | auto · merge off | auto · merge off | a **workspace admin** of the tenant, `all` scope | 24 h | 3 |
 | 17 | `image-tool-rescan` | `task`: one `claude-code` agent | R2 | yes | **approve merge** | **approve merge** | members | 24 h (created weekly) | 2 |
+| 18 | `branch-sweep` | API | R1 | deletes merged branches (`contents: write`); not with `dry_run` | auto | auto | members | 6 h (created daily) | 2 |
 
 The **floor** column is the lowest gate the type allows. Between the floor and
 the default, only a platform admin may set the gate (§4.2), with one
@@ -1454,6 +1455,80 @@ Built by lane IMAGE-TOOL-RESCAN (PR 2099, part of #442):
   outcome (`queued`, `room`, `deferred`, `pr_open`, `nothing_held`,
   `no_dockerfile`, `not_registered`, `failed: <code>`) is logged and is the
   dry run's answer. No outcome is a refusal.
+
+### 3.19 `branch-sweep`
+
+`swarm_api/schedtypes/branch_sweep.py` and its `TYPES` entry in
+`swarm_api/scheduletypes.py`.
+
+* **Why it exists.** The owner asked on 2026-11-02 for "a scheduled job that
+  comes and double checks for leftovers or zombie branches left behind and
+  failed to delete", as a SwarmCloud schedule rather than a GitHub Actions
+  job. That night the SwarmCloud repository held 4,756 branches, 4,032 of them
+  `swarm/task_*`: 2,228 whose pull request merged, 2,406 with no pull request
+  (step hand-offs, lanes that never published, scratch), 107 closed without
+  merging and 15 open. Nothing in the platform deletes a branch when its task
+  or workflow ends. The owner then switched on GitHub's auto-delete of merged
+  head branches for the repository and had the 2,223 merged, unchanged
+  branches deleted by hand; everything else was kept. This type is the
+  standing check that catches what auto-delete or a merge step leaves.
+* **Merged is read from the pull request, never from git.** Merges are
+  squashed, so `git branch --merged` called 13 of the 2,228 merged. A branch
+  is merged when a pull request from it, in this repository (a fork's
+  same-named branch is not it), has `merged_at`.
+* **The rule (the owner's).** A branch is deleted only when a pull request
+  from it MERGED and the branch's head is still that pull request's head
+  commit: nothing was pushed after the merge. Never deleted: the default
+  branch, a branch GitHub marks protected, a branch under `keep/`, a branch
+  with an open pull request, and a branch live work still reads -- the branch
+  of any task that has not ended, of a task a live task depends on (a step's
+  hand-off), continues (`metadata.dispatch.continues`) or names in its
+  dispatch metadata (an integrator's contributors), and a live task's
+  `repository_ref`. Branches are `swarm/<task id>`, so a task id in the name
+  is how a branch is matched to the work that reads it.
+* **Kept, and counted.** Every other branch is kept and counted by kind:
+  `no_pull_request`, `closed_unmerged`, `head_moved_after_merge`,
+  `open_pull_request`, `protected_or_keep`, `in_use`; and the deletable ones
+  the firing could not finish: `unverified` (the open pull requests or the
+  live tasks were not read whole, so nothing in that repository is deleted),
+  `deferred` (past `max_deletes`, the request budget or the time budget) and
+  `delete_failed`.
+* **Does.** Per repository in scope, with the schedule's tenant's forge
+  credential: reads the default branch, every open pull request, the branches
+  and the closed pull requests, 100 a page; judges each branch; deletes the
+  allowed ones (`DELETE git/refs/heads/<branch>`), the deletes an earlier
+  firing of the schedule recorded as failed first, then by name. GitHub's ref
+  delete takes no expected sha, so a push in the seconds between the read and
+  the delete is not seen; the pull request keeps the commits and GitHub's
+  "Restore branch" brings the branch back.
+* **Parameters.** `repositories` (optional `owner/repo` names narrowing the
+  scope; empty is every repository the scope holds, with `all` scope every
+  one registered in the workspace), `max_deletes` (default 300, 1-500, across
+  the firing: half the request budget, and a backlog is worked down 300 a
+  day), `dry_run` (report only: `would_delete` in place of `deleted`, nothing
+  deleted).
+* **The GitHub quota is the owner's.** `MAX_REQUESTS` is 600 requests a
+  firing, reads and deletes together: 12% of one hour of a GitHub App
+  installation's 5,000. After the clean-up the SwarmCloud repository lists in
+  about 50 pages. `BUDGET_SECONDS` is 90, `pr-shepherd`'s, so the tick keeps
+  room for other schedules. Each stop is named in the report (`stopped`,
+  `capped_message`).
+* **Produces.** One api_action, `report`: `deleted` (count and every name),
+  `kept` by kind (count and up to 20 names each), per repository the same with
+  `delete_failed` in full (the next firing retries it), `requests` used, and
+  `capped`/`capped_message` when `max_deletes` stopped it. A repository that
+  could not be read, or a delete GitHub refused, is also on a second item,
+  `refusals`, which ends `failed`, so the firing is `partial` (§2.9). A 401 or
+  403 on a delete names `contents: write` and stops that repository's deletes.
+* **The token never reaches the report.** Every branch name and every
+  refusal's sentence is passed through `neutral_line` with the token as a
+  known literal.
+* **Gate, budget, creates.** Run auto; risk R1 (a ref delete changes no
+  code). `BUDGET_CAPS` in the executor: `per_run_usd` 0.01, `per_day_usd`
+  0.05, `max_concurrent` 2 -- it runs no model, as `cost-report`. Members
+  create it, at `repos` or `all` scope; it is a write to the repository, so
+  the owner needs `write` (§5.4) unless `dry_run`. Minimum interval 6 hours;
+  it is created daily.
 
 ---
 

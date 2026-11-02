@@ -1154,6 +1154,26 @@ class GitHubWriter:
             return False
         return True
 
+    def branches_page(self, ref: IssueRef, page: int, token: str) -> list[dict[str, Any]]:
+        """Page `page` (from 1, `PAGE_SIZE` a page) of the repository's branches,
+        as GitHub lists them: `name`, `commit.sha`, `protected`. One request,
+        so the caller counts its own budget."""
+        return self._list(
+            self._url(ref, f"branches?per_page={PAGE_SIZE}&page={int(page)}"), token,
+            f"the branches of {ref.repository}", needs=CONTENTS_READ,
+        )
+
+    def pulls_page(self, ref: IssueRef, state: str, page: int, token: str) -> list[dict[str, Any]]:
+        """Page `page` of the pull requests in `state` (`open`, `closed` or
+        `all`), most recently updated first. One request, as `branches_page`."""
+        if state not in ("open", "closed", "all"):
+            raise ValueError(f"a pull request state is open, closed or all, not {state!r}")
+        return self._list(
+            self._url(ref, f"pulls?state={state}&sort=updated&direction=desc"
+                           f"&per_page={PAGE_SIZE}&page={int(page)}"),
+            token, f"the {state} pull requests of {ref.repository}", needs=PULLS_READ,
+        )
+
     def compare_files(self, ref: IssueRef, base: str, head: str, token: str) -> list[str]:
         """The paths changed from the merge base of `base` and `head` to `head`.
 
