@@ -15,7 +15,6 @@ import {
   cancelWorkflow,
   loadWorkflow,
   loadWorkflowBoard,
-  DIGEST_MAX_IDS,
   loadTaskDigests,
   loadWorkflowUsage,
   loadOlderWorkflows,
@@ -3387,10 +3386,11 @@ function CriticalPathNote({
 /**
  * At most this many waits timed per poll. It was 24 EVENT READS, one request
  * per step; it is now the ids of ONE digest read (`loadTaskDigests`), the
- * route's own bound. The rest keep their lower bound (`stepDuration`'s `≥`)
- * until a later poll.
+ * route's own bound (`api.ts`'s `DIGEST_MAX_IDS`, restated as a literal: a
+ * screen test that mocks `../api` without it would fail at import). The rest
+ * keep their lower bound (`stepDuration`'s `≥`) until a later poll.
  */
-const ENTERED_READS = DIGEST_MAX_IDS
+const ENTERED_READS = 100
 
 /** One wait, as the record read now says it: a new park is a new key. */
 const enteredKey = (t: Task): string => `${t.id}:${t.state}:${t.updated_at}`

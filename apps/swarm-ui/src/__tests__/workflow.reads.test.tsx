@@ -249,17 +249,40 @@ describe('the Graph’s step inspector sits above the stage cards', () => {
   }
 
   it('docked: the panel’s layer is above every layer the canvas draws', async () => {
+    render(<WorkflowsScreen view="wf=wf_big" />)
+    await waitFor(() => expect(document.querySelector('.wf-split.has-panel > .wf-panel .wf-inspect')).toBeTruthy())
+    // The canvas's layers are read from the stylesheet's own z-index rules
+    // that reach a canvas element, the highest of them: an upper bound on
+    // what any element paints at. `getComputedStyle` on each of the canvas's
+    // 415 elements walks the 600 KB sheet every time in jsdom, and ran this
+    // case past its 30 s budget.
     const sheet = document.createElement('style')
     sheet.textContent = STYLES
     document.head.appendChild(sheet)
+    const layers: { sel: string; z: number }[] = []
+    const collect = (rules: CSSRuleList) => {
+      for (const r of [...rules]) {
+        if (r instanceof CSSStyleRule) {
+          const v = Number.parseInt(r.style.getPropertyValue('z-index'), 10)
+          if (Number.isFinite(v)) layers.push({ sel: r.selectorText, z: v })
+        } else if ('cssRules' in r) collect((r as CSSGroupingRule).cssRules)
+      }
+    }
+    collect(sheet.sheet!.cssRules)
+    const reaches = (el: Element, sel: string) => {
+      try {
+        return el.matches(sel)
+      } catch {
+        return false
+      }
+    }
     try {
-      render(<WorkflowsScreen view="wf=wf_big" />)
-      await waitFor(() => expect(document.querySelector('.wf-split.has-panel > .wf-panel .wf-inspect')).toBeTruthy())
       const panel = document.querySelector('.wf-split.has-panel > .wf-panel')!
       expect(getComputedStyle(panel).position).toBe('sticky')
       const canvas = [...document.querySelectorAll('.wf-split.has-panel > .wf-split-main *')]
       expect(canvas.length).toBeGreaterThan(40)
-      const top = Math.max(...canvas.map(z))
+      const drawn = layers.filter((l) => canvas.some((el) => reaches(el, l.sel)))
+      const top = Math.max(0, ...drawn.map((l) => l.z), ...canvas.map((el) => Number.parseInt((el as HTMLElement).style?.getPropertyValue('z-index') ?? '', 10) || 0))
       expect(top, 'the canvas paints no numbered layer: the check would prove nothing').toBeGreaterThan(0)
       expect(z(panel), `the panel paints at ${z(panel)}, under the canvas's layer ${top}`).toBeGreaterThan(top)
     } finally {
