@@ -69,6 +69,15 @@ gke_enable_private_endpoint = false
 #     back to false without planning a cluster rebuild.
 gke_enable_fqdn_network_policy = true
 
+# Voice it's swarm-voice (terraform/infra/voice.tf), step 1 of its three:
+# "account" reads the swarm-voice service account that terraform/bootstrap
+# created (it exists in this project, read 2026-11-02) and grants NOTHING, so
+# this needs no IAM approval. Step 3, "on", binds and grants and so waits at
+# the release's IAM gate; it follows once the owner's OpenAI credential is
+# stored in his personal scope. Set 2026-11-02, after the owner asked to make
+# more progress on Voice it.
+voice_it = "account"
+
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
 # apply time as the operator's own /32. That is no longer what this does.
 #

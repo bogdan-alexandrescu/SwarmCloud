@@ -19,8 +19,9 @@
 # platform owner's next voice session.
 #
 # OFF IS NOT A FAILURE. The output is null until voice_it = "on" with a
-# swarm-voice digest in image_refs (every environment today: voice_it is
-# "off"); then this prints one notice and exits 0, having asked nothing of
+# swarm-voice digest in image_refs (every environment today: dev's voice_it
+# is "account", the others "off"); then this prints one notice and exits 0,
+# having asked nothing of
 # gcloud or the cluster. Terraform does not store a null output in state at
 # all, so a named read of it -- `-raw` or `-json` -- fails with 'Output
 # "swarm_voice_manifest" not found', exactly as a missing state would (PR

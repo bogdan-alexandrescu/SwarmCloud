@@ -68,7 +68,10 @@ def test_120_the_fields_default_to_none_and_come_last():
     assert WorkflowStep(step_id="a", runner_profile="mock", input={}).budget is None
     # Contract request 123 (#1820) appended `platform_refusals` after it;
     # `budget` keeps its position, which is what this holds.
-    assert [f.name for f in fields(Task)][-2:] == ["budget", "platform_refusals"]
+    # and contract request 131 (#2688) `timeout_seconds_asked` after that.
+    assert [f.name for f in fields(Task)][-3:] == [
+        "budget", "platform_refusals", "timeout_seconds_asked",
+    ]
     assert [f.name for f in fields(WorkflowStep)][-1] == "budget"
 
 
