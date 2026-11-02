@@ -316,6 +316,33 @@ describe('one subscription twice', () => {
     expect(duplicatePairs([foreign]).map((p) => p.other)).toEqual([null])
   })
 
+  it('says why it is withheld and which kind of identity matched, never its value (#3046)', () => {
+    const extra = acct('team', {
+      can_take_new_agent: false,
+      blocked_by: [{
+        duplicate_of: 'eng:home-personal',
+        reason: 'registered on the same organisation and seat as eng:home-personal',
+        matched_on: 'organisation_and_seat',
+      }],
+      duplicate_of: 'eng:home-personal',
+    })
+    const names = new Map([['eng:home-personal', 'home-personal']])
+    const { container } = render(<>{tableModule.whyOf(extra, 'eng', Date.now(), names)}</>)
+    expect(container.textContent).toBe(
+      'One subscription twice: registered on the same organisation and seat as home-personal ' +
+        '(matched on the provider’s organisation and seat). The pool hands out only the other',
+    )
+    // An older broker's block, with no `matched_on`, still reads as it did.
+    const old = acct('team', {
+      can_take_new_agent: false,
+      blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
+    })
+    const { container: was } = render(<>{tableModule.whyOf(old, 'eng', Date.now(), names)}</>)
+    expect(was.textContent).toBe(
+      'One subscription twice: registered on the same organisation as home-personal. The pool hands out only the other',
+    )
+  })
+
   it('draws the banner with what to do', async () => {
     api.loadTasksInState.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     const foreign = acct('lone', {
