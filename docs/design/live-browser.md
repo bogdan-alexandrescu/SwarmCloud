@@ -2584,6 +2584,7 @@ synthetic page (no Chromium there):
 | JPEG q70, loopback, 20 s | 0.05 s | 10.0 | 105 ms | 0.46 MB | 0 |
 | lossless, 8 Mbit/s, 30 s | 0.92 s | 6.05 | 449 ms | 0.79 MB | 0 |
 | JPEG q70, 8 Mbit/s, 30 s | 0.28 s | 10.0 | 164 ms | 0.46 MB | 0 |
+| lossless, loopback, 540 s | 0.05 s | 10.0 | 116 ms | 1.78 MB | 0 |
 
 So the gate, the relay and lossless Tight reach the 10 fps target where the
 link carries 1.8 MB a second; on a link of 8 Mbit/s lossless falls to about
