@@ -306,6 +306,15 @@ MERGE_CI_FALLBACK_SECONDS = 900
 #: traffic: a burst of hand merges during one CI run should not fail a
 #: step, while five of them, each costing a CI run (10-20 min here) with the
 #: slot held and the queue behind it waiting, is a question for a person.
+#: Read again on 2026-11-02, when main's ruleset began requiring branches to
+#: be up to date (#2999): every lane behind now takes the catch-up, which is
+#: not counted. Even if all of main's ~54 merges a day landed outside the
+#: slot (Poisson, one per ~27 min), a held update is behind again after one
+#: CI run (median 944 s, plus about two minutes for the wake tick and the
+#: attempt) with p ~= 1 - exp(-54 * 1124 / 86400) ~= 0.5, so six in a row,
+#: the refusal, is p^6 ~= 1.6% of steps at worst; merges the slot serialises
+#: never count. Raising it would hold the slot, and the queue, longer for a
+#: base that is outrunning CI. Kept at 5.
 MERGE_MAX_BRANCH_UPDATES = 5
 
 #: How many of GitHub's base merges the first-parent walk accepts on top of
