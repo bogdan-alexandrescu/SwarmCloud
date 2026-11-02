@@ -15,6 +15,17 @@
 //
 // MUTATIONS: put the partial line inside the log; connect the analyser to the
 // context's destination; drop the end POST; leave the mic track running.
+//
+// THE CARDS BESIDE IT (section 10, phase two, "The console renders work,
+// review, plan, budget, stop and details cards"): the list reads the
+// session's card stream, keeps cards in the order they arrived, updates a
+// card in place by id and only for a newer version, draws no card of an
+// unknown kind and logs that kind once, and a resumed stream (a repeat, or a
+// reconnect from `?after=`) never draws a card twice.
+//
+// MUTATIONS: draw a card whose kind the catalogue lacks; append an upsert of
+// a known card id; accept an older version; drop the sequence check; reopen
+// the stream without `after`.
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -22,12 +33,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeAudioContext, FakePeer, FakeStream, FakeTrack, installMedia, settle } from './voice.fakes'
 
 const fetchMock = vi.hoisted(() => ({ write: vi.fn() }))
+const apiMock = vi.hoisted(() => ({ fixtures: false, loadWorkflow: vi.fn() }))
+
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>()
+  return {
+    ...actual,
+    get USE_FIXTURES() {
+      return apiMock.fixtures
+    },
+    loadWorkflow: apiMock.loadWorkflow,
+  }
+})
+
+vi.mock('../AwaitInputCard', () => ({
+  AwaitInputCard: ({ workflowId, stepId }: { workflowId: string; stepId: string }) => (
+    <section data-testid="await-input" data-workflow={workflowId} data-step={stepId}>
+      the await-input card
+    </section>
+  ),
+}))
 
 vi.mock('../fetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../fetch')>()),
   write: fetchMock.write,
 }))
 
+import { CardList, FIXTURE_CARDS, applyStreamEvent, EMPTY_LIST, type VoiceCard } from '../voice/CardList'
+import { CARD_KINDS } from '../voice/cards'
 import { TalkPane } from '../voice/Talk'
 import { applyCaption, captionEvent, type CaptionLine } from '../voice/captions'
 
@@ -156,10 +189,11 @@ describe('the Talk pane', () => {
     expect(mic.stop).toHaveBeenCalled()
   })
 
-  it('draws the card area empty, with the phase-two line and no cards', () => {
+  it('draws the card area empty before a session, and says cards appear as you talk', () => {
     render(<TalkPane />)
     const cards = screen.getByRole('region', { name: 'Cards' })
-    expect(cards.textContent).toMatch(/cards arrive in phase two/i)
+    expect(cards.textContent).toMatch(/no cards yet/i)
+    expect(cards.textContent).not.toMatch(/phase two/i)
     expect(cards.querySelectorAll('article')).toHaveLength(0)
   })
 })
@@ -191,5 +225,223 @@ describe('caption events', () => {
     lines = applyCaption(lines, { side: 'you', key: 'v', text: 'um', final: false })
     lines = applyCaption(lines, { side: 'you', key: 'v', text: ' ', final: true })
     expect(lines.map((l) => l.text)).toEqual(['One, two.', 'Three.'])
+  })
+})
+
+// ---- the cards ---------------------------------------------------------------
+
+/** An EventSource the test drives: frames carry their sequence as the SSE id. */
+class FakeEventSource extends EventTarget {
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSED = 2
+  static all: FakeEventSource[] = []
+  readyState = 1
+  onerror: ((e: Event) => void) | null = null
+  onopen: ((e: Event) => void) | null = null
+  constructor(readonly url: string) {
+    super()
+    FakeEventSource.all.push(this)
+  }
+  close(): void {
+    this.readyState = 2
+  }
+  frame(type: string, seq: number, data: Record<string, unknown>): void {
+    this.dispatchEvent(new MessageEvent(type, { data: JSON.stringify({ seq, type, ...data }), lastEventId: String(seq) }))
+  }
+  upsert(seq: number, card: VoiceCard | Record<string, unknown>): void {
+    this.frame('card.upsert', seq, { card })
+  }
+  /** The server refused or the session ended: EventSource gives up. */
+  giveUp(): void {
+    this.readyState = 2
+    this.onerror?.(new Event('error'))
+  }
+  static get last(): FakeEventSource {
+    const s = FakeEventSource.all[FakeEventSource.all.length - 1]
+    if (s === undefined) throw new Error('no EventSource was opened')
+    return s
+  }
+}
+
+function card(kind: string, id: string, version: number, title: string, body: Record<string, unknown> = {}): VoiceCard {
+  const fixture = FIXTURE_CARDS.find((c) => c.kind === kind)
+  const base = fixture ?? FIXTURE_CARDS[0]
+  if (base === undefined) throw new Error('no fixture cards')
+  return {
+    ...base,
+    kind,
+    card_id: id,
+    version,
+    title,
+    body: { ...(fixture?.body ?? {}), ...body },
+  }
+}
+
+function drawn(root: ParentNode = document): string[] {
+  return Array.from(root.querySelectorAll('article')).map((a) => `${a.getAttribute('data-kind')}:${a.getAttribute('data-card-id')}`)
+}
+
+const LISTED = ['work', 'review', 'plan', 'budget', 'stop', 'details_input']
+
+describe('the cards beside the Talk pane', () => {
+  let warn: ReturnType<typeof vi.spyOn>
+  beforeEach(() => {
+    FakeEventSource.all = []
+    vi.stubGlobal('EventSource', FakeEventSource)
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    apiMock.fixtures = false
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    warn.mockRestore()
+    apiMock.loadWorkflow.mockReset()
+    fetchMock.write.mockReset()
+  })
+
+  it('has a fixture card of each kind this lane draws, all in the catalogue', () => {
+    expect(FIXTURE_CARDS.map((c) => c.kind)).toEqual(LISTED)
+    const known = new Set(CARD_KINDS.map((k) => k.kind))
+    for (const c of FIXTURE_CARDS) {
+      expect(known.has(c.kind)).toBe(true)
+      const spec = CARD_KINDS.find((k) => k.kind === c.kind)
+      expect(spec?.states).toContain(c.state)
+      // Every body field is one the catalogue names for the kind.
+      expect(Object.keys(c.body ?? {}).every((f) => spec?.fields.includes(f))).toBe(true)
+    }
+  })
+
+  it('renders each kind from its fixture, with the links out and nothing that acts', () => {
+    const { container } = render(<CardList sessionId={null} fixtures={FIXTURE_CARDS} />)
+    expect(drawn(container)).toEqual(FIXTURE_CARDS.map((c) => `${c.kind}:${c.card_id}`))
+
+    const work = screen.getByRole('article', { name: 'Work: Card renderers lane' })
+    expect(within(work).getByRole('link', { name: 'Open in Work' }).getAttribute('href')).toBe('#work/workflows?wf=wf-fixture')
+    expect(work.textContent).toContain('example/repo')
+    expect(work.textContent).toContain('apps/swarm-ui/src/voice/CardList.tsx')
+    expect(work.textContent).toContain('$6 reserved')
+
+    const review = screen.getByRole('article', { name: 'Review: Cards render beside the Talk pane' })
+    expect(within(review).getByRole('link', { name: 'Open diff' }).getAttribute('href')).toBe('https://github.com/example/repo/pull/1/files')
+    expect(review.textContent).toContain('checks pass')
+    expect(review.textContent).toContain('review: merge')
+
+    const plan = screen.getByRole('article', { name: 'Plan: Voice it cards' })
+    expect(plan.textContent).toContain('Draw every card kind beside the Talk pane.')
+    expect(within(plan).getByRole('list', { name: 'Waves' }).children).toHaveLength(2)
+    expect(plan.textContent).toContain('Reserved against the session cap')
+
+    const budget = screen.getByRole('article', { name: 'Budget: Budget' })
+    expect(within(budget).getAllByRole('row').map((r) => r.querySelector('th, td')?.textContent)).toEqual(['Line', 'Talk', 'Lanes'])
+    expect(budget.textContent).toContain('Claude subscription seats')
+
+    const stop = screen.getByRole('article', { name: 'Stop: Held: a workflow file' })
+    expect(stop.textContent).toContain('held: a workflow file')
+    expect(within(stop).getByRole('link', { name: 'Open where you act' }).getAttribute('href')).toBe('https://github.com/example/repo/pull/1')
+
+    const details = screen.getByRole('article', { name: 'Details: Which theme first?' })
+    expect(details.textContent).toContain('Which theme should the mock-ups use first?')
+    expect(within(details).getByLabelText('Options').textContent).toBe('LightDark')
+    expect(details.textContent).toContain('Say which one, or answer in your own words')
+
+    // Phase two spends nothing: no card draws a button that acts.
+    expect(within(container).queryAllByRole('button')).toHaveLength(0)
+  })
+
+  it('draws only the catalogue fields, and links nowhere but the console and GitHub', () => {
+    const odd = card('stop', 'vc_odd', 1, 'Held', { where: 'https://example.com/elsewhere', html: '<b>not drawn</b>' })
+    render(<CardList sessionId={null} fixtures={[odd]} />)
+    const stop = screen.getByRole('article', { name: 'Stop: Held' })
+    expect(within(stop).queryByRole('link')).toBeNull()
+    expect(stop.textContent).toContain('https://example.com/elsewhere')
+    expect(stop.textContent).not.toContain('not drawn')
+  })
+
+  it('does not draw a card of an unknown kind, and logs the kind once', () => {
+    const { container } = render(<CardList sessionId={null} fixtures={[card('work', 'vc_a', 1, 'A'), { ...card('work', 'vc_b', 1, 'B'), kind: 'hologram' }]} />)
+    expect(drawn(container)).toEqual(['work:vc_a'])
+  })
+
+  it('reads the session stream: in order, in place by id and version, unknown kinds not drawn and logged once', async () => {
+    answerStarts()
+    installMedia({ audioContext: true })
+    render(<TalkPane />)
+    await start()
+    const es = FakeEventSource.last
+    expect(es.url).toBe(`/v1/voice/sessions/${SESSION}/events`)
+    const region = screen.getByRole('region', { name: 'Cards' })
+
+    await act(async () => es.upsert(1, card('work', 'vc_w', 1, 'Filed')))
+    await act(async () => es.upsert(2, { ...card('work', 'vc_x', 1, 'Odd'), kind: 'hologram' }))
+    await act(async () => es.upsert(3, { ...card('work', 'vc_y', 1, 'Odd too'), kind: 'hologram' }))
+    await act(async () => es.upsert(4, card('review', 'vc_r', 1, 'Finished')))
+    expect(drawn(region)).toEqual(['work:vc_w', 'review:vc_r'])
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('hologram'))).toHaveLength(1)
+
+    // A newer version replaces the card where it stands; an older one changes nothing.
+    await act(async () => es.upsert(5, card('work', 'vc_w', 3, 'Running')))
+    await act(async () => es.upsert(6, card('work', 'vc_w', 2, 'Stale')))
+    expect(drawn(region)).toEqual(['work:vc_w', 'review:vc_r'])
+    expect(within(region).getByRole('article', { name: 'Work: Running' })).toBeTruthy()
+    expect(within(region).queryByRole('article', { name: 'Work: Stale' })).toBeNull()
+
+    await act(async () => es.frame('card.remove', 7, { card_id: 'vc_r' }))
+    expect(drawn(region)).toEqual(['work:vc_w'])
+  })
+
+  it('a resumed stream does not duplicate cards, and a reconnect asks for what comes after the last sequence', async () => {
+    answerStarts()
+    installMedia({ audioContext: true })
+    render(<TalkPane />)
+    await start()
+    const first = FakeEventSource.last
+    const region = screen.getByRole('region', { name: 'Cards' })
+    await act(async () => first.upsert(1, card('plan', 'vc_p', 1, 'Plan')))
+    await act(async () => first.upsert(2, card('budget', 'vc_b', 1, 'Budget')))
+    await act(async () => first.frame('session.state', 3, { state: 'thinking' }))
+
+    // The stream repeats itself after its own reconnect: nothing is drawn twice.
+    await act(async () => first.upsert(1, card('plan', 'vc_p', 1, 'Plan')))
+    await act(async () => first.upsert(2, card('budget', 'vc_b', 1, 'Budget')))
+    expect(drawn(region)).toEqual(['plan:vc_p', 'budget:vc_b'])
+
+    // EventSource gave up: Reconnect opens it again from the last sequence seen.
+    await act(async () => first.giveUp())
+    fireEvent.click(within(region).getByRole('button', { name: 'Reconnect' }))
+    await settle(act)
+    const second = FakeEventSource.last
+    expect(second).not.toBe(first)
+    expect(first.readyState).toBe(FakeEventSource.CLOSED)
+    expect(second.url).toBe(`/v1/voice/sessions/${SESSION}/events?after=3`)
+    await act(async () => second.upsert(2, card('budget', 'vc_b', 1, 'Budget')))
+    await act(async () => second.upsert(4, card('stop', 'vc_s', 1, 'Held')))
+    expect(drawn(region)).toEqual(['plan:vc_p', 'budget:vc_b', 'stop:vc_s'])
+  })
+
+  it('keeps the list pure: a repeated sequence is a no-op', () => {
+    const once = applyStreamEvent(EMPTY_LIST, { type: 'card.upsert', seq: 1, data: { card: card('work', 'vc_w', 1, 'W') } })
+    expect(applyStreamEvent(once, { type: 'card.upsert', seq: 1, data: { card: card('work', 'vc_w', 2, 'W2') } })).toBe(once)
+  })
+
+  it("draws a lane's waiting question with the console's await-input card, found by its task", async () => {
+    apiMock.loadWorkflow.mockResolvedValue({
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: { workflow: { workflow_id: 'wf-1', steps: [{ step_id: 'build', task_id: 't-0' }, { step_id: 'ask', task_id: 't-ask' }] }, tasks: [] },
+    })
+    const lane = { ...card('details_input', 'vc_d', 1, 'The lane asks', { task_id: 't-ask', question: 'Which?' }), references: { workflow: 'wf-1' } }
+    render(<CardList sessionId={null} fixtures={[lane]} />)
+    await settle(act)
+    expect(apiMock.loadWorkflow).toHaveBeenCalledWith('wf-1')
+    const ai = screen.getByTestId('await-input')
+    expect([ai.getAttribute('data-workflow'), ai.getAttribute('data-step')]).toEqual(['wf-1', 'ask'])
+    expect(screen.getByRole('article', { name: 'Details: The lane asks' }).contains(ai)).toBe(true)
+  })
+
+  it('in fixture mode, the Talk pane draws a fixture card of each kind before a session', () => {
+    apiMock.fixtures = true
+    render(<TalkPane />)
+    const region = screen.getByRole('region', { name: 'Cards' })
+    expect(drawn(region).map((d) => d.split(':')[0])).toEqual(LISTED)
   })
 })
