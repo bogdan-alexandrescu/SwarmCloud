@@ -1672,6 +1672,19 @@ body {
    the other way. It resolves per theme for free, because the mix is expressed
    in `--surface` and `--bg` and those are the tokens the theme swaps. */
 :root { --wf-body-bg: color-mix(in srgb, var(--surface) 55%, var(--bg)); }
+/* VOICE IT, TALK (styles/talk-pane.css): the pane's glass, its line, the
+   ring's desktop size and the level bar's resting fill. On `:root` for the
+   reason `--wf-body-bg` is: the probe reads `:root` tokens only, and a section
+   sheet declares none. The glass is a console token mixed with transparency,
+   so it follows the theme the way `--wf-body-bg` does. `--vt-level` is
+   overwritten on the bar itself as the voice moves (voice/Scope.tsx). */
+:root {
+  --vt-glass: color-mix(in srgb, var(--surface) 70%, transparent);
+  --vt-glass-dim: color-mix(in srgb, var(--surface) 52%, transparent);
+  --vt-glass-line: color-mix(in srgb, var(--info) 22%, var(--line));
+  --vt-ring: 340px;
+  --vt-level: 0%;
+}
 /* It SCROLLS rather than shrinking, and WHICH GRAPHS SCROLL HAS INVERTED WITH
    THE AXIS. Left to right, depth made a graph wide, so a chain -- the commonest
    shape in this product -- was the one that always scrolled. Top to bottom, a

@@ -12,7 +12,7 @@ import { task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
-  loadTasksInState: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadTask: vi.fn(),
   loadAttempts: vi.fn(),
   loadResourceClasses: vi.fn(),
@@ -70,7 +70,7 @@ const ALL = [flaky, untitled, leased, queued, ready, plan, scan, report, lone, f
 
 function serve(tasks: Task[] = ALL) {
   api.loadTasks.mockResolvedValue(ok({ tasks, next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
-  api.loadTasksInState.mockResolvedValue(ok({ tasks: [], next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
+  api.loadTasksInStates.mockResolvedValue(ok({ tasks: [], next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
   api.loadAttempts.mockResolvedValue(ok({ attempts: [{ generation: 1 }] }))
   api.loadResourceClasses.mockReturnValue(new Promise(() => {}))
   // The workflow's full read never lands: the row must not need it.

@@ -4,16 +4,16 @@
  * each a page at its own path (`/voice/talk`, `/voice/projects`,
  * `/voice/preferences`), and the one rule for who is shown them.
  *
- * WHAT EACH PANE DRAWS TODAY, AND WHY NOTHING MORE. Talk needs swarm-api's
- * session routes, swarm-voice and the WebRTC pane (§10, phase one's later
- * lanes); Projects and Preferences are phase four's (§3.11). A button that
- * starts a session nothing answers would be a stub, so each pane says plainly
- * what it will hold and when, and offers no control that cannot work. Talk
- * draws the presence layout at rest (§11: the ring, still, with nothing said)
- * so the page reads as the one the person will talk on.
+ * WHAT EACH PANE DRAWS TODAY, AND WHY NOTHING MORE. Talk is the Talk pane
+ * (Talk.tsx, §3.10): its start control asks swarm-api's session routes for a
+ * session, and while swarm-voice is not deployed here swarm-api refuses it and
+ * the pane shows that refusal as served. Projects and Preferences are phase
+ * four's (§3.11): a control nothing answers would be a stub, so each says
+ * plainly what it will hold and when, and offers no control.
  *
- * NOTHING HERE LISTENS. No pane asks for the microphone, opens a connection
- * or reads a secret; the first lane that does is the Talk pane's (§3.10).
+ * ONLY TALK LISTENS, AND ONLY WHEN ASKED. Nothing asks for the microphone
+ * until the person presses Start talking; Projects and Preferences open no
+ * connection and read no secret.
  */
 import { useEffect, useState, type ReactNode } from 'react'
 
@@ -21,6 +21,7 @@ import { loadMe } from '../api'
 import { PageHead } from '../Shell'
 import { Absent } from '../primitives'
 import type { Me } from '../types'
+import { TalkPane } from './Talk'
 
 /**
  * WHO VOICE IT IS OPEN TO. Version one is one person's (§1: one budget, one
@@ -73,29 +74,18 @@ function Gate({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-/** The presence ring at rest (§11), still: no session is live and nothing is said. */
-function RestingRing() {
-  return (
-    <figure className="vi-ring is-idle" data-state="idle">
-      <svg viewBox="0 0 400 400" width="160" height="160" role="img" aria-label="Voice it: no session">
-        <circle cx="200" cy="200" r="120" fill="none" stroke="currentColor" strokeOpacity="0.35" strokeWidth="2" />
-      </svg>
-      <figcaption>Voice it</figcaption>
-    </figure>
-  )
-}
-
-/** Voice it › Talk: where the person talks to the agent, with captions of both sides. */
+/**
+ * Voice it › Talk: where the person talks to the agent, with captions of both
+ * sides. The Talk pane (Talk.tsx) draws its own ring, its start control and
+ * its captions; until swarm-voice is deployed here, a start is refused by
+ * swarm-api and the pane says so in the server's words.
+ */
 export function VoiceTalkScreen() {
   return (
     <>
       <PageHead title="Talk" />
       <Gate>
-        <RestingRing />
-        <Absent kind="zero" heading="No session yet" say="Talking is not switched on yet">
-          Talking arrives with phase one's next lanes: the session routes, the voice service, and this
-          page's microphone and captions. Nothing on this page listens or records.
-        </Absent>
+        <TalkPane />
       </Gate>
     </>
   )

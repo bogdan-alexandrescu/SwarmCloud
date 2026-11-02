@@ -31,7 +31,7 @@ import { at, attempt, ev, task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
-  loadTasksInState: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadTask: vi.fn(),
   loadAttempts: vi.fn(),
   loadAgentDetail: vi.fn(),
@@ -327,9 +327,9 @@ describe('VQ-012: over a capped page Waiting is counted whole, as the panel coun
   it('reads `Waiting 3`, with no `+`, when the waiting states answered whole', async () => {
     api.loadTasks.mockResolvedValue(page([...waiting, ...finished], 'next-1'))
     const all = [...waiting, old, ...finished]
-    // One state or a comma list of them, as one `in` query (#2998).
-    api.loadTasksInState.mockImplementation(async (state: TaskState) => {
-      const asked = new Set(state.split(','))
+    // Every state asked for, as one `in` query (#2998).
+    api.loadTasksInStates.mockImplementation(async (states: readonly TaskState[]) => {
+      const asked = new Set<TaskState>(states)
       const tasks = all.filter((t) => asked.has(t.state))
       return tasks.length === 0 ? { status: 'empty', fetchedAt: Date.now() } : page(tasks, null)
     })
@@ -337,18 +337,18 @@ describe('VQ-012: over a capped page Waiting is counted whole, as the panel coun
     render(<AgentsScreen onOpen={() => {}} />)
     // MUTATION: read only the live states and the tab reads `2+`.
     await waitFor(() => expect(badge(/^Waiting/)).toBe('3'))
-    expect(api.loadTasksInState).toHaveBeenCalledTimes(1)
-    expect(String(api.loadTasksInState.mock.calls[0]![0]).split(',').sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
+    expect(api.loadTasksInStates).toHaveBeenCalledTimes(1)
+    expect([...api.loadTasksInStates.mock.calls[0]![0]].sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
     // CONTROL: Recent is still the capped page's, and says so.
     expect(badge(/^Recent/)).toBe('4+')
   })
 
   it('keeps the lower bound when a waiting-state read fails', async () => {
     api.loadTasks.mockResolvedValue(page([...waiting, ...finished], 'next-1'))
-    api.loadTasksInState.mockResolvedValue({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })
+    api.loadTasksInStates.mockResolvedValue({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })
     api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     render(<AgentsScreen onOpen={() => {}} />)
-    await waitFor(() => expect(api.loadTasksInState).toHaveBeenCalled())
+    await waitFor(() => expect(api.loadTasksInStates).toHaveBeenCalled())
     await waitFor(() => expect(badge(/^Waiting/)).toBe('2+'))
   })
 
