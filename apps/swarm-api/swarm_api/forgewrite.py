@@ -1144,15 +1144,35 @@ class GitHubWriter:
         )
 
     def delete_branch(self, ref: IssueRef, branch: str, token: str) -> bool:
-        """Delete `branch`; False when it was already gone."""
+        """Delete `branch`; False when it was already gone (404, or 422
+        "Reference does not exist", GitHub's answer once its auto-delete of a
+        merged head branch got there first)."""
+        what = f"the branch {branch} of {ref.repository}"
         try:
-            self._call(
+            data = self._call(
                 "DELETE", self._url(ref, f"git/refs/heads/{quote(branch, safe='/')}"), token,
-                f"the branch {branch} of {ref.repository}", needs=CONTENTS_WRITE, ok=(204,),
+                what, needs=CONTENTS_WRITE, ok=(204, 422),
             )
         except ForgeWriteNotFound:
             return False
-        return True
+        if data is None:
+            return True
+        message = data.get("message") if isinstance(data, dict) else None
+        if isinstance(message, str) and "reference does not exist" in message.lower():
+            return False
+        raise ForgeWriteError(f"GitHub answered HTTP 422 for {what}")
+
+    def branch_protected(self, ref: IssueRef, branch: str, token: str) -> bool | None:
+        """Whether `branch` is protected; None when there is no such branch."""
+        what = f"the branch {branch} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"branches/{quote(branch, safe='')}"), token, what,
+                needs=CONTENTS_READ,
+            )
+        except ForgeWriteNotFound:
+            return None
+        return isinstance(data, dict) and data.get("protected") is True
 
     def compare_files(self, ref: IssueRef, base: str, head: str, token: str) -> list[str]:
         """The paths changed from the merge base of `base` and `head` to `head`.
