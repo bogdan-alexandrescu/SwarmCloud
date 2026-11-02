@@ -1988,6 +1988,8 @@ class Worker:
                 indexrun_mod.extractor_argv(
                     program, checkout=checkout, work=ws.work, lsp_total=budget.lsp_total,
                     base_sha=base_sha,
+                    # A full run's base carries only the servers' answers (#2991).
+                    base_lsp_only=indexrun_mod.base_lsp_only((self._task or {}).get("input")),
                     # What each server cost last time, from the signed prompt
                     # (INDEX-BUDGETS, #1693); None is the equal split.
                     lsp_costs=indexrun_mod.lsp_costs((self._task or {}).get("input")),
