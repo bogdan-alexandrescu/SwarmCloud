@@ -205,6 +205,14 @@ MERGE_TARGET_FIELD = "merge_target"
 
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: The `result_summary` key listing each unanswered advisory question this
+#: merge went ahead past (owner decision, 2 November 2026): `{task_id,
+#: step_id, question_index, question, recommended, built}`. swarm-api's answer
+#: route reads it from a SUCCEEDED merge to start a pick-fix round against the
+#: default branch when the owner later picks another option
+#: (`swarm_api.agent_questions.ADVISORY_MERGED_PAST_KEY`, held equal by
+#: tests/unit/worker/test_merge_advisory_questions.py).
+ADVISORY_MERGED_PAST_KEY = "advisory_merged_past"
 #: The code a merge refuses with when the owner picked an option the asking
 #: branch did not build (ANSWER-CONTENT-CHECK, owner decision 2026-10-26), the
 #: `result_summary` key naming each such pick, and the code for a counted
@@ -1944,8 +1952,15 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # #2070: the owner questions the review said hold the merge, each
         # answer re-read; then the ones it said need not, listed if open.
         held = _unanswered(ctx, verdict.needs_owner)
+        # 2 November 2026: an advisory question -- not blocking, with a
+        # recommended option the branch built, about nothing sensitive
+        # (`owner_questions.hold_reason`) -- no longer holds the merge. It
+        # is merged past, recorded, and stays open for the owner.
+        held, past = _advisory_split(ctx, held)
         if held or verdict.needs_owner_unreadable:
             return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+        if past:
+            summary[ADVISORY_MERGED_PAST_KEY] = past
         # ANSWER-CONTENT-CHECK: answered is not enough; the pick must be
         # the option the asking branch built -- for every answered question
         # that names `built`, held or not (PICK-FIX-ROUND). One it did not
@@ -1955,7 +1970,11 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # blocking one still unanswered holds the merge as `needs_owner` does.
         try:
             asked_by_rounds = _round_questions(ctx, target, opener)
-            unbuilt = _unbuilt_picks(ctx, target, verdict.needs_owner, asked_by_rounds)
+            # A merged-past question is unanswered: no pick to check yet.
+            merged_past = {(q["task_id"], q["question_index"]) for q in past}
+            unbuilt = _unbuilt_picks(ctx, target, tuple(
+                ref for ref in verdict.needs_owner
+                if (ref.task_id, ref.question_index) not in merged_past), asked_by_rounds)
         except InputUnavailable as exc:
             summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
             return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
@@ -2515,6 +2534,43 @@ def _unanswered(ctx: ActionContext,
     return out
 
 
+def _advisory_split(ctx: ActionContext, held: list[dict[str, Any]]
+                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(still held, merged past)`: the `_unanswered` rows split by `hold_reason`.
+
+    Owner decision, 2 November 2026: advisory questions stop holding merges.
+    Each row's question is read again from its asking task's own validated
+    `questions.json` (`owner_questions.questions_of`), never from the
+    review's copy. FAIL CLOSED: a task that cannot be read, is not a step of
+    this workflow, or holds no such question still holds, as does any
+    question `owner_questions.hold_reason` names a reason for. Nothing is
+    answered here: a merged-past question stays open for the owner.
+    """
+    kept: list[dict[str, Any]] = []
+    past: list[dict[str, Any]] = []
+    asked: dict[str, dict[int, Mapping[str, Any]] | None] = {}
+    for row in held:
+        task_id = row.get("task_id")
+        if isinstance(task_id, str) and task_id not in asked:
+            try:
+                doc = ctx.fetch_upstream(task_id)
+                ours = ctx.workflow_id is not None and doc.get("workflow_id") == ctx.workflow_id
+                asked[task_id] = ({q["question_index"]: q for q in owner_questions_mod.questions_of(
+                    task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id)} if ours else None)
+            except InputUnavailable:
+                asked[task_id] = None
+        question = (asked.get(task_id) or {}).get(row.get("question_index")) \
+            if isinstance(task_id, str) else None
+        if question is None or not owner_questions_mod.merges_past(question):
+            kept.append(row)
+            continue
+        past.append({**row, "question": question.get("question") or row.get("question"),
+                     "recommended": question.get("recommended"),
+                     "built": question.get(owner_questions_mod.BUILT_KEY,
+                                           question.get("recommended"))})
+    return kept, past
+
+
 def _asked_questions(ctx: ActionContext, task_id: str,
                      doc: Mapping[str, Any]) -> dict[int, Any]:
     """`{question_index: question text}` as task `task_id` asked them; {} unreadable."""
@@ -2542,6 +2598,28 @@ def open_questions_lines(rows: list[Mapping[str, Any]]) -> list[str]:
         where = row.get("step_id") or row.get("task_id")
         lines.append(f"- step {where} question {row.get('question_index')} "
                      f"(task {row.get('task_id')}): {text}".replace("```", "ʼʼʼ"))
+    lines.append("```")
+    return lines
+
+
+def advisory_lines(rows: list[Mapping[str, Any]]) -> list[str]:
+    """The comment's section listing the advisory questions this merge went past.
+
+    Untrusted agent text, fenced as `open_questions_lines` fences it. Each
+    names the recommended option the branch builds: an answer picking
+    another one starts a pick-fix round against the default branch.
+    """
+    if not rows:
+        return []
+    lines = ["", "", "Merged past these advisory owner questions, building each one's "
+             "recommended option; they stay open (answer them on their task: another "
+             "pick starts a pick-fix round against the default branch):", "", "```text"]
+    for row in rows:
+        text = " ".join(str(row.get("question") or "").split())
+        where = row.get("step_id") or row.get("task_id")
+        lines.append(f"- step {where} question {row.get('question_index')} "
+                     f"(task {row.get('task_id')}), recommended {row.get('recommended')!r}: "
+                     f"{text}".replace("```", "ʼʼʼ"))
     lines.append("```")
     return lines
 
@@ -3063,6 +3141,9 @@ def _record(summary: dict[str, Any], merger: ForgeMerger, number: int, message: 
     rows = summary.get("open_questions")
     if isinstance(rows, list) and rows:
         message = message + "\n".join(open_questions_lines(rows))
+    past = summary.get(ADVISORY_MERGED_PAST_KEY)
+    if isinstance(past, list) and past:
+        message = message + "\n".join(advisory_lines(past))
     try:
         summary["recorded_on_pull_request"] = merger.comment(number, message)
     except forge_mod.ForgeError as exc:
