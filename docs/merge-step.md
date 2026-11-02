@@ -65,10 +65,18 @@ merge; nothing answers them, and they stay open on the agent that asked them. Wh
 later answers one with a pick other than what the branch built, the answer
 route (`swarm_api.agent_questions.answer_question`) claims it on the merge's
 `metadata.advisory_pick_fix`, in the answer's own transaction, and submits a
-pick-fix round as the answering member: a one-step `direct-pr` workflow from
-the default branch (the pull request is merged, so there is no branch to
-continue) that builds the pick, opens its own pull request and reports
-`picks-built.json` (`mergewake.advisory_pick_fix_round`). The recommended pick,
+pick-fix round as the answering member: a full lane from the default branch
+(the pull request is merged, so there is no branch to continue) that builds
+the pick, reports `picks-built.json` and opens its own pull request
+(`mergewake.advisory_pick_fix_round`). The owner picked on 2 November 2026
+that the round is merged by its own review and merge steps rather than left
+open for a person: it is an `integrate` workflow, pick-fix -> review -> fix
+gated on NOT_YET, with `metadata.merge` `"on_merge_verdict"`, so submission
+appends the re-review and the merge step and it merges only on a MERGE
+verdict, as any lane does. Why: a pick the owner already made is not a
+decision a person must make again at the merge, and the review still gates
+it; a second NOT_YET after the one fix leaves the pull request open for a
+person (`REREVIEW_ROUNDS`). The recommended pick,
 or the same pick answered again, starts nothing. Fencing, the merge slot and
 the hold for every other question are unchanged.
 

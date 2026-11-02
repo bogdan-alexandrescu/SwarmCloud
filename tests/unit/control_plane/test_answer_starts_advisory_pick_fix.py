@@ -6,9 +6,11 @@ recommended option its branch built (`agent_worker.merge`), records it as
 `result_summary.advisory_merged_past`, and the question stays open. These
 tests hold `POST /v1/tasks/{id}/answers` to:
 
-  1. A DIFFERENT PICK STARTS A ROUND -- one `direct-pr` pick-fix workflow
-     from the default branch, submitted as the answering member, claimed on
-     the merge's `metadata.advisory_pick_fix` with its workflow;
+  1. A DIFFERENT PICK STARTS A ROUND -- one pick-fix lane from the default
+     branch, submitted as the answering member, claimed on the merge's
+     `metadata.advisory_pick_fix` with its workflow, and merged by its own
+     review and merge steps (owner pick, 2 November 2026: `integrate`,
+     pick-fix -> review -> fix, `metadata.merge` "on_merge_verdict");
   2. THE SAME ANSWER STARTS NOTHING -- the recommended option, or the same
      different pick answered again;
   3. A MERGE THAT DID NOT GO PAST THE QUESTION STARTS NOTHING;
@@ -126,16 +128,18 @@ def test_a_later_different_pick_starts_a_pick_fix_round_against_main(
     # MUTATION: leave the trigger out of the answer route and nothing is submitted.
     ((auth, spec),) = submissions.calls
     assert auth.email == OWNER
-    assert spec.strategy == "direct-pr"
+    assert spec.strategy == "integrate"
     # Against the default branch: the pull request is merged, nothing to continue.
     assert spec.continues_task is None
     assert spec.repository_url == REPO
-    (step,) = spec.steps
-    assert step.step_id == "pick-fix"
+    step, review, fix = spec.steps
+    assert (step.step_id, review.step_id, fix.step_id) == ("pick-fix", "review", "fix")
     prompt = step.input["prompt"]
     assert f"pick {IMPLEMENT} question 0" in prompt and repr(PER_WORKFLOW) in prompt
     assert "pull request #41" in prompt and "picks-built.json" in prompt
-    assert spec.metadata["merge"] == "off"
+    # MUTATION: leave the round's merge "off" and it waits for a person.
+    assert spec.metadata["merge"] == "on_merge_verdict"
+    assert fix.when.step == "review" and fix.when.verdict_in == ["NOT_YET"]
     assert spec.metadata["advisory_pick_fix_round"]["merge_task"] == MERGE
     (claim,) = _claims(db)
     assert (claim["task_id"], claim["question_index"], claim["picked"], claim["built"]) == (
@@ -201,3 +205,26 @@ def test_a_refused_round_is_recorded_and_the_answer_stands(client, db, objects,
     assert "not registered" in claim["error"]
     answers = db.docs[f"tasks/{IMPLEMENT}"]["metadata"]["owner_answers"]
     assert [a["choice"] for a in answers] == [PER_WORKFLOW]
+
+
+def test_the_round_is_merged_by_its_own_review_and_merge_steps(client, db) -> None:
+    """The owner's pick: submitted for real, the round gains a re-review and a merge."""
+    from swarm_api.mergewake import advisory_pick_fix_round
+
+    seed_tenant(db, "eng")
+    spec = advisory_pick_fix_round(
+        repository_url=REPO,
+        merge={"id": MERGE, "workflow_id": WORKFLOW,
+               "result_summary": {"pull_request": 41}},
+        claim={"task_id": IMPLEMENT, "question_index": 0, "question": "Where?",
+               "picked": PER_WORKFLOW, "built": PER_TASK})
+
+    response = client.post("/v1/workflows", headers=auth_header("alice"),
+                           json=spec.model_dump(mode="json", exclude_none=True))
+
+    assert response.status_code == 201, response.text
+    steps = {s["step_id"]: s for s in response.json()["workflow"]["steps"]}
+    # MUTATION: submit the round with merge "off" and no merge step is appended.
+    assert list(steps) == ["pick-fix", "review", "fix", "re-review", "merge"]
+    assert steps["merge"]["runner_profile"] == "merge"
+    assert steps["merge"]["input_from"] == {"re-review": "verdict.json"}
