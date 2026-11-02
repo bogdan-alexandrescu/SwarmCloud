@@ -17,12 +17,22 @@ last turn and before its result is written, over what the agent wrote into
     Jev never decides; it can only make a person look.
   Written to `PLAN_ADVISORY_FILE` beside `plan.json`; `plan.json` itself is
   never touched.
-* REVIEWER (`review_post_step`), over `verdict.json`:
+* REVIEWER (`review_post_step`), over every verdict file the step owes in its
+  artifacts: each declared output named `*verdict.json` and each
+  `*verdict.json` it wrote (`verdict.json`, and the experiment reviews'
+  `code-verdict.json` and `ui-verdict.json`; owner, 2 November 2026) -- a
+  review's, or a re-review's own (never the earlier verdict a re-review
+  stages: `contextpack.tasktype.classify` types a step that owes its own
+  verdict a review, and a fix that only stages one a fix):
   * J3, finding triage: one `noul` per finding, "is this a real defect in
     this diff, as stated?", with the code around the finding's line and the
-    patch's hunk for its file. The answers go onto the findings as `p_real`
-    (`verdict.annotate_findings`); under 0.15 a finding is marked "verify
-    before acting" and still reaches the fixer. `verdict` is never touched.
+    patch's hunk for its file. A finding is an item of `findings`,
+    `blockers`, `majors` or `minors`, a string or an object. The answers go
+    onto the findings as `p_real` (`verdict.annotate_findings`); under 0.15 a
+    finding is marked "verify before acting" and still reaches the fixer.
+    `verdict` and every other key are never touched. The step's summary
+    says how many findings each file had and how many were scored; a file
+    that cannot be read is left byte for byte and named there.
 
 ALL OR NOTHING, PER QUESTION SET. A J whose call is skipped (breaker, budget),
 fails, times out or answers malformed contributes nothing: with every call
@@ -230,33 +240,150 @@ def _line(value: Any) -> int | None:
     return value if type(value) is int and value >= 1 else None
 
 
-def review_post_step(judge: Any, artifacts_dir: Path, checkout: Path | None, work_dir: Path,
-                     payload: Mapping[str, Any]) -> dict | None:
-    """J3 over the review's verdict.json; `{asked, p_real}` when it was
-    annotated, None (and the file untouched) otherwise."""
+#: The lists a verdict file carries its findings in, in the order J3 asks
+#: about them: `verdict.json`'s `findings` (#2837), and the experiment reviews'
+#: `blockers`, `majors` and `minors` (`code-verdict.json`, `ui-verdict.json`).
+#: Under the J3_MAX_FINDINGS cap a blocker is asked about before a minor.
+FINDING_LISTS = ("blockers", "findings", "majors", "minors")
+_LIST_RANK = {"blockers": 0, "findings": 1, "majors": 1, "minors": 2}
+#: What a finding object says its defect is, in the order read: the `summary`
+#: shape, then the review briefs' `problem` shape (`verdict._MINOR_TEXT_FIELDS`).
+_FINDING_TEXT = ("summary", "title", "message", "problem", "what")
+#: The suffix that marks an artifact as a verdict file.
+VERDICT_SUFFIX = "verdict.json"
+
+
+def _verdict_files(artifacts_dir: Path, payload: Mapping[str, Any]) -> list[str]:
+    """The verdict files this review step owes, relative to `artifacts_dir`:
+    every declared output (input.json's `expected_outputs`) whose name ends in
+    `verdict.json`, and every `*verdict.json` the step wrote at the top of
+    the directory, `verdict.json` among them. Sorted, each once."""
+    from agent_worker import expected_outputs as expected_mod
+
+    names = {n for n in expected_mod.parse_names(payload.get(expected_mod.METADATA_KEY)).names
+             if n.rsplit("/", 1)[-1].endswith(VERDICT_SUFFIX)}
+    try:
+        names.update(p.name for p in Path(artifacts_dir).iterdir()
+                     if p.name.endswith(VERDICT_SUFFIX) and not p.name.startswith("."))
+    except OSError:
+        pass
+    return sorted(names)
+
+
+def _read_verdict_file(artifacts_dir: Path, name: str) -> tuple[dict | None, str]:
+    """The verdict file's object, or None and why it cannot be read."""
+    root = Path(artifacts_dir)
+    path = root / name
+    try:
+        # A link anywhere under the directory is refused, never followed: the
+        # agent wrote these files and may have planted one.
+        parts = Path(name).parts
+        if any(root.joinpath(*parts[:n]).is_symlink() for n in range(1, len(parts) + 1)):
+            return None, "a link"
+        if not _inside(path, Path(artifacts_dir)):
+            return None, "outside the artifacts directory"
+        if not path.exists():
+            return None, "not written"
+        if not path.is_file():
+            return None, "not a file"
+        if path.stat().st_size > MAX_READ_BYTES:
+            return None, f"over {MAX_READ_BYTES} bytes"
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None, "not JSON"
+    except OSError as exc:
+        return None, f"unreadable ({type(exc).__name__})"
+    try:
+        document = json.loads(text)
+    except ValueError:
+        return None, "not JSON"
+    if not isinstance(document, dict):
+        return None, "not a JSON object"
+    return document, ""
+
+
+def _finding_of(item: Any) -> dict[str, Any] | None:
+    """What J3 is asked about for one item -- `{summary, file?, line?}` -- or
+    None for an item that says no defect."""
+    if isinstance(item, str):
+        item = {"summary": item}
+    if not isinstance(item, dict):
+        return None
+    text = next((item[k] for k in _FINDING_TEXT
+                 if isinstance(item.get(k), str) and item[k].strip()), None)
+    if text is None:
+        return None
+    file = item.get("file") if isinstance(item.get("file"), str) else ""
+    line = _line(item.get("line"))
+    return {k: v for k, v in (("summary", text), ("file", file), ("line", line)) if v}
+
+
+def _minor(item: Any) -> bool:
     from agent_worker import verdict as verdict_mod
 
+    severity = item.get("severity") if isinstance(item, dict) else None
+    return isinstance(severity, str) and severity.strip().lower() == verdict_mod.SEVERITY_MINOR
+
+
+def _annotate(document: dict[str, Any], scores: Mapping[tuple[str, int], float]) -> dict[str, Any]:
+    """`document` with `p_real` (and the verify mark) on each scored item, as
+    `verdict.annotate_findings` writes it on `findings`: a string item becomes
+    `{"summary": <it>, ...}`, an object keeps every key. Nothing is dropped
+    or reordered, and no other key -- `verdict` above all -- is touched."""
+    from agent_worker import verdict as verdict_mod
+
+    out = dict(document)
+    for key in FINDING_LISTS:
+        p_real = {index: p for (k, index), p in scores.items() if k == key}
+        if p_real:
+            out[key] = verdict_mod.annotate_findings({"findings": document[key]},
+                                                     p_real)["findings"]
+    return out
+
+
+def review_post_step(judge: Any, artifacts_dir: Path, checkout: Path | None, work_dir: Path,
+                     payload: Mapping[str, Any]) -> dict | None:
+    """J3 over every verdict file the review step owes (`_verdict_files`), in
+    either shape: a `findings` list, or `blockers`/`majors`/`minors` lists,
+    each item a string or an object.
+
+    Returns the step's summary, `{asked, files: {name: {findings, scored,
+    p_real}}, unreadable: {name: why}}`; None when there is nothing to report,
+    and None -- every file untouched -- when any J3 call fails. A file that
+    cannot be read is never written, and is named under `unreadable`."""
     if judge is None:
         return None
-    path = Path(artifacts_dir) / VERDICT_FILE
-    document = _read_json(path)
-    if not isinstance(document, dict) or not isinstance(document.get("findings"), list):
+    artifacts_dir = Path(artifacts_dir)
+    documents: dict[str, dict[str, Any]] = {}
+    unreadable: dict[str, str] = {}
+    for name in _verdict_files(artifacts_dir, payload):
+        document, why = _read_verdict_file(artifacts_dir, name)
+        if document is None:
+            unreadable[name] = why
+        else:
+            documents[name] = document
+    if not documents and not unreadable:
         return None
-    hunks = patch_hunks(_staged_patch(work_dir, payload))
+    candidates: list[tuple[int, int, str, str, int, dict[str, Any]]] = []
+    counts: dict[str, int] = {}
+    for order, (name, document) in enumerate(sorted(documents.items())):
+        counts[name] = 0
+        for key in FINDING_LISTS:
+            items = document.get(key)
+            for index, item in enumerate(items if isinstance(items, list) else ()):
+                finding = _finding_of(item)
+                if finding is None:
+                    continue
+                counts[name] += 1
+                rank = 2 if _minor(item) else _LIST_RANK[key]
+                candidates.append((rank, order, name, key, index, finding))
+    candidates.sort(key=lambda row: (row[0], row[1], FINDING_LISTS.index(row[3]), row[4]))
+    hunks = patch_hunks(_staged_patch(work_dir, payload)) if candidates else {}
     stops = tuple(getattr(judge, "hard_stop_paths", ()) or ())
-    p_real: dict[int, float] = {}
+    scores: dict[str, dict[tuple[str, int], float]] = {name: {} for name in documents}
     asked = 0
-    for index, item in enumerate(document["findings"]):
-        if asked >= J3_MAX_FINDINGS:
-            break
-        if isinstance(item, str):
-            item = {"summary": item}
-        if not isinstance(item, dict) or not isinstance(item.get("summary"), str):
-            continue
-        file = item.get("file") if isinstance(item.get("file"), str) else ""
-        line = _line(item.get("line"))
-        finding = {k: v for k, v in (("summary", item["summary"]), ("file", file),
-                                     ("line", line)) if v}
+    for _rank, _order, name, key, index, finding in candidates[:J3_MAX_FINDINGS]:
+        file, line = finding.get("file", ""), finding.get("line")
         code = code_window(checkout, file, line) if file and checkout is not None else {}
         # §5.4: names only for a denied path. `diff_hunk` is a top-level
         # string the client's sanitizer cannot tie to a path, so withhold it here.
@@ -267,9 +394,19 @@ def review_post_step(judge: Any, artifacts_dir: Path, checkout: Path | None, wor
         p = shapes.read_finding(answers) if answers is not None else None
         if p is None:
             return None  # all or nothing: no partial triage reaches the fixer
-        p_real[index] = min(max(p, 0.0), 1.0)
-    if not p_real:
+        scores[name][(key, index)] = min(max(p, 0.0), 1.0)
+    if not asked and not unreadable:
         return None
-    annotated = verdict_mod.annotate_findings(document, p_real)
-    _write_atomically(path, json.dumps(annotated, indent=2) + "\n")
-    return {"asked": asked, "p_real": {str(k): round(v, 4) for k, v in p_real.items()}}
+    files: dict[str, Any] = {}
+    for name, document in sorted(documents.items()):
+        scored = scores[name]
+        files[name] = {"findings": counts[name], "scored": len(scored),
+                       "p_real": {f"{k}[{i}]": round(v, 4) for (k, i), v in sorted(
+                           scored.items(), key=lambda kv: (FINDING_LISTS.index(kv[0][0]),
+                                                           kv[0][1]))}}
+    # Every answer is in: only now is any file rewritten.
+    for name, document in documents.items():
+        if scores[name]:
+            _write_atomically(artifacts_dir / name,
+                              json.dumps(_annotate(document, scores[name]), indent=2) + "\n")
+    return {"asked": asked, "files": files, "unreadable": unreadable}

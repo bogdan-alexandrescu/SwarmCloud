@@ -84,6 +84,7 @@ body:
         - "Web UI · Capacity › Accounts (/capacity/accounts)"
         - "Web UI · Capacity › Account health (/capacity/account-health)"
         - "Web UI · Capacity › Provider quota (/capacity/accounts/quota)"
+        - "Web UI · Capacity › Jev usage (/capacity/jev-usage)"
         - "Web UI · Capacity › API reads (/capacity/api-reads)"
         - "Web UI · Config › GitHub access (/config/github)"
         - "Web UI · Config › Repositories (/config/repositories)"

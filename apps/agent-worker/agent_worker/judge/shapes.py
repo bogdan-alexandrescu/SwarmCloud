@@ -2,9 +2,10 @@
 
 Each builder returns `(state, questions)` for `JudgeClient.decide`, truncated
 to §5.2's limits; each reader turns a successful call's answers into the one
-thing its caller uses. The callers are lane CTXQ-JW's: J1 in the pack's
-ranking, J2 and J5 in the planner's post-step, J3 in the review post-step,
-J4 in the gate. Every output is ADVISORY: no reader returns a verdict, and a
+thing its caller uses. J0 is called by `contextpack.tasktype.classify_with_jev`
+for a step the local rules leave `implement`. The others are lane CTXQ-JW's:
+J1 in the pack's ranking, J2 and J5 in the planner's post-step, J3 in the
+review post-step, J4 in the gate. Every output is ADVISORY: no reader returns a verdict, and a
 failed call leaves the caller with its local-only answer.
 """
 
@@ -14,7 +15,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 #: J0's options, in §5.2's order.
 ROLES = ("implement", "review", "fix", "test", "design", "plan")
-#: J0: below this confidence the pipeline stays `implement`.
+#: J0: below this confidence the pipeline stays `implement` (and at or above
+#: it, `classify_with_jev` still takes only `tasktype.JEV_TYPES`).
 CLASSIFY_MIN_CONFIDENCE = 0.6
 #: J2: a requirement whose best step is under this is flagged.
 PLAN_COVERAGE_MIN_P = 0.5

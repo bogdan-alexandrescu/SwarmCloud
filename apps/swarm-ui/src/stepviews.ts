@@ -980,8 +980,13 @@ export function attemptPhase(taskState: TaskState | null, latest: boolean): Atte
   return { kind: 'waiting', state: taskState }
 }
 
+// A GETTER, NOT A COPY: stepviews → dag → wfreview → api → stepviews is an
+// import cycle, so when `dag` is loaded first this module is evaluated before
+// `dag` has assigned NEVER_STARTED_WORD, and a copy taken here is undefined.
 const NEVER_STARTED: Absence = {
-  text: NEVER_STARTED_WORD,
+  get text() {
+    return NEVER_STARTED_WORD
+  },
   note: 'This attempt carries no start time and is over: it was fenced, parked, refused at dispatch or failed before its container started.',
 }
 

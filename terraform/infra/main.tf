@@ -310,7 +310,25 @@ data "google_project" "this" {
   project_id = var.project_id
 }
 
-module "cloud_run" {
+# swarm-api ROLLS FIRST (owner's pick, 2026-11-02, #3041). Its own call of the
+# module, and module.cloud_run below `depends_on` it, so one apply of the one
+# reviewed plan brings swarm-api's new revision to Ready before it touches the
+# scheduler, whose WORKER_IMAGE_REFS picks the image of every new dispatch.
+# Without the order the two rolled in parallel (one for_each), and a release
+# that added a state route and its first worker call in one commit could
+# dispatch a new worker that called the route before the serving swarm-api
+# revision had it. The worker's bare-404 retry (agent_worker/statecall.py)
+# still covers a revision's rollout; this removes the window it was the only
+# cover for.
+#
+# Its run.invoker grants are NOT here: they stay in module.cloud_run's
+# `invokers_elsewhere`, at the addresses they always had (the cloud_run
+# module's variables.tf says why). moved.tf moves the service itself.
+#
+# Nothing this call reads comes from module.cloud_run (its environment takes
+# the computed URLs, below), so the ordering is not a cycle. swarm-api's own
+# outputs are read from here: module.cloud_run_api.service_urls["swarm-api"].
+module "cloud_run_api" {
   source = "../modules/cloud_run"
 
   project_id = var.project_id
@@ -385,36 +403,61 @@ module "cloud_run" {
       # told this service's URL-shaped API_AUDIENCE without a cycle. Accepted
       # in addition to the URL; people's clients are unaffected.
       custom_audiences = [local.push_audiences["swarm-api"]]
-      # THE IAP SERVICE AGENT, EXPLICITLY.
-      #
-      # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
-      # answers every request with "The IAP service account is not provisioned"
-      # -- a 500-class failure that looks like the app being broken rather than
-      # a missing grant.
-      #
-      # Not left to `allUsers`, which currently holds run.invoker and would
-      # cover it by accident. That grant exists for a different reason (Cloud
-      # Run's edge IAM consumes the Authorization header, destroying the only
-      # credential that identifies a tenant), and the day it is tightened IAP
-      # would break for a reason nobody would connect to it.
-      #
-      # The AGENT ITSELF is not created here: it is a Google-managed identity
-      # and `google_project_service_identity` lives only in the google-beta
-      # provider, which this repository does not carry for one resource. It is a
-      # once-per-project command, documented in modules/frontend/main.tf beside
-      # the OAuth brand:
-      #
-      #   gcloud beta services identity create \
-      #     --service=iap.googleapis.com --project=<project>
-      #
-      # And each tenant's WORKER, once child tasks are on: the worker-only
-      # child routes are the one thing a worker calls here (child_tasks.tf).
-      invokers = merge(
-        { for member in var.api_invokers : member => member },
-        { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
-        local.child_route_invokers,
-      )
+      # Granted by module.cloud_run's invokers_elsewhere, below.
+      invokers = {}
     }
+  }
+
+  labels = local.labels
+
+  depends_on = [module.project_services]
+}
+
+module "cloud_run" {
+  source = "../modules/cloud_run"
+
+  project_id = var.project_id
+  region     = var.region
+
+  network    = module.network.network_id
+  subnetwork = module.network.subnetwork_id
+
+  deletion_protection = var.deletion_protection
+
+  # swarm-api's run.invoker grants, on the service module.cloud_run_api
+  # creates. THE IAP SERVICE AGENT, EXPLICITLY.
+  #
+  # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
+  # answers every request with "The IAP service account is not provisioned"
+  # -- a 500-class failure that looks like the app being broken rather than
+  # a missing grant.
+  #
+  # Not left to `allUsers`, which currently holds run.invoker and would
+  # cover it by accident. That grant exists for a different reason (Cloud
+  # Run's edge IAM consumes the Authorization header, destroying the only
+  # credential that identifies a tenant), and the day it is tightened IAP
+  # would break for a reason nobody would connect to it.
+  #
+  # The AGENT ITSELF is not created here: it is a Google-managed identity
+  # and `google_project_service_identity` lives only in the google-beta
+  # provider, which this repository does not carry for one resource. It is a
+  # once-per-project command, documented in modules/frontend/main.tf beside
+  # the OAuth brand:
+  #
+  #   gcloud beta services identity create \
+  #     --service=iap.googleapis.com --project=<project>
+  #
+  # And each tenant's WORKER, once child tasks are on: the worker-only
+  # child routes are the one thing a worker calls here (child_tasks.tf).
+  invokers_elsewhere = {
+    "swarm-api" = merge(
+      { for member in var.api_invokers : member => member },
+      { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
+      local.child_route_invokers,
+    )
+  }
+
+  services = {
     "swarm-scheduler" = {
       service_account_email = module.iam.service_account_emails["swarm-scheduler"]
       image                 = local.image["swarm-scheduler"]
@@ -509,7 +552,9 @@ module "cloud_run" {
 
   labels = local.labels
 
-  depends_on = [module.project_services]
+  # module.cloud_run_api first: swarm-api's revision is Ready before the
+  # scheduler's rolls (#3041).
+  depends_on = [module.project_services, module.cloud_run_api]
 }
 
 module "cloud_run_jobs" {
@@ -571,7 +616,7 @@ module "scheduler" {
   # `pr_stranded` (redrive false; the monitoring module alerts on it). The
   # issue sweeper's job was deleted on 2026-10-12: the tenant's `issue-sweep`
   # schedule replaced it (modules/scheduler/jobs.tf).
-  api_endpoint      = module.cloud_run.service_urls["swarm-api"]
+  api_endpoint      = module.cloud_run_api.service_urls["swarm-api"]
   rollup_tenant_ids = toset(keys(var.tenants))
 
   # D2 (#780, OB2): swarm-forge-refresh, the GitHub user-token refresh sweep,
@@ -659,7 +704,7 @@ resource "google_cloud_run_v2_service_iam_member" "rollup_sweeper_invokes_api" {
   location = var.region
   # `service_names` is a sorted list; take the name from the map-shaped output,
   # as verify_invokes_api does.
-  name   = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
+  name   = [for k, _ in module.cloud_run_api.service_ids : k if k == "swarm-api"][0]
   role   = "roles/run.invoker"
   member = "serviceAccount:${module.scheduler.rollup_sweeper_email}"
 }
@@ -674,7 +719,7 @@ resource "google_cloud_run_v2_service_iam_member" "rollup_sweeper_invokes_api" {
 resource "google_cloud_run_v2_service_iam_member" "schedule_tick_invokes_api" {
   project  = var.project_id
   location = var.region
-  name     = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
+  name     = [for k, _ in module.cloud_run_api.service_ids : k if k == "swarm-api"][0]
   role     = "roles/run.invoker"
   member   = "serviceAccount:${module.scheduler.schedule_tick_email}"
 }
