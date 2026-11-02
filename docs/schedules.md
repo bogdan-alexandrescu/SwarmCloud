@@ -1467,7 +1467,7 @@ Built by lane IMAGE-TOOL-RESCAN (PR 2099, part of #442):
   job. That night the SwarmCloud repository held 4,756 branches, 4,032 of them
   `swarm/task_*`: 2,228 whose pull request merged, 2,406 with no pull request
   (step hand-offs, lanes that never published, scratch), 107 closed without
-  merging and 15 open. Nothing in the platform deletes a branch when its task
+  merging and 15 open. Nothing in the platform deletes a branch when its agent
   or workflow ends. The owner then switched on GitHub's auto-delete of merged
   head branches for the repository and had the 2,223 merged, unchanged
   branches deleted by hand; everything else was kept. This type is the
@@ -1481,16 +1481,16 @@ Built by lane IMAGE-TOOL-RESCAN (PR 2099, part of #442):
   commit: nothing was pushed after the merge. Never deleted: the default
   branch, a branch GitHub marks protected, a branch under `keep/`, a branch
   with an open pull request, and a branch live work still reads -- the branch
-  of any task that has not ended, of a task a live task depends on (a step's
-  hand-off), continues (`metadata.dispatch.continues`) or names in its
-  dispatch metadata (an integrator's contributors), and a live task's
+  of any agent that has not ended, of an agent a live agent depends on (a
+  step's hand-off), continues (`metadata.dispatch.continues`) or names in its
+  dispatch metadata (an integrator's contributors), and a live agent's
   `repository_ref`. Branches are `swarm/<task id>`, so a task id in the name
   is how a branch is matched to the work that reads it.
 * **Kept, and counted.** Every other branch is kept and counted by kind:
   `no_pull_request`, `closed_unmerged`, `head_moved_after_merge`,
   `open_pull_request`, `protected_or_keep`, `in_use`; and the deletable ones
   the firing could not finish: `unverified` (the open pull requests or the
-  live tasks were not read whole, so nothing in that repository is deleted),
+  live agents were not read whole, so nothing in that repository is deleted),
   `deferred` (past `max_deletes`, the request budget or the time budget) and
   `delete_failed`.
 * **Does.** Per repository in scope, with the schedule's tenant's forge
