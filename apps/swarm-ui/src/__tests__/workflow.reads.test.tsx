@@ -17,6 +17,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, waitFor } from '@testing-library/react'
 
+import STYLES from '../styles.css?raw'
 import type { WorkflowBoard } from '../api'
 import type { Result } from '../fetch'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
@@ -227,5 +228,53 @@ describe('a 40-step workflow page reads its steps in one batched read', () => {
     const ids = new URL(asked, 'http://console.test').searchParams.get('ids')!.split(',')
     const waits = STATES.flatMap((s, i) => (['PARKED', 'LEASED', 'DISPATCHED'].includes(s) ? [taskId(i)] : []))
     expect([...ids].sort()).toEqual([...waits].sort())
+  })
+})
+
+/**
+ * THE GRAPH'S STEP INSPECTOR IS DRAWN ABOVE THE STAGE CARDS (#2688; the
+ * owner's browser, 2026-11-02: the inspector was drawn under the stage
+ * cards). The canvas paints four layers (styles.css, over `.wf-levels`): the
+ * cards at auto, `.wf-band`, `.node-stop` at 2, and the sticky rail and a
+ * focused card's full note at 3. The docked panel was `z-index: auto`, so
+ * every numbered layer of the canvas painted over it wherever the two met.
+ * Rendered with the real stylesheet: the panel's layer is above every layer
+ * inside the canvas column, at the docked widths (1280-1512) and as the
+ * phone's bottom sheet.
+ */
+describe('the Graph’s step inspector sits above the stage cards', () => {
+  const z = (el: Element) => {
+    const v = Number.parseInt(getComputedStyle(el).zIndex, 10)
+    return Number.isFinite(v) ? v : 0
+  }
+
+  it('docked: the panel’s layer is above every layer the canvas draws', async () => {
+    const sheet = document.createElement('style')
+    sheet.textContent = STYLES
+    document.head.appendChild(sheet)
+    try {
+      render(<WorkflowsScreen view="wf=wf_big" />)
+      await waitFor(() => expect(document.querySelector('.wf-split.has-panel > .wf-panel .wf-inspect')).toBeTruthy())
+      const panel = document.querySelector('.wf-split.has-panel > .wf-panel')!
+      expect(getComputedStyle(panel).position).toBe('sticky')
+      const canvas = [...document.querySelectorAll('.wf-split.has-panel > .wf-split-main *')]
+      expect(canvas.length).toBeGreaterThan(40)
+      const top = Math.max(...canvas.map(z))
+      expect(top, 'the canvas paints no numbered layer: the check would prove nothing').toBeGreaterThan(0)
+      expect(z(panel), `the panel paints at ${z(panel)}, under the canvas's layer ${top}`).toBeGreaterThan(top)
+    } finally {
+      sheet.remove()
+    }
+  })
+
+  it('on a phone: the bottom sheet is above every canvas layer too', () => {
+    // jsdom does not apply media queries, so the phone rule is read from the sheet.
+    const phone = STYLES.slice(STYLES.indexOf('@media (max-width: 699px) {\n  .wf-split.has-panel { display: block; }'))
+    const sheet = phone.slice(0, phone.indexOf('\n}\n'))
+    const zs = /\.wf-panel \{[^}]*z-index: (\d+)/.exec(sheet)
+    expect(zs, 'no z-index on the phone sheet').not.toBeNull()
+    const canvasLayers = [...STYLES.matchAll(/^\.(?:wf-levels|node-note-full|node-stop|wf-band)\b[^{]*\{[^}]*?z-index: (\d+)/gm)].map((m) => Number(m[1]))
+    expect(canvasLayers.length).toBeGreaterThan(0)
+    expect(Number(zs![1])).toBeGreaterThan(Math.max(...canvasLayers))
   })
 })
