@@ -7,7 +7,8 @@ last turn and before its result is written, over what the agent wrote into
 
 * PLANNER (`plan_post_step`), over `plan.json`:
   * J2, plan coverage: one `choice` per requirement over the plan's steps and
-    `none`. A requirement whose best step is under p 0.5, or `none`, is flagged.
+    `none`. A requirement whose best step is under p 0.5, or `none`, is flagged,
+    with `coverage` `none` (no step) or `weak` (a step, under p 0.5).
   * J5, duplicate: one `choice` over the in-flight lanes the stager wrote
     (`inflight.json`, titles and files only, §5.4) and `none`. p >= 0.85 on a
     lane asks for the auto-approved plan to be HELD FOR A HUMAN (owner
@@ -122,8 +123,8 @@ def plan_post_step(judge: Any, artifacts_dir: Path, context_dir: Path | None) ->
             flagged = shapes.read_plan_coverage(answers)
             advisory["coverage"] = {
                 "requirements": len(asked),
-                "flagged": [{"index": k, "requirement": asked[k]} for k in flagged
-                            if k < len(asked)],
+                "flagged": [{"index": k, "requirement": asked[k], "coverage": how}
+                            for k, how in flagged if k < len(asked)],
             }
     lanes = _in_flight(context_dir)
     if lanes and steps:

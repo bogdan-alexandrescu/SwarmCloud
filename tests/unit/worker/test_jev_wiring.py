@@ -527,11 +527,22 @@ def test_j2_flags_uncovered_requirements_and_j5_holds_a_likely_duplicate(tmp_pat
     assert len(fake.requests) == 2
     written = json.loads((artifacts / poststeps.PLAN_ADVISORY_FILE).read_text())
     assert written == advisory
-    assert written["coverage"]["flagged"] == [{"index": 1, "requirement": "keep the header accessible"}]
+    assert written["coverage"]["flagged"] == [
+        {"index": 1, "requirement": "keep the header accessible", "coverage": "none"}]
     assert written["duplicate"]["ref"] == "swarm/sort" and written["hold_for_human"] is True
     assert (artifacts / "plan.json").read_bytes() == before
     # §5.4: in-flight lanes go as titles and files; never an author.
     assert "someone@example.com" not in json.dumps(fake.requests)
+
+
+def test_j2_records_a_weakly_covered_requirement_as_weak(tmp_path):
+    artifacts, context = _planner(tmp_path, lanes=False)
+
+    def answer(name, q, state):
+        return _choice(list(q["criteria"]), "sort-key", 0.9 if name == "r0" else 0.3)
+    advisory = poststeps.plan_post_step(_judge(tmp_path, FakeJev(answer)), artifacts, context)
+    assert advisory["coverage"]["flagged"] == [
+        {"index": 1, "requirement": "keep the header accessible", "coverage": "weak"}]
 
 
 def test_j5_under_085_does_not_hold(tmp_path):

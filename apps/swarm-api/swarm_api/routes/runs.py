@@ -221,7 +221,9 @@ def jev_holds_for_human(run: IssueRun, advisory: dict | None) -> bool:
 #: text bounded: the artifact is the planner's output, and a reader renders
 #: it as text. A flagged requirement's `coverage` is `weak` when the artifact
 #: says so and otherwise `none` -- J2 flags a requirement no step covers at
-#: p >= 0.5 (`agent_worker.judge.shapes.read_plan_coverage`).
+#: p >= 0.5, and the worker records `none` (no step) or `weak` (a step under
+#: p 0.5; `agent_worker.judge.shapes.read_plan_coverage`). An artifact written
+#: before the worker recorded it has no `coverage` and is served as `none`.
 MAX_ADVISORY_TEXT = 500
 MAX_ADVISORY_FLAGS = 50
 _DUPLICATE_ISSUE_REF = re.compile(r"^([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})#([1-9][0-9]{0,9})$")
