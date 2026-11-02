@@ -147,6 +147,22 @@ records are the authority on what was sent.
 * **Never swarm-api.** swarm-api reads `plan-advisory.json` (the J2/J5
   result) and never holds a Jev client.
 
+**Which verdict files J3 reads** (owner, 2 November 2026). A review step's
+verdict is not always one `verdict.json` with a `findings` list: the first
+experiment batch's reviews wrote `code-verdict.json` and `ui-verdict.json`
+with `blockers`, `majors` and `minors`, and no finding carried `p_real`.
+`poststeps.review_post_step` therefore reads every declared output named
+`*verdict.json` and every `*verdict.json` the step wrote, takes a finding from
+any of the four lists (a string or an object, its text from `summary` or the
+briefs' `problem`), and asks about blockers before majors and minors under the
+same five-call cap, so it spends no more of the task's eight calls than before.
+Each finding is sent through `shapes.j3_finding` and the client's sanitizer
+like any other; the answer goes onto it as `p_real` and nothing else in the
+file changes, `verdict` least of all. The step's summary (`jev.review`) names
+how many findings each file had and how many were scored, and names every file
+it could not read, which is left byte for byte. One failed call still leaves
+every file as the review wrote it.
+
 ## Which key
 
 Chosen by the workspace's judgment backend (`judge.settings.resolve_backend`):
