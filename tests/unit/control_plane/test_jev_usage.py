@@ -271,3 +271,29 @@ def test_the_rate_setting_has_no_default_and_refuses_a_bad_value(client, seeded)
                          json={"jev_token_rates": {}})
     assert cleared.status_code == 200
     assert cleared.json()["jev_token_rates"] == {}
+
+
+def test_outcomes_never_recorded_are_null_not_zero(client, seeded):
+    body = read(client)
+    oct20 = day_of(body, "2026-10-20")
+    # a row with no split recorded no outcome: not "0 ok, 0 failed"
+    assert oct20["kinds"][0]["outcomes"] is None
+    assert oct20["outcomes"] is None
+    # the total counts what was recorded and says how many calls were not
+    outcomes = body["total"]["outcomes"]
+    assert (outcomes["ok"], outcomes["failed"], outcomes["skipped"]) == (4, 1, 3)
+    assert outcomes["unrecorded"] == 2
+    j4 = kind_of(day_of(body, "2026-11-02"), "J4")
+    assert j4["outcomes"]["unrecorded"] == 0
+
+
+def test_a_kind_without_outcomes_counts_its_calls_unrecorded():
+    rows = [UsageRow({"kind": "attempt", "tenant_id": "eng", "settled_at": NOW, "by_kind": {
+        "J1": {"calls": 3, "input_tokens": 30},
+        "J2": {"calls": 1, "input_tokens": 10, "outcomes": {"ok": 1}}}})]
+    body = summarise("eng", rows, now=NOW, rates={"input": None, "output": None},
+                     month_used_tokens=0, cap_tokens=None)
+    day = body["days"][0]
+    assert kind_of(day, "J1")["outcomes"] is None
+    assert kind_of(day, "J2")["outcomes"]["unrecorded"] == 0
+    assert (day["outcomes"]["ok"], day["outcomes"]["unrecorded"]) == (1, 3)

@@ -46,7 +46,22 @@ describe('Capacity › Jev usage', () => {
     render(<JevUsageBody usage={usage()} />)
     expect(screen.getByText('2 ok · 0 failed · 2 skipped (oversize 2)')).toBeTruthy()
     expect(screen.getByText('1 ok · 1 failed · 1 skipped (budget_calls 1)')).toBeTruthy()
-    expect(outcomeText(usage().total.outcomes)).toBe('3 ok · 1 failed · 3 skipped (budget_calls 1, oversize 2)')
+    expect(outcomeText({ ...usage().total.outcomes!, unrecorded: 0 })).toBe(
+      '3 ok · 1 failed · 3 skipped (budget_calls 1, oversize 2)',
+    )
+  })
+
+  it('shows outcomes never recorded as a dash, and counts them in the total', () => {
+    const u = usage()
+    expect(u.days[1]?.kinds[0]?.outcomes).toBeNull()
+    render(<JevUsageBody usage={u} />)
+    const table = screen.getByRole('table', { name: 'Jev usage by day and kind' })
+    const unsplit = within(table).getAllByRole('row').slice(1)[2]!
+    expect(within(unsplit).getByRole('img', { name: 'outcomes not recorded' })).toBeTruthy()
+    expect(unsplit.textContent).not.toMatch(/0 ok/)
+    expect(outcomeText(u.total.outcomes!)).toBe(
+      '3 ok · 1 failed · 3 skipped (budget_calls 1, oversize 2) · 2 not recorded',
+    )
   })
 
   it('leaves dollars blank, never $0, while no rate is set', () => {

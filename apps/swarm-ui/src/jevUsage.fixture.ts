@@ -1,13 +1,15 @@
 // JEV-USAGE-PAGE (part of #2688): `GET /v1/jev-usage` as swarm-api serves it
 // (`swarm_api.jevusage.summarise`), for the dev console and the page's test.
 // No rate is set, so every `usd` is null; one day's record is a row with no
-// per-kind split, and one call was skipped for the per-task call limit.
+// per-kind split, whose outcomes were never recorded (null, not zero), and one
+// call was skipped for the per-task call limit.
 
-const outcomes = (ok: number, failed = 0, skipped: Record<string, number> = {}) => ({
+const outcomes = (ok: number, failed = 0, skipped: Record<string, number> = {}, unrecorded = 0) => ({
   ok,
   failed,
   skipped: Object.values(skipped).reduce((a, b) => a + b, 0),
   skipped_by_reason: skipped,
+  unrecorded,
 })
 
 export function fixtureJevUsage(): Record<string, unknown> {
@@ -49,7 +51,7 @@ export function fixtureJevUsage(): Record<string, unknown> {
         calls: 2,
         input_tokens: 4_000,
         output_tokens: null,
-        outcomes: outcomes(0),
+        outcomes: null,
         usd: null,
         kinds: [
           {
@@ -58,7 +60,7 @@ export function fixtureJevUsage(): Record<string, unknown> {
             calls: 2,
             input_tokens: 4_000,
             output_tokens: null,
-            outcomes: outcomes(0),
+            outcomes: null,
             usd: null,
           },
         ],
@@ -68,7 +70,7 @@ export function fixtureJevUsage(): Record<string, unknown> {
       calls: 6,
       input_tokens: 15_000,
       output_tokens: 150,
-      outcomes: outcomes(3, 1, { budget_calls: 1, oversize: 2 }),
+      outcomes: outcomes(3, 1, { budget_calls: 1, oversize: 2 }, 2),
       usd: null,
       by_kind: [],
     },
