@@ -174,6 +174,69 @@ def test_an_outage_past_the_budget_raises_service_unavailable():
     assert sum(clock.slept) <= 10 and clock.slept[:3] == [1.0, 2.0, 4.0]
 
 
+def _bare_404() -> ChildApiError:
+    """What `ChildApi.call` raises for a 404 whose body is not swarm-api's
+    refusal shape: FastAPI's router `{"detail": "Not Found"}`, or a page from
+    in front of the service, has no `code`, so the transport names it
+    `http_404` with no message (#3041)."""
+    return ChildApiError(404, "http_404", "", retryable=False)
+
+
+def test_a_bare_404_is_retried_like_an_outage_and_the_attempt_goes_on():
+    # #3041: a running task failed on a 404 that carried no code while a
+    # release rolled out. A 404 swarm-api did not name is the edge or the
+    # router, not a refusal: retried with the same bytes within the budget.
+    clock = Clock()
+    transport = Transport(_bare_404(), _bare_404(), {"ok": True, "task": {}})
+    calls, _key = _opened(Transport(), clock)
+    calls._api = transport
+
+    answer = calls.get("poll", {"provider": "anthropic"}, deadline_seconds=60)
+
+    assert answer == {"ok": True, "task": {}}
+    assert len(transport.sent) == 3 and clock.slept == [1.0, 2.0]
+    assert len({s["path"] for s in transport.sent}) == 1
+
+
+def test_a_bare_404_past_the_budget_is_an_outage_not_a_refusal():
+    clock = Clock()
+    transport = Transport(_bare_404())
+    calls, _key = _opened(Transport(), clock)
+    calls._api = transport
+
+    with pytest.raises(core_exceptions.ServiceUnavailable) as caught:
+        calls.post("heartbeat", {}, deadline_seconds=10)
+
+    assert sum(clock.slept) <= 10 and clock.slept[:3] == [1.0, 2.0, 4.0]
+    assert "http_404" in str(caught.value)
+
+
+@pytest.mark.parametrize("code", ["not_found", "attempt_not_found", "task_not_found"])
+def test_a_404_swarm_api_names_stays_final(code):
+    transport = Transport(ChildApiError(404, code, "no such attempt", retryable=False))
+    calls, _key = _opened(Transport())
+    calls._api = transport
+
+    with pytest.raises(StateRefused) as caught:
+        calls.post("heartbeat", {}, deadline_seconds=60)
+
+    assert len(transport.sent) == 1
+    assert caught.value.status == 404 and caught.value.code == code
+
+
+def test_a_409_fence_is_still_not_retried_after_a_bare_404():
+    clock = Clock()
+    fenced = ChildApiError(409, "attempt_fenced", "stale generation", retryable=False)
+    transport = Transport(_bare_404(), fenced)
+    calls, _key = _opened(Transport(), clock)
+    calls._api = transport
+
+    with pytest.raises(FencedWriteRefused):
+        calls.post("checkpoint", {"checkpoint_id": "c1"}, deadline_seconds=60)
+
+    assert len(transport.sent) == 2 and clock.slept == [1.0]
+
+
 @pytest.mark.parametrize("code", ["attempt_fenced", "child_key_taken", "child_key_window_closed"])
 def test_a_409_fence_is_a_refused_write_and_is_not_retried(code):
     transport = Transport(ChildApiError(409, code, "stale generation", retryable=False))
