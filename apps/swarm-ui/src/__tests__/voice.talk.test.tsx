@@ -26,6 +26,14 @@
 // MUTATIONS: draw a card whose kind the catalogue lacks; append an upsert of
 // a known card id; accept an older version; drop the sequence check; reopen
 // the stream without `after`.
+//
+// THE CARDS' STYLESHEET: every `vt-card*` class the card markup carries has a
+// rule in styles/talk-pane.css, and the rules draw from console tokens only.
+//
+// MUTATIONS: drop a card rule; give a card rule a literal colour.
+
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -443,5 +451,26 @@ describe('the cards beside the Talk pane', () => {
     render(<TalkPane />)
     const region = screen.getByRole('region', { name: 'Cards' })
     expect(drawn(region).map((d) => d.split(':')[0])).toEqual(LISTED)
+  })
+})
+
+describe('the cards are seated by talk-pane.css', () => {
+  const voice = join(__dirname, '..', 'voice')
+  const markup = ['CardList.tsx', 'cards/WorkCards.tsx', 'cards/InputCards.tsx']
+    .map((f) => readFileSync(join(voice, f), 'utf8'))
+    .join('\n')
+  const css = readFileSync(join(__dirname, '..', 'styles', 'talk-pane.css'), 'utf8')
+
+  it('every vt-card class the markup carries has a rule', () => {
+    const used = [...new Set([...markup.matchAll(/className="[^"]*?\b(vt-card[a-z-]*)/g)].map((m) => m[1]))].sort()
+    expect(used.length).toBeGreaterThanOrEqual(12)
+    const missing = used.filter((c) => !new RegExp(`\\.${c}(?![a-z-])`).test(css))
+    expect(missing).toEqual([])
+  })
+
+  it('the card rules use console tokens, never a literal colour', () => {
+    const rules = css.split('\n').filter((l) => l.includes('.vt-card'))
+    expect(rules.length).toBeGreaterThan(0)
+    for (const r of rules) expect(r).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i)
   })
 })
