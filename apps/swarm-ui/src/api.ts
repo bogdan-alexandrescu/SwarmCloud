@@ -18,6 +18,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
+import { summaryTaskById, type StepTaskSummary } from './stepviews'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
 import { noteProfile, revisionAfterZoneSaves } from './timezone'
@@ -218,17 +219,17 @@ export async function loadTasks(
 }
 
 /**
- * Workflows plus the task documents their steps point at.
+ * Workflows plus the step tasks' states, from ONE read.
  *
- * Two requests, because `GET /v1/workflows` returns steps with NO state
- * (codec.py:354-365) -- a step's state only exists on the task it created. The
- * list endpoint does not join for us the way `GET /v1/workflows/{id}` does, so
- * the join happens here, once.
+ * `GET /v1/workflows?view=summary` serves, on each step, what the board draws
+ * of its task (`task_summary`, #2993): its state, title and unit, its times,
+ * its cost and time over every attempt, and its error's first line. The join
+ * is built from those blocks (`summaryTaskById`, stepviews.ts), so the board
+ * no longer reads `GET /v1/tasks?limit=200` (328 KB and 3.8 s in the owner's
+ * browser, 2026-11-01) nor any workflow or attempts by id.
  *
- * The second request is allowed to fail on its own. When it does the board
- * still renders -- the DAG shape, the dependencies and the step names are all
- * in the first response -- but `taskById` is null and every node says its state
- * could not be read. That is the point: a failed join must not look like a
+ * A step whose task the route did not read carries no block, stays out of
+ * `taskById` and reads `state unknown`: a missing join must not look like a
  * workflow full of idle steps.
  */
 export interface WorkflowBoard {
@@ -254,47 +255,26 @@ export interface WorkflowBoard {
  */
 export const WORKFLOW_LIST_VIEW = 'view=summary'
 
-export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
+export async function loadWorkflowBoard(limit: number = 100): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
-  const [wf, tasks] = await Promise.all([
-    read<WorkflowPage>(route('/v1/workflows?limit=100', {}, WORKFLOW_LIST_VIEW), (d) => d.workflows.length === 0),
-    read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
-  ])
-
-  // The workflow read decides whether there is a screen at all.
-  if (wf.status === 'loading' || wf.status === 'error') return wf
-  if (wf.status === 'stale') {
-    return { status: 'stale', data: emptyBoard(wf.data.workflows), fetchedAt: wf.fetchedAt, error: wf.error }
+  // One registry route, `/v1/workflows`, whatever the page size: the workflow
+  // page asks for fewer, the workflows it draws around itself.
+  const wf = await read<WorkflowPage>(
+    limit === 100
+      ? route('/v1/workflows?limit=100', {}, WORKFLOW_LIST_VIEW)
+      : route('/v1/workflows', {}, `limit=${limit}&${WORKFLOW_LIST_VIEW}`),
+    (d) => d.workflows.length === 0,
+  )
+  if (wf.status === 'loading' || wf.status === 'error' || wf.status === 'empty') return wf
+  const data: WorkflowBoard = {
+    workflows: wf.data.workflows,
+    taskById: summaryTaskById(wf.data.workflows),
+    statesDetail: null,
+    nextPageToken: wf.data.next_page_token ?? null,
   }
-  if (wf.status === 'empty') return wf
-
-  // A task read that did not produce rows is not the same as one that failed.
-  // `empty` is a real answer -- no tasks exist -- so the join is complete and
-  // every step is legitimately "not started". Only a FAILURE leaves states
-  // unknown, and only that sets statesDetail.
-  if (tasks.status === 'error' || tasks.status === 'stale') {
-    return {
-      status: 'ok',
-      fetchedAt: wf.fetchedAt,
-      serverAt: wf.serverAt,
-      data: {
-        workflows: wf.data.workflows,
-        taskById: null,
-        statesDetail: tasks.error.message,
-        nextPageToken: wf.data.next_page_token ?? null,
-      },
-    }
-  }
-
-  const taskById = new Map<string, Task>()
-  if (tasks.status === 'ok') for (const t of tasks.data.tasks) taskById.set(t.id, t)
-  return {
-    status: 'ok',
-    fetchedAt: wf.fetchedAt,
-    serverAt: wf.serverAt,
-    data: { workflows: wf.data.workflows, taskById, statesDetail: null, nextPageToken: wf.data.next_page_token ?? null },
-  }
+  if (wf.status === 'stale') return { status: 'stale', data, fetchedAt: wf.fetchedAt, error: wf.error }
+  return { status: 'ok', fetchedAt: wf.fetchedAt, serverAt: wf.serverAt, data }
 }
 
 /**
@@ -302,8 +282,8 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
  * The list read only its newest 100 and offered no way past them, while its
  * counts and its "oldest first" read as the tenant's whole history:
  * `Failed 15` against 52 failed workflows. `token` is the previous read's
- * `next_page_token`. No task join: the list reads each older row's steps by
- * id as it scrolls in (`useRowReads`), as it already does for the first 100.
+ * `next_page_token`. Each older row's steps carry their task blocks too, and
+ * the list joins them as it joins the first 100 (`summaryTaskById`).
  */
 export async function loadOlderWorkflows(token: string): Promise<Result<WorkflowPage>> {
   if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { workflows: [], next_page_token: null } }
@@ -313,15 +293,11 @@ export async function loadOlderWorkflows(token: string): Promise<Result<Workflow
   )
 }
 
-function emptyBoard(workflows: Workflow[]): WorkflowBoard {
-  return { workflows, taskById: null, statesDetail: 'The agent read did not complete.' }
-}
-
 /**
  * The workflow LIST alone -- no join, for the landing screen.
  *
- * `loadWorkflowBoard` above exists to draw the graph, so it pays for a second
- * request to learn each step's state. Overview does not draw a graph: it asks
+ * `loadWorkflowBoard` above exists to draw the graph, so it joins each step's
+ * task block into a task map. Overview does not draw a graph: it asks
  * whether anything has stopped moving, and `GET /v1/workflows` already answers
  * that without help. Every row carries `rollup.counts`, which the route derived
  * server-side from the step tasks it read (routes/workflows.py:64-84), so the
@@ -5674,18 +5650,55 @@ async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   // development instead of only in production.
   noteFixtureProbe(route('/v1/admin/dispatch'), 120, false)
 
-  // Reuse the task fixture so the join is a REAL join: if a step_id or task_id
-  // stops matching, the fixture shows "state unknown" exactly as production
-  // would, instead of quietly carrying a state of its own.
-  const tasks = await fixtureTasks()
-  const taskById = new Map<string, Task>()
-  if (tasks.status === 'ok') for (const t of tasks.data.tasks) taskById.set(t.id, t)
-
+  // ONE READ, AS IN PRODUCTION: each step carries its task's block, built off
+  // the task fixture, and the join is built from those blocks by the same
+  // `summaryTaskById` -- so a step_id or task_id that stops matching shows
+  // "state unknown" exactly as production would.
+  const tasks = [...fixtureTasksMade, ...fixtureTaskRows()]
+  const workflows = withTaskSummaries(fixtureWorkflowRows(tasks), tasks)
   return {
     status: 'ok',
     fetchedAt: Date.now(),
-    data: { taskById, statesDetail: null, workflows: fixtureWorkflowRows(tasks.status === 'ok' ? tasks.data.tasks : undefined) },
+    data: { taskById: summaryTaskById(workflows), statesDetail: null, workflows },
   }
+}
+
+/** Each fixture step's `task_summary`, as `codec.step_task_summary` serves it off the step's task. */
+function withTaskSummaries(workflows: Workflow[], tasks: readonly Task[]): Workflow[] {
+  const byId = new Map(tasks.map((t) => [t.id, t]))
+  return workflows.map((w) => ({
+    ...w,
+    steps: w.steps.map((s) => {
+      const t = s.task_id ? byId.get(s.task_id) : undefined
+      if (t === undefined) return { ...s, task_summary: null }
+      const meta = t.metadata ?? {}
+      // THE TOTALS OVER THE FIXTURE'S OWN ATTEMPTS (`fixtureAttemptRows`,
+      // newest first), as `attempt_totals.totals_for` sums the documents: the
+      // same rows a step's page reads, so the list and the page agree.
+      const rows = fixtureAttemptRows(t)
+      const costs = rows.map((a) => a.cost_usd).filter((c): c is number => typeof c === 'number' && Number.isFinite(c))
+      const last = rows[0]?.cost_usd
+      const task_summary: StepTaskSummary = {
+        state: t.state,
+        title: typeof meta.title === 'string' ? meta.title : null,
+        unit: typeof meta.unit === 'string' ? meta.unit : null,
+        started_at: t.started_at,
+        completed_at: t.completed_at,
+        attempts: rows.length,
+        attempts_with_cost: costs.length,
+        cost_usd_total: costs.length > 0 ? costs.reduce((a, b) => a + b, 0) : null,
+        cost_incomplete: costs.length < rows.length,
+        duration_s_total: null,
+        duration_incomplete: rows.length > 0,
+        first_started_at: t.started_at,
+        last_attempt_cost_usd: typeof last === 'number' && Number.isFinite(last) ? last : null,
+        last_attempt_duration_s: null,
+        attempts_read: 'ok',
+        last_error_line: t.last_error ? (t.last_error.split('\n')[0] ?? null) : null,
+      }
+      return { ...s, task_summary }
+    }),
+  }))
 }
 
 /**
