@@ -161,15 +161,17 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import io
 import json
 import logging
+import os
 import statistics
 import struct
 import time
 import zlib
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from .capture import Frame
@@ -227,6 +229,44 @@ _SCROLL_CANDIDATES = 3
 _SCROLL_EDGE = TILE
 #: Tight's Basic rectangle under 12 bytes of pixels is sent as they are.
 _TIGHT_MIN_TO_COMPRESS = 12
+_TIGHT_JPEG = 0x90
+
+#: ADAPTIVE JPEG (LIVE-STREAM-SPEED, part of #2688): OFF unless this is set.
+#: The owner asked for a sharp picture (STREAM-SMOOTH, the ENCODINGS
+#: paragraph above), so lossless Tight stays the default; the measured case
+#: for JPEG while the page moves is in the LIVE-STREAM-SPEED pull request and
+#: its question to the owner. Set to a JPEG quality, 1-95, to turn it on: an
+#: update whose changes cover at least `JPEG_MOTION_SHARE` of the frame -- a
+#: scroll's new rows, an animation, a video, a page load -- sends its
+#: rectangles of at least `JPEG_MIN_PIXELS` as Tight JPEG; a caret or a typed
+#: character stays lossless. Once the frame has not changed for
+#: `JPEG_SETTLE_SECONDS` after a lossy update, the whole frame is sent again
+#: losslessly, so a page that stops moving is pixel for pixel what Chromium drew.
+JPEG_QUALITY_ENV = "SWARM_LIVE_JPEG_QUALITY"
+JPEG_MOTION_SHARE = 0.05
+JPEG_MIN_PIXELS = TILE * TILE
+JPEG_SETTLE_SECONDS = 0.4
+
+
+def jpeg_quality_from_env(environ: Any = None) -> int:
+    """The JPEG quality `JPEG_QUALITY_ENV` names, 1-95; 0 (lossless only) when unset or not a number."""
+    raw = (os.environ if environ is None else environ).get(JPEG_QUALITY_ENV, "")
+    try:
+        quality = int(str(raw).strip() or "0")
+    except ValueError:
+        return 0
+    return max(0, min(95, quality))
+
+
+def pillow_jpeg(rgb: bytes, width: int, height: int, quality: int) -> bytes | None:
+    """A baseline JPEG of packed RGB, through Pillow (in the browser image); None without it."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    out = io.BytesIO()
+    Image.frombytes("RGB", (width, height), rgb).save(out, "JPEG", quality=quality)
+    return out.getvalue()
 
 #: Where every connection's diff and encode run: off the event loop (module
 #: docstring). A few threads, since a viewer and the recorder encode at once.
@@ -888,6 +928,8 @@ class _Job:
     incremental: bool
     resend: bool
     new_streams: bool
+    #: The JPEG quality for this update's moving rectangles; 0 is lossless only.
+    jpeg: int = 0
 
 
 class RfbSession:
@@ -897,8 +939,16 @@ class RfbSession:
                  hub: FrameHub, control: ControlState, injector: Injector, *,
                  max_events_per_second: int = MAX_INPUT_EVENTS_PER_SECOND,
                  max_motion_per_second: int = MAX_MOTION_PER_SECOND,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 jpeg_quality: int | None = None,
+                 jpeg_encoder: Callable[[bytes, int, int, int], bytes | None] = pillow_jpeg) -> None:
         self.conn_id = conn_id
+        #: Adaptive JPEG (`JPEG_QUALITY_ENV`): 0, today's lossless-only, unless switched on.
+        self._jpeg_quality = jpeg_quality_from_env() if jpeg_quality is None else jpeg_quality
+        self._jpeg_encoder = jpeg_encoder
+        #: The viewer holds rectangles sent as JPEG: refined losslessly once the frame settles.
+        self._lossy = False
+        self._jpeg_sent = False  # set by `_encode_rect` while an update renders
         self._reader = reader
         self._writer = writer
         self._hub = hub
@@ -1200,7 +1250,20 @@ class RfbSession:
 
     async def _write_loop(self) -> None:
         while True:
-            await self._wake.wait()
+            if self._lossy and self._pending is not None:
+                # Adaptive JPEG: the frame stood still for JPEG_SETTLE_SECONDS
+                # after a lossy update, so the viewer is sent the whole frame
+                # losslessly, as if it had asked for a full update.
+                try:
+                    async with asyncio.timeout(JPEG_SETTLE_SECONDS):
+                        await self._wake.wait()
+                except TimeoutError:
+                    if self._pending is not None and self._hub.version == self._sent_version:
+                        self._pending = None
+                        await self._send_update(False, lossless=True)
+                        continue
+            else:
+                await self._wake.wait()
             self._wake.clear()
             if self._pending is None:
                 continue
@@ -1210,7 +1273,7 @@ class RfbSession:
             self._pending = None
             await self._send_update(incremental)
 
-    async def _send_update(self, incremental: bool) -> None:
+    async def _send_update(self, incremental: bool, *, lossless: bool = False) -> None:
         current = self._hub.current
         frame = current.frame
         self._sent_version = self._hub.version
@@ -1235,7 +1298,8 @@ class RfbSession:
                    incremental=incremental,
                    # This viewer's own copy gets the pointer (module docstring).
                    pointer=None if self._local_pointer() else self._hub.pointer.position,
-                   resend=self._resend, new_streams=self._new_streams)
+                   resend=self._resend, new_streams=self._new_streams,
+                   jpeg=0 if lossless else self._jpeg_quality)
         self._resend = self._new_streams = False
         loop = asyncio.get_running_loop()
         rects = await loop.run_in_executor(_ENCODE_POOL, self._render, job)
@@ -1323,10 +1387,22 @@ class RfbSession:
                 out.append(struct.pack(">HHHHiHH", 0, top, width, bottom - top,
                                        ENCODING_COPY_RECT, 0, top + dy))
             rects = changed_rects(_scrolled(old, width, dy, runs), pixels, width, height)
+        if job.jpeg and job.encoding == ENCODING_TIGHT:
+            moved = sum(w * h for _x, _y, w, h in rects)
+            if moved < JPEG_MOTION_SHARE * width * height:
+                job = replace(job, jpeg=0)
+        else:
+            job = replace(job, jpeg=0)
+        # A full update replaces every pixel the viewer holds; an incremental
+        # one leaves what an earlier JPEG drew where nothing changed.
+        lossy, self._jpeg_sent = self._lossy and job.incremental, False
         if job.encoding == ENCODING_TIGHT:
-            return out + [piece for x, y, w, h in rects
-                          for piece in self._tight_pieces(job, native, pixels, width, x, y, w, h)]
-        return out + [self._encode_rect(job, native, pixels, width, *rect) for rect in rects]
+            out += [piece for x, y, w, h in rects
+                    for piece in self._tight_pieces(job, native, pixels, width, x, y, w, h)]
+        else:
+            out += [self._encode_rect(job, native, pixels, width, *rect) for rect in rects]
+        self._lossy = lossy or self._jpeg_sent
+        return out
 
     def _tight_pieces(self, job: _Job, native: _Format, pixels: bytes, width: int,
                       x: int, y: int, w: int, h: int) -> list[bytes]:
@@ -1366,7 +1442,13 @@ class RfbSession:
             data = b"".join(pixels[at:at + w * 4] for at in range(y * row + x * 4, (y + h) * row, row))
         header = struct.pack(">HHHHi", x, y, w, h, job.encoding)
         if job.encoding == ENCODING_TIGHT:
-            return header + self._tight_rect(_rgb(data, native), w * h, job.level)
+            rgb = _rgb(data, native)
+            if job.jpeg and w * h >= JPEG_MIN_PIXELS:
+                jpeg = self._jpeg_encoder(rgb, w, h, job.jpeg)
+                if jpeg is not None:
+                    self._jpeg_sent = True
+                    return header + bytes((_TIGHT_JPEG,)) + _compact_length(len(jpeg)) + jpeg
+            return header + self._tight_rect(rgb, w * h, job.level)
         data = _reorder(data, native, job.target)
         if job.encoding == ENCODING_ZLIB:
             if self._zlib is None:
