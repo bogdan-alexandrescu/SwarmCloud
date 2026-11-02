@@ -226,6 +226,19 @@ def test_status_says_whether_a_sign_in_is_stored_and_when_never_a_value(client, 
     assert client.get("/v1/voice/chatgpt", headers=auth_header("bob")).json()["stored"] is False
 
 
+def test_the_newest_stored_version_is_the_reference_swarm_voice_takes(client, db, writer, tokens):
+    service = vsi.ChatGPTSignIn(db, writer, tokens, now=lambda: None)
+    assert service.stored_version("alice@example.com") is None
+
+    _signed_in(client)
+    _signed_in(client)
+
+    ref = service.stored_version("alice@example.com")
+    assert ref == f"projects/{PROJECT}/secrets/{_secret('alice@example.com')}/versions/2"
+    assert cred.check_scope(ref, person="alice@example.com", project=PROJECT).version == 2
+    assert service.stored_version("bob@example.com") is None
+
+
 def test_signing_in_again_adds_a_second_version(client, writer):
     _signed_in(client)
     _, _, again = _signed_in(client)

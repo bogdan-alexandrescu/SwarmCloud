@@ -270,6 +270,13 @@ class ChatGPTSignIn:
         record = self._keys().status(tenant_id_for_user(person), PROVIDER)
         return {"stored": bool(record["set"]), "stored_at": record["set_at"]}
 
+    def stored_version(self, person: str) -> str | None:
+        """The newest stored version's reference (`projects/<p>/secrets/<s>/versions/<n>`),
+        what swarm-voice's start call takes as `credential`; None when none is stored."""
+        record = self._keys().status(tenant_id_for_user(person), PROVIDER)
+        version = record["version"] if record["set"] else None
+        return version if isinstance(version, str) and version else None
+
     def begin(self, person: str) -> dict[str, Any]:
         verifier = new_verifier()
         state = new_state()
