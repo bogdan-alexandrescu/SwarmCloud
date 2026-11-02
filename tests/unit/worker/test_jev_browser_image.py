@@ -63,6 +63,12 @@ INSTALL_ROOT = "/opt/swarm/jev-browser"
 SERVER = f"{INSTALL_ROOT}/node_modules/jev-browser/bin/jev-browser-mcp.mjs"
 ENDPOINT = "http://127.0.0.1:9222"
 REFUSAL = "jev-browser here drives only the live browser the person watches"
+#: The outbound filter (lane jev-outbound-redaction, owner decision 2026-11-02):
+#: the base image's gate launcher, which every image built FROM it holds, is
+#: imported before the server so every request body is filtered first.
+GATE = "/opt/swarm/jev-gates/bin/swarm-jev-gate.mjs"
+REPO_GATE = REPO / "images" / "agent-runtime-base" / "jev-gates" / "bin" / "swarm-jev-gate.mjs"
+REDACTION_PYTHON = "/opt/venv/bin/python"
 
 
 def _instructions(text: str) -> list[str]:
@@ -205,8 +211,10 @@ def wrapper(tmp_path) -> Path:
     text = WRAPPER.read_text()
     assert 'NODE="/usr/local/bin/node"' in text
     assert f'SERVER="{SERVER}"' in text
+    assert f'GATE="{GATE}"' in text
     copy = tmp_path / "jev-browser-mcp"
-    copy.write_text(text.replace('NODE="/usr/local/bin/node"', f'NODE="{node}"'))
+    copy.write_text(text.replace('NODE="/usr/local/bin/node"', f'NODE="{node}"')
+                    .replace(f'GATE="{GATE}"', f'GATE="{REPO_GATE}"'))
     copy.chmod(0o755)
     return copy
 
@@ -216,6 +224,11 @@ def _wrap(wrapper: Path, *argv: str, env: dict[str, str] | None = None) -> subpr
             if not k.startswith(("JEV_", "SWARM_CDP", "SWARM_JEV", "TYPESAFE", "PLAYWRIGHT_SKIP"))}
     return subprocess.run(["bash", str(wrapper), *argv], env={**base, **(env or {})},
                           capture_output=True, text=True, timeout=30, check=False)
+
+
+def _filtered(gate: Path | str) -> list[str]:
+    """The node arguments that install the outbound filter before the server runs."""
+    return ["--import", f"data:text/javascript,import{{installBrowserFilter}}from'file://{gate}';installBrowserFilter();"]
 
 
 def _passed(done: subprocess.CompletedProcess) -> dict[str, Any]:
@@ -234,7 +247,7 @@ def test_without_the_live_browser_the_wrapper_refuses_to_start(wrapper):
 def test_the_attach_endpoint_is_always_the_live_browsers(wrapper):
     seen = _passed(_wrap(wrapper, env={"SWARM_CDP_ENDPOINT": ENDPOINT,
                                        "JEV_BROWSER_CDP_ENDPOINT": "http://127.0.0.1:9333"}))
-    assert seen["argv"] == [SERVER]
+    assert seen["argv"] == [*_filtered(REPO_GATE), SERVER]
     # With jev's client tag, which the gate attributes and strips (BSTATUS-API).
     assert seen["env"]["JEV_BROWSER_CDP_ENDPOINT"] == ENDPOINT + "/client/jev"
 
@@ -245,7 +258,7 @@ def test_the_wrapper_drops_what_would_launch_or_redirect_and_forbids_downloads(w
         "SWARM_CDP_ENDPOINT": ENDPOINT, "JEV_BROWSER_PROFILE": "/tmp/profile", "JEV_BROWSER_HEADED": "1",
         "JEV_API_URL": "https://elsewhere.invalid/v1", "JEV_MODEL": "other", "TYPESAFE_API_KEY": key,
     }))
-    assert seen["argv"] == [SERVER, "--extra"]
+    assert seen["argv"] == [*_filtered(REPO_GATE), SERVER, "--extra"]
     env = seen["env"]
     for name in ("JEV_BROWSER_PROFILE", "JEV_BROWSER_HEADED", "JEV_API_URL", "JEV_MODEL"):
         assert env[name] is None, name
@@ -326,6 +339,22 @@ def test_the_wrapper_passes_the_backend_compat_switch_through(wrapper):
     seen = _passed(_wrap(wrapper, env={"SWARM_CDP_ENDPOINT": ENDPOINT, "JEV_API_COMPAT": "internal"}))
     assert seen["env"]["JEV_API_COMPAT"] == "internal"
     assert "JEV_API_COMPAT" in WRAPPER.read_text()  # and the wrapper says why
+
+
+def test_without_the_outbound_filter_the_wrapper_refuses_to_start(wrapper, tmp_path):
+    # MUTATION: exec the server without `--import` of the filter, or when the
+    # launcher is missing, and page text leaves with no SwarmCloud redaction.
+    copy = tmp_path / "no-filter"
+    copy.write_text(wrapper.read_text().replace(f'GATE="{REPO_GATE}"', f'GATE="{tmp_path / "absent.mjs"}"'))
+    done = _wrap(copy, env={"SWARM_CDP_ENDPOINT": ENDPOINT})
+    assert done.returncode == 2 and "outbound filter" in done.stderr
+    assert done.stdout == ""  # the server never ran
+
+
+def test_the_wrapper_pins_the_images_redaction_python():
+    text = WRAPPER.read_text()
+    assert f'REDACTION_PYTHON="{REDACTION_PYTHON}"' in text
+    assert 'export SWARM_JEV_REDACTION_PYTHON="${REDACTION_PYTHON}"' in text
 
 
 def test_the_wrapper_is_a_house_script():
