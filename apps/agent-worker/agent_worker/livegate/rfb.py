@@ -54,10 +54,13 @@ ENCODINGS (STREAM-SMOOTH; part of #1030). The first of Tight, Zlib and Raw in
 the viewer's own order of preference. noVNC 1.4.0 offers Tight and never
 Zlib, so until this lane the console was sent Raw: 4 bytes a pixel, 5.2 MB per
 update of a scrolling Desktop page (measured with `livegate.bench`). The
-relay's recorder offers Zlib and Raw, and gets Zlib. Tight here is LOSSLESS,
-because the owner asked for a sharp picture: a one-colour rectangle is sent as
-Fill, anything else as Basic with the copy filter through zlib stream 0 --
-never JPEG, never PNG, whatever quality level the viewer names. zlib runs at
+relay's recorder offers Zlib and Raw, and gets Zlib. Tight here is LOSSLESS
+for a still page and for a small change, because the owner asked for a sharp
+picture: a one-colour rectangle is sent as Fill, anything else as Basic with
+the copy filter through zlib stream 0 -- never PNG, whatever quality level the
+viewer names. A page that MOVES is sent as Tight JPEG at `JPEG_QUALITY_DEFAULT`
+and refined losslessly once it settles (ADAPTIVE JPEG, below; the owner's
+pick of 2026-11-02, LIVE-STREAM-SPEED). zlib runs at
 the level the viewer names (the CompressLevel pseudo-encoding, which noVNC's
 `compressionLevel` sets) and at `ZLIB_LEVEL` for a viewer that names none;
 the benchmark in the pull request is why `ZLIB_LEVEL` is what it is. A resize
@@ -231,30 +234,35 @@ _SCROLL_EDGE = TILE
 _TIGHT_MIN_TO_COMPRESS = 12
 _TIGHT_JPEG = 0x90
 
-#: ADAPTIVE JPEG (LIVE-STREAM-SPEED, part of #2688): OFF unless this is set.
-#: The owner asked for a sharp picture (STREAM-SMOOTH, the ENCODINGS
-#: paragraph above), so lossless Tight stays the default; the measured case
-#: for JPEG while the page moves is in the LIVE-STREAM-SPEED pull request and
-#: its question to the owner. Set to a JPEG quality, 1-95, to turn it on: an
+#: ADAPTIVE JPEG (LIVE-STREAM-SPEED, part of #2688): ON, at quality 70.
+#: The owner chose it on 2026-11-02 (pull request #3035's question, option
+#: "Adaptive JPEG q70"), reversing STREAM-SMOOTH's lossless-only Tight for a
+#: page that moves: measured on a link of 8 Mbit/s, lossless fell to about 6
+#: frames a second and JPEG q70 held 10 (docs/design/live-browser.md). An
 #: update whose changes cover at least `JPEG_MOTION_SHARE` of the frame -- a
 #: scroll's new rows, an animation, a video, a page load -- sends its
 #: rectangles of at least `JPEG_MIN_PIXELS` as Tight JPEG; a caret or a typed
 #: character stays lossless. Once the frame has not changed for
 #: `JPEG_SETTLE_SECONDS` after a lossy update, the whole frame is sent again
-#: losslessly, so a page that stops moving is pixel for pixel what Chromium drew.
+#: losslessly, so a page that stops moving is pixel for pixel what Chromium
+#: drew. `JPEG_QUALITY_ENV` overrides the quality, 1-95; 0 there is
+#: lossless-only Tight, as before this lane.
 JPEG_QUALITY_ENV = "SWARM_LIVE_JPEG_QUALITY"
+#: 70: the quality the owner picked and the bench measured (0.46 MB a second
+#: against lossless's 1.79 MB on the moving 1440x987 page).
+JPEG_QUALITY_DEFAULT = 70
 JPEG_MOTION_SHARE = 0.05
 JPEG_MIN_PIXELS = TILE * TILE
 JPEG_SETTLE_SECONDS = 0.4
 
 
 def jpeg_quality_from_env(environ: Any = None) -> int:
-    """The JPEG quality `JPEG_QUALITY_ENV` names, 1-95; 0 (lossless only) when unset or not a number."""
-    raw = (os.environ if environ is None else environ).get(JPEG_QUALITY_ENV, "")
+    """The JPEG quality `JPEG_QUALITY_ENV` names, 0-95 (0 is lossless only); `JPEG_QUALITY_DEFAULT` when unset or not a number."""
+    raw = str((os.environ if environ is None else environ).get(JPEG_QUALITY_ENV, "")).strip()
     try:
-        quality = int(str(raw).strip() or "0")
+        quality = int(raw)
     except ValueError:
-        return 0
+        return JPEG_QUALITY_DEFAULT
     return max(0, min(95, quality))
 
 
@@ -943,7 +951,7 @@ class RfbSession:
                  jpeg_quality: int | None = None,
                  jpeg_encoder: Callable[[bytes, int, int, int], bytes | None] = pillow_jpeg) -> None:
         self.conn_id = conn_id
-        #: Adaptive JPEG (`JPEG_QUALITY_ENV`): 0, today's lossless-only, unless switched on.
+        #: Adaptive JPEG: `JPEG_QUALITY_DEFAULT` unless `JPEG_QUALITY_ENV` says otherwise.
         self._jpeg_quality = jpeg_quality_from_env() if jpeg_quality is None else jpeg_quality
         self._jpeg_encoder = jpeg_encoder
         #: The viewer holds rectangles sent as JPEG: refined losslessly once the frame settles.

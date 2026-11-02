@@ -1,9 +1,8 @@
-"""Adaptive JPEG in the gate's Tight encoder, behind a switch that is off (LIVE-STREAM-SPEED, part of #2688).
+"""Adaptive JPEG in the gate's Tight encoder, on at quality 70 (LIVE-STREAM-SPEED, part of #2688).
 
-The owner asked for a sharp picture (STREAM-SMOOTH), so the gate sends only
-lossless Tight, and that stays the default. MEASURED 2026-11-02 in the
-owner's Chrome: the live views moved at under one frame a second. With
-`SWARM_LIVE_JPEG_QUALITY` set, an update whose changes cover at least
+MEASURED 2026-11-02 in the owner's Chrome: the live views moved at under one
+frame a second, and the owner picked adaptive JPEG at q70 over STREAM-SMOOTH's
+lossless-only Tight. By default (`SWARM_LIVE_JPEG_QUALITY` unset), an update whose changes cover at least
 `JPEG_MOTION_SHARE` of the frame sends its large rectangles as Tight JPEG,
 a small change (a caret, a typed character) stays lossless, and once the
 frame stands still for `JPEG_SETTLE_SECONDS` the whole frame is sent again
@@ -13,7 +12,10 @@ The JPEG encoder is a fake: unit tests run without Pillow, and what is
 asserted is the gate's wire -- Tight's JPEG control byte, the compact length,
 the encoder's bytes -- and when it is chosen.
 
-MUTATIONS: default the quality to anything but 0 (1 fails); drop the motion
+`SWARM_LIVE_JPEG_QUALITY=0` keeps lossless-only Tight.
+
+MUTATIONS: default the quality to anything but 70 (1 and 2 fail); read 0 as
+the default (2 and 6 fail); drop the motion
 share check (3 fails); drop the settle refresh (4 fails); ignore an encoder
 that answers None (5 fails).
 """
@@ -139,8 +141,37 @@ def _run(body: Any) -> None:
     asyncio.run(asyncio.wait_for(main(), 10))
 
 
-def test_1_off_by_default_every_rectangle_is_lossless(monkeypatch) -> None:
+def test_1_on_by_default_a_moving_page_is_jpeg_at_q70(monkeypatch) -> None:
     monkeypatch.delenv(rfb.JPEG_QUALITY_ENV, raising=False)
+    jpeg = FakeJpeg()
+
+    async def body(hub: rfb.FrameHub) -> None:
+        viewer = await _connect(hub, jpeg_encoder=jpeg)
+        viewer.request(False)
+        await viewer.read_update()
+        hub.publish(_noise(99))
+        viewer.request(True)
+        assert "jpeg" in {k for k, *_ in await viewer.read_update()}
+        viewer.task.cancel()  # type: ignore[attr-defined]
+
+    _run(body)
+    assert jpeg.calls and {q for *_, q in jpeg.calls} == {70}
+
+
+def test_2_the_switch_is_read_from_the_environment() -> None:
+    env = rfb.JPEG_QUALITY_ENV
+    assert rfb.JPEG_QUALITY_DEFAULT == 70
+    assert rfb.jpeg_quality_from_env({}) == 70
+    assert rfb.jpeg_quality_from_env({env: ""}) == 70
+    assert rfb.jpeg_quality_from_env({env: "lossless"}) == 70
+    assert rfb.jpeg_quality_from_env({env: "0"}) == 0
+    assert rfb.jpeg_quality_from_env({env: "60"}) == 60
+    assert rfb.jpeg_quality_from_env({env: "400"}) == 95
+    assert rfb.jpeg_quality_from_env({env: "-3"}) == 0
+
+
+def test_6_zero_in_the_environment_is_lossless_only(monkeypatch) -> None:
+    monkeypatch.setenv(rfb.JPEG_QUALITY_ENV, "0")
     jpeg = FakeJpeg()
 
     async def body(hub: rfb.FrameHub) -> None:
@@ -154,16 +185,6 @@ def test_1_off_by_default_every_rectangle_is_lossless(monkeypatch) -> None:
 
     _run(body)
     assert jpeg.calls == []
-
-
-def test_2_the_switch_is_read_from_the_environment() -> None:
-    env = rfb.JPEG_QUALITY_ENV
-    assert rfb.jpeg_quality_from_env({}) == 0
-    assert rfb.jpeg_quality_from_env({env: ""}) == 0
-    assert rfb.jpeg_quality_from_env({env: "60"}) == 60
-    assert rfb.jpeg_quality_from_env({env: "lossless"}) == 0
-    assert rfb.jpeg_quality_from_env({env: "400"}) == 95
-    assert rfb.jpeg_quality_from_env({env: "-3"}) == 0
 
 
 def test_3_a_moving_page_is_jpeg_and_a_typed_character_is_not() -> None:

@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--seconds", type=float, default=600.0, help="how long the viewer watches")
     parser.add_argument("--jpeg", type=int, default=rfb.jpeg_quality_from_env(),
-                        help="the gate's adaptive JPEG quality; 0 is today's lossless-only")
+                        help="the gate's adaptive JPEG quality (the gate's default, 70, unless set); 0 is lossless-only")
     parser.add_argument("--control", action="store_true", help="capture at the gate's control rate")
     parser.add_argument("--source", default="animate",
                         help="animate (a moving box on a still page), scroll, or xvfb:PATH to a screen file")

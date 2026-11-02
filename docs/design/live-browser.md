@@ -2557,22 +2557,25 @@ of view, and asks every 250 ms instead of every 1 s while three or fewer
 cards are on screen (`THUMB_FEW_VISIBLE`); with more it keeps the 1 s floor
 of §6, so a long graph costs what is on screen.
 
-**Encoding: adaptive JPEG, behind a switch, off.** The gate's Tight is
-lossless because the owner asked for a sharp picture (STREAM-SMOOTH, the
-ENCODINGS paragraph of `livegate/rfb.py`). `SWARM_LIVE_JPEG_QUALITY` (1-95)
-turns on adaptive Tight JPEG: an update whose changes cover at least 5% of
-the frame sends its large rectangles as JPEG, a caret or a typed character
-stays lossless, and 0.4 s after the page stops moving the whole frame is sent
-again losslessly, so a still page is pixel for pixel what Chromium drew.
-Unset, the gate is exactly today's lossless Tight. Whether to turn it on is
-the owner's question (the LIVE-STREAM-SPEED pull request).
+**Encoding: adaptive JPEG, on at quality 70.** The gate's Tight was
+lossless only because the owner asked for a sharp picture (STREAM-SMOOTH, the
+ENCODINGS paragraph of `livegate/rfb.py`). Asked again with the numbers below
+(pull request #3035, 2026-11-02), the owner picked adaptive JPEG at q70: an
+update whose changes cover at least 5% of the frame sends its large
+rectangles as Tight JPEG at quality 70 (`JPEG_QUALITY_DEFAULT`), a caret or a
+typed character stays lossless, and 0.4 s after the page stops moving the
+whole frame is sent again losslessly, so a still page is pixel for pixel what
+Chromium drew. `SWARM_LIVE_JPEG_QUALITY` overrides the quality (1-95); `0`
+there is the lossless-only Tight of before. The relay's recorder is sent
+Zlib, never Tight, so recordings are unchanged. The JPEG encoder is Pillow,
+which the browser image already pins; without it a rectangle stays lossless.
 
 **The bench.** `scripts/live-stream-bench.sh` runs the real relay
 (`swarm_live`, under uvicorn), the real gate tunnel and RFB session and a
 viewer that speaks RFB as noVNC 1.4.0 does with the console's settings, on a
 1440x987 page whose 720x400 box moves every frame, at the gate's 10 fps watch
 rate. It prints time to first frame, frames and bytes a second and reconnects,
-lossless first and then with the JPEG switch. `--link-mbps` holds the
+lossless first (`--jpeg 0`) and then with adaptive JPEG. `--link-mbps` holds the
 viewer's side to a link of that speed; `--chromium` draws the page with a real
 Chromium on Xvfb. Every hop is loopback: swarm-api's proxy and the hosted
 network are not in it. Measured 2026-11-02 in a SwarmCloud container, the
