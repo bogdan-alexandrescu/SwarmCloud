@@ -1529,6 +1529,13 @@ RELEASE_WAIT_RESUMES_METADATA_KEY = "release_wait_resumes"
 #: (`control.QUOTA_PARK_RESUMES_METADATA_KEY`).
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 
+#: The continuations at the time limit whose attempt was refunded (BGD,
+#: 2026-11-02), counted against `attemptstate.TIME_LIMIT_MAX_CONTINUATIONS`.
+#: A caller who set it would choose how many more time limits the task may
+#: run past. The worker restates it
+#: (`control.TIME_LIMIT_CONTINUATIONS_METADATA_KEY`).
+TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
+
 #: The pull requests a workflow's root step waits for before it may start
 #: (`after`, lane SPEED-D3, `swarm_api.prgate`): written by `submit_workflow`
 #: from the spec's `after` and then only by the wake tick. A caller who set
@@ -1579,6 +1586,7 @@ RESERVED_METADATA_KEYS = (
     QA_TARGET_METADATA_KEY,
     RELEASE_WAIT_RESUMES_METADATA_KEY,
     QUOTA_PARK_RESUMES_METADATA_KEY,
+    TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
 )
 
 #: Reserved like every key above, and refused by the same function in the
@@ -2454,6 +2462,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{QUOTA_PARK_RESUMES_METADATA_KEY} is reserved: it is set only "
         "by the worker's quota park, to count the provider-quota parks whose "
         "attempt was refunded. Drop the key from metadata."
+    ),
+    TIME_LIMIT_CONTINUATIONS_METADATA_KEY: (
+        f"metadata.{TIME_LIMIT_CONTINUATIONS_METADATA_KEY} is reserved: it is set "
+        "only by the worker's park at the time limit, to count the continuations "
+        "whose attempt was refunded. Drop the key from metadata."
     ),
     OWNER_ANSWERS_METADATA_KEY: (
         f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "

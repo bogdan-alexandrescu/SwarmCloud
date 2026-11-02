@@ -189,6 +189,20 @@ RELEASE_WAIT_MAX_RESUMES = 4
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
 
+#: A continuation at the time limit (BGD, 2026-11-02): a SCHEDULED_RETRY park
+#: whose detail carries a `TIME_LIMIT_DETAIL_KEY` block, written by
+#: `lifecycle._continue_at_time_limit`. Such a park refunds its attempt, and
+#: adds one to `metadata.time_limit_continuations`, while fewer than
+#: TIME_LIMIT_MAX_CONTINUATIONS were; past it the park spends an attempt. Restated as
+#: `swarm_api.attemptstate.TIME_LIMIT_CONTINUATIONS` and
+#: `TIME_LIMIT_MAX_CONTINUATIONS`, which say why 2, and reserved from callers
+#: by `swarm_api.validation`; tests/unit/worker/test_time_limit_continuation.py
+#: holds them equal. The lifecycle continues no further than the bound: the
+#: third stop at the limit fails the task.
+TIME_LIMIT_DETAIL_KEY = "time_limit"
+TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
+TIME_LIMIT_MAX_CONTINUATIONS = 2
+
 #: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
 #: §1): `metadata.merge_wait` on the task, written by `park_ci_pending`. Read by
 #: swarm-api's wake tick (`swarm_api.mergewake`), which adds the marker below,
@@ -360,6 +374,13 @@ def _as_state(value: Any) -> TaskState:
         return TaskState(value)
     except (ValueError, TypeError) as exc:
         raise ControlPlaneError(f"task document holds an unknown state {value!r}") from exc
+
+
+def time_limit_attempt_error(continuation: int) -> str:
+    """A continued attempt's `error`, as the attempt list shows it; the same
+    words as `swarm_api.attemptstate.park_attempt_error`."""
+    return (f"{ParkReason.SCHEDULED_RETRY.value}: continued at the time limit "
+            f"({continuation} of {TIME_LIMIT_MAX_CONTINUATIONS})")
 
 
 def _count(value: Any) -> int:
@@ -2432,6 +2453,8 @@ class ControlPlane:
         uploads = uploads if isinstance(uploads, list) else None
         announced = [self._event_write(kind, d) for kind, d in announce]
         quota = reason is ParkReason.PROVIDER_QUOTA_EXHAUSTED
+        time_limit = (reason is ParkReason.SCHEDULED_RETRY
+                      and isinstance((detail or {}).get(TIME_LIMIT_DETAIL_KEY), Mapping))
         parked = self._event_write(
             EventType.PARKED,
             {"reason": reason.value, "next_eligible_at": next_eligible_at, **(detail or {})},
@@ -2453,6 +2476,29 @@ class ControlPlane:
             }
             refund = False
             event = parked
+            error = reason.value
+            if time_limit:
+                metadata = dict(task.get("metadata") or {})
+                used = _count(metadata.get(TIME_LIMIT_CONTINUATIONS_METADATA_KEY))
+                attempt_count = _count(task.get("attempt_count"))
+                refund = used < TIME_LIMIT_MAX_CONTINUATIONS and attempt_count > 0
+                if refund:
+                    metadata[TIME_LIMIT_CONTINUATIONS_METADATA_KEY] = used + 1
+                    payload["metadata"] = metadata
+                    payload["attempt_count"] = attempt_count - 1
+                error = time_limit_attempt_error(used + 1)
+                event = self._filled(
+                    parked,
+                    EventType.PARKED,
+                    {
+                        "reason": reason.value,
+                        "next_eligible_at": next_eligible_at,
+                        "attempt_refunded": refund,
+                        TIME_LIMIT_CONTINUATIONS_METADATA_KEY: used + (1 if refund else 0),
+                        "max_continuations": TIME_LIMIT_MAX_CONTINUATIONS,
+                        **(detail or {}),
+                    },
+                )
             if quota:
                 metadata = dict(task.get("metadata") or {})
                 used = _count(metadata.get(QUOTA_PARK_RESUMES_METADATA_KEY))
@@ -2479,7 +2525,7 @@ class ControlPlane:
                 payload=payload,
                 release=release,
                 exit_code=ExitCode.PARKED,
-                error=reason.value,
+                error=error,
                 events=[*announced, event],
                 released_slot=released_slot,
                 now=now,
