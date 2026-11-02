@@ -178,6 +178,13 @@ def task_to_firestore(task: Task) -> dict[str, Any]:
     return task.to_firestore()
 
 
+def _timeout_asked(value: Any) -> int | None:
+    """A stored `timeout_seconds_asked`: an int above 0, anything else None."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 def task_from_dict(data: dict[str, Any]) -> Task:
     park = data.get("park_reason")
     return Task(
@@ -201,6 +208,9 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         attempt_count=int(data.get("attempt_count", 0)),
         # Contract request 123: absent on every older document, which is 0.
         platform_refusals=int(data.get("platform_refusals") or 0),
+        # Contract request 131: absent on every older document and on a task
+        # not lowered. A record only, never a limit (invariant 10).
+        timeout_seconds_asked=_timeout_asked(data.get("timeout_seconds_asked")),
         next_eligible_at=as_datetime(data.get("next_eligible_at")),
         park_reason=ParkReason(park) if park else None,
         blocked_by=list(data.get("blocked_by") or []),
@@ -673,6 +683,10 @@ def task_to_api(
         # resets it). Past PLATFORM_REFUSED_MAX_PARKS the task is trouble.
         "platform_refusals": task.platform_refusals,
         "timeout_seconds": task.timeout_seconds,
+        # Contract request 131: what the spec asked when swarm-api stored a
+        # lower `timeout_seconds`, else null. A record only: the limit is
+        # `timeout_seconds` (invariant 10).
+        "timeout_seconds_asked": task.timeout_seconds_asked,
         # Contract request 120 (#2459): the attempt's resolved budget, or
         # null for none. A task stored before the field serves what its
         # dispatch block pinned (`served_budget`).
