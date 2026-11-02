@@ -65,9 +65,51 @@ TARGETS=("$@")
 # gate from leaning on that refusal to sequence its own targets.
 [[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=(smoke-test race-test e2e-test concurrency-test)
 
+# ---------------------------------------------------------------------------
+# EVERY EXECUTION SAYS WHO STARTED IT (#1822 comment 31).
+#
+# accept.yml's quiesce used to cancel every running swarm-verify execution,
+# an operator's `make verify-remote` in flight among them, whose run then read
+# "FAILED" like a regression. So each execution carries SWARM_VERIFY_ORIGIN:
+# `operator` unless the caller says otherwise, and accept.yml sets
+# `accept-<run id>` for its whole workflow. Its quiesce and cleanup steps
+# cancel only executions whose origin names an accept run, and print the rest
+# as skipped.
+#
+# An environment override, not a label: `gcloud run jobs execute` takes
+# `--args` and `--update-env-vars` and no label flag, and the execution
+# records the override in its own template, where `executions list --format
+# json` reads it back. The value is one of two shapes and nothing else: a
+# comma would add a variable of the caller's choosing to the execution.
+SWARM_VERIFY_ORIGIN="${SWARM_VERIFY_ORIGIN:-operator}"
+[[ "${SWARM_VERIFY_ORIGIN}" =~ ^(operator|accept-[0-9]+)$ ]] \
+  || die "SWARM_VERIFY_ORIGIN must be 'operator' or 'accept-<GitHub run id>', not '${SWARM_VERIFY_ORIGIN}'"
+
+# THE ROLES PROBE'S SETTINGS (ROLES-ACCEPT, scripts/acceptance/groups/roles.sh)
+# reach the execution the same way, each only when set: the job's own
+# environment is its Terraform template's, and these four are the repository's
+# variables, which accept.yml's smoke job passes in. None is a secret (a
+# tenant id, two service-account emails, a workspace id), and each is checked
+# for the characters those use before it goes near the comma-separated flag.
+FORWARDED_SETTINGS=(
+  SWARM_ACCEPTANCE_ROLES_TENANT
+  SWARM_ACCEPTANCE_ROLES_VIEWER_SA
+  SWARM_ACCEPTANCE_ROLES_ADMIN_SA
+  SWARM_ACCEPTANCE_ROLES_OTHER_WORKSPACE
+)
+EXECUTION_ENV="SWARM_VERIFY_ORIGIN=${SWARM_VERIFY_ORIGIN}"
+for setting in "${FORWARDED_SETTINGS[@]}"; do
+  value="${!setting:-}"
+  [[ -n "${value}" ]] || continue
+  [[ "${value}" =~ ^[A-Za-z0-9@._-]+$ ]] \
+    || die "${setting} may hold letters, digits, '@', '.', '_' and '-' only"
+  EXECUTION_ENV+=",${setting}=${value}"
+done
+
 step "Verification gate, inside the VPC"
 info "job     ${JOB} (${REGION}/${PROJECT_ID})"
 info "targets ${TARGETS[*]}"
+info "origin  ${SWARM_VERIFY_ORIGIN}"
 
 # ---------------------------------------------------------------------------
 # A FAILED TARGET PRINTS ITS OWN TRANSCRIPT, NOT ONLY GCLOUD'S VERDICT.
@@ -211,7 +253,35 @@ print_execution_log() {
   rm -f "${entries}"
 }
 
+# execution_cancelled EXECUTION -> prints why the execution was cancelled and
+# returns 0 when Cloud Run says it was; returns 1 for anything else, an
+# unreadable execution included, so a failure is never excused as a cancel.
+#
+# A cancel is not a regression in the target: something stopped it -- an
+# accept run's quiesce (which now cancels accept runs' executions only), its
+# cleanup after a GitHub cancel, or a person -- so it is reported apart from
+# FAILED. Cloud Run does not record who cancelled; the audit log does.
+execution_cancelled() {
+  local execution="$1" described why
+  described="$(mktemp "${TMPDIR:-/tmp}/swarm-verify-describe.XXXXXX")"
+  if ! gcloud run jobs executions describe "${execution}" \
+      --project "${PROJECT_ID}" --region "${REGION}" --format json >"${described}" 2>/dev/null; then
+    rm -f "${described}"
+    return 1
+  fi
+  why="$(jq -r '
+      (.status // {}) as $s
+      | [($s.conditions // [])[] | select((.reason // "") | test("cancel"; "i"))] as $c
+      | if (($s.cancelledCount // 0) > 0) or ($c | length) > 0
+        then ($c[0].message // "Cloud Run counts a cancelled task") else empty end' \
+    <"${described}" 2>/dev/null | head -n 1 | redact)" || why=""
+  rm -f "${described}"
+  [[ -n "${why}" ]] || return 1
+  printf '%s' "${why}"
+}
+
 FAILED=()
+CANCELLED=()
 for target in "${TARGETS[@]}"; do
   step "${target}"
 
@@ -231,15 +301,22 @@ for target in "${TARGETS[@]}"; do
     --project "${PROJECT_ID}" \
     --region "${REGION}" \
     --args "scripts/${target}.sh" \
+    --update-env-vars "${EXECUTION_ENV}" \
     --wait \
     > "${out}" 2>&1 || rc=$?
 
   redact < "${out}" | tail -n 40
 
   if [[ "${rc}" -ne 0 ]]; then
+    execution="$(execution_name "${out}")"
+    if [[ -n "${execution}" ]] && why="$(execution_cancelled "${execution}")"; then
+      warn "${target} CANCELLED (by a cancel of execution ${execution}: ${why}); not a failure of the target, run it again"
+      CANCELLED+=("${target}")
+      rm -f "${out}"
+      continue
+    fi
     err "${target} FAILED (exit ${rc})"
     FAILED+=("${target}")
-    execution="$(execution_name "${out}")"
     if [[ -n "${execution}" ]]; then
       print_execution_log "${execution}"
     else
@@ -254,7 +331,9 @@ for target in "${TARGETS[@]}"; do
 done
 
 hr
-if [[ "${#FAILED[@]}" -gt 0 ]]; then
-  die "${#FAILED[@]} of ${#TARGETS[@]} targets failed: ${FAILED[*]}"
+if [[ "${#FAILED[@]}" -gt 0 || "${#CANCELLED[@]}" -gt 0 ]]; then
+  [[ "${#CANCELLED[@]}" -eq 0 ]] || err "${#CANCELLED[@]} of ${#TARGETS[@]} targets cancelled: ${CANCELLED[*]}"
+  [[ "${#FAILED[@]}" -eq 0 ]] || err "${#FAILED[@]} of ${#TARGETS[@]} targets failed: ${FAILED[*]}"
+  exit 1
 fi
 ok "all ${#TARGETS[@]} verification targets passed"

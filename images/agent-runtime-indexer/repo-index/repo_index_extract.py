@@ -1666,13 +1666,19 @@ def _base_covered(files: list[dict], base_graph: Any, affected: set[str]) -> set
     return covered
 
 
-def _base_servers(base_graph: Any) -> dict[str, tuple[Any, Any]]:
-    """Each language's server and the version it reported, as the base recorded them."""
-    found: dict[str, tuple[Any, Any]] = {}
+def _base_servers(base_graph: Any) -> dict[str, "lsp_pass.Answered"]:
+    """Each language's server, the version it reported, its install
+    (`server_build`) and its cost, as the base recorded them (no paths)."""
+    found: dict[str, lsp_pass.Answered] = {}
     for row in (base_graph or {}).get("languages") or []:
         if isinstance(row, dict) and isinstance(row.get("language"), str):
             counts = row.get("lsp") if isinstance(row.get("lsp"), dict) else {}
-            found[row["language"]] = (row.get("server"), counts.get("server_version"))
+            build, cost = counts.get("server_build"), counts.get("cost_seconds")
+            found[row["language"]] = lsp_pass.Answered(
+                row.get("server"), counts.get("server_version"),
+                build=build if isinstance(build, str) else None,
+                cost_seconds=cost if isinstance(cost, (int, float))
+                and not isinstance(cost, bool) else None)
     return found
 
 
@@ -1688,11 +1694,14 @@ def _lsp_on_base(root: Path, lsp_files: dict[str, str], symbols: list[dict], sit
     learns the version at initialize and asks those files too, in path
     order after the affected ones (`lsp_pass.Answered`).
 
-    A language with carried files and nothing to ask still has its server
-    started, asked nothing, only to learn its version: without it a server
-    upgrade never reached a stable language, whose files kept the old
-    server's answers until one changed. When the total runs out before a
-    server's version is learnt, none of its languages' answers is carried.
+    A language with carried files and nothing to ask has its server started,
+    asked nothing, only to learn its version -- without it a server upgrade
+    never reached a stable language, whose files kept the old server's
+    answers until one changed -- unless the base recorded that server's
+    version with this same install (`server_build`, which the image pins):
+    then the driver reads the version from the base and starts nothing
+    (owner 2026-11-02). When the total runs out before a server's version
+    is learnt, none of its languages' answers is carried.
     """
     servers = lsp_pass.SERVERS if options.servers is None else options.servers
     served = {lang for spec in servers.values() for lang in spec.languages}
@@ -1706,19 +1715,20 @@ def _lsp_on_base(root: Path, lsp_files: dict[str, str], symbols: list[dict], sit
     for path in carried:
         language = lsp_files.get(path)
         if language in served:
-            server, version = before.get(language, (None, None))
-            answered.setdefault(language, (server, version, set()))[2].add(path)
+            recorded = before.get(language) or lsp_pass.Answered(None, None)
+            answered.setdefault(language, (recorded, set()))[1].add(path)
     wanted = {lsp_files[path] for path in first | rest} | set(answered)
     if not wanted:
         return None, set(), carried, {}
     result = lsp_pass.run_pass(
         root, {path: lang for path, lang in lsp_files.items() if lang in wanted}, symbols, sites,
         _replace(options, asked_paths=frozenset(first | rest), first_paths=frozenset(first),
-                 answered={language: lsp_pass.Answered(server, version, frozenset(paths))
-                           for language, (server, version, paths) in answered.items()}))
+                 answered={language: _replace(recorded, paths=frozenset(paths))
+                           for language, (recorded, paths) in answered.items()}))
     asked = first | rest
     not_carried: dict[str, str] = {}
-    for language, (base_server, base_version, paths) in sorted(answered.items()):
+    for language, (recorded, paths) in sorted(answered.items()):
+        base_server, base_version = recorded.server, recorded.version
         row = result.languages.get(language)
         server = row.server if row is not None else None
         version = row.counts.get("server_version") if row is not None else None
