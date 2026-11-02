@@ -102,6 +102,14 @@ CLOSE_REFUSED = 4404
 CLOSE_SESSION_CLOSED = 4409
 CLOSE_FULL = 4429
 CLOSE_NO_RELAY = 4503
+#: Session reads in a row that may fail before a viewer's socket is closed
+#: (LIVE-STREAM-SPEED, part of #2688). MEASURED 2026-11-02: one failed read
+#: -- a Firestore transaction aborted under contention while the API's reads
+#: ran at p95 16.67 s -- ended the socket, and an idle viewer minted a new
+#: ticket every 5-17 s. A blip is ridden out on the next tick (2 s); a
+#: session that cannot be read for this many ticks (~10 s) is closed, so the
+#: viewer reconnects and is admitted afresh.
+STATUS_FAILURES_MAX = 5
 #: The relay's viewer cap (`swarm_live.rendezvous.CLOSE_FULL`), passed on as
 #: itself; every other refusal by the relay reads as 4404, as ours do.
 RELAY_CLOSE_FULL = 4429
@@ -854,6 +862,7 @@ class _Proxy:
         next_flush = loop.time() + self.flush
         next_watch = loop.time() + self.watch
         last_status = None
+        failures = 0
         while True:
             await asyncio.sleep(self.poll)
             now = loop.time()
@@ -879,7 +888,19 @@ class _Proxy:
             try:
                 if not await self._status():
                     return
+                failures = 0
             except ApiError as exc:
                 if exc != last_status:
                     log.info("live session status unavailable (%s)", exc.code)
                 last_status = exc
+            except Exception as exc:  # noqa: BLE001 -- a failed read is not a closed session
+                # Anything else -- an aborted transaction, a deadline -- is
+                # read again on the next tick; the socket, its relay link and
+                # the picture stay (STATUS_FAILURES_MAX). The generation and
+                # the tenant are checked again by the next read that lands.
+                failures += 1
+                log.info("live session status read failed (%s), %d in a row",
+                         type(exc).__name__, failures)
+                if failures >= STATUS_FAILURES_MAX:
+                    self.close_code = 1011
+                    return

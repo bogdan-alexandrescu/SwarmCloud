@@ -280,7 +280,7 @@ resource "google_cloud_run_v2_service" "github_hooks" {
       # (modules/scheduler jobs.tf, api_audience empty).
       env {
         name  = "SWARM_API_URL"
-        value = module.cloud_run.service_urls["swarm-api"]
+        value = module.cloud_run_api.service_urls["swarm-api"]
       }
 
       env {

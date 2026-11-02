@@ -742,6 +742,11 @@ NO_CONTINUATION_CHECKPOINT = "no_checkpoint"
 NO_CONTINUATION_CAP = "out_of_continuations"
 NO_CONTINUATION_BUDGET = "budget"
 NO_CONTINUATION_CANCEL = "cancel_requested"
+#: The verified task's resolved turn cap (contract request 133, `Task.max_turns`)
+#: and the runner's name for it (`claude_code.MAX_TURNS_ENV`, held equal by
+#: tests/unit/worker/test_runners.py).
+MAX_TURNS_FIELD = "max_turns"
+MAX_TURNS_ENV = "SWARM_MAX_TURNS"
 PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
 PREPUBLISH_SECTION_MAX_CHARS = 20000
 #: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
@@ -4683,6 +4688,7 @@ class Worker:
 
             runner_result = self._add_runner_block(summary)
             self._record_quality_gates(summary)
+            self._settle_jev()
 
         if self.budget is not None:
             # The limits, what the attempt used and, when it stopped the
@@ -9973,6 +9979,17 @@ class Worker:
             return {}
         return {TIMEOUT_ASKED_ENV: str(asked)} if asked > self.cfg.timeout_seconds else {}
 
+    def _max_turns_env(self) -> dict[str, str]:
+        """`MAX_TURNS_ENV` from the VERIFIED task's `max_turns` (contract request
+        133), signed at spec format 7, so a cap raised or removed after
+        submission failed `verify_spec` before this runs. Empty when the task
+        has none: no cap, today's behaviour. Never from `input`, which a
+        caller writes (invariant 10)."""
+        cap = (self._task or {}).get(MAX_TURNS_FIELD)
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+            return {}
+        return {MAX_TURNS_ENV: str(cap)}
+
     def _build_child_env(self) -> dict[str, str]:
         ws = self.ws
         assert ws is not None
@@ -10015,6 +10032,7 @@ class Worker:
             # worker and its runner share the container's clock.
             RUNNER_DEADLINE_ENV: f"{time.time() + self._runner_deadline - time.monotonic():.3f}",
             **self._timeout_asked_env(),
+            **self._max_turns_env(),
             GRACE_ENV: str(self.cfg.termination_grace_seconds),
             STDOUT_ENV: str(self.cfg.max_stdout_bytes),
             STDERR_ENV: str(self.cfg.max_stderr_bytes),
@@ -10151,9 +10169,10 @@ class Worker:
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
-        base.update(self._graph_context_env(ws, clone_base))
-        # `work/repos`, when the task reads additional repositories: a path.
-        base.update(extrarepos_mod.child_env(ws, self._extra_checkouts))
+        # BEFORE THE GRAPH CONTEXT, whose `judge.attempt.setup` reads the key
+        # file this writes (`attempt.TYPESAFE_KEY_FILE`): after it, a live-
+        # browser attempt's judge on TypeSafe found no key and read `no_key`
+        # (lane JEV-JUDGMENTS-RUN, 2026-11-02).
         # The jev MCP server's TypeSafe key, on a live-browser attempt with a
         # key (JEV-RUNNER, `jevkey`): the PATH of a 0600 file in private/,
         # never the key, which reaches only that server's process. Never
@@ -10171,6 +10190,9 @@ class Worker:
             inject=self.typesafe.on,
             shim_file=self.typesafe.shim_file,
         ))
+        base.update(self._graph_context_env(ws, clone_base))
+        # `work/repos`, when the task reads additional repositories: a path.
+        base.update(extrarepos_mod.child_env(ws, self._extra_checkouts))
         # The lane quality gates (JEV-LANES, `qualitygates`): on a claude-code
         # attempt whose workspace turned `quality_gates.jev` on, the PATH of a
         # 0600 config naming the workspace key's 0600 file in private/, never
@@ -10248,6 +10270,29 @@ class Worker:
                                                  **({"switch": record} if record else {})}
         if qualitygates_mod.worth_an_event(counts):
             self._emit_startup_mark(qualitygates_mod.EVENT_CAUSE, dict(counts or {}))
+
+    def _settle_jev(self) -> None:
+        """After the agent, before any terminal write: this attempt's Jev calls
+        and tokens into `jev_usage` (`judge.attempt.settle`), one row per
+        attempt and the workspace's month, in one transaction fenced by this
+        attempt's generation as every guarded write is (invariant 5): a
+        superseded attempt writes nothing. The next attempt of the task counts
+        these calls, and the month's total is what `code_intelligence
+        .jev_monthly_cap_tokens` is held to. Never raises; no output changes."""
+        from .judge import attempt as judge_attempt
+
+        if not self._graph_env:
+            return
+        try:
+            judge_attempt.settle(
+                self._graph_env, db=self.db,
+                run_transaction=self.control._run_transaction,
+                tenant_id=self.cfg.tenant_id, task_id=self.cfg.task_id,
+                generation=self.cfg.generation,
+                fence=lambda txn: self.control._fenced_task(txn, write="jev usage"),
+                log=self.log)
+        except Exception as exc:  # noqa: BLE001 -- accounting is never worth the attempt
+            self.log.warning("jev_settle_failed", error=type(exc).__name__)
 
     def _record_switches(self, summary: dict[str, Any]) -> None:
         """The workflow switches' record (`graphstage.switches_summary`), only
