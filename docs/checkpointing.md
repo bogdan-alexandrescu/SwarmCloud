@@ -430,20 +430,20 @@ attempt id and generation differ, which is exactly what makes the fencing check
 in step 1 able to tell the two apart.
 
 **A step that reaches its time limit continues the same way** (the owner's
-choice, 2 November 2026). Before this, a killed attempt ended the task FAILED
+choice, 2 November 2026). Before this, a killed attempt ended the agent FAILED
 (`EndCause.TIMEOUT`) and took its workflow down with it. In the 14 days to that
-date, 46 tasks were killed at a 1 or 2 hour limit, 75 hours of work. Now an
+date, 46 agents were killed at a 1 or 2 hour limit, 75 hours of work. Now an
 attempt stopped at `timeout_seconds` whose **final checkpoint uploaded** does
 not publish. It parks `SCHEDULED_RETRY` at once, in the park's one fenced
 transaction, and leaves the agent's session id in `work/.swarm-continuation.json`
 for that checkpoint to carry. The scheduler's `_promote_scheduled_retries` returns
 it to READY. Admission leases a new attempt at a new generation. That attempt
 restores the checkpoint, removes the note and resumes the session (or starts the
-task again in the restored tree when there was none). Either way it is told it is
+agent again in the restored tree when there was none). Either way it is told it is
 continuing after a time limit (`cliagent.TIME_LIMIT_RESUME_PROMPT`).
 
 The park refunds its attempt and counts it in `metadata.time_limit_continuations`,
-up to `TIME_LIMIT_MAX_CONTINUATIONS` = 2 per task (`control`, restated by
+up to `TIME_LIMIT_MAX_CONTINUATIONS` = 2 per agent (`control`, restated by
 `swarm_api.attemptstate`). Two more limits give a step three times what it asked
 for, and a step that needs a fourth is looping. The PARKED event (cause
 `time_limit_continuation`) and the attempt's `error` ("continued at the time
@@ -453,7 +453,7 @@ and the error says why:
 * the cap is spent ("ran out of continuations");
 * the final checkpoint did not upload;
 * a cancel was requested;
-* the task's budget would not hold another attempt at this one's spend.
+* the agent's budget would not hold another attempt at this one's spend.
 
 Periodic checkpointing is unchanged, and a stale generation still exits without
 running the agent.
