@@ -196,7 +196,8 @@ def _run_body(monkeypatch, tmp_path, *, payload: dict[str, Any], jev_key: bool =
 @pytest.mark.parametrize(
     "selected, key, servers, lead",
     [
-        ("auto", True, {"playwright", "jev"}, "auto"),
+        # A ready jev is first under auto (AGENTS-USE-TOOLS, 2026-11-02).
+        ("auto", True, {"playwright", "jev"}, "auto-jev-first"),
         ("auto", False, {"playwright"}, "auto"),
         ("playwright", True, {"playwright"}, "playwright"),
         ("dev-browser", True, {"playwright"}, "dev-browser"),
@@ -222,7 +223,8 @@ def test_the_runner_registers_the_choice_and_names_it_first(monkeypatch, tmp_pat
         assert jev["args"][-1] == claude_code.JEV_MCP_BIN
         assert "ts-" not in json.dumps(jev)
     note = seen["prompt"].split("Check the pricing page.\n\n", 1)[1]
-    assert note.startswith(claude_code.BROWSER_TOOL_LEAD[lead])
+    leads = {**claude_code.BROWSER_TOOL_LEAD, "auto-jev-first": claude_code.BROWSER_TOOL_LEAD_JEV_FIRST}
+    assert note.startswith(leads[lead])
     assert claude_code.LIVE_BROWSER_NOTE in note
     choice = browser_tools.choose(selected, jev_installed=True, jev_key=key)
     assert seen["state"] == choice.state()
@@ -244,7 +246,8 @@ def test_an_internal_backend_needs_no_key_for_the_selected_tool(monkeypatch, tmp
     assert set(seen["mcp"]) == servers
     assert seen["state"]["jev"]["enabled"] == ("jev" in servers)
     if "jev" in servers:
-        assert seen["mcp"]["jev"] == {"type": "stdio", "command": claude_code.JEV_MCP_BIN, "args": []}
+        assert seen["mcp"]["jev"] == {"type": "stdio", "command": claude_code.JEV_MCP_BIN, "args": [],
+                                      "alwaysLoad": True}
 
 
 def test_jev_chosen_without_a_key_runs_on_playwright_and_says_why(monkeypatch, tmp_path):

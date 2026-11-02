@@ -215,7 +215,7 @@ locals {
 
 output "swarm_api_url" {
   description = "swarm-api's own uri, as Cloud Run reports it. Workers are handed main.tf's local.swarm_api_url, the deterministic URL of the same service."
-  value       = module.cloud_run.service_urls["swarm-api"]
+  value       = module.cloud_run_api.service_urls["swarm-api"]
 }
 
 output "child_tasks_service_wiring" {

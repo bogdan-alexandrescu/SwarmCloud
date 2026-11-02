@@ -107,6 +107,7 @@ def test_broker_url_computed(env_name: str, local_name: str, service: str):
     assert set(assignments) <= {
         f"local.{local_name}",
         f'module.cloud_run.service_urls["{service}"]',
+        f'module.cloud_run_api.service_urls["{service}"]',
     }, assignments
     (definition,) = [
         m.group(1)

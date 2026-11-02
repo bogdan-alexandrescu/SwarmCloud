@@ -2109,8 +2109,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_schedule_create",
         "description": (
             "Create a recurring schedule on your tenant's repositories. `type` is "
-            "one of the catalogue's seventeen: `issue-sweep`, `issue-plan-only`, "
-            "`repo-index-refresh`, `observer`, `epic-triage`, `pr-shepherd`, "
+            "one of the catalogue's eighteen: `issue-sweep`, `issue-plan-only`, "
+            "`repo-index-refresh`, `observer`, `epic-triage`, `pr-shepherd`, `branch-sweep`, "
             "`ci-flake-hunter`, `dependency-cve-refresh`, `image-tool-rescan`, `release-health`, "
             "`docs-drift`, `cost-report`, `custom-prompt`, `visual-qa` (a workspace "
             "admin's, scope `all`, naming one of the workspace's QA targets), and the admin-only "
@@ -4639,6 +4639,13 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             limit=limit if isinstance(limit, int) and not isinstance(limit, bool) else None,
             page_token=args.get("page_token") or None,
         )
+        from . import runs
+
+        # The planner's flags, as the same sentences `swarm_run` answers with.
+        for row in listing.get("runs") or []:
+            advised = runs.advisory_lines(row.get("plan_advisory")) if isinstance(row, dict) else []
+            if advised:
+                row["plan_advisory_lines"] = advised
         return json.dumps(listing, indent=2, default=str)
     run_id = _text_arg(args, "run_id", name)
     if name == "swarm_run":

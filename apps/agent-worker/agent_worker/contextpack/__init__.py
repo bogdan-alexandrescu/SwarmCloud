@@ -148,9 +148,13 @@ def prepare(ctx: "RunnerContext", checkout: Path, judge: Any = None) -> str | No
             reason = _one_line(str(stage.get("reason") or "no graph snapshot was staged"))
             return f"No repository context was staged for this step: {reason}."
         from .build import build_pack, write_artifact
+        from .tasktype import classify_with_jev
 
+        # J0 types the step only where the local rules fall back to implement,
+        # and only with a Jev client (Jev for code on): `classify_with_jev`.
+        kind = classify_with_jev(ctx.payload, Path(ctx.work_dir), stage, judge)
         pack = build_pack(where, checkout=Path(checkout), work_dir=Path(ctx.work_dir),
-                          payload=ctx.payload, judge=judge)
+                          payload=ctx.payload, task_type=kind, judge=judge)
         write_artifact(Path(ctx.artifacts_dir), pack)
         return prompt_line(where / CONTEXT_FILE)
     except Exception as exc:  # noqa: BLE001 -- a pack is never worth a failed step
