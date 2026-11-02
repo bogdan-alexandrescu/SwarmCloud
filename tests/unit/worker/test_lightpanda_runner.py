@@ -207,7 +207,8 @@ def test_the_mcp_server_runs_under_the_same_scrubbed_env(tmp_path, monkeypatch):
     assert server["command"] == "/usr/bin/env"
     assert "env" not in server
     assert set(_env_dash_i(server["args"])) == ALLOWED
-    assert server["args"][-3:] == ["/opt/swarm/lightpanda/lightpanda", "mcp", "--block-private-networks"]
+    binary = server["args"].index("/opt/swarm/lightpanda/lightpanda")
+    assert server["args"][binary + 1:binary + 3] == ["mcp", "--block-private-networks"]
     assert seen["token"] not in json.dumps(seen["mcp"])
 
 
@@ -225,10 +226,30 @@ def test_child_env_takes_nothing_else_from_the_parent(tmp_path):
 def test_both_commands_block_private_networks():
     env = lightpanda.child_env({}, Path("/c"))
     serve = lightpanda.serve_argv(env)
-    assert serve[serve.index(lightpanda.BINARY) + 1:] == [
+    start = serve.index(lightpanda.BINARY) + 1
+    assert serve[start:start + 10] == [
         "serve", "--host", "127.0.0.1", "--port", "9223", "--cdp-max-connections", "64",
         "--block-private-networks", "--log-level", "warn"]
     assert "--block-private-networks" in lightpanda.mcp_server(env)["args"]
+
+
+def _pairs(args: list[str], flag: str) -> list[str]:
+    return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == flag]
+
+
+def test_the_runner_refuses_what_listens_before_it_starts_lightpanda(tmp_path, monkeypatch):
+    """The shim and the relay are up before the runner; their ports reach both
+    Lightpanda commands, and the agent's later servers are not refused."""
+    shim_port = 30000 + secrets.randbelow(20000)
+    monkeypatch.setattr(claude_code.lightpanda, "loopback_listeners", lambda *a, **k: [shim_port])
+    seen = _run(tmp_path, monkeypatch, lightpanda.PROFILE)
+    (supervisor,) = seen["supervisors"]
+    server = seen["mcp"][lightpanda.MCP_SERVER_NAME]
+    for args in (supervisor.argv, server["args"]):
+        assert f"*:{shim_port}/*" in _pairs(args, "--block-urls")
+        assert f"*:{lightpanda.CDP_PORT}/*" in _pairs(args, "--block-urls")
+        exempted = [v[1:] for v in _pairs(args, "--block-cidrs") if v.startswith("-")]
+        assert sorted(exempted) == ["127.0.0.1/32", "::1/128"]
 
 
 def test_disallowed_tools_names_the_three_tools_and_a_flag_follows(tmp_path, monkeypatch):
