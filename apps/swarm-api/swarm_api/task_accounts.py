@@ -389,10 +389,116 @@ def derive(task: Task, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return _from_rows(current, live=task.state not in TERMINAL_STATES)
 
 
+# --------------------------------------------------------------------------
+# The stored copy (contract request 132, accepted 2026-11-01)
+# --------------------------------------------------------------------------
+#
+# `Task.current_account` is a READ-SIDE VIEW ONLY of the events above: the
+# answer `derive` gives, kept on the task document by the writer of each
+# account event, in that event's own write (`account_after`). The worker's
+# direct path restates the rule (`agent_worker.control`, a separate image)
+# and a test holds the two equal. Nothing that admits, leases or counts
+# capacity reads it: the broker's holds are an account's capacity.
+
+#: The causes that move a task's current account.
+ACCOUNT_CAUSES = (ACCOUNT_ASSIGNED, ACCOUNT_UNREADABLE)
+
+
+def account_after(prev: Any, event: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`Task.current_account` once `event` is written over `prev`, or None
+    when `event` is not an account event (nothing to write).
+
+    `_walk`'s rule, one event at a time: an assignment holds its account; an
+    unreadable account is a swap, and gives back the account held when it is
+    that one. A newer generation starts from nothing.
+    """
+    detail = event.get("detail") or {}
+    cause = detail.get("cause")
+    account_id = detail.get("account_id")
+    if cause not in ACCOUNT_CAUSES or not isinstance(account_id, str) or not account_id:
+        return None
+    generation = event.get("generation")
+    same = isinstance(prev, Mapping) and prev.get("generation") == generation
+    swaps = _stored_swaps(prev.get("swaps")) if same else []
+    if cause == ACCOUNT_ASSIGNED:
+        provider = detail.get("provider")
+        return _account(
+            STATUS_ASSIGNED,
+            account_id=account_id,
+            provider=provider if isinstance(provider, str) else None,
+            attempt_id=event.get("attempt_id"),
+            generation=generation,
+            swaps=swaps,
+        )
+    swaps.append({"account_id": account_id, "cause": _SWAP_CAUSE[cause]})
+    if same and prev.get("status") == STATUS_ASSIGNED and prev.get("account_id") != account_id:
+        return _account(
+            STATUS_ASSIGNED,
+            account_id=prev.get("account_id"),
+            provider=prev.get("provider"),
+            attempt_id=prev.get("attempt_id"),
+            generation=generation,
+            swaps=swaps,
+        )
+    return _account(
+        STATUS_NOT_ASSIGNED_YET,
+        attempt_id=prev.get("attempt_id") if same else event.get("attempt_id"),
+        generation=generation,
+        swaps=swaps,
+    )
+
+
+def _stored_swaps(value: Any) -> list[dict[str, str]]:
+    """A stored `swaps` list, only its well-formed entries."""
+    if not isinstance(value, list):
+        return []
+    return [
+        {"account_id": s["account_id"], "cause": s["cause"]}
+        for s in value
+        if isinstance(s, Mapping)
+        and isinstance(s.get("account_id"), str)
+        and isinstance(s.get("cause"), str)
+    ]
+
+
+_STORED_STATUSES = (STATUS_ASSIGNED, STATUS_NOT_ASSIGNED_YET, STATUS_NOT_ASSIGNED)
+
+
+def served_account(task: Task) -> dict[str, Any] | None:
+    """The stored copy, as `derive` would serve it, or None when the reader
+    must derive: no copy, a malformed one, or one from an earlier attempt
+    (a retry not yet assigned an account)."""
+    stored = task.current_account
+    if not isinstance(stored, Mapping) or stored.get("generation") != task.current_generation:
+        return None
+    status = stored.get("status")
+    account_id = stored.get("account_id")
+    if status not in _STORED_STATUSES:
+        return None
+    if (status == STATUS_ASSIGNED) != (isinstance(account_id, str) and bool(account_id)):
+        return None
+    if status == STATUS_NOT_ASSIGNED_YET and task.state in TERMINAL_STATES:
+        status = STATUS_NOT_ASSIGNED
+    provider = stored.get("provider")
+    attempt_id = stored.get("attempt_id")
+    return _account(
+        status,
+        account_id=account_id if status == STATUS_ASSIGNED else None,
+        provider=provider if isinstance(provider, str) else None,
+        attempt_id=attempt_id if isinstance(attempt_id, str) else None,
+        generation=task.current_generation,
+        swaps=_stored_swaps(stored.get("swaps")),
+    )
+
+
 def accounts_for(
     db: Any, tenant_id: str, tasks: Sequence[Task], *, cache: FinishedAccounts | None = None
 ) -> dict[str, dict[str, Any]]:
-    """`task.account` for every task of one page, in at most ceil(n / 30) queries."""
+    """`task.account` for every task of one page, in at most ceil(n / 30) queries.
+
+    A task carrying a current stored copy (`served_account`, contract request
+    132) is served from it and costs no read.
+    """
     cache = FINISHED if cache is None else cache
     out: dict[str, dict[str, Any]] = {}
     pending: list[Task] = []
@@ -403,6 +509,10 @@ def accounts_for(
         static = _static(task)
         if static is not None:
             out[task.id] = static
+            continue
+        stored = served_account(task)
+        if stored is not None:
+            out[task.id] = stored
             continue
         hit = cache.get(task)
         if hit is not None:
@@ -453,3 +563,109 @@ def accounts_for_attempts(
             account["generation"] = attempt.generation
         out[attempt.attempt_id] = account
     return out
+
+
+# --------------------------------------------------------------------------
+# The one-time backfill (contract request 132)
+# --------------------------------------------------------------------------
+#
+# `scripts/backfill-task-views.sh` runs this once per deployment, so a task
+# written before the fields stops costing `GET /v1/tasks` its per-page reads.
+# It writes what the writers would have written, from the same rules: the
+# totals of the task's attempt documents as of its CURRENT attempt
+# (`attempt_totals.stored_totals`) and the account its current attempt's
+# events leave it on (`account_after`, folded oldest first). A task whose
+# current attempt has no document, or no account event, is left to the
+# reader's derivation, which serves it as before.
+
+#: The task documents' collection (`store.TASKS`).
+TASKS = "tasks"
+
+
+def backfill_task_views(db: Any, *, apply: bool, tenant_id: str | None = None,
+                        sample: int = 20) -> dict[str, Any]:
+    """Plan, and with `apply` write, the two stored views every task lacks.
+
+    Only a field that is absent (or null) is written, inside a transaction
+    that re-reads the task and writes nothing if a writer filled the field
+    or a newer attempt moved `current_generation` since the plan read it.
+    Attempts and events are read in the task's own tenant only.
+    """
+    from google.cloud import firestore
+
+    from .attempt_totals import stored_totals, task_attempt_docs
+
+    query = db.collection(TASKS)
+    if tenant_id:
+        query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+    report: dict[str, Any] = {
+        "tasks_read": 0, "totals_to_write": 0, "accounts_to_write": 0,
+        "left_no_current_attempt": 0, "left_no_account_event": 0, "left_unread": 0,
+        "written": 0, "refused_changed": 0, "sample": [],
+    }
+    for snap in query.stream():
+        doc = snap.to_dict() or {}
+        report["tasks_read"] += 1
+        task_tenant = doc.get("tenant_id")
+        task_id = doc.get("id") or snap.id
+        if not isinstance(task_tenant, str) or not task_tenant or (tenant_id and task_tenant != tenant_id):
+            continue
+        try:
+            generation = int(doc.get("current_generation") or 0)
+        except (TypeError, ValueError):
+            continue
+        if generation <= 0:
+            continue
+        fields: dict[str, Any] = {}
+        if doc.get("attempt_totals") is None:
+            try:
+                attempts = task_attempt_docs(db, task_tenant, task_id)
+            except OverflowError:
+                report["left_unread"] += 1
+                attempts = []
+            current = [a for a in attempts if a.get("generation") == generation]
+            if current:
+                fields["attempt_totals"] = stored_totals(
+                    attempts, attempt_id=str(current[0].get("attempt_id")), generation=generation)
+                report["totals_to_write"] += 1
+            else:
+                report["left_no_current_attempt"] += 1
+        if doc.get("current_account") is None and could_hold_account(doc):
+            events, complete = read_account_events(db, task_tenant, [task_id])
+            if task_id not in complete:
+                report["left_unread"] += 1
+            else:
+                account = None
+                for row in _ordered(r for r in events.get(task_id, [])
+                                    if r.get("generation") == generation):
+                    account = account_after(account, row) or account
+                if account is None:
+                    report["left_no_account_event"] += 1
+                else:
+                    fields["current_account"] = account
+                    report["accounts_to_write"] += 1
+        if not fields:
+            continue
+        if len(report["sample"]) < sample:
+            report["sample"].append({"task_id": task_id, "tenant_id": task_tenant,
+                                     "generation": generation, "fields": sorted(fields)})
+        if not apply:
+            continue
+        ref = db.collection(TASKS).document(snap.id)
+
+        def write(txn: Any, ref: Any = ref, fields: dict[str, Any] = fields,
+                  generation: int = generation) -> bool:
+            now = ref.get(transaction=txn).to_dict() or {}
+            if now.get("current_generation") != generation:
+                return False
+            still = {k: v for k, v in fields.items() if now.get(k) is None}
+            if not still:
+                return False
+            txn.update(ref, still)
+            return True
+
+        if firestore.transactional(write)(db.transaction()):
+            report["written"] += 1
+        else:
+            report["refused_changed"] += 1
+    return report
