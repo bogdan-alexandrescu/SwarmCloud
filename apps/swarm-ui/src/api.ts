@@ -18,7 +18,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
-import { summaryTaskById, type StepTaskSummary } from './stepviews'
+import { stateEnteredAt, summaryTaskById, type StepTaskSummary } from './stepviews'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
 import { noteProfile, revisionAfterZoneSaves } from './timezone'
@@ -1670,6 +1670,30 @@ export async function loadRuns(
   if (limit !== null) query.set('limit', String(limit))
   return read<IssueRunSummaryPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
 }
+
+/**
+ * THE PLANNER'S CHECK OF ITS OWN PLAN (CLD's Jev report: plan coverage),
+ * served on the run read as `plan_advisory` (`served_plan_advisory`,
+ * routes/runs.py): read from the planner's `plan-advisory.json` when the run
+ * is read, never stored on the run. Null when the planner wrote none; absent
+ * on a list row that is not PLANNED (not read). Advisory: it decides nothing.
+ */
+export interface PlanAdvisory {
+  /** J2: the requirements no step covers (`none`) or covers only weakly (`weak`). */
+  coverage: {
+    requirements: number | null
+    flagged: { index: number | null; requirement: string; coverage: 'none' | 'weak' }[]
+  } | null
+  /** J5: the work in flight this plan likely duplicates; `url` only on github.com. */
+  duplicate: { title: string | null; ref: string | null; url: string | null; p: number | null } | null
+  /** The duplicate made the plan wait for a person's approval. */
+  hold_for_human: boolean
+  /** The plan revision that was judged: the planner's own, 1. */
+  judged_revision: number
+}
+
+/** A run as the run read serves it, with the planner's check. */
+export type AdvisedIssueRun = IssueRun & { plan_advisory?: PlanAdvisory | null }
 
 /** `GET /v1/runs/{run_id}`. The read advances the run (routes/runs.py). */
 export async function loadRun(runId: string): Promise<Result<IssueRunRead>> {
@@ -3381,6 +3405,152 @@ export async function loadTaskEventsPage(
   return read<TaskEventsPage>(route('/v1/tasks/{id}/events', { id: taskId }, q), () => false)
 }
 
+/**
+ * ONE TASK'S DIGEST, AS `GET /v1/tasks/digests` SERVES IT (#2688,
+ * WORK-READS-SPEED): what a page draws for each of many tasks, so it reads
+ * them all at once. The owner's 40-step workflow page made 24 events pages
+ * and 12 attempt reads for these figures, and the Agents list one live
+ * session read per browser row on every refresh.
+ *
+ *  - `entered_at`: when a PARKED, LEASED or DISPATCHED task entered that
+ *    state (the server applies `stateEnteredAt`'s rule to the same newest
+ *    page), else null; absent when `entered` was not asked for.
+ *  - `usage`: the task's attempts summed as `StepUsage`; null with
+ *    `usage_read: 'failed'` when they were not read -- never a zero.
+ *  - `live`: the current attempt's session state and device (`include` live).
+ *
+ * A task of another tenant, or a missing one, is simply not in `digests`.
+ */
+export interface TaskDigest {
+  task_id: string
+  state: TaskState
+  entered_at?: string | null
+  usage?: {
+    attempts: number
+    attempts_with_cost: number
+    attempts_with_tokens: number
+    checkpoints: number
+    cost_usd: number | null
+    input_tokens: number | null
+    output_tokens: number | null
+    cache_read_input_tokens: number | null
+    cache_creation_input_tokens: number | null
+  } | null
+  usage_read?: 'ok' | 'failed'
+  live?: { live_browser: boolean; session_state: 'open' | 'closed' | null; device: LiveDevice | null }
+}
+
+export interface TaskDigests {
+  tenant_id?: string
+  read_at?: string
+  digests: TaskDigest[]
+  /** The gate's presets, once beside the rows, when `live` was asked for. */
+  presets?: LivePreset[]
+}
+
+export type DigestPart = 'entered' | 'usage' | 'live'
+
+/** The most ids one digest read takes: the route's `DIGEST_MAX_IDS`. */
+export const DIGEST_MAX_IDS = 100
+
+/**
+ * `GET /v1/tasks/digests?ids=...&include=...`: many tasks' digests in ONE
+ * request. More than `DIGEST_MAX_IDS` ids are read in as many requests as
+ * they need, never one per task.
+ */
+export async function loadTaskDigests(
+  taskIds: readonly string[],
+  include: readonly DigestPart[] = ['entered', 'usage'],
+): Promise<Result<TaskDigests>> {
+  const wanted = Array.from(new Set(taskIds.filter((id) => id !== '')))
+  if (wanted.length === 0) return { status: 'empty', fetchedAt: Date.now() }
+  if (USE_FIXTURES) return fixtureTaskDigests(wanted, include)
+  const chunks: string[][] = []
+  for (let i = 0; i < wanted.length; i += DIGEST_MAX_IDS) chunks.push(wanted.slice(i, i + DIGEST_MAX_IDS))
+  const pages = await Promise.all(
+    chunks.map((ids) =>
+      read<TaskDigests>(
+        route('/v1/tasks/digests', {}, new URLSearchParams({ ids: ids.join(','), include: include.join(',') })),
+        () => false,
+      ),
+    ),
+  )
+  const failed = pages.find((p) => p.status === 'error')
+  if (failed !== undefined) return failed
+  const digests: TaskDigest[] = []
+  let presets: LivePreset[] | undefined
+  let fetchedAt = Date.now()
+  for (const p of pages) {
+    if (p.status !== 'ok' && p.status !== 'stale') continue
+    digests.push(...p.data.digests)
+    presets = presets ?? p.data.presets
+    fetchedAt = Math.min(fetchedAt, p.fetchedAt)
+  }
+  return { status: 'ok', fetchedAt, data: { digests, ...(presets !== undefined ? { presets } : {}) } }
+}
+
+/**
+ * The fixture build's digests, from THE SAME fixture reads the per-task routes
+ * serve: each task's newest events page through `stateEnteredAt`, its attempt
+ * rows through `rollUpAttempts`, and its live session as `loadLiveSession`
+ * answers it. One probe, as one request.
+ */
+async function fixtureTaskDigests(ids: readonly string[], include: readonly DigestPart[]): Promise<Result<TaskDigests>> {
+  noteFixtureProbe(route('/v1/tasks/digests'), 200, true)
+  const tasks = await fixtureTasks()
+  const byId = new Map(tasks.status === 'ok' ? tasks.data.tasks.map((t) => [t.id, t] as const) : [])
+  const digests: TaskDigest[] = []
+  let presets: LivePreset[] | undefined
+  for (const id of ids) {
+    let t = byId.get(id) ?? null
+    if (t === null) {
+      const detail = await fixtureAgentDetail(id)
+      t = detail.status === 'ok' ? detail.data.task : null
+    }
+    if (t === null) continue
+    const row: TaskDigest = { task_id: id, state: t.state }
+    if (include.includes('entered')) {
+      const page = await fixtureEventsPage(id, 'desc')
+      const at = page.status === 'ok' ? stateEnteredAt(t.state, page.data.events) : null
+      row.entered_at = at === null ? null : new Date(at).toISOString()
+    }
+    if (include.includes('usage')) {
+      const got = await fixtureStepAttempts(id)
+      const rows = got.status === 'ok' ? got.data.attempts : got.status === 'empty' ? [] : null
+      if (rows === null) {
+        row.usage = null
+        row.usage_read = 'failed'
+      } else {
+        const u = rollUpAttempts(rows)
+        row.usage = {
+          attempts: u.attempts,
+          attempts_with_cost: u.attemptsWithCost,
+          attempts_with_tokens: u.attemptsWithTokens,
+          checkpoints: u.checkpoints,
+          cost_usd: u.costUsd,
+          input_tokens: u.inputTokens,
+          output_tokens: u.outputTokens,
+          cache_read_input_tokens: u.cacheReadTokens,
+          cache_creation_input_tokens: u.cacheCreationTokens,
+        }
+        row.usage_read = 'ok'
+      }
+    }
+    if (include.includes('live')) {
+      const live = await loadLiveSession(id)
+      const data = live.status === 'ok' ? live.data : null
+      row.live = {
+        live_browser: data?.live_browser ?? false,
+        session_state: data?.session?.state ?? null,
+        device: data?.session?.device ?? null,
+      }
+      presets = presets ?? data?.session?.presets
+    }
+    digests.push(row)
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: { digests, presets: include.includes('live') ? (presets ?? []) : undefined } }
+}
+
 async function fixtureAttemptsPage(since: string, until: string): Promise<Result<AttemptsPage>> {
   const tasks = await fixtureTasks()
   noteFixtureProbe(route('/v1/attempts'), 200, true)
@@ -4717,7 +4887,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "mock": {"available": true, "disabled_reason": ""},
   "generic": {"available": true, "disabled_reason": ""},
   "claude-code": {"available": true, "disabled_reason": ""},
-  "codex": {"available": false, "disabled_reason": "codex is disabled until the ChatGPT-plan pool lands: the quota broker leasing OpenAI plan accounts and the codex runner using them. A follow-up turns it on once both have merged. Use claude-code."},
+  "codex": {"available": true, "disabled_reason": ""},
   "browser": {"available": true, "disabled_reason": ""},
   "merge": {"available": true, "disabled_reason": ""},
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
@@ -7887,7 +8057,6 @@ export async function loadSpend(page: TaskPage): Promise<Result<SpendRollup>> {
  * is the honest shape.
  */
 const STEP_USAGE_SAMPLE_TASKS = 12
-const STEP_USAGE_CONCURRENCY = 3
 
 /** What one step's attempts add up to. Every summable field is nullable. */
 export interface StepUsage {
@@ -7936,27 +8105,30 @@ export async function loadWorkflowUsage(
   // them -- and distinct from "we could not read the attempts".
   if (sample.length === 0) return { status: 'empty', fetchedAt: Date.now() }
 
-  const results = await mapWithLimit(sample, STEP_USAGE_CONCURRENCY, (id) =>
-    USE_FIXTURES ? fixtureStepAttempts(id) : loadAttempts(id),
-  )
-
+  // ONE READ FOR EVERY SAMPLED STEP (#2688, WORK-READS-SPEED): the digests
+  // route sums each task's attempts where they are, so the board no longer
+  // reads one attempt page per step -- 12 requests on the owner's 40-step
+  // page, three at a time. The opened step still reads its own attempts.
+  const r = await loadTaskDigests(sample, ['usage'])
   const byTaskId = new Map<string, StepUsage>()
   const failed = new Map<string, string>()
-  results.forEach((r, i) => {
-    const id = sample[i]
-    if (id === undefined) return
-    if (r.status === 'error') {
-      failed.set(id, r.error.message)
-      return
-    }
+  if (r.status === 'error') {
+    for (const id of sample) failed.set(id, r.error.message)
+  } else if (r.status === 'loading') {
     // `loading` cannot be awaited into existence here, but the union permits
     // it and a silent `continue` would record the task as measured-with-zero.
-    if (r.status === 'loading') {
-      failed.set(id, 'The attempt read did not complete.')
-      return
+    for (const id of sample) failed.set(id, 'The attempt read did not complete.')
+  } else {
+    const served = new Map((r.status === 'empty' ? [] : r.data.digests).map((d) => [d.task_id, d] as const))
+    for (const id of sample) {
+      const d = served.get(id)
+      // Not served is another tenant's, a missing task, or not the caller's:
+      // what the per-task read answered with a 404.
+      if (d === undefined) failed.set(id, 'The task was not found.')
+      else if (d.usage === null || d.usage === undefined || d.usage_read === 'failed') failed.set(id, 'The attempt read failed.')
+      else byTaskId.set(id, usageOfDigest(d.usage))
     }
-    byTaskId.set(id, rollUpAttempts(r.status === 'empty' ? [] : r.data.attempts))
-  })
+  }
 
   return {
     status: 'ok',
@@ -7968,6 +8140,21 @@ export async function loadWorkflowUsage(
       sampleLimit: STEP_USAGE_SAMPLE_TASKS,
       tasksRequested: wanted.length,
     },
+  }
+}
+
+/** A digest's `usage` as the board's `StepUsage`: the same figures, renamed. */
+function usageOfDigest(u: NonNullable<TaskDigest['usage']>): StepUsage {
+  return {
+    attempts: u.attempts,
+    attemptsWithCost: u.attempts_with_cost,
+    attemptsWithTokens: u.attempts_with_tokens,
+    checkpoints: u.checkpoints,
+    costUsd: u.cost_usd,
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+    cacheReadTokens: u.cache_read_input_tokens,
+    cacheCreationTokens: u.cache_creation_input_tokens,
   }
 }
 

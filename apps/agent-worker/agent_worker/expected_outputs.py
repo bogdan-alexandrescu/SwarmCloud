@@ -473,6 +473,8 @@ def agent_instructions(
             "repository included, do not reach those steps.",
         ]
         lines += [f"- {PurePosixPath(directory) / name}" for name in names]
+        if REVIEW_VERDICT_NAME in names:
+            lines.append(verdict_line())
     if staged:
         lines.append(
             "Earlier steps of this workflow gave you these files, which are outside "
@@ -480,6 +482,29 @@ def agent_instructions(
         )
         lines += [f"- {path}" for path in staged]
     return "\n".join(lines)
+
+
+def verdict_line() -> str:
+    """The one line that says what `verdict.json` must hold (#3024).
+
+    MEASURED 2026-11-02 (task_3f1d937155f745c4a461): a review step owed
+    `verdict.json`, its prompt named only the file, and the agent wrote
+    `{"verdict": "changes_requested"}` in its own words. The worker refused it
+    after the session (`verdict_problem`, `unreadable_verdict`) and each retry
+    started from the same prompt: three attempts and $9.79 lost. So the shape
+    and when to use each value go into the prompt, from `verdict.EXPECTED_SHAPE`
+    and `verdict.REVIEW_VERDICTS`, the same two the worker reads it with. No
+    synonym is accepted, so none is offered. It carries no rate-limit or
+    credential marker (`cliagent._RATE_LIMIT_MARKERS`) for a CLI that echoes it.
+    """
+    merge, not_yet = verdict_mod.REVIEW_VERDICTS
+    return (
+        f"{REVIEW_VERDICT_NAME} is a JSON object, {verdict_mod.EXPECTED_SHAPE}: "
+        f"`verdict` is {merge} when nothing must change and {not_yet} when anything "
+        "must change, and `findings` lists what you found. No other word is a "
+        f"verdict: a file whose `verdict` is not {merge} or {not_yet} is refused and "
+        "fails the step."
+    )
 
 
 def with_instructions(

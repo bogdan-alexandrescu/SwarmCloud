@@ -24,6 +24,17 @@ MONTHLY CAP. `monthly_cap_tokens` and `month_used_tokens` are read by the
 worker when the attempt starts; a call is admitted only while this task's
 spend still fits under what was left of the month. The task's spend is added
 to the workspace's month once, by `settle`, when the attempt ends.
+
+PER TASK, ACROSS ATTEMPTS (lane JEV-JUDGMENTS-RUN, 2026-11-02). The worker
+settles each attempt with `settle_attempt`: in ONE transaction, fenced by the
+attempt's generation (invariant 5), it adds the attempt's tokens to the
+month's document and writes the attempt's own row
+(`<tenant>_<task>_g<generation>`, `kind: attempt`, its calls and tokens). The
+next attempt of the task reads those rows (`FirestoreMonthlyLedger
+.task_spend`) and starts its ledger with their calls and tokens carried, so
+the owner's 8 calls and 120k tokens are per task, not per attempt. What is
+carried was charged to the month by the attempt that spent it, so it is
+created as already settled and never charged twice.
 """
 
 from __future__ import annotations
@@ -32,6 +43,7 @@ import fcntl
 import json
 import os
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol
 
@@ -63,7 +75,9 @@ class Ledger:
                calls: int = 0, input_tokens: int = 0) -> "Ledger":
         """The attempt's ledger. An existing one is kept, so registering the
         tool twice in one attempt does not refill the budget. `calls` and
-        `input_tokens` carry an earlier attempt's spend on the same task."""
+        `input_tokens` carry an earlier attempt's spend on the same task,
+        already charged to the month by that attempt: they count against the
+        task's limits and are never settled again."""
         ledger = cls(path)
         ledger.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if not ledger.path.exists():
@@ -71,7 +85,8 @@ class Ledger:
                 "version": LEDGER_VERSION,
                 "max_calls": max_calls, "max_input_tokens": max_input_tokens,
                 "monthly_cap_tokens": monthly_cap_tokens, "month_used_tokens": month_used_tokens,
-                "calls": calls, "input_tokens": input_tokens, "settled_tokens": 0,
+                "calls": calls, "input_tokens": input_tokens,
+                "settled_calls": calls, "settled_tokens": input_tokens,
                 "consecutive_failures": 0, "breaker_open": False, "unavailable_logged": False,
                 "audit": [],
             })
@@ -106,7 +121,8 @@ class Ledger:
         if not isinstance(state, dict) or state.get("version") != LEDGER_VERSION:
             return {"version": LEDGER_VERSION, "max_calls": 0, "max_input_tokens": 0,
                     "monthly_cap_tokens": None, "month_used_tokens": 0, "calls": 0,
-                    "input_tokens": 0, "settled_tokens": 0, "consecutive_failures": 0,
+                    "input_tokens": 0, "settled_calls": 0, "settled_tokens": 0,
+                    "consecutive_failures": 0,
                     "breaker_open": True, "unavailable_logged": True, "audit": []}
         return state
 
@@ -148,6 +164,22 @@ class Ledger:
             state["settled_tokens"] = int(state["input_tokens"])
             return delta
 
+    def take_unsettled_attempt(self) -> tuple[int, int]:
+        """`(calls, tokens)` this attempt spent and has not yet settled,
+        marked settled: what `settle_attempt` writes."""
+        with self._locked() as state:
+            calls = max(0, int(state["calls"]) - int(state.get("settled_calls") or 0))
+            tokens = max(0, int(state["input_tokens"]) - int(state.get("settled_tokens") or 0))
+            state["settled_calls"] = int(state.get("settled_calls") or 0) + calls
+            state["settled_tokens"] = int(state.get("settled_tokens") or 0) + tokens
+            return calls, tokens
+
+    def restore_unsettled(self, calls: int, tokens: int) -> None:
+        """Undo `take_unsettled_attempt` after a settle that did not land."""
+        with self._locked() as state:
+            state["settled_calls"] = int(state.get("settled_calls") or 0) - calls
+            state["settled_tokens"] = int(state.get("settled_tokens") or 0) - tokens
+
 
 def _refusal(state: Mapping[str, Any], estimate: int) -> str | None:
     if state.get("breaker_open"):
@@ -185,8 +217,24 @@ class InMemoryMonthlyLedger:
         self.totals[(workspace, month)] = self.used(workspace, month) + tokens
 
 
-#: One document per workspace and calendar month (UTC), `<tenant>_<YYYY-MM>`.
+#: One document per workspace and calendar month (UTC), `<tenant>_<YYYY-MM>`,
+#: and one row per settled attempt, `<tenant>_<task>_g<generation>`.
 MONTHLY_COLLECTION = "jev_usage"
+#: The attempt rows' `kind`; the month documents carry none.
+ATTEMPT_KIND = "attempt"
+
+
+def month_of(now: datetime) -> str:
+    """The calendar month (UTC) a use counts in, `YYYY-MM`."""
+    return now.astimezone(timezone.utc).strftime("%Y-%m")
+
+
+def attempt_row_id(workspace: str, task_id: str, generation: int) -> str:
+    return f"{workspace}_{task_id}_g{int(generation)}"
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
 class FirestoreMonthlyLedger:
@@ -222,6 +270,73 @@ class FirestoreMonthlyLedger:
                           "input_tokens": before + tokens})
 
         self._runner.run(_apply)
+
+    def task_spend(self, workspace: str, task_id: str) -> tuple[int, int]:
+        """`(calls, input_tokens)` the task's settled attempts spent, from
+        their rows: this tenant's only, as the rows name it."""
+        from google.cloud.firestore_v1.base_query import FieldFilter  # lazy: grpc
+
+        query = (self._db.collection(MONTHLY_COLLECTION)
+                 .where(filter=FieldFilter("tenant_id", "==", workspace))
+                 .where(filter=FieldFilter("task_id", "==", task_id))
+                 .where(filter=FieldFilter("kind", "==", ATTEMPT_KIND)))
+        calls = tokens = 0
+        for snapshot in query.stream():
+            data = snapshot.to_dict() or {}
+            calls += _count(data.get("calls"))
+            tokens += _count(data.get("input_tokens"))
+        return calls, tokens
+
+    def settle_attempt(self, workspace: str, month: str, *, task_id: str, generation: int,
+                       calls: int, tokens: int,
+                       fence: Callable[[Any], Any] | None = None) -> None:
+        """In ONE transaction: `fence(txn)` first, which reads the task and
+        its lease and raises for a superseded attempt (invariant 5), so a
+        stale attempt writes nothing; then the month's total and the
+        attempt's row, each added to, never replaced."""
+        month_ref = self._ref(workspace, month)
+        row_ref = self._db.collection(MONTHLY_COLLECTION).document(
+            attempt_row_id(workspace, task_id, generation))
+
+        def _apply(txn: Any) -> None:
+            if fence is not None:
+                fence(txn)
+            month_snap = txn.get(month_ref)
+            row_snap = txn.get(row_ref)
+            month_data = (month_snap.to_dict() if month_snap.exists else None) or {}
+            row_data = (row_snap.to_dict() if row_snap.exists else None) or {}
+            if tokens:
+                txn.set(month_ref, {"tenant_id": workspace, "month": month,
+                                    "input_tokens": _count(month_data.get("input_tokens"))
+                                    + tokens})
+            txn.set(row_ref, {"kind": ATTEMPT_KIND, "tenant_id": workspace,
+                              "task_id": task_id, "generation": int(generation),
+                              "month": month,
+                              "calls": _count(row_data.get("calls")) + calls,
+                              "input_tokens": _count(row_data.get("input_tokens")) + tokens})
+
+        self._runner.run(_apply)
+
+
+def settle_attempt(ledger: Ledger, usage: FirestoreMonthlyLedger, *, workspace: str,
+                   task_id: str, generation: int, month: str,
+                   fence: Callable[[Any], Any] | None = None,
+                   log: Callable[..., None] | None = None) -> tuple[int, int] | None:
+    """Settle this attempt's not-yet-settled calls and tokens into
+    `jev_usage`: one row per attempt and the month's total, fenced. Returns
+    what was settled, or None when the write did not land (a fence, an
+    outage), which is logged by type and returned to the unsettled count. It
+    never raises: accounting never fails the attempt."""
+    calls, tokens = ledger.take_unsettled_attempt()
+    try:
+        usage.settle_attempt(workspace, month, task_id=task_id, generation=generation,
+                             calls=calls, tokens=tokens, fence=fence)
+    except Exception as exc:  # noqa: BLE001
+        ledger.restore_unsettled(calls, tokens)
+        if log is not None:
+            log("jev_settle_failed", error=type(exc).__name__, calls=calls, tokens=tokens)
+        return None
+    return calls, tokens
 
 
 def settle(ledger: Ledger, monthly: MonthlyLedger, *, workspace: str, month: str,

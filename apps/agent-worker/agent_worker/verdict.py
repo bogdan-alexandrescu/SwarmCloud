@@ -124,8 +124,12 @@ _COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
 NOOP_PRECHECK_KEY = "noop_precheck"
 NOOP_PRECHECK_CHECK = "b"
 
-_EXPECTED_SHAPE = (
-    '{"verdict": "MERGE" | "NOT_YET", "findings": [...]}'
+#: A verdict file's shape, stated once: the refusal of an unreadable staged
+#: verdict says it, and so do the review's own prompt and its repair turn
+#: (`expected_outputs.verdict_line`, #3024).
+EXPECTED_SHAPE = (
+    '{"verdict": ' + " | ".join(f'"{v}"' for v in REVIEW_VERDICTS)
+    + ', "findings": [...]}'
 )
 
 
@@ -534,7 +538,7 @@ def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
 
     def refuse(problem: str) -> InputUnavailable:
         return InputUnavailable(
-            f"{where} {problem}. A verdict file is {_EXPECTED_SHAPE}, with "
+            f"{where} {problem}. A verdict file is {EXPECTED_SHAPE}, with "
             f"`verdict` {accepted}; the agent was not started and nothing was "
             "published, because an unreadable review is not a MERGE"
         )
