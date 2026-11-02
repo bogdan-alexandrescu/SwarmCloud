@@ -54,9 +54,14 @@ export class TalkError extends Error {
   }
 }
 
-/** `POST /v1/voice/sessions`: swarm-api checks the person and forwards the offer. */
-export async function startVoiceSession(offerSdp: string): Promise<StartedSession> {
-  const r = await write(route(VOICE_SESSIONS), 'POST', { offer_sdp: offerSdp })
+/**
+ * `POST /v1/voice/sessions`: swarm-api checks the person and forwards the
+ * offer. With `projectId` (a Resume), the session continues that project;
+ * without it, swarm-api opens a new one.
+ */
+export async function startVoiceSession(offerSdp: string, projectId: string | null = null): Promise<StartedSession> {
+  const body = projectId === null ? { offer_sdp: offerSdp } : { offer_sdp: offerSdp, project_id: projectId }
+  const r = await write(route(VOICE_SESSIONS), 'POST', body)
   if (r.status === 'error' || r.status === 'stale') throw new TalkError(r.error.message, r.error)
   if (r.status !== 'ok') throw new TalkError('swarm-api answered the start with nothing.')
   const d = r.data as Partial<StartedSession> | null
@@ -98,9 +103,10 @@ export interface TalkCall {
  * Open the call: the mic, one peer carrying its track, the events channel,
  * the offer to swarm-api and its answer back. On any failure everything
  * opened so far is closed before the error is thrown, so a refused start
- * never leaves the mic light on.
+ * never leaves the mic light on. `projectId` is the project a Resume
+ * continues, sent with the offer; null starts a new project.
  */
-export async function connectTalk(h: TalkHandlers): Promise<TalkCall> {
+export async function connectTalk(h: TalkHandlers, projectId: string | null = null): Promise<TalkCall> {
   if (typeof RTCPeerConnection === 'undefined' || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     throw new TalkError('This browser cannot make a voice call (no WebRTC or no microphone access).')
   }
@@ -156,7 +162,7 @@ export async function connectTalk(h: TalkHandlers): Promise<TalkCall> {
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
     if (!offer.sdp) throw new TalkError('The browser made no SDP offer.')
-    const started = await startVoiceSession(offer.sdp)
+    const started = await startVoiceSession(offer.sdp, projectId)
     try {
       await pc.setRemoteDescription({ type: 'answer', sdp: started.answer_sdp })
     } catch (e) {

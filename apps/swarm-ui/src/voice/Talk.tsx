@@ -17,6 +17,12 @@
  * live calls Shell.tsx's `noteActivity`, so the console's fifteen-minute idle
  * stop does not pause the screens of someone who is only talking. When the
  * session ends the call is hung up and nothing calls it.
+ *
+ * RESUME (§3.7). Projects.tsx hands over the project a Resume continues
+ * (`takeResumedProject`); the first Start talking takes it and sends it as
+ * `project_id`, so the session continues that project. It is kept until a
+ * start succeeds, so a refused start (no mic, swarm-voice away) retries the
+ * same project; after that, a start opens a new project.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -25,6 +31,7 @@ import { Button, Segmented, ToneMark } from '../components'
 import { noteActivity } from '../Shell'
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
 import { micWord, useMic, type MicMode } from './mic'
+import { takeResumedProject } from './Projects'
 import { connectTalk, endVoiceSession, TalkError, type TalkCall } from './rtc'
 import { Ring, type ScopeState } from './Scope'
 import '../styles/talk-pane.css'
@@ -124,6 +131,9 @@ export function TalkPane() {
   const call = useRef<TalkCall | null>(null)
   const mounted = useRef(true)
   const audio = useRef<HTMLAudioElement | null>(null)
+  // The Resume's project: undefined until the first start takes it, then the
+  // id until a start succeeds, then null.
+  const resumed = useRef<string | null | undefined>(undefined)
   const live = phase === 'live'
   const { mic, setMuted, setMode, hold } = useMic(track, live)
 
@@ -169,12 +179,17 @@ export function TalkPane() {
     setProblem(null)
     setLines([])
     setPhase('connecting')
+    if (resumed.current === undefined) resumed.current = takeResumedProject()
     try {
-      const c = await connectTalk({
-        onEvent,
-        onVoice: (s) => setVoice(s),
-        onDropped: () => void end(),
-      })
+      const c = await connectTalk(
+        {
+          onEvent,
+          onVoice: (s) => setVoice(s),
+          onDropped: () => void end(),
+        },
+        resumed.current,
+      )
+      resumed.current = null
       if (!mounted.current) {
         c.hangUp()
         void endVoiceSession(c.sessionId)
