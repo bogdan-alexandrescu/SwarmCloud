@@ -148,7 +148,7 @@ records are the authority on what was sent.
   setting and the step's `jev_judgments` switch; the entry is
   `register.server_entry` over the worker's own config, so the tool's calls
   go through the same `JudgeClient`, sanitizer (every rule above) and ledger
-  as J1-J5 and count against the same per-task and monthly budget. The entry
+  as J1-J5 and count against the same per-agent and monthly budget. The entry
   carries Claude Code's `alwaysLoad`, so the tool is in the prompt from the
   session's start, and the prompt has one line saying when to ask it. The
   tool process is the agent's child, running as the agent's user: on the
