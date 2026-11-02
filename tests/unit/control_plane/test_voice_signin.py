@@ -344,6 +344,14 @@ def test_a_body_naming_a_person_or_secret_is_422(client, writer):
     assert writer.versions == {}
 
 
+def test_the_exchange_body_is_never_captured():
+    from swarm_api.main import UNCAPTURED_ROUTES
+    from swarm_api.routes import voice_signin
+
+    assert voice_signin.EXCHANGE_ROUTE == "/v1/voice/chatgpt/exchange"
+    assert "/v1/voice/chatgpt/exchange" in UNCAPTURED_ROUTES
+
+
 def test_authorize_says_where_the_browser_lands_and_what_to_paste(client):
     started = _begin(client).json()
 

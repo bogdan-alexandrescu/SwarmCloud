@@ -184,6 +184,9 @@ UNCAPTURED_ROUTES = frozenset({
     # The Desktop sign-in client's secret (day-one-plan.md §5.6, part of
     # #2964), which the route adds to Secret Manager and nowhere else.
     "/v1/admin/setup/sign-in-client",
+    # Voice it's ChatGPT sign-in: the address it ended on carries the OAuth
+    # authorization code that redeems for the person's refresh token.
+    voice_signin.EXCHANGE_ROUTE,
 })
 
 # --------------------------------------------------------------------------

@@ -42,6 +42,9 @@ from .workspace_secrets import secret_writer
 
 router = APIRouter(prefix="/v1/voice/chatgpt", tags=["voice"])
 
+#: Its body carries an OAuth authorization code: in `main.UNCAPTURED_ROUTES`.
+EXCHANGE_ROUTE = "/v1/voice/chatgpt/exchange"
+
 
 class FinishSignIn(StrictModel):
     #: The state `/authorize` returned: which pending sign-in this finishes.
@@ -83,7 +86,7 @@ async def begin_sign_in(
     return await run_in_threadpool(_service(ctx, writer, tokens).begin, person)
 
 
-@router.post("/exchange")
+@router.post(EXCHANGE_ROUTE.removeprefix(router.prefix))
 async def finish_sign_in(
     body: FinishSignIn,
     person: str = Depends(allowed_person),
