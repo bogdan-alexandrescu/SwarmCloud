@@ -31,7 +31,7 @@ import { task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
-  loadTasksInState: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadAttempts: vi.fn(),
   loadLiveSession: vi.fn(),
   loadTask: vi.fn(),
@@ -76,10 +76,10 @@ function page(tasks: Task[], token: string | null): Result<TaskPage> {
   return ok({ tasks, next_page_token: token, tenant_id: 'eng' })
 }
 
-/** Every `?state=` read answers from `all()`, whole: one state or a comma list as one `in` query. */
+/** Every `?state=` read answers from `all()`, whole: every state asked for, as one `in` query. */
 function statesFrom(all: () => Task[]) {
-  api.loadTasksInState.mockImplementation(async (state: TaskState) => {
-    const asked = new Set(state.split(','))
+  api.loadTasksInStates.mockImplementation(async (states: readonly TaskState[]) => {
+    const asked = new Set<TaskState>(states)
     const tasks = all().filter((t) => asked.has(t.state))
     return tasks.length === 0 ? ({ status: 'empty', fetchedAt: Date.now() } satisfies Result<TaskPage>) : page(tasks, null)
   })
@@ -133,16 +133,16 @@ describe('the poll plan: one state read per 5 s poll, the page every 30 s', () =
     await advance(0)
     expect(liveBadge()).toBe('3')
     expect(api.loadTasks).toHaveBeenCalledTimes(1)
-    expect(api.loadTasksInState).toHaveBeenCalledTimes(1)
+    expect(api.loadTasksInStates).toHaveBeenCalledTimes(1)
 
     // Each 5 s poll while Live holds a row: exactly one request, the state list.
     for (let poll = 1; poll <= 4; poll++) {
       await advance(LIVE_POLL_MS)
       expect(api.loadTasks, `poll ${poll} re-read the 200-row page`).toHaveBeenCalledTimes(1)
-      expect(api.loadTasksInState, `poll ${poll} made other than one state read`).toHaveBeenCalledTimes(1 + poll)
+      expect(api.loadTasksInStates, `poll ${poll} made other than one state read`).toHaveBeenCalledTimes(1 + poll)
     }
-    for (const [state, opts] of api.loadTasksInState.mock.calls) {
-      expect(String(state).split(',').sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
+    for (const [states, opts] of api.loadTasksInStates.mock.calls) {
+      expect([...states].sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
       expect(opts).toEqual({ view: 'summary' })
     }
 
@@ -182,9 +182,9 @@ describe('the poll plan: one state read per 5 s poll, the page every 30 s', () =
     statesFrom(() => live)
     render(<AgentsScreen onOpen={() => {}} />)
     await advance(0)
-    api.loadTasksInState.mockResolvedValue({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })
+    api.loadTasksInStates.mockResolvedValue({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })
     await advance(LIVE_POLL_MS)
-    expect(api.loadTasksInState).toHaveBeenCalledTimes(2)
+    expect(api.loadTasksInStates).toHaveBeenCalledTimes(2)
     expect(rowEl(tid(1))).not.toBeNull()
     expect(liveBadge()).toBe('3')
   })
@@ -199,7 +199,7 @@ describe('the page read and the state read start together', () => {
     await advance(0)
     expect(api.loadTasks).toHaveBeenCalledTimes(1)
     // MUTATION: await the page, then read the states -- this is 0.
-    expect(api.loadTasksInState, 'the state read waited for the page').toHaveBeenCalledTimes(1)
+    expect(api.loadTasksInStates, 'the state read waited for the page').toHaveBeenCalledTimes(1)
     await act(async () => answer(page([...live, ...finished], 'next-1')))
     await advance(0)
     expect(liveBadge()).toBe('3')
@@ -242,14 +242,14 @@ describe('an open agent is read first, and the list after its panel', () => {
     await advance(0)
     await advance(1_000)
     expect(api.loadTasks, 'the list read before the agent panel rendered').not.toHaveBeenCalled()
-    expect(api.loadTasksInState).not.toHaveBeenCalled()
+    expect(api.loadTasksInStates).not.toHaveBeenCalled()
     expect(container.querySelector('.ag-list-tabs')).toBeNull()
     expect(container.querySelector('[aria-busy="true"], .skel, .skeleton, .ctl-skel')).not.toBeNull()
 
     await act(async () => agentPanelShown(tid(1)))
     await advance(0)
     expect(api.loadTasks).toHaveBeenCalledTimes(1)
-    expect(api.loadTasksInState).toHaveBeenCalledTimes(1)
+    expect(api.loadTasksInStates).toHaveBeenCalledTimes(1)
     expect(liveBadge()).toBe('3')
   })
 
@@ -259,14 +259,14 @@ describe('an open agent is read first, and the list after its panel', () => {
     agentPanelShown(tid(1))
     const { rerender } = render(<AgentsScreen onOpen={() => {}} taskId={tid(1)} />)
     await advance(0)
-    const reads = () => api.loadTasks.mock.calls.length + api.loadTasksInState.mock.calls.length
+    const reads = () => api.loadTasks.mock.calls.length + api.loadTasksInStates.mock.calls.length
     expect(reads()).toBe(2)
     await advance(LIVE_POLL_MS)
     await advance(LIVE_POLL_MS)
     expect(reads(), 'the list polled at 5 s under an open agent').toBe(2)
     await advance(IDLE_POLL_MS - 2 * LIVE_POLL_MS)
     expect(api.loadTasks).toHaveBeenCalledTimes(2)
-    expect(api.loadTasksInState).toHaveBeenCalledTimes(2)
+    expect(api.loadTasksInStates).toHaveBeenCalledTimes(2)
 
     rerender(<AgentsScreen onOpen={() => {}} taskId={null} />)
     await advance(IDLE_POLL_MS)

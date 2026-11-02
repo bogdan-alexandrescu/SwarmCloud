@@ -31,6 +31,7 @@ import type { Task, TaskPage, TaskState } from '../types'
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadTaskEventsPage: vi.fn(),
   loadTaskLogs: vi.fn(),
   loadTranscript: vi.fn(),
@@ -210,6 +211,12 @@ describe('the Agents list: All | Browsers N', () => {
 
   async function mount() {
     api.loadTasks.mockResolvedValue({ status: 'ok', data: { tasks: rows(), tenant_id: 'u-ada' }, fetchedAt: Date.now() } satisfies Result<TaskPage>)
+    // The live and waiting states' one read answers from the same rows.
+    api.loadTasksInStates.mockImplementation(async (states: readonly TaskState[]) => ({
+      status: 'ok',
+      data: { tasks: rows().filter((t) => states.includes(t.state)), tenant_id: 'u-ada' },
+      fetchedAt: Date.now(),
+    }) satisfies Result<TaskPage>)
     api.loadLiveSession.mockImplementation(async (id: string) =>
       id === 'task_needsyou00000000001'
         ? read(session({ device: { preset: 'iphone-15', orientation: 'portrait', touch: true } }))

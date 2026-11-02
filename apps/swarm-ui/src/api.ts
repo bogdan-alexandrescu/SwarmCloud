@@ -2754,6 +2754,38 @@ export async function loadTasksInState(
   )
 }
 
+/**
+ * ONE PAGE OF TASKS IN ANY OF `states`, from ONE read: `state=A,B,...`, which
+ * the route takes as one `state IN [...]` query (swarm-api routes/tasks.py
+ * `_parse_states`, at most `STATE_IN_MAX` states). The Agents list reads its
+ * live and waiting states through this (the owner's pick, 2026-11-02), typed,
+ * where it once cast a comma list to one `TaskState`; the request is the one
+ * that cast sent, byte for byte. A FIXTURE BUILD filters its one fixture page
+ * to those states, so its request log shows the one read.
+ */
+export async function loadTasksInStates(
+  states: readonly TaskState[],
+  options: { limit?: number; view?: 'summary' } = {},
+): Promise<Result<TaskPage>> {
+  if (USE_FIXTURES) {
+    const page = await fixtureTasks()
+    if (page.status !== 'ok') return page
+    const asked: ReadonlySet<TaskState> = new Set(states)
+    const tasks = page.data.tasks.filter((t) => asked.has(t.state))
+    return tasks.length === 0
+      ? { status: 'empty', fetchedAt: Date.now() }
+      : { status: 'ok', fetchedAt: Date.now(), data: { ...page.data, tasks } }
+  }
+  return read<TaskPage>(
+    route(
+      '/v1/tasks',
+      {},
+      new URLSearchParams({ state: states.join(','), limit: String(options.limit ?? 200), ...(options.view === 'summary' ? { view: 'summary' } : {}) }),
+    ),
+    (d) => d.tasks.length === 0,
+  )
+}
+
 async function fixtureStats(options: { frame?: boolean } = {}): Promise<Result<Stats>> {
   await new Promise((r) => setTimeout(r, 220))
   noteFixtureProbe(route('/v1/stats'), 220, true, undefined, { frame: options.frame === true })

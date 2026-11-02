@@ -12,7 +12,7 @@ import { TaskIdLine } from './TaskIdLine'
 import { BrowserUseMark, browserUseOf, browserUseSay } from './BrowserUse'
 import { BudgetRowMark, budgetRowSay, budgetStopLine, stoppedAtBudgetRow, useBudgetWarning } from './AgentBudget'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, workflowHref, type AgentList, type RecentState } from './agentlist'
-import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
+import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInStates, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { pageReads, type Result } from './fetch'
 import { isLiveBrowser, liveBrowserRows, needsYou } from './Handoff'
@@ -376,12 +376,9 @@ export function pageDue(held: HeldPage | null, now: number = Date.now()): boolea
 }
 
 /**
- * ONE `?state=` READ OF THE LIVE AND WAITING STATES, summary rows. The route
- * takes `state=A,B` as one `state IN [...]` query (swarm-api routes/tasks.py
- * `_parse_states`, at most `STATE_IN_MAX` states); `loadTasksInState` sends the
- * value it is handed as the one `state` parameter, so the comma list goes to
- * the route as written. A FIXTURE BUILD filters its one fixture page instead,
- * through `loadTasks`, so its request log shows the one read.
+ * ONE `?state=` READ OF THE LIVE AND WAITING STATES, summary rows, through
+ * `loadTasksInStates`: one `state=A,B,...` request, which the route takes as
+ * one `state IN [...]` query. A FIXTURE BUILD filters its one fixture page.
  *
  * A read that throws or answers nothing is a failed read, never an empty
  * state, as the header's attempt read treats one (AgentSplit.tsx). Called
@@ -390,18 +387,7 @@ export function pageDue(held: HeldPage | null, now: number = Date.now()): boolea
  */
 function readLiveAndWaiting(): Promise<Result<TaskPage> | null> {
   try {
-    if (USE_FIXTURES) {
-      return loadTasks(TASK_PAGE_LIMIT, { view: 'summary' }).then(
-        (r): Result<TaskPage> | null => {
-          if (r.status !== 'ok' && r.status !== 'stale') return r
-          const tasks = r.data.tasks.filter((t) => IN_STATE_READ.has(t.state))
-          return tasks.length === 0 ? { status: 'empty', fetchedAt: r.fetchedAt } : { ...r, data: { ...r.data, tasks } }
-        },
-        () => null,
-      )
-    }
-    const states = LIVE_AND_WAITING.join(',') as TaskState
-    return loadTasksInState(states, { view: 'summary' }).then((r) => r ?? null, () => null)
+    return loadTasksInStates(LIVE_AND_WAITING, { view: 'summary' }).then((r) => r ?? null, () => null)
   } catch {
     return Promise.resolve(null)
   }
