@@ -30,7 +30,7 @@ import { task as runTask } from './runfixture'
 const api = vi.hoisted(() => ({
   loadTask: vi.fn(),
   loadTasks: vi.fn(),
-  loadTasksInState: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadChildren: vi.fn(),
   loadAttempts: vi.fn(),
   loadLiveSession: vi.fn(),
@@ -80,8 +80,8 @@ function ok<T>(data: T): Result<T> {
 
 function serve(tasks: Task[]): void {
   api.loadTasks.mockResolvedValue(ok({ tasks, next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
-  api.loadTasksInState.mockImplementation(async (state: TaskState) => {
-    const of = tasks.filter((t) => t.state === state)
+  api.loadTasksInStates.mockImplementation(async (states: readonly TaskState[]) => {
+    const of = tasks.filter((t) => states.includes(t.state))
     return of.length === 0
       ? ({ status: 'empty', fetchedAt: Date.now() } satisfies Result<TaskPage>)
       : ok({ tasks: of, next_page_token: null, tenant_id: 'eng' } satisfies TaskPage)
