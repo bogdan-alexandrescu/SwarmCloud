@@ -364,16 +364,13 @@ catalogue's own words — so the two answers stay apart:
 
 * *there is no runner profile called `claude`* — a typo. The refusal lists the
   real names; pick one and re-dispatch. Nothing was spent.
-* *`codex` is refused: …* — a **known** profile that is turned off. Do not go
-  hunting for a typo and do not retry it.
+* *`post-verdict` is refused: …* — a **known** profile that is turned off. Do
+  not go hunting for a typo and do not retry it.
 
-**`codex` is DISABLED.** It was turned off on 2026-09-23, when four codex
-steps of a twenty-step run failed with "openai refused the credential", each
-after being admitted, leased and dispatched. It now names a ChatGPT plan's
-credential beside the tenant's OpenAI key, but stays off until the
-ChatGPT-plan pool lands (the quota broker leasing OpenAI plan accounts and the
-codex runner using them); a follow-up turns it on once both have merged. Until
-then, use `claude-code`. The same refusal now happens
+**`codex` runs** (contract request 130, turned on 2026-11-02): on the tenant's
+OpenAI key when it has registered one, else on a ChatGPT plan leased from the
+account pool. `claude-code` stays the default; name `codex` only when a unit
+asks for it. A refused profile is refused
 at submission for a whole workflow, so a DAG with one bad step is refused
 entire rather than running the other nineteen and failing that one late.
 
