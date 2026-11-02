@@ -75,6 +75,7 @@ from swarm_common.states import (
 )
 
 from . import children as children_mod
+from . import limits as limits_mod
 from . import reviewgate as reviewgate_mod
 from . import runtime as runtime_mod
 from . import sizes as sizes_mod
@@ -724,6 +725,12 @@ class DrainReport:
     stop_reason: str = "not_started"
     duration_seconds: float = 0.0
     blockers: dict[str, int] = field(default_factory=dict)
+    #: Per refused limit (#3047): how many refusals named it, the lowest value
+    #: applied, its ceiling, the most units in use, and which input held the
+    #: applied value below the ceiling, with when it was set
+    #: (`limits.add_to_report`). `drain finished` logs it, so a refusal under
+    #: an adaptive target of 7 against a ceiling of 40 can be read afterwards.
+    limits: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -798,6 +805,8 @@ class Scheduler:
         # Tasks this run ended itself (`_note_ended`), whose dependants it
         # resolves before it returns (`_release_ended`, #636). Per run.
         self._ended: list[str] = []
+        # What explains each refusal's limit (#3047). Per run, like the above.
+        self._limits = limits_mod.LimitExplainer(db=store.db, now=now)
         # Where the child-cascade sweep resumes: (parent_task_id, child id).
         self._child_cursor: tuple[str, str] | None = None
         # The runner-size version this admission pass applies (`_size_version`),
@@ -839,6 +848,8 @@ class Scheduler:
         self._workflow_verdicts = {}
         self._swept_workflows = set()
         self._ended = []
+        # Each refused pool's ceiling and inputs, read once per run (#3047).
+        self._limits = limits_mod.LimitExplainer(db=self._store.db, now=self._now)
         # A loan made or withdrawn since the last drain is seen by this one.
         self._pool.forget()
         # A reconnect, or a refresh that failed, since the last drain likewise.
@@ -1506,7 +1517,11 @@ class Scheduler:
             _sleep(random.uniform(CONTENTION_BACKOFF_MIN_SECONDS, CONTENTION_BACKOFF_MAX_SECONDS))
             return False
         except AdmissionDenied as denied:
-            reasons = denied.reasons
+            # THE LIMIT APPLIED, RECORDED (#3047). Explained after the refusal,
+            # from reads outside the transaction, so admission's decision --
+            # all-or-nothing, counted from the lease -- is the one it made.
+            reasons = self._limits.explain(denied.reasons)
+            limits_mod.add_to_report(report.limits, reasons)
             recorded = self._store.record_blockers(task, reasons)
             if not recorded.applied:
                 # A `not_ready` denial: another scheduler admitted it first.
