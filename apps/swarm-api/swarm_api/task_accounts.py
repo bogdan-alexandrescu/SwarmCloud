@@ -563,3 +563,109 @@ def accounts_for_attempts(
             account["generation"] = attempt.generation
         out[attempt.attempt_id] = account
     return out
+
+
+# --------------------------------------------------------------------------
+# The one-time backfill (contract request 132)
+# --------------------------------------------------------------------------
+#
+# `scripts/backfill-task-views.sh` runs this once per deployment, so a task
+# written before the fields stops costing `GET /v1/tasks` its per-page reads.
+# It writes what the writers would have written, from the same rules: the
+# totals of the task's attempt documents as of its CURRENT attempt
+# (`attempt_totals.stored_totals`) and the account its current attempt's
+# events leave it on (`account_after`, folded oldest first). A task whose
+# current attempt has no document, or no account event, is left to the
+# reader's derivation, which serves it as before.
+
+#: The task documents' collection (`store.TASKS`).
+TASKS = "tasks"
+
+
+def backfill_task_views(db: Any, *, apply: bool, tenant_id: str | None = None,
+                        sample: int = 20) -> dict[str, Any]:
+    """Plan, and with `apply` write, the two stored views every task lacks.
+
+    Only a field that is absent (or null) is written, inside a transaction
+    that re-reads the task and writes nothing if a writer filled the field
+    or a newer attempt moved `current_generation` since the plan read it.
+    Attempts and events are read in the task's own tenant only.
+    """
+    from google.cloud import firestore
+
+    from .attempt_totals import stored_totals, task_attempt_docs
+
+    query = db.collection(TASKS)
+    if tenant_id:
+        query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+    report: dict[str, Any] = {
+        "tasks_read": 0, "totals_to_write": 0, "accounts_to_write": 0,
+        "left_no_current_attempt": 0, "left_no_account_event": 0, "left_unread": 0,
+        "written": 0, "refused_changed": 0, "sample": [],
+    }
+    for snap in query.stream():
+        doc = snap.to_dict() or {}
+        report["tasks_read"] += 1
+        task_tenant = doc.get("tenant_id")
+        task_id = doc.get("id") or snap.id
+        if not isinstance(task_tenant, str) or not task_tenant or (tenant_id and task_tenant != tenant_id):
+            continue
+        try:
+            generation = int(doc.get("current_generation") or 0)
+        except (TypeError, ValueError):
+            continue
+        if generation <= 0:
+            continue
+        fields: dict[str, Any] = {}
+        if doc.get("attempt_totals") is None:
+            try:
+                attempts = task_attempt_docs(db, task_tenant, task_id)
+            except OverflowError:
+                report["left_unread"] += 1
+                attempts = []
+            current = [a for a in attempts if a.get("generation") == generation]
+            if current:
+                fields["attempt_totals"] = stored_totals(
+                    attempts, attempt_id=str(current[0].get("attempt_id")), generation=generation)
+                report["totals_to_write"] += 1
+            else:
+                report["left_no_current_attempt"] += 1
+        if doc.get("current_account") is None and could_hold_account(doc):
+            events, complete = read_account_events(db, task_tenant, [task_id])
+            if task_id not in complete:
+                report["left_unread"] += 1
+            else:
+                account = None
+                for row in _ordered(r for r in events.get(task_id, [])
+                                    if r.get("generation") == generation):
+                    account = account_after(account, row) or account
+                if account is None:
+                    report["left_no_account_event"] += 1
+                else:
+                    fields["current_account"] = account
+                    report["accounts_to_write"] += 1
+        if not fields:
+            continue
+        if len(report["sample"]) < sample:
+            report["sample"].append({"task_id": task_id, "tenant_id": task_tenant,
+                                     "generation": generation, "fields": sorted(fields)})
+        if not apply:
+            continue
+        ref = db.collection(TASKS).document(snap.id)
+
+        def write(txn: Any, ref: Any = ref, fields: dict[str, Any] = fields,
+                  generation: int = generation) -> bool:
+            now = ref.get(transaction=txn).to_dict() or {}
+            if now.get("current_generation") != generation:
+                return False
+            still = {k: v for k, v in fields.items() if now.get(k) is None}
+            if not still:
+                return False
+            txn.update(ref, still)
+            return True
+
+        if firestore.transactional(write)(db.transaction()):
+            report["written"] += 1
+        else:
+            report["refused_changed"] += 1
+    return report
