@@ -780,7 +780,12 @@ def test_cli_runner_triages_a_re_review_s_own_verdict(tmp_path):
                         repo_dir=checkout)
     fake = FakeJev(_j3_answer([0.8, 0.05]))
     out = cliagent._jev_post_steps(ctx, _judge(tmp_path, fake), checkout, _log())
-    assert out["review"] == {"asked": 2, "p_real": {"0": 0.8, "1": 0.05}}
+    assert out["review"] == {
+        "asked": 2,
+        "files": {"verdict.json": {"findings": 2, "scored": 2,
+                                   "p_real": {"findings[0]": 0.8, "findings[1]": 0.05}}},
+        "unreadable": {},
+    }
     doc = json.loads((artifacts / "verdict.json").read_text())
     assert doc["verdict"] == "NOT_YET"
     assert doc["findings"][0]["p_real"] == 0.8
