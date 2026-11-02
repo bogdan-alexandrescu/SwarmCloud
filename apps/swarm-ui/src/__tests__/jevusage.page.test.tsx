@@ -10,12 +10,13 @@
 // text, read the month's use from the 30-day total, or let `normJevUsage`
 // turn a null into 0 -- a case below turns red.
 
-import { cleanup, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { JevUsageBody, outcomeText } from '../JevUsagePage'
-import { normJevUsage, type JevUsage } from '../jevUsage'
+import { normJevUsage, parseJevRate, type JevUsage } from '../jevUsage'
 import { fixtureJevUsage } from '../jevUsage.fixture'
+import { serve, visible } from './repofixture'
 
 afterEach(cleanup)
 
@@ -88,5 +89,68 @@ describe('Capacity › Jev usage', () => {
   it('refuses a body in a shape it does not know', () => {
     expect(normJevUsage({ days: 'no' })).toBeNull()
     expect(normJevUsage(null)).toBeNull()
+  })
+})
+
+// The rate behind the dollars: Admin › Pool limits › Jev's rate, saved as
+// `jev_token_rates` through `PUT /v1/admin/settings` and nothing else.
+describe('Admin › Jev’s rate', () => {
+  type Json = Record<string, unknown>
+  const settings = (rates: Json): Json => ({
+    merge_by_default: false,
+    max_additional_repositories: 5,
+    additional_repositories_budget_gib: 6,
+    model_prices: {},
+    agent_budget_ceiling: {},
+    jev_token_rates: rates,
+    updated_at: null,
+    updated_by: null,
+    settings_document: 'present',
+  })
+
+  async function rateCard(rates: Json) {
+    const calls = serve((m, url, body) => {
+      if (m === 'GET' && url === '/v1/admin/settings') return { status: 200, body: settings(rates) }
+      if (m === 'PUT' && url === '/v1/admin/settings') {
+        return { status: 200, body: settings((body as Json).jev_token_rates as Json) }
+      }
+      return null
+    })
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { JevRateCard } = await import('../AdminSettings')
+    render(<JevRateCard />)
+    const heading = await screen.findByRole('heading', { name: 'Jev’s rate' })
+    const card = heading.closest('section') as HTMLElement
+    await waitFor(() => expect(within(card).queryByText('Reading…')).toBeNull())
+    return { calls, card }
+  }
+
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('has no rate until one is set, and says so', async () => {
+    const { card } = await rateCard({})
+    const input = within(card).getByRole('textbox', { name: 'Dollars per million tokens in' }) as HTMLInputElement
+    expect(input.value).toBe('')
+    expect(input.placeholder).toBe('rate not set')
+    expect((within(card).getByRole('button', { name: 'Save rate' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('saves the rate as `jev_token_rates` and nothing else', async () => {
+    const { calls, card } = await rateCard({})
+    fireEvent.change(within(card).getByRole('textbox', { name: 'Dollars per million tokens in' }), { target: { value: '2.5' } })
+    fireEvent.click(within(card).getByRole('button', { name: 'Save rate' }))
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(1))
+    expect(calls.find((c) => c.method === 'PUT')!.body).toEqual({ jev_token_rates: { input: 2.5 } })
+    expect(visible(await within(card).findByRole('status'))).toBe('Saved: $2.5 per million tokens in.')
+  })
+
+  it('refuses a rate that is not a number of dollars', async () => {
+    const { card } = await rateCard({ input: 3 })
+    fireEvent.change(within(card).getByRole('textbox', { name: 'Dollars per million tokens out' }), { target: { value: '-1' } })
+    expect(visible(card)).toContain('A rate is a number of dollars, 0 or more.')
+    expect((within(card).getByRole('button', { name: 'Save rate' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(parseJevRate('$1,000')).toBe(1000)
+    expect(parseJevRate('abc')).toBeNull()
   })
 })

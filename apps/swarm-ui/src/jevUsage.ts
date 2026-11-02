@@ -8,7 +8,7 @@
 // where no record carried them. `normJevUsage` keeps both nulls: a figure that
 // was not recorded is not a zero.
 
-import { read, route, noteFixtureProbe, type Result } from './fetch'
+import { read, route, noteFixtureProbe, write, type Result } from './fetch'
 import { USE_FIXTURES } from './api'
 import { fixtureJevUsage } from './jevUsage.fixture'
 
@@ -171,4 +171,37 @@ export async function loadJevUsage(): Promise<Result<JevUsage>> {
     }
   }
   return { ...r, data: usage }
+}
+
+/** Jev's rate, USD per million tokens, as the platform settings hold it: a direction not set is null. */
+export interface JevRate {
+  input: number | null
+  output: number | null
+}
+
+/** `jev_token_rates` in a platform settings read (`PlatformSettings` keeps it as served). */
+export function jevRateOf(settings: unknown): JevRate {
+  const raw = isRecord(settings) && isRecord(settings.jev_token_rates) ? settings.jev_token_rates : {}
+  return { input: figure(raw.input), output: figure(raw.output) }
+}
+
+/** A typed rate, or null: a number of dollars at or above 0. Commas, spaces and a leading `$` are allowed. */
+export function parseJevRate(typed: string): number | null {
+  const t = typed.replace(/[,\s_]/g, '').replace(/^\$/, '')
+  if (!/^\d+(\.\d+)?$/.test(t)) return null
+  const v = Number(t)
+  return Number.isFinite(v) && v <= 1_000_000 ? v : null
+}
+
+/**
+ * `PUT /v1/admin/settings` with `jev_token_rates` and nothing else, so a save never rewrites another setting. The rate
+ * is replaced whole: a direction left out has none, and `{}` clears it (`Store.set_platform_settings`).
+ */
+export async function saveJevRate(rate: JevRate): Promise<Result<JevRate>> {
+  const body: Record<string, number> = {}
+  if (rate.input !== null) body.input = rate.input
+  if (rate.output !== null) body.output = rate.output
+  const r = await write(route('/v1/admin/settings'), 'PUT', { jev_token_rates: body })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: jevRateOf(r.data) }
+  return r as Result<JevRate>
 }
