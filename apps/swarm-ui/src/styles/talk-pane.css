@@ -103,7 +103,13 @@
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
 .vt-card[data-state="waiting"] > .c-card { border-left: 3px solid var(--paused); }
 .vt-card[data-state="failed"] > .c-card { border-left: 3px solid var(--bad); }
+/* The title takes the head's free width and wraps; the kind and state tags
+   keep the right edge and drop under it when a phone has no room. A chip or
+   tag in a card carries card data (a reference, an option), so it wraps
+   inside the card instead of holding one line past a 390-wide screen. */
+.vt-card .c-card-h > h3 { flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere; }
 .vt-card-tags { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.vt-card .c-chip, .vt-card .c-tag { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .vt-card p { margin: 0; }
 .vt-card-summary { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
 .vt-card-text { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); overflow-wrap: anywhere; }
@@ -113,10 +119,15 @@
   font-size: var(--t-meta); line-height: var(--lh-meta); }
 .vt-card-facts dt { color: var(--text-dim); }
 .vt-card-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
-.vt-card-lanes, .vt-card-waves { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px;
+/* Waves are numbered; a wave's lanes are rows on the glass line, as the
+   heads-up edge is drawn, each lane's territory on a line of its own. */
+.vt-card-lanes, .vt-card-waves { margin: 0; display: flex; flex-direction: column; gap: 4px;
   font-size: var(--t-meta); line-height: var(--lh-meta); }
+.vt-card-waves { padding-left: 18px; }
 .vt-card-waves > li { display: flex; flex-direction: column; gap: 4px; }
-.vt-card-territory { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.vt-card-lanes { padding-left: 0; list-style: none; gap: 6px; }
+.vt-card-lanes > li { min-width: 0; padding: 2px 0 2px 10px; border-left: 2px solid var(--vt-glass-line); overflow-wrap: anywhere; }
+.vt-card-territory { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
 .vt-card-territory code { padding: 0 4px; border-radius: var(--r-card); background: var(--vt-glass-dim); overflow-wrap: anywhere; }
 .vt-card-lines { min-width: 0; overflow-x: auto; }
 
