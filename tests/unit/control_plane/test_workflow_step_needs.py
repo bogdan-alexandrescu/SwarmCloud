@@ -157,3 +157,60 @@ def test_artifact_questions_are_served_by_index_only(client, db):
     assert needs["questions"] == []
     assert needs["questions_unread"] == [0, 2]
     assert needs["pull_request"] == {"number": 42, "url": "https://github.com/o/r/pull/42"}
+
+
+def _answer(index: int) -> dict:
+    return {"question_index": index, "text": "earlier", "by": "alice@example.com", "at": T0.isoformat()}
+
+
+def test_answers_to_an_earlier_wait_never_hide_a_new_waits_questions(client, db):
+    # The park is attempt att_2's wait; metadata still holds att_1's, with
+    # att_1's answer at index 0. Until swarm-api adopts att_2's wait those
+    # answers are not its own (notifications._asked_item reads them the same way).
+    seed_tenant(db, "eng")
+    earlier = {"attempt_id": "att_1", "blocking": [0], "questions": [{"question": "Old?", "options": []}]}
+    new = {"attempt_id": "att_2", "blocking": [0], "questions": [{"question": "Which bucket?", "options": []}]}
+    _one_step(db, "wf_new_wait", state="PARKED", park_reason="HUMAN_REQUIRED",
+              blocked_by=[{"reason": "HUMAN_REQUIRED", "question_wait": new}],
+              metadata={"title": "The step", "question_wait": earlier, "owner_answers": [_answer(0)]})
+
+    needs = _needs(client, "wf_new_wait")
+
+    assert needs["question_wait"] is True
+    assert needs["questions"] == [{"index": 0, "question": "Which bucket?", "options": [], "recommended": None}]
+
+
+def test_questions_unread_is_bounded_by_the_workers_cap(client, db):
+    seed_tenant(db, "eng")
+    _one_step(db, "wf_many", state="SUCCEEDED", result_summary={"questions": 200_000})
+
+    needs = _needs(client, "wf_many")
+
+    assert needs["questions_unread"] == list(range(20))
+
+
+def test_the_served_question_cap_is_the_workers():
+    from agent_worker.questions import MAX_QUESTIONS
+    from swarm_api.codec import MAX_ARTIFACT_QUESTIONS
+
+    assert MAX_ARTIFACT_QUESTIONS == MAX_QUESTIONS
+
+
+def test_a_step_not_parked_on_a_wait_serves_no_wait_questions(client, db):
+    seed_tenant(db, "eng")
+    wait = {"attempt_id": "att_1", "blocking": [0], "questions": [{"question": "Old?", "options": []}]}
+    _one_step(db, "wf_dead", state="DEAD_LETTERED", metadata={"title": "The step", "question_wait": wait})
+
+    needs = _needs(client, "wf_dead")
+
+    assert needs["question_wait"] is False
+    assert needs["questions"] == []
+
+
+def test_a_running_step_serves_no_unread_artifact_questions(client, db):
+    seed_tenant(db, "eng")
+    _one_step(db, "wf_running", state="RUNNING", result_summary={"questions": 3})
+
+    needs = _needs(client, "wf_running")
+
+    assert needs["questions_unread"] == []
