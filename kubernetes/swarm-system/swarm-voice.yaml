@@ -186,6 +186,14 @@ spec:
               value: __QUOTA_BROKER_URL__
             - name: QUOTA_BROKER_AUDIENCE
               value: __QUOTA_BROKER_AUDIENCE__
+            # The planner's Claude Code (swarm_voice/claudeturn.py), installed
+            # by the image at agent-runtime-base's pinned version. Each turn
+            # runs it on a Claude account the same broker leases from the
+            # workspace pool (swarm_voice/plannerlease.py), with a private
+            # HOME under /tmp removed after the turn; the token is in that
+            # child's environment only, never in this pod's.
+            - name: CLAUDE_CODE_BIN
+              value: /opt/claude/bin/claude
           resources:
             requests:
               cpu: 500m
