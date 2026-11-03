@@ -66,6 +66,7 @@ import { NEAR_CEILING } from './AdminSettings'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
 import { voiceItOpen } from './voice/Section'
+import { HOME_JUMPS } from './Home'
 
 export type SpineSection = 'profile' | 'home' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
 

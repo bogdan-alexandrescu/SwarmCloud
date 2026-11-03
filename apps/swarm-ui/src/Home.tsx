@@ -48,7 +48,7 @@ import {
   type ApprovalItem,
   type LiveSession,
 } from './api'
-import { approvalAddress } from './ApprovalDecision'
+import { approvalAddress } from './Approvals'
 import { Button, ButtonLink, Card, CardLink, Chip, StatTile, type TileValue } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { handoffOf, humanReady, needsYou, ownerQuestionsHold, type HeldQuestion } from './Handoff'
