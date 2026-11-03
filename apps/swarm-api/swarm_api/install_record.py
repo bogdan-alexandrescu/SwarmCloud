@@ -62,7 +62,12 @@ ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_made_at", "link_expires"
 ENGINE_DOCUMENT = "swarm-install/{env}"
 #: The engine document's fields Admin › Setup reads by name; each is in the
 #: engine's row of `swarm_install.record.WRITERS` (`test_record_parity`).
-ENGINE_FIELDS_READ = frozenset({"lease", "sizing", "installer", "sign_in_client"})
+ENGINE_FIELDS_READ = frozenset({"lease", "sizing", "installer", "sign_in_client", "passes"})
+#: The passes the engine times in `passes` (`swarm_install.record.TIMED_PASSES`),
+#: and each one's fields: `started_at`, then `ended_at` and `result` once it
+#: has stopped. Restated, as above; `test_record_parity` holds both alike.
+TIMED_PASSES: tuple[str, ...] = ("sign_in_pass", "infra_pass_3")
+PASS_FIELDS = frozenset({"started_at", "ended_at", "result"})
 #: `sizing`'s fields the status route serves (the INTERFACE SHEET's
 #: `state.outputs["sizing"]`, written in stage 0 by lane SIZING-ASK).
 SIZING_FIELDS: tuple[str, ...] = ("mode", "members", "pool_limits", "service_max_instances",
@@ -191,6 +196,7 @@ __all__ = [
     "GITHUB_APP",
     "INDIVIDUAL",
     "InstallRecord",
+    "PASS_FIELDS",
     "PERSONAL",
     "RecordFieldRefused",
     "SIGN_IN_CLIENT",
@@ -198,6 +204,7 @@ __all__ = [
     "SWARM_API_DOCUMENTS",
     "TEAM",
     "TEAMS",
+    "TIMED_PASSES",
     "VERIFY_RUNS",
     "check_fields",
 ]

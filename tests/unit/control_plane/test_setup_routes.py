@@ -1830,3 +1830,35 @@ def test_typical_waits_restate_the_engines_own_figures() -> None:
         wait = setup_routes.TYPICAL_WAITS[name]
         assert wait["typical_s"] == spec.expected_s, name
         assert wait["expected"] == spec.expected, name
+
+
+def test_each_unmeasured_pass_is_served_with_its_start_time(setup_client, db) -> None:
+    """With no usual length for the sign-in pass and infra pass 3, the page
+    shows how long each has run: `passes[name].started_at` from the engine's
+    `passes`, and `ended_at` and `result` once it stopped."""
+    seed_engine_document(db)
+    db.docs[ENGINE_DOC]["passes"] = {
+        "sign_in_pass": {"started_at": 1_790_000_000.0},
+        "infra_pass_3": {"started_at": 1_790_000_100.0, "ended_at": 1_790_000_400.0,
+                         "result": "done"},
+    }
+    passes = page(setup_client)["passes"]
+    assert passes == {
+        "sign_in_pass": {"started_at": 1_790_000_000.0},
+        "infra_pass_3": {"started_at": 1_790_000_100.0, "ended_at": 1_790_000_400.0,
+                         "result": "done"},
+    }
+    assert set(passes) == set(setup_routes.TYPICAL_WAITS) & set(passes)
+    for name in passes:
+        assert setup_routes.TYPICAL_WAITS[name]["source"].startswith("not measured")
+
+
+@pytest.mark.parametrize("stored", [None, {}, {"sign_in_pass": "not a mapping"}])
+def test_a_pass_not_yet_started_is_served_with_no_start_time(setup_client, db, stored) -> None:
+    """Before the engine stamped a pass, or from an engine older than the
+    field, each pass is served with `started_at` None and nothing else."""
+    seed_engine_document(db)
+    if stored is not None:
+        db.docs[ENGINE_DOC]["passes"] = stored
+    assert page(setup_client)["passes"] == {"sign_in_pass": {"started_at": None},
+                                            "infra_pass_3": {"started_at": None}}

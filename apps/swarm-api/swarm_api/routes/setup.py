@@ -972,6 +972,8 @@ def sign_in_client_view(project_id: str, doc: dict[str, Any] | None,
 #: does not carry `apps/swarm-install`); `test_setup_routes` imports both and
 #: fails on any difference. A wait the platform has no figure for carries no
 #: `typical_s` at all, and its `source` says so: never a made-up value.
+#: For those (the sign-in pass, infra pass 3) the page shows the time since
+#: the pass started instead, from `passes` (`passes_view`), until one is measured.
 TYPICAL_WAITS: dict[str, dict[str, Any]] = {
     "sign_in_pass": {
         "source": "not measured: swarm install's sign-in pass (bootstrap pass 2 putting the saved Desktop "
@@ -996,6 +998,22 @@ TYPICAL_WAITS: dict[str, dict[str, Any]] = {
                   "the Groups API",
     },
 }
+
+
+def passes_view(engine: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Each timed pass (`ir.TIMED_PASSES`) as the page reads it: `started_at`
+    from the engine's `passes`, None until the engine stamped one (a pass not
+    yet run, or an engine from before the field), and `ended_at` and `result`
+    once it stopped. With no measured usual length (`TYPICAL_WAITS`), the page
+    shows a running pass's elapsed time from `started_at` instead."""
+    stored = (engine or {}).get("passes")
+    stored = stored if isinstance(stored, dict) else {}
+    view: dict[str, dict[str, Any]] = {}
+    for name in ir.TIMED_PASSES:
+        entry = stored.get(name) if isinstance(stored.get(name), dict) else {}
+        view[name] = {"started_at": entry.get("started_at"),
+                      **{key: entry[key] for key in ("ended_at", "result") if key in entry}}
+    return view
 
 
 def engine_view(engine: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1079,6 +1097,7 @@ def setup_state(
         "hostname": ctx.settings.install_hostname or None,
         "github_org": ctx.settings.setup_github_org or None,
         "typical_waits": TYPICAL_WAITS,
+        "passes": passes_view(engine),
     }
 
 
