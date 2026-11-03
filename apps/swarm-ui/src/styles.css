@@ -11597,3 +11597,69 @@ span.sk-ttile { cursor: default; }
 .wya-name b { font-weight: 600; overflow-wrap: anywhere; }
 .wya-name small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wya-links { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: var(--t-meta); }
+
+/* ---------------------------------------------------------------------------
+   THE WORKFLOWS LIST (the picked Work redesign, "Graph with a docked
+   inspector", frame graph-workflows-rest; part of #2688). The left pane of the
+   docked inspector (work/Inspector.tsx): buckets, the tools row and one line
+   per workflow. Columns drop by the left pane's own width (`work-main`), so
+   the inspector opening narrows the table without the page moving, and
+   nothing is wider than the viewport. Tokens only, so both themes draw it.
+   --------------------------------------------------------------------------- */
+.wfg { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.wfg-filters { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.wfg-filters > .wfg-seg { max-width: 100%; overflow-x: auto; align-self: flex-start; }
+.wfg-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+.wfg-search { flex: 1 1 220px; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); }
+.wfg-pick { display: inline-flex; min-width: 0; max-width: 100%; }
+.wfg-pick > select { height: 32px; max-width: 100%; padding: 0 6px; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); }
+.wfg-scroll { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.wfg-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); font-variant-numeric: tabular-nums; table-layout: auto; }
+.wfg-table th { position: sticky; top: 0; z-index: 1; text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 8px; background: var(--surface-2); border-bottom: 1px solid var(--line); white-space: nowrap; }
+.wfg-table th.num, .wfg-table td.num { text-align: right; }
+.wfg-table td { padding: 4px 8px; height: 34px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; vertical-align: middle; }
+.wfg-table tbody tr.wfg-row { cursor: pointer; }
+.wfg-table tbody tr.wfg-row:hover { background: var(--surface-2); }
+.wfg-table tbody tr.wfg-row:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.wfg-table tbody tr.wfg-row.is-picked { background: color-mix(in srgb, var(--info) 14%, var(--surface)); box-shadow: inset 3px 0 0 var(--info); }
+/* The name takes what the other columns leave and cuts with an ellipsis; its whole text is the link's title. */
+.wfg-table td[data-col="workflow"] { width: 100%; max-width: 1px; min-width: 10em; overflow: hidden; text-overflow: ellipsis; }
+.wfg-table td[data-col="workflow"] > a { color: var(--text); font-weight: 600; text-decoration: none; }
+.wfg-table td[data-col="workflow"] > a:hover, .wfg-table td[data-col="workflow"] > a:focus-visible { color: var(--info); text-decoration: underline; }
+.wfg-table td[data-col="workflow"] > .tag { margin-left: 6px; }
+.wfg-bar { display: inline-flex; align-items: center; gap: 6px; }
+.wfg-bar > .c-bar { width: 120px; flex: none; }
+.wfg-dim { color: var(--text-dim); }
+.wfg-absent { color: var(--text-dim); font-style: italic; }
+.wfg-need { display: inline-block; margin-right: 8px; font-weight: 600; }
+.wfg-need.is-bad { color: var(--bad-ink, var(--s-bad)); }
+.wfg-need.is-park { color: var(--paused-ink, var(--s-park)); }
+.wfg-table td[data-col="owner"] { max-width: 10em; overflow: hidden; text-overflow: ellipsis; }
+/* WHILE THE INSPECTOR IS OPEN, Owner is hidden and Changed is in the summary's facts line. */
+.wfg.has-inspector .wfg-table [data-col="owner"],
+.wfg.has-inspector .wfg-table [data-col="changed"] { display: none; }
+@container work-main (max-width: 760px) { .wfg-table [data-col="owner"] { display: none; } .wfg-bar > .c-bar { width: 72px; } }
+@container work-main (max-width: 600px) { .wfg-table [data-col="spent"], .wfg-table [data-col="changed"] { display: none; } }
+/* THE PHONE ROW: state, name, steps and needs (frame graph-workflow-rest-390); the head is not drawn but stays read. */
+@media (max-width: 720px) {
+  .wfg-table [data-col="spent"], .wfg-table [data-col="owner"], .wfg-table [data-col="changed"] { display: none; }
+  .wfg-table thead { position: relative; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .wfg-table thead th { padding: 0; border: 0; }
+  .wfg-table td { height: 40px; padding: 4px 6px; }
+  .wfg-bar > .c-bar { width: 48px; }
+  .wfg-tools .wfg-pick { flex: 1 1 40%; }
+  .wfg-tools .wfg-pick > select { width: 100%; }
+}
+/* The summary in the inspector. */
+.wfg-sum { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.wfg-sum > p { margin: 0; min-width: 0; }
+.wfg-sum-facts { color: var(--text-dim); font-size: var(--t-meta); }
+.wfg-sum > .id { font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfg-sum-why > .wfl-why { display: block; overflow-wrap: anywhere; }
+.wfg-sum-row .wfl-done { display: flex; align-items: center; gap: var(--ctl-s2); }
+.wfg-sum-row .wfl-done > .c-bar { flex: 1 1 auto; min-width: 24px; }
+.wfg-sum-needs { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ctl-s1) var(--ctl-s2); font-size: var(--t-meta); }
+.wfg-sum-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px var(--ctl-s3); margin: 0; font-size: var(--t-meta); }
+.wfg-sum-dl > dt { color: var(--text-dim); }
+.wfg-sum-dl > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.wfg-open { white-space: nowrap; }

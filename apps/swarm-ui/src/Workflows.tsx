@@ -143,6 +143,7 @@ import {
   consequenceOf,
   dispatchOf,
   formatDuration,
+  timeAgo,
   stateGlyph,
   stateTone,
   stepState,
@@ -163,7 +164,6 @@ import {
 } from './types'
 import {
   MergeStepCard,
-  MoreRight,
   SourceNote,
   StepInspector,
   StrayMark,
@@ -187,6 +187,8 @@ import { Mark } from './primitives'
 import { stateWord } from './words'
 import './styles/workflows.css'
 import './styles/names.css'
+import { Inspector } from './work/Inspector'
+import { StageGrid } from './work/StageGrid'
 import {
   anyRunning,
   bucketCounts,
@@ -195,11 +197,12 @@ import {
   BUCKET_LABEL,
   derivedStateOf,
   EMPTY_QUERY,
+  listBucketOf,
   listHref,
   matchesFilters,
+  needsOf,
   ownersOf,
   parseWorkflowQuery,
-  phoneSummary,
   profilesOf,
   rowWhy,
   SORT_LABEL,
@@ -211,6 +214,7 @@ import {
   WORKFLOW_SORTS,
   type BucketFilter,
   type RowWhy,
+  type WorkflowNeeds,
   type WorkflowQuery,
   type WorkflowSort,
 } from './workflowlist'
@@ -482,7 +486,7 @@ export function WorkflowsScreen({
         link: { href: '#work/new-workflow', label: 'Submit a workflow' },
       }}
     >
-      {(d) => <WorkflowList board={d} query={query} choose={choose} />}
+      {(d) => <WorkflowList board={d} query={query} choose={choose} go={go} />}
     </Screen>
   )
 }
@@ -590,7 +594,10 @@ export function startedPhrase(started: { text: string; kind: 'never' | 'unread' 
  * figures are of the newest read, never the tenant's totals.
  */
 export function listSummary(d: Pick<WorkflowBoard, 'workflows' | 'nextPageToken'>): string {
-  const c = bucketCounts(d.workflows)
+  // The three summary buckets (`bucketOf`), not the segment's five: this line
+  // says parked, waiting and unknown apart from running in its own words.
+  const c = { running: 0, finished: 0, failed: 0 }
+  for (const w of d.workflows) c[bucketOf(w)] += 1
   let parked = 0
   let waiting = 0
   // NOR IS A STATE THIS READ COULD NOT DERIVE (visual QA QA-036, 2026-10-20):
@@ -5564,21 +5571,27 @@ function markWord(word: string): string {
 /**
  * THE LIST'S COLUMNS, named once, so the loading skeleton draws the head the
  * loaded table will (#113) and the first row lands where the skeleton's was.
+ *
+ * THE PICKED WORK REDESIGN (frame graph-workflows-rest; part of #2688): one
+ * line per workflow -- its state, its name, the step bar with done of total,
+ * what needs the person, spend, owner and when it changed. Shape, runners,
+ * submitted and duration moved into the inspector's summary, which a row opens
+ * (`WorkflowSummary`), so the line stays one line at 1280.
  */
 const LIST_COLUMNS: readonly { col: string; label: string; num?: boolean }[] = [
   { col: 'state', label: 'State' },
   { col: 'workflow', label: 'Workflow' },
-  { col: 'shape', label: 'Shape' },
-  { col: 'done', label: 'Steps done' },
-  { col: 'runners', label: 'Runners' },
-  { col: 'cost', label: 'Cost', num: true },
+  { col: 'steps', label: 'Steps' },
+  { col: 'needs', label: 'Needs you' },
+  { col: 'spent', label: 'Spent', num: true },
+  // Owner is hidden and Changed moves into the inspector while it is open
+  // (`.wfg.has-inspector` in styles.css): the left pane keeps its width for
+  // the name and the step bar.
   { col: 'owner', label: 'Owner' },
-  // SUBMITTED, NOT STARTED (QA G3-20, 2026-10-07): every order sorts by
-  // submission, and a column of first-step starts under "newest first" read
-  // 15:33:10, 15:33:09, 15:35:37. Duration is measured from submission too.
-  // The first step's start is the cell's title.
-  { col: 'submitted', label: 'Submitted' },
-  { col: 'duration', label: 'Duration', num: true },
+  // CHANGED IS THE WORKFLOW'S `updated_at`, the one progress timestamp the
+  // API keeps (types.ts `Workflow.updated_at`): it moves only when the derived
+  // state does. Submission is in the inspector, as is the duration.
+  { col: 'changed', label: 'Changed' },
 ]
 
 function ListHead() {
@@ -5586,7 +5599,7 @@ function ListHead() {
     <thead>
       <tr>
         {LIST_COLUMNS.map((c) => (
-          // `data-col` is what styles/workflows.css gives each column its share of the width by.
+          // `data-col` is what styles.css gives each column its share of the width by.
           <th key={c.label} data-col={c.col} className={c.num === true ? 'num' : undefined}>
             {c.label}
           </th>
@@ -5597,15 +5610,27 @@ function ListHead() {
 }
 
 /**
- * THE SEGMENT'S WORDS: the Running bucket's tab is named by what it counts
- * (visual QA QA-036, run 2, 2026-10-20). The bucket is every workflow not yet
- * ended -- running, parked, waiting, and any whose state the read could not
- * derive -- so `Running 2` sat beside the summary's `1 running · 1 state not
- * derived` and read as two running workflows. `Not ended 2` is the sum of
- * those parts. The address keeps `state=running` and the back link keeps the
- * bucket's name (`backLabel`): only the count's own label changed.
+ * THE SEGMENT'S TITLES: what each bucket holds (`listBucketOf`). Running is
+ * every workflow that has not ended and is not parked, so its title says that
+ * waiting its turn counts; All counts a workflow whose state this read could
+ * not derive, which no other bucket does (QA-036: a count never reads as that
+ * many running).
  */
-const TAB_LABEL: Readonly<Record<BucketFilter, string>> = { ...BUCKET_LABEL, running: 'Not ended' }
+const TAB_TITLE: Readonly<Record<BucketFilter, string>> = {
+  all: 'Every workflow read, including any whose state this read could not derive',
+  running: 'Running, starting, or waiting its turn to start',
+  parked: 'Parked: waiting on a person, a provider, a pull request or an earlier step',
+  failed: 'Failed or dead-lettered',
+  done: 'Succeeded or stopped',
+}
+
+/** The sort control's words; the default is the redesign's "Needs you first". */
+const SORT_WORD: Readonly<Record<WorkflowSort, string>> = {
+  state: 'Needs you first',
+  newest: 'Newest first',
+  oldest: 'Oldest first',
+  failed: 'Most failed steps first',
+}
 
 /**
  * THE LIST'S TOOLBAR, loaded or not (#113). While the read is in flight it is
@@ -5629,115 +5654,105 @@ function WorkflowListFilters({
 }) {
   const off = counts === null
   return (
-    <div className="wfl-filters">
+    <div className="wfg-filters">
       <Segmented
-        className="wfl-seg"
+        className="wfg-seg"
         label="Which workflows"
         disabled={off}
         value={query.state}
         options={BUCKET_FILTERS.map((b) => ({
           key: b,
-          label: TAB_LABEL[b],
+          label: BUCKET_LABEL[b],
           ...(counts !== null ? { count: counts[b] } : {}),
-          // WF-10: Running is every workflow not yet ended, parked and queued included.
-          // QA-036: and one whose state this read could not derive, which the
-          // title names so the tab's count never reads as that many running.
-          ...(b === 'running'
-            ? {
-                title:
-                  'Every workflow that has not ended: running, parked or waiting to start, and any whose state this read could not derive',
-              }
-            : {}),
+          title: TAB_TITLE[b],
         }))}
         onChange={(b) => choose({ ...query, state: b })}
       />
-      <input
-        className="wfl-search"
-        type="search"
-        aria-label="Find a workflow or step"
-        placeholder="Find a workflow or step"
-        disabled={off}
-        value={query.q}
-        onChange={(e) => choose({ ...query, q: e.target.value })}
-      />
-      <label className="wfl-pick">
-        owner
-        <select disabled={off} value={query.owner} onChange={(e) => choose({ ...query, owner: e.target.value })}>
-          <option value="">anyone</option>
-          {/* The name before the @, as the Owner cell prints it (QA G3-14): a
-              service account's whole address set the select 424px wide in
-              a 354px column at 390. The address is the option's title. */}
-          {owners.map((o) => (
-            <option key={o} value={o} title={o}>
-              {ownerShort(o)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="wfl-pick">
-        profile
-        <select disabled={off} value={query.profile} onChange={(e) => choose({ ...query, profile: e.target.value })}>
-          <option value="">any</option>
-          {profiles.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-      </label>
-      {/* THE ORDER (#111): by state as before, by age, or by how many steps
-          failed -- the triage order. In the address like every other choice. */}
-      <label className="wfl-pick">
-        sort
-        <select
+      <div className="wfg-tools" role="search">
+        <input
+          className="wfg-search"
+          type="search"
+          aria-label="Find a workflow or step"
+          placeholder="Search name, id, step"
           disabled={off}
-          value={query.sort}
-          onChange={(e) => choose({ ...query, sort: e.target.value as WorkflowSort })}
-        >
-          {WORKFLOW_SORTS.map((o) => (
-            <option key={o} value={o}>
-              {o === 'state' ? 'by state' : SORT_LABEL[o]}
-            </option>
-          ))}
-        </select>
-      </label>
+          value={query.q}
+          onChange={(e) => choose({ ...query, q: e.target.value })}
+        />
+        <label className="wfg-pick">
+          <span className="vh">owner</span>
+          <select aria-label="owner" disabled={off} value={query.owner} onChange={(e) => choose({ ...query, owner: e.target.value })}>
+            <option value="">Anyone</option>
+            {/* The name before the @, as the Owner cell prints it (QA G3-14): a
+                service account's whole address set the select 424px wide in
+                a 354px column at 390. The address is the option's title. */}
+            {owners.map((o) => (
+              <option key={o} value={o} title={o}>
+                {ownerShort(o)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="wfg-pick">
+          <span className="vh">profile</span>
+          <select aria-label="profile" disabled={off} value={query.profile} onChange={(e) => choose({ ...query, profile: e.target.value })}>
+            <option value="">Any profile</option>
+            {profiles.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
+        {/* THE ORDER (#111): needs you first, by age, or by how many steps
+            failed -- the triage order. In the address like every other choice. */}
+        <label className="wfg-pick">
+          <span className="vh">sort</span>
+          <select
+            aria-label="sort"
+            disabled={off}
+            value={query.sort}
+            onChange={(e) => choose({ ...query, sort: e.target.value as WorkflowSort })}
+          >
+            {WORKFLOW_SORTS.map((o) => (
+              <option key={o} value={o}>
+                {SORT_WORD[o]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
     </div>
   )
 }
 
 /** How many rows the loading skeleton draws: about one laptop fold of the list. */
 const SKELETON_ROWS = 6
-/** Each skeleton cell's bar width, in em, per column; the name cell draws two lines as a row does. */
-const SKELETON_WIDTHS: readonly number[] = [5, 12, 4, 7, 6, 4, 6, 5, 4]
+/** Each skeleton cell's bar width, in em, per column. */
+const SKELETON_WIDTHS: readonly number[] = [5, 12, 7, 4, 4, 5, 5]
 
 /**
  * THE LIST WHILE ITS READ IS IN FLIGHT (#113): the real toolbar, disabled, the
  * real table head, and skeleton rows in the table's own cells -- the same
- * `.wfl-row` and padding, the name cell two lines tall as a loaded row's is --
- * so the first loaded row lands where the first skeleton row was. The bars are
- * `.wfl-skel`, a step darker than the shared `.skeleton`, which sat at about
- * 1.03:1 in light. They carry no text: a skeleton answers nothing.
+ * `.wfg-row` and padding -- so the first loaded row lands where the first
+ * skeleton row was. The bars are `.wfl-skel`, a step darker than the shared
+ * `.skeleton`, which sat at about 1.03:1 in light. They carry no text: a
+ * skeleton answers nothing.
  */
 export function WorkflowListSkeleton({ query }: { query: WorkflowQuery }) {
   const owners = query.owner === '' ? [] : [query.owner]
   const profiles = query.profile === '' ? [] : [query.profile]
   return (
-    <div className="wfl is-loading" aria-busy="true">
+    <div className="wfg is-loading" aria-busy="true">
       <WorkflowListFilters query={query} choose={() => {}} counts={null} owners={owners} profiles={profiles} />
-      <div className="table-wrap is-scroll wfl-scroll" aria-hidden="true">
-        <table className="wfl-table">
+      <div className="table-wrap wfg-scroll" aria-hidden="true">
+        <table className="wfg-table">
           <ListHead />
           <tbody>
             {Array.from({ length: SKELETON_ROWS }, (_, r) => (
-              <tr key={r} className="wfl-row is-skel">
+              <tr key={r} className="wfg-row is-skel">
                 {SKELETON_WIDTHS.map((w, c) => (
-                  <td
-                    key={c}
-                    data-col={LIST_COLUMNS[c]?.col}
-                    className={c === 1 ? 'wfl-name' : LIST_COLUMNS[c]?.num === true ? 'num' : undefined}
-                  >
+                  <td key={c} data-col={LIST_COLUMNS[c]?.col} className={LIST_COLUMNS[c]?.num === true ? 'num' : undefined}>
                     <span className="wfl-skel" style={{ width: `${w}em` }} />
-                    {c === 1 && <span className="wfl-skel is-sub" style={{ width: `${w - 4}em` }} />}
                   </td>
                 ))}
               </tr>
@@ -5750,21 +5765,29 @@ export function WorkflowListSkeleton({ query }: { query: WorkflowQuery }) {
 }
 
 /**
- * THE LIST, FULL WIDTH (workflows.html A). One row per workflow: the rollup
- * mark, the name, the shape, steps done, the runner mix, cost, owner, when it
- * started and how long it ran (#111). A failed row's second line names the
- * failing step and why; a parked one what it waits on; an unread one says so.
- * Everything chosen above the table, the order included, is in the address
- * (`workflowlist.ts`).
+ * THE LIST (the picked Work redesign, frame graph-workflows-rest): two panes.
+ * On the left the toolbar and one line per workflow; on the right, once a row
+ * is picked, the docked inspector with that workflow's summary
+ * (`WorkflowSummary`). The left side never moves when the inspector opens,
+ * changes or closes, so the reader keeps their place. A row picks; its name
+ * opens the workflow's page. Everything chosen above the table, the order
+ * included, is in the address (`workflowlist.ts`); the pick is the page's own.
+ *
+ * NO READ OF ITS OWN. The rows, their needs and the summary all come from the
+ * list read (`GET /v1/workflows?view=summary`) and the older pages the reader
+ * asks for, exactly as before.
  */
 function WorkflowList({
   board,
   query,
   choose,
+  go,
 }: {
   board: WorkflowBoard
   query: WorkflowQuery
   choose: (q: WorkflowQuery) => void
+  /** Open a workflow's page as a new history entry; `choose` replaces the entry. */
+  go: (q: WorkflowQuery) => void
 }) {
   // THE ROWS: the board's newest 100, and every older page the reader asked
   // for (WF-2). Everything below -- counts, sorts, search -- is over these.
@@ -5786,12 +5809,13 @@ function WorkflowList({
     () => new Map(all.map((w) => [w.workflow_id, workflowLabel(w, taskById)] as const)),
     [all, taskById],
   )
+  const [picked, setPicked] = useState<string | null>(null)
   // The segment's counts follow the OTHER filters, so "Failed 2" means two
   // failed workflows of priya's, when owner is priya.
   const filtered = all.filter((w) => listMatches(w, labels.get(w.workflow_id) ?? null, query))
   const counts = bucketCounts(filtered)
   const rows = sortWorkflows(
-    query.state === 'all' ? filtered : filtered.filter((w) => bucketOf(w) === query.state),
+    query.state === 'all' ? filtered : filtered.filter((w) => listBucketOf(w) === query.state),
     query.sort,
     taskById,
   )
@@ -5806,14 +5830,8 @@ function WorkflowList({
   const owners = withChosen(ownersOf(all), query.owner)
   const profiles = withChosen(profilesOf(all), query.profile)
   const filteredAtAll = query.q !== '' || query.owner !== '' || query.profile !== ''
-  // THE ROWS' COST, BY THE TABLE'S RULE (WF-5): each step's total over every
-  // attempt comes with its block in the list read, so no attempt read is made
-  // for the rows and no cost cell waits on one.
-  // One clock for every running row's `so far`, on the shared age tick: the
-  // started and duration columns move on the same beat as every other age on
-  // the screen, and a running row's duration advances between polls. The
-  // canvas's own 1Hz `useNow` above is scoped to an open card; holding it
-  // here would re-render every row once a second.
+  // One clock for every row's `changed` and the summary's running duration,
+  // on the shared age tick, so every age on the screen moves on one beat.
   const now = useSharedClock(AGE_TICK_MS)
   // WHAT THE LIST HOLDS, said wherever a figure could read as a total (WF-2):
   // `the 100 newest`, or every workflow once no older page is left.
@@ -5841,14 +5859,15 @@ function WorkflowList({
   ]
     .filter((c): c is string => c !== null)
     .join(' · ')
-  return (
-    <div className="wfl">
+  // The picked workflow, from the rows the list holds; a pick the filters or
+  // a re-read dropped closes the inspector rather than showing a stale one.
+  const open = picked === null ? null : (all.find((w) => w.workflow_id === picked) ?? null)
+  const main = (
+    <div className={`wfg${open !== null ? ' has-inspector' : ''}`}>
       <WorkflowListFilters query={query} choose={choose} counts={counts} owners={owners} profiles={profiles} />
       {/* ONE MUTED LINE UNDER THE HEAD (visual QA VQ-013, #2391): what the
-          counts are of and how many rows know their steps were two notes,
-          each with the list's gap after it, and at 1512x806 they and the
-          tall rows left about five of 100 workflows on screen. The two facts
-          are clauses of one note now, each said only when it is true. */}
+          counts are of and how many rows know their steps, each clause only
+          when it is true. */}
       {listNote !== '' && <CountNote>{listNote}</CountNote>}
       {outside !== null && (
         <p className="wfl-outside" data-fact="pasted-id">
@@ -5873,8 +5892,8 @@ function WorkflowList({
           )}
         </p>
       ) : (
-        <MoreRight className="table-wrap is-scroll wfl-scroll">
-          <table className="wfl-table">
+        <div className="table-wrap wfg-scroll">
+          <table className="wfg-table" aria-label="Workflows">
             <ListHead />
             <tbody>
               {rows.map((w) => (
@@ -5885,11 +5904,13 @@ function WorkflowList({
                   taskById={taskById}
                   query={query}
                   now={now}
+                  picked={w.workflow_id === picked}
+                  onPick={() => setPicked((p) => (p === w.workflow_id ? null : w.workflow_id))}
                 />
               ))}
             </tbody>
           </table>
-        </MoreRight>
+        </div>
       )}
       <p className="wfl-foot">
         {rows.length} of {all.length} read · {SORT_LABEL[query.sort]} · 100 per read
@@ -5906,6 +5927,30 @@ function WorkflowList({
         {older.read.kind === 'failed' && <span className="warn-text"> The older read failed: {older.read.detail}</span>}
       </p>
     </div>
+  )
+  const openName = open === null ? null : listRowName(open.workflow_id, labels.get(open.workflow_id) ?? null, stepsRead(open, taskById)).name
+  return (
+    <Inspector
+      screen="workflows"
+      main={main}
+      label="Workflow inspector"
+      title={openName ?? undefined}
+      state={open === null ? undefined : <WorkflowStateMark workflow={open} />}
+      actions={
+        open === null ? undefined : (
+          <a className="ctl-link wfg-open" href={workflowHref(open.workflow_id, query)}>
+            Open workflow
+          </a>
+        )
+      }
+      onClose={() => setPicked(null)}
+      phoneOpen={open !== null}
+      backLabel="Workflows"
+    >
+      {open === null ? null : (
+        <WorkflowSummary workflow={open} taskById={taskById} query={query} go={go} now={now} />
+      )}
+    </Inspector>
   )
 }
 
@@ -5991,62 +6036,78 @@ function withChosen(options: string[], chosen: string): string[] {
 }
 
 /**
- * THE RUNNERS GO UNDER THE NAME WHEN THE NAME WOULD KEEP LESS THAN 200px
- * (VQ-013 re-review, #2391). The mix keeps room for one whole chip on the
- * name's line (`.wfl-mix`'s 11rem, styles/workflows.css), and at 1440 with the
- * nav open that line is 319px: the name kept 127px of it and every row read
- * 'Audit the operator s…', the ~20-character cut QA G3-09 fixed. Below the
- * floor the mix moves to the row's second line, beside the current step, and
- * the name has the whole line.
- *
- * Only in the band where the mix is drawn at all (900-1679, where the
- * Runners column is hidden): the phone card gives the mix its own line in the
- * card already, and from 1680 the column carries the runners.
+ * THE NEEDS-YOU CELL (the picked Work redesign): what in this workflow waits
+ * on the person, by kind, from the list read (`needsOf`). A dash when nothing
+ * does; "not known" -- never 0 -- when the steps were not read or the state
+ * could not be derived. `long` is the inspector's form, with the words.
  */
-const NAME_FLOOR_PX = 200
-/**
- * `.wfl-mix`'s basis (11rem) and `.wfl-line`'s `--ctl-s2` gap, as FALLBACKS
- * only. The row reads both from the cascade (`cssPx`), so a change to the
- * sheet moves the threshold with it; these are what a box with no computed
- * style (jsdom, which loads no sheet) is counted with, and
- * vq.workflows.test.tsx holds them to the sheet's values.
- */
-const LINE_MIX_PX = 11 * 16
-const LINE_GAP_PX = 8
-const MIX_BAND_QUERY = '(min-width: 900px) and (max-width: 1679px)'
-
-/**
- * Whether the name would keep less than `NAME_FLOOR_PX` beside the mix on a
- * line `el`. Counted the same way wherever the mix is drawn now -- the mix's
- * room and its gap are counted whether or not it is on the line -- so moving
- * it cannot change the answer, and the row settles in one step. A tag is
- * `flex: none`, so it costs its width; so does the id, whose floor and cap
- * are one 10ch (#2391 comment 58), so its width never moves with the line.
- */
-function mixGoesUnder(el: HTMLElement): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
-  if (!window.matchMedia(MIX_BAND_QUERY).matches) return false
-  const line = el.clientWidth
-  if (line <= 0) return false
-  const others = [...el.children].filter((c) => !c.classList.contains('wfl-mix'))
-  const tags = others
-    .filter((c) => c.classList.contains('tag') || c.classList.contains('id'))
-    // A box with no width read (no layout) costs 0, never NaN.
-    .reduce((w, c) => w + ((c as HTMLElement).offsetWidth || 0), 0)
-  // The mix is on this line or on the row's second one; its basis is 11rem in both places.
-  const mix = el.parentElement?.querySelector<HTMLElement>(':scope > .wfl-line > .wfl-mix, :scope > .wfl-sub > .wfl-mix') ?? null
-  const style = window.getComputedStyle(el)
-  const gap = cssPx(style.columnGap, LINE_GAP_PX)
-  const basis = mix === null ? LINE_MIX_PX : cssPx(window.getComputedStyle(mix).flexBasis, LINE_MIX_PX)
-  // Every item but the name is one gap: the others less the name, and the mix.
-  const gaps = others.length * gap
-  return line - tags - gaps - basis < NAME_FLOOR_PX
+function NeedsMarks({ needs, long = false }: { needs: WorkflowNeeds | null; long?: boolean }) {
+  if (needs === null) {
+    return (
+      <span className="wfg-absent" title="The list read did not serve this workflow's steps' states, so what waits on you is not known; its page reads them">
+        not known
+      </span>
+    )
+  }
+  const marks: { key: keyof WorkflowNeeds; glyph: string; n: number; word: string; title: string; tone: string }[] = [
+    { key: 'failed', glyph: '✗', n: needs.failed, word: 'failed', title: `${needs.failed} failed ${needs.failed === 1 ? 'step' : 'steps'}`, tone: 'is-bad' },
+    {
+      key: 'questions',
+      glyph: '?',
+      n: needs.questions,
+      word: needs.questions === 1 ? 'asks you' : 'ask you',
+      title: `${needs.questions} ${needs.questions === 1 ? 'step waits' : 'steps wait'} on an answer from you`,
+      tone: 'is-park',
+    },
+    {
+      key: 'held',
+      glyph: '⇢',
+      n: needs.held,
+      word: 'held for you',
+      title: `${needs.held} ${needs.held === 1 ? 'step is' : 'steps are'} held for a person: a merge held by questions, or a turn in a browser; the workflow's page says which`,
+      tone: 'is-park',
+    },
+  ]
+  const shown = marks.filter((m) => m.n > 0)
+  if (shown.length === 0) return <span className="wfg-dim">—</span>
+  return (
+    <>
+      {shown.map((m) => (
+        <span key={m.key} className={`wfg-need ${m.tone}`} data-need={m.key} title={m.title}>
+          <span aria-hidden>{m.glyph}</span> {m.n}
+          {long ? ` ${m.word}` : <span className="vh"> {m.word}</span>}
+        </span>
+      ))}
+    </>
+  )
 }
 
-/** A computed `<n>px` length, or `fallback` where the box has none (`auto`, `normal`, or no sheet loaded). */
-function cssPx(value: string | undefined, fallback: number): number {
-  const m = /^([\d.]+)px$/.exec((value ?? '').trim())
-  return m === null ? fallback : Number(m[1])
+/**
+ * THE STEP BAR, ONE LINE: the bar in the workflow's own hue and done of total.
+ * An untrusted census draws what it did count and hatches the rest, and says
+ * the census's own words instead of a fraction (`StepsDone`, Q9).
+ */
+function StepBar({ workflow, roll }: { workflow: Workflow; roll: Rollup }) {
+  const s = derivedStateOf(workflow)
+  const hue = s === null ? 'neu' : STATE_MARK[s].hue
+  if (!roll.trustworthy) {
+    const counted = workflow.rollup?.counts.SUCCEEDED ?? 0
+    const unread = workflow.rollup?.unreadable_steps.length ?? roll.total
+    return (
+      <span className="wfg-bar" title={roll.why}>
+        <ProgressBar done={workflow.rollup ? counted : 0} total={workflow.rollup ? roll.total : 0} unread={unread} tone={hue} label={roll.why} />
+        <small className="wfg-dim">{roll.text}</small>
+      </span>
+    )
+  }
+  return (
+    <span className="wfg-bar" title={roll.why}>
+      <ProgressBar done={roll.done} total={roll.total} tone={hue} label={roll.why} />
+      <small>
+        {roll.done}/{roll.total}
+      </small>
+    </span>
+  )
 }
 
 function WorkflowListRow({
@@ -6055,6 +6116,8 @@ function WorkflowListRow({
   taskById,
   query,
   now,
+  picked,
+  onPick,
 }: {
   workflow: Workflow
   label: string | null
@@ -6062,140 +6125,159 @@ function WorkflowListRow({
   taskById: ReadonlyMap<string, Task> | null
   query: WorkflowQuery
   now: number
+  /** This row's workflow is open in the inspector. */
+  picked: boolean
+  /** The row was clicked, or Enter or Space pressed on it: open (or close) its summary. */
+  onPick: () => void
 }) {
-  // The name's line, measured: its width comes from the fixed table's column,
-  // never from what it holds, so measuring it cannot feed back into itself.
-  const lineRef = useRef<HTMLSpanElement | null>(null)
-  const [mixUnder, setMixUnder] = useState(false)
-  useLayoutEffect(() => {
-    const el = lineRef.current
-    if (el === null) return
-    const measure = () => setMixUnder(mixGoesUnder(el))
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const watch = new ResizeObserver(measure)
-    watch.observe(el)
-    return () => watch.disconnect()
-  }, [])
-  const why = listRowWhy(workflow, taskById)
-  // A row known to have no label or title is "Untitled workflow", id under it.
+  // A row known to have no label or title is "Untitled workflow", id in its title.
   const named = listRowName(workflow.workflow_id, label, stepsRead(workflow, taskById))
   const roll = rollupLine(workflow, taskById)
   // The steps' totals over every attempt, from their blocks (`totalCostOf`).
   const spend = workflowSpend(workflow.steps, taskById)
-  const failed = why !== null && (why.kind === 'failed' || why.kind === 'failed-unread')
-  // SUBMITTED is when the workflow was submitted, the instant every order
-  // sorts by (QA G3-20), with the first step's start in its hover -- the
-  // same words the open card's head uses (#376). DURATION is wall clock from
-  // submission (`workflowDuration`), so the two columns share one origin.
+  const needs = needsOf(workflow, taskById)
+  const failed = listBucketOf(workflow) === 'failed'
+  const changed = Number.isFinite(Date.parse(workflow.updated_at)) ? timeAgo(workflow.updated_at, now) : 'not recorded'
+  return (
+    <tr
+      className={`wfg-row${failed ? ' is-failed' : ''}${picked ? ' is-picked' : ''}`}
+      data-workflow={workflow.workflow_id}
+      aria-selected={picked}
+      tabIndex={0}
+      onClick={onPick}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
+        e.preventDefault()
+        onPick()
+      }}
+    >
+      <td className="wfg-state" data-col="state">
+        <WorkflowStateMark workflow={workflow} />
+      </td>
+      <td className="wfg-name" data-col="workflow">
+        {/* THE NAME OPENS THE PAGE; THE REST OF THE ROW PICKS. The click on
+            the link stops here so the inspector does not open behind the
+            page it is leaving for. The id is the link's title and the
+            inspector's; the line stays one line. */}
+        <a
+          href={workflowHref(workflow.workflow_id, query)}
+          title={named.showId ? `${named.name} · ${workflow.workflow_id}` : named.name}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {named.name}
+        </a>
+        <PullRequestWaitTag workflow={workflow} />
+        {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
+      </td>
+      <td className="wfg-steps" data-col="steps">
+        <StepBar workflow={workflow} roll={roll} />
+      </td>
+      <td className="wfg-needs" data-col="needs">
+        <NeedsMarks needs={needs} />
+      </td>
+      <td className="num wfg-spent" data-col="spent">
+        <Spend spend={spend} short />
+      </td>
+      <td className="wfg-owner" data-col="owner" title={workflow.submitted_by ?? undefined}>
+        {ownerShort(workflow.submitted_by)}
+      </td>
+      <td className="wfg-changed" data-col="changed" title={workflow.updated_at}>
+        {changed}
+      </td>
+    </tr>
+  )
+}
+
+/**
+ * THE WORKFLOW'S SUMMARY, IN THE INSPECTOR (the picked Work redesign; a row
+ * opens it). Everything the list row used to carry on its second line and in
+ * the columns the one-line row gave up, from the same list read: the facts
+ * line (steps, spend, owner, changed), the id, what it waits on, why it failed
+ * or what it is doing, what needs the person, the stage grid, and its shape,
+ * runners, submission and duration. "Open workflow" in the head goes to the
+ * page. A chip in the grid opens the workflow's page.
+ */
+function WorkflowSummary({
+  workflow,
+  taskById,
+  query,
+  go,
+  now,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+  query: WorkflowQuery
+  /** Open a workflow's page as a new history entry (`WorkflowsScreen`'s `go`). */
+  go: (q: WorkflowQuery) => void
+  now: number
+}) {
+  const roll = rollupLine(workflow, taskById)
+  const spend = workflowSpend(workflow.steps, taskById)
+  const why = listRowWhy(workflow, taskById)
+  const shape = shapeOf(workflow.steps)
   const started = workflowStartUtc(workflow, taskById, now)
   const read = workflowDuration(workflow, taskById, now)
-  // NO DURATION CLAIM WHILE THE STATE IS UNKNOWN (visual QA pass 2,
-  // overview-agents-62, #2694): the Running bucket holds a workflow whose
-  // state this read could not derive, so its row measured to now and said
-  // `9d 22h so far` -- a claim that it is still running, beside a mark that
-  // says nobody knows. It says how long ago it began instead, in the
-  // absent treatment, and why in its title. IN THE LARGEST UNIT ONLY (review
-  // of #2694's lane QA2-FIX-06): `submitted 10d 0h ago` was 144px in the
-  // 124px Duration column (`submitted 10d 0h ag` at 1440) and ran 9px off the
-  // phone card; `began 10d ago` fits both (95px by the table-fit model,
-  // `started 10d ago` 109px of 104), and the phone card draws no
-  // `duration` label over it (`.is-unknown` in workflows.css).
+  // NO DURATION CLAIM WHILE THE STATE IS UNKNOWN (overview-agents-62, #2694):
+  // how long ago it began, in the largest unit, and why in its title.
   const unknownState = derivedStateOf(workflow) === null && read.live && read.ms !== null
   const dur = unknownState
     ? {
-        ...read,
-        ms: null,
         text: `began ${formatDuration(read.ms ?? 0).split(' ')[0]} ago`,
         title: `The workflow's state is unknown, so whether it is still running, and so its duration, is not known. Submitted ${workflow.created_at}.`,
       }
     : read
+  const changed = Number.isFinite(Date.parse(workflow.updated_at)) ? timeAgo(workflow.updated_at, now) : 'not recorded'
+  const n = workflow.steps.length
   return (
-    <tr className={`wfl-row${failed ? ' is-failed' : ''}`} data-workflow={workflow.workflow_id}>
-      {/* EVERY CELL NAMES ITS COLUMN (browser QA D8): the sheet sizes State,
-          Steps done and Duration to what they hold, and cuts the name and the
-          shape with their whole text as the title. */}
-      <td className="wfl-state" data-col="state">
-        <WorkflowStateMark workflow={workflow} />
-      </td>
-      <td className="wfl-name" data-col="workflow">
-        {/* ONE LINE: THE NAME AND ITS RUNNERS (visual QA VQ-013, #2391;
-            workflows.html A). Name, id, runner chips and the current step
-            were four stacked lines, so a row was 3-4 lines tall. The id is
-            the line under the name (overview-agents-61, below); the runner mix follows on the same line where the Runners column
-            is not drawn (below 1680, QA G3-09). The current step, when there
-            is one, is the row's only second line -- and the runners join it
-            when the name would keep less than 200px beside them
-            (`mixGoesUnder`; VQ-013 re-review). */}
-        <span className="wfl-line" ref={lineRef}>
-          <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
-            {named.name}
-          </a>
-          {!mixUnder && (
-            <span className="wfl-mix">
-              <Mix steps={workflow.steps} />
-            </span>
-          )}
+    <div className="wfg-sum" data-workflow={workflow.workflow_id}>
+      <p className="wfg-sum-facts">
+        {n} {n === 1 ? 'step' : 'steps'} · <Spend spend={spend} short /> ·{' '}
+        <span title={workflow.submitted_by ?? undefined}>{ownerShort(workflow.submitted_by)}</span> ·{' '}
+        <span title={workflow.updated_at}>changed {changed}</span>
+      </p>
+      <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>
+      {(pullRequestWait(workflow) !== null || cancelPending(workflow)) && (
+        <p className="wfg-sum-tags">
           <PullRequestWaitTag workflow={workflow} />
           {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
-        </span>
-        {/* THE ID UNDER THE NAME, AT EVERY WIDTH (visual QA pass 1
-            overview-agents-61, #2596): beside the name it took a 10ch cut
-            of the line and every 45-character title read `Audit the operator
-            scripts and the Terr…` at 1440. Under it, in the small mono, as
-            the phone card already drew it, the name has the line. */}
-        {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
-        {/* Drawn at ≤560 only, where the done, failed and age columns are
-            off the right edge (#109); the cells say it wide, so hidden from
-            assistive technology to keep one reading of each fact. */}
-        <span className="wfl-phone" aria-hidden>
-          {phoneSummary(workflow, now)}
-        </span>
-        {mixUnder ? (
-          <span className="wfl-sub">
-            <span className="wfl-mix">
-              <Mix steps={workflow.steps} />
-            </span>
-            {why !== null && <RowWhyLine why={why} />}
-          </span>
-        ) : (
-          why !== null && <RowWhyLine why={why} />
-        )}
-      </td>
-      <td className="wfl-shape" data-col="shape" title={shapeOf(workflow.steps).label}>
-        <StageGlyph steps={workflow.steps} taskById={taskById} />
-        <Shape shape={shapeOf(workflow.steps)} />
-        {partialDeps(workflow.steps) && (
-          <Chip title="Some steps depend on part of the level above, not all of it">partial</Chip>
-        )}
-      </td>
-      <td data-col="done">
+        </p>
+      )}
+      {why !== null && (
+        <p className="wfg-sum-why">
+          <RowWhyLine why={why} />
+        </p>
+      )}
+      <div className="wfg-sum-row">
         <StepsDone workflow={workflow} roll={roll} />
-      </td>
-      <td data-col="runners">
-        <Mix steps={workflow.steps} />
-      </td>
-      <td className="num" data-col="cost">
-        <Spend spend={spend} short />
-      </td>
-      <td className="wfl-owner" data-col="owner" title={workflow.submitted_by ?? undefined}>
-        {ownerShort(workflow.submitted_by)}
-      </td>
-      <td
-        className="wfl-submitted"
-        data-col="submitted"
-        title={`${started.submittedTitle}; first step ${startedPhrase(started)}`}
-      >
-        {started.submitted}
-      </td>
-      <td
-        className={`num wfl-dur${dur.ms === null ? ' is-absent' : ''}${unknownState ? ' is-unknown' : ''}`}
-        data-col="duration"
-        title={dur.title}
-      >
-        {dur.text}
-      </td>
-    </tr>
+      </div>
+      <p className="wfg-sum-needs">
+        <b>Needs you</b> <NeedsMarks needs={needsOf(workflow, taskById)} long />
+      </p>
+      <StageGrid
+        workflow={workflow}
+        taskById={taskById}
+        now={now}
+        onSelect={() => go({ ...query, wf: workflow.workflow_id, tab: 'graph', stage: null, stepState: null })}
+      />
+      <dl className="wfg-sum-dl">
+        <dt>Shape</dt>
+        <dd title={shape.label}>
+          <StageGlyph steps={workflow.steps} taskById={taskById} />
+          <Shape shape={shape} />
+          {partialDeps(workflow.steps) && <Chip title="Some steps depend on part of the level above, not all of it">partial</Chip>}
+        </dd>
+        <dt>Runners</dt>
+        <dd>
+          <Mix steps={workflow.steps} />
+        </dd>
+        <dt>Submitted</dt>
+        <dd title={`${started.submittedTitle}; first step ${startedPhrase(started)}`}>{started.submitted}</dd>
+        <dt>Duration</dt>
+        <dd className={read.ms === null || unknownState ? 'wfg-absent' : undefined} title={dur.title}>
+          {dur.text}
+        </dd>
+      </dl>
+    </div>
   )
 }
 
