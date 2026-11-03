@@ -1701,3 +1701,132 @@ def test_one_persons_workspace_waits_for_publishing(setup_app, setup_client, db)
     publisher.enabled = True
     assert page(setup_client)["personal"]["workspace"] == tenant
     assert len(publisher.messages) == 1, publisher.messages
+
+
+# --------------------------------------------------------------------------
+# what the console finish's checklist reads beside each mark: verify's
+# cause, when the smoke started, when a link was made, how long a wait
+# usually takes. Each is served when recorded and absent when not.
+# --------------------------------------------------------------------------
+
+
+def _verify_row(**more: Any) -> dict[str, Any]:
+    return {"check": "end-to-end", "done": 9, "total": 11, "started": 1_790_000_000.0,
+            "expected_end": 1_790_001_080.0, "deadline": 1_790_002_700.0, **more}
+
+
+def test_verify_detail_is_served_when_verify_failed(setup_client, db) -> None:
+    """Verify's one-line cause, written by swarm install into the engine
+    document on a failure, is served as `engine.verify.detail`; the stored
+    document is not changed."""
+    written = seed_engine_document(db)
+    cause = "console-workflow (t-1) finished without a pull request"
+    db.docs[ENGINE_DOC]["verify"] = _verify_row(result="failed", detail=cause)
+    stored = json.loads(json.dumps(db.docs[ENGINE_DOC], default=str))
+    assert page(setup_client)["engine"]["verify"]["detail"] == cause
+    assert json.loads(json.dumps(db.docs[ENGINE_DOC], default=str)) == stored
+    assert written["release"] == page(setup_client)["engine"]["release"]
+
+
+@pytest.mark.parametrize("row", [
+    _verify_row(result=None),
+    _verify_row(result="passed"),
+    _verify_row(result=None, detail="a cause left from an earlier failure"),
+    _verify_row(result="failed", detail=""),
+    _verify_row(result="failed", detail="   "),
+    _verify_row(result="failed"),
+])
+def test_verify_detail_is_absent_unless_verify_failed_with_a_cause(setup_client, db, row) -> None:
+    """Absent, never empty: a row that has not failed, or a failed row from
+    before the field existed, is served with no `detail` key."""
+    seed_engine_document(db)
+    db.docs[ENGINE_DOC]["verify"] = dict(row)
+    served = page(setup_client)["engine"]["verify"]
+    assert "detail" not in served
+    assert served["result"] == row["result"] and served["done"] == 9
+
+
+def test_an_engine_document_without_verify_reads_cleanly(setup_client, db) -> None:
+    seed_engine_document(db)
+    engine = page(setup_client)["engine"]
+    assert "verify" not in engine and engine["release"] == "1.0.0"
+
+
+def test_the_smokes_start_time_is_served_once_it_started(setup_client, db, github, pool,
+                                                         runs) -> None:
+    """`teams[].smoke.started_at` is recorded when the smoke is submitted and
+    served on every later read; before it starts there is none."""
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    assert page_team(setup_client, team).get("smoke") is None
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    smoke = page_team(setup_client, team)["smoke"]
+    assert smoke["state"] == "running" and smoke["started_at"]
+    stored = team_doc(db, team)["smoke"]["started_at"]
+    assert datetime.fromisoformat(smoke["started_at"].replace("Z", "+00:00")) == stored
+    runs.states["task-1"] = "succeeded"
+    assert page_team(setup_client, team)["smoke"]["started_at"] == smoke["started_at"]
+
+
+def test_a_smoke_recorded_without_a_start_time_is_served_without_one(setup_client, db,
+                                                                      github, pool) -> None:
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    team_doc(db, team)["smoke"] = {"state": "succeeded", "task_id": "task-0",
+                                   "repository": f"{ORG}/api"}
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    smoke = page_team(setup_client, team)["smoke"]
+    assert smoke["state"] == "succeeded" and "started_at" not in smoke
+
+
+def test_the_link_time_is_stored_when_a_link_is_made(setup_client, db) -> None:
+    """`accounts[].link_made_at` is the link's own creation time, stored
+    with it, not `link_expires` minus a guessed lifetime."""
+    create_team(setup_client)
+    made = setup_client.post("/v1/admin/setup/links", headers=auth_header("root"), json={
+        "kind": "pool-account", "label": "pool-1", "owner": ALICE})
+    assert made.status_code == 201, made.text
+    account = db.docs[f"swarm-install/{ENV}/console/accounts"]["pool-1"]
+    link = next(d for k, d in db.docs.items() if k.startswith("setup_links/") and d["label"] == "pool-1")
+    assert account["link_made_at"] == link["created_at"]
+    served = page(setup_client)["accounts"]["pool-1"]
+    assert datetime.fromisoformat(served["link_made_at"].replace("Z", "+00:00")) == link["created_at"]
+    assert "link_hash" not in served
+
+
+def test_an_account_recorded_before_link_times_is_served_without_one(setup_client, db) -> None:
+    expires = datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc)
+    db.docs[f"swarm-install/{ENV}/console/accounts"] = {
+        "pool-1": {"owner": ALICE, "link_hash": "0" * 64, "link_expires": expires}}
+    served = page(setup_client)["accounts"]["pool-1"]
+    assert "link_made_at" not in served
+    assert served["owner"] == ALICE and served["link_expires"]
+
+
+def test_typical_waits_are_served_with_their_sources(setup_client, db) -> None:
+    """Each wait the page names carries where its number comes from; a wait
+    the platform has no figure for has no `typical_s`, never a made-up one."""
+    seed_engine_document(db)
+    waits = page(setup_client)["typical_waits"]
+    assert set(waits) == {"sign_in_pass", "infra_pass_3", "workspace_build", "smoke", "groups"}
+    for name, wait in waits.items():
+        assert wait["source"], name
+    for name in ("sign_in_pass", "infra_pass_3"):
+        assert "typical_s" not in waits[name] and "expected" not in waits[name]
+        assert waits[name]["source"].startswith("not measured")
+
+
+def test_typical_waits_restate_the_engines_own_figures() -> None:
+    """The numbers are the engine's `WaitSpec`s, restated because swarm-api's
+    image does not carry swarm_install; this fails on any drift."""
+    from swarm_install import team
+    from swarm_install.steps import identity
+
+    specs = {"workspace_build": team.WORKSPACE_WAIT, "smoke": team.SMOKE_WAIT,
+             "groups": identity.GROUPS_WAIT}
+    for name, spec in specs.items():
+        wait = setup_routes.TYPICAL_WAITS[name]
+        assert wait["typical_s"] == spec.expected_s, name
+        assert wait["expected"] == spec.expected, name

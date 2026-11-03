@@ -53,7 +53,10 @@ SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     "swarm-install/{env}/console/sign_in_client": frozenset({"client_id", "saved_at", "saved_by"}),
     "swarm-install/{env}/health/latest": frozenset({"run_at", "checks", "findings"}),
 }
-ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"})
+#: `link_made_at` is when the account's one-time link was made, stored with
+#: it; an account recorded before the field existed has none, and Admin ›
+#: Setup serves it without one rather than guessing it from `link_expires`.
+ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_made_at", "link_expires", "signed_in_at"})
 
 #: Read only, never written here.
 ENGINE_DOCUMENT = "swarm-install/{env}"

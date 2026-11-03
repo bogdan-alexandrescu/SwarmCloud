@@ -74,7 +74,7 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
             {"state_hash", "id", "slug", "client_id", "name", "installed_on", "secrets_written_at", "self_check"}
         ),
     ),
-    # Fields keyed per account label: owner, link_hash, link_expires, signed_in_at.
+    # Fields keyed per account label: owner, link_hash, link_made_at, link_expires, signed_in_at.
     "swarm-install/{env}/console/accounts": (SWARM_API, frozenset()),
     # A collection under the env document: `console/teams/<id>` has five
     # segments, which real Firestore refuses as a document (audit 3, A2).
@@ -113,8 +113,11 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
 
 #: Each stage's entry in `stages[0..15]`.
 STAGE_FIELDS = frozenset({"state", "at", "by"})
+#: `detail` is verify's one-line cause, present only while `result` is
+#: "failed": the terminal prints it, and Admin › Setup serves it as
+#: `engine.verify.detail` so the console's verify step says why too.
 VERIFY_FIELDS = frozenset(
-    {"check", "done", "total", "started", "expected_end", "deadline", "result"}
+    {"check", "done", "total", "started", "expected_end", "deadline", "result", "detail"}
 )
 
 
