@@ -14,7 +14,7 @@
 // MUTATIONS, one per block: drop the `wi-hide-*` class from a cell; pass the
 // wall when an agent is open; open the phone sheet without the button; leave
 // the owner filter out of the rows; count a null cost as $0.00; drop the
-// failed rows from `agentNeeds`.
+// failed rows from `agentNeeds`; open nothing on a pasted whole task id.
 
 import SHELL_CSS from '../work/inspectorShell.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -274,6 +274,22 @@ describe('the tools row: owner and most spent first', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Most spent first' }))
     expect(names(c)).toEqual(['Book the demo', 'Cheap one', 'Never measured'])
     expect(bySpent({ cost_usd_total: null }, { cost_usd_total: 0 })).toBeGreaterThan(0)
+  })
+})
+
+describe('a pasted whole task id opens that agent', () => {
+  it('opens the row it names in the inspector, once, and a part of an id only searches', async () => {
+    media(false)
+    const open = vi.fn()
+    await land([BROWSER, CHEAP, UNMEASURED], null, open)
+    const box = screen.getByRole('searchbox', { name: /find by name or task id/i })
+    fireEvent.change(box, { target: { value: 'task_bbbbbbbb' } })
+    expect(open).not.toHaveBeenCalled()
+    fireEvent.change(box, { target: { value: ` ${CHEAP.id} ` } })
+    await waitFor(() => expect(open).toHaveBeenCalledWith(CHEAP.id))
+    // A re-read of the same page does not open it again after the reader closed it.
+    await act(async () => {})
+    expect(open).toHaveBeenCalledTimes(1)
   })
 })
 
