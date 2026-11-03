@@ -172,3 +172,103 @@ def test_the_previous_key_verifies_for_a_tickets_life_after_a_rotation():
 ])
 def test_the_bearer_header(header, expected):
     assert svc.bearer(header) == expected
+
+
+# --- the stats ticket (graph-answer-cache.md §5.3) -----------------------------------------
+# swarm-api's `mint_stats_ticket` is the reference here too. The graph-cache
+# panel was refused on every read while the two sides restated different claim
+# sets (`previous_digest` and `nonce` against `previous_manifest_digest`): the
+# graph's own tests minted with the graph's own field names, so neither side
+# saw it. These mint with the REFERENCE and verify with the service.
+
+DIGEST = "sha256:" + "b" * 64
+PREVIOUS = "sha256:" + "c" * 64
+
+
+def _stats(key: str, *, previous: str | None = PREVIOUS, exp: int | None = None) -> str:
+    return reference.mint_stats_ticket(
+        key, tenant_id=TENANT, repo_id=REPO_ID, manifest_digest=DIGEST,
+        previous_digest=previous, exp=int(time.time()) + 60 if exp is None else exp)
+
+
+def test_the_stats_wire_constants_are_the_references():
+    assert svc.STATS_DOMAIN == reference.STATS_DOMAIN
+    assert svc.STATS_TICKET_FIELDS == reference.STATS_FIELDS
+    assert svc.MAX_STATS_TICKET_SECONDS == reference.STATS_TICKET_SECONDS
+
+
+@pytest.mark.parametrize("previous", [PREVIOUS, None])
+def test_a_reference_stats_ticket_verifies_here_with_the_same_claims(previous):
+    key = new_key()
+    ticket = _stats(key, previous=previous)
+    now = time.time()
+    claims = reference.verify_stats_ticket([key], ticket, now=now)
+    got = svc.verify_stats_ticket([key.encode()], ticket, now=now)
+    assert (got.tenant_id, got.repo_id, got.manifest_digest, got.previous_digest, got.exp) == (
+        claims["tenant_id"], claims["repo_id"], claims["manifest_digest"],
+        claims["previous_digest"], claims["exp"])
+    assert got.previous_digest == previous and got.nonce == claims["nonce"]
+
+
+def test_every_reference_stats_ticket_carries_its_own_nonce():
+    key = new_key()
+    nonces = {svc.verify_stats_ticket([key.encode()], _stats(key), now=time.time()).nonce
+              for _ in range(50)}
+    assert len(nonces) == 50
+
+
+@pytest.mark.parametrize("case", ["forged", "other_key", "expired", "too_long", "attempt",
+                                  "malformed"])
+def test_what_the_reference_refuses_as_a_stats_ticket_is_refused_here(case):
+    key = new_key()
+    now = time.time()
+    ticket = {
+        "forged": _flip_mac(_stats(key)),
+        "other_key": _stats(new_key()),
+        "expired": _stats(key, exp=int(now) - 1),
+        "too_long": _stats(key, exp=int(now) + 3600),
+        "attempt": mint(key, raw=RAW),
+        "malformed": "not-a-ticket",
+    }[case]
+    with pytest.raises(reference.TicketRefused):
+        reference.verify_stats_ticket([key], ticket, now=now)
+    with pytest.raises(svc.TicketRefused) as refused:
+        svc.verify_stats_ticket([key.encode()], ticket, now=now)
+    assert refused.value.reason == ("expired" if case == "expired" else "invalid")
+    assert ticket not in str(refused.value) and key not in str(refused.value)
+
+
+def _forge_stats(key: str, claims: dict) -> str:
+    payload = _b64(json.dumps(claims, sort_keys=True, separators=(",", ":")).encode())
+    mac = hmac.new(key.encode(), svc.STATS_DOMAIN + payload.encode(), hashlib.sha256).digest()
+    return f"{payload}.{_b64(mac)}"
+
+
+STATS_GOOD = {"tenant_id": TENANT, "repo_id": REPO_ID, "manifest_digest": DIGEST,
+              "previous_digest": PREVIOUS, "nonce": "0123456789abcdef"}
+
+
+@pytest.mark.parametrize("field,value", [
+    ("tenant_id", "../other"), ("repo_id", "repo_../x"), ("manifest_digest", "b" * 64),
+    ("previous_digest", "nope"), ("previous_digest", 7), ("nonce", "zz"), ("nonce", None),
+    ("nonce", "0123456789ABCDEF"),
+])
+def test_a_maced_stats_ticket_with_a_misshapen_claim_is_refused(field, value):
+    key = new_key()
+    exp = int(time.time()) + 60
+    good = _forge_stats(key, dict(STATS_GOOD, exp=exp))
+    assert svc.verify_stats_ticket([key.encode()], good, now=time.time()).tenant_id == TENANT
+    with pytest.raises(svc.TicketRefused) as refused:
+        svc.verify_stats_ticket([key.encode()], _forge_stats(key, dict(STATS_GOOD, exp=exp,
+                                                                       **{field: value})),
+                                now=time.time())
+    assert refused.value.reason == "invalid"
+
+
+def test_a_stats_ticket_with_an_extra_or_missing_field_is_refused():
+    key = new_key()
+    exp = int(time.time()) + 60
+    for claims in (dict(STATS_GOOD, exp=exp, previous_manifest_digest=PREVIOUS),
+                   {k: v for k, v in dict(STATS_GOOD, exp=exp).items() if k != "nonce"}):
+        with pytest.raises(svc.TicketRefused):
+            svc.verify_stats_ticket([key.encode()], _forge_stats(key, claims), now=time.time())

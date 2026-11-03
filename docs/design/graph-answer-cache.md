@@ -54,10 +54,10 @@ console section BGD asked for on 2026-10-27 (mock-up proposal C).
   1. **Warm**: the first ticket naming a newly promoted digest re-asks that
      repository's 200 most-asked questions against it, after decoding a
      widened `HOT_LAYERS` (BGD Q5).
-  2. **Carry forward**, built only after warming and demotion have run for two
-     weeks (BGD Q4): an answer computed at the previous digest is reused at
-     the new one **only when every manifest entry it read resolves to the same
-     blob in the new manifest**. This is the literal "invalidation on merges":
+  2. **Carry forward** (**built**, 2026-11-03, at the owner's request that the
+     graph service work well: §2.3 b): an answer computed at the previous
+     digest is reused at the new one **only when every manifest entry it read
+     resolves to the same entry in the new manifest**. This is the literal "invalidation on merges":
      a merge invalidates exactly the answers whose inputs it changed, worked out
      by comparing manifests, never by trusting an event.
   3. **Demote**: entries of a superseded digest go to the cold end of the LRU.
@@ -292,9 +292,10 @@ digest**. No existing entry becomes wrong.
 
 **What is not built, and is the reason latency still grows:**
 
-* **Hit rate after a merge is zero.** The first question at a new digest is a
-  miss, even when nothing it reads has changed. On a repository merging dozens
-  of times a day, the cache keeps being reset by its own key.
+* **Hit rate after a merge was zero** (**built away 2026-11-03**: carry
+  forward, §2.3 b). The first question at a new digest was a miss, even when
+  nothing it reads had changed. On a repository merging dozens of times a day,
+  the cache kept being reset by its own key.
 * **The first-sight warmer skips the layers `context` reads.**
   `swarm_graph/warm.py::HOT_LAYERS` is `symbols`, `callers`, `files` and
   `terms`. `context` also reads `callees`, `tests` and `signatures`, so the
@@ -304,6 +305,34 @@ digest**. No existing entry becomes wrong.
 * **Staged workspaces get nothing.** `DEFAULT_GRAPH_DELIVERY` is `staged`. Each
   staged pod runs its own server over a 48 MiB raw per-pod LRU
   (`snapshot.py::CACHE_RAW_BYTES`), and no answer outlives the agent.
+
+**Built 2026-11-03 beside the cache: a server deadline and answer latency.**
+
+* **A 7 s server deadline** (`store.ANSWER_DEADLINE_SECONDS`). The pod's shim
+  gives a call 10 s, and a cold replica (the first after each promotion) read
+  the manifest and then shard after shard, each read up to
+  `OBJECT_TIMEOUT_SECONDS` (10 s), so a cold `impact` could pass the shim's
+  limit and the agent got a timeout instead of an answer. Now a `tools/call`
+  reads a cold manifest and cold shards on a load pool (`LOAD_WORKERS`) and
+  waits for them only until 7 s after the request arrived. A shard not read by
+  then is answered as empty, no further read is started, and the answer is
+  paged as usual with a `partial` head (`after_ms`, `shards_unread`, a note
+  saying to ask again). A partial answer is **never cached**; an unresolved
+  name under a cut is an error saying the name cannot be resolved yet, never a
+  cached "no such symbol"; a manifest not read in time is an error answer.
+  The reads finish in the background into the caches, so the same question
+  asked again is whole. The 3 s left are for the reply, the shim and the
+  network.
+* **Per-answer latency** (`stats.AnswerCounters`). Every answer's milliseconds
+  are recorded with its `graph_answer` line, by outcome (`hit`, `carried`,
+  `miss`, `partial`, `uncached`) and temperature (`cold` when the request read
+  the manifest or a shard from storage, `warm` otherwise), and the stats route
+  serves them as `answer_latency`: count, p50, p95, p99 and max over the
+  replica's 24 h, overall, by outcome, by temperature and by both. The
+  `graph_answer` line carries `partial` and `temperature` too. This is the
+  SERVED latency of §5.2's first column; `index_versions/{sha}.answer_latency`
+  (§1.2) stays the indexer's uncached measurement, and swarm-api's Cache route
+  still reads that one.
 
 ### 2.2 The repository events, and the path each one takes
 
@@ -354,9 +383,29 @@ BGD Q5: replay the top 200, **and** widen `HOT_LAYERS`. Built with §1.
 
 This is the part that makes a merge **invalidate only what it changed**.
 
-**When it is built** (BGD Q4): after warming (a) and demotion (c) have run for
-two weeks, so §3.2's exact-hit baseline is measured before carry forward moves
-it. Until then the `carried` value of §3.2 never appears.
+**When it is built** (BGD Q4 said: after warming (a) and demotion (c) have run
+for two weeks). **BUILT on 2026-11-03**, ahead of that, because the owner asked
+that the graph service and its cache work well and efficiently: answers went
+cold at every promotion (about 32 a day). What was built, and where:
+
+* the recorder and the check: `apps/swarm-graph/swarm_graph/carry.py`
+  (`Recorder`, `unchanged`). An entry's read records the digest of the whole
+  manifest entry (`blob`, `records`, `bytes`), not just its blob, because
+  `index` answers with the counts;
+* the carry key, the read sets and the pointer dropped with its entry:
+  `cache.py::ResultCache` (`put_result(..., repo_id, reads)`, `carried`);
+* the lookup: `server.py::GraphService.answer`, exact key first, then the carry
+  key; a carried answer is logged and counted `cache: carried`, and
+  `stats.CARRY_FORWARD` is true, so the console's "Reused from the last index"
+  tile has a count rather than a dash;
+* the property test: `tests/unit/graphsvc/test_graphsvc_carry.py`, the whole
+  battery one incremental commit apart, with the added-symbol and the
+  grown-listing cases.
+
+**Not built with it**: the `graph_carry` candidate and pass counters of §3.2,
+and the per-tenant half-bound of `ResultCache` (§2.4). A carried answer is
+copied to the new digest's exact key, so it is a candidate again at the next
+promotion.
 
 * **What each entry records.** A `ResultCache` entry also records its **read
   set**: every manifest lookup its computation made. `Snapshot` is the only way
@@ -442,7 +491,7 @@ that were considered:
 * **Warming adds no new memory** beyond `WARM_BYTES`, which `HOT_LAYERS`
   already spends.
 
-**Tenant fairness.** `ShardCache` caps a tenant at half its bound while more
+**Tenant fairness** (not built yet). `ShardCache` caps a tenant at half its bound while more
 than one tenant is resident. `ResultCache` has no such share today. Carry
 forward makes one busy repository's entries live longer, so `ResultCache` gains
 the same rule: half the bound per tenant while more than one is resident.

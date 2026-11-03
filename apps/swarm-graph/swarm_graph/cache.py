@@ -28,7 +28,12 @@ THREE CACHES, per replica:
     serialised compactly, keyed `(tenant_id, manifest_digest, tool,
     canonical_args, TOOLS_VERSION)` (§5.2). Every page of one question is
     served from one computation. An entry over RESULT_ENTRY_MAX_BYTES is
-    computed and not kept.
+    computed and not kept. Each computed entry also keeps its READ SET
+    (carry.py) and is the target of a second, CARRY key `(tenant_id, repo_id,
+    tool, canonical_args, TOOLS_VERSION)` (graph-answer-cache.md §2.3 b): on
+    an exact miss at a new digest, the newest answer to the same question is
+    served when every read it made resolves the same in the new manifest, so
+    an answer whose inputs a promotion did not change survives it.
   * `ManifestCache` -- the opened `Snapshot` of a manifest, keyed `(tenant_id,
     repo_id, manifest_digest)`. §3.3 names the key `(tenant_id,
     manifest_digest)`; `repo_id` is added because the snapshot's blob source
@@ -75,6 +80,8 @@ from typing import Any, Callable, Generic, Hashable, TypeVar
 from agent_worker.graphmcp import tools
 from agent_worker.graphmcp.snapshot import Snapshot, _Shard
 
+from .carry import ReadSet, read_set_bytes, unchanged
+
 MiB = 1024 * 1024
 #: The Deployment's memory, requests == limits (§2.1, invariant 7).
 MEMORY_LIMIT_BYTES = 3 * 1024 * MiB
@@ -111,7 +118,7 @@ class _Lru(Generic[K, V]):
     def __init__(self, bound: int, *, max_entry: int | None = None) -> None:
         self.bound = bound
         self.max_entry = bound if max_entry is None else max_entry
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._entries: OrderedDict[K, tuple[V, int]] = OrderedDict()
         self._bytes = 0
 
@@ -151,12 +158,17 @@ class _Lru(Generic[K, V]):
             old = self._entries.pop(key, None)
             if old is not None:
                 self._bytes -= old[1]
+                self._dropped(key)
             self._entries[key] = (value, size)
             self._bytes += size
             while self._bytes > self.bound and len(self._entries) > 1:
-                _key, (_value, dropped) = self._entries.popitem(last=False)
+                gone, (_value, dropped) = self._entries.popitem(last=False)
                 self._bytes -= dropped
+                self._dropped(gone)
         return True
+
+    def _dropped(self, key: K) -> None:
+        """An entry left (evicted or replaced), under the lock."""
 
 
 # --- decoded shards (§5.1) -----------------------------------------------------
@@ -256,6 +268,17 @@ class ShardCache:
             if shard is not None:
                 self._entries.move_to_end(key)
             return shard
+
+    def get_counted(self, key: ShardKey) -> _Shard | None:
+        """The shard if it is held, counted as a read; None, and not counted,
+        when it is not (the load that follows, `get_or_load`, counts it)."""
+        with self._lock:
+            shard = self._entries.get(key)
+            if shard is None:
+                return None
+            self._entries.move_to_end(key)
+        self._reads.record(key, self._clock())
+        return shard
 
     def get_or_load(self, key: ShardKey, load: Callable[[], _Shard]) -> tuple[_Shard, bool]:
         """(the shard, whether it was a hit). One caller loads a missing key;
@@ -379,15 +402,83 @@ def decode_result(data: bytes) -> tools.Computed | tuple[str, list[str]]:
     return tools.Computed(body["head"], body["rows"])
 
 
+#: `(tenant_id, repo_id, tool, canonical_args, TOOLS_VERSION)`: the carry key
+#: of graph-answer-cache.md §2.3 b, the exact key without the digest.
+CarryKey = tuple[str, str, str, str, str]
+
+
+def carry_key(key: ResultKey, repo_id: str) -> CarryKey:
+    tenant_id, _digest, tool, args, version = key
+    return (tenant_id, repo_id, tool, args, version)
+
+
 class ResultCache(_Lru[ResultKey, bytes]):
+    """The exact-key answers, and for each one computed with a read set, the
+    carry key pointing at the newest computation of that question for that
+    repository (graph-answer-cache.md §2.3 b, §2.4). The pointer is not a
+    copy: it is dropped with the entry it points at, and the read set counts
+    against the bound with the answer it belongs to."""
+
     def __init__(self, bound: int = RESULT_CACHE_BYTES,
                  max_entry: int = RESULT_ENTRY_MAX_BYTES) -> None:
         super().__init__(bound, max_entry=max_entry)
+        self._read_sets: dict[ResultKey, ReadSet] = {}
+        self._carry: dict[CarryKey, ResultKey] = {}
+        self._carry_of: dict[ResultKey, CarryKey] = {}
 
-    def put_result(self, key: ResultKey, data: bytes) -> bool:
+    def put_result(self, key: ResultKey, data: bytes, *, repo_id: str | None = None,
+                   reads: ReadSet | None = None) -> bool:
+        """Keep an answer; with `repo_id` and its `reads`, also as the carry
+        candidate of its question."""
         if key[0] == "" or key[1] == "":
             raise ValueError("a result key leads with the tenant and the manifest digest")
-        return self.put(key, data, len(data))
+        if reads is None or not repo_id:
+            return self.put(key, data, len(data))
+        with self._lock:
+            if not self.put(key, data, len(data) + read_set_bytes(reads)):
+                return False
+            ckey = carry_key(key, repo_id)
+            self._read_sets[key] = reads
+            self._carry[ckey] = key
+            self._carry_of[key] = ckey
+        return True
+
+    def _dropped(self, key: ResultKey) -> None:
+        self._read_sets.pop(key, None)
+        ckey = self._carry_of.pop(key, None)
+        if ckey is not None and self._carry.get(ckey) == key:
+            del self._carry[ckey]
+
+    def carry_candidate(self, key: ResultKey,
+                        repo_id: str) -> tuple[ResultKey, bytes, ReadSet] | None:
+        """The newest computation of `key`'s question for this repository at
+        ANOTHER digest, with its read set; None when there is none."""
+        with self._lock:
+            held = self._carry.get(carry_key(key, repo_id))
+            if held is None or held == key:
+                return None
+            entry = self._entries.get(held)
+            reads = self._read_sets.get(held)
+            if entry is None or reads is None:
+                return None
+            return held, entry[0], reads
+
+    def carried(self, key: ResultKey, repo_id: str, snap: Snapshot) -> bytes | None:
+        """§2.3 b's lookup on an exact miss: the candidate's answer when every
+        read in its read set resolves the same in `snap` (the ticket's own,
+        verified snapshot), kept under `key` from then on; None otherwise."""
+        candidate = self.carry_candidate(key, repo_id)
+        if candidate is None:
+            return None
+        _held, data, reads = candidate
+        if not unchanged(reads, snap):
+            return None
+        self.put_result(key, data, repo_id=repo_id, reads=reads)
+        return data
+
+    def read_set(self, key: ResultKey) -> ReadSet | None:
+        with self._lock:
+            return self._read_sets.get(key)
 
     def held_for(self, tenant_id: str, manifest_digest: str) -> int:
         """How many answers this tenant holds for one manifest digest. The
@@ -420,7 +511,9 @@ __all__ = [
     "ManifestCache",
     "ResultCache",
     "ShardCache",
+    "CarryKey",
     "canonical_args",
+    "carry_key",
     "decode_result",
     "encode_computed",
     "encode_unresolved",
