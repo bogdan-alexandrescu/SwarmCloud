@@ -15,15 +15,17 @@ import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList,
 import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadTask, loadTaskDigests, loadTasks, loadTasksInStates, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { pageReads, type Result } from './fetch'
-import { isLiveBrowser, liveBrowserRows, needsYou } from './Handoff'
+import { handoffOf, isLiveBrowser, liveBrowserRows, needsYou, ownerQuestionsHold } from './Handoff'
 import { presetLabel } from './LiveBrowser'
-import { theaterPath } from './LiveThumb'
+import { LiveThumb, theaterPath } from './LiveThumb'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
 import { listMayStart, panelWaiters, wakePanelWaiters } from './agentPanel'
 import { focusSplitOnOpen } from './agent-split/focus'
 import { tabStep } from './agent-split/tabs'
 import './styles/agents.css'
+import { Inspector, startsFolded, useIsPhone, type WidthClass } from './work/Inspector'
+import { NeedsYou, heldName, type NeedItem } from './work/NeedsYou'
 import { PARK_WORD, Segmented, StateMark, ToneMark } from './components'
 import { Id, Screen } from './Shell'
 import { publishListCounts } from './Spine'
@@ -555,6 +557,140 @@ export function listPollInterval(page: TaskPage | null, open: string | null): nu
  * `onList` and App writes the address -- this screen never touches the hash.
  * Both optional, for the same reason `taskId` is.
  */
+/*
+ * THE WORK REDESIGN'S AGENTS PAGE (the owner's pick of 2026-11-03, "Graph
+ * with a docked inspector, plus the Attention inbox's row of what needs you";
+ * part of #2688). The list is the left pane of the Work section's docked
+ * inspector (work/Inspector.tsx); with no agent open the inspector is the
+ * wall of live browser stills, and the Needs-you row sits over the list.
+ * Every count below is read from the rows this page already holds: nothing is
+ * read for it that the list did not read before, and nothing is counted by
+ * hand.
+ */
+
+/** A row column that gives way as the left pane narrows. */
+export type DroppedColumn = 'attempt' | 'owner' | 'cost' | 'pr'
+
+/**
+ * Which row columns the left pane drops at a width class: attempt and owner
+ * first, then cost, then the pull request, so beside a wide inspector a row is
+ * its still, state, agent and time. The cells carry the matching
+ * `wi-hide-*` class (inspectorShell.css), whose container queries use the
+ * same bounds as `widthClassOf`.
+ */
+export function droppedColumns(cls: WidthClass): DroppedColumn[] {
+  if (cls === 'wide') return []
+  if (cls === 'medium') return ['attempt', 'owner']
+  if (cls === 'narrow') return ['attempt', 'owner', 'cost']
+  return ['attempt', 'owner', 'cost', 'pr']
+}
+
+/** The `wi-hide-*` class a column's cell carries: the width class it leaves at. */
+export const DROP_CLASS: Readonly<Record<DroppedColumn, string>> = {
+  attempt: 'wi-hide-medium',
+  owner: 'wi-hide-medium',
+  cost: 'wi-hide-narrow',
+  pr: 'wi-hide-slim',
+}
+
+/**
+ * WHAT WAITS ON THE PERSON AMONG THE ROWS READ, for the Needs-you row: a
+ * failed agent, a merge held by owner questions (and each question it names,
+ * once), a browser hand-off. Approvals are not read by this page, so the row
+ * says "not known" for them (`approvals={null}`), never 0.
+ */
+export function agentNeeds(tasks: readonly Task[], title: (t: Task) => string): NeedItem[] {
+  const items: NeedItem[] = []
+  const asked = new Set<string>()
+  for (const t of tasks) {
+    const hold = ownerQuestionsHold(t)
+    if (hold !== null) {
+      items.push({ kind: 'merge', task: t, title: title(t), approval: null })
+      for (const q of hold.questions) {
+        const key = `${q.task_id}:${q.question_index}`
+        if (asked.has(key)) continue
+        asked.add(key)
+        items.push({ kind: 'question', taskId: q.task_id, index: q.question_index, title: heldName(q), question: q.question })
+      }
+    } else if (t.state === 'FAILED') {
+      items.push({ kind: 'failed', task: t, title: title(t), why: t.last_error ?? null })
+    } else if (handoffOf(t) !== null) {
+      items.push({ kind: 'handoff', task: t, title: title(t) })
+    }
+  }
+  return items
+}
+
+/** The row's cost: the measured spend, "+" when some attempt has not reported, "not known" when none measured it (never $0). */
+export function costCell(t: Pick<Task, 'cost_usd_total' | 'cost_incomplete'>): { text: string; say: string } {
+  const usd = t.cost_usd_total
+  if (usd === null || usd === undefined || !Number.isFinite(usd)) return { text: 'not known', say: 'Cost not known: no attempt of this agent has reported what it spent' }
+  const v = `$${usd.toFixed(2)}`
+  return t.cost_incomplete === true
+    ? { text: `${v}+`, say: `At least ${v}: an attempt has not reported what it spent yet` }
+    : { text: v, say: `Spent ${v}` }
+}
+
+/** The row's pull request, from the result's git summary when the row carries one; null is not known. */
+export function rowPullRequest(t: Pick<Task, 'result_summary'>): { number: number; url: string } | null {
+  const git = (t.result_summary as { git?: unknown } | null | undefined)?.git
+  if (typeof git !== 'object' || git === null) return null
+  const pr = (git as { pull_request?: unknown }).pull_request
+  if (typeof pr !== 'object' || pr === null) return null
+  const { number, url } = pr as { number?: unknown; url?: unknown }
+  return typeof number === 'number' && typeof url === 'string' && /^https:\/\//.test(url) ? { number, url } : null
+}
+
+/** The row's owner, as the owner filter offers it: the address before its @. */
+function ownerOf(t: Pick<Task, 'submitted_by'>): string | null {
+  return t.submitted_by?.split('@')[0] || null
+}
+
+/** The order the "most spent first" box puts rows in: the most spent first, an unmeasured cost last. */
+export function bySpent(a: Pick<Task, 'cost_usd_total'>, b: Pick<Task, 'cost_usd_total'>): number {
+  const x = a.cost_usd_total ?? null
+  const y = b.cost_usd_total ?? null
+  if (x === null || y === null) return Number(x === null) - Number(y === null)
+  return y - x
+}
+
+/**
+ * THE INSPECTOR WITH NO AGENT OPEN: every live browser's still, the one
+ * waiting on the person first (`liveBrowserRows`), each opening its agent.
+ * A starting browser has no picture yet and is counted, not drawn.
+ */
+export function LiveWall({ tasks, onOpen, title }: { tasks: readonly Task[]; onOpen: (taskId: string) => void; title: (t: Task) => string }) {
+  const live = liveBrowserRows(tasks)
+  const starting = tasks.filter((t) => t.state === 'STARTING' && isLiveBrowser(t)).length
+  return (
+    <div className="ag-wall" data-live={live.length}>
+      {starting > 0 && (
+        <p className="ag-wall-note">
+          +{starting} starting, no picture yet
+        </p>
+      )}
+      {live.length === 0 ? (
+        <p className="ag-wall-note">No browser is live right now.</p>
+      ) : (
+        <ul className="ag-wall-grid" aria-label="Live browsers">
+          {live.map((t) => {
+            const yours = handoffOf(t) !== null
+            return (
+              <li key={t.id} className={`ag-wall-card${yours ? ' is-your-turn' : ''}`} data-task-id={t.id}>
+                <button type="button" className="ag-wall-open" onClick={() => onOpen(t.id)} title={`${title(t)} · ${t.id}`}>
+                  <span className="ag-wall-name">{title(t)}</span>
+                  {yours && <ToneMark tone="wait">your turn</ToneMark>}
+                </button>
+                <LiveThumb taskId={t.id} workflowId={t.workflow_id ?? null} />
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export function AgentsScreen({
   onOpen,
   taskId = null,
@@ -886,6 +1022,14 @@ function AgentsBody({
   // `BROWSERS`, NOT `LIVE` (live-browser QA p12, QA12-20): the option read
   // `Live` inside the Live tab, one word for two different sets on one line.
   const [browsersOnly, setBrowsersOnly] = useState(false)
+  // THE OWNER FILTER AND "MOST SPENT FIRST" (the Work redesign's tools row):
+  // a reader's scratch over the loaded rows, held here as the started sort is.
+  const [owner, setOwner] = useState('')
+  const [spentFirst, setSpentFirst] = useState(false)
+  const owners = useMemo(
+    () => Array.from(new Set(page.tasks.map(ownerOf).filter((o): o is string => o !== null))).sort(),
+    [page.tasks],
+  )
   const browsers = shown === 'live' && browsersOnly
   const liveBrowsers = useMemo(() => browserRows(page.tasks).length, [page.tasks])
   const sort: SortControl = {
@@ -899,17 +1043,23 @@ function AgentsBody({
           // not reorder it; the profile and the search still narrow it.
           browserRows(page.tasks)
             .filter((t) => profile === '' || t.runner_profile === profile)
+            .filter((t) => owner === '' || ownerOf(t) === owner)
             .filter((t) => !browserUnused || browserUseOf(t)?.kind === 'unused')
             .filter((t) => needle === '' || matchesQuery(t, needle))
         : page.tasks
         .filter((t) => tabOf(t) === shown)
         .filter((t) => stateFilter === null || t.state === RECENT_STATE_OF[stateFilter])
         .filter((t) => profile === '' || t.runner_profile === profile)
+        .filter((t) => owner === '' || ownerOf(t) === owner)
         // Only an explicit `false` from the worker: a null verdict is not
         // "not used" (BrowserUse.tsx), so it is never listed here.
         .filter((t) => !browserUnused || browserUseOf(t)?.kind === 'unused')
         .filter((t) => needle === '' || matchesQuery(t, needle))
         .sort((a, b) => {
+          if (spentFirst) {
+            const bySpend = bySpent(a, b)
+            if (bySpend !== 0) return bySpend
+          }
           if (failFirst) {
             const byFailed = Number(b.state === 'FAILED') - Number(a.state === 'FAILED')
             if (byFailed !== 0) return byFailed
@@ -917,7 +1067,7 @@ function AgentsBody({
           if (startedSort !== null) return compareStarted(a, b, startedSort === 'asc')
           return listOrder(a, b, shown)
         }),
-    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort, browsers, browserUnused],
+    [page.tasks, shown, stateFilter, profile, owner, needle, failFirst, spentFirst, startedSort, browsers, browserUnused],
   )
 
   // EVERY ROW READ, BY ID, not only the ones this tab and its filters keep
@@ -1090,9 +1240,41 @@ function AgentsBody({
   const devices = useRowDevices(rows.filter((t) => t.state === 'RUNNING' && isLiveBrowser(t)).map((t) => t.id), readAt)
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
+  // THE NEEDS-YOU ROW AND THE WALL read the rows this page holds, nothing more.
+  // Their titles are the rows' own: a lone agent's title, else the step's
+  // workflow and step as the row draws them.
+  const allTitles = useRowTitles(page.tasks.filter((t) => isStep(t) && stepWorkflowTitle(t, null) === null))
+  const nameOf = (t: Task): string => ownTitle(t) ?? rowLabel(t, stepWorkflowTitle(t, allTitles))
+  const needs = useMemo(() => agentNeeds(page.tasks, nameOf), [page.tasks, allTitles]) // eslint-disable-line react-hooks/exhaustive-deps
+  const phone = useIsPhone()
+  // ON A PHONE THE WALL IS A SHEET, opened from the toolbar and closed by its back control.
+  const [wallOpen, setWallOpen] = useState(false)
+  const wallTasks = useMemo(() => browserRows(page.tasks), [page.tasks])
+  // The inspector at rest: the wall while no agent is open and a browser is
+  // live or starting. An open agent is the console's own agent view, which
+  // App mounts beside this page (AgentSplit) -- so the left pane is the page.
+  const wall = openTaskId === null && wallTasks.length > 0 ? <LiveWall tasks={page.tasks} onOpen={openRow} title={nameOf} /> : null
+  const [foldAtRest] = useState(() => typeof window !== 'undefined' && startsFolded(window.innerWidth))
+
   return (
+    <Inspector
+      screen="agents"
+      label="Live browsers"
+      title="Live browsers"
+      state={<span className="ag-wall-count">{liveBrowsers} live</span>}
+      startFolded={foldAtRest}
+      phoneOpen={wallOpen}
+      onBack={() => setWallOpen(false)}
+      backLabel="Agents"
+      main={
     <RowDevices.Provider value={devices}>
     <RowTitleOf.Provider value={titleOf}>
+      <NeedsYou items={needs} approvals={null} />
+      {phone && wall !== null && (
+        <button type="button" className="ag-wall-phone" onClick={() => setWallOpen(true)}>
+          Watch {liveBrowsers} live {liveBrowsers === 1 ? 'browser' : 'browsers'}
+        </button>
+      )}
       {/* THE SECTION'S PAGES AS A STRIP (agents.html V1; #503 at 390): Live,
           Waiting and Recent with their counts, underlined rather than boxed.
           On a phone it sticks under the header, so the reader can change tab
@@ -1186,6 +1368,17 @@ function AgentsBody({
               {profiles.map((p) => (
                 <option key={p} value={p}>
                   {p}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="ag-filter ag-filter-owner">
+            <span className="ag-filter-k">owner:</span>
+            <select value={owner} title={owner === '' ? 'anyone' : owner} aria-label="Owner" onChange={(e) => setOwner(e.target.value)}>
+              <option value="">anyone</option>
+              {owners.map((o) => (
+                <option key={o} value={o}>
+                  {o}
                 </option>
               ))}
             </select>
@@ -1289,6 +1482,10 @@ function AgentsBody({
           )}
 
           <div className="ag-tools-tail">
+            <label className="ag-filter check">
+              <input type="checkbox" checked={spentFirst} onChange={(e) => setSpentFirst(e.target.checked)} />
+              Most spent first
+            </label>
             {failFirstOffered && (
               <label className="ag-filter check">
                 <input
@@ -1449,6 +1646,10 @@ function AgentsBody({
       )}
     </RowTitleOf.Provider>
     </RowDevices.Provider>
+      }
+    >
+      {wall}
+    </Inspector>
   )
 }
 
@@ -2373,6 +2574,8 @@ function CompactRow({
   // the budget stopped. No read and no mark for an agent with no budget.
   const { warning: budgetWarning } = useBudgetWarning(task)
   const budgetSay = budgetRowSay(task, budgetWarning, live)
+  const cost = costCell(task)
+  const pr = rowPullRequest(task)
   const cardId = `ag-card-${task.id}`
 
   const show = (row: HTMLElement) => {
@@ -2404,7 +2607,7 @@ function CompactRow({
     live || tries.over ? tries.say : null,
     startingBrowser ? 'browser starting' : null,
     cancelling ? 'cancelling' : null,
-    waitsForYou ? 'needs you' : null,
+    waitsForYou ? 'your turn' : null,
     budgetSay,
     cancelSpan ? CANCEL_SPAN : null,
     why.text === '' ? null : whySaid(why),
@@ -2423,11 +2626,13 @@ function CompactRow({
     profile,
     browserMark !== null ? browserUseSay(browserMark) : null,
     task.submitted_by ?? 'no owner recorded',
+    cost.say,
+    pr !== null ? `pull request #${pr.number}` : 'pull request not known',
     ran,
     !live && !waitingRow && wordOnly ? el.text : null,
     !live && tries.over ? tries.text : null,
     cancelling ? 'cancelling' : null,
-    waitsForYou ? 'needs you' : null,
+    waitsForYou ? 'your turn' : null,
     cancelSpan ? CANCEL_SPAN : null,
   ]
     .filter((p): p is string => p !== null && p !== undefined && p !== '')
@@ -2549,13 +2754,14 @@ function CompactRow({
             {' · '}
           </>
         )}
+        {/* The attempt gives way first as the inspector widens (`droppedColumns`). */}
         {live && (
-          <>
+          <span className={DROP_CLASS.attempt}>
             <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
               {tries.text}
             </span>
             {' · '}
-          </>
+          </span>
         )}
         {/* THE BUDGET MARK COMES BEFORE THE PROFILE (#2459): the line is cut
             at its end on a desktop row, and this is what the row is watched
@@ -2567,15 +2773,37 @@ function CompactRow({
           </>
         )}
         <span className="cr-profile">{profile}</span>
-        {' · '}
         {browserMark !== null && (
           <>
-            <BrowserUseMark view={browserMark} />
             {' · '}
+            <BrowserUseMark view={browserMark} />
           </>
         )}
-        <span className="cr-owner" title={task.submitted_by ?? undefined}>
-          {owner ?? <Em />}
+        {/* THE OWNER, COST AND PULL REQUEST carry their separator inside, so
+            a column the narrowed pane drops leaves no stray dot behind. */}
+        <span className={DROP_CLASS.owner}>
+          {' · '}
+          <span className="cr-owner" title={task.submitted_by ?? undefined}>
+            {owner ?? <Em />}
+          </span>
+        </span>
+        <span className={DROP_CLASS.cost}>
+          {' · '}
+          <span className={`cr-cost${cost.text === 'not known' ? ' is-unknown' : ''}`} title={cost.say}>
+            {cost.text}
+          </span>
+        </span>
+        <span className={DROP_CLASS.pr}>
+          {' · '}
+          {pr !== null ? (
+            <a className="cr-pr" href={pr.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+              #{pr.number}
+            </a>
+          ) : (
+            <span className="cr-pr is-unknown" title="Pull request not known: the list's read does not carry it; the agent's Changes tab does">
+              PR not known
+            </span>
+          )}
         </span>
         {ran !== null && (
           <>
@@ -2612,7 +2840,7 @@ function CompactRow({
         {waitsForYou && (
           <>
             {' · '}
-            <ToneMark tone="wait">needs you</ToneMark>
+            <ToneMark tone="wait">your turn</ToneMark>
           </>
         )}
         {/* WHAT A CANCELLED RUN'S FIGURE SPANS (#163), as a short mark on
