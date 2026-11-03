@@ -5043,6 +5043,62 @@ changed module through relative imports (`import ... from`, `export ... from`,
 runs under (`vitest.config.ts`, `src/__tests__/setup.ts`, `package.json`, ...)
 is related to no file by import: it is named in a warning and CI runs the suite.
 
+**Why one route no longer selects the suite** (RELATED-NARROW, part of #2688).
+Agents reported about 1,972 files selected for a change to a handful, and
+hand-picked tests instead. Measured on main at 0409b8d (2026-11-03), a change
+to one swarm-api route, `routes/budget_settings.py`, reached 1,428 of 1,707
+pytest files by import, through three false or overbroad edges:
+
+* **every suffix of a module's dotted name counted as a way to import it**, so
+  `agent_worker/startup.py`'s `import platform` (the standard library) read as
+  an import of `swarm_api/routes/platform.py`, and `main`, `config`, `errors`
+  likewise. Python finds `platform` there only if `swarm_api/routes` itself
+  is on `sys.path`, and nothing puts a package directory there, so an
+  absolute name now reaches a module only through a directory that is not a
+  package (`apps/<app>`, `tests/unit`, `scripts/lib`) or the repository root;
+* **a lazy import counted as an eager one**: `swarm_api/__init__.py` imports
+  `.main` (every route) only inside `create_app()`, yet
+  `from swarm_api import forgeapp` read as loading every route. An import in a
+  function body now passes the change on only to importers whose code (not a
+  docstring) names that function;
+* **`main.py` mounts every router**, so every test that builds the app reached
+  every route. A router module reached through an app that mounts it
+  (`include_router(budget_settings.router)`) now reaches only the tests that
+  request one of its URLs (its `APIRouter` prefix, literals, module
+  constants and f-strings; `{param}` is any one segment), and the guards that
+  walk every route the app mounts (`app.routes`, `.openapi()` ...). A router
+  with a path the selector cannot read is not gated: a partial URL list would
+  drop the tests of the paths it missed.
+
+The same change now selects 13 files: the two that request its URLs and eleven
+route walkers (credentials, the admin surface ...), and no worker test. A
+`conftest.py` that is changed, or reached, also reaches every test under its
+directory: tests use its fixtures without importing it, which the old closure
+missed. Swarm-ui: a type-only `import type` / `export type ... from` is no
+edge, since vitest transpiles without running it (tsc, in CI, reads it).
+
+These rules live in `select_unit_tests.py`'s `import_closure`, so pull-request
+CI selects by them too; main's push run and a merge-train run still run the
+whole suite, so a miss there costs a red main, never an untested release.
+
+**Where the code graph is staged, its `tests_for` answers first.** With a
+snapshot beside the checkout (`$SWARM_CONTEXT_DIR/snapshot`, else
+`../.swarm-context/snapshot`, where the pre-publish gate reads it), a changed
+file the graph knows a covering test for selects the graph's tests for it: the
+file's own test rows and its symbols', as `swarm-graph`'s `tests_for` answers.
+A file it does not know, or knows no test for, selects by imports: no coverage
+on record is not no coverage. The snapshot is read with the standard library,
+each blob checked against its digest name; one that cannot be read is named in
+a warning and the import map selects alone.
+
+**Wide by design.** What CI runs the whole suite for (the frozen contract
+`apps/common/swarm_common/`, which every component imports; a `conftest.py`;
+`pyproject.toml`; `uv.lock` ...) still selects every test that imports or reads
+it here, about 1,500 files for `swarm_common/models.py`, and a warning says it
+is wide by design and that CI runs the whole suite. Other modules many
+components import (`swarm_api/store.py`, the worker's runners) still select
+hundreds by import; the graph's `tests_for` is what narrows those.
+
 **A stylesheet change also selects the stylesheet guards** (RELATED-CSS-GUARDS,
 part of #1914, owner decision 2026-10-22). Any `.css` under `apps/swarm-ui/`
 adds `stylesheet.gate.test.ts`, `sections.stylesheet.test.ts`,

@@ -19,6 +19,13 @@ WHAT IS RELATED:
     a changed module through any chain of imports; every test whose text names
     a changed path (or a script that names one) -- select_unit_tests.py's
     rules, imported rather than restated, so the two cannot drift;
+  * where the code graph's snapshot is staged (load_graph), a changed file it
+    knows a covering test for selects the graph's tests_for instead of its
+    importers, on both sides; any other file selects by imports. A type-only
+    import (`import type`) is no edge: vitest does not run it (_TYPE_ONLY);
+  * a change CI's selector runs the whole suite for -- the frozen contract,
+    a conftest.py, pyproject.toml ... -- still selects every test that
+    imports or reads it, and a note says it is wide by design;
   * swarm-ui (vitest): the change's own test files, and every test file that
     reaches a changed module through relative imports -- `import ... from`,
     `export ... from`, `import '...'`, `import('...')` and `vi.mock('...')` --
@@ -61,8 +68,11 @@ Pure standard library, like select_unit_tests.py.
 from __future__ import annotations
 
 import argparse
+import gzip
+import hashlib
 import json
 import math
+import os
 import posixpath
 import re
 import sys
@@ -151,6 +161,14 @@ _IMPORT_PATTERNS = (
     re.compile(r"""\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)"""),
     re.compile(r"""\bvi\.(?:mock|doMock|importActual|importMock)\s*\(\s*['"]([^'"]+)['"]"""),
 )
+# A type-only import or re-export (`import type { Run } from './api'`) is
+# erased before a test runs -- vitest transpiles, it does not type-check; tsc
+# in CI does -- so it carries no change into a test. 1,311 of them in src made
+# a change to api.ts or types.ts reach almost every test by an edge that does
+# not run (RELATED-NARROW, part of #2688). `import { type A, b }` still runs.
+_TYPE_ONLY = re.compile(
+    r"""^[ \t]*(?:import|export)\s+type\s+(?:\{[^}'"]*\}|\*\s+as\s+\w+|\w+)\s*from\s*['"][^'"]+['"];?""",
+    re.M)
 
 
 def is_vitest_file(rel: str) -> bool:
@@ -185,8 +203,10 @@ def _resolve(importer: str, spec: str, known: set[str]) -> str | None:
     return None
 
 
-def ui_related(ui_root: Path, changed_ui: list[str]) -> list[str]:
-    """Vitest files (relative to ui_root) that are, or import, a changed file."""
+def ui_related(ui_root: Path, changed_ui: list[str], graph: "Graph | None" = None) -> list[str]:
+    """Vitest files (relative to ui_root) that are, or import, a changed file;
+    a changed module the code graph covers selects the graph's tests for it
+    instead of its importers."""
     files = _ui_files(ui_root)
     known = set(files)
     importers: dict[str, set[str]] = {}
@@ -197,19 +217,23 @@ def ui_related(ui_root: Path, changed_ui: list[str]) -> list[str]:
         text = (ui_root / rel).read_text(errors="replace")
         if is_vitest_file(rel):
             sheets_named[rel] = {m.group(2) for m in _QUOTED_SHEET.finditer(text)}
+        text = _TYPE_ONLY.sub("", text)
         for pattern in _IMPORT_PATTERNS:
             for spec in pattern.findall(text):
                 target = _resolve(rel, spec, known)
                 if target and target != rel:
                     importers.setdefault(target, set()).add(rel)
+    by_graph, by_imports = graph_split(graph, [c for c in changed_ui if c in known], is_vitest_file,
+                                       {k for k in known if is_vitest_file(k)}, prefix=f"{UI}/")
     reached: set[str] = set()
-    todo = [c for c in changed_ui if c in known]
+    todo = list(by_imports)
     while todo:
         rel = todo.pop()
         if rel in reached:
             continue
         reached.add(rel)
         todo.extend(importers.get(rel, ()))
+    reached.update(by_graph)
     changed_sheets = [c for c in changed_ui if c.endswith(".css")]
     if changed_sheets:
         reached.update(stylesheet_guards(known))
@@ -378,18 +402,147 @@ def stylesheet_guards(known: set[str]) -> list[str]:
     return [g for g in STYLESHEET_GUARDS if g in known]
 
 
-def python_related(root: Path, changed: list[str]) -> list[str]:
+# THE CODE GRAPH'S tests_for (RELATED-NARROW, part of #2688). Where a step
+# has the repository's graph snapshot staged beside the checkout -- where the
+# worker's pre-publish gate reads it (agent_worker/prepublish.py's
+# context_dir and _graph_tests) -- a changed file the graph knows a covering
+# test for selects the tests the graph names for it, the file's own test rows
+# and every one of its symbols': the tests that exercise it, not every test
+# that imports something that imports it. A file the graph does not know, or
+# knows no test for, falls back to the import map: no coverage on record is
+# not no coverage. The snapshot is read here with the standard library, and
+# every blob is checked against its digest name, as graphmcp/snapshot.py does.
+CONTEXT_DIR_ENV = "SWARM_CONTEXT_DIR"
+CONTEXT_DIR_NAME = ".swarm-context"
+SNAPSHOT_DIR_NAME = "snapshot"
+MANIFEST_SCHEMA = "swarm.repo-graph-manifest/v1"
+_BLOB = re.compile(r"sha256:([0-9a-f]{64})")
+
+
+class GraphError(Exception):
+    """The staged snapshot cannot be read as it is."""
+
+
+class Graph:
+    """The `files`, `symbols` and `tests` layers of a staged graph snapshot."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        try:
+            raw = (directory / "manifest.json").read_bytes()
+            manifest = json.loads(raw)
+        except (OSError, ValueError) as exc:
+            raise GraphError(f"its manifest cannot be read ({exc})") from None
+        if not isinstance(manifest, dict) or manifest.get("schema") != MANIFEST_SCHEMA:
+            raise GraphError(f"its manifest is not a {MANIFEST_SCHEMA} document")
+        if manifest.get("compression", "gzip") != "gzip" or manifest.get("blob_suffix", ".jsonl.gz") != ".jsonl.gz":
+            raise GraphError("its blobs are not gzip JSON lines")
+        try:
+            record = json.loads((directory / "freshness.json").read_text())
+        except (OSError, ValueError):
+            record = {}
+        expected = record.get("manifest_digest") if isinstance(record, dict) else None
+        if expected and expected != "sha256:" + hashlib.sha256(raw).hexdigest():
+            raise GraphError("its manifest does not match the digest the stager recorded")
+        self.commit = str(manifest.get("commit_sha") or "")[:12] or "an unknown commit"
+        shards = manifest.get("shards")
+        self._shards = shards if isinstance(shards, dict) else {}
+        self._rows: dict[tuple[str, str], list[dict]] = {}
+
+    def rows(self, layer: str, module: str) -> list[dict]:
+        key = (layer, module)
+        if key not in self._rows:
+            entry = (self._shards.get(layer) or {}).get(module)
+            found = _BLOB.fullmatch(str((entry or {}).get("blob") or "")) if isinstance(entry, dict) else None
+            if found is None:
+                self._rows[key] = []
+                return []
+            hexdigest = found.group(1)
+            try:
+                data = (self.directory / "blobs" / f"{hexdigest}.jsonl.gz").read_bytes()
+            except OSError as exc:
+                raise GraphError(f"blob {hexdigest[:12]} is missing ({exc.strerror})") from None
+            if hashlib.sha256(data).hexdigest() != hexdigest:
+                raise GraphError(f"blob {hexdigest[:12]} does not match its name")
+            try:
+                rows = [json.loads(line) for line in gzip.decompress(data).splitlines() if line.strip()]
+            except (OSError, ValueError, EOFError) as exc:
+                raise GraphError(f"blob {hexdigest[:12]} is not gzip JSON lines ({exc})") from None
+            self._rows[key] = [r for r in rows if isinstance(r, dict)]
+        return self._rows[key]
+
+    def tests_for(self, path: str) -> set[str]:
+        """The test files the graph says cover `path` (repo-relative), as
+        swarm-graph's tests_for answers: the file's own test rows and its
+        symbols'. Empty when the graph does not know the file."""
+        module = posixpath.dirname(path) or "."
+        files = [r for r in self.rows("files", module) if r.get("path") == path]
+        if not files:
+            return set()
+        rows = list(files[0].get("tests") or [])
+        for symbol in self.rows("symbols", module):
+            if symbol.get("path") == path:
+                sid = str(symbol.get("id"))
+                rows.extend(r for r in self.rows("tests", module) if r.get("symbol") == sid)
+        return {str(r.get("test")).split("#", 1)[0] for r in rows if isinstance(r, dict) and r.get("test")}
+
+
+def load_graph(root: Path, env: dict[str, str] | None = None) -> tuple[Graph | None, str]:
+    """The staged snapshot -- under $SWARM_CONTEXT_DIR, else beside the
+    checkout -- and a line saying what was found; None, never an error, when
+    there is none or it cannot be read: the import map then selects alone."""
+    env = dict(os.environ) if env is None else env
+    named = (env.get(CONTEXT_DIR_ENV) or "").strip()
+    directory = (Path(named) if named else root.parent / CONTEXT_DIR_NAME) / SNAPSHOT_DIR_NAME
+    if not (directory / "manifest.json").is_file():
+        return None, ""
+    try:
+        graph = Graph(directory)
+    except GraphError as exc:
+        return None, f"the staged code graph at {directory} is not used: {exc}; the import map selects alone"
+    return graph, ""
+
+
+def graph_split(graph: Graph | None, changed: list[str], is_test, known: set[str],
+                prefix: str = "") -> tuple[set[str], list[str]]:
+    """(the tests the graph names for the changed files it covers, the changed
+    files left to the import map). `prefix` is what the graph's paths carry
+    before `known`'s (apps/swarm-ui/ for vitest files)."""
+    if graph is None:
+        return set(), list(changed)
+    chosen: set[str] = set()
+    rest: list[str] = []
+    for path in changed:
+        if is_test(path):
+            rest.append(path)
+            continue
+        try:
+            found = graph.tests_for(prefix + path)
+        except GraphError:
+            found = set()
+        tests = {t[len(prefix):] for t in found if t.startswith(prefix) and t[len(prefix):] in known}
+        if tests:
+            chosen.update(tests)
+        else:
+            rest.append(path)
+    return chosen, rest
+
+
+def python_related(root: Path, changed: list[str], graph: Graph | None = None) -> list[str]:
     """tests/unit files related to the change, by select_unit_tests.py's rules
-    without its fall-back to the whole suite."""
+    without its fall-back to the whole suite; a changed module the code graph
+    covers selects the graph's tests for it instead of its importers."""
     all_tests = sorted(str(p.relative_to(root)) for p in sut._python_files(root, "tests/unit")
                        if sut.is_test(str(p.relative_to(root))))
     known = set(all_tests)
     chosen = {c for c in changed if c in known}
     changed_py = [c for c in changed if c.endswith(".py") and c.startswith(("apps/", "scripts/", "tests/unit/"))]
-    # The closure parses every module in the repository (~10 s here): only
-    # worth it when a Python file changed.
-    if changed_py:
-        chosen.update(r for r in sut.import_closure(root, changed_py) if r in known)
+    by_graph, by_imports = graph_split(graph, changed_py, sut.is_test, known)
+    chosen.update(by_graph)
+    # The closure parses every module in the repository (~20 s here): only
+    # worth it when a Python file the graph does not cover changed.
+    if by_imports:
+        chosen.update(r for r in sut.import_closure(root, by_imports) if r in known)
     # The same text rule as CI and changed-guards.sh (#2299): a test naming a
     # doc that cites a changed path reaches the change through the doc.
     virtual = sut.script_closure(root, sut.doc_closure(root, changed))
@@ -486,10 +639,26 @@ def main(argv: list[str]) -> int:
         if rel in RUNNER_WIDE:
             print(f"note\t{UI}/{rel} changes how every component test runs; no test imports it, "
                   "so none is named for it here and CI runs the whole UI suite")
+    graph, unusable = load_graph(root)
+    if unusable:
+        print(f"note\t{unusable}")
+    elif graph is not None:
+        print(f"note\tcode graph snapshot of {graph.commit}: a changed file it knows a covering test for "
+              "selects its tests_for; every other file selects by imports")
+    python = python_related(root, changed, graph)
+    # WIDE BY DESIGN: what CI's selector runs the whole suite for (the frozen
+    # contract every component imports, a conftest.py, pyproject.toml, uv.lock
+    # ...) still selects every test that imports or reads it here, and says so.
+    wide = sut.fallback_reason(changed)
+    if wide:
+        contract = next((c for c in changed if c.startswith("apps/common/swarm_common/")), None)
+        why = (f"{contract} is the frozen contract every component imports" if contract else wide)
+        print(f"note\t{why}: the selection is wide by design ({len(python)} test file(s) import or "
+              "read it), and CI runs the whole suite for it")
     lines = []
-    for run in pytest_runs(root, python_related(root, changed)):
+    for run in pytest_runs(root, python):
         lines.append("pytest\t" + " ".join(run))
-    for run in vitest_runs(root, ui_related(root / UI, changed_ui)):
+    for run in vitest_runs(root, ui_related(root / UI, changed_ui, graph)):
         lines.append("vitest\t" + " ".join(run))
     # The node:test runners read the tree from disk, so any UI change reaches
     # them (#2455); one run, whichever and however many files changed.
