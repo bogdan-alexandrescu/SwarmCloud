@@ -464,6 +464,35 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
     }
   })
 
+  // THE STEPS CELL NEVER CUTS ITS WORDS (review finding on PR #3147: the
+  // 116px column held the 72px bar and "12/12" but cut an untrusted census's
+  // "3 steps" to "3 step", at 1440 and 1280 open or folded, and at 390 in
+  // 92px). The fixed layout lets the words go under the bar and wrap at their
+  // spaces, so the column holds the bar, "12/12" and every word whole.
+  // MUTATION: drop the wrap, or put `nowrap` back on the cell.
+  it('holds the bar and every word of the step census whole, at every fixed pane, open and folded', () => {
+    const LONGEST = ['12/12', '12 steps', '12 of 12 steps unread']
+    for (const open of [false, true]) {
+      const root = row(open)
+      const small = root.querySelector<HTMLElement>('td[data-col="steps"] small')!
+      for (const [width, pane] of [[1440, 1024], [1440, 580], [1280, 900], [1280, 520], [390, 356]] as const) {
+        const env: CascadeEnv = { width, container: pane }
+        const what = `${open ? 'open' : 'folded'} at ${width}, a ${pane}px pane`
+        const th = root.querySelector<HTMLElement>('th[data-col="steps"]')!
+        const td = root.querySelector<HTMLElement>('td[data-col="steps"]')!
+        const [pl, pr] = paddingX(td, env)
+        const inner = px(painted(th, 'width', env), `steps ${what}`) - pl - pr
+        const bar = root.querySelector<HTMLElement>('td[data-col="steps"] .wfg-bar')!
+        expect(painted(bar, 'flex-wrap', env), what).toBe('wrap')
+        expect(painted(td, 'white-space', env), what).toBe('normal')
+        expect(px(painted(root.querySelector('td[data-col="steps"] .c-bar')!, 'width', env), `the bar ${what}`), what).toBeLessThanOrEqual(inner)
+        for (const text of LONGEST) {
+          for (const word of text.split(' ')) expect(textPx(word, small, env), `"${word}" of "${text}" ${what}`).toBeLessThanOrEqual(inner)
+        }
+      }
+    }
+  })
+
   it('fits the phone row at 390 with the head kept read', () => {
     const root = row(false)
     const env: CascadeEnv = { width: 390, container: 356 }
