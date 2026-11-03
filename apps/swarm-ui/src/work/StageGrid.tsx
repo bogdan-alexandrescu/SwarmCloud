@@ -50,7 +50,7 @@ import {
   type WorkflowStep,
 } from '../types'
 import { useNow } from '../useNow'
-import './stagegrid.css'
+import './stage-grid.css'
 
 // ---------------------------------------------------------------------------
 // Placement

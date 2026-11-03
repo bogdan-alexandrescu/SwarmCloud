@@ -275,7 +275,7 @@ describe('StageGrid', () => {
 
   it('turns the column labels vertical only when marks are all that is left', async () => {
     const { workflow, taskById } = fixture()
-    const STYLES = (await import('./stagegrid.css?raw')).default
+    const STYLES = (await import('./stage-grid.css?raw')).default
     const style = document.createElement('style')
     style.textContent = STYLES
     document.head.appendChild(style)
