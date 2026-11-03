@@ -509,7 +509,7 @@ def env_bin(tmp_path):
         f"#!{sys.executable}\n"
         "import json, os\n"
         "print(json.dumps({k: os.environ.get(k) for k in"
-        " ('SWARM_JEV_BROWSER_COUNTS', 'SWARM_JEV_SECRET_ENV_NAMES')}))\n"
+        " ('SWARM_JEV_BROWSER_COUNTS', 'SWARM_JEV_BROWSER_CALLS', 'SWARM_JEV_SECRET_ENV_NAMES')}))\n"
     )
     server.chmod(0o755)
     return server
@@ -531,6 +531,7 @@ def test_the_browser_launch_names_the_counts_file_and_the_secret_names(tmp_path,
     # MUTATION: drop `filter_env` and the wrapper's filter counts nothing and
     # scrubs only the key, not the registered secrets.
     assert out["SWARM_JEV_BROWSER_COUNTS"] == str(Path(path).parent / "jev-browser.counts")
+    assert out["SWARM_JEV_BROWSER_CALLS"] == str(Path(path).parent / "jev-browser.calls")
     assert out["SWARM_JEV_SECRET_ENV_NAMES"] == \
         "ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,MY_PASSPHRASE"
     # Names and a path only: never the key or a secret's value.

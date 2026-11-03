@@ -290,7 +290,7 @@ describe('the Sky spine shell', () => {
     // The fixture caller administers nothing, so no Admin (NAV-ADMIN-ROLE).
     render(<App />)
     // MUTATION: draw Profile under the Hive again, or API reads in the foot.
-    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Help', 'Profile'])
+    expect(spineLabels()).toEqual(['Submit', 'Home', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Help', 'Profile'])
   })
 
   it('draws Admin after Capacity for a platform admin', async () => {
@@ -300,7 +300,7 @@ describe('the Sky spine shell', () => {
     // MUTATION: move `admin` in SPINE and it leaves its place after Capacity.
     // Voice it follows Admin: a platform admin is who the identity read can name
     // as the person Voice it is open to until swarm-api's session routes say so.
-    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Voice it', 'Help', 'Profile']))
+    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Home', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Voice it', 'Help', 'Profile']))
   })
 
   it('lists the open section\'s pages in the panel, with the open page\'s children', async () => {

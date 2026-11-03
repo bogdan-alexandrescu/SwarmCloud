@@ -3328,6 +3328,14 @@ def extract(root: Path, budget: Budget | None = None,
             "blob_ids": head_blobs is not None and all(
                 isinstance(row.get("blob"), str) and bool(row["blob"]) for row in files),
             "history": history,
+            # What this run rebuilt and what it carried (`run_work`): the
+            # index canary's reused-versus-recomputed counts
+            # (scripts/index_canary_report.py), read off the graph manifest.
+            # Counts only, never a duration: the output stays byte-identical
+            # for the same input.
+            "work": run_work(
+                files, affected if changes is not None else None,
+                None if lsp is None else (set(facts) if asked is None else asked), carried_lsp),
             "lsp": None if lsp_result is None else {
                 "servers": dict(sorted(lsp_result.servers.items())),
                 "request_timeout_seconds": lsp_result.request_timeout_seconds,
@@ -3571,6 +3579,30 @@ def _modules(files: list[dict], truncated: set[str]) -> list[dict]:
         modules.append({"path": directory, "language": language, "files": len(members),
                         "lines": sum(f["lines"] for f in members)})
     return modules[:MAX_MODULES]
+
+
+def run_work(files: list[dict], affected: set[str] | None, asked: set[str] | None,
+             carried_lsp: set[str]) -> dict:
+    """How much of the parsed tree this run rebuilt, and how much it carried.
+
+    `recomputed` is the parsed files whose edges this run resolved itself:
+    every one in a full run, the `affected` set in an incremental one (the
+    changed files and every file that calls into them, `_affected`). The rest
+    of the parsed files are `reused`: their edges are the base's, verbatim
+    (`_carry_edges`). Every file is re-parsed either way; what a carry saves
+    is resolution and the language servers. `lsp_asked` is the files a server
+    was asked about and `lsp_carried` the files whose base answers were kept;
+    both None when no LSP pass ran, which is not zero.
+    """
+    parsed = {row["path"] for row in files if row.get("status") == "parsed"}
+    recomputed = parsed if affected is None else parsed & set(affected)
+    return {
+        "parsed": len(parsed),
+        "recomputed": len(recomputed),
+        "reused": len(parsed) - len(recomputed),
+        "lsp_asked": None if asked is None else len(asked),
+        "lsp_carried": None if asked is None else len(carried_lsp),
+    }
 
 
 def _lsp_coverage(lsp_result: Any, asked: set[str] | None, carried: set[str]) -> set[str]:

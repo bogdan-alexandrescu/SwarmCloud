@@ -291,7 +291,8 @@ describe('#98: one read age per screen', () => {
     // of. Since VQ-004 (2026-10-26) it is `N problems · R of T checks ran`:
     // the problems, one per card (QA-013), then the checks they came from.
     // MUTATION: an unlabelled `{n}/{m}` fraction, or drop the problems.
-    window.history.replaceState(null, '', '/')
+    // Overview's own route: the root is Home since the owner's pick of it.
+    window.history.replaceState(null, '', '/overview')
     render(<App />)
     const line = await waitFor(() => {
       const el = document.querySelector('#ov-needs .ov-lh .ov-cnt')

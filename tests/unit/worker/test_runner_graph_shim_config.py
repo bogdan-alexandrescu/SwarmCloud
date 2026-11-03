@@ -168,7 +168,8 @@ def test_claude_code_registers_the_shim_with_the_url_in_its_env(monkeypatch, tmp
     # A served graph gets the graph clause of the exploration line (LANE CAPS,
     # part of #2524), and nothing else.
     # ... after the line saying what to ask the graph first (AGENTS-USE-TOOLS).
-    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.GRAPH_FIRST_NOTE + "\n\n"
+    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
+                              + claude_code.GRAPH_FIRST_NOTE + "\n\n"
                               + claude_code.exploration_note(graph=True, children="",
                                                              shape=graphstage.SHAPE_TOOLS))
 

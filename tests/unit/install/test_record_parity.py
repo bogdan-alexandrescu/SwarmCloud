@@ -128,3 +128,20 @@ def test_the_personal_workspace_document_is_named_alike() -> None:
     path = f"swarm-install/{{env}}/console/{api_record.PERSONAL}"
     assert {"owner", "workspace", "grant", "smoke"} <= api_record.SWARM_API_DOCUMENTS[path]
     assert api_record.SWARM_API_DOCUMENTS[path] == _api_rows()[path]
+
+
+def test_the_timed_passes_are_named_alike_and_written_in_the_engines_row() -> None:
+    """Admin › Setup serves each timed pass's start time from the engine's
+    `passes`; both sides name the same passes and fields."""
+    assert tuple(engine_record.TIMED_PASSES) == api_record.TIMED_PASSES
+    assert engine_record.PASS_FIELDS == api_record.PASS_FIELDS
+    assert "passes" in api_record.ENGINE_FIELDS_READ
+    record = engine_record.InstallRecord(env="prod", documents=None)  # type: ignore[arg-type]
+    assert record.document_for(_state(), {})["passes"] is None
+    times = {"sign_in_pass": {"started_at": 1.0}, "infra_pass_3": {"started_at": 2.0, "ended_at": 3.0,
+                                                                   "result": "done"},
+             "not_a_pass": {"started_at": 4.0}}
+    data = record.document_for(_state(pass_times=times), {})
+    assert data["passes"] == {"sign_in_pass": {"started_at": 1.0},
+                              "infra_pass_3": {"started_at": 2.0, "ended_at": 3.0, "result": "done"}}
+    assert set(data) <= engine_record.WRITERS[api_record.ENGINE_DOCUMENT][1]

@@ -196,6 +196,8 @@ def test_a_change_to_the_base_reaches_the_nocodex_base_and_the_browser(tmp_path)
         "agent-runtime-base", NOCODEX, "agent-runtime-browser", "agent-runtime-indexer",
         # Built FROM the base by digest too (LIGHTPANDA-BUILD-SCRIPTS).
         "agent-runtime-lightpanda",
+        # Copies this file in to read the base's pinned CLAUDE_CODE_VERSION (VOICE-STATEFULSET).
+        "swarm-voice",
     }
 
 

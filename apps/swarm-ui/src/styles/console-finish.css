@@ -1,0 +1,120 @@
+/* Admin › Setup's console finish: the status line, the compact checklist and the working panel beside it (ChecklistFinish.tsx). Tokens only, no literal colour. */
+/* The four boxes' corner is 10px, styles.css's --radius, written as its number. */
+.cfc-page { min-width: 0; }
+.cfc-page code { font-family: var(--mono); font-size: var(--t-meta); }
+
+/* The status line: what swarm install is doing now. */
+.cfc-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 10px 14px; margin: 0 0 12px; border: 1px solid var(--line); border-left: 4px solid var(--sk-ac, var(--info)); border-radius: 10px; background: var(--surface); min-width: 0; }
+.cfc-status.is-ok { border-left-color: var(--s-live); }
+.cfc-status.is-bad { border-left-color: var(--s-bad); }
+.cfc-status.is-warn { border-left-color: var(--s-warn, var(--warn)); }
+.cfc-status-mark .cfg-mark { stroke: var(--sk-ac, var(--s-live)); stroke-width: 2; }
+.cfc-status.is-ok .cfg-mark circle { fill: var(--s-live); stroke: var(--s-live); }
+.cfc-status.is-ok .cfg-mark path { stroke: var(--surface); stroke-width: 2; }
+.cfc-status.is-bad .cfg-mark, .cfc-status.is-warn .cfg-mark { stroke: var(--s-bad); }
+.cfc-status-main { min-width: 0; }
+.cfc-status-h { margin: 0; font-weight: 650; font-size: var(--t-lead); line-height: var(--lh-lead); color: var(--text); overflow-wrap: anywhere; }
+.cfc-status-k { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px; background: var(--surface-2); color: var(--text-dim); font-size: var(--t-micro); font-weight: 600; line-height: var(--lh-micro); vertical-align: 1px; }
+.cfc-status-l { margin: 2px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+.cfc-ready { color: var(--text); font-weight: 600; }
+.cfc-status-count { display: flex; flex-direction: column; align-items: flex-end; text-align: right; }
+.cfc-status-count b { font-size: var(--t-lead); color: var(--text); }
+.cfc-status-count small { font-size: var(--t-micro); color: var(--text-dim); max-width: 30ch; }
+
+/* The two columns. */
+.cfc-grid { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); gap: 16px; align-items: start; min-width: 0; }
+.cfc-left, .cfc-right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* The compact checklist. */
+.cfc-list { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 6px; min-width: 0; }
+.cfc-list ol { list-style: none; margin: 0; padding: 0; }
+.cfc-item { border-radius: 8px; }
+.cfc-item + .cfc-item { margin-top: 2px; }
+.cfc-pick { display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.cfc-pick:hover { background: var(--surface-2); }
+.cfc-item.is-selected > .cfc-pick { background: var(--surface-2); border-color: var(--ctl-bd, var(--line)); }
+.cfc-item .cfg-mark { margin-top: 1px; }
+.cfc-item.is-done .cfg-mark circle, .cfc-panel-h .cfg-mark.is-done circle { fill: var(--s-live); stroke: var(--s-live); }
+.cfc-item.is-done .cfg-mark path { stroke: var(--surface); stroke-width: 2; }
+.cfc-item.is-in_progress .cfg-mark { stroke: var(--sk-ac, var(--s-live)); stroke-width: 2; }
+.cfc-item.is-failed .cfg-mark { stroke: var(--s-bad); stroke-width: 2; }
+.cfc-item.is-todo .cfg-mark { stroke-dasharray: 3 2.4; }
+.cfc-item-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.cfc-item-h { display: flex; gap: 8px; align-items: center; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.cfc-item.is-todo .cfc-item-h b { color: var(--text-dim); font-weight: 600; }
+.cfc-item-now { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+.cfc-item-who { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; margin-top: 2px; font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+/* Who acts now: a word, never a colour alone. */
+.cfc-who { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text); white-space: nowrap; }
+.cfc-who::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); }
+.cfc-who.is-you { border-color: var(--sk-ac, var(--info)); color: var(--info-ink); }
+.cfc-who.is-you::before { background: var(--sk-ac, var(--info)); }
+.cfc-who.is-teammate::before { background: var(--s-park, var(--paused)); }
+.cfc-who.is-google::before, .cfc-who.is-github::before { background: var(--text-faint); }
+.cfc-who.is-install::before, .cfc-who.is-console::before { background: var(--s-live); }
+.cfc-since { color: var(--text-dim); font-size: var(--t-micro); }
+.cfc-done { color: var(--ok-ink); font-size: var(--t-micro); font-weight: 600; }
+.cfc-later { color: var(--text-faint); font-size: var(--t-micro); }
+
+/* Waits on others, kept in view under their step. */
+.cfc-subs { list-style: none; margin: 0 0 4px 38px; padding: 4px 0 2px 10px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 3px; }
+.cfc-subs li { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; min-width: 0; }
+.cfc-addons { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 6px 0 2px; padding: 8px 8px 4px; border-top: 1px solid var(--line-soft); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.cfc-addon-mark { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1.5px dashed var(--text-dim); border-radius: 50%; font-weight: 650; }
+.cfc-link { padding: 0; border: 0; background: none; color: var(--info); font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
+.cfc-note { margin: 4px 8px 4px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* The working panel. */
+.cfc-panel { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); min-width: 0; }
+.cfc-panel-head { padding: 12px 16px 10px; border-bottom: 1px solid var(--line-soft); }
+.cfc-kicker { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.cfc-panel-h { display: flex; gap: 8px; align-items: center; margin: 2px 0 4px; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 650; color: var(--text); }
+.cfc-panel-h .cfg-mark { width: 22px; height: 22px; }
+.cfc-panel-who { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 0; font-size: var(--t-meta); color: var(--text-dim); }
+.cfc-panel-body { padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cfc-panel-body .c-card { border: 0; padding: 0; background: none; box-shadow: none; }
+.cfc-panel-body .ob-list { margin: 0; }
+.cfc-row-line { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.cfc-act { display: flex; flex-wrap: wrap; gap: 8px; }
+.cfc-locked { margin: 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; font-size: var(--t-meta); color: var(--text-dim); }
+.cfc-err { margin: 0; color: var(--bad-ink); font-size: var(--t-meta); }
+.cfc-h3 { margin: 0 0 6px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 650; color: var(--text-dim); }
+.cfc-waits { padding: 10px 16px; border-bottom: 1px solid var(--line-soft); background: var(--surface-2); }
+.cfc-waits ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.cfc-waits li { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 4px 10px; align-items: baseline; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.cfc-wait-what { color: var(--text); overflow-wrap: anywhere; }
+.cfc-wait-meta { display: flex; flex-direction: column; align-items: flex-end; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); text-align: right; }
+.cfc-prov { margin: 0 4px; font-size: var(--t-micro); color: var(--text-faint); }
+
+/* This install: the sizing and the release, compact. */
+.cfc-about { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 10px 12px; }
+.cfc-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 0; }
+.cfc-facts div { min-width: 0; }
+.cfc-facts dt { font-size: var(--t-micro); color: var(--text-dim); }
+.cfc-facts dd { margin: 0; font-size: var(--t-meta); color: var(--text); overflow-wrap: anywhere; }
+.cfc-more { margin-top: 8px; font-size: var(--t-meta); }
+.cfc-more summary { cursor: pointer; color: var(--info); font-weight: 600; }
+
+
+@media (max-width: 900px) {
+  .cfc-grid { grid-template-columns: minmax(0, 1fr); }
+  .cfc-grid .cfc-right { order: -1; }
+  .cfc-status { grid-template-columns: auto minmax(0, 1fr); }
+  .cfc-status-count { grid-column: 1 / -1; align-items: flex-start; text-align: left; }
+  .cfc-status-count small { max-width: none; }
+  .cfc-waits li { grid-template-columns: minmax(0, 1fr); }
+  .cfc-wait-meta { align-items: flex-start; text-align: left; }
+}
+.cfc-usual { color: var(--text-dim); font-size: var(--t-micro); }
+.cfc-usual::before { content: '· '; }
+.cfc-panel-h.is-done .cfg-mark circle { fill: var(--s-live); stroke: var(--s-live); }
+.cfc-panel-h.is-done .cfg-mark path { stroke: var(--surface); stroke-width: 2; }
+.cfc-panel-h.is-in_progress .cfg-mark { stroke: var(--sk-ac, var(--s-live)); stroke-width: 2; }
+.cfc-panel-h.is-failed .cfg-mark { stroke: var(--s-bad); stroke-width: 2; }
+.cfc-panel-h.is-todo .cfg-mark { stroke-dasharray: 3 2.4; }
+.cfc-panel-body .c-code pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.cfc-about .cfc-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .cfc-about .cfc-facts { grid-template-columns: 1fr 1fr; }
+}

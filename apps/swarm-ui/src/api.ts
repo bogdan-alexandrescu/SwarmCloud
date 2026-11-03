@@ -2229,6 +2229,38 @@ export async function cancelWorkflow(workflowId: string): Promise<Result<CancelW
   >
 }
 
+/**
+ * RE-RUN ONE FAILED WORKFLOW STEP INSIDE ITS WORKFLOW.
+ * `POST /v1/workflows/{id}/steps/{step}/rerun`
+ * (apps/swarm-api/swarm_api/routes/workflows.py `rerun_workflow_step`,
+ * `swarm_api/steprerun.py`). The body is empty: the step's runner profile and
+ * spec are the ones the API resolved at submission (invariant 10). The failed
+ * step, and the steps its failure cancelled, get new tasks; the answer names
+ * each step's old and new task id. Refused 409 `conflict` while a step still
+ * runs, for a step that did not fail, for a cancelled workflow, and when
+ * another re-run or a cancel landed first (`detail.reason` says which; the
+ * message says it in words). Called by Needs you's Retry on a
+ * failed step (work/NeedsYou.tsx). The fixture build sends nothing.
+ */
+export async function rerunWorkflowStep(workflowId: string, stepId: string): Promise<Result<StepRerunResult>> {
+  const target = route('/v1/workflows/{id}/steps/{step}/rerun', { id: workflowId, step: stepId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, false)
+    return {
+      status: 'error',
+      error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build re-runs no steps.' },
+    }
+  }
+  return (await write(target, 'POST')) as Result<StepRerunResult>
+}
+
+/** What `rerun_workflow_step` answers: each re-run step's old and new task id. */
+export interface StepRerunResult {
+  workflow_id: string
+  step_id: string
+  replaced: Record<string, { from: string; to: string }>
+}
+
 /** Only what this client reads of the cancel response (store.py `cancel_workflow`). */
 export interface CancelWorkflowResult {
   workflow_id: string
@@ -13612,6 +13644,8 @@ export interface SetupVerify {
   deadline: number | null
   /** `passed`, `failed`, or null while verify runs. */
   result: string | null
+  /** Verify's one-line cause, as swarm install printed it in the terminal (`engine.verify.detail`); null when the route serves none. */
+  detail: string | null
 }
 
 /** `stages[n]` of the engine document: `{state, at, by}`, or null for a stage not started. */
@@ -13726,6 +13760,8 @@ export interface SetupSmoke {
   state: string
   detail: string | null
   url: string | null
+  /** When the smoke agent started (`smoke.started_at`); null when the record holds none, drawn as not recorded. */
+  started_at: string | null
 }
 
 /** The route's word for a smoke that passed; `finish` waits for exactly this. */
@@ -13808,7 +13844,19 @@ export interface SetupAccount {
   owner: string | null
   link_expires: string | null
   signed_in_at: string | null
+  /** When its one-time link was made (`accounts[].link_made_at`); null when the route serves none, never derived from the expiry. */
+  link_made_at: string | null
 }
+
+/**
+ * `typical_s`: how long each wait usually takes, in seconds, as the route
+ * serves it. The keys the console finish reads: `sign_in_pass` (the infra
+ * pass that applies the sign-in client), `pass_3` (the pass that gives
+ * swarm-api the App's id), `workspace_build`, `smoke`, `groups` (Google
+ * Groups showing an added member), `verify` and `install` (the whole console
+ * finish). A key the route does not serve is drawn as not recorded.
+ */
+export type SetupTypical = Record<string, number>
 
 export interface SetupAddon {
   name: string
@@ -13840,6 +13888,8 @@ export interface SetupState {
   personal: SetupPersonal | null
   /** Whether the first-team and invites steps are needed, as the route says; null from a route that serves none. */
   steps: { first_team: SetupStepNeed | null; invites: SetupStepNeed | null } | null
+  /** The usual length of each wait (`typical_s`); empty when the route serves none. */
+  typical_s: SetupTypical
 }
 
 const objOf = (v: unknown): Record<string, unknown> | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
@@ -13882,6 +13932,7 @@ function normVerify(raw: unknown): SetupVerify | null {
     expected_end: numOf(v.expected_end),
     deadline: numOf(v.deadline),
     result: strOf(v.result),
+    detail: strOf(v.detail),
   }
 }
 
@@ -13939,7 +13990,9 @@ function normGitHubApp(raw: unknown): SetupGitHubApp | null {
 
 function normSmoke(raw: unknown): SetupSmoke | null {
   const smoke = objOf(raw)
-  return smoke === null ? null : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail) ?? strOf(smoke.reason), url: strOf(smoke.url) }
+  return smoke === null
+    ? null
+    : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail) ?? strOf(smoke.reason), url: strOf(smoke.url), started_at: timeOf(smoke.started_at) }
 }
 
 function normGrant(raw: unknown): SetupGrant | null {
@@ -14060,7 +14113,7 @@ export function normSetupState(raw: unknown): SetupState {
       .sort()
       .map((label) => {
         const a = objOf(accounts[label]) ?? {}
-        return { label, owner: strOf(a.owner), link_expires: strOf(a.link_expires), signed_in_at: strOf(a.signed_in_at) }
+        return { label, owner: strOf(a.owner), link_expires: strOf(a.link_expires), signed_in_at: strOf(a.signed_in_at), link_made_at: timeOf(a.link_made_at) }
       }),
     finished: finished === null ? null : { at: strOf(finished.at), by: strOf(finished.by) },
     addons: Array.isArray(d.addons)
@@ -14076,7 +14129,15 @@ export function normSetupState(raw: unknown): SetupState {
     mode,
     personal: mode === 'individual' ? normPersonal(d.personal) : null,
     steps: steps === null ? null : { first_team: normStepNeed(steps.first_team), invites: normStepNeed(steps.invites) },
+    typical_s: normTypical(d.typical_s),
   }
+}
+
+/** `typical_s`: only a finite, positive number of seconds is a usual time. */
+function normTypical(raw: unknown): SetupTypical {
+  const out: SetupTypical = {}
+  for (const [k, v] of Object.entries(objOf(raw) ?? {})) if (typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v
+  return out
 }
 
 /** `POST /v1/admin/setup/github-app/manifest`: the App manifest and the github.com form it posts to. */
@@ -14286,7 +14347,7 @@ export function restartSetupSmoke(): Promise<Result<{ workspace: string | null; 
     'POST',
     undefined,
     (raw) => ({ workspace: strOf(objOf(raw)?.workspace), smoke: normSmoke(objOf(raw)?.smoke) }),
-    () => ({ workspace: 'engineering', smoke: { state: 'running', detail: null, url: null } }),
+    () => ({ workspace: 'engineering', smoke: { state: 'running', detail: null, url: null, started_at: null } }),
   )
 }
 

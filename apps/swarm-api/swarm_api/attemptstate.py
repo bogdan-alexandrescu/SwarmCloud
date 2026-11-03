@@ -83,7 +83,7 @@ from .repositories import parse_repository, repo_id_for
 from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLECTION
 from .rollup import derived_state_write
 from .task_accounts import account_after
-from .store import EVENTS, LEASES, TASKS
+from .store import CONTROL, EVENTS, LEASES, SETTINGS_DOC, TASKS
 from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
 
@@ -97,6 +97,13 @@ REPOSITORIES = "repositories"
 TENANT_SETTINGS = "tenant_settings"
 #: The park's upload carry (#166), `control.CARRY_COLLECTION` / `CARRY_INDEX_ID`.
 CARRY = "carry"
+#: The fields of `control/settings` (`store.SETTINGS_DOC`) `state/context`
+#: serves. A worker switched to the state routes builds no Firestore client,
+#: so the admin's extra-repository size budget reaches its clone check only
+#: this way (owner's pick, 3 November 2026; `agent_worker.extrarepos.
+#: BUDGET_SETTING`). The platform's other settings -- prices, the budget
+#: ceiling -- are the control plane's, so none is served.
+PLATFORM_SETTINGS_SERVED = ("additional_repositories_budget_gib",)
 CARRY_INDEX = "parks"
 MERGE_SLOTS = "merge_slots"
 MERGE_TRAIN_ENTRIES = "merge_train_entries"
@@ -1790,8 +1797,10 @@ class AttemptState:
 
     def context(self, attempt: AttemptTuple) -> dict[str, Any]:
         """What the worker reads of its OWN tenant's settings, keys and grant
-        (`secrets.load_tenant`, `jevkey`, `judge/attempt.py`, `graphstage.py`).
-        Every id is derived from the tuple and the task's signed fields."""
+        (`secrets.load_tenant`, `jevkey`, `judge/attempt.py`, `graphstage.py`),
+        and of the platform's settings only `PLATFORM_SETTINGS_SERVED`
+        (`extrarepos.budget_bytes`). Every id is derived from the tuple and
+        the task's signed fields."""
         task = self._own_task(attempt)
         tenant_id = attempt.tenant_id
         tenant = self._read(self._ref(TENANTS, tenant_id))
@@ -1827,7 +1836,15 @@ class AttemptState:
             "provider_keys": keys,
             "personal_tenant_id": personal,
             "forge_grant": jsonable(grant),
+            "platform_settings": self._platform_settings(),
         }
+
+    def _platform_settings(self) -> dict[str, Any]:
+        """`control/settings`, cut to `PLATFORM_SETTINGS_SERVED`, each field as
+        stored and left out when absent: the worker keeps its own default for
+        a field it is not given and checks the value's shape itself."""
+        stored = self._read(self._ref(CONTROL, SETTINGS_DOC)) or {}
+        return {key: jsonable(stored[key]) for key in PLATFORM_SETTINGS_SERVED if key in stored}
 
     def upstream(self, attempt: AttemptTuple, upstream_task_id: str) -> dict[str, Any]:
         """`fetch_parent_states` and `inputs.fetch_upstream_task`: ONLY an id

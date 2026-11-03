@@ -166,6 +166,7 @@ from . import jevkey as jevkey_mod
 from . import qualitygates as qualitygates_mod
 from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
+from . import stepservers as stepservers_mod
 from . import territory as territory_mod
 from . import testservices as testservices_mod
 from . import typesafe_shim as typesafe_shim_mod
@@ -318,6 +319,7 @@ from .runners.cliagent import (
     RESUME_SESSION_ENV,
     RESUME_TIME_LIMIT,
     SESSION_FILE_ENV,
+    STEP_PUBLISHES_ENV,
     STOP_DRAIN,
     STOP_EXHAUSTED,
     carries_session_totals,
@@ -10065,6 +10067,17 @@ class Worker:
         # recorded and skipped. Set by the worker, never from `input`.
         if self._prepublish_rebase:
             base[PREPUBLISH_BASE_ENV] = self._prepublish_rebase
+        # WHETHER THIS STEP PUBLISHES (ONE-PLACE, 2026-11-03): "0" for a
+        # repository step whose branch is not its deliverable, so the CLI
+        # runner leaves the publishing paragraph out of its prompt
+        # (`cliagent.step_publishes`). Set by the worker, never from `input`.
+        if self._repo_url:
+            base[STEP_PUBLISHES_ENV] = "1" if self._deliverable_branch() else "0"
+        # WHICH OF swarm-git AND swarm-state THIS STEP'S AGENT IS HANDED
+        # (ONE-PLACE, 2026-11-03; the owner's `explicit-list` on PR #3113),
+        # from the signed step facts `stepservers.step_servers` reads. Set on
+        # every start, never from `input`; the spools stay offered either way.
+        base[stepservers_mod.ENV] = stepservers_mod.render(self._step_servers())
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than
@@ -10302,6 +10315,22 @@ class Worker:
                 log=self.log)
         except Exception as exc:  # noqa: BLE001 -- accounting is never worth the attempt
             self.log.warning("jev_settle_failed", error=type(exc).__name__)
+
+    def _settle_jev_at_exit(self) -> None:
+        """`judge.attempt.settle_at_exit` with this attempt's committed end,
+        and the workspace's `private/`, where the quality hooks and the Jev
+        browser left one record per call: those are sent even when the
+        judgments are off."""
+        from .judge import attempt as judge_attempt
+
+        ws = self.ws
+        private_dir = getattr(ws, "private", None) if ws is not None else None
+        if self._graph_env or private_dir is not None:
+            judge_attempt.settle_at_exit(
+                self._graph_env or {}, db=self.db,
+                committed_end=getattr(self.control, "committed_end", None),
+                tenant_id=self.cfg.tenant_id, task_id=self.cfg.task_id,
+                generation=self.cfg.generation, log=self.log, private_dir=private_dir)
 
     def _record_switches(self, summary: dict[str, Any]) -> None:
         """The workflow switches' record (`graphstage.switches_summary`), only
@@ -13881,6 +13910,18 @@ class Worker:
                 "from it, so nothing was cloned or pushed"
             )
         return f"{self.cfg.git_branch_prefix}{raw.strip()}"
+
+    def _step_servers(self) -> tuple[str, ...]:
+        """The platform MCP servers this step's agent is handed (`stepservers`)."""
+        task = self._task or {}
+        try:
+            onto_pull_request = self._publish_to_pr() is not None
+        except WorkerError:
+            onto_pull_request = False
+        return stepservers_mod.step_servers(
+            step_id=task.get("step_id"), metadata=task.get("metadata"),
+            dispatch=self._dispatch_block(), pr_role=self._pr_role(),
+            onto_pull_request=onto_pull_request)
 
     def _publish_to_pr(self) -> "publishpr_mod.Target | None":
         """The existing pull request this step publishes onto (#2183), or None.
@@ -18307,6 +18348,11 @@ class Worker:
             # so `_attempt_usage` includes it. Nothing on the fenced path
             # touches the lease by writing its own attempt document.
             ("record_cpu", self._record_cpu),
+            # Jev's spend on the state routes, settled with how the attempt
+            # ended -- park, cancel and crash included -- before the workspace
+            # holding its ledger is destroyed (`judge.attempt.settle_at_exit`).
+            # Its own attempt's rows only, never the lease.
+            ("settle_jev", self._settle_jev_at_exit),
             # AFTER the child is gone and BEFORE the workspace is destroyed.
             # Giving the account back while an agent could still be making
             # calls on it would let the broker hand the same subscription to
