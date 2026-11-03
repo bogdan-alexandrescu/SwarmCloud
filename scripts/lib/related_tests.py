@@ -537,7 +537,11 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None) -
     known = set(all_tests)
     chosen = {c for c in changed if c in known}
     changed_py = [c for c in changed if c.endswith(".py") and c.startswith(("apps/", "scripts/", "tests/unit/"))]
-    by_graph, by_imports = graph_split(graph, changed_py, sut.is_test, known)
+    # What CI runs the whole suite for (the frozen contract, a conftest.py
+    # ...) selects by imports whatever the graph says, so it stays wide.
+    wide = [c for c in changed_py if sut.fallback_reason([c])]
+    by_graph, by_imports = graph_split(graph, [c for c in changed_py if c not in wide], sut.is_test, known)
+    by_imports = wide + by_imports
     chosen.update(by_graph)
     # The closure parses every module in the repository (~20 s here): only
     # worth it when a Python file the graph does not cover changed.

@@ -5068,7 +5068,9 @@ pytest files by import, through three false or overbroad edges:
   constants and f-strings; `{param}` is any one segment), and the guards that
   walk every route the app mounts (`app.routes`, `.openapi()` ...). A router
   with a path the selector cannot read is not gated: a partial URL list would
-  drop the tests of the paths it missed.
+  drop the tests of the paths it missed. A test that builds the URL from a
+  constant in a helper module (`BASE = "/v1/admin"`, then `f"{BASE}/x"`) does
+  not match and is dropped; main's push run still runs it.
 
 The same change now selects 13 files: the two that request its URLs and eleven
 route walkers (credentials, the admin surface ...), and no worker test. A
@@ -5095,7 +5097,8 @@ a warning and the import map selects alone.
 `apps/common/swarm_common/`, which every component imports; a `conftest.py`;
 `pyproject.toml`; `uv.lock` ...) still selects every test that imports or reads
 it here, about 1,500 files for `swarm_common/models.py`, and a warning says it
-is wide by design and that CI runs the whole suite. Other modules many
+is wide by design and that CI runs the whole suite. A staged graph never
+narrows these: they select by imports whatever its `tests_for` names. Other modules many
 components import (`swarm_api/store.py`, the worker's runners) still select
 hundreds by import; the graph's `tests_for` is what narrows those.
 

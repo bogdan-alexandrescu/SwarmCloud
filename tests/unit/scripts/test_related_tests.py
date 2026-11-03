@@ -1220,3 +1220,30 @@ def test_vitest_runs_with_the_dot_reporter(tmp_path):
     assert vitest and all("--reporter=dot" in c for c in vitest), calls
     printed = [c for c in _commands(result.stdout) if c.startswith(VITEST_CMD)]
     assert printed and all("--reporter=dot" in c for c in printed)
+
+
+def test_a_staged_graph_never_narrows_what_selects_widely_by_design(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    _tree(root)
+    contract = "/".join("apps common swarm_common".split())
+    _write(root, f"{contract}/__init__.py")
+    _write(root, f"{contract}/schema.py", "class Tenant:\n    pass\n")
+    _write(root, "apps/foo/foo/model_user.py", "from swarm_common.schema import Tenant\n")
+    _write(root, "tests/unit/foo/test_model_user.py", "from foo.model_user import Tenant\n")
+    _write(root, "tests/unit/foo/conftest.py", "import pytest\n")
+    context = tmp_path / "context"
+    monkeypatch.setenv("SWARM_CONTEXT_DIR", str(context))
+    # The graph names one test each for the contract and for the conftest.
+    _snapshot(
+        context,
+        files=[{"path": f"{contract}/schema.py", "tests": [{"test": "tests/unit/foo/test_core.py"}]},
+               {"path": "tests/unit/foo/conftest.py", "tests": [{"test": "tests/unit/foo/test_core.py"}]}],
+        symbols=[], tests=[],
+    )
+    # MUTATION: let the graph's tests_for answer for the contract -> only
+    # test_core.py comes back and the note's "wide by design" count is false.
+    got = _select(root, f"{contract}/schema.py")
+    assert "tests/unit/foo/test_model_user.py" in _files(got["pytest"])
+    # A conftest.py reaches every test under it, whatever the graph says.
+    got = _select(root, "tests/unit/foo/conftest.py")
+    assert "tests/unit/foo/test_model_user.py" in _files(got["pytest"])
