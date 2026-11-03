@@ -645,10 +645,6 @@ def _flag(name: str, default: bool) -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-#: Version one of the Voice it pool serves the platform owner only (owner,
-#: 2026-11-02); VOICE_IT_PEOPLE or PLATFORM_OWNER overrides it.
-VOICE_IT_OWNER = "bogdan@saga.xyz"
-
 #: How long a Voice it session's hold lives without a renewal. swarm-voice
 #: renews every four minutes; a swarm-voice that dies stops renewing, and the
 #: hold lapses on its own within this.
@@ -2845,13 +2841,15 @@ def create_app(
         if a.strip()
     )
     # Who a Voice it pool account lists when the pool is added. Version one:
-    # the platform owner only (owner, 2026-11-02).
+    # the platform owner only (owner, 2026-11-02): VOICE_IT_PEOPLE when set,
+    # else PLATFORM_OWNER, which terraform/infra renders from
+    # var.platform_owner. Never a literal in the code: a new deployment has
+    # its own owner, and with neither set the pool lists nobody.
     app.state.voice_it_people = tuple(
         p.strip().lower()
         for p in (
             os.environ.get("VOICE_IT_PEOPLE", "")
             or os.environ.get("PLATFORM_OWNER", "")
-            or VOICE_IT_OWNER
         ).split(",")
         if p.strip()
     )

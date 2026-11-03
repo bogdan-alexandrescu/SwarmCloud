@@ -337,7 +337,7 @@ output "voice" {
     namespace        = local.voice_namespace
     service_account  = local.voice_ksa
     google_account   = local.voice_account ? local.voice_email : null
-    quota_broker_url = local.voice_on ? local.voice_broker_url : null
+    broker_url       = local.voice_on ? local.voice_broker_url : null
     internal_address = local.voice_on ? google_compute_address.voice[0].address : null
     url              = local.voice_url
     port             = 8080
