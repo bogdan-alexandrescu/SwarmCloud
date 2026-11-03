@@ -5001,6 +5001,58 @@ section below), no `terraform test` and nothing needing credentials, and a
 green run proves nothing CI has not. `tests/unit/scripts/test_changed_guards.py` holds its
 selection against fixture diffs.
 
+### The gate time-boxes the guard run and runs its parts side by side
+
+Owner decision, 3 November 2026 ("1+3"), after a full-day re-measure of the
+worker's pre-publish gate (`agent_worker/prepublish.py`, each agent's final
+attempt, 72 hours before the gate change against 22.5 hours after): builder
+steps (implement, build, fix) went from 8.5 to 15.6 minutes of gate a run on
+average, the slowest tenth from 36.8 to 64.3 minutes. 96% of that was the
+`changed-guards` check, which ran in 46% of builder runs (28% before), its
+`--shard` parts one after another (90th percentile 79.5 minutes).
+
+**What the gate does now** (`timeboxed_guards`):
+
+* It asks the script for the selection (`--list`) and `scripts/related-tests.sh`
+  for the tests related to the files the step changed, and cuts both into
+  parts of about 40 CI-seconds (`GUARDS_PART_WEIGHT`), in the listing's order,
+  so the fixed guards lead the rest.
+* The contract-parity check and the stylesheet guards are the first part,
+  then every related part, then the rest. Each part is one
+  `changed-guards.sh --only <list> --workers <n>` command: `--only` runs just
+  the selection entries it names (no record, no self-split), `--workers` sets
+  pytest's `-n`.
+* The parts run **side by side**, as many as the pod has CPUs (`pod_cpus`:
+  the CPUs the process may use, bounded by the cgroup CPU limit and the
+  platform's `PYTEST_XDIST_AUTO_NUM_WORKERS`), each on its share of them. A
+  larger runtime runs more parts at once with no change to the gate.
+* A part starts only while the **budget** lasts: `GUARDS_BUDGET_SECONDS`, 600
+  s of wall time for the whole check, never past the step's own deadline.
+  A part not started, or stopped at the budget with no failure of its own, is
+  **left to CI**: listed on the round's record (`left_to_ci`) and in the pull
+  request's advisory section, never counted as passed. CI runs the whole
+  selection anyway.
+* A failing part still fails the check, and its output, placed last, goes to
+  the fix turn. A failure printed before a budget stop counts too: the stop's
+  timeout marker is reworded so the gate never reads a stopped part as a
+  timeout nobody can fix.
+
+**Measured on this change's own selection** (2026-11-03, a 6-CPU container,
+343 test files, 3,365 CI-seconds; `related-tests.sh` related 326 of them,
+because the gate module is widely imported). One after another, the old way,
+part 1 of 7 (38 files, 481 CI-seconds) took 454 s at `-n auto`: about 1.06
+CI-seconds a second, so the seven parts are about 53 minutes of gate. Side by
+side, six parts at a time at one worker each, 97 files (891 CI-seconds)
+passed in 500 s: about 1.78 CI-seconds a second. With the 600 s budget the
+check ends at about 10 minutes, a third of the selection run (related parts
+first) and the rest left to CI. The first try ran the related set as ONE
+command; it was killed at the budget and every file was left to CI, which is
+why the related set is cut into parts like the rest.
+
+The contract-parity check took 66 s alone in that container, past the
+script's own 60 s `PARITY_SECONDS`, so it failed in some of these runs whichever way the
+guards ran; that limit predates this change and is not changed by it.
+
 ### While it works, a SwarmCloud agent runs only the related tests
 
 ```bash
