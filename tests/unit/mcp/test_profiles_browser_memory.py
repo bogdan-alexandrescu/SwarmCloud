@@ -8,10 +8,11 @@ holds to the class's (`ResourceSize.live_split`, design runner-sizes §4.3).
 agent's container was killed at 5, so a caller sized a step for 10 and was
 OOM-killed at 5.
 
-Now each profile's `resources` carries `agent_memory_gib` (what a step's agent
+Now each profile's entry carries, beside `resources` (the CLASS, which stays
+field-identical to `/v1/resource-classes`), `agent_memory_gib` (what a step's agent
 gets: the worker's share on a live pod, the whole size otherwise),
 `display_memory_gib` (the display's share, null with no display) and
-`pod_memory_gib` (the total, which `memory_gib` stays, since admission and the
+`pod_memory_gib` (the total, which `resources.memory_gib` stays, since admission and the
 units charge it). The display is on exactly when swarm-api has a relay
 address: Terraform sets SWARM_LIVE_URL and the scheduler's
 LIVE_BROWSER_SIDECAR from the one `live_relay_enabled` (terraform/infra
@@ -137,10 +138,16 @@ def test_the_premise_the_live_profile_is_on_the_split_class_and_browser_is_not_l
     assert RUNNER_PROFILES["browser"].resource_class == "browser"
 
 
+def _memory(entry: dict[str, Any]) -> dict[str, Any]:
+    """The entry's three memory figures beside its class's `memory_gib`."""
+    out = {k: entry[k] for k in ("agent_memory_gib", "display_memory_gib", "pod_memory_gib")}
+    return {**out, "memory_gib": entry["resources"]["memory_gib"]}
+
+
 def test_the_route_serves_the_worker_share_as_the_agent_s_memory(live):
     _resize(live, TEN_GIB)
 
-    resources = _runtimes(live)[LIVE]["resources"]
+    resources = _memory(_runtimes(live)[LIVE])
 
     # MUTATION: serving the class's total (10) as what the agent gets, the
     # defect of #3118, turns this red.
@@ -156,7 +163,7 @@ def test_the_route_serves_the_worker_share_as_the_agent_s_memory(live):
 def test_with_no_version_the_route_serves_the_default_split(live):
     worker, display = default_sizes()["browser"].live_split
 
-    resources = _runtimes(live)[LIVE]["resources"]
+    resources = _memory(_runtimes(live)[LIVE])
 
     # MUTATION: a literal 5 (the live deployment's) instead of the split turns this red.
     assert resources["agent_memory_gib"] == worker.memory_gib
@@ -169,13 +176,13 @@ def test_a_pod_with_no_display_gives_the_agent_the_whole_size(live, unlit):
     _resize(unlit, TEN_GIB)
 
     # The `browser` profile runs no live display: one container, all of it.
-    plain = _runtimes(live)["browser"]["resources"]
+    plain = _memory(_runtimes(live)["browser"])
     # MUTATION: applying the split to every profile on the class turns this red.
     assert plain["agent_memory_gib"] == plain["pod_memory_gib"] == 10
     assert plain["display_memory_gib"] is None
 
     # With no relay the scheduler renders no display sidecar either.
-    dark = _runtimes(unlit)[LIVE]["resources"]
+    dark = _memory(_runtimes(unlit)[LIVE])
     # MUTATION: serving the split whatever the deployment runs turns this red.
     assert dark["agent_memory_gib"] == dark["pod_memory_gib"] == 10
     assert dark["display_memory_gib"] is None
@@ -187,7 +194,7 @@ def test_every_profile_serves_the_three_numbers(live):
     # Counted, so an empty listing cannot pass the loop vacuously.
     assert len(runtimes) == len(RUNNER_PROFILES)
     for name, entry in runtimes.items():
-        resources = entry["resources"]
+        resources = _memory(entry)
         assert resources["pod_memory_gib"] == resources["memory_gib"], name
         if name == LIVE:
             continue
