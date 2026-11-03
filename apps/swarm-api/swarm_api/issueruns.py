@@ -212,7 +212,7 @@ from .redaction import redact_detail
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
-from . import sessiontag
+from . import sessiontag, workcontract
 from .specsigning import SpecSigningUnavailable
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
@@ -2477,6 +2477,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
         if previous is not None:
             spec["depends_on"] = [previous]
             spec["builds_on"] = previous
+        _attach_plan_contract(spec, run, plan, step)
         steps.append(spec)
         previous = step_id
     last = previous
@@ -2589,6 +2590,34 @@ def _review_impact(review_context: str | None) -> str:
     return f"{review_context.rstrip()}\n\n" if review_context else ""
 
 
+def _attach_plan_contract(spec: dict[str, Any], run: "IssueRun", plan: Mapping[str, Any],
+                          step: Mapping[str, Any]) -> None:
+    """An implementer step's advisory work contract (`workcontract.from_plan_step`),
+    in its metadata at `workcontract.METADATA_KEY`, while SWARM_WORK_CONTRACTS
+    is on; nothing while it is off, so the compiled workflow is today's.
+
+    Bound to the commit the plan was made from when the run used an index
+    (`index_sha`), else to the repository alone. The approver owns it: the
+    person whose approval of the plan's digest made this step. A plan step
+    no contract can describe (a file pattern outside the repository) is an
+    invalid plan, refused before anything is submitted."""
+    if not workcontract.enabled(os.environ):
+        return
+    sha = run.index_sha if isinstance(run.index_sha, str) and re.fullmatch(
+        r"[0-9a-f]{40}", run.index_sha) else None
+    try:
+        contract = workcontract.from_plan_step(
+            run_id=run.id, tenant_id=run.tenant_id,
+            owner=run.approved_by or run.created_by, plan=plan, step=step,
+            repository_url=run.issue.repository_url, commit=sha,
+            runner_profile=spec["runner_profile"],
+        )
+    except workcontract.WorkContractError as exc:
+        raise InvalidPlan(f"step {step['step_id']!r} has no work contract: {exc.message}") from exc
+    spec["metadata"] = {**spec.get("metadata", {}),
+                        workcontract.METADATA_KEY: contract.to_document()}
+
+
 def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
                     review_context: str | None = None, *,
                     class_models: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
@@ -2666,6 +2695,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
                 )
         spec["input"] = {"prompt": _step_prompt(ref, plan, index, step, context),
                          "issue": ref.number}
+        _attach_plan_contract(spec, run, plan, step)
         steps.append(spec)
     impl = [_impl_id(sid) for sid in order]
     last = impl[-1]
