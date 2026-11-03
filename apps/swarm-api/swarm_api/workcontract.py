@@ -723,8 +723,34 @@ class Amendment:
     withdrawn: tuple[str, ...]
 
 
+_GLOB = re.compile(r"[*?\[]")
+
+
+def _literal_prefix(pattern: str) -> str:
+    found = _GLOB.search(pattern)
+    return pattern if found is None else pattern[:found.start()]
+
+
 def _covered(pattern: str, by: Sequence[str]) -> bool:
-    return any(pattern == old or fnmatch.fnmatchcase(pattern, old) for old in by)
+    """Whether every path `pattern` matches is matched by some pattern in `by`.
+
+    Matching the new pattern as a literal string against an old one is not a
+    subset test (old `src/?` matches the text `src/*`), so a new pattern
+    counts as covered only when it equals an old one, when it is a plain
+    path the old one matches, or when the old one is a literal prefix
+    followed by nothing but `*` (fnmatch's `*` crosses `/`) and the new
+    pattern's own literal prefix starts with it. Anything else is widening.
+    """
+    literal = _literal_prefix(pattern)
+    for old in by:
+        if pattern == old:
+            return True
+        if literal == pattern and fnmatch.fnmatchcase(pattern, old):
+            return True
+        stem = _literal_prefix(old)
+        if old != stem and old[len(stem):].strip("*") == "" and literal.startswith(stem):
+            return True
+    return False
 
 
 def widening(old: WorkContract, new: WorkContract) -> tuple[str, ...]:
