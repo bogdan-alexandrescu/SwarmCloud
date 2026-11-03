@@ -21,6 +21,7 @@ from swarm_api.voice import sessions as vs
 from swarm_api.voice import store as vstore
 
 from .conftest import auth_header
+from .test_voice_cards import _card
 from .test_voice_sessions import FakeVoice, _client, _end, _start
 
 
@@ -212,6 +213,13 @@ def test_a_blob_is_created_once_and_never_overwritten(db, blobs):
 # ---- the documents ---------------------------------------------------------
 
 
+def _card_body(**over):
+    """A valid proposal card's stored fields: the store validates every card."""
+    card = _card(**over)
+    card.pop("kind")
+    return card
+
+
 def _seed(db, blobs, project: str, session: str, *, tenant="eng", person="alice@example.com"):
     store = _store(db, blobs)
     db.collection(vs.PROJECTS).document(project).set(
@@ -219,7 +227,8 @@ def _seed(db, blobs, project: str, session: str, *, tenant="eng", person="alice@
     db.collection(vs.PROJECTS).document(project).collection(vs.SESSIONS).document(session).set(
         {"tenant_id": tenant, "person": person, "state": vs.ENDED})
     kw = dict(tenant_id=tenant, person=person, project_id=project)
-    store.put_card(**kw, card_id="vc_" + secrets.token_hex(4), kind="proposal", body={"a": 1})
+    store.put_card(**kw, card_id="vc_" + secrets.token_hex(16), kind="proposal",
+                   body=_card_body())
     store.record_turn(**kw, turn_id="vt_" + secrets.token_hex(4), fields={"state": "done"})
     store.append_event(**kw, session_id=session, event={"type": "card"})
     store.append_event(**kw, session_id=session, event={"type": "caption"})
@@ -246,10 +255,11 @@ def test_a_cards_version_counts_up(db, blobs):
     store = _seed(db, blobs, project, session)
     kw = dict(tenant_id="eng", person="alice@example.com", project_id=project)
 
-    store.put_card(**kw, card_id="vc_same", kind="diagram", body={"v": 1})
-    card = store.put_card(**kw, card_id="vc_same", kind="diagram", body={"v": 2})
+    same = "vc_" + secrets.token_hex(16)
+    store.put_card(**kw, card_id=same, kind="proposal", body=_card_body(state="proposed"))
+    card = store.put_card(**kw, card_id=same, kind="proposal", body=_card_body(state="done"))
 
-    assert card["version"] == 2 and card["body"] == {"v": 2}
+    assert card["version"] == 2 and card["body"]["state"] == "done"
 
 
 def test_a_retried_turn_keeps_the_actions_it_recorded(db, blobs):

@@ -22,6 +22,7 @@ The same who-guard and workspace: another tenant's session, or another
 person's, is the same 404 as a missing one. It needs no swarm-voice.
 
     GET    /v1/voice/cards/schema             -> the card catalogue and the planner's tools
+    POST   /v1/voice/sessions/{session_id}/cards  {card} -> {card}
     GET    /v1/voice/sessions/{session_id}/events[?after=N]
                                               -> text/event-stream, resumes by sequence
 
@@ -34,6 +35,18 @@ belongs to on this request; another tenant's session, another person's, and a
 missing one are the same 404. It ends itself before 600 seconds, under the
 660-second request timeout, and the browser resumes from `Last-Event-ID`; once
 the session has ended and everything is sent, a reconnect is 204.
+
+THE CARD WRITE (§3.5, §3.6, §4). `POST /v1/voice/sessions/{session_id}/cards`
+takes `{card}` and writes it through `cards.write_card` as the caller's
+person, with the tenant, the project and the session from the session
+document, never from the body or a header the writer chose; another tenant's
+or another person's session is the same 404 as a missing one, and an ended
+session is 409. It is the one write a session grant reaches
+(`voice.grant.WRITE_ROUTES`): swarm-voice's planner draws its cards here, as
+the session's person, with the `voice_audit` row every grant request writes
+first. A grant writes only to its own session: any other session id is 403.
+`VoiceStore.put_card` validates against the catalogue again, so no write path
+bypasses it.
 
 PROJECTS AND PREFERENCES (§3.7, §3.11, §10 phase 2; swarm_api/voice/store.py
 and voice/preferences.py). The same who-guard and the same workspace: a
@@ -85,10 +98,11 @@ from starlette.concurrency import run_in_threadpool
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
-from ..errors import ValidationFailed
+from ..errors import Conflict, ValidationFailed
 from .profile import preferences_store
 from ..preferences import Preferences
 from ..voice import cards as vcards
+from ..voice import grant as vgrant
 from ..voice import ledger as vledger
 from ..voice import preferences as vprefs
 from ..voice import sessions as vs
@@ -328,6 +342,39 @@ async def undo_preferences(
 @router.get("/cards/schema")
 async def card_schema(person: str = Depends(allowed_person)) -> dict:
     return vcards.catalogue()
+
+
+class WriteCard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: The writer's fields of one card; `cards.validate` judges them.
+    card: dict[str, Any]
+
+
+@router.post("/sessions/{session_id}/cards")
+async def write_card(
+    session_id: str,
+    body: WriteCard,
+    person: str = Depends(allowed_person),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    _check_id(session_id, "vs_", "session_id")
+    tenants = vstream.tenants_of(auth)
+    if auth.via == vgrant.VIA:
+        # A grant writes only to the session it was minted for, in its
+        # session's workspace (the authenticator resolved it to that one).
+        if auth.voice_session != session_id:
+            raise vgrant.RouteNotGranted("a Voice it grant writes only to its own session")
+        tenants = frozenset({auth.tenant_id})
+    found = await run_in_threadpool(
+        vstream.find_session, ctx.db, person=person, session_id=session_id, tenants=tenants)
+    if found.state != vs.LIVE:
+        raise Conflict(f"voice session {session_id!r} has ended; no card is drawn on it")
+    card = await run_in_threadpool(
+        vcards.write_card, vstore.VoiceStore(ctx.db, now=ctx.now), tenant_id=found.tenant_id,
+        person=person, project_id=found.project_id, session_id=found.session_id, card=body.card)
+    return {"card": card}
 
 
 def stream_timing(request: Request) -> dict[str, Any]:

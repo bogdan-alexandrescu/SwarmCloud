@@ -125,6 +125,16 @@ def test_the_pod_acts_as_its_own_account_and_checks_its_caller():
     assert env["PORT"] == "8080" and env["PROJECT_ID"] == "__PROJECT_ID__"
 
 
+def test_the_planner_reaches_swarm_api_at_the_host_its_egress_policy_admits():
+    # main.build_sessions hands Sessions a planner only when SWARM_API_URL is
+    # set; swarm-api is Cloud Run, so its address from the cluster is the
+    # run.app host voice.tf renders, the one the egress policy names. The
+    # audience defaults to that URL, swarm-api's own API_AUDIENCE.
+    env = {e["name"]: e["value"] for e in _container()["env"]}
+    assert env["SWARM_API_URL"] == "https://__SWARM_API_HOST__"
+    assert "SWARM_API_AUDIENCE" not in env
+
+
 def test_every_object_is_labelled_managed_by_swarm_terraform():
     for path in (MANIFEST, POLICY):
         for doc in _docs(path):
