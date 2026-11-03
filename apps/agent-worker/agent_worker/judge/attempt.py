@@ -341,9 +341,10 @@ def settle(env: Mapping[str, str], *, db: Any,
            generation: int, fence: Callable[[Any], Any] | None = None, log: Any = None,
            now: Callable[[], datetime] | None = None) -> tuple[int, int] | None:
     """After the agent: this attempt's Jev calls and tokens into `jev_usage`
-    (`budget.settle_attempt`), one row per attempt and the month's total, in
-    one transaction that `fence` refuses for a superseded attempt
-    (invariant 5). Nothing for an attempt without Jev, or on the state
+    (`budget.settle_attempt`), one row per attempt -- with `settled_at`,
+    `now()`, and `by_kind`, summed from the ledger's audit rows -- and the
+    month's total, in one transaction that `fence` refuses for a superseded
+    attempt (invariant 5). Nothing for an attempt without Jev, or on the state
     routes, which hold no Firestore client. Returns what was settled, or
     None. Never raises, and changes no output of the attempt."""
     from agent_worker import indexrun
@@ -359,11 +360,12 @@ def settle(env: Mapping[str, str], *, db: Any,
         if not isinstance(ledger_path, str) or not ledger_path:
             return None
         warn = None if log is None else (lambda event, **kw: log.warning(event, **kw))
+        when = (now or _utcnow)()
         return budget.settle_attempt(
             budget.Ledger(Path(ledger_path)),
             budget.FirestoreMonthlyLedger(db, _Transactions(run_transaction)),
             workspace=tenant_id, task_id=task_id, generation=generation,
-            month=budget.month_of((now or _utcnow)()), fence=fence, log=warn)
+            month=budget.month_of(when), fence=fence, log=warn, settled_at=when)
     except Exception as exc:  # noqa: BLE001 -- accounting is never worth the attempt
         if log is not None:
             log.warning("jev_settle_failed", error=type(exc).__name__)

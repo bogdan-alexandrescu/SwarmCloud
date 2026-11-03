@@ -71,11 +71,11 @@ gke_enable_fqdn_network_policy = true
 
 # Voice it's swarm-voice (terraform/infra/voice.tf), step 1 of its three:
 # "account" reads the swarm-voice service account that terraform/bootstrap
-# created (it exists in this project, read 2026-11-02) and grants NOTHING, so
-# this needs no IAM approval. Step 3, "on", binds and grants and so waits at
-# the release's IAM gate; it follows once the owner's OpenAI credential is
-# stored in his personal scope. Set 2026-11-02, after the owner asked to make
-# more progress on Voice it.
+# created and grants NOTHING, so this needs no IAM approval. Back from "on" on
+# 2026-11-02: the owner chose that Voice it takes its ChatGPT plan from the
+# Voice it pool only ("Pool only, wait for it"), so swarm-voice will be granted
+# the quota broker's lease routes, not read of the owner's own sign-in. The
+# Voice it pool lane rewrites step 3 to match and turns it on.
 voice_it = "account"
 
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
