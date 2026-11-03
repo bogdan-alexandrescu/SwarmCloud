@@ -1288,35 +1288,33 @@ else
   # environment does). Discovery, which every authenticated caller may read
   # (GKE's system:discovery): no grant is needed to ask.
   #
-  # Skipped, with a line saying so, when the cluster does not serve it, when the
-  # question cannot be answered, and under the workspace job's call guard
-  # (SWARM_CALL_GUARD): scripts/lib/workspace-calls.json admits neither this
-  # read nor the kind, and a refused call stops the job. The policy only names
-  # a host rule 4 of allow-egress.yaml already admits, so a namespace without
-  # it loses nothing a packet notices today; onboarding never waits on it.
+  # Asked the same way under the workspace job's call guard (SWARM_CALL_GUARD):
+  # scripts/lib/workspace-calls.json admits this one discovery read on the
+  # swarm cluster's context, and the kind under the name
+  # swarm-allow-typesafe-direct alone, in the tenant's own namespace (C1, C7,
+  # kube_kind_names). Skipped, with a line saying so, when the cluster does not
+  # serve it and when the question cannot be answered. The policy only names a
+  # host rule 4 of allow-egress.yaml already admits, so a namespace without it
+  # loses nothing a packet notices today; onboarding never waits on it.
   FQDN_ARGS=()
   FQDN_RESOURCE="$("${PYTHON}" "${HERE}/render.py" fqdn-resource)" \
     || die "could not ask render.py which resource the hostname policy needs (above)"
-  if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then
-    info "hostname policy  skipped: the workspace call guard admits no ${FQDN_RESOURCE} read; swarm-allow-typesafe-direct is not rendered"
-  else
-    FQDN_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-fqdn-probe.XXXXXX")"
-    # To files, not $(...): the status and the error are both kept.
-    if "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" api-resources \
-        --api-group=networking.gke.io -o name >"${FQDN_WORK}/resources" 2>"${FQDN_WORK}/err"; then
-      if grep -Fxq "${FQDN_RESOURCE}" "${FQDN_WORK}/resources"; then
-        FQDN_ARGS=(--fqdn-network-policy)
-        info "hostname policy  the cluster serves ${FQDN_RESOURCE}: rendering swarm-allow-typesafe-direct"
-      else
-        info "hostname policy  skipped: the cluster does not serve ${FQDN_RESOURCE} (FQDN network policy is off); swarm-allow-typesafe-direct is not rendered"
-      fi
+  FQDN_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-fqdn-probe.XXXXXX")"
+  # To files, not $(...): the status and the error are both kept.
+  if "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" api-resources \
+      --api-group=networking.gke.io -o name >"${FQDN_WORK}/resources" 2>"${FQDN_WORK}/err"; then
+    if grep -Fxq "${FQDN_RESOURCE}" "${FQDN_WORK}/resources"; then
+      FQDN_ARGS=(--fqdn-network-policy)
+      info "hostname policy  the cluster serves ${FQDN_RESOURCE}: rendering swarm-allow-typesafe-direct"
     else
-      warn "hostname policy  skipped: could not read whether the cluster serves ${FQDN_RESOURCE}:"
-      redact <"${FQDN_WORK}/err" | sed -n '1,3p' | sed 's/^/     /' >&2
-      dim "  swarm-allow-typesafe-direct is not rendered; re-run once the cluster answers discovery."
+      info "hostname policy  skipped: the cluster does not serve ${FQDN_RESOURCE} (FQDN network policy is off); swarm-allow-typesafe-direct is not rendered"
     fi
-    rm -rf "${FQDN_WORK}"
+  else
+    warn "hostname policy  skipped: could not read whether the cluster serves ${FQDN_RESOURCE}:"
+    redact <"${FQDN_WORK}/err" | sed -n '1,3p' | sed 's/^/     /' >&2
+    dim "  swarm-allow-typesafe-direct is not rendered; re-run once the cluster answers discovery."
   fi
+  rm -rf "${FQDN_WORK}"
 
   MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" --project "${PROJECT_ID}" \
     ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
