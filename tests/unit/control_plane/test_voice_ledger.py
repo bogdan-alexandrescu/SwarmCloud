@@ -119,6 +119,26 @@ def test_the_lines_are_computed_from_talk_turns_and_starts(db):
     assert not [p for p in db.docs if "ledger" in p]
 
 
+def test_a_subscription_turn_is_not_measured_and_still_counts_against_the_caps_by_its_estimate(db):
+    # swarm-voice's planner runs on a Claude subscription account leased from
+    # the pool (docs/design/voice-it.md §3.6): no price was paid per token, so
+    # the turn is never $0 spent; its estimate at Opus prices is reserved.
+    project, session = _session(db, seconds=0)
+    db.collection(vs.PROJECTS).document(project).collection(vstore.TURNS).document(
+        "vt_" + "2" * 32).set({
+            "tenant_id": "eng", "person": ALICE, "session_id": session, "created_at": NOW,
+            "usage": {"input_tokens": 1_000_000, "output_tokens": 100_000,
+                      "model": "claude-opus-5-5", "billing": "subscription"}})
+
+    view = _ledger(db).compute(tenant_id="eng", person=ALICE, session_id=session)
+
+    for scope in (view["session"], view["day"]):
+        planner = _line(scope, "planner")
+        assert planner["spent_usd"] == 0.0 and planner["reserved_usd"] == pytest.approx(6.0)
+        assert scope["subscription_turns"] == 1
+        assert scope["total_usd"] == pytest.approx(6.0)
+
+
 def test_a_live_sessions_talk_grows_with_the_clock(db):
     project, session = _session(db, state=vs.LIVE, seconds=None,
                                 created=NOW - timedelta(minutes=20))

@@ -105,7 +105,7 @@ Read on `origin/main`, 2026-11-01.
 | A fix workflow can push onto an existing pull request's branch by naming the agent | `apps/swarm-api/swarm_api/continuation.py` (`WorkflowCreate.continues_task`) | The rescue path fixes a red pull request in place |
 | A person's preferences live in a document whose id is an HMAC no worker can compute | `apps/swarm-api/swarm_api/preferences.py` | Voice it preferences use the same id scheme (§3.7) |
 | Artifacts are served as `text/plain`, and no screen ever builds HTML from artifact bytes; no diagram renderer exists | `apps/swarm-api/swarm_api/routes/tasks.py` (artifact content), `apps/swarm-ui/src/ArtifactViewer.tsx` | Mock-ups need a sandboxed frame; diagrams need a renderer (§4) |
-| A workspace secret may name provider `openai`; provider-key links are TypeSafe-only; the account pool holds Claude **subscriptions**, not API keys; the codex runner is disabled, and eng's `swarm-tenant-eng-openai` holds one version OpenAI refused on 2026-09-23 | `workspace_secrets.py` (`PROVIDERS`), `validation.py` (`PROVIDER_KEY_PROVIDERS`), `apps/quota-broker/quota_broker/oauth.py`, `apps/common/swarm_common/profiles.py` (the `codex` entry) | BGD adds a fresh personal OpenAI key through Config › Secrets. The planner needs an Anthropic **API key**; the pool is not used (§3.6) |
+| A workspace secret may name provider `openai`; provider-key links are TypeSafe-only; the account pool holds Claude **subscriptions**, not API keys; the codex runner is disabled, and eng's `swarm-tenant-eng-openai` holds one version OpenAI refused on 2026-09-23 | `workspace_secrets.py` (`PROVIDERS`), `validation.py` (`PROVIDER_KEY_PROVIDERS`), `apps/quota-broker/quota_broker/oauth.py`, `apps/common/swarm_common/profiles.py` (the `codex` entry) | BGD adds a fresh personal OpenAI key through Config › Secrets. The planner runs on a Claude subscription account leased from the pool through Claude Code (§3.6, owner 2026-11-02) |
 | swarm-api reads the artifact bucket but may write only under narrow, conditioned, create-only grants, one per purpose | `terraform/modules/iam/bindings.tf` (`api_reader`), `terraform/infra/await_input.tf`, `terraform/infra/git_tools.tf` | Voice it's GCS prefix is one more such grant: an IAM change (§10) |
 | `swarm-live` and `swarm-graph` are rolled by named steps in the release and hotfix workflows | `.github/workflows/release.yml`, `.github/workflows/hotfix.yml` | A new service in `swarm-system` needs workflow lines: held for BGD (§10) |
 
@@ -306,14 +306,11 @@ Voice it, because it is the same route.
 
 * **OpenAI:** a ChatGPT plan account in the quota broker's **Voice it
   pool** (below). No person's own OpenAI secret is read any more.
-* **Anthropic:** the planner calls the Messages API, so it needs an
-  **API key**, not a subscription. It resolves the way every secret does,
-  the person's before the workspace's (`docs/design/secrets-scopes.md`).
-  Whose key it is stays open (question 2).
-* swarm-voice reads both from Secret Manager by version reference, with a
-  per-secret accessor grant on its own service account, as `swarm-live`
-  reads its key (`terraform/infra/live.tf`). It never writes them, logs
-  them, or sends them to the browser.
+* **Anthropic: the planner runs on a pool lease** (below, "The planner's
+  Claude account"). No person's Anthropic secret is read and swarm-voice
+  holds no accessor grant for one.
+* swarm-voice never writes a credential, logs one, or sends one to the
+  browser.
 
 **How a session reaches the OpenAI credential: the Voice it pool (owner,
 2026-11-02 and 2026-11-03).** The owner connected a ChatGPT plan and asked
@@ -363,10 +360,58 @@ allow accounts to be in more than one pool at a time".
   is run.invoker on the quota broker, and the broker admits only its
   service account to the voice routes.
 
-**Why not the account pool.** The pool holds Claude subscriptions, which the
-quota broker refreshes and hands to workers with leases. Their five-hour
-windows are the lanes' capacity, and a planner drawing on them would compete
-with the very lanes it starts.
+**The planner's Claude account: a pool lease through Claude Code (owner,
+2 November 2026).** The owner picked "Pool account via Claude Code": "we have
+a pool of account for anthropic, lets use one of the accounts there". The
+planner used to call the Messages API with an Anthropic API key read from the
+person's own secret, which needed a per-secret accessor grant and a stored key.
+It now runs each delegation turn the way a worker runs an agent:
+
+* **One lease per turn** (`swarm_voice/plannerlease.py`). swarm-voice asks the
+  broker's `POST /v1/accounts/assign` for an `anthropic` account with holder
+  `voice-planner`, the session's person and the voice session id. The broker
+  resolves the person's OWN workspace (never one the body names), picks the
+  account with `choose()` over that workspace's pool, and records the hold on
+  the account like an agent's, so `max_agents` and the windows see it. The hold
+  is renewed every four minutes and released in a `finally` whatever the turn
+  did. If swarm-voice dies the hold lapses on the broker's TTL, which a turn
+  (four minutes at most) never outlives unrenewed.
+* **A full pool is a refusal, never a wait.** With no account free the voice
+  says so ("Every Claude account in your workspace's pool is busy right
+  now..."), or that the workspace has none, and nothing runs.
+* **Claude Code, headless** (`swarm_voice/claudeturn.py`): `claude -p` with
+  `claude-opus-5-5`, stream-json output, `--no-session-persistence`, the
+  planner's system prompt, and a private temporary HOME (0700, also its cwd
+  and TMPDIR) removed after the turn. Its environment is built, not
+  inherited: the leased token in `CLAUDE_CODE_OAUTH_TOKEN` and nothing else
+  secret, never `ANTHROPIC_API_KEY`. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+  and `DISABLE_TELEMETRY` are set, so the CLI reaches `api.anthropic.com`
+  only, which swarm-voice's egress already admits. The subscription token is
+  used only through Claude Code, never sent to the Messages API directly.
+* **Only the planner's tools** (`swarm_voice/mcp_server.py`). `--tools ""`
+  removes every built-in tool, so the child has no file, shell, web or agent
+  tool. The only MCP server is the turn's own (`--strict-mcp-config`), and
+  only its tools are allowed. It lists the catalogue's `draw_<kind>` tools,
+  the read tools and `speak`. It holds nothing itself: each call goes over a
+  unix socket in the private HOME (checked against a per-turn nonce) back to
+  swarm-voice, which runs it through swarm-api with the session grant the
+  child never sees. The turn stops the child once `speak` is answered.
+* **Nothing secret captured.** Every line the child prints is scrubbed of the
+  token and the grant before it is parsed, as the worker's redaction does. So
+  are the prompt, the tool results, the cards and the spoken summary.
+* **Cost: not measured.** A subscription has no per-token price. The turn's
+  `usage` carries its token counts, the model and `billing: "subscription"`.
+  The ledger (§3.8) RESERVES its estimate at Opus prices against the
+  session's $100 and the day's $300, never counts it as $0 spent, and counts
+  it in `subscription_turns`.
+* **The windows.** A planner turn is one agent on one account for at most
+  four minutes. It competes with the workspace's lanes for that account's
+  five-hour window exactly as one more short agent would, and the broker's
+  `choose()` spreads it like one. This was the reason the earlier design kept
+  the planner off the pool. The owner accepted that cost on 2 November 2026.
+* **The CLI** is in swarm-voice's image at the version
+  `images/agent-runtime-base/Dockerfile` pins, read from that file at build
+  time, so there is one source for it.
 
 ### 3.7 Storage: Firestore and the tenant's prefix
 
@@ -915,7 +960,10 @@ grace window.
     accessor, invoker on swarm-api);
   * the storage lane (swarm-api's create and delete grants on the voice
     prefix);
-  * the planner lane (the Anthropic secret accessor).
+  * the planner lane: none any more. The planner runs on a pool lease
+    (§3.6) through the broker swarm-voice already invokes; what it needs is
+    the broker admitting swarm-voice as a service holder on
+    `POST /v1/accounts/assign`, which the owner approves as an access change.
 * **Workflow file:** the release, hotfix and security workflow lines.
 * **Frozen contract:** none.
 
@@ -947,8 +995,9 @@ states, not where they are drawn.
 
 1. **The OpenAI key:** a new personal key added through Config › Secrets.
    Eng's existing key was refused by OpenAI on 2026-09-23.
-2. **The planner's Anthropic key:** BGD's personal API key, or a workspace
-   one? The account pool's subscriptions are not used.
+2. **The planner's Anthropic key:** answered on 2 November 2026: no key.
+   The planner runs on a Claude subscription account leased from the pool
+   through Claude Code (§3.6).
 3. **Budget raises:** a click with a typed amount only (recommended), or also
    by voice?
 4. **The grace window on spending actions:** 5 s (recommended), none, or

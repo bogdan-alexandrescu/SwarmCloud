@@ -35,6 +35,7 @@ from ..attemptstate import (
     UsageBody,
 )
 from ..children import PROOF_HEADER, TIMESTAMP_HEADER
+from ..jevaccount import JevAccount, JevCallBody, JevReserveBody, JevSettleBody
 from ..deps import AppContext, get_context
 from .children import _presented, _worker_verifier
 
@@ -83,6 +84,11 @@ _POSTS: dict[str, tuple[type, Callable[[AttemptState], Callable[..., dict]]]] = 
     "merge-slot": (MergeSlotBody, lambda s: s.merge_slot),
     "merge-train": (MergeTrainBody, lambda s: s.merge_train),
     "ci-fix-tasks": (CiFixBody, lambda s: s.ci_fix_tasks),
+    # Jev spend (`swarm_api.jevaccount`): the reservation, one record per
+    # call, the settlement.
+    "jev-reserve": (JevReserveBody, lambda s: JevAccount(s).reserve),
+    "jev-usage": (JevCallBody, lambda s: JevAccount(s).record_call),
+    "jev-settle": (JevSettleBody, lambda s: JevAccount(s).settle),
 }
 
 

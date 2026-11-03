@@ -12,12 +12,14 @@ first start's stdin prompt carries:
 
 1. the limit in GiB;
 2. run one heavy command at a time;
-3. never background a test run with `&` or `nohup`;
+3. never background a test run with `&` or `nohup` -- said once, by the
+   time-limit line (`cliagent.time_limit_line`), not by this one;
 4. kill a timed-out command's process group before starting another;
 5. `--max-old-space-size` at most the limit less 1.5 GiB (6656 MiB of 8 GiB,
    3584 of 5), and never the whole limit.
 
-MUTATIONS: drop any one rule from `cliagent.budget_line` (2-4); cap
+MUTATIONS: drop any one rule from `cliagent.budget_line` (2, 4), or 3 from
+`cliagent.time_limit_line`; cap
 `--max-old-space-size` at the whole limit again (5).
 """
 
@@ -62,11 +64,18 @@ def test_the_line_says_one_heavy_command_at_a_time(tmp_path, monkeypatch, memory
 
 
 @pytest.mark.parametrize("memory", [8 * GIB, 5 * GIB])
-def test_the_line_says_never_background_a_test_run(tmp_path, monkeypatch, memory):
+def test_the_background_rule_is_the_time_limit_lines_not_restated_here(tmp_path, monkeypatch,
+                                                                         memory):
+    """ONE-PLACE (2026-11-03): rule 3 is said once per first message, in
+    `cliagent.time_limit_line`, which every start carries with or without a
+    known memory limit."""
+    from agent_worker.runners import cliagent
+
     line = _line(tmp_path, monkeypatch, memory)
 
-    assert "never background a test run" in line, line
-    assert " & " in line and "nohup" in line, line
+    assert "background" not in line and "nohup" not in line, line
+    limit = cliagent.time_limit_line(3600)
+    assert "in the background (`&`, `nohup`)" in limit, limit
 
 
 @pytest.mark.parametrize("memory", [8 * GIB, 5 * GIB])
