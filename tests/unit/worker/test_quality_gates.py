@@ -182,6 +182,8 @@ def test_on_writes_the_workspace_key_to_one_0600_file_and_hands_over_a_config_pa
     assert key not in config_path.read_text()
     assert config["secret_env_names"] == ["ANTHROPIC_API_KEY", "MY_PASSPHRASE"]
     assert Path(config["counts_file"]).parent == private
+    # One record per Jev call, which the worker sends through state/jev-usage.
+    assert Path(config["calls_file"]) == private / qualitygates.CALLS_FILE_NAME
     assert Path(config["data_dir"]).is_dir() and Path(config["data_dir"]).parent == private
     assert key not in log and key not in json.dumps(env)
 

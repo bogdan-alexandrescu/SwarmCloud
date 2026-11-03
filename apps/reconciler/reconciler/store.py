@@ -40,6 +40,7 @@ from swarm_common.states import (
     TaskState,
     can_transition,
 )
+from swarm_rollup import settled_unpin
 
 from .backends import TENANT_NAMESPACE_MISMATCH, _namespace_mismatch_due, sanitize_name
 from .config import ReconcilerConfig
@@ -783,9 +784,15 @@ class ControlStore:
             snap = _snapshot(txn.get(ref))
             if not snap.exists:
                 return "workflow_missing"
-            if (snap.to_dict() or {}).get("state") != expected.value:
+            stored = snap.to_dict() or {}
+            if stored.get("state") != expected.value:
                 return "state_changed"
-            txn.update(ref, {"state": to.value, "updated_at": utcnow()})
+            # A settled workflow's graph pins go with the same write (#3116):
+            # a worker that crashed after its graph ticket and before its
+            # step's end left them, and this repair is what settles it.
+            txn.update(
+                ref, {"state": to.value, "updated_at": utcnow(), **settled_unpin(to, stored)}
+            )
             return None
 
         return self._txn.run(_apply)

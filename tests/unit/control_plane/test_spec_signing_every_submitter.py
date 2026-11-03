@@ -35,6 +35,10 @@ WRITERS_OF_A_NEW_TASK = {
     ("swarm-api/swarm_api/service.py", "SubmissionService.submit_tasks"),
     ("swarm-api/swarm_api/service.py", "SubmissionService.submit_workflow"),
     ("swarm-api/swarm_api/children.py", "ChildService.submit._apply"),
+    # A step re-run's new tasks (PR #3123): signed by `steprerun.rerun`
+    # before the store call, pinned below; written in the transaction that
+    # moves the workflow's step pointers to them.
+    ("swarm-api/swarm_api/store.py", "Store.rerun_workflow_steps._apply"),
 }
 
 #: The call names that create a task document.
@@ -145,6 +149,26 @@ def test_a_child_is_signed_before_the_transaction_that_stores_it():
     assert build and build[0] < apply_.lineno, "the child is built after its transaction"
     assert _sign_lines(scan.functions["ChildService._build_child"]), (
         "ChildService._build_child no longer signs the child it builds"
+    )
+
+
+def test_a_step_rerun_is_signed_before_the_transaction_that_stores_it():
+    """`steprerun.rerun` signs the re-run's tasks, then hands them to
+    `Store.rerun_workflow_steps`, and the service passes its own `_sign`."""
+    scan = _scan(APPS / "swarm-api/swarm_api/steprerun.py")
+    rerun = scan.functions["rerun"]
+    calls = [(n.lineno, _call_name(n)) for n in ast.walk(rerun) if isinstance(n, ast.Call)]
+    signs = [line for line, name in calls if name == "sign"]
+    stores = [line for line, name in calls if name == "rerun_workflow_steps"]
+    assert signs and stores and max(signs) < min(stores), (
+        f"steprerun.rerun stores {stores} and signs {signs}"
+    )
+    service = _scan(APPS / "swarm-api/swarm_api/service.py")
+    method = service.functions["SubmissionService.rerun_workflow_step"]
+    passed = [kw.value for n in ast.walk(method) if isinstance(n, ast.Call)
+              and _call_name(n) == "rerun" for kw in n.keywords if kw.arg == "sign"]
+    assert passed and isinstance(passed[0], ast.Attribute) and passed[0].attr == "_sign", (
+        "SubmissionService.rerun_workflow_step does not sign with its own _sign"
     )
 
 
