@@ -654,3 +654,61 @@ def test_a_lease_lost_while_a_step_applies_stops_the_run(tmp_path: Path) -> None
     assert "verify infra.pass1" not in log
     if STATE_OBJECT in rig.bucket.objects:
         assert "infra.pass1" not in rig.bucket.state().get("steps", {})
+
+
+def _pass_times(rig: Rig) -> dict:
+    return rig.bucket.state()["outputs"].get("pass_times", {})
+
+
+def test_the_sign_in_pass_is_timed_from_its_first_apply_to_its_last_done(tmp_path: Path) -> None:
+    """Admin › Setup has no usual length for the sign-in pass, so it shows the
+    time since the pass started: the engine stamps `started_at` before the
+    first step applies and `ended_at` once the last one is done."""
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    seen: dict[str, dict] = {}
+
+    def first_applies() -> None:
+        seen["first"] = dict(_pass_times(rig).get("sign_in_pass", {}))
+        rig.clock.t += 120
+
+    def second_applies() -> None:
+        seen["second"] = dict(_pass_times(rig).get("sign_in_pass", {}))
+        rig.clock.t += 60
+
+    start = rig.clock.now()
+    steps = [FakeStep("handoff.sign-in-bootstrap", 13, log=log, on_apply=first_applies),
+             FakeStep("handoff.sign-in-infra", 13, log=log, on_apply=second_applies)]
+    assert rig.engine(steps).run().exit_code == 0
+    assert seen["first"] == {"started_at": start}, "started before the first step applies"
+    assert seen["second"] == {"started_at": start}, "the second step runs on the same pass"
+    assert _pass_times(rig)["sign_in_pass"] == {"started_at": start, "ended_at": start + 180,
+                                                "result": "done"}
+    assert "infra_pass_3" not in _pass_times(rig)
+
+
+def test_a_failed_pass_ends_failed_and_its_rerun_starts_the_clock_again(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    log: list[str] = []
+
+    def terraform_fails() -> None:
+        rig.clock.t += 30
+        raise RuntimeError("state lock held")
+
+    start = rig.clock.now()
+    failing = FakeStep("github.pass-3", 9, log=log, on_apply=terraform_fails)
+    assert rig.engine([failing]).run().exit_code != 0
+    assert _pass_times(rig)["infra_pass_3"] == {"started_at": start, "ended_at": start + 30,
+                                                "result": "failed"}
+
+    rig.clock.t += 600
+    again = rig.clock.now()
+    assert rig.engine([FakeStep("github.pass-3", 9, log=log)]).run().exit_code == 0
+    assert _pass_times(rig)["infra_pass_3"] == {"started_at": again, "ended_at": again,
+                                                "result": "done"}
+
+
+def test_a_step_in_no_timed_pass_stamps_nothing(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    assert rig.engine([FakeStep("infra.pass-2", 7, log=[])]).run().exit_code == 0
+    assert _pass_times(rig) == {}
