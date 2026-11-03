@@ -7,17 +7,17 @@ entry, and that the question bridge builds on the program's trusted park and res
 bridge spikes run now; the build order below follows the program's work-contract and trusted-state packages.
 
 The owner (BGD) asked on 3 November 2026 for agents to
-use Claude Code plugins chosen per runtime and per task, starting with gstack, whose planner, designer and reviewer
+use Claude Code plugins chosen per runtime and per agent, starting with gstack, whose planner, designer and reviewer
 skills "could be super useful in making sc agents a lot more powerful and capable", and for a plan to build it as
 soon as possible. Every fact below was read on 3 November 2026 on `origin/main`; files are named, lines are not,
 because they move.
 
 ## Decisions (BGD, 3 November 2026)
 
-* **Chosen per step from the start.** A workflow step (and a single task) names the plugins it uses and, for each,
+* **Chosen per step from the start.** A workflow step (and a single agent) names the plugins it uses and, for each,
   its mode and skills. There is no workflow-wide switch first. Per-step names need a frozen-contract change
   request (see "The contract change request" below), so that request is the first lane.
-* **Baked into the agent images at a pinned version.** No install at task start.
+* **Baked into the agent images at a pinned version.** No install when an agent starts.
 * **Two modes, toggled per step.**
   * **Unattended:** gstack answers every question that has a recommended option by itself and logs it. A question
     it cannot answer that way (a consent, no recommendation, a final gate) **parks the step for an answer**, and
@@ -43,7 +43,7 @@ the pod's root filesystem is read-only.
 verdict and the workflow's switch whether to run it, write a private config, and the runner registers Jev's hooks.
 
 **Switches are per workflow, not per step.** `DISPATCH_SWITCHES` (`swarm_api/validation.py`) is on/off only, set on
-a task or a workflow, written into every step's signed `metadata.dispatch` block. `WorkflowStepCreate` has no
+an agent or a workflow, written into every step's signed `metadata.dispatch` block. `WorkflowStepCreate` has no
 dispatch field. Runner profiles (`swarm_common/profiles.py`, frozen) have no field for plugins, skills or hooks.
 
 **Images** are pinned by digest; the base image is about 730 MB and the browser image about 1.25 GB
@@ -52,7 +52,7 @@ mirror or are vendored. Every byte added is paid on every agent start.
 
 **Waiting for a person exists.** The `AWAITING_INPUT` park state (`swarm_common/states.py`) and the `await-input`
 step ([human-steps.md](human-steps.md)) wait at no cost and resume on an answer. Owner questions
-(`questions.json`, recorded through the task answers route) already reach the console and the operator's session.
+(`questions.json`, recorded through the answers route) already reach the console and the operator's session.
 The plan decision page (`ApprovalDecision.tsx`, [plans-pipeline.md](plans-pipeline.md)) shows a plan and its
 conversation.
 
@@ -180,7 +180,7 @@ and no image release lands while experiment batch three runs (its conditions for
 ## The contract change request
 
 Requested, not applied: `apps/common/swarm_common/` is frozen. The request adds the step's `plugins` field (and the
-same on a single task) with its shape and limits, the signed settings block for the workspace's allowed plugins
+same on a single agent) with its shape and limits, the signed settings block for the workspace's allowed plugins
 (`specsign.SETTINGS_MAC_FIELDS`), a spec format bump so a step's plugins are signed, and, if the packaging spike
 shows it is needed, a profile marker for the runners that can load plugins.
 
