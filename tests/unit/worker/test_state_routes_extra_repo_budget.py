@@ -18,7 +18,10 @@ import io
 import pytest
 
 from agent_worker import extrarepos
+from agent_worker.children import AttemptKey, ChildApiError
+from agent_worker.errors import FencedWriteRefused
 from agent_worker.logs import build_logger
+from agent_worker.statecall import StateCall
 from control_plane.fakes import FakeFirestore as ApiFirestore
 from state_routes_harness import (
     ATTEMPT,
@@ -66,3 +69,24 @@ def test_a_switched_worker_keeps_the_default_when_the_field_is_absent(api_db):
     assert extrarepos.budget_bytes(state, logger=_logger(io.StringIO())) == 6 * GIB
     api_db.docs["control/settings"] = {"merge_by_default": True}
     assert extrarepos.budget_bytes(state, logger=_logger(io.StringIO())) == 6 * GIB
+
+
+
+class _FencedAnswer:
+    """`ChildApi.call` answering every call as swarm-api answers an attempt
+    that no longer owns its task: 409 `attempt_fenced`."""
+
+    def call(self, method: str, path: str, **_kwargs):
+        raise ChildApiError(409, "attempt_fenced", "a newer generation owns the task",
+                            retryable=False)
+
+
+def test_a_fenced_budget_read_is_the_fence_not_the_default():
+    """The refusal reaches the lifecycle rather than becoming the default
+    budget, so the worker exits without cloning or running the agent
+    (invariant 5); every other failure to read still means the default."""
+    state = StateCall(_FencedAnswer(), tenant_id=TENANT, task_id=TASK, attempt_id=ATTEMPT,
+                      lease_id="lease_1", generation=1, sleep=lambda _s: None)
+    state._key = AttemptKey()  # as `state/open` leaves it; no proof is checked here
+    with pytest.raises(FencedWriteRefused):
+        extrarepos.budget_bytes(state, logger=_logger(io.StringIO()))
