@@ -47,7 +47,7 @@ vi.mock('../LiveThumb', async (importOriginal) => {
 })
 
 import { HostedAgent } from '../work/hostedAgent'
-import { AgentsScreen, DROP_CLASS, WALL_WIDTH, agentNeeds, bySpent, costCell, droppedColumns, rowPullRequest } from '../Agents'
+import { AgentsScreen, DROP_CLASS, WALL_WIDTH, agentNeeds, bySpent, costCell, droppedColumns } from '../Agents'
 import { resetListSnap } from '../listSnap'
 
 const NOW = '2026-09-23T12:00:00.000Z'
@@ -288,18 +288,13 @@ describe('a row carries its cost and pull request', () => {
     expect(costCell({ cost_usd_total: undefined, cost_incomplete: null }).text).toBe('cost not known')
   })
 
-  it('links the pull request the row carries and says when it is not known', async () => {
+  it('says the pull request is not known: the summary read does not carry it (#168)', async () => {
     media(false)
-    const withPr = task('task_dddddddd00000000000d', 'RUNNING', {
-      metadata: { title: 'Has a PR' },
-      result_summary: { git: { pull_request: { number: 2403, url: 'https://github.test/o/r/pull/2403' } } },
-    })
-    const c = await land([withPr, CHEAP], null)
-    const link = rowOf(c, 'Has a PR').querySelector<HTMLAnchorElement>('a.cr-pr')
-    expect(link?.textContent).toBe('#2403')
-    expect(link?.getAttribute('href')).toBe('https://github.test/o/r/pull/2403')
-    expect(rowOf(c, 'Cheap one').querySelector('.cr-pr')?.textContent).toBe('PR not known')
-    expect(rowPullRequest({ result_summary: { git: { pull_request: { number: 1, url: 'javascript:alert(1)' } } } })).toBeNull()
+    const c = await land([CHEAP], null)
+    const cell = rowOf(c, 'Cheap one').querySelector('.cr-pr')
+    expect(cell?.textContent?.trim()).toBe('PR not known')
+    expect(cell?.classList.contains('is-unknown')).toBe(true)
+    expect(rowOf(c, 'Cheap one').querySelector('a.cr-pr')).toBeNull()
   })
 })
 

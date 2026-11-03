@@ -636,16 +636,6 @@ export function costCell(t: Pick<Task, 'cost_usd_total' | 'cost_incomplete'>): {
     : { text: v, say: `Spent ${v}` }
 }
 
-/** The row's pull request, from the result's git summary when the row carries one; null is not known. */
-export function rowPullRequest(t: Pick<Task, 'result_summary'>): { number: number; url: string } | null {
-  const git = (t.result_summary as { git?: unknown } | null | undefined)?.git
-  if (typeof git !== 'object' || git === null) return null
-  const pr = (git as { pull_request?: unknown }).pull_request
-  if (typeof pr !== 'object' || pr === null) return null
-  const { number, url } = pr as { number?: unknown; url?: unknown }
-  return typeof number === 'number' && typeof url === 'string' && /^https:\/\//.test(url) ? { number, url } : null
-}
-
 /** The row's owner, as the owner filter offers it: the address before its @. */
 function ownerOf(t: Pick<Task, 'submitted_by'>): string | null {
   return t.submitted_by?.split('@')[0] || null
@@ -2644,7 +2634,6 @@ function CompactRow({
   const { warning: budgetWarning } = useBudgetWarning(task)
   const budgetSay = budgetRowSay(task, budgetWarning, live)
   const cost = costCell(task)
-  const pr = rowPullRequest(task)
   const cardId = `ag-card-${task.id}`
 
   const show = (row: HTMLElement) => {
@@ -2696,7 +2685,7 @@ function CompactRow({
     browserMark !== null ? browserUseSay(browserMark) : null,
     task.submitted_by ?? 'no owner recorded',
     cost.say,
-    pr !== null ? `pull request #${pr.number}` : 'pull request not known',
+    'pull request not known',
     ran,
     !live && !waitingRow && wordOnly ? el.text : null,
     !live && tries.over ? tries.text : null,
@@ -2910,7 +2899,10 @@ function CompactRow({
       {/* COST AND PULL REQUEST, the design's right-hand columns: their own
           cell under the time, so the line beside them keeps its order --
           profile, owner, the run, and a cancelled run's note last. Each
-          gives way as the inspector widens (`droppedColumns`). */}
+          gives way as the inspector widens (`droppedColumns`). THE PULL
+          REQUEST IS NOT KNOWN HERE: it is in the result summary, which the
+          list's summary read does not serve (#168), so the row never reads
+          `result_summary` and says so rather than guessing. */}
       <span className="cr-figs">
         <span className={DROP_CLASS.cost}>
           <span className={`cr-cost${cost.text === 'cost not known' ? ' is-unknown' : ''}`} title={cost.say}>
@@ -2919,16 +2911,10 @@ function CompactRow({
         </span>
         <span className={DROP_CLASS.pr}>
           {' · '}
-          {pr !== null ? (
-            <a className="cr-pr" href={pr.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
-              #{pr.number}
-            </a>
-          ) : (
-            <span className="cr-pr is-unknown" title="Pull request not known: the list's read does not carry it; the agent's Changes tab does">
-              PR not known
-              </span>
-            )}
+          <span className="cr-pr is-unknown" title="Pull request not known: the list's read does not carry it; the agent's Changes tab does">
+            PR not known
           </span>
+        </span>
       </span>
       {/* THE REASON IS CLAMPED AND WHOLE IN ITS TITLE (V061): a failed row
           printed its whole multi-line error. ON A FAILED ROW IT IS RED, as the

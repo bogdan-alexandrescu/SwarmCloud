@@ -169,10 +169,12 @@ function merge(parts: Report[]): Report {
  * Resolved like the main sheet and placed BEFORE it -- the order the app loads
  * them, since main.tsx imports App (and so every screen's sheet) first. The
  * resolved copy comes after the injected one in the document, so it is the
- * one the cascade picks.
+ * one the cascade picks. The Work section's shared pieces keep their sheets
+ * beside them (`src/work/*.css`: the docked inspector, the Needs-you row, the
+ * stage grid), and Agents draws two of them (#3146), so those are read too.
  */
 const SECTION_SHEETS = Object.values(
-  import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true }),
+  import.meta.glob<string>(['../styles/*.css', '../work/*.css'], { query: '?raw', import: 'default', eager: true }),
 )
 const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
 
