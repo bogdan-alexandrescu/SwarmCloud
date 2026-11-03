@@ -1686,6 +1686,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         env[BROWSERS_PATH_ENV] = cache_browsers
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
     lightpanda_env: dict[str, str] = {}
+    lightpanda_refused: list[int] = []
     if on_lightpanda:
         # Lightpanda, never Chromium and never the live browser: no
         # SWARM_CDP_ENDPOINT, no browser note, no `browser.json`
@@ -1698,6 +1699,9 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         cache_home = os.environ.get(CACHE_HOME_ENV, "").strip()
         lightpanda_env = lightpanda.child_env(
             os.environ, Path(cache_home) if cache_home else Path(ctx.work_dir) / ".cache")
+        # What listens on loopback now is the platform's (the TypeSafe shim,
+        # the MCP relay): the CLI has not started. Both commands refuse it.
+        lightpanda_refused = lightpanda.loopback_listeners()
     prompt = ctx.payload.get("prompt")
     spec = SPEC
     unstaged = graphstage.unstaged_note(os.environ)
@@ -1832,7 +1836,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             graph_served=graph_served, relay=relay if relay[1] else None,
             screenshots_dir=(str(Path(ctx.artifacts_dir) / SCREENSHOTS_DIR_NAME)
                              if live_endpoint else None),
-            lightpanda_server=lightpanda.mcp_server(lightpanda_env) if lightpanda_env else None,
+            lightpanda_server=(lightpanda.mcp_server(lightpanda_env, refused_ports=lightpanda_refused)
+                               if lightpanda_env else None),
             judge_config=judge_config or None)
         # BROWSER-START: the live browser's tool is in the config the CLI
         # reads, or the agent does not start.
@@ -1847,7 +1852,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             # fencing check, and in the runner's process group, so it ends with
             # the attempt; stopped below whatever the CLI did.
             supervisor = lightpanda.Supervisor(
-                lightpanda.serve_argv(lightpanda_env), lightpanda_env,
+                lightpanda.serve_argv(lightpanda_env, refused_ports=lightpanda_refused),
+                lightpanda_env,
                 log=StructuredLogger(stream=sys.stderr, component="claude-code-runner").warning)
             supervisor.start()
         result = run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)

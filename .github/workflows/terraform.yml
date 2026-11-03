@@ -18,15 +18,12 @@ on:
   # ever ran on pull requests, and a repository whose history landed straight
   # on main had never run its own tests once.
   #
-  # AND ON A LANE BRANCH (LANE CI-EARLY, part of #1694, owner decision
-  # 2026-10-20). application.yml runs on a push to `swarm/**` so CI starts
-  # when the implement step pushes, and its ci-gate waits for this
-  # workflow's run at the same commit: a push has no path filter here, so
-  # without this trigger ci-gate would wait ten minutes for a run that never
-  # starts. A lane push runs fmt/validate, the tests and checkov; never the
-  # plan (its `if:`), which says so in `plan-not-run`.
+  # Never on a lane branch (owner decision 2026-11-02, CI once per head, part
+  # of #2688): application.yml no longer runs on a `swarm/**` push, so no
+  # ci-gate there waits for this run, and a lane head is tested by its pull
+  # request's run alone (application.yml says why).
   push:
-    branches: [main, "swarm/**"]
+    branches: [main]
   pull_request:
     paths:
       - "terraform/**"

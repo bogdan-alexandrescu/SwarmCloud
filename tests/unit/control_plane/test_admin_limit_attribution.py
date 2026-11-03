@@ -35,6 +35,13 @@ from .conftest import auth_header, seed_pool, seed_tenant
 
 ROOT = "root@example.com"
 
+
+class _Broker:
+    """The quota broker's `set_hard_max`, answering as it does on success."""
+
+    def set_hard_max(self, provider: str, tenant_id: str, **kwargs: object) -> dict:
+        return {"quota": {"configured_hard_max": kwargs["hard_max"]}}
+
 #: Every admin route that writes a pool document, and the pools each one
 #: touches. A route added later that writes a ceiling and is not
 #: in this list is the omission this file exists to prevent, so the list is
@@ -90,6 +97,9 @@ def test_every_admin_pool_write_records_the_verified_caller(
     seed_tenant(db, "eng")
     for name in pools:
         seed_pool(db, name, hard_limit=20, active=2)
+    # The per-tenant provider pool route moves the broker's maximum first
+    # (owner, 2026-11-02); the others never reach the broker.
+    client.app.state.account_pool = _Broker()
 
     response = getattr(client, method)(path, headers=auth_header("root"), json=body)
     assert response.status_code == 200, response.text

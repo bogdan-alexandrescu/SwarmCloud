@@ -12,7 +12,8 @@
 #   * swarm-api's side: SWARM_TYPESAFE_FWD_KEY by reference, once served;
 #   * the forwarder's manifest, kubernetes/swarm-system/swarm-typesafe-fwd.yaml,
 #     rendered as `swarm_typesafe_fwd_manifest` with the image, the key's
-#     version reference, the project and the setting (the kill switch).
+#     version reference, the project and the setting (the kill switch), and
+#     its egress policy where the cluster admits hostname policy (below).
 #
 # WHO READS WHAT.
 #
@@ -225,13 +226,36 @@ output "typesafe_forwarder" {
   }
 }
 
-# kubernetes/swarm-system/swarm-typesafe-fwd.yaml with its placeholders filled.
+# kubernetes/swarm-system/swarm-typesafe-fwd.yaml with its placeholders filled,
+# followed -- where the cluster admits hostname policy -- by its egress policy,
+# kubernetes/network-policies/swarm-system-typesafe-fwd.yaml (the TypeSafe
+# egress allowlist, docs/runbooks/typesafe-egress.md): a NetworkPolicy that
+# puts the forwarder's pods under egress isolation and an FQDNNetworkPolicy
+# that admits api.typesafe.ai and Secret Manager by name. One apply, as
+# swarm-voice's policy rides with swarm-voice (voice.tf), so the pod and its
+# policy never part.
+#
+# ONLY WHERE gke_enable_fqdn_network_policy (dev.tfvars; no other environment
+# today), and BOTH OBJECTS OR NEITHER. On a cluster without FQDN network policy
+# the FQDNNetworkPolicy is refused while the NetworkPolicy is not, which would
+# leave the forwarder reaching DNS and the metadata server only and fail every
+# forwarded Jev call. There the forwarder keeps the egress it has today, and
+# `kubernetes/apply.sh --swarm-typesafe-fwd` refuses a manifest carrying the
+# kind the cluster does not serve.
+#
 # Null until served with an image, so there is never a half-rendered manifest
 # to apply.
+locals {
+  typesafe_fwd_manifest_files = concat(
+    ["${path.module}/../../kubernetes/swarm-system/swarm-typesafe-fwd.yaml"],
+    var.gke_enable_fqdn_network_policy ? ["${path.module}/../../kubernetes/network-policies/swarm-system-typesafe-fwd.yaml"] : [],
+  )
+}
+
 output "swarm_typesafe_fwd_manifest" {
-  description = "The TypeSafe forwarder's Kubernetes objects, rendered. Apply to swarm-autopilot only (never agents-staging). Null until typesafe_forwarder.serve is set and the image has a digest."
+  description = "The TypeSafe forwarder's Kubernetes objects, rendered, with its egress policy where gke_enable_fqdn_network_policy is set. Apply to swarm-autopilot only (never agents-staging). Null until typesafe_forwarder.serve is set and the image has a digest."
   value = local.typesafe_fwd_serving && local.typesafe_fwd_image != "" ? replace(replace(replace(replace(replace(
-    file("${path.module}/../../kubernetes/swarm-system/swarm-typesafe-fwd.yaml"),
+    join("---\n", [for f in local.typesafe_fwd_manifest_files : file(f)]),
     "__SWARM_TYPESAFE_FWD_IMAGE__", local.typesafe_fwd_image),
     "__TYPESAFE_FWD_KEY_VERSION__", local.typesafe_fwd_key_version_name),
     "__PROJECT_ID__", var.project_id),
