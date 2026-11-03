@@ -478,6 +478,10 @@ def placeholders(block: str) -> list[str]:
     for word in _CAPS_RE.findall(block):
         if word in _CAPS_ALLOWED or word in heredoc_ends or len(word) < 2:
             continue
+        # A name the block also uses as a variable (`--get GSTACK_STATE_ROOT`
+        # beside `GSTACK_STATE_ROOT=$(...)`) or asks a helper for by name.
+        if re.search(r"(\$\{?|--get\s+)" + word + r"\b|\b" + word + r"=", block):
+            continue
         found.append(word)
     return sorted(set(found))
 
