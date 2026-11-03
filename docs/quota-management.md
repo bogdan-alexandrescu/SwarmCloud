@@ -513,7 +513,7 @@ pool"; 2026-11-03, "We should allow accounts to be in more than one pool at
 a time"). A document without the field is in `workspace` alone, so nothing
 changed for an existing account.
 
-* **`workspace`.** Tasks of the owner's workspace and of the workspaces in
+* **`workspace`.** Agents of the owner's workspace and of the workspaces in
   `lend_to` lease it through `/v1/accounts/assign`, as before.
 * **`voice-it`.** Only swarm-voice leases it, through `/v1/voice/lease`,
   for a Voice it session of a person in `voice_it_people`. Version one lists
@@ -521,7 +521,7 @@ changed for an existing account.
 * **In `voice-it` only, the account is reserved.** `Account.may_serve` (and
   `_raw_may_serve`, where a hold commits) refuses it to every tenant. So
   `accounts_serving` never lists it, admission never counts it as a
-  workspace's pool, no task lease of any workspace or profile is handed it,
+  workspace's pool, no agent of any workspace or profile is handed it,
   and the lending route refuses to lend it.
 * **In both, the account is shared.** Both sides lease it. Its `max_agents`,
   its one-agent-before-a-reading rule and its window floors hold across both,

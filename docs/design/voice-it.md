@@ -325,7 +325,7 @@ allow accounts to be in more than one pool at a time".
 * **The pools.** A pool account's `pools` is a set: `workspace`, which every
   account was in before, and `voice-it`, which also lists `voice_it_people`.
   Version one lists the platform owner only. An account in `voice-it` only is
-  **reserved**. `Account.may_serve` refuses it to every tenant, so no task of
+  **reserved**. `Account.may_serve` refuses it to every tenant, so no agent of
   any workspace or profile is ever assigned it, it is never lent, and the
   scheduler's admission count (`accounts_serving`) leaves it out. An account
   in **both** pools is shared. Either side may lease it, and its `max_agents`
