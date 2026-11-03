@@ -960,7 +960,10 @@ grace window.
     accessor, invoker on swarm-api);
   * the storage lane (swarm-api's create and delete grants on the voice
     prefix);
-  * the planner lane (the Anthropic secret accessor).
+  * the planner lane: none any more. The planner runs on a pool lease
+    (§3.6) through the broker swarm-voice already invokes; what it needs is
+    the broker admitting swarm-voice as a service holder on
+    `POST /v1/accounts/assign`, which the owner approves as an access change.
 * **Workflow file:** the release, hotfix and security workflow lines.
 * **Frozen contract:** none.
 
@@ -992,8 +995,9 @@ states, not where they are drawn.
 
 1. **The OpenAI key:** a new personal key added through Config › Secrets.
    Eng's existing key was refused by OpenAI on 2026-09-23.
-2. **The planner's Anthropic key:** BGD's personal API key, or a workspace
-   one? The account pool's subscriptions are not used.
+2. **The planner's Anthropic key:** answered on 2 November 2026: no key.
+   The planner runs on a Claude subscription account leased from the pool
+   through Claude Code (§3.6).
 3. **Budget raises:** a click with a typed amount only (recommended), or also
    by voice?
 4. **The grace window on spending actions:** 5 s (recommended), none, or
