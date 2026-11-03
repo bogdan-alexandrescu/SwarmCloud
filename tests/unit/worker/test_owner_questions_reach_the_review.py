@@ -213,3 +213,20 @@ def test_the_guidance_puts_an_owner_only_finding_in_needs_owner_under_merge():
             "NOT_YET finding") in text
     assert "give MERGE if nothing else is open" in text
     assert "give NOT_YET only for findings a fix step can act on now" in text
+
+
+def test_the_guidance_puts_an_answered_unbuilt_pick_in_needs_owner():
+    from agent_worker import owner_questions
+
+    text = " ".join(owner_questions.guidance(
+        "/work/owner-questions.json", [{"answer": {"choice": "Widen this lane"}}]).split())
+
+    # MUTATION: keep "An answered question goes in neither" unqualified and a
+    # re-review records the owner's unbuilt pick as a NOT_YET finding, which
+    # ended wf_f0044e94's merge verdict_not_merge (#3149).
+    assert "An answered question goes in neither." not in text
+    assert ("An answered question whose answer is the option its `built` names goes in "
+            "neither") in text
+    assert ("An answered question whose answer is NOT its `built` (another option, or "
+            "free text) goes in `needs_owner` too") in text
+    assert "so it is not by itself a NOT_YET finding" in text
