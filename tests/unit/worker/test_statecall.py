@@ -295,6 +295,7 @@ _MODULE_OPS = {
     "mergetrain.py": {"merge-train"},
     "inputs.py": {"ci-fix-tasks", "upstream"},
     "indexrun.py": {"context", "repository"},
+    "statecall.py": {"jev-usage", "jev-settle"},
 }
 
 
@@ -328,10 +329,80 @@ def test_swarm_api_serves_every_state_route_the_worker_calls():
         if route.path.startswith(prefix)
         for method in route.methods
     }
-    gets = {"poll", "upstream", "context", "repository"}
+    gets = {"poll", "upstream", "context", "repository", "jev-usage"}
     ops = _worker_ops()
 
     assert {"heartbeat", "poll", "transition", "finish", "park"} <= ops
     missing = sorted(op for op in ops
                      if ("GET" if op in gets else "POST", op) not in served)
     assert missing == []
+
+
+# ---------------------------------------------------------------------------
+# The Jev ledger (docs/design/agent-quality/trusted-state.md §3)
+# ---------------------------------------------------------------------------
+
+
+def test_jev_usage_reads_the_route_and_returns_its_three_counts():
+    transport = Transport({"ok": True, "month": "2026-11", "month_used_tokens": 900,
+                           "task_calls": 3, "task_input_tokens": 400})
+    calls, key = _opened(transport)
+
+    assert calls.jev_usage(deadline_seconds=5) == (900, 3, 400)
+    (sent,) = transport.sent
+    assert sent["method"] == "GET"
+    assert sent["path"].startswith("/v1/attempts/att_1/state/jev-usage?tenant_id=eng&")
+    _verify(key, sent, path=sent["path"], body=b"")
+
+
+@pytest.mark.parametrize("answer", [
+    {"ok": True},
+    {"ok": True, "month_used_tokens": -1, "task_calls": 0, "task_input_tokens": 0},
+    {"ok": True, "month_used_tokens": True, "task_calls": 0, "task_input_tokens": 0},
+    {"ok": True, "month_used_tokens": "9", "task_calls": 0, "task_input_tokens": 0},
+])
+def test_a_jev_usage_answer_missing_a_count_is_an_error_never_a_zero(answer):
+    """An unread count is unknown: the caller turns the judgments off, it
+    never runs them against a month it takes to be empty."""
+    calls, _key = _opened(Transport(answer))
+
+    with pytest.raises(ControlPlaneError):
+        calls.jev_usage(deadline_seconds=5)
+
+
+def test_jev_settle_sends_the_counts_and_one_request_id_across_retries():
+    outage = ChildApiError(503, "http_503", "", retryable=True)
+    transport = Transport({"ok": True}, outage, {"ok": True, "repeated": False,
+                                   "settled": {"calls": 3, "input_tokens": 1200}})
+    calls, key = _opened(transport)
+    split = {"J1": {"calls": 3, "input_tokens": 1200, "output_tokens": None,
+                    "outcomes": {"ok": 3}}}
+
+    settled = calls.jev_settle(calls=3, input_tokens=1200, by_kind=split, deadline_seconds=30)
+
+    assert settled == (3, 1200)
+    first, second = transport.sent
+    assert first["body"] == second["body"]
+    body = json.loads(first["body"])
+    assert body == {"tenant_id": "eng", "task_id": "task_1", "lease_id": "lease_1",
+                    "generation": 3, "request_id": body["request_id"], "calls": 3,
+                    "input_tokens": 1200, "by_kind": split}
+    assert len(body["request_id"]) == 32
+    _verify(key, second, path="/v1/attempts/att_1/state/jev-settle", body=second["body"])
+
+
+def test_a_repeated_jev_settle_reports_what_the_first_one_settled():
+    transport = Transport({"ok": True, "repeated": True,
+                           "settled": {"calls": 0, "input_tokens": 0}})
+    calls, _key = _opened(transport)
+
+    assert calls.jev_settle(calls=2, input_tokens=10, by_kind={},
+                            deadline_seconds=5) == (2, 10)
+
+
+def test_a_fenced_jev_settle_raises_fenced():
+    fenced = ChildApiError(409, "attempt_fenced", "superseded", retryable=False)
+    calls, _key = _opened(Transport({"ok": True}, fenced))
+
+    with pytest.raises(FencedWriteRefused):
+        calls.jev_settle(calls=1, input_tokens=1, by_kind={}, deadline_seconds=5)
