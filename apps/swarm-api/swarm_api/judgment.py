@@ -259,6 +259,9 @@ WRITER_FIELDS: Mapping[str, tuple[str, ...]] = {
     "budget": ("unit", "amount"),
     # Contract request 128: `qualitygates.QualityGatesStore.put` writes it.
     "quality_gates": ("jev",),
+    # Contract request 136: no route writes `plugins.allowed` yet, so a stored
+    # one is only a forger's, held by the re-sign pass and never signed.
+    "plugins": (),
 }
 
 
