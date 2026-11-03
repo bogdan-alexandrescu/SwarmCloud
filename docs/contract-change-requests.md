@@ -141,6 +141,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("API records the ask", answering the pre-publish gate lane's question on #2981, PR 2986; requested the same day by lane TIMEOUT-ASKED-CONTRACT) and APPLIED by the pull request that adds this line (lane TIMEOUT-ASKED-APPLY, part of #2688): the field last in `Task`, unsigned; swarm-api writes it in `_build_task` and a child's `replace`, reads and serves it in its codec and refuses it in a caller's metadata; the console's `Task` type declares it |
 | 132 | `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and the account its current attempt holds, so `GET /v1/tasks` stops reading every row's attempts and account events (STORED-TASK-TOTALS, from LOAD-SPEED-TASKS-LIST, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("Accept"; drafted by lane LOAD-SPEED-TASKS-LIST as 131, renumbered: TIMEOUT-ASKED-CONTRACT took 131 the same day). APPLIED by the pull request that adds this line (lane STORED-TASK-TOTALS): the worker and swarm-api write both views with each attempt start, spend and end and each account event; `GET /v1/tasks` serves them and derives a task that has none; `scripts/backfill-task-views.sh` fills older tasks once |
 | 133 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | ACCEPTED by the owner (BGD) 2 November 2026 ("Accept and build"; owner accepted 2 November 2026; requested 2026-10-28 by lane CONTRACT-MAXTURNS on PR 2682 as 127, renumbered 2026-11-02 by lane CARRY-TURN-CAP). APPLIED 2026-11-02 by the pull request that adds this line (lane TURN-CAP-APPLIED, part of #2688): spec format 7; `supports_max_turns=True` on the six claude-code-runner profiles and `max_turns` None on every profile; swarm-api resolves `max_turns` beside `validate_timeout` on a task, a workflow step, a child and both profiles of a `browser_if_ui` step; the worker passes the verified `Task.max_turns` as `--max-turns`; the requirements check asks for 30 turns and its prompt no longer does |
+| 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (BGD, answering question 0 of PR 3095: merge as built on the current class, and file this request) |
 
 ---
 
@@ -16067,3 +16068,102 @@ PR 2678, REVIEW-GATE-DEFAULT). The shape -- step field resolved against the
 profile, rather than a profile field alone -- is this request's proposal
 and BGD's to accept. The owner chose on 2026-11-02 to carry PR 2682 onto
 main rather than drop it.
+
+## 134. `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688)
+
+**Status:** open, REQUESTED 2026-11-03 by the builder lane of PR 3095
+(task_98b46c02fd214e56a012) at the owner's instruction. BGD answered that
+pull request's question 0 the same day: *merge this pull request as built,
+on the current builder class*, and file a frozen-contract change request for
+a 12-CPU, 16 GiB builder class (about +$0.31 per builder hour). PR 3095
+merges on `standard`; this request is the class change, and nothing in it is
+applied. `apps/common/swarm_common/` is frozen.
+
+### What is true today
+
+Read on main on 2026-11-03. Builder steps run on their profile's class, and
+every coding profile's is `standard`: a 4-CPU request, an 8-CPU limit on GKE
+(request 108) and 8 GiB of memory, 4 of it workspace tmpfs. PR 3095 makes the
+pre-publish gate run the changed-guards check as parts of about 40
+CI-seconds, side by side, as many as the pod has CPUs (`pod_cpus`), inside a
+600 s budget (`GUARDS_BUDGET_SECONDS`), and leaves what does not fit to CI.
+Measured in a 6-CPU SwarmCloud container on 2026-11-03, that ran about 1.78
+CI-seconds a second: roughly a third of a 3,365 CI-second selection in the
+budget, related parts first. More CPUs run more parts in the same budget,
+with no code change.
+
+The class cannot be made 12 CPUs by an admin size today. `ResourceClass.__post_init__`
+refuses a request above 8 CPUs ("exceeds the Cloud Run Jobs ceiling") and
+`CPU_REQUEST_MAX = 8` bounds every admin size (requests 109-110), because
+every class can be reached by a Cloud Run profile's step or fallback Job.
+`CLASS_ORDER` names three classes and no fourth.
+
+### The change
+
+A fourth class, GKE only, between `browser` and `large`:
+
+```python
+# profiles.py
+RESOURCE_CLASSES["builder"] = ResourceClass(
+    "builder", cpu=12, memory_gib=16, disk_gib=8, units=3, cpu_limit=12,
+)
+CLASS_ORDER = ("standard", "browser", "builder", "large")
+```
+
+with the ceiling check moved from "every class" to "every class a Cloud Run
+profile can reach": a class above 8 CPUs is refused on a profile whose
+backend, or fallback, is Cloud Run, and `CPU_REQUEST_MAX` becomes a GKE bound
+(the GKE Autopilot general-purpose maximum) with the Cloud Run ceiling of 8
+kept for Cloud Run profiles. 16 GiB over 12 CPUs is 1.33 GiB a core, inside
+`MEMORY_PER_CPU_MIN`..`MEMORY_PER_CPU_MAX`. `units_for(12, 16)` is 3. The
+CPU limit equals the request, so the class adds no burst. The coding profiles
+that run builder steps would name `builder`, or a workflow's builder step
+would name it as its `resource_class` (a larger class than the profile's,
+which `validate_resource_class_override` refuses today, so the profile's
+class is the place).
+
+The smaller alternative, which needs no contract change: an admin size
+(requests 109-110) of a 6-CPU request with a 12-CPU limit and 16 GiB on
+`standard`. It fits every bound today, bursts only onto idle requested CPU,
+and charges 2 units instead of 1; it does not guarantee the 12 CPUs.
+
+### What it would break if accepted
+
+Cost and capacity, not code. At list Autopilot prices (quoted by PR 3095, not
+re-checked on 2026-11-03) a builder hour costs about $0.31 more, and each
+builder charges 3 capacity units instead of 1, so a pool fits a third as many
+builders at once. Every reader of `CLASS_ORDER` and `RESOURCE_CLASSES` (the
+admin sizes route, the console's class list, admission's unit charge, the
+scheduler's pod rendering) sees one more class; the tests that pin three
+classes change with it. A Cloud Run runtime cannot run the class, so a
+builder step whose GKE runtime is down waits instead of falling back.
+
+### If it is declined
+
+PR 3095's gate runs on `standard` as merged: it reads the CPUs the pod has
+and runs that many parts, and what does not fit the 600 s budget is left to
+CI, never reported as passed. The gate stays at about ten minutes on a large
+selection and covers less of it before CI does.
+
+### Invariants
+
+**7** holds: memory and ephemeral storage stay request equal to limit, and
+the CPU limit equals the request, inside `CPU_BURST_MAX_RATIO`. **10** holds:
+a caller still names a profile, and the class comes from the profile, never
+from the caller. **2** and **3** hold: admission charges the class's units in
+the same all-or-nothing transaction, counted from `LEASED`. **6** holds: no
+Spot. **1**, **4**, **5**, **8** and **9** are untouched.
+
+### How it is tested
+
+When it is applied, by the applying lane, red first:
+`tests/unit/common/test_runner_size_bounds.py` for the class, its units and
+the Cloud Run refusal of a class above 8 CPUs; the admin sizes and
+admission-follows-size tests for the fourth class; and a scheduler test that
+a builder pod renders a 12-CPU request and limit and 16 GiB.
+
+### Who decided
+
+BGD, 2026-11-03, on PR 3095: merge on the current class and file this
+request. Whether to accept it, and in which shape (the class, or the admin
+size alternative), is BGD's.

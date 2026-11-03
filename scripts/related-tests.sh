@@ -27,6 +27,13 @@
 # reaches them, and CI's ui-build runs them. Four lanes (PRs #2429, #2430,
 # #2433, #2437) never ran them and went red there on no-company-name.test.mjs
 # (#2455).
+# RELATED-NARROW (part of #2688): a change to one swarm-api route selected
+# 1,428 of 1,707 pytest files (a bare `import platform` read as an import of
+# routes/platform.py, swarm_api/__init__'s lazy import of main as an eager
+# one, and main.py mounting every route), so agents hand-picked tests. Now an
+# import counts as Python resolves it, a mounted router reaches only the tests
+# that request its URLs, a staged code graph's tests_for is added for the
+# files it covers, and a frozen-contract change says why it selects widely.
 # A selection too big for one run comes
 # back as a few runs of named files, printed to run ONE AFTER ANOTHER in the
 # foreground: at most ~540 CI-seconds of pytest (unit_test_durations.json), and

@@ -23,7 +23,13 @@ WHAT IT SELECTS, for a change it can reason about:
     the guard set and every test whose text names a changed path (--guards:
     that list, read from a file the caller wrote);
   * every test file that imports, directly or through any chain of other
-    modules under apps/, scripts/ and tests/unit, a changed Python module;
+    modules under apps/, scripts/ and tests/unit, a changed Python module --
+    as Python resolves it (an absolute name only through a directory that can
+    stand on sys.path), a lazy import only into what calls its function, a
+    mounted router only into what requests its URLs or walks every route --
+    and the tests under a changed or reached conftest.py (import_closure;
+    RELATED-NARROW, part of #2688: one swarm-api route reached 1,428 of 1,707
+    test files before);
   * every test whose text names a changed path the way a test builds one: its
     full path, its basename (a generic basename -- Dockerfile, __init__.py --
     only together with one of its directories' names), after first adding
@@ -123,19 +129,30 @@ def module_name(rel: str) -> str:
     return ".".join(parts)
 
 
-def imported_names(rel: str, text: str) -> set[str]:
+def import_edges(rel: str, text: str) -> dict[str, frozenset[str] | None]:
     """Every dotted name a module imports, with each of its prefixes: `import
     a.b.c` runs a/__init__ and a/b/__init__ too. Relative imports are resolved
-    to repo-rooted names. Text that does not parse is read with a regex."""
-    names: set[str] = set()
+    to repo-rooted names. Text that does not parse is read with a regex.
+
+    Each name maps to None when the module imports it as it loads (at module
+    level, under an `if` or a `try` too), else to the top-level functions and
+    classes whose bodies import it: a lazy import, which runs only when one of
+    them is called. swarm_api/__init__.py imports .main -- every route -- only
+    inside create_app(), so `from swarm_api import forgeapp` loads no route
+    (RELATED-NARROW, part of #2688)."""
+    edges: dict[str, frozenset[str] | None] = {}
     package = module_name(rel).split(".")
     if not rel.endswith("/__init__.py"):
         package = package[:-1]
 
-    def add(name: str) -> None:
+    def add(name: str, owner: str | None) -> None:
         bits = name.split(".")
         for i in range(1, len(bits) + 1):
-            names.add(".".join(bits[:i]))
+            key = ".".join(bits[:i])
+            if owner is None or (key in edges and edges[key] is None):
+                edges[key] = None
+            else:
+                edges[key] = frozenset({*(edges.get(key) or ()), owner})
 
     def relative(level: int, module: str | None) -> str:
         base = package[: len(package) - (level - 1)] if level > 1 else package
@@ -146,61 +163,307 @@ def imported_names(rel: str, text: str) -> set[str]:
     except (SyntaxError, ValueError):
         for m in re.finditer(r"^\s*(?:from\s+([\w.]+)\s+import\s+([\w, ]+)|import\s+([\w., ]+))", text, re.M):
             if m.group(1):
-                add(m.group(1))
+                add(m.group(1), None)
                 for alias in m.group(2).split(","):
                     if alias.strip():
-                        add(f"{m.group(1)}.{alias.split()[0]}")
+                        add(f"{m.group(1)}.{alias.split()[0]}", None)
             else:
                 for alias in m.group(3).split(","):
                     if alias.strip():
-                        add(alias.split()[0])
-        return names
-    for node in ast.walk(tree):
+                        add(alias.split()[0], None)
+        return edges
+
+    def record(node: ast.AST, owner: str | None) -> None:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                add(alias.name)
+                add(alias.name, owner)
         elif isinstance(node, ast.ImportFrom):
             base = relative(node.level, node.module) if node.level else (node.module or "")
             if base:
-                add(base)
+                add(base, owner)
                 for alias in node.names:
                     if alias.name != "*":
-                        add(f"{base}.{alias.name}")
-    return names
+                        add(f"{base}.{alias.name}", owner)
+
+    def walk(node: ast.AST, owner: str | None, cls: str | None) -> None:
+        # A function body runs when it is called, a class body as the module
+        # loads. The owner is the top-level name an importer has to reach the
+        # function by: its own, or for a method its class's.
+        for child in ast.iter_child_nodes(node):
+            record(child, owner)
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(child, owner if owner is not None else (cls or child.name), None)
+            elif isinstance(child, ast.ClassDef):
+                walk(child, owner, cls if cls is not None or owner is not None else child.name)
+            else:
+                walk(child, owner, cls)
+
+    walk(tree, None, None)
+    return edges
 
 
-def _suffixes(module: str) -> set[str]:
-    """Every name an absolute import could reach `module` by: a suffix of its
-    repo-rooted name, since sys.path roots are apps/<app>, tests/unit,
-    scripts ... (`scheduler.dispatch` is apps.scheduler.scheduler.dispatch).
-    A resolved relative import names the whole of it, which is a suffix too."""
-    parts = module.split(".")
-    return {".".join(parts[i:]) for i in range(len(parts))}
+def imported_names(rel: str, text: str) -> set[str]:
+    """Every dotted name a module imports, eagerly or lazily (import_edges)."""
+    return set(import_edges(rel, text))
+
+
+def _suffixes(root: Path, rel: str) -> set[str]:
+    """Every name an absolute import could reach the module at `rel` by: a
+    suffix of its repo-rooted name whose stripped prefix is a directory that
+    can stand on sys.path -- the repository root, or a directory that is not a
+    package (apps/<app>, tests/unit, scripts/lib ...; `scheduler.dispatch` is
+    apps.scheduler.scheduler.dispatch). A resolved relative import names the
+    whole of it, the root's suffix.
+
+    WHY NOT EVERY SUFFIX (RELATED-NARROW, part of #2688). Counting a package's
+    directory as a root made a module's bare name match every import of that
+    name: apps/agent-worker/agent_worker/startup.py's `import platform` (the
+    standard library) read as an import of swarm_api/routes/platform.py, and
+    `main`, `config`, `errors` and `models` likewise, so a change to one
+    swarm-api route reached 1,428 of 1,707 test files, the worker's among them
+    (measured on main at 0409b8d, 2026-11-03). Python finds `platform` there
+    only if swarm_api/routes itself is on sys.path, and nothing puts a package
+    directory there."""
+    parts = module_name(rel).split(".")
+    dirs = rel.split("/")[:-1]
+    out = {".".join(parts)}
+    for i in range(1, len(parts)):
+        if not (root.joinpath(*dirs[:i]) / "__init__.py").is_file():
+            out.add(".".join(parts[i:]))
+    return out
+
+
+# How much of a module a change reaches: all of it (None); only what calls one
+# of these top-level names -- a lazy import (CALL, names); or only what
+# requests one of these URLs -- an app that mounts a changed router (URL,
+# patterns). Two different partial reaches meet as the whole module.
+CALL = "call"
+URL = "url"
+Reach = "tuple[str, frozenset[str]] | None"
+
+
+def _meet(a: tuple[str, frozenset[str]] | None,
+          b: tuple[str, frozenset[str]] | None) -> tuple[str, frozenset[str]] | None:
+    if a is None or b is None or a[0] != b[0]:
+        return None
+    return (a[0], a[1] | b[1])
+
+
+_VERBS = {"get", "post", "put", "patch", "delete", "head", "options", "trace", "api_route", "websocket"}
+
+
+def _static(node: ast.AST, consts: dict[str, str]) -> str | None:
+    """A string expression's value when the module alone fixes it: a literal,
+    a module-level constant, an f-string or `+` of those; else None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return consts.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _static(node.left, consts), _static(node.right, consts)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr):
+        out = []
+        for part in node.values:
+            if isinstance(part, ast.FormattedValue):
+                if part.conversion != -1 or part.format_spec is not None:
+                    return None
+                value = _static(part.value, consts)
+            else:
+                value = _static(part, consts)
+            if value is None:
+                return None
+            out.append(value)
+        return "".join(out)
+    return None
+
+
+def route_urls(text: str) -> list[str]:
+    """Every URL path a FastAPI router module serves, its APIRouter prefix
+    included -- or [] when it is not one, or serves a path this cannot read
+    (a computed path, add_api_route, a root path): a partial list would gate
+    out the tests of the paths it missed, so then the module is not gated."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return []
+    consts: dict[str, str] = {}
+    prefixes: dict[str, str] = {}
+    for node in tree.body:
+        target, value = None, None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            target, value = node.targets[0].id, node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+            target, value = node.target.id, node.value
+        if target is None or value is None:
+            continue
+        if isinstance(value, ast.Call) and getattr(value.func, "id", getattr(value.func, "attr", "")) == "APIRouter":
+            prefix = ""
+            for kw in value.keywords:
+                if kw.arg == "prefix":
+                    found = _static(kw.value, consts)
+                    if found is None:
+                        return []
+                    prefix = found
+            prefixes[target] = prefix
+            continue
+        found = _static(value, consts)
+        if found is not None:
+            consts[target] = found
+    if not prefixes:
+        return []
+    paths: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in {"add_api_route", "add_api_websocket_route", "include_router", "mount"}:
+            return []
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for deco in node.decorator_list:
+            if not (isinstance(deco, ast.Call) and isinstance(deco.func, ast.Attribute)
+                    and isinstance(deco.func.value, ast.Name) and deco.func.value.id in prefixes):
+                continue
+            if deco.func.attr not in _VERBS:
+                continue
+            arg = deco.args[0] if deco.args else next((k.value for k in deco.keywords if k.arg == "path"), None)
+            path = None if arg is None else _static(arg, consts)
+            if path is None:
+                return []
+            full = prefixes[deco.func.value.id] + path
+            if not full.strip("/"):
+                return []
+            paths.append(full)
+    return sorted(set(paths))
+
+
+def url_pattern(path: str) -> str:
+    """A regex for `path` as a test requests it: each `{param}` any one segment
+    -- a literal, or an f-string's `{TENANT}` -- and nothing after it but a
+    quote, a query or the end, so /v1/budget is not /v1/budget/x."""
+    parts = re.split(r"\{[^}]*\}", path)
+    return r"[^/\s\"'?#]+".join(re.escape(part) for part in parts) + r"""(?=["'?#\s]|$)"""
+
+
+# A test that walks every route an app mounts -- the credential and admin
+# surface guards (test_no_route_serves_credentials.py ...) -- reads a changed
+# router whichever URL it serves.
+_ENUMERATES_ROUTES = re.compile(r"\bapp\.routes\b|\bapp\.router\.routes\b|\.openapi\(\)|\bopenapi_schema\b|\.url_path_for\(")
+
+
+def _mounts(text: str, rel: str) -> bool:
+    """Whether a module includes the router module at `rel` in an app, by its
+    module name (`app.include_router(budget_settings.router)`)."""
+    stem = rel.rsplit("/", 1)[-1][:-3]
+    return "include_router(" in text and re.search(rf"\b{re.escape(stem)}\.router\b", text) is not None
 
 
 def import_closure(root: Path, changed_py: list[str]) -> set[str]:
     """Every module under apps/, scripts/ and tests/unit that imports a changed
-    module, through any chain of imports."""
+    module, through any chain of imports, and every test a reached conftest.py
+    reaches.
+
+    Not every chain carries the whole change (RELATED-NARROW, part of #2688):
+
+    * a module reached only through a lazy import (import_edges) changes only
+      when a function holding that import is called, so it passes the change
+      on only to importers whose code names one of those functions;
+    * an app that mounts a changed router (swarm_api/main.py's
+      `include_router(budget_settings.router)`) changes only at that router's
+      URLs, so what is reached through it is kept -- a test, or the tests
+      under a conftest.py -- only when its text requests one of them or it
+      walks every route the app mounts (_ENUMERATES_ROUTES);
+    * a conftest.py is imported by no test, yet runs for every test under its
+      directory: a changed or reached one reaches those tests (a reached one
+      under the same terms).
+
+    Measured on main at 0409b8d (2026-11-03): one swarm-api route reached
+    1,428 of 1,707 test files before these rules."""
     files = [*_python_files(root, "apps"), *_python_files(root, "scripts"), *_python_files(root, "tests/unit")]
     rels = [str(p.relative_to(root)) for p in files]
-    importers: dict[str, set[str]] = {}
+    text = {rel: (root / rel).read_text(errors="replace") for rel in rels}
+    names: dict[str, frozenset[str]] = {}
+
+    def used(rel: str) -> frozenset[str]:
+        if rel not in names:
+            names[rel] = identifiers(text.get(rel) or (root / rel).read_text(errors="replace"))
+        return names[rel]
+
+    importers: dict[str, dict[str, frozenset[str] | None]] = {}
     for rel in rels:
-        for name in imported_names(rel, (root / rel).read_text(errors="replace")):
-            importers.setdefault(name, set()).add(rel)
-    reached: set[str] = set()
-    todo = [module_name(p) for p in changed_py]
-    seen: set[str] = set()
+        for name, owners in import_edges(rel, text[rel]).items():
+            importers.setdefault(name, {})[rel] = owners
+    state: dict[str, tuple[str, frozenset[str]] | None] = dict.fromkeys(changed_py)
+    reached: dict[str, tuple[str, frozenset[str]] | None] = {}
+
+    def reach(rel: str, now: tuple[str, frozenset[str]] | None) -> bool:
+        """Record `now` for rel; True when that reaches more of it than before."""
+        before = reached.get(rel, ("", frozenset())) if rel in reached else False
+        merged = now if before is False else _meet(before, now)
+        if before is not False and before == merged:
+            return False
+        reached[rel] = merged
+        return True
+
+    todo = list(changed_py)
     while todo:
-        module = todo.pop()
-        if module in seen:
-            continue
-        seen.add(module)
-        for suffix in _suffixes(module):
-            for rel in importers.get(suffix, ()):
-                if rel not in reached:
-                    reached.add(rel)
-                    todo.append(module_name(rel))
-    return reached
+        path = todo.pop()
+        through = state[path]
+        src = text.get(path) or ""
+        urls = route_urls(src) if through is None else []
+        for suffix in _suffixes(root, path):
+            for rel, owners in importers.get(suffix, {}).items():
+                if through is not None and through[0] == CALL and not through[1] & used(rel):
+                    continue
+                if through is not None and through[0] == URL:
+                    now = through
+                elif urls and owners is None and _mounts(text[rel], path):
+                    now = (URL, frozenset(url_pattern(u) for u in urls))
+                else:
+                    now = None if owners is None else (CALL, owners)
+                if not reach(rel, now):
+                    continue
+                if rel in changed_py:
+                    continue
+                state[rel] = reached[rel]
+                todo.append(rel)
+    # The tests under each changed or reached conftest.py.
+    tests = [rel for rel in rels if rel.startswith("tests/unit/") and is_test(rel)]
+    confs = {r: reached[r] for r in reached if r.rsplit("/", 1)[-1] == "conftest.py"}
+    confs.update((c, None) for c in changed_py if c.rsplit("/", 1)[-1] == "conftest.py")
+    for conf, how in confs.items():
+        under = conf[: -len("conftest.py")]
+        for test in tests:
+            if test.startswith(under):
+                reach(test, how if how is not None and how[0] == URL else None)
+    out: set[str] = set()
+    for rel, how in reached.items():
+        if how is not None and how[0] == URL and is_test(rel):
+            body = text.get(rel) or ""
+            if not _ENUMERATES_ROUTES.search(body) and not any(re.search(p, body) for p in how[1]):
+                continue
+        out.add(rel)
+    return out
+
+
+def identifiers(text: str) -> frozenset[str]:
+    """The names a module's code uses -- variables, attributes, the names it
+    imports -- not its strings, comments or docstrings: forge.py's docstring
+    saying `create_app()` builds no client calls no create_app. Text that does
+    not parse counts every word in it."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return frozenset(re.findall(r"\w+", text))
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            out.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            out.add(node.attr)
+        elif isinstance(node, ast.alias):
+            out.add((node.asname or node.name).split(".")[0])
+            out.add(node.name.rsplit(".", 1)[-1])
+    return frozenset(out)
 
 
 def _quoted(word: str) -> re.Pattern[str]:

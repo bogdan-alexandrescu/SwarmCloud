@@ -104,6 +104,10 @@ MIN_TICKET_SECONDS = 60
 #: its OWN domain, so an attempt ticket never reads `/v1/stats` and a stats
 #: ticket never reads `/mcp`. It names a repository and two digests, and no
 #: task, attempt or commit: it reads counters, never a graph.
+#: swarm_graph.ticket.STATS_TICKET_FIELDS restates this set (its image carries
+#: no swarm-api); tests/unit/graphsvc/test_graphsvc_ticket.py mints here and
+#: verifies there, so a rename on either side turns it red. The nonce makes
+#: every mint distinct; the service checks its shape.
 STATS_DOMAIN = b"swarm-graph-stats/v1\0"
 STATS_FIELDS = frozenset({"tenant_id", "repo_id", "manifest_digest", "previous_digest",
                           "exp", "nonce"})
