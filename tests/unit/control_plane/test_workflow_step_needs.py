@@ -25,7 +25,7 @@ from .conftest import auth_header, seed_task, seed_tenant
 
 T0 = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 NEEDS_KEYS = {
-    "park_reason", "next_eligible_at", "updated_at", "human_wait", "owner_questions",
+    "park_reason", "next_eligible_at", "updated_at", "human_wait", "owner_questions", "question_wait",
     "questions", "questions_unread", "pull_request",
 }
 
@@ -104,6 +104,7 @@ def test_a_merge_held_by_owner_questions_serves_the_hold(client, db):
     needs = _needs(client, "wf_merge")
 
     assert needs["park_reason"] == "HUMAN_REQUIRED"
+    assert needs["question_wait"] is False
     assert needs["next_eligible_at"].startswith("2026-11-03T12:05:00")
     held = needs["owner_questions"]
     assert held["unreadable"] == 0
@@ -136,6 +137,7 @@ def test_a_question_wait_serves_its_open_questions_and_not_the_answered(client, 
     needs = _needs(client, "wf_ask")
 
     assert needs["owner_questions"] is None
+    assert needs["question_wait"] is True
     assert needs["questions"] == [{
         "index": 0, "question": "Which database?",
         "options": [{"label": "Postgres", "description": "the usual"}], "recommended": "Postgres",

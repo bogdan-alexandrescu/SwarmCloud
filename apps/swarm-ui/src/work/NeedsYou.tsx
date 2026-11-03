@@ -81,6 +81,12 @@ export interface QuestionNeed {
   /** The API's `may_answer` for this task when the page read it; false disables Answer and says why. */
   mayAnswer?: boolean
   mayAnswerBecause?: string | null
+  /**
+   * Its words are on its task's page and not in what the page read (the
+   * Workflows list: the agent's `questions.json`, PR #3147). The row says so
+   * and Answer is disabled: nobody answers a question they cannot read.
+   */
+  onItsPage?: boolean
 }
 
 /** A merge step waiting. What holds it is read from the task's park (`ownerQuestionsHold`). */
@@ -489,7 +495,10 @@ function QuestionRow({ item, onChanged }: { item: QuestionNeed; onChanged?: () =
   const options = (item.options ?? []).filter((o): o is QuestionOption & { label: string } => typeof o.label === 'string' && o.label !== '')
   const choice = options.length === 0 ? OTHER : pick
   const ownWords = text.trim()
-  const notAllowed = roleGate ?? (item.mayAnswer === false ? (item.mayAnswerBecause ?? 'The API did not say you may answer') : null)
+  const notAllowed =
+    roleGate ??
+    (item.onItsPage === true ? 'Read the question on its page first: this list does not carry its words' : null) ??
+    (item.mayAnswer === false ? (item.mayAnswerBecause ?? 'The API did not say you may answer') : null)
   const ready = !busy && choice !== null && (choice !== OTHER || (ownWords.length > 0 && ownWords.length <= MAX_ANSWER_CHARS))
 
   useEffect(() => {
@@ -520,7 +529,7 @@ function QuestionRow({ item, onChanged }: { item: QuestionNeed; onChanged?: () =
       <Kind k="question" />
       <b className="ny-title">{item.title}</b>
       <span className="ny-text" title={item.question ?? undefined}>
-        {item.question ?? 'The question could not be read'}
+        {item.question ?? (item.onItsPage === true ? 'Its words are on its page' : 'The question could not be read')}
       </span>
       <span className="ny-acts">
         {saved ? (

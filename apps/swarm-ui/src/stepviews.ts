@@ -1983,6 +1983,43 @@ export interface StepTaskSummary {
   last_attempt_duration_s?: number | null
   attempts_read?: 'ok' | 'failed'
   last_error_line?: string | null
+  /** What the list's Needs-you bar draws for the step (`codec.step_needs`); absent from an API older than PR #3147. */
+  needs?: StepNeeds | null
+}
+
+/** One open question of a step's question wait, as `codec.step_needs` serves it, masked. */
+export interface StepNeedQuestion {
+  index: number
+  question: string | null
+  options: { label: string | null; description: string | null }[]
+  recommended: string | null
+}
+
+/**
+ * WHAT THE WORKFLOWS LIST'S NEEDS-YOU BAR READS ON EACH STEP (the owner's pick
+ * on PR #3147, "Widen view=summary"; `codec.step_needs`), off the step task's
+ * document alone: its park and the instants a parked hand-off's deadline
+ * counts from, a running browser hand-off, a merge held by the owner's
+ * questions, whether it parks on a question wait, that wait's open
+ * questions, the indices of the questions only its artifact holds
+ * (`questions_unread`: their words are on its page), and its pull request.
+ */
+export interface StepNeeds {
+  park_reason?: string | null
+  next_eligible_at?: string | null
+  updated_at?: string | null
+  human_wait?: { reason: string | null; expect: string | null; deadline: string | null } | null
+  owner_questions?: { questions: unknown[]; unreadable: number | null } | null
+  question_wait?: boolean
+  questions?: StepNeedQuestion[]
+  questions_unread?: number[]
+  pull_request?: { number: number; url: string | null } | null
+}
+
+/** The step's needs block, when the list served one. */
+export function stepNeedsOf(step: WorkflowStep): StepNeeds | null {
+  const n = (step as SummaryStep).task_summary?.needs
+  return n !== null && typeof n === 'object' ? n : null
 }
 
 /** A step as the summary list serves it: `WorkflowStep` plus its task's block. */
@@ -2004,7 +2041,7 @@ const boolOrNull = (v: unknown): boolean | null => (typeof v === 'boolean' ? v :
  * and 3.8 s in the owner's browser, then read every row the window missed by
  * id. The list now serves what the board draws on each step, so the join is
  * built here and nothing else is read. The row carries what the block served
- * and NOTHING it did not: no input, no result summary, no lease or
+ * and NOTHING it did not: no input, no result summary but its pull request (PR #3147), no lease or
  * generation (0 and null, which no list cell reads). A workflow's own page
  * reads its whole step tasks (`GET /v1/workflows/{id}`), and they take this
  * row's place there, so the step card never draws from it.
@@ -2029,6 +2066,13 @@ export function summaryTask(workflow: Workflow, step: WorkflowStep): Task | null
   // the step (#1782) in the park reasons' own words.
   const waiting = step.waiting ?? null
   const parked = state === 'PARKED' && waiting !== null && (PARK_REASONS as readonly string[]).includes(waiting.reason)
+  // WHAT THE NEEDS-YOU BAR READS (PR #3147): a hand-off's wait and clock, a
+  // merge's owner-questions hold as its park records it (`ownerQuestionsHold`)
+  // and the pull request (`pullRequestOf`), each only when the block served it.
+  const needs = typeof s.needs === 'object' && s.needs !== null ? s.needs : null
+  const wait = needs?.human_wait ?? null
+  const hold = needs?.owner_questions ?? null
+  const pr = needs?.pull_request ?? null
   return {
     id: step.task_id,
     tenant_id: workflow.tenant_id,
@@ -2040,7 +2084,7 @@ export function summaryTask(workflow: Workflow, step: WorkflowStep): Task | null
     // The block serves no creation time: the workflow's, the earliest the
     // step's task can have been made, and the last time the block names.
     created_at: workflow.created_at,
-    updated_at: completed ?? started ?? workflow.updated_at,
+    updated_at: textOrNull(needs?.updated_at) ?? completed ?? started ?? workflow.updated_at,
     started_at: started,
     completed_at: completed,
     submitted_by: workflow.submitted_by ?? null,
@@ -2049,7 +2093,7 @@ export function summaryTask(workflow: Workflow, step: WorkflowStep): Task | null
     attempt_count: attempts ?? (started !== null ? 1 : 0),
     max_attempts: attempts ?? (started !== null ? 1 : 0),
     park_reason: parked ? waiting.reason : null,
-    blocked_by: null,
+    blocked_by: hold === null ? null : [{ reason: 'HUMAN_REQUIRED', park_phase: 'owner_questions', owner_questions: hold }],
     workflow_id: workflow.workflow_id,
     step_id: step.step_id,
     depends_on: step.depends_on,
@@ -2058,13 +2102,14 @@ export function summaryTask(workflow: Workflow, step: WorkflowStep): Task | null
     model: null,
     model_class: step.model_class ?? null,
     timeout_seconds: step.timeout_seconds ?? null,
-    next_eligible_at: null,
+    next_eligible_at: textOrNull(needs?.next_eligible_at),
     metadata: Object.keys(metadata).length > 0 ? metadata : null,
     repository_ref: null,
     input: null,
     last_error: textOrNull(s.last_error_line),
-    result_summary: null,
+    result_summary: pr === null ? null : { git: { pull_request: pr } },
     latest_checkpoint: null,
+    human_wait: wait === null ? null : { reason: textOrNull(wait.reason), expect: textOrNull(wait.expect), deadline: textOrNull(wait.deadline), requested_at: null, controller: null },
     waiting,
     attempts,
     attempts_with_cost: numberOrNull(s.attempts_with_cost),

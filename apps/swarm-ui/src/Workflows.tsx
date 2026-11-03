@@ -188,6 +188,8 @@ import { stateWord } from './words'
 import './styles/workflows.css'
 import './styles/names.css'
 import { Inspector } from './work/Inspector'
+import { listNeedItems } from './work/listNeeds'
+import { NeedsYou } from './work/NeedsYou'
 import { StageGrid } from './work/StageGrid'
 import {
   anyRunning,
@@ -486,7 +488,7 @@ export function WorkflowsScreen({
         link: { href: '#work/new-workflow', label: 'Submit a workflow' },
       }}
     >
-      {(d) => <WorkflowList board={d} query={query} choose={choose} go={go} />}
+      {(d) => <WorkflowList board={d} query={query} choose={choose} go={go} reload={stores.reload} />}
     </Screen>
   )
 }
@@ -5776,18 +5778,28 @@ export function WorkflowListSkeleton({ query }: { query: WorkflowQuery }) {
  * NO READ OF ITS OWN. The rows, their needs and the summary all come from the
  * list read (`GET /v1/workflows?view=summary`) and the older pages the reader
  * asks for, exactly as before.
+ *
+ * THE NEEDS-YOU BAR ON TOP (the owner's pick on PR #3147, "Widen
+ * view=summary"): the list read serves each step's `task_summary.needs`
+ * (`codec.step_needs`), and `listNeedItems` builds the bar's rows from it
+ * over every workflow the list holds. Approvals are not in that read, so
+ * their chip says "not known" (`approvals={null}`), never 0. An action the
+ * bar takes (an answer, a re-run, I'm ready) re-reads the list (`reload`).
  */
 function WorkflowList({
   board,
   query,
   choose,
   go,
+  reload,
 }: {
   board: WorkflowBoard
   query: WorkflowQuery
   choose: (q: WorkflowQuery) => void
   /** Open a workflow's page as a new history entry; `choose` replaces the entry. */
   go: (q: WorkflowQuery) => void
+  /** Read the list again, after the Needs-you bar acted. */
+  reload: () => void
 }) {
   // THE ROWS: the board's newest 100, and every older page the reader asked
   // for (WF-2). Everything below -- counts, sorts, search -- is over these.
@@ -5810,6 +5822,11 @@ function WorkflowList({
     [all, taskById],
   )
   const [picked, setPicked] = useState<string | null>(null)
+  const needItems = useMemo(
+    () =>
+      listNeedItems(all, taskById, (w) => listRowName(w.workflow_id, labels.get(w.workflow_id) ?? null, stepsRead(w, taskById)).name),
+    [all, taskById, labels],
+  )
   // The segment's counts follow the OTHER filters, so "Failed 2" means two
   // failed workflows of priya's, when owner is priya.
   const filtered = all.filter((w) => listMatches(w, labels.get(w.workflow_id) ?? null, query))
@@ -5864,6 +5881,7 @@ function WorkflowList({
   const open = picked === null ? null : (rows.find((w) => w.workflow_id === picked) ?? null)
   const main = (
     <div className={`wfg${open !== null ? ' has-inspector' : ''}`}>
+      <NeedsYou items={needItems} approvals={null} onChanged={reload} />
       <WorkflowListFilters query={query} choose={choose} counts={counts} owners={owners} profiles={profiles} />
       {/* ONE MUTED LINE UNDER THE HEAD (visual QA VQ-013, #2391): what the
           counts are of and how many rows know their steps, each clause only

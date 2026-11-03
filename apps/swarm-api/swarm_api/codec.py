@@ -1728,6 +1728,8 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
     * `owner_questions`: a merge held by the owner's questions (#2313), its
       park's `owner_questions` record, `{questions, unreadable}`, each
       question `{task_id, step_id, question_index, question}`; else null.
+    * `question_wait`: whether the task is PARKED on a question wait, which
+      is HUMAN_REQUIRED as a browser hand-off is, and is not one.
     * `questions`: the open questions of the wait the task parks on (or last
       parked on), each `{index, question, options, recommended}` -- the
       blocking indices with no stored answer -- and `questions_unread`: the
@@ -1737,7 +1739,7 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
       reads them (`GET /v1/tasks/{id}/questions`).
     * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
     """
-    from .agent_questions import blocking_unanswered, current_wait, question_count, unanswered_indices
+    from .agent_questions import blocking_unanswered, current_wait, parked_wait, question_count, unanswered_indices
 
     def masked(value: Any) -> str | None:
         return masking.text(value)[0] if isinstance(value, str) else None
@@ -1801,6 +1803,7 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
         "updated_at": _iso(task.updated_at),
         "human_wait": human_wait,
         "owner_questions": hold,
+        "question_wait": parked_wait(task) is not None,
         "questions": open_questions,
         "questions_unread": unanswered_indices(question_count(task.result_summary), task.metadata),
         "pull_request": pull_request,

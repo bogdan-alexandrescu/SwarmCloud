@@ -1,0 +1,145 @@
+// THE NEEDS-YOU BAR ON THE WORKFLOWS LIST (the owner's pick on PR #3147,
+// "Widen view=summary"). The list read serves each step's
+// `task_summary.needs` (`codec.step_needs`); `summaryTask` joins it into the
+// step's task and `listNeedItems` builds the bar's rows from it, so the list
+// mounts the bar with no read of its own.
+//
+// MUTATIONS: drop `<NeedsYou>` from `WorkflowList`; leave `human_wait`,
+// `blocked_by` or `result_summary` out of `summaryTask`; list a question-wait
+// park as a hand-off; let an artifact question's Answer open blind.
+
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { summaryTask, summaryTaskById, type StepNeeds } from '../stepviews'
+import type { Workflow } from '../types'
+import { listNeedItems } from '../work/listNeeds'
+
+const { NeedsYou } = await import('../work/NeedsYou')
+const { WorkflowsScreen } = await import('../Workflows')
+
+afterEach(cleanup)
+
+const block = (state: string, needs: StepNeeds, extra: Record<string, unknown> = {}) => ({ state, title: null, unit: null, needs, ...extra })
+
+function workflow(steps: { id: string; summary: unknown; waiting?: unknown }[]): Workflow {
+  return {
+    workflow_id: 'wf_needs',
+    tenant_id: 'eng',
+    state: 'RUNNING',
+    created_at: '2026-11-03T10:00:00Z',
+    updated_at: '2026-11-03T10:30:00Z',
+    submitted_by: 'priya@example.com',
+    priority: 0,
+    on_step_failure: 'stop',
+    cancel_requested: false,
+    steps: steps.map((s) => ({
+      step_id: s.id,
+      runner_profile: 'claude-code',
+      resource_class: 'standard',
+      depends_on: [],
+      input_from: {},
+      task_id: `task_${s.id}`,
+      task_summary: s.summary,
+      ...(s.waiting === undefined ? {} : { waiting: s.waiting }),
+    })),
+  } as unknown as Workflow
+}
+
+const parkedHuman = { reason: 'HUMAN_REQUIRED', summary: 'waits for a person' }
+
+describe('summaryTask joins the needs block', () => {
+  it('carries the hand-off wait, the merge hold, the park clock and the pull request', () => {
+    const w = workflow([
+      { id: 'browse', summary: block('RUNNING', { human_wait: { reason: 'sign in', expect: null, deadline: '2026-11-03T11:00:00Z' } }) },
+      {
+        id: 'merge',
+        summary: block('PARKED', {
+          next_eligible_at: '2026-11-03T10:20:00Z',
+          owner_questions: { questions: [{ task_id: 'task_impl', step_id: 'implement', question_index: 0, question: 'Which?' }], unreadable: 0 },
+          pull_request: { number: 7, url: 'https://github.com/o/r/pull/7' },
+        }),
+        waiting: parkedHuman,
+      },
+    ])
+    const browse = summaryTask(w, w.steps[0]!)!
+    expect(browse.human_wait?.reason).toBe('sign in')
+    expect(browse.human_wait?.deadline).toBe('2026-11-03T11:00:00Z')
+    const merge = summaryTask(w, w.steps[1]!)!
+    expect(merge.park_reason).toBe('HUMAN_REQUIRED')
+    expect(merge.next_eligible_at).toBe('2026-11-03T10:20:00Z')
+    expect(merge.blocked_by).toEqual([
+      { reason: 'HUMAN_REQUIRED', park_phase: 'owner_questions', owner_questions: expect.objectContaining({ unreadable: 0 }) },
+    ])
+    expect(merge.result_summary).toEqual({ git: { pull_request: { number: 7, url: 'https://github.com/o/r/pull/7' } } })
+  })
+
+  it('leaves them empty for a block from an API older than the needs', () => {
+    const w = workflow([{ id: 'old', summary: { state: 'SUCCEEDED' } }])
+    const t = summaryTask(w, w.steps[0]!)!
+    expect(t.human_wait).toBeNull()
+    expect(t.blocked_by).toBeNull()
+    expect(t.result_summary).toBeNull()
+  })
+})
+
+describe('listNeedItems', () => {
+  const w = workflow([
+    { id: 'build', summary: block('FAILED', {}, { last_error_line: 'tests failed' }) },
+    {
+      id: 'ask',
+      summary: block('PARKED', {
+        question_wait: true,
+        questions: [{ index: 0, question: 'Which database?', options: [{ label: 'Postgres', description: null }], recommended: 'Postgres' }],
+      }),
+      waiting: parkedHuman,
+    },
+    { id: 'review', summary: block('SUCCEEDED', { questions_unread: [1] }) },
+    { id: 'merge', summary: block('PARKED', { owner_questions: { questions: [], unreadable: 1 } }), waiting: parkedHuman },
+    { id: 'browse', summary: block('PARKED', { next_eligible_at: '2026-11-03T10:20:00Z' }), waiting: parkedHuman },
+    { id: 'done', summary: block('SUCCEEDED', {}) },
+  ])
+  const items = listNeedItems([w], summaryTaskById([w]), () => 'Ship it')
+
+  it('builds one row per need, titled by the workflow and the step', () => {
+    expect(items.map((i) => [i.kind, i.title])).toEqual([
+      ['failed', 'Ship it › build'],
+      ['question', 'Ship it › ask'],
+      ['question', 'Ship it › review'],
+      ['merge', 'Ship it › merge'],
+      ['handoff', 'Ship it › browse'],
+    ])
+  })
+
+  it("serves a wait's question with its words and an artifact's as on its page", () => {
+    const [, wait, file] = items
+    expect(wait).toMatchObject({ kind: 'question', taskId: 'task_ask', index: 0, question: 'Which database?', recommended: 'Postgres' })
+    expect(file).toMatchObject({ kind: 'question', taskId: 'task_review', index: 1, question: null, onItsPage: true })
+  })
+
+  it('never lists a question-wait park as a hand-off', () => {
+    expect(items.filter((i) => i.kind === 'handoff').map((i) => i.title)).toEqual(['Ship it › browse'])
+  })
+
+  it('an artifact question says its words are on its page and does not open blind', () => {
+    render(<NeedsYou items={items.filter((i) => i.kind === 'question')} approvals={null} />)
+    const row = screen.getByText('Its words are on its page').closest('li')!
+    const answer = within(row).getByRole('button', { name: /Answer/ })
+    expect(answer.getAttribute('aria-disabled') === 'true' || (answer as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('the Workflows list mounts the bar', () => {
+  it('draws Needs you above the filters, with approvals not known', async () => {
+    render(<WorkflowsScreen view="" onView={() => {}} />)
+    const bar = await waitFor(
+      () => {
+        const s = document.querySelector<HTMLElement>('.wfg section[aria-label="Needs you"]')
+        expect(s).toBeTruthy()
+        return s!
+      },
+      { timeout: 4000 },
+    )
+    expect(within(bar).getByText('not known')).toBeTruthy()
+  })
+})
