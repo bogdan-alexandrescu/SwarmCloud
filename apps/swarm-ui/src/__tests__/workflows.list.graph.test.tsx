@@ -17,6 +17,7 @@ import type { WorkflowBoard } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import { painted } from './marks'
 import type { CascadeEnv } from './cssgate'
+import { lengthPx, paddingX, textPx } from './tablefit'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -327,5 +328,147 @@ describe('the list draws at 1440, 580 beside the inspector and 390 (review findi
       expect(painted(td, 'text-overflow', PHONE)).toBe('ellipsis')
     }
     for (const col of ['spent', 'owner', 'changed']) expect(painted(root.querySelector(`td[data-col="${col}"]`)!, 'display', PHONE)).toBe('none')
+  })
+})
+
+// THE TABLE NEVER EXCEEDS ITS PANE (review finding on PR #3147, part of
+// #2688). With the inspector open at 1440 the pane was 580px and the table
+// 627px: Spent's "$0.518 3 of 4 reported" set its column to 179px and the
+// pane, `overflow: hidden`, cut the header, the figures and the note. jsdom
+// lays nothing out, so this sums what the cascade declares: below 1024px of
+// pane the table is laid out fixed, every column but the name has a width,
+// and the shown columns' widths and paddings leave the name its floor inside
+// the pane's 1px borders, at every pane width the docked inspector can leave
+// (MAIN_MIN is 360px less the pane's 12px padding), open or folded. Widths
+// are tokens-free px, so the two themes lay out the same.
+// MUTATION: put the table back to `table-layout: auto`, drop a column's
+// width, put the note back on the value's line, or move a threshold so a
+// column stays shown where the sum no longer fits.
+describe('the list never exceeds its pane, with the inspector open or folded (review finding on PR #3147)', () => {
+  const NOTE = '3 of 4 reported'
+  function row(open: boolean): HTMLElement {
+    const root = document.createElement('div')
+    root.className = `wfg${open ? ' has-inspector' : ''}`
+    root.innerHTML =
+      '<div class="table-wrap wfg-scroll"><table class="wfg-table"><thead><tr>' +
+      '<th data-col="state">State</th><th data-col="workflow">Workflow</th><th data-col="steps">Steps</th><th data-col="needs">Needs you</th>' +
+      '<th class="num" data-col="spent">Spent</th><th data-col="owner">Owner</th><th data-col="changed">Changed</th></tr></thead><tbody>' +
+      '<tr class="wfg-row"><td class="wfg-state" data-col="state"><span class="sk-st is-live"><svg></svg><span class="sk-st-w">awaiting input</span></span></td>' +
+      '<td class="wfg-name" data-col="workflow"><a>name</a></td>' +
+      '<td class="wfg-steps" data-col="steps"><span class="wfg-bar"><span class="c-bar"></span><small>12/12</small></span></td>' +
+      '<td class="wfg-needs" data-col="needs"><span class="wfg-need is-bad"><span>✗</span> 1<span class="vh"> failed</span></span></td>' +
+      `<td class="num wfg-spent" data-col="spent"><span class="wf-spend">$0.518 <span class="wf-spend-cov">${NOTE}</span></span></td>` +
+      '<td class="wfg-owner" data-col="owner">swarm-pipeline</td><td class="wfg-changed" data-col="changed">not recorded</td></tr></tbody></table></div>'
+    document.body.replaceChildren(root)
+    return root
+  }
+  const ORDER = ['owner', 'changed', 'spent']
+  const px = (v: string | null, what: string): number => {
+    const n = lengthPx(v, 0)
+    expect(n, `${what}: ${v} is a width in px`).not.toBeNull()
+    return n!
+  }
+
+  /** What the shown columns leave the name in a pane `pane` px wide, and which columns are hidden. */
+  function fit(root: HTMLElement, env: CascadeEnv, pane: number): { name: number; hidden: string[] } {
+    const tbl = root.querySelector('table')!
+    expect(painted(tbl, 'table-layout', env), `fixed at ${pane}`).toBe('fixed')
+    let used = 0
+    const hidden: string[] = []
+    for (const th of root.querySelectorAll<HTMLElement>('thead th')) {
+      const col = th.getAttribute('data-col')!
+      if (painted(th, 'display', env) === 'none') {
+        hidden.push(col)
+        expect(painted(root.querySelector(`td[data-col="${col}"]`)!, 'display', env), `${col} td at ${pane}`).toBe('none')
+        continue
+      }
+      if (col === 'workflow') continue
+      const [pl, pr] = paddingX(th, env)
+      used += px(painted(th, 'width', env), `${col} at ${pane}`) + pl + pr
+    }
+    // The scroll box's two 1px borders.
+    return { name: pane - 2 - used, hidden }
+  }
+
+  // Each band's narrowest pane is where its sum is tightest (the shown
+  // columns are the same across the band and the pane only shrinks), and the
+  // pane one pixel under each threshold is where the next column must have
+  // gone; the cascade costs seconds a width, so these are the widths read.
+  // [pane, hidden folded, hidden open]
+  const O = 'owner'
+  const C = 'changed'
+  const S = 'spent'
+  const LADDER: readonly [number, string[], string[]][] = [
+    [1024, [], [O, C]],
+    [861, [], [O, C]],
+    [860, [O], [O, C]],
+    [721, [O], [O, C]],
+    [720, [O, C], [O, C]],
+    [613, [O, C], [O, C]],
+    [612, [O, C], [O, C]],
+    [580, [O, C], [O, C]],
+    [571, [O, C], [O, C]],
+    [570, [O, C, S], [O, C, S]],
+    [348, [O, C, S], [O, C, S]],
+  ]
+  it('leaves the name its floor from 1024 down to 348, open and folded, giving way Owner, Changed, Spent', { timeout: 180_000 }, () => {
+    for (const open of [false, true]) {
+      const root = row(open)
+      let before: string[] = []
+      for (const [pane, folded, opened] of LADDER) {
+        const env: CascadeEnv = { width: 1440, container: pane }
+        const { name, hidden } = fit(root, env, pane)
+        const what = `${open ? 'open' : 'folded'} at ${pane}`
+        expect([...hidden].sort(), what).toEqual([...(open ? opened : folded)].sort())
+        const floor = hidden.includes('spent') ? 100 : 112
+        expect(name, `${what}: the name has ${name}px`).toBeGreaterThanOrEqual(floor)
+        // Columns give way in the documented order, and none comes back narrower.
+        const dropped = ORDER.filter((c) => hidden.includes(c))
+        expect(dropped, what).toEqual(ORDER.slice(0, dropped.length))
+        for (const c of before) expect(hidden, `${c} came back ${what}`).toContain(c)
+        before = hidden
+      }
+    }
+  })
+
+  it('keeps Spent, whole, beside the open inspector at 1440 (a 580px pane), its note not setting the column', () => {
+    const root = row(true)
+    const env: CascadeEnv = { width: 1440, container: 580 }
+    const { name, hidden } = fit(root, env, 580)
+    expect(hidden).not.toContain('spent')
+    expect(name).toBeGreaterThanOrEqual(112)
+    const th = root.querySelector<HTMLElement>('th[data-col="spent"]')!
+    const td = root.querySelector<HTMLElement>('td[data-col="spent"]')!
+    const width = px(painted(th, 'width', env), 'spent')
+    expect(textPx('Spent', th, env)).toBeLessThanOrEqual(width)
+    expect(textPx('$12.92', root.querySelector('.wf-spend')!, env)).toBeLessThanOrEqual(width)
+    // The coverage note is in the inspector's summary while it is open; in
+    // the row it stays read, drawn nowhere.
+    const note = td.querySelector('.wf-spend-cov')!
+    expect(painted(note, 'position', env)).toBe('absolute')
+    expect(painted(note, 'width', env)).toBe('1px')
+    expect(painted(td, 'position', env)).toBe('relative')
+  })
+
+  it('wraps the note under the value, never setting the column, while the inspector is folded', () => {
+    const root = row(false)
+    for (const pane of [1024, 900, 760, 640]) {
+      const env: CascadeEnv = { width: 1440, container: pane }
+      const note = root.querySelector('.wf-spend-cov')!
+      expect(painted(root.querySelector('th[data-col="spent"]')!, 'display', env)).not.toBe('none')
+      expect(painted(note, 'display', env), `${pane}`).toBe('block')
+      expect(painted(note, 'contain', env), `${pane}`).toBe('inline-size')
+      expect(painted(note, 'white-space', env), `${pane}`).toBe('normal')
+      const width = px(painted(root.querySelector('th[data-col="spent"]')!, 'width', env), 'spent')
+      expect(textPx(NOTE, note, env), `"${NOTE}" on its own line at ${pane}`).toBeLessThanOrEqual(width)
+    }
+  })
+
+  it('fits the phone row at 390 with the head kept read', () => {
+    const root = row(false)
+    const env: CascadeEnv = { width: 390, container: 356 }
+    const { name, hidden } = fit(root, env, 356)
+    expect(hidden).toEqual(expect.arrayContaining(ORDER))
+    expect(name).toBeGreaterThanOrEqual(100)
   })
 })
