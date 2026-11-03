@@ -6,24 +6,24 @@ skills "could be super useful in making sc agents a lot more powerful and capabl
 soon as possible. Every fact below was read on 3 November 2026 on `origin/main`; files are named, lines are not,
 because they move.
 
-## 1. Decisions (BGD, 3 November 2026)
+## Decisions (BGD, 3 November 2026)
 
-1. **Chosen per step from the start.** A workflow step (and a single task) names the plugins it uses and, for each,
-   its mode and skills. There is no workflow-wide switch first. Per-step names need a frozen-contract change
-   request (§5), so that request is the first lane.
-2. **Baked into the agent images at a pinned version.** No install at task start.
-3. **Two modes, toggled per step.**
-   * **Unattended:** gstack answers every question that has a recommended option by itself and logs it. A question
-     it cannot answer that way (a consent, no recommendation, a final gate) **parks the step for an answer**, and
-     the same step resumes with it.
-   * **Planner or designer:** gstack's planning and design skills run an interview, a back-and-forth of questions
-     with a person. The step parks between questions. The plan or design it produces goes to approval, or is
-     approved automatically when the run says so, as an issue run's plan is today.
-4. **The interview happens on the planning page and in Voice it, both in the first release** of the planner mode.
-5. **No outside AI services at first.** gstack's second-opinion reviewer and its image generation are off. Plans,
-   designs and reviews run on Claude alone.
+* **Chosen per step from the start.** A workflow step (and a single task) names the plugins it uses and, for each,
+  its mode and skills. There is no workflow-wide switch first. Per-step names need a frozen-contract change
+  request (see "The contract change request" below), so that request is the first lane.
+* **Baked into the agent images at a pinned version.** No install at task start.
+* **Two modes, toggled per step.**
+  * **Unattended:** gstack answers every question that has a recommended option by itself and logs it. A question
+    it cannot answer that way (a consent, no recommendation, a final gate) **parks the step for an answer**, and
+    the same step resumes with it.
+  * **Planner or designer:** gstack's planning and design skills run an interview, a back-and-forth of questions
+    with a person. The step parks between questions. The plan or design it produces goes to approval, or is
+    approved automatically when the run says so, as an issue run's plan is today.
+* **The interview happens on the planning page and in Voice it, both in the first release** of the planner mode.
+* **No outside AI services at first.** gstack's second-opinion reviewer and its image generation are off. Plans,
+  designs and reviews run on Claude alone.
 
-## 2. What exists today
+## What exists today
 
 **SwarmCloud agents load no plugin and no skill.** The Claude Code runner (`agent_worker/runners/claude_code.py`)
 writes its own settings file (`write_headless_settings`: environment, hooks) and its own tool-server list
@@ -44,10 +44,11 @@ dispatch field. Runner profiles (`swarm_common/profiles.py`, frozen) have no fie
 (`docs/worker-images.md`). The base Dockerfile may not fetch from GitHub; outside sources come through the build
 mirror or are vendored. Every byte added is paid on every agent start.
 
-**Waiting for a person exists.** `PARKED(AWAITING_INPUT)` (`swarm_common/states.py`) and the `await-input` step
-([human-steps.md](human-steps.md)) wait at no cost and resume on an answer. Owner questions (`questions.json`,
-recorded with `POST /v1/tasks/{id}/answers`) already reach the console and this operator's session. The plan
-decision page (`ApprovalDecision.tsx`, [plans-pipeline.md](plans-pipeline.md)) shows a plan and its conversation.
+**Waiting for a person exists.** The `AWAITING_INPUT` park state (`swarm_common/states.py`) and the `await-input`
+step ([human-steps.md](human-steps.md)) wait at no cost and resume on an answer. Owner questions
+(`questions.json`, recorded through the task answers route) already reach the console and the operator's session.
+The plan decision page (`ApprovalDecision.tsx`, [plans-pipeline.md](plans-pipeline.md)) shows a plan and its
+conversation.
 
 **gstack** (github.com/garrytan/gstack, MIT) is a skill suite installed as a git checkout at
 `~/.claude/skills/gstack` with each skill linked beside it. Facts that shape the plan:
@@ -65,15 +66,15 @@ decision page (`ApprovalDecision.tsx`, [plans-pipeline.md](plans-pipeline.md)) s
 * About 27 MB is skills, helpers and libraries; most of the rest of the 1.5 GB local install is development
   dependencies, the browser profile, a 112 MB prompt-injection model and compiled binaries of about 60 MB each.
 
-## 3. The design
+## The design
 
-### 3.1 A closed plugin catalogue, owned by the platform
+### A closed plugin catalogue, owned by the platform
 
 A catalogue in the worker and swarm-api lists each plugin SwarmCloud may load: its name (`gstack` first), pinned
 version, read-only install path in the image, the runner families it supports (the five claude-code profiles
 first; codex later), and per mode the **skills it may offer**. A step names plugins and skills from it by name only:
-never a path, command, URL or version (invariant 10). A workspace setting, signed like the quality-gates setting,
-says which catalogue plugins that workspace may use; it is admin-only and audited.
+never a path, command, URL or version, as callers already name runner profiles. A workspace setting, signed like
+the quality-gates setting, says which catalogue plugins that workspace may use; it is admin-only and audited.
 
 gstack's first offer, from the research:
 
@@ -81,31 +82,31 @@ gstack's first offer, from the research:
 |---|---|
 | Unattended | `review`, `investigate`, `health`, `cso`, `qa-only`, `qa`, `design-review`, `document-generate`, `document-release`, `ship` (handoff only: never pushes), `plan-eng-review`, `plan-design-review`, `autoplan` |
 | Planner | `office-hours`, `plan-ceo-review`, `plan-eng-review`, `plan-devex-review`, `autoplan`, `spec` (file-only) |
-| Designer | `design-consultation`, `plan-design-review`, `design-review`, `design-html` (image-drawing skills such as `design-shotgun` wait for outside AI, decision 5) |
+| Designer | `design-consultation`, `plan-design-review`, `design-review`, `design-html` (image-drawing skills such as `design-shotgun` wait for outside AI services) |
 
 Never offered: `careful` and `guard` (they answer "ask"), `gstack-upgrade`, `land-and-deploy`, `canary`, `captain`,
 `pair-agent`, `connect-chrome`, `setup-browser-cookies`, the gbrain and iOS skills, `plan-tune`, and any skill that
 calls a paid model.
 
-### 3.2 Per-step selection (frozen-contract change request)
+### Per-step selection
 
 A step carries `plugins: {"gstack": {"mode": "unattended" | "planner" | "designer", "skills": [...]}}`, validated by
 swarm-api against the catalogue, the workspace setting and the step's runner profile, and signed with the step (a
-spec format bump in `specsign`), so the worker trusts only what was signed. The request (§5) also asks for the
-workspace settings block and, if needed, a profile marker for runners that can load plugins.
+spec format bump in `specsign`), so the worker trusts only what was signed. The frozen-contract change request also
+asks for the workspace settings block and, if needed, a profile marker for runners that can load plugins.
 
-### 3.3 Packaging: baked in, pinned
+### Packaging: baked in, pinned
 
 * A build stage takes gstack at a pinned stable release tag from the build mirror, installs production dependencies
   only, renders the skills for Claude Code and compiles its binaries, all on Linux. It skips the Chromium download,
   the fonts step, the security scanner images and the 112 MB model (`GSTACK_SECURITY_OFF=1`).
 * **The base image** gets `/opt/swarm/plugins/gstack` (skills, helpers, libraries, needed modules) and Bun.
   **The browser image** also gets gstack's browser binary, pointed at the Chromium it already carries.
-* The added size is measured by the packaging lane and stated in its pull request; the base image's start time is
-  measured before and after.
+* The packaging lane measures the added size and states it in its pull request, with the base image's start time
+  before and after.
 * A lane bumps the pinned version; CI renders every offered skill and runs each one's smoke check.
 
-### 3.4 Start of a step
+### The start of a step
 
 When a signed step names gstack, the worker (a module modelled on `qualitygates.prepare`):
 
@@ -119,26 +120,27 @@ When a signed step names gstack, the worker (a module modelled on `qualitygates.
    apply only to the offered skills;
 5. records in the result which plugin, version, mode and skills the step had, and how many times each skill ran.
 
-### 3.5 The question bridge: one mechanism for both modes
+### The question bridge: one mechanism for both modes
 
 This is the new core piece. In a headless agent, when gstack asks a question it cannot answer by itself:
 
 1. A hook on the question tool (gstack already hooks it for `plan-tune`) captures the question: text, options,
    recommendation, previews and the skill that asked. The runner writes it to the step's pending question and ends
    the session cleanly.
-2. The worker checkpoints the workspace, the Claude session and `GSTACK_HOME` (invariant 8), and the step parks as
-   `PARKED(AWAITING_INPUT)`: no lease, no slot, no container (invariants 1, 4).
-3. The question appears on the planning page, in Voice it, and in this operator's owner questions. The first answer
+2. The worker checkpoints the workspace, the Claude session and `GSTACK_HOME` (checkpointing before every park), and
+   the step parks in the `AWAITING_INPUT` state: no lease, no slot, no container (parked work creates no demand,
+   and workers never sleep through a wait).
+3. The question appears on the planning page, in Voice it, and in the operator's owner questions. The first answer
    is recorded on the step, with who answered and where.
-4. The scheduler requeues the step. A new attempt, at a new fencing generation (invariant 5), restores the
-   checkpoint and resumes the Claude session with the answer as the next message.
-5. A question unanswered for 24 hours (human steps' default) ends the step with the question left open, never with
-   an answer nobody gave.
+4. The scheduler requeues the step. A new attempt, at a new fencing generation (a stale attempt exits without
+   running the agent), restores the checkpoint and resumes the Claude session with the answer as the next message.
+5. A question unanswered for 24 hours (the human steps' default) ends the step with the question left open, never
+   with an answer nobody gave.
 
 Unattended mode uses this only for what gstack cannot answer itself. Planner and designer modes use it for every
 interview question.
 
-### 3.6 Planner and designer mode on the planning surfaces
+### Planner and designer mode on the planning surfaces
 
 * **The planning page.** The plan decision page gets an interview panel: the pending question with its options,
   recommendation and previews, the questions answered so far, and "use the recommended answer". When the interview
@@ -150,43 +152,48 @@ interview question.
 * **The issue-run planner** gains planner mode as an option: its planner step runs gstack's planning skills, and its
   output must still fit the run's plan shape and digest, so approval, editing and auto-approval work unchanged.
 
-## 4. Build order
+## Build order
 
-Each step is a SwarmCloud lane (build, review, fix, merge) unless it says otherwise.
+Each item is a SwarmCloud lane (build, review, fix, merge) unless it says otherwise.
 
-| # | Lane | Needs | Gives |
-|---|---|---|---|
-| 1 | **Contract change request:** per-step `plugins`, the signed workspace block, the spec format bump | nothing | the request, for BGD to accept |
-| 2 | **Packaging spike:** gstack built into a test image stage, sizes and start time measured, every offered skill's smoke run in a container in unattended mode | nothing | the measured numbers and what breaks |
-| 3 | **Question bridge spike:** prove a headless agent can capture a question through the hook, park, and resume the same Claude session with the answer | nothing | a yes or no on the core mechanism, before the build |
-| 4 | **Catalogue and step start:** the catalogue, the worker module of §3.4, swarm-api validation and signing, the workspace setting | 1 accepted, 2 | unattended mode without the bridge (open questions end as owner questions until 5 lands) |
-| 5 | **The bridge** of §3.5 | 3, 4 | unattended mode as decided: park and resume |
-| 6 | **Console:** Config › Plugins (catalogue, versions, workspace setting), the step's plugin picker in the workflow builder, the interview panel on the planning page | 4, 5 | planner and designer modes on the page |
-| 7 | **Voice it interview** | 5, the Voice it pool and planner lanes | the interview by voice |
-| 8 | **Issue-run planner in planner mode** | 5, 6 | gstack planning for issue runs, with approval or auto-approval |
-| 9 | Later: outside AI (second opinions, image mockups) once keys or accounts are decided; codex parity; more catalogue plugins | | |
+| Lane | Needs | Gives |
+|---|---|---|
+| **The contract change request:** per-step `plugins`, the signed workspace block, the spec format bump | nothing | the request, for BGD to accept |
+| **The packaging spike:** gstack built into a test image stage, sizes and start time measured, every offered skill's smoke run in a container in unattended mode | nothing | the measured numbers and what breaks |
+| **The question bridge spike:** prove a headless agent can capture a question through the hook, park, and resume the same Claude session with the answer | nothing | a yes or no on the core mechanism, before the build |
+| **The catalogue and the start of a step:** the catalogue, the worker module above, swarm-api validation and signing, the workspace setting | the contract request accepted, the packaging spike | unattended mode without the bridge (open questions end as owner questions until the bridge lands) |
+| **The question bridge** | the bridge spike, the catalogue lane | unattended mode as decided: park and resume |
+| **The console:** Config › Plugins (catalogue, versions, workspace setting), the step's plugin picker in the workflow builder, the interview panel on the planning page | the catalogue lane, the bridge | planner and designer modes on the page |
+| **The Voice it interview** | the bridge, the Voice it pool and planner lanes | the interview by voice |
+| **The issue-run planner in planner mode** | the bridge, the console lane | gstack planning for issue runs, with approval or auto-approval |
+| Later: outside AI (second opinions, image mockups) once keys or accounts are decided; codex parity; more catalogue plugins | | |
 
-Lanes 1, 2 and 3 start together. Image changes release through the normal image pipeline, and no image release
-lands while experiment batch three runs (its conditions forbid it).
+The contract request and the two spikes start together. Image changes release through the normal image pipeline,
+and no image release lands while experiment batch three runs (its conditions forbid it).
 
-## 5. Contract change request (lane 1 writes it)
+## The contract change request
 
 Requested, not applied: `apps/common/swarm_common/` is frozen. The request adds the step's `plugins` field (and the
 same on a single task) with its shape and limits, the signed settings block for the workspace's allowed plugins
-(`specsign.SETTINGS_MAC_FIELDS`), a spec format bump so a step's plugins are signed, and, if lane 2 shows it is
-needed, a profile marker for the runners that can load plugins.
+(`specsign.SETTINGS_MAC_FIELDS`), a spec format bump so a step's plugins are signed, and, if the packaging spike
+shows it is needed, a profile marker for the runners that can load plugins.
 
-## 6. Invariants
+## The invariants
 
-1-3: a parked step holds nothing, and capacity rules are untouched. 4: a step waiting for an answer parks and exits;
-it never sleeps. 5: every resumed attempt has a new generation, and a stale one exits without running the agent.
-6-7: no change. 8: the step is checkpointed before it parks. 9: gstack's state lives under the attempt, inside the
-tenant's own workspace and prefix; nothing is shared between tenants. 10: plugins, modes and skills are names from
-the platform catalogue, never paths, commands, images or versions from a caller.
+* **Demand, reservation and concurrency:** a parked step holds nothing, and the capacity rules are untouched.
+* **No sleeping through a wait:** a step waiting for an answer checkpoints, parks and exits.
+* **Fencing:** every resumed attempt has a new generation, and a stale one exits without running the agent.
+* **Spot and pod sizing:** no change.
+* **Checkpointing:** the step is checkpointed before it parks.
+* **Per-tenant isolation:** gstack's state lives under the attempt, inside the tenant's own workspace and prefix;
+  nothing is shared between tenants.
+* **Callers name, never send:** plugins, modes and skills are names from the platform catalogue, never paths,
+  commands, images or versions from a caller.
 
-## 7. Risks the spikes answer first
+## Risks the spikes answer first
 
-* Whether headless Claude Code lets a hook capture gstack's questions and end the session cleanly (lane 3).
-* gstack's literal skill paths and Bun under a read-only image with `HOME` in the workspace (lane 2).
-* The base image's size and start time with Bun and gstack added (lane 2).
+* Whether headless Claude Code lets a hook capture gstack's questions and end the session cleanly (the question
+  bridge spike).
+* gstack's literal skill paths and Bun under a read-only image with `HOME` in the workspace (the packaging spike).
+* The base image's size and start time with Bun and gstack added (the packaging spike).
 * The prompt cost of each offered skill's description; only the step's own skills are linked, to keep it small.
