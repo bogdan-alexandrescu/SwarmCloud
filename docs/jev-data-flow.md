@@ -194,14 +194,14 @@ tenant is dropped again in code (per-tenant isolation), and the task id, the
 generation and any field not counted never leave swarm-api. Dollars come from
 the platform setting `jev_token_rates` (USD per million tokens, in and out),
 which has no default: until a platform admin sets it the page says "rate not
-set" and prints no figure, never $0. **The gap:** the worker's attempt rows
-carry `calls` and `input_tokens` only, so today every call is shown as
-"not split by kind", on the day of the row's last write, with its outcomes
-"not recorded" (null, never 0 ok and 0 failed; the 30-day total counts those
-calls as `unrecorded`) and no output tokens; the read sums `settled_at` and the per-kind split
-(`by_kind: {kind: {calls, input_tokens, output_tokens, outcomes}}`) once the
-worker's settle writes them from its ledger's audit rows, a change asked of
-the owner in that lane's PR. The quality gates' jev-belay and jev-enforce
+set" and prints no figure, never $0. The worker's settle writes each attempt
+row's `settled_at` and its per-kind split (`by_kind: {kind: {calls,
+input_tokens, output_tokens, outcomes}}`), summed from its ledger's audit
+rows in the same fenced transaction
+(`apps/agent-worker/agent_worker/judge/budget.py::split_by_kind`); a row
+settled before that is shown as "not split by kind", on the day of its last
+write, with its outcomes "not recorded" (null, never 0 ok and 0 failed), and
+output tokens stay null because no audit row records them. The quality gates' jev-belay and jev-enforce
 hooks and the Jev browser record nothing in `jev_usage` yet.
 
 ## Which key
@@ -394,9 +394,9 @@ hooks, launcher redaction and URL pin, counts and event) and
   (`apps/agent-worker/agent_worker/qualitygates.py::hard_stop_paths`, this
   tenant's registration only). Still open: the browser's counts reach the
   summary only on an attempt whose gates run, an internal-backend browser
-  (started without `jev_launch.py`) gets neither variable, and `prepare`
-  learns the repository from the job's `REPOSITORY_URL` until the lifecycle
-  passes its own `repository_url` (asked for in the lane's PR). With the
+  (started without `jev_launch.py`) gets neither variable. The lifecycle
+  passes the clone's `repository_url` to `prepare`
+  (`apps/agent-worker/agent_worker/lifecycle.py::Worker._quality_gates_env`). With the
   forwarder serving the tenant on the TypeSafe backend, a gated claude-code
   pod is labelled `swarm-typesafe: inject` and no `private/jev-gates.key` is
   written (`apps/scheduler/scheduler/dispatch.py::quality_gates_run`).
