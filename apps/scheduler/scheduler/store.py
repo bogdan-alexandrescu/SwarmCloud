@@ -110,6 +110,10 @@ ATTEMPTS = "attempts"
 CONTROL = "control"
 EVENTS = "events"
 WORKFLOWS = "workflows"
+#: A field of the workflow DOCUMENT, beside the frozen `Workflow`'s: the task
+#: ids a step re-run replaced. Written by swarm-api
+#: (`swarm_api.store.Store.rerun_workflow_steps`); the same name there.
+SUPERSEDED_TASK_IDS = "superseded_task_ids"
 CONTROL_DOC = "dispatch"
 #: The runner-size setting (docs/design/runner-sizes.md §4.3): the pointer
 #: beside `control/settings`, and one immutable document per version, its id
@@ -594,6 +598,19 @@ class SchedulerStore:
             .limit(limit)
         )
         return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def workflow_superseded_task_ids(self, tenant_id: str, workflow_id: str) -> frozenset[str]:
+        """The task ids a step re-run replaced in this workflow (swarm-api's
+        `steprerun`): tasks that still name the workflow but are no step of
+        it any more. Empty for a missing document, another tenant's, and every
+        workflow nobody re-ran a step of. One point read."""
+        snap = self._db.collection(WORKFLOWS).document(workflow_id).get()
+        if not snap.exists:
+            return frozenset()
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id:
+            return frozenset()
+        return frozenset(str(t) for t in (data.get(SUPERSEDED_TASK_IDS) or []) if t)
 
     def workflow_steps_in_state(
         self, tenant_id: str, workflow_id: str, state: TaskState, limit: int

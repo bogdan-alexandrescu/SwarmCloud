@@ -31,7 +31,7 @@ afterEach(() => {
 
 describe('F: a check still reading is a skeleton card, not an empty dashed box', () => {
   it('draws a skeleton of the check card while any check is reading', async () => {
-    window.history.replaceState(null, '', '/')
+    window.history.replaceState(null, '', '/overview')
     render(<App />)
     const lead = await waitFor(() => {
       const l = document.querySelector<HTMLElement>('#ov-needs')
@@ -61,7 +61,7 @@ describe('F, revised by browser QA D19 (2026-10-04): each card keeps its own hei
   // stacks, so a short card is followed by the next card in its column. Each
   // column and the grid still align to the top, and no card has a height.
   it('aligns every card of a column to its top, none with a height of its own', async () => {
-    window.history.replaceState(null, '', '/')
+    window.history.replaceState(null, '', '/overview')
     render(<App />)
     const cols = await waitFor(() => {
       const r = [...document.querySelectorAll<HTMLElement>('.ov-g21 > .ov-col')]
