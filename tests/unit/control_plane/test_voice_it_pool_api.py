@@ -294,3 +294,31 @@ def test_the_client_asks_the_voice_pool_for_one_person():
     assert client.voice_pool("alice@example.com") == {"account": None, "reason": "not_in_voice_pool"}
     assert seen[0]["method"] == "GET"
     assert seen[0]["url"] == "https://broker.internal/v1/voice/pool?person=alice%40example.com"
+
+
+def test_a_voice_only_account_moves_back_to_the_workspace_pool(client, broker, db):
+    """The broker's default listing leaves a Voice-it-only account out (it
+    serves no tenant), so the move looks it up with `include_reserved`; else
+    a reserved account could never be moved back."""
+    response = _move(client, "eng:voice", {"pools": ["workspace"], "confirm_label": "voice"})
+
+    assert response.status_code == 200, response.text
+    assert ("list_accounts", "eng") in broker.calls
+    assert ("set_pools", "eng:voice", ("workspace",), "voice") in broker.calls
+    assert response.json()["change"]["from_pools"] == ["voice-it"]
+
+
+def test_the_default_listing_leaves_a_voice_only_account_out(broker):
+    """What every capacity count reads: no reserved account in it."""
+    ids = [a["account_id"] for a in broker.list_accounts("eng")["accounts"]]
+    assert ids == ["eng:primary"]
+
+
+def test_the_client_asks_for_reserved_accounts_only_when_told():
+    client, seen = _broker(200, {"accounts": []})
+
+    client.list_accounts("eng")
+    client.list_accounts("eng", include_reserved=True)
+
+    assert seen[0]["url"] == "https://broker.internal/v1/accounts?tenant_id=eng"
+    assert seen[1]["url"] == "https://broker.internal/v1/accounts?tenant_id=eng&include_reserved=true"

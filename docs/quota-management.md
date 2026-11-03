@@ -536,8 +536,20 @@ changed for an existing account.
   typed back, at least one pool stays, and the change is audited in the log
   with the caller (swarm-api also writes an `admin_audit` row). It is refused
   with 409 `pool_in_use` while the account holds a live lease of a pool being
-  removed. The broker is still the only writer of the account document and
+  removed, and with 409 `pool_lent` when the move would leave the account in
+  `voice-it` only while it is still lent. A borrower's worker can read a
+  lent account's secret until the loan ends, so a reserved account must not
+  be lent: end the loan first, which revokes the borrowers' read, then move
+  it. The broker is still the only writer of the account document and
   keeps refreshing the plan whichever pool it is in.
+* **Who sees a reserved account.** The default scoped `GET /v1/accounts`
+  leaves a `voice-it`-only account out, because it serves no tenant. Every
+  count of a workspace's capacity reads that default listing (admission,
+  setup, the profile). Capacity › Accounts and the pool move ask with
+  `include_reserved=true`, and see the scope's own reserved accounts only,
+  never another workspace's. Without that, a reserved account could never be
+  shown or moved back. The page's verdict, rule line and forecast still
+  count only accounts in `workspace`.
 
 
 

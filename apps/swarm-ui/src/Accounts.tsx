@@ -417,7 +417,10 @@ function Body({
   // and if not, when. Re-read with the board, so the two agree.
   const waiting = usePoolWaiting(board.readAt)
   const scope = board.page.tenant_id
-  const pool = accounts as PoolAccount[]
+  // THE WORKSPACE'S OWN CAPACITY: a Voice-it-only account is listed (its
+  // pools, its Pools… panel) but serves no workspace task, so the verdict
+  // and the rule line never count it (the owner, 2026-11-02).
+  const pool = (accounts as PoolAccount[]).filter(servesWorkspace)
   // ON A PHONE THE OPENED ACCOUNT IS THE SCREEN (#2222, mock-up A P3): the
   // list steps aside (capacity.css `.is-detail`), and so does the page's lead
   // -- the verdict, the floors and the banners -- which sat above the sheet and
@@ -1016,7 +1019,7 @@ function Pool({
               topic is what may and may not be concluded from it. */}
           <HelpCard topic="projected-not-measured" />
         </p>
-        <Forecast accounts={accounts as PoolAccount[]} scope={board.page.tenant_id} now={now} />
+        <Forecast accounts={(accounts as PoolAccount[]).filter(servesWorkspace)} scope={board.page.tenant_id} now={now} />
         {/* THE VOICE IT POOL (the owner, 2026-11-02): drawn only when an
             account is in it, so a pool without one reads as it always did. */}
         <VoiceItPool accounts={accounts} now={now} phone={phone} />
@@ -3055,6 +3058,12 @@ function PoolsControl({ account, reload }: { account: Account; reload: () => voi
   )
 }
 
+/** Whether an account serves workspace tasks: an older broker that sends no
+ * pools means the workspace pool, as every account was before. */
+export function servesWorkspace(a: object): boolean {
+  return (poolsOf(a) ?? ['workspace']).includes('workspace')
+}
+
 /**
  * THE VOICE IT POOL: the accounts whose pools include Voice it -- the
  * provider, both windows as the table draws them, who may use it (read-only)
@@ -3081,7 +3090,7 @@ export function VoiceItPool({ accounts, now, phone }: { accounts: readonly Accou
   return (
     <section className="acct-voice-it" aria-label="Voice it pool">
       <h3>
-        Voice it pool
+        Voice it pool{' '}
         <span className="ctl-card-note is-end">{pluralise(rows.length, 'account')}</span>
       </h3>
       {phone ? (

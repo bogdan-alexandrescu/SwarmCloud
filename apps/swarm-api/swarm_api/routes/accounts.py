@@ -281,7 +281,9 @@ def list_accounts(
     there are five with nothing to say so.
     """
     tenant_id = _tenant_id(ctx, auth)
-    payload = pool.list_accounts(tenant_id)
+    # With the tenant's own Voice-it-only accounts (`include_reserved`), so
+    # the page's Voice it pool section and Pools… can reach a reserved one.
+    payload = pool.list_accounts(tenant_id, include_reserved=True)
     return {
         # Each through `_own_view` (#2222): another tenant's account is never
         # named by a duplicate mark, whatever the broker sent.
@@ -786,7 +788,9 @@ def set_account_pools(
     owner = account_id.split(":", 1)[0] if ":" in account_id else ""
     before = None
     if owner:
-        for row in pool.list_accounts(owner).get("accounts") or []:
+        # `include_reserved`: a Voice-it-only account serves no tenant, so
+        # the default listing leaves it out and it could never move back.
+        for row in pool.list_accounts(owner, include_reserved=True).get("accounts") or []:
             if isinstance(row, dict) and row.get("account_id") == account_id \
                     and row.get("owner_tenant") == owner:
                 before = row

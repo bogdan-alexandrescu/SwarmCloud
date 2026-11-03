@@ -329,7 +329,7 @@ class _Pool:
     def __init__(self, payload: dict) -> None:
         self._payload = payload
 
-    def list_accounts(self, tenant_id: str) -> dict:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict:
         return dict(self._payload)
 
 

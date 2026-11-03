@@ -191,7 +191,9 @@ class AccountPool(Protocol):
     reach a broker endpoint this API was never meant to call.
     """
 
-    def list_accounts(self, tenant_id: str) -> dict[str, Any]: ...
+    def list_accounts(
+        self, tenant_id: str, include_reserved: bool = False
+    ) -> dict[str, Any]: ...
 
     def register(
         self,
@@ -511,8 +513,17 @@ class BrokerClient:
 
     # ------------------------------------------------------------------ routes
 
-    def list_accounts(self, tenant_id: str) -> dict[str, Any]:
-        return self._call("GET", "/v1/accounts", params={"tenant_id": tenant_id})
+    def list_accounts(
+        self, tenant_id: str, include_reserved: bool = False
+    ) -> dict[str, Any]:
+        """`include_reserved`: also the tenant's OWN accounts in the Voice it
+        pool only, which serve no workspace task. Only Capacity › Accounts
+        and the pool move ask for them; every count of a workspace's capacity
+        reads the default listing, which leaves them out."""
+        params = {"tenant_id": tenant_id}
+        if include_reserved:
+            params["include_reserved"] = "true"
+        return self._call("GET", "/v1/accounts", params=params)
 
     def register(
         self,

@@ -1877,6 +1877,11 @@ class PoolInUse(Exception):
     """A pool cannot be removed while the account holds a lease of it."""
 
 
+class PoolLent(Exception):
+    """An account cannot be reserved for Voice it while it is lent: its
+    borrowers' workers can read its secret until the loan is ended."""
+
+
 def set_account_pools(
     db: Any,
     account_id: str,
@@ -1911,6 +1916,16 @@ def set_account_pools(
                     f"{account_id} holds a lease from the {pool} pool; it can leave "
                     "that pool when the lease ends"
                 )
+        lent = [t for t in (data.get("lend_to") or []) if isinstance(t, str) and t]
+        if POOL_WORKSPACE not in pools and lent:
+            # Reserved for Voice it means never lent: a borrower's worker
+            # keeps read of the account's secret while the loan stands
+            # (`_sync_lending`), so the loan ends first, through the lending
+            # route that revokes those grants.
+            raise PoolLent(
+                f"{account_id} is lent to {len(lent)} other workspace(s); stop lending "
+                "it first, then reserve it for Voice it"
+            )
         txn.update(
             ref,
             {
@@ -3489,6 +3504,7 @@ def create_app(
     def list_accounts(
         request: Request,
         tenant_id: str | None = Query(default=None),
+        include_reserved: bool = Query(default=False),
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
         caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
@@ -3507,7 +3523,18 @@ def create_app(
         if scope:
             # `may_serve` is what `for_tenant` applies: owned AND lent-to, which
             # is the set a tenant may actually run on, not the set it owns.
-            accounts = [a for a in listing.accounts if a.may_serve(scope)]
+            accounts = [
+                a for a in listing.accounts
+                if a.may_serve(scope)
+                # `include_reserved`: the scope's OWN accounts that are in the
+                # Voice it pool only, which `may_serve` refuses to every
+                # tenant. Capacity › Accounts and the pool move read them
+                # (the owner, 2026-11-02), or a reserved account could never
+                # be seen or moved back. Ownership only, never a loan, and
+                # every other caller's listing (admission, capacity, setup)
+                # leaves them out.
+                or (include_reserved and a.owner_tenant == scope)
+            ]
         else:
             accounts = listing.accounts
         # Each row's 24 h health counts and status (#2302), so a list can draw
@@ -4557,6 +4584,8 @@ def create_app(
             )
         except PoolInUse as exc:
             return JSONResponse(status_code=409, content={"code": "pool_in_use", "message": str(exc)})
+        except PoolLent as exc:
+            return JSONResponse(status_code=409, content={"code": "pool_lent", "message": str(exc)})
         if moved is None:
             raise BrokerValidationError(f"no account {account_id!r}")
         before, after = moved
@@ -4631,7 +4660,8 @@ def create_app(
         person = body.person.strip().lower()
         store = _accounts(request)
         now = datetime.now(timezone.utc)
-        chosen, reason = choose_voice(store.list(), person, provider, now)
+        listing = store.list()
+        chosen, reason = choose_voice(listing, person, provider, now)
         refused = {
             "account_id": None,
             "assignment_id": None,
@@ -4641,16 +4671,27 @@ def create_app(
         }
         if chosen is None:
             return refused
-        held = acquire_hold(
-            request.app.state.broker.db,
-            chosen.account_id,
-            tenant_id="",
-            now=now,
-            ttl=VOICE_HOLD_TTL,
-            person=person,
-            voice_session_id=body.voice_session_id,
-        )
-        if held is None:
+        # A hold that loses a race for the chosen account's last slot tries
+        # the next free one, so a session is refused only when none is left.
+        held = None
+        tried: set[str] = set()
+        while chosen is not None:
+            tried.add(chosen.account_id)
+            held = acquire_hold(
+                request.app.state.broker.db,
+                chosen.account_id,
+                tenant_id="",
+                now=now,
+                ttl=VOICE_HOLD_TTL,
+                person=person,
+                voice_session_id=body.voice_session_id,
+            )
+            if held is not None:
+                break
+            chosen, _ = choose_voice(
+                [a for a in listing if a.account_id not in tried], person, provider, now
+            )
+        if held is None or chosen is None:
             return {**refused, "reason": VOICE_NONE_AVAILABLE}
         assignment_id, _assigned = held
         try:

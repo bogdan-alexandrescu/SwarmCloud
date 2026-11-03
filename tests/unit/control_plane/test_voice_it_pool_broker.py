@@ -76,9 +76,17 @@ class _Secrets:
 
     def __init__(self) -> None:
         self.latest: dict[str, str] = {}
+        #: Each secret's worker readers, as the lending route last set them.
+        self.readers: dict[str, set[str]] = {}
 
     def access(self, name):  # noqa: ANN001
         return self.latest[name]
+
+    def set_worker_readers(self, name, *, readers, manages, revoke=True):  # noqa: ANN001
+        before = self.readers.get(name, set())
+        after = set(readers) if revoke else before | set(readers)
+        self.readers[name] = after
+        return sorted(after - before), sorted(before - after)
 
 
 @pytest.fixture()
@@ -95,6 +103,9 @@ def client(broker, accounts, monkeypatch):
     monkeypatch.delenv("PROJECT_ID", raising=False)
     monkeypatch.setenv("VOICE_SERVICE_ACCOUNTS", "swarm-voice@test-project.iam.gserviceaccount.com")
     monkeypatch.setenv("VOICE_IT_PEOPLE", PERSON)
+    monkeypatch.setenv(
+        "WORKER_SERVICE_ACCOUNT_TEMPLATE", "swarm-worker-{tenant}@test-project.iam.gserviceaccount.com"
+    )
     identity = _Identity()
     app = create_app(broker, identity=identity, account_store=accounts)
     app.state.secret_store = _Secrets()
@@ -119,6 +130,16 @@ def _plan(client, accounts, owner: str, label: str, *, lend_to=(), pools=None) -
     return account.account_id
 
 
+def _reserve_lent(broker, client, accounts, owner: str, label: str) -> str:
+    """A LENT account whose document says Voice it only. The move route
+    refuses to make one (`pool_lent`), so the document is written directly:
+    a document from before that rule must still serve no borrower."""
+    account_id = _plan(client, accounts, owner, label, lend_to=(ENG,))
+    broker.db.docs[f"accounts/{account_id}"]["pools"] = [POOL_VOICE_IT]
+    broker.db.docs[f"accounts/{account_id}"]["voice_it_people"] = [PERSON]
+    return account_id
+
+
 def _assign(client, tenant: str):
     client.identity.as_tenant(tenant)
     return client.post("/v1/accounts/assign", json={"provider": "openai"}).json()
@@ -135,18 +156,18 @@ def _lease(client, person: str = PERSON, session: str = "vs-1"):
 # -- a reserved account is never a task's ------------------------------------
 
 
-def test_a_voice_only_account_is_never_assigned_to_any_workspace_task(client, accounts):
+def test_a_voice_only_account_is_never_assigned_to_any_workspace_task(client, accounts, broker):
     """Engineering borrows it and BGD's personal workspace owns it; the only
     free openai account is still refused to both."""
-    _plan(client, accounts, OWNER, "chatgpt-1", lend_to=(ENG,), pools=[POOL_VOICE_IT])
+    _reserve_lent(broker, client, accounts, OWNER, "chatgpt-1")
     for tenant in (ENG, OWNER):
         body = _assign(client, tenant)
         assert body["account_id"] is None, body
         assert body["reason"] == "no_accounts_registered"
 
 
-def test_the_pool_admission_counts_exclude_a_voice_only_account(client, accounts):
-    _plan(client, accounts, OWNER, "chatgpt-1", lend_to=(ENG,), pools=[POOL_VOICE_IT])
+def test_the_pool_admission_counts_exclude_a_voice_only_account(client, accounts, broker):
+    _reserve_lent(broker, client, accounts, OWNER, "chatgpt-1")
     _plan(client, accounts, ENG, "team-plan")
     listed = accounts.list()
     assert [a.label for a in accounts_serving(listed, ENG, "openai")] == ["team-plan"]
@@ -159,6 +180,61 @@ def test_a_voice_only_account_is_never_lent(client, accounts):
     refused = client.put(f"/v1/accounts/{account_id}/lending", json={"lend_to": [ENG]})
     assert refused.status_code in (400, 422), refused.text
     assert accounts.get(account_id).lend_to == ()
+
+
+def test_a_lent_account_is_not_reserved_until_its_loan_ends(client, accounts):
+    """Reserved means never lent: a borrower's worker reads the account's
+    secret while the loan stands, so the move to Voice it only is refused
+    until the owner ends the loan, which revokes the borrower's read."""
+    account_id = _plan(client, accounts, OWNER, "chatgpt-1")
+    secret = accounts.secret_for(accounts.get(account_id))
+    client.identity.as_tenant(OWNER)
+    lent = client.put(f"/v1/accounts/{account_id}/lending", json={"lend_to": [ENG]})
+    assert lent.status_code == 200, lent.text
+    assert len(client.secrets.readers[secret]) == 2
+
+    client.identity.as_platform()
+    path = f"/v1/accounts/{account_id}/pools"
+    refused = client.put(path, json={"pools": [POOL_VOICE_IT], "confirm_label": "chatgpt-1"})
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["code"] == "pool_lent"
+    assert accounts.get(account_id).pools == (POOL_WORKSPACE,)
+    # Both pools keep it a workspace account, so a loan may stand.
+    both = client.put(path, json={"pools": [POOL_WORKSPACE, POOL_VOICE_IT], "confirm_label": "chatgpt-1"})
+    assert both.status_code == 200, both.text
+
+    client.identity.as_tenant(OWNER)
+    assert client.put(f"/v1/accounts/{account_id}/lending", json={"lend_to": []}).status_code == 200
+    client.identity.as_platform()
+    moved = client.put(path, json={"pools": [POOL_VOICE_IT], "confirm_label": "chatgpt-1"})
+    assert moved.status_code == 200, moved.text
+    reserved = accounts.get(account_id)
+    assert reserved.pools == (POOL_VOICE_IT,) and reserved.lend_to == ()
+    # Only the owner's own worker is left reading it; no borrower.
+    assert client.secrets.readers[secret] == {client.app.state.worker_service_account(OWNER)}
+
+
+def test_a_reserved_account_is_listed_to_its_owner_only_when_asked(client, accounts):
+    """A Voice-it-only account serves no tenant, so the default listing --
+    what admission, capacity and setup read -- leaves it out; Capacity ›
+    Accounts and the pool move ask with `include_reserved` and see it, its
+    owner only."""
+    account_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    client.identity.as_platform()
+
+    def listed(tenant: str, **params) -> list[str]:
+        response = client.get("/v1/accounts", params={"tenant_id": tenant, **params})
+        assert response.status_code == 200, response.text
+        return [a["account_id"] for a in response.json()["accounts"]]
+
+    assert listed(OWNER) == []
+    assert listed(OWNER, include_reserved="true") == [account_id]
+    assert listed(ENG, include_reserved="true") == []
+    # So the move back to the workspace pool is reachable.
+    back = client.put(f"/v1/accounts/{account_id}/pools",
+                      json={"pools": [POOL_WORKSPACE], "confirm_label": "chatgpt-1"})
+    assert back.status_code == 200, back.text
+    assert listed(OWNER) == [account_id]
 
 
 # -- a Voice it session ------------------------------------------------------
@@ -216,6 +292,29 @@ def test_the_listed_person_leases_renews_and_releases(client, accounts):
         json={"assignment_id": body["assignment_id"], "voice_session_id": "vs-1"},
     )
     assert again.status_code == 409
+
+
+def test_a_lost_race_for_one_account_leases_the_next_free_one(client, accounts, monkeypatch):
+    """Another session took the chosen account's last slot between the
+    listing and the hold: the session gets the other free account, not a
+    refusal."""
+    import quota_broker.main as broker_main
+
+    first = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    second = _plan(client, accounts, OWNER, "chatgpt-2", pools=[POOL_VOICE_IT])
+    real = broker_main.acquire_hold
+    lost: list[str] = []
+
+    def racing(db, account_id, **kwargs):  # noqa: ANN001
+        if not lost:
+            lost.append(account_id)
+            return None
+        return real(db, account_id, **kwargs)
+
+    monkeypatch.setattr(broker_main, "acquire_hold", racing)
+    body = _lease(client).json()
+    assert len(lost) == 1
+    assert body["account_id"] in {first, second} - set(lost), body
 
 
 def test_a_failed_credential_read_leaves_no_hold(client, accounts):

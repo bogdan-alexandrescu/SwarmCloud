@@ -49,7 +49,7 @@ vi.mock('../fetch', async (importOriginal) => ({
   write: fetchMock.write,
 }))
 
-const { AccountsScreen, VoiceItPool, ACCOUNT_POOLS_ROUTE } = await import('../Accounts')
+const { AccountsScreen, VoiceItPool, ACCOUNT_POOLS_ROUTE, servesWorkspace } = await import('../Accounts')
 
 const WAIT = { timeout: 5000 } as const
 const CONFIRM = { name: (_: string, el: Element) => el.classList.contains('c-dlg') }
@@ -179,6 +179,18 @@ describe('the Voice it pool section', () => {
     expect(rows[1]!.querySelector('[data-holder="free"]')!.textContent).toBe('free')
     // The windows are the table's own cells.
     expect(both.querySelectorAll('.acct-win').length).toBe(2)
+  })
+
+  it('keeps a space between its heading and the account count', () => {
+    render(<VoiceItPool accounts={[BOTH, VOICE_ONLY] as Account[]} now={Date.now()} phone={false} />)
+    const section = screen.getByRole('region', { name: 'Voice it pool' })
+    expect(section.querySelector('h3')!.textContent).toBe('Voice it pool 2 accounts')
+  })
+
+  it('counts a Voice-it-only account toward no workspace capacity', () => {
+    // The verdict, the rule line and the forecast read only these.
+    expect([WORKSPACE_ONLY, BOTH, VOICE_ONLY, OLD_BROKER].filter(servesWorkspace).map((a) => a.label))
+      .toEqual([WORKSPACE_ONLY.label, BOTH.label, OLD_BROKER.label])
   })
 
   it('is not drawn when no account is in the Voice it pool', async () => {
