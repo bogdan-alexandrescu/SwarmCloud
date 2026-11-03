@@ -459,6 +459,60 @@ JEV_DECIDE_NOTE = (
     "Jev budget, and credential-shaped text is removed before anything is sent."
 )
 
+#: AGENTS-USE-TOOLS-WHEN (part of #2688). Experiment batch two was stopped on
+#: 2 November 2026: graph-on build steps called the graph 1, 0, 0, 0, 0 and 0
+#: times against 200-560 built-in calls, and Jev-on steps never called
+#: `jev_decide`. Their transcripts show both servers `connected` and their
+#: tools listed: loaded, not chosen. The one line naming them sat after the
+#: whole brief while CLAUDE.md, in the system context, says "`grep -n` or
+#: `rg` first", and nothing named a moment for either tool. So the moments go
+#: in `--append-system-prompt` (`system_note`), at CLAUDE.md's weight and in
+#: every session of the attempt -- a resumed one, and a fresh one after a
+#: context handoff whose prompt is only the handoff -- and only when the
+#: switch is on. Each names where the tool beats grep or a solo call, and
+#: when to skip it, so no call is forced where it adds nothing.
+GRAPH_SYSTEM_NOTE = (
+    "Code intelligence is on for this step: the swarm-graph tools hold this "
+    "repository's symbols, call edges, covering tests and history. A text search "
+    "misses calls through imports, aliases and methods and cannot tell a call from "
+    "a mention, so use the graph at these three moments:\n"
+    "1. Before you edit an existing function, class or file, call `context` on the "
+    "symbol (callers, callees and covering tests in one call) or `impact` on the "
+    "file: those callers are what your change must keep working.\n"
+    "2. Before you run tests, call `tests_for` with the files you changed (`files`, "
+    "repo-relative paths) and run what it lists beside the tests you chose.\n"
+    "3. Before you finish, call `impact` on each existing file you changed and "
+    "check every caller it lists still holds.\n"
+    "Skip them for a file you created in this step and for a docs-only change. A "
+    "row marked `stale` is on a path changed since the index, and zero callers or "
+    "tests is unknown, not none: then grep. A repository rule to grep first and "
+    "read big files by window is about reading files; it is not a reason to skip "
+    "these calls."
+)
+JEV_SYSTEM_NOTE = (
+    f"Jev is on for this step: the `{JEV_DECIDE_TOOL}` tool gives an independent "
+    "second judgement on a state you pass. Call it where you would otherwise "
+    "decide alone:\n"
+    "1. a choice the brief leaves open between designs, wordings or approaches: "
+    "ask which option fits, with the options as criteria;\n"
+    "2. before you finish, the acceptance check: ask whether each requirement the "
+    "brief states is met, giving your evidence for each;\n"
+    "3. when a test or check fails and it is unclear whether the code or the test "
+    "is wrong.\n"
+    "Do not call it for a fact you can check yourself. Its answer is advisory: "
+    "weigh it. It shares this task's Jev budget, and credential-shaped text is "
+    "removed before anything is sent."
+)
+#: The CLI flag carrying `system_note` (Claude Code 2.1.283: "Append a custom
+#: system prompt to the default system prompt", print mode included).
+APPEND_SYSTEM_PROMPT_FLAG = "--append-system-prompt"
+
+
+def system_note(*, graph: bool, jev: bool) -> str | None:
+    """The system-prompt block for the switched-on tools, or None with both off."""
+    blocks = [note for on, note in ((graph, GRAPH_SYSTEM_NOTE), (jev, JEV_SYSTEM_NOTE)) if on]
+    return "\n\n".join(blocks) or None
+
 #: Set by the dispatcher on the worker container only with the live browser's
 #: display sidecar (scheduler/dispatch.py); the lifecycle passes it on.
 CDP_ENDPOINT_ENV = "SWARM_CDP_ENDPOINT"
@@ -1845,6 +1899,11 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             raise RunnerFailure(f"{LIVE_BROWSER_UNAVAILABLE}: Playwright MCP is not registered; "
                                 "the agent was not started")
         extra += ["--mcp-config", str(mcp)]
+    # When each switched-on tool helps, at the system prompt's weight and in
+    # every session of the attempt (AGENTS-USE-TOOLS-WHEN; `system_note`).
+    moments = system_note(graph=bool(graph_snapshot or graph_served), jev=bool(judge_config))
+    if moments:
+        extra += [APPEND_SYSTEM_PROMPT_FLAG, moments]
     supervisor: lightpanda.Supervisor | None = None
     try:
         if lightpanda_env:
