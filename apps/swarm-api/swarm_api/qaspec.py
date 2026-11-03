@@ -94,7 +94,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Any, Collection, Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from swarm_common.config import Settings
 from swarm_common.profiles import RUNNER_PROFILES
@@ -351,6 +351,67 @@ def base_url(target: Mapping[str, Any]) -> str:
     return (origin + parts.path).rstrip("/")
 
 
+#: A leg's `entry_query` (QA-ENTRY-QUERY): the plain `key=value` pairs every
+#: URL the leg opens carries -- the gate's sign-in entry, every route the
+#: capture loads -- for an app that picks its backend from the address (one
+#: app, `?env=production` or `?env=staging`). Plain characters only, so no
+#: percent-encoding hides anything, and no key that reads as a credential: a
+#: query is logged by every proxy on the way, so it never carries a secret.
+ENTRY_QUERY_MAX = 256
+MAX_ENTRY_QUERY_PAIRS = 8
+_QUERY_KEY = re.compile(r"[A-Za-z][A-Za-z0-9._~-]{0,63}")
+_QUERY_VALUE = re.compile(r"[A-Za-z0-9._~,:-]{0,128}")
+_CREDENTIAL_KEY = re.compile(
+    r"token|secret|passw|pwd|key|auth|session|sig|cred|bearer|jwt|cookie|code|otp|ticket|nonce|saml",
+    re.IGNORECASE)
+ENTRY_QUERY_MESSAGE = (
+    f"entry_query must be up to {MAX_ENTRY_QUERY_PAIRS} plain key=value pairs joined by &, at most "
+    f"{ENTRY_QUERY_MAX} characters: letters, digits and . _ ~ - (a value also , :), each key once, "
+    "and no key that reads as a credential (token, secret, password, key, auth, session, code ...)")
+
+
+def entry_query(target: Mapping[str, Any]) -> str | None:
+    """The leg's `entry_query`, checked, as `k=v&k2=v2`; None when unset.
+    Raises `QaSpecError` with a sentence that quotes nothing of the value."""
+    raw = target.get("entry_query")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise _invalid(ENTRY_QUERY_MESSAGE)
+    text = raw.strip()
+    if text.startswith("?"):
+        text = text[1:]
+    if not text:
+        return None
+    if len(text) > ENTRY_QUERY_MAX:
+        raise _invalid(ENTRY_QUERY_MESSAGE)
+    pairs = text.split("&")
+    if len(pairs) > MAX_ENTRY_QUERY_PAIRS:
+        raise _invalid(ENTRY_QUERY_MESSAGE)
+    keys: set[str] = set()
+    for pair in pairs:
+        key, eq, value = pair.partition("=")
+        if not eq or not _QUERY_KEY.fullmatch(key) or not _QUERY_VALUE.fullmatch(value) \
+                or key.lower() in keys or _CREDENTIAL_KEY.search(key):
+            raise _invalid(ENTRY_QUERY_MESSAGE)
+        keys.add(key.lower())
+    return "&".join(pairs)
+
+
+def with_query(url: str, query: str | None) -> str:
+    """`url` with the leg's `entry_query` merged into its own query, the
+    leg's keys winning (a route's `?tab=x` is kept, its `env` replaced). The
+    fragment stays where it was. `url` unchanged when `query` is None."""
+    if not query:
+        return url
+    parts = urlsplit(url)
+    ours = [tuple(p.split("=", 1)) for p in query.split("&")]
+    mine = {k for k, _ in ours}
+    kept = [p for p in parts.query.split("&") if p and p.split("=", 1)[0] not in mine] if parts.query else []
+    merged = "&".join([*kept, *(f"{k}={v}" for k, v in ours)])
+    return urlunsplit((parts.scheme, parts.netloc, parts.path or "/", merged, parts.fragment))
+
+
 def screen_url(base: str, path: str) -> str:
     """The URL a base-relative `path` opens under `base` (as `base_url`
     returns it, with no trailing slash): `/` is the base itself, with its
@@ -510,7 +571,7 @@ MAX_ENVIRONMENTS = 8
 #: app and stay on the target once, because two copies drift (§1.1).
 LEG_FIELDS = (
     "base_url", "host", "origin", "environment", "sign_in", "credential", "challenge_bypass",
-    "challenge_bypass_value", "host_state", "approved_origins", "approved_by", "approved_at",
+    "challenge_bypass_value", "entry_query", "host_state", "approved_origins", "approved_by", "approved_at",
     "approved_idp_token_path", "read_posts", "rate", "discovered", "discovered_at", "discovered_by",
     "discovered_workflow", "discovered_new", "discovery_error", "discovering", "legacy_map_key",
 )
@@ -1138,6 +1199,10 @@ def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Ma
         flags.append("--keep-storage")
     if "clock" in routes:
         flags.append("--clock")
+    query = entry_query(target)
+    if query is not None:
+        # QA-ENTRY-QUERY: every URL the capture opens carries the leg's pairs.
+        flags.append(f"--entry-query {shlex.quote(query)}")
     out = f"$SWARM_ARTIFACTS_DIR/capture-{group}"
     # `capture --base` takes the ORIGIN: route paths are origin-relative, as
     # `discover` writes them (`/todomvc/...` under a `/todomvc` base), so a base

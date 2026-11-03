@@ -333,7 +333,7 @@ import urllib.request
 import zlib
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 #: The live browser's CDP endpoint (swarm_browser.ENDPOINT_ENV): set only when it exists.
 ENDPOINT_ENV = "SWARM_CDP_ENDPOINT"
@@ -1167,6 +1167,47 @@ def _names(value: str, what: str) -> list[str]:
 # -- the live browser ----------------------------------------------------------
 
 
+#: `capture --entry-query` (QA-ENTRY-QUERY): the leg's plain `key=value`
+#: pairs, applied to every URL the capture opens. `swarm_api.qaspec`'s rules
+#: (`entry_query`, `with_query`), restated because this image does not carry
+#: swarm-api; swarm-api checked the value at registration, this checks it again.
+ENTRY_QUERY_MAX = 256
+MAX_ENTRY_QUERY_PAIRS = 8
+_QUERY_KEY = re.compile(r"[A-Za-z][A-Za-z0-9._~-]{0,63}")
+_QUERY_VALUE = re.compile(r"[A-Za-z0-9._~,:-]{0,128}")
+
+
+def entry_query(text: str | None) -> list[tuple[str, str]]:
+    """`--entry-query`'s pairs, in order; [] for none. Raises UsageError."""
+    text = (text or "").strip().lstrip("?")
+    if not text:
+        return []
+    pairs = text.split("&")
+    if len(text) > ENTRY_QUERY_MAX or len(pairs) > MAX_ENTRY_QUERY_PAIRS:
+        raise UsageError("--entry-query is at most %d key=value pairs, %d characters"
+                         % (MAX_ENTRY_QUERY_PAIRS, ENTRY_QUERY_MAX))
+    out: list[tuple[str, str]] = []
+    for pair in pairs:
+        key, eq, value = pair.partition("=")
+        if not eq or not _QUERY_KEY.fullmatch(key) or not _QUERY_VALUE.fullmatch(value) \
+                or any(k.lower() == key.lower() for k, _ in out):
+            raise UsageError("--entry-query takes plain key=value pairs joined by &, each key once")
+        out.append((key, value))
+    return out
+
+
+def entry_url(url: str, pairs: list[tuple[str, str]] | None) -> str:
+    """`url` with the leg's pairs merged into its own query, the leg's keys
+    winning; the fragment (a hash route) stays after it. Unchanged with none."""
+    if not pairs:
+        return url
+    parts = urlsplit(url)
+    mine = {k for k, _ in pairs}
+    kept = [p for p in parts.query.split("&") if p and p.split("=", 1)[0] not in mine]
+    query = "&".join([*kept, *(f"{k}={v}" for k, v in pairs)])
+    return urlunsplit((parts.scheme, parts.netloc, parts.path or "/", query, parts.fragment))
+
+
 def _connect():
     """`(playwright, browser, context)` on the live browser (swarm_browser.live)."""
     from swarm_browser import live
@@ -1791,8 +1832,10 @@ def _shot(page, segment: int, preset: str | None = None) -> tuple[bytes, list[di
 def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict, preset: str, theme: str,
                    out: Path, axe_source: str | None, settle: str = "console",
                    persona_cookie: bool = True, gate: _GateRefusals | None = None,
-                   links: dict[str, list] | None = None, keep_storage: bool = False) -> dict:
-    """One route at one preset and theme. Raises with the step that failed.
+                   links: dict[str, list] | None = None, keep_storage: bool = False,
+                   query: list[tuple[str, str]] | None = None) -> dict:
+    """One route at one preset and theme. `query` (`--entry-query`) is merged
+    into every URL it opens (`entry_url`). Raises with the step that failed.
     `persona_cookie` False (sets_persona) sets no PERSONA_COOKIE. `keep_storage`
     True never forces a full load of a same-document (hash) route. `gate`
     gives the route the refusals the live gate made while it loaded. A route
@@ -1811,13 +1854,14 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         if persona is not None:
             here = _origin(page.url)
             if here is None or here != _origin(base):
-                page.goto(base, wait_until="load", timeout=NAV_TIMEOUT_MS)
+                page.goto(entry_url(base, query), wait_until="load", timeout=NAV_TIMEOUT_MS)
             page.evaluate(PERSONA_COOKIE_JS, f"{PERSONA_COOKIE}={persona}; path=/; SameSite=Lax")
         # After the persona step, so what the origin's own load logged is not
         # the route's.
         errors.reset()
         step = "navigate"
-        response = page.goto(base + route["path"], wait_until="load", timeout=NAV_TIMEOUT_MS)
+        response = page.goto(entry_url(base + route["path"], query), wait_until="load",
+                             timeout=NAV_TIMEOUT_MS)
         # None for a same-document navigation (a hash route from the route
         # before it): no document answered, so there is no status to read.
         # Playwright returns None for every same-document navigation, and the
@@ -1983,7 +2027,8 @@ def _bundle(out: Path, bundle: Path) -> None:
 
 def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: list[str],
             out: Path, bundle: Path, axe_source: str | None = None, keep_storage: bool = False,
-            settle: str = "console", clock: str | None = None, crawl: dict | None = None) -> dict:
+            settle: str = "console", clock: str | None = None, crawl: dict | None = None,
+            query: list[tuple[str, str]] | None = None) -> dict:
     """Capture `group` at every preset and theme; write the manifest and the
     tarball, whatever failed. Returns the manifest. `clock` (else the route
     list's) freezes the page clock; neither leaves it running.
@@ -2033,7 +2078,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                         entry = _capture_route(page, errors, base=base, group=group, route=route,
                                                preset=preset, theme=theme, out=out, axe_source=axe_source,
                                                settle=settle, persona_cookie=persona_cookie, gate=gate,
-                                               links=harvested, keep_storage=keep_storage)
+                                               links=harvested, keep_storage=keep_storage, query=query)
                         manifest["routes"].append(entry)
                         why = []
                         if entry["pending"]:
@@ -2067,7 +2112,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
             page.clock.set_fixed_time(clock_at({"clock": frozen}))
         sweep(page, errors, group_routes)
         if crawl is not None:
-            walk = _crawl_walk(routes, base, crawl, gate, harvested or {})
+            walk = _crawl_walk(routes, base, crawl, gate, harvested or {}, query=query)
             walk.run(page)
             found, owned = _found(walk, routes, crawl)
             sweep(page, errors, owned)
@@ -2152,7 +2197,8 @@ def _stored(routes: dict) -> list[dict]:
     return [route for members in routes["groups"].values() for route in members]
 
 
-def _crawl_walk(routes: dict, base: str, crawl: dict, gate: _GateRefusals, harvested: dict) -> _Walk:
+def _crawl_walk(routes: dict, base: str, crawl: dict, gate: _GateRefusals, harvested: dict,
+                query: list[tuple[str, str]] | None = None) -> _Walk:
     """The walk a crawling capture makes: from its start path and every
     stored route, hash routes on, disclosure clicks on, robots.txt read."""
     origin = _origin(base)
@@ -2168,7 +2214,7 @@ def _crawl_walk(routes: dict, base: str, crawl: dict, gate: _GateRefusals, harve
                  words=words, selectors=crawl.get("selectors", []),
                  seconds=crawl.get("seconds", CRAWL_SECONDS),
                  navigation_ms=crawl.get("navigation_ms", NAVIGATION_MS), gate=gate, harvested=harvested,
-                 dismissed=set(routes.get("dismissed", [])))
+                 dismissed=set(routes.get("dismissed", [])), query=query)
     for route in _stored(routes):
         walk.seed(route["path"], route.get("reveal"))
     # The start path heads the walk; listed after the stored routes, so one
@@ -2457,8 +2503,11 @@ class _Walk:
                  clicks: bool = False, words: list[str] | tuple[str, ...] = DEFAULT_EXCLUDED_CONTROLS,
                  selectors: list[str] | None = None, seconds: float = CRAWL_SECONDS,
                  navigation_ms: int = NAVIGATION_MS, gate: _GateRefusals | None = None,
-                 harvested: dict[str, list] | None = None, dismissed: set[str] | None = None) -> None:
+                 harvested: dict[str, list] | None = None, dismissed: set[str] | None = None,
+                 query: list[tuple[str, str]] | None = None) -> None:
         self.root, self.origin, self.start = root, origin, start
+        #: `--entry-query`'s pairs, on every page the walk loads (`entry_url`).
+        self.query = list(query or [])
         #: The run's dismissed routes, as `_sha(state_key)` (QA-CRAWL-SKIP).
         self.dismissed = set(dismissed or ())
         self.globs, self.rules = globs, rules
@@ -2557,7 +2606,7 @@ class _Walk:
     def _goto(self, page, path: str):
         self._space()
         try:
-            return page.goto(self.root + path, wait_until="load", timeout=NAV_TIMEOUT_MS)
+            return page.goto(entry_url(self.root + path, self.query), wait_until="load", timeout=NAV_TIMEOUT_MS)
         finally:
             self.last_nav = _now()
 
@@ -2946,6 +2995,9 @@ def _parser() -> argparse.ArgumentParser:
     cap.add_argument("--routes", required=True)
     cap.add_argument("--group", required=True)
     cap.add_argument("--base", required=True, help="the console's origin, e.g. http://localhost:5173")
+    cap.add_argument("--entry-query", default=None,
+                     help="plain key=value pairs (k=v&k2=v2) merged into every URL the capture opens, "
+                          "the leg's keys winning (QA-ENTRY-QUERY), e.g. env=production")
     cap.add_argument("--presets", default="desktop,phone-390")
     cap.add_argument("--themes", default="light,dark")
     cap.add_argument("--out", required=True)
@@ -3032,6 +3084,7 @@ def _capture_command(args) -> int:
             raise UsageError("--base must be an http(s) origin")
         if args.clock is not None:
             clock_at({"clock": args.clock})
+        query = entry_query(args.entry_query)
         axe_source = None
         if args.axe:
             try:
@@ -3045,7 +3098,8 @@ def _capture_command(args) -> int:
     out.mkdir(parents=True, exist_ok=True)
     manifest = capture(routes=routes, group=args.group, base=args.base.rstrip("/"), presets=presets,
                        themes=themes, out=out, bundle=bundle, axe_source=axe_source,
-                       keep_storage=args.keep_storage, settle=args.settle, clock=args.clock, crawl=crawl)
+                       keep_storage=args.keep_storage, settle=args.settle, clock=args.clock, crawl=crawl,
+                       query=query)
     images = sum(len(r["images"]) for r in manifest["routes"])
     sys.stdout.write(json.dumps({"group": args.group, "images": images, "captured": len(manifest["routes"]),
                                  "failed": len(manifest["failed"]),
