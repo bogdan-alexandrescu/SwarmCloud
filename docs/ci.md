@@ -5004,7 +5004,7 @@ selection against fixture diffs.
 ### The gate time-boxes the guard run and runs its parts side by side
 
 Owner decision, 3 November 2026 ("1+3"), after a full-day re-measure of the
-worker's pre-publish gate (`agent_worker/prepublish.py`, each task's final
+worker's pre-publish gate (`agent_worker/prepublish.py`, each agent's final
 attempt, 72 hours before the gate change against 22.5 hours after): builder
 steps (implement, build, fix) went from 8.5 to 15.6 minutes of gate a run on
 average, the slowest tenth from 36.8 to 64.3 minutes. 96% of that was the
