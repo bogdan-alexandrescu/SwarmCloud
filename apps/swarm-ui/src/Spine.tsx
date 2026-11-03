@@ -48,7 +48,7 @@ import { Banner, Button, ButtonLink, NamedMark, Toaster, acknowledge, routedClic
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
-import { addressToPath } from './paths'
+import { addressToPath, workspacePagePathTenant } from './paths'
 import { PageHead } from './Shell'
 import { AdminRoleRefusal } from './WorkspaceRefusal'
 import { shortcut, typedIntoField } from './shortcuts'
@@ -1772,7 +1772,17 @@ export function SkyShell({
   const [openedAtAdmin, setOpenedAtAdmin] = useState(() => /^\/admin\/?$/.test(globalThis.location?.pathname ?? '') || /^#\/?admin\/?$/.test(globalThis.location?.hash ?? ''))
   const platformPage = section === 'admin' && adminDecided && landing !== null && !missing
     && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
-  const adminRefused = section === 'admin' && adminDecided && !missing && (landing === null || (platformPage && !openedAtAdmin))
+  // A PERSON'S OWN WORKSPACE'S PAGE IS NEVER REFUSED (admin routes lane review,
+  // part of #2688): Config's People and roles and Workspace Settings open the
+  // workspace in hand's page (paths.ts `movedToWorkspacePage`), and someone
+  // whose only workspace is their personal one administers no group, so has no
+  // Admin pages -- the gate refused the settings Config used to give them. The
+  // page is theirs when it is the one in hand (not yet named), the one `me`
+  // reads, or one of their own `/v1/tenants/mine` entries (never a reach).
+  const pageTenant = section === 'admin' ? workspacePagePathTenant(place) : undefined
+  const ownWorkspacePage = pageTenant !== undefined && who !== null
+    && (pageTenant === null || pageTenant === who.tenant.tenant_id || (dataOf(mine) ?? []).some((c) => c.tenant_id === pageTenant && !isReach(c)))
+  const adminRefused = section === 'admin' && adminDecided && !missing && !ownWorkspacePage && (landing === null || (platformPage && !openedAtAdmin))
   const refusedEntry = PANEL_PAGES.admin.find((p) => p.to === `admin/${tab}`)
   const refusedPage = refusedEntry?.label ?? 'Admin'
   const refusedHere = (dataOf(mine) ?? []).find((c) => c.tenant_id === who?.tenant.tenant_id)

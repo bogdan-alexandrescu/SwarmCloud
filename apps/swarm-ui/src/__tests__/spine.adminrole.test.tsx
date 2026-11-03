@@ -237,6 +237,40 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     expect(window.location.search).toBe('')
   })
 
+  // REVIEW (admin routes lane, part of #2688): someone whose only workspace is
+  // their personal one administers no group, so has no Admin pages; the gate
+  // refused the Workspace Settings Config used to give them.
+  it('opens a personal-only person\'s old Config › Workspace Settings address on their workspace\'s Settings tab, not a refusal', async () => {
+    serve(ME(false), [PERSONAL])
+    await app('/config/workspace')
+    await waitFor(() => expect(window.location.search).toBe('?tab=settings'))
+    expect(window.location.pathname.startsWith('/admin/workspaces')).toBe(true)
+    // MUTATION: drop `!ownWorkspacePage` from Spine's `adminRefused` -> the refusal is drawn in place of the page and this fails.
+    await waitFor(() => expect(document.querySelector('.wpg-body[role="tabpanel"]')?.getAttribute('aria-label')).toBe('Settings'))
+    expect(document.querySelector('[data-refused="admin"]'), 'the person was refused their own workspace').toBeNull()
+    expect(adminItem(), 'a personal-only person was drawn an Admin item').toBeNull()
+  })
+
+  it('opens a personal-only person\'s own workspace page by its name, and still refuses them another workspace\'s', async () => {
+    serve(ME(false), [PERSONAL])
+    await app('/admin/workspaces/u-ana?tab=settings')
+    await waitFor(() => expect(document.querySelector('.wpg-body[role="tabpanel"]')?.getAttribute('aria-label')).toBe('Settings'))
+    expect(document.querySelector('[data-refused="admin"]')).toBeNull()
+    cleanup()
+    serve(ME(false), [PERSONAL])
+    await app('/admin/workspaces/eng')
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]')).not.toBeNull())
+  })
+
+  it('reads a workspace page\'s tenant off its path: named, in hand, or none', async () => {
+    const { workspacePagePathTenant } = await import('../paths')
+    expect(workspacePagePathTenant('/admin/workspaces/u-ana?tab=settings')).toBe('u-ana')
+    expect(workspacePagePathTenant('/admin/workspaces/a%20b')).toBe('a b')
+    expect(workspacePagePathTenant('/admin/workspaces?tab=setup')).toBeNull()
+    expect(workspacePagePathTenant('/admin/workspaces')).toBeUndefined()
+    expect(workspacePagePathTenant('/admin/limits')).toBeUndefined()
+  })
+
   it('lists for a platform admin every group workspace, the ones they reach too, each marked as a platform admin\'s', async () => {
     serve(ME(true), [
       PERSONAL,

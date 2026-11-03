@@ -428,6 +428,25 @@ export function workspacePageAddress(tenantId: string | null, tab: string = 'peo
 }
 
 /**
+ * The workspace a path's page is (`workspacePageAddress`'s path): its tenant,
+ * null for the workspace in hand (an old Config address, not yet named), and
+ * undefined when the path is no workspace's page -- the list included.
+ */
+export function workspacePagePathTenant(path: string): string | null | undefined {
+  const q = path.indexOf('?')
+  const bare = q === -1 ? path : path.slice(0, q)
+  if (bare === WORKSPACES_PATH) return q !== -1 && workspaceTabIn(path.slice(q + 1)) !== null ? null : undefined
+  if (!bare.startsWith(`${WORKSPACES_PATH}/`)) return undefined
+  const seg = bare.slice(WORKSPACES_PATH.length + 1)
+  if (seg === '' || seg.includes('/')) return undefined
+  try {
+    return decodeURIComponent(seg)
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * CONFIG › PEOPLE AND ROLES AND CONFIG › WORKSPACE SETTINGS LEFT THE CONFIG
  * PANEL for the workspace's own page (admin routes lane; part of #2688): their
  * addresses -- and every older one that already landed on them (`#settings/people`,
