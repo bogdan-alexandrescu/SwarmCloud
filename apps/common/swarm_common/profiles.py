@@ -1105,6 +1105,9 @@ SECRET_KINDS: tuple[str, ...] = (
     "api_key", "bearer_token", "basic_auth", "oauth_client", "opaque", "forge_token",
 )
 _SLOT_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+#: A runtime capability's name (`RunnerProfile.runtime_capabilities`,
+#: contract request 136): the shape of `swarm_api.workcontract`'s names.
+_CAPABILITY_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 @dataclass(frozen=True)
@@ -1300,6 +1303,16 @@ class RunnerProfile:
     #: `supports_max_turns`. Last in the class, after the model classes, so no
     #: positional construction of a profile changes meaning.
     max_turns: int | None = None
+    #: Contract request 136 (AQ-WORK-CONTRACT, part of #2688), accepted by the
+    #: owner 3 November 2026. The runtime capabilities this profile's runner
+    #: provides (`dom_automation`, `screenshots`, `write_isolation` ...), each
+    #: a name from `swarm_api.workcontract.RUNTIME_CAPABILITIES`, so swarm-api
+    #: can refuse a strict work contract whose capabilities its profile does
+    #: not provide. Names only, never a binary or a path (invariant 10). Empty
+    #: on every profile until the routing package fills them in; each
+    #: catalogue entry states its value, so filling one in is an edit to that
+    #: profile. Last in the class, so no positional construction changes meaning.
+    runtime_capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.control_plane:
@@ -1416,6 +1429,23 @@ class RunnerProfile:
                 "(contract request 133)"
             )
         self._check_model_classes()
+        self._check_runtime_capabilities()
+
+    def _check_runtime_capabilities(self) -> None:
+        """Contract request 136: capability names, each once."""
+        if not isinstance(self.runtime_capabilities, tuple) or not all(
+            isinstance(c, str) and _CAPABILITY_NAME.fullmatch(c)
+            for c in self.runtime_capabilities
+        ):
+            raise ValueError(
+                f"runner {self.name}: runtime_capabilities is a tuple of capability "
+                f"names, not {self.runtime_capabilities!r} (contract request 136)"
+            )
+        if len(set(self.runtime_capabilities)) != len(self.runtime_capabilities):
+            raise ValueError(
+                f"runner {self.name}: runtime_capabilities names a capability twice "
+                "(contract request 136)"
+            )
 
     def _check_model_classes(self) -> None:
         """Contract request 101: a profile's classes mean something only where a
@@ -1691,6 +1721,7 @@ _GENERIC_PROFILE = RunnerProfile(
     backend=Backend.GKE_AUTOPILOT,
     runner_argv=("python", "-m", "agent_worker.runners.generic"),
     provider=None,
+    runtime_capabilities=(),
 )
 
 #: The generic runner's inputs (`agent_worker/runners/generic.py`).
@@ -1861,6 +1892,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         timeout_seconds=600,
         checkpoint_interval_seconds=30,
         inputs=_MOCK_INPUTS,
+        runtime_capabilities=(),
     ),
     # Built from `_GENERIC_PROFILE` (declared above, alongside `_GENERIC_INPUTS`,
     # so the input's own `timeout_seconds` ceiling can read this profile's
@@ -1897,6 +1929,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
+        runtime_capabilities=(),
     ),
     # CONTRACT REQUEST 113, accepted by the owner 2026-10-22 (Q6 of
     # docs/design/agent-autonomy.md §7, applied by lane AU-9): claude-code made
@@ -1927,6 +1960,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
+        runtime_capabilities=(),
     ),
     "codex": RunnerProfile(
         name="codex",
@@ -1964,6 +1998,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         # request 11 when the one registered key was refused; it now runs on a
         # pool ChatGPT plan as well as a tenant's key.
         secret_slots={"files": _FILES_SLOT},   # contract request 80
+        runtime_capabilities=(),
     ),
     "browser": RunnerProfile(
         name="browser",
@@ -1978,6 +2013,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         timeout_seconds=5400,
         inputs=_BROWSER_INPUTS,
         secret_slots={"files": _FILES_SLOT},   # contract request 80
+        runtime_capabilities=(),
     ),
     # --- #295, the merge chain: contract requests 33, 35 and 36 -------------
     #
@@ -2021,6 +2057,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=(),
         timeout_seconds=600,
         inputs={},
+        runtime_capabilities=(),
     ),
     "post-verdict": RunnerProfile(
         name="post-verdict",
@@ -2051,6 +2088,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         inputs={},
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
+        runtime_capabilities=(),
     ),
     # Identical to claude-code except its name and never_restore_checkpoint,
     # and, since contract request 53 moved claude-code to GKE Autopilot, its
@@ -2080,6 +2118,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=("opus",),
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
+        runtime_capabilities=(),
     ),
     # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
     # on agent-runtime-indexer, the image that carries the repository index's
@@ -2109,6 +2148,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
+        runtime_capabilities=(),
     ),
     # CONTRACT REQUEST 67, accepted by the owner 2026-10-11: claude-code on
     # agent-runtime-browser (Playwright + Chromium), so an agent can render
@@ -2141,6 +2181,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
+        runtime_capabilities=(),
     ),
     # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
     # docs/design/lightpanda-runtime.md), accepted by the owner 2026-10-31:
@@ -2168,6 +2209,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
+        runtime_capabilities=(),
     ),
     # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
     # docs/design/human-steps.md §5 request C): a workflow step that waits for
@@ -2188,6 +2230,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         timeout_seconds=300,          # unused; the wait is await_input's (at most 24 h)
         inputs={},
         available=True,
+        runtime_capabilities=(),
     ),
     # CONTRACT REQUEST 124, accepted by BGD 2026-10-27 (FL-CONTRACT,
     # docs/design/fix-loop.md §7 request A, Q1 and Q10): a workflow step that
@@ -2213,6 +2256,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
             "fix-loop is not available yet: it ships unavailable until its "
             "acceptance run passes, as docs/design/fix-loop.md says."
         ),
+        runtime_capabilities=(),
     ),
 }
 

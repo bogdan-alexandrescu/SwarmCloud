@@ -9,6 +9,7 @@ stored contract body with the same function before it enforces any of it.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 
 from swarm_common import specsign
@@ -62,7 +63,12 @@ def test_swarm_api_imports_the_one_definition_rather_than_restating_it():
     assert wc.CONTRACT_PURPOSE is common.CONTRACT_PURPOSE == "swarm.work-contract/v1"
     assert wc.SCHEMA_VERSION is common.SCHEMA_VERSION
     assert common.SCHEMA_VERSION == 1
-    assert wc.WorkContract is common.WorkContract
+    # swarm-api's contract adds only what swarm-api reads; the fields and the
+    # projection the digest covers are the shared class's, never overridden.
+    assert issubclass(wc.WorkContract, common.WorkContract)
+    assert wc.WorkContract.to_document is common.WorkContract.to_document
+    assert [f.name for f in dataclasses.fields(wc.WorkContract)] == \
+        [f.name for f in dataclasses.fields(common.WorkContract)]
     assert wc.Requirement is common.Requirement
     assert common.CONTRACT_PURPOSE not in (specsign.SPEC_PURPOSE, specsign.SETTINGS_PURPOSE)
 
