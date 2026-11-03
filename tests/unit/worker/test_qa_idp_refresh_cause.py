@@ -342,3 +342,13 @@ def test_a_capture_with_no_sign_in_state_says_null(qa, world, monkeypatch, tmp_p
 def test_the_worker_and_the_capture_name_the_same_file(qa):
     # MUTATION: rename either constant and the capture reads a file the worker never writes.
     assert qa.QA_TARGET_STATUS_NAME == worker_qt.STATUS_NAME
+
+
+def test_the_handoff_spools_file_list_names_the_sign_in_state():
+    from agent_worker import handoff
+
+    listing = handoff.__doc__.split("$SWARM_HANDOFF = work/.swarm-handoff/", 1)[1].split("WHY A SPOOL.", 1)[0]
+    # MUTATION: leave qa-target.json out of the list and a reader of the spool never finds who writes it.
+    line = next((row for row in listing.splitlines() if row.strip().startswith(worker_qt.STATUS_NAME)), "")
+    assert "this worker's" in line
+    assert worker_qt.NOTICE_NAME in listing
