@@ -64,9 +64,13 @@ starts the ledger with the task's earlier attempts' calls and tokens
 `jev_monthly_cap_tokens`, the month's use so far; `settle`, called by the
 lifecycle after the agent, writes the attempt's row and adds its tokens to
 the month, fenced by the generation. A tenant on the state routes holds no
-Firestore client: with a cap set its month is unread, so it counts as spent
-(every call `skipped:budget_monthly`), and its earlier attempts are not
-carried.
+Firestore client: `setup` asks swarm-api to reserve the attempt's allowance
+(`judge.account.reserve`, lane AQ-JEV-ACCOUNTING), which carries the task's
+earlier attempts and holds the month's cap against every other live
+reservation, and the ledger admits only within that grant; `settle` sends one
+record per call and the attempt's outcome (`judge.account.settle`), however
+the attempt ended. A reserve that fails is Jev off, never an unbounded
+allowance.
 
 NEVER RAISES. A settings read that fails is "off" with its reason, and the
 attempt runs exactly as the local-only run does.
@@ -81,7 +85,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from agent_worker.judge import client as client_mod
-from agent_worker.judge import budget, register, settings as settings_mod
+from agent_worker.judge import account, budget, register, settings as settings_mod
 
 #: The runner's variable: the path of the attempt's Jev config, never a key.
 CONFIG_ENV = "SWARM_JUDGE_CONFIG"
@@ -200,13 +204,8 @@ def unverified(env: Mapping[str, str]) -> str | None:
 def _carried(db: Any, tenant_id: str, given: settings_mod.JudgeSettings,
              env: Mapping[str, str], now: datetime) -> tuple[int, int, int]:
     """`(month_used_tokens, task_calls, task_input_tokens)` for this
-    attempt's ledger. Raises what a read raises: `setup` turns it into off."""
-    from agent_worker import indexrun
-
-    if indexrun.state_routes(db) is not None:
-        # No Firestore here: an unread month counts as spent, never as free.
-        cap = given.monthly_cap_tokens
-        return (cap if cap is not None else 0), 0, 0
+    attempt's ledger, on the direct path. Raises what a read raises: `setup`
+    turns it into off."""
     usage = budget.FirestoreMonthlyLedger(db, runner=None)
     month_used = (usage.used(tenant_id, budget.month_of(now))
                   if given.monthly_cap_tokens is not None else 0)
@@ -261,6 +260,8 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
     scheduler's verdict (VERDICT_ENV), the decision API's URL and the task
     and generation; `now` is the clock the month is read by.
     """
+    from agent_worker import indexrun
+
     env = os.environ if environ is None else environ
     switch = switch if switch in (ON, OFF) else None
     note = record if record is not None else {}
@@ -298,14 +299,22 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
             # `register.prepare` as the one 0600 file `private/jev-key`.
             key = resolve_key()
         month_used = task_calls = task_tokens = 0
+        grant: budget.Grant | None = None
         if settings_mod.opted_in(given) is None:
-            month_used, task_calls, task_tokens = _carried(
-                db, tenant_id, given, env, (now or _utcnow)())
+            if indexrun.state_routes(db) is not None:
+                # swarm-api's reservation: the month and the task, held there.
+                reserved = account.reserve(db)
+                grant, task_calls, task_tokens = (reserved.grant, reserved.task_calls,
+                                                  reserved.task_input_tokens)
+                note["reservation"] = {**grant.as_dict(), "reason": reserved.reason}
+            else:
+                month_used, task_calls, task_tokens = _carried(
+                    db, tenant_id, given, env, (now or _utcnow)())
         done = register.prepare(attempt_dir=attempt_dir, settings=given, key=key,
                                 environ=env, hard_stop_paths=_hard_stops(registration),
                                 secret_env_names=secret_env_names, shim_url=shim_url,
                                 month_used_tokens=month_used, task_calls=task_calls,
-                                task_input_tokens=task_tokens)
+                                task_input_tokens=task_tokens, grant=grant)
     except Exception as exc:  # noqa: BLE001 -- Jev is never worth the attempt
         if log is not None:
             log.warning("jev not set up", error=type(exc).__name__)
@@ -339,26 +348,38 @@ class _Transactions:
 def settle(env: Mapping[str, str], *, db: Any,
            run_transaction: Callable[[Callable[[Any], Any]], Any], tenant_id: str, task_id: str,
            generation: int, fence: Callable[[Any], Any] | None = None, log: Any = None,
-           now: Callable[[], datetime] | None = None) -> tuple[int, int] | None:
-    """After the agent: this attempt's Jev calls and tokens into `jev_usage`
-    (`budget.settle_attempt`), one row per attempt -- with `settled_at`,
-    `now()`, and `by_kind`, summed from the ledger's audit rows -- and the
-    month's total, in one transaction that `fence` refuses for a superseded
-    attempt (invariant 5). Nothing for an attempt without Jev, or on the state
-    routes, which hold no Firestore client. Returns what was settled, or
-    None. Never raises, and changes no output of the attempt."""
+           now: Callable[[], datetime] | None = None,
+           outcome: str | None = None) -> tuple[int, int] | None:
+    """When the attempt ends: this attempt's Jev calls and tokens into
+    `jev_usage`. Directly (`budget.settle_attempt`): one row per attempt --
+    with `settled_at`, `now()`, and `by_kind`, summed from the ledger's audit
+    rows -- and the month's total, in one transaction that `fence` refuses
+    for a superseded attempt (invariant 5). On the state routes (`db` is the
+    attempt's state client): one record per call through swarm-api
+    (`account.settle`) and, when `outcome` (`account.OUTCOMES`) is given --
+    `settle_at_exit`, once the attempt's end is committed -- the settlement,
+    which releases the attempt's reservation. Nothing for an attempt without
+    Jev. Returns what was settled, or None. Never raises, and changes no
+    output of the attempt."""
     from agent_worker import indexrun
 
     path = (env.get(CONFIG_ENV) or "").strip()
     if not path:
         return None
     try:
-        if indexrun.state_routes(db) is not None:
-            return None
         config = json.loads(Path(path).read_text(encoding="utf-8"))
         ledger_path = config.get("ledger") if isinstance(config, dict) else None
         if not isinstance(ledger_path, str) or not ledger_path:
             return None
+        if indexrun.state_routes(db) is not None:
+            ledger = budget.Ledger(Path(ledger_path))
+            before = ledger.read()
+            answer = account.settle(db, ledger, outcome=outcome)
+            if log is not None and outcome is not None:
+                log.info("jev_settled", outcome=outcome, replayed=bool(answer.get("replayed")))
+            return (max(0, int(before["calls"]) - int(before.get("settled_calls") or 0)),
+                    max(0, int(before["input_tokens"])
+                        - int(before.get("settled_tokens") or 0)))
         warn = None if log is None else (lambda event, **kw: log.warning(event, **kw))
         when = (now or _utcnow)()
         return budget.settle_attempt(
@@ -370,6 +391,35 @@ def settle(env: Mapping[str, str], *, db: Any,
         if log is not None:
             log.warning("jev_settle_failed", error=type(exc).__name__)
         return None
+
+
+def settle_at_exit(env: Mapping[str, str], *, db: Any, committed_end: Any,
+                   tenant_id: str, task_id: str, generation: int,
+                   log: Any = None, private_dir: Path | None = None) -> tuple[int, int] | None:
+    """On EVERY exit, before the workspace holding the ledger goes: on the
+    state routes, the quality hooks' and the Jev browser's calls `private_dir`
+    holds (`account.record_tool_calls`, one record each, whether or not the
+    judgments are on), then the judgments' calls not yet recorded and the
+    settlement with how the attempt ended (`account.outcome_of(committed_end)`:
+    succeeded, failed, parked, cancelled, retried, or crashed when no end was
+    committed). The tools' records go first, so the reservation the
+    settlement releases has counted them. The direct path settles after the
+    agent (`settle`, fenced): nothing here. Never raises."""
+    from agent_worker import indexrun
+
+    if indexrun.state_routes(db) is None:
+        return None
+    if private_dir is not None:
+        try:
+            sent = account.record_tool_calls(db, Path(private_dir))
+            if sent and log is not None:
+                log.info("jev_tool_calls_recorded", records=sent)
+        except Exception as exc:  # noqa: BLE001 -- accounting is never worth the attempt
+            if log is not None:
+                log.warning("jev_tool_calls_unrecorded", error=type(exc).__name__)
+    return settle(env, db=db, run_transaction=lambda fn: None, tenant_id=tenant_id,
+                  task_id=task_id, generation=generation, log=log,
+                  outcome=account.outcome_of(committed_end))
 
 
 def finish(env: Mapping[str, str]) -> None:

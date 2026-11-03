@@ -64,8 +64,10 @@ def test_a_good_answer_is_returned_and_counted(tmp_path: Path) -> None:
     ledger = jev.ledger.read()
     assert ledger["calls"] == 1 and ledger["input_tokens"] == 2850
     (row,) = ledger["audit"]
-    assert set(row) == {"call_id", "kind", "backend", "bytes", "input_tokens", "ms", "outcome"}
+    assert set(row) == {"call_id", "kind", "backend", "bytes", "input_tokens", "ms", "outcome",
+                        "requested_model", "tokens_estimated"}
     assert row["kind"] == "J1" and row["outcome"] == "ok" and row["input_tokens"] == 2850
+    assert row["tokens_estimated"] is False
     # The audit never holds the payload.
     assert "implement" not in json.dumps(ledger["audit"])
 

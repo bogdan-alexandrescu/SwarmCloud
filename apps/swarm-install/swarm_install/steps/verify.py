@@ -69,7 +69,8 @@ target's IAM policy, the resource's own and the project's.
 
 **The console's verify row** (D26): every step writes the engine document's
 `verify` field as it goes (`check`, `done`, `total`, `started`,
-`expected_end`, `deadline`, `result`), so Admin › Setup draws "Verify, run by
+`expected_end`, `deadline`, `result`, and on a failure `detail`, the one-line
+cause the terminal prints), so Admin › Setup draws "Verify, run by
 swarm install" with a countdown, and "Send to your team" unlocks only when it
 passes.
 """
@@ -248,10 +249,23 @@ VERIFY_GCP = _Lazy()
 # -- the verify row ------------------------------------------------------------
 
 
-def write_progress(ctx: Any, check: str, done: int, *, result: str | None = None) -> dict[str, Any]:
+#: The longest cause the verify row carries; the terminal still prints it whole.
+DETAIL_MAX = 500
+
+
+def one_line(cause: str) -> str:
+    """A cause as the verify row's `detail`: one line, at most DETAIL_MAX characters."""
+    line = " ".join(cause.split())
+    return line if len(line) <= DETAIL_MAX else line[:DETAIL_MAX - 1] + "…"
+
+
+def write_progress(ctx: Any, check: str, done: int, *, result: str | None = None,
+                   detail: str = "") -> dict[str, Any]:
     """Write the engine document's `verify` field (the console's verify row).
     `started` is the stage's first write; the countdown runs to the runs'
-    expected end and bound from there."""
+    expected end and bound from there. A failed row carries `detail`, the
+    one-line cause the terminal prints; any other row has no `detail` at all,
+    so Admin › Setup never serves an empty or stale one."""
     started = ctx.outputs.get("verify_started")
     if started is None:
         started = ctx.clock.now()
@@ -265,6 +279,8 @@ def write_progress(ctx: Any, check: str, done: int, *, result: str | None = None
         "deadline": started + RUNS_WAIT.bound_s,
         "result": result,
     }
+    if result == "failed" and detail.strip():
+        row["detail"] = one_line(detail)
     engine = getattr(ctx, "engine", None)
     record = getattr(engine, "record", None)
     if record is not None and not ctx.dry_run:
@@ -276,7 +292,8 @@ def write_progress(ctx: Any, check: str, done: int, *, result: str | None = None
                     state=result or "waiting", expected=RUNS_WAIT.expected,
                     remaining_s=max(0.0, row["deadline"] - ctx.clock.now()),
                     detail=f"{done} of {TOTAL} verification checks passed; checking {check}"
-                           + (f" ({result})" if result else ""), **row)
+                           + (f" ({result})" if result else ""),
+                    **{key: value for key, value in row.items() if key != "detail"})
     return row
 
 
@@ -1232,7 +1249,8 @@ class EndToEndStep(_Base):
                     prs[key] = found.pull_request
                 done += 1
         result = "failed" if problems else ("passed" if done == len(RUNS) else None)
-        write_progress(ctx, self.check_name, len(QUICK_CHECKS) + done, result=result)
+        write_progress(ctx, self.check_name, len(QUICK_CHECKS) + done, result=result,
+                       detail="; ".join(problems))
         if problems:
             # A definite failure (a run cloned with a personal token, a run
             # relaunched to its limit, a check run without its proof): no
