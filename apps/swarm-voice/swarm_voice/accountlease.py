@@ -136,6 +136,11 @@ class VoiceBroker:
             body = None
         return response.status_code, body
 
+    async def call(self, path: str, payload: dict) -> tuple[int, Any]:
+        """(status, JSON body) of one authenticated POST to the broker; the
+        planner's lease (plannerlease.py) goes through it."""
+        return await self._post(path, payload)
+
     async def lease(self, *, person: str, voice_session_id: str) -> "PoolCredential":
         """Lease a Voice it pool account for `person`'s session. Raises
         VoicePoolRefused with the broker's reason, or CredentialError."""
