@@ -31,13 +31,17 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
-from swarm_common.specsign import SpecNotCanonical, jcs
-
-
-#: Domain separation: a contract's bytes can never be read as a step spec's
-#: (`swarm.step-spec`) or a settings block's (`swarm.settings/v1`).
-CONTRACT_PURPOSE = "swarm.work-contract/v1"
-SCHEMA_VERSION = 1
+from swarm_common.specsign import SpecNotCanonical
+# The signed form is swarm_common's (contract request 136): the purpose, the
+# schema version and the projection are re-exported, never restated.
+from swarm_common.workcontract import (  # noqa: F401 - re-exported
+    CONTRACT_PURPOSE,
+    LIMIT_KEYS as _LIMIT_KEYS,
+    SCHEMA_VERSION,
+    Requirement,
+    WorkContract as _SignedForm,
+    canonical_bytes as _canonical_bytes,
+)
 
 #: The switch. Off unless the environment says exactly `on`: a contract that
 #: is compiled but not attached changes nothing a task stores.
@@ -163,7 +167,6 @@ _TOP_KEYS = frozenset({
     "acceptance", "requirements", "repositories", "scope", "protected", "capabilities",
     "limits", "artifacts", "ownership",
 })
-_LIMIT_KEYS = ("runner_profile", "model_class", "budget", "max_turns", "timeout_seconds")
 
 
 class WorkContractError(ValueError):
@@ -212,34 +215,15 @@ class ScopeWideningRefused(WorkContractError):
 
 
 @dataclass(frozen=True)
-class Requirement:
-    id: str
-    text: str
-    verification: tuple[str, ...]
+class WorkContract(_SignedForm):
+    """A decoded, canonical work contract. Immutable: an amendment is a new one.
 
+    Its fields and canonical projection (`to_document`) are
+    `swarm_common.workcontract.WorkContract`'s (contract request 136), the one
+    definition the worker digests a stored body with; this adds what only
+    swarm-api reads, and `acceptance`, which the projection carries only when
+    it is not the default."""
 
-@dataclass(frozen=True)
-class WorkContract:
-    """A decoded, canonical work contract. Immutable: an amendment is a new one."""
-
-    contract_id: str
-    tenant_id: str
-    revision: int
-    previous_digest: str | None
-    strictness: str
-    requirements: tuple[Requirement, ...]
-    repositories: tuple[Mapping[str, Any], ...]
-    read_scope: tuple[str, ...]
-    write_scope: tuple[str, ...]
-    protected_paths: tuple[str, ...]
-    protected_interfaces: tuple[str, ...]
-    runtime_capabilities: tuple[str, ...]
-    plugins: Mapping[str, Mapping[str, Any]] = field(hash=False)
-    limits: Mapping[str, Any] = field(hash=False)
-    artifacts: tuple[Mapping[str, Any], ...]
-    owner: str
-    depends_on: tuple[str, ...]
-    withdrawn: tuple[str, ...]
     acceptance: str = ACCEPTANCE_STRICT
 
     def to_document(self) -> dict[str, Any]:
@@ -249,38 +233,7 @@ class WorkContract:
         absent field decodes as `strict`, so both spellings name one revision,
         and every contract written before the field existed keeps its digest
         (and the signed dispatch references that name it keep verifying)."""
-        document = {
-            "schema": SCHEMA_VERSION,
-            "contract_id": self.contract_id,
-            "tenant_id": self.tenant_id,
-            "revision": self.revision,
-            "previous_digest": self.previous_digest,
-            "strictness": self.strictness,
-            "requirements": [
-                {"id": r.id, "text": r.text, "verification": list(r.verification)}
-                for r in self.requirements
-            ],
-            "repositories": [dict(r) for r in self.repositories],
-            "scope": {"read": list(self.read_scope), "write": list(self.write_scope)},
-            "protected": {
-                "paths": list(self.protected_paths),
-                "interfaces": list(self.protected_interfaces),
-            },
-            "capabilities": {
-                "runtime": list(self.runtime_capabilities),
-                "plugins": {
-                    name: {"mode": p["mode"], "skills": list(p["skills"])}
-                    for name, p in sorted(self.plugins.items())
-                },
-            },
-            "limits": {k: self.limits.get(k) for k in _LIMIT_KEYS},
-            "artifacts": [dict(a) for a in self.artifacts],
-            "ownership": {
-                "owner": self.owner,
-                "depends_on": list(self.depends_on),
-                "withdrawn": list(self.withdrawn),
-            },
-        }
+        document = super().to_document()
         if self.acceptance != ACCEPTANCE_STRICT:
             document["acceptance"] = self.acceptance
         return document
@@ -581,9 +534,11 @@ def decode(document: Any) -> WorkContract:
 
 def canonical_bytes(contract: WorkContract) -> bytes:
     """RFC 8785 (JCS) of the purpose and the canonical document, through the
-    frozen `swarm_common.specsign.jcs`: one encoder for every signed thing."""
+    frozen `swarm_common.specsign.jcs`: one encoder for every signed thing.
+    `swarm_common.workcontract.canonical_bytes` is the definition (contract
+    request 136), so the worker's `contract_digest` of a stored body is this."""
     try:
-        return jcs({"purpose": CONTRACT_PURPOSE, "contract": contract.to_document()})
+        return _canonical_bytes(contract.to_document())
     except SpecNotCanonical as exc:
         raise _fail(f"the contract has no canonical form: {exc}", field="contract") from exc
 
