@@ -218,7 +218,9 @@ def test_settle_writes_one_jev_usage_row_per_attempt_and_the_month(tmp_path):
             if path.startswith(budget.MONTHLY_COLLECTION + "/")}
     assert rows[f"jev_usage/acme_{TASK}_g2"] == {
         "kind": "attempt", "tenant_id": "acme", "task_id": TASK, "generation": 2,
-        "month": MONTH, "calls": 2, "input_tokens": 3_000}
+        "month": MONTH, "calls": 2, "input_tokens": 3_000, "settled_at": NOW,
+        "by_kind": {"unattributed": {"calls": 2, "input_tokens": 3_000, "output_tokens": None,
+                                     "outcomes": {"ok": 2}}}}
     assert rows[f"jev_usage/acme_{MONTH}"]["input_tokens"] == 3_000
     assert len(rows) == 2
 
@@ -259,6 +261,112 @@ def test_the_lifecycle_settles_the_attempt_after_the_agent(db, worker_factory, m
     assert len(rows) == 1
     assert rows[0]["task_id"] == "task_1" and rows[0]["calls"] == 1
     assert rows[0]["input_tokens"] == 700 and rows[0]["tenant_id"] == TENANT
+
+
+def _audited_attempt(tmp_path: Path, db: FakeFirestore) -> tuple[dict[str, str], budget.Ledger]:
+    """An attempt whose audit holds what `JudgeClient.decide` writes: two J1
+    calls (one ok, one malformed), an agent call that was ok, a J4 call that
+    failed, and two skips the budget refused before admitting a call."""
+    env = _setup(tmp_path, db, _env())
+    ledger = budget.Ledger(Path(json.loads(Path(env[attempt.CONFIG_ENV]).read_text())["ledger"]))
+    for kind, outcome, tokens in [("J1", "ok", 1_000), ("J1", "malformed", 400),
+                                  ("agent", "ok", 2_500), ("J4", "failed", 0)]:
+        assert ledger.admit(estimate=0) is None
+        ledger.record({"call_id": "c", "kind": kind, "backend": "internal", "bytes": 10,
+                       "input_tokens": tokens, "ms": 5, "outcome": outcome},
+                      succeeded=outcome == "ok")
+    for _ in range(2):
+        ledger.record({"call_id": "c", "kind": "J1", "backend": "internal", "bytes": 0,
+                       "input_tokens": 0, "ms": 0, "outcome": "skipped:budget_calls"},
+                      succeeded=None)
+    return env, ledger
+
+
+def test_a_settle_writes_by_kind_and_settled_at_summed_from_the_audit_rows(tmp_path):
+    """Owner, 2026-11-02 ("Worker lane writes them"): the row carries the
+    shape swarm-api's Jev usage read sums."""
+    db = _db({"jev": True})
+    env, ledger = _audited_attempt(tmp_path, db)
+    kwargs = dict(db=db, run_transaction=FakeTransactionRunner(db).run, tenant_id="acme",
+                  task_id=TASK, generation=2, now=lambda: NOW)
+    assert attempt.settle(env, **kwargs) == (4, 3_900)
+    row = db.documents[f"jev_usage/acme_{TASK}_g2"]
+    assert row["settled_at"] == NOW
+    # MUTATION: write the row without by_kind and swarm-api shows every call
+    # as "not split by kind", its outcomes "not recorded".
+    assert row["by_kind"] == {
+        "J1": {"calls": 2, "input_tokens": 1_400, "output_tokens": None,
+               "outcomes": {"ok": 1, "failed": 1, "skipped:budget_calls": 2}},
+        "J4": {"calls": 1, "input_tokens": 0, "output_tokens": None,
+               "outcomes": {"failed": 1}},
+        "agent": {"calls": 1, "input_tokens": 2_500, "output_tokens": None,
+                  "outcomes": {"ok": 1}},
+    }
+    # A later call in the same attempt is added to the row, never replaces it.
+    assert ledger.admit(estimate=0) is None
+    ledger.record({"kind": "J4", "input_tokens": 300, "outcome": "ok"}, succeeded=True)
+    later = datetime(2026, 11, 2, 6, 0, tzinfo=timezone.utc)
+    assert attempt.settle(env, **{**kwargs, "now": lambda: later}) == (1, 300)
+    row = db.documents[f"jev_usage/acme_{TASK}_g2"]
+    assert row["settled_at"] == later and row["calls"] == 5
+    assert row["by_kind"]["J4"] == {"calls": 2, "input_tokens": 300, "output_tokens": None,
+                                    "outcomes": {"failed": 1, "ok": 1}}
+    assert row["by_kind"]["J1"]["outcomes"] == {"ok": 1, "failed": 1, "skipped:budget_calls": 2}
+
+
+def test_swarm_apis_read_sums_the_settled_row(tmp_path):
+    """The written row through swarm-api's own read, unchanged."""
+    from swarm_api import jevusage
+
+    db = _db({"jev": True})
+    env, _ledger_ = _audited_attempt(tmp_path, db)
+    attempt.settle(env, db=db, run_transaction=FakeTransactionRunner(db).run, tenant_id="acme",
+                   task_id=TASK, generation=2, now=lambda: NOW)
+    row = db.documents[f"jev_usage/acme_{TASK}_g2"]
+    kinds = jevusage.row_kinds(row)
+    assert set(kinds) == {"J1", "J4", "agent"}
+    assert (kinds["J1"].ok, kinds["J1"].failed, kinds["J1"].skipped) == (1, 1, {"budget_calls": 2})
+    assert kinds["J1"].output_tokens is None and kinds["J1"].unrecorded == 0
+    assert jevusage.row_day(row) == NOW.date()
+
+
+def test_calls_the_audit_did_not_keep_are_unattributed_without_outcomes(tmp_path):
+    db = _db({"jev": True})
+    env = _setup(tmp_path, db, _env())
+    ledger = budget.Ledger(Path(json.loads(Path(env[attempt.CONFIG_ENV]).read_text())["ledger"]))
+    assert ledger.admit(estimate=0) is None
+    ledger.record({"kind": "J2", "input_tokens": 100, "outcome": "ok"}, succeeded=True)
+    with ledger._locked() as state:  # a call whose audit row was not kept
+        state["calls"] += 1
+        state["input_tokens"] += 50
+    attempt.settle(env, db=db, run_transaction=FakeTransactionRunner(db).run, tenant_id="acme",
+                   task_id=TASK, generation=2, now=lambda: NOW)
+    assert db.documents[f"jev_usage/acme_{TASK}_g2"]["by_kind"] == {
+        "J2": {"calls": 1, "input_tokens": 100, "output_tokens": None, "outcomes": {"ok": 1}},
+        "unattributed": {"calls": 1, "input_tokens": 50, "output_tokens": None}}
+
+
+def test_a_stale_generations_settle_writes_no_by_kind_and_keeps_its_audit_rows(
+        tmp_path, db, worker_factory):
+    """The real fence on a superseded attempt: no row, no by_kind, no
+    settled_at; the audit rows stay unsettled with the calls, so the split is
+    not lost if the same attempt's settle is ever retried unfenced."""
+    seed_attempt(db, generation=1, task_generation=2)
+    worker, _, _ = worker_factory()
+    db.seed("workspace_settings/acme", {"code_intelligence": {"jev": True}})
+    env, _ledger_ = _audited_attempt(tmp_path, db)
+    fence = lambda txn: worker.control._fenced_task(txn, write="jev usage")  # noqa: E731
+    assert attempt.settle(env, db=db, run_transaction=worker.control._run_transaction,
+                          tenant_id=TENANT, task_id="task_1", generation=1, fence=fence,
+                          now=lambda: NOW) is None
+    assert not [p for p in db.documents if p.startswith(budget.MONTHLY_COLLECTION + "/")]
+    state = _ledger(env)
+    assert state["settled_calls"] == 0 and state.get("settled_audit", 0) == 0
+    assert attempt.settle(env, db=db, run_transaction=FakeTransactionRunner(db).run,
+                          tenant_id=TENANT, task_id="task_1", generation=1,
+                          now=lambda: NOW) == (4, 3_900)
+    row = db.documents[f"jev_usage/{TENANT}_task_1_g1"]
+    assert row["by_kind"]["J1"]["outcomes"] == {"ok": 1, "failed": 1, "skipped:budget_calls": 2}
 
 
 def test_a_failed_settle_changes_no_output_and_is_retried(tmp_path):

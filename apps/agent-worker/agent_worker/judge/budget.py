@@ -35,6 +35,17 @@ next attempt of the task reads those rows (`FirestoreMonthlyLedger
 the owner's 8 calls and 120k tokens are per task, not per attempt. What is
 carried was charged to the month by the attempt that spent it, so it is
 created as already settled and never charged twice.
+
+BY KIND (owner, 2026-11-02: "Worker lane writes them"). The same fenced
+transaction also writes the attempt row's `settled_at` and `by_kind:
+{kind: {calls, input_tokens, output_tokens, outcomes}}`, summed from the
+audit rows this settle takes (`Ledger.take_unsettled_attempt`), which is
+the shape swarm-api's Jev usage read sums (`swarm_api.jevusage`). A skip
+is an outcome, not a call. `malformed` is a failed call. `output_tokens` is
+None while no audit row records any: never 0. Calls or tokens the audit did
+not keep (it is bounded) are filed under `unattributed`, with no outcomes.
+A stale generation's settle writes none of it, and its audit rows stay
+unsettled with its calls.
 """
 
 from __future__ import annotations
@@ -164,21 +175,25 @@ class Ledger:
             state["settled_tokens"] = int(state["input_tokens"])
             return delta
 
-    def take_unsettled_attempt(self) -> tuple[int, int]:
-        """`(calls, tokens)` this attempt spent and has not yet settled,
-        marked settled: what `settle_attempt` writes."""
+    def take_unsettled_attempt(self) -> tuple[int, int, list[dict[str, Any]]]:
+        """`(calls, tokens, audit rows)` this attempt spent and has not yet
+        settled, marked settled: what `settle_attempt` writes."""
         with self._locked() as state:
             calls = max(0, int(state["calls"]) - int(state.get("settled_calls") or 0))
             tokens = max(0, int(state["input_tokens"]) - int(state.get("settled_tokens") or 0))
+            audit = state.get("audit") if isinstance(state.get("audit"), list) else []
+            done = min(len(audit), max(0, int(state.get("settled_audit") or 0)))
             state["settled_calls"] = int(state.get("settled_calls") or 0) + calls
             state["settled_tokens"] = int(state.get("settled_tokens") or 0) + tokens
-            return calls, tokens
+            state["settled_audit"] = len(audit)
+            return calls, tokens, [row for row in audit[done:] if isinstance(row, dict)]
 
-    def restore_unsettled(self, calls: int, tokens: int) -> None:
+    def restore_unsettled(self, calls: int, tokens: int, rows: int = 0) -> None:
         """Undo `take_unsettled_attempt` after a settle that did not land."""
         with self._locked() as state:
             state["settled_calls"] = int(state.get("settled_calls") or 0) - calls
             state["settled_tokens"] = int(state.get("settled_tokens") or 0) - tokens
+            state["settled_audit"] = max(0, int(state.get("settled_audit") or 0) - rows)
 
 
 def _refusal(state: Mapping[str, Any], estimate: int) -> str | None:
@@ -222,6 +237,12 @@ class InMemoryMonthlyLedger:
 MONTHLY_COLLECTION = "jev_usage"
 #: The attempt rows' `kind`; the month documents carry none.
 ATTEMPT_KIND = "attempt"
+#: `by_kind`'s kind for calls and tokens no audit row kept, and for an audit
+#: row naming no kind: swarm-api's own name for an unsplit row.
+UNATTRIBUTED_KIND = "unattributed"
+OUTCOME_OK = "ok"
+OUTCOME_FAILED = "failed"
+SKIPPED_PREFIX = "skipped:"
 
 
 def month_of(now: datetime) -> str:
@@ -235,6 +256,71 @@ def attempt_row_id(workspace: str, task_id: str, generation: int) -> str:
 
 def _count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _outcome(value: Any) -> str:
+    """An audit row's outcome as `by_kind` counts it: `ok`, `skipped:<reason>`,
+    or `failed` for every other (`failed`, `malformed`)."""
+    if value == OUTCOME_OK or (isinstance(value, str) and value.startswith(SKIPPED_PREFIX)):
+        return value
+    return OUTCOME_FAILED
+
+
+def split_by_kind(audit: list[Mapping[str, Any]], *, calls: int,
+                  tokens: int) -> dict[str, dict[str, Any]]:
+    """`{kind: {calls, input_tokens, output_tokens, outcomes}}` of one
+    settle's audit rows. A skip was never admitted, so it is an outcome and
+    not a call. What `calls` and `tokens` hold beyond the rows (the audit is
+    bounded) is `unattributed`, with no outcomes: not recorded, not zero."""
+    split: dict[str, dict[str, Any]] = {}
+    for row in audit:
+        kind = row.get("kind")
+        kind = kind if isinstance(kind, str) and kind else UNATTRIBUTED_KIND
+        entry = split.setdefault(kind, {"calls": 0, "input_tokens": 0, "output_tokens": None,
+                                        "outcomes": {}})
+        outcome = _outcome(row.get("outcome"))
+        if not outcome.startswith(SKIPPED_PREFIX):
+            entry["calls"] += 1
+        entry["input_tokens"] += _count(row.get("input_tokens"))
+        if "output_tokens" in row and row.get("output_tokens") is not None:
+            entry["output_tokens"] = (entry["output_tokens"] or 0) + _count(row["output_tokens"])
+        entry["outcomes"][outcome] = entry["outcomes"].get(outcome, 0) + 1
+    rest_calls = calls - sum(entry["calls"] for entry in split.values())
+    rest_tokens = tokens - sum(entry["input_tokens"] for entry in split.values())
+    if rest_calls > 0 or rest_tokens > 0:
+        entry = split.setdefault(UNATTRIBUTED_KIND, {"calls": 0, "input_tokens": 0,
+                                                     "output_tokens": None})
+        entry["calls"] += max(0, rest_calls)
+        entry["input_tokens"] += max(0, rest_tokens)
+    return split
+
+
+def _merge_by_kind(before: Any, added: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """The row's `by_kind` with one settle's split added, never replaced."""
+    merged: dict[str, Any] = {kind: dict(value) for kind, value in
+                              (before.items() if isinstance(before, Mapping) else ())
+                              if isinstance(kind, str) and isinstance(value, Mapping)}
+    for kind, value in added.items():
+        old = merged.get(kind, {})
+        entry: dict[str, Any] = {
+            "calls": _count(old.get("calls")) + _count(value.get("calls")),
+            "input_tokens": _count(old.get("input_tokens")) + _count(value.get("input_tokens")),
+            "output_tokens": None,
+        }
+        for side in (old, value):
+            if side.get("output_tokens") is not None:
+                entry["output_tokens"] = (entry["output_tokens"] or 0) \
+                    + _count(side.get("output_tokens"))
+        old_outcomes, new_outcomes = old.get("outcomes"), value.get("outcomes")
+        if isinstance(old_outcomes, Mapping) or isinstance(new_outcomes, Mapping):
+            outcomes: dict[str, int] = {}
+            for side in (old_outcomes, new_outcomes):
+                for outcome, n in (side.items() if isinstance(side, Mapping) else ()):
+                    if isinstance(outcome, str):
+                        outcomes[outcome] = outcomes.get(outcome, 0) + _count(n)
+            entry["outcomes"] = outcomes
+        merged[kind] = entry
+    return merged
 
 
 class FirestoreMonthlyLedger:
@@ -289,11 +375,17 @@ class FirestoreMonthlyLedger:
 
     def settle_attempt(self, workspace: str, month: str, *, task_id: str, generation: int,
                        calls: int, tokens: int,
-                       fence: Callable[[Any], Any] | None = None) -> None:
+                       fence: Callable[[Any], Any] | None = None,
+                       audit: list[Mapping[str, Any]] | None = None,
+                       settled_at: datetime | None = None) -> None:
         """In ONE transaction: `fence(txn)` first, which reads the task and
         its lease and raises for a superseded attempt (invariant 5), so a
         stale attempt writes nothing; then the month's total and the
-        attempt's row, each added to, never replaced."""
+        attempt's row, each added to, never replaced. The row's `by_kind` is
+        summed from `audit`, this settle's audit rows (`split_by_kind`), and
+        added to what an earlier settle of the attempt wrote; `settled_at`
+        is this settle's time (UTC)."""
+        when = (settled_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         month_ref = self._ref(workspace, month)
         row_ref = self._db.collection(MONTHLY_COLLECTION).document(
             attempt_row_id(workspace, task_id, generation))
@@ -313,7 +405,12 @@ class FirestoreMonthlyLedger:
                               "task_id": task_id, "generation": int(generation),
                               "month": month,
                               "calls": _count(row_data.get("calls")) + calls,
-                              "input_tokens": _count(row_data.get("input_tokens")) + tokens})
+                              "input_tokens": _count(row_data.get("input_tokens")) + tokens,
+                              "settled_at": when,
+                              "by_kind": _merge_by_kind(
+                                  row_data.get("by_kind"),
+                                  split_by_kind(list(audit or ()), calls=calls,
+                                                tokens=tokens))})
 
         self._runner.run(_apply)
 
@@ -321,18 +418,21 @@ class FirestoreMonthlyLedger:
 def settle_attempt(ledger: Ledger, usage: FirestoreMonthlyLedger, *, workspace: str,
                    task_id: str, generation: int, month: str,
                    fence: Callable[[Any], Any] | None = None,
-                   log: Callable[..., None] | None = None) -> tuple[int, int] | None:
-    """Settle this attempt's not-yet-settled calls and tokens into
-    `jev_usage`: one row per attempt and the month's total, fenced. Returns
-    what was settled, or None when the write did not land (a fence, an
-    outage), which is logged by type and returned to the unsettled count. It
-    never raises: accounting never fails the attempt."""
-    calls, tokens = ledger.take_unsettled_attempt()
+                   log: Callable[..., None] | None = None,
+                   settled_at: datetime | None = None) -> tuple[int, int] | None:
+    """Settle this attempt's not-yet-settled calls, tokens and audit rows
+    into `jev_usage`: one row per attempt (with `by_kind` and `settled_at`)
+    and the month's total, fenced. Returns what was settled, or None when
+    the write did not land (a fence, an outage), which is logged by type and
+    returned to the unsettled count, its audit rows with it. It never
+    raises: accounting never fails the attempt."""
+    calls, tokens, audit = ledger.take_unsettled_attempt()
     try:
         usage.settle_attempt(workspace, month, task_id=task_id, generation=generation,
-                             calls=calls, tokens=tokens, fence=fence)
+                             calls=calls, tokens=tokens, fence=fence, audit=audit,
+                             settled_at=settled_at)
     except Exception as exc:  # noqa: BLE001
-        ledger.restore_unsettled(calls, tokens)
+        ledger.restore_unsettled(calls, tokens, len(audit))
         if log is not None:
             log("jev_settle_failed", error=type(exc).__name__, calls=calls, tokens=tokens)
         return None
