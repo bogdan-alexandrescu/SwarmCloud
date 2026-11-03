@@ -87,7 +87,7 @@ from agent_worker.graphmcp.snapshot import (
 #: The version of every handler's output (graph-service.md §5.2): part of the
 #: shared service's result-cache key. Bump it in the same change as any edit
 #: that changes an answer; test_graphmcp_tools_version.py holds the two together.
-TOOLS_VERSION = "1"
+TOOLS_VERSION = "2"
 #: §7.7: an answer is capped at 4 KiB, paged beyond.
 ANSWER_CAP = 4096
 #: `search`'s default and largest result count.
@@ -198,21 +198,58 @@ TOOLS: list[dict[str, Any]] = [
 ]
 TOOL_NAMES = tuple(tool["name"] for tool in TOOLS)
 
+#: THE SKILL'S ONE QUERY (SKILL-ON-DEMAND, the owner's pick of 3 November
+#: 2026, part of #2688). Batch one deferred the ten schemas behind the CLI's
+#: tool search and no agent fetched them (0 calls in 45 steps); batch two
+#: loaded them on every turn, about 1,900 tokens, for 2 calls in 12 steps. A
+#: step of the `skill` shape (`SHAPES`) lists only this tool, behind the
+#: code-graph skill: one bounded, paged slice of the graph around the files
+#: or symbols asked about, 1 to 3 hops, with what to include. It is in
+#: HANDLERS like the ten, so the shared service answers it too, but not in
+#: TOOLS: the `tools` shape lists exactly batch two's ten.
+SLICE_INCLUDES = ("callers", "callees", "tests", "docs")
+SLICE_DEFAULT_INCLUDE = ("callers", "tests")
+SLICE_DEFAULT_DEPTH = 1
+SLICE_TOOL: dict[str, Any] = {
+    "name": "slice",
+    "description": "The code graph around files or symbols, 1-3 hops: callers, callees, "
+                   "covering tests, docs naming them. An ambiguous name answers its best "
+                   "match and lists the others.",
+    "inputSchema": {"type": "object", "properties": {
+        "files": _FILES, "symbols": {"type": "array", "items": {"type": "string"}},
+        "depth": {"type": "integer", "minimum": 1, "maximum": IMPACT_MAX_DEPTH},
+        "include": {"type": "array", "items": {"type": "string",
+                                               "enum": list(SLICE_INCLUDES)}},
+        "cursor": _CURSOR}}}
+
+#: What a step's graph server lists, by the step's shape (graphstage.SHAPES):
+#: `skill` the slice alone, `tools` the ten.
+SHAPE_SKILL = "skill"
+SHAPE_TOOLS = "tools"
+SHAPE_LISTS: dict[str, list[dict[str, Any]]] = {SHAPE_SKILL: [SLICE_TOOL], SHAPE_TOOLS: TOOLS}
+
+
+def listed(shape: str | None) -> list[dict[str, Any]]:
+    """The tools a server of `shape` lists; the ten for an unknown or absent one."""
+    return SHAPE_LISTS.get(shape or SHAPE_TOOLS, TOOLS)
+
 #: The argument naming an additional repository's graph (§4.9). Never one of
 #: TOOLS' own properties, and never forwarded to the service.
 REPO_ARGUMENT = "repo"
 REPO_DESCRIPTION = "an additional repository (work/repos/<name>); omit for this step's own"
 
 
-def tools_with_repo(names: Any) -> list[dict[str, Any]]:
-    """TOOLS, each taking an optional `repo` from `names`; TOOLS itself when
-    `names` is empty, so a one-repository step lists exactly today's."""
-    listed = sorted({str(n) for n in names or ()})
-    if not listed:
-        return TOOLS
-    prop = {"type": "string", "enum": listed, "description": REPO_DESCRIPTION}
+def tools_with_repo(names: Any, base: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """`base` (TOOLS by default), each taking an optional `repo` from `names`;
+    `base` itself when `names` is empty, so a one-repository step lists
+    exactly today's."""
+    base = TOOLS if base is None else base
+    repos = sorted({str(n) for n in names or ()})
+    if not repos:
+        return base
+    prop = {"type": "string", "enum": repos, "description": REPO_DESCRIPTION}
     out: list[dict[str, Any]] = []
-    for tool in TOOLS:
+    for tool in base:
         schema = dict(tool["inputSchema"])
         schema["properties"] = {**schema["properties"], REPO_ARGUMENT: prop}
         out.append({**tool, "inputSchema": schema})
@@ -500,6 +537,37 @@ def resolve(snap: Snapshot, text: str) -> str:
     raise _Unresolved(f"{len(exact)} symbols match {text!r}; pass one id", exact)
 
 
+def resolve_best(snap: Snapshot, text: str) -> tuple[str, list[str]]:
+    """(a symbol id for `text`, the other symbols its name also matched).
+
+    As `resolve`, save that a name several symbols match answers the best of
+    them and lists the rest, never an error (SKILL-ON-DEMAND, part of #2688:
+    batch two's first graph call was "2 symbols match 'cancel_workflow'; pass
+    one id", and that agent never asked the graph again). Best is an exact
+    `name` or `module.name` over a dotted suffix, an application symbol over
+    a test and a definition over a local, then the search's own order. No
+    match at all is still `_Unresolved`, with the nearest candidates.
+    `resolve` keeps refusing: the context pack's seeds skip an ambiguous name.
+    """
+    if "#" in text:
+        return resolve(snap, text), []
+    exact = [c for c in _candidates(snap, text, text) if _matches(c, text)]
+    if not exact:
+        return resolve(snap, text), []
+    ranked = sorted(exact, key=lambda c: (text not in _forms(c), _is_test(snap, c),
+                                          (snap.symbol(c) or {}).get("kind") == "local"))
+    return ranked[0], ranked[1:]
+
+
+def _also(head: dict, others: list[str]) -> dict:
+    """`head` with the other symbols an ambiguous name matched, bounded."""
+    if others:
+        head["also_matched"] = others[:SHOWN_CANDIDATES]
+        if len(others) > SHOWN_CANDIDATES:
+            head["also_matched_count"] = len(others)
+    return head
+
+
 def _matches(symbol_id: str, text: str) -> bool:
     return any(form == text or form.endswith("." + text) for form in _forms(symbol_id))
 
@@ -557,7 +625,7 @@ def tool_search(snap: Snapshot, args: dict) -> Computed:
 
 def tool_context(snap: Snapshot, args: dict) -> Computed:
     args = _args(args, {"symbol", "cursor"}, {"symbol"})
-    symbol = resolve(snap, _string(args, "symbol"))
+    symbol, others = resolve_best(snap, _string(args, "symbol"))
     row = snap.symbol(symbol) or {}
     callers = sorted((e for e in snap.callers(symbol) if e.get("kind") != "import"),
                      key=lambda e: (str(e.get("from")), e.get("line") or 0))
@@ -573,6 +641,7 @@ def tool_context(snap: Snapshot, args: dict) -> Computed:
             "callees": len(callees), "tests": len(tests)}
     if not callers:
         head["note"] = UNKNOWN_CALLERS
+    _also(head, others)
     rows = ([_edge_row("caller", e, "from") for e in callers]
             + [_edge_row("callee", e, "to") for e in callees]
             + [_test_row(t) for t in tests])
@@ -663,7 +732,7 @@ def tool_tests_for(snap: Snapshot, args: dict) -> Computed:
 
     for name in names:
         try:
-            symbol = resolve(snap, name)
+            symbol, _others = resolve_best(snap, name)
         except _Unresolved:
             unknown.append(name)
             continue
@@ -697,7 +766,7 @@ def _nearness(origin: str, other: str) -> tuple[int, str]:
 
 def tool_neighbours(snap: Snapshot, args: dict) -> Computed:
     args = _args(args, {"symbol", "cursor"}, {"symbol"})
-    symbol = resolve(snap, _string(args, "symbol"))
+    symbol, also = resolve_best(snap, _string(args, "symbol"))
     row = snap.symbol(symbol) or {}
     kind = row.get("kind")
     path = path_of(symbol)
@@ -720,7 +789,7 @@ def tool_neighbours(snap: Snapshot, args: dict) -> Computed:
     head = {"symbol": symbol, "kind": kind,
             "community": str(community.get("id")) if community else None,
             "community_label": community.get("label") if community else None}
-    return Computed(head, rows)
+    return Computed(_also(head, also), rows)
 
 
 def tool_territory(snap: Snapshot, args: dict) -> Computed:
@@ -766,7 +835,7 @@ def tool_similar_changes(snap: Snapshot, args: dict) -> Computed:
     unknown: list[str] = []
     for name in names:
         try:
-            files.append(path_of(resolve(snap, name)))
+            files.append(path_of(resolve_best(snap, name)[0]))
         except _Unresolved:
             unknown.append(name)
     inputs = list(dict.fromkeys(files))
@@ -921,8 +990,8 @@ def _roots(snap: Snapshot, target: str) -> tuple[list[str], dict[str, Any]]:
         target = _file_arg(target)
         roots = [s["id"] for s in snap.symbols_in(target) if s.get("kind") != "local"]
         return roots, {"file": target, "symbols": len(roots)}
-    root = resolve(snap, target)
-    return [root], {"symbol": root}
+    root, others = resolve_best(snap, target)
+    return [root], _also({"symbol": root}, others)
 
 
 def _walk(snap: Snapshot, roots: list[str], depth: int, upstream: bool,
@@ -1032,6 +1101,108 @@ def tool_index(snap: Snapshot, args: dict) -> Computed:
     return Computed(head, snap.shard(layer, key).rows)
 
 
+def tool_slice(snap: Snapshot, args: dict) -> Computed:
+    """The skill's one query (`SLICE_TOOL`): the graph around `files` and
+    `symbols`, `depth` hops, the `include` sections in SLICE_INCLUDES' order.
+
+    Bounded as `call_graph` is (IMPACT_MAX_NODES symbols past the first hop
+    over both walks) and paged at the cap like every answer. A caller that is
+    a test is a covering test, not a caller, as in `impact`. Docs are the
+    rules layer's `doc` rows naming a file of the slice's roots."""
+    args = _args(args, {"files", "symbols", "depth", "include", "cursor"}, set())
+    files = list(dict.fromkeys(_file_arg(f) for f in _strings(args, "files")))
+    names = _strings(args, "symbols")
+    if not files and not names:
+        raise ToolInputError("give files, symbols or both")
+    depth = _int(args, "depth", SLICE_DEFAULT_DEPTH, 1, IMPACT_MAX_DEPTH)
+    asked = _strings(args, "include") or list(SLICE_DEFAULT_INCLUDE)
+    wrong = [i for i in asked if i not in SLICE_INCLUDES]
+    if wrong:
+        raise ToolInputError(f"include takes {', '.join(SLICE_INCLUDES)}, not {wrong[0]!r}")
+    include = [i for i in SLICE_INCLUDES if i in asked]
+    roots: list[str] = []
+    paths: list[str] = []
+    unknown: list[str] = []
+    also: dict[str, list[str]] = {}
+    for path in files:
+        if snap.file(path) is None:
+            unknown.append(path)
+            continue
+        paths.append(path)
+        roots += [str(r["id"]) for r in snap.symbols_in(path) if r.get("kind") != "local"]
+    for name in names:
+        try:
+            symbol, others = resolve_best(snap, name)
+        except _Unresolved:
+            unknown.append(name)
+            continue
+        roots.append(symbol)
+        paths.append(path_of(symbol))
+        if others and len(also) < SHOWN_CANDIDATES:
+            also[name] = [symbol, *others[:SHOWN_CANDIDATES]]
+    roots = list(dict.fromkeys(roots))
+    paths = list(dict.fromkeys(paths))
+    head: dict[str, Any] = {"roots": len(roots), "depth": depth, "include": include}
+    if len(roots) == 1:
+        head["symbol"] = roots[0]
+    elif len(paths) == 1 and not names:
+        head["file"] = paths[0]
+    rows: list[dict] = []
+    budget = IMPACT_MAX_NODES
+    truncated = False
+    for rel, upstream in (("callers", True), ("callees", False)):
+        if rel not in include:
+            continue
+        edges, reached, cut = _walk(snap, roots, depth, upstream, budget)
+        budget = max(budget - reached, 0)
+        truncated = truncated or cut
+        near, far = ("to", "from") if upstream else ("from", "to")
+        found = [{"rel": rel[:-1], "symbol": e[far], "of": e[near], "depth": e["depth"],
+                  "confidence": e["confidence"]}
+                 for e in edges if not (upstream and _is_test(snap, e[far]))]
+        head[rel] = len(found)
+        rows += found
+    if "callers" in include and not head["callers"]:
+        head["callers"] = "UNKNOWN"
+        head["note"] = UNKNOWN_CALLERS
+    if "tests" in include:
+        tests: dict[str, dict] = {}
+        covering = [row for root in roots for row in snap.tests(root)]
+        covering += [row for path in paths for row in (snap.file(path) or {}).get("tests") or []]
+        for row in covering:
+            test = str(row.get("test"))
+            have = tests.get(test)
+            if have is None or (row.get("confidence") or 0) > (have["confidence"] or 0):
+                tests[test] = _test_row(row)
+        head["tests"] = len(tests)
+        rows += sorted(tests.values(), key=lambda t: (-(t.get("confidence") or 0),
+                                                      str(t.get("test"))))
+    if "docs" in include:
+        if not snap.has_layer("rules"):
+            head["docs"] = "UNKNOWN"
+        else:
+            docs: dict[str, dict] = {}
+            for rule in snap.rules():
+                if str(rule.get("kind")) != "doc":
+                    continue
+                pattern = str(rule.get("glob") or rule.get("path") or "")
+                hits = [p for p in paths if glob_match(pattern, p)]
+                if hits:
+                    have = docs.setdefault(str(rule.get("ref")), {
+                        "rel": "doc", "ref": rule.get("ref"), "files": []})
+                    have["files"] += [p for p in hits if p not in have["files"]]
+            for row in docs.values():
+                row["files"] = sorted(row["files"])[:SHOWN_FILES]
+            head["docs"] = len(docs)
+            rows += [docs[ref] for ref in sorted(docs)]
+    head["truncated"] = truncated
+    if unknown:
+        head["unknown"] = unknown[:SHOWN_CANDIDATES]
+    if also:
+        head["also_matched"] = also
+    return Computed(head, rows)
+
+
 HANDLERS: dict[str, Callable[[Snapshot, Any], Computed]] = {
     "search": tool_search,
     "context": tool_context,
@@ -1043,6 +1214,7 @@ HANDLERS: dict[str, Callable[[Snapshot, Any], Computed]] = {
     "rules_for": tool_rules_for,
     "call_graph": tool_call_graph,
     "index": tool_index,
+    "slice": tool_slice,
 }
 
 

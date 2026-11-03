@@ -968,6 +968,8 @@ def test_a_review_with_a_slow_graph_service_reaches_its_agent_within_the_bound(
                                                / contextpack.PIN_FILE))
     monkeypatch.setenv(graphstage.TICKET_FILE_ENV, str(ticket_file))
     monkeypatch.setenv(graphstage.URL_ENV, http.url)
+    # The tools shape, whose prompt carries the graph line asserted below.
+    monkeypatch.setenv(graphstage.SHAPE_ENV, graphstage.SHAPE_TOOLS)
     monkeypatch.setattr(build, "PACK_DEADLINE_SECONDS", 1.0, raising=False)
     ctx = _ctx(work, tmp_path, {"prompt": _review_prompt(
         ["src/pkg/store.py", "src/pkg/users.py", "src/pkg/routes.py"])})

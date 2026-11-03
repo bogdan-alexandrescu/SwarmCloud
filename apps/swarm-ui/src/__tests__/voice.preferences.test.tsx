@@ -1,19 +1,19 @@
-// VOICE IT › PREFERENCES: THE CHATGPT SIGN-IN (the owner's pick, 2026-11-02:
-// "Sign-in button, then go live").
+// VOICE IT › PREFERENCES: WHICH CHATGPT PLAN THE NEXT SESSION USES (the owner,
+// 2026-11-02: ChatGPT plan accounts are reserved for Voice it in a separate
+// Voice it pool).
 //
-//   * not stored: "Not signed in" and "Sign in with ChatGPT";
-//   * stored: "Signed in", since when, and "Sign in again" -- never a value;
-//   * the control starts a sign-in through swarm-api, opens ChatGPT's page,
-//     says where the sign-in ends, and sends the pasted address back with the
-//     sign-in's state; the stored state follows, and the field is emptied;
-//   * a refusal is said in swarm-api's words and nothing is drawn as stored.
+//   * one line from `GET /v1/voice/pool`: the account's name (or label), or
+//     why there is none, with a link to Capacity › Accounts;
+//   * no ChatGPT sign-in: no button, no field, and no call to the removed
+//     `/v1/voice/chatgpt*` routes, read or write;
+//   * a refusal is said in swarm-api's words.
 //
-// MUTATIONS: draw the stored line for `stored: false`; drop `state` from the
-// exchange body; leave the pasted address in the field after saving; render
-// a field of the status answer other than `stored` and `stored_at`.
+// MUTATIONS: print the label when a name is served; draw the account line for
+// `account: null`; read `/v1/voice/chatgpt`; put a "Sign in with ChatGPT"
+// button back.
 
-import { act, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const fetchMock = vi.hoisted(() => ({ read: vi.fn(), write: vi.fn() }))
 
@@ -31,22 +31,15 @@ vi.mock('../api', async (importOriginal) => ({
 }))
 
 import { VoicePreferencesScreen } from '../voice/Section'
-import { VOICE_CHATGPT, VOICE_CHATGPT_AUTHORIZE, VOICE_CHATGPT_EXCHANGE, VoicePreferences } from '../voice/Preferences'
-
-const STATE = 'st-0001'
-const AUTHORIZE = `https://auth.openai.com/oauth/authorize?state=${STATE}`
-const INSTRUCTIONS =
-  'Sign in to ChatGPT in the tab that opens. When it is done, that tab goes to an address starting ' +
-  'http://localhost:1455/auth/callback and says the page cannot be reached: that is expected. Copy the ' +
-  'whole address from the address bar and paste it here.'
+import { CAPACITY_ACCOUNTS_HREF, VOICE_POOL, VOICE_PREFERENCES, VoicePreferences } from '../voice/Preferences'
 
 function ok(data: unknown) {
   return { status: 'ok', data, fetchedAt: Date.now() }
 }
 
-function serveStatus(data: unknown): void {
+function servePool(data: unknown): void {
   fetchMock.read.mockImplementation(async (target: { url: string }) => {
-    expect(target.url).toBe(VOICE_CHATGPT)
+    expect(target.url).toBe(VOICE_POOL)
     return ok(data)
   })
 }
@@ -57,104 +50,81 @@ async function settle(): Promise<void> {
   })
 }
 
-describe('Voice it › Preferences, the ChatGPT sign-in', () => {
-  let open: ReturnType<typeof vi.fn>
-  beforeEach(() => {
-    open = vi.fn()
-    vi.stubGlobal('open', open)
-  })
+function readUrls(): string[] {
+  return fetchMock.read.mock.calls.map(([t]) => (t as { url: string }).url)
+}
+
+function noSignIn(): void {
+  expect(screen.queryByRole('button', { name: /sign in/i })).toBeNull()
+  expect(screen.queryByRole('textbox')).toBeNull()
+  expect(document.body.textContent ?? '').not.toMatch(/sign in with chatgpt|sign-in/i)
+  for (const url of readUrls()) expect(url).not.toContain('/v1/voice/chatgpt')
+  expect(fetchMock.write).not.toHaveBeenCalled()
+}
+
+describe('Voice it › Preferences, the Voice it pool line', () => {
   afterEach(() => {
     fetchMock.read.mockReset()
     fetchMock.write.mockReset()
     apiMock.loadMe.mockReset()
-    vi.unstubAllGlobals()
   })
 
-  it('draws the not-stored state with "Sign in with ChatGPT"', async () => {
-    serveStatus({ stored: false, stored_at: null })
+  it("names the account the next session will use, by its name, and links to Capacity", async () => {
+    servePool({ pool: 'voice-it', account: { label: 'plan-a', display_name: 'Team plan A', provider: 'openai' }, reason: '' })
     render(<VoicePreferences />)
     await settle()
 
-    expect(screen.getByText('Not signed in')).toBeTruthy()
-    expect(screen.queryByText('Signed in')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Sign in again' })).toBeNull()
+    expect(screen.getByText("Your next session will use the Voice it pool's ChatGPT plan: Team plan A.")).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Capacity › Accounts/ }).getAttribute('href')).toBe(CAPACITY_ACCOUNTS_HREF)
+    expect(readUrls()).toEqual([VOICE_POOL])
+    noSignIn()
   })
 
-  it('draws the stored state, since when, with "Sign in again" and no value', async () => {
-    const leaked = `rt-${Math.random().toString(36).slice(2)}`
-    serveStatus({ stored: true, stored_at: '2026-11-02T03:04:05+00:00', refresh_token: leaked })
-    const { container } = render(<VoicePreferences />)
-    await settle()
-
-    expect(screen.getByText('Signed in')).toBeTruthy()
-    expect(screen.getByText(/A ChatGPT sign-in is stored, since Nov 2/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Sign in with ChatGPT' })).toBeNull()
-    expect(container.innerHTML).not.toContain(leaked)
-  })
-
-  it('runs the sign-in: opens the page, says where it ends, sends the address with its state', async () => {
-    serveStatus({ stored: false, stored_at: null })
-    fetchMock.write.mockImplementation(async (target: { url: string }) => {
-      if (target.url === VOICE_CHATGPT_AUTHORIZE) {
-        return ok({ authorize_url: AUTHORIZE, state: STATE, redirect_uri: 'http://localhost:1455/auth/callback', expires_in_seconds: 900, instructions: INSTRUCTIONS })
-      }
-      if (target.url === VOICE_CHATGPT_EXCHANGE) return ok({ stored: true, stored_at: '2026-11-02T03:04:05+00:00' })
-      throw new Error(`unexpected write ${target.url}`)
-    })
+  it('falls back to the label when the account has no name', async () => {
+    servePool({ pool: 'voice-it', account: { label: 'plan-a', display_name: null, provider: 'openai' }, reason: '' })
     render(<VoicePreferences />)
     await settle()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
-    await settle()
-
-    expect(open).toHaveBeenCalledWith(AUTHORIZE, '_blank', 'noopener,noreferrer')
-    expect(screen.getByText(INSTRUCTIONS)).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Open the ChatGPT sign-in' }).getAttribute('href')).toBe(AUTHORIZE)
-
-    const pasted = `http://localhost:1455/auth/callback?code=ac-${Math.random().toString(36).slice(2)}&state=${STATE}`
-    const field = screen.getByLabelText('The address the sign-in tab ended on')
-    fireEvent.change(field, { target: { value: pasted } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save sign-in' }))
-    await settle()
-
-    const exchange = fetchMock.write.mock.calls.find(([t]) => (t as { url: string }).url === VOICE_CHATGPT_EXCHANGE)
-    expect(exchange?.[1]).toBe('POST')
-    expect(exchange?.[2]).toEqual({ state: STATE, callback: pasted })
-    expect(screen.getByText('Signed in')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeTruthy()
-    expect(screen.queryByLabelText('The address the sign-in tab ended on')).toBeNull()
-    expect(document.body.innerHTML).not.toContain(pasted)
+    expect(screen.getByText("Your next session will use the Voice it pool's ChatGPT plan: plan-a.")).toBeTruthy()
   })
 
-  it("says a refusal in swarm-api's words and draws nothing as stored", async () => {
-    serveStatus({ stored: false, stored_at: null })
-    fetchMock.write.mockImplementation(async (target: { url: string }) => {
-      if (target.url === VOICE_CHATGPT_AUTHORIZE) return ok({ authorize_url: AUTHORIZE, state: STATE, instructions: INSTRUCTIONS })
-      return { status: 'error', error: { kind: 'http', status: 422, message: 'this sign-in has expired or was already used; press Sign in with ChatGPT to start again' } }
-    })
+  it('says when no Voice it pool account is free', async () => {
+    servePool({ pool: 'voice-it', account: null, reason: 'no_voice_account_available' })
     render(<VoicePreferences />)
     await settle()
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
-    await settle()
-    fireEvent.change(screen.getByLabelText('The address the sign-in tab ended on'), { target: { value: 'code-1234#st-0001' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save sign-in' }))
-    await settle()
-
-    expect(screen.getByText('The ChatGPT sign-in did not finish')).toBeTruthy()
-    expect(screen.getByText(/this sign-in has expired or was already used/)).toBeTruthy()
-    expect(screen.queryByText('Signed in')).toBeNull()
-    expect((screen.getByLabelText('The address the sign-in tab ended on') as HTMLInputElement).value).toBe('')
+    expect(screen.getByText('No Voice it pool account is free right now.')).toBeTruthy()
+    expect(screen.queryByText(/Your next session will use/)).toBeNull()
+    noSignIn()
   })
 
-  it('is what the Preferences screen draws for the person Voice it is open to', async () => {
+  it('says when the person is not in the Voice it pool', async () => {
+    servePool({ pool: 'voice-it', account: null, reason: 'not_in_voice_pool' })
+    render(<VoicePreferences />)
+    await settle()
+    expect(screen.getByText('You are not in the Voice it pool.')).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Capacity › Accounts/ })).toBeTruthy()
+  })
+
+  it("says a refusal in swarm-api's words", async () => {
+    fetchMock.read.mockResolvedValue({ status: 'error', error: { kind: 'http', status: 503, message: 'the account pool is unavailable' } })
+    render(<VoicePreferences />)
+    await settle()
+    expect(screen.getByText('Could not read the Voice it pool')).toBeTruthy()
+    expect(screen.getByText('the account pool is unavailable')).toBeTruthy()
+  })
+
+  it('is what the Preferences screen draws, with no ChatGPT sign-in anywhere on it', async () => {
     apiMock.loadMe.mockResolvedValue(ok({ principal: { is_admin: true } }))
-    serveStatus({ stored: false, stored_at: null })
+    fetchMock.read.mockImplementation(async (target: { url: string }) => {
+      if (target.url === VOICE_POOL) return ok({ pool: 'voice-it', account: null, reason: 'no_voice_account_available' })
+      if (target.url === VOICE_PREFERENCES) return { status: 'error', error: { kind: 'http', status: 503, message: 'down' } }
+      throw new Error(`unexpected read ${target.url}`)
+    })
     render(<VoicePreferencesScreen />)
     await settle()
 
-    expect(screen.getByRole('heading', { name: 'ChatGPT sign-in' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'ChatGPT plan' })).toBeTruthy()
+    expect(screen.getByText('No Voice it pool account is free right now.')).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'ChatGPT sign-in' })).toBeNull()
+    noSignIn()
   })
 })

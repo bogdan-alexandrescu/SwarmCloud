@@ -4,7 +4,7 @@ memory only (docs/design/voice-it.md §3.6; swarm_voice/grant.py).
 The grant rides on the live session until the session ends, is presented
 only as the two headers swarm-api reads, and never appears in a log line, a
 response, a refusal or a repr. The harness is test_live_session's: a fake
-OpenAI, in-memory Secret Manager, no cloud credential. Every grant is built at
+OpenAI, a fake quota broker's Voice it pool, no cloud credential. Every grant is built at
 runtime with `secrets`.
 """
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import secrets
 
-from test_live_session import FAKE_LOG, Harness, _seed, _start_body, run
+from test_live_session import FAKE_LOG, Harness, _start_body, run
 
 from swarm_voice.grant import GRANT_HEADER, SESSION_HEADER, SessionGrant
 
@@ -23,7 +23,7 @@ def _ids() -> tuple[str, str]:
 
 
 def _body(h: Harness, project_id: str, session_id: str, grant: str) -> dict:
-    return {**_start_body(_seed(h), voice_id=session_id), "project_id": project_id, "grant": grant}
+    return {**_start_body(voice_id=session_id), "project_id": project_id, "grant": grant}
 
 
 def test_the_grant_is_held_on_the_live_session_and_presented_as_swarm_apis_headers():
@@ -56,7 +56,7 @@ def test_the_grant_is_dropped_when_the_session_ends():
 
 def test_a_start_without_a_grant_holds_none():
     async def scenario(h: Harness):
-        body = _start_body(_seed(h))
+        body = _start_body()
         assert (await h.post("/internal/sessions", body)).status_code == 201
         assert h.sessions.get(body["voice_session_id"]).grant is None
 
@@ -71,7 +71,7 @@ def test_a_malformed_or_mismatched_grant_is_422_and_the_refusal_never_carries_it
     async def scenario(h: Harness):
         bad = await h.post("/internal/sessions", _body(h, project_id, session_id, short))
         assert bad.status_code == 422 and short not in bad.text
-        alone = {**_start_body(_seed(h), voice_id=session_id), "grant": good}
+        alone = {**_start_body(voice_id=session_id), "grant": good}
         refused = await h.post("/internal/sessions", alone)
         assert refused.status_code == 422 and good not in refused.text
         # A grant swarm-api minted for a session id that is not this call's.

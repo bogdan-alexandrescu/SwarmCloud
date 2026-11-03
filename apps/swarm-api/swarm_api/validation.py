@@ -1344,8 +1344,26 @@ DEFAULT_CARRIER = "checkpoints"
 #: stored before. The worker spells them in `agent_worker.graphstage`
 #: (`SWITCH_CODE_INTELLIGENCE`), `agent_worker.qualitygates` (`SWITCH`) and
 #: `agent_worker.judge.attempt` (`SWITCH`).
-DISPATCH_SWITCHES = ("code_intelligence", "quality_gates", "jev_judgments")
+#:
+#: `graph_shape` (SKILL-ON-DEMAND, the owner's pick of 3 November 2026, part
+#: of #2688) is the one switch that is not on/off: it says which shape a
+#: graph-on step's code graph takes, so the experiment can compare them --
+#: `skill` (the code-graph skill over one slice query, with a grep nudge),
+#: `tools` (the ten graph tools loaded on every turn) or `off` (no graph).
+#: Three words naming no image, command or backend (invariant 10); it
+#: chooses a shape and never turns a graph on where the stored settings and
+#: `code_intelligence` leave it off. The worker spells it
+#: `agent_worker.graphstage.SWITCH_GRAPH_SHAPE` and its words `SHAPES`.
+DISPATCH_SWITCHES = ("code_intelligence", "quality_gates", "jev_judgments", "graph_shape")
 DISPATCH_SWITCH_VALUES = ("on", "off")
+#: The accepted words of each switch that is not on/off.
+DISPATCH_SWITCH_CHOICES: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {"graph_shape": ("skill", "tools", "off")})
+
+
+def dispatch_switch_values(name: str) -> tuple[str, ...]:
+    """The words switch `name` accepts: its own choices, else on/off."""
+    return DISPATCH_SWITCH_CHOICES.get(name, DISPATCH_SWITCH_VALUES)
 
 #: The single key inside `task.metadata` this feature owns. One nested key
 #: rather than two flat ones because `metadata` is caller-supplied and free
@@ -2131,8 +2149,9 @@ class DispatchOptions:
     #: `publishtopr.resolve` read it from GitHub at submission; empty on every
     #: other dispatch. The worker derives the branch from the task id.
     publish_to_pr: tuple[tuple[str, Any], ...] = ()
-    #: `(switch, "on" | "off")` for each `DISPATCH_SWITCHES` key the spec's
-    #: `dispatch` map set, in that order (2026-11-01); empty when it set none.
+    #: `(switch, word)` for each `DISPATCH_SWITCHES` key the spec's `dispatch`
+    #: map set, in that order (2026-11-01); empty when it set none. The word is
+    #: `on` or `off`, or one of `DISPATCH_SWITCH_CHOICES` for its switch.
     switches: tuple[tuple[str, str], ...] = ()
 
     @property
@@ -2634,7 +2653,8 @@ def resolve_dispatch_switches(value: Any) -> tuple[tuple[str, str], ...]:
         return ()
     if not isinstance(value, Mapping):
         raise DispatchOptionError(
-            "dispatch is a map of switches, each `on` or `off`; accepted switches are "
+            "dispatch is a map of switches, each `on` or `off` (graph_shape: skill, "
+            "tools or off); accepted switches are "
             + ", ".join(DISPATCH_SWITCHES),
             detail={"accepted_switches": list(DISPATCH_SWITCHES),
                     "accepted_switch_values": list(DISPATCH_SWITCH_VALUES)},
@@ -2647,7 +2667,7 @@ def resolve_dispatch_switches(value: Any) -> tuple[tuple[str, str], ...]:
             detail={"accepted_switches": list(DISPATCH_SWITCHES), "unknown": unknown},
         )
     return tuple(
-        (name, _accepted_value(f"dispatch.{name}", value[name], DISPATCH_SWITCH_VALUES,
+        (name, _accepted_value(f"dispatch.{name}", value[name], dispatch_switch_values(name),
                                "accepted_switch_values"))
         for name in DISPATCH_SWITCHES if name in value
     )

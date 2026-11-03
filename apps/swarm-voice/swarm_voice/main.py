@@ -11,13 +11,21 @@ Routes:
 
 * `POST /internal/sessions` -- swarm-api starts a voice session. Body:
   `voice_session_id` (swarm-api's session id), `person` (the signed-in person's
-  email), `credential` (the Secret Manager VERSION reference of that person's
-  own OpenAI secret, never the value) and `offer` (the browser's SDP offer).
-  swarm-voice checks the reference is the person's own (credential.check_scope),
-  creates the GPT-Live session, attaches its sideband and answers
-  `201 {voice_session_id, live_session_id, answer}`. 403 for a credential
-  outside the person's scope, 409 when the voice session already has a live
-  one, 502 when OpenAI or Secret Manager refused (the status only).
+  email) and `offer` (the browser's SDP offer). swarm-voice leases a ChatGPT
+  plan account from the quota broker's Voice it pool for `person`
+  (accountlease.py; owner, 2026-11-02: "pool only, wait for it"), creates the
+  GPT-Live session on that lease, attaches its sideband and answers
+  `201 {voice_session_id, live_session_id, answer}`. When the broker leases
+  nothing, nothing starts: 403 `{"code": "voice_pool_refused", "message"}` for
+  a person outside the pool, 409 `{"code": "voice_pool_busy" |
+  "voice_pool_refused", "message"}` when its account is in use or none is
+  registered, `message` being one sentence the voice can say. 409 also when
+  the voice session already has a live one; 502 when OpenAI or the broker
+  failed (the status only). The lease is released when the session ends, when
+  its start fails and when OpenAI closes it; if swarm-voice dies, the broker's
+  hold expires on its own (ten-minute TTL, renewed every four minutes).
+  No person's own ChatGPT sign-in is read: there is no Secret Manager path for
+  the OpenAI credential any more.
   Optionally, together, `project_id` and `grant`: the session grant
   (grant.py, docs/design/voice-it.md §3.6), held in memory on the live session
   until it ends and presented only to swarm-api. A grant without a project, a
@@ -35,13 +43,15 @@ THE CALLER. Each `/internal/` call carries a Google ID token minted for
 `aud` check when it is None (swarm_api/auth.py, GoogleTokenVerifier).
 
 NOTHING SECRET LEAVES. A response carries the SDP answer and ids, never a
-credential; an error carries a status, never a body; the credential's value is
-held in memory only (credential.py).
+credential; an error carries a status, never a body; the leased token is held
+in memory only (accountlease.PoolCredential) and never logged.
 
 Configuration, read once at start (never at import):
 
-* `PROJECT_ID` -- this deployment's project: the only one whose secrets a
-  credential reference may name.
+* `PROJECT_ID` -- this deployment's project (the planner's key, planner.py).
+* `QUOTA_BROKER_URL` (and `QUOTA_BROKER_AUDIENCE`) -- the quota broker, whose
+  Voice it pool leases each session's account. Required: without it no
+  session could start.
 * `SWARM_VOICE_AUDIENCE` -- the audience swarm-api mints its ID token for.
 * `SWARM_VOICE_CALLERS` -- comma-separated service account emails admitted.
 * `SWARM_API_URL` (and optionally `SWARM_API_AUDIENCE`) -- swarm-api's
@@ -63,7 +73,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr
 
-from .credential import VERSION_REF, CredentialError, CredentialFactory, CredentialRefused, SecretManagerStore
+from .accountlease import NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused, build_broker
+from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
 from .live import MAX_OFFER_BYTES, LiveApi, LiveError, SessionExists, Sessions
 from .planner import build_planner
@@ -78,7 +89,6 @@ CallerCheck = Callable[[str], Awaitable[str]]
 class StartRequest(BaseModel):
     voice_session_id: str = Field(pattern=VOICE_ID)
     person: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
-    credential: str = Field(max_length=512, pattern="^" + VERSION_REF.pattern + "$")
     offer: str = Field(min_length=4, max_length=MAX_OFFER_BYTES, pattern=r"^v=0\r?\n")
     #: The session grant and its project (grant.py). A SecretStr with no
     #: constraint, so neither its repr nor a validation error carries it: its
@@ -100,6 +110,23 @@ def session_grant(body: StartRequest) -> SessionGrant | None:
     except GrantInvalid as exc:
         raise HTTPException(422, str(exc)) from None
     return grant
+
+
+#: What swarm-api is told when the Voice it pool leases no account: (status, code,
+#: one sentence the voice or the page can say). Nothing starts on any of them.
+POOL_REFUSALS: dict[str, tuple[int, str, str]] = {
+    NOT_IN_POOL: (403, "voice_pool_refused",
+                  "Voice it's ChatGPT plan isn't available to you, so this conversation can't start."),
+    NONE_AVAILABLE: (409, "voice_pool_busy",
+                     "Voice it's ChatGPT plan is in use by another session; try again when it ends."),
+}
+POOL_REFUSED_DEFAULT = (409, "voice_pool_refused",
+                        "Voice it has no ChatGPT plan account set up yet, so this conversation can't start.")
+
+
+def pool_refusal(reason: str) -> JSONResponse:
+    status, code, message = POOL_REFUSALS.get(reason, POOL_REFUSED_DEFAULT)
+    return JSONResponse(status_code=status, content={"code": code, "message": message})
 
 
 def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
@@ -133,15 +160,12 @@ def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
 
 
 def build_sessions(http: Any) -> Sessions:
-    project = os.environ.get("PROJECT_ID", "").strip()
-    if not project:
-        raise RuntimeError("PROJECT_ID is not set: no credential reference could be checked against it")
-    store = SecretManagerStore()
-    credentials = CredentialFactory(store=store, http=http, project=project)
+    # Every session's account is leased from the quota broker's Voice it pool;
+    # without QUOTA_BROKER_URL this raises and the process does not start.
+    leases = build_broker(http)
     # The planner (§3.3) reaches swarm-api at SWARM_API_URL through the session
     # grant; without that address it is None and no session offers delegation.
-    return Sessions(LiveApi(http), credentials=credentials,
-                    planner=build_planner(http, store=store))
+    return Sessions(LiveApi(http), leases=leases, planner=build_planner(http))
 
 
 def build_caller_check() -> CallerCheck:
@@ -186,16 +210,17 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             raise HTTPException(401, "the caller is not admitted") from None
 
     @app.post("/internal/sessions", status_code=201)
-    async def start(body: StartRequest, _caller: str = Depends(caller)) -> dict:
+    async def start(body: StartRequest, _caller: str = Depends(caller)) -> Any:
         grant = session_grant(body)
         try:
             session = await app.state.sessions.start(
-                body.voice_session_id, person=body.person, credential_ref=body.credential, offer=body.offer,
-                grant=grant)
+                body.voice_session_id, person=body.person, offer=body.offer, grant=grant)
         except SessionExists:
             raise HTTPException(409, "this voice session already has a live session") from None
-        except CredentialRefused as exc:
-            raise HTTPException(403, str(exc)) from None
+        except VoicePoolRefused as exc:
+            log.info("voice session %s: the Voice it pool leased no account (%s)",
+                     body.voice_session_id, exc.reason)
+            return pool_refusal(exc.reason)
         except (CredentialError, LiveError) as exc:
             log.warning("voice session %s: start failed: %s", body.voice_session_id, exc)
             raise HTTPException(502, str(exc)) from None
