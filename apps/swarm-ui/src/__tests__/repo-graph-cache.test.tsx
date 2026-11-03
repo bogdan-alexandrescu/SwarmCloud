@@ -366,7 +366,7 @@ describe('the served answer latency', () => {
     expect(t.textContent).toMatch(/of 1,284 answers · slowest 410 ms/)
     const table = screen.getByRole('table', { name: /Served answer latency/ })
     const row = (k: string) => table.querySelector<HTMLElement>(`[data-latency-row="${k}"]`)!
-    expect(row('carried').textContent).toBe('Carried from the last index125 ms9 ms9 ms')
+    expect(row('carried').textContent).toBe('Carried125 ms9 ms9 ms')
     expect(row('hit').textContent).toContain('≤ 25 ms')
     expect(row('cold').textContent).toContain('≤ 380 ms')
     // Nothing cut at the deadline: dashes, never a 0 ms.

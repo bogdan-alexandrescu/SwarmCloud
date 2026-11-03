@@ -345,16 +345,17 @@ function warmTile(f: GraphCacheFacts, stats: Stats): TileValue {
 // The served answer latency (lane graph-cache-panel-latency)
 // ---------------------------------------------------------------------------
 
+// Short, so the table's five columns fit a phone's width before it scrolls.
 const OUTCOME_WORDS: Readonly<Record<string, string>> = {
-  hit: 'Answered from the cache',
-  carried: 'Carried from the last index',
-  miss: 'Missed the cache',
-  partial: 'Cut at the deadline',
+  hit: 'Cache hit',
+  carried: 'Carried',
+  miss: 'Cache miss',
+  partial: 'Cut at deadline',
   uncached: 'No cache key',
 }
 const TEMPERATURE_WORDS: Readonly<Record<string, string>> = {
-  warm: 'Warm: from memory',
-  cold: 'Cold: read from storage',
+  warm: 'Warm (memory)',
+  cold: 'Cold (storage)',
 }
 const UPPER_BOUND_WHY = 'Several replicas answered: the slowest replica’s figure, so at most this'
 
