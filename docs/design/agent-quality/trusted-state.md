@@ -89,7 +89,7 @@ switch off, which is still every tenant not listed.
 | Repository registration and index versions | `qualitygates.py`, `indexrun.py`, `graphstage.py`, `judge/attempt.py` | `GET state/repository` (the signed repository's) | `repositories` and its versions |
 | **Jev ledger: month and agent spend** | `judge/attempt._carried` | **the Jev accounting pull request's route (§3)** | `jev_usage` month document and attempt rows |
 | **Jev ledger: settle the attempt** | `judge/attempt.settle` | **the Jev accounting pull request's route; settled even when fenced (§3.2)** | `jev_usage` |
-| Platform settings: extra-repository size budget | `extrarepos.budget_bytes` | **none**: the switched path uses the default and says so in the log | `control/settings` |
+| Platform settings: extra-repository size budget | `extrarepos.budget_bytes` | `GET state/context`'s `platform_settings` (that one field, read only) | `control/settings` |
 | Quota report, account error | `control.py` | quota broker HTTP on both paths (no Firestore) | the same |
 | Child agents, child key | `children.py` | `/v1/attempts/{id}/child-key`, `/v1/tasks/{id}/children` (signed, child purpose) | the same |
 | Git tools, hand-off, accounts, secret release, state reads for the MCP | `gittools.py`, `handoff.py`, `accountlease.py`, `secretrelease.py`, `statemcp/relay.py` | their own signed swarm-api routes on both paths | the same |
@@ -113,9 +113,9 @@ What still needs a direct privilege, then:
    the provider secrets through `register-tenant.sh`). This one stays. No route
    serves a credential by design (`jevkey.py`), and a grant per secret already
    makes another tenant's secret Google's refusal, not this code's.
-4. **`control/settings`.** No privilege is needed, because the switched path
-   does not read it. The cost is a default the admin's setting does not reach
-   (§3.3).
+4. **`control/settings`.** No privilege is needed. `GET state/context` serves
+   its `additional_repositories_budget_gib` field, and nothing else of the
+   document, as `platform_settings` (§3.3).
 
 ## 3. The Jev ledger over the routes (owned by the Jev accounting pull request)
 
@@ -149,15 +149,33 @@ holds for every write that is not its own ledger row). That rule is for the
 Jev accounting pull request's settle route to carry; nothing in this package
 writes `jev_usage`.
 
-### 3.3 Still degraded on the switched path
+### 3.3 The extra-repository size budget, and what is still degraded
 
-* **The extra-repository size budget** (`extrarepos.budget_bytes`) is the
-  default, not the admin's `control/settings` value. That is safe (the default
-  is the bound) but not the configured value. Serving it needs a field on
-  `GET state/context` read from `control/settings`, and a one-line change in
-  `extrarepos.py` (outside this territory). It is listed as an operator
-  question.
-* **The Jev ledger**, until the Jev accounting pull request merges (§3.2).
+The owner decided on 3 November 2026 that the state context read serves the
+platform's extra-repository size budget. Before that, a switched worker
+applied the 6 GiB default whatever the admin set, while swarm-api enforced
+the admin's figure on the forge's estimate at submission: the two checks of
+one limit disagreed. Now:
+
+* `GET state/context` answers `platform_settings`: the fields of
+  `control/settings` named in `attemptstate.PLATFORM_SETTINGS_SERVED`, which
+  is `additional_repositories_budget_gib` alone, each as stored and left out
+  when absent. Prices and the budget ceiling are the control plane's own, so
+  none is served. Read-only: no route writes `control/settings` (§4, item 4).
+* `extrarepos.budget_bytes` reads that field for a switched worker, at every
+  call, and applies the same rules as the Firestore read. An absent field
+  gives the default. So does a malformed field or a failed read, and the log
+  says so. A fenced answer (409 `attempt_fenced`) is the one exception: it is
+  re-raised, never turned into the default, so a superseded worker exits
+  without cloning (invariant 5).
+* Tested in `tests/unit/control_plane/test_attemptstate_routes.py` (the field
+  served, nothing else of the document) and
+  `tests/unit/worker/test_state_routes_extra_repo_budget.py` (the worker
+  reads the admin's figure through the real routes; an absent field keeps
+  the default; a fenced answer is the fence).
+
+Still degraded: **the Jev ledger**, until the Jev accounting pull request
+merges (§3.2).
 
 ## 4. The refusals, tested
 
@@ -344,8 +362,8 @@ Plan: 0 to add, 1 to change, 1 to destroy.
 
 ### 7.4 Operator action list
 
-1. Answer the PR's remaining question (the extra-repository budget over
-   `state/context`). The Jev ones are answered (§3.2).
+1. Nothing to answer: the owner answered the extra-repository budget (§3.3)
+   and the Jev questions (§3.2) on 3 November 2026.
 2. After merge, in dev: confirm the state switch and the `eng` role removal
    are applied (the runbook's "What to watch"), and record the date. Until
    then they are "enabled in configuration", not live.
