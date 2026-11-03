@@ -348,10 +348,11 @@ class ShimServer(GraphServer):
                  url: str, transport: Transport = http_transport,
                  sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.time,
-                 repositories: Mapping[str, Repository] | None = None) -> None:
+                 repositories: Mapping[str, Repository] | None = None,
+                 shape: str | None = None) -> None:
         # No snapshot: the service holds it. `GraphServer.handle` reads
         # `self.snapshot` only for `tools/call`, which this class answers.
-        super().__init__(None, freshness)  # type: ignore[arg-type]
+        super().__init__(None, freshness, shape=shape)  # type: ignore[arg-type]
         self.ticket = ticket
         self.index_sha = index_sha
         self.url = url
@@ -369,7 +370,8 @@ class ShimServer(GraphServer):
             if self.repositories and isinstance(message, dict) \
                     and message.get("method") == "tools/list" \
                     and isinstance(response, dict) and "result" in response:
-                response["result"] = {"tools": tools.tools_with_repo(self.repositories)}
+                response["result"] = {"tools": tools.tools_with_repo(
+                    self.repositories, tools.listed(self.shape))}
             return response
         ident = message["id"]
         params = message.get("params") or {}
@@ -525,6 +527,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ticket-file", required=True, help="the worker's graph ticket file")
     parser.add_argument("--workdir", default=None,
                         help="the step's checkout, for the paths dirtied in this step")
+    parser.add_argument("--shape", default=None, choices=sorted(tools.SHAPE_LISTS),
+                        help="what tools/list answers: the slice alone or the ten")
     args = parser.parse_args(argv)
     try:
         pin = load_pin(args.pin)
@@ -535,7 +539,8 @@ def main(argv: list[str] | None = None) -> int:
     freshness = Freshness.establish(pin["index_sha"], workdir=args.workdir, record=pin)
     server = ShimServer(freshness, ticket=TicketFile(args.ticket_file),
                         index_sha=pin["index_sha"], url=url, transport=http_transport,
-                        repositories=discover(args.pin, args.ticket_file))
+                        repositories=discover(args.pin, args.ticket_file),
+                        shape=args.shape)
     server.serve(sys.stdin.buffer, sys.stdout.buffer)
     return 0
 

@@ -271,6 +271,21 @@ DELIVERY_SETTINGS_COLLECTION = SETTINGS_COLLECTION
 #: The workflow switch in the signed `task.metadata.dispatch` block
 #: (`swarm_api.validation.DISPATCH_SWITCHES`, 2026-11-01): `on` | `off`.
 SWITCH_CODE_INTELLIGENCE = "code_intelligence"
+#: The workflow switch choosing the SHAPE a graph-on step's graph takes
+#: (SKILL-ON-DEMAND, the owner's pick of 3 November 2026, part of #2688;
+#: `swarm_api.validation.DISPATCH_SWITCHES`): `skill` (the code-graph skill
+#: over the one `slice` tool, with a grep nudge), `tools` (batch two's ten
+#: tools loaded on every turn) or `off` (no graph, as `code_intelligence:
+#: off`). Unset is `DEFAULT_SHAPE`. It only chooses a shape: whether a step
+#: is staged at all is still the setting, the A/B and `code_intelligence`.
+SWITCH_GRAPH_SHAPE = "graph_shape"
+SHAPE_SKILL, SHAPE_TOOLS = "skill", "tools"
+SHAPES = (SHAPE_SKILL, SHAPE_TOOLS, "off")
+#: The owner's pick: the skill on demand, with the nudge.
+DEFAULT_SHAPE = SHAPE_SKILL
+#: The runner's reading of the shape (`claude_code.graph_shape`), set beside
+#: the graph's own variables and only with them.
+SHAPE_ENV = "SWARM_GRAPH_SHAPE"
 #: The deciding source when the switch decided.
 SOURCE_SWITCH = "workflow switch"
 #: `stage.json`'s record of the workflow switches: `{code_intelligence:
@@ -346,6 +361,26 @@ def switch_of(dispatch: Mapping[str, Any] | None, name: str) -> str | None:
     absent or not one of the two words (an older or newer control plane)."""
     value = dispatch.get(name) if isinstance(dispatch, Mapping) else None
     return value if value in (ON, OFF) else None
+
+
+def shape_of(dispatch: Mapping[str, Any] | None) -> str | None:
+    """`skill`, `tools` or `off` from the signed block's `graph_shape`; None
+    when absent or another word."""
+    value = dispatch.get(SWITCH_GRAPH_SHAPE) if isinstance(dispatch, Mapping) else None
+    return value if value in SHAPES else None
+
+
+def shape_env(shape: str | None) -> dict[str, str]:
+    """`{SHAPE_ENV: shape}` for a shape the switch chose, else nothing: the
+    runner reads an absent variable as `DEFAULT_SHAPE`, so a step that chose
+    none hands the runner exactly the variables it did before."""
+    return {SHAPE_ENV: shape} if shape in (SHAPE_SKILL, SHAPE_TOOLS) else {}
+
+
+def graph_switch(dispatch: Mapping[str, Any] | None) -> str | None:
+    """The `code_intelligence` switch as staging reads it: `off` also when
+    `graph_shape` says `off`, so that shape is no graph at all."""
+    return OFF if shape_of(dispatch) == OFF else switch_of(dispatch, SWITCH_CODE_INTELLIGENCE)
 
 
 @dataclass(frozen=True)
@@ -1127,7 +1162,8 @@ def switches_summary(work: Path, dispatch: Mapping[str, Any] | None
 
     names = (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH, "quality_gates")
     set_ = {name: switch_of(dispatch, name) for name in names}
-    if not any(set_.values()):
+    shape = shape_of(dispatch)
+    if not any(set_.values()) and not shape:
         return None
     try:
         stored = json.loads((Path(work) / CONTEXT_DIR_NAME / STAGE_RECORD_NAME)
@@ -1135,9 +1171,16 @@ def switches_summary(work: Path, dispatch: Mapping[str, Any] | None
     except (OSError, ValueError, AttributeError):
         stored = None
     stored = dict(stored) if isinstance(stored, Mapping) else {}
-    return {name: stored.get(name) if isinstance(stored.get(name), Mapping)
-            else {"value": set_[name]}
-            for name in (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH)}
+    summary = {name: stored.get(name) if isinstance(stored.get(name), Mapping)
+               else {"value": set_[name]}
+               for name in (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH)}
+    if shape:
+        # The shape the step's graph took, only when the block chose one,
+        # so every other attempt's summary is the one it wrote before.
+        record = stored.get(SWITCH_GRAPH_SHAPE)
+        summary[SWITCH_GRAPH_SHAPE] = (record if isinstance(record, Mapping)
+                                       else {"value": shape})
+    return summary
 
 
 def offers_graph(runner_argv: Sequence[str]) -> bool:
@@ -1222,7 +1265,8 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         context_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         service = ServiceRoute(ticket=graph_ticket, private_dir=private_dir, backend=backend,
                                url=service_url, probe=probe)
-        switch = switch_of(dispatch, SWITCH_CODE_INTELLIGENCE)
+        switch = graph_switch(dispatch)
+        shape = shape_of(dispatch)
         result = stage(db=db, store=store, tenant_id=tenant_id, repository_url=repository_url,
                        task_id=task_id, checkout=checkout, base_sha=base_sha,
                        context_dir=context_dir, call_options=call_options, service=service,
@@ -1283,14 +1327,18 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         (context_dir / STAGE_RECORD_NAME).write_text(
             json.dumps({**result.record(), SWITCHES_FIELD: {
                 SWITCH_CODE_INTELLIGENCE: result.switch_record(switch),
+                SWITCH_GRAPH_SHAPE: {"value": shape,
+                                     "shape": None if shape == OFF else shape or DEFAULT_SHAPE,
+                                     "source": SOURCE_SWITCH if shape else "default"},
                 judge_attempt.SWITCH: {k: v for k, v in judgments.items() if k != "switch"},
             }}, indent=2, default=str) + "\n", encoding="utf-8")
         if result.served and result.pin is not None and result.ticket_file is not None:
             return {CONTEXT_ENV: str(context_dir), PIN_ENV: str(result.pin),
                     TICKET_FILE_ENV: str(result.ticket_file), URL_ENV: str(service_url),
-                    **jev}
+                    **shape_env(shape), **jev}
         if result.staged and result.snapshot is not None:
-            return {CONTEXT_ENV: str(context_dir), SNAPSHOT_ENV: str(result.snapshot), **jev}
+            return {CONTEXT_ENV: str(context_dir), SNAPSHOT_ENV: str(result.snapshot),
+                    **shape_env(shape), **jev}
         if result.wanted:
             return {UNSTAGED_ENV: result.reason, **jev}
         return dict(jev)
@@ -1405,22 +1453,28 @@ def _stage_additional(entry: Mapping[str, Any], *, directory: Path,
                  service=service, unserved=unserved)
 
 
-def server_argv(snapshot: str, workdir: str | None) -> list[str]:
+def server_argv(snapshot: str, workdir: str | None, shape: str | None = None) -> list[str]:
     """The command a CLI runs as `swarm-graph`: this interpreter, `-I` so a module
-    the agent wrote in the checkout is never what runs (`children.git_shim_argv`)."""
+    the agent wrote in the checkout is never what runs (`children.git_shim_argv`).
+    `shape` (`SHAPES`) is what its tools/list answers; none lists the ten."""
     argv = [sys.executable, "-I", "-m", SERVER_MODULE, "--snapshot", snapshot]
     if workdir:
         argv += ["--workdir", workdir]
+    if shape:
+        argv += ["--shape", shape]
     return argv
 
 
-def shim_argv(pin: str, ticket_file: str, workdir: str | None) -> list[str]:
+def shim_argv(pin: str, ticket_file: str, workdir: str | None,
+              shape: str | None = None) -> list[str]:
     """The command a CLI runs as `swarm-graph` when the graph is served (§4.2):
     the shim, under this interpreter with `-I`, as `server_argv`. It names no
     host, bucket or commit; the URL is the server entry's `env`."""
     argv = [sys.executable, "-I", "-m", SHIM_MODULE, "--pin", pin, "--ticket-file", ticket_file]
     if workdir:
         argv += ["--workdir", workdir]
+    if shape:
+        argv += ["--shape", shape]
     return argv
 
 
@@ -1464,7 +1518,8 @@ __all__ = [
     "MIN_FORMAT", "PIN_ENV", "PIN_MANIFEST_NAME", "PIN_NAME", "READY_MARK",
     "REPOSITORY_CONTEXT_FIELD", "REPOS_CONTEXT_DIR_NAME", "REPOS_DIR_NAME", "SERVER_NAME",
     "SETTINGS_COLLECTION", "SHIM_MODULE", "SOURCE_SWITCH", "SWITCHES_FIELD",
-    "SWITCH_CODE_INTELLIGENCE",
+    "SWITCH_CODE_INTELLIGENCE", "SWITCH_GRAPH_SHAPE", "SHAPES", "SHAPE_ENV", "SHAPE_SKILL",
+    "SHAPE_TOOLS", "DEFAULT_SHAPE", "shape_of", "shape_env", "graph_switch",
     "SNAPSHOT_DIR_NAME", "SNAPSHOT_ENV", "STAGE_RECORD_NAME", "STAGING_BACKENDS",
     "ServiceRoute", "StageResult", "TICKET_FILE_ENV", "UNSTAGED_ENV", "URL_ENV",
     "assign_arm", "checked_manifest", "decide", "delivery_of", "history_fetcher",

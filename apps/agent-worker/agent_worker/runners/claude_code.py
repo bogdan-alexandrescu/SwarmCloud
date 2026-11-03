@@ -306,6 +306,7 @@ import dataclasses
 import json
 import os
 import shlex
+import shutil
 import re
 import sys
 from pathlib import Path
@@ -381,6 +382,11 @@ BUDGET_NOTE_HOOK = Path(__file__).resolve().parent / "budget_note_hook.py"
 #: file beside the settings, reset each time the settings are written.
 GUARDS_REPEAT_HOOK = Path(__file__).resolve().parent / "guards_repeat_hook.py"
 GUARDS_STATE_NAME = "guards-state.json"
+#: The PreToolUse hook of the `skill` graph shape: the grep nudge and the
+#: subagent line (SKILL-ON-DEMAND; the why is in its docstring). Its state,
+#: the names already hinted, beside the settings file.
+GRAPH_HINT_HOOK = Path(__file__).resolve().parent / "graph_hint_hook.py"
+GRAPH_HINT_STATE_NAME = "graph-hint-state.json"
 #: The repository `.mcp.json` servers a lane does not load (LANE CAPS).
 REPO_MCP_SERVERS_OFF = ("swarmcloud",)
 #: The most characters of one Bash result the CLI keeps (LANE CAPS). A
@@ -508,9 +514,121 @@ JEV_SYSTEM_NOTE = (
 APPEND_SYSTEM_PROMPT_FLAG = "--append-system-prompt"
 
 
-def system_note(*, graph: bool, jev: bool) -> str | None:
-    """The system-prompt block for the switched-on tools, or None with both off."""
-    blocks = [note for on, note in ((graph, GRAPH_SYSTEM_NOTE), (jev, JEV_SYSTEM_NOTE)) if on]
+#: SKILL-ON-DEMAND (the owner's pick of 3 November 2026, "Skill on demand,
+#: with a nudge"; part of #2688). Batch one deferred the ten graph tools
+#: behind tool search: 0 calls in 45 steps. Batch two loaded them on every
+#: turn, about 1,900 tokens, for 2 calls in 12 steps, the first an ambiguity
+#: error after which that agent never came back; subagents, a third to two
+#: thirds of all calls, were never told. So a step's graph takes one of two
+#: SHAPES, chosen by the workflow switch `graph_shape` (`graphstage
+#: .shape_of`), `skill` unless it says otherwise:
+#:
+#:   skill  the code-graph skill (`write_graph_skill`): its description,
+#:          about 100 tokens, names the three moments it pays off; its body,
+#:          read only when invoked, gives the one `slice` query, the only
+#:          tool the server lists, deferred like any other until asked for.
+#:          A PreToolUse hook nudges a grep for an identifier and passes the
+#:          skill's line on to every subagent prompt (`graph_hint_hook.py`).
+#:   tools  batch two exactly: the ten tools loaded (`ALWAYS_LOAD`),
+#:          `GRAPH_FIRST_NOTE` and `GRAPH_SYSTEM_NOTE`, for the comparison.
+GRAPH_SHAPE_SKILL = graphstage.SHAPE_SKILL
+GRAPH_SHAPE_TOOLS = graphstage.SHAPE_TOOLS
+#: The skill's directory under the CLI's HOME (`work/`, cliagent): the CLI
+#: reads a personal skill from `~/.claude/skills/<name>/SKILL.md`. Never the
+#: checkout, so nothing of it reaches a commit.
+GRAPH_SKILL_NAME = "code-graph"
+GRAPH_SKILL_DIR = Path(".claude") / "skills" / GRAPH_SKILL_NAME
+#: The MCP name of the slice tool: server `swarm-graph`, tool `slice`.
+GRAPH_SLICE_TOOL = f"mcp__{graphstage.SERVER_NAME}__slice"
+#: The description is what the session pays for on every turn: the three
+#: moments, nothing about how (the body says how).
+GRAPH_SKILL_DESCRIPTION = (
+    "This repository's code graph in one query. Use it before changing an "
+    "existing function (who calls it), before finishing (which tests cover the "
+    "files you changed) and when a change spans modules (what it touches); it "
+    "sees calls through imports and methods that grep misses."
+)
+GRAPH_SKILL_BODY = f"""\
+# Code graph
+
+One tool answers: `{GRAPH_SLICE_TOOL}`. It is deferred: load it once with the
+ToolSearch tool, query `select:{GRAPH_SLICE_TOOL}`, then call it.
+
+Arguments: `files` (repo-relative paths) and/or `symbols` (a name or an id
+`path#name`), `depth` 1-3 hops (default 1), `include` any of `callers`,
+`callees`, `tests`, `docs` (default callers and tests). The answer is one JSON
+page of at most 4 KiB; pass its `next_cursor` back as `cursor` for the next.
+
+When:
+1. Before changing an existing function or class: `{{"symbols": ["name"]}}`.
+   Every caller listed must keep working after your change.
+2. Before finishing: `{{"files": [<each existing file you changed>],
+   "include": ["tests"]}}`, and run the tests it lists beside your own.
+3. A change across modules: `{{"files": [...], "depth": 2,
+   "include": ["callers", "callees", "docs"]}}` for what it touches.
+
+Reading it: a name several symbols share answers the best match and lists the
+rest under `also_matched`: pass the id you meant to ask again. A row marked
+`stale` is on a path changed since the index. Zero callers or tests is
+UNKNOWN, not none: then grep. Skip it for a file you created in this step.
+
+When you write a prompt for a subagent, tell it the code graph is there and
+that this skill answers callers and covering tests.
+"""
+#: The `skill` shape's system-prompt line: CLAUDE.md, in the same system
+#: context, says grep first; this says when the skill is the better first move.
+GRAPH_SKILL_SYSTEM_NOTE = (
+    f"Code intelligence is on for this step: invoke the `{GRAPH_SKILL_NAME}` skill "
+    "before changing an existing function, before finishing and when a change "
+    "spans modules. A rule to grep first is about reading files, not a reason to "
+    "skip it."
+)
+#: The exploration line's clause in the `skill` shape (`exploration_note`).
+EXPLORATION_SKILL_CLAUSE = (
+    f"invoke the `{GRAPH_SKILL_NAME}` skill before a `grep -rn` for a symbol "
+    "across the tree"
+)
+
+
+def graph_shape(environ: Mapping[str, str]) -> str:
+    """The step's graph shape from the worker (`graphstage.SHAPE_ENV`):
+    `tools` only when it says so, else `skill`, the owner's pick."""
+    value = (environ.get(graphstage.SHAPE_ENV) or "").strip()
+    return GRAPH_SHAPE_TOOLS if value == GRAPH_SHAPE_TOOLS else GRAPH_SHAPE_SKILL
+
+
+def write_graph_skill(home: Path, *, on: bool) -> Path | None:
+    """Write the code-graph skill under `home` when `on`, else remove what an
+    earlier attempt left there (`work/` travels in checkpoints); return the
+    SKILL.md written, or None."""
+    directory = home / GRAPH_SKILL_DIR
+    if directory.is_symlink() or directory.is_file():
+        directory.unlink()
+    elif directory.exists():
+        for child in directory.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        directory.rmdir()
+    if not on:
+        return None
+    for parent in (home / ".claude", home / ".claude" / "skills"):
+        if parent.is_symlink():
+            parent.unlink()
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / "SKILL.md"
+    _write_private(path, f"---\nname: {GRAPH_SKILL_NAME}\ndescription: "
+                         f"{GRAPH_SKILL_DESCRIPTION}\n---\n\n{GRAPH_SKILL_BODY}")
+    return path
+
+
+def system_note(*, graph: bool, jev: bool, shape: str = GRAPH_SHAPE_TOOLS) -> str | None:
+    """The system-prompt block for the switched-on tools, or None with both off.
+    The graph's block is its `shape`'s: the moments for the loaded tools, the
+    one line for the skill."""
+    graph_note = GRAPH_SKILL_SYSTEM_NOTE if shape == GRAPH_SHAPE_SKILL else GRAPH_SYSTEM_NOTE
+    blocks = [note for on, note in ((graph, graph_note), (jev, JEV_SYSTEM_NOTE)) if on]
     return "\n\n".join(blocks) or None
 
 #: Set by the dispatcher on the worker container only with the live browser's
@@ -931,11 +1049,13 @@ def scratch_note_for(environ: Mapping[str, str]) -> str | None:
     return scratch_note(own_volume=not Path(tmpdir).is_relative_to(workspace))
 
 
-def exploration_note(*, graph: bool, children: str) -> str | None:
+def exploration_note(*, graph: bool, children: str,
+                     shape: str = GRAPH_SHAPE_TOOLS) -> str | None:
     """The one exploration line, naming only what this attempt has, or None."""
     clauses = []
     if graph:
-        clauses.append(EXPLORATION_GRAPH_CLAUSE)
+        clauses.append(EXPLORATION_SKILL_CLAUSE if shape == GRAPH_SHAPE_SKILL
+                       else EXPLORATION_GRAPH_CLAUSE)
     if children:
         clauses.append(EXPLORATION_CHILDREN_CLAUSE)
     if not clauses:
@@ -981,7 +1101,7 @@ def resume_summary(spool: str) -> str | None:
     return text or None
 
 
-def write_headless_settings(directory: Path) -> Path:
+def write_headless_settings(directory: Path, *, graph_hint: bool = False) -> Path:
     """Write the CLI's `--settings` file and its hook into `directory`; return the file.
 
     On a live-browser attempt -- the one kind the lifecycle sets SWARM_HANDOFF
@@ -990,6 +1110,10 @@ def write_headless_settings(directory: Path) -> Path:
     next tool result says when the gate has asked a person to solve a CAPTCHA
     (CAPTCHA-HANDOFF-2, BGD 2026-10-23; part of #2058). Any other attempt has
     no spool for it to read, and gets no hook.
+
+    With `graph_hint` (a step whose graph takes the `skill` shape), it also
+    registers `graph_hint_hook.py` before a search and a subagent's launch:
+    the grep nudge and the subagent line (SKILL-ON-DEMAND).
     """
     if directory.is_symlink():
         directory.unlink()
@@ -1072,6 +1196,23 @@ def write_headless_settings(directory: Path) -> Path:
             ]
         },
     }
+    hint_state = directory / GRAPH_HINT_STATE_NAME
+    if hint_state.is_symlink() or hint_state.exists():
+        hint_state.unlink()
+    if graph_hint:
+        # Hints, never blocks: additionalContext or updatedInput, exit 0,
+        # and fails open (graph_hint_hook.py).
+        settings["hooks"]["PreToolUse"].append({
+            "matcher": "Bash|Grep|Task|Agent",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(GRAPH_HINT_HOOK))} "
+                               f"{shlex.quote(str(hint_state))}",
+                    "timeout": 10,
+                }
+            ],
+        })
     post_tool_use: list[dict[str, Any]] = []
     spool = os.environ.get(HANDOFF_ENV, "").strip()
     if spool:
@@ -1223,6 +1364,7 @@ def write_mcp_config(
     screenshots_dir: str | None = None,
     lightpanda_server: dict[str, Any] | None = None,
     judge_config: str | None = None,
+    graph_shape: str | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
     browser when `endpoint` is given (writing what it names itself into
@@ -1246,7 +1388,9 @@ def write_mcp_config(
     swarm-graph, jev and swarm-jev carry `ALWAYS_LOAD`: their tools are in
     the prompt from the session's start, never behind tool search, because
     the agent is told to use them first (AGENTS-USE-TOOLS). Playwright and
-    the rest load as the CLI chooses.
+    the rest load as the CLI chooses. In the `skill` `graph_shape`, swarm-graph
+    lists the slice alone and does not carry it: the code-graph skill says
+    when to load it (SKILL-ON-DEMAND).
 
     Playwright MCP connects with its client tag on the endpoint
     (`browser_tools.tag_endpoint`), so the gate can say which tool drove the
@@ -1296,15 +1440,19 @@ def write_mcp_config(
     if state_spool:
         command, *args = state_shim_argv(state_spool)
         servers[STATE_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+    skill = graph_shape == GRAPH_SHAPE_SKILL
+    graph_load = {} if skill else {ALWAYS_LOAD: True}
     if graph_served:
         pin, ticket_file, url = graph_served
-        command, *args = graphstage.shim_argv(pin, ticket_file, graph_workdir)
+        command, *args = graphstage.shim_argv(pin, ticket_file, graph_workdir,
+                                              GRAPH_SHAPE_SKILL if skill else None)
         servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args,
-                                           "env": {graphstage.URL_ENV: url}, ALWAYS_LOAD: True}
+                                           "env": {graphstage.URL_ENV: url}, **graph_load}
     elif graph_snapshot:
-        command, *args = graphstage.server_argv(graph_snapshot, graph_workdir)
+        command, *args = graphstage.server_argv(graph_snapshot, graph_workdir,
+                                                GRAPH_SHAPE_SKILL if skill else None)
         servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args,
-                                           ALWAYS_LOAD: True}
+                                           **graph_load}
     if judge_config:
         servers[JEV_DECIDE_SERVER_NAME] = jev_decide_entry(Path(judge_config))
     if relay:
@@ -1684,7 +1832,14 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         extra += lightpanda.disallowed_tools_args()
     # After the platform's flags, so a deployment's CLAUDE_CODE_ARGS cannot
     # leave background commands switched on by replacing the flag set.
-    settings = write_headless_settings(Path(ctx.work_dir) / SETTINGS_DIR_NAME)
+    # The graph's shape (SKILL-ON-DEMAND): the skill and its hook only on a
+    # step whose graph is staged or served below.
+    graph_on = bool(os.environ.get(graphstage.SNAPSHOT_ENV, "").strip()
+                    or graphstage.served_env(os.environ))
+    shape = graph_shape(os.environ)
+    write_graph_skill(Path(ctx.work_dir), on=graph_on and shape == GRAPH_SHAPE_SKILL)
+    settings = write_headless_settings(Path(ctx.work_dir) / SETTINGS_DIR_NAME,
+                                       graph_hint=graph_on and shape == GRAPH_SHAPE_SKILL)
     extra += ["--settings", str(settings)]
     # HOME is `work/` (cliagent), so `work/.claude.json` is the config the CLI
     # reads. Only a checkout is trusted: with none the agent starts in HOME,
@@ -1775,7 +1930,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         ctx.payload = {**ctx.payload, "prompt": prompt}
     # The graph, loaded up front, and what to ask it first (AGENTS-USE-TOOLS):
     # only when it is registered below.
-    if (graph_snapshot or graph_served) and isinstance(prompt, str) and prompt.strip():
+    if (graph_snapshot or graph_served) and shape == GRAPH_SHAPE_TOOLS \
+            and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{GRAPH_FIRST_NOTE}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     # The agent's own `jev_decide` (AGENTS-USE-TOOLS): the worker writes this
@@ -1790,7 +1946,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         ctx.payload = {**ctx.payload, "prompt": prompt}
     # Where to explore first, naming only the tools this attempt has (LANE CAPS).
     explore = exploration_note(graph=bool(graph_snapshot or graph_served),
-                               children=env.get(CHILDREN_ENV, ""))
+                               children=env.get(CHILDREN_ENV, ""), shape=shape)
     if explore and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{explore}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
@@ -1892,7 +2048,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                              if live_endpoint else None),
             lightpanda_server=(lightpanda.mcp_server(lightpanda_env, refused_ports=lightpanda_refused)
                                if lightpanda_env else None),
-            judge_config=judge_config or None)
+            judge_config=judge_config or None, graph_shape=shape)
         # BROWSER-START: the live browser's tool is in the config the CLI
         # reads, or the agent does not start.
         if env.get(HANDOFF_ENV) and MCP_SERVER_NAME not in json.loads(mcp.read_text())["mcpServers"]:
@@ -1901,7 +2057,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         extra += ["--mcp-config", str(mcp)]
     # When each switched-on tool helps, at the system prompt's weight and in
     # every session of the attempt (AGENTS-USE-TOOLS-WHEN; `system_note`).
-    moments = system_note(graph=bool(graph_snapshot or graph_served), jev=bool(judge_config))
+    moments = system_note(graph=bool(graph_snapshot or graph_served), jev=bool(judge_config),
+                          shape=shape)
     if moments:
         extra += [APPEND_SYSTEM_PROMPT_FLAG, moments]
     supervisor: lightpanda.Supervisor | None = None
