@@ -1967,7 +1967,7 @@ export const HELP_PLACES = {
   'admin/people': 'People and roles',
   'admin/runner-sizes': 'Runner sizes',
   'admin/platform-secrets': 'Platform secrets',
-  'admin/workspaces': 'Workspaces you admin',
+  'admin/workspaces': 'Workspaces',
   'config/github': 'GitHub access',
   'config/repositories': 'Repositories',
   'config/secrets': 'Secrets',
