@@ -1589,18 +1589,16 @@ def credential_lines(repo: Path) -> tuple[list[str], str | None]:
 #: nothing had told the agent so.
 PUBLISH_PARAGRAPH = (
     "You do not push or open a pull request; the worker publishes your committed "
-    "branch. Commit your work. Write the pull request's title (one line) to "
+    "branch after you finish, so never say one is missing for want of GitHub "
+    "credentials. Commit your work. Write the pull request's title (one line) to "
     "$SWARM_ARTIFACTS_DIR/pr-title.txt and its body to "
-    "$SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull "
-    "request exists because you lack GitHub credentials: the worker opens it "
-    "after you finish. If the work is already done and nothing needs changing, "
-    "commit nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what "
-    "you checked and what showed it is done; that ends the step as no change "
-    "instead of a failure. Keep your commits on the branch you were cloned "
-    "onto: to build on another branch, fetch it and merge it in (git merge "
-    "FETCH_HEAD); never git checkout -B, git switch or git reset onto another "
-    "line, because commits that do not descend from the commit you started on "
-    "are discarded."
+    "$SWARM_ARTIFACTS_DIR/pr-body.md. If the work is already done, commit "
+    "nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what you "
+    "checked and what showed it is done: the step ends as no change, not a "
+    "failure. Keep your commits on the branch you were cloned onto: to build on "
+    "another branch, fetch it and merge it in (git merge FETCH_HEAD); never git "
+    "checkout -B, git switch or git reset onto another line, because commits "
+    "that do not descend from the commit you started on are discarded."
 )
 
 

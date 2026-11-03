@@ -199,6 +199,8 @@ def test_no_instruction_appears_twice_in_a_first_message(tmp_path, monkeypatch, 
     prompt = _first_message(tmp_path, monkeypatch, payload, repo=kind != "no-repository",
                             publishes="0" if kind == "review" else None)
     _assert_said_once(prompt[len(BRIEF):])
+    # The Jev lines only when Jev is on: this attempt has no judge config.
+    assert "Jev" not in prompt
     if kind != "no-repository":
         assert prompt.count(claude_code.RELATED_TESTS_NOTE) == 1
 
