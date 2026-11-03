@@ -98,6 +98,8 @@
 
 
 @media (max-width: 900px) {
+  .cfc-grid { grid-template-columns: minmax(0, 1fr); }
+  .cfc-grid .cfc-right { order: -1; }
   .cfc-status { grid-template-columns: auto minmax(0, 1fr); }
   .cfc-status-count { grid-column: 1 / -1; align-items: flex-start; text-align: left; }
   .cfc-status-count small { max-width: none; }

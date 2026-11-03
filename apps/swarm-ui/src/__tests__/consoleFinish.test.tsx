@@ -252,3 +252,16 @@ describe('the fixture build’s moments', () => {
     expect(fixtures.fixtureMoment('?moment=nowhere')).toBeNull()
   })
 })
+
+describe('the console finish on a phone', () => {
+  it('stacks the checklist and the panel in one column, the panel first', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const css = readFileSync(join(__dirname, '..', 'consolefinish', 'checklist.css'), 'utf8')
+    const phone = [...css.matchAll(/@media \(max-width: 900px\) \{([\s\S]*?)\n\}/g)].map((m) => m[1]).join('\n')
+    // MUTATION: drop either rule -> the 390-wide grid keeps two columns and
+    // the panel computes 0px wide, so no step's controls can be reached.
+    expect(phone).toMatch(/\.cfc-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/)
+    expect(phone).toMatch(/\.cfc-grid \.cfc-right \{ order: -1; \}/)
+  })
+})
