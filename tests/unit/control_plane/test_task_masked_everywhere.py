@@ -317,7 +317,7 @@ class _SweepBroker:
     def _account(self) -> dict[str, Any]:
         return {"account_id": SWEEP_ACCOUNT, "owner_tenant": "eng", "lend_to": ["research"]}
 
-    def list_accounts(self, tenant_id: str) -> dict[str, Any]:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict[str, Any]:
         return {"accounts": [self._account()]}
 
     def holds(self, account_id: str) -> dict[str, Any]:

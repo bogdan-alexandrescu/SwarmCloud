@@ -3,8 +3,10 @@
 # answers the browser's WebRTC offer and holds each session's sideband.
 #
 # No Firestore or storage client: every read and write of Voice it's data goes
-# through swarm-api (§3.6). Secret Manager is read over REST with google-auth
-# (credential.py, SecretManagerStore); OpenAI over httpx and websockets.
+# through swarm-api (§3.6). Each session's ChatGPT plan account is leased from
+# the quota broker's Voice it pool over httpx (accountlease.py); the planner's
+# Anthropic key is read over REST with google-auth (planner.py); OpenAI over
+# httpx and websockets.
 [project]
 name = "swarm-voice"
 version = "0.1.0"

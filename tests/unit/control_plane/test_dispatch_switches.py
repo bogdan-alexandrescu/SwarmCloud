@@ -45,8 +45,8 @@ def _blocks(db: Any, response: Any) -> list[dict[str, Any]]:
     return [db.docs[f"tasks/{task_id}"]["metadata"]["dispatch"] for task_id in ids]
 
 
-def test_the_switches_are_the_three_the_owner_named():
-    assert DISPATCH_SWITCHES == SWITCHES
+def test_the_switches_are_the_three_the_owner_named_and_the_graph_shape():
+    assert DISPATCH_SWITCHES == (*SWITCHES, "graph_shape")
     assert DISPATCH_SWITCH_VALUES == ("on", "off")
     assert DISPATCH_METADATA_KEY in SIGNED_METADATA_KEYS
 
@@ -100,9 +100,30 @@ def test_an_unknown_switch_is_refused_with_the_accepted_switches_named(client, d
     assert response.status_code == 422, response.text
     body = response.json()
     assert body["code"] == "invalid_dispatch"
-    assert body["detail"]["accepted_switches"] == list(SWITCHES)
-    for name in SWITCHES:
+    assert body["detail"]["accepted_switches"] == [*SWITCHES, "graph_shape"]
+    for name in (*SWITCHES, "graph_shape"):
         assert name in body["message"]
+
+
+# --- graph_shape (SKILL-ON-DEMAND, the owner's pick of 3 November 2026) -------
+
+@pytest.mark.parametrize("shape", ["skill", "tools", "off"])
+def test_each_graph_shape_is_stored_exactly_on_every_step(client, db, shape):
+    baseline = _blocks(db, _workflow(client))
+    blocks = _blocks(db, _workflow(client, dispatch={"code_intelligence": "on",
+                                                     "graph_shape": shape}))
+    for before, after in zip(baseline, blocks):
+        assert after == {**before, "code_intelligence": "on", "graph_shape": shape}
+
+
+@pytest.mark.parametrize("bad", ["on", "SKILL", "mcp", "", True, None])
+def test_a_graph_shape_outside_its_three_words_is_refused_naming_them(client, db, bad):
+    response = _workflow(client, dispatch={"graph_shape": bad})
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "invalid_dispatch"
+    assert body["detail"]["accepted_switch_values"] == ["skill", "tools", "off"]
+    assert not [key for key in db.docs if key.startswith("tasks/")]
 
 
 def test_a_map_that_is_not_one_is_refused():

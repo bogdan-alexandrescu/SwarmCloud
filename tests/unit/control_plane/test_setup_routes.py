@@ -224,7 +224,7 @@ class FakePool:
         self.accounts.append(account)
         return {"account": account, "expires_at": None}
 
-    def list_accounts(self, tenant_id):
+    def list_accounts(self, tenant_id, include_reserved: bool = False):
         return {"accounts": [a for a in self.accounts if a["owner_tenant"] == tenant_id]}
 
 

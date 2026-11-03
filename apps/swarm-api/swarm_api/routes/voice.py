@@ -12,8 +12,19 @@
     GET    /v1/voice/preferences              -> {preferences, revision, can_undo, previous}
     PATCH  /v1/voice/preferences              {changes, revision?} -> the same, plus changed
     POST   /v1/voice/preferences/undo         {revision?} -> the same
+    GET    /v1/voice/pool                     -> {pool, account, reason}
     GET    /v1/voice/sessions/{session_id}/ledger
         -> {session_id, date, time_zone, session, day, not_counted}
+
+THE VOICE IT POOL (owner, 2026-11-02). Voice it talks on the ChatGPT plan
+account the quota broker reserves in its "voice-it" pool; swarm-voice leases
+it per session. `GET /v1/voice/pool` (Voice it › Preferences) asks the
+broker, as this service's platform identity, which account the CALLER's next
+session would lease, without leasing it: `{"pool": "voice-it", "account":
+{label, display_name, provider} | null, "reason": "" | "not_in_voice_pool" |
+"no_voice_account_registered" | "no_voice_account_available"}`. The person
+is the verified email, never a query parameter, so nobody can ask about
+someone else. No credential is read or served.
 
 THE LEDGER (§3.8; swarm_api/voice/ledger.py) is computed on every read from
 the session's seconds, its turns' usage and what Voice it started, against
@@ -74,12 +85,12 @@ tenant-scoped route declares; the person is the verified email, never a
 field of the body.
 
 ORDER. Who first (403), then whether swarm-voice is deployed (503
-`voice_unavailable`, nothing written), then the person's stored ChatGPT
-sign-in (403 `forbidden` naming Voice it › Preferences, nothing written or
-sent: `ChatGPTSignIn.stored_version`, voice/signin.py, whose version
-reference alone is what swarm-voice is sent as `credential`), then the
-transaction that refuses a second live session (409 `conflict`), then
-swarm-voice. The
+`voice_unavailable`, nothing written), then the transaction that refuses a
+second live session (409 `conflict`), then swarm-voice. No credential is
+read or sent: swarm-voice leases the ChatGPT plan account from the quota
+broker's Voice it pool itself, and its pool refusals (403, or 409
+`voice_pool_busy`/`voice_pool_refused`) reach the browser with its sentence
+(voice/sessions.py, `pool_refusal`). The
 browser's offer goes to swarm-voice unchanged and its answer comes back
 unchanged; neither is logged or stored.
 
@@ -99,6 +110,8 @@ from starlette.concurrency import run_in_threadpool
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import Conflict, ValidationFailed
+from ..brokerclient import AccountPool
+from .accounts import VOICE_POOL, account_pool
 from .profile import preferences_store
 from ..preferences import Preferences
 from ..voice import cards as vcards
@@ -106,11 +119,8 @@ from ..voice import grant as vgrant
 from ..voice import ledger as vledger
 from ..voice import preferences as vprefs
 from ..voice import sessions as vs
-from ..voice import signin as vsi
 from ..voice import store as vstore
 from ..voice import stream as vstream
-from ..workspace_secrets import SecretWriter
-from .workspace_secrets import secret_writer
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
@@ -148,13 +158,40 @@ def _service(ctx: AppContext, client: Any) -> vs.VoiceSessions:
         raise vs.unavailable()
     return vs.VoiceSessions(ctx.db, client,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
-                            project=str(ctx.settings.project_id or ""), now=ctx.now)
+                            now=ctx.now)
 
 
-def _stored_sign_in(ctx: AppContext, writer: SecretWriter, person: str) -> str | None:
-    """The version reference of the person's own stored ChatGPT sign-in. Only the
-    provider-keys record is read: the writer and token endpoint are never called."""
-    return vsi.ChatGPTSignIn(ctx.db, writer, vsi.HttpTokenEndpoint(), now=ctx.now).stored_version(person)
+#: The broker's reasons for "no account" (`GET /v1/voice/pool`); anything
+#: else it sends reads as unavailable rather than passing an unknown word on.
+POOL_REASONS = frozenset({"", "not_in_voice_pool", "no_voice_account_registered",
+                          "no_voice_account_available"})
+
+
+def _pool_answer(raw: Any) -> dict[str, Any]:
+    """The broker's answer by the allow-list: the account's label, Name and
+    provider (never its id, owner or anything else), and the reason."""
+    raw = raw if isinstance(raw, dict) else {}
+    account = raw.get("account")
+    shown = None
+    if isinstance(account, dict) and isinstance(account.get("label"), str):
+        display = account.get("display_name")
+        provider = account.get("provider")
+        shown = {"label": account["label"],
+                 "display_name": display if isinstance(display, str) else None,
+                 "provider": provider if isinstance(provider, str) else None}
+    reason = raw.get("reason")
+    reason = reason if isinstance(reason, str) and reason in POOL_REASONS else (
+        "" if shown is not None else "no_voice_account_available")
+    return {"pool": VOICE_POOL, "account": shown, "reason": reason}
+
+
+@router.get("/pool")
+async def voice_pool(
+    person: str = Depends(allowed_person),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Which Voice it pool account the caller's next session would lease."""
+    return _pool_answer(await run_in_threadpool(pool.voice_pool, person))
 
 
 def _check_id(value: str, prefix: str, what: str) -> None:
@@ -169,7 +206,6 @@ async def start_session(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
     client: Any = Depends(voice_client),
-    writer: SecretWriter = Depends(secret_writer),
 ) -> dict:
     service = _service(ctx, client)
     if not body.offer_sdp.startswith("v=0"):
@@ -179,8 +215,7 @@ async def start_session(
 
     def _start() -> dict:
         return service.start(tenant_id=tenant_id, person=person, offer=body.offer_sdp,
-                             project_id=body.project_id,
-                             credential=_stored_sign_in(ctx, writer, person))
+                             project_id=body.project_id)
 
     return await run_in_threadpool(_start)
 

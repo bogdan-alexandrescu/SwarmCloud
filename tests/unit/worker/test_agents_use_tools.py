@@ -45,7 +45,8 @@ _CLEARED = ("SWARM_GIT", "SWARM_CHILDREN", "SWARM_SEARCH", "SWARM_STATE",
             claude_code.JEV_BACKEND_ENV, claude_code.JEV_KEY_FILE_ENV, claude_code.JEV_URL_ENV,
             claude_code.MCP_RELAY_ENV, judge_attempt.CONFIG_ENV,
             graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV,
-            graphstage.PIN_ENV, graphstage.TICKET_FILE_ENV, graphstage.URL_ENV)
+            graphstage.PIN_ENV, graphstage.TICKET_FILE_ENV, graphstage.URL_ENV,
+            graphstage.SHAPE_ENV)
 
 
 def _call(name: str, tool_input: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -142,7 +143,8 @@ def _judge_config(tmp_path: Path) -> Path:
 @pytest.mark.parametrize("env_of", [_graph_env, _served_env], ids=["staged", "served"])
 def test_a_switched_on_graph_loads_up_front_and_the_prompt_says_to_use_it_first(
         monkeypatch, tmp_path, env_of):
-    seen = _run(monkeypatch, tmp_path, env_of(tmp_path))
+    # The `tools` shape, batch two's, kept for the comparison (SKILL-ON-DEMAND).
+    seen = _run(monkeypatch, tmp_path, {**env_of(tmp_path), graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS})
     entry = _servers(seen)[graphstage.SERVER_NAME]
     # MUTATION: drop `alwaysLoad` and the graph's tools wait behind tool search.
     assert entry["alwaysLoad"] is True
