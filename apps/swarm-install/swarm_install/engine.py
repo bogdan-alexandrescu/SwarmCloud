@@ -44,7 +44,7 @@ from .events import Events
 from .exitcodes import MET, UNKNOWN, UNMET, ExitCode
 from .lease import HEARTBEAT_SECONDS, Lease, LeaseHeld, LeaseLost, LeaseRefused
 from .manifest import Entry, Manifest
-from .record import InstallRecord, RecordConflict
+from .record import PASS_TIMES, InstallRecord, RecordConflict, pass_ended, pass_started
 from .state import (
     STEP_DONE,
     STEP_DRIFT,
@@ -219,6 +219,26 @@ class Engine:
             s.steps[step.id] = entry
             if outputs:
                 s.outputs.update(outputs)
+            if state in (STEP_DONE, STEP_FAILED, STEP_PAUSED):
+                ended = pass_ended(s.outputs.get(PASS_TIMES) or {}, step.id, state, entry.at)
+                if ended is not None:
+                    s.outputs[PASS_TIMES] = ended
+
+        self.save(change)
+
+    def _pass_starts(self, step: Step) -> None:
+        """Stamp when a timed pass (`record.TIMED_PASSES`) began, before its
+        step applies, so Admin › Setup shows how long it has been running."""
+        if self.dry_run or self.ctx is None:
+            return
+        now = self.clock.now()
+        if pass_started(self.ctx.state.outputs.get(PASS_TIMES) or {}, step.id, now) is None:
+            return
+
+        def change(s: InstallState) -> None:
+            started = pass_started(s.outputs.get(PASS_TIMES) or {}, step.id, now)
+            if started is not None:
+                s.outputs[PASS_TIMES] = started
 
         self.save(change)
 
@@ -460,6 +480,7 @@ class Engine:
         )
         self.lease.renew()
         self.events.emit("step_apply", step=step.id, stage=step.stage, explain=step.explain())
+        self._pass_starts(step)
         try:
             with self._beating():
                 step.apply(self.ctx, plan)
