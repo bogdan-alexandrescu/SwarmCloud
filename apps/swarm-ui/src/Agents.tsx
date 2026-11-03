@@ -2792,6 +2792,21 @@ function CompactRow({
             {owner ?? <Em />}
           </span>
         </span>
+        {ran !== null && (
+          <>
+            {' · '}
+            <span className="cr-ran" title={cancelSpan ? `${ran} ${CANCEL_SPAN}` : undefined}>
+              {ran}
+            </span>
+          </>
+        )}
+        {!live && !waitingRow && wordOnly && (
+          <>
+            {' · '}
+            <span className="cr-state">{el.text}</span>
+          </>
+        )}
+        {/* Cost and pull request after the run, so a finished row still reads profile, owner, then the run. */}
         <span className={DROP_CLASS.cost}>
           {' · '}
           <span className={`cr-cost${cost.text === 'cost not known' ? ' is-unknown' : ''}`} title={cost.say}>
@@ -2810,20 +2825,6 @@ function CompactRow({
             </span>
           )}
         </span>
-        {ran !== null && (
-          <>
-            {' · '}
-            <span className="cr-ran" title={cancelSpan ? `${ran} ${CANCEL_SPAN}` : undefined}>
-              {ran}
-            </span>
-          </>
-        )}
-        {!live && !waitingRow && wordOnly && (
-          <>
-            {' · '}
-            <span className="cr-state">{el.text}</span>
-          </>
-        )}
         {/* THE TRY ON A LIVE ROW, as V1 draws it (leading the line, above)
             -- and on any row whose count is over its cap (AG-15), which a
             finished row must still show: that is the platform running past
