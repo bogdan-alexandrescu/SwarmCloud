@@ -1,0 +1,1177 @@
+diff --git a/apps/swarm-ui/src/App.tsx b/apps/swarm-ui/src/App.tsx
+index eabb926..6f5c4ff 100644
+--- a/apps/swarm-ui/src/App.tsx
++++ b/apps/swarm-ui/src/App.tsx
+@@ -77,6 +77,8 @@ import { AGE_TICK_MS, useNow } from './useNow'
+ import { useRecentName, WorkflowsScreen } from './Workflows'
+ import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceTalkScreen } from './voice/Section'
+ import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
++import { HomeRedraw } from './homeredraw/HomeRedraw' // MOCK-HOOK
++import { HOME_TAKEOVER } from './homeredraw/fixtures' // MOCK-HOOK
+ 
+ /**
+  * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.
+@@ -1682,7 +1684,7 @@ export function App() {
+           <div className={`app${inspector ? ' has-inspector' : ''}`}>
+             <main className="work">
+ 
+-              {section === null ? (
++              {HOME_TAKEOVER ? <HomeRedraw go={go} /> /* MOCK-HOOK */ : section === null ? (
+                 at.sectionId === HELP ? (
+                   <HelpScreen topic={at.tab} />
+                 ) : at.sectionId === SUBMIT ? (
+diff --git a/apps/swarm-ui/src/People.tsx b/apps/swarm-ui/src/People.tsx
+index 4870797..59813ed 100644
+--- a/apps/swarm-ui/src/People.tsx
++++ b/apps/swarm-ui/src/People.tsx
+@@ -44,6 +44,7 @@ import { accountName } from './accountName'
+ import './styles/repositories.css'
+ import './styles/onboarding.css'
+ import './styles/people.css'
++import { HOMESET, homesetMembers } from './homeredraw/fixtures' // MOCK-HOOK
+ 
+ /**
+  * ADMIN › PEOPLE (#847, lane W8; docs/workspaces.md §6.4, the admin half of
+@@ -879,6 +880,7 @@ const MEMBERS_INIT = { sameOrigin: 'same-origin' } as const satisfies Record<str
+  */
+ export async function loadWorkspaceMembers(tenantId: string, signal?: AbortSignal): Promise<Result<WorkspaceMembersDoc>> {
+   // The fixture build serves no members list, and a mark is never a guess.
++  if (USE_FIXTURES && HOMESET !== null) return { status: 'ok', data: homesetMembers(tenantId), fetchedAt: Date.now() } // MOCK-HOOK
+   if (USE_FIXTURES) return { status: 'error', error: { kind: 'not_found', httpStatus: null, code: null, message: 'The fixture build serves no members list.' } }
+   const target = route('/v1/workspace/members')
+   let res: Response
+diff --git a/apps/swarm-ui/src/api.ts b/apps/swarm-ui/src/api.ts
+index 307634a..1bb9f03 100644
+--- a/apps/swarm-ui/src/api.ts
++++ b/apps/swarm-ui/src/api.ts
+@@ -24,6 +24,7 @@ import { normUtilisation, type UtilisationRead } from './utilisation'
+ import { noteProfile, revisionAfterZoneSaves } from './timezone'
+ import type { Outcomes } from './outcomes'
+ import { ledgerFixture } from './outcomes.fixture'
++import { HOMESET, homeActingTenant, homesetApprovals, homesetCapacity, homesetLeases, homesetPeopleSetup, homesetMe, homesetRead, homesetStats, homesetTasks, homesetTenantChoices } from './homeredraw/fixtures' // MOCK-HOOK
+ import {
+   appendReadable, normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTestSelection, normTokens,
+   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
+@@ -141,6 +142,7 @@ function fixtureAdminRefusal<T>(target: ApiRoute, latencyMs: number): Result<T>
+ }
+ 
+ export async function loadCapacity(options: { frame?: boolean } = {}): Promise<Result<Capacity>> {
++  if (USE_FIXTURES && HOMESET !== null) return fixtureCapacity().then((r) => (r.status === 'ok' ? { ...r, data: homesetCapacity(r.data) } : r)) // MOCK-HOOK
+   if (USE_FIXTURES) return fixtureCapacity()
+   // `frame`: the shell's capacity meter reads this too, as the FRAME's read
+   // (CH-2), so its age never stands in for the page's own.
+@@ -2724,6 +2726,7 @@ function fixtureCpu(a: AttemptRow): AttemptRow {
+ }
+ 
+ export async function loadStats(options: { frame?: boolean; platform?: boolean } = {}): Promise<Result<Stats>> {
++  if (USE_FIXTURES && HOMESET !== null) return fixtureStats(options).then((r) => (r.status === 'ok' ? { ...r, data: homesetStats(r.data) } : r)) // MOCK-HOOK
+   if (USE_FIXTURES) return fixtureStats(options)
+   // A successful read always yields twelve numbers, because count_tasks_by_state
+   // iterates the whole enum and writes a key for each. So there is no empty
+@@ -2945,6 +2948,7 @@ export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
+     // pick. The platform-admin persona is also a member of `eng`, where its
+     // STORED role is admin -- what Admin › Workspaces you admin lists.
+     if (!fixtureIsAdmin && !fixtureIsWorkspaceAdmin) return { status: 'empty', fetchedAt: Date.now() }
++    if (HOMESET !== null) return { status: 'ok', fetchedAt: Date.now(), data: homesetTenantChoices() as TenantChoice[] } // MOCK-HOOK
+     return { status: 'ok', fetchedAt: Date.now(), data: fixtureTenantChoices() }
+   }
+   return read<TenantChoice[]>(route('/v1/tenants/mine'), (rows) => rows.length === 0, { frame: true })
+@@ -3103,12 +3107,14 @@ function fixtureTenantChoices(): TenantChoice[] {
+  * access still described u-bogdan after the eng card's link picked eng).
+  */
+ function fixtureActingTenant(): string {
++  if (HOMESET !== null) return homeActingTenant(chosenTenant()) // MOCK-HOOK
+   return chosenTenant() === FIXTURE_GROUP.tenant_id && (fixtureIsAdmin || fixtureIsWorkspaceAdmin) ? FIXTURE_GROUP.tenant_id : 'u-bogdan'
+ }
+ 
+ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
+   await new Promise((r) => setTimeout(r, 150))
+   noteFixtureProbe(route('/v1/tenants/me'), 150, true, undefined, { frame: options.frame === true })
++  if (HOMESET !== null) return { status: 'ok', fetchedAt: Date.now(), data: homesetMe(chosenTenant()) } // MOCK-HOOK
+   // THE PICK IS HONOURED, AS THE API HONOURS `X-Swarm-Tenant` (QA1-FIX-32,
+   // admin-shell-01): Admin › Workspaces you admin selects `eng` and opens
+   // Workspace Settings, which read this and drew the personal workspace. A
+@@ -3219,6 +3225,7 @@ async function fixtureTenants(): Promise<Result<{ tenants: Tenant[] }>> {
+  * Admin-gated, so a 403 here renders as information.
+  */
+ export async function loadLeases(): Promise<Result<LeasePage>> {
++  if (USE_FIXTURES && HOMESET !== null) return Promise.all([fixtureLeases(), fixtureTasks()]).then(([r, t]) => (r.status === 'ok' && t.status === 'ok' ? { ...r, data: homesetLeases(r.data, t.data) } : r)) // MOCK-HOOK
+   if (USE_FIXTURES) return fixtureLeases()
+   return read<LeasePage>(route('/v1/admin/leases?active_only=true&limit=200'), (d) => d.leases.length === 0)
+ }
+@@ -5404,6 +5411,7 @@ function fixtureUsage(task: Task): Pick<
+ async function fixtureTasks(): Promise<Result<TaskPage>> {
+   await new Promise((r) => setTimeout(r, 350))
+   noteFixtureProbe(route('/v1/tasks'), 350, true)
++  if (HOMESET !== null) return { status: 'ok', fetchedAt: Date.now(), data: homesetTasks({ tasks: [...fixtureTasksMade, ...fixtureTaskRows()], next_page_token: null, tenant_id: 'u-bogdan' }) } // MOCK-HOOK
+   return {
+     status: 'ok',
+     fetchedAt: Date.now(),
+@@ -8235,7 +8243,7 @@ function fixtureOnboarding(): unknown {
+       },
+       // config_setup.people_step's two answers: eng's only role holder is the
+       // reader (`fixtureAdminWorkspacesRoles`), so nobody else is in it yet.
+-      people: group
++      people: HOMESET !== null ? homesetPeopleSetup(acting) /* MOCK-HOOK */ : group
+         ? { applies: true, done: false, holders: 0, admins: 0, pending: null, reason: null, pending_reason: 'this workspace takes no requests to join; its people come from its group' }
+         : { applies: false, done: null, holders: null, admins: null, pending: null, reason: 'a personal workspace has nobody to invite', pending_reason: null },
+     },
+@@ -8628,7 +8636,7 @@ const FIXTURE_READS: Readonly<Record<string, (url: string) => FixtureBody | unde
+ /** A read whose body is normalised before any screen sees it. */
+ async function readAs<T>(target: ApiRoute, norm: (raw: unknown) => T, isEmpty: (d: T) => boolean = () => false): Promise<Result<T>> {
+   if (USE_FIXTURES) {
+-    const answer = FIXTURE_READS[target.template]?.(target.url)
++    const answer = (HOMESET !== null ? homesetRead(target.template, target.url, chosenTenant()) : undefined) ?? FIXTURE_READS[target.template]?.(target.url) // MOCK-HOOK: the homeset table first
+     if (answer === undefined) return repoNotServed<T>(target)
+     await new Promise((r) => setTimeout(r, 80))
+     if (answer === 'admin') return fixtureAdminRefusal<T>(target, 80)
+@@ -12157,6 +12165,7 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
+ export async function loadApprovals(
+   options: { frame?: boolean; kind?: string; state?: 'pending' | 'all' | 'decided' | 'expired' } = {},
+ ): Promise<Result<{ approvals: ApprovalItem[] }>> {
++  if (USE_FIXTURES && HOMESET !== null && homesetApprovals().approvals.length > 0) return { status: 'ok', fetchedAt: Date.now(), data: homesetApprovals() as { approvals: ApprovalItem[] } } // MOCK-HOOK
+   if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
+   // The frame reads this on every page. A 200 without an `approvals` list is
+   // not a measured empty inbox, and passing it on as one would draw "nothing
+diff --git a/apps/swarm-ui/src/homeredraw/HomeRedraw.tsx b/apps/swarm-ui/src/homeredraw/HomeRedraw.tsx
+new file mode 100644
+index 0000000..5a3a422
+--- /dev/null
++++ b/apps/swarm-ui/src/homeredraw/HomeRedraw.tsx
+@@ -0,0 +1,223 @@
++// MOCK-HOOK FILE
++// THE HOME REDRAW SCAFFOLD (mock-ups of 2 November 2026, step 'foundation').
++// While `?homeset=<direction>` names a direction other than `today`, App.tsx
++// draws this in the console's main slot whatever the route: the direction's
++// screen named by `?homescreen=` in the state named by `?homestate=`. The
++// left menu and the header stay the console's own. `base` is the plain,
++// neutral layout: every item of features.md placed once, from the console's
++// existing page components; `desk` and `place` start as copies of it.
++import { useEffect, useState, type ReactNode } from 'react'
++import { loadApprovals, loadPeople, loadStats, loadTasks, type ApprovalItem } from '../api'
++import type { PeopleDoc, PersonRow, Stats, Task } from '../types'
++import type { Result } from '../fetch'
++import { Card, StatTile, ButtonLink, type TileValue } from '../components'
++import { OverviewScreen } from '../Overview'
++import { SetupCard } from '../Onboarding'
++import { WaitingOnYouCard } from '../Schedules'
++import { WorkspacePeopleScreen } from '../WorkspacePeople'
++import { WorkspaceSettingsScreen } from '../WorkspaceSettings'
++import { PeopleScreen, waitingRequests } from '../People'
++import { PersonWorkspaceRoles } from '../WorkspaceRolesAdmin'
++import { WorkspacesYouAdminScreen } from '../WorkspacesYouAdmin'
++import { needsYou, ownerQuestionsHold } from '../Handoff'
++import { agentPath } from '../OverviewRegions'
++import { HOMESET, HOMESCREEN, HOMESTATE, HOME_ME, HOME_PERSONA, HOME_PEOPLE, HOME_ADMINISTERED, HOME_WORKSPACES, HOME_OVERRIDE_NOT_IN_GROUP } from './fixtures'
++import '../styles/homeredraw.css'
++
++export const HOME_SCREENS = ['home', 'overview', 'people', 'person', 'settings', 'workspaces'] as const
++export type HomeScreen = (typeof HOME_SCREENS)[number]
++export const HOME_STATES = ['rest', 'answer', 'answered', 'open', 'changed'] as const
++export type HomeState = (typeof HOME_STATES)[number]
++export const HOME_DIRECTIONS = ['base', 'today', 'desk', 'place'] as const
++
++export interface ScreenProps {
++  go: (to: string) => void
++  state: HomeState
++}
++
++const SCREEN_WORDS: Readonly<Record<HomeScreen, string>> = {
++  home: 'Home', overview: 'Overview', people: 'People and roles', person: 'One person', settings: 'Workspace settings', workspaces: 'Workspaces you admin',
++}
++
++/** A read, as a hook: null until it lands. */
++export function useRead<T>(load: () => Promise<Result<T>>): Result<T> | null {
++  const [r, setR] = useState<Result<T> | null>(null)
++  useEffect(() => {
++    let live = true
++    void load().then((x) => live && setR(x))
++    return () => {
++      live = false
++    }
++  }, [load])
++  return r
++}
++
++const readTasks = () => loadTasks()
++const readStats = () => loadStats()
++const readApprovals = () => loadApprovals()
++const readPeople = () => loadPeople()
++
++function dataOf<T>(r: Result<T> | null): T | null {
++  return r !== null && (r.status === 'ok' || r.status === 'stale') ? r.data : null
++}
++
++/** A count tile: a dash with its reason until the read lands, never a zero. */
++function tile(n: number | null, why: string, note?: string): TileValue {
++  return n === null ? { kind: 'unknown', why } : { kind: 'value', value: n, ...(note === undefined ? {} : { note }) }
++}
++
++/** What waits on the signed-in person, from the reads the console already makes. */
++export function useWaiting() {
++  const tasks = dataOf(useRead(readTasks))?.tasks ?? null
++  const approvals = useRead(readApprovals)
++  const peopleRead = useRead(readPeople)
++  const people = dataOf(peopleRead)
++  const questions = tasks === null ? null : tasks.filter((t) => ownerQuestionsHold(t) !== null && t.submitted_by === HOME_ME.email)
++  const handoffs = tasks === null ? null : tasks.filter(needsYou)
++  const failed = tasks === null ? null : tasks.filter((t) => (t.state === 'FAILED' || t.state === 'DEAD_LETTERED') && t.submitted_by === HOME_ME.email)
++  const approvalList: ApprovalItem[] | null = approvals === null ? null : approvals.status === 'empty' ? [] : (dataOf(approvals)?.approvals ?? null)
++  const requests = people !== null && (people as PeopleDoc).scope === 'platform' ? waitingRequests((people as PeopleDoc).people as PersonRow[]) : people === null && peopleRead?.status !== 'error' ? null : []
++  return { tasks, questions, handoffs, failed, approvals: approvalList, requests }
++}
++
++function TaskLine({ t, say }: { t: Task; say: string }) {
++  const title = typeof t.metadata?.title === 'string' ? t.metadata.title : t.id
++  return (
++    <li>
++      <a href={agentPath(t)}>{title}</a> <small>{say}</small>
++    </li>
++  )
++}
++
++/** HOME (base): what waits on you, then the deployment in numbers. Overview stays its own screen. */
++function BaseHome({ go, state }: ScreenProps) {
++  const w = useWaiting()
++  const stats: Stats | null = dataOf(useRead(readStats))
++  const by = stats?.tasks_by_state ?? null
++  const sum = (ks: string[]) => (by === null ? null : ks.reduce((n, k) => n + (by[k] ?? 0), 0))
++  const total = (xs: unknown[] | null) => (xs === null ? null : xs.length)
++  return (
++    <div className="hr-stack">
++      <Card title="Waiting on you">
++        <div className="hr-tiles">
++          <StatTile label="Questions for you" tile={tile(total(w.questions), 'tasks not read yet')} />
++          <StatTile label="Approvals" tile={tile(total(w.approvals), 'approvals not read yet')} />
++          {HOME_PERSONA === 'platform-admin' && <StatTile label="Requests" tile={tile(total(w.requests), 'people not read yet')} />}
++          <StatTile label="Your failures today" tile={tile(total(w.failed), 'tasks not read yet', 'of the newest read')} />
++        </div>
++        <ul className="hr-list">
++          {(w.questions ?? []).map((t) => (
++            <TaskLine key={t.id} t={t} say={ownerQuestionsHold(t)?.questions[0]?.question ?? 'a question waits for your answer'} />
++          ))}
++          {(w.handoffs ?? []).map((t) => <TaskLine key={t.id} t={t} say="waits for a person at its browser" />)}
++          {(w.approvals ?? []).map((a) => (
++            <li key={a.approval_id}>
++              <a href="/automate/approvals">{a.summary}</a> <small>approval</small>
++            </li>
++          ))}
++          {(w.requests ?? []).map((r) => (
++            <li key={`${r.kind}-${r.row.email}`}>
++              <a href="/admin/people">{r.row.display_name ?? r.row.email}</a> <small>{r.kind === 'workspace' ? 'asks for a workspace' : 'asks to borrow a Claude account'}</small>
++            </li>
++          ))}
++          {(w.failed ?? []).map((t) => <TaskLine key={t.id} t={t} say={t.last_error ?? 'failed'} />)}
++        </ul>
++        <WaitingOnYouCard go={go} />
++      </Card>
++      <Card title="The deployment">
++        <div className="hr-tiles">
++          <StatTile label="Holding capacity" tile={tile(sum(['LEASED', 'DISPATCHED', 'STARTING', 'RUNNING']), 'stats not read yet')} />
++          <StatTile label="Waiting" tile={tile(sum(['QUEUED', 'READY', 'PARKED']), 'stats not read yet', 'costs nothing')} />
++          <StatTile label="Failed" tile={tile(sum(['FAILED', 'DEAD_LETTERED']), 'stats not read yet')} />
++        </div>
++        <details open={state === 'open'}>
++          <summary>What these count</summary>
++          <p>Holding capacity is every agent leased, dispatched, starting or running; waiting ones cost nothing until a pool has room. Overview breaks each down by state.</p>
++        </details>
++        <ButtonLink kind="secondary" href="/overview">Open Overview</ButtonLink>
++      </Card>
++      <SetupCard />
++    </div>
++  )
++}
++
++function BaseOverview({ go }: ScreenProps) {
++  return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
++}
++
++/** People and roles: the workspace's own page, then (an admin) the platform's people and the workspace roles grid. */
++function BasePeople() {
++  return (
++    <div className="hr-stack">
++      <WorkspacePeopleScreen view={null} />
++      {HOME_PERSONA !== 'member' && <PeopleScreen />}
++    </div>
++  )
++}
++
++/** One person: their roles in every group workspace (the Manage drawer's part a page of its own would hold). */
++function BasePerson() {
++  const email = new URLSearchParams(window.location.search).get('homeperson') ?? 'maximiliana.kowalczyk-wisniewska.contractor@example.com'
++  if (HOME_PERSONA !== 'platform-admin') {
++    return (
++      <Card title="One person">
++        <p>Only a platform admin reads a person's roles across workspaces; this read would be refused.</p>
++      </Card>
++    )
++  }
++  return <PersonWorkspaceRoles email={email} platformAdmin={HOME_PEOPLE.some((p) => p.email === email && p.platform_admin)} />
++}
++
++function BaseSettings({ go }: ScreenProps) {
++  return (
++    <div className="hr-stack">
++      <WorkspaceSettingsScreen part="settings" go={go} />
++      <WorkspaceSettingsScreen part="setup" go={go} />
++      {HOME_PERSONA === 'platform-admin' && <WorkspaceSettingsScreen part="new" go={go} />}
++    </div>
++  )
++}
++
++function BaseWorkspaces({ go }: ScreenProps) {
++  return <WorkspacesYouAdminScreen go={go} />
++}
++
++const BASE: Readonly<Record<HomeScreen, (p: ScreenProps) => ReactNode>> = {
++  home: BaseHome, overview: BaseOverview, people: BasePeople, person: BasePerson, settings: BaseSettings, workspaces: BaseWorkspaces,
++}
++
++/** Each direction's screens. A direction step replaces its entry; until then it draws the base layout and says so. */
++export const DIRECTIONS: Record<string, { screens: Readonly<Record<HomeScreen, (p: ScreenProps) => ReactNode>>; fromBase: boolean }> = {
++  base: { screens: BASE, fromBase: false },
++  desk: { screens: BASE, fromBase: true },
++  place: { screens: BASE, fromBase: true },
++}
++
++function switchHref(key: string, value: string): string {
++  const q = new URLSearchParams(window.location.search)
++  q.set(key, value)
++  return `${window.location.pathname}?${q.toString()}`
++}
++
++export function HomeRedraw({ go }: { go: (to: string) => void }) {
++  const direction = DIRECTIONS[HOMESET ?? 'base'] ?? DIRECTIONS.base!
++  const screen: HomeScreen = (HOME_SCREENS as readonly string[]).includes(HOMESCREEN) ? (HOMESCREEN as HomeScreen) : 'home'
++  const state: HomeState = (HOME_STATES as readonly string[]).includes(HOMESTATE) ? (HOMESTATE as HomeState) : 'rest'
++  const Screen = direction.screens[screen]
++  return (
++    <div className="hr-frame" data-homeset={HOMESET ?? 'base'} data-homescreen={screen} data-homestate={state}>
++      <nav className="hr-switch" aria-label="Mock-up screens">
++        {HOME_SCREENS.map((s) => (
++          <a key={s} href={switchHref('homescreen', s)} aria-current={s === screen ? 'page' : undefined}>
++            {SCREEN_WORDS[s]}
++          </a>
++        ))}
++      </nav>
++      {direction.fromBase && <p className="hr-note">This direction is not drawn yet: it shows the base layout.</p>}
++      <Screen go={go} state={state} />
++      <p className="hr-note">
++        {HOME_WORKSPACES.length} group workspaces · {HOME_PEOPLE.length} people signed in · you administer {HOME_ADMINISTERED.length} · {HOME_OVERRIDE_NOT_IN_GROUP.length} role kept for someone not in the group yet
++      </p>
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/homeredraw/features.md b/apps/swarm-ui/src/homeredraw/features.md
+new file mode 100644
+index 0000000..e37d4e4
+--- /dev/null
++++ b/apps/swarm-ui/src/homeredraw/features.md
+@@ -0,0 +1,354 @@
++<!-- MOCK-HOOK FILE -->
++
++# Feature inventory — Overview, Config, Admin and related console pages
++
++Read from source in `apps/swarm-ui/src`. IDs are grouped by page; roles are
++`member` / `workspace admin` / `platform admin` (a row may list more than
++one). "State" says when the feature is drawn (always / while loading / when
++empty / on error / admin only / etc.).
++
++## Overview (OV)
++
++Note: Overview.tsx does **not** import or render `QuestionsCard.tsx` — that
++component belongs to `AgentDetail.tsx`, not this page.
++
++- OV-01 | Page title "Overview" with the section-help `?` link | Overview.tsx:OverviewScreen (PageHead) | member, workspace admin, platform admin | always
++- OV-02 | Refresh control: age of newest read, "Paused · resume" after 15 min idle, manual refresh button | Overview.tsx:OverviewScreen (RefreshControl) | member, workspace admin, platform admin | always; "stale"/"reading" sub-states
++- OV-03 | "On this page" jump-count strip above the lead (problems, agents holding capacity, waiting, recent failures) | Overview.tsx:OverviewScreen via Spine.tsx:OverviewCounts | member, workspace admin, platform admin | always, counts hidden per-section while that section's checks/reads are still loading
++- OV-04 | Workspace-scope note ("workspace <tenant>" / "workspace —" / "workspace reading…") | Overview.tsx:OverviewScreen (CountNote span.ov-scope) | member, workspace admin, platform admin | always; 3 sub-states (reading / no tenant found / named)
++- OV-05 | Read tally ("N/8 reads") with tone dot and `?` help note | Overview.tsx:OverviewScreen (CountNote span.ov-tally, HelpCard topic="absent-vs-zero") | member, workspace admin, platform admin | always; tone varies ok/pending/refused(admin)/broken
++- OV-06 | Setup checklist card ("Set up SwarmCloud"), entry point passed from App | Onboarding.tsx:SetupCard, rendered via Overview.tsx:OverviewScreen `{setup}` slot | member, workspace admin, platform admin | only while checklist incomplete and not dismissed; absent once complete, hidden, or read not landed
++- OV-07 | Setup card header actions: step-count chip, Hide button, "Open setup" primary link | Onboarding.tsx:SetupCard | member, workspace admin, platform admin | while card is shown
++- OV-08 | Setup card step-progress bar (one segment per step) | Onboarding.tsx:StepBar | member, workspace admin, platform admin | while card is shown
++- OV-09 | Setup checklist steps list (Sign in, Request your workspace, Add a Claude account, Connect GitHub, Install the App, Enable orgs, Choose repositories, Verify access, Ready), each with state mark, evidence line, issue copy, and its own action button | Onboarding.tsx:Checklist / StepAction | member, workspace admin, platform admin | each row's action only drawn when that step is not done / is waiting
++- OV-10 | Setup card footer note explaining Hide vs. Workspace Settings persistence | Onboarding.tsx:SetupCard | member, workspace admin, platform admin | while card is shown
++- OV-11 | "Waiting on you" card entry point (Automate approvals inbox), passed from App | Schedules.tsx:WaitingOnYouCard, rendered via Overview.tsx:OverviewScreen `{waitingOnYou}` slot | member, workspace admin, platform admin | only drawn when the inbox holds ≥1 item; nothing while reading/empty/failed
++- OV-12 | "Waiting on you" header with live count badge | Schedules.tsx:WaitingOnYouCard | member, workspace admin, platform admin | while card is shown
++- OV-13 | "Waiting on you" list rows: kind label, linked summary (or plain text if no subject address), relative age | Schedules.tsx:WaitingOnYouCard | member, workspace admin, platform admin | shows up to 5 oldest items
++- OV-14 | "Waiting on you" footer note ("oldest N of M… waiting items hold no capacity") | Schedules.tsx:WaitingOnYouCard | member, workspace admin, platform admin | while card is shown, extra clause only when truncated
++- OV-15 | "Needs a look" section heading with aggregate count/accessible summary | Overview.tsx:NeedsALook | member, workspace admin, platform admin | always
++- OV-16 | "Needs a look" blind-checks badge ("N blind") | Overview.tsx:NeedsALook | member, workspace admin, platform admin | only when ≥1 check is blind; tone differs if all blind checks are admin-only
++- OV-17 | "Needs a look" partial mark (pill) when some checks are blind but problems exist | Overview.tsx:NeedsALook (Mark kind="partial") | member, workspace admin, platform admin | while blind.length>0 and reading.length===0 and problems.length>0
++- OV-18 | "Needs a look" reading state: skeleton check cards (height held from last render) | Overview.tsx:NeedsALook | member, workspace admin, platform admin | while any check status is "reading"
++- OV-19 | "Needs a look" problem cards, one per derived problem (dispatch paused, leases overdue/silent/past-TTL, provider quota throttled/exhausted/disabled, accounts REAUTH_REQUIRED, pools over ceiling, stalled workflows, parked-too-long, recent-failures-spike) | Overview.tsx:CheckCard / checks.ts:deriveChecks | member, workspace admin, platform admin (Leases check's problems are admin-only) | while problems.length>0 and reading.length===0
++- OV-20 | "Needs a look" check card: mark, title, id-line with linked workflow ids, detail line, scoped link, optional per-workflow links | Overview.tsx:CheckCard | member, workspace admin, platform admin | per problem card; Leases check problems are platform-admin only
++- OV-21 | "Needs a look" all-clear absence state ("Nothing wrong" / "N not checked") | Overview.tsx:NeedsALook (CardAbsent) | member, workspace admin, platform admin | when problems.length===0; sub-state "partial"/"admin" when some checks are blind
++- OV-22 | Hand-off cards: one card per agent waiting for a person (reason, expected site, time-left clock, controller) | Overview.tsx:HandoffCards / Handoff.tsx:HandoffBanner, handoffOf, needsYou | member, workspace admin, platform admin | only drawn when ≥1 task `needsYou`; up to 3 shown, oldest-waiting first
++- OV-23 | Hand-off card "who is waiting" line (step/agent kind, short task id, waiting age, workflow title) | Overview.tsx:handoffWho | member, workspace admin, platform admin | per hand-off card
++- OV-24 | Hand-off card "Take control" button (held/hold-phase only) | Overview.tsx:HandoffTakeControl / LiveBrowser.tsx:LiveControl | member, workspace admin, platform admin (further gated by live-session `you.can_control`) | only on a held (RUNNING, phase="hold") hand-off
++- OV-25 | Hand-off card "I'm ready" action (parked phase) | Handoff.tsx:HandoffBanner | member, workspace admin, platform admin | only on a parked (phase="parked") hand-off
++- OV-26 | Hand-off card "Open →" link to the agent | Overview.tsx:HandoffCardList | member, workspace admin, platform admin | per hand-off card
++- OV-27 | Hand-off "+N more waiting" link to Agents › Waiting | Overview.tsx:HandoffCardList | member, workspace admin, platform admin | when more than 3 agents are waiting for a person
++- OV-28 | Lifecycle band region (Waiting / Holding capacity / Finished today) | OverviewRegions.tsx:LifecycleBand | member, workspace admin, platform admin | always
++- OV-29 | Lifecycle band "Waiting" cell, broken down by QUEUED/READY/PARKED state marks | OverviewRegions.tsx:LifecycleBand | member, workspace admin, platform admin | counted from `/v1/stats`
++- OV-30 | Lifecycle band "Holding capacity" cell, broken down by LEASED/DISPATCHED/STARTING/RUNNING state marks | OverviewRegions.tsx:LifecycleBand | member, workspace admin, platform admin | counted from `/v1/stats`
++- OV-31 | Lifecycle band "Finished today" cell, broken down by SUCCEEDED/FAILED/DEAD_LETTERED/CANCELLED marks, with "≥N" lower-bound + partial mark | OverviewRegions.tsx:LifecycleBand | member, workspace admin, platform admin | counted off the task page; partial sub-state when page has a next-page
++- OV-32 | Lifecycle band per-cell stale/age footer ("counted N min ago") | OverviewRegions.tsx:LifecycleBand | member, workspace admin, platform admin | only when stats read is stale or aged
++- OV-33 | Lifecycle band per-cell page-coverage footer ("of the N newest read", "no agent exists") | OverviewRegions.tsx:LifecycleBand | member, workspace admin, platform admin | "Finished today" cell only
++- OV-34 | "Running now" card header, note ("N listed"), "All live →" link | Overview.tsx:RunningCard (CardHead) | member, workspace admin, platform admin | always
++- OV-35 | "Running now" card loading skeleton | Overview.tsx:RunningCard | member, workspace admin, platform admin | while task read is loading
++- OV-36 | "Running now" card error/blind absence ("Agent list unread") | Overview.tsx:RunningCard (CardAbsent) | member, workspace admin, platform admin | on task-read error
++- OV-37 | "Running now" card real-zero absence ("No agent exists") | Overview.tsx:RunningCard (CardAbsent) | member, workspace admin, platform admin | when task read is empty
++- OV-38 | "Running now" card "Nothing running" absence, cross-checked against `/v1/stats` count | Overview.tsx:RunningCard (CardAbsent) | member, workspace admin, platform admin | when no HOLDING-state rows found
++- OV-39 | "Running now" table: State / Agent·profile / Runtime / Cost so far columns | Overview.tsx:RunningCard, RunningRow | member, workspace admin, platform admin | desktop; up to 8 rows then a "N more" disclosure
++- OV-40 | "Running now" row: state mark, agent/workflow title link, silent-worker chip, runner profile, workflow link | Overview.tsx:RunningRow | member, workspace admin, platform admin | "silent" chip only when the admin-gated leases read supplied a silent-duration
++- OV-41 | "Running now" row Runtime cell (elapsed / "leased" / dash with reason when lease unread) | Overview.tsx:Runtime | member, workspace admin, platform admin | dash sub-state when leases read failed/admin-gated
++- OV-42 | "Running now" row Cost so far cell (figure, "last attempt" sub-text, or dash with reason) | Overview.tsx:CostSoFar | member, workspace admin, platform admin | dash sub-states: not served / not yet reported / unread
++- OV-43 | "Running now" phone list (mark, name, elapsed), with its own "N more" disclosure | Overview.tsx:PhoneRunRow | member, workspace admin, platform admin | phone width only
++- OV-44 | "Running now" card footer (row count vs. stats count, "cost so far shows once an attempt ends") | Overview.tsx:RunningCard | member, workspace admin, platform admin | always once landed
++- OV-45 | "Waiting, and why" card header, note (total waiting · "none cost anything"), "All waiting →" link | Overview.tsx:OverviewScreen (CardHead) | member, workspace admin, platform admin | always
++- OV-46 | "Waiting, and why" grouped list rows (state mark, reason title, detail line, count) | OverviewRegions.tsx:WaitingWhy / waitGroups | member, workspace admin, platform admin | up to 6 groups, then "N more reasons" link
++- OV-47 | "Waiting, and why" absence states (unread list / "None among the N newest") | OverviewRegions.tsx:WaitingWhy | member, workspace admin, platform admin | on task-read failure or zero waiting rows
++- OV-48 | "Recent token cost" card header, note ("last N attempt"), "Timeline →" link, `?` help note | Overview.tsx:OverviewScreen (CardHead, explain="token-cost") | member, workspace admin, platform admin | always
++- OV-49 | "Recent token cost" loading skeleton | Overview.tsx:SpendBody | member, workspace admin, platform admin | while spend rollup is loading
++- OV-50 | "Recent token cost" error absence (task-read failed vs. attempt-read failed) | Overview.tsx:SpendBody (CardAbsent) | member, workspace admin, platform admin | on error
++- OV-51 | "Recent token cost" zero absences ("No agent exists" / "No attempt has ended" / "No agent has run") | Overview.tsx:SpendBody (CardAbsent) | member, workspace admin, platform admin | on empty rollup, three distinct causes
++- OV-52 | "Recent token cost" big figure (dollar sum or dash) with absent/partial mark | Overview.tsx:SpendBody | member, workspace admin, platform admin | partial mark on a measured figure (sample); absent mark when nothing reported
++- OV-53 | "Recent token cost" four-token-count list (input/output/cache read/cache write) | Overview.tsx:TokenMix | member, workspace admin, platform admin | each count independently dash vs. figure
++- OV-54 | "Recent token cost" provenance footer (sample coverage, unmeasured count, failed-reads count, staleness, "updates only on refresh") | Overview.tsx:SpendBody | member, workspace admin, platform admin | each clause conditional on its own count
++- OV-55 | "Headroom" card header, "Pools →" link, `?` help note | Overview.tsx:OverviewScreen (CardHead, explain="pools-all-at-once") | member, workspace admin, platform admin | always
++- OV-56 | Headroom "Can start now, by runner profile" sub-heading and per-profile tiles | Overview.tsx:HeadroomBody, CapacityStacks, ProfileTile | member, workspace admin, platform admin | always
++- OV-57 | Headroom profile tile: disabled state ("disabled", reason) | Overview.tsx:ProfileTile | member, workspace admin, platform admin | when `profile.available === false`
++- OV-58 | Headroom profile tile: figure (+N / 0 / dash) and "binds <pool(s)>" or refusal reason line | Overview.tsx:ProfileTile | member, workspace admin, platform admin | normal case
++- OV-59 | Headroom card capacity-read absence/empty states ("Pool state unread" / "No pools exist" / "No runner profile") | Overview.tsx:CapacityStacks (CardAbsent) | member, workspace admin, platform admin | on capacity-read error/empty/no-profiles
++- OV-60 | Headroom card footer (pool count read, whose workspace, staleness) | Overview.tsx:CapacityStacks | member, workspace admin, platform admin | always once landed
++- OV-61 | Headroom "Subscription accounts" sub-heading and one-line account summary | Overview.tsx:HeadroomBody, AccountLine | member, workspace admin, platform admin | always
++- OV-62 | Account line: usable/total figure, best-account % used + window, staleness | Overview.tsx:AccountLine / accountHeadroom | member, workspace admin, platform admin | dash sub-state when nothing measured
++- OV-63 | Account line "N projected (...) not counted" note | Overview.tsx:AccountLine | member, workspace admin, platform admin | when projected accounts exist
++- OV-64 | Account line "N needs sign-in" warning chip | Overview.tsx:AccountLine (WarnMark) | member, workspace admin, platform admin | when any account `needsAHuman`
++- OV-65 | Account line "Accounts →" link | Overview.tsx:AccountLine | member, workspace admin, platform admin | always
++- OV-66 | Account line absence states ("Account pool unread" / "No account registered") | Overview.tsx:AccountLine (CardAbsent) | member, workspace admin, platform admin | on accounts-read error/empty
++- OV-67 | "Recent failures" card header, note (failures summary string), "All recent →" link | Overview.tsx:OverviewScreen (CardHead) | member, workspace admin, platform admin | always
++- OV-68 | "Recent failures" table (mark, agent/workflow name+id, why, ended-ago time) for FAILED/DEAD_LETTERED rows | OverviewRegions.tsx:RecentFailures | member, workspace admin, platform admin | up to 6 rows then "N more" disclosure
++- OV-69 | "Recent failures" "N cancelled" folded disclosure | OverviewRegions.tsx:RecentFailures | member, workspace admin, platform admin | only when cancelled rows exist
++- OV-70 | "Recent failures" absence states (unread / partial-vs-zero / "None among the N newest") | OverviewRegions.tsx:RecentFailures | member, workspace admin, platform admin | on task-read failure, or zero failed/cancelled rows
++- OV-71 | "Pools" card header, note (pool count · "busiest first" · "N lowered"), "Pools →" link | Overview.tsx:OverviewScreen (CardHead) / poolsNote | member, workspace admin, platform admin | always
++- OV-72 | "Pools" full-width row of per-pool usage bars (name, usage track, active/limit, paused/full/near-full marks) | Overview.tsx:PoolsBody, PoolRow, busiestFirst | member, workspace admin, platform admin | sorted busiest-first
++- OV-73 | "Pools" card absence states ("Pool state unread" / "No pools exist") | Overview.tsx:PoolsBody (CardAbsent) | member, workspace admin, platform admin | on capacity-read error/empty
++- OV-74 | Session-expired full-page empty state ("Session expired", "Reload to sign in" button) | Overview.tsx:OverviewScreen | member, workspace admin, platform admin | when any read answers unauthenticated/session_expired
++
++## Config › People and roles (CP)
++
++- CP-01 | Tab strip switching between "Roles" and "Members' GitHub" views (`?view=members`) | WorkspacePeople.tsx:WorkspacePeopleScreen | member, workspace admin, platform admin | shown only to a platform admin, or when the URL already names `view=members`
++- CP-02 | "Roles" tab option | WorkspacePeople.tsx:WorkspacePeopleScreen | member, workspace admin, platform admin | default/bare-path tab
++- CP-03 | "Members' GitHub" tab option | WorkspacePeople.tsx:WorkspacePeopleScreen | member, workspace admin, platform admin | content behind it is platform-admin gated (see CP-57/CP-58)
++- CP-04 | Page lead: "— this workspace's roles could not be read, so who holds one is not known." | WorkspacePeople.tsx:PeopleLead | member, workspace admin, platform admin | roles read errored or empty
++- CP-05 | Page lead absent entirely for a personal workspace | WorkspacePeople.tsx:PeopleLead | workspace's own person | personal workspace, roles read ok
++- CP-06 | Page lead "Read only for you": names the admin(s) or "nobody holds admin yet", plus "You hold…"/"Everyone else holds…" | WorkspacePeople.tsx:PeopleLead | member/viewer (non-admin) | group workspace, viewer is not can_manage
++- CP-07 | Page lead "Step 4 · People invited — {reason}" when the setup read cannot say who holds a role | WorkspacePeople.tsx:PeopleLead | workspace admin, platform admin | setup-read's people step unreadable
++- CP-08 | Page lead "Needs an admin": "N person/people are waiting for an admin to answer their request." | WorkspacePeople.tsx:PeopleLead | workspace admin, platform admin | can_manage and pending>0
++- CP-09 | Page lead "Nobody else holds a role of their own yet" + "Give a person a role" button (scrolls/focuses invite field) | WorkspacePeople.tsx:PeopleLead | workspace admin, platform admin | can_manage, no pending, holders===0
++- CP-10 | Page lead "Step 4 · done": "N other person holds/people hold a role; nothing here is waiting for you." | WorkspacePeople.tsx:PeopleLead | workspace admin, platform admin | can_manage, holders>0
++- CP-11 | Card "Roles in this workspace" | WorkspacePeople.tsx:RolesPage | member, viewer, workspace admin, platform admin | group workspace, always
++- CP-12 | Chip badge "read only for members" in the card's action row | WorkspacePeople.tsx:RolesPage | member, viewer | readOnly (group and not can_manage)
++- CP-13 | Refresh control on the roster card | WorkspacePeople.tsx:RolesPage | member, viewer, workspace admin, platform admin | always
++- CP-14 | Loading/error/empty region for `GET /v1/workspace/roles` with "Try again" retry | WorkspacePeople.tsx:RolesPage | member, viewer, workspace admin, platform admin | while loading/on error/when empty
++- CP-15 | Personal-workspace message block ("You are this workspace's admin; a personal workspace has only you.") | WorkspacePeople.tsx:PersonalOnly | workspace's own person; platform admin | personal workspace
++- CP-16 | Button-link "Open Workspace Settings" | WorkspacePeople.tsx:PersonalOnly | workspace's own person, platform admin | personal workspace
++- CP-17 | Button-link "Add a new workspace" | WorkspacePeople.tsx:PersonalOnly | platform admin | personal workspace, viewer is platform admin
++- CP-18 | "Your role" paragraph ("You hold {role} in {name}, {source}, by {granted_by} {time}.") | WorkspacePeople.tsx:Roster | member, viewer, workspace admin, platform admin | group workspace, roles read ok
++- CP-19 | Platform-admin reach notice ("You are not in {name}'s group… recorded in its audit log.") | WorkspacePeople.tsx:Roster | platform admin | viewer reaches via platform_admin
++- CP-20 | "Default role" paragraph (who holds the default, migration note) | WorkspacePeople.tsx:Roster | member, viewer, workspace admin, platform admin | group workspace, roles read ok
++- CP-21 | Roster table "Who holds which role in …" | WorkspacePeople.tsx:People | member, viewer, workspace admin, platform admin | group workspace; stacks into cards below 720px
++- CP-22 | Roster column: Person (email, "you" marker) | WorkspacePeople.tsx:People | member, viewer, workspace admin, platform admin | always
++- CP-23 | Roster column: Role | WorkspacePeople.tsx:People | member, viewer, workspace admin, platform admin | always
++- CP-24 | Roster column: Given by (incl. "(platform admin)" suffix) | WorkspacePeople.tsx:People | member, viewer, workspace admin, platform admin | always
++- CP-25 | Roster column: When (relative time, title = exact timestamp) | WorkspacePeople.tsx:People | member, viewer, workspace admin, platform admin | always
++- CP-26 | Roster column: Reason | WorkspacePeople.tsx:People | member, viewer, workspace admin, platform admin | always
++- CP-27 | Roster column: Actions — "Return to default" button, busy/disabled while in flight | WorkspacePeople.tsx:People | workspace admin, platform admin | can_manage only
++- CP-28 | Synthetic "you" row when caller holds no override | WorkspacePeople.tsx:People | member, viewer, workspace admin, platform admin | caller not in data.people
++- CP-29 | Write-result note beside the roster | WorkspacePeople.tsx:RolesPage (Said at:'roster') | workspace admin, platform admin | after "Return to default" succeeds/fails
++- CP-30 | Hint "Only this workspace's admins change roles. You can read them here." | WorkspacePeople.tsx:Roster | member, viewer | not can_manage
++- CP-31 | "What each role permits" definition list | WorkspacePeople.tsx:RoleTable | member, viewer, workspace admin, platform admin | shown when summaries.length>0
++- CP-32 | "Set the default" form: role select + "Set default" button | WorkspacePeople.tsx:DefaultForm | workspace admin, platform admin | can_manage; busy while submitting
++- CP-33 | Write-result note beside the default form | WorkspacePeople.tsx:RolesPage (Said at:'default') | workspace admin, platform admin | after "Set default" succeeds/fails
++- CP-34 | Card "Give a person their own role" | WorkspacePeople.tsx:RolesPage | workspace admin, platform admin | can_manage, group workspace
++- CP-35 | Info paragraph: "Google owns who is in the workspace…" | WorkspacePeople.tsx:PersonForm | workspace admin, platform admin | always on form
++- CP-36 | Email input field (required, type=email, maxLength 254) | WorkspacePeople.tsx:PersonForm | workspace admin, platform admin | form open
++- CP-37 | Role segmented control (viewer/member/admin) | WorkspacePeople.tsx:PersonForm | workspace admin, platform admin | form open
++- CP-38 | Reason input field (optional, maxLength 280) | WorkspacePeople.tsx:PersonForm | workspace admin, platform admin | form open
++- CP-39 | "Set role" submit button (busy/disabled) | WorkspacePeople.tsx:PersonForm | workspace admin, platform admin | form open/submitting
++- CP-40 | Write-result note beside the person form | WorkspacePeople.tsx:RolesPage (Said at:'person') | workspace admin, platform admin | after "Set role" succeeds/fails
++- CP-41 | Card "Role events" | WorkspacePeople.tsx:RolesPage (Events) | member, viewer, workspace admin, platform admin | always
++- CP-42 | Role/platform-admin event list, one sentence per event; empty-state "No role has been given or changed here…" | WorkspacePeople.tsx:Events | member, viewer, workspace admin, platform admin | list when events exist, empty-state otherwise
++- CP-43 | Card "Join link" | WorkspacePeople.tsx:JoinLinkCard | workspace admin, platform admin | group workspace, can_manage
++- CP-44 | Join-link status paragraph (on/off, who turned it on, when) | WorkspacePeople.tsx:JoinLinkCard | workspace admin, platform admin | on/off state
++- CP-45 | Hint "Nobody gets in by holding the link: each request waits in Admin › People and roles…" | WorkspacePeople.tsx:JoinLinkCard | workspace admin, platform admin | always
++- CP-46 | One-time reveal banner + read-only link field + Copy button | WorkspacePeople.tsx:JoinLinkCard | workspace admin, platform admin | right after turning on/rotating; never shown again
++- CP-47 | Write-result note after Turn on/off/rotate | WorkspacePeople.tsx:JoinLinkCard | workspace admin, platform admin | after action succeeds/fails
++- CP-48 | "Make a new link" button (rotate) | WorkspacePeople.tsx:JoinLinkCard | workspace admin, platform admin | link currently on
++- CP-49 | "Turn the link off" button (danger) | WorkspacePeople.tsx:JoinLinkCard | workspace admin, platform admin | link currently on
++- CP-50 | "Turn the link on" button (primary) | WorkspacePeople.tsx:JoinLinkCard | workspace admin, platform admin | link currently off
++- CP-51 | Card "Joined by request" | WorkspacePeople.tsx:JoinedByRequestCard | workspace admin, platform admin | group workspace, can_manage
++- CP-52 | Notice: "Approving a request does not let anyone in yet: platform memberships are off…" | WorkspacePeople.tsx:JoinedByRequestCard | workspace admin, platform admin | platform_memberships is off
++- CP-53 | Write-result note ("membership by request is ended…") | WorkspacePeople.tsx:JoinedByRequestCard | workspace admin, platform admin | after "Remove" succeeds/fails
++- CP-54 | Empty-state "Nobody holds a membership of {name} by request…" | WorkspacePeople.tsx:JoinedByRequestCard | workspace admin, platform admin | members.length===0
++- CP-55 | Table columns: Person, Let in by, When, Access, Actions | WorkspacePeople.tsx:JoinedByRequestCard | workspace admin, platform admin | members.length>0
++- CP-56 | "Remove" button per row | WorkspacePeople.tsx:JoinedByRequestCard | workspace admin, platform admin | row present
++- CP-57 | Card "Members' GitHub connections" (second tab's content) | WorkspacePeople.tsx:Members | platform admin | `?view=members`
++- CP-58 | Admin-gate panel (FailedPanel) drawn from a 403/admin_required refusal | WorkspacePeople.tsx:Members | member, viewer, workspace admin (non-platform-admin) | `/v1/access/members` refuses with 403
++- CP-59 | Refresh control on the Members card | WorkspacePeople.tsx:Members | platform admin | shown only when not gated
++- CP-60 | Loading/error region for `GET /v1/access/members` with retry | WorkspacePeople.tsx:Members | platform admin | while loading/on error
++- CP-61 | Empty-state "No member has started" / "Nobody has connected GitHub or chosen a repository yet." | WorkspacePeople.tsx:Members | platform admin | members.length===0
++- CP-62 | Lead paragraph describing the table | WorkspacePeople.tsx:Members | platform admin | members.length>0
++- CP-63 | Column headers: Member, Connection, Owners, Repositories (hidden on phone) | WorkspacePeople.tsx:Members | platform admin | members.length>0
++- CP-64 | Per-member row: name, GitHub handle, connection mark, owners list, repository/write counts | WorkspacePeople.tsx:MemberRow | platform admin | one row per member
++- CP-65 | Hint "Each member connects as themselves. An admin sees states and names, never a value…" | WorkspacePeople.tsx:Members | platform admin | always
++
++## Workspace Settings (WS)
++
++- WS-01 | Page header "Workspace Settings" with a refresh control re-reading profile and workspace-roles | WorkspaceSettings.tsx:WorkspaceSettingsScreen | member, workspace admin, platform admin | always
++- WS-02 | Config tabs: Settings / Workspace setup / Add a new workspace | WorkspaceSettings.tsx:WorkspaceSettingsScreen | member/workspace admin see Settings+Workspace setup; platform admin additionally sees Add a new workspace | always
++- WS-03 | Lead banner "Setup's next step" + "Open Workspace setup" button | WorkspaceSettings.tsx:SetupLead | member, workspace admin, platform admin | checklist incomplete
++- WS-04 | Lead banner once complete: "Nothing here needs you" / "Setup's next step is on X" + button / "N of M setup steps not measured" | WorkspaceSettings.tsx:StripLead | member, workspace admin, platform admin | checklist complete
++- WS-05 | "This workspace" card: Name / Id / Kind / Your role; empty message "The profile read names no acting workspace." | WorkspaceSettings.tsx:ThisWorkspace | member, workspace admin, platform admin | always once profile ok; empty-state otherwise
++- WS-06 | "This workspace" card: Default role row + "People and roles" link | WorkspaceSettings.tsx:ThisWorkspace / DefaultRole | member, workspace admin, platform admin | group workspace only
++- WS-07 | "Rename" button | WorkspaceSettings.tsx:ThisWorkspace | workspace admin, platform admin | group workspace, effective role admin
++- WS-08 | Rename form: "New name" input, hint, Save/Cancel, refusal message | WorkspaceSettings.tsx:RenameForm | workspace admin, platform admin | after Rename clicked; disabled while saving
++- WS-09 | "Code intelligence" card lead paragraph + refresh | CodeIntelligence.tsx:CodeIntelligenceCard | member, workspace admin, platform admin | always
++- WS-10 | "Send code to Jev" switch + "Never sent" list + Set-by line + Saved/error messages | CodeIntelligence.tsx:JevSwitch | member (read-only); workspace owner/admin or platform admin (can edit) | disabled for non-editors; busy while saving
++- WS-11 | "Visual QA" card lead paragraph + refresh | WorkspaceSettings.tsx:QaSettingsCard | member, workspace admin, platform admin | always
++- WS-12 | QA flows-per-step read-only figure | WorkspaceSettings.tsx:QaFlowsPerStep | member (can_edit=false) | not editable
++- WS-13 | QA flows-per-step form (number input, bounds hint, validation, Save, Saved/refusal) | WorkspaceSettings.tsx:QaFlowsPerStep | workspace owner/admin, platform admin | editable; validation error out of bounds
++- WS-14 | "Per-agent budget" card lead paragraph + refresh | WorkspaceSettings.tsx:WorkspaceBudgetCard | member, workspace admin, platform admin | always
++- WS-15 | Budget read-only view (Budget, Platform ceiling, Set by, restriction note) | WorkspaceSettings.tsx:BudgetReadOnly | member (can_edit=false) | not editable
++- WS-16 | Budget form: Off/Dollars/Tokens radiogroup, amount input, hint, invalid/over-max/over-ceiling warnings, Save, Set-by, Saved/refusal | WorkspaceSettings.tsx:BudgetForm | workspace owner/admin, platform admin | editable; disabled while saving
++
++## Workspace setup (WSU)
++
++- WSU-01 | Page header "Workspace Settings" with refresh control (profile only) | WorkspaceSettings.tsx:WorkspaceSettingsScreen | member, workspace admin, platform admin | always
++- WSU-02 | Config tabs (same as WS-02) | WorkspaceSettings.tsx:WorkspaceSettingsScreen | member, workspace admin, platform admin | always
++- WSU-03 | Lead banner "Step N of M · next" + "Open GitHub access" button | WorkspaceSettings.tsx:SetupLead | member, workspace admin, platform admin | checklist incomplete
++- WSU-04 | Lead banner once complete: "Setup is complete" / strip-vs-checklist mismatch note + "Open X" button | WorkspaceSettings.tsx:StripLead | member, workspace admin, platform admin | checklist complete or strip has a step left
++- WSU-05 | Intro paragraph (connect GitHub / install App / enable orgs / choose repos / verify access) | Onboarding.tsx:OnboardingScreen | member, workspace admin, platform admin | always
++- WSU-06 | Checklist card loading/error/empty states ("The checklist answered with no steps") | Onboarding.tsx:OnboardingScreen | member, workspace admin, platform admin | while loading/on error/when empty
++- WSU-07 | Checklist card header: title, "Show on Overview" button, refresh, footer "Derived x ago for user in workspace Y" | Onboarding.tsx:OnboardingScreen | member, workspace admin, platform admin | "Show on Overview" only when dismissed and not complete
++- WSU-08 | Count-summary sentence + step bar | Onboarding.tsx:StepBar | member, workspace admin, platform admin | always once loaded
++- WSU-09 | Checklist rows: title, state word, "next" chip, evidence line, checked-at time | Onboarding.tsx:Checklist | member, workspace admin, platform admin | always
++- WSU-10 | Step issue/error copy message(s), with "Open on GitHub" link | Onboarding.tsx:IssueCopy | member, workspace admin, platform admin | when a step carries an issue/code
++- WSU-11 | "Last probe did not complete…" note on Connect GitHub step | Onboarding.tsx:Checklist | member, workspace admin, platform admin | last probe incomplete
++- WSU-12 | "Connecting authorised the App…" help note on Install the App step | Onboarding.tsx:Checklist | member, workspace admin, platform admin | step not done, not waiting on another
++- WSU-13 | Per-step action buttons: Connect GitHub/Reconnect, Re-check, Install the App, Enable orgs, Choose repositories, Verify access, Start an agent | Onboarding.tsx:StepAction | member, workspace admin, platform admin | varies by step state; hidden once done
++- WSU-14 | Workspace step, "none" state: helper + "Request my workspace" button | OnboardingWorkspace.tsx:WorkspaceStepBody | member, workspace admin, platform admin | no workspace requested
++- WSU-15 | Workspace step, "requested" state: request line, elapsed time, migration/waiting note | OnboardingWorkspace.tsx:WorkspaceStepBody | member, workspace admin, platform admin | requested
++- WSU-16 | Workspace step, approved/applying/needs_owner state: ApprovedWaiting/"Setting up…" + elapsed time + notes + JobSteps timeline | OnboardingWorkspace.tsx:WorkspaceStepBody / ApprovedWaiting / JobSteps | member, workspace admin, platform admin | approved/applying/needs_owner
++- WSU-17 | Workspace step, "ready" state: "Workspace ready (id)" | OnboardingWorkspace.tsx:WorkspaceStepBody | member, workspace admin, platform admin | ready
++- WSU-18 | Workspace step, "denied" state: reason quote + "Request again" button or wait-until text | OnboardingWorkspace.tsx:WorkspaceStepBody | member, workspace admin, platform admin | denied
++- WSU-19 | Workspace step, "failed" state: "Setting up your workspace stopped" + failure copy | OnboardingWorkspace.tsx:WorkspaceStepBody | member, workspace admin, platform admin | failed
++- WSU-20 | Workspace step: refusal message on request failure + "Submissions are not held for this step right now" | OnboardingWorkspace.tsx:WorkspaceStepBody | member, workspace admin, platform admin | write failure / optional step not ready
++- WSU-21 | Claude-account step: counts line, helper text, "Add key" link, "Request a loan" button / "Loan requested", refusal, optional-step note | OnboardingWorkspace.tsx:ClaudeAccountStepBody | member, workspace admin, platform admin | step not done
++- WSU-22 | "After the checklist" card: Secrets / People invited rows + Set/Invite buttons | WorkspaceSettings.tsx:AfterChecklist | member, workspace admin, platform admin | People invited row absent for personal workspace
++- WSU-23 | "On Overview" card status paragraph (complete/hidden/shown/default) | WorkspaceSettings.tsx:OnOverview | member, workspace admin, platform admin | always
++- WSU-24 | "On Overview" card "Show on Overview" button + refusal message | WorkspaceSettings.tsx:OnOverview | member, workspace admin, platform admin | checklist hidden/dismissed
++- WSU-25 | GitHub section header: "Checked x ago" + "↻ Re-check" | PermissionCards.tsx:GitHubPermissions | member, workspace admin, platform admin | always
++- WSU-26 | GitHub section loading/error states | PermissionCards.tsx:GitHubPermissions | member, workspace admin, platform admin | while loading/on error
++- WSU-27 | GitHub section lead paragraph ("GitHub does not let SwarmCloud grant permissions itself…") | PermissionCards.tsx:GitHubPermissions | member, workspace admin, platform admin | once loaded
++- WSU-28 | App permissions card: Details/Hide toggle, count chip, summary, gap lines, grants table | PermissionCards.tsx:AppCard / PermCard | member, workspace admin, platform admin | always
++- WSU-29 | App permissions card "Add to App" fix link | PermissionCards.tsx:AppCard | platform admin | gaps exist and server grants settings URL
++- WSU-30 | App permissions card hint "A platform admin adds these to the App…" | PermissionCards.tsx:AppCard | member, workspace admin (non-platform-admin) | gaps exist
++- WSU-31 | App permissions card "not read"/"The App was not read." error state | PermissionCards.tsx:AppCard | member, workspace admin, platform admin | read error
++- WSU-32 | Org permissions cards (one per installation): toggle, count chip, summary, gap/pending lines, grants table, "Also granted" details, "Covers: N repositories", "Manage on GitHub" link, checked-at line | PermissionCards.tsx:OrgCard / OrgDetail | member, workspace admin, platform admin | one per installation
++- WSU-33 | Org permissions card "Review on GitHub" fix link + "Only an owner of X can accept" hint | PermissionCards.tsx:OrgCard | member, workspace admin, platform admin | gaps exist
++- WSU-34 | "No connected org" empty state | PermissionCards.tsx:GitHubPermissions | member, workspace admin, platform admin | no org reached through the App
++
++## Add a new workspace (NW)
++
++- NW-01 | Page header + Config tabs (page itself platform-admin gated) | WorkspaceSettings.tsx:WorkspaceSettingsScreen | platform admin | always
++- NW-02 | "Reading whether you are a platform admin…" loading message | WorkspaceSettings.tsx:WorkspaceSettingsScreen | member, workspace admin | while profile loading
++- NW-03 | "Not available to you" / "Adding a workspace is for platform admins" lead + "Open Workspace setup" button | WorkspaceSettings.tsx:WorkspaceSettingsScreen | member, workspace admin (non-platform-admin) | profile loaded, viewer not platform admin
++- NW-04 | "Add a new workspace" lead banner explaining the approval flow | WorkspaceSettings.tsx:AddWorkspace | platform admin | always
++- NW-05 | Workspace-kind tabs: Personal / Group / Service | NewWorkspace.tsx:NewWorkspaceForm | platform admin | always
++- NW-06 | Address field (email input; label/placeholder vary by kind) | NewWorkspace.tsx:NewWorkspaceForm | platform admin | disabled while posting
++- NW-07 | Display name (optional) field | NewWorkspace.tsx:NewWorkspaceForm | platform admin | disabled while posting
++- NW-08 | First admin's email address (optional) field + hint | NewWorkspace.tsx:NewWorkspaceForm | platform admin | Group kind only
++- NW-09 | "What this gets" paragraph, text differs per kind | NewWorkspace.tsx:Gets | platform admin | always
++- NW-10 | Refusal error message (code + sentence) | NewWorkspace.tsx:Refused | platform admin | submit failure
++- NW-11 | "Create workspace"/"Creating…" submit button | NewWorkspace.tsx:NewWorkspaceForm | platform admin | disabled while posting or address empty
++- NW-12 | First-admin outcome message (granted & member / granted & pending / not granted) | NewWorkspace.tsx:FirstAdminOutcome | platform admin | after filing a Group request with a first admin
++- NW-13 | Progress: record id + name/principal line | NewWorkspace.tsx:Progress | platform admin | after filing
++- NW-14 | Progress, "requested" state line + held/migration note | NewWorkspace.tsx:Progress | platform admin | state=requested
++- NW-15 | Progress, approved/applying state | NewWorkspace.tsx:Progress | platform admin | approved/applying
++- NW-16 | Progress, "needs_owner" state | NewWorkspace.tsx:Progress | platform admin | needs_owner
++- NW-17 | Progress, "ready" state ("Workspace ready") | NewWorkspace.tsx:Progress | platform admin | ready
++- NW-18 | Progress, "denied" state (reason quote) | NewWorkspace.tsx:Progress | platform admin | denied
++- NW-19 | Progress, "failed" state ("Setting up stopped" + failure copy) | NewWorkspace.tsx:Progress | platform admin | failed
++- NW-20 | Progress, unknown-state Dash fallback | NewWorkspace.tsx:Progress | platform admin | unrecognized state
++- NW-21 | WorkspaceTimeline: ordered job-step list with tone, label, state word, timestamp, code | NewWorkspace.tsx:WorkspaceTimeline | platform admin | after filing, polled every 5s until settled
++- NW-22 | "Add another" button | WorkspaceSettings.tsx:AddWorkspace | platform admin | after a request is filed
++- NW-23 | "What creating it does" card: ordered list of job steps, "a service workspace only" annotations | WorkspaceSettings.tsx:AddWorkspace | platform admin | always
++- NW-24 | "What creating it does" card explanatory paragraph (POST /v1/admin/workspaces route) | WorkspaceSettings.tsx:AddWorkspace | platform admin | always
++- NW-25 | "Filed <id>. Admin › Tenants lists it under Being created…" message | WorkspaceSettings.tsx:AddWorkspace | platform admin | after filing
++
++## Admin › People and roles (AP)
++
++- AP-01 | Page title "People and roles" | People.tsx:PeopleScreen | workspace admin, platform admin | always
++- AP-02 | Subtitle (platform-wide wording vs scoped wording) | People.tsx:PeopleScreen | workspace admin, platform admin | text varies by scope
++- AP-03 | Refresh control beside the title | People.tsx:PeopleScreen | workspace admin, platform admin | always
++- AP-04 | Admin-gate region (403 on `GET /v1/admin/people` draws as a plain error/retry region) | People.tsx:PeopleScreen | n/a (member refused) | on error/403
++- AP-05 | Full-platform lead: "Nobody is waiting for an admin" | People.tsx:PeopleLead | platform admin | no open request, joins read ok
++- AP-06 | Full-platform lead: "N requests are waiting for an admin", oldest named, "Review the oldest" button | People.tsx:PeopleLead | platform admin | ≥1 open request
++- AP-07 | Full-platform lead: unread state ("who is waiting to join… could not be read") | People.tsx:PeopleLead | platform admin | join reads failed, nothing else waits
++- AP-08 | Workspace-admin lead ("Your workspaces"): "Nobody is waiting for you in X" | People.tsx:ScopedBody | workspace admin (non-platform) | no open join request in their workspaces
++- AP-09 | Workspace-admin lead: "N people are waiting to join X" + "Review it/the N" button | People.tsx:ScopedBody | workspace admin (non-platform) | ≥1 open join request
++- AP-10 | Workspace-admin lead: unread state | People.tsx:ScopedBody | workspace admin (non-platform) | join read failed
++- AP-11 | "Workspace building is off" banner | People.tsx:BuildingOff | platform admin | provisioning.available === false
++- AP-12 | "The requests to join could not be read" warning banner | People.tsx:JoinsUnread | workspace admin, platform admin | join_requests_error present
++- AP-13 | "Waiting for you" card: amber, one row per open request, oldest-first, count+age chip | People.tsx:WaitingCard | platform admin | total waiting > 0
++- AP-14 | Waiting-card empty line "Nothing else is waiting." | People.tsx:WaitingCard | platform admin | total becomes 0 but a decision outcome is still shown
++- AP-15 | Workspace-request row: avatar, name, "asked <time>", workspace id, limit chips / default-ceiling note | People.tsx:WaitingCard, LimitChips, Requested | platform admin | row kind = workspace
++- AP-16 | Approve control (one click) + busy state + outcome line | People.tsx:Approve | platform admin | workspace-request row
++- AP-17 | Deny control: inline reason textarea (required, max 500), Cancel/Deny | People.tsx:Deny | platform admin | workspace-request row
++- AP-18 | Loan-request row: avatar, name, "Borrow a Claude account · asked <time>", pool size sentence | People.tsx:WaitingCard, PoolLine | platform admin | row kind = loan
++- AP-19 | Lend control: account picker/confirm dialog | People.tsx:LoanPicker | platform admin | loan-request row, pool non-empty
++- AP-20 | Decline control: optional reason input, Cancel/Decline | People.tsx:DeclineLoan | platform admin | loan-request row
++- AP-21 | Join-request row: avatar, requester name, "to join <workspace> · asked <time>", quoted message | People.tsx:JoinReq | platform admin, workspace admin | open join request
++- AP-22 | Join Approve control: role select + Approve button; success/"waiting for group change" text | People.tsx:JoinApprove | platform admin, workspace admin | open join request
++- AP-23 | Join Deny control: required reason textarea, Cancel/Deny | People.tsx:JoinDeny | platform admin, workspace admin | open join request
++- AP-24 | Workspace-admin "Waiting for you" card (join requests only) | People.tsx:JoinWaitingCard | workspace admin (non-platform) | ≥1 open join request
++- AP-25 | "The workspaces' roles could not be read" banner | People.tsx:ColumnsUnread | platform admin | workspaces_error present
++- AP-26 | "People and their roles" card head: Workspace filter, count chip, "Grant admin" button | People.tsx:PeopleBody | platform admin | full view
++- AP-27 | Workspace filter (Segmented): "Every workspace" + one per column | People.tsx:WorkspaceFilter | platform admin | ≥2 workspace columns
++- AP-28 | Count chip ("N of M people in X" / "N people · M pending") | People.tsx:PeopleBody | platform admin | always
++- AP-29 | "Grant admin" button opening GrantDialog | People.tsx:PeopleBody, GrantDialog | platform admin | always
++- AP-30 | "Find a person" search box + match-count line | People.tsx:FindPerson | workspace admin, platform admin | rows.length > 0
++- AP-31 | "No 'joined by request' mark…" notice | People.tsx:MembersUnread | workspace admin, platform admin | one or more member-list reads failed
++- AP-32 | Empty state "no one has signed in" | People.tsx:PeopleBody | platform admin | doc.people empty
++- AP-33 | "Nobody has been seen in X yet, and nobody holds a role there." | People.tsx:ScopedBody | workspace admin (non-platform) | scoped doc.people empty
++- AP-34 | NobodyShown filtered-empty message | People.tsx:NobodyShown | workspace admin, platform admin | filter/search narrows to zero rows
++- AP-35 | Full table columns: Person, Platform role, per-workspace role columns, Own workspace, Claude account, Ceiling, Last active, Manage | People.tsx:PeopleBody, Row | platform admin | rows present
++- AP-36 | Scoped table columns: Person, one per administered workspace, Last active | People.tsx:ScopedBody | workspace admin (non-platform) | rows present
++- AP-37 | Person cell: avatar, name/email, GitHub mark, legacy "platform owner" chip | People.tsx:PersonCell, Avatar, GitHubMark | workspace admin, platform admin | always
++- AP-38 | Platform role cell | People.tsx:PlatformRoleCell | platform admin | full view, grid API
++- AP-39 | Role cell (grid): role word, admin badge, none/requested/dash states, joined-by-request mark | People.tsx:RoleCell, JoinedMark | workspace admin, platform admin | grid API
++- AP-40 | Own-workspace cell: state tone+word, workspace id, failure note, denial reason, live job-step progress | People.tsx:WorkspaceCell | workspace admin, platform admin | always
++- AP-41 | Claude-account cell: source summary, multi-loan disclosure, borrow/decline chips | People.tsx:ClaudeCell, ClaudeSummary | platform admin | full view, non-phone
++- AP-42 | Ceiling cell: numeric value or dash | People.tsx:Row | platform admin | full view, non-phone
++- AP-43 | Last-active cell | People.tsx:Row, ScopedBody | workspace admin, platform admin | always
++- AP-44 | "Manage" button opening the person's drawer | People.tsx:Row | platform admin | full view only
++- AP-45 | Manage drawer: Facts section | People.tsx:Drawer | platform admin | drawer open
++- AP-46 | Manage drawer: Ceiling section (stepper, numeric field, Save, confirm dialog) | People.tsx:Drawer, Ceiling | platform admin | drawer open, person has workspace record
++- AP-47 | Manage drawer: Claude account section | People.tsx:Drawer, ClaudeSection | platform admin | drawer open
++- AP-48 | Manage drawer: Admin switch (on/off, confirm dialog) | People.tsx:Drawer, AdminSwitch | platform admin | drawer open
++- AP-49 | Manage drawer: "Roles in workspaces" section | WorkspaceRolesAdmin.tsx:PersonWorkspaceRoles | platform admin | drawer open
++- AP-50 | Drawer chrome: focus trap, Escape/scrim/Close dismissal | People.tsx:Drawer | platform admin | drawer open
++- AP-51 | "Workspace roles" card: per-workspace default role, named admins, override list, "Name an admin"/"Set default" forms, pagination | WorkspaceRolesAdmin.tsx:WorkspaceRolesCard | platform admin | full view only
++- AP-52 | Workspace-roles card list states (loading/error/empty) | WorkspaceRolesAdmin.tsx:ListPage | platform admin | loading/error/empty
++- AP-53 | "Admins" side card: admin list, inline "Grant admin" form, confirm dialogs | People.tsx:Admins, AdminList | platform admin | full view only
++- AP-54 | "Recent admin actions" side card (folded, "N this week") | People.tsx:Audit | platform admin | full view only
++- AP-55 | Audit body: empty state, housekeeping fold/unfold, per-run list lines | People.tsx:Audit, auditRuns | platform admin | card expanded
++- AP-56 | Outcome/error line after any write (SaidLine) | People.tsx:SaidLine | workspace admin, platform admin | after any action
++
++## Workspaces you admin (WYA)
++
++- WYA-01 | Page title "Workspaces you admin" | WorkspacesYouAdmin.tsx:WorkspacesYouAdminScreen | member (workspace admin), platform admin | always
++- WYA-02 | Refresh control beside the title | WorkspacesYouAdmin.tsx:WorkspacesYouAdminScreen | member, platform admin | always
++- WYA-03 | Subtitle describing the page | WorkspacesYouAdmin.tsx:WorkspacesYouAdminScreen | member, platform admin | always
++- WYA-04 | Error/retry region for `GET /v1/tenants/mine` | WorkspacesYouAdmin.tsx:WorkspacesYouAdminScreen | member, platform admin | on read error
++- WYA-05 | Empty state "You administer no group workspace" | WorkspacesYouAdmin.tsx:NoneToAdmin | member, platform admin | administers no group workspace
++- WYA-06 | "Behind" lead card naming the workspace furthest behind in setup + "Open <X>'s Config" button | WorkspacesYouAdmin.tsx:AdminList | member (workspace admin), platform admin | ≥1 administered workspace with readable setup progress
++- WYA-07 | List of administered workspaces (display name + tenant id) | WorkspacesYouAdmin.tsx:AdminList | member, platform admin | ≥1 administered workspace
++- WYA-08 | "admin as a platform admin" marker | WorkspacesYouAdmin.tsx:AdminList | platform admin (de-facto, not named) | role source is platform_admin
++- WYA-09 | Per-workspace links: Workspace Settings, MCP servers, People and roles, Secrets | WorkspacesYouAdmin.tsx:AdminList | member, platform admin | per row, always
++- WYA-10 | Per-workspace setup progress strip (segments/count/next-step), "Reading setup…"/"Setup not read" states | WorkspacesYouAdmin.tsx:AdminList, SetupProgress | member, platform admin | per row, while/if setup read is in flight or fails
++- WYA-11 | Setup-progress "next" click opens that step's Config page | WorkspacesYouAdmin.tsx:AdminList, SetupProgress | member, platform admin | per row, when a next step exists
++- WYA-12 | Design note: personal workspaces never listed; platform admin's general-reach-only workspaces excluded (behavior, not a drawn element) | WorkspacesYouAdmin.tsx (header comment) | member, platform admin | n/a
++
++## Nav (NAV) — Spine.tsx / ConfigSetup.tsx
++
++- NAV-01 | Overview's "On this page" panel lists 8 jump links in page order (Needs a look, Waiting/working/done, Running now, Waiting and why, Recent token cost, Headroom, Recent failures, Pools); a click replaceState's a `#id` hash and scrolls/closes the phone drawer | Spine.tsx:OVERVIEW_JUMPS/PanelPages (jumpTo) | all roles | always while section is Overview
++- NAV-02 | 4 of the 8 Overview jump links (Needs a look, Running now, Waiting and why, Recent failures) carry a live count via `OverviewCounts`/`publishOverviewCounts` so the panel and the page's cards read the same numbers | Spine.tsx:OverviewCounts/CountMark | all roles | no mark while the read is in flight; dash when asked-for but null; number otherwise
++- NAV-03 | Config section's panel lists 6 rows in fixed order: GitHub access, Repositories, Secrets, MCP servers, People and roles, Workspace Settings; "People and roles" is dropped in a personal workspace | Spine.tsx:PANEL_PAGES.config / configPagesFor | member, workspace admin | People and roles hidden when personal===true
++- NAV-04 | Each Config row (except Workspace Settings) draws a setup badge (done tick, count, "N to set", "via group", or unknown dash) fed by the onboarding read | Spine.tsx:PanelRows / ConfigSetup.tsx:configBadges/ConfigBadgeMark | member, workspace admin | varies per step state; Workspace Settings carries no badge
++- NAV-05 | Admin section's panel lists up to 9 rows: Pool limits, Runner sizes, Tenants, Platform counts, Platform secrets, Setup, Health, People and roles, Workspaces you admin | Spine.tsx:PANEL_PAGES.admin / adminPagesFor | platform admin sees all 9; workspace admin (non-platform) sees only People and roles + Workspaces you admin; others see no Admin item at all | gated by role read
++- NAV-06 | Admin panel drawn in two groups ("People and workspaces"/"Your workspaces" first, then "Platform"); a group with zero rows is not rendered | Spine.tsx:adminGroups/ADMIN_WORKSPACE_KEYS | platform admin sees both groups; workspace admin sees only the first | heading text depends on whether any Platform row exists
++- NAV-07 | Admin rows carry status badges from reads already made ("Workspaces you admin" = admin'd count, "People and roles" = admin_pending/joinsToDecide, "Pool limits" = "N near ceiling", "Tenants" = "N waiting", "Platform secrets" = ******** count) | Spine.tsx:adminPanelCounts | role-scoped per bullet | no badge while the underlying read is incomplete or inapplicable
++- NAV-08 | "In Automate" group inside the Admin panel links to Schedules and Approvals; a platform admin's Schedules link opens the All-workspaces scope labelled "all workspaces" | Spine.tsx:inAutomateLinks | platform admin, workspace admin | Approvals link shows a CountMark; "all workspaces" sub-label only for platform admin
++- NAV-09 | Capacity › Accounts' "Provider quota" child row carries a small "admin" pill rather than being hidden | Spine.tsx:PANEL_PAGES.capacity, PanelPage.admin | all roles see the row/pill; the screen behind it refuses non-admins | always shown when admin===true
++- NAV-10 | SetupStrip renders across the top of every Config page (mounted once by App.tsx's ConfigPage): GitHub connected → Repositories chosen → Secrets set → People invited (3 steps on a personal workspace); folds to one line when every step is done | ConfigSetup.tsx:SetupStrip; App.tsx:ConfigPage | member, workspace admin | folded when done===of and of>0
++- NAV-11 | Compact SetupMeter (segmented bar, "Setup N of M steps") drawn in the Config panel itself, fed by the same `useSetupSteps` read as the strip | ConfigSetup.tsx:SetupMeter | member, workspace admin | always while Config panel is open; next-todo step marked is-next
++
++## Home / App.tsx navigation test
++
++- HOME-01 | The root address `/` resolves to address `overview/now`, which `addressToPath`'s FIXED table maps to `/overview`, rendering OverviewScreen; an unrecognized address also falls back to `/overview` — Overview is both the literal home route and the universal fallback | App.tsx / paths.ts (pathToAddress, addressToPath FIXED) | all roles | always
++
++The comment block at the top of App.tsx ("THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS") explains why the console collapsed to five sections (Overview, Work, Automate, Capacity, Admin) named after objects rather than questions, and states that every tab's label must equal the heading of the screen it opens — a reader landing on a different heading than the one they clicked cannot tell a rename from a misnavigation. That rule is enforced by a test that parses `SECTIONS` and the `SectionBody` switch statement directly out of the shipped App.tsx source (not a hand-maintained fixture), resolves every route's component to the heading it actually renders, and asserts the two strings agree for all of the console's routes, plus a second test guarding the parser itself so a broken regex cannot silently empty the route table and pass vacuously.
++
++### Path constants found
++
++- `overview/now` (FIXED entry) = `/overview` — also the target of root `/` via `pathToAddress`
++- `config/people` (FIXED entry) = `/config/people`
++- `config/workspace` (FIXED entry) = `/config/workspace` (Workspace Settings' default "settings" part)
++- `WORKSPACE_SETUP_ADDRESS` = `config/workspace?part=setup` → `WORKSPACE_SETUP_PATH` = `/config/workspace/setup`
++- `WORKSPACE_NEW_ADDRESS` = `config/workspace?part=new` (no dedicated path constant; resolves via the generic FIXED entry + query)
++- `admin/people` (FIXED entry) = `/admin/people`
++- `admin/workspaces` (FIXED entry) = `/admin/workspaces`; tab key `WORKSPACES_YOU_ADMIN_TAB` = `workspaces`
++
++## Reads per page
++
++- Overview: loadCapacity (GET /v1/capacity), loadTasks (GET /v1/tasks), loadLeases (GET /v1/admin/leases), loadProviders (GET /v1/providers), loadAccountPool (GET /v1/accounts), loadWorkflows (GET /v1/workflows), loadStats (GET /v1/stats), loadSpend (aggregates per-task loadAttempts, GET /v1/tasks/{id}/attempts), loadTasksInState (GET /v1/tasks with state= query), loadLiveSession (GET /v1/tasks/{id}/live/session), loadTask (GET /v1/tasks/{id}), loadOnboarding (GET /v1/onboarding), dismissOnboarding (POST /v1/onboarding/dismiss), loadApprovals (GET /v1/approvals). githubAppName is a pure helper, not a network call.
++- Config People and roles: loadMe (GET /v1/tenants/me), loadWorkspaceRoles (GET /v1/workspace/roles), setWorkspacePersonRole (PUT /v1/workspace/roles/person), clearWorkspacePersonRole (DELETE /v1/workspace/roles/person), setWorkspaceDefaultRole (PUT /v1/workspace/roles/default), loadJoinLink (GET /v1/workspace/join-link), setJoinLink (PUT /v1/workspace/join-link), loadJoinedMembers (GET /v1/workspace/members), removeJoinedMember (DELETE /v1/workspace/members/person), loadAccessMembers (GET /v1/access/members).
++- Workspace Settings: loadMe (GET /v1/tenants/me), loadProfile (GET /v1/profile), loadWorkspaceRoles (GET /v1/workspace/roles), renameWorkspace (PUT /v1/workspaces/{tenant_id}/name), loadQaSettings (GET /v1/qa-settings), putQaSettings (PUT /v1/workspaces/{tenant_id}/qa-settings), loadWorkspaceBudget (GET /v1/budget), putWorkspaceBudget (PUT /v1/workspaces/{tenant_id}/budget), loadCodeIntelligence (GET /v1/code-intelligence), loadJudgment (GET /v1/judgment), putCodeIntelligence (PUT /v1/workspaces/{tenant_id}/code-intelligence). budgetAmount, budgetLimitsWords, budgetRefusalWords and parseBudgetAmount are pure formatting helpers, not reads.
++- Workspace setup: loadProfile (GET /v1/profile), dismissOnboarding (POST /v1/onboarding/dismiss), loadOnboarding (GET /v1/onboarding), loadWorkspace (GET /v1/workspace), requestWorkspace (POST /v1/workspace), requestLoan (POST /v1/workspace/loan-request), loadForgePermissions (GET /v1/forge/permissions), loadMe (GET /v1/tenants/me). githubAppName is a pure helper, not a network call.
++- Add a new workspace: loadProfile (GET /v1/profile), createAdminWorkspace (POST /v1/admin/workspaces), loadAdminWorkspace (GET /v1/admin/workspaces/{workspace_id}).
++- Admin People and roles: loadPeople (GET /v1/admin/people), approveWorkspace (POST /v1/admin/workspaces/{workspace_id}/approve), denyWorkspace (POST /v1/admin/workspaces/{workspace_id}/deny), retryWorkspace (POST /v1/admin/workspaces/{workspace_id}/retry), setWorkspaceCeiling (PUT /v1/admin/workspaces/{workspace_id}/limits), setWorkspaceLoan (PUT /v1/admin/people/{workspace_id}/loan), declineLoanRequest (POST /v1/admin/people/{workspace_id}/loan/decline), grantAdmin (PUT /v1/admin/admins/{email}), removeAdmin (DELETE /v1/admin/admins/{email}), loadAdminPersonRoles (GET /v1/admin/roles/person), loadAdminWorkspaceRoles (GET /v1/admin/workspaces/{tenant_id}/roles), loadAdminWorkspacesRoles (GET /v1/admin/workspaces/roles), setAdminWorkspaceDefaultRole (PUT /v1/admin/workspaces/{tenant_id}/roles/default), setAdminWorkspacePersonRole (PUT /v1/admin/workspaces/{tenant_id}/roles/person), clearAdminWorkspacePersonRole (DELETE /v1/admin/workspaces/{tenant_id}/roles/person).
++- Workspaces you admin: loadMyTenants (GET /v1/tenants/mine).
+diff --git a/apps/swarm-ui/src/homeredraw/fixtures.ts b/apps/swarm-ui/src/homeredraw/fixtures.ts
+new file mode 100644
+index 0000000..1184b80
+--- /dev/null
++++ b/apps/swarm-ui/src/homeredraw/fixtures.ts
+@@ -0,0 +1,430 @@
++// MOCK-HOOK FILE
++// THE HOME REDRAW'S HARD CASE (mock-ups of 2 November 2026, step 'foundation').
++// While `?homeset` is in the address (any value) the fixture build answers
++// every read of Overview, Config › People and roles, Config › Workspace
++// Settings, Admin › People and roles and Admin › Workspaces you admin from
++// here, each in its route's own shape. Without the switch nothing here runs.
++// Invented data only: example.com addresses, made-up people and repositories.
++import type { Capacity, LeasePage, Me, Stats, Task, TaskPage } from '../types'
++
++/** The switches, read once per page load. */
++const params = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search)
++export const HOMESET: string | null = params.get('homeset')
++export const HOMESCREEN: string = params.get('homescreen') ?? 'home'
++export const HOMESTATE: string = params.get('homestate') ?? 'rest'
++/** Whether the redraw's screen replaces the routed page: a direction is named and it is not `today`. */
++export const HOME_TAKEOVER: boolean = HOMESET !== null && HOMESET !== 'today'
++
++type Persona = 'member' | 'platform-admin' | 'workspace-admin'
++function persona(): Persona {
++  if (typeof document === 'undefined') return 'member'
++  const m = /(?:^|;\s*)swarm_qa_persona=([^;]*)/.exec(document.cookie)
++  return m?.[1] === 'platform-admin' || m?.[1] === 'workspace-admin' ? m[1] : 'member'
++}
++export const HOME_PERSONA: Persona = persona()
++const isAdmin = HOME_PERSONA === 'platform-admin'
++const isWsAdmin = HOME_PERSONA === 'workspace-admin'
++
++/** The fixture clock (api.ts FIXTURE_CLOCK), so every age here reads against it. */
++export const HOME_NOW = Date.parse('2026-10-19T12:00:00Z')
++const MIN = 60_000
++const HOUR = 60 * MIN
++const DAY = 24 * HOUR
++const ago = (ms: number) => new Date(HOME_NOW - ms).toISOString()
++
++/** The six group workspaces. `eng` keeps today's fixture id so the picker logic still selects it. */
++/** `setup`: how many of the seven setup steps each has done, for Workspaces you admin's order (drawn by the screens; `/v1/onboarding` keeps today's fixture). */
++export const HOME_WORKSPACES = [
++  { tenant_id: 'eng', name: 'engineering', group: 'engineering@example.com', default_role: 'member', setup: 7 },
++  { tenant_id: 'design', name: 'design', group: 'design@example.com', default_role: 'viewer', setup: 3 },
++  { tenant_id: 'data-platform', name: 'data-platform', group: 'data-platform-and-analytics-guild@example.com', default_role: 'member', setup: 6 },
++  { tenant_id: 'support', name: 'support', group: 'support@example.com', default_role: 'viewer', setup: 7 },
++  { tenant_id: 'research', name: 'research', group: 'research@example.com', default_role: 'viewer', setup: 5 },
++  { tenant_id: 'sales-ops', name: 'sales-ops', group: 'sales-ops@example.com', default_role: 'member', setup: 2 },
++] as const
++/** What each persona administers: the platform admin all six, the workspace admin two, the member none. */
++export const HOME_ADMINISTERED: readonly string[] = isAdmin ? HOME_WORKSPACES.map((w) => w.tenant_id) : isWsAdmin ? ['eng', 'design'] : []
++
++/** Who the fixture caller is. */
++export const HOME_ME = isAdmin
++  ? { email: 'bogdan@example.com', name: 'Bogdan', personal: 'u-bogdan' }
++  : isWsAdmin
++    ? { email: 'ana.moreau@example.com', name: 'Ana Moreau', personal: 'u-ana' }
++    : { email: 'kenji.sato@example.com', name: 'Kenji Sato', personal: 'u-kenji' }
++
++const FIRST = ['Ana', 'Kenji', 'Priya', 'Tomás', 'Ingrid', 'Oluwaseun', 'Mei', 'Lukas', 'Fatima', 'Diego', 'Hana', 'Rafael', 'Sofia', 'Nikolai', 'Amara', 'Jonas', 'Yuki', 'Mateo', 'Leila', 'Aleksandra']
++const LAST = ['Moreau', 'Sato', 'Raman', 'García', 'Lindqvist', 'Adebayo-Okonkwo', 'Chen', 'Becker', 'Haddad', 'Fernández', 'Kowalczyk-Wiśniewska', 'Okafor']
++
++export interface HomePerson {
++  email: string
++  name: string | null
++  workspace: string
++  state: string
++  roles: Record<string, string>
++  platform_admin: boolean
++  github: string
++  last_active: string | null
++}
++
++/** The 60 people who have signed in, built once. Index 0..2 are the three personas. */
++export const HOME_PEOPLE: HomePerson[] = (() => {
++  const out: HomePerson[] = []
++  const seen = new Set<string>()
++  const add = (p: HomePerson) => {
++    if (!seen.has(p.email)) {
++      seen.add(p.email)
++      out.push(p)
++    }
++  }
++  const none = () => Object.fromEntries(HOME_WORKSPACES.map((w) => [w.tenant_id, 'none']))
++  add({ email: 'bogdan@example.com', name: 'Bogdan', workspace: 'u-bogdan', state: 'ready', roles: Object.fromEntries(HOME_WORKSPACES.map((w) => [w.tenant_id, 'admin'])), platform_admin: true, github: 'connected', last_active: ago(2 * MIN) })
++  add({ email: 'ana.moreau@example.com', name: 'Ana Moreau', workspace: 'u-ana', state: 'ready', roles: { ...none(), eng: 'admin', design: 'admin', research: 'viewer' }, platform_admin: false, github: 'connected', last_active: ago(9 * MIN) })
++  add({ email: 'kenji.sato@example.com', name: 'Kenji Sato', workspace: 'u-kenji', state: 'ready', roles: { ...none(), eng: 'member' }, platform_admin: false, github: 'connected', last_active: ago(31 * MIN) })
++  add({ email: 'maximiliana.kowalczyk-wisniewska.contractor@example.com', name: 'Maximiliana Aleksandra Kowalczyk-Wiśniewska', workspace: 'u-maxkw', state: 'ready', roles: { ...none(), 'data-platform': 'member', research: 'admin' }, platform_admin: false, github: 'expired', last_active: ago(3 * DAY) })
++  add({ email: 'oluwaseun.adebayo-okonkwo@example.com', name: 'Oluwaseun Adebayo-Okonkwo', workspace: 'u-oluwa', state: 'ready', roles: { ...none(), eng: 'viewer', support: 'admin' }, platform_admin: false, github: 'connected', last_active: ago(5 * HOUR) })
++  // The two workspace requests and the new person with no workspace yet.
++  add({ email: 'priya.raman@example.com', name: 'Priya Raman', workspace: 'w-priya', state: 'requested', roles: none(), platform_admin: false, github: 'none', last_active: ago(40 * MIN) })
++  add({ email: 'tomas.garcia@example.com', name: null, workspace: 'w-tomas', state: 'requested', roles: none(), platform_admin: false, github: 'none', last_active: ago(2 * HOUR) })
++  add({ email: 'hana.okafor@example.com', name: 'Hana Okafor', workspace: '', state: 'none', roles: none(), platform_admin: false, github: 'none', last_active: ago(12 * MIN) })
++  let i = 0
++  while (out.length < 60) {
++    const f = FIRST[i % FIRST.length] ?? 'Ana'
++    const l = LAST[(i * 7 + 3) % LAST.length] ?? 'Moreau'
++    const home = HOME_WORKSPACES[i % 6]!
++    const also = HOME_WORKSPACES[(i + 2) % 6]!
++    const email = `${f.toLowerCase().normalize('NFD').replace(/[^a-z]/g, '')}.${l.toLowerCase().normalize('NFD').replace(/[^a-z-]/g, '')}${i > 30 ? i : ''}@example.com`
++    const roles = none()
++    roles[home.tenant_id] = home.default_role
++    if (i % 4 === 0) roles[also.tenant_id] = also.default_role
++    add({ email, name: i % 5 === 3 ? null : `${f} ${l}`, workspace: `u-p${i}`, state: 'ready', roles, platform_admin: false, github: i % 3 === 0 ? 'none' : 'connected', last_active: i % 9 === 4 ? null : ago((i + 1) * 47 * MIN) })
++    i += 1
++  }
++  return out
++})()
++
++/** The 9 people with a role of their own, by workspace; one given before they joined the group. */
++const OVERRIDES: { tenant: string; email: string; role: string; reason: string; in_group: boolean }[] = [
++  { tenant: 'eng', email: 'ana.moreau@example.com', role: 'admin', reason: 'leads the platform team', in_group: true },
++  { tenant: 'eng', email: 'oluwaseun.adebayo-okonkwo@example.com', role: 'viewer', reason: 'support rotation, read only', in_group: true },
++  { tenant: 'eng', email: 'lukas.becker@example.com', role: 'viewer', reason: 'starts next month', in_group: false },
++  { tenant: 'design', email: 'ana.moreau@example.com', role: 'admin', reason: 'design systems owner', in_group: true },
++  { tenant: 'design', email: 'mei.chen@example.com', role: 'member', reason: 'runs the icon pipeline', in_group: true },
++  { tenant: 'data-platform', email: 'maximiliana.kowalczyk-wisniewska.contractor@example.com', role: 'member', reason: 'contract to March', in_group: true },
++  { tenant: 'research', email: 'maximiliana.kowalczyk-wisniewska.contractor@example.com', role: 'admin', reason: 'research lead', in_group: true },
++  { tenant: 'support', email: 'oluwaseun.adebayo-okonkwo@example.com', role: 'admin', reason: 'support lead', in_group: true },
++  { tenant: 'sales-ops', email: 'fatima.haddad@example.com', role: 'member', reason: 'quarter-end reporting', in_group: true },
++]
++export const HOME_OVERRIDE_NOT_IN_GROUP = OVERRIDES.filter((o) => !o.in_group).map((o) => o.email)
++
++const ROLE_SUMMARIES = [
++  { name: 'viewer', summary: 'Reads the workspace: agents, runs, logs and artifacts.' },
++  { name: 'member', summary: 'Starts and cancels agents and runs, and answers their questions.' },
++  { name: 'admin', summary: 'Changes the workspace: its people, roles, keys and settings.' },
++]
++
++/** The workspace the fixture caller is acting in: a group workspace they may pick, else their own. */
++export function homeActingTenant(chosen: string | null): string {
++  if (chosen !== null && (chosen === HOME_ME.personal || HOME_ADMINISTERED.includes(chosen))) return chosen
++  return HOME_ADMINISTERED.length > 0 ? 'eng' : HOME_ME.personal
++}
++
++function roster(tenant: string) {
++  const ws = HOME_WORKSPACES.find((w) => w.tenant_id === tenant)
++  if (ws === undefined) {
++    return { tenant_id: tenant, kind: 'user', default_role: null, default_source: null, people: [], roles: ROLE_SUMMARIES, audit: [] }
++  }
++  const people = OVERRIDES.filter((o) => o.tenant === tenant).map((o, n) => ({
++    email: o.email, role: o.role, source: 'override', granted_by: 'bogdan@example.com', granted_at: ago((n + 2) * DAY), granted_via: 'console', reason: o.reason,
++  }))
++  const audit = [
++    ...people.map((p, n) => ({ action: 'role_set', by: 'bogdan@example.com', at: ago((n + 2) * DAY), target_email: p.email, detail: { role: p.role } })),
++    { action: 'default_role_set', by: 'bogdan@example.com', at: ago(20 * DAY), detail: { role: ws.default_role } },
++  ]
++  return { tenant_id: tenant, kind: 'group', default_role: ws.default_role, default_source: 'set', people, roles: ROLE_SUMMARIES, audit }
++}
++
++function workspaceRoles(chosen: string | null) {
++  const tenant = homeActingTenant(chosen)
++  const r = roster(tenant)
++  const mine = HOME_PEOPLE.find((p) => p.email === HOME_ME.email)
++  const role = r.kind === 'user' ? 'admin' : (mine?.roles[tenant] ?? 'none')
++  const source = r.kind === 'user' ? 'personal' : isAdmin ? 'platform_admin' : 'override'
++  return { ...r, me: { email: HOME_ME.email, role: role === 'none' ? (r.default_role ?? 'viewer') : role, source, via: r.kind === 'user' ? 'personal' : 'member' }, can_manage: role === 'admin' || isAdmin }
++}
++
++function profile(chosen: string | null) {
++  const acting = homeActingTenant(chosen)
++  const workspaces: Record<string, unknown>[] = [{
++    tenant_id: HOME_ME.personal, display_name: `Your workspace (${HOME_ME.personal})`, kind: 'user',
++    role: { name: 'admin', source: 'personal', via: 'personal' }, state: 'ready', selectable: true, is_acting: acting === HOME_ME.personal, is_default: true,
++  }]
++  for (const w of HOME_WORKSPACES) {
++    const admin = HOME_ADMINISTERED.includes(w.tenant_id)
++    const role = HOME_PEOPLE.find((p) => p.email === HOME_ME.email)?.roles[w.tenant_id] ?? 'none'
++    if (!admin && role === 'none' && HOME_PERSONA !== 'member') continue
++    if (HOME_PERSONA === 'member' && w.tenant_id !== 'eng') continue
++    workspaces.push({
++      tenant_id: w.tenant_id, display_name: w.name, kind: 'group',
++      role: { name: admin ? 'admin' : role === 'none' ? w.default_role : role, source: isAdmin ? 'platform_admin' : admin ? 'override' : 'default', via: 'member' },
++      state: 'ready', selectable: true, is_acting: acting === w.tenant_id, is_default: false,
++    })
++  }
++  return {
++    identity: { email: HOME_ME.email, display_name: HOME_ME.name, display_name_suggested: HOME_ME.name, domain: 'example.com', platform_role: isAdmin ? 'admin' : null, is_admin: isAdmin },
++    workspaces,
++    default_workspace: { tenant_id: null, source: null, ignored: null },
++    connections: {
++      github: workspaces.map((w) => ({ tenant_id: w.tenant_id, state: 'active', forge_login: HOME_ME.personal.slice(2) + '-example', method: 'app', access_expires_at: new Date(HOME_NOW + 5 * HOUR).toISOString(), refreshed_at: ago(2 * HOUR) })),
++      typesafe: { personal: { set: false, set_at: null, set_by: null, version: null }, acting_workspace: { tenant_id: acting, set: false, set_at: null, set_by: null, version: null }, uses: null },
++    },
++    notifications: { preferences: { muted: [], reminder: 'daily' }, topics: ['approval', 'waiting_step', 'question', 'failed', 'finished', 'account', 'admin'] },
++    time_zone: 'UTC',
++    time_zone_source: 'default',
++    claude_accounts: { personal_workspace: HOME_ME.personal, accounts: [], unreadable_document_count: 0 },
++    revision: 1,
++    unavailable: [],
++  }
++}
++
++const COLUMNS = HOME_WORKSPACES.map((w) => ({ tenant_id: w.tenant_id, group: w.group, display_name: w.name, default_role: w.default_role, unavailable: false }))
++
++function personRow(p: HomePerson, n: number) {
++  const requested = p.state === 'requested'
++  const loan = p.email === 'kenji.sato@example.com'
++  return {
++    email: p.email, display_name: p.name, teams: [], github: p.github, roles: p.roles, ...(p.platform_admin ? { platform_admin: true } : {}),
++    workspace: {
++      state: p.state, setup_url: '', setup_command: '', kind: 'personal', workspace_id: p.workspace || null, tenant_id: p.workspace || null,
++      ...(requested ? { request_id: `wsr_${p.workspace}`, requested_at: ago((n + 1) * 20 * MIN), requested_via: 'console' } : p.state === 'ready' ? { ready_at: ago((n + 3) * DAY) } : {}),
++    },
++    claude_account: p.platform_admin
++      ? { source: 'own', own: 2, lent: 0, lent_by: [], provider_key: false }
++      : { source: 'none', own: 0, lent: 0, lent_by: [], provider_key: false },
++    loan_request: loan ? { state: 'requested', requested_at: ago(25 * MIN), reason: 'my own account is at its weekly limit until Thursday' } : null,
++    first_seen: ago((n + 2) * DAY), last_seen: p.last_active, last_submitted: p.last_active, last_active: p.last_active,
++  }
++}
++
++function people() {
++  const rows = HOME_PEOPLE.map(personRow)
++  return {
++    scope: 'platform', workspaces: COLUMNS, workspaces_error: null, people: rows, count: rows.length,
++    pending: rows.filter((r) => r.workspace.state === 'requested').length,
++    audit: [
++      { action: 'approve', target_workspace_id: 'u-oluwa', by: 'bogdan@example.com', at: ago(DAY), detail: {} },
++      { action: 'admin_grant', target_email: 'ana.moreau@example.com', by: 'bogdan@example.com', at: ago(4 * DAY), detail: {} },
++      { action: 'loan_set', target_workspace_id: 'u-maxkw', by: 'bogdan@example.com', at: ago(6 * DAY), detail: {} },
++    ],
++    lendable_accounts: [
++      { account_id: 'u-bogdan:primary', owner_tenant: 'u-bogdan', label: 'Main subscription', state: 'AVAILABLE', lend_to: [] },
++      { account_id: 'u-bogdan:team', owner_tenant: 'u-bogdan', label: 'Team subscription', state: 'AVAILABLE', lend_to: [] },
++    ],
++    lendable_error: null,
++    provisioning: { available: true, approved_waiting: 0 },
++    admins: [
++      { email: 'bogdan@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null },
++      { email: 'ops@example.com', role: 'admin', granted_by: 'bogdan@example.com', granted_at: ago(30 * DAY) },
++    ],
++    admins_error: null,
++  }
++}
++
++function scopedPeople() {
++  const cols = COLUMNS.filter((c) => HOME_ADMINISTERED.includes(c.tenant_id))
++  const rows = HOME_PEOPLE.filter((p) => cols.some((c) => p.roles[c.tenant_id] !== 'none')).map((p) => ({
++    email: p.email, display_name: p.name, roles: Object.fromEntries(cols.map((c) => [c.tenant_id, p.roles[c.tenant_id]])), last_active: p.last_active,
++    ...(p.platform_admin ? { platform_admin: true } : {}),
++  }))
++  return { scope: 'workspaces', workspaces: cols, workspaces_error: null, people: rows, count: rows.length, pending: 0 }
++}
++
++function adminWorkspacesRoles() {
++  return {
++    workspaces: HOME_WORKSPACES.map((w) => {
++      const r = roster(w.tenant_id)
++      return { tenant_id: w.tenant_id, group: w.group, registered_by: 'bogdan@example.com', kind: 'group', default_role: r.default_role, default_source: r.default_source, people: r.people }
++    }),
++    roles: ROLE_SUMMARIES,
++    next_page_token: null,
++  }
++}
++
++function personRoles(url: string) {
++  const email = new URL(url, 'http://x').searchParams.get('email') ?? ''
++  return {
++    email,
++    workspaces: HOME_WORKSPACES.map((w) => {
++      const o = OVERRIDES.find((x) => x.tenant === w.tenant_id && x.email === email)
++      return o === undefined
++        ? { tenant_id: w.tenant_id, group: w.group }
++        : { tenant_id: w.tenant_id, group: w.group, email, role: o.role, source: 'override', granted_by: 'bogdan@example.com', granted_at: ago(3 * DAY), granted_via: 'console', reason: o.reason }
++    }),
++  }
++}
++
++/** The routes `readAs` serves (api.ts FIXTURE_READS's shape); undefined falls through to today's table. */
++export function homesetRead(template: string, url: string, chosen: string | null): { body: unknown } | 'admin' | undefined {
++  const anyAdmin = isAdmin || isWsAdmin
++  switch (template) {
++    case '/v1/profile': return { body: profile(chosen) }
++    case '/v1/workspace/roles': return { body: workspaceRoles(chosen) }
++    case '/v1/workspace/join-link': return workspaceRoles(chosen).can_manage ? { body: { on: true, set_by: 'bogdan@example.com', set_at: ago(8 * DAY) } } : 'admin'
++    case '/v1/workspace/members':
++      return workspaceRoles(chosen).can_manage
++        ? {
++            body: {
++              platform_memberships: true,
++              members: homesetMembers(homeActingTenant(chosen)).members,
++            },
++          }
++        : 'admin'
++    case '/v1/access/members': return isAdmin ? { body: { tenant_id: homeActingTenant(chosen), members: [] } } : 'admin'
++    case '/v1/admin/people': return isAdmin ? { body: people() } : isWsAdmin ? { body: scopedPeople() } : 'admin'
++    case '/v1/admin/workspaces/roles': return isAdmin ? { body: adminWorkspacesRoles() } : 'admin'
++    case '/v1/admin/roles/person': return isAdmin ? { body: personRoles(url) } : 'admin'
++    case '/v1/admin/workspaces/{tenant_id}/roles': {
++      const id = decodeURIComponent((url.split('?')[0] ?? '').split('/')[4] ?? '')
++      return anyAdmin && HOME_ADMINISTERED.includes(id) ? { body: roster(id) } : 'admin'
++    }
++    default: return undefined
++  }
++}
++
++/** The providers each workspace has a registration for (names only). */
++const PROVIDERS_REGISTERED = ['anthropic']
++
++/** `GET /v1/tenants/me` for the acting workspace. */
++export function homesetMe(chosen: string | null): Me {
++  const id = homeActingTenant(chosen)
++  const ws = HOME_WORKSPACES.find((w) => w.tenant_id === id)
++  return {
++    tenant: {
++      tenant_id: id, kind: ws ? 'group' : 'user', principal: ws ? ws.group : HOME_ME.email, display_name: ws ? ws.name : HOME_ME.name,
++      created_at: ago(40 * DAY), max_active: 40, capacity_units: 120, monthly_budget_usd: null, enabled: true, credentials: [********,
++      service_account: `swarm-agent-worker-${id}@example-project.iam.gserviceaccount.com`, gcs_prefix: `gs://swarm-artifacts-dev/${id}`, namespace: `swarm-tenant-${id}`,
++    },
++    principal: { email: HOME_ME.email, domain: 'example.com', groups: HOME_WORKSPACES.filter((w) => HOME_ADMINISTERED.includes(w.tenant_id)).map((w) => w.group), is_admin: isAdmin },
++    environment: 'dev',
++    environment_declared: false,
++  } as unknown as Me
++}
++
++/** `GET /v1/tenants/mine`: the personal workspace and every group workspace the caller administers. */
++export function homesetTenantChoices(): { tenant_id: string; display_name: string; group?: string; kind: 'user' | 'group'; role: { name: string; source: string }; via: string }[] {
++  return [
++    { tenant_id: HOME_ME.personal, display_name: `Your workspace (${HOME_ME.personal})`, kind: 'user', role: { name: 'admin', source: 'personal' }, via: 'personal' },
++    ...HOME_WORKSPACES.filter((w) => HOME_ADMINISTERED.includes(w.tenant_id)).map((w) => ({
++      tenant_id: w.tenant_id, display_name: w.name, group: w.group, kind: 'group' as const, role: { name: 'admin', source: isAdmin ? 'platform_admin' : 'override' }, via: 'member',
++    })),
++  ]
++}
++
++const REPOS = ['northwind-crm', 'roombook', 'ledger-sync', 'payroll-exports', 'design-tokens']
++const counts = (): Record<string, number> =>
++  HOME_PERSONA === 'member'
++    ? { RUNNING: 2, LEASED: 0, DISPATCHED: 0, STARTING: 1, READY: 1, PARKED: 0, SUCCEEDED: 6, FAILED: 0, CANCELLED: 0 }
++    : { RUNNING: 30, LEASED: 1, DISPATCHED: 1, STARTING: 2, READY: 71, PARKED: 15, SUCCEEDED: 48, FAILED: 5, CANCELLED: 3 }
++
++/**
++ * `GET /v1/tasks`: the hard case's rows, cloned from today's fixture rows of
++ * the same state (so every field keeps its real shape) with new ids, ages and
++ * repositories. 34 hold capacity, 86 wait (71 for room in a pool, 15 parked;
++ * never QUEUED or DEAD_LETTERED, which no task document holds), 5 failed today; two parked on the caller's questions and one
++ * held for a person at a browser.
++ */
++export function homesetTasks(base: TaskPage): TaskPage {
++  const pick = (state: string): Task => base.tasks.find((t) => t.state === state) ?? base.tasks.find((t) => t.state === 'READY') ?? base.tasks[0]!
++  const tenant = HOME_PERSONA === 'member' ? HOME_ME.personal : 'eng'
++  const tasks: Task[] = []
++  let n = 0
++  for (const [state, k] of Object.entries(counts())) {
++    for (let i = 0; i < k; i += 1) {
++      n += 1
++      const t = pick(state === 'DEAD_LETTERED' ? 'FAILED' : state)
++      const repo = REPOS[n % REPOS.length]
++      const mins = state === 'FAILED' || state === 'DEAD_LETTERED' ? 30 + i * 95 : 3 + n * 4
++      const row: Task = {
++        ...t,
++        id: `task_hs${String(n).padStart(3, '0')}`,
++        tenant_id: tenant,
++        state: state as Task['state'],
++        created_at: ago(mins * MIN + 10 * MIN),
++        updated_at: ago(mins * MIN),
++        submitted_by: n % 3 === 0 ? HOME_ME.email : (HOME_PEOPLE[(n % 50) + 8] ?? HOME_PEOPLE[0]!).email,
++        repository_url: `https://github.com/example/${repo}`,
++        metadata: { ...(t.metadata ?? {}), title: `${repo}: ${['fix flaky login test', 'bump date library', 'add CSV export', 'tidy migrations', 'translate settings page'][n % 5]}` },
++        last_error: state === 'FAILED' || state === 'DEAD_LETTERED' ? (i % 2 === 0 ? 'tests failed after 3 fix rounds' : 'the agent ran past its time limit') : t.last_error,
++      }
++      if (state === 'PARKED') {
++        row.park_reason = i < 2 ? 'HUMAN_REQUIRED' : i < 8 ? 'PROVIDER_QUOTA_EXHAUSTED' : 'CI_PENDING'
++        row.blocked_by = i < 2
++          ? [{ reason: 'HUMAN_REQUIRED', park_phase: 'owner_questions', owner_questions: { unreadable: 0, questions: [{ task_id: row.id, step_id: 'review', question_index: 0, question: i === 0 ? 'Keep the old export format for one more release?' : 'May the agent rename the public settings route?' }] } } as unknown as NonNullable<Task['blocked_by']>[number]]
++          : t.blocked_by
++        row.submitted_by = i < 2 ? HOME_ME.email : row.submitted_by
++      }
++      if (state === 'RUNNING') row.human_wait = i === 0 && HOME_PERSONA !== 'member' ? ({ reason: 'sign in to the staging site', expect: 'a person signs in', deadline: new Date(HOME_NOW + 9 * MIN).toISOString(), controller: null } as unknown as Task['human_wait']) : null
++      tasks.push(row)
++    }
++  }
++  return { ...base, tasks, next_page_token: null, tenant_id: tenant }
++}
++
++/** `GET /v1/stats`: the same counts the task rows carry. */
++export function homesetStats(base: Stats): Stats {
++  const c = counts()
++  return { ...base, tenant_id: HOME_PERSONA === 'member' ? HOME_ME.personal : 'eng', tasks_by_state: c, ...(isAdmin ? { platform_tasks_by_state: c } : {}) }
++}
++
++/** `GET /v1/capacity`: today's pools with one at its ceiling. */
++export function homesetCapacity(base: Capacity): Capacity {
++  return {
++    ...base,
++    pools: base.pools.map((p, i) => {
++      const limit = p.effective_limit ?? p.hard_limit
++      return i === 0 && limit !== null ? { ...p, active: limit, available: 0 } : p
++    }),
++  }
++}
++
++/** `GET /v1/admin/leases`: one lease per task that holds capacity. */
++export function homesetLeases(base: LeasePage, tasks: TaskPage): LeasePage {
++  const live = new Set(['LEASED', 'DISPATCHED', 'STARTING', 'RUNNING'])
++  const template = base.leases[0]
++  if (template === undefined) return base
++  const leases = tasks.tasks.filter((t) => live.has(t.state)).map((t, i) => ({
++    ...template, task_id: t.id, lease_id: `lease_hs${i}`, attempt_id: `att_hs${i}`, tenant_id: t.tenant_id, units: 1, dispatch_state: t.state === 'LEASED' ? 'LEASED' : 'DISPATCHED',
++    created_at: ago((10 + i) * MIN), heartbeat_at: ago(5_000), expires_at: new Date(HOME_NOW + 5 * MIN).toISOString(), dispatch_deadline: new Date(HOME_NOW + 5 * MIN).toISOString(),
++    released_at: null, release_reason: null, released: false, expired: false, dispatch_overdue: false, silent_seconds: 5, heartbeat_ever: true, last_error: null,
++  }))
++  return { ...base, leases, units_held: leases.length }
++}
++
++/** `GET /v1/approvals`: one approval waits on the caller (none for the member). */
++export function homesetApprovals(): { approvals: { approval_id: string; kind: string; subject: Record<string, unknown>; summary: string; state: string; requested_at: string | null; expires_at: string | null; approver_names?: (string | null)[] | null }[] } {
++  if (HOME_PERSONA === 'member') return { approvals: [] }
++  return {
++    approvals: [{
++      approval_id: 'apr_hs1', kind: 'run_plan', subject: { run_id: 'run_hs1', issue: 'northwind-crm#412' },
++      summary: 'Plan for northwind-crm#412: 4 steps, about 2 hours of agent time', state: 'pending',
++      requested_at: ago(35 * MIN), expires_at: new Date(HOME_NOW + 23 * HOUR).toISOString(), approver_names: [HOME_ME.name],
++    }],
++  }
++}
++
++/** `/v1/onboarding`'s `config_setup.people` for the acting workspace, counted from the overrides above (today's fixture says "only you"). */
++export function homesetPeopleSetup(tenant: string) {
++  if (!HOME_WORKSPACES.some((w) => w.tenant_id === tenant)) {
++    return { applies: false, done: null, holders: null, admins: null, pending: null, reason: 'a personal workspace has nobody to invite', pending_reason: null }
++  }
++  const mine = OVERRIDES.filter((o) => o.tenant === tenant)
++  return { applies: true, done: mine.length > 0, holders: mine.length, admins: mine.filter((o) => o.role === 'admin').length, pending: 0, reason: null, pending_reason: null }
++}
++
++/** A workspace's platform memberships: engineering let 2 people in by an approved join request; the others none. */
++export function homesetMembers(tenant: string) {
++  const let_in = tenant === 'eng' ? [HOME_PEOPLE[10], HOME_PEOPLE[11]].filter((p): p is HomePerson => p !== undefined) : []
++  return {
++    platform_memberships: true,
++    members: let_in.map((p, n) => ({ email: p.email, by: n === 0 ? 'ana.moreau@example.com' : 'bogdan@example.com', at: ago((2 + 3 * n) * DAY), via: 'join_request', group_changed: n === 1, still_in_group: n === 0 ? true : null })),
++  }
++}
+diff --git a/apps/swarm-ui/src/styles/homeredraw.css b/apps/swarm-ui/src/styles/homeredraw.css
+new file mode 100644
+index 0000000..08ef024
+--- /dev/null
++++ b/apps/swarm-ui/src/styles/homeredraw.css
+@@ -0,0 +1,11 @@
++/* MOCK-HOOK FILE */
++/* The home redraw scaffold's neutral layout: tokens only, nothing new. */
++.hr-frame { display: flex; flex-direction: column; gap: var(--s-4, 16px); min-width: 0; } /* MOCK-HOOK */
++.hr-stack { display: flex; flex-direction: column; gap: var(--s-4, 16px); min-width: 0; } /* MOCK-HOOK */
++.hr-switch { display: flex; flex-wrap: wrap; gap: var(--s-2, 8px); font-size: 13px; } /* MOCK-HOOK */
++.hr-switch a { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: inherit; text-decoration: none; } /* MOCK-HOOK */
++.hr-switch a[aria-current='page'] { background: var(--surface-2); font-weight: 600; } /* MOCK-HOOK */
++.hr-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--s-3, 12px); } /* MOCK-HOOK */
++.hr-list { margin: var(--s-3, 12px) 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; overflow-wrap: anywhere; } /* MOCK-HOOK */
++.hr-list small { color: var(--text-dim); font-size: 12px; } /* MOCK-HOOK */
++.hr-note { font-size: 12px; color: var(--text-dim); margin: 0; } /* MOCK-HOOK */
