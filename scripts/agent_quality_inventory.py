@@ -15,9 +15,14 @@ report:
   quarantined       tests/flaky.txt's entries;
   cited_pytest_ids  how many `tests/...py::test_name` ids the documents cite;
   cited_vitest_files how many console test files they cite;
-  missing           every cited id whose file or test function is not there.
+  missing           every cited id whose file or test function is not there;
+  matrix_rows       how many capability rows capability-matrix.md has;
+  unnamed_live_verified  every row without its four columns, or whose
+                    live-verified cell is a bare "none", "no", "yes" (and the
+                    like) instead of a named record, "not read from here" or
+                    "n/a: <why>".
 
-It exits 1 when anything cited is missing, so a renamed test can never keep
+It exits 1 when anything cited is missing or a row is unnamed, so a renamed test can never keep
 reading as "behaviourally tested". What it cannot check is named in the
 documents themselves: a vitest case's title, a configuration value read from a
 live deployment, and anything live-verified.
@@ -44,7 +49,11 @@ FLAKY = Path("tests") / "flaky.txt"
 _PYTEST_ID = re.compile(
     r"`((?:tests|apps)/(?:[^`\s]+/)?test_[^`\s/]*\.py)::([A-Za-z_][A-Za-z0-9_]*)[^`]*`"
 )
-_VITEST_FILE = re.compile(r"`(apps/swarm-ui/[^`\s]+\.test\.tsx?)`")
+#: A glob (`jev.*.test.tsx`, an owned-path pattern) is not a cited file.
+_VITEST_FILE = re.compile(r"`(apps/swarm-ui/[^`\s*]+\.test\.tsx?)`")
+MATRIX = DOCS / "capability-matrix.md"
+#: A live-verified cell that names nothing: an unknown must read as unknown.
+_UNNAMED = {"", "-", "none", "no", "yes", "0", "false", "true", "unknown", "n/a"}
 
 #: Kinds of marker, matched on code joined token by token with one space.
 MARKERS = {
@@ -159,6 +168,32 @@ def commit(root: Path) -> str | None:
     return top[1]
 
 
+def _matrix_cells(text: str) -> list[list[str]]:
+    """Each capability row's cells; a `\\|` inside a cell does not split it."""
+    rows = []
+    for line in text.splitlines():
+        if not line.startswith("|") or line.startswith("|---") or line.startswith("| Capability |"):
+            continue
+        rows.append([c.strip() for c in re.split(r"(?<!\\)\|", line.strip())[1:-1]])
+    return rows
+
+
+def matrix_rows(text: str) -> int:
+    return len(_matrix_cells(text))
+
+
+def unnamed_live_verified(text: str) -> list[str]:
+    """Rows that are short a column or whose live-verified cell names nothing."""
+    out = []
+    for cells in _matrix_cells(text):
+        name = cells[0] if cells else "?"
+        if len(cells) != 5:
+            out.append(f"{name}: {len(cells)} columns, not 5")
+        elif cells[4].strip("*. ").lower() in _UNNAMED:
+            out.append(f"{name}: live-verified is {cells[4]!r}")
+    return out
+
+
 def report(root: Path) -> dict:
     docs = sorted((root / DOCS).glob("*.md"))
     text = "\n".join(p.read_text() for p in docs)
@@ -167,6 +202,7 @@ def report(root: Path) -> dict:
     missing = missing_pytest_ids(root, ids)
     missing += [f"{f} (no such file)" for f in vitest if not (root / f).is_file()]
     locals_tf = root / LOCALS
+    matrix = (root / MATRIX).read_text() if (root / MATRIX).is_file() else ""
     return {
         "commit": commit(root),
         "runner_models": runner_models(locals_tf.read_text()) if locals_tf.is_file() else {},
@@ -175,6 +211,8 @@ def report(root: Path) -> dict:
         "cited_pytest_ids": len(ids),
         "cited_vitest_files": len(vitest),
         "missing": missing,
+        "matrix_rows": matrix_rows(matrix),
+        "unnamed_live_verified": unnamed_live_verified(matrix),
     }
 
 
@@ -189,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     result = report(args.root)
     print(json.dumps(result, indent=2))
-    return 1 if result["missing"] else 0
+    return 1 if result["missing"] or result["unnamed_live_verified"] else 0
 
 
 if __name__ == "__main__":
