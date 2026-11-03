@@ -34,10 +34,19 @@ in for the other: an attempt ticket's MAC never verifies on the stats routes,
 and a stats ticket's never on `/mcp`. swarm-api mints it (lane 3) for the
 console's Cache section, pinning one tenant, one repository and the current and
 previous manifest digests, for MAX_STATS_TICKET_SECONDS. Its claims are exactly
-STATS_TICKET_FIELDS:
+STATS_TICKET_FIELDS, `swarm_api.graph_ticket.STATS_FIELDS` (the reference):
 
     {"tenant_id", "repo_id", "manifest_digest",
-     "previous_manifest_digest" (null when there is no previous version), "exp"}
+     "previous_digest" (null when there is no previous version), "exp", "nonce"}
+
+The set once differed here (`previous_manifest_digest`, no `nonce`), and every
+console read of the Cache section was `ticket_refused`;
+tests/unit/graphsvc/test_graphsvc_ticket.py now mints with the reference and
+verifies here, so the two cannot drift again. The nonce (16 hex, as the
+attempt ticket's) makes every minted ticket distinct and is shape-checked;
+it is not a single-use mark, because the replica that takes `/v1/stats`
+hands the SAME ticket to every peer's `/v1/stats/local`. A replayed stats
+ticket reads only its one tenant's figures for at most a minute.
 
 `json.dumps(claims, sort_keys=True, separators=(",", ":"))`, base64url, as the
 attempt ticket's. It reads no object: it only selects which of this replica's
@@ -77,7 +86,7 @@ PREVIOUS_KEY_SECONDS = MAX_TICKET_SECONDS + 60
 #: (lane 3) is held to it.
 STATS_DOMAIN = b"swarm-graph-stats/v1\0"
 STATS_TICKET_FIELDS = frozenset({"tenant_id", "repo_id", "manifest_digest",
-                                 "previous_manifest_digest", "exp"})
+                                 "previous_digest", "exp", "nonce"})
 #: A stats ticket is minted for one read of the console's 30 s refresh (§5.5),
 #: so it lives a minute, not an attempt's quarter hour.
 MAX_STATS_TICKET_SECONDS = 60
@@ -220,8 +229,9 @@ class StatsTicket:
     tenant_id: str
     repo_id: str
     manifest_digest: str
-    previous_manifest_digest: str | None
+    previous_digest: str | None
     exp: int
+    nonce: str
 
 
 def verify_stats_ticket(keys: Sequence[bytes], raw: Any, *, now: float) -> StatsTicket:
@@ -237,14 +247,15 @@ def verify_stats_ticket(keys: Sequence[bytes], raw: Any, *, now: float) -> Stats
         raise TicketRefused(EXPIRED)
     if exp > now + MAX_STATS_TICKET_SECONDS + SKEW_SECONDS:
         raise TicketRefused("too_long")
-    previous = claims["previous_manifest_digest"]
+    previous = claims["previous_digest"]
     if not (_shaped(claims["tenant_id"], _TENANT) and _shaped(claims["repo_id"], _REPO_ID)
             and _shaped(claims["manifest_digest"], _DIGEST)
-            and (previous is None or _shaped(previous, _DIGEST))):
+            and (previous is None or _shaped(previous, _DIGEST))
+            and _shaped(claims["nonce"], _NONCE)):
         raise TicketRefused("claims_refused")
     return StatsTicket(tenant_id=claims["tenant_id"], repo_id=claims["repo_id"],
                        manifest_digest=claims["manifest_digest"],
-                       previous_manifest_digest=previous, exp=exp)
+                       previous_digest=previous, exp=exp, nonce=claims["nonce"])
 
 
 def bearer(authorization: str | None) -> str | None:

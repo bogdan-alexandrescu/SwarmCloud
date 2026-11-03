@@ -135,26 +135,29 @@ _FILES = {"type": "array", "items": {"type": "string"}, "description": "repo-rel
 
 TOOLS: list[dict[str, Any]] = [
     {"name": "search",
-     "description": "Find application symbols by keywords (BM25 over names, paths, "
-                    "signatures, docstrings). Tests are not indexed: use tests_for.",
+     "description": "Find where application symbols are defined, by keywords (BM25 over "
+                    "names, paths, signatures, docstrings). Tests are not indexed: use "
+                    "tests_for.",
      "inputSchema": {"type": "object", "required": ["query"], "properties": {
          "query": {"type": "string"},
          "limit": {"type": "integer", "minimum": 1, "maximum": SEARCH_MAX},
          "cursor": _CURSOR}}},
     {"name": "context",
-     "description": "A symbol's definition, direct callers, callees and covering tests.",
+     "description": "A symbol's definition, direct callers, callees and covering tests: "
+                    "call it before editing the symbol.",
      "inputSchema": {"type": "object", "required": ["symbol"], "properties": {
          "symbol": _SYMBOL, "cursor": _CURSOR}}},
     {"name": "impact",
      "description": "Blast radius: transitive callers of a symbol or every symbol of a "
-                    "file, with modules and covering tests. fan_in is the risk.",
+                    "file, with modules and covering tests. fan_in is the risk. Call it "
+                    "before finishing a change to an existing file.",
      "inputSchema": {"type": "object", "required": ["symbol"], "properties": {
          "symbol": {"type": "string", "description": "symbol id, name, or file path"},
          "depth": {"type": "integer", "minimum": 1, "maximum": IMPACT_MAX_DEPTH},
          "cursor": _CURSOR}}},
     {"name": "tests_for",
      "description": "Tests covering files or symbols, most confident first: run these "
-                    "before pushing.",
+                    "before pushing. pass files (repo-relative) for the fullest answer.",
      "inputSchema": {"type": "object", "properties": {
          "files": _FILES, "symbols": {"type": "array", "items": {"type": "string"}},
          "cursor": _CURSOR}}},
@@ -179,7 +182,8 @@ TOOLS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "required": ["files"], "properties": {
          "files": _FILES, "cursor": _CURSOR}}},
     {"name": "call_graph",
-     "description": "Call edges from a symbol or file, breadth-first.",
+     "description": "Call edges from a symbol or file, breadth-first: who calls it, "
+                    "which grep cannot tell from a mention.",
      "inputSchema": {"type": "object", "required": ["symbol"], "properties": {
          "symbol": {"type": "string", "description": "symbol id, name, or file path"},
          "direction": {"type": "string", "enum": list(CALL_GRAPH_DIRECTIONS)},

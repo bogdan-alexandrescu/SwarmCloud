@@ -17,6 +17,11 @@ against:
      -- for the ticket's (tenant_id, repo_id) only:
      "outcomes": [{"hour": <ISO Z>, "hit": n, "miss": n}, ... 24, oldest first],
      "served_ms": {"bounds_ms": MS_BOUNDS, "counts": [len(MS_BOUNDS) + 1]},
+     "answer_latency": {"window_hours": 24, "bounds_ms": LATENCY_BOUNDS_MS,
+                        "count", "p50_ms", "p95_ms", "p99_ms", "max_ms",
+                        "by_outcome": {<LATENCY_OUTCOMES>: {"count", "p50_ms", ...}},
+                        "by_temperature": {"warm"|"cold": {...}},
+                        "cells": {"<outcome>/<temperature>": {...}, only those seen}},
      "answers_hot": n,
      "shards_hot": n | null,
      "last_warm": {"digest", "ms", "shards", "replayed": null, "cause", "at"} | null,
@@ -37,9 +42,15 @@ THE FIGURES, and why each is what it is:
   * `outcomes` and `served_ms` are AnswerCounters, recorded by
     `GraphService._log` right after the `graph_answer` line, so the tile and
     the log-based metric of §3.1 count the same events. `none` (no cache key)
-    is not an outcome (§3.2). Each bucket carries no `carried` count until
-    carry forward (§2.3 b) is built (CARRY_FORWARD): the console shows a dash,
-    never a 0% that would say carry forward ran and reused nothing;
+    is not an outcome (§3.2). Each bucket carries a `carried` count: carry
+    forward (§2.3 b) is built (CARRY_FORWARD);
+  * `answer_latency` is every answer's milliseconds, recorded with the same
+    line, by outcome (`hit`, `carried`, `miss`, `partial` for one cut at the
+    deadline, `uncached` for a question with no cache key) and by temperature
+    (`cold` when the request read the manifest or a shard from storage,
+    `warm` when it was answered from memory). The percentiles are read off a
+    histogram whose bounds step about 25%, each capped at the slowest answer
+    seen, and are null with a count of 0, never a 0 ms that was not measured;
   * `answers_hot` counts this tenant's result-cache entries for the ticket's
     current digest;
   * `shards_hot` and `shards` are over the blobs of the ticket's CURRENT
@@ -61,6 +72,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
 import os
 import socket
 import threading
@@ -93,14 +105,27 @@ PEERS_HOST_ENV = "SWARM_GRAPH_PEERS_HOST"
 MAX_PEER_BYTES = 16 * 1024 * 1024
 #: The answer outcomes counted; `none` is not one (§3.2).
 OUTCOMES = ("hit", "carried", "miss")
-#: Whether carry forward (§2.3 b) is built. BGD's Q4 (2026-10-27): after two
-#: weeks of baseline. Until then no bucket carries a `carried` count.
-CARRY_FORWARD = False
+#: Whether carry forward (§2.3 b) is built: it is (cache.ResultCache's carry
+#: key, the owner's 2026-11-03 request), so every bucket carries `carried`.
+CARRY_FORWARD = True
 HOURS = 24
 #: The served-ms histogram's upper bounds, exponential from 1 ms like the
 #: log-based metric's buckets (§3.1); counts[i] is answers with
 #: bounds[i-1] < ms <= bounds[i], and the last count is everything above.
 MS_BOUNDS = tuple(2 ** i for i in range(17))
+#: `answer_latency`'s finer bounds, so a percentile is read to within about
+#: 25%: 1 ms to a minute. A percentile is the bound of the bucket it falls
+#: in, never above the slowest answer seen.
+LATENCY_BOUNDS_MS = (1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100,
+                     120, 150, 200, 250, 300, 400, 500, 600, 800, 1000, 1200, 1500, 2000,
+                     2500, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 15000, 20000, 30000,
+                     60000)
+#: An answer's outcome for `answer_latency`: the cache's word, `partial` for
+#: one cut at the deadline, `uncached` for a question that has no cache key.
+LATENCY_OUTCOMES = ("hit", "carried", "miss", "partial", "uncached")
+#: Cold: the request read the manifest or a shard from storage; warm: memory only.
+TEMPERATURES = ("warm", "cold")
+PERCENTILES = (("p50_ms", 0.50), ("p95_ms", 0.95), ("p99_ms", 0.99))
 NOT_READ = "not_read"
 NOT_READ_REASONS = ("timeout", "refused", "disabled", "ticket_refused", "bad_response")
 
@@ -109,11 +134,31 @@ def iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _bucket_of(ms: int) -> int:
-    for index, bound in enumerate(MS_BOUNDS):
+def _bucket_of(ms: int, bounds: tuple[int, ...] = MS_BOUNDS) -> int:
+    for index, bound in enumerate(bounds):
         if ms <= bound:
             return index
-    return len(MS_BOUNDS)
+    return len(bounds)
+
+
+def _percentiles(counts: list[int], slowest: int) -> dict[str, Any]:
+    """`count`, `max_ms` and each PERCENTILES' bound over one latency histogram."""
+    total = sum(counts)
+    out: dict[str, Any] = {"count": total}
+    for name, q in PERCENTILES:
+        if not total:
+            out[name] = None
+            continue
+        rank = max(1, math.ceil(round(q * total, 6)))
+        seen = 0
+        for index, n in enumerate(counts):
+            seen += n
+            if seen >= rank:
+                bound = LATENCY_BOUNDS_MS[index] if index < len(LATENCY_BOUNDS_MS) else slowest
+                out[name] = min(bound, slowest)
+                break
+    out["max_ms"] = slowest if total else None
+    return out
 
 
 class AnswerCounters:
@@ -127,18 +172,28 @@ class AnswerCounters:
         self._swept = 0
 
     def record(self, tenant_id: str, repo_id: str, cache: str | None, ms: int, *,
-               now: float) -> None:
-        if cache not in OUTCOMES:
+               now: float, partial: bool = False, cold: bool = False) -> None:
+        """One answer: its cache outcome (hit, carried or miss; `none` is
+        not one), and its latency by outcome and temperature."""
+        outcome = "partial" if partial else ("uncached" if cache == "none" else cache)
+        if outcome not in LATENCY_OUTCOMES:
             return
+        ms = max(0, ms)
         hour = int(now // HOUR_SECONDS)
         with self._lock:
             hours = self._by.setdefault((tenant_id, repo_id), {})
             bucket = hours.get(hour)
             if bucket is None:
                 bucket = hours[hour] = {"hit": 0, "carried": 0, "miss": 0,
-                                        "ms": [0] * (len(MS_BOUNDS) + 1)}
-            bucket[cache] += 1
-            bucket["ms"][_bucket_of(max(0, ms))] += 1
+                                        "ms": [0] * (len(MS_BOUNDS) + 1), "latency": {}}
+            if cache in OUTCOMES:
+                bucket[cache] += 1
+                bucket["ms"][_bucket_of(ms)] += 1
+            cell = (outcome, "cold" if cold else "warm")
+            counts, slowest = bucket["latency"].get(cell) or (
+                [0] * (len(LATENCY_BOUNDS_MS) + 1), 0)
+            counts[_bucket_of(ms, LATENCY_BOUNDS_MS)] += 1
+            bucket["latency"][cell] = (counts, max(slowest, ms))
             if hour != self._swept:
                 self._swept = hour
                 oldest = hour - HOURS + 1
@@ -156,6 +211,7 @@ class AnswerCounters:
         names = OUTCOMES if CARRY_FORWARD else tuple(o for o in OUTCOMES if o != "carried")
         counts = [0] * (len(MS_BOUNDS) + 1)
         outcomes = []
+        cells: dict[tuple[str, str], tuple[list[int], int]] = {}
         with self._lock:
             hours = self._by.get((tenant_id, repo_id), {})
             for h in range(hour - HOURS + 1, hour + 1):
@@ -165,8 +221,37 @@ class AnswerCounters:
                 outcomes.append(row)
                 if bucket:
                     counts = [a + b for a, b in zip(counts, bucket["ms"])]
+                    for cell, (seen, slowest) in bucket["latency"].items():
+                        held, top = cells.get(cell) or ([0] * (len(LATENCY_BOUNDS_MS) + 1), 0)
+                        cells[cell] = ([a + b for a, b in zip(held, seen)], max(top, slowest))
         return {"outcomes": outcomes,
-                "served_ms": {"bounds_ms": list(MS_BOUNDS), "counts": counts}}
+                "served_ms": {"bounds_ms": list(MS_BOUNDS), "counts": counts},
+                "answer_latency": _latency(cells)}
+
+
+def _latency(cells: dict[tuple[str, str], tuple[list[int], int]]) -> dict[str, Any]:
+    """`answer_latency`: percentiles over every answer in the window, then by
+    outcome, by temperature, and by both."""
+    width = len(LATENCY_BOUNDS_MS) + 1
+
+    def over(chosen: list[tuple[list[int], int]]) -> dict[str, Any]:
+        counts = [0] * width
+        slowest = 0
+        for seen, top in chosen:
+            counts = [a + b for a, b in zip(counts, seen)]
+            slowest = max(slowest, top)
+        return _percentiles(counts, slowest)
+
+    return {
+        "window_hours": HOURS, "bounds_ms": list(LATENCY_BOUNDS_MS),
+        **over(list(cells.values())),
+        "by_outcome": {o: over([v for (co, _t), v in cells.items() if co == o])
+                       for o in LATENCY_OUTCOMES},
+        "by_temperature": {t: over([v for (_o, ct), v in cells.items() if ct == t])
+                           for t in TEMPERATURES},
+        "cells": {f"{o}/{t}": _percentiles(*cells[(o, t)])
+                  for o in LATENCY_OUTCOMES for t in TEMPERATURES if (o, t) in cells},
+    }
 
 
 def manifest_blobs(snap: Snapshot) -> list[str]:
@@ -336,6 +421,8 @@ def read_peers(peers: list[str], ticket: str, *, with_shards: bool,
 __all__ = [
     "CARRY_FORWARD",
     "HOURS",
+    "LATENCY_BOUNDS_MS",
+    "LATENCY_OUTCOMES",
     "MS_BOUNDS",
     "NOT_READ_REASONS",
     "OUTCOMES",
