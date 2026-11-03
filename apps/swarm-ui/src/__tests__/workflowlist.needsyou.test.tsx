@@ -88,9 +88,9 @@ describe('summaryTask joins the needs block', () => {
     // hold or a browser hand-off, nor what the agent asked: those chips say
     // so. Failed is the step's state, which the old block serves.
     render(<NeedsYou items={listNeedItems([w], summaryTaskById([w]), () => 'Old')} approvals={null} />)
+    const chip = (word: string) => [...document.querySelectorAll('.ny-chip')].find((c) => c.querySelector('.ny-word')?.textContent === word)!
     for (const word of ['Question', 'Merge waiting', 'Your turn in a browser', 'Approvals']) {
-      const chip = screen.getByText(word).closest('.ny-chip')!
-      expect(chip.textContent).toContain('not known')
+      expect(chip(word).textContent).toContain('not known')
     }
     expect(screen.getByRole('button', { name: 'Failed: 1' })).toBeTruthy()
   })
@@ -179,6 +179,7 @@ describe('the Workflows list mounts the bar', () => {
       },
       { timeout: 4000 },
     )
-    expect(within(bar).getByText('not known')).toBeTruthy()
+    const approvals = [...bar.querySelectorAll('.ny-chip')].find((c) => c.querySelector('.ny-word')?.textContent === 'Approvals')!
+    expect(approvals.textContent).toContain('not known')
   })
 })

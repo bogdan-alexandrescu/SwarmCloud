@@ -29,9 +29,9 @@
  * named and opened, and its Answer disabled here.
  */
 import { handoffOf, ownerQuestionsHold } from '../Handoff'
-import { stepNeedsOf, summaryTask } from '../stepviews'
+import { stepNeedsOf, summaryTask, type StepNeeds } from '../stepviews'
 import { type Task, type Workflow } from '../types'
-import { type NeedItem, type NeedPullRequest } from './NeedsYou'
+import { type NeedItem, type NeedItems, type NeedKind, type NeedPullRequest } from './NeedsYou'
 
 function prOf(task: Task): NeedPullRequest | null {
   const git = task.result_summary?.git
@@ -42,48 +42,73 @@ function prOf(task: Task): NeedPullRequest | null {
 }
 
 /**
+ * ONE STEP'S NEEDS: the one classifier the bar (`listNeedItems`) and the
+ * row's Needs mark (`workflowlist.needsOf`) both read, so the two never
+ * count the same step differently. `needs` is the step's block (null when the
+ * list served none: the kinds only it can tell are then not known, see
+ * `NEEDS_BLOCK_KINDS`); `title` is the row's.
+ */
+export function stepNeedItems(task: Task, needs: StepNeeds | null, title: string): NeedItem[] {
+  const out: NeedItem[] = []
+  const pr = prOf(task)
+  if (task.state === 'FAILED' || task.state === 'DEAD_LETTERED') {
+    const why = task.last_error?.split('\n')[0]?.trim() ?? ''
+    out.push({ kind: 'failed', task, title, why: why === '' ? null : why, pr })
+  }
+  for (const q of needs?.questions ?? []) {
+    out.push({
+      kind: 'question',
+      taskId: task.id,
+      index: q.index,
+      title,
+      question: q.question,
+      options: q.options,
+      recommended: q.recommended,
+    })
+  }
+  for (const index of needs?.questions_unread ?? []) {
+    out.push({ kind: 'question', taskId: task.id, index, title, question: null, onItsPage: true })
+  }
+  if (task.state === 'PARKED' && task.park_reason === 'AWAITING_INPUT') {
+    out.push({ kind: 'question', taskId: task.id, index: 0, title, question: null, onItsPage: true })
+  }
+  if (ownerQuestionsHold(task) !== null) out.push({ kind: 'merge', task, title, pr })
+  else if (needs?.question_wait !== true && handoffOf(task) !== null) out.push({ kind: 'handoff', task, title })
+  return out
+}
+
+/**
+ * The kinds only a step's needs block tells (PR #3147): a question wait's
+ * and the artifact's questions, a merge's owner-questions hold and a browser
+ * hand-off, which the block's state alone cannot tell apart. A step with no
+ * block -- an API older than it, during a rolling deploy -- leaves their
+ * counts not known, never 0 (the owner's rule). Failed is the step's state.
+ */
+export const NEEDS_BLOCK_KINDS: readonly NeedKind[] = ['question', 'merge', 'handoff']
+
+/**
  * Every row the list's Needs-you bar draws for `workflows`, in their order and
  * each workflow's step order. `nameOf` is the list row's name for a workflow;
- * a row's title is that name and the step's id.
+ * a row's title is that name and the step's id. `unknownKinds` names the
+ * kinds whose count is not known: `NEEDS_BLOCK_KINDS` when any step with a
+ * task was served no needs block.
  */
 export function listNeedItems(
   workflows: readonly Workflow[],
   taskById: ReadonlyMap<string, Task> | null,
   nameOf: (w: Workflow) => string,
-): NeedItem[] {
+): NeedItems {
   const out: NeedItem[] = []
+  let blind = false
   for (const w of workflows) {
     for (const step of w.steps) {
       if (!step.task_id) continue
+      const needs = stepNeedsOf(step)
+      if (needs === null) blind = true
       const task = taskById?.get(step.task_id) ?? summaryTask(w, step)
       if (task === null || task === undefined) continue
-      const needs = stepNeedsOf(step)
-      const title = `${nameOf(w)} › ${step.step_id}`
-      const pr = prOf(task)
-      if (task.state === 'FAILED' || task.state === 'DEAD_LETTERED') {
-        const why = task.last_error?.split('\n')[0]?.trim() ?? ''
-        out.push({ kind: 'failed', task, title, why: why === '' ? null : why, pr })
-      }
-      for (const q of needs?.questions ?? []) {
-        out.push({
-          kind: 'question',
-          taskId: task.id,
-          index: q.index,
-          title,
-          question: q.question,
-          options: q.options,
-          recommended: q.recommended,
-        })
-      }
-      for (const index of needs?.questions_unread ?? []) {
-        out.push({ kind: 'question', taskId: task.id, index, title, question: null, onItsPage: true })
-      }
-      if (task.state === 'PARKED' && task.park_reason === 'AWAITING_INPUT') {
-        out.push({ kind: 'question', taskId: task.id, index: 0, title, question: null, onItsPage: true })
-      }
-      if (ownerQuestionsHold(task) !== null) out.push({ kind: 'merge', task, title, pr })
-      else if (needs?.question_wait !== true && handoffOf(task) !== null) out.push({ kind: 'handoff', task, title })
+      out.push(...stepNeedItems(task, needs, `${nameOf(w)} › ${step.step_id}`))
     }
   }
-  return out
+  return Object.assign(out, { unknownKinds: blind ? NEEDS_BLOCK_KINDS : [] })
 }

@@ -108,6 +108,13 @@ export interface HandoffNeed {
 
 export type NeedItem = FailedNeed | QuestionNeed | MergeNeed | HandoffNeed
 
+/**
+ * The rows a page draws, and the kinds whose count it cannot know
+ * (`unknownKinds`, e.g. the Workflows list's `listNeedItems` over a step the
+ * list served no needs for): those chips read "not known", never 0.
+ */
+export type NeedItems = readonly NeedItem[] & { readonly unknownKinds?: readonly NeedKind[] }
+
 /** The chips' order and words. */
 export const NEED_KINDS: readonly NeedKind[] = ['failed', 'question', 'merge', 'handoff', 'approval']
 
@@ -170,7 +177,7 @@ export function NeedsYou({
   onSelect,
   onChanged,
 }: {
-  items: readonly NeedItem[]
+  items: NeedItems
   /** The approvals waiting, or null when the page could not read them ("not known"). */
   approvals: readonly ApprovalItem[] | null
   /** The kind picked, when the page holds the pick; left out, the component holds it. */
@@ -185,7 +192,10 @@ export function NeedsYou({
   const kind = selected === undefined ? own : selected
   const listId = useId()
 
-  const count = (k: NeedKind): number | null => (k === 'approval' ? (approvals === null ? null : approvals.length) : items.filter((i) => i.kind === k).length)
+  const count = (k: NeedKind): number | null => {
+    if (k === 'approval') return approvals === null ? null : approvals.length
+    return items.unknownKinds?.includes(k) === true ? null : items.filter((i) => i.kind === k).length
+  }
   const total = items.length + (approvals?.length ?? 0)
 
   const pick = (k: NeedKind | null) => {
@@ -208,7 +218,15 @@ export function NeedsYou({
           const n = count(k)
           if (n === null) {
             return (
-              <span key={k} className="ny-chip is-approval is-faint" title="Approvals are not read on this screen, so their count is not known; Automate › Approvals lists them">
+              <span
+                key={k}
+                className={`ny-chip is-${k} is-faint`}
+                title={
+                  k === 'approval'
+                    ? 'Approvals are not read on this screen, so their count is not known; Automate › Approvals lists them'
+                    : `${NEED_WORD[k]}: not known. This screen's read does not say for every step; each step's page does`
+                }
+              >
                 <span className="ny-glyph" aria-hidden>
                   {NEED_GLYPH[k]}
                 </span>

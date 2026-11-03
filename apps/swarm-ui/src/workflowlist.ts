@@ -17,7 +17,7 @@
  * `workflowQueryString` writes one canonical order -- wf, tab, then the filters
  * -- because paths.ts round-trips an address only when the order is its own.
  */
-import { failureCause, WORKFLOW_TABS, type WorkflowView } from './stepviews'
+import { failureCause, stepNeedsOf, WORKFLOW_TABS, type WorkflowView } from './stepviews'
 import {
   formatDuration,
   reasonCopy,
@@ -28,6 +28,7 @@ import {
   type TaskState,
   type Workflow,
 } from './types'
+import { stepNeedItems } from './work/listNeeds'
 
 /** The three buckets every workflow is in exactly one of: what polls, and what runs to now. */
 export type WorkflowBucket = 'running' | 'finished' | 'failed'
@@ -258,13 +259,13 @@ export function bucketCounts(rows: readonly Workflow[]): Record<BucketFilter, nu
 
 /**
  * WHAT WAITS ON THE PERSON IN ONE WORKFLOW, from the list read alone (the
- * Needs-you column). `failed`: steps that failed or were dead-lettered.
- * `questions`: steps parked on an answer (AWAITING_INPUT). `held`: steps
- * parked for a person (HUMAN_REQUIRED) -- a merge held by the owner's
- * questions, or a turn in a browser; the list read's step block carries the
- * reason but not which (`summaryTask` serves no `blocked_by`), so the page
- * says which. Null -- "not known", never 0 -- when the steps were not read or
- * the state could not be derived.
+ * Needs-you column), counted off the very rows the Needs-you bar draws
+ * (`stepNeedItems`, one classifier for both): `failed`, the steps that failed
+ * or were dead-lettered; `questions`, every open question -- a question
+ * wait's, a finished step's unanswered artifact questions, an await-input
+ * step's input; `held`, the merges held by the owner's questions and the
+ * turns in a browser. Null -- "not known", never 0 -- when the steps were not
+ * read or the state could not be derived.
  */
 export interface WorkflowNeeds {
   readonly failed: number
@@ -280,9 +281,11 @@ export function needsOf(w: Workflow, taskById: ReadonlyMap<string, Task> | null)
   for (const s of w.steps) {
     const st = stepState(s, taskById)
     if (st.kind !== 'state') continue
-    if (st.state === 'FAILED' || st.state === 'DEAD_LETTERED') failed += 1
-    else if (st.state === 'PARKED' && st.task.park_reason === 'AWAITING_INPUT') questions += 1
-    else if (st.state === 'PARKED' && st.task.park_reason === 'HUMAN_REQUIRED') held += 1
+    for (const item of stepNeedItems(st.task, stepNeedsOf(s), s.step_id)) {
+      if (item.kind === 'failed') failed += 1
+      else if (item.kind === 'question') questions += 1
+      else held += 1
+    }
   }
   return { failed, questions, held }
 }
