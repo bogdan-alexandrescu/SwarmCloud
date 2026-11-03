@@ -2134,6 +2134,13 @@ class DispatchOptions:
     #: `(switch, "on" | "off")` for each `DISPATCH_SWITCHES` key the spec's
     #: `dispatch` map set, in that order (2026-11-01); empty when it set none.
     switches: tuple[tuple[str, str], ...] = ()
+    #: The work contract reference (`swarm_api.workcontract`, the agent
+    #: quality program, 2026-11-03): id, revision, digest, strictness and
+    #: requirement ids, written at `work_contract` inside the signed block so
+    #: a rewritten reference fails the step-spec signature. Set only by
+    #: `workcontract.attach`, which does nothing while SWARM_WORK_CONTRACTS
+    #: is off. Not hashed: a map.
+    work_contract: Mapping[str, Any] | None = field(default=None, hash=False)
 
     @property
     def needs_repository(self) -> bool:
@@ -2176,6 +2183,10 @@ class DispatchOptions:
     def with_await_input(self, block: Mapping[str, Any] | None) -> "DispatchOptions":
         """This `await-input` step's normalised declaration; None on every other step."""
         return replace(self, await_input=block)
+
+    def with_work_contract(self, reference: Mapping[str, Any]) -> "DispatchOptions":
+        """This step's signed work contract reference (`workcontract.attach`)."""
+        return replace(self, work_contract=dict(reference))
 
     def with_input_parents(self, parents: Mapping[str, str]) -> "DispatchOptions":
         """This step's `{upstream task id: upstream step id}`, for a `by_parent` step."""
@@ -2327,6 +2338,10 @@ class DispatchOptions:
         # `dispatch` map stores exactly the block it stored before.
         for name, value in self.switches:
             block[name] = value
+        # Absent unless a work contract was attached, so every other step
+        # stores exactly the block it stored before.
+        if self.work_contract is not None:
+            block["work_contract"] = json.loads(json.dumps(self.work_contract))
         return block
 
 
