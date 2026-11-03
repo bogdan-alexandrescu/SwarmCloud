@@ -1,0 +1,1559 @@
+diff --git a/apps/swarm-ui/src/AdminSetup.tsx b/apps/swarm-ui/src/AdminSetup.tsx
+index ca00e82..6958efa 100644
+--- a/apps/swarm-ui/src/AdminSetup.tsx
++++ b/apps/swarm-ui/src/AdminSetup.tsx
+@@ -434,3 +434,5 @@ export function AdminSetupCallbackScreen({ search }: { search: string }) {
+     </div>
+   )
+ }
++// The console finish mock-ups' scaffold (src/consolefinish/) reuses the read and the strip's mark. // MOCK-HOOK
++export { SetupRead, StepMark } // MOCK-HOOK
+diff --git a/apps/swarm-ui/src/AdminSetupSteps.tsx b/apps/swarm-ui/src/AdminSetupSteps.tsx
+index ad59261..102a753 100644
+--- a/apps/swarm-ui/src/AdminSetupSteps.tsx
++++ b/apps/swarm-ui/src/AdminSetupSteps.tsx
+@@ -1853,3 +1853,7 @@ export function GitHubAppCallback({ search }: { search?: string }) {
+     </Card>
+   )
+ }
++// The console finish mock-ups' scaffold (src/consolefinish/) draws each row on its own. // MOCK-HOOK
++export { signInRow, cloudRow, githubRow, teamRow, accountsRow, addonsRow, verifyRow, sendRow, Checklist, useAction, useNow, useAutoSelfCheck, TONE as STEP_TONE, WORD as STEP_WORD } // MOCK-HOOK
++export { ConsoleChecks } // MOCK-HOOK: the checklist direction draws verify's console checks under its own failure line
++export type { Row as SetupRow } // MOCK-HOOK
+diff --git a/apps/swarm-ui/src/App.tsx b/apps/swarm-ui/src/App.tsx
+index eabb926..482dd7b 100644
+--- a/apps/swarm-ui/src/App.tsx
++++ b/apps/swarm-ui/src/App.tsx
+@@ -58,6 +58,7 @@ import { ProfileScreen } from './Profile'
+ import { WorkspacePeopleScreen } from './WorkspacePeople'
+ import { JOIN_PATH, JoinWorkspaceScreen, joinCodeFrom } from './JoinWorkspace'
+ import { SetupLinkScreen } from './SetupLink'
++import { consoleFinish } from './consolefinish/ConsoleFinish' // MOCK-HOOK
+ import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
+ import { QuotaDetailScreen } from './QuotaDetail'
+ import { tableMode, usePhoneTables } from './capacityPoll'
+@@ -1693,7 +1694,7 @@ export function App() {
+                   // Keyed by the code, so a second link pasted into the tab asks afresh.
+                   <JoinWorkspaceScreen key={joinCode ?? ''} code={joinCode} />
+                 ) : at.sectionId === SETUP_LINK ? (
+-                  <SetupLinkScreen token={setupToken} />
++                  (consoleFinish({ page: 'link', token: setupToken }) ?? <SetupLinkScreen token={setupToken} />) /* MOCK-HOOK */
+                 ) : (
+                   // Settings › Profile: the last page that is not a section.
+                   // API keys was beside it until SSC-UI moved it to Config ›
+@@ -2433,7 +2434,7 @@ function SectionBody({
+ 
+     // DAYONE-SETUP-UI-3: Setup, its GitHub App callback page, and Health.
+     case 'admin/setup':
+-      return <AdminSetupScreen callback={page === SETUP_CALLBACK_PAGE ? (view ?? '') : undefined} />
++      return consoleFinish(page === SETUP_CALLBACK_PAGE ? { page: 'callback', search: view ?? '' } : { page: 'setup' }) ?? <AdminSetupScreen callback={page === SETUP_CALLBACK_PAGE ? (view ?? '') : undefined} /> // MOCK-HOOK
+     case 'admin/health':
+       return <AdminSetupHealthScreen />
+     case 'admin/limits':
+diff --git a/apps/swarm-ui/src/SetupLink.tsx b/apps/swarm-ui/src/SetupLink.tsx
+index e5bbefa3..d8d0071 100644
+--- a/apps/swarm-ui/src/SetupLink.tsx
++++ b/apps/swarm-ui/src/SetupLink.tsx
+@@ -39,6 +39,7 @@
+  */
+ import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+ import { USE_FIXTURES, beginAccountSignIn, finishAccountSignIn } from './api'
++import { FINISH_MOMENT, MOMENT_REDEEM } from './consolefinish/moments' // MOCK-HOOK
+ import { Banner, Button, Card } from './components'
+ import { chooseTenant, route, write, type ApiError, type Result } from './fetch'
+ import { PageHead } from './Shell'
+@@ -67,6 +68,7 @@ type Opened =
+ /** `POST /v1/setup/links/redeem`, the token (and a form kind's value) in the body. */
+ export async function redeemSetupLink(token: string, value?: string): Promise<Result<unknown>> {
+   if (USE_FIXTURES) {
++    if (FINISH_MOMENT !== null) return { status: 'ok', fetchedAt: Date.now(), data: MOMENT_REDEEM } // MOCK-HOOK
+     return { status: 'ok', fetchedAt: Date.now(), data: { kind: 'pool-account', label: 'claude-1', tenant: 'eng' } }
+   }
+   return write(route(REDEEM_ROUTE), 'POST', value === undefined ? { token } : { token, value })
+diff --git a/apps/swarm-ui/src/api.ts b/apps/swarm-ui/src/api.ts
+index 307634a..af7f5de 100644
+--- a/apps/swarm-ui/src/api.ts
++++ b/apps/swarm-ui/src/api.ts
+@@ -61,6 +61,7 @@ import type {
+   RunnerRecentUse, RunnerSize, RunnerSizeChanges, RunnerSizesDoc, RunnerSizesPreview, RunnerSizeVersion,
+ } from './types'
+ 
++import { FINISH_MOMENT, MOMENT_APP, momentRunWord, momentSetupState } from './consolefinish/moments' // MOCK-HOOK
+ // The fetch contract lives in fetch.ts. This file is only the list of reads
+ // this product performs, and what "empty" means for each of them -- which is
+ // per-endpoint and cannot be guessed: a capacity response with no pools and a
+@@ -1127,6 +1128,8 @@ export async function loadArtifactContent(
+  */
+ export async function loadTask(taskId: string): Promise<Result<Task>> {
+   if (USE_FIXTURES) {
++    const momentWord = FINISH_MOMENT === null ? null : momentRunWord(FINISH_MOMENT, taskId) // MOCK-HOOK
++    if (momentWord !== null) { const page = await fixtureTasks(); const first = page.status === 'ok' ? page.data.tasks[0] : undefined; if (first !== undefined) return { status: 'ok', data: { ...first, id: taskId, state: momentWord as Task['state'] }, fetchedAt: Date.now() } } // MOCK-HOOK
+     const detail = await fixtureAgentDetail(taskId)
+     return detail.status === 'ok' ? { status: 'ok', data: detail.data.task, fetchedAt: detail.fetchedAt } : (detail as Result<Task>)
+   }
+@@ -1442,6 +1445,8 @@ export interface WorkflowRead {
+ }
+ 
+ export async function loadWorkflow(workflowId: string): Promise<Result<WorkflowRead>> {
++  const momentWord = USE_FIXTURES && FINISH_MOMENT !== null ? momentRunWord(FINISH_MOMENT, workflowId) : null // MOCK-HOOK
++  if (momentWord !== null) { const row = fixtureWorkflowRows()[0]; if (row !== undefined) return { status: 'ok', fetchedAt: Date.now(), data: { workflow: { ...row, workflow_id: workflowId, state: momentWord as typeof row.state }, tasks: [] } } } // MOCK-HOOK
+   if (USE_FIXTURES) return fixtureWorkflowRead(workflowId)
+   return read<WorkflowRead>(route('/v1/workflows/{id}', { id: workflowId }), () => false)
+ }
+@@ -13734,7 +13739,7 @@ export function convertGitHubApp(code: string, state: string): Promise<Result<{
+     'POST',
+     { code, state },
+     (raw) => ({ id: strOf(objOf(raw)?.id), slug: strOf(objOf(raw)?.slug) }),
+-    () => ({ id: '4242', slug: 'swarmcloud-prod' }),
++    () => (FINISH_MOMENT !== null ? MOMENT_APP : { id: '4242', slug: 'swarmcloud-prod' }), // MOCK-HOOK
+   )
+ }
+ 
+@@ -13762,6 +13767,7 @@ export async function checkGitHubAppInstallation(): Promise<Result<GitHubAppInst
+     await new Promise((r) => setTimeout(r, 120))
+     if (!fixtureIsAdmin) return fixtureAdminRefusal<GitHubAppInstallation>(target, 120)
+     noteFixtureProbe(target, 120, true)
++    if (FINISH_MOMENT !== null) { const app = normSetupState(fixtureSetupState()).github_app; return { status: 'ok', data: { installed: app?.installed_on != null, org: app?.installed_on ?? null, slug: app?.slug ?? null }, fetchedAt: Date.now() } } // MOCK-HOOK
+     return { status: 'ok', data: { installed: true, org: 'example-org', slug: 'swarmcloud-prod' }, fetchedAt: Date.now() }
+   }
+   const r = await read<unknown>(target, () => false)
+@@ -13914,6 +13920,7 @@ function fixtureSignInClient(): Record<string, unknown> {
+ 
+ /** The fixture build's install, mid-verify: every console step done, verify on its third check. */
+ function fixtureSetupState(): Record<string, unknown> {
++  if (FINISH_MOMENT !== null) return momentSetupState(FINISH_MOMENT, FIXTURE_NOW) // MOCK-HOOK
+   const at = (minAgo: number) => new Date(FIXTURE_NOW - minAgo * 60_000).toISOString()
+   const t0 = FIXTURE_NOW / 1000 - 240
+   return {
+diff --git a/apps/swarm-ui/src/consolefinish/ConsoleFinish.tsx b/apps/swarm-ui/src/consolefinish/ConsoleFinish.tsx
+new file mode 100644
+index 0000000..bd472fb
+--- /dev/null
++++ b/apps/swarm-ui/src/consolefinish/ConsoleFinish.tsx
+@@ -0,0 +1,180 @@
++// MOCK-HOOK FILE: the console finish mock-ups' neutral scaffold, `?finish=base` (2026-11-02). Nothing is built from it until the owner picks a direction.
++/**
++ * THE BASE LAYOUT (`?finish=base`): a plain, neutral arrangement of every part
++ * the console finish draws today, from the console's own components, so each
++ * direction starts from working parts. Nothing here is new behaviour: every
++ * state is still read from `GET /v1/admin/setup` (`useSetupState`), every row
++ * is the checklist's own builder (AdminSetupSteps.tsx), and nothing is marked
++ * done by hand. A direction copies this file to `<Name>.tsx`, registers it in
++ * `LAYOUTS` below and draws its own arrangement at `?finish=<name>`.
++ */
++import { useCallback, useRef, type ReactNode } from 'react'
++import { SetupLead, SetupRead, SetupStrip, AdminSetupCallbackScreen } from '../AdminSetup'
++import { AdminSetupTeam } from '../AdminSetupTeam'
++import {
++  CapacityCard,
++  Checklist,
++  InstallerCard,
++  SendToTeam,
++  accountsRow,
++  addonsRow,
++  cloudRow,
++  githubRow,
++  sendRow,
++  signInRow,
++  teamRow,
++  useAction,
++  useAutoSelfCheck,
++  useNow,
++  useSetupState,
++  verifyRow,
++  type SetupRow,
++} from '../AdminSetupSteps'
++import type { SetupState } from '../api'
++import { Banner, Card } from '../components'
++import { SetupLinkScreen } from '../SetupLink'
++import { PageHead } from '../Shell'
++import { FINISH_LAYOUT, FINISH_MOMENT, FINISH_MOMENTS, momentIndex } from './moments'
++import '../styles/admin-setup.css'
++import './consolefinish.css'
++import { ChecklistFinish } from './checklist/ChecklistFinish' // MOCK-HOOK
++
++/** The page each switch draws: Admin › Setup, its GitHub App callback, or the one-time link page. */
++export type FinishPage = { page: 'setup' } | { page: 'callback'; search: string } | { page: 'link'; token: string | null }
++
++/** The layouts `?finish=` names. A direction adds `<name>: <Component>` here. */
++const LAYOUTS: Record<string, (p: FinishPage) => ReactNode> = {
++  base: (p) => <BaseFinish {...p} />,
++  checklist: (p) => <ChecklistFinish {...p} />, // MOCK-HOOK
++}
++
++/** The page `?finish` draws, or null to draw today's page (no switch, or a layout no direction registered). */
++export function consoleFinish(p: FinishPage): ReactNode | null {
++  if (FINISH_LAYOUT === null) return null
++  const draw = LAYOUTS[FINISH_LAYOUT]
++  return draw === undefined ? null : draw(p)
++}
++
++/**
++ * Which moment of the story this page answers, and the other thirteen, one
++ * click each (a whole page load, so the moment is read again). Shown only in
++ * the mock-ups, never in a built page.
++ */
++export function MomentBar({ links = true }: { links?: boolean }) {
++  const here = FINISH_MOMENT
++  const href = (m: string) => `/admin/setup?${new URLSearchParams({ ...(FINISH_LAYOUT === null ? {} : { finish: FINISH_LAYOUT }), moment: m }).toString()}`
++  return (
++    <nav className="cf-moments" aria-label="Mock-up moments">
++      <span className="cf-moments-h">
++        {here === null ? 'Mock-up: today’s fixture record (no moment chosen)' : `Mock-up: moment ${momentIndex(here).n} of ${FINISH_MOMENTS.length}, ${here}`}
++      </span>
++      {links && (
++        <ol className="cf-moments-list">
++          {FINISH_MOMENTS.filter((m) => m !== 'link-teammate').map((m) => (
++            <li key={m}>
++              <a href={href(m)} aria-current={m === here ? 'page' : undefined}>
++                {m}
++              </a>
++            </li>
++          ))}
++        </ol>
++      )}
++    </nav>
++  )
++}
++
++function BaseFinish(p: FinishPage) {
++  if (p.page === 'link') {
++    return (
++      <>
++        <MomentBar links={false} />
++        <SetupLinkScreen token={p.token} />
++      </>
++    )
++  }
++  if (p.page === 'callback') {
++    return (
++      <>
++        <MomentBar />
++        <AdminSetupCallbackScreen search={p.search} />
++      </>
++    )
++  }
++  return <BaseSetup />
++}
++
++function BaseSetup() {
++  const { result, reload } = useSetupState()
++  return (
++    <div className="ur-page asm-page cf-base">
++      <PageHead title="Setup" />
++      <MomentBar />
++      <SetupRead result={result} reload={reload}>
++        {(state) => <BaseBody state={state} onChanged={reload} />}
++      </SetupRead>
++    </div>
++  )
++}
++
++/** Every row of the checklist on its own card, the progress above them and the terminal and side cards beside them. */
++export function BaseBody({ state, now, onChanged }: { state: SetupState; now?: number; onChanged?: () => void }) {
++  const nowMs = useNow(now)
++  const changed = useRef(onChanged)
++  changed.current = onChanged
++  const reread = useCallback(() => changed.current?.(), [])
++  const githubAct = useAction(reread)
++  useAutoSelfCheck(state, githubAct)
++  const rows: SetupRow[] = [
++    signInRow(state, reread, nowMs),
++    cloudRow(state),
++    githubRow(state, reread, githubAct),
++    teamRow(state, reread, nowMs),
++    accountsRow(state, reread, nowMs),
++    addonsRow(state),
++    verifyRow(state, reread, nowMs),
++    sendRow(state),
++  ]
++  const nextKey = rows.find((r) => r.key !== 'addons' && r.state !== 'done')?.key
++  for (const r of rows) if (r.key === nextKey) r.next = true
++  return (
++    <>
++      <section className="cf-section" aria-label="Progress">
++        <SetupStrip state={state} />
++        <SetupLead state={state} now={now} />
++      </section>
++      <div className="cf-grid">
++        <section className="cf-col" aria-label="Steps">
++          <h2 className="cf-h">Steps</h2>
++          {rows.map((r) => (
++            <Card key={r.key} className="ob-card cf-row" title={r.title}>
++              <Checklist rows={[r]} />
++            </Card>
++          ))}
++        </section>
++        <section className="cf-col" aria-label="Beside the steps">
++          <h2 className="cf-h">The terminal</h2>
++          {!state.cli_running && (
++            <Banner tone="warn" title="swarm install is not running">
++              Run <code>swarm install</code> in a terminal to continue: the App’s switches and verify need it. The steps on this page stay usable meanwhile.
++            </Banner>
++          )}
++          <InstallerCard state={state} now={now} />
++          <h2 className="cf-h">Beside the steps</h2>
++          <SendToTeam state={state} />
++          <CapacityCard sizing={state.sizing} />
++          <Card title="Health" foot="The hourly doctor’s checks, read-only, on the live deployment; swarm doctor checks this machine and the deployment from a terminal.">
++            <p className="ur-hint">
++              Once setup is done, the scheduled doctor’s findings and each one’s repair are on <a href="/admin/setup/health">Admin › Setup › Health</a>.
++            </p>
++          </Card>
++        </section>
++      </div>
++      {state.teams.length > 0 && (
++        <section className="cf-section" aria-label="Later">
++          <h2 className="cf-h">Later: add a team</h2>
++          <AdminSetupTeam teams={state.teams} onChanged={onChanged} />
++        </section>
++      )}
++    </>
++  )
++}
+diff --git a/apps/swarm-ui/src/consolefinish/checklist/ChecklistFinish.tsx b/apps/swarm-ui/src/consolefinish/checklist/ChecklistFinish.tsx
+new file mode 100644
+index 0000000..9e664f6
+--- /dev/null
++++ b/apps/swarm-ui/src/consolefinish/checklist/ChecklistFinish.tsx
+@@ -0,0 +1,775 @@
++// MOCK-HOOK FILE: the console finish direction "Checklist beside a working panel", `?finish=checklist` (2026-11-02). Nothing is built from it until the owner picks a direction.
++/**
++ * CHECKLIST BESIDE A WORKING PANEL (`?finish=checklist`).
++ *
++ * Everything on one screen. Across the top, one status line says what swarm
++ * install is doing now, from the install record (its lease, its stages, its
++ * verify). On the left, a compact checklist: one line per step with its mark,
++ * its name, who acts now (you, a teammate, Google, GitHub, swarm install or
++ * the console) and since when; the waits on someone else stay listed under
++ * their step, so the person works on another step meanwhile. On the right,
++ * the selected step's working panel: who it waits on, what to do, and the
++ * step's own controls, which are today's (AdminSetupSteps.tsx) unchanged.
++ * The panel follows the next step the person can act on, unless they picked
++ * another; one click goes back to following.
++ *
++ * Nothing here is marked by hand: every mark, actor and time is derived from
++ * `GET /v1/admin/setup` (`useSetupState`), read every 5 s. A time the record
++ * does not hold is drawn as "not recorded", never as now or zero.
++ */
++import { useCallback, useRef, useState, type ReactNode } from 'react'
++import { AdminSetupCallbackScreen, SetupRead, StepMark } from '../../AdminSetup'
++import {
++  CapacityCard,
++  ConsoleChecks,
++  Facts,
++  GitHubAppCallback,
++  StepFailure,
++  accountSignedIn,
++  accountsRow,
++  addonsRow,
++  consoleDone,
++  firstWorkspace,
++  githubRow,
++  isOnePerson,
++  pluginLine,
++  signInRow,
++  signedInCount,
++  spanWords,
++  teamRow,
++  useAction,
++  useAutoSelfCheck,
++  useNow,
++  useSetupState,
++  verifyRow,
++  type SetupRow,
++  type StepState,
++} from '../../AdminSetupSteps'
++import { FIXTURE_CLOCK, restartSetupSmoke, type SetupState } from '../../api'
++import { Button, Chip, CodeBlock } from '../../components'
++import { SetupLinkScreen } from '../../SetupLink'
++import { PageHead } from '../../Shell'
++import { MomentBar, type FinishPage } from '../ConsoleFinish'
++import { FINISH_MOMENT } from '../moments'
++import '../../styles/admin-setup.css'
++import '../consolefinish.css'
++import './checklist.css'
++
++/** The mock-ups read the record at the fixture clock, so "seen 20 s ago" reads the same on every open. */
++const FIXED_NOW: number | undefined = FINISH_MOMENT === null ? undefined : Date.parse(FIXTURE_CLOCK)
++
++/** Who acts on a step now. `console` is this deployment's own machinery (a workspace build, the smoke agent). */
++type Actor = 'you' | 'teammate' | 'google' | 'github' | 'install' | 'console'
++
++const ACTOR: Record<Actor, string> = {
++  you: 'You',
++  teammate: 'A teammate',
++  google: 'Google',
++  github: 'GitHub',
++  install: 'swarm install',
++  console: 'The console',
++}
++
++/** One thing a step waits on: who, doing what, since when, and how long it usually takes. */
++interface Wait {
++  who: Actor
++  name?: string
++  what: string
++  since: number | null
++  usual: string | null
++  state: StepState
++}
++
++/** One line of the compact checklist. */
++interface Line {
++  key: 'cloud' | 'sign-in-client' | 'github' | 'team' | 'accounts' | 'smoke' | 'verify' | 'send'
++  name: string
++  state: StepState
++  /** Who acts now; null once done, or while the step waits on an earlier one. */
++  actor: Actor | null
++  /** When the current actor's turn started (ms), or when the step was done. */
++  since: number | null
++  /** A few words: what is true of it now. */
++  now: string
++  waits: Wait[]
++  /** How long the actor's part usually takes: the page's own estimate, not served by the route. */
++  usual?: string
++}
++
++const ms = (iso: string | null | undefined): number | null => {
++  if (iso === null || iso === undefined) return null
++  const t = Date.parse(iso)
++  return Number.isNaN(t) ? null : t
++}
++
++const clock = (t: number): string => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })
++
++/** "since 12:04 · 6 min", or the honest "since: not recorded". */
++function sinceWords(t: number | null, nowMs: number): string {
++  if (t === null) return 'since: not recorded'
++  return `since ${clock(t)} · ${spanWords((nowMs - t) / 1000)}`
++}
++
++/** The verify checks swarm install runs, in plain words; an id not listed is shown as it is. */
++const CHECK_WORDS: Record<string, string> = {
++  smoke: 'the smoke run',
++  'gke-proof': 'the GKE proof',
++  race: 'the race test',
++  'reconciler-jobs': 'the reconciler’s scheduled jobs',
++  digests: 'the image digests',
++  'plugin-browser': 'the live-browser check',
++  'console-task': 'the console task',
++  'console-workflow': 'the console workflow',
++}
++const checkWords = (id: string | null): string => (id === null ? 'starting' : CHECK_WORDS[id] ?? id)
++
++/**
++ * Verify's one-line cause. NOT SERVED TODAY: swarm install prints it in the
++ * terminal only; notes.md names the field the route would need
++ * (`engine.verify.detail`). The mock-up draws it from this fixture alone.
++ */
++const VERIFY_DETAIL: string | null =
++  FINISH_MOMENT === 'verify-failed' ? 'the live browser opened https://console.example.com but Google’s sign-in answered 403 for the test account' : null
++
++const CLI_STAGES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 13]
++
++/** The record, as the checklist's eight lines. Same rules as the strip: a line is done exactly when the record says so. */
++function lines(state: SetupState): Line[] {
++  const e = state.engine
++  const handOff = ms(e?.hand_off_at)
++  const stages = e?.stages ?? []
++  const cloudDone = CLI_STAGES.filter((n) => stages[n]?.state === 'done').length
++  const onePerson = isOnePerson(state)
++  const out: Line[] = []
++
++  out.push({
++    key: 'cloud',
++    name: 'Cloud',
++    state: cloudDone === CLI_STAGES.length ? 'done' : 'in_progress',
++    actor: cloudDone === CLI_STAGES.length ? null : 'install',
++    since: handOff,
++    now: `${cloudDone} of ${CLI_STAGES.length} stages, by swarm install`,
++    waits: [],
++  })
++
++  const client = state.sign_in_client
++  const signIn: Line = { key: 'sign-in-client', name: 'Sign-in client', state: 'todo', actor: null, since: null, now: 'not read yet', waits: [] }
++  if (client !== null) {
++    const saved = ms(client.saved_at)
++    if (client.state === 'applied') Object.assign(signIn, { state: 'done', since: saved, now: 'on Google’s sign-in proxy' })
++    else if (client.state === 'saved') {
++      Object.assign(signIn, { state: 'in_progress', actor: 'install', since: saved, now: 'saved; swarm install applies it' })
++      signIn.waits.push({ who: 'install', what: 'adds the client to the sign-in proxy (its infra pass)', since: saved, usual: 'usually 2 to 4 min', state: 'in_progress' })
++    } else Object.assign(signIn, { state: 'todo', actor: 'you', since: handOff, now: 'three Google pages, then its id and secret', usual: 'usually about 5 min of yours' })
++  }
++  out.push(signIn)
++
++  const app = state.github_app
++  const org = state.github_org ?? 'your organisation'
++  const gh: Line = { key: 'github', name: 'GitHub App', state: 'todo', actor: 'you', since: ms(client?.saved_at) ?? handOff, now: 'create it from the manifest', waits: [], usual: 'usually about 3 min: two GitHub pages' }
++  if (app !== null && app.started) {
++    const written = ms(app.secrets_written_at)
++    const check = app.self_check
++    if (check?.state === 'failed') Object.assign(gh, { state: 'failed', actor: 'you', since: ms(check.at), now: `self-check failed${check.reason === null ? '' : `: ${check.reason}`}` })
++    else if (app.installed_on !== null && check?.ok === true) Object.assign(gh, { state: 'done', actor: null, since: ms(check.at), now: `installed on ${app.installed_on}` })
++    else if (app.id === null) {
++      Object.assign(gh, { state: 'in_progress', actor: 'github', since: null, now: 'you are on GitHub’s page creating it' })
++    } else if (app.installed_on === null) {
++      Object.assign(gh, { state: 'in_progress', actor: 'you', since: written, now: `created; install it on ${org}`, usual: 'usually under a minute' })
++      gh.waits.push({ who: 'github', what: `tells this page once the App is installed on ${org}; the page checks every 10 s`, since: written, usual: 'as soon as you press Install', state: 'in_progress' })
++    } else {
++      Object.assign(gh, { state: 'in_progress', actor: 'install', since: ms(check?.at) ?? written, now: `installed on ${app.installed_on}; self-check waits` })
++      gh.waits.push({
++        who: 'install',
++        what: 'runs its third infrastructure pass, which gives swarm-api the App’s id; this page then runs the self-check by itself',
++        since: ms(check?.at) ?? written,
++        usual: 'usually 3 to 5 min',
++        state: 'in_progress',
++      })
++    }
++  }
++  out.push(gh)
++
++  const team = firstWorkspace(state)
++  const ws = team === null ? null : typeof team.progress.workspace_state === 'string' ? team.progress.workspace_state : null
++  const built = ms(typeof team?.progress.created_at === 'string' ? team.progress.created_at : null)
++  const teamLine: Line = { key: 'team', name: onePerson ? 'Your workspace' : 'First team', state: 'todo', actor: null, since: null, now: 'after the GitHub App', waits: [] }
++  if (team === null) {
++    if (gh.state === 'done') Object.assign(teamLine, { actor: onePerson ? 'console' : 'you', since: gh.since, now: onePerson ? 'filed on the next read' : 'name the Google group', usual: onePerson ? undefined : 'usually about 2 min of yours' })
++  } else if (ws === 'failed' || ws === 'denied') {
++    Object.assign(teamLine, { state: 'failed', actor: 'you', since: built, now: `${team.workspace}: the build ${ws}` })
++  } else if (ws !== 'ready') {
++    Object.assign(teamLine, { state: 'in_progress', actor: 'console', since: built, now: `${team.workspace}: building` })
++    teamLine.waits.push({ who: 'console', what: `builds ${team.workspace}: record, namespace, worker identity, git access`, since: built, usual: 'usually 5 to 10 min', state: 'in_progress' })
++  } else {
++    Object.assign(teamLine, { state: 'done', since: built, now: `${team.workspace} is ready` })
++  }
++  // Invites: the console adds no one; Google Groups shows each person once they are added on Google Admin's page.
++  const t0 = state.teams[0]
++  if (!onePerson && t0 !== undefined) {
++    for (const p of t0.members) {
++      if (p.member === true) continue
++      teamLine.waits.push({
++        who: 'google',
++        name: p.email,
++        what: p.member === null ? `Google Groups did not answer this read for ${p.email}` : `shows ${p.email} in ${t0.group} once she is added on Google Admin’s members page`,
++        since: built,
++        usual: 'usually a few minutes after she is added',
++        state: 'in_progress',
++      })
++    }
++  }
++  out.push(teamLine)
++
++  const signed = signedInCount(state)
++  const acc: Line = { key: 'accounts', name: 'Claude accounts', state: 'todo', actor: null, since: null, now: onePerson ? 'after your workspace' : 'after the first team', waits: [] }
++  if (team !== null || onePerson) {
++    acc.state = signed > 0 ? 'done' : state.accounts.length > 0 ? 'in_progress' : 'todo'
++    acc.now = state.accounts.length === 0 ? 'one link per subscription account' : `${signed} of ${state.accounts.length} signed in`
++    if (state.accounts.length === 0) Object.assign(acc, { actor: 'you', since: built, usual: 'about a minute per account; each owner then signs in' })
++    for (const a of state.accounts) {
++      const exp = ms(a.link_expires)
++      const made = exp === null ? null : exp - 24 * 3_600_000
++      if (accountSignedIn(state, a)) {
++        if (signed > 0 && acc.since === null) acc.since = ms(a.signed_in_at)
++        continue
++      }
++      const own = onePerson || a.owner === state.personal?.owner
++      const left = exp === null ? null : exp - (FIXED_NOW ?? Date.now())
++      acc.waits.push({
++        who: own ? 'you' : 'teammate',
++        name: a.owner ?? a.label,
++        what: own ? 'sign in your own account: the link opens itself in a new tab' : left !== null && left <= 0 ? 'the link expired unused: make a new one' : 'opens the one-time link and signs in',
++        since: made,
++        usual: left === null ? 'link time not recorded' : left > 0 ? `${spanWords(left / 1000)} left on the link` : 'expired',
++        state: 'in_progress',
++      })
++    }
++    if (acc.state !== 'done') {
++      const w = acc.waits[0]
++      if (w !== undefined) Object.assign(acc, { actor: w.who, since: w.since })
++    }
++  }
++  out.push(acc)
++
++  const smoke = team?.smoke ?? null
++  const sm: Line = { key: 'smoke', name: 'Smoke agent', state: 'todo', actor: null, since: null, now: 'runs on the first signed-in account', waits: [] }
++  if (smoke !== null) {
++    if (smoke.state === 'succeeded') Object.assign(sm, { state: 'done', now: smoke.detail ?? 'succeeded' })
++    else if (smoke.state === 'failed') Object.assign(sm, { state: 'failed', actor: 'you', now: 'failed: retry it' })
++    else {
++      Object.assign(sm, { state: 'in_progress', actor: 'console', now: `${smoke.state} in ${team?.workspace ?? 'the workspace'}` })
++      sm.waits.push({ who: 'console', what: 'runs one agent end to end: clone, edit, publish', since: null, usual: 'usually about 3 min', state: 'in_progress' })
++    }
++  } else if (team !== null && signed > 0) Object.assign(sm, { actor: 'console', now: 'starts now' })
++  out.push(sm)
++
++  const v = e?.verify ?? null
++  const finished = ms(state.finished?.at)
++  const ver: Line = { key: 'verify', name: 'Verify', state: 'todo', actor: null, since: null, now: 'after the smoke agent', waits: [] }
++  if (v === null) {
++    if (state.finished !== null) Object.assign(ver, { actor: 'install', since: finished, now: 'handed over; starting' })
++    else if (consoleDone(state)) Object.assign(ver, { actor: 'you', since: null, now: 'hand over to swarm install', usual: 'one click; verify then takes about 18 min' })
++  } else {
++    const started = v.started === null ? null : v.started * 1000
++    if (v.result === 'passed') Object.assign(ver, { state: 'done', since: started, now: `passed, ${v.done} of ${v.total} checks` })
++    else if (v.result === 'failed') Object.assign(ver, { state: 'failed', actor: 'you', since: started, now: `failed at check ${v.done + 1} of ${v.total}` })
++    else {
++      Object.assign(ver, { state: 'in_progress', actor: 'install', since: started, now: `check ${v.done + 1} of ${v.total}` })
++      const left = v.expected_end === null ? null : v.expected_end * 1000 - (FIXED_NOW ?? Date.now())
++      ver.waits.push({
++        who: 'install',
++        what: `checks ${checkWords(v.check)}`,
++        since: started,
++        usual: left === null ? 'end not recorded' : left > 0 ? `about ${spanWords(left / 1000)} left` : `${spanWords(-left / 1000)} past the expected end`,
++        state: 'in_progress',
++      })
++    }
++  }
++  out.push(ver)
++
++  const passed = v?.result === 'passed'
++  out.push({ key: 'send', name: 'Send to your team', state: passed ? 'done' : 'todo', actor: passed ? 'you' : null, since: ms(e?.ready_at), now: passed ? 'the plugin line is ready' : 'locked until verify passes', waits: [] })
++  return out
++}
++
++/** The line the panel follows by itself: the first one the person can act on, else the first not done, else Send. */
++function nextKey(ls: Line[]): Line['key'] {
++  const mine = ls.find((l) => l.state !== 'done' && l.actor === 'you')
++  if (mine !== undefined) return mine.key
++  const open = ls.find((l) => l.state !== 'done')
++  return open?.key ?? 'send'
++}
++
++// ---------------------------------------------------------------------------
++// the status line: what swarm install is doing now
++// ---------------------------------------------------------------------------
++
++function TerminalLine({ state, ls, nowMs }: { state: SetupState; ls: Line[]; nowMs: number }) {
++  const e = state.engine
++  const beat = ms(e?.lease?.heartbeat)
++  const seen = beat === null ? 'not recorded' : `${spanWords((nowMs - beat) / 1000)} ago`
++  const v = e?.verify ?? null
++  const ready = ms(e?.ready_at)
++  const done = ls.filter((l) => l.state === 'done').length
++  let tone: 'ok' | 'live' | 'bad' | 'warn' = 'live'
++  let head: ReactNode
++  let line: ReactNode
++  if (ready !== null && state.engine?.hostname != null) {
++    tone = 'ok'
++    head = 'swarm install finished and printed its ready line'
++    line = (
++      <>
++        <code className="cfc-ready">READY: SwarmCloud answers at https://{state.engine.hostname}</code> at {clock(ready)}. It has exited; nothing waits on this page.
++      </>
++    )
++  } else if (!state.cli_running) {
++    tone = 'bad'
++    head = `swarm install is not running · last seen ${seen}`
++    line = (
++      <>
++        Every step here still works up to the GitHub App’s self-check. To continue, run <code>swarm install</code> again in a terminal: it resumes where it stopped.
++      </>
++    )
++  } else if (v !== null && v.result === 'failed') {
++    tone = 'warn'
++    head = `swarm install stopped: verify failed at check ${v.done + 1} of ${v.total}, ${checkWords(v.check)}`
++    line = <>It printed the cause in the terminal, and it is shown below. Run <code>swarm install</code> again once it is fixed: verify starts again from that check.</>
++  } else if (v !== null) {
++    head = `swarm install is running verify · check ${v.done + 1} of ${v.total}, ${checkWords(v.check)}`
++    const left = v.expected_end === null ? null : v.expected_end * 1000 - nowMs
++    const dl = v.deadline === null ? null : v.deadline * 1000 - nowMs
++    line = `${left === null ? 'End not recorded' : left > 0 ? `About ${spanWords(left / 1000)} left` : `${spanWords(-left / 1000)} past the expected end`}${dl === null ? '' : ` · stops at the 45-minute deadline, in ${spanWords(Math.max(0, dl) / 1000)}`} · seen ${seen}. It prints its ready line when every check passes.`
++  } else if (state.finished !== null) {
++    head = 'swarm install has the hand-over and is starting verify'
++    line = `Seen ${seen}. Verify takes up to 45 minutes; it usually ends in about 18.`
++  } else {
++    const pass = ls.find((l) => l.actor === 'install' && l.state !== 'done')
++    head = pass === undefined ? 'swarm install is waiting on this page' : `swarm install is working: ${pass.waits[0]?.what ?? pass.now}`
++    line = `Seen ${seen}; it checks in every 30 s and runs its own steps as yours land here. Keep its terminal open.`
++  }
++  const left = ls.length - done
++  return (
++    <section className={`cfc-status is-${tone}`} aria-label="What swarm install is doing" role="status">
++      <span className="cfc-status-mark">
++        <StepMark state={tone === 'ok' ? 'done' : tone === 'bad' || tone === 'warn' ? 'failed' : 'in_progress'} />
++      </span>
++      <div className="cfc-status-main">
++        <p className="cfc-status-h">
++          <span className="cfc-status-k">Terminal</span> {head}
++        </p>
++        <p className="cfc-status-l">{line}</p>
++      </div>
++      <div className="cfc-status-count">
++        <b>
++          {done} of {ls.length} done
++        </b>
++        <small>{left === 0 ? 'every step done' : state.finished !== null ? `${left} left` : done <= 1 ? `${left} left · usually 20 to 60 min in all` : `${left} left · waiting on ${[...new Set(ls.filter((l) => l.state !== 'done' && l.actor !== null).map((l) => ACTOR[l.actor!]))].join(', ') || 'nobody yet'}`}</small>
++      </div>
++    </section>
++  )
++}
++
++// ---------------------------------------------------------------------------
++// the compact checklist
++// ---------------------------------------------------------------------------
++
++function ActorChip({ who, name }: { who: Actor; name?: string }) {
++  return <span className={`cfc-who is-${who}`}>{name === undefined ? ACTOR[who] : `${ACTOR[who]} · ${name}`}</span>
++}
++
++function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls: Line[]; selected: Line['key']; following: boolean; onPick: (k: Line['key'] | null) => void; nowMs: number; onePerson: boolean }) {
++  return (
++    <nav className="cfc-list" aria-label="Setup steps">
++      <ol>
++        {ls.map((l, i) => (
++          <li key={l.key} className={`cfc-item is-${l.state}${l.key === selected ? ' is-selected' : ''}`}>
++            <button type="button" className="cfc-pick" aria-current={l.key === selected ? 'step' : undefined} onClick={() => onPick(l.key)}>
++              <StepMark state={l.state} />
++              <span className="cfc-item-main">
++                <span className="cfc-item-h">
++                  <b>
++                    {i + 1}. {l.name}
++                  </b>
++                  {l.state === 'failed' && <Chip tone="bad">failed</Chip>}
++                </span>
++                {l.state === 'done' ? (
++                  <span className="cfc-item-now">
++                    <span className="cfc-done">{l.since === null ? 'done' : `done ${clock(l.since)}`}</span> · {l.now}
++                  </span>
++                ) : l.actor === null ? (
++                  <span className="cfc-item-now cfc-later">{l.now}</span>
++                ) : (
++                  <>
++                    <span className="cfc-item-now">{l.now}</span>
++                    <span className="cfc-item-who">
++                      <ActorChip who={l.actor} />
++                      <span className="cfc-since">{sinceWords(l.since, nowMs)}</span>
++                    </span>
++                  </>
++                )}
++              </span>
++            </button>
++            {l.waits.filter((w) => w.who === 'teammate' || w.who === 'google').length > 0 && (
++              <ul className="cfc-subs" aria-label={`${l.name}: waiting on others`}>
++                {l.waits
++                  .filter((w) => w.who === 'teammate' || w.who === 'google')
++                  .map((w, j) => (
++                    <li key={j}>
++                      <ActorChip who={w.who} name={w.name} />
++                      <span className="cfc-since">
++                        {w.since === null ? '' : `since ${clock(w.since)} · `}
++                        {w.usual}
++                      </span>
++                    </li>
++                  ))}
++              </ul>
++            )}
++          </li>
++        ))}
++      </ol>
++      <p className="cfc-addons">
++        <span className="cfc-addon-mark" aria-hidden>
++          +
++        </span>
++        Add-ons: optional, off. Each is turned on from the terminal later; the panel lists them.
++        <button type="button" className="cfc-link" onClick={() => onPick(null)} hidden={following}>
++          Follow the next step again
++        </button>
++      </p>
++      {onePerson && <p className="cfc-note">One-person install: no team step and no invites. Your admins group was still made.</p>}
++    </nav>
++  )
++}
++
++// ---------------------------------------------------------------------------
++// the working panel
++// ---------------------------------------------------------------------------
++
++function WaitTable({ waits, nowMs, closed }: { waits: Wait[]; nowMs: number; closed: boolean }) {
++  if (waits.length === 0) return null
++  return (
++    <div className="cfc-waits" role="region" aria-label="Waiting on">
++      <h3 className="cfc-h3">Waiting on</h3>
++      <ul>
++        {waits.map((w, i) => (
++          <li key={i}>
++            <ActorChip who={w.who} name={w.name} />
++            <span className="cfc-wait-what">
++              {w.what}
++              {closed && w.who === 'install' ? ' (not running: run swarm install again)' : ''}
++            </span>
++            <span className="cfc-wait-meta">
++              <span>{sinceWords(w.since, nowMs)}</span>
++              <span>{w.usual ?? 'usual time not known'}</span>
++            </span>
++          </li>
++        ))}
++      </ul>
++    </div>
++  )
++}
++
++/** The cloud line's panel: what the terminal did before it handed over. */
++function CloudBody({ state, nowMs }: { state: SetupState; nowMs: number }) {
++  const e = state.engine
++  const stages = e?.stages ?? []
++  const first = ms(stages[0]?.at)
++  const handOff = ms(e?.hand_off_at)
++  return (
++    <Facts
++      label="The cloud part"
++      items={[
++        { state: 'done', name: 'Stages', text: `${CLI_STAGES.filter((n) => stages[n]?.state === 'done').length} of ${CLI_STAGES.length}: project, infrastructure, identity, edge and secrets` },
++        { state: handOff === null ? 'todo' : 'done', name: 'Handed over', text: handOff === null ? 'not recorded' : `at ${clock(handOff)}, ${spanWords((nowMs - handOff) / 1000)} ago${first === null ? '' : `; its first stage was recorded at ${clock(first)}`}` },
++        { state: 'done', name: 'Release', text: e?.release ?? 'not recorded' },
++      ]}
++    />
++  )
++}
++
++function SmokeBody({ state, onChanged }: { state: SetupState; onChanged: () => void }) {
++  const act = useAction(onChanged)
++  const team = firstWorkspace(state)
++  const smoke = team?.smoke ?? null
++  const first = state.accounts.find((a) => accountSignedIn(state, a))
++  return (
++    <>
++      {smoke?.state === 'failed' && (
++        <StepFailure
++          cause={`The smoke agent failed${smoke.detail === null ? '' : `: ${smoke.detail}`}`}
++          fix={
++            <>
++              check that the App is installed on that repository ({state.github_org ?? 'your organisation'}’s settings › GitHub Apps › Repository access), then Retry. Its task page says the rest.
++            </>
++          }
++          onRetry={() => act.run('smoke', restartSetupSmoke)}
++          busy={act.busy === 'smoke'}
++          retryLabel="Retry the smoke agent"
++        />
++      )}
++      {act.error !== null && <p className="cfc-err" role="alert">{act.error.message}</p>}
++      <Facts
++        label="Smoke agent"
++        items={[
++          { state: smoke === null ? 'todo' : smoke.state === 'succeeded' ? 'done' : smoke.state === 'failed' ? 'failed' : 'in_progress', name: 'State', text: smoke === null ? 'not started' : smoke.state === 'succeeded' ? `succeeded${smoke.detail === null ? '' : `, ${smoke.detail}`}` : smoke.state },
++          { state: first === undefined ? 'todo' : 'done', name: 'On account', text: first === undefined ? 'none signed in yet' : `${first.label} (${first.owner ?? 'owner not recorded'})` },
++          { state: team === null ? 'todo' : 'done', name: 'In', text: team === null ? 'no workspace yet' : `the ${team.workspace} workspace` },
++        ]}
++      />
++      {smoke?.url != null && (
++        <p className="ur-hint">
++          <a href={smoke.url}>Open the smoke agent’s page</a>
++        </p>
++      )}
++      <p className="ur-hint">The hand-over to swarm install is offered once it succeeds.</p>
++    </>
++  )
++}
++
++function SendBody({ state }: { state: SetupState }) {
++  const passed = state.engine?.verify?.result === 'passed'
++  const host = state.hostname ?? state.engine?.hostname ?? null
++  const [copied, setCopied] = useState(false)
++  if (!passed) return <p className="cfc-locked">Locked until verify passes: the line works only on a deployment verify has proven.</p>
++  if (host === null) return <p className="ur-hint">The deployment’s address is not recorded yet, so there is nothing to send.</p>
++  const line = pluginLine(host, state.engine?.release ?? null)
++  return (
++    <>
++      <p className="ur-hint">One line for each teammate’s terminal. Its only value is this deployment’s address; the plugin reads the rest from it.</p>
++      <CodeBlock
++        title="Plugin install"
++        lang="shell"
++        text={line}
++        action={
++          <Button size="sm" kind="primary" onClick={() => void navigator.clipboard?.writeText(line).then(() => setCopied(true))}>
++            {copied ? 'Copied' : 'Copy'}
++          </Button>
++        }
++      />
++      <Facts
++        items={[
++          { state: 'done', name: 'Console', text: `https://${host}` },
++          { state: 'done', name: 'Then', text: 'each teammate runs sc login, then /sc:submit in Claude Code' },
++          { state: 'done', name: 'Day two', text: 'Admin › Setup › Health shows the hourly checks' },
++        ]}
++      />
++    </>
++  )
++}
++
++function Panel({ line, n, total, state, rows, nowMs, onChanged, following }: { line: Line; n: number; total: number; state: SetupState; rows: Record<string, SetupRow>; nowMs: number; onChanged: () => void; following: boolean }) {
++  const row = rows[line.key]
++  const closed = !state.cli_running && state.engine?.ready_at == null
++  let body: ReactNode
++  if (line.key === 'cloud') body = <CloudBody state={state} nowMs={nowMs} />
++  else if (line.key === 'smoke') body = <SmokeBody state={state} onChanged={onChanged} />
++  else if (line.key === 'send') body = <SendBody state={state} />
++  else if (line.key === 'verify' && state.engine?.verify != null) {
++    const v = state.engine.verify
++    body = (
++      <>
++        {v.result === 'failed' && (
++          <StepFailure
++            cause={`Check ${v.done + 1} of ${v.total}, ${checkWords(v.check)}, failed${VERIFY_DETAIL === null ? '' : `: ${VERIFY_DETAIL}`}`}
++            fix={<>swarm install printed the same in its terminal. Once it is fixed, run <code>swarm install</code> again: it starts verify again from this check.</>}
++          />
++        )}
++        <p className="cfc-row-line">
++          {v.done} of {v.total} checks passed{v.result === null ? `; now ${checkWords(v.check)}` : ''}. The console task and workflow below are two of them.
++        </p>
++        <ConsoleChecks state={state} onChanged={onChanged} />
++      </>
++    )
++  }
++  else if (row !== undefined) {
++    body = (
++      <>
++        {line.key === 'verify' && closed && consoleDone(state) && state.finished === null && (
++          <p className="cfc-locked">swarm install is not running. You can hand over now: verify starts as soon as swarm install runs again.</p>
++        )}
++        <p className="cfc-row-line">{row.line}</p>
++        {row.body ?? null}
++        {row.act !== undefined && <div className="cfc-act">{row.act}</div>}
++      </>
++    )
++  }
++  return (
++    <section className="cfc-panel" aria-label={`Step ${n}: ${line.name}`}>
++      <header className="cfc-panel-head">
++        <p className="cfc-kicker">
++          Step {n} of {total}
++          {following ? ' · the panel follows the next step you can act on' : ' · picked by you'}
++        </p>
++        <h2 className={`cfc-panel-h is-${line.state}`}>
++          <StepMark state={line.state} />
++          {line.name}
++        </h2>
++        <p className="cfc-panel-who">
++          {line.state === 'done' ? (
++            <span className="cfc-done">Done{line.since === null ? '' : ` at ${clock(line.since)}`}, from the install record</span>
++          ) : line.actor === null ? (
++            <span className="cfc-later">Not yet: it waits on the step above</span>
++          ) : (
++            <>
++              <span>Acts now:</span> <ActorChip who={line.actor} /> <span className="cfc-since">{sinceWords(line.since, nowMs)}</span>
++              {line.usual !== undefined && <span className="cfc-usual">{line.usual}</span>}
++            </>
++          )}
++        </p>
++      </header>
++      <WaitTable waits={line.waits} nowMs={nowMs} closed={closed} />
++      <div className="cfc-panel-body">{body}</div>
++    </section>
++  )
++}
++
++function AddonsAndInstall({ state }: { state: SetupState }) {
++  const s = state.sizing
++  const addons = addonsRow(state)
++  return (
++    <section className="cfc-about" aria-label="This install">
++      <h3 className="cfc-h3">This install</h3>
++      <dl className="cfc-facts">
++        <div>
++          <dt>Sized for</dt>
++          <dd>{s === null ? 'not recorded' : s.mode === 'individual' ? 'one person' : s.members === null ? 'a team' : `a team of ${s.members}`}</dd>
++        </div>
++        <div>
++          <dt>Budget</dt>
++          <dd>{s?.budget_usd == null ? 'not recorded' : `$${s.budget_usd.toLocaleString('en-US')} a month`}</dd>
++        </div>
++        <div>
++          <dt>Accounts</dt>
++          <dd>{s?.pool_accounts == null ? 'not recorded' : `${s.pool_accounts} to add`}</dd>
++        </div>
++        <div>
++          <dt>Ceiling</dt>
++          <dd>{s?.pool_limits.global == null ? 'not recorded' : `${s.pool_limits.global} agents at once`}</dd>
++        </div>
++        <div>
++          <dt>Release</dt>
++          <dd>{state.engine?.release ?? 'not recorded'}</dd>
++        </div>
++        <div>
++          <dt>Health</dt>
++          <dd>
++            <a href="/admin/setup/health">Admin › Setup › Health</a>
++          </dd>
++        </div>
++      </dl>
++      <details className="cfc-more">
++        <summary>Capacity in full, and the add-ons</summary>
++        <CapacityCard sizing={s} />
++        <p className="ur-hint">{addons.line}</p>
++        {addons.body ?? null}
++      </details>
++    </section>
++  )
++}
++
++/** The one screen: status line, the checklist, the panel. `callback` swaps the GitHub step's panel for GitHub's callback page. */
++function ChecklistBody({ state, onChanged, callback }: { state: SetupState; onChanged: () => void; callback?: string }) {
++  const nowMs = useNow(FIXED_NOW)
++  const changed = useRef(onChanged)
++  changed.current = onChanged
++  const reread = useCallback(() => changed.current(), [])
++  const githubAct = useAction(reread)
++  useAutoSelfCheck(state, githubAct)
++  const [picked, setPicked] = useState<Line['key'] | null>(null)
++  const ls = lines(state)
++  const following = picked === null && callback === undefined
++  const selected: Line['key'] = callback !== undefined ? 'github' : picked ?? nextKey(ls)
++  const rows: Record<string, SetupRow> = {
++    'sign-in-client': signInRow(state, reread, nowMs),
++    github: githubRow(state, reread, githubAct),
++    team: teamRow(state, reread, nowMs),
++    accounts: accountsRow(state, reread, nowMs),
++    verify: verifyRow(state, reread, nowMs),
++  }
++  const i = ls.findIndex((l) => l.key === selected)
++  const line = ls[i]!
++  return (
++    <>
++      <TerminalLine state={state} ls={ls} nowMs={nowMs} />
++      <div className="cfc-grid">
++        <div className="cfc-left">
++          <CompactList ls={ls} selected={selected} following={following} onPick={setPicked} nowMs={nowMs} onePerson={isOnePerson(state)} />
++        </div>
++        <div className="cfc-right">
++          {callback !== undefined ? (
++            <section className="cfc-panel" aria-label="Back from GitHub">
++              <header className="cfc-panel-head">
++                <p className="cfc-kicker">Step {i + 1} of {ls.length} · back from GitHub</p>
++                <h2 className={`cfc-panel-h is-${line.state}`}>
++                  <StepMark state={line.state} />
++                  GitHub App
++                </h2>
++              </header>
++              <div className="cfc-panel-body">
++                <GitHubAppCallback search={callback} />
++              </div>
++            </section>
++          ) : (
++            <Panel line={line} n={i + 1} total={ls.length} state={state} rows={rows} nowMs={nowMs} onChanged={reread} following={following} />
++          )}
++          <AddonsAndInstall state={state} />
++          <p className="cfc-prov">Every mark comes from the install record, read every 5 s; nothing here is ticked by hand.</p>
++        </div>
++      </div>
++    </>
++  )
++}
++
++function ChecklistSetup({ callback }: { callback?: string }) {
++  const { result, reload } = useSetupState()
++  return (
++    <div className="ur-page asm-page cfc-page">
++      <PageHead title="Setup" />
++      <MomentBar />
++      <SetupRead result={result} reload={reload}>
++        {(state) => <ChecklistBody state={state} onChanged={reload} callback={callback} />}
++      </SetupRead>
++    </div>
++  )
++}
++
++/** Lea's own page: her part in three lines beside the link's working panel. */
++function ChecklistLink({ token }: { token: string | null }) {
++  return (
++    <div className="ur-page cfc-page cfc-linkpage">
++      <MomentBar links={false} />
++      <div className="cfc-grid cfc-grid-link">
++        <nav className="cfc-list" aria-label="Your part">
++          <p className="cfc-kicker">Your part of the setup</p>
++          <ol>
++            {[
++              ['Open your link', 'one click; it works once, for you only, within 24 hours of being made'],
++              ['Sign in your Claude account', 'on Claude’s own page, opened from here'],
++              ['That is all', 'your platform admin sees it on their page by itself; nothing to send back'],
++            ].map(([h, t], j) => (
++              <li key={j} className="cfc-item">
++                <div className="cfc-pick is-static">
++                  <span className="cfc-num">{j + 1}</span>
++                  <span className="cfc-item-main">
++                    <b>{h}</b>
++                    <span className="cfc-item-now">{t}</span>
++                  </span>
++                </div>
++              </li>
++            ))}
++          </ol>
++        </nav>
++        <div className="cfc-right">
++          <SetupLinkScreen token={token} />
++        </div>
++      </div>
++    </div>
++  )
++}
++
++export function ChecklistFinish(p: FinishPage) {
++  if (p.page === 'link') return <ChecklistLink token={p.token} />
++  if (p.page === 'callback') return FINISH_MOMENT === null ? <AdminSetupCallbackScreen search={p.search} /> : <ChecklistSetup callback={p.search} />
++  return <ChecklistSetup />
++}
+diff --git a/apps/swarm-ui/src/consolefinish/checklist/checklist.css b/apps/swarm-ui/src/consolefinish/checklist/checklist.css
+new file mode 100644
+index 0000000..639bb17
+--- /dev/null
++++ b/apps/swarm-ui/src/consolefinish/checklist/checklist.css
+@@ -0,0 +1,125 @@
++/* MOCK-HOOK FILE: the console finish direction "Checklist beside a working panel" (`?finish=checklist`). Tokens only, no literal colour. */
++.cfc-page { min-width: 0; } /* MOCK-HOOK */
++.cfc-page code { font-family: var(--mono); font-size: 0.92em; } /* MOCK-HOOK */
++
++/* The status line: what swarm install is doing now. */ /* MOCK-HOOK */
++.cfc-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 10px 14px; margin: 0 0 12px; border: 1px solid var(--line); border-left: 4px solid var(--sk-ac, var(--info)); border-radius: var(--radius); background: var(--surface); min-width: 0; } /* MOCK-HOOK */
++.cfc-status.is-ok { border-left-color: var(--s-live); } /* MOCK-HOOK */
++.cfc-status.is-bad { border-left-color: var(--s-bad); } /* MOCK-HOOK */
++.cfc-status.is-warn { border-left-color: var(--s-warn, var(--warn)); } /* MOCK-HOOK */
++.cfc-status-mark .cfg-mark { stroke: var(--sk-ac, var(--s-live)); stroke-width: 2; } /* MOCK-HOOK */
++.cfc-status.is-ok .cfg-mark circle { fill: var(--s-live); stroke: var(--s-live); } /* MOCK-HOOK */
++.cfc-status.is-ok .cfg-mark path { stroke: var(--surface); stroke-width: 2; } /* MOCK-HOOK */
++.cfc-status.is-bad .cfg-mark, .cfc-status.is-warn .cfg-mark { stroke: var(--s-bad); } /* MOCK-HOOK */
++.cfc-status-main { min-width: 0; } /* MOCK-HOOK */
++.cfc-status-h { margin: 0; font-weight: 650; font-size: 15px; line-height: 22px; color: var(--text); overflow-wrap: anywhere; } /* MOCK-HOOK */
++.cfc-status-k { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px; background: var(--surface-2); color: var(--text-dim); font-size: 12px; font-weight: 600; line-height: 20px; vertical-align: 1px; } /* MOCK-HOOK */
++.cfc-status-l { margin: 2px 0 0; font-size: 13px; line-height: 19px; color: var(--text-dim); overflow-wrap: anywhere; } /* MOCK-HOOK */
++.cfc-ready { color: var(--text); font-weight: 600; } /* MOCK-HOOK */
++.cfc-status-count { display: flex; flex-direction: column; align-items: flex-end; text-align: right; } /* MOCK-HOOK */
++.cfc-status-count b { font-size: 15px; color: var(--text); } /* MOCK-HOOK */
++.cfc-status-count small { font-size: 12px; color: var(--text-dim); max-width: 30ch; } /* MOCK-HOOK */
++
++/* The two columns. */ /* MOCK-HOOK */
++.cfc-grid { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); gap: 16px; align-items: start; min-width: 0; } /* MOCK-HOOK */
++.cfc-left, .cfc-right { display: flex; flex-direction: column; gap: 12px; min-width: 0; } /* MOCK-HOOK */
++
++/* The compact checklist. */ /* MOCK-HOOK */
++.cfc-list { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 6px; min-width: 0; } /* MOCK-HOOK */
++.cfc-list ol { list-style: none; margin: 0; padding: 0; } /* MOCK-HOOK */
++.cfc-item { border-radius: 8px; } /* MOCK-HOOK */
++.cfc-item + .cfc-item { margin-top: 2px; } /* MOCK-HOOK */
++.cfc-pick { display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; } /* MOCK-HOOK */
++.cfc-pick:hover { background: var(--surface-2); } /* MOCK-HOOK */
++.cfc-pick.is-static { cursor: default; } /* MOCK-HOOK */
++.cfc-pick.is-static:hover { background: none; } /* MOCK-HOOK */
++.cfc-item.is-selected > .cfc-pick { background: var(--surface-2); border-color: var(--ctl-bd, var(--line)); } /* MOCK-HOOK */
++.cfc-item .cfg-mark { margin-top: 1px; } /* MOCK-HOOK */
++.cfc-item.is-done .cfg-mark circle, .cfc-panel-h .cfg-mark.is-done circle { fill: var(--s-live); stroke: var(--s-live); } /* MOCK-HOOK */
++.cfc-item.is-done .cfg-mark path { stroke: var(--surface); stroke-width: 2; } /* MOCK-HOOK */
++.cfc-item.is-in_progress .cfg-mark { stroke: var(--sk-ac, var(--s-live)); stroke-width: 2; } /* MOCK-HOOK */
++.cfc-item.is-failed .cfg-mark { stroke: var(--s-bad); stroke-width: 2; } /* MOCK-HOOK */
++.cfc-item.is-todo .cfg-mark { stroke-dasharray: 3 2.4; } /* MOCK-HOOK */
++.cfc-item-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; } /* MOCK-HOOK */
++.cfc-item-h { display: flex; gap: 8px; align-items: center; font-size: 14px; line-height: 20px; color: var(--text); } /* MOCK-HOOK */
++.cfc-item.is-todo .cfc-item-h b { color: var(--text-dim); font-weight: 600; } /* MOCK-HOOK */
++.cfc-item-now { font-size: 13px; line-height: 18px; color: var(--text-dim); overflow-wrap: anywhere; } /* MOCK-HOOK */
++.cfc-item-who { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; margin-top: 2px; font-size: 12px; line-height: 18px; } /* MOCK-HOOK */
++.cfc-num { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--text-dim); font-size: 12px; font-weight: 650; color: var(--text-dim); } /* MOCK-HOOK */
++
++/* Who acts now: a word, never a colour alone. */ /* MOCK-HOOK */
++.cfc-who { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: 12px; line-height: 18px; font-weight: 600; color: var(--text); white-space: nowrap; } /* MOCK-HOOK */
++.cfc-who::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); } /* MOCK-HOOK */
++.cfc-who.is-you { border-color: var(--sk-ac, var(--info)); color: var(--info-ink); } /* MOCK-HOOK */
++.cfc-who.is-you::before { background: var(--sk-ac, var(--info)); } /* MOCK-HOOK */
++.cfc-who.is-teammate::before { background: var(--s-park, var(--paused)); } /* MOCK-HOOK */
++.cfc-who.is-google::before, .cfc-who.is-github::before { background: var(--text-faint); } /* MOCK-HOOK */
++.cfc-who.is-install::before, .cfc-who.is-console::before { background: var(--s-live); } /* MOCK-HOOK */
++.cfc-since { color: var(--text-dim); font-size: 12px; } /* MOCK-HOOK */
++.cfc-done { color: var(--ok-ink); font-size: 12px; font-weight: 600; } /* MOCK-HOOK */
++.cfc-later { color: var(--text-faint); font-size: 12px; } /* MOCK-HOOK */
++
++/* Waits on others, kept in view under their step. */ /* MOCK-HOOK */
++.cfc-subs { list-style: none; margin: 0 0 4px 38px; padding: 4px 0 2px 10px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 3px; } /* MOCK-HOOK */
++.cfc-subs li { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; min-width: 0; } /* MOCK-HOOK */
++.cfc-addons { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 6px 0 2px; padding: 8px 8px 4px; border-top: 1px solid var(--line-soft); font-size: 12px; line-height: 18px; color: var(--text-dim); } /* MOCK-HOOK */
++.cfc-addon-mark { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1.5px dashed var(--text-dim); border-radius: 50%; font-weight: 650; } /* MOCK-HOOK */
++.cfc-link { padding: 0; border: 0; background: none; color: var(--info); font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; } /* MOCK-HOOK */
++.cfc-note { margin: 4px 8px 4px; font-size: 12px; line-height: 18px; color: var(--text-dim); } /* MOCK-HOOK */
++
++/* The working panel. */ /* MOCK-HOOK */
++.cfc-panel { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); min-width: 0; } /* MOCK-HOOK */
++.cfc-panel-head { padding: 12px 16px 10px; border-bottom: 1px solid var(--line-soft); } /* MOCK-HOOK */
++.cfc-kicker { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-dim); } /* MOCK-HOOK */
++.cfc-panel-h { display: flex; gap: 8px; align-items: center; margin: 2px 0 4px; font-size: 20px; line-height: 28px; font-weight: 650; color: var(--text); } /* MOCK-HOOK */
++.cfc-panel-h .cfg-mark { width: 22px; height: 22px; } /* MOCK-HOOK */
++.cfc-panel-who { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 0; font-size: 13px; color: var(--text-dim); } /* MOCK-HOOK */
++.cfc-panel-body { padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; } /* MOCK-HOOK */
++.cfc-panel-body .c-card { border: 0; padding: 0; background: none; box-shadow: none; } /* MOCK-HOOK */
++.cfc-panel-body .ob-list { margin: 0; } /* MOCK-HOOK */
++.cfc-row-line { margin: 0; font-size: 14px; line-height: 20px; color: var(--text); } /* MOCK-HOOK */
++.cfc-act { display: flex; flex-wrap: wrap; gap: 8px; } /* MOCK-HOOK */
++.cfc-locked { margin: 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; font-size: 13px; color: var(--text-dim); } /* MOCK-HOOK */
++.cfc-err { margin: 0; color: var(--bad-ink); font-size: 13px; } /* MOCK-HOOK */
++.cfc-h3 { margin: 0 0 6px; font-size: 13px; line-height: 18px; font-weight: 650; color: var(--text-dim); } /* MOCK-HOOK */
++.cfc-waits { padding: 10px 16px; border-bottom: 1px solid var(--line-soft); background: var(--surface-2); } /* MOCK-HOOK */
++.cfc-waits ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; } /* MOCK-HOOK */
++.cfc-waits li { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 4px 10px; align-items: baseline; font-size: 13px; line-height: 19px; } /* MOCK-HOOK */
++.cfc-wait-what { color: var(--text); overflow-wrap: anywhere; } /* MOCK-HOOK */
++.cfc-wait-meta { display: flex; flex-direction: column; align-items: flex-end; font-size: 12px; line-height: 17px; color: var(--text-dim); text-align: right; } /* MOCK-HOOK */
++.cfc-prov { margin: 0 4px; font-size: 12px; color: var(--text-faint); } /* MOCK-HOOK */
++
++/* This install: the sizing and the release, compact. */ /* MOCK-HOOK */
++.cfc-about { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 10px 12px; } /* MOCK-HOOK */
++.cfc-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 0; } /* MOCK-HOOK */
++.cfc-facts div { min-width: 0; } /* MOCK-HOOK */
++.cfc-facts dt { font-size: 12px; color: var(--text-dim); } /* MOCK-HOOK */
++.cfc-facts dd { margin: 0; font-size: 13px; color: var(--text); overflow-wrap: anywhere; } /* MOCK-HOOK */
++.cfc-more { margin-top: 8px; font-size: 13px; } /* MOCK-HOOK */
++.cfc-more summary { cursor: pointer; color: var(--info); font-weight: 600; } /* MOCK-HOOK */
++
++/* Lea's page. */ /* MOCK-HOOK */
++.cfc-grid-link { grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); } /* MOCK-HOOK */
++.cfc-grid-link .cfc-kicker { padding: 6px 8px 4px; } /* MOCK-HOOK */
++
++@media (max-width: 900px) { /* MOCK-HOOK */
++  .cfc-grid, .cfc-grid-link { grid-template-columns: minmax(0, 1fr); } /* MOCK-HOOK */
++  .cfc-status { grid-template-columns: auto minmax(0, 1fr); } /* MOCK-HOOK */
++  .cfc-status-count { grid-column: 1 / -1; align-items: flex-start; text-align: left; } /* MOCK-HOOK */
++  .cfc-status-count small { max-width: none; } /* MOCK-HOOK */
++  .cfc-waits li { grid-template-columns: minmax(0, 1fr); } /* MOCK-HOOK */
++  .cfc-wait-meta { align-items: flex-start; text-align: left; } /* MOCK-HOOK */
++} /* MOCK-HOOK */
++.cfc-usual { color: var(--text-dim); font-size: 12px; } /* MOCK-HOOK */
++.cfc-usual::before { content: '· '; } /* MOCK-HOOK */
++.cfc-panel-h.is-done .cfg-mark circle { fill: var(--s-live); stroke: var(--s-live); } /* MOCK-HOOK */
++.cfc-panel-h.is-done .cfg-mark path { stroke: var(--surface); stroke-width: 2; } /* MOCK-HOOK */
++.cfc-panel-h.is-in_progress .cfg-mark { stroke: var(--sk-ac, var(--s-live)); stroke-width: 2; } /* MOCK-HOOK */
++.cfc-panel-h.is-failed .cfg-mark { stroke: var(--s-bad); stroke-width: 2; } /* MOCK-HOOK */
++.cfc-panel-h.is-todo .cfg-mark { stroke-dasharray: 3 2.4; } /* MOCK-HOOK */
++.cfc-panel-body .c-code pre { white-space: pre-wrap; overflow-wrap: anywhere; } /* MOCK-HOOK */
++.cfc-about .cfc-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); } /* MOCK-HOOK */
++@media (max-width: 900px) { /* MOCK-HOOK */
++  .cfc-grid:not(.cfc-grid-link) .cfc-right { order: -1; } /* MOCK-HOOK */
++  .cfc-about .cfc-facts { grid-template-columns: 1fr 1fr; } /* MOCK-HOOK */
++} /* MOCK-HOOK */
+diff --git a/apps/swarm-ui/src/consolefinish/consolefinish.css b/apps/swarm-ui/src/consolefinish/consolefinish.css
+new file mode 100644
+index 0000000..278d2f9
+--- /dev/null
++++ b/apps/swarm-ui/src/consolefinish/consolefinish.css
+@@ -0,0 +1,14 @@
++/* MOCK-HOOK FILE: the console finish mock-ups' neutral scaffold (`?finish=base`). Tokens only, no literal colour. */
++.cf-base { min-width: 0; } /* MOCK-HOOK */
++.cf-section { margin: 0 0 var(--ctl-s3, 12px); min-width: 0; } /* MOCK-HOOK */
++.cf-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--ctl-s3, 12px); align-items: start; min-width: 0; } /* MOCK-HOOK */
++.cf-col { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; } /* MOCK-HOOK */
++.cf-h { font-size: 13px; font-weight: 600; color: var(--text-dim); margin: 4px 0 0; } /* MOCK-HOOK */
++.cf-row .ob-list { margin: 0; } /* MOCK-HOOK */
++.cf-moments { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin: 0 0 var(--ctl-s3, 12px); padding: 6px 10px; border: 1px dashed var(--line); border-radius: 6px; font-size: 12px; color: var(--text-dim); min-width: 0; } /* MOCK-HOOK */
++.cf-moments-h { font-weight: 600; } /* MOCK-HOOK */
++.cf-moments-list { display: flex; flex-wrap: wrap; gap: 4px 10px; list-style: none; margin: 0; padding: 0; min-width: 0; } /* MOCK-HOOK */
++.cf-moments-list a[aria-current='page'] { font-weight: 600; text-decoration: underline; } /* MOCK-HOOK */
++@media (max-width: 720px) { /* MOCK-HOOK */
++  .cf-grid { grid-template-columns: minmax(0, 1fr); } /* MOCK-HOOK */
++} /* MOCK-HOOK */
+diff --git a/apps/swarm-ui/src/consolefinish/moments.ts b/apps/swarm-ui/src/consolefinish/moments.ts
+new file mode 100644
+index 0000000..16e7144
+--- /dev/null
++++ b/apps/swarm-ui/src/consolefinish/moments.ts
+@@ -0,0 +1,308 @@
++// MOCK-HOOK FILE: the Day One console finish mock-ups' record moments (2026-11-02). Fixture build only; nothing here is read live.
++/**
++ * THE RECORD MOMENTS (console finish mock-ups, step 'foundation').
++ *
++ * `?moment=<name>` makes the fixture build's `GET /v1/admin/setup` answer the
++ * install record at one moment of the story both directions draw, in the
++ * route's own shape (what `normSetupState` reads). Every time is counted from
++ * the fixture clock (`FIXTURE_CLOCK` in api.ts, passed in as `nowMs`): each
++ * moment is the page read at that clock, with the install's history placed
++ * behind it, so "seen 20 s ago" and "21 hours left" read the same on every
++ * open. Without `?moment` nothing here is used and today's fixtures stand.
++ *
++ * The story, in minutes from the install's start (stage 0) to the read:
++ * cloud part done at 38 (11 of 11 stages), the hand-off at 38; arrive 39;
++ * signin-typing 44; signin-saved 47; github-callback 52; github-installed 55;
++ * team-building 68; Lea's link made at 70; accounts-waiting 250 (Ana came back
++ * hours later: 21 hours left on Lea's link); smoke-failed 256; terminal-closed
++ * 270 (terminal last seen at 256); verify-running 300; verify-failed 318;
++ * ready 340. one-person is its own install, read at its accounts step.
++ */
++
++export const FINISH_MOMENTS = [
++  'arrive',
++  'signin-typing',
++  'signin-saved',
++  'github-callback',
++  'github-installed',
++  'team-building',
++  'accounts-waiting',
++  'smoke-failed',
++  'terminal-closed',
++  'verify-running',
++  'verify-failed',
++  'ready',
++  'link-teammate',
++  'one-person',
++] as const
++
++export type FinishMoment = (typeof FINISH_MOMENTS)[number]
++
++/** The story minute each moment is read at (see above). */
++const READ_AT: Record<FinishMoment, number> = {
++  arrive: 39,
++  'signin-typing': 44,
++  'signin-saved': 47,
++  'github-callback': 52,
++  'github-installed': 55,
++  'team-building': 68,
++  'accounts-waiting': 250,
++  'smoke-failed': 256,
++  'terminal-closed': 270,
++  'verify-running': 300,
++  'verify-failed': 318,
++  ready: 340,
++  'link-teammate': 251,
++  'one-person': 52,
++}
++
++/** One moment's place in the story, for a direction that draws a timeline: index 1-14 and its read minute. */
++export function momentIndex(m: FinishMoment): { n: number; minute: number } {
++  return { n: FINISH_MOMENTS.indexOf(m) + 1, minute: READ_AT[m] }
++}
++
++function readParam(name: string): string | null {
++  if (typeof window === 'undefined') return null
++  return new URLSearchParams(window.location.search).get(name)
++}
++
++/**
++ * The moment this page load answers, read ONCE at module load (as the persona
++ * cookie is), so a page that rewrites its address (the callback page drops
++ * its query) keeps answering the same moment. Null without `?moment`, or with
++ * a name not in the story.
++ */
++export const FINISH_MOMENT: FinishMoment | null = (() => {
++  const m = readParam('moment')
++  return m !== null && (FINISH_MOMENTS as readonly string[]).includes(m) ? (m as FinishMoment) : null
++})()
++
++/** `?finish=<layout>`, read once: `base` is the neutral scaffold; a direction adds its own name. Null draws today's page. */
++export const FINISH_LAYOUT: string | null = (() => {
++  const f = readParam('finish')
++  return f !== null && /^[a-z][a-z0-9-]{0,31}$/.test(f) ? f : null
++})()
++
++/** True from `arrive` on; a story minute at or before this one is in the moment's past. */
++const reached = (m: FinishMoment, minute: number) => READ_AT[m] >= minute
++
++/** Hex made at run time (crypto), never a written literal: GitHub's one-time code and state for the callback frame. */
++export function runtimeHex(bytes: number): string {
++  const a = new Uint8Array(bytes)
++  globalThis.crypto.getRandomValues(a)
++  return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('')
++}
++
++/** The callback's query as GitHub sends it, `?code=…&state=…`, both made at run time. */
++export function momentCallbackSearch(): string {
++  return `?code=${runtimeHex(10)}&state=${runtimeHex(16)}`
++}
++
++/** `POST /v1/admin/setup/github-app/conversion`'s answer at the github-callback moment: the App's id and slug, never a secret. */
++export const MOMENT_APP = { id: '4242', slug: 'swarmcloud-console-example' }
++
++/** `POST /v1/setup/links/redeem`'s answer for Lea's link (link-teammate): her pool account, filed into the first team. */
++export const MOMENT_REDEEM = { kind: 'pool-account', label: 'lea', tenant: 'engineering' }
++
++/** The console verify runs' and the smoke agent's ids under a moment. */
++export const MOMENT_RUN_IDS = { task: 'task_verify_console', workflow: 'wf_verify_console', smoke: 'task_smoke_engineering' }
++
++/** The state `GET /v1/tasks/{id}` / `GET /v1/workflows/{id}` answers for a moment's run, or null for an id that is not one of them. */
++export function momentRunWord(m: FinishMoment, id: string): string | null {
++  if (id === MOMENT_RUN_IDS.smoke) return m === 'smoke-failed' ? 'FAILED' : reached(m, 270) ? 'SUCCEEDED' : 'RUNNING'
++  if (id === MOMENT_RUN_IDS.task) return m === 'verify-running' ? 'RUNNING' : 'SUCCEEDED'
++  if (id === MOMENT_RUN_IDS.workflow) return m === 'verify-running' ? 'PENDING' : 'SUCCEEDED'
++  return null
++}
++
++const SIGN_IN_PAGES = (() => {
++  const page = (path: string) => `https://console.cloud.google.com/auth/${path}?project=swarmcloud-example`
++  return { branding: page('branding'), audience: page('audience'), create_client: page('clients/create') }
++})()
++
++/** The Desktop client's id as it reads in the frames; its secret is never in any record. */
++const CLIENT_ID = '409117-desktop.apps.googleusercontent.com'
++
++const ANA = 'ana@example.com'
++const RAVI = 'ravi@example.com'
++const LEA = 'lea@example.com'
++
++/**
++ * The install record `GET /v1/admin/setup` answers at moment `m`, read at
++ * `nowMs` (the fixture clock). Raw, in the route's shape: the caller passes
++ * it through `normSetupState` as the live answer is.
++ */
++export function momentSetupState(m: FinishMoment, nowMs: number): Record<string, unknown> {
++  const readAt = READ_AT[m]
++  /** The ISO time of story minute `minute`, as seen from this moment's read. */
++  const at = (minute: number) => new Date(nowMs - (readAt - minute) * 60_000).toISOString()
++  /** The same instant in epoch seconds: the engine writes its own times so. */
++  const sec = (minute: number) => Math.round((nowMs - (readAt - minute) * 60_000) / 1000)
++
++  const onePerson = m === 'one-person'
++  const closed = m === 'terminal-closed'
++  // Stage 9 (pass 3, the App's switches) lands at 58 and pass 4 at 60; stage 14 is verify, 15 READY.
++  const cloud = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 13]
++  const stages = Array.from({ length: 16 }, (_, i) => {
++    if (cloud.includes(i)) return { state: 'done', at: sec(Math.round((cloud.indexOf(i) + 1) * (38 / 11))), by: ANA }
++    if (i === 9 && !onePerson && reached(m, 58)) return { state: reached(m, 60) ? 'done' : 'switches_on', at: sec(58), by: ANA }
++    if (i === 9 && onePerson) return { state: 'done', at: sec(50), by: ANA }
++    if (i === 14 && reached(m, 291)) return { state: m === 'verify-failed' ? 'failed' : m === 'ready' ? 'done' : 'running', at: sec(291), by: ANA }
++    if (i === 15 && m === 'ready') return { state: 'done', at: sec(338), by: ANA }
++    return null
++  })
++
++  const verify =
++    m === 'verify-running'
++      ? { check: 'reconciler-jobs', done: 2, total: 8, started: sec(291), expected_end: sec(309), deadline: sec(336), result: null }
++      : m === 'verify-failed'
++        ? { check: 'plugin-browser', done: 5, total: 8, started: sec(291), expected_end: sec(309), deadline: sec(336), result: 'failed' }
++        : m === 'ready'
++          ? { check: 'console-workflow', done: 8, total: 8, started: sec(291), expected_end: sec(309), deadline: sec(336), result: 'passed' }
++          : null
++
++  const engine = {
++    release: '2026.11.0',
++    hostname: 'console.example.com',
++    stages,
++    // The lease's holder heartbeats every 30 s while swarm install waits; terminal-closed: last seen 14 minutes ago.
++    lease: { holder: `${ANA} laptop`, heartbeat: closed ? sec(256) : Math.round(nowMs / 1000) - 20 },
++    verify,
++    hand_off_at: sec(38),
++    ready_at: m === 'ready' ? sec(338) : null,
++    workspace_groups: onePerson ? null : { team: 'engineering@example.com' },
++    // The engine's own record of the Desktop client once its pass applied it.
++    iap_programmatic_client: reached(m, 49) ? CLIENT_ID : null,
++  }
++
++  const signIn =
++    onePerson || reached(m, 49)
++      ? { state: 'applied', client_id: CLIENT_ID, saved_at: at(onePerson ? 44 : 46), saved_by: ANA, links: SIGN_IN_PAGES }
++      : m === 'signin-saved'
++        ? { state: 'saved', client_id: CLIENT_ID, saved_at: at(46), saved_by: ANA, links: SIGN_IN_PAGES }
++        : { state: 'waiting', client_id: null, saved_at: null, saved_by: null, links: SIGN_IN_PAGES }
++
++  const githubApp = onePerson
++    ? { started: true, id: 4242, slug: MOMENT_APP.slug, installed_on: 'example-org', secrets_written_at: at(47), self_check: { ok: true, reason: null, at: at(51), state: 'passed' } }
++    : !reached(m, 50)
++      ? null
++      : {
++          started: true,
++          id: reached(m, 52) ? 4242 : null,
++          slug: reached(m, 52) ? MOMENT_APP.slug : null,
++          installed_on: reached(m, 54) ? 'example-org' : null,
++          secrets_written_at: reached(m, 52) ? at(52) : null,
++          self_check: !reached(m, 55)
++            ? null
++            : reached(m, 59)
++              ? { ok: true, reason: null, at: at(59), state: 'passed' }
++              : { ok: false, reason: 'app_id_not_configured', at: at(55), state: 'waiting_for_infra_pass_3' },
++        }
++
++  const grant = { state: 'granted', account: 'example-org', selection: 'selected', repositories: ['example-org/app', 'example-org/web'] }
++  const smoke =
++    m === 'smoke-failed'
++      ? { state: 'failed', detail: 'the smoke agent could not clone example-org/app: the GitHub App answered 404 for the repository', url: `/agents/${MOMENT_RUN_IDS.smoke}` }
++      : reached(m, 266)
++        ? { state: 'succeeded', detail: 'green in 3 min 12 s', url: `/agents/${MOMENT_RUN_IDS.smoke}` }
++        : reached(m, 246)
++          ? { state: 'running', detail: null, url: `/agents/${MOMENT_RUN_IDS.smoke}` }
++          : null
++  const leaIn = reached(m, 296) && m !== 'link-teammate'
++  const ravi = reached(m, 240)
++  const teams =
++    onePerson || !reached(m, 62)
++      ? []
++      : [
++          {
++            id: 'engineering',
++            group: 'engineering@example.com',
++            workspace: 'engineering',
++            workspace_id: 'w-engineering',
++            first_admin: ANA,
++            invites: [RAVI, LEA],
++            progress: { created_at: at(62), namespace: reached(m, 70) ? 'ready' : 'creating', identity: reached(m, 72) ? 'ready' : 'waiting' },
++            workspace_state: reached(m, 75) ? 'ready' : 'applying',
++            smoke,
++            grant: reached(m, 72) ? grant : { state: 'waiting_for_app', account: 'example-org', selection: null, repositories: [] },
++            members: [
++              { email: ANA, member: true },
++              { email: RAVI, member: true },
++              { email: LEA, member: reached(m, 90) },
++            ],
++            pool_accounts: [...(ravi ? ['ravi'] : []), ...(leaIn ? ['lea'] : [])],
++            add_members_url: 'https://admin.google.com/ac/groups/engineering%40example.com/members',
++          },
++        ]
++
++  const accounts: Record<string, unknown> = onePerson
++    ? { ana: { owner: ANA, link_expires: null, signed_in_at: null } }
++    : reached(m, 70)
++      ? {
++          // `signed_in_at` is stamped by the hand-over (290) for the accounts in the pool then; Lea signs in at 296.
++          ravi: { owner: RAVI, link_expires: at(69 + 1440), signed_in_at: reached(m, 290) ? at(290) : null },
++          lea: { owner: LEA, link_expires: at(70 + 1440), signed_in_at: null },
++        }
++      : {}
++
++  const finished = reached(m, 290) ? { at: at(290), by: ANA } : null
++  const verifyRuns = reached(m, 290)
++    ? {
++        verify_runs: { console_task: MOMENT_RUN_IDS.task, console_workflow: MOMENT_RUN_IDS.workflow },
++        repository: 'example-org/app',
++        retries: { console_task: 0, console_workflow: 0 },
++      }
++    : null
++
++  return {
++    env: 'prod',
++    engine,
++    // terminal-closed: the lease's heartbeat is over 2 minutes old, so the route says no CLI runs.
++    cli_running: !closed,
++    sign_in_client: signIn,
++    github_app: githubApp,
++    teams,
++    accounts,
++    finished,
++    addons: [
++      { name: 'brave-search', enable: 'swarm addon enable brave-search', secret_link: true },
++      { name: 'ci', enable: 'swarm addon enable ci', secret_link: false },
++    ],
++    hostname: 'console.example.com',
++    github_org: 'example-org',
++    verify_runs: verifyRuns,
++    mode: onePerson ? 'individual' : 'team',
++    personal: onePerson
++      ? {
++          owner: ANA,
++          workspace: 'u-ana',
++          reason: null,
++          progress: { created_at: at(51) },
++          workspace_state: 'ready',
++          grant,
++          smoke: null,
++          pool_accounts: [],
++        }
++      : null,
++    steps: onePerson
++      ? { first_team: { needed: false, state: 'not_needed', reason: 'individual' }, invites: { needed: false, state: 'not_needed', reason: 'individual' } }
++      : { first_team: { needed: true, state: reached(m, 62) ? 'started' : 'todo', reason: null }, invites: { needed: true, state: reached(m, 90) ? 'done' : reached(m, 62) ? 'waiting' : 'todo', reason: null } },
++    sizing: onePerson
++      ? {
++          mode: 'individual',
++          members: 1,
++          pool_limits: { global: 4, default_tenant: 4, provider_tenant: 4 },
++          service_max_instances: { 'swarm-api': 1, 'swarm-scheduler': 1, 'swarm-quota-broker': 1, 'swarm-reconciler': 1 },
++          pool_accounts: 1,
++          budget_usd: 200,
++        }
++      : {
++          mode: 'team',
++          members: 5,
++          pool_limits: { global: 12, default_tenant: 8, provider_tenant: 8 },
++          service_max_instances: { 'swarm-api': 2, 'swarm-scheduler': 1, 'swarm-quota-broker': 1, 'swarm-reconciler': 1 },
++          pool_accounts: 2,
++          budget_usd: 1000,
++        },
++  }
++}

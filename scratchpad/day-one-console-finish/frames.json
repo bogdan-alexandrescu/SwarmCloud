@@ -1,0 +1,128 @@
+[
+  {
+    "name": "finish-checklist-arrive",
+    "moment": "arrive",
+    "caption": "The arrival: the cloud part is done (11 of 11 stages), the terminal is waiting, and the panel opens on the first thing to do here, the sign-in client",
+    "code": "Checklist beside a working panel \u00b7 1",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-signin-typing",
+    "moment": "signin-typing",
+    "caption": "The sign-in client: three Google pages in order, then the client's id typed and its secret hidden as it is typed",
+    "code": "Checklist beside a working panel \u00b7 2",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-signin-saved",
+    "moment": "signin-saved",
+    "caption": "Saved: swarm install applies the client while the panel moves on by itself to the GitHub App",
+    "code": "Checklist beside a working panel \u00b7 3",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-github-callback",
+    "moment": "github-callback",
+    "caption": "Back from GitHub: the App is created and its secrets stored, never shown; install it on example-org next",
+    "code": "Checklist beside a working panel \u00b7 4",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-github-installed",
+    "moment": "github-installed",
+    "caption": "Installed on example-org: the self-check waits on swarm install's third pass, and the panel is already on the first team",
+    "code": "Checklist beside a working panel \u00b7 5",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-team-building",
+    "moment": "team-building",
+    "caption": "The first team, picked by hand: its workspace is building, and Lea's invite waits for Google Groups to show her",
+    "code": "Checklist beside a working panel \u00b7 6",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-accounts-waiting",
+    "moment": "accounts-waiting",
+    "caption": "Back hours later: Ravi is signed in, Lea's link is unused with 21 hours left, and the smoke agent is running",
+    "code": "Checklist beside a working panel \u00b7 7",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-smoke-failed",
+    "moment": "smoke-failed",
+    "caption": "The smoke agent failed: its cause in one line, the fix and Retry",
+    "code": "Checklist beside a working panel \u00b7 8",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-terminal-closed",
+    "moment": "terminal-closed",
+    "caption": "The terminal was last seen 14 minutes ago: the steps here still work, and the one thing to do is run swarm install again",
+    "code": "Checklist beside a working panel \u00b7 9",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-verify-running",
+    "moment": "verify-running",
+    "caption": "Handed over: swarm install runs verify, check 3 of 8, about 9 minutes left",
+    "code": "Checklist beside a working panel \u00b7 10",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-verify-failed",
+    "moment": "verify-failed",
+    "caption": "Verify failed at the live-browser check: its cause, and how to resume",
+    "code": "Checklist beside a working panel \u00b7 11",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-ready",
+    "moment": "ready",
+    "caption": "Ready: the terminal printed its ready line, and Send to your team is open with the plugin line",
+    "code": "Checklist beside a working panel \u00b7 12",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-link-teammate",
+    "moment": "link-teammate",
+    "caption": "Lea's own page: her part in three lines, and her one-time link opened by her click",
+    "code": "Checklist beside a working panel \u00b7 13",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-one-person",
+    "moment": "one-person",
+    "caption": "A one-person install at its Claude accounts step: no team step and no invites",
+    "code": "Checklist beside a working panel \u00b7 14",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "finish-checklist-arrive-1512",
+    "moment": "arrive",
+    "caption": "The arrival in the owner's own window, 1512 by 862",
+    "code": "Checklist beside a working panel \u00b7 15",
+    "viewport": "1512x862"
+  },
+  {
+    "name": "finish-checklist-arrive-1280",
+    "moment": "arrive",
+    "caption": "The arrival on a 1280 by 800 laptop",
+    "code": "Checklist beside a working panel \u00b7 16",
+    "viewport": "1280x800"
+  },
+  {
+    "name": "finish-checklist-arrive-390",
+    "moment": "arrive",
+    "caption": "The arrival on a phone: what swarm install is doing, then the steps, then the working panel",
+    "code": "Checklist beside a working panel \u00b7 17",
+    "viewport": "390x844"
+  },
+  {
+    "name": "finish-checklist-link-teammate-390",
+    "moment": "link-teammate",
+    "caption": "Lea's one-time link page on her phone",
+    "code": "Checklist beside a working panel \u00b7 18",
+    "viewport": "390x844"
+  }
+]
