@@ -14,7 +14,8 @@ where swarm-api keeps 20 versions. What is held here:
   promoted version on top;
 * swarm-api, not the worker, decides the kept commits -- the newest
   `keep_versions` versions, the promoted `current_sha` and the run's own
-  commit -- and names them in the SIGNED prompt (`KEEP_LINE`), the way it
+  commit, and every version recorded in the last day (2026-11-03) -- and
+  names them in the SIGNED prompt (`KEEP_LINE`), the way it
   names an incremental run's base (`BASE_LINE`);
 * the worker's sweep report reaches the run and the registration, so the
   repository page says what was deleted and kept, or why nothing was.
@@ -234,13 +235,14 @@ def test_the_age_floor_keeps_no_more_than_the_most_a_repository_may_keep():
 
 def test_the_prune_spares_the_last_days_versions(db, repo_id):
     shas = _seed_versions(db, repo_id, 40)  # one an hour from T0
+    rows = [dict(db.docs[f"repositories/{repo_id}/index_versions/{c}"]) for c in shas]
     service = _service(db)
     service._now = lambda: T0 + timedelta(hours=39)
     service._prune_versions(repo_id, keep=None, keep_versions=5)
-    # The newest 25 (hours 15..39) are younger than a day; the prune and the
-    # sweep's keep set agree on them.
+    # MUTATION: prune by count alone and only hours 35..39 stay. The newest
+    # 25 (hours 15..39) are younger than a day; the prune and the sweep's
+    # keep set agree on them.
     assert _versions(db, repo_id) == set(shas[15:])
-    rows = [dict(db.docs[f"repositories/{repo_id}/index_versions/{c}"]) for c in shas]
     assert set(repoindex.kept_commits(rows, keep_versions=5, current_sha=None, own=shas[-1],
                                       now=T0 + timedelta(hours=39))) == set(shas[15:])
 
