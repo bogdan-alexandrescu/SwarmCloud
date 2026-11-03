@@ -1432,10 +1432,19 @@ def cmd_profiles(_client, args) -> int:
     width = max([12, *(len(entry["name"]) for entry in entries)])
     for entry in entries:
         mark = "ok  " if entry["available"] else "--  "
+        # WHAT THE AGENT GETS FIRST (#3118): a live-browser pod's total is
+        # the agent's container plus the display's, and a step sized by the
+        # total is OOM-killed at the agent's share.
+        memory = f"{entry['memory_gib']} GiB"
+        if entry.get("display_memory_gib") is not None:
+            memory = (
+                f"agent {entry['agent_memory_gib']} GiB (display {entry['display_memory_gib']} "
+                f"of the pod's {entry['pod_memory_gib']} GiB)"
+            )
         print(
             f"  {mark} {entry['name']:<{width}} {entry['backend']:<15} "
             f"{entry['resource_class']:<9} {entry['cpu']:g} cpu / "
-            f"{entry['memory_gib']} GiB  timeout {entry['timeout_seconds']}s"
+            f"{memory}  timeout {entry['timeout_seconds']}s"
         )
         if entry.get("provider"):
             print(f"       provider {entry['provider']} -- needs a registered credential")
