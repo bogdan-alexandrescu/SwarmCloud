@@ -427,3 +427,23 @@ def test_a_resigned_document_reads_the_same_once_cut_over(client, seeded, api_co
     assert get_backend(client, "eng") == "typesafe"
     assert get_merge(client, "eng")["mode"] == "train"
     assert get_ci(client, "eng")["jev"] is True
+
+
+def test_a_plugins_list_no_writer_wrote_is_held_and_the_other_blocks_still_sign():
+    """Contract request 136 adds the `plugins` block (`allowed`) and no swarm-api
+    route writes it yet, so a stored `plugins.allowed` is one only a forger can
+    have put there: the re-sign pass holds it, never signs it, and signs the
+    workspace's other blocks exactly as before."""
+    db = FakeFirestore()
+    legacy(db)
+    db.docs["workspace_settings/eng"]["plugins"] = {"allowed": ["gstack"]}
+    key = new_key()
+    assert judgment.unowned_covered_keys("plugins") == ("allowed",)
+    plan = judgment.resign_workspace_settings(db, key, apply=True)
+    statuses = {(b["tenant_id"], b["block"]): b["status"] for b in plan["blocks"]}
+    assert statuses[("eng", "plugins")] == "held"
+    assert "mac" not in db.docs["workspace_settings/eng"]["plugins"]
+    eng = db.docs["workspace_settings/eng"]
+    assert reference_verifies(key, "eng", "top", eng)
+    assert reference_verifies(key, "eng", "merge", eng["merge"])
+    assert plan["written"] == 4

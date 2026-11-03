@@ -143,7 +143,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 133 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | ACCEPTED by the owner (BGD) 2 November 2026 ("Accept and build"; owner accepted 2 November 2026; requested 2026-10-28 by lane CONTRACT-MAXTURNS on PR 2682 as 127, renumbered 2026-11-02 by lane CARRY-TURN-CAP). APPLIED 2026-11-02 by the pull request that adds this line (lane TURN-CAP-APPLIED, part of #2688): spec format 7; `supports_max_turns=True` on the six claude-code-runner profiles and `max_turns` None on every profile; swarm-api resolves `max_turns` beside `validate_timeout` on a task, a workflow step, a child and both profiles of a `browser_if_ui` step; the worker passes the verified `Task.max_turns` as `--max-turns`; the requirements check asks for 30 turns and its prompt no longer does |
 | 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (BGD, answering question 0 of PR 3095: merge as built on the current class, and file this request) |
 | 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
-| 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | open, REQUESTED 2026-11-03; not applied |
+| 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
 
 ---
 
@@ -16401,10 +16401,36 @@ both are the owner's to accept.
 
 ## 136. A shared `workcontract.py`, a `"plugins"` settings block and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, part of #2688)
 
-**Status:** open, REQUESTED 2026-11-03 by lane aq-work-contract, the work
-contract package of the owner's agent quality program (BGD, 3 November 2026).
-Not applied: `apps/common/swarm_common/` is frozen. Nothing built by that lane
-depends on it; what it unblocks is listed under "What reads it".
+**Status:** ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by
+the pull request that adds this status (lane
+apply-contract-request-work-contract-plugins, part of #2688). Requested
+2026-11-03 by lane aq-work-contract, the work contract package of the owner's
+agent quality program (BGD, 3 November 2026). What reads it is listed under
+"What reads it"; none of those readers is built by the applying change.
+
+Applied exactly as worded:
+
+* **A.** `apps/common/swarm_common/workcontract.py` holds `CONTRACT_PURPOSE`,
+  `SCHEMA_VERSION`, the limit keys, `Requirement`, `WorkContract` with its
+  `to_document` projection, `canonical_bytes(document)` and
+  `contract_digest(document) -> str`. `swarm_api.workcontract` imports them
+  (its `WorkContract` subclasses the shared one and adds only
+  `requirement_ids` and `components`) and keeps the schema validation and the
+  amendment protocol. The digest of every existing test vector is pinned
+  before and after the move
+  (`tests/unit/control_plane/test_work_contract_common.py`), and the
+  pinned-bytes test in `tests/unit/control_plane/test_work_contract.py` is
+  unchanged and green.
+* **B.** `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`. Every other block's
+  canonical bytes are pinned unchanged (`tests/unit/common/test_settings_block.py`),
+  so every stored MAC still verifies. `swarm_api.judgment.WRITER_FIELDS`
+  gains `"plugins": ()` beside it: no route writes the block yet, so the
+  re-sign pass holds a stored `plugins.allowed`, never signs it, and does not
+  fail on it.
+* **C.** `RunnerProfile.runtime_capabilities: tuple[str, ...] = ()`, last in
+  the class, refused when it is not a tuple of distinct capability names, and
+  stated as `()` on every catalogue profile until the routing package fills
+  them in (`tests/unit/common/test_runtime_capabilities_contract.py`).
 
 ### What is true today
 
