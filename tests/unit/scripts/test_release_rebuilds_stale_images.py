@@ -52,6 +52,9 @@ from .test_ci_built_images import FAKE_GH, IMAGES, OWNER_REPO, REGISTRY, ci_run
 # agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base by digest.
 WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer",
           "agent-runtime-lightpanda"}
+# swarm-voice (VOICE-STATEFULSET) copies the base's Dockerfile in to read its pinned
+# CLAUDE_CODE_VERSION, so a change to that file rebuilds it with the base's family.
+BASE_DOCKERFILE_READERS = WORKER | {"swarm-voice"}
 
 
 class Release(Sandbox):
@@ -177,8 +180,8 @@ def test_a_stale_base_rebuilds_the_images_built_from_it(box):
 
     proc, manifest, events = box.release(record)
     assert proc.returncode == 0, proc.stderr[-4000:]
-    assert _submitted(events) == WORKER, f"submitted {_submitted(events)}"
-    for name in WORKER:
+    assert _submitted(events) == BASE_DOCKERFILE_READERS, f"submitted {_submitted(events)}"
+    for name in BASE_DOCKERFILE_READERS:
         assert _by_name(manifest)[name]["built_from"] == head
 
 

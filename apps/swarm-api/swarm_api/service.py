@@ -31,6 +31,7 @@ later, and the scheduler's credential sweep re-readies it.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
@@ -52,7 +53,7 @@ from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backe
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from . import budget as budget_mod
-from . import gitidentity, publishtopr, runnersizes
+from . import gitidentity, publishtopr, runnersizes, workcontract
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import CI_FIX_METADATA_FIELD, stamp as stamp_ci_fix
@@ -104,7 +105,7 @@ from .provider_keys import task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
-from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
+from .schemas import StepBudget, TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
@@ -686,6 +687,40 @@ class SubmissionService:
 
     # -- tasks ------------------------------------------------------------
 
+    def _work_contract(self, spec: TaskCreate, *, tenant: Tenant, step_id: str | None,
+                       repository_url: str | None,
+                       repository_ref: str | None) -> workcontract.Prepared | None:
+        """The step's work contract, prepared (`workcontract.prepare`), or None.
+
+        None while SWARM_WORK_CONTRACTS is off, whatever the metadata holds,
+        and for a step with none. A refusal is a 422 `validation_failed`
+        naming the contract's own code in `detail.work_contract`: the
+        established code, behind the switch, so no new refusal code ships on
+        (`swarm_api.refusals`)."""
+        try:
+            return workcontract.prepare(
+                spec.metadata, tenant_id=tenant.tenant_id, step_id=step_id,
+                step_fields={
+                    "runner_profile": spec.runner_profile,
+                    "model_class": spec.model_class,
+                    "budget": (spec.budget.model_dump(exclude_none=True)
+                               if spec.budget is not None else None),
+                    "max_turns": spec.max_turns,
+                    "timeout_seconds": spec.timeout_seconds,
+                },
+                repository_url=repository_url, repository_ref=repository_ref,
+                environ=os.environ,
+            )
+        except workcontract.WorkContractError as exc:
+            raise ValidationFailed(
+                f"metadata.{workcontract.METADATA_KEY}: {exc.message}",
+                detail={"field": f"metadata.{workcontract.METADATA_KEY}",
+                        "work_contract": exc.code,
+                        **{("contract_field" if k == "field" else k): v
+                           for k, v in exc.detail.items()},
+                        **({"step_id": step_id} if step_id else {})},
+            ) from exc
+
     def _build_task(
         self,
         *,
@@ -714,6 +749,18 @@ class SubmissionService:
         if submitted_by is None:
             assert ctx is not None
             submitted_by = ctx.email
+        # A work contract (docs/design/agent-quality/work-contract.md), only
+        # while SWARM_WORK_CONTRACTS is on: first, because the limits it sets
+        # and the step leaves unset become the step's own fields, which every
+        # check below then resolves as if the caller had named them.
+        contract = self._work_contract(spec, tenant=tenant, step_id=step_id,
+                                       repository_url=repository_url or spec.repository_url,
+                                       repository_ref=repository_ref or spec.repository_ref)
+        if contract is not None:
+            update: dict[str, Any] = {**contract.fields, "metadata": dict(contract.metadata)}
+            if "budget" in update:
+                update["budget"] = StepBudget(**update["budget"])
+            spec = spec.model_copy(update=update)
         profile = validate_runner_profile(spec.runner_profile)
         # An `await-input` step only inside a workflow (docs/design/
         # human-steps.md §4.1): as a task, a batch entry or a child it has no
@@ -810,6 +857,10 @@ class SubmissionService:
         # and `spec.carrier` are deliberately not read here -- `submit_workflow`
         # synthesises a TaskCreate whose defaults would otherwise silently
         # override the workflow's choice.
+        if contract is not None:
+            # Inside the signed block: `_sign` covers the reference, and the
+            # reference binds the stored document by digest.
+            dispatch = workcontract.attach(dispatch, contract.compiled, environ=os.environ)
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
         # The limits go in the typed `Task.budget` below (contract request
@@ -1286,6 +1337,15 @@ class SubmissionService:
                     "metadata of each step that should run on the browser only when "
                     "its upstream change touches UI",
                     detail={"field": f"metadata.{RUNTIME_METADATA_KEY}"},
+                )
+            # A work contract is one step's: copied onto every step, each
+            # would carry the same requirements as its own. Read only while
+            # SWARM_WORK_CONTRACTS is on; off, the key is the caller's.
+            if workcontract.enabled(os.environ) and workcontract.METADATA_KEY in spec.metadata:
+                raise ValidationFailed(
+                    "metadata.work_contract is a step's, not the workflow's: put each "
+                    "step's contract in that step's metadata",
+                    detail={"field": f"metadata.{workcontract.METADATA_KEY}"},
                 )
             # Copied onto every step's task, so refused once, here, without a
             # step id: it is the workflow's (#294).

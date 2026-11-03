@@ -8,7 +8,12 @@ each time it is read from facts other code already keeps:
                 it, else live_at -> ended_at, or -> now while live) at
                 `gpt-live-1`'s per-minute price (`modelprices.per_minute_cost`)
   Planner       each turn's `usage` at the platform's `model_prices`
-                (Opus 5.5 unless the turn names its model)
+                (Opus 5.5 unless the turn names its model). A turn run on a
+                Claude subscription account from the pool (`usage.billing ==
+                "subscription"`, swarm-voice's planner, §3.6) has no measured
+                price: its estimate is RESERVED, never spent and never $0, so
+                it still counts against both caps, and `subscription_turns`
+                says how many were not measured
   Work running  each `voice_starts` row's step budgets times 1.2 (the
                 worker's guard kills a step at 120%, agent-budget.md §5),
                 plus any follow-up allowance reserved with it, until the
@@ -77,6 +82,9 @@ RESERVE_FACTOR = 1.2
 #: The live voice model and the planner's model (§3.8).
 TALK_MODEL = "gpt-live-1"
 PLANNER_MODEL = "claude-opus-5-5"
+#: `usage.billing` of a turn run on a pool subscription account (§3.6).
+BILLING = "billing"
+SUBSCRIPTION = "subscription"
 #: The largest one step's budget the ledger accepts: far above any lane, far
 #: below a figure that would make the arithmetic meaningless.
 MAX_STEP_USD = 1_000.0
@@ -258,6 +266,7 @@ def turn_cost(usage: Any, prices: Mapping[str, Mapping[str, Any]]) -> float | No
     {model: counts}}`. None when a model has no price; 0.0 with no usage."""
     if not isinstance(usage, Mapping) or not usage:
         return 0.0
+    usage = {k: v for k, v in usage.items() if k != BILLING}
     by_model = usage.get("by_model")
     if not isinstance(by_model, Mapping):
         model = usage.get("model") if isinstance(usage.get("model"), str) else PLANNER_MODEL
@@ -317,7 +326,7 @@ class _Totals:
     def __init__(self, cap: float) -> None:
         self.cap = cap
         self.lines = {name: {"spent_usd": 0.0, "reserved_usd": 0.0} for name in LINES}
-        self.notes = {"unpriced_turns": 0, "unmeasured_items": 0, "running_items": 0,
+        self.notes = {"unpriced_turns": 0, "subscription_turns": 0, "unmeasured_items": 0, "running_items": 0,
                       "finished_items": 0, "followup_tasks": 0}
 
     def add(self, line: str, *, spent: float = 0.0, reserved: float = 0.0) -> None:
@@ -411,6 +420,8 @@ class VoiceLedger:
 
             for _tid, turn in self._children(project_id, vstore.TURNS, tenant_id, person):
                 cost = turn_cost(turn.get("usage"), prices)
+                usage = turn.get("usage")
+                subscription = isinstance(usage, Mapping) and usage.get(BILLING) == SUBSCRIPTION
                 mine = turn.get("session_id") == session_id
                 today_turn = day_of(turn.get("created_at"), tz) == today
                 for totals, counts in ((session, mine), (day, today_turn)):
@@ -418,6 +429,10 @@ class VoiceLedger:
                         continue
                     if cost is None:
                         totals.notes["unpriced_turns"] += 1
+                    elif subscription:
+                        # Not measured: the estimate holds against the cap.
+                        totals.add("planner", reserved=cost)
+                        totals.notes["subscription_turns"] += 1
                     else:
                         totals.add("planner", spent=cost)
 

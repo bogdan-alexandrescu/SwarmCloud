@@ -1347,6 +1347,73 @@ def test_verify_progress_written_with_countdown(tmp_path: Path) -> None:
     assert last["done"] == verify.TOTAL and last["result"] == "passed" and last["started"] == started
 
 
+class _Recording(_Saves):
+    """`ctx.engine` with an install record, so `write_progress` writes the row."""
+
+    _stage_of: dict[str, int] = {}
+    lease = SimpleNamespace(as_record=lambda: None)
+
+    def __init__(self, ctx: Any) -> None:
+        super().__init__(ctx)
+        self.documents = FakeDocuments()
+        self.record = InstallRecord(env="dev", documents=self.documents)
+
+    def row(self) -> dict[str, Any]:
+        return self.documents.docs[engine_document("dev")][0]["verify"]
+
+
+def _recording(kinds: dict[str, str] | None = None) -> tuple[Any, Any, _Recording]:
+    step, ctx = _all_finished(kinds)
+    ctx.dry_run = False
+    ctx.engine = _Recording(ctx)
+    return step, ctx, ctx.engine
+
+
+def test_a_failed_verify_writes_its_one_line_cause_into_the_record() -> None:
+    """Verify's cause, which the terminal prints, is the row's `detail` when
+    the row says `failed`, so Admin › Setup serves it as `engine.verify.detail`."""
+    step, ctx, engine = _recording({"console-single": "pat"})
+    observed = step.check(ctx)
+    assert observed.status == UNMET
+    row = engine.row()
+    assert row["result"] == "failed"
+    assert row["detail"] == observed.detail and "\n" not in row["detail"]
+    assert "console-single (t-console-single)" in row["detail"]
+    # The terminal's countdown still carries its own sentence as `detail`.
+    assert "verification checks passed" in ctx.events.of_kind("wait_countdown")[-1]["detail"]
+
+
+def test_a_verify_row_that_has_not_failed_has_no_detail() -> None:
+    step, ctx, engine = _recording()
+    assert step.check(ctx).status == MET
+    assert engine.row()["result"] == "passed" and "detail" not in engine.row()
+    # A failure mended on a later check leaves no cause behind.
+    step, ctx, engine = _recording({"plugin-single": "pat"})
+    step.check(ctx)
+    assert engine.row()["detail"]
+    step.runs.finish("t-plugin-single")
+    assert step.check(ctx).status == MET
+    assert "detail" not in engine.row()
+
+
+def test_the_cause_is_one_line_and_bounded() -> None:
+    long = "a run failed\n  because " + "x" * 2000
+    line = verify.one_line(long)
+    assert "\n" not in line and line.startswith("a run failed because x")
+    assert len(line) == verify.DETAIL_MAX
+    assert verify.one_line("short cause") == "short cause"
+
+
+def test_the_record_accepts_the_verify_detail_and_nothing_unknown() -> None:
+    assert "detail" in record.VERIFY_FIELDS
+    rig = InstallRecord(env="dev", documents=FakeDocuments())
+    ctx = _ctx()
+    doc = rig.document_for(ctx.state, {}, verify={"result": "failed", "detail": "why"})
+    assert doc["verify"]["detail"] == "why"
+    with pytest.raises(ValueError):
+        rig.document_for(ctx.state, {}, verify={"cause": "why"})
+
+
 @pytest.mark.usefixtures("cosign")
 def test_cluster_objects_from_release_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`other.release-kubernetes-bundle`: what stage 10 applies and stage 14

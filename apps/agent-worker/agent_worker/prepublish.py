@@ -347,6 +347,12 @@ J4_MAX_SYMBOLS = 64
 #: Test files one graph check runs. Past this the graph's ranking is too wide
 #: to be a selection, and CI runs the whole suite anyway.
 GRAPH_TESTS_MAX = 60
+#: The graph's test maps. A staged snapshot whose manifest lists either as
+#: `truncated` names only part of a file's covering tests, so graph-pytest
+#: adds `related-tests.sh`'s import pick to its selection (owner's pick
+#: `widen-in-prepublish`, PR #3105): the cut can then only fail to add a
+#: test, never drop one the imports reach.
+GRAPH_TEST_MAPS = frozenset({"symbol_test_map", "file_test_map"})
 _JS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
 _TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts")
 _JS_TEST = re.compile(r"\.(test|spec)\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$")
@@ -1548,49 +1554,93 @@ def watched(check: Check, stopped: Callable[[], str | None]) -> Check:
     return Check(check.name, check.files, check.command, run=run, skipped=check.skipped)
 
 
-def _graph_pytest(tests: Sequence[str], base: str
+def test_maps_truncated(snapshot: Snapshot | None) -> bool:
+    """Whether the staged graph's manifest lists a test map (`GRAPH_TEST_MAPS`)
+    as truncated: its tests rows then name only part of a file's tests."""
+    if snapshot is None:
+        return False
+    cut = (snapshot.manifest or {}).get("truncated")
+    return isinstance(cut, (list, tuple)) and any(
+        isinstance(name, str) and name in GRAPH_TEST_MAPS for name in cut)
+
+
+def _import_pick(runner: Runner, repo: Path, env: Mapping[str, str], base: str,
+                 timeout: float) -> list[str]:
+    """The pytest files `related-tests.sh` names for the diff (its import map,
+    plus the graph's tests_for), present in the checkout; empty when the
+    repository has no such script or it cannot say."""
+    if not (repo / RELATED_SCRIPT).is_file():
+        return []
+    ran = runner(["bash", RELATED_SCRIPT, "--base", base], repo, env,
+                 max(MIN_CHECK_SECONDS, min(GUARDS_LIST_SECONDS, timeout)))
+    if ran.code != 0 or ran.timed_out:
+        return []
+    return sorted(t for t in parse_related(ran.output) if (repo / t).is_file())
+
+
+def _graph_pytest(tests: Sequence[str], base: str, *, widen: bool = False
                   ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
     """One `uv run pytest` per Python project: the nearest directory above
     each selected file holding a pyproject.toml, run from there (#1756: a
     repository whose projects live in subfolders has no project at the root
-    for uv to find). Passes only when every project's run passes."""
+    for uv to find). Passes only when every project's run passes.
+
+    `widen` (the staged graph's test maps are truncated, `test_maps_truncated`)
+    adds `related-tests.sh`'s import pick to the graph's selection, up to
+    GRAPH_TESTS_MAX, and says how many it added."""
     def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
-        already = _guards_selection(runner, repo, env, base, timeout)
-        rest = [t for t in tests if t not in already]
-        if not rest:
-            return PASSED, "every selected test file is already run by changed-guards"
-        projects: dict[str, list[str]] = {}
-        orphans: list[str] = []
-        for test in rest:
-            project = _package_root(repo, test, "pyproject.toml")
-            if project is None:
-                orphans.append(test)
-            else:
-                projects.setdefault(project, []).append(test)
-        notes = [f"no Python project above {t}; CI runs it" for t in orphans]
-        # The repository's one root project: the run it always was, unwrapped.
-        if not orphans and list(projects) == [""]:
-            return _pytest_project(runner, repo, "", rest, env, timeout)
-        if not projects:
-            return SKIPPED, "\n".join(notes)
-        deadline = time.monotonic() + timeout
-        results: list[tuple[str, str, str]] = []
-        for project, members in sorted(projects.items()):
-            left = max(1.0, deadline - time.monotonic())
-            status, output = _pytest_project(runner, repo, project, members, env, left)
-            results.append((project or ".", status, output))
-        statuses = {status for _where, status, _output in results}
-        overall = (FAILED if FAILED in statuses else PASSED if PASSED in statuses
-                   else SKIPPED)
-        lines = [f"{where}: {status}" + (f" ({output.strip()})" if status == SKIPPED else "")
-                 for where, status, output in results]
-        if overall == SKIPPED:
-            # Every project could not run: the reason is the per-project lines.
-            return SKIPPED, "\n".join(lines + notes)
-        details = [f"--- {where} ({status}) ---\n{output.strip()}"
-                   for where, status, output in results if status != SKIPPED]
-        return overall, "\n".join(lines + notes + [""] + details)
+        started = time.monotonic()
+        selected = list(tests)
+        note = ""
+        if widen:
+            added = [t for t in _import_pick(runner, repo, env, base, timeout)
+                     if t not in selected][:max(0, GRAPH_TESTS_MAX - len(selected))]
+            selected += added
+            note = (f"the staged graph's test maps are truncated: {len(added)} test file(s) "
+                    f"added from {RELATED_SCRIPT}'s import pick\n")
+            timeout = max(1.0, timeout - (time.monotonic() - started))
+        status, output = _graph_pytest_run(runner, repo, env, timeout, selected, base)
+        return status, note + output
     return run
+
+
+def _graph_pytest_run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float,
+                      tests: Sequence[str], base: str) -> tuple[str, str]:
+    already = _guards_selection(runner, repo, env, base, timeout)
+    rest = [t for t in tests if t not in already]
+    if not rest:
+        return PASSED, "every selected test file is already run by changed-guards"
+    projects: dict[str, list[str]] = {}
+    orphans: list[str] = []
+    for test in rest:
+        project = _package_root(repo, test, "pyproject.toml")
+        if project is None:
+            orphans.append(test)
+        else:
+            projects.setdefault(project, []).append(test)
+    notes = [f"no Python project above {t}; CI runs it" for t in orphans]
+    # The repository's one root project: the run it always was, unwrapped.
+    if not orphans and list(projects) == [""]:
+        return _pytest_project(runner, repo, "", rest, env, timeout)
+    if not projects:
+        return SKIPPED, "\n".join(notes)
+    deadline = time.monotonic() + timeout
+    results: list[tuple[str, str, str]] = []
+    for project, members in sorted(projects.items()):
+        left = max(1.0, deadline - time.monotonic())
+        status, output = _pytest_project(runner, repo, project, members, env, left)
+        results.append((project or ".", status, output))
+    statuses = {status for _where, status, _output in results}
+    overall = (FAILED if FAILED in statuses else PASSED if PASSED in statuses
+               else SKIPPED)
+    lines = [f"{where}: {status}" + (f" ({output.strip()})" if status == SKIPPED else "")
+             for where, status, output in results]
+    if overall == SKIPPED:
+        # Every project could not run: the reason is the per-project lines.
+        return SKIPPED, "\n".join(lines + notes)
+    details = [f"--- {where} ({status}) ---\n{output.strip()}"
+               for where, status, output in results if status != SKIPPED]
+    return overall, "\n".join(lines + notes + [""] + details)
 
 
 def _terraform_fmt(files: Sequence[str]
@@ -1616,15 +1666,21 @@ def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[st
     tests = list(select_tests(repo, files, snapshot))[:GRAPH_TESTS_MAX]
 
     py_tests = [t for t in tests if t.endswith(_PY_SUFFIX)]
-    if py_tests:
+    # A cut test map names only some of a changed module's tests, or none:
+    # the import pick is added (GRAPH_TEST_MAPS), so the check runs then too.
+    widen = (test_maps_truncated(snapshot) and (repo / RELATED_SCRIPT).is_file()
+             and any(f.endswith(_PY_SUFFIX) and not is_test_path(f) for f in files))
+    if py_tests or widen:
+        selection = ("<graph-selected files and related-tests' import pick>" if widen
+                     else "<graph-selected files>")
         if not _which("uv", env):
             checks.append(Check("graph-pytest", tuple(py_tests), "uv run pytest -n auto",
                                 skipped="uv is not on PATH in this image"))
         else:
             checks.append(Check("graph-pytest", tuple(py_tests),
-                                "uv run pytest -q -n auto <graph-selected files> "
+                                f"uv run pytest -q -n auto {selection} "
                                 "(in each Python project)",
-                                run=_graph_pytest(py_tests, base)))
+                                run=_graph_pytest(py_tests, base, widen=widen)))
 
     by_package: dict[str, list[str]] = {}
     for test in tests:

@@ -115,6 +115,11 @@ CONFIG_ENV = "SWARM_JEV_GATES_CONFIG"
 CONFIG_FILE_NAME = "jev-gates.json"
 KEY_FILE_NAME = "jev-gates.key"
 COUNTS_FILE_NAME = "jev-gates.counts"
+#: The launcher's one record per Jev call (`swarm-jev-gate.mjs`
+#: `recordedSend`), which `judge.account.record_tool_calls` sends through
+#: `state/jev-usage` on every exit. Kept across a second `prepare`: what it
+#: holds and has not been sent is still spend.
+CALLS_FILE_NAME = "jev-gates.calls"
 #: jev-enforce's CLAUDE_PLUGIN_DATA: its rule cache and, in `end` mode, the
 #: edits it holds until the Stop hook. In `private/`, so never checkpointed.
 DATA_DIR_NAME = "jev-gates-data"
@@ -122,6 +127,7 @@ DATA_DIR_NAME = "jev-gates-data"
 #: The config's fields (the launcher reads exactly these).
 KEY_FILE_FIELD = "key_file"
 COUNTS_FILE_FIELD = "counts_file"
+CALLS_FILE_FIELD = "calls_file"
 DATA_DIR_FIELD = "data_dir"
 SECRET_NAMES_FIELD = "secret_env_names"
 HARD_STOP_FIELD = "hard_stop_paths"
@@ -350,6 +356,7 @@ def prepare(*, db: Any, client: Any, tenant_id: str, private_dir: Path, logger: 
         _write_private(config, json.dumps({
             KEY_FILE_FIELD: str(key_file),
             COUNTS_FILE_FIELD: str(counts),
+            CALLS_FILE_FIELD: str(private / CALLS_FILE_NAME),
             DATA_DIR_FIELD: str(data_dir),
             SECRET_NAMES_FIELD: names,
             HARD_STOP_FIELD: stops,
@@ -446,6 +453,7 @@ __all__ = [
     "BELAY",
     "BROWSER",
     "BROWSER_COUNTS_FILE_NAME",
+    "CALLS_FILE_NAME",
     "CONFIG_ENV",
     "ENFORCE",
     "EVENT_CAUSE",
