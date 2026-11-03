@@ -1,5 +1,5 @@
 {
-  "about": "The workspace call guard's self-test (docs/workspaces.md §2.5). Every rule in workspace-calls.json has a call it must refuse and a call it must allow. `rule` is the rule a case exercises; `by` (default: rule) is the rule the guard must name in its verdict. Values in braces come from the expectation the self-test builds from `record` with the guard's own `expect`, plus {casedir}, {fake_token} and {auth_config} (common.sh's auth_config around the fake token: the line fs_request writes), made at run time so nothing here looks like a credential. `phase` is bootstrap (before A1), ready (the default) or stopped (after a refusal). expect_refusals are records `expect` must refuse to turn into an expectation. `kind_records` are a group's and a service's records (docs/design/workspace-kinds.md §4.3); a case or an expect_refusal that names a `kind` is judged against that kind's expectation, and the rest against `record`'s, a person's.",
+  "about": "The workspace call guard's self-test (docs/workspaces.md \u00a72.5). Every rule in workspace-calls.json has a call it must refuse and a call it must allow. `rule` is the rule a case exercises; `by` (default: rule) is the rule the guard must name in its verdict. Values in braces come from the expectation the self-test builds from `record` with the guard's own `expect`, plus {casedir}, {fake_token} and {auth_config} (common.sh's auth_config around the fake token: the line fs_request writes), made at run time so nothing here looks like a credential. `phase` is bootstrap (before A1), ready (the default) or stopped (after a refusal). expect_refusals are records `expect` must refuse to turn into an expectation. `kind_records` are a group's and a service's records (docs/design/workspace-kinds.md \u00a74.3); a case or an expect_refusal that names a `kind` is judged against that kind's expectation, and the rest against `record`'s, a person's.",
   "workspace_id": "w-3f9a2c",
   "record": {
     "name": "projects/saga-agents-staging/databases/swarm/documents/workspaces/u-alice",
@@ -1906,7 +1906,8 @@
         "-f",
         "-"
       ],
-      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n",
+      "kube_current_context": "gke_saga-agents-staging_us-central1-a_agents-staging"
     },
     {
       "name": "apply through the current context, the other team's agents-staging",
@@ -2709,7 +2710,8 @@
         "--api-group=networking.gke.io",
         "-o",
         "name"
-      ]
+      ],
+      "kube_current_context": "gke_saga-agents-staging_us-central1-a_agents-staging"
     },
     {
       "name": "a group's team slot, empty",
