@@ -300,6 +300,12 @@ SETTINGS_PURPOSE = "swarm.settings/v1"
 #: "quality_gates" is contract request 128 (JEV-LANES, PR 2905), accepted by
 #: the owner 2026-10-31: whether the workspace's claude-code lanes run
 #: jev-belay and jev-enforce, `{jev}`.
+#:
+#: "plugins" is contract request 136 (AQ-WORK-CONTRACT, part of #2688),
+#: accepted by the owner 2026-11-03: the admin-only list of catalogue plugins
+#: the workspace's steps may name, `{allowed}` (docs/design/agent-plugins.md,
+#: "A closed plugin catalogue"). A new block: no other block's bytes change,
+#: and no workspace stores one yet, so nothing needs re-signing.
 SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "top": ("judgment_backend",),
@@ -313,6 +319,7 @@ SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
         "budget": ("unit", "amount"),
         "quality_gates": ("jev",),
+        "plugins": ("allowed",),
     }
 )
 
