@@ -108,7 +108,11 @@ def test_every_note_naming_the_variable_names_what_the_agent_has(tmp_path, monke
     CLI's environment carries it, and also names the spool directory itself,
     which is what the prompt's child-tasks line points at."""
     seen = _run(tmp_path, monkeypatch, profile, spool=_spool(tmp_path))
-    notes = [claude_code.EXPLORATION_CHILDREN_CLAUSE]
+    # The exploration clause names no path (ONE-PLACE): the child-tasks line
+    # names the spool, once.
+    assert claude_code.EXPLORATION_CHILDREN_CLAUSE in seen["prompt"]
+    assert f"${children.CHILDREN_ENV}" not in claude_code.EXPLORATION_CHILDREN_CLAUSE
+    notes = []
     if profile == lightpanda.PROFILE:
         notes.append(lightpanda.LIGHTPANDA_NOTE)
     for note in notes:

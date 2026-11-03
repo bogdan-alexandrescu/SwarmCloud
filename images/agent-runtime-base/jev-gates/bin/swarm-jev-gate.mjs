@@ -25,6 +25,14 @@
 // After the tool: one line of counts -- hook, Jev calls, blocked, rules
 // flagged, strings dropped, objects denied, keys withheld; never text --
 // appended to the counts file for the worker's event.
+// And for EVERY Jev call, as it is answered: one record -- call id, source,
+// kind, backend, requested and served model, input and output tokens,
+// whether the tokens were estimated, outcome; never text -- appended to the
+// config's `calls_file` (the Jev browser's: SWARM_JEV_BROWSER_CALLS). The
+// worker sends each one through swarm-api's `state/jev-usage`
+// (agent_worker/judge/account.py `record_tool_calls`, lane
+// AQ-JEV-ACCOUNTING, owner's pick on #3111), so the hooks' and the browser's
+// spend is in the attempt's account beside the judgments'.
 //
 // THE OUTBOUND FILTER (lane jev-outbound-redaction, owner decision 2026-11-02,
 // CLD's Jev report). The worker's own judgments go through
@@ -61,6 +69,7 @@
 // nothing and exits 0, so the turn ends as it would have without the gate.
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -90,6 +99,12 @@ const FLAG_SCRIPT = [
   "print(json.dumps([redact(t).count > 0 for t in texts]))",
 ].join("\n");
 const FLAG_TIMEOUT_MS = 30_000;
+// A call record's limits: agent_worker/judge/account.py's patterns and
+// budget.MEASURED_TOKENS_PER_CALL, restated (this file runs with node alone);
+// tests/unit/worker/test_jev_tool_calls.py holds them equal.
+export const MEASURED_TOKENS_PER_CALL = 2_850;
+const MODEL = /^[A-Za-z0-9_.:@/+-]{1,128}$/;
+const IDENT = /^[A-Za-z0-9_.-]{1,48}$/;
 const DROP = Symbol("drop");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -263,8 +278,67 @@ export function filterBody(text, { secrets = [], hardStop = [], cwd = "", python
   return typeof out === "string" ? out : JSON.stringify(out);
 }
 
+function tokenCount(value) {
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/** One Jev call's record, as agent_worker/judge/account.py `call_record`
+ * reads it: names and counts, never the body or the answer. `body` is the
+ * filtered request as sent; `status` the HTTP status (0: no answer); `text`
+ * the answer's text. An answered call whose usage states no input tokens is
+ * charged at least MEASURED_TOKENS_PER_CALL and flagged `tokens_estimated`,
+ * as the worker's own client charges one (judge/client.py `_usage`): an
+ * answer cannot make a call free. A call with no answer is `failed`, 0. */
+export function callRecord({ source, kind, backend = null, body, status, text = "" }) {
+  let requested = null;
+  try { requested = JSON.parse(body)?.model ?? null; } catch { requested = null; }
+  const record = {
+    call_id: `${kind}-${randomUUID()}`, source, kind,
+    backend: typeof backend === "string" && IDENT.test(backend) ? backend : null,
+    requested_model: typeof requested === "string" && MODEL.test(requested) ? requested : null,
+    served_model: null, input_tokens: 0, output_tokens: null, tokens_estimated: false,
+    outcome: "failed",
+  };
+  if (!(status >= 200 && status < 300)) return record;
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch { parsed = null; }
+  const usage = parsed && typeof parsed === "object" && parsed.usage && typeof parsed.usage === "object"
+    ? parsed.usage : {};
+  const stated = tokenCount(usage.input_tokens);
+  record.input_tokens = stated ?? Math.max(Math.floor(body.length / 3), MEASURED_TOKENS_PER_CALL);
+  record.tokens_estimated = stated === null;
+  record.output_tokens = tokenCount(usage.output_tokens);
+  const served = parsed && typeof parsed === "object" ? parsed.model : null;
+  if (typeof served === "string" && MODEL.test(served)) record.served_model = served;
+  record.outcome = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? "ok" : "malformed";
+  return record;
+}
+
+/** Send `body` with `send`, and append the call's record to `callsFile`
+ * (none named: nothing is written). The answer is read from a clone, so the
+ * tool reads it as it always has; a record is never worth the call. */
+export async function recordedSend(send, body, { callsFile, source, kind, backend = null }) {
+  let res;
+  try {
+    res = await send(body);
+  } catch (err) {
+    appendRecord(callsFile, callRecord({ source, kind, backend, body, status: 0 }));
+    throw err;
+  }
+  let text = "";
+  try { text = await res.clone().text(); } catch { text = ""; }
+  appendRecord(callsFile, callRecord({ source, kind, backend, body, status: res.status, text }));
+  return res;
+}
+
+function appendRecord(callsFile, record) {
+  if (!callsFile) return;
+  try { appendFileSync(callsFile, `${JSON.stringify(record)}\n`, { mode: 0o600 }); } catch { /* never worth a call */ }
+}
+
 /** A `fetch` that sends only to TypeSafe's API (or the shim), filtered, counted. */
-export function guardedFetch(realFetch, { url, key, secrets, counter, hardStop = [], cwd = "", python = REDACTION_PYTHON }) {
+export function guardedFetch(realFetch, { url, key, secrets, counter, hardStop = [], cwd = "", python = REDACTION_PYTHON,
+  callsFile = "", hook = "" }) {
   for (const name of ["calls", "dropped", "denied", "withheld"]) counter[name] ??= 0;
   return async (input, init = {}) => {
     const target = typeof input === "string" ? input : String(input?.url ?? input);
@@ -277,7 +351,8 @@ export function guardedFetch(realFetch, { url, key, secrets, counter, hardStop =
     const body = filterBody(init.body, { secrets, hardStop, cwd, python, counts: counter });
     counter.calls += 1;
     const headers = { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
-    return realFetch(url, { method: "POST", body, headers, signal: init.signal });
+    return recordedSend((sent) => realFetch(url, { method: "POST", body: sent, headers, signal: init.signal }), body,
+      { callsFile, source: "quality_hook", kind: hook || "quality_hook", backend: "typesafe" });
   };
 }
 
@@ -293,6 +368,7 @@ export function installBrowserFilter(env = process.env) {
   const realFetch = globalThis.fetch.bind(globalThis);
   const python = env.SWARM_JEV_REDACTION_PYTHON || REDACTION_PYTHON;
   const countsFile = env.SWARM_JEV_BROWSER_COUNTS || "";
+  const callsFile = env.SWARM_JEV_BROWSER_CALLS || "";
   globalThis.fetch = async (input, init = {}) => {
     if (typeof input !== "string" && !(input instanceof URL)) {
       throw new Error("jev-browser-mcp: refused a request that is not a URL and a body");
@@ -309,7 +385,8 @@ export function installBrowserFilter(env = process.env) {
     if (countsFile) {
       try { appendFileSync(countsFile, `${line}\n`, { mode: 0o600 }); } catch { /* a count is never worth a call */ }
     }
-    return realFetch(input, { ...init, body });
+    return recordedSend((sent) => realFetch(input, { ...init, body: sent }), body,
+      { callsFile, source: "browser", kind: "browser", backend: env.SWARM_JEV_BACKEND || null });
   };
 }
 
@@ -349,6 +426,7 @@ async function main(argv) {
     hardStop: Array.isArray(config.hard_stop_paths) ? config.hard_stop_paths : [],
     cwd: process.cwd(),
     python: typeof config.redaction_python === "string" && config.redaction_python ? config.redaction_python : REDACTION_PYTHON,
+    callsFile: typeof config.calls_file === "string" ? config.calls_file : "", hook: mode.hook,
   });
   for (const name of Object.keys(env)) {
     if (name.startsWith("CLAUDE_PLUGIN_OPTION_")) delete env[name];
