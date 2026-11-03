@@ -6,7 +6,9 @@ threaded the agent profile's registered secrets into Jev's config and
 amended §5.4 to say where the audit lands. "When a call may be made" added
 2026-11-02 at `5117e12` by lane JEV-JUDGMENTS-RUN, which made the judgments
 run (the decision API's address, the signed opt-in, the setup order, the
-monthly cap and the per-agent count). Every `path::Symbol` below is checked by
+monthly cap and the per-agent count). "Jev spend on the state routes" added
+2026-11-03 at `272a7fd`, from the code lane AQ-JEV-ACCOUNTING merged (#3111),
+when the owner chose a doc follow-up for that lane. Every `path::Symbol` below is checked by
 `tests/unit/worker/test_jev_data_flow.py`, which fails when a cited function,
 name or test no longer exists. The rules are those of
 [context-quality.md §5.4](design/context-quality.md#54-what-is-sent-and-what-never-is-even-when-opted-in);
@@ -58,9 +60,55 @@ the attempt's outputs stay byte-identical to the local-only run (§5.6).
 | **The signed opt-in.** `code_intelligence.jev` counts only when swarm-api's MAC over the `code_intelligence` block verifies (tenant-settings-integrity.md row 7). The worker holds no settings key, so the scheduler checks the block at dispatch and writes the verdict, `SWARM_JEV_JUDGMENTS` (`true`/`false`, and `SWARM_JEV_JUDGMENTS_REFUSED` with why), into every claude-code and codex job on both backends, as it does the quality gates'. The worker reads anything but `true` -- unsigned, mismatched, SETTINGS_MAC_REQUIRED off, no verdict at all -- as not opted in, and sets nothing up. | `apps/scheduler/scheduler/judgment.py::judgments_verdict`, `apps/scheduler/scheduler/dispatch.py::read_jev_judgments`, `apps/scheduler/scheduler/dispatch.py::jev_judgments_reading`, `apps/agent-worker/agent_worker/judge/attempt.py::unverified`, `apps/agent-worker/agent_worker/judge/attempt.py::setup` | `tests/unit/control_plane/test_judge_address.py::test_unsigned_or_mismatched_is_off`, `tests/unit/control_plane/test_judge_address.py::test_build_router_wires_the_reader_into_both_dispatchers`, `tests/unit/control_plane/test_judge_address.py::test_the_cloud_run_job_carries_the_verdict`, `tests/unit/worker/test_jev_judgments_run.py::test_unsigned_settings_turn_judgments_off` |
 | **The decision API's address.** A claude-code or codex pod on GKE whose signed opt-in is on, or whose signed dispatch block says `jev_judgments: on` (never `off`), on `internal-jev` or `internal-laya` with the tailnet egress on, gets `SWARM_JUDGE_INTERNAL_URL` (the backend's `/v1/decide` by the tailnet name), the `swarm-judge: internal` label `kubernetes/network-policies/allow-judge-egress.yaml` selects, and the hostAliases entry: from `jev_dispatch`, the live browser's code path. A Cloud Run Job cannot reach the egress Service and gets no URL: there an internal backend still reads `no_internal_url`. | `apps/scheduler/scheduler/judgment.py::judge_dispatch`, `apps/scheduler/scheduler/dispatch.py::judges_internally`, `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._with_judge_address`, `apps/agent-worker/agent_worker/judge/settings.py::resolve_backend` | `tests/unit/control_plane/test_judge_address.py::test_an_opted_in_internal_backend_attempt_gets_the_address_and_the_label`, `tests/unit/control_plane/test_judge_address.py::test_no_address_and_no_label_otherwise`, `tests/unit/control_plane/test_judge_address.py::test_the_url_variable_is_the_worker_judges` |
 | **The setup order.** `jevkey.prepare` writes `private/jev-typesafe.key` before the graph context runs `judge.attempt.setup`, which reads it (`_read_key`): before, a live-browser attempt on TypeSafe without the forwarder read `no_key`. | `apps/agent-worker/agent_worker/lifecycle.py::Worker._build_child_env`, `apps/agent-worker/agent_worker/judge/attempt.py::_read_key` | `tests/unit/worker/test_jev_judgments_run.py::test_the_typesafe_key_file_exists_before_the_judge_is_set_up` |
-| **The per-agent count.** At setup the ledger starts with the calls and tokens of the agent's settled attempts (their `jev_usage` rows, this tenant's only), created as already settled so they are never charged twice: 8 calls and 120k tokens per agent, not per attempt. | `apps/agent-worker/agent_worker/judge/attempt.py::_carried`, `apps/agent-worker/agent_worker/judge/budget.py::FirestoreMonthlyLedger.task_spend`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.create` | `tests/unit/worker/test_jev_judgments_run.py::test_a_tasks_second_attempt_counts_the_first_attempts_calls` |
-| **The monthly cap.** With `code_intelligence.jev_monthly_cap_tokens` set, setup reads the month's total (`jev_usage/<tenant>_<YYYY-MM>`, UTC); a call that would take the month past the cap is `skipped:budget_monthly`. | `apps/agent-worker/agent_worker/judge/attempt.py::_carried`, `apps/agent-worker/agent_worker/judge/budget.py::FirestoreMonthlyLedger.used`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.admit` | `tests/unit/worker/test_jev_judgments_run.py::test_a_month_over_its_cap_skips_with_budget_monthly_and_changes_nothing`, `tests/unit/worker/test_jev_judgments_run.py::test_with_no_cap_the_month_is_not_read` |
-| **The settle.** After the agent, before any terminal write, the lifecycle settles the attempt: in ONE transaction, fenced by the generation through the control plane's own `_fenced_task` (invariant 5), the attempt's row `jev_usage/<tenant>_<task>_g<generation>` (`kind: attempt`, its calls and tokens) and the month's total are added to. A superseded attempt writes nothing; a failed settle is logged by type, left unsettled, and changes no output. | `apps/agent-worker/agent_worker/lifecycle.py::Worker._settle_jev`, `apps/agent-worker/agent_worker/judge/attempt.py::settle`, `apps/agent-worker/agent_worker/judge/budget.py::settle_attempt`, `apps/agent-worker/agent_worker/judge/budget.py::FirestoreMonthlyLedger.settle_attempt` | `tests/unit/worker/test_jev_judgments_run.py::test_settle_writes_one_jev_usage_row_per_attempt_and_the_month`, `tests/unit/worker/test_jev_judgments_run.py::test_a_stale_generation_settles_nothing`, `tests/unit/worker/test_jev_judgments_run.py::test_the_lifecycle_settles_the_attempt_after_the_agent` |
+| **The per-agent count.** At setup the ledger starts with the calls and tokens of the agent's settled attempts (their `jev_usage` rows, this tenant's only), created as already settled so they are never charged twice: 8 calls and 120k tokens per agent, not per attempt. On the state routes swarm-api's reservation carries the task's earlier attempts instead ("Jev spend on the state routes"). | `apps/agent-worker/agent_worker/judge/attempt.py::_carried`, `apps/agent-worker/agent_worker/judge/budget.py::FirestoreMonthlyLedger.task_spend`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.create` | `tests/unit/worker/test_jev_judgments_run.py::test_a_tasks_second_attempt_counts_the_first_attempts_calls` |
+| **The monthly cap.** With `code_intelligence.jev_monthly_cap_tokens` set, setup reads the month's total (`jev_usage/<tenant>_<YYYY-MM>`, UTC); a call that would take the month past the cap is `skipped:budget_monthly`. That read is the direct (Firestore) path's; on the state routes the cap is held by swarm-api's reservation, against every other live reservation too. | `apps/agent-worker/agent_worker/judge/attempt.py::_carried`, `apps/agent-worker/agent_worker/judge/budget.py::FirestoreMonthlyLedger.used`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.admit` | `tests/unit/worker/test_jev_judgments_run.py::test_a_month_over_its_cap_skips_with_budget_monthly_and_changes_nothing`, `tests/unit/worker/test_jev_judgments_run.py::test_with_no_cap_the_month_is_not_read` |
+| **The settle.** After the agent, before any terminal write, the lifecycle settles the attempt: in ONE transaction, fenced by the generation through the control plane's own `_fenced_task` (invariant 5), the attempt's row `jev_usage/<tenant>_<task>_g<generation>` (`kind: attempt`, its calls and tokens) and the month's total are added to. A superseded attempt writes nothing; a failed settle is logged by type, left unsettled, and changes no output. This is the direct (Firestore) path. On the state routes the same call (`judge.attempt.settle`, outcome not yet known) sends the ledger's records one per call, and the settlement waits for the attempt's exit ("Jev spend on the state routes"). | `apps/agent-worker/agent_worker/lifecycle.py::Worker._settle_jev`, `apps/agent-worker/agent_worker/judge/attempt.py::settle`, `apps/agent-worker/agent_worker/judge/budget.py::settle_attempt`, `apps/agent-worker/agent_worker/judge/budget.py::FirestoreMonthlyLedger.settle_attempt` | `tests/unit/worker/test_jev_judgments_run.py::test_settle_writes_one_jev_usage_row_per_attempt_and_the_month`, `tests/unit/worker/test_jev_judgments_run.py::test_a_stale_generation_settles_nothing`, `tests/unit/worker/test_jev_judgments_run.py::test_the_lifecycle_settles_the_attempt_after_the_agent` |
+
+## Jev spend on the state routes
+
+Lane AQ-JEV-ACCOUNTING (#3111, merged 2026-11-03). A tenant switched to the
+state routes (`SWARM_STATE_VIA_API`) builds no Firestore client, so the direct
+path above never ran for it: its calls were never settled, its earlier
+attempts were not carried, and with a monthly cap set every call was
+`skipped:budget_monthly`, because a month nobody read counts as spent. On
+either path the cap was also held to the ledger, a file the agent's user can
+edit, read once at start, so two attempts running at once could each spend
+the same remainder. swarm-api is now the authority, through three routes
+beside the others in `apps/swarm-api/swarm_api/routes/attemptstate.py::_POSTS`.
+The worker reaches them only through its signed state call; the agent's own
+process cannot sign one, so the worker sends the records after the agent.
+
+| Step | What holds it | Test that fails when it is removed |
+|---|---|---|
+| **The reservation, at admission (`state/jev-reserve`).** `judge.attempt.setup` asks for it before writing the config. In ONE transaction, fenced by the generation through `AttemptState._fenced` (invariant 5), swarm-api reads the task's earlier attempt rows (at most 256 generations back; a task past that is granted nothing, because an unread spend is not a free one), the workspace's cap (`code_intelligence.jev_monthly_cap_tokens`, only as the signed block lets a reader act on it), the month's spend and every other live reservation. It grants the attempt at most what is left of the task's 8 calls and 120k tokens, its tokens no more than what is left of the month after the other reservations, and nothing when that cannot pay for one call at the measured 2,850 tokens. The body is the tuple alone: the worker names no number, so editing the local ledger cannot raise the grant. Two attempts reserving at once are serialised by the transaction, so they cannot both take the last of the month. A replayed reserve answers the grant as first made. A reserve that fails is Jev off for the attempt, never an unbounded allowance. | `apps/swarm-api/swarm_api/jevaccount.py::JevAccount.reserve`, `apps/swarm-api/swarm_api/jevaccount.py::grant_for`, `apps/swarm-api/swarm_api/jevaccount.py::JevReserveBody`, `apps/swarm-api/swarm_api/jevaccount.py::MAX_GENERATIONS_READ`, `apps/swarm-api/swarm_api/attemptstate.py::AttemptState._fenced`, `apps/agent-worker/agent_worker/judge/account.py::reserve`, `apps/agent-worker/agent_worker/judge/attempt.py::setup` | `tests/unit/control_plane/test_jev_account.py::test_reserve_grants_the_task_allowance_bounded_by_the_month`, `tests/unit/control_plane/test_jev_account.py::test_reserve_takes_no_number_from_the_worker`, `tests/unit/control_plane/test_jev_account.py::test_two_attempts_cannot_both_reserve_the_last_of_the_month`, `tests/unit/control_plane/test_jev_account.py::test_the_cap_is_held_to_what_the_month_already_spent`, `tests/unit/control_plane/test_jev_account.py::test_a_replayed_reserve_grants_nothing_more`, `tests/unit/worker/test_jev_state_accounting.py::test_a_capped_tenant_on_the_state_routes_is_granted_its_month`, `tests/unit/worker/test_jev_state_accounting.py::test_two_concurrent_attempts_cannot_both_spend_the_last_of_the_allowance`, `tests/unit/worker/test_jev_state_accounting.py::test_a_failed_reserve_is_jev_off_never_unbounded` |
+| **The grant binds the ledger.** The ledger is built with the grant as its authority: the file's limits can only narrow it, and the counts this process has seen are a floor the file cannot lower. A response that states no usable `usage.input_tokens` is charged what the call was admitted at, never below 2,850, and its row says `tokens_estimated`; `output_tokens` and `served_model` are recorded only when stated, unknown and never 0. | `apps/agent-worker/agent_worker/judge/budget.py::Grant`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger`, `apps/agent-worker/agent_worker/judge/client.py::_usage` | `tests/unit/worker/test_jev_state_accounting.py::test_editing_the_local_ledger_cannot_raise_authority`, `tests/unit/worker/test_jev_state_accounting.py::test_an_invalid_jev_response_cannot_bypass_the_budget`, `tests/unit/worker/test_jev_state_accounting.py::test_a_valid_response_records_its_served_model_and_output_tokens` |
+| **One record per call (`state/jev-usage`).** After the agent, `judge.attempt.settle` with no outcome sends every ledger row not yet settled, one record each, keyed by its `call_id`. In one transaction swarm-api writes the call's own document, adds to the attempt's row (`calls`, `input_tokens`, `by_kind`), to the month's total and takes the tokens off the reservation's remainder, renewing its expiry. A record already stored is answered `replayed` and charges nothing, so a resend after a lost answer, or a settle run again, is never a second charge. A `skipped:<reason>` record is an outcome, not a call. Spend past the grant is recorded, never refused, and flagged on the row as `over_grant`. A failure returns everything to the ledger's unsettled count. | `apps/swarm-api/swarm_api/jevaccount.py::JevAccount.record_call`, `apps/swarm-api/swarm_api/jevaccount.py::JevCallBody`, `apps/agent-worker/agent_worker/judge/account.py::call_record`, `apps/agent-worker/agent_worker/judge/account.py::settle`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.take_unsettled_attempt`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.restore_unsettled` | `tests/unit/control_plane/test_jev_account.py::test_usage_through_the_state_routes_is_recorded_and_charged_once`, `tests/unit/control_plane/test_jev_account.py::test_a_skip_is_an_outcome_not_a_call`, `tests/unit/control_plane/test_jev_account.py::test_spend_past_the_grant_is_recorded_and_flagged`, `tests/unit/worker/test_jev_state_accounting.py::test_settle_through_the_state_routes_records_one_record_per_call`, `tests/unit/worker/test_jev_state_accounting.py::test_a_replayed_settlement_does_not_charge_twice` |
+| **The settlement, on every exit (`state/jev-settle`).** The cleanup's `settle_jev` step, on every exit path and before the workspace holding the ledger is destroyed, settles with how the attempt ended: the committed end read as `succeeded`, `failed` (a dead letter too), `parked`, `cancelled` or `retried`, and `crashed` when no end was committed (a crash, a fence, an exit before any end). The records not yet sent go first, then the settlement: the calls and tokens the ledger counted beyond its kept audit rows, charged to the row and the month under the kind `unattributed`, and the reservation's remainder released. Once: a second settle is `replayed`. So a park, a cancellation and a crash in the worker are charged, not only an attempt that reached the harvest. | `apps/agent-worker/agent_worker/lifecycle.py::Worker._settle_jev_at_exit`, `apps/agent-worker/agent_worker/judge/attempt.py::settle_at_exit`, `apps/agent-worker/agent_worker/judge/account.py::outcome_of`, `apps/agent-worker/agent_worker/judge/account.py::ENDS`, `apps/swarm-api/swarm_api/jevaccount.py::JevAccount.settle`, `apps/swarm-api/swarm_api/jevaccount.py::JevSettleBody` | `tests/unit/control_plane/test_jev_account.py::test_every_ending_settles_and_releases_the_reservation`, `tests/unit/worker/test_jev_state_accounting.py::test_the_park_cancel_and_crash_paths_settle`, `tests/unit/worker/test_jev_state_accounting.py::test_after_the_agent_records_go_and_the_exit_settles_with_the_committed_end`, `tests/unit/worker/test_jev_state_accounting.py::test_calls_beyond_the_kept_audit_settle_as_unattributed_at_the_exit`, `tests/unit/worker/test_jev_settle_at_exit.py::test_cleanup_settles_jev_with_the_committed_end_before_the_workspace_goes`, `tests/unit/worker/test_jev_settle_at_exit.py::test_cleanup_settles_nothing_without_jev`, `tests/unit/worker/test_jev_state_accounting.py::test_the_direct_path_is_not_settled_at_the_exit` |
+| **An abandoned attempt.** A worker that dies before settling (the pod killed, the node lost) leaves its reservation held. The task's next attempt's reserve releases it and settles the dead attempt's row as `abandoned`, with `unreported_calls` and `unreported_tokens` null: its spend beyond the records it sent is UNKNOWN, never 0. What it did record stays on its row and is carried into the task's limits. A reservation no recorded call renews for 6 hours is released by any reserve, so a worker that is gone cannot starve the workspace's other attempts of the month. | `apps/swarm-api/swarm_api/jevaccount.py::JevAccount.reserve`, `apps/swarm-api/swarm_api/jevaccount.py::ABANDONED`, `apps/swarm-api/swarm_api/jevaccount.py::RESERVATION_TTL` | `tests/unit/control_plane/test_jev_account.py::test_a_crashed_attempt_is_reconciled_by_the_next_reserve` |
+| **A superseded attempt's spend.** `state/jev-usage` and `state/jev-settle` are checked against the attempt's own document (`AttemptState._attempt_doc_ok`: 409 when it names another tuple), not fenced on the task, because a cancelled or superseded attempt's spend is still spend. What they write is that attempt's own row, its own call documents, the month's total and its own entry in the reservations: never the task, the lease or another attempt's reservation (invariant 5). The reserve, which grants new spend, is fenced. | `apps/swarm-api/swarm_api/attemptstate.py::AttemptState._attempt_doc_ok`, `apps/swarm-api/swarm_api/jevaccount.py::JevAccount.record_call`, `apps/swarm-api/swarm_api/jevaccount.py::JevAccount.settle` | `tests/unit/control_plane/test_jev_account.py::test_every_ending_settles_and_releases_the_reservation`, `tests/unit/control_plane/test_jev_account.py::test_another_tenants_worker_cannot_record` |
+| **The quality hooks' and the browser's calls.** jev-belay, jev-enforce and the live browser call Jev themselves, through the image's launcher, whose `recordedSend` appends one record per call as it is answered (call id, source, kind, backend, requested and served model, input and output tokens, whether the tokens were estimated, outcome; never text) to `private/jev-gates.calls` (the gates' config `calls_file`) or `private/jev-browser.calls` (`SWARM_JEV_BROWSER_CALLS`). At exit, before the settlement, the worker sends each new line through the same `state/jev-usage` with source `quality_hook` or `browser`, whether or not the judgments are on, so the reservation the settlement releases has counted them. A file's sent offset is kept beside it (`.sent`), so a second exit sends only what is new and a lost answer leaves the offset where it was; a symlinked file, a half-written line or a line of another source is not read. These tools are the workspace's hooks, not the judgments' budget: their records are spend reported, never refused. | `apps/agent-worker/agent_worker/judge/account.py::record_tool_calls`, `apps/agent-worker/agent_worker/judge/account.py::TOOL_CALL_FILES`, `apps/agent-worker/agent_worker/qualitygates.py::CALLS_FILE_NAME`, `apps/agent-worker/agent_worker/runners/jev_launch.py::BROWSER_CALLS_FILE_NAME`, `apps/agent-worker/agent_worker/judge/attempt.py::settle_at_exit` | `tests/unit/worker/test_jev_tool_calls.py::test_jev_enforce_writes_one_record_per_call`, `tests/unit/worker/test_jev_tool_calls.py::test_the_browser_filter_records_each_call_with_its_stated_usage`, `tests/unit/worker/test_jev_tool_calls.py::test_a_browser_call_that_got_no_answer_is_recorded_failed_and_still_raises`, `tests/unit/worker/test_jev_tool_calls.py::test_record_tool_calls_sends_each_once_and_only_its_own_source`, `tests/unit/worker/test_jev_tool_calls.py::test_a_lost_answer_leaves_the_offset_so_the_records_go_again`, `tests/unit/worker/test_jev_tool_calls.py::test_a_half_written_line_waits_for_its_newline`, `tests/unit/worker/test_jev_tool_calls.py::test_a_symlinked_calls_file_is_not_read`, `tests/unit/worker/test_jev_tool_calls.py::test_the_tools_calls_are_recorded_at_exit_even_with_the_judgments_off`, `tests/unit/worker/test_jev_tool_calls.py::test_the_tools_records_count_against_the_reservation_before_it_is_released`, `tests/unit/worker/test_jev_settle_at_exit.py::test_cleanup_hands_the_tools_calls_over_even_with_the_judgments_off` |
+
+**What a record carries.** The names and counts in `call_record` and
+`JevCallBody`, each field held to a pattern (a call id, an identifier, a model
+name, an outcome); a row that does not fit is not sent as a record and its
+spend is settled as unrecorded instead. Never a payload, a question, an
+answer or a key: none of rule 6's forbidden fields reaches swarm-api, and
+another tenant's worker cannot record into this tenant's documents.
+
+**The documents** (collection `jev_usage`, every id derived by swarm-api from
+the attempt's tuple):
+
+| Document | `kind` | What it holds |
+|---|---|---|
+| `<tenant>_<YYYY-MM>` | none | the month's `input_tokens`, as before (UTC) |
+| `<tenant>_<task>_g<generation>` | `attempt` | as before (`calls`, `input_tokens`, `by_kind`, `settled_at`), plus `reservation` (the task's carried spend, the grant, its reason, the cap and the month), `over_grant` when spend passed the grant, and `settlement` (the outcome, the unrecorded calls and tokens, the released tokens; or `abandoned` with its unreported spend null) |
+| `<tenant>_<task>_g<generation>_c<call_id>` | `call` | one call: source (`judgment`, `quality_hook`, `browser`), its kind, backend, requested and served model, input and output tokens, `tokens_estimated`, outcome, `recorded_at` |
+| `<tenant>_reservations` | `reservations` | `held`: each live reservation by `<task>_g<generation>`, with its remaining tokens and expiry |
+
+`swarm_api.jevusage` reads only `kind: attempt` rows and the month documents,
+so the two new kinds change no total the usage page serves; the rows'
+`by_kind` now also carries the hooks' and the browser's kinds and
+`unattributed`.
 
 ## The rules
 
@@ -109,7 +157,10 @@ ledger's `flock`, at most 200 rows):
 | `kind` | `J0`-`J5` for the runner's calls, `agent` for the `jev_decide` tool |
 | `backend` | `internal-jev`, `internal-laya` or `typesafe`; named in §5.4 step 6 since JEV-SCRUB. A name, never a URL or key |
 | `bytes` | the size of the request body actually sent, after rules 1-5; `0` for a skip |
-| `input_tokens` | `usage.input_tokens` from the answer; `0` when there was none |
+| `input_tokens` | `usage.input_tokens` from the answer; `0` for a skip or a failed call; for an answered call (`ok` or `malformed`) that states no usable count, what the call was admitted at, never below 2,850 (`client._usage`) |
+| `tokens_estimated` | `true` when `input_tokens` is that admitted estimate, not the answer's count |
+| `output_tokens` | `usage.output_tokens`, only when the answer states it: absent means unknown, never 0 |
+| `requested_model`, `served_model` | the model the backend was asked for, and the model the answer says served it (only when stated); names, never a payload |
 | `ms` | wall time across the call and its retries |
 | `outcome` | `ok`, `failed`, `malformed`, or `skipped:<reason>` (`empty_state`, `oversize`, `breaker_open`, `budget_calls`, `budget_tokens`, `budget_monthly`) |
 
@@ -142,7 +193,11 @@ records are the authority on what was sent.
   writes `<attempt>/judge/config.json` (with the agent profile's registered
   secret names, never their values) and the ledger, or nothing when Jev is
   off. After the agent it settles the ledger into `jev_usage`
-  (`judge.attempt.settle`).
+  (`judge.attempt.settle`). On the state routes it reads none of that
+  itself: it asks swarm-api for the attempt's reservation at setup, sends
+  one record per call after the agent, and settles at exit however the
+  attempt ended (`judge.attempt.settle_at_exit`; "Jev spend on the state
+  routes").
 * **The agent's `jev_decide` tool, on claude-code steps** (§5.1's owner
   override; wired by lane AGENTS-USE-TOOLS on 2026-11-02, when the owner chose
   that agents must use the tools switched on for them). The claude-code runner
@@ -201,8 +256,13 @@ rows in the same fenced transaction
 (`apps/agent-worker/agent_worker/judge/budget.py::split_by_kind`); a row
 settled before that is shown as "not split by kind", on the day of its last
 write, with its outcomes "not recorded" (null, never 0 ok and 0 failed), and
-output tokens stay null because no audit row records them. The quality gates' jev-belay and jev-enforce
-hooks and the Jev browser record nothing in `jev_usage` yet.
+output tokens stay null where no record states them. On the state routes
+each call also has its own record and the row's `by_kind` is added to call
+by call, the quality gates' jev-belay and jev-enforce hooks and the Jev
+browser included (their kinds beside J0-J5 and `agent`), and calls beyond
+the kept audit appear as `unattributed` ("Jev spend on the state routes").
+On the direct path the hooks and the browser still record nothing in
+`jev_usage` (Known gaps).
 
 ## Which key
 
@@ -365,8 +425,12 @@ file. After the agent,
 the key file, and `apps/agent-worker/agent_worker/lifecycle.py::Worker._record_quality_gates`
 puts them in the attempt's summary under `quality_gates` and records one
 RUNNING event, cause `quality_gate`, with the same counts when belay blocked
-a stop or enforce flagged a rule. There is no per-call ledger row like rule
-6's; TypeSafe's own records are the authority on what was sent.
+a stop or enforce flagged a rule. The launcher also appends one record per
+Jev call, names and counts only, to `private/jev-gates.calls` (the browser's
+to `private/jev-browser.calls`), which the worker sends to swarm-api's
+`state/jev-usage` at exit on the state routes, so their spend is in the
+attempt's account beside the judgments' ("Jev spend on the state routes").
+TypeSafe's own records remain the authority on what was sent.
 
 **Egress.** The same path the jev browser tools' direct calls take
 (Which egress path): a gates-on pod without the forwarder is labelled
@@ -403,14 +467,21 @@ hooks, launcher redaction and URL pin, counts and event) and
 * **A Cloud Run Job judges on TypeSafe only.** The decision API's egress is
   a cluster Service, so a claude-code or codex attempt routed to Cloud Run
   gets no Internal URL and an internal backend reads `no_internal_url` there.
-* **The state routes carry no Jev usage.** A tenant switched to them holds no
-  Firestore client: with a monthly cap set its month counts as spent (every
-  call `skipped:budget_monthly`), its earlier attempts are not carried, and
-  nothing is settled.
-* **Only an attempt that reaches the harvest is settled.** A park, a crash or
-  a cancellation ends before `_settle_jev`, so that attempt's calls (at most
-  J1's, which run before the agent) are neither charged to the month nor
-  carried to the next attempt.
+* **On the direct (Firestore) path, only an attempt that reaches the harvest
+  is settled.** A park, a crash or a cancellation ends before `_settle_jev`,
+  so that attempt's calls (at most J1's, which run before the agent) are
+  neither charged to the month nor carried to the next attempt; and the
+  quality hooks' and the browser's per-call records are sent only on the
+  state routes (`judge.attempt.settle_at_exit` makes no call without a state
+  client). The direct path also still holds the cap to the ledger read once
+  at start, so two attempts running at once can each spend the month's last
+  remainder. The state routes close all three ("Jev spend on the state
+  routes"); the direct path is what a tenant uses until it is switched.
+* **No test drives a superseded generation's record or settle.** The routes
+  are checked against the attempt's own document and write only its own row,
+  calls, reservation entry and the month, which is what the code does; the
+  tests cover a cancelled task and another tenant's worker, not a generation
+  the task has moved past.
 * **The opt-in needs SETTINGS_MAC_REQUIRED on.** As for the quality gates,
   the scheduler verifies nothing while that switch is off, so every stored
   `code_intelligence.jev: true` reads as off (`settings_mac_off`) until lane
@@ -430,6 +501,21 @@ hooks, launcher redaction and URL pin, counts and event) and
   hostname sinkhole on unlabelled pods, or the general internet behind a
   proxy that refuses the host) is an owner question, in
   [the runbook](runbooks/typesafe-egress.md).
+
+### Closed by lane AQ-JEV-ACCOUNTING (2026-11-03)
+
+* **The state routes carried no Jev usage.** A tenant switched to them held
+  no Firestore client: with a monthly cap set its month counted as spent
+  (every call `skipped:budget_monthly`), its earlier attempts were not
+  carried, and nothing was settled. swarm-api now reserves a bounded
+  allowance at admission in one fenced transaction, records each call once
+  and settles the attempt: "Jev spend on the state routes".
+* **Only an attempt that reached the harvest was settled**, on the state
+  routes: a park, a cancellation and a crash in the worker now settle at
+  exit with their outcome, and a worker that died is settled `abandoned`,
+  its unreported spend unknown, by the task's next reserve.
+* **The quality hooks and the Jev browser recorded nothing in `jev_usage`.**
+  On the state routes each of their calls is now a record of its own.
 
 ### Closed by lane jev-outbound-redaction (2026-11-02)
 
