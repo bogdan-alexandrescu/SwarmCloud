@@ -99,7 +99,7 @@ nothing at another commit or another revision.
 
 ## Strict and advisory
 
-A **strict** contract is refused (`work_contract_not_enforceable`, 422) when it
+A **strict** contract is refused (`work_contract_not_enforceable`) when it
 sets any component outside the enforced set; it **never** silently compiles as
 advisory. Today the enforced set (`WORKER_ENFORCED_TODAY`) is the repository
 binding and the limits. As a worker package enforces another component (a
@@ -142,6 +142,15 @@ no kind still needs one passing record. No evidence is never success.
 The model's judgment is never the authorization: whether an amendment widens
 scope is computed from the two revisions, and who authored it comes from the
 caller's verified identity, never from what the agent says.
+
+## Refusal codes ship off
+
+The module's refusals (`work_contract_invalid`, `work_contract_not_enforceable`,
+`work_contract_amendment_refused`, `work_contract_scope_widening`) are domain
+errors, `WorkContractError`, not `ApiError`s: no route serves a contract yet,
+and a new refusal in swarm-api ships switched off (`swarm_api.refusals`). The
+lane that wires submission maps each code to an `ApiError`, registers its
+`refusals.Switch` and raises it through `refusals.refuse()`.
 
 ## Issue runs
 

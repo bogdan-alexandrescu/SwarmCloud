@@ -33,7 +33,6 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from swarm_common.specsign import SpecNotCanonical, jcs
 
-from swarm_api.errors import Forbidden, ValidationFailed
 
 #: Domain separation: a contract's bytes can never be read as a step spec's
 #: (`swarm.step-spec`) or a settings block's (`swarm.settings/v1`).
@@ -128,29 +127,46 @@ _TOP_KEYS = frozenset({
 _LIMIT_KEYS = ("runner_profile", "model_class", "budget", "max_turns", "timeout_seconds")
 
 
-class ContractInvalid(ValidationFailed):
-    """422 `work_contract_invalid`: the document is not a work contract."""
+class WorkContractError(ValueError):
+    """A contract refusal, as a domain error with a stable `code` and `detail`.
+
+    Deliberately NOT an `ApiError`: no route raises these yet, and a new
+    refusal in swarm-api ships switched off (`swarm_api.refusals`, observer
+    proposal I). The lane that wires a route maps each code to an `ApiError`,
+    registers a `refusals.Switch` for it and raises it through
+    `refusals.refuse()`; until then nothing a caller sends can meet one."""
+
+    code = "work_contract_refused"
+
+    def __init__(self, message: str, *, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.detail = detail or {}
+
+
+class ContractInvalid(WorkContractError):
+    """`work_contract_invalid`: the document is not a work contract."""
 
     code = "work_contract_invalid"
 
 
-class ContractNotEnforceable(ValidationFailed):
-    """422 `work_contract_not_enforceable`: a strict contract sets a component
+class ContractNotEnforceable(WorkContractError):
+    """`work_contract_not_enforceable`: a strict contract sets a component
     no worker enforces. Never compiled as advisory instead."""
 
     code = "work_contract_not_enforceable"
 
 
-class AmendmentRefused(ValidationFailed):
-    """422 `work_contract_amendment_refused`: the amendment drops an unmet
+class AmendmentRefused(WorkContractError):
+    """`work_contract_amendment_refused`: the amendment drops an unmet
     requirement silently, reuses a withdrawn id, or breaks the lineage."""
 
     code = "work_contract_amendment_refused"
 
 
-class ScopeWideningRefused(Forbidden):
-    """403 `work_contract_scope_widening`: an agent's amendment widens its
-    own contract. Only a person widens a contract."""
+class ScopeWideningRefused(WorkContractError):
+    """`work_contract_scope_widening`: an agent's amendment widens its own
+    contract. Only a person widens a contract (a 403 once a route serves it)."""
 
     code = "work_contract_scope_widening"
 

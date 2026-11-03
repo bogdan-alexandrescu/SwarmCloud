@@ -151,6 +151,16 @@ def test_the_canonical_bytes_are_jcs_with_the_purpose_and_round_trip():
     assert wc.digest(wc.decode(c.to_document())) == wc.digest(c)
 
 
+def test_no_contract_refusal_is_an_api_error_until_a_route_switches_it():
+    """A new refusal ships off (swarm_api.refusals): these are domain errors
+    until the wiring lane maps them through refusals.refuse()."""
+    from swarm_api.errors import ApiError
+
+    for cls in (wc.ContractInvalid, wc.ContractNotEnforceable, wc.AmendmentRefused,
+                wc.ScopeWideningRefused):
+        assert issubclass(cls, wc.WorkContractError) and not issubclass(cls, ApiError)
+
+
 def test_the_purpose_separates_a_contract_from_a_step_spec():
     assert wc.CONTRACT_PURPOSE not in (specsign.SPEC_PURPOSE, specsign.SETTINGS_PURPOSE)
 
@@ -480,7 +490,7 @@ def test_an_agent_cannot_widen_its_own_scope(mutate, widens):
     with pytest.raises(wc.ScopeWideningRefused) as raised:
         wc.amend(old, _proposal(old, mutate), author_is_agent=True)
     assert widens in raised.value.detail["widens"]
-    assert raised.value.status_code == 403
+    assert raised.value.code == "work_contract_scope_widening"
     # A person may widen it; the new revision then waits for approval.
     assert wc.amend(old, _proposal(old, mutate), author_is_agent=False).contract.revision == 2
 
