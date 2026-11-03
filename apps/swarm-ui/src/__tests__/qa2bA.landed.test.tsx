@@ -91,19 +91,21 @@ describe('admin2-02: the frame refuses a workspace admin’s own page as such', 
   }
   const refusal = () => document.querySelector<HTMLElement>('[data-refused="admin"]')
 
-  it('titles Workspaces you admin "for workspace admins" for a member of a group workspace', async () => {
-    await shell('workspaces', [PERSONAL, ENG_MEMBER])
+  // A member reaches Admin › Workspaces since the admin routes lane (part of #2688; BGD 3 November), so the
+  // workspace admins' page they are refused is Platform people.
+  it('titles Platform people "for workspace admins" for a member of a group workspace', async () => {
+    await shell('people', [PERSONAL, ENG_MEMBER])
     await waitFor(() => expect(refusal()).not.toBeNull())
     // MUTATION: drop `audience` from the frame's AdminRoleRefusal and this reads "platform".
     expect(refusal()!.getAttribute('data-audience')).toBe('workspace')
-    expect(refusal()!.textContent).toContain('Workspaces is for workspace admins')
+    expect(refusal()!.textContent).toContain('Platform people is for workspace admins')
     expect(refusal()!.textContent).toContain('you administer none')
   })
 
   it('tells the owner of only a personal workspace it is their own, never its admin', async () => {
     await shell('people', [PERSONAL])
     await waitFor(() => expect(refusal()).not.toBeNull())
-    expect(refusal()!.textContent).toContain('People and roles is for workspace admins')
+    expect(refusal()!.textContent).toContain('Platform people is for workspace admins')
     // MUTATION: drop `personal` from the frame's AdminRoleRefusal and this reads "You are an admin of ...".
     expect(refusal()!.textContent).toContain('is your own workspace')
     expect(refusal()!.textContent).not.toContain('an admin of')
