@@ -322,6 +322,8 @@ from .runners.cliagent import (
     STOP_EXHAUSTED,
     carries_session_totals,
 )
+from .runners.ceiling import COST_INCOMPLETE_KEY as CEILING_COST_INCOMPLETE_KEY
+from .runners.ceiling import SESSIONS_METRIC as CEILING_SESSIONS_METRIC
 from .runners.ceiling import UNPRICED_KEY as CEILING_UNPRICED_KEY
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .runners.streams import agent_stream_files, cli_agent_spec
@@ -5005,6 +5007,11 @@ class Worker:
             summary["cost_estimated"] = True
             if self._spend.get("tier_estimated"):
                 summary["tier_estimated"] = True
+        if self._spend.get("cost_incomplete"):
+            # A session of the attempt had its usage unread: `cost_usd`, if
+            # any, does not cover it (`_collect_spend`). Free-form summary
+            # only -- a typed `Attempt` field would be a contract change.
+            summary["cost_incomplete"] = True
         runner_result = _read_json(ws.result_path)
         if runner_result:
             # The SAME figure `_record_spend` wrote onto the attempt (it ran
@@ -17638,9 +17645,18 @@ class Worker:
             result = _read_json(self.ws.result_path) or {}
             usage = _usage_summary(result.get("output"))
             unpriced = _unpriced_sessions(result.get("output"))
+            incomplete = _cost_incomplete(result)
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("could not read the runner's spend", error=str(exc))
             return
+        if incomplete:
+            # A SESSION WHOSE USAGE WAS NOT READ (COST-ACROSS-SESSIONS, part
+            # of #2688): the runner dropped its partial `total_cost_usd`, so
+            # what follows estimates the capture or reports no cost. Kept
+            # sticky on the attempt's spend and said in the summary
+            # (`result_summary.cost_incomplete`), never inferred from
+            # `cost_estimated` alone, which a priced stopped run also sets.
+            self._spend["cost_incomplete"] = True
         stopped_cost: float | None = None
         if "total_cost_usd" in usage and unpriced:
             # SESSIONS A CONTEXT-CEILING HANDOFF ENDED (#2896): stopped at a
@@ -21341,6 +21357,26 @@ def _unpriced_sessions(output: Any) -> dict[str, Any]:
                 if isinstance(counts, dict)
             }
     return {}
+
+
+def _cost_incomplete(result: Any) -> bool:
+    """Whether a runner's result says a session's usage was not read: the
+    spend's `ceiling.COST_INCOMPLETE_KEY`, on its output or nested
+    `structured_output`, or `metrics.sessions.cost_complete` false
+    (COST-ACROSS-SESSIONS, part of #2688)."""
+    if not isinstance(result, dict):
+        return False
+    output = result.get("output")
+    if isinstance(output, dict):
+        for source in (output, output.get("structured_output")):
+            if isinstance(source, dict) and source.get(CEILING_COST_INCOMPLETE_KEY) is True:
+                return True
+    for holder in (result, output):
+        metrics = holder.get("metrics") if isinstance(holder, dict) else None
+        sessions = metrics.get(CEILING_SESSIONS_METRIC) if isinstance(metrics, dict) else None
+        if isinstance(sessions, dict) and sessions.get("cost_complete") is False:
+            return True
+    return False
 
 
 def _usage_summary(output: Any) -> dict[str, Any]:

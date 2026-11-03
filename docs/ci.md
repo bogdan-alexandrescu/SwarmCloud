@@ -5001,6 +5001,58 @@ section below), no `terraform test` and nothing needing credentials, and a
 green run proves nothing CI has not. `tests/unit/scripts/test_changed_guards.py` holds its
 selection against fixture diffs.
 
+### The gate time-boxes the guard run and runs its parts side by side
+
+Owner decision, 3 November 2026 ("1+3"), after a full-day re-measure of the
+worker's pre-publish gate (`agent_worker/prepublish.py`, each agent's final
+attempt, 72 hours before the gate change against 22.5 hours after): builder
+steps (implement, build, fix) went from 8.5 to 15.6 minutes of gate a run on
+average, the slowest tenth from 36.8 to 64.3 minutes. 96% of that was the
+`changed-guards` check, which ran in 46% of builder runs (28% before), its
+`--shard` parts one after another (90th percentile 79.5 minutes).
+
+**What the gate does now** (`timeboxed_guards`):
+
+* It asks the script for the selection (`--list`) and `scripts/related-tests.sh`
+  for the tests related to the files the step changed, and cuts both into
+  parts of about 40 CI-seconds (`GUARDS_PART_WEIGHT`), in the listing's order,
+  so the fixed guards lead the rest.
+* The contract-parity check and the stylesheet guards are the first part,
+  then every related part, then the rest. Each part is one
+  `changed-guards.sh --only <list> --workers <n>` command: `--only` runs just
+  the selection entries it names (no record, no self-split), `--workers` sets
+  pytest's `-n`.
+* The parts run **side by side**, as many as the pod has CPUs (`pod_cpus`:
+  the CPUs the process may use, bounded by the cgroup CPU limit and the
+  platform's `PYTEST_XDIST_AUTO_NUM_WORKERS`), each on its share of them. A
+  larger runtime runs more parts at once with no change to the gate.
+* A part starts only while the **budget** lasts: `GUARDS_BUDGET_SECONDS`, 600
+  s of wall time for the whole check, never past the step's own deadline.
+  A part not started, or stopped at the budget with no failure of its own, is
+  **left to CI**: listed on the round's record (`left_to_ci`) and in the pull
+  request's advisory section, never counted as passed. CI runs the whole
+  selection anyway.
+* A failing part still fails the check, and its output, placed last, goes to
+  the fix turn. A failure printed before a budget stop counts too: the stop's
+  timeout marker is reworded so the gate never reads a stopped part as a
+  timeout nobody can fix.
+
+**Measured on this change's own selection** (2026-11-03, a 6-CPU container,
+343 test files, 3,365 CI-seconds; `related-tests.sh` related 326 of them,
+because the gate module is widely imported). One after another, the old way,
+part 1 of 7 (38 files, 481 CI-seconds) took 454 s at `-n auto`: about 1.06
+CI-seconds a second, so the seven parts are about 53 minutes of gate. Side by
+side, six parts at a time at one worker each, 97 files (891 CI-seconds)
+passed in 500 s: about 1.78 CI-seconds a second. With the 600 s budget the
+check ends at about 10 minutes, a third of the selection run (related parts
+first) and the rest left to CI. The first try ran the related set as ONE
+command; it was killed at the budget and every file was left to CI, which is
+why the related set is cut into parts like the rest.
+
+The contract-parity check took 66 s alone in that container, past the
+script's own 60 s `PARITY_SECONDS`, so it failed in some of these runs whichever way the
+guards ran; that limit predates this change and is not changed by it.
+
 ### While it works, a SwarmCloud agent runs only the related tests
 
 ```bash
@@ -5042,6 +5094,68 @@ changed module through relative imports (`import ... from`, `export ... from`,
 `node_modules` and can be cut into runs. A change to what every component test
 runs under (`vitest.config.ts`, `src/__tests__/setup.ts`, `package.json`, ...)
 is related to no file by import: it is named in a warning and CI runs the suite.
+
+**Why one route no longer selects the suite** (RELATED-NARROW, part of #2688).
+Agents reported about 1,972 files selected for a change to a handful, and
+hand-picked tests instead. Measured on main at 0409b8d (2026-11-03), a change
+to one swarm-api route, `routes/budget_settings.py`, reached 1,428 of 1,707
+pytest files by import, through three false or overbroad edges:
+
+* **every suffix of a module's dotted name counted as a way to import it**, so
+  `agent_worker/startup.py`'s `import platform` (the standard library) read as
+  an import of `swarm_api/routes/platform.py`, and `main`, `config`, `errors`
+  likewise. Python finds `platform` there only if `swarm_api/routes` itself
+  is on `sys.path`, and nothing puts a package directory there, so an
+  absolute name now reaches a module only through a directory that is not a
+  package (`apps/<app>`, `tests/unit`, `scripts/lib`) or the repository root;
+* **a lazy import counted as an eager one**: `swarm_api/__init__.py` imports
+  `.main` (every route) only inside `create_app()`, yet
+  `from swarm_api import forgeapp` read as loading every route. An import in a
+  function body now passes the change on only to importers whose code (not a
+  docstring) names that function;
+* **`main.py` mounts every router**, so every test that builds the app reached
+  every route. A router module reached through an app that mounts it
+  (`include_router(budget_settings.router)`) now reaches only the tests that
+  request one of its URLs (its `APIRouter` prefix, literals, module
+  constants and f-strings; `{param}` is any one segment), and the guards that
+  walk every route the app mounts (`app.routes`, `.openapi()` ...). A router
+  with a path the selector cannot read is not gated: a partial URL list would
+  drop the tests of the paths it missed. A test that builds the URL from a
+  constant in a helper module (`BASE = "/v1/admin"`, then `f"{BASE}/x"`) does
+  not match and is dropped; main's push run still runs it.
+
+The same change now selects 13 files: the two that request its URLs and eleven
+route walkers (credentials, the admin surface ...), and no worker test. A
+`conftest.py` that is changed, or reached, also reaches every test under its
+directory: tests use its fixtures without importing it, which the old closure
+missed. Swarm-ui: a type-only `import type` / `export type ... from` is no
+edge, since vitest transpiles without running it (tsc, in CI, reads it).
+
+These rules live in `select_unit_tests.py`'s `import_closure`, so pull-request
+CI selects by them too; main's push run and a merge-train run still run the
+whole suite, so a miss there costs a red main, never an untested release.
+
+**Where the code graph is staged, its `tests_for` is added to the import
+map.** With a snapshot beside the checkout (`$SWARM_CONTEXT_DIR/snapshot`, else
+`../.swarm-context/snapshot`, where the pre-publish gate reads it), a changed
+file the graph knows a covering test for also selects the graph's tests for it:
+the file's own test rows and its symbols', as `swarm-graph`'s `tests_for`
+answers. They are added to what its imports select, never put in its place
+(owner decision on PR 3099, 2026-11-03: union, not replace). The graph catches
+a test no import reaches (a fixture, a subprocess, a URL), and the import map
+keeps a test the graph's coverage run missed: no coverage on record is not no
+coverage. So the graph widens a selection, never narrows it. The snapshot is
+read with the standard library, each blob checked against its digest name; one
+that cannot be read is named in a warning and the import map selects alone.
+
+**Wide by design.** What CI runs the whole suite for (the frozen contract
+`apps/common/swarm_common/`, which every component imports; a `conftest.py`;
+`pyproject.toml`; `uv.lock` ...) still selects every test that imports or reads
+it here, about 1,500 files for `swarm_common/models.py`, and a warning says it
+is wide by design and that CI runs the whole suite. A staged graph never
+adds to these: they select by imports alone, so the warning's count is exact.
+Other modules many components import (`swarm_api/store.py`, the worker's
+runners) still select hundreds by import.
 
 **A stylesheet change also selects the stylesheet guards** (RELATED-CSS-GUARDS,
 part of #1914, owner decision 2026-10-22). Any `.css` under `apps/swarm-ui/`

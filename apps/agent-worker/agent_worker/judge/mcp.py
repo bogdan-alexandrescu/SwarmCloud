@@ -33,7 +33,10 @@ ADVISORY = "Jev is advisory: no answer this time; continue with your own judgeme
 TOOL = {
     "name": TOOL_NAME,
     "description": (
-        "Ask Jev, a fast judgement model, typed questions about `state`. Each question is "
+        "Ask Jev, a fast judgement model, typed questions about `state`. Call it when "
+        "choosing between options the brief leaves open, for the acceptance check of each "
+        "stated requirement before finishing, and when a check fails and it is unclear "
+        "whether the code or the test is wrong; not for facts you can check. Each question is "
         "{type, instructions, criteria}: `noul` answers p(yes); `choice` picks one option and "
         "needs criteria as {option: description-or-null} (at most 255); `score` needs criteria "
         "as a list of strings. Refer to parts of state by name in backticks. Credential-shaped "

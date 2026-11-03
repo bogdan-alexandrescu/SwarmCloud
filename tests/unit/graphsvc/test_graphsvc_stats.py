@@ -97,11 +97,11 @@ def test_the_local_document_has_every_figure_of_section_5_3(world):
     assert document["result_bound"] == svc.results.bound and document["result_bytes"] > 0
     assert document["shard_bound"] == svc.shards.bound and document["shard_bytes"] > 0
     assert len(document["outcomes"]) == stats_mod.HOURS == 24
-    assert [set(b) for b in document["outcomes"]] == [{"hour", "hit", "miss"}] * 24, \
-        "no `carried` count while carry forward is not built (the tile is a dash)"
+    assert [set(b) for b in document["outcomes"]] == [{"hour", "hit", "carried", "miss"}] * 24, \
+        "carry forward is built, so every bucket counts `carried`"
     hours = [b["hour"] for b in document["outcomes"]]
     assert hours == sorted(hours) and len(set(hours)) == 24
-    assert _totals(document) == {"hit": 0, "miss": 1}
+    assert _totals(document) == {"hit": 0, "carried": 0, "miss": 1}
     histogram = document["served_ms"]
     assert histogram["bounds_ms"] == list(stats_mod.MS_BOUNDS)
     assert len(histogram["counts"]) == len(stats_mod.MS_BOUNDS) + 1
@@ -139,7 +139,7 @@ def test_a_second_tenants_entries_never_appear(world):
     assert svc.shards.bytes > 0 and len(svc.results) == 2
     reply = get(svc, "/v1/stats/local?shards=1", mint_stats(key, raw=raw, previous=digest(raw)))
     document = _doc(reply)
-    assert _totals(document) == {"hit": 0, "miss": 0}
+    assert _totals(document) == {"hit": 0, "carried": 0, "miss": 0}
     assert sum(document["served_ms"]["counts"]) == 0
     assert document["answers_hot"] == 0
     assert document["shards_hot"] is None, "this tenant's manifest is not held here"
@@ -154,7 +154,7 @@ def test_a_second_tenants_entries_never_appear(world):
     # The first tenant's own question is counted, and only it.
     post(svc, QUESTION, mint(key, raw=raw))
     document = _doc(get(svc, "/v1/stats/local?shards=1", mint_stats(key, raw=raw)))
-    assert _totals(document) == {"hit": 0, "miss": 1}
+    assert _totals(document) == {"hit": 0, "carried": 0, "miss": 1}
     assert document["answers_hot"] == 1
     assert all(blob in {b for t, b in svc.shards.keys() if t == TENANT} or not row["hot"]
                for blob, row in document["shards"].items())
@@ -313,7 +313,7 @@ def test_a_stats_ticket_lives_sixty_seconds_and_names_one_repository(world):
     too_long = get(svc, "/v1/stats", mint_stats(key, raw=raw, exp=now + 3600))
     assert json.loads(too_long.body) == {"error": "ticket_refused", "reason": "invalid"}
     for bad in ({"repo_id": "../x"}, {"tenant_id": "Eng/"}, {"manifest_digest": "sha256:x"},
-                {"previous_manifest_digest": "nope"}, {"extra": 1}):
+                {"previous_digest": "nope"}, {"nonce": "zz"}, {"extra": 1}):
         reply = get(svc, "/v1/stats", mint_stats(key, raw=raw, **bad))
         assert reply.status == 401, bad
     assert get(svc, "/v1/stats", mint_stats(key, raw=raw, previous=digest(b"x"))).status == 200
@@ -332,9 +332,10 @@ def test_the_counters_move_at_the_graph_answer_line(world, caplog, monkeypatch):
         post(svc, _call("search", ["not", "an", "object"]), ticket)  # cache: none
     lines = [json.loads(r.getMessage()) for r in caplog.records]
     answers = [line for line in lines if line["event"] == "graph_answer"]
-    logged = {c: sum(1 for line in answers if line["cache"] == c) for c in ("hit", "miss")}
+    logged = {c: sum(1 for line in answers if line["cache"] == c)
+              for c in ("hit", "carried", "miss")}
     document = _doc(get(svc, "/v1/stats/local", mint_stats(key, raw=raw)))
-    assert logged == {"hit": 1, "miss": 2}
+    assert logged == {"hit": 1, "carried": 0, "miss": 2}
     assert _totals(document) == logged
     assert sum(document["served_ms"]["counts"]) == 3, "`none` is not an answer outcome (§3.2)"
 

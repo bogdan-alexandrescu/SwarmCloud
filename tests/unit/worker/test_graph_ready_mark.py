@@ -33,7 +33,9 @@ from test_graphstage import (  # noqa: F401 -- the `clone` fixture
 from worker_seeds import TENANT, seed_attempt
 
 ARGV = ["python", "-m", "agent_worker.runners.claude_code"]
-FIELDS = {"delivery", "seconds", "bytes", "blobs", "reason"}
+#: `history_seconds` and `phases`: the start-up's timed phases (lane
+#: REVIEW-STARTUP-WAIT, part of #2688).
+FIELDS = {"delivery", "seconds", "bytes", "blobs", "reason", "history_seconds", "phases"}
 
 
 def _prepare(db: Any, store: Any, checkout: Path, base: str, *, task_id: str = "task_b"):
@@ -80,6 +82,10 @@ def test_a_staged_graph_is_marked_with_its_delivery_seconds_bytes_and_blobs(db, 
     assert graph["bytes"] == record["bytes"] > 0
     assert graph["seconds"] == record["seconds"] >= 0.0
     assert graph["reason"] == record["reason"] and graph["reason"].startswith("staged the graph")
+    # MUTATION: a phase timed but not marked, or marked before it ran.
+    assert graph["phases"] == record["phases"]
+    assert set(graph["phases"]) == {"stage", "additional", "jev_setup"}
+    assert graph["history_seconds"] is None and "history_seconds" not in record
 
 
 def test_a_graph_that_could_not_be_staged_is_marked_none_with_its_reason(db, clone):
@@ -145,9 +151,12 @@ def test_the_mark_carries_numbers_and_the_reason_only():
         snapshot=Path("/work/.swarm-context/snapshot"), seconds=1.5,
         facts={"index_sha": "0" * 40, "format_version": 3, "blobs": 4, "bytes": 2048,
                "behind_by": 0, "basis": "same", "changed": 0})
+    result.history_seconds = 2.25
+    result.phases.update(stage=1.5, additional=0.0, jev_setup=0.125)
     assert graphstage.ready_detail(result) == {"graph": {
         "delivery": "staged", "seconds": 1.5, "bytes": 2048, "blobs": 4,
-        "reason": "staged the graph of 0123456789ab (git)"}}
+        "reason": "staged the graph of 0123456789ab (git)", "history_seconds": 2.25,
+        "phases": {"stage": 1.5, "additional": 0.0, "jev_setup": 0.125}}}
 
 
 # --------------------------------------------------------------------------

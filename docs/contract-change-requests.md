@@ -141,6 +141,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("API records the ask", answering the pre-publish gate lane's question on #2981, PR 2986; requested the same day by lane TIMEOUT-ASKED-CONTRACT) and APPLIED by the pull request that adds this line (lane TIMEOUT-ASKED-APPLY, part of #2688): the field last in `Task`, unsigned; swarm-api writes it in `_build_task` and a child's `replace`, reads and serves it in its codec and refuses it in a caller's metadata; the console's `Task` type declares it |
 | 132 | `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and the account its current attempt holds, so `GET /v1/tasks` stops reading every row's attempts and account events (STORED-TASK-TOTALS, from LOAD-SPEED-TASKS-LIST, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("Accept"; drafted by lane LOAD-SPEED-TASKS-LIST as 131, renumbered: TIMEOUT-ASKED-CONTRACT took 131 the same day). APPLIED by the pull request that adds this line (lane STORED-TASK-TOTALS): the worker and swarm-api write both views with each attempt start, spend and end and each account event; `GET /v1/tasks` serves them and derives a task that has none; `scripts/backfill-task-views.sh` fills older tasks once |
 | 133 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | ACCEPTED by the owner (BGD) 2 November 2026 ("Accept and build"; owner accepted 2 November 2026; requested 2026-10-28 by lane CONTRACT-MAXTURNS on PR 2682 as 127, renumbered 2026-11-02 by lane CARRY-TURN-CAP). APPLIED 2026-11-02 by the pull request that adds this line (lane TURN-CAP-APPLIED, part of #2688): spec format 7; `supports_max_turns=True` on the six claude-code-runner profiles and `max_turns` None on every profile; swarm-api resolves `max_turns` beside `validate_timeout` on a task, a workflow step, a child and both profiles of a `browser_if_ui` step; the worker passes the verified `Task.max_turns` as `--max-turns`; the requirements check asks for 30 turns and its prompt no longer does |
+| 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (BGD, answering question 0 of PR 3095: merge as built on the current class, and file this request) |
+| 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
 
 ---
 
@@ -16067,3 +16069,331 @@ PR 2678, REVIEW-GATE-DEFAULT). The shape -- step field resolved against the
 profile, rather than a profile field alone -- is this request's proposal
 and BGD's to accept. The owner chose on 2026-11-02 to carry PR 2682 onto
 main rather than drop it.
+
+---
+
+## 134. `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688)
+
+**Status:** open, REQUESTED 2026-11-03 by the builder lane of PR 3095
+(task_98b46c02fd214e56a012) at the owner's instruction. BGD answered that
+pull request's question 0 the same day: *merge this pull request as built,
+on the current builder class*, and file a frozen-contract change request for
+a 12-CPU, 16 GiB builder class (about +$0.31 per builder hour). PR 3095
+merges on `standard`; this request is the class change, and nothing in it is
+applied. `apps/common/swarm_common/` is frozen.
+
+### What is true today
+
+Read on main on 2026-11-03. Builder steps run on their profile's class, and
+every coding profile's is `standard`: a 4-CPU request, an 8-CPU limit on GKE
+(request 108) and 8 GiB of memory, 4 of it workspace tmpfs. PR 3095 makes the
+pre-publish gate run the changed-guards check as parts of about 40
+CI-seconds, side by side, as many as the pod has CPUs (`pod_cpus`), inside a
+600 s budget (`GUARDS_BUDGET_SECONDS`), and leaves what does not fit to CI.
+Measured in a 6-CPU SwarmCloud container on 2026-11-03, that ran about 1.78
+CI-seconds a second: roughly a third of a 3,365 CI-second selection in the
+budget, related parts first. More CPUs run more parts in the same budget,
+with no code change.
+
+The class cannot be made 12 CPUs by an admin size today. `ResourceClass.__post_init__`
+refuses a request above 8 CPUs ("exceeds the Cloud Run Jobs ceiling") and
+`CPU_REQUEST_MAX = 8` bounds every admin size (requests 109-110), because
+every class can be reached by a Cloud Run profile's step or fallback Job.
+`CLASS_ORDER` names three classes and no fourth.
+
+### The change
+
+A fourth class, GKE only, between `browser` and `large`:
+
+```python
+# profiles.py
+RESOURCE_CLASSES["builder"] = ResourceClass(
+    "builder", cpu=12, memory_gib=16, disk_gib=8, units=3, cpu_limit=12,
+)
+CLASS_ORDER = ("standard", "browser", "builder", "large")
+```
+
+with the ceiling check moved from "every class" to "every class a Cloud Run
+profile can reach": a class above 8 CPUs is refused on a profile whose
+backend, or fallback, is Cloud Run, and `CPU_REQUEST_MAX` becomes a GKE bound
+(the GKE Autopilot general-purpose maximum) with the Cloud Run ceiling of 8
+kept for Cloud Run profiles. 16 GiB over 12 CPUs is 1.33 GiB a core, inside
+`MEMORY_PER_CPU_MIN`..`MEMORY_PER_CPU_MAX`. `units_for(12, 16)` is 3. The
+CPU limit equals the request, so the class adds no burst. The coding profiles
+that run builder steps would name `builder`, or a workflow's builder step
+would name it as its `resource_class` (a larger class than the profile's,
+which `validate_resource_class_override` refuses today, so the profile's
+class is the place).
+
+The smaller alternative, which needs no contract change: an admin size
+(requests 109-110) of a 6-CPU request with a 12-CPU limit and 16 GiB on
+`standard`. It fits every bound today, bursts only onto idle requested CPU,
+and charges 2 units instead of 1; it does not guarantee the 12 CPUs.
+
+### What it would break if accepted
+
+Cost and capacity, not code. At list Autopilot prices (quoted by PR 3095, not
+re-checked on 2026-11-03) a builder hour costs about $0.31 more, and each
+builder charges 3 capacity units instead of 1, so a pool fits a third as many
+builders at once. Every reader of `CLASS_ORDER` and `RESOURCE_CLASSES` (the
+admin sizes route, the console's class list, admission's unit charge, the
+scheduler's pod rendering) sees one more class; the tests that pin three
+classes change with it. A Cloud Run runtime cannot run the class, so a
+builder step whose GKE runtime is down waits instead of falling back.
+
+### If it is declined
+
+PR 3095's gate runs on `standard` as merged: it reads the CPUs the pod has
+and runs that many parts, and what does not fit the 600 s budget is left to
+CI, never reported as passed. The gate stays at about ten minutes on a large
+selection and covers less of it before CI does.
+
+### Invariants
+
+**7** holds: memory and ephemeral storage stay request equal to limit, and
+the CPU limit equals the request, inside `CPU_BURST_MAX_RATIO`. **10** holds:
+a caller still names a profile, and the class comes from the profile, never
+from the caller. **2** and **3** hold: admission charges the class's units in
+the same all-or-nothing transaction, counted from `LEASED`. **6** holds: no
+Spot. **1**, **4**, **5**, **8** and **9** are untouched.
+
+### How it is tested
+
+When it is applied, by the applying lane, red first:
+`tests/unit/common/test_runner_size_bounds.py` for the class, its units and
+the Cloud Run refusal of a class above 8 CPUs; the admin sizes and
+admission-follows-size tests for the fourth class; and a scheduler test that
+a builder pod renders a 12-CPU request and limit and 16 GiB.
+
+### Who decided
+
+BGD, 2026-11-03, on PR 3095: merge on the current class and file this
+request. Whether to accept it, and in which shape (the class, or the admin
+size alternative), is BGD's.
+
+---
+
+## 135. `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688)
+
+**Status:** REQUESTED 2026-11-03 by lane contract-request-builder-cpus (part
+of #2688). Not applied: `apps/common/swarm_common/` is frozen, and which of
+the two shapes below is built is the owner's choice. The owner chose on
+3 November 2026, answering the publish check lane's question on builder
+machine size (after his earlier note to time-box the guard run and to use
+faster guard machines), to merge the time-boxed, parallel guard check as
+built and to request a 12-CPU, 16 GiB builder class as a frozen-contract
+change. This entry is that request. Drafted as 134 and renumbered 135 when
+main took 134 for BUILDER-CLASS-12CPU (PR 3095, issue #3100), the same
+owner answer filed from another lane; which of the two, if either, is
+accepted is the owner's.
+
+### What is true today
+
+Read on main (ff447a8) on 2026-11-03.
+
+* **The classes** (`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`):
+  `standard` and `browser` are 4 CPU requested, 8 CPU limit, 8 GiB memory,
+  4 GiB workspace, 1 unit; `large` is 8 CPU requested, 16 limit, 32 GiB,
+  16 GiB workspace, 4 units. The workspace is a tmpfs slice of the memory
+  (the "WORKSPACE SIZES ARE MEMORY, NOT DISK" comment above `RESOURCE_CLASSES`), and memory and workspace are
+  request and limit both.
+* **Which profiles use which** (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`):
+  `standard` -- `claude-code` (GKE Autopilot), `codex`, `generic`, `merge`,
+  `indexer`, `claude-code-lightpanda`, and on Cloud Run `mock`,
+  `post-verdict` and `claude-code-review`; `await-input` and `fix-loop`
+  name it but are control-plane steps and never reserve. `browser` --
+  `browser` and `claude-code-browser`. `large` -- `claude-code-large`,
+  picked by name for a lane whose cause was an out-of-memory kill or a
+  timeout (request 113).
+* **Every step that builds runs on `claude-code`, so on `standard`.** The
+  issue-run compiler writes its `implement-<id>` steps and its `fix` step on
+  `apps/swarm-api/swarm_api/issueruns.py::STEP_PROFILE` (`"claude-code"`;
+  the step ids are `apps/swarm-api/swarm_api/issueruns.py::_impl_id` and
+  `apps/swarm-api/swarm_api/issueruns.py::FIX_STEP`), and its review on
+  `apps/swarm-api/swarm_api/issueruns.py::REVIEW_PROFILE`, the runtime
+  policy's profile: `claude-code` for a change without UI. A review, a requirements
+  check and a merge therefore weigh exactly what an implement step weighs.
+* **The bounds a class must keep:** `ResourceClass.__post_init__` (`apps/common/swarm_common/profiles.py::ResourceClass.__post_init__`)
+  refuses a request above 8 CPU or 32 GiB, Cloud Run's ceiling, and a
+  limit outside request to `CPU_BURST_MAX_RATIO` (2) x request; an admin's
+  size (`apps/common/swarm_common/profiles.py::check_size`) must keep
+  `CPU_REQUEST_MAX = 8`, `MEMORY_PER_CPU_MIN` to `MEMORY_PER_CPU_MAX`
+  (1.0 to 6.5 GiB per requested core) and `CLASS_ORDER`: standard <=
+  browser <= large in CPU request, memory and workspace.
+* **How units count:** `apps/common/swarm_common/profiles.py::units_for` charges one unit per
+  4 requested cores or per 8 GiB, whichever is more, and every class's
+  `units` must equal it (checked when the module loads). Admission reserves
+  a lease's units in each of the pools
+  `apps/common/swarm_common/models.py::pool_names_for` lists (`global`,
+  `tenant:<t>`, `resource:<class>`, `runner:<profile>`, `backend:<b>`)
+  all at once, and 1 in each `provider:*` pool whatever the size (request
+  129, `apps/common/swarm_common/models.py::pool_units_for`, checked in
+  `apps/common/swarm_common/admission.py::evaluate_capacity`).
+* **What a 2-unit builder does to how many fit.** At the numbers
+  `terraform/environments/dev/dev.tfvars` states in its `pool_limits` block (the live pools are
+  set by `scripts/pool-limit.sh` and were not read for this request):
+  `runner:claude-code` 80 units is 80 one-unit steps today and 40 two-unit
+  builders; `default_tenant` 40 is 40 one-unit steps per workspace and 20
+  builders; `global` 180 is 90 builders. The provider pools are unchanged,
+  since a lease takes 1 there whatever its class. A request of 12 CPU would
+  not be 2 units but 3 (`units_for(12, 16) = max(3, 2)`), and is refused by
+  `ResourceClass.__post_init__` in any case.
+* **Where the class sets the gate's parallel parts:**
+  `apps/agent-worker/agent_worker/runners/cliagent.py::agent_resource_budget`
+  sets `PYTEST_XDIST_AUTO_NUM_WORKERS` (`XDIST_WORKERS_ENV`), which `-n auto`
+  uses, to the container's CPU limit (cgroup `cpu.max`) capped at (memory
+  limit - `AGENT_MEMORY_HEADROOM_BYTES`, 2 GiB) / `XDIST_WORKER_BYTES`
+  (1 GiB per xdist worker). On `standard`
+  that is min(8, (8 - 2) / 1) = **6**: today's cap is the memory, not the
+  CPU. It rises with the class and needs no code change: at 16 GiB with a
+  12-CPU limit it is min(12, 14) = **12**. `scripts/changed-guards.sh`
+  runs its selection in one `pytest -n auto` call inside a 540 s pytest
+  budget (`scripts/changed-guards.sh` (`PYTEST_SECONDS=540`)), so the guard check's parallelism is this number.
+* **The publish check lane's measurements** (reported by that lane, not
+  re-measured here): on the current 6 usable CPUs about a third of a
+  343-file guard selection runs inside the 10-minute budget; the selection
+  ran 1.06 CI-seconds of tests a second one part after another against 1.78
+  side by side; on 12 CPUs about two thirds would fit.
+* **The cost** (the same lane's estimate, at list Autopilot prices that this
+  request did not re-read): about +6 vCPU and +8 GiB for the step's length,
+  about +$0.31 per 60-minute builder step. Autopilot bills the request, so
+  the shape proposed below, which raises the request by 4 vCPU and the
+  memory by 8 GiB, bills less than that figure; the extra 4 cores to the
+  limit are borrowed from idle requests on the node and are not billed.
+
+### The change
+
+The owner's 12 CPUs, as the frozen bounds allow: the request cannot pass 8
+(`ResourceClass.__post_init__`, `CPU_REQUEST_MAX`), so the 12 is the GKE limit and 8 is what is
+guaranteed. One size for both shapes: **8 CPU requested, 12 CPU limit,
+16 GiB memory, 8 GiB workspace**, which is `units_for(8, 16)` = **2 units**,
+2 GiB per core, a limit of 1.5 x the request, and gives
+`PYTEST_XDIST_AUTO_NUM_WORKERS` = 12 on GKE.
+
+Two shapes; both keep invariant 10 (a caller picks a `runner_profile` by
+name and never a resource spec):
+
+* **A. Raise the class `claude-code` already uses.** `standard` becomes
+  8/12/16 GiB/8 GiB, 2 units. Every `standard` step pays it: every
+  `claude-code` step, reviews and requirements checks included, and
+  `codex`, `generic`, `merge`, `indexer` and `claude-code-lightpanda`.
+  `CLASS_ORDER` forces `browser` up to at least 8 CPU and 16 GiB too, so
+  live-browser work doubles as well. (The same numbers could be set on GKE
+  without a contract change, as an admin size version through requests
+  109-110's route (`apps/common/swarm_common/profiles.py::effective_size`), with the same
+  blast radius.) Concurrency halves for every profile in the list:
+  `runner:claude-code` 80 is 40 agents of any kind.
+* **B. A `builder` class used only by the steps that build.** This request
+  proposes B:
+  * `RESOURCE_CLASSES["builder"] = ResourceClass("builder", cpu=8,
+    memory_gib=16, disk_gib=8, units=2, cpu_limit=12)`, and `CLASS_ORDER =
+    ("standard", "browser", "builder", "large")`: builder sits between browser
+    and large in CPU request (4 <= 8 <= 8), memory (8 <= 16 <= 32) and
+    workspace (4 <= 8 <= 16), so `check_size` holds the order.
+  * `BUILD_STAGES = ("implement", "build", "fix")` and
+    `RunnerProfile.build_resource_class: str | None = None`, set to
+    `"builder"` on `claude-code` only, and one frozen function,
+    `resource_class_for_stage(profile, stage) -> str`, which returns the
+    profile's `build_resource_class` for a stage in `BUILD_STAGES` and its
+    `resource_class` otherwise.
+  * **The platform chooses it, never a caller.** swarm-api's compilers call
+    it with the stage they are writing (the issue run's `implement-<id>`
+    and `fix` steps, a lane's build step) and store the class on the step;
+    the stage is the compiler's own argument, never read from a step id, an
+    input or anything else a caller sends. A caller's own `resource_class`
+    still goes through `validate_resource_class_override`
+    (`apps/swarm-api/swarm_api/validation.py::validate_resource_class_override`), unchanged: it may only
+    shrink, so `builder` on `claude-code` from a caller is refused as larger.
+  * Reviews, requirements checks, merges, `codex`, `generic` and the
+    browser profiles keep their classes and their concurrency.
+
+B is proposed because the guard check runs in the steps that build: a
+review or a requirements check gains nothing from 12 cores and, under A,
+would take two units of every compute pool for it. B is the larger contract
+edit (a class, a field, a function), A the smaller one (three numbers) with
+the larger bill and the larger loss of concurrency. The choice is the
+owner's.
+
+### What reads it
+
+Under B: the scheduler's admission (`pool_names_for` gains
+`resource:builder`, which needs a `pool_limits.resource_classes.builder`
+in `terraform/infra` and each environment's tfvars, set live by
+`scripts/pool-limit.sh`), the GKE pod renderer and its manifest guards
+(`tests/unit/control_plane/test_dispatch_manifests.py`,
+`test_gke_workspace_fits.py`), swarm-api's compilers and its admin sizes
+route (`check_size` judges four classes), the console's capacity views and
+`/v1/capacity` (which read the served classes), and `specsign`, which
+already signs `resource_class`. The worker reads
+nothing new: `agent_resource_budget` reads the cgroup. Under A: the same
+readers, with no new pool.
+
+### What it would break if accepted
+
+Nothing at once under B: no stored lease or step names `builder`, and an
+attempt reserved before the change releases its own units. What changes is
+the room: each builder takes 2 units of `global`, `tenant:<t>`,
+`runner:claude-code` and `backend:GKE_AUTOPILOT`, so a workspace runs half
+as many concurrent builders as it runs implement steps today unless its
+limits are raised. Until `resource:builder` has a stated limit it is
+whatever an unconfigured pool gets, so the applying lane states one. Under
+A every `standard` and `browser` profile halves at once, and the pod of a
+live-browser step changes size.
+
+### If it is declined
+
+The time-boxed, parallel guard check on main stays the gate: on 6 workers
+about a third of a 343-file selection fits the 10-minute budget, and the
+rest is CI's. `claude-code-large` (8 requested, 16 limit, 32 GiB) already
+gives 16 xdist workers today, but it is picked by name for an
+out-of-memory or timeout lane and costs 4 units of every compute pool. An
+admin size version for `standard` on GKE is shape A without the contract
+change.
+
+### Invariants
+
+* **1:** demand is still created only by `LEASED`, `DISPATCHED`, `STARTING`
+  and `RUNNING`: a builder is an ordinary lease with a larger class, and a
+  queued builder costs nothing.
+* **2:** the builder's 2 units in each compute pool, and 1 in each provider
+  pool, are reserved in the one admission transaction across every pool,
+  all or nothing, as every class's are; release is unchanged.
+* **3:** concurrency is counted from `LEASED`: the units are taken at
+  reserve, and `concurrency-judge.jq` sums each lease's held share, so a
+  2-unit lease is counted as 2 the moment it is leased.
+* **7:** memory 16 GiB and workspace 8 GiB are request and limit both; CPU
+  is 8 requested <= 12 limit <= `CPU_BURST_MAX_RATIO` (2) x 8 = 16, on GKE
+  only. Cloud Run renders the request, 8, as its one limit, which is within
+  Cloud Run's ceiling, so `ResourceClass.__post_init__` accepts it. The
+  pod's QoS class stays Burstable.
+* **10:** a caller still names a profile and never a size; under B the
+  class is the platform's choice from the stage, and a caller's
+  `resource_class` may still only shrink.
+* **5:** the class is in the signed spec, so a changed class fails the
+  worker's check before the agent runs. **4**, **6**, **8** and **9** are
+  untouched: no checkpointing, Spot, park or tenant boundary moves.
+
+### How it is tested
+
+When it is applied, by the applying lane, red first: the class table's own
+module-load check (`units` equals `units_for`) and a test in
+`tests/unit/common/test_runner_size_shape.py` that `builder` is 8/12/16/8
+with 2 units and keeps `CLASS_ORDER` under `check_size`; a swarm-api test
+that an issue run's `implement-<id>` and `fix` steps are stored with
+`builder` and its review with `standard`, and that a caller-sent
+`resource_class: builder` on `claude-code` is refused as larger; an
+admission test that a builder lease takes 2 units in each compute pool and
+1 in each provider pool; a manifest test that the builder pod renders
+requests 8 CPU and 16 GiB with limits 12 CPU and 16 GiB; and a case in
+`tests/unit/worker/test_agent_env_resource_budget.py` that a 16 GiB
+container with a 12-core `cpu.max` sets `PYTEST_XDIST_AUTO_NUM_WORKERS` to
+12.
+
+### Who decided
+
+BGD, 3 November 2026: merge the time-boxed, parallel guard check as built
+and request a 12-CPU, 16 GiB builder class as a frozen-contract change
+(answering the publish check lane's question on builder machine size). The
+8-requested, 12-limit reading of "12 CPU", forced by Cloud Run's ceiling on
+the request, and the proposal of shape B over shape A are this request's;
+both are the owner's to accept.
