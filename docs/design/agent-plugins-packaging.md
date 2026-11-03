@@ -309,7 +309,7 @@ script's smoke on the new tag, read-only, and refuses a list that changed withou
 
 * The start time before and after (no image built).
 * An `EROFS` read-only root filesystem; the install was read-only by mode bits.
-* The 193 skipped blocks: their helpers with model-written arguments.
+* The 194 skipped blocks: their helpers with model-written arguments.
 * Anything a model does in a skill. This spike runs no model and asks no question.
 * gstack's question capture, park and resume (the question bridge spike's work).
 * `/cso` in an agent pod: whether `work/` has a group- or world-writable ancestor there.
