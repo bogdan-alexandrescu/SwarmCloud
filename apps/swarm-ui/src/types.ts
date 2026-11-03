@@ -2417,6 +2417,17 @@ export interface Runtime {
    * second one declared that could drift from it.
    */
   resources: ResourceClassSpec
+  /**
+   * WHAT THE AGENT'S CONTAINER GETS (#3118), beside `resources` and not in it:
+   * `resources` is the class, and a live-browser pod splits it between the
+   * agent and the display. Null when the platform cannot say; absent from a
+   * platform from before the split was served.
+   */
+  agent_memory_gib?: number | null
+  /** The display container's share; null on a pod with no display. */
+  display_memory_gib?: number | null
+  /** The pod's total, which `resources.memory_gib` is too. */
+  pod_memory_gib?: number | null
 }
 
 /** GiB, binary. The ceilings are GiB, so a GB (1e9) denominator would overstate

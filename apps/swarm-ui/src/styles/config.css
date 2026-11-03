@@ -172,7 +172,50 @@
 .cfg-progress-h small,
 .cfg-progress-next { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
 .cfg-progress .cfg-meter-bar { max-width: 360px; }
-.wya-setup { flex: 1 0 100%; min-width: 0; }
-.wya-reading { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* ADMIN › WORKSPACES, THE FRAME'S COLUMNS (HOME-ADMIN, part of #2688; the
+   owner picked adding the grid here, 2026-11-03): each group workspace's row
+   is one grid line -- name, setup progress, roster facts, what waits, the
+   caller's role -- with its Config links on a line of their own under it. The
+   personal row keeps styles.css's flex line: it has a name and a sentence.
+   The counts over the list are tiles, their figure large. */
+.wya-row:not(.is-personal) {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(180px, 1.4fr) minmax(0, 1.4fr) minmax(0, 1.2fr) minmax(110px, 0.7fr);
+  grid-template-areas: "name setup facts waits role" "links links links links links";
+  align-items: start;
+  gap: 6px var(--ctl-s3, 12px);
+}
+.wya-row:not(.is-personal) .wya-name { grid-area: name; }
+.wya-row:not(.is-personal) .wya-setup { grid-area: setup; }
+.wya-row:not(.is-personal) .wya-facts { grid-area: facts; }
+.wya-row:not(.is-personal) .wya-waits { grid-area: waits; }
+.wya-row:not(.is-personal) .wya-role { grid-area: role; text-align: right; }
+.wya-row:not(.is-personal) .wya-links { grid-area: links; }
+.wya-setup { min-width: 0; }
+.wya-facts,
+.wya-waits { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.wya-role { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.wya-reading,
+.wya-facts-note { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.wya-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--ctl-s2, 8px); margin: 0 0 var(--ctl-s3, 12px); }
+.wya-counts > [role="listitem"] { display: flex; min-width: 0; }
+.wya-counts .c-chip { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; height: auto; padding: 10px 14px; border-radius: var(--r-ctl); white-space: normal; text-align: left; }
+.wya-counts .c-chip b { font: 650 var(--t-figure)/var(--lh-figure) var(--font); color: var(--text); }
+/* Tablet: name and progress on one line, facts and what waits under them. */
+@media (max-width: 1100px) {
+  .wya-row:not(.is-personal) {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "name role" "setup setup" "facts waits" "links links";
+  }
+}
+/* Phone: one column, in the row's reading order. */
+@media (max-width: 759px) {
+  .wya-row:not(.is-personal) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "name" "role" "setup" "facts" "waits" "links";
+  }
+  .wya-row:not(.is-personal) .wya-role { text-align: left; }
+  .wya-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .wya-behind { margin: 0 0 var(--ctl-s2, 8px); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
 .cfg-badge.is-note { color: var(--text-dim); }
