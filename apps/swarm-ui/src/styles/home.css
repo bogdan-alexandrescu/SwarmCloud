@@ -11,33 +11,33 @@
 
 .hm-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; padding-bottom: 28px; }
 .hm-pagehead { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; }
-.hm-pagehead h1 { margin: 0; font-size: 22px; line-height: 1.2; }
-.hm-sub { margin: 2px 0 0; color: var(--text-dim); font-size: 13px; }
+.hm-pagehead h1 { margin: 0; font-size: var(--t-figure); line-height: var(--lh-figure); }
+.hm-sub { margin: 2px 0 0; color: var(--text-dim); font-size: var(--t-meta); }
 .hm-headchips { display: flex; gap: 8px; flex-wrap: wrap; }
-.hm-hc { display: inline-flex; align-items: baseline; gap: 5px; font-size: 13px; color: var(--text-dim); padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); text-decoration: none; }
-.hm-hc b { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
+.hm-hc { display: inline-flex; align-items: baseline; gap: 5px; font-size: var(--t-meta); color: var(--text-dim); padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); text-decoration: none; }
+.hm-hc b { font-size: var(--t-body); color: var(--text); font-variant-numeric: tabular-nums; }
 .hm-hc.is-warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
 
 .hm-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.hm-head h2 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+.hm-head h2 { margin: 0; font-size: var(--t-lead); display: flex; align-items: center; gap: 8px; }
 .hm-head > :last-child:not(h2):not(.hm-why) { margin-left: auto; }
-.hm-count { font-style: normal; font-size: 12px; font-weight: 600; min-width: 22px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); text-align: center; font-variant-numeric: tabular-nums; }
-.hm-why { position: relative; font-size: 12px; }
-.hm-why > summary { list-style: none; cursor: pointer; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); display: inline-grid; place-items: center; color: var(--text-dim); font-size: 12px; }
+.hm-count { font-style: normal; font-size: var(--t-micro); font-weight: 600; min-width: 22px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); text-align: center; font-variant-numeric: tabular-nums; }
+.hm-why { position: relative; font-size: var(--t-micro); }
+.hm-why > summary { list-style: none; cursor: pointer; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); display: inline-grid; place-items: center; color: var(--text-dim); font-size: var(--t-micro); }
 .hm-why > summary::-webkit-details-marker { display: none; }
-.hm-why[open] > p { position: absolute; z-index: 5; top: 24px; left: 0; width: min(340px, 80vw); margin: 0; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm); box-shadow: var(--ctl-shadow-pop); color: var(--text); line-height: 1.45; }
+.hm-why[open] > p { position: absolute; z-index: 5; top: 24px; left: 0; width: min(340px, 80vw); margin: 0; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm); box-shadow: var(--ctl-shadow-pop); color: var(--text); line-height: var(--lh-micro); }
 
-.hm-meta { color: var(--text-dim); font-size: 12px; }
-.hm-dash { color: var(--text-faint); font-size: 12px; }
-.hm-age { color: var(--text-dim); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hm-meta { color: var(--text-dim); font-size: var(--t-micro); }
+.hm-dash { color: var(--text-faint); font-size: var(--t-micro); }
+.hm-age { color: var(--text-dim); font-size: var(--t-micro); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .hm-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; display: block; }
-.hm-empty { color: var(--text-dim); font-size: 13px; margin: 4px 0; }
+.hm-empty { color: var(--text-dim); font-size: var(--t-meta); margin: 4px 0; }
 .hm-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .hm-okmark { color: var(--ok-ink); font-weight: 700; }
-.hm-clear { margin: 8px 0 0; font-size: 13px; color: var(--text-dim); }
-.hm-done { margin: 10px 0 0; padding: 8px 10px; border-radius: var(--ctl-radius-sm); background: color-mix(in srgb, var(--ok) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line)); font-size: 13px; }
-.hm-refused { margin: 6px 0 0; font-size: 12px; color: var(--bad-ink); }
-.hm-tid { font-family: var(--mono); font-size: 12px; color: var(--text-dim); font-weight: 400; white-space: nowrap; }
+.hm-clear { margin: 8px 0 0; font-size: var(--t-meta); color: var(--text-dim); }
+.hm-done { margin: 10px 0 0; padding: 8px 10px; border-radius: var(--ctl-radius-sm); background: color-mix(in srgb, var(--ok) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line)); font-size: var(--t-meta); }
+.hm-refused { margin: 6px 0 0; font-size: var(--t-micro); color: var(--bad-ink); }
+.hm-tid { font-family: var(--mono); font-size: var(--t-micro); color: var(--text-dim); font-weight: 400; white-space: nowrap; }
 
 .hm-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
 .hm-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; overflow-wrap: anywhere; }
@@ -50,21 +50,21 @@
 .hm-items { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; }
 .hm-item { display: grid; grid-template-columns: 116px minmax(0, 1fr) auto 64px; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line-soft); }
 .hm-item.is-question { align-items: start; }
-.hm-kind { font-size: 12px; font-weight: 600; color: var(--text-dim); padding-top: 2px; }
+.hm-kind { font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); padding-top: 2px; }
 .hm-item.is-question .hm-kind { color: var(--warn-ink); }
 .hm-item.is-failed .hm-kind { color: var(--bad-ink); }
 .hm-item-main { min-width: 0; overflow: hidden; }
-.hm-item-title { font-weight: 600; font-size: 14px; }
+.hm-item-title { font-weight: 600; font-size: var(--t-body); }
 .hm-item-main p { margin: 2px 0 0; }
-.hm-q { font-size: 14px; }
+.hm-q { font-size: var(--t-body); }
 .hm-answer { display: flex; gap: 8px; align-items: flex-end; margin-top: 8px; }
-.hm-answer textarea { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 6px 8px; border-radius: var(--ctl-radius-sm); border: 1px solid var(--line); background: var(--surface); color: var(--text); resize: vertical; }
+.hm-answer textarea { flex: 1; min-width: 0; font: inherit; font-size: var(--t-meta); padding: 6px 8px; border-radius: var(--ctl-radius-sm); border: 1px solid var(--line); background: var(--surface); color: var(--text); resize: vertical; }
 .hm-reason { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.hm-confirm { font-size: 13px; }
+.hm-confirm { font-size: var(--t-meta); }
 .hm-acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .hm-item .hm-age { text-align: right; }
 
-.hm-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.hm-state { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-micro); white-space: nowrap; }
 .hm-state > i { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); flex: none; }
 .hm-state.is-live > i { background: var(--info); }
 .hm-state.is-park > i { background: var(--warn); }
@@ -73,14 +73,14 @@
 
 .hm-work { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
 .hm-workcard { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm); min-width: 0; overflow: hidden; background: var(--surface); }
-.hm-workcard-title { font-size: 13px; font-weight: 600; }
-.hm-workcard-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-dim); }
-.hm-thumb { height: 92px; border-radius: var(--ctl-radius-sm); border: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: var(--text-dim); font-size: 12px; background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, var(--surface) 6px 12px); }
+.hm-workcard-title { font-size: var(--t-meta); font-weight: 600; }
+.hm-workcard-meta { display: flex; justify-content: space-between; gap: 8px; font-size: var(--t-micro); color: var(--text-dim); }
+.hm-thumb { height: 92px; border-radius: var(--ctl-radius-sm); border: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: var(--text-dim); font-size: var(--t-micro); background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, var(--surface) 6px 12px); }
 .hm-thumb b { font-family: var(--mono); font-weight: 500; color: var(--text); }
 .hm-why-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
-.hm-why-label { font-size: 13px; font-weight: 600; }
+.hm-why-label { font-size: var(--t-meta); font-weight: 600; }
 
-.hm-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.hm-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); table-layout: fixed; }
 .hm-table td { padding: 6px; border-top: 1px solid var(--line-soft); text-align: left; vertical-align: middle; }
 .hm-table td:first-child { width: 110px; }
 .hm-table td.hm-ellipsis { display: table-cell; }
@@ -89,18 +89,18 @@
 .hm-startbtns { display: flex; flex-direction: column; gap: 8px; }
 .hm-startbtns > * { justify-content: center; }
 .hm-wslist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.hm-wslist li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line-soft); font-size: 13px; }
-.hm-role { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-dim); line-height: 18px; }
+.hm-wslist li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line-soft); font-size: var(--t-meta); }
+.hm-role { display: inline-block; font-size: var(--t-micro); padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-dim); line-height: var(--lh-micro); }
 .hm-role.is-member { color: var(--text); }
 .hm-role.is-admin { color: var(--text); font-weight: 600; border-color: var(--text-dim); }
-.hm-prog { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hm-prog { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-micro); color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .hm-prog-bar { width: 44px; height: 6px; border-radius: 3px; background: var(--surface-2); border: 1px solid var(--line); overflow: hidden; display: inline-block; }
 .hm-prog-bar i { display: block; height: 100%; background: var(--warn); }
 .hm-prog.is-done .hm-prog-bar i { background: var(--ok); }
 .hm-glance { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0; }
 .hm-glance div { display: flex; flex-direction: column-reverse; }
-.hm-glance dt { font-size: 12px; color: var(--text-dim); }
-.hm-glance dd { margin: 0; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hm-glance dt { font-size: var(--t-micro); color: var(--text-dim); }
+.hm-glance dd { margin: 0; font-size: var(--t-figure); font-weight: 600; font-variant-numeric: tabular-nums; }
 .hm-glance dd.is-bad { color: var(--bad-ink); }
 
 /* One column on a phone; each Needs you row stacks its kind above it, and a
@@ -110,7 +110,7 @@
   .hm-rail { position: static; }
   .hm-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .hm-tiles .c-tile { padding: 6px 8px; min-height: 0; }
-  .hm-tiles .c-tile b { font-size: 20px; }
+  .hm-tiles .c-tile b { font-size: var(--t-title); line-height: var(--lh-title); }
   .hm-hc { padding: 2px 8px; }
   .hm-item { grid-template-columns: minmax(0, 1fr) auto; }
   .hm-item > .hm-kind { grid-column: 1 / -1; }
