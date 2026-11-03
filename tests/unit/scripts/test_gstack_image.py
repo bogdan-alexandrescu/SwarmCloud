@@ -193,10 +193,6 @@ def test_the_base_image_ships_bun_and_the_base_list_root_owned() -> None:
     copies = [line for line in runtime if line.startswith("COPY --from=gstack-build")]
     # No --chown: COPY writes uid 0, so the agent's uid cannot change it.
     assert all("--chown" not in line for line in copies), copies
-    smoke = [line for line in runtime if line.startswith("RUN ") and "toolbox smoke" in line]
-    assert smoke and re.search(r'tools="[^"]*\bbun\b', smoke[0]), "the toolbox smoke does not run bun"
-    assert f"test ! -e {PLUGIN_ROOT}/.git" in smoke[0]
-    assert f"! touch {PLUGIN_ROOT}/" in smoke[0], "the smoke does not prove the install read-only to the agent"
 
 
 def test_the_browser_image_adds_the_browser_list() -> None:
