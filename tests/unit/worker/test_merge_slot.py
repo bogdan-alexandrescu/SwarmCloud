@@ -34,7 +34,7 @@ from typing import Any
 import pytest
 
 from agent_worker import forge as forge_mod
-from agent_worker import merge, mergeslot, post_verdict
+from agent_worker import merge, mergeslot, mergetrain, post_verdict
 from agent_worker.errors import ExitCode, FencedError
 from swarm_common.models import EndCause
 from swarm_common.states import EventType, ParkReason, TaskState
@@ -96,6 +96,9 @@ class Repo:
         self.updates: list[int] = []
         #: Every merge call: (number, whether the branch was up to date).
         self.merge_calls: list[tuple[int, bool]] = []
+        #: `vars.MERGE_TRAIN` (None: unset), and the pull requests labelled `ready`.
+        self.train: str | None = None
+        self.ready: list[int] = []
 
     # -- what a test sets up -------------------------------------------
     def open(self, number: int, *, ci_seconds: float = CI_SECONDS, red: bool = False,
@@ -131,6 +134,7 @@ class Repo:
             head_ref=f"feature/{number}", head_repo=self.full_name, base_ref=BASE,
             base_repo=self.full_name, mergeable=True, merge_commit_sha=pull.merge_commit,
             mergeable_state="behind" if pull.based_on != self.tip else "clean",
+            labels=("ready",) if number in self.ready else (),
         )
 
     def required_checks(self, branch: str) -> merge.RequiredChecks:
@@ -193,6 +197,17 @@ class Repo:
 
     def close_issue(self, number: int, *, comment: str) -> bool:
         return True
+
+    def repository_variable(self, name: str) -> str | None:
+        assert name == merge.REPOSITORY_TRAIN_VARIABLE
+        return self.train
+
+    def add_label(self, number: int, name: str) -> None:
+        assert name == merge.REPOSITORY_TRAIN_LABEL
+        self.ready.append(number)
+
+    def train_ejection(self, number: int) -> str | None:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +517,39 @@ def test_cancelled_releases_the_slot(driver):
     ctx.recheck = lambda: True
     outcome = merge.run_merge(ctx)
     assert outcome.state is TaskState.CANCELLED
+    assert driver.slot(repo)["holder"]["task_id"] == waiter.task_id
+
+
+def test_with_the_repository_train_on_no_step_takes_the_slot_or_updates(driver):
+    """The repository's merge train is the one merger: each green step labels
+    `ready` and parks on the train, behind or not, and the slot stays free."""
+    repo = driver.repo("octo-org/widget-shop")
+    repo.train = merge.REPOSITORY_TRAIN_ON
+    steps = [driver.submit(repo, n, ci_seconds=0, behind=n == 1) for n in (1, 2, 3)]
+    for step in steps:
+        driver.attempt(step)
+    assert [driver.codes(s) for s in steps] == [[mergetrain.TRAIN_WAITING]] * 3
+    assert sorted(repo.ready) == [1, 2, 3]
+    assert repo.updates == [] and repo.merge_calls == [] and repo.merged == []
+    # No step ever queued for the slot: its document was never written.
+    assert not [path for path in driver.db.documents
+                if path.startswith(f"{mergeslot.MERGE_SLOTS_COLLECTION}/")]
+
+
+def test_a_slot_holder_boarding_the_train_hands_the_slot_on(driver):
+    """The train goes on while a step holds the slot: its next green reading
+    boards the train and gives the slot to the next waiter."""
+    repo = driver.repo("octo-org/widget-shop")
+    holder = driver.submit(repo, 1, ci_seconds=0, behind=True)
+    waiter = driver.submit(repo, 2, ci_seconds=0)
+    driver.attempt(holder)
+    driver.attempt(waiter)
+    assert driver.slot(repo)["holder"]["task_id"] == holder.task_id
+    driver.clock.advance(CI_SECONDS)
+    repo.train = merge.REPOSITORY_TRAIN_ON
+    outcome = driver.attempt(holder)
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING
+    assert repo.ready == [1] and repo.merged == []
     assert driver.slot(repo)["holder"]["task_id"] == waiter.task_id
 
 
