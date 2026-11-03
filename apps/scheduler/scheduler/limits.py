@@ -90,6 +90,10 @@ class PoolReading:
     provider_state: str | None = None
     #: The newest admin override of the target: (target, instant, action).
     override: tuple[int, str | None, str] | None = None
+    #: When the broker last CHANGED the target (`target_changed_at`, owner
+    #: 2026-11-02): a cut, a climb, an override or a max's clamp, never a
+    #: success that left it alone. None for a document written before it.
+    target_changed_at: str | None = None
 
 
 def _override_holds(reading: PoolReading, applied: int) -> bool:
@@ -107,6 +111,25 @@ def _override_holds(reading: PoolReading, applied: int) -> bool:
     return last_cut is None or (at is not None and at >= last_cut)
 
 
+def _target_dating(reading: PoolReading, override_holds: bool) -> tuple[str | None, str | None]:
+    """(set_at, set_by) for the adaptive target, from `target_changed_at`.
+
+    The instant is the broker's own record of the target's last change. What
+    made that change: the override when one still holds the value, else the
+    rate limit when the change was not after the last cut (a cut stamps both
+    with one instant), else a climb -- the +1-per-successes step, the
+    time-based recovery -- since nothing else raises a target after a cut.
+    """
+    changed = reading.target_changed_at
+    if override_holds:
+        return changed, "override"
+    at = as_datetime(changed)
+    last_cut = as_datetime(reading.last_rate_limited_at)
+    if last_cut is not None and at is not None and at <= last_cut:
+        return changed, "rate_limit"
+    return changed, "climb"
+
+
 def lowered_by(reading: PoolReading, applied: int | None) -> list[dict[str, Any]]:
     """The inputs that hold `applied` below the ceiling, with when each was set.
 
@@ -122,10 +145,16 @@ def lowered_by(reading: PoolReading, applied: int | None) -> list[dict[str, Any]
     It is NOT the quota document's `updated_at`: the broker rewrites that on
     every success and refresh while the target holds, so it reads minutes ago
     for a target that has held 7 for hours. That last write is served apart,
-    as `quota_written_at`. The broker keeps no "target last changed" instant,
-    so a target the +1-per-successes step raised since the cut is dated by the
-    cut. A shared `provider:<p>` pool has no quota document of its own, so its
-    instants are null rather than a guess.
+    as `quota_written_at`.
+
+    THE TARGET'S OWN INSTANT FIRST (owner, 2026-11-02): the broker writes
+    `target_changed_at` only when the target moves, so the adaptive target is
+    dated by it when the document has it, and a target a climb raised since
+    the cut reads `set_by: "climb"` at the climb (`_target_dating`). A
+    document written before that field is dated as above, by the override or
+    the cut. A quota-derived limit is dated as above either way. A shared
+    `provider:<p>` pool has no quota document of its own, so its instants are
+    null rather than a guess.
     """
     ceiling = reading.ceiling
     if ceiling is None or applied is None or applied >= ceiling:
@@ -144,8 +173,11 @@ def lowered_by(reading: PoolReading, applied: int | None) -> list[dict[str, Any]
     ):
         if value is None or value >= ceiling or max(0, value) != applied:
             continue
+        at, by = set_at, set_by
+        if name == "adaptive_target" and reading.target_changed_at is not None:
+            at, by = _target_dating(reading, override_holds)
         entry: dict[str, Any] = {
-            "input": name, "value": value, "set_at": set_at, "set_by": set_by,
+            "input": name, "value": value, "set_at": at, "set_by": by,
             "quota_written_at": reading.quota_updated_at,
         }
         if name == "adaptive_target" and reading.last_rate_limited_at is not None:
@@ -173,6 +205,10 @@ def _read_override(db: Any, provider: str, tenant_id: str) -> tuple[int, str | N
         target = _int(row.get("to_target"))
         at = as_datetime(row.get("at"))
         if action not in _OVERRIDE_ACTIONS or target is None or at is None:
+            continue
+        if action == "hard_max_set" and _int(row.get("from_target")) == target:
+            # A max that left the target alone did not set it -- every pool
+            # raise through swarm-api writes one (owner, 2026-11-02).
             continue
         if newest is None or at > newest[0]:
             newest = (at, target, str(action))
@@ -202,6 +238,7 @@ def read_pool(db: Any, pool: str, now: datetime) -> PoolReading | None:
         q = quota.to_dict() or {}
         reading.quota_updated_at = _iso(q.get("updated_at"))
         reading.last_rate_limited_at = _iso(q.get("last_429_at"))
+        reading.target_changed_at = _iso(q.get("target_changed_at"))
         state = q.get("state")
         reading.provider_state = str(state) if isinstance(state, str) else None
     reading.override = _read_override(db, provider, tenant_id)

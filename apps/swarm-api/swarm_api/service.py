@@ -2484,7 +2484,11 @@ class SubmissionService:
         the override's audit instant, else the rate limit that last cut the
         target (`last_429_at`), else null. NOT the quota document's
         `updated_at`: the broker rewrites that on every success and refresh,
-        so it is served apart as `quota_written_at`. Only a per-tenant
+        so it is served apart as `quota_written_at`. The adaptive target is
+        dated first by the quota document's `target_changed_at`, which the
+        broker writes only when the target moves (owner, 2026-11-02), with
+        `set_by: "climb"` for a rise since the cut; a document written before
+        it is dated by the override or the cut as above. Only a per-tenant
         provider pool has a quota document; every other pool's instants are
         null. Read only for a pool that is lowered. Only numbers, a state word
         and instants are copied, never an audit row's caller or reason.
@@ -2531,6 +2535,12 @@ class SubmissionService:
                             or isinstance(target, bool) or not isinstance(target, int)
                             or at is None):
                         continue
+                    before = row.get("from_target")
+                    if (row["action"] == "hard_max_set" and isinstance(before, int)
+                            and not isinstance(before, bool) and before == target):
+                        # A max that left the target alone did not set it --
+                        # every pool raise through the admin route writes one.
+                        continue
                     if override is None or at > override[1]:
                         override = (target, at, str(row["action"]))
             except Exception as exc:  # noqa: BLE001 - the pool row is still served
@@ -2548,6 +2558,21 @@ class SubmissionService:
         else:
             set_at, set_by = None, None
 
+        # The broker's record of the target's own last change, written only
+        # when it moves (owner, 2026-11-02): preferred for the adaptive target,
+        # with what made the change -- the override that still holds it, the
+        # cut (a cut stamps both with one instant), else a climb.
+        changed_at = moment(quota.get("target_changed_at"))
+        target_dating = (set_at, set_by)
+        if changed_at is not None:
+            if override_holds:
+                changed_by = "override"
+            elif last_cut is not None and changed_at <= last_cut:
+                changed_by = "rate_limit"
+            else:
+                changed_by = "climb"
+            target_dating = (changed_at.isoformat(), changed_by)
+
         out: list[dict[str, Any]] = []
         for name, value in (
             ("adaptive_target", pool.adaptive_target),
@@ -2555,8 +2580,9 @@ class SubmissionService:
         ):
             if value is None or value >= ceiling or max(0, value) != applied:
                 continue
+            at, by = target_dating if name == "adaptive_target" else (set_at, set_by)
             entry: dict[str, Any] = {
-                "input": name, "value": value, "set_at": set_at, "set_by": set_by,
+                "input": name, "value": value, "set_at": at, "set_by": by,
                 "quota_written_at": instant(quota.get("updated_at")),
             }
             if name == "adaptive_target" and last_cut is not None:
