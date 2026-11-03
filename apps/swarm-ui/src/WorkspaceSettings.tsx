@@ -899,7 +899,14 @@ function AddWorkspace() {
   )
 }
 
-export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: WorkspacePart; go?: (to: string) => void }) {
+/**
+ * EMBEDDED (lane workspace-admin-page; part of #2688): drawn as a tab of one
+ * workspace's page (WorkspacePage.tsx), which carries the workspace's own
+ * heading and its People, Roles, Settings and Setup tabs, so this screen draws
+ * neither its "Workspace Settings" heading nor its Config tab strip; the
+ * read's refresh stays, right-aligned above the part.
+ */
+export function WorkspaceSettingsScreen({ part = 'settings', go, embedded = false }: { part?: WorkspacePart; go?: (to: string) => void; embedded?: boolean }) {
   const profile = useUrRead(loadProfile, 'profile')
   const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
   const read = profile.state.status === 'ok' || profile.state.status === 'stale' ? profile.state.data : null
@@ -911,10 +918,18 @@ export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: Work
   ]
   return (
     <div className="pk-page ws-page">
-      <PageHead title="Workspace Settings">
-        <UrRefresh reads={part === 'settings' ? [profile, roles] : [profile]} />
-      </PageHead>
-      <Tabs className="cfg-parts" label="Workspace Settings" current={part} onGo={go} tabs={tabs} />
+      {embedded ? (
+        <div className="ws-embed-head">
+          <UrRefresh reads={part === 'settings' ? [profile, roles] : [profile]} />
+        </div>
+      ) : (
+        <>
+          <PageHead title="Workspace Settings">
+            <UrRefresh reads={part === 'settings' ? [profile, roles] : [profile]} />
+          </PageHead>
+          <Tabs className="cfg-parts" label="Workspace Settings" current={part} onGo={go} tabs={tabs} />
+        </>
+      )}
       {part === 'settings' && (
         <>
           <SetupLead part="settings" go={go} />

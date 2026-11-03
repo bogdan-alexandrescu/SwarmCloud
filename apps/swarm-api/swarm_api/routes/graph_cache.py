@@ -40,11 +40,15 @@ WHY EACH RULE:
     graph-cache-panel-latency, part of #2688). Each replica serves its own
     `answer_latency` (swarm_graph/stats.py): count, p50, p95, p99 and max over
     its window, by outcome, by temperature and by both. `facts.answer_latency`
-    sums the counts, takes the slowest max, and takes a percentile as it is
-    when one replica answered and as the slowest replica's otherwise: a
-    replica serves percentiles, not its histogram, and the merged p95 is never
-    above the slowest replica's p95, so that figure is an upper bound and says
-    so (`exact: false`). A replica that did not answer, or answered without
+    sums the counts and takes the slowest max. Each replica also serves its
+    histogram (`bounds_ms` and each group's `counts`), so when every replica
+    that answered served counts over the same bounds the histograms add and
+    each percentile is read off the sum, exactly as one replica reads its own
+    (`exact: true`; the owner's pick, 3 November 2026). When one did not (an
+    older swarm-graph during a roll-out) a percentile is taken as it is when
+    one replica answered and as the slowest replica's otherwise: never below
+    the merged figure, so it is an upper bound and says so (`exact: false`).
+    The counts stay in this route; the console gets the figures. A replica that did not answer, or answered without
     the figure, is named in `not_read`, never counted as zero answers; with no
     replica's figure at all the fact is `{state: "not_read", reason}`. It sits
     beside `latency`, the indexer's uncached measurement, which is unchanged.
@@ -62,6 +66,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import socket
 import time
 import urllib.error
@@ -337,9 +342,33 @@ def _ms(value: Any) -> float | int | None:
     return value if value >= 0 and value == value and value != float("inf") else None
 
 
-def _summary(value: Any) -> dict[str, Any] | None:
+def _bounds(value: Any) -> tuple[float, ...] | None:
+    """A replica's latency `bounds_ms`: positive numbers, strictly rising."""
+    if not isinstance(value, list) or not value:
+        return None
+    bounds = [_ms(b) for b in value]
+    if any(b is None or b <= 0 for b in bounds) \
+            or any(a >= b for a, b in zip(bounds, bounds[1:])):
+        return None
+    return tuple(bounds)  # type: ignore[arg-type]
+
+
+def _counts(value: Any, count: int, bounds: tuple[float, ...] | None) -> list[int] | None:
+    """A group's histogram `counts`, trusted only as len(bounds) + 1 whole
+    numbers that add up to the group's own `count`; None otherwise."""
+    if bounds is None or not isinstance(value, list) or len(value) != len(bounds) + 1:
+        return None
+    counts = [_int(n) for n in value]
+    if any(n is None for n in counts) or sum(counts) != count:  # type: ignore[arg-type]
+        return None
+    return counts  # type: ignore[return-value]
+
+
+def _summary(value: Any, bounds: tuple[float, ...] | None = None) -> dict[str, Any] | None:
     """One `answer_latency` group (`count`, the percentiles, `max_ms`) held to
-    numbers, or None when it is not one. A count of 0 has no percentile."""
+    numbers, or None when it is not one. A count of 0 has no percentile.
+    `counts` is the group's histogram over `bounds` when the replica served
+    one that adds up, else None (a swarm-graph from before the counts)."""
     if not isinstance(value, dict):
         return None
     count = _int(value.get("count"))
@@ -348,55 +377,97 @@ def _summary(value: Any) -> dict[str, Any] | None:
     out: dict[str, Any] = {"count": count}
     for name in (*_PERCENTILES, "max_ms"):
         out[name] = _ms(value.get(name)) if count else None
+    out["counts"] = _counts(value.get("counts"), count, bounds)
     return out
 
 
 def replica_latency(value: Any) -> dict[str, Any] | None:
     """A replica's `answer_latency`: the overall group, `by_outcome`,
-    `by_temperature` and `cells`, only the groups swarm-graph names; None
-    when the replica served none (an older swarm-graph, or not the document)."""
-    overall = _summary(value)
+    `by_temperature` and `cells`, only the groups swarm-graph names, and the
+    histogram's `bounds_ms`; None when the replica served none (an older
+    swarm-graph, or not the document)."""
+    bounds = _bounds(value.get("bounds_ms")) if isinstance(value, dict) else None
+    overall = _summary(value, bounds)
     if overall is None or not isinstance(value, dict):
         return None
 
     def groups(field: str, names: Sequence[str]) -> dict[str, dict[str, Any]]:
         table = value.get(field)
         table = table if isinstance(table, dict) else {}
-        return {n: g for n in names if (g := _summary(table.get(n))) is not None}
+        return {n: g for n in names if (g := _summary(table.get(n), bounds)) is not None}
 
     cells = [f"{o}/{t}" for o in LATENCY_OUTCOMES for t in TEMPERATURES]
     window = _int(value.get("window_hours"))
-    return {**overall, "window_hours": window,
+    return {**overall, "window_hours": window, "bounds_ms": bounds,
             "by_outcome": groups("by_outcome", LATENCY_OUTCOMES),
             "by_temperature": groups("by_temperature", TEMPERATURES),
             "cells": groups("cells", cells)}
 
 
-def merge_summaries(groups: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _public(group: Mapping[str, Any]) -> dict[str, Any]:
+    """A group as the console reads it: the histogram stays in this route."""
+    return {k: v for k, v in group.items() if k != "counts"}
+
+
+def _read_off(counts: Sequence[int], bounds: Sequence[float], slowest: float
+              ) -> dict[str, Any]:
+    """Each percentile read off a merged histogram as swarm-graph reads its
+    own (stats._percentiles): the bound of the bucket the rank falls in, the
+    slowest answer above the last bound, never above the slowest answer."""
+    total = sum(counts)
+    out: dict[str, Any] = {}
+    for name, q in zip(_PERCENTILES, (0.50, 0.95, 0.99)):
+        rank = max(1, math.ceil(round(q * total, 6)))
+        seen = 0
+        for index, n in enumerate(counts):
+            seen += n
+            if seen >= rank:
+                bound = bounds[index] if index < len(bounds) else slowest
+                value = min(bound, slowest)
+                out[name] = int(value) if float(value).is_integer() else value
+                break
+    return out
+
+
+def merge_summaries(groups: Sequence[Mapping[str, Any]],
+                    bounds: Sequence[float] | None = None) -> dict[str, Any]:
     """Several replicas' summaries of one group as one. The counts add and
-    the max is the slowest; a percentile is exact when one replica answered
-    and otherwise the slowest replica's, an upper bound (`exact` false)."""
+    the max is the slowest. When every replica that answered served its
+    histogram over the same `bounds`, the histograms add and each percentile
+    is read off the sum: exact, as one replica's own (the owner's pick,
+    3 November 2026). Otherwise (a replica from before the counts, mixed
+    versions during a roll-out) a percentile is exact when one replica
+    answered and else the slowest replica's, an upper bound (`exact` false)."""
     answered = [g for g in groups if g.get("count")]
     out: dict[str, Any] = {"count": sum(g.get("count") or 0 for g in groups)}
     for name in (*_PERCENTILES, "max_ms"):
         values = [g[name] for g in answered if g.get(name) is not None]
         out[name] = max(values) if values else None
-    out["exact"] = len(answered) <= 1
+    counted = bounds is not None and len(answered) > 1 and out["max_ms"] is not None \
+        and all(g.get("counts") is not None and g.get("max_ms") is not None for g in answered)
+    if counted:
+        summed = [sum(column) for column in zip(*(g["counts"] for g in answered))]
+        out.update(_read_off(summed, bounds, out["max_ms"]))  # type: ignore[arg-type]
+    out["exact"] = counted or len(answered) <= 1
     return out
 
 
 def merge_latency(latencies: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The replicas' `replica_latency` merged, group by group."""
+    """The replicas' `replica_latency` merged, group by group, over their
+    histograms when every replica served the same bounds."""
+    served = {lat.get("bounds_ms") for lat in latencies}
+    bounds = next(iter(served)) if len(served) == 1 else None
+
     def merged(field: str, names: Sequence[str]) -> dict[str, dict[str, Any]]:
         out = {}
         for name in names:
             groups = [lat[field][name] for lat in latencies if name in lat[field]]
             if groups:
-                out[name] = merge_summaries(groups)
+                out[name] = merge_summaries(groups, bounds)
         return out
 
     cells = [f"{o}/{t}" for o in LATENCY_OUTCOMES for t in TEMPERATURES]
-    return {**merge_summaries(latencies),
+    return {**merge_summaries(latencies, bounds),
             "by_outcome": merged("by_outcome", LATENCY_OUTCOMES),
             "by_temperature": merged("by_temperature", TEMPERATURES),
             "cells": merged("cells", cells)}
@@ -443,7 +514,8 @@ class Replicas:
         panel["last_warm"] = self._warm(repository.get("last_warm"))
         latency = replica_latency(repository.get("answer_latency"))
         panel["answer_latency"] = None if latency is None else {
-            k: latency[k] for k in ("count", *_PERCENTILES, "max_ms", "by_temperature")}
+            **{k: latency[k] for k in ("count", *_PERCENTILES, "max_ms")},
+            "by_temperature": {t: _public(g) for t, g in latency["by_temperature"].items()}}
         return panel
 
     def _warm(self, warm: Any) -> dict[str, Any] | None:

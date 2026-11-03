@@ -962,6 +962,74 @@ def sign_in_client_view(project_id: str, doc: dict[str, Any] | None,
             "links": sign_in_links(project_id)}
 
 
+# --------------------------------------------------------------------------
+# what the checklist reads beside the marks (the console finish's checklist)
+# --------------------------------------------------------------------------
+
+#: How long each wait the page names usually takes, with where the number
+#: comes from, so the page's "usually" text is served rather than invented.
+#: A number is restated from the engine's own `WaitSpec` (swarm-api's image
+#: does not carry `apps/swarm-install`); `test_setup_routes` imports both and
+#: fails on any difference. A wait the platform has no figure for carries no
+#: `typical_s` at all, and its `source` says so: never a made-up value.
+#: For those (the sign-in pass, infra pass 3) the page shows the time since
+#: the pass started instead, from `passes` (`passes_view`), until one is measured.
+TYPICAL_WAITS: dict[str, dict[str, Any]] = {
+    "sign_in_pass": {
+        "source": "not measured: swarm install's sign-in pass (bootstrap pass 2 putting the saved Desktop "
+                  "client in IAP's programmatic clients) is a Terraform apply with no wait of its own",
+    },
+    "infra_pass_3": {
+        "source": "not measured: swarm install's infra pass 3 (the GitHub App's ids into swarm-api) is one "
+                  "Terraform apply with no wait of its own",
+    },
+    "workspace_build": {
+        "typical_s": 10 * 60, "expected": "2 to 10 min",
+        "source": "swarm_install.team.WORKSPACE_WAIT: swarm-workspace-apply making the team's identity, "
+                  "slots and namespace",
+    },
+    "smoke": {
+        "typical_s": 5 * 60, "expected": "1 to 5 min",
+        "source": "swarm_install.team.SMOKE_WAIT: a team's smoke agent to finish",
+    },
+    "groups": {
+        "typical_s": 5 * 60, "expected": "1 to 5 min after they are saved",
+        "source": "swarm_install.steps.identity.GROUPS_WAIT: a change saved in the Admin console reaching "
+                  "the Groups API",
+    },
+}
+
+
+def passes_view(engine: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Each timed pass (`ir.TIMED_PASSES`) as the page reads it: `started_at`
+    from the engine's `passes`, None until the engine stamped one (a pass not
+    yet run, or an engine from before the field), and `ended_at` and `result`
+    once it stopped. With no measured usual length (`TYPICAL_WAITS`), the page
+    shows a running pass's elapsed time from `started_at` instead."""
+    stored = (engine or {}).get("passes")
+    stored = stored if isinstance(stored, dict) else {}
+    view: dict[str, dict[str, Any]] = {}
+    for name in ir.TIMED_PASSES:
+        entry = stored.get(name) if isinstance(stored.get(name), dict) else {}
+        view[name] = {"started_at": entry.get("started_at"),
+                      **{key: entry[key] for key in ("ended_at", "result") if key in entry}}
+    return view
+
+
+def engine_view(engine: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The engine's document as the page reads it: `verify.detail`, verify's
+    one-line cause, only while `verify.result` is "failed" and the cause is
+    not empty; otherwise the field is absent. The stored document is never
+    changed: swarm-api does not write it."""
+    if engine is None or not isinstance(engine.get("verify"), dict):
+        return engine
+    verify = dict(engine["verify"])
+    detail = verify.pop("detail", None)
+    if verify.get("result") == FAILED and isinstance(detail, str) and detail.strip():
+        verify["detail"] = detail
+    return {**engine, "verify": verify}
+
+
 @router.get("", dependencies=[Depends(admin_auth)])
 def setup_state(
     request: Request,
@@ -1008,7 +1076,7 @@ def setup_state(
             keep_verify_runs(record, ctx, handed, runs=runs, by=caller.email)
     return {
         "env": record.env,
-        "engine": engine,
+        "engine": engine_view(engine),
         "mode": mode,
         "sizing": sizing_view(engine),
         "steps": steps_view(mode, teams, publishing=bool(getattr(publisher, "enabled", False))),
@@ -1028,6 +1096,8 @@ def setup_state(
                     "secret_link": name in sl.ADDON_SECRETS} for name in ADDONS],
         "hostname": ctx.settings.install_hostname or None,
         "github_org": ctx.settings.setup_github_org or None,
+        "typical_waits": TYPICAL_WAITS,
+        "passes": passes_view(engine),
     }
 
 
@@ -1562,7 +1632,8 @@ def mint_link(
                              tenant_id=tenant_id, team_id=team_id)
     if body.kind == sl.POOL_ACCOUNT:
         record.write(record.console_path(ir.ACCOUNTS), {body.label: {
-            "owner": owner, "link_hash": sl.digest(token), "link_expires": link["expires_at"],
+            "owner": owner, "link_hash": sl.digest(token), "link_made_at": link["created_at"],
+            "link_expires": link["expires_at"],
         }})
     elif body.kind == sl.TEAM_GIT and progress_path is not None:
         team = record.read(progress_path) or {}

@@ -107,7 +107,8 @@ from pydantic import (
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
-from swarm_common.states import TaskState
+from swarm_common.states import TERMINAL_STATES, TaskState
+from swarm_rollup import GRAPH_PIN_REPOS, GRAPH_PINS, WORKFLOWS
 
 from .auth import AuthContext
 from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable, ValidationFailed
@@ -345,6 +346,15 @@ RUN_KINDS = ("full", "incremental")
 RUNS_COLLECTION = "repo_index_runs"
 #: Under each registration: one entry per promoted-or-kept commit sha.
 VERSIONS_COLLECTION = "index_versions"
+#: Under each registration: one pin per holder and commit a graph ticket
+#: names (graph_ticket.py `record_pin`). Retention keeps a pinned commit,
+#: however old, until its holder settles -- the step's workflow, or the task
+#: itself when it runs outside one (owner's pick `record-pins`, PR #3105):
+#: by age and count alone, a long workflow's steps found the version they
+#: were pinned to swept.
+PINS_COLLECTION = "index_pins"
+#: The collections a pin's holder is read from; nothing else is a holder.
+PIN_HOLDERS = ("workflows", "tasks")
 #: §2.3: the last 20 versions are kept; older entries are deleted here, and
 #: their manifest and index copy under repos/ by the next index run's sweep
 #: (lane IX3), which then sweeps the blobs no kept manifest names. A
@@ -412,6 +422,8 @@ _TERMINAL = {
     TaskState.SUCCEEDED.value, TaskState.FAILED.value, TaskState.DEAD_LETTERED.value,
     TaskState.CANCELLED.value,
 }
+#: A workflow's stored states whose graph pins hold nothing (`pinned_commits`).
+_SETTLED_WORKFLOW = frozenset(state.value for state in TERMINAL_STATES)
 #: The run states that are not the task's own: the task document is gone.
 RUN_MISSING = "MISSING"
 
@@ -838,15 +850,20 @@ def _lsp_base_paragraph(lsp_base_sha: str) -> str:
 
 
 def retained_versions(rows: Iterable[Mapping[str, Any]], *, keep_versions: int,
-                      now: datetime) -> list[Mapping[str, Any]]:
+                      now: datetime, pinned: Iterable[str] = ()) -> list[Mapping[str, Any]]:
     """The versions retention keeps, newest first: the newest `keep_versions`
     by `recorded_at`, and every other one recorded in the last
-    KEEP_VERSIONS_MIN_AGE_HOURS, up to KEEP_VERSIONS_RANGE's most.
+    KEEP_VERSIONS_MIN_AGE_HOURS, up to KEEP_VERSIONS_RANGE's most; then every
+    version a running workflow's graph ticket pinned (`pinned`,
+    `pinned_commits`), however old.
 
     By count alone, 20 versions covered ~15 hours of SwarmCloud's runs
     (2026-11-03), so a step whose base was a few hours old found its index
     swept. `_prune_versions` and `kept_commits` both keep exactly these, so
-    the registration and the bucket agree on what is kept.
+    the registration and the bucket agree on what is kept. The pins are kept
+    outside both rules (#3116): a long workflow's steps read the version
+    their tickets name until the workflow settles, and the pins are bounded
+    by the live workflows, not by a setting.
     """
     listed = sorted(rows, key=lambda r: _parse_time(r.get("recorded_at")) or datetime.min.replace(
         tzinfo=timezone.utc), reverse=True)
@@ -857,28 +874,82 @@ def retained_versions(rows: Iterable[Mapping[str, Any]], *, keep_versions: int,
         if len(kept) >= KEEP_VERSIONS_RANGE[1] or recorded is None or recorded < floor:
             break
         kept.append(row)
+    pins = set(pinned)
+    if pins:
+        held = {id(row) for row in kept}
+        kept.extend(row for row in listed
+                    if id(row) not in held and row.get("commit_sha") in pins)
     return kept
+
+
+def pinned_commits(db: Any, tenant_id: str, repo_id: str) -> set[str]:
+    """The commits of `repo_id` a running workflow of `tenant_id` holds a graph
+    pin on (#3116; `swarm_api.graph_ticket` writes them).
+
+    ONE QUERY: `workflows` where `graph_pin_repos` contains `repo_id`, served
+    by Firestore's automatic single-field index. The pins live on the
+    workflow document, not beside the versions, because the write that
+    settles a workflow clears them in the same update
+    (`swarm_rollup.settled_unpin`) without first having to find them, and
+    retention reads the workflow's own state with them: a pin on a workflow
+    whose stored state is terminal holds nothing, even if its clearing write
+    has not landed. Another tenant's workflow never pins this tenant's
+    repository. A READ THAT FAILS RAISES: "nothing is pinned" and "the pins
+    could not be read" must never look alike to a sweep that deletes.
+    """
+    query = db.collection(WORKFLOWS).where(
+        filter=FieldFilter(GRAPH_PIN_REPOS, "array_contains", repo_id))
+    pinned: set[str] = set()
+    for snap in query.stream():
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id or data.get("state") in _SETTLED_WORKFLOW:
+            continue
+        shas = (data.get(GRAPH_PINS) or {}).get(repo_id)
+        if isinstance(shas, list):
+            pinned.update(c for c in shas if isinstance(c, str) and _SHA.match(c))
+    return pinned
+
+
+def pin_id(holder: str, holder_id: str, commit_sha: str) -> str:
+    """The pin document's id: one per holder and commit, so a ticket renewed
+    every few minutes rewrites one pin rather than adding another."""
+    return f"{holder}-{holder_id}-{commit_sha}"
+
+
+def pin_settled(holder: Mapping[str, Any] | None, tenant_id: Any) -> bool:
+    """True when a pin's holder no longer holds it: gone, another tenant's,
+    or in a terminal state. An unknown state holds: retention keeps too much
+    for a run rather than sweep a version a step still reads."""
+    if holder is None or holder.get("tenant_id") != tenant_id:
+        return True
+    try:
+        return TaskState(holder.get("state")) in TERMINAL_STATES
+    except ValueError:
+        return False
 
 
 def kept_commits(
     rows: Iterable[Mapping[str, Any]], *, keep_versions: int, current_sha: str | None,
-    own: str, now: datetime | None = None,
+    own: str, now: datetime | None = None, pinned: Iterable[str] = (),
 ) -> list[str] | None:
     """The commits an index run's sweep must keep, or None when they cannot be named.
 
-    The versions `retained_versions` keeps -- what `_prune_versions` keeps --
-    plus the promoted `current_sha` and the run's own commit, sorted. None
-    when any version names no commit: the sweep would then delete objects a
-    version still points at, so it is given no keep set and retires nothing.
-    `now` defaults to the wall clock.
+    The versions `retained_versions` keeps -- what `_prune_versions` keeps,
+    running workflows' pins (`pinned`) included -- plus the promoted
+    `current_sha`, the run's own commit and every commit a live holder pins
+    (`pinned`, `RepoIndex._all_pinned`), sorted. None when any version names
+    no commit: the sweep would then delete objects a version still points
+    at, so it is given no keep set and retires nothing. `now` defaults to
+    the wall clock.
     """
     listed = list(rows)
     if any(not isinstance(row.get("commit_sha"), str) or not _SHA.match(row["commit_sha"])
            for row in listed):
         return None
     kept = {row["commit_sha"] for row in retained_versions(
-        listed, keep_versions=keep_versions, now=now or datetime.now(timezone.utc))}
-    for commit in (current_sha, own):
+        listed, keep_versions=keep_versions, now=now or datetime.now(timezone.utc),
+        pinned=pinned)}
+    for commit in (current_sha, own, *pinned):
         if isinstance(commit, str) and _SHA.match(commit):
             kept.add(commit)
     return sorted(kept)
@@ -2389,6 +2460,162 @@ def retention_of(summary: Any) -> dict[str, Any] | None:
     return out
 
 
+#: The worker's phase names (`agent_worker.lifecycle`'s PhaseRecords) as the
+#: index canary names them. `extraction` is the extractor's whole phase, its
+#: language-server pass included; `language_servers` is that pass alone, read
+#: from the graph manifest (`language_server_seconds`), so it is a part of
+#: `extraction`, never added to it. `judgment` is the agent's turn, `upload`
+#: the graph write. `promotion` is swarm-api's own: from the task's end to
+#: the promotion that settled it.
+METRIC_PHASES = {
+    "stage_base": "stage_base", "extract": "extraction", "agent": "judgment",
+    "index_check": "check", "graph_write": "upload", SWEEP_PHASE: "sweep",
+}
+METRIC_PHASE_NAMES = ("stage_base", "extraction", "language_servers", "judgment", "check",
+                      "upload", "sweep", "promotion")
+#: A server that finished records the seconds it used in these steps
+#: (lsp/driver.py, `measured_cost`), so the sum is a ceiling by at most a step
+#: a server.
+LSP_COST_STEP_SECONDS = 10
+
+
+def _seconds(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return round(float(value), 3) if 0 <= value <= MAX_LSP_COST_SECONDS else None
+
+
+def phase_seconds(summary: Any) -> dict[str, float | None]:
+    """The seconds each phase of an index run took, from its task's
+    `result_summary.repo_index_phases`, under METRIC_PHASES' names.
+
+    A phase that was skipped, or that the run never reached, is None: it did
+    not run, which is not zero seconds. A phase recorded twice (a resumed
+    attempt) is the last record's, as `retention_of` reads the sweep.
+    """
+    out: dict[str, float | None] = {name: None for name in METRIC_PHASE_NAMES
+                                    if name not in ("language_servers", "promotion")}
+    phases = summary.get("repo_index_phases") if isinstance(summary, Mapping) else None
+    for row in phases if isinstance(phases, list) else []:
+        if not isinstance(row, Mapping) or row.get("phase") not in METRIC_PHASES:
+            continue
+        name = METRIC_PHASES[row["phase"]]
+        ran = row.get("status") in ("ok", "failed", "timed_out")
+        out[name] = _seconds(row.get("seconds")) if ran else None
+    return out
+
+
+def language_server_seconds(manifest: Mapping[str, Any] | None) -> float | None:
+    """The seconds the extractor's LSP pass ran its servers, from the graph
+    manifest's language rows, one server once; None when it cannot be known.
+
+    The servers run one after another (lsp/driver.py), so the pass is their
+    sum. A server that finished (`ok`) used its `cost_seconds`; one its budget
+    cut (`partial`, `timed_out`) used its whole `grant_seconds`; one never
+    started because its answers were carried had a grant of 0 and used none.
+    A server that ran and measured nothing (`failing`) makes the whole pass
+    unknown, and so does a manifest with no LSP pass recorded at all.
+    """
+    if not isinstance(manifest, Mapping):
+        return None
+    extractor = manifest.get("extractor")
+    if not isinstance(extractor, Mapping) or not isinstance(extractor.get("lsp"), Mapping):
+        return None
+    servers: dict[str, tuple[Any, Mapping[str, Any]]] = {}
+    for row in manifest.get("languages") or []:
+        if not isinstance(row, Mapping) or not isinstance(row.get("server"), str):
+            continue
+        counts = row.get("lsp")
+        if isinstance(counts, Mapping):
+            servers.setdefault(row["server"], (row.get("status"), counts))
+    total = 0.0
+    for status, counts in servers.values():
+        grant, cost = _seconds(counts.get("grant_seconds")), _seconds(counts.get("cost_seconds"))
+        if grant == 0:
+            continue
+        if status == "ok" and cost is not None:
+            total += cost
+        elif status in ("partial", "timed_out") and grant is not None:
+            total += grant
+        else:
+            return None
+    return round(total, 3)
+
+
+def files_work(manifest: Mapping[str, Any] | None) -> dict[str, int | None] | None:
+    """What the extractor rebuilt and carried (`repo_index_extract.run_work`),
+    from the graph manifest; None for a graph extracted before it said."""
+    extractor = manifest.get("extractor") if isinstance(manifest, Mapping) else None
+    work = extractor.get("work") if isinstance(extractor, Mapping) else None
+    if not isinstance(work, Mapping):
+        return None
+    out: dict[str, int | None] = {}
+    for key in ("parsed", "recomputed", "reused", "lsp_asked", "lsp_carried"):
+        value = work.get(key)
+        out[key] = value if isinstance(value, int) and not isinstance(value, bool) \
+            and value >= 0 else None
+    return out
+
+
+def rebuild_reason(run: Mapping[str, Any], built_kind: str | None,
+                   manifest: Mapping[str, Any] | None) -> str | None:
+    """Why a run rebuilt the index in full; None when it was incremental or
+    built nothing.
+
+    Submitted full: the reason swarm-api chose it (`kind_reason`, from
+    `choose_kind`). Submitted incremental and built full: the extractor's own
+    reason for not carrying the base (`extractor.incremental.reason`). Either
+    one unrecorded is said as such, never left blank.
+    """
+    if built_kind != "full":
+        return None
+    if run.get("kind") == "incremental":
+        extractor = manifest.get("extractor") if isinstance(manifest, Mapping) else None
+        incremental = extractor.get("incremental") if isinstance(extractor, Mapping) else None
+        said = incremental.get("reason") if isinstance(incremental, Mapping) else None
+        return (neutral_line(f"the extractor did not carry the base: {said}", 300)
+                if isinstance(said, str) and said else
+                "submitted incremental and built full; the extractor recorded no reason")
+    said = run.get("kind_reason")
+    return (neutral_line(said, 300) if isinstance(said, str) and said else
+            "submitted full; no reason was recorded")
+
+
+def run_metrics(
+    summary: Any, run: Mapping[str, Any], *, built_kind: str | None = None,
+    manifest: Mapping[str, Any] | None = None, ended_at: datetime | None = None,
+    promoted_at: datetime | None = None, at_head: bool | None = None,
+) -> dict[str, Any]:
+    """The index canary's record of one run (scripts/index_canary_report.py),
+    stored on the run as `metrics` and served by the index-runs read.
+
+    `phases` holds every METRIC_PHASE_NAMES entry, None where it did not run
+    or cannot be known. `built_kind` is what the index says it is (None when
+    nothing was promoted: a failed or refused run built no index served), apart from
+    `requested_kind`, what the run was submitted as. `lag_seconds` is from
+    the run's queueing -- when swarm-api saw its commit at the head -- to its
+    promotion, and `at_head` whether that commit was still the head then.
+    """
+    phases: dict[str, float | None] = {**phase_seconds(summary),
+                                       "language_servers": None, "promotion": None}
+    if manifest is not None:
+        phases["language_servers"] = language_server_seconds(manifest)
+    if promoted_at is not None and ended_at is not None and promoted_at >= ended_at:
+        phases["promotion"] = round((promoted_at - ended_at).total_seconds(), 3)
+    queued = _parse_time(run.get("queued_at"))
+    lag = (round((promoted_at - queued).total_seconds(), 3)
+           if promoted_at is not None and queued is not None and promoted_at >= queued else None)
+    return {
+        "requested_kind": run.get("kind"),
+        "built_kind": built_kind,
+        "rebuild_reason": rebuild_reason(run, built_kind, manifest),
+        "phases": {name: phases[name] for name in METRIC_PHASE_NAMES},
+        "files": files_work(manifest),
+        "lag_seconds": lag,
+        "at_head": at_head,
+    }
+
+
 def run_to_api(run: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if run is None:
         return None
@@ -2408,6 +2635,9 @@ def run_to_api(run: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "promotion": dict(run.get("promotion") or {}) or None,
         # What its sweep deleted and kept, or why it did not run (INDEX-RETENTION).
         "retention": dict(run.get("retention") or {}) or None,
+        # Phase durations, full or incremental and why, files reused and
+        # recomputed: the index canary's reading (`run_metrics`).
+        "metrics": dict(run.get("metrics") or {}) or None,
     }
 
 
@@ -2507,23 +2737,64 @@ class RepoIndex:
         for row in ended:
             self._run_ref(row["task_id"]).delete()
 
-    def _prune_versions(self, repo_id: str, keep: str | None,
+    def _prune_versions(self, tenant_id: str, repo_id: str, keep: str | None,
                         keep_versions: int = KEPT_VERSIONS) -> None:
         """Delete every version but `retained_versions`' (the newest
-        `keep_versions`, and the last day's) and `keep`.
+        `keep_versions`, the last day's and those a running workflow of
+        `tenant_id` pinned), the ones a live holder pins (`_all_pinned`) and
+        `keep`.
 
         `keep_versions` is the registration's own (`keep_versions_of`). Their
         objects under repos/ go at the next index run's sweep, which this
         service cannot run: it reads the bucket and may not delete in it.
+        When the pins cannot be read nothing is deleted: the prune waits for
+        the next promotion rather than delete a version a step reads.
         """
+        try:
+            pinned = self._all_pinned(tenant_id, repo_id)
+        except Exception as failed:  # retention never stops a promotion
+            log.warning("repo index prune repo_id=%s pins unread error=%s",
+                        repo_id, type(failed).__name__)
+            return
         coll = self._repo_ref(repo_id).collection(VERSIONS_COLLECTION)
         rows = [snap.to_dict() for snap in coll.stream()]
         rows = [row for row in rows if row]
         retained = {id(row) for row in retained_versions(
-            rows, keep_versions=max(1, keep_versions), now=self._now())}
+            rows, keep_versions=max(1, keep_versions), now=self._now(), pinned=pinned)}
         for row in rows:
-            if id(row) not in retained and row.get("commit_sha") != keep:
+            if (id(row) not in retained and row.get("commit_sha") != keep
+                    and row.get("commit_sha") not in pinned):
                 self._version_ref(repo_id, row["commit_sha"]).delete()
+
+    def _all_pinned(self, tenant_id: str, repo_id: str) -> set[str]:
+        """Every commit of `repo_id` a pin holds: the running workflows' pins
+        on their own documents (`pinned_commits`, #3116) and the live holders'
+        pins under the registration (`_pinned_commits`, PR #3105). Raises when
+        either cannot be read: the caller then retires nothing."""
+        return pinned_commits(self._db, tenant_id, repo_id) | self._pinned_commits(repo_id)
+
+    def _pinned_commits(self, repo_id: str) -> set[str]:
+        """The commits a live holder pins (`PINS_COLLECTION`). A pin whose
+        holder has settled (`pin_settled`), or that names no holder or commit,
+        is deleted here, so a pin lasts exactly as long as its workflow. Raises
+        when the pins cannot be read: the caller then retires nothing."""
+        coll = self._repo_ref(repo_id).collection(PINS_COLLECTION)
+        pinned: set[str] = set()
+        for snap in list(coll.stream()):
+            pin = snap.to_dict() or {}
+            commit, holder, holder_id = (pin.get("commit_sha"), pin.get("holder"),
+                                         pin.get("holder_id"))
+            if (not isinstance(commit, str) or not _SHA.match(commit)
+                    or holder not in PIN_HOLDERS or not isinstance(holder_id, str)
+                    or not holder_id):
+                coll.document(snap.id).delete()
+                continue
+            held = self._db.collection(holder).document(holder_id).get()
+            if pin_settled(held.to_dict() if held.exists else None, pin.get("tenant_id")):
+                coll.document(snap.id).delete()
+                continue
+            pinned.add(commit)
+        return pinned
 
     # -- starting a run ----------------------------------------------------
     def _claim(
@@ -2645,12 +2916,14 @@ class RepoIndex:
         try:
             rows = [{"commit_sha": snap.id, **(snap.to_dict() or {})} for snap in
                     self._repo_ref(repo_id).collection(VERSIONS_COLLECTION).stream()]
+            pinned = self._all_pinned(tenant_id, repo_id)
         except Exception as failed:  # retention never stops a run
             log.warning("repo index keep set tenant=%s repo_id=%s error=%s",
                         tenant_id, repo_id, type(failed).__name__)
             return None
         return kept_commits(rows, keep_versions=keep_versions_of(index),
-                            current_sha=index.get("current_sha"), own=sha, now=self._now())
+                            current_sha=index.get("current_sha"), own=sha, now=self._now(),
+                            pinned=pinned)
 
     def _start(
         self, auth: AuthContext, tenant_id: str, record: Mapping[str, Any], sha: str, *,
@@ -2860,11 +3133,15 @@ class RepoIndex:
         _apply(transaction)
 
     def _end_run(self, tenant_id: str, repo_id: str, run: Mapping[str, Any], *, state: str,
-                 end_cause: str | None, promotion: dict[str, Any] | None = None) -> None:
-        self._run_ref(run["task_id"]).update({
-            "state": state, "ended_at": self._now(), "end_cause": end_cause,
-            "promotion": promotion,
-        })
+                 end_cause: str | None, promotion: dict[str, Any] | None = None,
+                 metrics: dict[str, Any] | None = None) -> None:
+        ended = {"state": state, "ended_at": self._now(), "end_cause": end_cause,
+                 "promotion": promotion}
+        if metrics is not None:
+            # What its phases took (`run_metrics`): a failed, cancelled or
+            # refused run is measured too, and its unknowns stay None.
+            ended["metrics"] = metrics
+        self._run_ref(run["task_id"]).update(ended)
         self._clear_in_flight(tenant_id, repo_id, run["task_id"])
 
     def _settle_run(self, tenant_id: str, record: Mapping[str, Any], run: Mapping[str, Any],
@@ -2884,7 +3161,8 @@ class RepoIndex:
             cause = task.end_cause.value if getattr(task, "end_cause", None) else None
             if cause is None and task.last_error:
                 cause = neutral_line(task.last_error, 300)
-            self._end_run(tenant_id, repo_id, run, state=state, end_cause=cause)
+            self._end_run(tenant_id, repo_id, run, state=state, end_cause=cause,
+                          metrics=run_metrics(getattr(task, "result_summary", None), run))
             if state == TaskState.FAILED.value:
                 # INDEX-FAIL: the cause goes on the registration, where the
                 # card reads it and the poll decides whether to stop. A
@@ -2907,12 +3185,14 @@ class RepoIndex:
         latest = {**retention, "task_id": run["task_id"], "at": self._now()}
         self._update_index(tenant_id, repo_id, lambda index: {**index, "retention": latest})
 
-    def _refuse(self, tenant_id: str, repo_id: str, run: Mapping[str, Any], reason: str) -> None:
+    def _refuse(self, tenant_id: str, repo_id: str, run: Mapping[str, Any], reason: str,
+                metrics: dict[str, Any] | None = None) -> None:
         log.info("repo index run tenant=%s repo_id=%s task=%s promotion=refused",
                  tenant_id, repo_id, run["task_id"])
         self._end_run(
             tenant_id, repo_id, run, state=TaskState.SUCCEEDED.value, end_cause=None,
             promotion={"outcome": "refused", "reason": reason[:2000], "at": self._now()},
+            metrics=metrics,
         )
 
     def _read_document(self, tenant_id: str, task_id: str) -> tuple[str, dict[str, Any]]:
@@ -2943,6 +3223,11 @@ class RepoIndex:
     def _promote_from(self, tenant_id: str, record: Mapping[str, Any], run: Mapping[str, Any],
                       task: Any, tenant: Tenant) -> None:
         repo_id = record["repo_id"]
+        summary = getattr(task, "result_summary", None)
+
+        def refuse(reason: str) -> None:
+            self._refuse(tenant_id, repo_id, run, reason, metrics=run_metrics(summary, run))
+
         try:
             content, window = self._read_document(tenant_id, task.id)
             document = parse_index(content)
@@ -2950,26 +3235,20 @@ class RepoIndex:
             log.warning("repo index run %s: %s could not be read yet", task.id, INDEX_FILE)
             return
         except (InvalidIndex, IndexUnavailable) as refused:
-            self._refuse(tenant_id, repo_id, run, refused.message)
+            refuse(refused.message)
             return
         new = run["commit_sha"]
         if document["commit_sha"] != new:
-            self._refuse(
-                tenant_id, repo_id, run,
-                f"the index describes commit {document['commit_sha']}, but the run indexed "
-                f"commit {new}",
-            )
+            refuse(f"the index describes commit {document['commit_sha']}, but the run indexed "
+                   f"commit {new}")
             return
         if document["kind"] == "incremental" and (
             run.get("kind") != "incremental" or document.get("base_sha") != run.get("base_sha")
         ):
             given = run.get("base_sha") if run.get("kind") == "incremental" else None
-            self._refuse(
-                tenant_id, repo_id, run,
-                f"the index says it was built incrementally from {document.get('base_sha')}, "
-                + (f"but the run was given the base {given}" if given else
-                   "but the run was a full one, given no base"),
-            )
+            refuse(f"the index says it was built incrementally from {document.get('base_sha')}, "
+                   + (f"but the run was given the base {given}" if given else
+                      "but the run was a full one, given no base"))
             return
         digest = content_digest(content)
         # §2.5: the graph the index names is checked here, against the digest
@@ -2985,7 +3264,7 @@ class RepoIndex:
                             task.id)
                 return
             except (GraphDigestMismatch, GraphUnavailable, InvalidGraph) as refused:
-                self._refuse(tenant_id, repo_id, run, f"graph: {refused.message}")
+                refuse(f"graph: {refused.message}")
                 return
         relations: dict[tuple[str, str], str | None] = {}
 
@@ -3074,7 +3353,13 @@ class RepoIndex:
             index = indexfailure.after_success(index)
             txn.update(repo_ref, {"index": index})
             outcome = "promoted" if decision == "promote" else "superseded"
+            metrics = run_metrics(
+                summary, run, built_kind=document["kind"], manifest=manifest,
+                ended_at=_parse_time(getattr(task, "completed_at", None)), promoted_at=now,
+                at_head=new == index.get("head_sha") if index.get("head_sha") else None,
+            )
             txn.update(run_ref, {
+                "metrics": metrics,
                 "state": TaskState.SUCCEEDED.value, "ended_at": now, "end_cause": None,
                 "promotion": {
                     "outcome": outcome, "digest": digest, "at": now,
@@ -3092,13 +3377,10 @@ class RepoIndex:
         except _AncestryUnknown:
             ended = _parse_time(getattr(task, "completed_at", None)) or now
             if now - ended > PROMOTION_RETRY_WINDOW:
-                self._refuse(
-                    tenant_id, repo_id, run,
-                    "GitHub could not say whether this commit descends from the promoted one "
-                    f"for {int(PROMOTION_RETRY_WINDOW.total_seconds() // 60)} minutes",
-                )
+                refuse("GitHub could not say whether this commit descends from the promoted one "
+                       f"for {int(PROMOTION_RETRY_WINDOW.total_seconds() // 60)} minutes")
             return
-        self._prune_versions(repo_id, keep=None if outcome != "promoted" else new,
+        self._prune_versions(tenant_id, repo_id, keep=None if outcome != "promoted" else new,
                              keep_versions=keep_versions_of(record.get("index")))
         log.info("repo index run tenant=%s repo_id=%s task=%s sha=%s promotion=%s",
                  tenant_id, repo_id, task.id, new[:12], outcome)
@@ -3697,12 +3979,12 @@ def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
 __all__ = [
     "BASE_INDEX_FILE", "BASE_LINE", "KEEP_LINE", "LSP_BASE_LINE", "LSP_COST_LINE",
     "INDEX_TIMEOUT_TABLE",
-    "MAX_INDEX_TIMEOUT_SECONDS", "index_timeout_seconds", "lsp_costs_of", "source_files_of", "SWEEP_PHASE", "kept_commits", "retention_of",
+    "MAX_INDEX_TIMEOUT_SECONDS", "index_timeout_seconds", "lsp_costs_of", "source_files_of", "SWEEP_PHASE", "kept_commits", "pinned_commits", "retention_of",
     "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",
     "EXTRACTOR_COMMAND", "GRAPH_WRITER_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE",
     "INDEXER_MODEL_CLASS", "INDEXER_EXTRACTOR_VERSION", "index_model_class", "KindChoice", "MAX_INCREMENTAL_CHANGES", "NO_RUN", "PHASES_FILE",
     "RUN_KINDS", "UNCHANGED",
-    "VERSIONS_COLLECTION", "choose_kind", "graph_carry_refusal", "graph_extractor_record",
+    "VERSIONS_COLLECTION", "PINS_COLLECTION", "PIN_HOLDERS", "pin_id", "pin_settled", "choose_kind", "graph_carry_refusal", "graph_extractor_record",
     "is_config_path", "last_full_at", "read_changes",
     "IndexDigestMismatch",
     "IndexPaused", "IndexRunRequest", "IndexUnavailable", "InvalidIndex", "MAX_INDEX_BYTES",

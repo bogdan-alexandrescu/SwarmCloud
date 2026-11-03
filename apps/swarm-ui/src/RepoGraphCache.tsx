@@ -30,7 +30,9 @@
  *     answer, by outcome (carried answers on their own row) and cold or warm,
  *     beside the indexer's uncached measurement. A replica whose figure was not
  *     read is named, never counted as zero answers; a percentile over several
- *     replicas is the slowest one's, an upper bound, and is drawn as "≤".
+ *     replicas is read off their summed histogram counts and drawn as it is.
+ *     Only while a replica serves no counts (mixed versions during a roll-out)
+ *     is it the slowest replica's, an upper bound, drawn as "≤".
  *   * A FAILED READ KEEPS THE LAST GOOD VALUES (§5.5), with the time they were
  *     read and the reason the new read failed; it never blanks them.
  *
@@ -357,9 +359,9 @@ const TEMPERATURE_WORDS: Readonly<Record<string, string>> = {
   warm: 'Warm (memory)',
   cold: 'Cold (storage)',
 }
-const UPPER_BOUND_WHY = 'Several replicas answered: the slowest replica’s figure, so at most this'
+const UPPER_BOUND_WHY = 'A replica served no histogram (an older version during a roll-out): the slowest replica’s figure, so at most this'
 
-/** A percentile in words: "≤ 40 ms" when it is an upper bound over several replicas. */
+/** A percentile in words: "≤ 40 ms" when it is an upper bound, not merged from counts. */
 function latencyMs(ms: number, exact: boolean): string {
   return exact ? msWords(ms) : `≤ ${msWords(ms)}`
 }

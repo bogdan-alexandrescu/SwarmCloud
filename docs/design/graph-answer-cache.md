@@ -330,9 +330,21 @@ digest**. No existing entry becomes wrong.
   serves them as `answer_latency`: count, p50, p95, p99 and max over the
   replica's 24 h, overall, by outcome, by temperature and by both. The
   `graph_answer` line carries `partial` and `temperature` too. This is the
-  SERVED latency of §5.2's first column; `index_versions/{sha}.answer_latency`
-  (§1.2) stays the indexer's uncached measurement, and swarm-api's Cache route
-  still reads that one.
+  SERVED latency, and swarm-api's Cache route reads it from every replica
+  (§5.3): each replica's own `answer_latency` goes on that replica's panel,
+  and the route merges them into `facts.answer_latency`, the console's
+  "Answer latency, served" tile and its table by outcome and temperature
+  (§5.2). The merged percentiles are an **upper bound** today, marked
+  `exact: false` whenever more than one replica answered: a replica serves
+  its percentiles and the table's bounds (`bounds_ms`) but not the counts
+  per bound, and percentiles cannot be added, so the route can only take the
+  slowest replica's, which the true p95 never exceeds. They become exact once
+  swarm-graph serves those histogram counts and the route sums them, as it
+  already sums `served_ms` for `served_p95_ms`. Beside it,
+  `index_versions/{sha}.answer_latency` (§1.2) stays the indexer's uncached
+  measurement, which the route still returns unchanged as `latency`: one
+  figure is what agents got, the other what the index costs with no cache,
+  and the gap between them is the cache's whole effect.
 
 ### 2.2 The repository events, and the path each one takes
 
@@ -723,7 +735,8 @@ has no `SWARM_GRAPH_STATS_URL` and the section says swarm-graph was not read.
 
 ### 5.2 What it shows
 
-**Repository facts, four tiles:**
+**Repository facts, five tiles** (the fifth, the served answer latency, added
+2026-11-03 by lane graph-cache-panel-latency, part of #2688):
 
 | tile | value | source |
 |---|---|---|
@@ -731,6 +744,16 @@ has no `SWARM_GRAPH_STATS_URL` and the section says swarm-graph was not read.
 | **Reused from the last index** | the share of hits that were `carried` (§2.3 b) | the same counts. **A dash ("—") until carry forward exists** (BGD Q4), never 0%: 0% would say carry forward ran and reused nothing |
 | **p95 served / uncached** | served p95 over 24 h, then the uncached (cold) p95 of the current version, then that cold p95 over the reference workload ("38 ms / 152 ms · 7.4× reference") | served: the replicas' answer timings; uncached and ratio: `latency.json` (§1.2) as copied to `index_versions/{sha}.answer_latency`. "Not measured" when that version has no measurement |
 | **Last promotion warm-up** | how long the warm of the current digest took and how many questions it replayed ("2.1 s · 200 questions replayed") | the replicas' `graph_warmed` and `graph_prewarmed` records for the current digest; the slowest replica's time is the one shown |
+| **Answer latency, served** | the middle and slow answer (p50 / p95) of N answers and the slowest one ("≤ 8 ms / ≤ 40 ms · middle / slow (p95) of 1,284 answers · slowest 410 ms"), with a table under the tiles by outcome (`hit`, `carried`, `miss`, `partial`, `uncached`) and by temperature (`warm`, `cold`) | `facts.answer_latency`: every replica's `answer_latency` (§2.1) merged by swarm-api (§5.3). A percentile over several replicas is drawn "≤", because it is the slowest replica's and an upper bound; the slowest answer is exact either way. A replica whose figure was not read is named ("2 of 3 replicas; not read: …"), never counted as zero answers |
+
+**Why two latency figures.** "p95 served / uncached" puts the served p95 from
+`served_ms` (power-of-two bounds, summed exactly across replicas) against the
+indexer's cold measurement, so the ratio shows what the cache saves. "Answer
+latency, served" says *where* the time goes: carried answers apart from hits,
+answers cut at the deadline apart from misses, cold apart from warm. That is
+what §3.3 needs to tell a cold-after-promotion problem from a cache that is
+simply too small, and its finer bounds (about 25% apart) read a percentile
+closer than `served_ms` can.
 
 A window shorter than 24 h (a replica restarted in it) is labelled with the
 window it covers ("over 5 h"), never presented as 24 h.
@@ -740,7 +763,14 @@ window it covers ("over 5 h"), never presented as 24 h.
 * the replica's name, its **uptime**, and the time it last (re)started;
 * **answers: MiB used of 256** (`ResultCache`, `RESULT_CACHE_BYTES`);
 * **shards: MiB used of 512** (`ShardCache`, `SHARD_CACHE_RAW_BYTES`);
-* **for THIS repository**: how many answers and how many shards it holds hot.
+* **for THIS repository**: how many answers and how many shards it holds hot;
+* **its own answer latency**: that replica's `answer_latency` (the middle
+  and slow answer, the slowest, the count, and the cold p95 apart), exact to
+  its bound because it is one replica's. A dash ("this replica does not serve
+  it yet") when the replica served none, as an older swarm-graph image does
+  during a roll. Shown per replica because the merged figure is an upper
+  bound: a panel whose p95 is far above its peers' is the replica that sets
+  that bound, typically the one that restarted and is still cold.
 
 The two MiB figures are the replica's totals across every tenant. They are
 numbers, not keys or names, and are shown because a full cache is what makes
@@ -796,10 +826,16 @@ started by `main.py`, the stats ticket in `ticket.py`, the counters in
 * **Per replica it returns**: `replica`, `started_at`, `result_bytes` and
   `result_bound`, `shard_bytes` and `shard_bound`; and for the ticket's
   `(tenant_id, repo_id)` only: answer outcomes in 24 hourly buckets (`hit`,
-  `carried`, `miss`), a served-ms histogram for the p95, the answers and shards
-  held hot, the last warm (`digest`, `ms`, `shards`, `replayed`), and, when
-  asked for shards, `{blob_sha256: {hot, hits_24h, last_read}}` for the blobs
-  of the ticket's digest.
+  `carried`, `miss`), a served-ms histogram for the p95 (`served_ms`: bounds
+  and counts), the served `answer_latency` of §2.1 (count, p50, p95, p99 and
+  max overall, by outcome, by temperature and by both, with its `bounds_ms`
+  but not its counts), the answers and shards held hot, the last warm
+  (`digest`, `ms`, `shards`, `replayed`), and, when asked for shards,
+  `{blob_sha256: {hot, hits_24h, last_read}}` for the blobs of the ticket's
+  digest. These per-repository figures sit **at the top level of the
+  replica's document** (`stats.local_document`), beside `replica` and the
+  byte totals, not in a nested object: the ticket already names the one
+  repository, so there is nothing to nest under.
 * **The counters are kept where the events are logged.** `GraphService.answer`
   counts the outcome at the line that logs `graph_answer`, so the tile and the
   log-based metric of §3.1 cannot disagree. `ShardCache` counts reads per blob
@@ -831,10 +867,35 @@ like `graph_ticket_key`; unset, or not an http(s) URL, the section is
   has not registered is a 404.
 * It reads the registration (current and previous digest), the current
   version's `answer_latency`, mints the stats ticket, calls `/v1/stats` once,
-  and returns `{facts, replicas[], shards?}`. With `shards=1` it also compares
+  and returns `{facts, replicas[], latency, shards?}`, `latency` being that
+  uncached version figure, unchanged. With `shards=1` it also compares
   the two manifests (read from the index store as the index route reads them;
   immutable by digest, so cached per digest pair) and merges each blob's
   replica marks into the rows of §5.2.
+* **It reads each replica's figures from the top of that replica's
+  document** (`Replicas._repository`), and the same names from a
+  `repository` object when a replica nests them, so the route does not break
+  if the document's shape grows one. It passes on only the fields named
+  above, each held to a number.
+* **The served latency, per replica and merged** (lane
+  graph-cache-panel-latency, part of #2688). Each read replica's panel
+  carries its own `answer_latency` (count, p50, p95, p99, max and
+  `by_temperature`), or null when the replica served none.
+  `facts.answer_latency` merges every replica's (`merge_latency`), group by
+  group: counts add, the max is the slowest replica's, and a percentile is
+  the replica's own when one replica answered and the slowest replica's
+  otherwise, with `exact: false`. That is an upper bound, never an estimate
+  that could fall below the truth: the merged p95 cannot exceed the largest
+  replica p95, and the route has no counts per bound to do better. It
+  becomes exact once swarm-graph serves `answer_latency`'s histogram counts
+  and the route sums them, as it already does for `served_ms` (whose sum is
+  `facts.served_p95_ms`). A replica that was not read, or answered without
+  the figure, is named in `not_read` and never counted as zero answers; with
+  no replica's figure at all the fact is `{state: "not_read", reason}`
+  (`no_replica_read`, `not_served`, or the section's own reason when
+  swarm-graph was not read). The console's types for all of this are the
+  `GraphCache*` block of `apps/swarm-ui/src/api.ts`
+  (`GraphCacheServedLatency`, `GraphCacheReplicaLatency`).
 * **swarm-graph not answering at all** (the ILB refuses or times out at 3 s) is
   a 200 with `replicas: []` and `stats: {state: "not_read", reason}`. The
   latency tile, read from Firestore, still shows.

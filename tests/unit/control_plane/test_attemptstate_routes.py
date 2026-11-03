@@ -55,6 +55,28 @@ def test_context_serves_the_grant_of_the_signed_submitter_and_repository(client,
     assert body["forge_grant"]["id"] == grant and body["forge_grant"]["mode"] == "write"
 
 
+def test_context_serves_the_platforms_extra_repository_budget_and_nothing_else(client, db):
+    """A worker switched to the state routes builds no Firestore client, so the
+    admin's `additional_repositories_budget_gib` reaches it only here (owner,
+    3 November 2026). Only that one field of `control/settings` is served."""
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs["control/settings"] = {"additional_repositories_budget_gib": 11,
+                                   "model_prices": {"claude": {"input": 3.0}},
+                                   "agent_budget_ceiling": {"usd": 50}}
+    body = worker.get(client, "context").json()
+    assert body["platform_settings"] == {"additional_repositories_budget_gib": 11}
+
+
+def test_context_serves_no_budget_when_the_platform_has_not_set_one(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    body = worker.get(client, "context").json()
+    assert body["platform_settings"] == {}
+    db.docs["control/settings"] = {"merge_by_default": True}
+    assert worker.get(client, "context").json()["platform_settings"] == {}
+
+
 def test_poll_reads_this_tenants_quota_and_the_fence(client, db):
     worker = Worker()
     opened(client, db, worker, cancel_requested=True)
