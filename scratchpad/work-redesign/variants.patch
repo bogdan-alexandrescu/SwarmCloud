@@ -1,0 +1,2831 @@
+diff --git a/apps/swarm-ui/src/App.tsx b/apps/swarm-ui/src/App.tsx
+index eabb926..4e768d8 100644
+--- a/apps/swarm-ui/src/App.tsx
++++ b/apps/swarm-ui/src/App.tsx
+@@ -9,6 +9,8 @@ import {
+   useSyncExternalStore,
+   type ReactNode,
+ } from 'react'
++import { WorkRedesign } from './workredesign/WorkRedesign' // MOCK-HOOK
++import { WORK_SWITCHES } from './workredesign/switches' // MOCK-HOOK
+ import { createPortal } from 'react-dom'
+ import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
+ import { AccountsScreen } from './Accounts'
+@@ -2374,6 +2376,7 @@ function SectionBody({
+   // Config › Repositories › QA targets: its address is that tab's `qarun=<id>`.
+   const qarun = `${sectionId}/${tab}` === 'config/repositories' && view !== null ? new URLSearchParams(view).get('qarun') : null
+   if (qarun !== null && qarun !== '') return <QaRunGroupScreen groupId={qarun} go={go} />
++  if (WORK_SWITCHES.wa !== null && sectionId === 'work') return <WorkRedesign go={go} list={list} onList={onList} /> // MOCK-HOOK
+   switch (`${sectionId}/${tab}`) {
+     case 'overview/now':
+       return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
+diff --git a/apps/swarm-ui/src/LiveBrowser.tsx b/apps/swarm-ui/src/LiveBrowser.tsx
+index 974a276..050d9e6 100644
+--- a/apps/swarm-ui/src/LiveBrowser.tsx
++++ b/apps/swarm-ui/src/LiveBrowser.tsx
+@@ -16,6 +16,7 @@ import {
+   type SyntheticEvent,
+ } from 'react'
+ 
++import { mockStillUrl } from './workredesign/fixtures' // MOCK-HOOK
+ import { AgentLogs } from './AgentLogs'
+ import {
+   closeLiveToMembers,
+@@ -2219,6 +2220,7 @@ function LiveScreen({
+   // retrying or has given up puts its reason in the frame's middle; once a
+   // picture has drawn, a reconnect keeps it and says so in the caption.
+   const blank = !framed && (conn === 'reconnecting' || conn === 'failed') && why !== null
++  const still = mockStillUrl(taskId, kind !== 'desktop') // MOCK-HOOK
+   const onFocus = () => {
+     keysHere.current = true
+     setHasFocus(true)
+@@ -2304,6 +2306,7 @@ function LiveScreen({
+             onTouchEndCapture={gateTouch}
+             onTouchCancelCapture={gateTouch}
+           >
++            {still !== null && <img className="mock-still" src={still} alt="The agent’s browser page (still image)" />} {/* MOCK-HOOK */}
+             {/* Inside the screen, so it goes with it into the theater. Clicks go through it. */}
+             {control && conn === 'connected' && !hasFocus && (
+               <span className="live-type-hint" aria-hidden="true">
+@@ -2311,7 +2314,7 @@ function LiveScreen({
+               </span>
+             )}
+           </div>
+-          {blank && (
++          {blank && still === null && ( // MOCK-HOOK: still === null
+             <div className="live-frame-empty" data-testid="live-frame-empty">
+               <EmptyState kind={conn === 'failed' ? 'failed' : 'empty'} heading="No picture from the agent’s browser">
+                 {conn === 'failed' ? `The live connection keeps failing: ${why}` : `${why} Trying again.`}
+diff --git a/apps/swarm-ui/src/LiveThumb.tsx b/apps/swarm-ui/src/LiveThumb.tsx
+index 9336288..10cfed3 100644
+--- a/apps/swarm-ui/src/LiveThumb.tsx
++++ b/apps/swarm-ui/src/LiveThumb.tsx
+@@ -1,5 +1,6 @@
+ import { useEffect, useRef, useState } from 'react'
+ 
++import { mockStillUrl } from './workredesign/fixtures' // MOCK-HOOK
+ import { USE_FIXTURES, loadLiveSession, mintLiveTicket, openLiveChannel, type LiveChannel } from './api'
+ import { route } from './fetch'
+ import { addressToPath } from './paths'
+@@ -595,6 +596,19 @@ export function LiveThumb({
+   useEffect(() => {
+     const sock = open(taskId)
+     if (sock === null) {
++      const still = mockStillUrl(taskId) // MOCK-HOOK
++      if (still !== null) { // MOCK-HOOK
++        const img = new Image() // MOCK-HOOK
++        img.onload = () => { // MOCK-HOOK
++          const c = canvas.current // MOCK-HOOK
++          if (c === null) return // MOCK-HOOK
++          c.width = 720; c.height = 450 // MOCK-HOOK
++          c.getContext('2d')?.drawImage(img, 0, 0, 720, 450) // MOCK-HOOK
++          setFrames(1); setStatus('live') // MOCK-HOOK
++        } // MOCK-HOOK
++        img.src = still // MOCK-HOOK
++        return // MOCK-HOOK
++      } // MOCK-HOOK
+       setStatus('unavailable')
+       return
+     }
+diff --git a/apps/swarm-ui/src/api.ts b/apps/swarm-ui/src/api.ts
+index c8e4682..2d0765e 100644
+--- a/apps/swarm-ui/src/api.ts
++++ b/apps/swarm-ui/src/api.ts
+@@ -15,6 +15,7 @@ import { chosenTenant, noteFixtureProbe, read, readGeneration, route, tenantQuer
+ // needs the concurrency set to decide which rows hold a lease -- invariant 1's
+ // four states, not a second list written out here.
+ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
++import { mockBrowserStatus, mockDevice, mockHandoffEvents, mockLiveTask, mockOrigin, mockTaskRows, mockWorkflowRows, mockWorkOn } from './workredesign/fixtures' // MOCK-HOOK
+ // The one rule for summing a nullable measurement: null until something
+ // actually reported it, so an unmeasured sample never becomes a confident zero.
+ import { sumReported } from './measure'
+@@ -3283,7 +3284,7 @@ async function fixtureAttemptsPage(since: string, until: string): Promise<Result
+ async function fixtureEventsPage(taskId: string, order: 'asc' | 'desc'): Promise<Result<TaskEventsPage>> {
+   const detail = await fixtureAgentDetail(taskId)
+   if (detail.status !== 'ok') return detail.status === 'error' ? detail : { status: 'ok', fetchedAt: Date.now(), data: { events: [], next_page_token: null } }
+-  const events = [...(detail.data.events ?? [])].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
++  const events = [...(detail.data.events ?? []), ...(mockHandoffEvents(taskId) as NonNullable<typeof detail.data.events>)].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)) // MOCK-HOOK: mockHandoffEvents
+   if (order === 'desc') events.reverse()
+   return { status: 'ok', fetchedAt: Date.now(), data: { events, next_page_token: null } }
+ }
+@@ -5389,6 +5390,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
+ 
+ /** The fixture's task list, built at one instant: `fixtureTasks` serves it, and the stats and workflow rows count it. */
+ function fixtureTaskRows(): Task[] {
++  if (mockWorkOn()) return mockTaskRows() // MOCK-HOOK
+   const now = FIXTURE_NOW
+   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
+ 
+@@ -5743,6 +5745,7 @@ function withTaskSummaries(workflows: Workflow[], tasks: readonly Task[]): Workf
+  * finding.
+  */
+ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
++  if (mockWorkOn()) return mockWorkflowRows() // MOCK-HOOK
+   // A WORKFLOW SPANS ITS STEPS (QAFIX4-FIXTURE-B F14c, run 4
+   // flow-workflow-graph-light-12): created when its first step task was,
+   // last changed when its last one was. Typed apart, the fan-in's 3h 31m
+@@ -12616,7 +12619,7 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
+     // agent records no failed route. The viewer ticket is still not served
+     // (`mintLiveTicket`): the fixture build has no gate to draw frames from.
+     noteFixtureProbe(target, 0, true)
+-    if (taskId !== 'task_b40e5a1c') {
++    if (taskId !== 'task_b40e5a1c' && !mockLiveTask(taskId)) { // MOCK-HOOK
+       return { status: 'ok', fetchedAt: Date.now(), data: { live_browser: false, session: null } }
+     }
+     const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
+@@ -12629,11 +12632,12 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
+           session_id: 'live_att_1',
+           state: 'open',
+           closed_reason: null,
+-          origin: { origin: 'https://example.com', host: 'example.com', registrable_domain: 'example.com', scheme: 'https:' },
++          origin: mockLiveTask(taskId) ? mockOrigin(taskId) : { origin: 'https://example.com', host: 'example.com', registrable_domain: 'example.com', scheme: 'https:' }, // MOCK-HOOK
+           human_wait: null,
+           controller: null,
+           open_to_members: false,
+-          device: { preset: 'desktop', orientation: 'landscape', touch: false },
++          device: mockLiveTask(taskId) ? mockDevice(taskId) : { preset: 'desktop', orientation: 'landscape', touch: false }, // MOCK-HOOK
++          ...(mockLiveTask(taskId) ? { browser: mockBrowserStatus(taskId) } : {}), // MOCK-HOOK
+           // swarm-api `LIVE_PRESETS`, the gate's fixed list (§6.1).
+           presets: [
+             { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
+diff --git a/apps/swarm-ui/src/workredesign/D/DirectionD.tsx b/apps/swarm-ui/src/workredesign/D/DirectionD.tsx
+new file mode 100644
+index 0000000..7c25608
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/D/DirectionD.tsx
+@@ -0,0 +1,1054 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only. Direction D: the graph with a docked inspector.
++//
++// Every screen is one shape: a dense main column (a one-line-per-row table, or
++// the workflow's stage x feature matrix) and a resizable inspector docked on
++// the right. The inspector's subject is a workflow (Overview / Browsers /
++// Needs you) or one agent (the console's own AgentSplit: Details, Browser,
++// Logs, Attempts, More: Changes, Children, Outputs, Checkpoints). Picking a row
++// or a chip changes the subject and keeps the main column where it was.
++import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
++
++import type { TaskPane } from '../../App'
++import { AgentSplit } from '../../AgentSplit'
++import { Breadcrumb, Button, LiveChip, PARK_WORD, Segmented, StatePill } from '../../components'
++import { WorkflowsScreen } from '../../Workflows'
++import { CANCEL_NOTE, WHOLE_TASK_ID, silentWorkerLine } from '../../Agents'
++import { CONCURRENCY_STATES, TERMINAL_STATES, WAITING_STATES, type ParkReason, type Task, type Workflow } from '../../types'
++import type { DirectionScreens } from '../WorkRedesign'
++import type { BaseProps } from '../base'
++import { HARD_WF, HARD_WF_TITLE, MOCK_NOW, MOCK_SPEND, hardTaskId, mockHost, mockStillUrl } from '../fixtures'
++import { NEED_WORD, needsYou, stagesOf, workflowSpend, type NeedItem, type WorkData, type WorkNav } from '../parts'
++import './d.css'
++
++const BROWSER = 'claude-code-browser'
++const DEFAULT_AGENT = hardTaskId('build', 'contacts')
++const isBrowser = (t: Task) => t.runner_profile === BROWSER
++const isLiveBrowser = (t: Task) => isBrowser(t) && t.state === 'RUNNING'
++
++// --------------------------------------------------------------------------
++// Small words: time, money, people
++// --------------------------------------------------------------------------
++
++function mins(fromIso: string | null | undefined, toMs: number = MOCK_NOW): number | null {
++  if (!fromIso) return null
++  return Math.max(0, Math.round((toMs - Date.parse(fromIso)) / 60_000))
++}
++function span(m: number | null): string {
++  if (m === null) return '—'
++  if (m < 60) return `${m}m`
++  if (m < 48 * 60) return `${Math.floor(m / 60)}h ${m % 60 ? `${m % 60}m` : ''}`.trim()
++  return `${Math.round(m / 1440)}d`
++}
++function money(n: number | null | undefined, incomplete = false): ReactNode {
++  if (typeof n !== 'number') return <span className="wd-dim" title="Not measured yet">—</span>
++  return (
++    <span title={incomplete ? 'Still running: more will be added' : undefined}>
++      ${n.toFixed(2)}
++      {incomplete ? <span className="wd-dim">+</span> : null}
++    </span>
++  )
++}
++function person(email: string | null | undefined): string {
++  if (!email) return '—'
++  const local = email.split('@')[0] ?? email
++  if (local === 'bogdan') return 'Bogdan'
++  return local.split('.').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ')
++}
++type PR = { number: number; url: string; state: string }
++function prOf(t: Task | undefined | null): PR | null {
++  const g = (t?.result_summary as { git?: { pull_request?: PR } } | null | undefined)?.git
++  return g?.pull_request ?? null
++}
++function checksOf(t: Task | undefined | null): { passed: number; failed: number; failed_names?: string[] } | null {
++  const g = (t?.result_summary as { git?: { checks?: { passed: number; failed: number; failed_names?: string[] } } } | null | undefined)?.git
++  return g?.checks ?? null
++}
++const asksOwner = (t: Task | undefined | null) => (t?.owner_answers ?? []).some((a) => a.choice === null && a.text === null)
++const waitWord = (t: Task): string => {
++  const r = t.park_reason as ParkReason | null
++  if (r && PARK_WORD[r]) return PARK_WORD[r]
++  if (t.state === 'QUEUED') return 'in line'
++  if (t.state === 'READY') return 'waiting for a slot'
++  return t.state.toLowerCase()
++}
++const waitSummary = (t: Task): string | null => (t as unknown as { waiting?: { summary?: string } }).waiting?.summary ?? null
++const titleOf = (t: Task) => (t.step_id ? t.step_id : String(t.metadata?.title ?? t.id))
++
++// --------------------------------------------------------------------------
++// The dock: a resizable inspector on the right
++// --------------------------------------------------------------------------
++
++function useDockWidth(initial: number): [number, (w: number) => void] {
++  const [w, setW] = useState(initial)
++  useEffect(() => setW(initial), [initial])
++  return [w, setW]
++}
++
++/** The page: main column, a drag handle, the docked inspector. `dock` null folds it to a rail. */
++function DockPage({ main, dock, width, onWidth, label, phoneOpen }: {
++  main: ReactNode
++  dock: ReactNode | null
++  width: number
++  onWidth: (w: number) => void
++  label: string
++  /** On a phone the inspector is a sheet over the page, shown only once something is picked. */
++  phoneOpen: boolean
++}) {
++  const root = useRef<HTMLDivElement>(null)
++  const drag = (e: React.PointerEvent) => {
++    e.preventDefault()
++    const box = root.current?.getBoundingClientRect()
++    if (!box) return
++    const move = (ev: PointerEvent) => onWidth(Math.min(Math.max(box.right - ev.clientX, 340), box.width - 360))
++    const up = () => {
++      window.removeEventListener('pointermove', move)
++      window.removeEventListener('pointerup', up)
++    }
++    window.addEventListener('pointermove', move)
++    window.addEventListener('pointerup', up)
++  }
++  const key = (e: React.KeyboardEvent) => {
++    if (e.key === 'ArrowLeft') onWidth(width + 40)
++    if (e.key === 'ArrowRight') onWidth(Math.max(340, width - 40))
++  }
++  return (
++    <div ref={root} className={`wd${dock ? '' : ' is-folded'}${phoneOpen ? ' is-sheet' : ''}`} style={{ ['--wd-dock' as string]: `${width}px` }}>
++      <div className="wd-main">{main}</div>
++      {dock && (
++        <>
++          <div
++            className="wd-handle"
++            role="separator"
++            aria-orientation="vertical"
++            aria-label="Resize the inspector"
++            aria-valuenow={width}
++            tabIndex={0}
++            onPointerDown={drag}
++            onKeyDown={key}
++          />
++          <aside className="wd-dock" aria-label={label}>
++            {dock}
++          </aside>
++        </>
++      )}
++    </div>
++  )
++}
++
++function DockHead({ children, onClose, closeLabel = 'Close the inspector' }: { children: ReactNode; onClose?: () => void; closeLabel?: string }) {
++  return (
++    <div className="wd-dock-head">
++      <div className="wd-dock-title">{children}</div>
++      {onClose && (
++        <button type="button" className="wd-x" onClick={onClose} aria-label={closeLabel} title={closeLabel}>
++          ×
++        </button>
++      )}
++    </div>
++  )
++}
++
++/** One agent in the inspector: the console's AgentSplit, its own tab clicks kept inside the dock. */
++function DockAgent({ taskId, task, pane, nav, go, onClose }: { taskId: string; task?: Task; pane: TaskPane; nav: WorkNav; go: (to: string) => void; onClose: () => void }) {
++  const [shown, setShown] = useState<TaskPane>(pane)
++  useEffect(() => setShown(pane), [pane, taskId])
++  const base = `work/task/${encodeURIComponent(taskId)}`
++  const inner = (to: string) => {
++    if (to.startsWith(base)) {
++      const rest = to.slice(base.length).replace(/^\//, '').split(/[/?]/)[0]
++      setShown((rest === '' ? 'detail' : rest) as TaskPane)
++      return
++    }
++    const other = /^work\/task\/([^/]+)/.exec(to)
++    if (other) return nav({ screen: 'agent', id: decodeURIComponent(other[1] ?? '') })
++    if (to.startsWith('work/running') || to === '/agents') return onClose()
++    go(to)
++  }
++  const silent = task ? silentWorkerLine(task, MOCK_NOW) : null
++  const beat = task?.heartbeat === 'read' && task.heartbeat_at ? Math.max(0, Math.round((MOCK_NOW - Date.parse(task.heartbeat_at)) / 1000)) : null
++  return (
++    <div className="wd-agent">
++      {task && CONCURRENCY_STATES.has(task.state) && (
++        <p className={`wd-beat${silent ? ' is-bad' : ''}`} title={silent ?? 'The lease heartbeat: the worker says it is alive'}>
++          <span aria-hidden>♥</span> heartbeat {beat === null ? 'not read' : beat < 60 ? `${beat}s ago` : `${Math.floor(beat / 60)}m ago`}
++          {silent ? ' · silent' : ''}
++        </p>
++      )}
++      <AgentSplit key={taskId} taskId={taskId} pane={shown} artifact={null} closeTo="work/running" go={inner} base={base} />
++    </div>
++  )
++}
++
++// --------------------------------------------------------------------------
++// The browser still where the live canvas goes
++// --------------------------------------------------------------------------
++
++function Still({ task, onOpen, big = false, picked = false }: { task: Task; onOpen: () => void; big?: boolean; picked?: boolean }) {
++  const url = mockStillUrl(task.id)
++  return (
++    <figure className={`wd-still${big ? ' is-big' : ''}${picked ? ' is-picked' : ''}`}>
++      {big && (
++        <div className="wd-still-addr" title="The address the agent's browser reports">
++          <span className="wd-still-live is-inline"><LiveChip /></span>
++          <span className="wd-mono wd-trunc">{mockHost(task.id)}</span>
++        </div>
++      )}
++      <button type="button" className="wd-still-pic" onClick={onOpen} aria-label={`Watch ${titleOf(task)}`}>
++        {url !== null ? <img src={url} alt="" /> : <span className="wd-dim">No picture</span>}
++        {!big && <span className="wd-still-live"><LiveChip /></span>}
++        {task.human_wait ? <span className="wd-still-turn">◉ your turn</span> : null}
++      </button>
++      <figcaption>
++        <span className="wd-trunc">{titleOf(task)}</span>
++        <span className="wd-dim">{span(mins(task.started_at))}</span>
++      </figcaption>
++    </figure>
++  )
++}
++
++// --------------------------------------------------------------------------
++// Needs you: one line of counted chips, and the list behind it
++// --------------------------------------------------------------------------
++
++const NEED_KINDS: NeedItem['kind'][] = ['failed', 'question', 'merge', 'handoff']
++/** The glyph that stands for each kind when the bar is narrow; the word is kept as its label and tooltip. */
++const NEED_GLYPH: Record<NeedItem['kind'], string> = { failed: '✗', approval: '✓', question: '?', merge: '⇢', handoff: '◉' }
++
++function NeedsBar({ items, onOpen, active }: { items: NeedItem[]; onOpen: () => void; active?: boolean }) {
++  const n = (k: NeedItem['kind']) => items.filter((i) => i.kind === k).length
++  const total = items.length
++  return (
++    <div className={`wd-needs${total ? ' has-some' : ''}${active ? ' is-on' : ''}`} role="group" aria-label="Needs you">
++      <button type="button" className="wd-needs-btn" onClick={onOpen} aria-pressed={active}>
++        <b>Needs you</b> <span className="wd-needs-n">{total}</span>
++      </button>
++      {NEED_KINDS.map((k) => (n(k) > 0 ? (
++        <button key={k} type="button" className={`wd-need is-${k}`} onClick={onOpen} title={`${NEED_WORD[k]}: ${n(k)}`} aria-label={`${NEED_WORD[k]}: ${n(k)}`}>
++          <span className="wd-need-glyph" aria-hidden>{NEED_GLYPH[k]}</span>
++          <span className="wd-need-word">{NEED_WORD[k]}</span> <b>{n(k)}</b>
++        </button>
++      ) : null))}
++      <span className="wd-need is-faint" title="Approvals are read on Automate › Approvals; this dataset has none to count">
++        Approvals <b>not read</b>
++      </span>
++    </div>
++  )
++}
++
++function NeedsList({ items, data, onPick }: { items: NeedItem[]; data: Extract<WorkData, { status: 'ok' }>; onPick: (taskId: string) => void }) {
++  return (
++    <ul className="wd-needlist">
++      {items.map((i, k) => {
++        const t = i.taskId ? data.taskById.get(i.taskId) : undefined
++        const pr = prOf(t)
++        const [head, ...rest] = i.label.split(': ')
++        return (
++          <li key={k} className={`is-${i.kind}`}>
++            <div className="wd-need-top">
++              <span className={`wd-need is-${i.kind}`}><span className="wd-need-glyph" aria-hidden>{NEED_GLYPH[i.kind]}</span> {NEED_WORD[i.kind]}</span>
++              <b className="wd-trunc">{head}</b>
++              {pr && <a className="wd-pr" href={pr.url} onClick={(e) => e.preventDefault()}>#{pr.number}</a>}
++              <span className="wd-dim">{span(mins(t?.completed_at ?? t?.updated_at))} ago</span>
++            </div>
++            <p className="wd-need-text">{rest.join(': ')}</p>
++            <div className="wd-row">
++              {i.kind === 'question' && <Button size="sm" kind="primary" onClick={() => i.taskId && onPick(i.taskId)}>Answer</Button>}
++              {i.kind === 'failed' && <Button size="sm" kind="primary" onClick={() => i.taskId && onPick(i.taskId)}>Open logs</Button>}
++              {i.kind === 'merge' && <Button size="sm" onClick={() => i.taskId && onPick(i.taskId)}>See what holds it</Button>}
++              {i.kind === 'handoff' && <Button size="sm" kind="primary" onClick={() => i.taskId && onPick(i.taskId)}>Take the browser</Button>}
++              {i.kind === 'failed' && checksOf(t) && (
++                <span className="wd-dim">
++                  checks <span className="wd-ok">✓{checksOf(t)!.passed}</span> <span className="wd-bad">✗{checksOf(t)!.failed}</span>
++                </span>
++              )}
++            </div>
++          </li>
++        )
++      })}
++    </ul>
++  )
++}
++
++// --------------------------------------------------------------------------
++// AGENTS: a dense table beside the inspector
++// --------------------------------------------------------------------------
++
++type AgentTab = 'live' | 'waiting' | 'recent'
++const tabOf = (t: Task): AgentTab | null =>
++  CONCURRENCY_STATES.has(t.state) ? 'live' : WAITING_STATES.has(t.state) ? 'waiting' : TERMINAL_STATES.has(t.state) ? 'recent' : null
++
++function AgentsMain({ data, tab, setTab, picked, onPick, needs, onNeeds, needsOn }: {
++  data: Extract<WorkData, { status: 'ok' }>
++  tab: AgentTab
++  setTab: (t: AgentTab) => void
++  picked: string | null
++  onPick: (id: string) => void
++  needs: NeedItem[]
++  onNeeds: () => void
++  needsOn: boolean
++}) {
++  const [q, setQ] = useState('')
++  const [profile, setProfile] = useState('')
++  const [owner, setOwner] = useState('')
++  const [browsers, setBrowsers] = useState(false)
++  const [sort, setSort] = useState('newest')
++  const counts = useMemo(() => {
++    const c = { live: 0, waiting: 0, recent: 0, browsers: 0 }
++    for (const t of data.tasks) {
++      const k = tabOf(t)
++      if (k) c[k] += 1
++      if (k === 'live' && isBrowser(t)) c.browsers += 1
++    }
++    return c
++  }, [data])
++  const profiles = useMemo(() => [...new Set(data.tasks.map((t) => t.runner_profile))].sort(), [data])
++  const owners = useMemo(() => [...new Set(data.tasks.map((t) => t.submitted_by ?? ''))].filter(Boolean).sort(), [data])
++  const rows = data.tasks
++    .filter((t) => tabOf(t) === tab)
++    .filter((t) => (profile ? t.runner_profile === profile : true))
++    .filter((t) => (owner ? t.submitted_by === owner : true))
++    .filter((t) => (browsers ? isBrowser(t) : true))
++    .filter((t) => (q ? `${t.id} ${titleOf(t)} ${t.metadata?.title ?? ''} ${t.repository_url ?? ''}`.toLowerCase().includes(q.toLowerCase()) : true))
++    .sort((a, b) => {
++      if (sort === 'cost') return (b.cost_usd_total ?? -1) - (a.cost_usd_total ?? -1)
++      if (sort === 'reason') return waitWord(a).localeCompare(waitWord(b))
++      const at = (t: Task) => Date.parse(t.completed_at ?? t.started_at ?? t.created_at)
++      return sort === 'oldest' ? at(a) - at(b) : at(b) - at(a)
++    })
++  const [pages, setPages] = useState(1)
++  const shown = rows.slice(0, 60 * pages)
++  // A whole task id pasted in the search opens that agent, as the console's list does.
++  useEffect(() => { if (WHOLE_TASK_ID.test(q.trim()) && data.tasks.some((t) => t.id === q.trim())) onPick(q.trim()) }, [q, data, onPick])
++  return (
++    <div className="wd-col">
++      <div className="wd-head">
++        <h1 className="wd-h1">Agents</h1>
++        <Segmented<AgentTab>
++          label="Which agents"
++          value={tab}
++          onChange={setTab}
++          role="tablist"
++          options={[
++            { key: 'live', label: 'Live', count: counts.live },
++            { key: 'waiting', label: 'Waiting', count: counts.waiting },
++            { key: 'recent', label: 'Recent', count: counts.recent },
++          ]}
++        />
++        <span className="wd-dim wd-hide-narrow" title="Live agents driving a browser">
++          <span className="wd-dot is-live" aria-hidden /> {counts.browsers} browsers live
++        </span>
++      </div>
++      <NeedsBar items={needs} onOpen={onNeeds} active={needsOn} />
++      <div className="wd-tools" role="search">
++        <input className="wd-search" type="search" placeholder="Search name, id, repository" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search agents" />
++        <select className="wd-sel" value={profile} onChange={(e) => setProfile(e.target.value)} aria-label="Profile">
++          <option value="">Any profile</option>
++          {profiles.map((p) => <option key={p} value={p}>{p}</option>)}
++        </select>
++        <select className="wd-sel" value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Owner">
++          <option value="">Anyone</option>
++          {owners.map((p) => <option key={p} value={p}>{person(p)}</option>)}
++        </select>
++        <label className="wd-check"><input type="checkbox" checked={browsers} onChange={() => setBrowsers((b) => !b)} /> Browsers only</label>
++        <select className="wd-sel" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort">
++          <option value="newest">Newest first</option>
++          <option value="oldest">Oldest first</option>
++          <option value="cost">Most spent first</option>
++          {tab === 'waiting' && <option value="reason">Grouped by why it waits</option>}
++        </select>
++      </div>
++      <div className="wd-tablewrap">
++        <table className="wd-table" aria-label={`${tab} agents`}>
++          <thead>
++            <tr>
++              <th className="wdc-pic"><span className="wd-sr">Browser</span></th>
++              <th>State</th>
++              <th>Agent</th>
++              <th className="wdc-owner">Owner</th>
++              <th className="wdc-time">{tab === 'live' ? 'Running' : tab === 'waiting' ? 'Waiting on' : 'Ended'}</th>
++              <th className="wdc-att">Attempt</th>
++              <th className="wdc-cost">Cost</th>
++              <th className="wdc-pr">PR</th>
++            </tr>
++          </thead>
++          <tbody>
++            {shown.map((t, k) => {
++              const pr = prOf(t)
++              // Grouped by why it waits: a header row each time the reason changes, with its count.
++              const group = tab === 'waiting' && sort === 'reason' && (k === 0 || waitWord(shown[k - 1]!) !== waitWord(t))
++                ? <tr key={`g-${waitWord(t)}`} className="wd-group"><td colSpan={8}>{waitWord(t)}<span className="wd-dim">{rows.filter((r) => waitWord(r) === waitWord(t)).length}</span></td></tr>
++                : null
++              const still = isLiveBrowser(t) ? mockStillUrl(t.id) : null
++              return (
++                <Fragment key={t.id}>
++                {group}
++                <tr className={picked === t.id ? 'is-picked' : undefined} onClick={() => onPick(t.id)} aria-selected={picked === t.id}>
++                  <td className="wdc-pic">
++                    {still ? <img src={still} alt="" className="wd-thumb" /> : isBrowser(t) ? <span className="wd-thumb is-none" title="Browser agent, no live picture">▢</span> : null}
++                  </td>
++                  <td><StatePill state={t.state} small /></td>
++                  <td className="wdc-name">
++                    <span className="wd-namecell">
++                      {/* The step first, its workflow after it in grey: when the column narrows the workflow's name shortens, never the step's. */}
++                      <button type="button" className="wd-rowlink" onClick={(e) => { e.stopPropagation(); onPick(t.id) }}>
++                        {t.workflow_id ? (t.step_id ?? 'merge') : String(t.metadata?.title ?? t.id)}
++                      </button>
++                      {t.human_wait ? <span className="wd-mark is-park" title={t.human_wait.reason ?? undefined}>◉ your turn</span> : null}
++                      {asksOwner(t) ? <span className="wd-mark is-park" title="Asks you a question">? question</span> : null}
++                      {(() => { const l = silentWorkerLine(t, MOCK_NOW); return l ? <span className="wd-mark is-bad" title={l}>silent</span> : null })()}
++                      {t.state === 'CANCELLED' ? <span className="wd-dim wd-note" title={CANCEL_NOTE}>· {CANCEL_NOTE}</span> : null}
++                      {t.workflow_id ? <span className="wd-dim wd-pre wd-note" title={String(t.metadata?.title ?? '')}>{String(t.metadata?.title ?? '').replace(/ merge$/, '')}</span> : null}
++                    </span>
++                  </td>
++                  <td className="wdc-owner">{person(t.submitted_by)}</td>
++                  <td className="wdc-time">
++                    {tab === 'live' ? span(mins(t.started_at)) : tab === 'waiting' ? (
++                      <span className="wd-trunc" title={waitSummary(t) ?? undefined}>{waitWord(t)}</span>
++                    ) : `${span(mins(t.completed_at))} ago`}
++                  </td>
++                  <td className="wdc-att">{t.attempt_count > 0 ? `${t.attempt_count}/${t.max_attempts}` : '—'}</td>
++                  <td className="wdc-cost">{money(t.cost_usd_total, t.cost_incomplete === true)}</td>
++                  <td className="wdc-pr">{pr ? <span className={`wd-pr is-${pr.state}`}>#{pr.number}</span> : <span className="wd-dim">—</span>}</td>
++                </tr>
++                </Fragment>
++              )
++            })}
++          </tbody>
++        </table>
++        <p className="wd-foot wd-dim">
++          {shown.length} of {rows.length} shown
++          {rows.length > shown.length && <> · <button type="button" className="wd-rowlink" onClick={() => setPages((n) => n + 1)}>show 60 more</button></>}
++        </p>
++      </div>
++    </div>
++  )
++}
++
++/** The Agents inspector with nothing picked: every live browser, watchable. */
++function BrowserWall({ tasks, onPick, title = 'Live browsers' }: { tasks: Task[]; onPick: (id: string) => void; title?: string }) {
++  const live = tasks.filter(isLiveBrowser).sort((a, b) => Number(!!b.human_wait) - Number(!!a.human_wait))
++  const starting = tasks.filter((t) => isBrowser(t) && CONCURRENCY_STATES.has(t.state) && t.state !== 'RUNNING').length
++  return (
++    <div className="wd-dock-body">
++      <DockHead>
++        <h2 className="wd-h2">{title}</h2>
++        <span className="wd-n">{live.length}</span>
++        {starting > 0 && <span className="wd-dim">+{starting} starting, no picture yet</span>}
++      </DockHead>
++      <div className="wd-wall">
++        {live.map((t) => <Still key={t.id} task={t} onOpen={() => onPick(t.id)} />)}
++      </div>
++    </div>
++  )
++}
++
++function DAgents({ data, nav, wst, go }: BaseProps) {
++  const [picked, setPicked] = useState<string | null>(null)
++  const [tab, setTab] = useState<AgentTab>('live')
++  const [needsOn, setNeedsOn] = useState(wst === 'needs')
++  // 340: the wall keeps two stills a row and the table keeps its Owner, Attempt and PR columns (fix-d, finding 8);
++  // an agent picked takes half the width, as on its own page.
++  const [w, setW] = useDockWidth(picked ? Math.round((typeof window === 'undefined' ? 1440 : window.innerWidth) * 0.5) : 340)
++  const needs = useMemo(() => (data.status === 'ok' ? needsYou(data.tasks) : []), [data])
++  if (data.status !== 'ok') return <Loading data={data} />
++  const main = (
++    <AgentsMain data={data} tab={tab} setTab={setTab} picked={picked} onPick={(id) => setPicked(id)} needs={needs} onNeeds={() => setNeedsOn((x) => !x)} needsOn={needsOn} />
++  )
++  const dock = picked ? (
++    <DockAgent taskId={picked} task={data.taskById.get(picked)} pane="detail" nav={nav} go={go} onClose={() => setPicked(null)} />
++  ) : needsOn ? (
++    <div className="wd-dock-body">
++      <DockHead onClose={() => setNeedsOn(false)}><h2 className="wd-h2">Needs you</h2><span className="wd-n">{needs.length}</span></DockHead>
++      <NeedsList items={needs} data={data} onPick={setPicked} />
++    </div>
++  ) : (
++    <BrowserWall tasks={data.tasks} onPick={setPicked} />
++  )
++  return <DockPage main={main} dock={dock} width={w} onWidth={setW} label="Inspector" phoneOpen={picked !== null || needsOn} />
++}
++
++function DAgent({ data, at, nav, wst, go }: BaseProps) {
++  const id = at.id ?? DEFAULT_AGENT
++  const [picked, setPicked] = useState<string>(id)
++  const [tab, setTab] = useState<AgentTab>('live')
++  const [w, setW] = useDockWidth(Math.round((typeof window === 'undefined' ? 1440 : window.innerWidth) * 0.52))
++  const needs = useMemo(() => (data.status === 'ok' ? needsYou(data.tasks) : []), [data])
++  if (data.status !== 'ok') return <Loading data={data} />
++  const pane: TaskPane = wst === 'logs' ? 'logs' : wst === 'rest' || wst === 'open' ? 'detail' : 'browser'
++  const main = (
++    <AgentsMain data={data} tab={tab} setTab={setTab} picked={picked} onPick={setPicked} needs={needs} onNeeds={() => nav({ screen: 'agents', id: null })} needsOn={false} />
++  )
++  return (
++    <DockPage
++      main={main}
++      dock={<DockAgent taskId={picked} task={data.taskById.get(picked)} pane={pane} nav={nav} go={go} onClose={() => nav({ screen: 'agents', id: null })} />}
++      width={w}
++      onWidth={setW}
++      label="Inspector"
++      phoneOpen
++    />
++  )
++}
++
++// --------------------------------------------------------------------------
++// WORKFLOWS: a dense table, a workflow preview docked
++// --------------------------------------------------------------------------
++
++type Tally = { done: number; running: number; waiting: number; failed: number; other: number; browsers: number }
++function tally(w: Workflow, byId: Map<string, Task>): Tally {
++  const c: Tally = { done: 0, running: 0, waiting: 0, failed: 0, other: 0, browsers: 0 }
++  for (const s of w.steps) {
++    const t = s.task_id ? byId.get(s.task_id) : undefined
++    if (!t) c.waiting += 1
++    else if (t.state === 'SUCCEEDED') c.done += 1
++    else if (t.state === 'FAILED') c.failed += 1
++    else if (CONCURRENCY_STATES.has(t.state)) {
++      c.running += 1
++      if (isLiveBrowser(t)) c.browsers += 1
++    } else if (WAITING_STATES.has(t.state)) c.waiting += 1
++    else c.other += 1
++  }
++  return c
++}
++
++function Progress({ c, total }: { c: Tally; total: number }) {
++  const seg = (n: number, cls: string, word: string) => (n > 0 ? <i className={cls} style={{ flexGrow: n }} title={`${n} ${word}`} /> : null)
++  return (
++    <span className="wd-prog" aria-label={`${c.done} done, ${c.running} running, ${c.waiting} waiting, ${c.failed} failed of ${total}`}>
++      {seg(c.done, 'is-done', 'done')}
++      {seg(c.failed, 'is-failed', 'failed')}
++      {seg(c.running, 'is-running', 'running')}
++      {seg(c.waiting, 'is-waiting', 'waiting')}
++      {seg(c.other, 'is-other', 'stopped')}
++    </span>
++  )
++}
++
++const BUCKET_STATE: Record<string, string> = { running: 'RUNNING', parked: 'PARKED', failed: 'FAILED', done: 'SUCCEEDED' }
++
++function DWorkflows({ data, nav, wst }: BaseProps) {
++  const [bucket, setBucket] = useState('all')
++  const [q, setQ] = useState('')
++  const [owner, setOwner] = useState('')
++  const [profile, setProfile] = useState('')
++  const [sort, setSort] = useState('state')
++  const [picked, setPicked] = useState<string | null>(HARD_WF)
++  const [w, setW] = useDockWidth(400)
++  const allNeeds = useMemo(() => (data.status === 'ok' ? needsYou(data.tasks) : []), [data])
++  if (data.status !== 'ok') return <Loading data={data} />
++  const needsBy = new Map<string, NeedItem[]>()
++  for (const n of allNeeds) if (n.workflowId) needsBy.set(n.workflowId, [...(needsBy.get(n.workflowId) ?? []), n])
++  const by = (s: string) => data.workflows.filter((x) => x.state === s).length
++  const order = ['FAILED', 'RUNNING', 'PARKED', 'SUCCEEDED']
++  const rows = data.workflows
++    .filter((x) => (bucket === 'all' ? true : x.state === BUCKET_STATE[bucket]))
++    .filter((x) => (owner ? x.submitted_by === owner : true))
++    .filter((x) => (profile ? x.steps.some((st) => st.runner_profile === profile) : true))
++    .filter((x) => (q ? `${x.workflow_id} ${wfTitle(x, data.taskById)} ${x.steps.map((s) => s.step_id).join(' ')}`.toLowerCase().includes(q.toLowerCase()) : true))
++    .sort((a, b) =>
++      sort === 'newest' ? Date.parse(b.updated_at) - Date.parse(a.updated_at)
++        : sort === 'failed' ? tally(b, data.taskById).failed - tally(a, data.taskById).failed
++          : (needsBy.get(b.workflow_id)?.length ?? 0) - (needsBy.get(a.workflow_id)?.length ?? 0) || order.indexOf(a.state) - order.indexOf(b.state) || Date.parse(b.updated_at) - Date.parse(a.updated_at))
++  const owners = [...new Set(data.workflows.map((x) => x.submitted_by ?? ''))].filter(Boolean).sort()
++  const wfProfiles = [...new Set(data.workflows.flatMap((x) => x.steps.map((st) => st.runner_profile)))].sort()
++  const main = (
++    <div className="wd-col">
++      <div className="wd-head">
++        <h1 className="wd-h1">Workflows</h1>
++        <Segmented
++          label="Which workflows"
++          value={bucket}
++          onChange={setBucket}
++          role="tablist"
++          options={[
++            { key: 'all', label: 'All', count: data.workflows.length },
++            { key: 'running', label: 'Running', count: by('RUNNING') },
++            { key: 'parked', label: 'Parked', count: by('PARKED') },
++            { key: 'failed', label: 'Failed', count: by('FAILED') },
++            { key: 'done', label: 'Done', count: by('SUCCEEDED') },
++          ]}
++        />
++      </div>
++      <NeedsBar items={allNeeds.filter((n) => n.workflowId)} onOpen={() => setPicked(HARD_WF)} active={wst === 'needs'} />
++      <div className="wd-tools" role="search">
++        <input className="wd-search" type="search" placeholder="Search name, id, step" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search workflows" />
++        <select className="wd-sel" value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Owner">
++          <option value="">Anyone</option>
++          {owners.map((p) => <option key={p} value={p}>{person(p)}</option>)}
++        </select>
++        <select className="wd-sel" value={profile} onChange={(e) => setProfile(e.target.value)} aria-label="Profile">
++          <option value="">Any profile</option>
++          {wfProfiles.map((p) => <option key={p} value={p}>{p}</option>)}
++        </select>
++        <select className="wd-sel" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort">
++          <option value="state">Needs you first</option>
++          <option value="newest">Newest first</option>
++          <option value="failed">Most failed steps first</option>
++        </select>
++      </div>
++      <div className="wd-tablewrap">
++        <table className="wd-table wd-wftable" aria-label="Workflows">
++          <thead>
++            <tr>
++              <th>State</th>
++              <th>Workflow</th>
++              <th className="wdc-prog">Steps</th>
++              <th className="wdc-need">Needs you</th>
++              <th className="wdc-live">Browsers</th>
++              <th className="wdc-cost">Spent</th>
++              <th className="wdc-owner">Owner</th>
++              <th className="wdc-time">Changed</th>
++            </tr>
++          </thead>
++          <tbody>
++            {rows.map((x) => {
++              const c = tally(x, data.taskById)
++              const n = needsBy.get(x.workflow_id) ?? []
++              return (
++                <tr key={x.workflow_id} className={picked === x.workflow_id ? 'is-picked' : undefined} onClick={() => setPicked(x.workflow_id)} aria-selected={picked === x.workflow_id}>
++                  <td><StatePill state={x.state as Task['state']} small /></td>
++                  <td className="wdc-name">
++                    <button type="button" className="wd-rowlink" onClick={(e) => { e.stopPropagation(); nav({ screen: 'workflow', id: x.workflow_id }) }}>
++                      {wfTitle(x, data.taskById)}
++                    </button>
++                  </td>
++                  <td className="wdc-prog">
++                    <Progress c={c} total={x.steps.length} />
++                    <span className="wd-dim wd-num">{c.done + c.failed}/{x.steps.length}</span>
++                  </td>
++                  <td className="wdc-need">
++                    {n.filter((i) => i.kind === 'failed').length > 0 && <span className="wd-mark is-bad" title="Failed steps">✗ {n.filter((i) => i.kind === 'failed').length}</span>}
++                    {n.filter((i) => i.kind === 'question').length > 0 && <span className="wd-mark is-park" title="Owner questions">? {n.filter((i) => i.kind === 'question').length}</span>}
++                    {n.filter((i) => i.kind === 'merge').length > 0 && <span className="wd-mark is-park" title="Merge waiting">⇢ merge</span>}
++                    {n.length === 0 && <span className="wd-dim">—</span>}
++                  </td>
++                  <td className="wdc-live">{c.browsers > 0 ? <span><span className="wd-dot is-live" aria-hidden /> {c.browsers}</span> : <span className="wd-dim">—</span>}</td>
++                  <td className="wdc-cost">{wfSpent(x, data.taskById)}</td>
++                  <td className="wdc-owner">{person(x.submitted_by)}</td>
++                  <td className="wdc-time">{span(mins(x.updated_at))} ago</td>
++                </tr>
++              )
++            })}
++          </tbody>
++        </table>
++      </div>
++    </div>
++  )
++  const pw = picked ? data.workflows.find((x) => x.workflow_id === picked) ?? null : null
++  const dock = pw ? (
++    <div className="wd-dock-body">
++      <DockHead onClose={() => setPicked(null)}>
++        <StatePill state={pw.state as Task['state']} small />
++        <h2 className="wd-h2 wd-trunc">{wfTitle(pw, data.taskById)}</h2>
++      </DockHead>
++      <div className="wd-row">
++        <Button kind="primary" size="sm" onClick={() => nav({ screen: 'workflow', id: pw.workflow_id })}>Open workflow</Button>
++        <span className="wd-dim">{pw.steps.length} steps · {workflowSpend(pw, data.taskById)} · {person(pw.submitted_by)} · changed {span(mins(pw.updated_at))} ago</span>
++      </div>
++      <TallyChips c={tally(pw, data.taskById)} />
++      <Matrix w={pw} data={data} picked={null} onPick={() => nav({ screen: 'workflow', id: pw.workflow_id })} mini />
++      {(needsBy.get(pw.workflow_id) ?? []).length > 0 && (
++        <>
++          <h3 className="wd-h3">Needs you <span className="wd-n">{needsBy.get(pw.workflow_id)!.length}</span></h3>
++          <NeedsList items={needsBy.get(pw.workflow_id)!} data={data} onPick={(id) => nav({ screen: 'agent', id })} />
++        </>
++      )}
++    </div>
++  ) : null
++  return <DockPage main={main} dock={dock} width={w} onWidth={setW} label="Workflow preview" phoneOpen={false} />
++}
++
++/** A workflow's spend as a figure: "+" (with its tooltip) only while a step still runs, "—" when nothing was measured. */
++function wfSpent(w: Workflow, byId: Map<string, Task>): ReactNode {
++  if (w.workflow_id === HARD_WF) return money(MOCK_SPEND.workflowUsd, true)
++  let sum = 0, known = 0
++  for (const s of w.steps) {
++    const c = s.task_id ? byId.get(s.task_id)?.cost_usd_total : null
++    if (typeof c === 'number') { sum += c; known += 1 }
++  }
++  if (known === 0) return money(null)
++  return money(sum, !TERMINAL_STATES.has(w.state as Task['state']))
++}
++
++function wfTitle(w: Workflow, byId: Map<string, Task>): string {
++  if (w.workflow_id === HARD_WF) return HARD_WF_TITLE
++  const first = w.steps[0]?.task_id ? byId.get(w.steps[0].task_id) : undefined
++  return String(first?.metadata?.title ?? w.workflow_id)
++}
++
++function TallyChips({ c }: { c: Tally }) {
++  return (
++    <div className="wd-row wd-tally">
++      <span className="wd-t is-running" title="Running">▶ <b>{c.running}</b> running</span>
++      <span className="wd-t is-waiting" title="Waiting on earlier steps">◷ <b>{c.waiting}</b> waiting</span>
++      <span className="wd-t is-done" title="Done">✓ <b>{c.done}</b> done</span>
++      <span className="wd-t is-failed" title="Failed">✗ <b>{c.failed}</b> failed</span>
++      {c.browsers > 0 && <span className="wd-t" title="Live browser agents"><span className="wd-dot is-live" aria-hidden /> <b>{c.browsers}</b> browsers</span>}
++    </div>
++  )
++}
++
++// --------------------------------------------------------------------------
++// The stage x feature matrix: a row per stage, a column per feature
++// --------------------------------------------------------------------------
++
++type Grid = { stages: string[]; cols: string[]; cell: (stage: string, col: string) => string | null; matrix: boolean }
++
++function gridOf(w: Workflow): Grid {
++  const rows = stagesOf(w)
++  // A matrix when each stage's steps are `<stage>-<feature>` over the same features.
++  const split = (id: string, stage: string) => (id.startsWith(`${stage}-`) ? id.slice(stage.length + 1) : null)
++  const stageNames = rows.map((ids) => {
++    const firstFeature = ids[0]?.split('-').slice(-1)[0] ?? ''
++    return ids[0]?.slice(0, ids[0].length - firstFeature.length - 1) ?? ''
++  })
++  const cols = rows[0]?.map((id) => split(id, stageNames[0] ?? '')) ?? []
++  const matrix = rows.length > 1 && cols.every((c) => c !== null) &&
++    rows.every((ids, k) => ids.length === cols.length && ids.every((id) => cols.includes(split(id, stageNames[k] ?? '') ?? '')))
++  if (matrix) {
++    const ids = new Set(w.steps.map((s) => s.step_id))
++    return { stages: stageNames, cols: cols as string[], cell: (s, c) => (ids.has(`${s}-${c}`) ? `${s}-${c}` : null), matrix: true }
++  }
++  return { stages: rows.map((_, k) => `Stage ${k + 1}`), cols: [], cell: () => null, matrix: false }
++}
++
++function cellState(t: Task | undefined): string {
++  if (!t) return 'unstarted'
++  if (t.state === 'PARKED' && t.park_reason === 'DEPENDENCY_INCOMPLETE') return 'waiting'
++  return t.state.toLowerCase()
++}
++
++function Cell({ stepId, t, picked, onPick, mini, label, dimmed }: { stepId: string; t: Task | undefined; picked: boolean; onPick: () => void; mini?: boolean; label?: string; dimmed?: boolean }) {
++  const st = cellState(t)
++  const pr = prOf(t)
++  const time = !t || st === 'waiting' ? null
++    : t.state === 'RUNNING' ? span(mins(t.started_at))
++      : t.completed_at && t.started_at ? span(mins(t.started_at, Date.parse(t.completed_at))) : null
++  const word = st === 'waiting' ? `waiting on ${(t?.depends_on ?? []).join(', ') || 'an earlier step'}` : st
++  const tip = `${stepId}: ${word}${time ? `, ${time}` : ''}${pr ? `, pull request #${pr.number}` : ''}${asksOwner(t) ? ', asks you a question' : ''}`
++  return (
++    <button
++      type="button"
++      className={`wd-cell is-${st}${picked ? ' is-picked' : ''}${dimmed ? ' is-dimmed' : ''}${mini ? ' is-mini' : ''}`}
++      onClick={onPick}
++      aria-pressed={picked}
++      aria-label={tip}
++      title={tip}
++    >
++      {label && <span className="wd-cell-name">{label}</span>}
++      {!mini && (
++        <span className="wd-cell-meta">
++          <span className="wd-cell-mark">{t && st !== 'waiting' ? <StatePill state={t.state} form="mark" /> : <span className="wd-wait" aria-hidden>◷</span>}</span>
++          {time && <span className="wd-cell-time">{time}</span>}
++          {pr && <span className="wd-cell-pr">#{pr.number}</span>}
++        </span>
++      )}
++      {asksOwner(t) && <span className="wd-ask" aria-hidden>?</span>}
++      {t && isLiveBrowser(t) && !mini && <span className="wd-cell-live" aria-hidden />}
++    </button>
++  )
++}
++
++function Matrix({ w, data, picked, onPick, mini = false, focus = null, onStage }: {
++  w: Workflow
++  data: Extract<WorkData, { status: 'ok' }>
++  picked: string | null
++  onPick: (stepId: string) => void
++  mini?: boolean
++  /** Steps to keep bright; the rest are dimmed (Needs you). */
++  focus?: Set<string> | null
++  /** A stage's counts open the Table on that stage. */
++  onStage?: (stage: string) => void
++}) {
++  const g = gridOf(w)
++  const stepTask = (id: string) => {
++    const s = w.steps.find((x) => x.step_id === id)
++    return s?.task_id ? data.taskById.get(s.task_id) : undefined
++  }
++  if (!g.matrix) {
++    const rows = stagesOf(w)
++    return (
++      <div className="wd-flow">
++        {rows.map((ids, k) => (
++          <div key={k} className="wd-flow-row">
++            <span className="wd-stage">{k + 1}</span>
++            {ids.map((id) => <Cell key={id} stepId={id} t={stepTask(id)} picked={picked === id} onPick={() => onPick(id)} label={id} mini={mini} />)}
++          </div>
++        ))}
++      </div>
++    )
++  }
++  return (
++    <div className={`wd-matrix${mini ? ' is-mini' : ''}`} role="grid" aria-label={`${w.steps.length} steps: a row per stage, a column per feature`} style={{ ['--wd-cols' as string]: g.cols.length }}>
++      <div className="wd-mrow is-head" role="row">
++        <span className="wd-stage" role="columnheader"><span className="wd-sr">Stage</span></span>
++        {g.cols.map((c) => <span key={c} className="wd-colhead" role="columnheader" title={c}>{c}</span>)}
++      </div>
++      {g.stages.map((s) => {
++        const ids = g.cols.map((c) => g.cell(s, c))
++        const ts = ids.map((id) => (id ? stepTask(id) : undefined))
++        const n = (st: string) => ts.filter((t) => cellState(t) === st).length
++        return (
++          <div key={s} className="wd-mrow" role="row">
++            <span className="wd-stage" role="rowheader">
++              <b>{s}</b>
++              {!mini && (
++                <span className="wd-stage-n" role={onStage ? 'button' : undefined} tabIndex={onStage ? 0 : undefined} onClick={() => onStage?.(s)} title={onStage ? `Open the Table on the ${s} stage` : undefined}>
++                  {n('succeeded') > 0 && <span className="wd-ok" title="done">✓{n('succeeded')}</span>}
++                  {n('failed') > 0 && <span className="wd-bad" title="failed">✗{n('failed')}</span>}
++                  {n('running') > 0 && <span className="wd-run" title="running">▶{n('running')}</span>}
++                  {n('waiting') > 0 && <span className="wd-dim" title="waiting on earlier steps">◷{n('waiting')}</span>}
++                </span>
++              )}
++            </span>
++            {ids.map((id, k) => (id ? (
++              <Cell key={id} stepId={id} t={ts[k]} picked={picked === id} onPick={() => onPick(id)} mini={mini} dimmed={focus !== null && !focus.has(id)} />
++            ) : <span key={k} />))}
++          </div>
++        )
++      })}
++    </div>
++  )
++}
++
++// --------------------------------------------------------------------------
++// ONE WORKFLOW: header, needs bar, views, the matrix; the inspector docked
++// --------------------------------------------------------------------------
++
++type WfView = 'graph' | 'table' | 'timeline' | 'changes'
++type DockSubject = { kind: 'workflow'; tab: 'overview' | 'browsers' | 'needs' } | { kind: 'step'; stepId: string }
++
++function DWorkflow({ data, at, nav, wst, go }: BaseProps) {
++  const id = at.id ?? HARD_WF
++  const vw = typeof window === 'undefined' ? 1440 : window.innerWidth
++  const [view, setView] = useState<WfView>('graph')
++  const [subject, setSubject] = useState<DockSubject>(
++    wst === 'open' || wst === 'logs' ? { kind: 'step', stepId: 'build-contacts' }
++      : wst === 'watch' ? { kind: 'workflow', tab: 'browsers' }
++        : wst === 'needs' ? { kind: 'workflow', tab: 'needs' } : { kind: 'workflow', tab: 'overview' },
++  )
++  const [big, setBig] = useState<string | null>(wst === 'watch' ? hardTaskId('build', 'contacts') : null)
++  const [w, setW] = useDockWidth(wst === 'watch' ? Math.round(vw * 0.46) : wst === 'open' ? Math.round(vw * 0.46) : Math.max(340, Math.round(vw * 0.27)))
++  const [phoneDock, setPhoneDock] = useState(wst !== 'rest')
++  // Under 1366 px the inspector starts folded at rest, so the matrix keeps its times and pull requests (the cost, notes.md).
++  const [dockOpen, setDockOpen] = useState(!(wst === 'rest' && vw < 1366))
++  const [stepPane, setStepPane] = useState<TaskPane>(wst === 'logs' ? 'logs' : 'detail')
++  const needs = useMemo(() => (data.status === 'ok' ? needsYou(data.tasks, id) : []), [data, id])
++  if (data.status !== 'ok') return <Loading data={data} />
++  const wf = data.workflows.find((x) => x.workflow_id === id)
++  if (!wf) return <p className="wd-dim">No workflow {id} in this dataset.</p>
++  const c = tally(wf, data.taskById)
++  const title = wfTitle(wf, data.taskById)
++  const stepOfTask = (taskId: string) => wf.steps.find((s) => s.task_id === taskId)?.step_id ?? null
++  const pickStep = (stepId: string, pane: TaskPane = 'detail') => {
++    setStepPane(pane)
++    setDockOpen(true)
++    setSubject({ kind: 'step', stepId })
++    setPhoneDock(true)
++  }
++  const pickTask = (taskId: string, pane: TaskPane = 'detail') => {
++    const s = stepOfTask(taskId)
++    if (s) pickStep(s, pane)
++    else nav({ screen: 'agent', id: taskId })
++  }
++  const needSteps = new Set(needs.map((n) => (n.taskId ? stepOfTask(n.taskId) : null)).filter((x): x is string => x !== null))
++  const liveTasks = wf.steps.map((s) => (s.task_id ? data.taskById.get(s.task_id) : undefined)).filter((t): t is Task => t !== undefined && isLiveBrowser(t))
++  const picked = subject.kind === 'step' ? subject.stepId : null
++  const mergeTask = data.tasks.find((t) => t.workflow_id === id && t.runner_profile === 'merge') ?? null
++  const after = (wf as unknown as { after_pull_requests?: { pull_requests: number[]; state: string } }).after_pull_requests
++
++  const main = (
++    <div className="wd-col">
++      <Breadcrumb crumbs={[{ key: 'wfs', label: 'Workflows', href: '/workflows' }, { key: 'wf', label: title, href: null }]} onGo={() => nav({ screen: 'workflows', id: null })} />
++      <div className="wd-head">
++        <StatePill state={wf.state as Task['state']} />
++        <h1 className="wd-h1 wd-trunc">{title}</h1>
++        <span className="wd-figs">
++          <span title="Steps">{wf.steps.length} steps</span>
++          <span title="Spent so far">{workflowSpend(wf, data.taskById)}</span>
++          <span className="wd-dim" title="Started">{span(mins(wf.created_at))} old</span>
++        </span>
++        <span className="wd-grow" />
++        {(!dockOpen || subject.kind === 'step') && <Button size="sm" onClick={() => { setSubject({ kind: 'workflow', tab: 'overview' }); setDockOpen(true); setPhoneDock(true) }}>Workflow details</Button>}
++      </div>
++      <TallyChips c={c} />
++      <NeedsBar items={needs} onOpen={() => { setSubject({ kind: 'workflow', tab: 'needs' }); setDockOpen(true); setPhoneDock(true) }} active={subject.kind === 'workflow' && subject.tab === 'needs'} />
++      <div className="wd-row wd-viewbar">
++        <Segmented<WfView>
++          label="View"
++          value={view}
++          onChange={setView}
++          role="tablist"
++          small
++          options={[
++            { key: 'graph', label: 'Graph' },
++            { key: 'table', label: 'Table' },
++            { key: 'timeline', label: 'Steps over time' },
++            { key: 'changes', label: 'Changes' },
++          ]}
++        />
++        {view === 'graph' && (
++          <span className="wd-legend wd-dim" aria-label="Legend">
++            <span><span className="wd-ok">✓</span> done</span>
++            <span><span className="wd-run">▶</span> running</span>
++            <span>◷ waiting</span>
++            <span><span className="wd-bad">✗</span> failed</span>
++            <span><span className="wd-ask is-inline">?</span> asks you</span>
++            <span><span className="wd-dot is-live" /> live browser</span>
++          </span>
++        )}
++        {view === 'graph' && liveTasks.length > 0 && (
++          <Button size="sm" kind={subject.kind === 'workflow' && subject.tab === 'browsers' ? 'primary' : 'secondary'} onClick={() => { setSubject({ kind: 'workflow', tab: 'browsers' }); setDockOpen(true); setPhoneDock(true) }}>
++            Watch {liveTasks.length} browsers
++          </Button>
++        )}
++      </div>
++      {view === 'graph' ? (
++        <Matrix w={wf} data={data} picked={picked} onPick={pickStep} onStage={() => setView('table')} focus={subject.kind === 'workflow' && subject.tab === 'needs' ? needSteps : null} />
++      ) : (
++        <div className="wd-embed">
++          <WorkflowsScreen view={`wf=${encodeURIComponent(id)}&tab=${view}`} onView={() => undefined} />
++        </div>
++      )}
++      {mergeTask && (
++        <div className={`wd-merge is-${mergeTask.state.toLowerCase()}`}>
++          <b>Merge</b>
++          <StatePill state={mergeTask.state} small label={mergeTask.park_reason === 'HUMAN_REQUIRED' ? 'waiting for you' : undefined} />
++          {after && <span className="wd-merge-prs" title="The pull requests this merge goes in after">after {after.pull_requests.map((n) => `#${n}`).join(' ')}</span>}
++          <span className="wd-dim wd-trunc" title={waitSummary(mergeTask) ?? undefined}>{waitSummary(mergeTask) ?? ''}</span>
++          <span className="wd-grow" />
++          <Button size="sm" onClick={() => { setSubject({ kind: 'workflow', tab: 'needs' }); setDockOpen(true); setPhoneDock(true) }}>Answer 2 questions</Button>
++        </div>
++      )}
++      {view === 'graph' && liveTasks.length > 0 && !(subject.kind === 'workflow' && subject.tab === 'browsers') && (
++        <section className="wd-strip" aria-label="Live browsers">
++          <h2 className="wd-h3">Live browsers <span className="wd-n">{liveTasks.length}</span> <span className="wd-dim">pick one to watch it</span></h2>
++          <div className="wd-strip-row">
++            {liveTasks.map((t) => <Still key={t.id} task={t} onOpen={() => pickTask(t.id, 'browser')} picked={picked !== null && stepOfTask(t.id) === picked} />)}
++          </div>
++        </section>
++      )}
++    </div>
++  )
++
++  let dock: ReactNode
++  if (subject.kind === 'step') {
++    const s = wf.steps.find((x) => x.step_id === subject.stepId)
++    const g = gridOf(wf)
++    const [stage, ...rest] = subject.stepId.split('-')
++    const feature = rest.join('-')
++    const si = g.stages.indexOf(subject.stepId.slice(0, subject.stepId.length - (g.cols.find((col) => subject.stepId.endsWith(`-${col}`))?.length ?? 0) - 1))
++    const col = g.cols.find((cc) => subject.stepId.endsWith(`-${cc}`)) ?? feature
++    const prev = si > 0 ? g.cell(g.stages[si - 1]!, col) : null
++    const next = si >= 0 && si < g.stages.length - 1 ? g.cell(g.stages[si + 1]!, col) : null
++    dock = (
++      <div className="wd-dock-step">
++        <div className="wd-dock-ctx">
++          <button type="button" className="wd-back" onClick={() => setSubject({ kind: 'workflow', tab: 'overview' })} aria-label="Back to the workflow">‹ {title}</button>
++          <span className="wd-dim">stage <b>{g.matrix ? g.stages[si] ?? stage : stage}</b> · {col}</span>
++          <span className="wd-grow" />
++          <button type="button" className="wd-step-nav" disabled={!prev} onClick={() => prev && pickStep(prev)} title={prev ? `Earlier step: ${prev}` : 'No earlier step'} aria-label="Earlier step">↑ {prev ? prev.split('-').slice(0, -1).join('-') : ''}</button>
++          <button type="button" className="wd-step-nav" disabled={!next} onClick={() => next && pickStep(next)} title={next ? `Next step: ${next}` : 'No next step'} aria-label="Next step">↓ {next ? next.split('-').slice(0, -1).join('-') : ''}</button>
++        </div>
++        {s?.task_id ? (
++          <DockAgent taskId={s.task_id} task={data.taskById.get(s.task_id)} pane={stepPane} nav={nav} go={go} onClose={() => setSubject({ kind: 'workflow', tab: 'overview' })} />
++        ) : (
++          <p className="wd-dim">Not started: waits on {s?.depends_on.join(', ') || 'nothing'}.</p>
++        )}
++      </div>
++    )
++  } else {
++    const tab = subject.tab
++    const bigTask = liveTasks.find((t) => t.id === big) ?? null
++    dock = (
++      <div className="wd-dock-body">
++        <DockHead onClose={() => { setPhoneDock(false); setDockOpen(false) }} closeLabel="Fold the inspector">
++          <Segmented<'overview' | 'browsers' | 'needs'>
++            label="Workflow inspector"
++            value={tab}
++            role="tablist"
++            small
++            onChange={(t) => setSubject({ kind: 'workflow', tab: t })}
++            options={[
++              { key: 'overview', label: 'Overview' },
++              { key: 'browsers', label: 'Browsers', count: liveTasks.length },
++              { key: 'needs', label: 'Needs you', count: needs.length },
++            ]}
++          />
++        </DockHead>
++        {tab === 'overview' && <WfOverview wf={wf} data={data} />}
++        {tab === 'browsers' && (
++          <>
++            {bigTask && (
++              <div className="wd-bigwrap">
++                <Still task={bigTask} onOpen={() => pickTask(bigTask.id, 'browser')} big />
++                <div className="wd-row">
++                  <Button size="sm" kind="primary" onClick={() => pickTask(bigTask.id, 'browser')}>Open {titleOf(bigTask)}</Button>
++                  <span className="wd-dim">Take control, logs and theater are in the step</span>
++                </div>
++              </div>
++            )}
++            <div className={`wd-wall${bigTask ? ' is-small' : ''}`}>
++              {liveTasks.filter((t) => t.id !== bigTask?.id).map((t) => <Still key={t.id} task={t} onOpen={() => setBig(t.id)} />)}
++            </div>
++          </>
++        )}
++        {tab === 'needs' && <NeedsList items={needs} data={data} onPick={pickTask} />}
++      </div>
++    )
++  }
++  return <DockPage main={main} dock={dockOpen ? dock : null} width={w} onWidth={setW} label="Inspector" phoneOpen={phoneDock} />
++}
++
++/** The workflow's own inspector: what the page's prose said, as figures, with the long words behind toggles. */
++function WfOverview({ wf, data }: { wf: Workflow; data: Extract<WorkData, { status: 'ok' }> }) {
++  const prs = wf.steps.map((s) => (s.task_id ? prOf(data.taskById.get(s.task_id)) : null)).filter((p): p is PR => p !== null)
++  const merged = prs.filter((p) => p.state === 'merged').length
++  const isHard = wf.workflow_id === HARD_WF
++  const after = (wf as unknown as { after_pull_requests?: { pull_requests: number[]; state: string } }).after_pull_requests
++  const spent = workflowSpend(wf, data.taskById)
++  return (
++    <div className="wd-ov">
++      <dl className="wd-dl">
++        <dt>Spent</dt>
++        <dd>
++          <b>{spent}</b>
++          {isHard && <span className="wd-dim"> · ${MOCK_SPEND.earlierAttemptsUsd.toFixed(2)} on earlier attempts</span>}
++        </dd>
++        <dt>Pull requests</dt>
++        <dd><b>{prs.length}</b> <span className="wd-dim">· {merged} merged · {prs.length - merged} open</span></dd>
++        <dt>Dispatch</dt>
++        <dd>a pull request per step</dd>
++        {after && (<><dt>Merge</dt><dd>after pull requests {after.pull_requests.map((n) => `#${n}`).join(', ')}: {after.state}</dd></>)}
++        <dt>On a failed step</dt>
++        <dd>{(() => { const f = (wf as unknown as { on_step_failure?: string }).on_step_failure; return f ? `${f.toLowerCase()} the others` : 'not read' })()}</dd>
++        <dt>Owner</dt>
++        <dd>{person(wf.submitted_by)}</dd>
++        <dt>Started</dt>
++        <dd>{span(mins(wf.created_at))} ago · changed {span(mins(wf.updated_at))} ago</dd>
++      </dl>
++      <details className="wd-details">
++        <summary>Policy</summary>
++        <p className="wd-dim">
++          Steps run when the step before them in the same column is done. A failed step does not stop the others; its later steps wait on it. Each
++          step opens its own pull request; the merge runs once every question is answered.
++        </p>
++      </details>
++      <details className="wd-details">
++        <summary>Workflow id and reads</summary>
++        <p className="wd-mono">{wf.workflow_id}</p>
++        <p className="wd-dim">{wf.steps.length} of {wf.steps.length} steps read · state derived from its steps</p>
++      </details>
++      <div className="wd-row">
++        <Button size="sm" kind="danger">Stop workflow</Button>
++        <Button size="sm" kind="ghost">Copy link</Button>
++      </div>
++    </div>
++  )
++}
++
++function Loading({ data }: { data: WorkData }) {
++  return <p className="wd-dim">{data.status === 'error' ? `Not read: ${data.why}` : 'Reading the agents and workflows…'}</p>
++}
++
++export const DIRECTION_D: DirectionScreens = { agents: DAgents, agent: DAgent, workflows: DWorkflows, workflow: DWorkflow }
+diff --git a/apps/swarm-ui/src/workredesign/D/d.css b/apps/swarm-ui/src/workredesign/D/d.css
+new file mode 100644
+index 0000000..0b1cf03
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/D/d.css
+@@ -0,0 +1,276 @@
++/* MOCK-HOOK FILE -- work-redesign mock-ups only. Direction D: the graph with a docked inspector. */
++
++/* The page: main column | handle | dock, each scrolling on its own, one viewport tall. */
++.wd { --wd-dock: 440px; display: grid; grid-template-columns: minmax(0, 1fr) 9px minmax(0, var(--wd-dock)); /* 93px: the reads footer (29) and the page's own padding (16 + 48), so the page itself never scrolls (fix-d, finding 5). */ height: calc(100dvh - 93px); min-height: 480px; min-width: 0; max-width: 100%; }
++.wd.is-folded { grid-template-columns: minmax(0, 1fr); }
++.wd-main { min-width: 0; overflow: auto; padding-right: var(--ctl-s3); container-type: inline-size; container-name: wdmain; }
++.wd-handle { cursor: col-resize; position: relative; touch-action: none; }
++.wd-handle::before { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--line); }
++.wd-handle::after { content: ''; position: absolute; top: 50%; left: 2px; width: 5px; height: 36px; margin-top: -18px; border-radius: 3px; background: var(--line); }
++.wd-handle:hover::before, .wd-handle:focus-visible::before { background: var(--info); width: 2px; }
++.wd-dock { min-width: 0; overflow: auto; padding-left: var(--ctl-s2); container-type: inline-size; container-name: wddock; }
++
++.wd-col { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; padding-bottom: var(--ctl-s4); }
++.wd-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
++.wd-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); min-width: 0; }
++.wd-h1 { font: 600 var(--t-title) / 1.2 var(--font); margin: 0; color: var(--text); }
++.wd-h2 { font: 600 var(--t-body) / 1.3 var(--font); margin: 0; color: var(--text); }
++.wd-h3 { font: 600 var(--t-meta) / 1.3 var(--font); margin: var(--ctl-s2) 0 0; color: var(--text); display: flex; gap: var(--ctl-s1); align-items: center; }
++.wd-dim { color: var(--text-dim); font-size: var(--t-meta); }
++.wd-mono { font-family: var(--mono); font-size: var(--t-meta); overflow-wrap: anywhere; }
++.wd-grow { flex: 1 1 auto; }
++.wd-trunc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.wd-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
++.wd-n { display: inline-grid; place-items: center; min-width: 22px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--surface-2); font: 600 var(--t-meta) / 1 var(--font); color: var(--text); }
++.wd-ok { color: var(--ok-ink, var(--ok)); }
++.wd-bad { color: var(--bad-ink, var(--bad)); }
++.wd-run { color: var(--info-ink, var(--info)); }
++.wd-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); vertical-align: middle; }
++.wd-dot.is-live { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
++.wd-figs { display: inline-flex; gap: var(--ctl-s3); font-size: var(--t-body); font-variant-numeric: tabular-nums; }
++.wd-figs > span:not(:last-child)::after { content: ''; }
++
++/* Needs you: one line of counted chips; amber edge when anything waits. */
++.wd-needs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); padding: 6px var(--ctl-s2); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
++.wd-needs.has-some { border-color: var(--s-park); border-left-width: 4px; }
++.wd-needs.is-on { background: var(--s-parkb, var(--surface)); }
++.wd-needs-btn { border: 0; background: none; padding: 0 var(--ctl-s1) 0 0; font: inherit; color: var(--text); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
++.wd-needs-n { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--s-park); color: var(--surface); font-weight: 700; font-size: var(--t-meta); }
++.wd-needlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s2); }
++.wd-needlist li { border: 1px solid var(--line); border-radius: var(--radius); padding: var(--ctl-s2); background: var(--surface); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
++.wd-needlist li.is-failed { border-left: 4px solid var(--s-bad); }
++.wd-needlist li.is-question, .wd-needlist li.is-merge, .wd-needlist li.is-handoff { border-left: 4px solid var(--s-park); }
++.wd-need-top { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
++.wd-need-text { margin: 0; font-size: var(--t-meta); color: var(--text); line-height: 1.4; }
++
++/* Tools: search and filters on one line. */
++.wd-tools { display: flex; flex-wrap: wrap; gap: var(--ctl-s2); align-items: center; }
++.wd-search { flex: 1 1 220px; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--ctl-bd, var(--line)); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); }
++.wd-sel { height: 32px; padding: 0 6px; border: 1px solid var(--ctl-bd, var(--line)); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); max-width: 100%; }
++
++/* The dense table: one line per row. */
++.wd-tablewrap { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
++.wd-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); font-variant-numeric: tabular-nums; table-layout: auto; }
++.wd-table th { position: sticky; top: 0; z-index: 1; text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 8px; background: var(--surface-2); border-bottom: 1px solid var(--line); white-space: nowrap; }
++.wd-table td { padding: 4px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; height: 34px; vertical-align: middle; }
++.wd-table tbody tr { cursor: pointer; }
++.wd-table tbody tr:hover { background: var(--surface-2); }
++.wd-table tbody tr.is-picked { background: color-mix(in srgb, var(--info) 14%, var(--surface)); box-shadow: inset 3px 0 0 var(--info); }
++.wd-table .wdc-name { max-width: 1px; width: 100%; overflow: hidden; text-overflow: ellipsis; }
++.wd-table .wdc-name > * { vertical-align: middle; }
++.wd-table .wdc-name .c-chip { margin-left: 6px; }
++.wd-table .wdc-cost, .wd-table .wdc-att, .wd-table .wdc-time { text-align: right; }
++.wd-table th.wdc-cost, .wd-table th.wdc-att, .wd-table th.wdc-time { text-align: right; }
++.wd-table .wdc-time { max-width: 13em; overflow: hidden; text-overflow: ellipsis; }
++.wd-table .wdc-pic { width: 52px; padding-right: 0; }
++.wd-wftable .wdc-name { min-width: 10em; }
++@container wdmain (max-width: 700px) { .wd-wftable .wdc-time { display: none; } }
++.wd-rowlink { border: 0; background: none; padding: 0; font: inherit; color: var(--text); cursor: pointer; text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.wd-rowlink:hover { color: var(--info); text-decoration: underline; }
++.wd-thumb { display: block; width: 44px; height: 27px; object-fit: cover; object-position: top left; border-radius: 3px; border: 1px solid var(--line); background: #f5f7fa; }
++.wd-thumb.is-none { display: grid; place-items: center; color: var(--text-dim); background: var(--surface-2); }
++.wd-pr { font-family: var(--mono); font-size: var(--t-meta); color: var(--info); text-decoration: none; }
++.wd-pr.is-merged { color: var(--text-dim); }
++.wd-foot { margin: 0; padding: 6px 8px; }
++.wd-prog { display: inline-flex; width: 120px; height: 8px; border-radius: 4px; overflow: hidden; background: var(--surface-2); vertical-align: middle; gap: 1px; }
++.wd-prog i { display: block; flex-basis: 0; min-width: 3px; }
++.wd-prog .is-done { background: var(--ok); }
++.wd-prog .is-failed { background: var(--bad); }
++.wd-prog .is-running { background: var(--info); }
++.wd-prog .is-waiting { background: var(--line); }
++.wd-prog .is-other { background: var(--text-faint, var(--text-dim)); }
++.wd-num { margin-left: 6px; }
++.wd-mark { display: inline-block; margin-right: 8px; font-weight: 600; }
++.wd-mark.is-bad { color: var(--bad-ink, var(--bad)); }
++.wd-mark.is-park { color: var(--paused-ink, var(--s-park)); }
++
++/* Columns give way as the main column narrows (the dock widened). */
++@container wdmain (max-width: 640px) { .wd-table .wdc-owner, .wd-table .wdc-att, .wd-table .wdc-pr { display: none; } }
++@container wdmain (max-width: 540px) { .wd-table .wdc-cost, .wd-table .wdc-live { display: none; } .wd-legend { display: none !important; } }
++@container wdmain (max-width: 480px) { .wd-table .wdc-time, .wd-table .wdc-prog .wd-num { display: none; } .wd-prog { width: 70px; } }
++
++/* The dock. */
++.wd-dock-body { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; padding-bottom: var(--ctl-s4); }
++.wd-dock-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: var(--ctl-s2); padding: 2px 0 var(--ctl-s2); background: var(--bg); border-bottom: 1px solid var(--line-soft); min-width: 0; }
++.wd-dock-title { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; flex: 1 1 auto; }
++.wd-x { border: 1px solid var(--line); background: var(--surface); color: var(--text); width: 28px; height: 28px; border-radius: var(--ctl-radius-sm, 6px); font-size: 18px; line-height: 1; cursor: pointer; flex: none; }
++.wd-dock-step { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; }
++.wd-dock-ctx { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: var(--ctl-s2); padding: 2px 0 6px; background: var(--bg); border-bottom: 1px solid var(--line-soft); min-width: 0; font-size: var(--t-meta); }
++.wd-back { border: 0; background: none; padding: 0; font: inherit; color: var(--info); cursor: pointer; white-space: nowrap; }
++.wd-step-nav { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: var(--ctl-radius-sm, 6px); height: 26px; padding: 0 8px; font: inherit; font-size: var(--t-meta); cursor: pointer; white-space: nowrap; }
++.wd-step-nav:disabled { opacity: .45; cursor: default; }
++/* The console's agent panel, drawn inside the dock rather than over the page. */
++.wd-agent { min-width: 0; }
++.wd-agent .drawer.ag-split { position: relative; top: auto; right: auto; bottom: auto; left: auto; width: 100%; max-width: 100%; max-height: none; z-index: auto; box-shadow: none; border: 0; padding: 0; background: transparent; }
++.wd-agent .ag-divider, .wd-agent .ag-scrim { display: none; }
++
++/* Browser stills. */
++.wd-wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--ctl-s2); }
++.wd-wall.is-small { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
++.wd-still { margin: 0; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
++.wd-still-pic { position: relative; display: block; padding: 0; width: 100%; aspect-ratio: 16 / 10; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: #f5f7fa; overflow: hidden; cursor: pointer; }
++.wd-still.is-picked .wd-still-pic { outline: 2px solid var(--info); outline-offset: 1px; }
++.wd-still-pic img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
++.wd-still-live { position: absolute; top: 5px; left: 5px; background: var(--surface); border-radius: 999px; padding: 0 6px; font-size: 12px; }
++.wd-still-turn { position: absolute; top: 5px; right: 5px; }
++.wd-still figcaption { display: flex; gap: var(--ctl-s1); align-items: baseline; min-width: 0; font-size: var(--t-meta); color: var(--text); }
++.wd-still figcaption .wd-trunc { flex: 1 1 auto; font-weight: 600; }
++.wd-still.is-big .wd-still-pic { aspect-ratio: 16 / 10; }
++.wd-bigwrap { display: flex; flex-direction: column; gap: var(--ctl-s1); }
++
++/* Tally chips: icon, figure, word. */
++.wd-tally { gap: var(--ctl-s1) var(--ctl-s3); font-size: var(--t-meta); }
++.wd-t { white-space: nowrap; color: var(--text-dim); }
++.wd-t b { color: var(--text); font-size: var(--t-body); }
++.wd-t.is-running { color: var(--info-ink, var(--info)); }
++.wd-t.is-done { color: var(--ok-ink, var(--ok)); }
++.wd-t.is-failed { color: var(--bad-ink, var(--bad)); }
++.wd-viewbar { justify-content: space-between; }
++.wd-legend { display: inline-flex; flex-wrap: wrap; gap: var(--ctl-s2); }
++.wd-legend > span { white-space: nowrap; }
++
++/* The matrix: a row per stage, a column per feature. */
++.wd-matrix { --wd-cols: 10; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
++.wd-mrow { display: grid; grid-template-columns: 6.5em repeat(var(--wd-cols), minmax(0, 1fr)); gap: 4px; align-items: stretch; }
++.wd-mrow.is-head { align-items: end; }
++.wd-colhead { font-size: var(--t-meta); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2px; }
++.wd-stage { display: flex; flex-direction: column; justify-content: center; gap: 1px; font-size: var(--t-meta); color: var(--text); min-width: 0; }
++.wd-stage-n { display: flex; gap: 5px; flex-wrap: wrap; font-size: 12px; }
++.wd-cell { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 1px; min-width: 0; min-height: 46px; padding: 4px 6px; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
++.wd-cell:hover { border-color: var(--info); }
++.wd-cell.is-running { border-color: color-mix(in srgb, var(--info) 60%, var(--line)); background: color-mix(in srgb, var(--info) 8%, var(--surface)); }
++.wd-cell.is-succeeded { background: color-mix(in srgb, var(--ok) 9%, var(--surface)); }
++.wd-cell.is-failed { border-color: var(--s-bad); border-width: 2px; background: var(--s-badb, var(--surface)); }
++.wd-cell.is-waiting, .wd-cell.is-unstarted { border-style: dashed; background: transparent; color: var(--text-dim); }
++.wd-cell.is-parked { border-color: var(--s-park); }
++.wd-cell.is-picked { outline: 2px solid var(--info); outline-offset: 1px; z-index: 1; }
++.wd-cell.is-dimmed { opacity: .35; }
++.wd-cell-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.wd-cell-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; min-width: 0; font-variant-numeric: tabular-nums; }
++.wd-cell-mark { display: inline-flex; }
++.wd-cell-time { font-weight: 600; }
++.wd-cell-pr { font-family: var(--mono); color: var(--text-dim); font-size: 12px; }
++.wd-wait { color: var(--text-dim); }
++.wd-ask { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--s-park); color: var(--surface); font-weight: 700; font-size: 12px; line-height: 1; box-shadow: 0 0 0 2px var(--bg); }
++.wd-ask.is-inline { position: static; display: inline-grid; box-shadow: none; width: 16px; height: 16px; }
++.wd-cell-live { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
++.wd-matrix.is-mini .wd-mrow { grid-template-columns: 5.5em repeat(var(--wd-cols), minmax(0, 1fr)); gap: 3px; }
++.wd-cell.is-mini { min-height: 18px; padding: 0; }
++.wd-matrix.is-mini .wd-ask { width: 14px; height: 14px; font-size: 12px; top: -5px; right: -5px; }
++.wd-matrix.is-mini .wd-colhead { font-size: 12px; writing-mode: vertical-rl; transform: rotate(180deg); max-height: 6em; justify-self: center; }
++@container wdmain (max-width: 700px) { .wd-cell-pr { display: none; } .wd-mrow { grid-template-columns: 5.5em repeat(var(--wd-cols), minmax(0, 1fr)); } }
++@container wdmain (max-width: 560px) {
++  .wd-cell { min-height: 34px; padding: 2px 4px; align-items: center; }
++  .wd-cell-time { display: none; }
++  .wd-colhead { writing-mode: vertical-rl; transform: rotate(180deg); max-height: 6.5em; justify-self: center; }
++}
++.wd-flow { display: flex; flex-direction: column; gap: 4px; }
++.wd-flow-row { display: flex; gap: 4px; align-items: stretch; }
++.wd-flow-row .wd-stage { width: 2em; }
++.wd-flow-row .wd-cell { flex: 0 1 180px; }
++.wd-after { margin: 0; }
++.wd-embed { min-width: 0; }
++
++/* The workflow overview. */
++.wd-ov { display: flex; flex-direction: column; gap: var(--ctl-s2); }
++.wd-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px var(--ctl-s3); margin: 0; font-size: var(--t-meta); }
++.wd-dl dt { color: var(--text-dim); }
++.wd-dl dd { margin: 0; color: var(--text); }
++.wd-details { border-top: 1px solid var(--line-soft); padding-top: 6px; font-size: var(--t-meta); }
++.wd-details summary { cursor: pointer; color: var(--text); }
++.wd-details p { margin: 6px 0 0; line-height: 1.45; }
++
++/* The phone: one column; the inspector is a sheet over the page once something is picked. */
++@media (max-width: 720px) {
++  .wd { display: block; height: auto; min-height: 0; }
++  .wd-main { overflow: visible; padding-right: 0; }
++  .wd-handle { display: none; }
++  .wd-dock { display: none; }
++  .wd.is-sheet .wd-dock { display: block; position: fixed; inset: 56px 0 0 0; z-index: 40; background: var(--bg); padding: var(--ctl-s2); border-top: 1px solid var(--line); box-shadow: var(--ctl-shadow-pop); }
++  .wd-tools .wd-sel { flex: 1 1 40%; }
++  .wd-table thead { display: none; }
++  .wd-table td { height: 40px; }
++  .wd-figs { font-size: var(--t-meta); gap: var(--ctl-s2); }
++  .wd-viewbar .c-seg { max-width: 100%; overflow-x: auto; }
++}
++/* The live strip under the matrix: every running browser of the workflow, small. */
++.wd-strip { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; }
++.wd-strip-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: var(--ctl-s2); }
++
++/* The merge: one line under the matrix, amber while it waits on Bogdan. */
++.wd-merge { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); padding: 6px var(--ctl-s2); border: 1px solid var(--line); border-left: 4px solid var(--s-park); border-radius: var(--radius); background: var(--surface); min-width: 0; font-size: var(--t-meta); }
++/* The agent panel fills the dock's height, so the live picture sizes to the dock, not to its own content. */
++.wd-dock > .wd-agent { height: 100%; }
++.wd-dock-step { height: 100%; }
++.wd-dock-step > .wd-agent { flex: 1 1 auto; min-height: 0; }
++.wd-agent .drawer.ag-split { height: 100%; }
++.wd-agent .drawer.ag-split:focus, .wd-agent .drawer.ag-split:focus-visible { outline: none; }
++/* A narrow list beside a wide inspector: name and state only; the needs bar keeps its total. */
++@container wdmain (max-width: 420px) {
++  .wd-table .wdc-pic, .wd-table .wdc-time, .wd-table .wdc-cost, .wd-table .wdc-live, .wd-table .wdc-need { display: none; }
++  .wd-tools .wd-sel, .wd-tools .c-chip { flex: 1 1 40%; }
++  .wd-head .c-seg { max-width: 100%; overflow-x: auto; }
++}
++@container wdmain (max-width: 700px) { .wd-prog { width: 72px; } }
++@container wdmain (max-width: 620px) { .wd-table .wdc-live { display: none; } }
++@container wdmain (max-width: 420px) { .wd-pre { display: none; } }
++/* A narrow bar keeps every kind with its word and count: it wraps to more lines, never drops one (fix-d, finding 13). */
++/* The phone keeps each row's picture and time; the state shrinks to its mark's pill. */
++@media (max-width: 720px) {
++  .wd-table td.wdc-pic, .wd-table td.wdc-time { display: table-cell !important; }
++  .wd-table td.wdc-time { font-size: 12px; }
++  .wd-table td { padding: 4px 6px; }
++}
++.wd-stage-n[role=button] { cursor: pointer; }
++/* Table, Steps over time and Changes are the console's own views; their page header and tabs are already drawn above. */
++.wd-embed .c-phead, .wd-embed .c-count-note, .wd-embed .wfp-head, .wd-embed .wfp > .c-tabs { display: none; }
++
++/* fix-d: what needs Bogdan, as a mark and a word (design-system §6.6): sans, no border, no radius. */
++.wd-need { display: inline-flex; align-items: baseline; gap: 4px; border: 0; background: none; padding: 2px 4px; font: 400 var(--t-meta) / 1.3 var(--font); color: var(--text); cursor: pointer; }
++.wd-need b { font-weight: 600; font-variant-numeric: tabular-nums; }
++.wd-need:hover { text-decoration: underline; }
++.wd-need-glyph { display: none; font-weight: 700; }
++.wd-need.is-failed .wd-need-glyph, .wd-needlist .is-failed .wd-need-glyph { color: var(--bad-ink, var(--bad)); }
++.wd-need.is-question .wd-need-glyph, .wd-need.is-merge .wd-need-glyph, .wd-need.is-handoff .wd-need-glyph { color: var(--paused-ink, var(--s-park)); }
++.wd-need::before { content: ''; align-self: center; width: 8px; height: 8px; border-radius: 50%; background: var(--paused-ink, var(--s-park)); flex: none; }
++.wd-need.is-failed::before { background: var(--bad-ink, var(--bad)); }
++.wd-need.is-faint { color: var(--text-dim); cursor: default; }
++.wd-need.is-faint::before { background: var(--line); }
++.wd-need.is-faint:hover { text-decoration: none; }
++.wd-needlist .wd-need { cursor: default; padding: 0; font-weight: 600; }
++.wd-needlist .wd-need::before { display: none; }
++.wd-needlist .wd-need .wd-need-glyph { display: inline; }
++.wd-needlist .wd-need:hover { text-decoration: none; }
++/* Browsers only: a plain checkbox in the tools row. */
++.wd-check { display: inline-flex; align-items: center; gap: 6px; font: 400 var(--t-meta) / 1.3 var(--font); color: var(--text); cursor: pointer; white-space: nowrap; }
++/* A row's name truncates; its marks (your turn, question, silent) keep their place, on the phone too (finding 1). */
++.wd-namecell { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
++.wd-namecell > .wd-rowlink { flex: 0 1 auto; min-width: 0; }
++.wd-namecell > .wd-mark, .wd-namecell > .wd-note { flex: none; margin-right: 0; white-space: nowrap; }
++.wd-namecell > .wd-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
++/* The browser still: "your turn" as a mark on a light plate; the large still has its own address strip (findings 3, 16). */
++.wd-still-turn { background: var(--surface); color: var(--paused-ink, var(--s-park)); border-radius: 4px; padding: 0 6px; font: 600 12px / 20px var(--font); }
++.wd-still-addr { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; padding: 2px 0; }
++.wd-still-live.is-inline { position: static; background: none; padding: 0; }
++/* The inspector's beat age (G15). */
++.wd-beat { margin: 0 0 4px; font-size: var(--t-meta); color: var(--text-dim); }
++.wd-beat.is-bad { color: var(--bad-ink, var(--bad)); }
++/* The merge line names the pull requests it waits on whole; only the reason may shorten (finding 11). */
++.wd-merge-prs { flex: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
++/* The Browser tab's live mark in lowercase, as everywhere else (finding 4). */
++.wd-agent .ag-tabs-edge button em { text-transform: lowercase; }
++/* The beat line sits above the agent panel; the panel takes the rest of the height. */
++.wd-agent { display: flex; flex-direction: column; min-height: 0; }
++.wd-agent > .drawer.ag-split { height: auto; flex: 1 1 auto; min-height: 0; }
++.wd-namecell > .wd-pre { flex: 0 1000 auto; min-width: 2em; }
++/* Waiting, grouped by why: a header row per reason with its count (A13). */
++.wd-table tr.wd-group td { background: var(--surface-2, var(--bg)); font: 600 var(--t-meta) / 1.3 var(--font); color: var(--text); height: 30px; padding-top: 4px; padding-bottom: 4px; }
++.wd-table tr.wd-group td .wd-dim { font-weight: 400; margin-left: 6px; }
++/* The log bar's labels in words in the inspector ("No error matched", never "0 err ln"); the bar wraps to a second line instead (finding 18). */
++.wd-agent .ag-logs-bar { flex-wrap: wrap; row-gap: 6px; }
++.wd-agent .ag-logs-bar .ag-logs-short { display: none !important; }
++.wd-agent .ag-logs-bar .ag-logs-long { display: inline; position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
++/* The inspector's tabs packed as the console packs them on a phone, so Overview, Browser, Logs, Changes and Attempts
++   stay tabs at the step inspector's width too, as in the agent's own view (finding 14 of fix-d: Changes under More). */
++.wd-agent .c-tabs.ag-split-tabs { gap: 0; }
++.wd-agent .c-tabs.ag-split-tabs > a, .wd-agent .c-tabs.ag-split-tabs > button, .wd-agent .ag-tabs-more { padding-inline: 8px; gap: 4px; }
+diff --git a/apps/swarm-ui/src/workredesign/WorkRedesign.tsx b/apps/swarm-ui/src/workredesign/WorkRedesign.tsx
+new file mode 100644
+index 0000000..ddefda1
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/WorkRedesign.tsx
+@@ -0,0 +1,49 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only. The entry App renders for the Work section when ?wa is set.
++//
++// A direction registers its four screens in DIRECTIONS under its letter; a
++// letter with nothing registered falls back to the scaffold (base) and says so.
++import { useState, type ComponentType } from 'react'
++
++import type { AgentList } from '../agentlist'
++import { BaseAgent, BaseAgents, BaseWorkflow, BaseWorkflows, type BaseProps } from './base'
++import { useWorkData, type WorkAt } from './parts'
++import { DIRECTION_D } from './D/DirectionD' // MOCK-HOOK: direction D
++import { WORK_SWITCHES, type WorkDirection, type WorkScreen } from './switches'
++
++export type DirectionScreens = Readonly<Record<WorkScreen, ComponentType<BaseProps>>>
++
++const BASE: DirectionScreens = { agents: BaseAgents, agent: BaseAgent, workflows: BaseWorkflows, workflow: BaseWorkflow }
++
++/** Each direction's screens. A direction adds one line here: `a: DIRECTION_A,`. */
++export const DIRECTIONS: Partial<Record<WorkDirection, DirectionScreens>> = {
++  base: BASE,
++  d: DIRECTION_D, // MOCK-HOOK: direction D
++}
++
++export function WorkRedesign({ go, list, onList }: { go: (to: string) => void; list: AgentList | null; onList: (list: AgentList) => void }) {
++  const wa = WORK_SWITCHES.wa ?? 'base'
++  const screens = DIRECTIONS[wa] ?? BASE
++  const [at, setAt] = useState<WorkAt>({ screen: WORK_SWITCHES.ws, id: WORK_SWITCHES.wid })
++  // A move inside the mock-up starts the new screen at rest.
++  const [wst, setWst] = useState(WORK_SWITCHES.wst)
++  const data = useWorkData()
++  const Screen = screens[at.screen]
++  return (
++    <div className="wr-root" data-wa={wa} data-ws={at.screen} data-wst={wst}>
++      {DIRECTIONS[wa] === undefined && <p className="wr-dim">Direction {wa} has no screens yet: showing the scaffold.</p>}
++      <Screen
++        data={data}
++        at={at}
++        nav={(to) => {
++          setAt(to)
++          setWst('rest')
++          if (typeof window !== 'undefined') window.scrollTo(0, 0)
++        }}
++        wst={wst}
++        go={go}
++        list={list}
++        onList={onList}
++      />
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/workredesign/base.tsx b/apps/swarm-ui/src/workredesign/base.tsx
+new file mode 100644
+index 0000000..668debe
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/base.tsx
+@@ -0,0 +1,195 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only. ?wa=base: the scaffold's plain, neutral layout.
++//
++// Each screen places every feature of features.md once: the console's own
++// screens (AgentsScreen, AgentSplit, WorkflowsScreen) carry the features they
++// have today, untouched, and the parts in parts.tsx add what the goals ask
++// for and today's screens do not draw (the needs-you strip, the browser wall,
++// the stage grid). A direction copies this file and rearranges.
++import { useState } from 'react'
++
++import type { TaskPane } from '../App'
++import { AgentSplit } from '../AgentSplit'
++import { AgentsScreen } from '../Agents'
++import { Breadcrumb, Chip, StatePill } from '../components'
++import type { AgentList } from '../agentlist'
++import { WorkflowsScreen } from '../Workflows'
++import { HARD_WF, HARD_WF_TITLE, hardTaskId } from './fixtures'
++import {
++  BrowserStill, BrowserWall, NeedsYou, Region, StageGrid, ageWords, splitCounts, useNeeds, workflowSpend,
++  type WorkAt, type WorkData, type WorkNav,
++} from './parts'
++import type { WorkState } from './switches'
++
++/** The agent the agent screen shows when the address names none: build-contacts, a running browser agent. */
++export const DEFAULT_AGENT = hardTaskId('build', 'contacts')
++
++export type BaseProps = {
++  data: WorkData
++  at: WorkAt
++  nav: WorkNav
++  wst: WorkState
++  /** The console's router, for anything outside the Work section. */
++  go: (to: string) => void
++  list: AgentList | null
++  onList: (list: AgentList) => void
++}
++
++function Loading({ data }: { data: WorkData }) {
++  return <p className="wr-dim">{data.status === 'error' ? `Not read: ${data.why}` : 'Reading the agents and workflows…'}</p>
++}
++
++/** An inline agent: the console's AgentSplit, its tab clicks kept inside the mock-up. */
++function InlineAgent({ taskId, pane, nav, go }: { taskId: string; pane: TaskPane; nav: WorkNav; go: (to: string) => void }) {
++  const [shown, setShown] = useState<TaskPane>(pane)
++  const base = `work/task/${encodeURIComponent(taskId)}`
++  const inner = (to: string) => {
++    if (to.startsWith(base)) {
++      const rest = to.slice(base.length).replace(/^\//, '').split('/')[0]
++      setShown((rest === '' ? 'detail' : rest) as TaskPane)
++      return
++    }
++    const other = /^work\/task\/([^/]+)/.exec(to)
++    if (other) return nav({ screen: 'agent', id: decodeURIComponent(other[1] ?? '') })
++    if (to.startsWith('work/running') || to === '/agents') return nav({ screen: 'agents', id: null })
++    go(to)
++  }
++  return (
++    <div className="wr-inline-agent">
++      <AgentSplit key={taskId} taskId={taskId} pane={shown} artifact={null} closeTo="work/running" go={inner} base={base} />
++    </div>
++  )
++}
++
++export function BaseAgents({ data, nav, wst, go, list, onList }: BaseProps) {
++  const needs = useNeeds(data)
++  if (data.status !== 'ok') return <Loading data={data} />
++  const c = splitCounts(data.tasks)
++  return (
++    <div className="wr-page">
++      <div className="wr-row wr-counts">
++        <Chip tone="live">Live <b>{c.live}</b></Chip>
++        <span className="wr-dim">of them browsers <b>{c.browsers}</b></span>
++        <Chip tone="park">Waiting <b>{c.waiting}</b></Chip>
++        <Chip>Recent <b>{c.recent}</b></Chip>
++      </div>
++      <NeedsYou items={needs} open={wst === 'needs'} nav={nav} />
++      <BrowserWall tasks={data.tasks} nav={nav} large={wst === 'watch' ? DEFAULT_AGENT : null} />
++      <div className={wst === 'open' ? 'wr-split' : undefined}>
++        <Region title="Agents" note="The console’s list: search, filters, Live / Waiting / Recent">
++          <AgentsScreen onOpen={(id: string) => nav({ screen: 'agent', id })} list={list} onList={onList} />
++        </Region>
++        {wst === 'open' && <InlineAgent taskId={DEFAULT_AGENT} pane="detail" nav={nav} go={go} />}
++      </div>
++    </div>
++  )
++}
++
++export function BaseAgent({ data, at, nav, wst, go }: BaseProps) {
++  const id = at.id ?? DEFAULT_AGENT
++  const task = data.status === 'ok' ? data.taskById.get(id) ?? null : null
++  const pane: TaskPane = wst === 'logs' ? 'logs' : wst === 'watch' ? 'browser' : 'detail'
++  return (
++    <div className="wr-page">
++      <Breadcrumb
++        crumbs={[
++          { key: 'agents', label: 'Agents', href: '/agents' },
++          ...(task?.workflow_id ? [{ key: 'wf', label: String(task.metadata?.title ?? task.workflow_id), href: `/workflows/${task.workflow_id}` }] : []),
++          { key: 'agent', label: task?.step_id ?? id, href: null },
++        ]}
++        onGo={(href) => (href === '/agents' ? nav({ screen: 'agents', id: null }) : nav({ screen: 'workflow', id: task?.workflow_id ?? null }))}
++      />
++      {task && (
++        <div className="wr-row">
++          <StatePill state={task.state} />
++          <span className="wr-mono">{task.id}</span>
++          <span className="wr-dim">started {ageWords(task.started_at)} ago</span>
++        </div>
++      )}
++      <div className="wr-split">
++        {task && task.runner_profile === 'claude-code-browser' && task.state === 'RUNNING' && (
++          <BrowserStill task={task} nav={nav} size="large" />
++        )}
++        <InlineAgent key={`${id}:${pane}`} taskId={id} pane={pane} nav={nav} go={go} />
++      </div>
++    </div>
++  )
++}
++
++export function BaseWorkflows({ data, nav, wst }: BaseProps) {
++  const needs = useNeeds(data)
++  const [view, setView] = useState('')
++  if (data.status !== 'ok') return <Loading data={data} />
++  const by = (s: string) => data.workflows.filter((w) => w.state === s).length
++  return (
++    <div className="wr-page">
++      <div className="wr-row wr-counts">
++        <Chip tone="live">Running <b>{by('RUNNING')}</b></Chip>
++        <Chip tone="park">Parked <b>{by('PARKED')}</b></Chip>
++        <Chip tone="bad">Failed <b>{by('FAILED')}</b></Chip>
++        <Chip>Done <b>{by('SUCCEEDED')}</b></Chip>
++      </div>
++      <NeedsYou items={needs} open={wst === 'needs'} nav={nav} />
++      <Region title="Workflows" note="The console’s board: search, filters, sort, stage cards">
++        <WorkflowsScreen
++          view={view}
++          onView={(v) => {
++            const wf = new URLSearchParams(v).get('wf')
++            if (wf) nav({ screen: 'workflow', id: wf })
++            else setView(v)
++          }}
++        />
++      </Region>
++    </div>
++  )
++}
++
++export function BaseWorkflow({ data, at, nav, wst }: BaseProps) {
++  const id = at.id ?? HARD_WF
++  const needs = useNeeds(data, id)
++  const [view, setView] = useState(`wf=${encodeURIComponent(id)}`)
++  const [step, setStep] = useState<string | null>(wst === 'open' ? 'build-invoices' : null)
++  if (data.status !== 'ok') return <Loading data={data} />
++  const w = data.workflows.find((x) => x.workflow_id === id)
++  if (w === undefined) return <p className="wr-dim">No workflow {id} in this dataset.</p>
++  const steps = w.steps.map((s) => (s.task_id ? data.taskById.get(s.task_id) : undefined))
++  const n = (pred: (t: (typeof steps)[number]) => boolean) => steps.filter(pred).length
++  const stepTasks = steps.filter((t): t is NonNullable<typeof t> => t !== undefined)
++  const sel = step === null ? null : w.steps.find((s) => s.step_id === step) ?? null
++  const selTask = sel?.task_id ? data.taskById.get(sel.task_id) ?? null : null
++  return (
++    <div className="wr-page">
++      <Breadcrumb crumbs={[{ key: 'wfs', label: 'Workflows', href: '/workflows' }, { key: 'wf', label: id === HARD_WF ? HARD_WF_TITLE : id, href: null }]} onGo={() => nav({ screen: 'workflows', id: null })} />
++      <div className="wr-row wr-counts">
++        <StatePill state={w.state as 'RUNNING'} />
++        <Chip tone="live">Running <b>{n((t) => t?.state === 'RUNNING')}</b></Chip>
++        <Chip tone="park">Waiting <b>{n((t) => t?.state === 'PARKED' || t?.state === 'QUEUED' || t?.state === 'READY' || t === undefined)}</b></Chip>
++        <Chip>Done <b>{n((t) => t?.state === 'SUCCEEDED')}</b></Chip>
++        <Chip tone="bad">Failed <b>{n((t) => t?.state === 'FAILED')}</b></Chip>
++        <span className="wr-dim">spent <b>{workflowSpend(w, data.taskById)}</b></span>
++      </div>
++      <NeedsYou items={needs} open={wst === 'needs' || wst === 'rest'} nav={nav} />
++      <div className={sel ? 'wr-split' : undefined}>
++        <Region title="Steps by stage" note={`${w.steps.length} steps; click one`}>
++          <StageGrid workflow={w} taskById={data.taskById} nav={nav} selected={step} onSelect={(s) => setStep((x) => (x === s ? null : s))} />
++        </Region>
++        {sel && (
++          <Region title={sel.step_id} note={selTask ? selTask.state.toLowerCase() : 'not started'}>
++            {selTask ? (
++              <div className="wr-col">
++                <button type="button" className="ctl-link" onClick={() => nav({ screen: 'agent', id: selTask.id })}>Open its agent</button>
++                {selTask.last_error && <p className="wr-bad">{selTask.last_error}</p>}
++                {selTask.runner_profile === 'claude-code-browser' && selTask.state === 'RUNNING' && <BrowserStill task={selTask} nav={nav} />}
++              </div>
++            ) : (
++              <p className="wr-dim">Waiting on {sel.depends_on.join(', ') || 'nothing'}.</p>
++            )}
++          </Region>
++        )}
++      </div>
++      <BrowserWall tasks={stepTasks} nav={nav} large={wst === 'watch' ? DEFAULT_AGENT : null} />
++      <Region title="Workflow" note="The console’s page: Graph / Table / Steps over time / Changes, policy, stop, reads">
++        <WorkflowsScreen view={view} onView={setView} />
++      </Region>
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/workredesign/fixtures.ts b/apps/swarm-ui/src/workredesign/fixtures.ts
+new file mode 100644
+index 0000000..a41df88
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/fixtures.ts
+@@ -0,0 +1,636 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only (LANE WORK-REDESIGN-MOCKUPS, 2026-11-02). Never committed.
++//
++// THE WORK SECTION'S MOCK DATASET. Invented data only: people at example.com,
++// repositories `northwind-crm` and `roombook`. When `mockWorkOn()` is true
++// (the fixture dev server, outside vitest, unless `?wfx=off`), api.ts's
++// `fixtureTaskRows()` and `fixtureWorkflowRows()` answer from here instead, so
++// every existing loader -- the Agents list, one agent, attempts, events, the
++// Workflows board, one workflow -- serves the same rows, and today's pages and
++// the redesign directions render the same data.
++//
++// THE HARD CASE, `wf_design_picks_build` ("design-picks-build"): 40 steps in
++// 4 stages of 10 (build, review, fix, re-review, one per feature). The brief's
++// counts (10 running, 25 waiting, 5 done, 1 failed) add to 41, and a chain per
++// feature holds at most one active step per feature: 10 running plus 1 failed is
++// 11 active in 10 chains, so a review would have to run after its failed build.
++// This file keeps the brief's 5 done, 1 failed and 25 waiting and draws 9 running
++// browser agents (5 + 1 + 9 + 25 = 40; fix-d, verdict finding 7); and the 2 owner questions are asked by two
++// finished build steps and hold the workflow's merge task (a 41st task of the
++// workflow, profile `merge`, PARKED HUMAN_REQUIRED, park_phase owner_questions),
++// which is also the "merge waiting". One pull request per started step.
++import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
++
++/**
++ * The instant mock times count from: the page's own clock at load, to the minute. NOT api.ts's
++ * FIXTURE_CLOCK: a page on a running clock drew every mock agent as "13 d 16 h" old, which a
++ * layout review cannot read past. Ages and states are deterministic; the wall-clock times are not.
++ */
++export const MOCK_NOW = Math.floor(Date.now() / 60_000) * 60_000
++const at = (minsAgo: number) => new Date(MOCK_NOW - minsAgo * 60_000).toISOString()
++
++function param(name: string): string | null {
++  if (typeof window === 'undefined') return null
++  return new URLSearchParams(window.location.search).get(name)
++}
++
++/** Read ONCE at load, so the app's own canonical rewrite of the address cannot drop a switch mid-session. */
++const WFX = param('wfx')
++
++/** Whether the work-redesign dataset replaces the Work section's fixtures. */
++export function mockWorkOn(): boolean {
++  return import.meta.env.DEV && !import.meta.env.VITE_LIVE && import.meta.env.MODE !== 'test' && WFX !== 'off'
++}
++
++export const MOCK_TENANT = 'u-bogdan'
++export const PEOPLE = {
++  bogdan: 'bogdan@example.com',
++  ana: 'ana.moreau@example.com',
++  kenji: 'kenji.sato@example.com',
++  lea: 'lea.fontaine@example.com',
++  ravi: 'ravi.iyer@example.com',
++} as const
++const OWNERS = [PEOPLE.bogdan, PEOPLE.ana, PEOPLE.kenji, PEOPLE.lea, PEOPLE.ravi]
++
++export const HARD_WF = 'wf_design_picks_build'
++export const HARD_WF_TITLE = 'design-picks-build'
++export const HARD_MERGE_TASK = 'task_dpb_merge'
++export const HARD_STAGES = ['build', 'review', 'fix', 're-review'] as const
++export const HARD_FEATURES = [
++  'login', 'search', 'calendar', 'invoices', 'contacts', 'reports', 'settings', 'booking', 'export', 'onboarding',
++] as const
++export const HARD_SPENT_USD = 13.52
++
++const REPOS = ['https://github.com/example-org/northwind-crm', 'https://github.com/example-org/roombook']
++
++/** A step id of the hard case: `<stage>-<feature>`, stage `re-review` included. */
++export const hardStepId = (stage: string, feature: string) => `${stage}-${feature}`
++export const hardTaskId = (stage: string, feature: string) => `task_dpb_${stage.replace('-', '')}_${feature}`
++
++// --------------------------------------------------------------------------
++// One task, shaped as api.ts's fixture `mk` shapes it
++// --------------------------------------------------------------------------
++
++function mk(id: string, state: TaskState, profile: string, minsAgo: number, extra: Partial<Task> = {}): Task {
++  const terminal = state === 'SUCCEEDED' || state === 'FAILED' || state === 'CANCELLED'
++  const admitted = !(state === 'QUEUED' || state === 'READY' || state === 'SUBMITTED')
++  const live = state === 'LEASED' || state === 'DISPATCHED' || state === 'STARTING' || state === 'RUNNING'
++  const task = {
++    id,
++    tenant_id: MOCK_TENANT,
++    state,
++    runner_profile: profile,
++    resource_class: profile === 'claude-code-browser' ? 'browser' : 'standard',
++    provider: 'anthropic',
++    priority: 0,
++    created_at: at(minsAgo + 6),
++    updated_at: at(terminal ? minsAgo : Math.max(0, Math.min(minsAgo, 2))),
++    started_at: admitted ? at(minsAgo + 4) : null,
++    completed_at: terminal ? at(minsAgo) : null,
++    submitted_by: PEOPLE.bogdan,
++    attempt_count: admitted ? 1 : 0,
++    max_attempts: 3,
++    park_reason: null,
++    blocked_by: null,
++    workflow_id: null,
++    step_id: null,
++    depends_on: null,
++    cancel_requested: false,
++    repository_url: REPOS[0],
++    model: 'claude-opus-5',
++    timeout_seconds: 3600,
++    next_eligible_at: null,
++    metadata: null,
++    repository_ref: 'main',
++    current_generation: admitted ? 1 : 0,
++    current_lease_id: live ? `lease_${id.replace('task_', '')}` : null,
++    dispatch: { strategy: 'direct-pr', carrier: 'checkpoints', role: null, integrates: [] },
++    input: null,
++    last_error: state === 'FAILED' ? 'exit status 1: CI check "e2e / chromium" failed on the pull request' : null,
++    result_summary: state === 'SUCCEEDED' ? { artifacts: 2, checkpoints: 3 } : null,
++    latest_checkpoint: null,
++    // A lease's heartbeat (Agents.tsx silentWorkerLine, the inspector's beat age) and the child
++    // fields served, so the Children tab is offered (fix-d, verdict findings 9 and 12).
++    heartbeat: live ? 'read' : 'no lease',
++    heartbeat_at: live ? at(0.4) : null,
++    heartbeat_grace_seconds: live ? 120 : null,
++    parent_task_id: null,
++    ...extra,
++  }
++  return task as unknown as Task
++}
++
++// --------------------------------------------------------------------------
++// The hard case: design-picks-build
++// --------------------------------------------------------------------------
++
++type HardShape = { state: TaskState | null; minsAgo: number; question?: string; costUsd: number }
++
++/** Each step's state, by stage then feature index. null: not started (waiting on an earlier step). */
++function hardShape(stage: number, f: number): HardShape {
++  // build: login, search, calendar succeeded; invoices FAILED (red check); the other six running.
++  if (stage === 0) {
++    if (f < 3) {
++      return {
++        state: 'SUCCEEDED', minsAgo: 40 - f * 6, costUsd: [1.12, 0.98, 1.31][f] ?? 0,
++        question: f === 1 ? 'The search design pick shows filters in a side panel; the brief says a top bar. Which one ships?'
++          : f === 2 ? 'Calendar: week view by default, or month view as in the second pick?' : undefined,
++      }
++    }
++    if (f === 3) return { state: 'FAILED', minsAgo: 18, costUsd: 1.46 }
++    return { state: 'RUNNING', minsAgo: 1, costUsd: [0.71, 0.66, 0.58, 0.49, 0.44, 0.39][f - 4] ?? 0 }
++  }
++  // review: login, search succeeded; calendar running. review-invoices waits on its failed build: a step never
++  // runs after the step it depends on failed (fix-d, verdict finding 7).
++  if (stage === 1) {
++    if (f === 0) return { state: 'SUCCEEDED', minsAgo: 12, costUsd: 0.62 }
++    if (f === 1) return { state: 'SUCCEEDED', minsAgo: 6, costUsd: 0.41 }
++    if (f === 2) return { state: 'RUNNING', minsAgo: 1, costUsd: 0.37 }
++    return { state: null, minsAgo: 0, costUsd: 0 }
++  }
++  // fix: login, search running.
++  if (stage === 2 && f === 0) return { state: 'RUNNING', minsAgo: 1, costUsd: 0.33 }
++  if (stage === 2 && f === 1) return { state: 'RUNNING', minsAgo: 1, costUsd: 0.27 }
++  return { state: null, minsAgo: 0, costUsd: 0 }
++}
++// Spend check: 1.12+0.98+1.31+1.46+0.71+0.66+0.58+0.49+0.44+0.39+0.62+0.41+0.37+0.33+0.27 = 10.14;
++// the merge task and the attempts' own usage are not summed here. HARD_SPENT_USD is the brief's figure
++// for the workflow header; MOCK_SPEND below spreads the remaining 3.38 over earlier attempts.
++const MOCK_EARLIER_ATTEMPTS_USD = 3.38
++
++function hardTasks(): Task[] {
++  const out: Task[] = []
++  HARD_STAGES.forEach((stage, si) => {
++    HARD_FEATURES.forEach((feature, f) => {
++      const shape = hardShape(si, f)
++      const stepId = hardStepId(stage, feature)
++      const id = hardTaskId(stage, feature)
++      const deps = si === 0 ? [] : [hardStepId(HARD_STAGES[si - 1]!, feature)]
++      const common: Partial<Task> = {
++        workflow_id: HARD_WF,
++        step_id: stepId,
++        depends_on: deps,
++        submitted_by: PEOPLE.bogdan,
++        repository_url: REPOS[f % 2],
++        metadata: { title: HARD_WF_TITLE },
++        input: { prompt: `${stage} the ${feature} screen from the picked design, in a browser, and open a pull request.` },
++      }
++      if (shape.state === null) {
++        out.push(mk(id, 'PARKED', 'claude-code-browser', 30, {
++          ...common,
++          park_reason: 'DEPENDENCY_INCOMPLETE',
++          attempt_count: 0,
++          current_generation: 0,
++          started_at: null,
++          waiting: { reason: 'DEPENDENCY_INCOMPLETE', summary: `Waiting on 1 earlier step: ${deps[0]}` },
++        } as Partial<Task>))
++        return
++      }
++      const pr = 2400 + si * 10 + f
++      const prState = shape.state === 'SUCCEEDED' ? 'merged' : 'open'
++      const failedCheck = shape.state === 'FAILED'
++      out.push(mk(id, shape.state, 'claude-code-browser', shape.minsAgo, {
++        ...common,
++        cost_usd_total: shape.costUsd > 0 ? shape.costUsd : null,
++        cost_incomplete: shape.state === 'RUNNING',
++        attempts: 1,
++        attempts_with_cost: shape.costUsd > 0 ? 1 : 0,
++        browser_used: true,
++        result_summary: {
++          ...(shape.state === 'SUCCEEDED' ? { artifacts: 2, checkpoints: 3 } : {}),
++          git: {
++            pull_request: { number: pr, url: `https://github.com/example-org/${f % 2 ? 'roombook' : 'northwind-crm'}/pull/${pr}`, state: prState, created: true },
++            checks: failedCheck ? { passed: 6, failed: 1, pending: 0, failed_names: ['e2e / chromium'] } : undefined,
++          },
++        },
++        owner_answers: shape.question
++          ? [{ question_index: 0, question: shape.question, history: [], choice: null, text: null, by: null, at: null }]
++          : undefined,
++      } as Partial<Task>))
++    })
++  })
++  // The merge, held by the two build steps' questions (Handoff.tsx ownerQuestionsHold).
++  out.push(mk(HARD_MERGE_TASK, 'PARKED', 'merge', 9, {
++    workflow_id: HARD_WF,
++    step_id: null,
++    submitted_by: PEOPLE.bogdan,
++    park_reason: 'HUMAN_REQUIRED',
++    metadata: { title: `${HARD_WF_TITLE} merge` },
++    blocked_by: [{
++      reason: 'HUMAN_REQUIRED',
++      park_phase: 'owner_questions',
++      owner_questions: {
++        unreadable: 0,
++        questions: [1, 2].map((f) => ({
++          task_id: hardTaskId('build', HARD_FEATURES[f]!),
++          step_id: hardStepId('build', HARD_FEATURES[f]!),
++          question_index: 0,
++          question: hardShape(0, f).question,
++        })),
++      },
++    }],
++    waiting: { reason: 'HUMAN_REQUIRED', summary: 'Merge held: 2 owner questions are not answered' },
++  } as Partial<Task>))
++  return out
++}
++
++// --------------------------------------------------------------------------
++// The rest of the Agents list: 34 live (18 browsers), 86 waiting, 110 recent
++// --------------------------------------------------------------------------
++
++const TOPICS = [
++  'Fix flaky invoice export', 'Add contact merge', 'Upgrade booking API client', 'Audit room permissions',
++  'Translate onboarding emails', 'Speed up search index', 'Check signup form on phones', 'Rename CRM fields',
++  'Write reports smoke test', 'Patch calendar timezone bug', 'Review accessibility of settings', 'Clean old feature flags',
++]
++const WAIT_REASONS: Array<{ reason: string; summary: string; park: string | null; state: TaskState }> = [
++  { reason: 'QUEUED', summary: 'In line for a standard runner: 4th of 9', park: null, state: 'QUEUED' },
++  { reason: 'READY_CAPACITY', summary: 'tenant:u-bogdan 20/20 units: waiting for a slot', park: null, state: 'READY' },
++  { reason: 'PROVIDER_QUOTA_EXHAUSTED', summary: 'Claude plan quota used up; resumes 13:10', park: 'PROVIDER_QUOTA_EXHAUSTED', state: 'PARKED' },
++  { reason: 'CI_PENDING', summary: 'CI on PR #2391: 5 checks pending; next check 12:04', park: 'CI_PENDING', state: 'PARKED' },
++  { reason: 'SCHEDULED_RETRY', summary: 'Retry 2 of 3 at 12:06 after "pytest collected 2 failures"', park: 'SCHEDULED_RETRY', state: 'PARKED' },
++  { reason: 'AWAITING_INPUT', summary: 'Asked the owner a question 14 minutes ago', park: 'AWAITING_INPUT', state: 'PARKED' },
++]
++const LIVE_STATES: TaskState[] = ['RUNNING', 'RUNNING', 'RUNNING', 'STARTING', 'DISPATCHED', 'LEASED']
++const RECENT_STATES: TaskState[] = ['SUCCEEDED', 'SUCCEEDED', 'SUCCEEDED', 'SUCCEEDED', 'FAILED', 'CANCELLED']
++
++function hex(n: number): string {
++  // Deterministic, id-shaped: 8 hex digits from n.
++  let x = (n + 1) * 2654435761
++  x = (x ^ (x >>> 15)) >>> 0
++  return x.toString(16).padStart(8, '0').slice(0, 8)
++}
++
++function otherTasks(): Task[] {
++  const out: Task[] = []
++  // Live: 15 more, 5 of them browsers (with the hard case's 9 and the 10 running steps of the small
++  // running workflows, 4 of them browsers: 34 live and 18 browsers).
++  for (let i = 0; i < 15; i += 1) {
++    const browser = i < 5
++    const state = browser ? (i === 4 ? 'STARTING' : 'RUNNING') : LIVE_STATES[i % LIVE_STATES.length]
++    const extra: Partial<Task> = {
++      submitted_by: OWNERS[i % OWNERS.length],
++      repository_url: REPOS[i % 2],
++      metadata: { title: `${TOPICS[i % TOPICS.length]}${browser ? ' (browser)' : ''}` },
++      cost_usd_total: state === 'RUNNING' ? Math.round((0.2 + (i % 7) * 0.31) * 100) / 100 : null,
++      cost_incomplete: true,
++      browser_used: browser ? true : null,
++    }
++    // One agent's worker has gone quiet past its grace: the "silent" mark (A14).
++    if (i === 11) Object.assign(extra, { heartbeat_at: at(6) })
++    // One browser agent is on its second attempt (A10).
++    if (i === 3) Object.assign(extra, { attempt_count: 2 })
++    // One browser agent asks for a person at its browser: a hand-off (Handoff.tsx).
++    if (i === 2) {
++      Object.assign(extra, {
++        human_wait: { reason: 'Sign in to the staging admin with a two-factor code', expect: 'admin.roombook.example.com',
++          requested_at: at(3), deadline: at(-27), controller: null },
++      })
++    }
++    out.push(mk(`task_${hex(i)}`, state as TaskState, browser ? 'claude-code-browser' : 'claude-code', 2 + i, extra))
++  }
++  // Waiting: 30 more (with the hard case's 25, its merge task and the small workflows' 30 waiting steps, 86 waiting).
++  for (let i = 0; i < 30; i += 1) {
++    // One is a parked hand-off: nobody took the browser in time, so it waits for "I'm ready" (G12).
++    const w = i === 5
++      ? { reason: 'HUMAN_REQUIRED', summary: 'Hand-off parked: nobody took the browser in time', park: 'HUMAN_REQUIRED', state: 'PARKED' as TaskState }
++      : WAIT_REASONS[i % WAIT_REASONS.length]!
++    out.push(mk(`task_${hex(100 + i)}`, w.state, i % 5 === 0 ? 'claude-code-browser' : 'claude-code', 8 + i * 3, {
++      submitted_by: OWNERS[i % OWNERS.length],
++      repository_url: REPOS[i % 2],
++      park_reason: w.park,
++      next_eligible_at: w.state === 'PARKED' ? at(-6) : null,
++      metadata: { title: i === 5 ? 'Sign in to the roombook admin (browser)' : TOPICS[(i + 3) % TOPICS.length] },
++      waiting: { reason: w.reason, summary: w.summary },
++      attempt_count: w.state === 'PARKED' ? 1 : 0,
++      current_generation: w.state === 'PARKED' ? 1 : 0,
++      started_at: w.state === 'PARKED' ? at(10 + i * 3) : null,
++    } as Partial<Task>))
++  }
++  // Recent: 110 finished over the last two days.
++  for (let i = 0; i < 110; i += 1) {
++    const state = RECENT_STATES[i % RECENT_STATES.length]!
++    out.push(mk(`task_${hex(300 + i)}`, state, i % 4 === 0 ? 'claude-code-browser' : 'claude-code', 50 + i * 25, {
++      submitted_by: OWNERS[i % OWNERS.length],
++      repository_url: REPOS[i % 2],
++      metadata: { title: TOPICS[(i + 5) % TOPICS.length] },
++      cost_usd_total: Math.round((0.15 + (i % 11) * 0.27) * 100) / 100,
++      cost_incomplete: false,
++      attempts: 1,
++      attempts_with_cost: 1,
++      browser_used: i % 4 === 0,
++    } as Partial<Task>))
++  }
++  return out
++}
++
++// --------------------------------------------------------------------------
++// Workflows: the hard case and 39 more across running, parked, failed, done
++// --------------------------------------------------------------------------
++
++const WF_NAMES = [
++  'nightly-crm-audit', 'roombook-a11y-sweep', 'invoice-export-fix', 'contacts-dedupe', 'search-speedup',
++  'release-notes-draft', 'pricing-page-qa', 'calendar-tz-fix', 'onboarding-copy', 'reports-smoke',
++]
++
++/** Small workflows' step tasks: a chain of 3, states chosen by the workflow's bucket. */
++function smallWorkflows(): { workflows: Workflow[]; tasks: Task[] } {
++  const workflows: Workflow[] = []
++  const tasks: Task[] = []
++  const BUCKETS: Array<{ wf: string; steps: TaskState[] }> = [
++    { wf: 'RUNNING', steps: ['SUCCEEDED', 'RUNNING', 'QUEUED'] },
++    { wf: 'PARKED', steps: ['SUCCEEDED', 'PARKED', 'QUEUED'] },
++    { wf: 'FAILED', steps: ['SUCCEEDED', 'FAILED', 'CANCELLED'] },
++    { wf: 'SUCCEEDED', steps: ['SUCCEEDED', 'SUCCEEDED', 'SUCCEEDED'] },
++  ]
++  for (let i = 0; i < 39; i += 1) {
++    const bucket = BUCKETS[i % 4]!
++    const id = `wf_${hex(700 + i)}${hex(800 + i)}`
++    const title = `${WF_NAMES[i % WF_NAMES.length]}${i >= WF_NAMES.length ? `-${Math.floor(i / WF_NAMES.length) + 1}` : ''}`
++    const stepIds = ['plan', 'do', 'check']
++    const minsAgo = 30 + i * 70
++    const steps: WorkflowStep[] = stepIds.map((s, k) => {
++      const tid = `task_${hex(900 + i * 3 + k)}`
++      const st = bucket.steps[k]!
++      // A running workflow's middle step is RUNNING, so its step bar has a running segment; these ten
++      // count among the Agents list's 34 live (fix-d, verdict finding 15).
++      const state: TaskState = st
++      tasks.push(mk(tid, state, k === 1 && i % 3 === 0 ? 'claude-code-browser' : 'claude-code', state === 'RUNNING' ? 12 + i : minsAgo - k * 10, {
++        workflow_id: id, step_id: s, depends_on: k === 0 ? [] : [stepIds[k - 1]],
++        submitted_by: OWNERS[i % OWNERS.length], metadata: { title },
++        repository_url: REPOS[i % 2],
++        park_reason: state === 'PARKED' ? 'CI_PENDING' : null,
++        waiting: state === 'PARKED' ? { reason: 'CI_PENDING', summary: 'CI on the pull request: 3 checks pending' }
++          : state === 'QUEUED' ? { reason: 'DEPENDENCY_INCOMPLETE', summary: `Waiting on 1 earlier step: ${stepIds[k - 1]}` } : undefined,
++        cost_usd_total: state === 'SUCCEEDED' || state === 'FAILED' ? Math.round((0.4 + k * 0.2 + (i % 7) * 0.13) * 100) / 100
++          : state === 'RUNNING' ? Math.round((0.15 + (i % 5) * 0.07) * 100) / 100 : null,
++        cost_incomplete: state === 'RUNNING' ? true : undefined,
++      } as Partial<Task>))
++      return {
++        step_id: s, runner_profile: 'claude-code', resource_class: 'standard',
++        depends_on: k === 0 ? [] : [stepIds[k - 1]], input_from: {}, timeout_seconds: 3600, task_id: tid,
++        input: { prompt: `${s} for ${title}` },
++      } as WorkflowStep
++    })
++    workflows.push(wfDoc(id, bucket.wf, steps, OWNERS[i % OWNERS.length]!, at(minsAgo + 6), at(Math.max(1, minsAgo - 25))))
++  }
++  return { workflows, tasks }
++}
++
++function wfDoc(id: string, state: string, steps: WorkflowStep[], by: string, created: string, updated: string,
++  extra: Partial<Workflow> = {}): Workflow {
++  return {
++    workflow_id: id,
++    tenant_id: MOCK_TENANT,
++    state,
++    stored_state: state,
++    state_source: 'derived',
++    rollup: {
++      state, complete: true, reason: null, counts: {}, unreadable_steps: [],
++      unstarted_steps: steps.filter((s) => !s.task_id).map((s) => s.step_id), steps_read: steps.length,
++    },
++    drift: { stored: state, derived: state, agrees: true, reason: null, steps_read: steps.length, unreadable_steps: [], repaired: false },
++    created_at: created,
++    updated_at: updated,
++    submitted_by: by,
++    priority: 0,
++    on_step_failure: 'CONTINUE',
++    cancel_requested: false,
++    steps,
++    ...extra,
++  } as unknown as Workflow
++}
++
++function hardWorkflow(): Workflow {
++  const steps: WorkflowStep[] = []
++  HARD_STAGES.forEach((stage, si) => {
++    HARD_FEATURES.forEach((feature) => {
++      const deps = si === 0 ? [] : [hardStepId(HARD_STAGES[si - 1]!, feature)]
++      steps.push({
++        step_id: hardStepId(stage, feature),
++        runner_profile: 'claude-code-browser',
++        resource_class: 'browser',
++        depends_on: deps,
++        input_from: si === 0 ? {} : { [deps[0]!]: 'report.md' },
++        timeout_seconds: 5400,
++        task_id: hardTaskId(stage, feature),
++        input: { prompt: `${stage} the ${feature} screen from the picked design, in a browser, and open a pull request.` },
++      } as WorkflowStep)
++    })
++  })
++  return wfDoc(HARD_WF, 'RUNNING', steps, PEOPLE.bogdan, at(52), at(1), {
++    after_pull_requests: { pull_requests: [2401, 2402], state: 'waiting' } as unknown as Workflow['after_pull_requests'],
++  })
++}
++
++// --------------------------------------------------------------------------
++// What api.ts reads
++// --------------------------------------------------------------------------
++
++let cache: { tasks: Task[]; workflows: Workflow[] } | null = null
++
++function build(): { tasks: Task[]; workflows: Workflow[] } {
++  if (cache !== null) return cache
++  const small = smallWorkflows()
++  const tasks = [...hardTasks(), ...otherTasks(), ...small.tasks]
++  const byId = new Map(tasks.map((t) => [t.id, t]))
++  const workflows = [hardWorkflow(), ...small.workflows].map((w) => {
++    const counts: Record<string, number> = {}
++    for (const st of w.steps) {
++      const key = !st.task_id ? 'unstarted' : (byId.get(st.task_id)?.state ?? 'unreadable')
++      counts[key] = (counts[key] ?? 0) + 1
++    }
++    return { ...w, rollup: w.rollup ? { ...w.rollup, counts } : w.rollup } as Workflow
++  })
++  cache = { tasks, workflows }
++  return cache
++}
++
++/** Every mock task: the hard case's 41, 24 live, 30 waiting, 110 recent, and 117 small-workflow steps. */
++export function mockTaskRows(): Task[] {
++  return build().tasks
++}
++
++/** Every mock workflow: the hard case first, then 39 across running, parked, failed and done. */
++export function mockWorkflowRows(): Workflow[] {
++  return build().workflows
++}
++
++export const MOCK_SPEND = { workflowUsd: HARD_SPENT_USD, earlierAttemptsUsd: MOCK_EARLIER_ATTEMPTS_USD }
++
++/** Whether a mock task has a live browser session (a RUNNING browser agent). */
++export function mockLiveTask(taskId: string): boolean {
++  if (!mockWorkOn()) return false
++  const t = build().tasks.find((x) => x.id === taskId)
++  return t !== undefined && t.runner_profile === 'claude-code-browser' && t.state === 'RUNNING'
++}
++
++const PRESETS = ['desktop', 'desktop', 'iphone-15', 'desktop', 'ipad-7', 'desktop', 'pixel-8'] as const
++
++/** The device a mock browser agent's session reports, deterministic per id. */
++export function mockDevice(taskId: string): { preset: string; orientation: 'portrait' | 'landscape'; touch: boolean } {
++  const preset = PRESETS[stillIndex(taskId) % PRESETS.length]!
++  const mobile = preset !== 'desktop'
++  return { preset, orientation: mobile && preset !== 'ipad-7' ? 'portrait' : preset === 'ipad-7' ? 'portrait' : 'landscape', touch: mobile }
++}
++
++// --------------------------------------------------------------------------
++// The browser agents' still images: a plausible page per agent, as SVG
++// --------------------------------------------------------------------------
++
++function stillIndex(taskId: string): number {
++  let h = 0
++  for (const c of taskId) h = (h * 31 + c.charCodeAt(0)) >>> 0
++  return h
++}
++
++const KINDS = ['form', 'table', 'dashboard', 'calendar', 'login', 'kanban'] as const
++export type StillKind = (typeof KINDS)[number]
++
++export function stillKind(taskId: string): StillKind {
++  // The hard case draws the page its feature names, so a wall of them reads as different screens.
++  const f = HARD_FEATURES.findIndex((x) => taskId.endsWith(`_${x}`) && taskId.startsWith('task_dpb_'))
++  if (f >= 0) return (['login', 'table', 'calendar', 'table', 'form', 'dashboard', 'form', 'calendar', 'table', 'kanban'] as const)[f]!
++  return KINDS[stillIndex(taskId) % KINDS.length]!
++}
++
++const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
++
++function stillBody(kind: StillKind, w: number, h: number, seed: number): string {
++  const r = (i: number) => ((seed >>> (i % 24)) % 7) / 7
++  const parts: string[] = []
++  const rect = (x: number, y: number, ww: number, hh: number, fill: string, rx = 4) =>
++    parts.push(`<rect x="${x}" y="${y}" width="${ww}" height="${hh}" rx="${rx}" fill="${fill}"/>`)
++  const text = (x: number, y: number, s: string, size = 14, fill = '#1f2933', weight = 400) =>
++    parts.push(`<text x="${x}" y="${y}" font-family="Inter, Arial, sans-serif" font-size="${size}" font-weight="${weight}" fill="${fill}">${esc(s)}</text>`)
++  const top = 56
++  if (kind === 'login') {
++    const cx = w / 2 - 170
++    rect(cx, 150, 340, 330, '#ffffff', 10)
++    text(cx + 30, 200, 'Sign in to Northwind CRM', 20, '#111827', 600)
++    text(cx + 30, 245, 'Email', 13, '#4b5563'); rect(cx + 30, 255, 280, 38, '#f3f4f6')
++    text(cx + 42, 279, 'ana.moreau@example.com', 13, '#374151')
++    text(cx + 30, 320, 'Password', 13, '#4b5563'); rect(cx + 30, 330, 280, 38, '#f3f4f6')
++    rect(cx + 30, 395, 280, 42, '#2563eb', 6); text(cx + 140, 421, 'Sign in', 15, '#ffffff', 600)
++  } else if (kind === 'table') {
++    text(32, top + 44, 'Invoices', 22, '#111827', 600)
++    rect(w - 180, top + 22, 148, 34, '#2563eb', 6); text(w - 160, top + 44, 'New invoice', 14, '#fff', 600)
++    const cols = ['Number', 'Customer', 'Due', 'Amount', 'Status']
++    rect(32, top + 72, w - 64, 36, '#eef2f7', 0)
++    cols.forEach((c, i) => text(48 + i * ((w - 96) / 5), top + 95, c, 13, '#4b5563', 600))
++    for (let row = 0; row < 12; row += 1) {
++      const y = top + 108 + row * 40
++      if (y > h - 40) break
++      rect(32, y, w - 64, 40, row % 2 ? '#ffffff' : '#fafbfc', 0)
++      const vals = [`INV-${1040 + row}`, ['Kenji Sato', 'Ana Moreau', 'Roombook Ltd', 'Lea Fontaine'][row % 4] ?? '', `Oct ${10 + row}`,
++        `$${(120 + row * 37 + Math.round(r(row) * 90)).toFixed(2)}`, row % 3 === 0 ? 'Overdue' : 'Paid']
++      vals.forEach((v: string, i: number) => text(48 + i * ((w - 96) / 5), y + 25, v, 13, i === 4 && row % 3 === 0 ? '#b91c1c' : '#1f2933'))
++    }
++  } else if (kind === 'dashboard') {
++    text(32, top + 44, 'Reports', 22, '#111827', 600)
++    const cw = (w - 64 - 48) / 4
++    ;['Revenue', 'New contacts', 'Bookings', 'Churn'].forEach((label, i) => {
++      rect(32 + i * (cw + 16), top + 68, cw, 92, '#ffffff', 8)
++      text(48 + i * (cw + 16), top + 96, label, 13, '#6b7280')
++      text(48 + i * (cw + 16), top + 136, ['$48.2k', '312', '1,094', '2.1%'][i] ?? '', 26, '#111827', 600)
++    })
++    rect(32, top + 180, w - 64, h - top - 220, '#ffffff', 8)
++    const bars = 18
++    const bw = (w - 128) / bars
++    for (let i = 0; i < bars; i += 1) {
++      const bh = 40 + ((seed >>> (i % 20)) % 9) * 22
++      rect(64 + i * bw, h - 70 - bh, bw * 0.6, bh, '#60a5fa', 2)
++    }
++  } else if (kind === 'calendar') {
++    text(32, top + 44, 'Roombook: October', 22, '#111827', 600)
++    const gw = (w - 64) / 7
++    const gh = (h - top - 110) / 5
++    ;['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach((d, i) => text(40 + i * gw, top + 80, d, 13, '#6b7280', 600))
++    for (let i = 0; i < 35; i += 1) {
++      const x = 32 + (i % 7) * gw
++      const y = top + 92 + Math.floor(i / 7) * gh
++      rect(x + 2, y + 2, gw - 4, gh - 4, '#ffffff', 4)
++      text(x + 10, y + 22, String((i % 31) + 1), 12, '#9ca3af')
++      if ((seed >>> (i % 23)) % 4 === 0) { rect(x + 8, y + 32, gw - 20, 20, '#c7d2fe', 4); text(x + 14, y + 46, 'Room A', 12, '#3730a3') }
++    }
++  } else if (kind === 'kanban') {
++    text(32, top + 44, 'Onboarding', 22, '#111827', 600)
++    const cw = (w - 64 - 32) / 3
++    ;['To do', 'Doing', 'Done'].forEach((c, i) => {
++      rect(32 + i * (cw + 16), top + 68, cw, h - top - 100, '#eef2f7', 8)
++      text(48 + i * (cw + 16), top + 94, c, 14, '#374151', 600)
++      for (let k = 0; k < 4 - i; k += 1) {
++        rect(44 + i * (cw + 16), top + 110 + k * 76, cw - 24, 64, '#ffffff', 6)
++        text(56 + i * (cw + 16), top + 136 + k * 76, TOPICS[(seed + i * 3 + k) % TOPICS.length]!.slice(0, 26), 13)
++      }
++    })
++  } else {
++    text(32, top + 44, 'New contact', 22, '#111827', 600)
++    ;['Full name', 'Email', 'Company', 'Phone', 'Notes'].forEach((label, i) => {
++      text(32, top + 90 + i * 72, label, 13, '#4b5563')
++      rect(32, top + 100 + i * 72, Math.min(520, w - 64), i === 4 ? 60 : 38, '#ffffff')
++      const v = ['Kenji Sato', 'kenji.sato@example.com', 'Northwind', '', ''][i]
++      if (v) text(44, top + 124 + i * 72, v, 13, '#1f2933')
++    })
++    rect(32, top + 470, 120, 40, '#2563eb', 6); text(62, top + 495, 'Save', 15, '#fff', 600)
++  }
++  return parts.join('')
++}
++
++const stillCache = new Map<string, string>()
++
++/** A data: URL of the still image drawn where the live canvas goes, or null when the task has no live browser. */
++export function mockStillUrl(taskId: string, mobile = false): string | null {
++  if (!mockLiveTask(taskId)) return null
++  const key = `${taskId}:${mobile}`
++  const hit = stillCache.get(key)
++  if (hit !== undefined) return hit
++  const [w, h] = mobile ? [393, 852] : [1440, 900]
++  const seed = stillIndex(taskId)
++  const kind = stillKind(taskId)
++  // The still is the page only, never browser chrome: its address is the Browser tab's own strip
++  // (mockOrigin), so it is drawn once (fix-d, verdict findings 3 and 16).
++  const site = taskId.startsWith('task_dpb_') ? 'Northwind CRM' : 'Roombook'
++  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`
++    + `<rect width="${w}" height="${h}" fill="#f5f7fa"/>`
++    + `<rect width="${w}" height="44" fill="#ffffff"/><rect y="44" width="${w}" height="1" fill="#e5e7eb"/>`
++    + `<circle cx="22" cy="22" r="8" fill="#2563eb"/>`
++    + `<text x="40" y="27" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#111827">${site}</text>`
++    + stillBody(kind, w, h, seed)
++    + `</svg>`
++  const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
++  stillCache.set(key, url)
++  return url
++}
++
++/** The host a mock browser agent's page is on: the one address the Browser tab's strip and a large still show. */
++export function mockHost(taskId: string): string {
++  return taskId.startsWith('task_dpb_') ? 'staging.northwind-crm.example.com' : 'app.roombook.example.com'
++}
++
++/** The live session's reported origin for a mock browser agent, agreeing with mockHost. */
++export function mockOrigin(taskId: string): { origin: string; host: string; registrable_domain: string; scheme: string } {
++  const host = mockHost(taskId)
++  return { origin: `https://${host}`, host, registrable_domain: 'example.com', scheme: 'https:' }
++}
++
++/** The live session's browser tools (BrowserBadges.tsx): Playwright last used, Jev on, direct egress. */
++export function mockBrowserStatus(taskId: string): unknown {
++  return {
++    tool_selected: 'auto',
++    tools_available: ['playwright', 'dev-browser', 'jev'],
++    tool_last_used: { name: taskId.startsWith('task_dpb_') ? 'playwright' : 'jev', at: at(0.5) },
++    jev: { enabled: true, reason: null, key_scope: 'tenant' },
++    egress: { mode: 'direct', state: 'ok', country: null, last_error: null },
++  }
++}
++
++/** The parked hand-off's request event: its reason and host, read back by Handoff.tsx's useHandoffRequest (G12). */
++export function mockHandoffEvents(taskId: string): unknown[] {
++  if (!mockWorkOn()) return []
++  const t = mockTaskRows().find((x) => x.id === taskId)
++  if (!t || t.park_reason !== 'HUMAN_REQUIRED' || t.workflow_id) return []
++  return [{
++    type: 'human_handoff_requested', at: at(40), attempt_id: null, generation: 1,
++    detail: { reason: 'Sign in to the roombook admin with a two-factor code', expect: 'admin.roombook.example.com' },
++  }]
++}
+diff --git a/apps/swarm-ui/src/workredesign/parts.tsx b/apps/swarm-ui/src/workredesign/parts.tsx
+new file mode 100644
+index 0000000..2b898ab
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/parts.tsx
+@@ -0,0 +1,329 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only. Shared building blocks every direction can reuse.
++//
++// Everything reads through the console's own api.ts loaders, which the
++// work-redesign dataset (fixtures.ts) answers; nothing here calls a service.
++import { useEffect, useMemo, useState, type ReactNode } from 'react'
++
++import { loadTasks, loadWorkflowBoard } from '../api'
++import { Chip, Count, LiveChip, StatePill } from '../components'
++import { ownerQuestionsHold, handoffOf } from '../Handoff'
++import { CONCURRENCY_STATES, TERMINAL_STATES, WAITING_STATES, type Task, type Workflow } from '../types'
++import { MOCK_NOW, mockStillUrl, HARD_WF, HARD_SPENT_USD } from './fixtures'
++import type { WorkScreen } from './switches'
++import './workredesign.css'
++
++// --------------------------------------------------------------------------
++// Navigation inside the mock-up: one click, context kept
++// --------------------------------------------------------------------------
++
++/** Where a mock-up screen is: the screen and the agent or workflow it shows. */
++export type WorkAt = { screen: WorkScreen; id: string | null }
++export type WorkNav = (to: WorkAt) => void
++
++// --------------------------------------------------------------------------
++// The data every screen reads: the whole task list and the workflow board
++// --------------------------------------------------------------------------
++
++export type WorkData =
++  | { status: 'loading' }
++  | { status: 'error'; why: string }
++  | { status: 'ok'; tasks: Task[]; taskById: Map<string, Task>; workflows: Workflow[] }
++
++/** The Agents list's page and the Workflows board, read once. */
++export function useWorkData(): WorkData {
++  const [data, setData] = useState<WorkData>({ status: 'loading' })
++  useEffect(() => {
++    let live = true
++    void Promise.all([loadTasks(500, { view: 'summary' }), loadWorkflowBoard()]).then(([t, w]) => {
++      if (!live) return
++      if (t.status !== 'ok' || w.status !== 'ok') {
++        setData({ status: 'error', why: t.status === 'error' ? t.error.message : w.status === 'error' ? w.error.message : 'nothing was read' })
++        return
++      }
++      const tasks = t.data.tasks
++      setData({ status: 'ok', tasks, taskById: new Map(tasks.map((x) => [x.id, x])), workflows: w.data.workflows })
++    })
++    return () => {
++      live = false
++    }
++  }, [])
++  return data
++}
++
++/** The three lists' counts, as the Agents list splits them. */
++export function splitCounts(tasks: Task[]): { live: number; waiting: number; recent: number; browsers: number } {
++  let live = 0, waiting = 0, recent = 0, browsers = 0
++  for (const t of tasks) {
++    if (CONCURRENCY_STATES.has(t.state)) {
++      live += 1
++      if (t.runner_profile === 'claude-code-browser') browsers += 1
++    } else if (WAITING_STATES.has(t.state)) waiting += 1
++    else if (TERMINAL_STATES.has(t.state)) recent += 1
++  }
++  return { live, waiting, recent, browsers }
++}
++
++// --------------------------------------------------------------------------
++// What needs Bogdan: failed steps, owner questions, merges waiting, hand-offs, approvals
++// --------------------------------------------------------------------------
++
++export type NeedItem = {
++  kind: 'failed' | 'question' | 'merge' | 'handoff' | 'approval'
++  /** One line: what, where. */
++  label: string
++  taskId: string | null
++  workflowId: string | null
++}
++
++export const NEED_WORD: Readonly<Record<NeedItem['kind'], string>> = {
++  failed: 'Failed',
++  question: 'Question',
++  merge: 'Merge waiting',
++  handoff: 'Your turn in a browser',
++  approval: 'Approval',
++}
++
++/** Every item that waits on the owner, newest first, from the task list alone. */
++export function needsYou(tasks: Task[], workflowId: string | null = null): NeedItem[] {
++  const out: NeedItem[] = []
++  const inScope = (t: Task) => workflowId === null || t.workflow_id === workflowId
++  for (const t of tasks) {
++    if (!inScope(t)) continue
++    const hold = ownerQuestionsHold(t)
++    if (hold !== null) {
++      for (const q of hold.questions) {
++        out.push({ kind: 'question', label: `${q.step_id ?? q.task_id}: ${q.question ?? 'question not readable'}`, taskId: q.task_id, workflowId: t.workflow_id })
++      }
++      out.push({ kind: 'merge', label: `${t.metadata?.title ?? t.id}: held by ${hold.questions.length} questions`, taskId: t.id, workflowId: t.workflow_id })
++      continue
++    }
++    if (t.state === 'PARKED' && t.park_reason === 'AWAITING_INPUT') {
++      out.push({ kind: 'question', label: `${t.metadata?.title ?? t.id}: asked a question`, taskId: t.id, workflowId: t.workflow_id })
++    }
++    if (t.state === 'FAILED' && t.workflow_id !== null && t.workflow_id !== undefined) {
++      out.push({ kind: 'failed', label: `${t.step_id ?? t.id}: ${t.last_error ?? 'failed'}`, taskId: t.id, workflowId: t.workflow_id })
++    }
++    if (handoffOf(t) !== null) {
++      out.push({ kind: 'handoff', label: `${t.metadata?.title ?? t.id}: ${t.human_wait?.reason ?? 'asks for a person'}`, taskId: t.id, workflowId: t.workflow_id })
++    }
++  }
++  return out
++}
++
++/** The needs-you strip: counts per kind, then (open) one line per item. Approvals are not in this dataset and say so. */
++export function NeedsYou({ items, open, nav }: { items: NeedItem[]; open: boolean; nav: WorkNav }) {
++  const kinds: NeedItem['kind'][] = ['failed', 'question', 'merge', 'handoff']
++  return (
++    <section className="wr-needs" aria-label="Needs you">
++      <div className="wr-needs-head">
++        <h2 className="wr-h">Needs you</h2>
++        {kinds.map((k) => (
++          <Chip key={k} tone={k === 'failed' ? 'bad' : 'park'}>
++            {NEED_WORD[k]} <b>{items.filter((i) => i.kind === k).length}</b>
++          </Chip>
++        ))}
++        <Chip faint title="Approvals are read on Automate › Approvals; this mock-up's dataset has none to count.">
++          Approvals <b>not read here</b>
++        </Chip>
++      </div>
++      {open && (
++        <ul className="wr-needs-list">
++          {items.map((i, n) => (
++            <li key={n}>
++              <span className={`wr-need-kind is-${i.kind}`}>{NEED_WORD[i.kind]}</span>{' '}
++              {i.taskId !== null ? (
++                <button type="button" className="ctl-link" onClick={() => nav({ screen: 'agent', id: i.taskId })}>
++                  {i.label}
++                </button>
++              ) : (
++                i.label
++              )}
++              {i.workflowId && (
++                <>
++                  {' '}
++                  <button type="button" className="ctl-link wr-dim" onClick={() => nav({ screen: 'workflow', id: i.workflowId })}>
++                    workflow
++                  </button>
++                </>
++              )}
++            </li>
++          ))}
++        </ul>
++      )}
++    </section>
++  )
++}
++
++// --------------------------------------------------------------------------
++// Browser agents: the still image drawn where the live canvas goes
++// --------------------------------------------------------------------------
++
++/** One browser agent's picture, marked live as the console marks it, with its name under it. */
++export function BrowserStill({ task, nav, size = 'thumb' }: { task: Task; nav: WorkNav; size?: 'thumb' | 'large' }) {
++  const url = mockStillUrl(task.id)
++  return (
++    <figure className={`wr-still is-${size}`}>
++      <button type="button" className="wr-still-pic" onClick={() => nav({ screen: 'agent', id: task.id })} aria-label={`Open ${task.step_id ?? task.id}`}>
++        {url !== null ? <img src={url} alt={`${task.step_id ?? task.id}: still image of its browser page`} /> : <span className="wr-dim">No picture: not a live browser.</span>}
++        {url !== null && (
++          <span className="wr-still-live">
++            <LiveChip />
++          </span>
++        )}
++      </button>
++      <figcaption>
++        <span className="wr-mono">{task.step_id ?? task.id}</span>
++        {task.human_wait ? <Chip tone="park">your turn</Chip> : null}
++      </figcaption>
++    </figure>
++  )
++}
++
++/** Several browser agents at once; one of them large on demand. */
++export function BrowserWall({ tasks, nav, large = null }: { tasks: Task[]; nav: WorkNav; large?: string | null }) {
++  const [big, setBig] = useState<string | null>(large)
++  const live = tasks.filter((t) => t.runner_profile === 'claude-code-browser' && t.state === 'RUNNING')
++  const bigTask = live.find((t) => t.id === big) ?? null
++  return (
++    <section className="wr-wall" aria-label="Live browsers">
++      <div className="wr-row">
++        <h2 className="wr-h">Live browsers</h2>
++        <Count n={live.length} label="running browser agents" bare />
++      </div>
++      {bigTask && (
++        <div className="wr-wall-big">
++          <BrowserStill task={bigTask} nav={nav} size="large" />
++          <button type="button" className="ctl-link" onClick={() => setBig(null)}>Make it small again</button>
++        </div>
++      )}
++      <div className="wr-wall-grid">
++        {live.map((t) => (
++          <div key={t.id} className="wr-wall-cell">
++            <BrowserStill task={t} nav={nav} />
++            <button type="button" className="ctl-link" onClick={() => setBig(t.id)}>Watch large</button>
++          </div>
++        ))}
++      </div>
++    </section>
++  )
++}
++
++// --------------------------------------------------------------------------
++// A big workflow at a glance: one row per stage, one cell per step
++// --------------------------------------------------------------------------
++
++/** Each step's stage: the length of its longest chain of dependencies. */
++export function stagesOf(w: Workflow): string[][] {
++  const depth = new Map<string, number>()
++  const byId = new Map(w.steps.map((s) => [s.step_id, s]))
++  const d = (id: string, seen: Set<string>): number => {
++    const hit = depth.get(id)
++    if (hit !== undefined) return hit
++    if (seen.has(id)) return 0
++    seen.add(id)
++    const s = byId.get(id)
++    const v = s === undefined || s.depends_on.length === 0 ? 0 : 1 + Math.max(...s.depends_on.map((x) => d(x, seen)))
++    depth.set(id, v)
++    return v
++  }
++  const rows: string[][] = []
++  for (const s of w.steps) {
++    const k = d(s.step_id, new Set())
++    ;(rows[k] ??= []).push(s.step_id)
++  }
++  return rows
++}
++
++/** The stage grid: every step a cell with its state, its pull request and a mark for what needs you. */
++export function StageGrid({ workflow, taskById, nav, selected = null, onSelect }: {
++  workflow: Workflow
++  taskById: Map<string, Task>
++  nav: WorkNav
++  selected?: string | null
++  onSelect?: (stepId: string) => void
++}) {
++  const rows = stagesOf(workflow)
++  const stepById = new Map(workflow.steps.map((s) => [s.step_id, s]))
++  const stageName = (k: number, ids: string[]) => {
++    const prefix = ids[0]?.split('-').slice(0, -1).join('-')
++    return prefix && ids.every((i) => i.startsWith(`${prefix}-`)) ? prefix : `Stage ${k + 1}`
++  }
++  return (
++    <div className="wr-grid" role="table" aria-label={`${workflow.steps.length} steps by stage`}>
++      {rows.map((ids, k) => (
++        <div key={k} className="wr-grid-row" role="row">
++          <span className="wr-grid-stage" role="rowheader">
++            {stageName(k, ids)} <span className="wr-dim">{ids.length}</span>
++          </span>
++          {ids.map((id) => {
++            const step = stepById.get(id)
++            const task = step?.task_id ? taskById.get(step.task_id) : undefined
++            const pr = (task?.result_summary as { git?: { pull_request?: { number: number } } } | null)?.git?.pull_request?.number
++            const asks = (task?.owner_answers ?? []).some((a) => a.choice === null && a.text === null)
++            return (
++              <button
++                key={id}
++                type="button"
++                role="cell"
++                className={`wr-cell is-${(task?.state ?? 'unstarted').toLowerCase()}${selected === id ? ' is-selected' : ''}`}
++                aria-pressed={selected === id}
++                onClick={() => (onSelect ? onSelect(id) : task && nav({ screen: 'agent', id: task.id }))}
++                title={`${id}: ${task ? task.state.toLowerCase() : 'not started'}${pr ? `, pull request #${pr}` : ''}`}
++              >
++                <span className="wr-cell-name">{id.split('-').slice(-1)[0]}</span>
++                <span className="wr-cell-meta">
++                  {task ? <StatePill state={task.state} form="mark" /> : <span className="wr-dim">not started</span>}
++                  {pr ? <span className="wr-mono">#{pr}</span> : null}
++                  {asks ? <span className="wr-ask" aria-label="Open owner question">?</span> : null}
++                </span>
++              </button>
++            )
++          })}
++        </div>
++      ))}
++    </div>
++  )
++}
++
++// --------------------------------------------------------------------------
++// Small pieces
++// --------------------------------------------------------------------------
++
++/** A workflow's spend: the hard case carries the brief's figure; elsewhere the steps' summed cost, or not known. */
++export function workflowSpend(w: Workflow, taskById: Map<string, Task>): string {
++  if (w.workflow_id === HARD_WF) return `$${HARD_SPENT_USD.toFixed(2)}`
++  let sum = 0, known = 0
++  for (const s of w.steps) {
++    const c = s.task_id ? taskById.get(s.task_id)?.cost_usd_total : null
++    if (typeof c === 'number') {
++      sum += c
++      known += 1
++    }
++  }
++  return known === 0 ? 'not known' : `$${sum.toFixed(2)}${known < w.steps.length ? ' so far' : ''}`
++}
++
++/** Minutes since an instant, against the fixture clock: "4 min", "2 h", "3 d". */
++export function ageWords(iso: string | null | undefined): string {
++  if (!iso) return 'not known'
++  const m = Math.max(0, Math.round((MOCK_NOW - Date.parse(iso)) / 60_000))
++  return m < 60 ? `${m} min` : m < 48 * 60 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`
++}
++
++/** A labelled region of the scaffold: a plain heading and its parts. */
++export function Region({ title, note, children }: { title: string; note?: ReactNode; children: ReactNode }) {
++  return (
++    <section className="wr-region" aria-label={title}>
++      <div className="wr-row">
++        <h2 className="wr-h">{title}</h2>
++        {note ? <span className="wr-dim">{note}</span> : null}
++      </div>
++      {children}
++    </section>
++  )
++}
++
++/** The memoised needs list for one scope. */
++export function useNeeds(data: WorkData, workflowId: string | null = null): NeedItem[] {
++  return useMemo(() => (data.status === 'ok' ? needsYou(data.tasks, workflowId) : []), [data, workflowId])
++}
+diff --git a/apps/swarm-ui/src/workredesign/switches.ts b/apps/swarm-ui/src/workredesign/switches.ts
+new file mode 100644
+index 0000000..00024f3
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/switches.ts
+@@ -0,0 +1,48 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only. The URL switches, read once at load.
++//
++// ?wa=<direction>  base | a | b | c | d | e | f   (absent: today's console, untouched)
++// ?ws=<screen>     agents | agent | workflows | workflow   (default: agents)
++// ?wst=<state>     rest | open | watch | needs | logs     (default: rest)
++// ?wid=<id>        optional: the agent (ws=agent) or workflow (ws=workflow) to show;
++//                  defaults to the hard case's running browser agent / design-picks-build
++// ?wfx=off         serve the console's ordinary fixtures instead of the work-redesign dataset
++// The theme is the console's own switch (Profile, or `data-theme` on <html>); the snapshot kit's
++// frames also take ?theme=light|dark.
++//
++// Read ONCE at module load: App rewrites the address to its canonical form on
++// mount, which drops query keys it does not know.
++
++export type WorkDirection = 'base' | 'a' | 'b' | 'c' | 'd' | 'e' | 'f'
++export type WorkScreen = 'agents' | 'agent' | 'workflows' | 'workflow'
++export type WorkState = 'rest' | 'open' | 'watch' | 'needs' | 'logs'
++
++const DIRECTIONS: readonly WorkDirection[] = ['base', 'a', 'b', 'c', 'd', 'e', 'f']
++const SCREENS: readonly WorkScreen[] = ['agents', 'agent', 'workflows', 'workflow']
++const STATES: readonly WorkState[] = ['rest', 'open', 'watch', 'needs', 'logs']
++
++function pick<T extends string>(raw: string | null, allowed: readonly T[], fallback: T): T {
++  return raw !== null && (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback
++}
++
++const q = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search)
++const rawWa = q.get('wa')
++
++export const WORK_SWITCHES: {
++  /** null: no ?wa, today's console. */
++  wa: WorkDirection | null
++  ws: WorkScreen
++  wst: WorkState
++  wid: string | null
++} = {
++  wa: rawWa === null ? null : pick(rawWa, DIRECTIONS, 'base'),
++  ws: pick(q.get('ws'), SCREENS, 'agents'),
++  wst: pick(q.get('wst'), STATES, 'rest'),
++  wid: q.get('wid'),
++}
++
++/** The address of one mock-up frame: path `/agents` keeps the spine on Work. */
++export function workMockHref(wa: WorkDirection, ws: WorkScreen, wst: WorkState = 'rest', wid?: string): string {
++  const p = new URLSearchParams({ wa, ws, wst })
++  if (wid !== undefined) p.set('wid', wid)
++  return `/agents?${p.toString()}`
++}
+diff --git a/apps/swarm-ui/src/workredesign/workredesign.css b/apps/swarm-ui/src/workredesign/workredesign.css
+new file mode 100644
+index 0000000..c045432
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/workredesign.css
+@@ -0,0 +1,46 @@
++/* MOCK-HOOK FILE -- work-redesign mock-ups only. The scaffold's plain layout, on the console's tokens. */
++.wr-root { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; max-width: 100%; }
++.wr-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
++.wr-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
++.wr-col { display: flex; flex-direction: column; gap: var(--ctl-s2); }
++.wr-h { font: 600 var(--t-body) / var(--lh-body) var(--font); margin: 0; color: var(--text); }
++.wr-dim { color: var(--text-dim); font-size: var(--t-meta); }
++.wr-bad { color: var(--bad-ink, var(--s-bad)); margin: 0; }
++.wr-mono { font-family: var(--mono); font-size: var(--t-meta); }
++.wr-region { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
++.wr-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--ctl-s3); align-items: start; }
++@media (max-width: 900px) { .wr-split { grid-template-columns: minmax(0, 1fr); } }
++.wr-inline-agent { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
++.wr-needs { border: 1px solid var(--line); border-radius: var(--radius); padding: var(--ctl-s2) var(--ctl-s3); background: var(--surface); }
++.wr-needs-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
++.wr-needs-list { list-style: none; margin: var(--ctl-s2) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s1); font-size: var(--t-meta); }
++.wr-need-kind { display: inline-block; min-width: 7.5em; color: var(--text-dim); }
++.wr-need-kind.is-failed { color: var(--bad-ink, var(--s-bad)); }
++.wr-wall-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--ctl-s2); }
++.wr-wall-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
++.wr-wall-big { display: flex; flex-direction: column; gap: var(--ctl-s1); max-width: 960px; }
++.wr-still { margin: 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
++.wr-still-pic { position: relative; display: block; padding: 0; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface-2); cursor: pointer; overflow: hidden; aspect-ratio: 16 / 10; width: 100%; }
++.wr-still-pic img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
++.wr-still.is-large .wr-still-pic { max-width: 960px; }
++.wr-still-live { position: absolute; top: 6px; left: 6px; background: var(--surface); border-radius: 999px; padding: 0 6px; }
++.wr-still figcaption { display: flex; gap: var(--ctl-s1); align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.wr-grid { display: flex; flex-direction: column; gap: var(--ctl-s1); overflow-x: auto; }
++.wr-grid-row { display: grid; grid-template-columns: 7em repeat(10, minmax(84px, 1fr)); gap: 4px; align-items: stretch; }
++.wr-grid-stage { font-size: var(--t-meta); color: var(--text); align-self: center; }
++.wr-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 4px 6px; min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); text-align: left; cursor: pointer; }
++.wr-cell.is-running { border-color: var(--s-live); }
++.wr-cell.is-failed { border-color: var(--s-bad); background: var(--s-badb, var(--surface)); }
++.wr-cell.is-parked, .wr-cell.is-queued, .wr-cell.is-unstarted { color: var(--text-dim); }
++.wr-cell.is-selected { outline: 2px solid var(--info); outline-offset: 1px; }
++.wr-cell-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.wr-cell-meta { display: flex; gap: 4px; align-items: center; }
++.wr-ask { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--s-park); color: var(--surface); font-weight: 600; font-size: 12px; }
++/* The still image where the live canvas goes (LiveBrowser's .live-screen). */
++.live-screen .mock-still { display: block; width: 100%; height: 100%; object-fit: contain; }
++/* A link-styled button inside the scaffold: no box, the link's own colour. */
++.wr-root button.ctl-link { border: 0; background: none; padding: 0; font: inherit; color: var(--info); text-decoration: underline; cursor: pointer; text-align: left; }
++.wr-root button.ctl-link.wr-dim { color: var(--text-dim); }
++/* The console's agent drawer, drawn in the page rather than over it. */
++.wr-inline-agent .drawer.ag-split { position: relative; top: auto; right: auto; bottom: auto; left: auto; width: 100%; max-height: none; z-index: auto; box-shadow: none; }
++.wr-inline-agent .ag-divider, .wr-inline-agent .ag-scrim { display: none; }

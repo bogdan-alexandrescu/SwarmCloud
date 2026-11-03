@@ -1,0 +1,1415 @@
+diff --git a/apps/swarm-ui/src/App.tsx b/apps/swarm-ui/src/App.tsx
+index eabb926..4e768d8 100644
+--- a/apps/swarm-ui/src/App.tsx
++++ b/apps/swarm-ui/src/App.tsx
+@@ -9,6 +9,8 @@ import {
+   useSyncExternalStore,
+   type ReactNode,
+ } from 'react'
++import { WorkRedesign } from './workredesign/WorkRedesign' // MOCK-HOOK
++import { WORK_SWITCHES } from './workredesign/switches' // MOCK-HOOK
+ import { createPortal } from 'react-dom'
+ import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
+ import { AccountsScreen } from './Accounts'
+@@ -2374,6 +2376,7 @@ function SectionBody({
+   // Config › Repositories › QA targets: its address is that tab's `qarun=<id>`.
+   const qarun = `${sectionId}/${tab}` === 'config/repositories' && view !== null ? new URLSearchParams(view).get('qarun') : null
+   if (qarun !== null && qarun !== '') return <QaRunGroupScreen groupId={qarun} go={go} />
++  if (WORK_SWITCHES.wa !== null && sectionId === 'work') return <WorkRedesign go={go} list={list} onList={onList} /> // MOCK-HOOK
+   switch (`${sectionId}/${tab}`) {
+     case 'overview/now':
+       return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
+diff --git a/apps/swarm-ui/src/LiveBrowser.tsx b/apps/swarm-ui/src/LiveBrowser.tsx
+index 974a276..050d9e6 100644
+--- a/apps/swarm-ui/src/LiveBrowser.tsx
++++ b/apps/swarm-ui/src/LiveBrowser.tsx
+@@ -16,6 +16,7 @@ import {
+   type SyntheticEvent,
+ } from 'react'
+ 
++import { mockStillUrl } from './workredesign/fixtures' // MOCK-HOOK
+ import { AgentLogs } from './AgentLogs'
+ import {
+   closeLiveToMembers,
+@@ -2219,6 +2220,7 @@ function LiveScreen({
+   // retrying or has given up puts its reason in the frame's middle; once a
+   // picture has drawn, a reconnect keeps it and says so in the caption.
+   const blank = !framed && (conn === 'reconnecting' || conn === 'failed') && why !== null
++  const still = mockStillUrl(taskId, kind !== 'desktop') // MOCK-HOOK
+   const onFocus = () => {
+     keysHere.current = true
+     setHasFocus(true)
+@@ -2304,6 +2306,7 @@ function LiveScreen({
+             onTouchEndCapture={gateTouch}
+             onTouchCancelCapture={gateTouch}
+           >
++            {still !== null && <img className="mock-still" src={still} alt="The agent’s browser page (still image)" />} {/* MOCK-HOOK */}
+             {/* Inside the screen, so it goes with it into the theater. Clicks go through it. */}
+             {control && conn === 'connected' && !hasFocus && (
+               <span className="live-type-hint" aria-hidden="true">
+@@ -2311,7 +2314,7 @@ function LiveScreen({
+               </span>
+             )}
+           </div>
+-          {blank && (
++          {blank && still === null && ( // MOCK-HOOK: still === null
+             <div className="live-frame-empty" data-testid="live-frame-empty">
+               <EmptyState kind={conn === 'failed' ? 'failed' : 'empty'} heading="No picture from the agent’s browser">
+                 {conn === 'failed' ? `The live connection keeps failing: ${why}` : `${why} Trying again.`}
+diff --git a/apps/swarm-ui/src/LiveThumb.tsx b/apps/swarm-ui/src/LiveThumb.tsx
+index 9336288..10cfed3 100644
+--- a/apps/swarm-ui/src/LiveThumb.tsx
++++ b/apps/swarm-ui/src/LiveThumb.tsx
+@@ -1,5 +1,6 @@
+ import { useEffect, useRef, useState } from 'react'
+ 
++import { mockStillUrl } from './workredesign/fixtures' // MOCK-HOOK
+ import { USE_FIXTURES, loadLiveSession, mintLiveTicket, openLiveChannel, type LiveChannel } from './api'
+ import { route } from './fetch'
+ import { addressToPath } from './paths'
+@@ -595,6 +596,19 @@ export function LiveThumb({
+   useEffect(() => {
+     const sock = open(taskId)
+     if (sock === null) {
++      const still = mockStillUrl(taskId) // MOCK-HOOK
++      if (still !== null) { // MOCK-HOOK
++        const img = new Image() // MOCK-HOOK
++        img.onload = () => { // MOCK-HOOK
++          const c = canvas.current // MOCK-HOOK
++          if (c === null) return // MOCK-HOOK
++          c.width = 720; c.height = 450 // MOCK-HOOK
++          c.getContext('2d')?.drawImage(img, 0, 0, 720, 450) // MOCK-HOOK
++          setFrames(1); setStatus('live') // MOCK-HOOK
++        } // MOCK-HOOK
++        img.src = still // MOCK-HOOK
++        return // MOCK-HOOK
++      } // MOCK-HOOK
+       setStatus('unavailable')
+       return
+     }
+diff --git a/apps/swarm-ui/src/api.ts b/apps/swarm-ui/src/api.ts
+index c8e4682..f990d1f 100644
+--- a/apps/swarm-ui/src/api.ts
++++ b/apps/swarm-ui/src/api.ts
+@@ -15,6 +15,7 @@ import { chosenTenant, noteFixtureProbe, read, readGeneration, route, tenantQuer
+ // needs the concurrency set to decide which rows hold a lease -- invariant 1's
+ // four states, not a second list written out here.
+ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
++import { mockDevice, mockLiveTask, mockTaskRows, mockWorkflowRows, mockWorkOn } from './workredesign/fixtures' // MOCK-HOOK
+ // The one rule for summing a nullable measurement: null until something
+ // actually reported it, so an unmeasured sample never becomes a confident zero.
+ import { sumReported } from './measure'
+@@ -5389,6 +5390,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
+ 
+ /** The fixture's task list, built at one instant: `fixtureTasks` serves it, and the stats and workflow rows count it. */
+ function fixtureTaskRows(): Task[] {
++  if (mockWorkOn()) return mockTaskRows() // MOCK-HOOK
+   const now = FIXTURE_NOW
+   const at = (minsAgo: number) => new Date(now - minsAgo * 60_000).toISOString()
+ 
+@@ -5743,6 +5745,7 @@ function withTaskSummaries(workflows: Workflow[], tasks: readonly Task[]): Workf
+  * finding.
+  */
+ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
++  if (mockWorkOn()) return mockWorkflowRows() // MOCK-HOOK
+   // A WORKFLOW SPANS ITS STEPS (QAFIX4-FIXTURE-B F14c, run 4
+   // flow-workflow-graph-light-12): created when its first step task was,
+   // last changed when its last one was. Typed apart, the fan-in's 3h 31m
+@@ -12616,7 +12619,7 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
+     // agent records no failed route. The viewer ticket is still not served
+     // (`mintLiveTicket`): the fixture build has no gate to draw frames from.
+     noteFixtureProbe(target, 0, true)
+-    if (taskId !== 'task_b40e5a1c') {
++    if (taskId !== 'task_b40e5a1c' && !mockLiveTask(taskId)) { // MOCK-HOOK
+       return { status: 'ok', fetchedAt: Date.now(), data: { live_browser: false, session: null } }
+     }
+     const at = (minsAgo: number) => new Date(FIXTURE_NOW - minsAgo * 60_000).toISOString()
+@@ -12633,7 +12636,7 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
+           human_wait: null,
+           controller: null,
+           open_to_members: false,
+-          device: { preset: 'desktop', orientation: 'landscape', touch: false },
++          device: mockLiveTask(taskId) ? mockDevice(taskId) : { preset: 'desktop', orientation: 'landscape', touch: false }, // MOCK-HOOK
+           // swarm-api `LIVE_PRESETS`, the gate's fixed list (§6.1).
+           presets: [
+             { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
+diff --git a/apps/swarm-ui/src/workredesign/WorkRedesign.tsx b/apps/swarm-ui/src/workredesign/WorkRedesign.tsx
+new file mode 100644
+index 0000000..661ab84
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/WorkRedesign.tsx
+@@ -0,0 +1,47 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only. The entry App renders for the Work section when ?wa is set.
++//
++// A direction registers its four screens in DIRECTIONS under its letter; a
++// letter with nothing registered falls back to the scaffold (base) and says so.
++import { useState, type ComponentType } from 'react'
++
++import type { AgentList } from '../agentlist'
++import { BaseAgent, BaseAgents, BaseWorkflow, BaseWorkflows, type BaseProps } from './base'
++import { useWorkData, type WorkAt } from './parts'
++import { WORK_SWITCHES, type WorkDirection, type WorkScreen } from './switches'
++
++export type DirectionScreens = Readonly<Record<WorkScreen, ComponentType<BaseProps>>>
++
++const BASE: DirectionScreens = { agents: BaseAgents, agent: BaseAgent, workflows: BaseWorkflows, workflow: BaseWorkflow }
++
++/** Each direction's screens. A direction adds one line here: `a: DIRECTION_A,`. */
++export const DIRECTIONS: Partial<Record<WorkDirection, DirectionScreens>> = {
++  base: BASE,
++}
++
++export function WorkRedesign({ go, list, onList }: { go: (to: string) => void; list: AgentList | null; onList: (list: AgentList) => void }) {
++  const wa = WORK_SWITCHES.wa ?? 'base'
++  const screens = DIRECTIONS[wa] ?? BASE
++  const [at, setAt] = useState<WorkAt>({ screen: WORK_SWITCHES.ws, id: WORK_SWITCHES.wid })
++  // A move inside the mock-up starts the new screen at rest.
++  const [wst, setWst] = useState(WORK_SWITCHES.wst)
++  const data = useWorkData()
++  const Screen = screens[at.screen]
++  return (
++    <div className="wr-root" data-wa={wa} data-ws={at.screen} data-wst={wst}>
++      {DIRECTIONS[wa] === undefined && <p className="wr-dim">Direction {wa} has no screens yet: showing the scaffold.</p>}
++      <Screen
++        data={data}
++        at={at}
++        nav={(to) => {
++          setAt(to)
++          setWst('rest')
++          if (typeof window !== 'undefined') window.scrollTo(0, 0)
++        }}
++        wst={wst}
++        go={go}
++        list={list}
++        onList={onList}
++      />
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/workredesign/base.tsx b/apps/swarm-ui/src/workredesign/base.tsx
+new file mode 100644
+index 0000000..668debe
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/base.tsx
+@@ -0,0 +1,195 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only. ?wa=base: the scaffold's plain, neutral layout.
++//
++// Each screen places every feature of features.md once: the console's own
++// screens (AgentsScreen, AgentSplit, WorkflowsScreen) carry the features they
++// have today, untouched, and the parts in parts.tsx add what the goals ask
++// for and today's screens do not draw (the needs-you strip, the browser wall,
++// the stage grid). A direction copies this file and rearranges.
++import { useState } from 'react'
++
++import type { TaskPane } from '../App'
++import { AgentSplit } from '../AgentSplit'
++import { AgentsScreen } from '../Agents'
++import { Breadcrumb, Chip, StatePill } from '../components'
++import type { AgentList } from '../agentlist'
++import { WorkflowsScreen } from '../Workflows'
++import { HARD_WF, HARD_WF_TITLE, hardTaskId } from './fixtures'
++import {
++  BrowserStill, BrowserWall, NeedsYou, Region, StageGrid, ageWords, splitCounts, useNeeds, workflowSpend,
++  type WorkAt, type WorkData, type WorkNav,
++} from './parts'
++import type { WorkState } from './switches'
++
++/** The agent the agent screen shows when the address names none: build-contacts, a running browser agent. */
++export const DEFAULT_AGENT = hardTaskId('build', 'contacts')
++
++export type BaseProps = {
++  data: WorkData
++  at: WorkAt
++  nav: WorkNav
++  wst: WorkState
++  /** The console's router, for anything outside the Work section. */
++  go: (to: string) => void
++  list: AgentList | null
++  onList: (list: AgentList) => void
++}
++
++function Loading({ data }: { data: WorkData }) {
++  return <p className="wr-dim">{data.status === 'error' ? `Not read: ${data.why}` : 'Reading the agents and workflows…'}</p>
++}
++
++/** An inline agent: the console's AgentSplit, its tab clicks kept inside the mock-up. */
++function InlineAgent({ taskId, pane, nav, go }: { taskId: string; pane: TaskPane; nav: WorkNav; go: (to: string) => void }) {
++  const [shown, setShown] = useState<TaskPane>(pane)
++  const base = `work/task/${encodeURIComponent(taskId)}`
++  const inner = (to: string) => {
++    if (to.startsWith(base)) {
++      const rest = to.slice(base.length).replace(/^\//, '').split('/')[0]
++      setShown((rest === '' ? 'detail' : rest) as TaskPane)
++      return
++    }
++    const other = /^work\/task\/([^/]+)/.exec(to)
++    if (other) return nav({ screen: 'agent', id: decodeURIComponent(other[1] ?? '') })
++    if (to.startsWith('work/running') || to === '/agents') return nav({ screen: 'agents', id: null })
++    go(to)
++  }
++  return (
++    <div className="wr-inline-agent">
++      <AgentSplit key={taskId} taskId={taskId} pane={shown} artifact={null} closeTo="work/running" go={inner} base={base} />
++    </div>
++  )
++}
++
++export function BaseAgents({ data, nav, wst, go, list, onList }: BaseProps) {
++  const needs = useNeeds(data)
++  if (data.status !== 'ok') return <Loading data={data} />
++  const c = splitCounts(data.tasks)
++  return (
++    <div className="wr-page">
++      <div className="wr-row wr-counts">
++        <Chip tone="live">Live <b>{c.live}</b></Chip>
++        <span className="wr-dim">of them browsers <b>{c.browsers}</b></span>
++        <Chip tone="park">Waiting <b>{c.waiting}</b></Chip>
++        <Chip>Recent <b>{c.recent}</b></Chip>
++      </div>
++      <NeedsYou items={needs} open={wst === 'needs'} nav={nav} />
++      <BrowserWall tasks={data.tasks} nav={nav} large={wst === 'watch' ? DEFAULT_AGENT : null} />
++      <div className={wst === 'open' ? 'wr-split' : undefined}>
++        <Region title="Agents" note="The console’s list: search, filters, Live / Waiting / Recent">
++          <AgentsScreen onOpen={(id: string) => nav({ screen: 'agent', id })} list={list} onList={onList} />
++        </Region>
++        {wst === 'open' && <InlineAgent taskId={DEFAULT_AGENT} pane="detail" nav={nav} go={go} />}
++      </div>
++    </div>
++  )
++}
++
++export function BaseAgent({ data, at, nav, wst, go }: BaseProps) {
++  const id = at.id ?? DEFAULT_AGENT
++  const task = data.status === 'ok' ? data.taskById.get(id) ?? null : null
++  const pane: TaskPane = wst === 'logs' ? 'logs' : wst === 'watch' ? 'browser' : 'detail'
++  return (
++    <div className="wr-page">
++      <Breadcrumb
++        crumbs={[
++          { key: 'agents', label: 'Agents', href: '/agents' },
++          ...(task?.workflow_id ? [{ key: 'wf', label: String(task.metadata?.title ?? task.workflow_id), href: `/workflows/${task.workflow_id}` }] : []),
++          { key: 'agent', label: task?.step_id ?? id, href: null },
++        ]}
++        onGo={(href) => (href === '/agents' ? nav({ screen: 'agents', id: null }) : nav({ screen: 'workflow', id: task?.workflow_id ?? null }))}
++      />
++      {task && (
++        <div className="wr-row">
++          <StatePill state={task.state} />
++          <span className="wr-mono">{task.id}</span>
++          <span className="wr-dim">started {ageWords(task.started_at)} ago</span>
++        </div>
++      )}
++      <div className="wr-split">
++        {task && task.runner_profile === 'claude-code-browser' && task.state === 'RUNNING' && (
++          <BrowserStill task={task} nav={nav} size="large" />
++        )}
++        <InlineAgent key={`${id}:${pane}`} taskId={id} pane={pane} nav={nav} go={go} />
++      </div>
++    </div>
++  )
++}
++
++export function BaseWorkflows({ data, nav, wst }: BaseProps) {
++  const needs = useNeeds(data)
++  const [view, setView] = useState('')
++  if (data.status !== 'ok') return <Loading data={data} />
++  const by = (s: string) => data.workflows.filter((w) => w.state === s).length
++  return (
++    <div className="wr-page">
++      <div className="wr-row wr-counts">
++        <Chip tone="live">Running <b>{by('RUNNING')}</b></Chip>
++        <Chip tone="park">Parked <b>{by('PARKED')}</b></Chip>
++        <Chip tone="bad">Failed <b>{by('FAILED')}</b></Chip>
++        <Chip>Done <b>{by('SUCCEEDED')}</b></Chip>
++      </div>
++      <NeedsYou items={needs} open={wst === 'needs'} nav={nav} />
++      <Region title="Workflows" note="The console’s board: search, filters, sort, stage cards">
++        <WorkflowsScreen
++          view={view}
++          onView={(v) => {
++            const wf = new URLSearchParams(v).get('wf')
++            if (wf) nav({ screen: 'workflow', id: wf })
++            else setView(v)
++          }}
++        />
++      </Region>
++    </div>
++  )
++}
++
++export function BaseWorkflow({ data, at, nav, wst }: BaseProps) {
++  const id = at.id ?? HARD_WF
++  const needs = useNeeds(data, id)
++  const [view, setView] = useState(`wf=${encodeURIComponent(id)}`)
++  const [step, setStep] = useState<string | null>(wst === 'open' ? 'build-invoices' : null)
++  if (data.status !== 'ok') return <Loading data={data} />
++  const w = data.workflows.find((x) => x.workflow_id === id)
++  if (w === undefined) return <p className="wr-dim">No workflow {id} in this dataset.</p>
++  const steps = w.steps.map((s) => (s.task_id ? data.taskById.get(s.task_id) : undefined))
++  const n = (pred: (t: (typeof steps)[number]) => boolean) => steps.filter(pred).length
++  const stepTasks = steps.filter((t): t is NonNullable<typeof t> => t !== undefined)
++  const sel = step === null ? null : w.steps.find((s) => s.step_id === step) ?? null
++  const selTask = sel?.task_id ? data.taskById.get(sel.task_id) ?? null : null
++  return (
++    <div className="wr-page">
++      <Breadcrumb crumbs={[{ key: 'wfs', label: 'Workflows', href: '/workflows' }, { key: 'wf', label: id === HARD_WF ? HARD_WF_TITLE : id, href: null }]} onGo={() => nav({ screen: 'workflows', id: null })} />
++      <div className="wr-row wr-counts">
++        <StatePill state={w.state as 'RUNNING'} />
++        <Chip tone="live">Running <b>{n((t) => t?.state === 'RUNNING')}</b></Chip>
++        <Chip tone="park">Waiting <b>{n((t) => t?.state === 'PARKED' || t?.state === 'QUEUED' || t?.state === 'READY' || t === undefined)}</b></Chip>
++        <Chip>Done <b>{n((t) => t?.state === 'SUCCEEDED')}</b></Chip>
++        <Chip tone="bad">Failed <b>{n((t) => t?.state === 'FAILED')}</b></Chip>
++        <span className="wr-dim">spent <b>{workflowSpend(w, data.taskById)}</b></span>
++      </div>
++      <NeedsYou items={needs} open={wst === 'needs' || wst === 'rest'} nav={nav} />
++      <div className={sel ? 'wr-split' : undefined}>
++        <Region title="Steps by stage" note={`${w.steps.length} steps; click one`}>
++          <StageGrid workflow={w} taskById={data.taskById} nav={nav} selected={step} onSelect={(s) => setStep((x) => (x === s ? null : s))} />
++        </Region>
++        {sel && (
++          <Region title={sel.step_id} note={selTask ? selTask.state.toLowerCase() : 'not started'}>
++            {selTask ? (
++              <div className="wr-col">
++                <button type="button" className="ctl-link" onClick={() => nav({ screen: 'agent', id: selTask.id })}>Open its agent</button>
++                {selTask.last_error && <p className="wr-bad">{selTask.last_error}</p>}
++                {selTask.runner_profile === 'claude-code-browser' && selTask.state === 'RUNNING' && <BrowserStill task={selTask} nav={nav} />}
++              </div>
++            ) : (
++              <p className="wr-dim">Waiting on {sel.depends_on.join(', ') || 'nothing'}.</p>
++            )}
++          </Region>
++        )}
++      </div>
++      <BrowserWall tasks={stepTasks} nav={nav} large={wst === 'watch' ? DEFAULT_AGENT : null} />
++      <Region title="Workflow" note="The console’s page: Graph / Table / Steps over time / Changes, policy, stop, reads">
++        <WorkflowsScreen view={view} onView={setView} />
++      </Region>
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/workredesign/fixtures.ts b/apps/swarm-ui/src/workredesign/fixtures.ts
+new file mode 100644
+index 0000000..1912631
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/fixtures.ts
+@@ -0,0 +1,579 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only (LANE WORK-REDESIGN-MOCKUPS, 2026-11-02). Never committed.
++//
++// THE WORK SECTION'S MOCK DATASET. Invented data only: people at example.com,
++// repositories `northwind-crm` and `roombook`. When `mockWorkOn()` is true
++// (the fixture dev server, outside vitest, unless `?wfx=off`), api.ts's
++// `fixtureTaskRows()` and `fixtureWorkflowRows()` answer from here instead, so
++// every existing loader -- the Agents list, one agent, attempts, events, the
++// Workflows board, one workflow -- serves the same rows, and today's pages and
++// the redesign directions render the same data.
++//
++// THE HARD CASE, `wf_design_picks_build` ("design-picks-build"): 40 steps in
++// 4 stages of 10 (build, review, fix, re-review, one per feature). The brief's
++// counts (10 running, 25 waiting, 5 done, 1 failed) add to 41, so this file
++// reads them as: 4 succeeded + 1 failed = 5 finished; 10 running browser agents;
++// 25 waiting on earlier steps; and the 2 owner questions are asked by two
++// finished build steps and hold the workflow's merge task (a 41st task of the
++// workflow, profile `merge`, PARKED HUMAN_REQUIRED, park_phase owner_questions),
++// which is also the "merge waiting". One pull request per started step.
++import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
++
++/**
++ * The instant mock times count from: the page's own clock at load, to the minute. NOT api.ts's
++ * FIXTURE_CLOCK: a page on a running clock drew every mock agent as "13 d 16 h" old, which a
++ * layout review cannot read past. Ages and states are deterministic; the wall-clock times are not.
++ */
++export const MOCK_NOW = Math.floor(Date.now() / 60_000) * 60_000
++const at = (minsAgo: number) => new Date(MOCK_NOW - minsAgo * 60_000).toISOString()
++
++function param(name: string): string | null {
++  if (typeof window === 'undefined') return null
++  return new URLSearchParams(window.location.search).get(name)
++}
++
++/** Read ONCE at load, so the app's own canonical rewrite of the address cannot drop a switch mid-session. */
++const WFX = param('wfx')
++
++/** Whether the work-redesign dataset replaces the Work section's fixtures. */
++export function mockWorkOn(): boolean {
++  return import.meta.env.DEV && !import.meta.env.VITE_LIVE && import.meta.env.MODE !== 'test' && WFX !== 'off'
++}
++
++export const MOCK_TENANT = 'u-bogdan'
++export const PEOPLE = {
++  bogdan: 'bogdan@example.com',
++  ana: 'ana.moreau@example.com',
++  kenji: 'kenji.sato@example.com',
++  lea: 'lea.fontaine@example.com',
++  ravi: 'ravi.iyer@example.com',
++} as const
++const OWNERS = [PEOPLE.bogdan, PEOPLE.ana, PEOPLE.kenji, PEOPLE.lea, PEOPLE.ravi]
++
++export const HARD_WF = 'wf_design_picks_build'
++export const HARD_WF_TITLE = 'design-picks-build'
++export const HARD_MERGE_TASK = 'task_dpb_merge'
++export const HARD_STAGES = ['build', 'review', 'fix', 're-review'] as const
++export const HARD_FEATURES = [
++  'login', 'search', 'calendar', 'invoices', 'contacts', 'reports', 'settings', 'booking', 'export', 'onboarding',
++] as const
++export const HARD_SPENT_USD = 13.52
++
++const REPOS = ['https://github.com/example-org/northwind-crm', 'https://github.com/example-org/roombook']
++
++/** A step id of the hard case: `<stage>-<feature>`, stage `re-review` included. */
++export const hardStepId = (stage: string, feature: string) => `${stage}-${feature}`
++export const hardTaskId = (stage: string, feature: string) => `task_dpb_${stage.replace('-', '')}_${feature}`
++
++// --------------------------------------------------------------------------
++// One task, shaped as api.ts's fixture `mk` shapes it
++// --------------------------------------------------------------------------
++
++function mk(id: string, state: TaskState, profile: string, minsAgo: number, extra: Partial<Task> = {}): Task {
++  const terminal = state === 'SUCCEEDED' || state === 'FAILED' || state === 'CANCELLED'
++  const admitted = !(state === 'QUEUED' || state === 'READY' || state === 'SUBMITTED')
++  const live = state === 'LEASED' || state === 'DISPATCHED' || state === 'STARTING' || state === 'RUNNING'
++  const task = {
++    id,
++    tenant_id: MOCK_TENANT,
++    state,
++    runner_profile: profile,
++    resource_class: profile === 'claude-code-browser' ? 'browser' : 'standard',
++    provider: 'anthropic',
++    priority: 0,
++    created_at: at(minsAgo + 6),
++    updated_at: at(terminal ? minsAgo : Math.max(0, Math.min(minsAgo, 2))),
++    started_at: admitted ? at(minsAgo + 4) : null,
++    completed_at: terminal ? at(minsAgo) : null,
++    submitted_by: PEOPLE.bogdan,
++    attempt_count: admitted ? 1 : 0,
++    max_attempts: 3,
++    park_reason: null,
++    blocked_by: null,
++    workflow_id: null,
++    step_id: null,
++    depends_on: null,
++    cancel_requested: false,
++    repository_url: REPOS[0],
++    model: 'claude-opus-5',
++    timeout_seconds: 3600,
++    next_eligible_at: null,
++    metadata: null,
++    repository_ref: 'main',
++    current_generation: admitted ? 1 : 0,
++    current_lease_id: live ? `lease_${id.replace('task_', '')}` : null,
++    dispatch: { strategy: 'direct-pr', carrier: 'checkpoints', role: null, integrates: [] },
++    input: null,
++    last_error: state === 'FAILED' ? 'exit status 1: CI check "e2e / chromium" failed on the pull request' : null,
++    result_summary: state === 'SUCCEEDED' ? { artifacts: 2, checkpoints: 3 } : null,
++    latest_checkpoint: null,
++    ...extra,
++  }
++  return task as unknown as Task
++}
++
++// --------------------------------------------------------------------------
++// The hard case: design-picks-build
++// --------------------------------------------------------------------------
++
++type HardShape = { state: TaskState | null; minsAgo: number; question?: string; costUsd: number }
++
++/** Each step's state, by stage then feature index. null: not started (waiting on an earlier step). */
++function hardShape(stage: number, f: number): HardShape {
++  // build: login, search, calendar succeeded; invoices FAILED (red check); the other six running.
++  if (stage === 0) {
++    if (f < 3) {
++      return {
++        state: 'SUCCEEDED', minsAgo: 40 - f * 6, costUsd: [1.12, 0.98, 1.31][f] ?? 0,
++        question: f === 1 ? 'The search design pick shows filters in a side panel; the brief says a top bar. Which one ships?'
++          : f === 2 ? 'Calendar: week view by default, or month view as in the second pick?' : undefined,
++      }
++    }
++    if (f === 3) return { state: 'FAILED', minsAgo: 18, costUsd: 1.46 }
++    return { state: 'RUNNING', minsAgo: 1, costUsd: [0.71, 0.66, 0.58, 0.49, 0.44, 0.39][f - 4] ?? 0 }
++  }
++  // review: login succeeded; search, calendar running; invoices running (reviewing the red check).
++  if (stage === 1) {
++    if (f === 0) return { state: 'SUCCEEDED', minsAgo: 12, costUsd: 0.62 }
++    if (f <= 3) return { state: 'RUNNING', minsAgo: 1, costUsd: [0, 0.41, 0.37, 0.29][f] ?? 0 }
++    return { state: null, minsAgo: 0, costUsd: 0 }
++  }
++  // fix: login running.
++  if (stage === 2 && f === 0) return { state: 'RUNNING', minsAgo: 1, costUsd: 0.33 }
++  return { state: null, minsAgo: 0, costUsd: 0 }
++}
++// Spend check: 1.12+0.98+1.31+1.46+0.71+0.66+0.58+0.49+0.44+0.39+0.62+0.41+0.37+0.29+0.33 = 10.16;
++// the merge task and the attempts' own usage are not summed here. HARD_SPENT_USD is the brief's figure
++// for the workflow header; MOCK_SPEND below spreads the remaining 3.36 over earlier attempts.
++const MOCK_EARLIER_ATTEMPTS_USD = 3.36
++
++function hardTasks(): Task[] {
++  const out: Task[] = []
++  HARD_STAGES.forEach((stage, si) => {
++    HARD_FEATURES.forEach((feature, f) => {
++      const shape = hardShape(si, f)
++      const stepId = hardStepId(stage, feature)
++      const id = hardTaskId(stage, feature)
++      const deps = si === 0 ? [] : [hardStepId(HARD_STAGES[si - 1]!, feature)]
++      const common: Partial<Task> = {
++        workflow_id: HARD_WF,
++        step_id: stepId,
++        depends_on: deps,
++        submitted_by: PEOPLE.bogdan,
++        repository_url: REPOS[f % 2],
++        metadata: { title: HARD_WF_TITLE },
++        input: { prompt: `${stage} the ${feature} screen from the picked design, in a browser, and open a pull request.` },
++      }
++      if (shape.state === null) {
++        out.push(mk(id, 'PARKED', 'claude-code-browser', 30, {
++          ...common,
++          park_reason: 'DEPENDENCY_INCOMPLETE',
++          attempt_count: 0,
++          current_generation: 0,
++          started_at: null,
++          waiting: { reason: 'DEPENDENCY_INCOMPLETE', summary: `Waiting on 1 earlier step: ${deps[0]}` },
++        } as Partial<Task>))
++        return
++      }
++      const pr = 2400 + si * 10 + f
++      const prState = shape.state === 'SUCCEEDED' ? 'merged' : 'open'
++      const failedCheck = shape.state === 'FAILED'
++      out.push(mk(id, shape.state, 'claude-code-browser', shape.minsAgo, {
++        ...common,
++        cost_usd_total: shape.costUsd > 0 ? shape.costUsd : null,
++        cost_incomplete: shape.state === 'RUNNING',
++        attempts: 1,
++        attempts_with_cost: shape.costUsd > 0 ? 1 : 0,
++        browser_used: true,
++        result_summary: {
++          ...(shape.state === 'SUCCEEDED' ? { artifacts: 2, checkpoints: 3 } : {}),
++          git: {
++            pull_request: { number: pr, url: `https://github.com/example-org/${f % 2 ? 'roombook' : 'northwind-crm'}/pull/${pr}`, state: prState, created: true },
++            checks: failedCheck ? { passed: 6, failed: 1, pending: 0, failed_names: ['e2e / chromium'] } : undefined,
++          },
++        },
++        owner_answers: shape.question
++          ? [{ question_index: 0, question: shape.question, history: [], choice: null, text: null, by: null, at: null }]
++          : undefined,
++      } as Partial<Task>))
++    })
++  })
++  // The merge, held by the two build steps' questions (Handoff.tsx ownerQuestionsHold).
++  out.push(mk(HARD_MERGE_TASK, 'PARKED', 'merge', 9, {
++    workflow_id: HARD_WF,
++    step_id: null,
++    submitted_by: PEOPLE.bogdan,
++    park_reason: 'HUMAN_REQUIRED',
++    metadata: { title: `${HARD_WF_TITLE} merge` },
++    blocked_by: [{
++      reason: 'HUMAN_REQUIRED',
++      park_phase: 'owner_questions',
++      owner_questions: {
++        unreadable: 0,
++        questions: [1, 2].map((f) => ({
++          task_id: hardTaskId('build', HARD_FEATURES[f]!),
++          step_id: hardStepId('build', HARD_FEATURES[f]!),
++          question_index: 0,
++          question: hardShape(0, f).question,
++        })),
++      },
++    }],
++    waiting: { reason: 'HUMAN_REQUIRED', summary: 'Merge held: 2 owner questions are not answered' },
++  } as Partial<Task>))
++  return out
++}
++
++// --------------------------------------------------------------------------
++// The rest of the Agents list: 34 live (18 browsers), 86 waiting, 110 recent
++// --------------------------------------------------------------------------
++
++const TOPICS = [
++  'Fix flaky invoice export', 'Add contact merge', 'Upgrade booking API client', 'Audit room permissions',
++  'Translate onboarding emails', 'Speed up search index', 'Check signup form on phones', 'Rename CRM fields',
++  'Write reports smoke test', 'Patch calendar timezone bug', 'Review accessibility of settings', 'Clean old feature flags',
++]
++const WAIT_REASONS: Array<{ reason: string; summary: string; park: string | null; state: TaskState }> = [
++  { reason: 'QUEUED', summary: 'In line for a standard runner: 4th of 9', park: null, state: 'QUEUED' },
++  { reason: 'READY_CAPACITY', summary: 'tenant:u-bogdan 20/20 units: waiting for a slot', park: null, state: 'READY' },
++  { reason: 'PROVIDER_QUOTA_EXHAUSTED', summary: 'Claude plan quota used up; resumes 13:10', park: 'PROVIDER_QUOTA_EXHAUSTED', state: 'PARKED' },
++  { reason: 'CI_PENDING', summary: 'CI on PR #2391: 5 checks pending; next check 12:04', park: 'CI_PENDING', state: 'PARKED' },
++  { reason: 'SCHEDULED_RETRY', summary: 'Retry 2 of 3 at 12:06 after "pytest collected 2 failures"', park: 'SCHEDULED_RETRY', state: 'PARKED' },
++  { reason: 'AWAITING_INPUT', summary: 'Asked the owner a question 14 minutes ago', park: 'AWAITING_INPUT', state: 'PARKED' },
++]
++const LIVE_STATES: TaskState[] = ['RUNNING', 'RUNNING', 'RUNNING', 'STARTING', 'DISPATCHED', 'LEASED']
++const RECENT_STATES: TaskState[] = ['SUCCEEDED', 'SUCCEEDED', 'SUCCEEDED', 'SUCCEEDED', 'FAILED', 'CANCELLED']
++
++function hex(n: number): string {
++  // Deterministic, id-shaped: 8 hex digits from n.
++  let x = (n + 1) * 2654435761
++  x = (x ^ (x >>> 15)) >>> 0
++  return x.toString(16).padStart(8, '0').slice(0, 8)
++}
++
++function otherTasks(): Task[] {
++  const out: Task[] = []
++  // Live: 24 more, 8 of them browsers (with the hard case's 10, 34 live and 18 browsers).
++  for (let i = 0; i < 24; i += 1) {
++    const browser = i < 8
++    const state = browser ? (i === 7 ? 'STARTING' : 'RUNNING') : LIVE_STATES[i % LIVE_STATES.length]
++    const extra: Partial<Task> = {
++      submitted_by: OWNERS[i % OWNERS.length],
++      repository_url: REPOS[i % 2],
++      metadata: { title: `${TOPICS[i % TOPICS.length]}${browser ? ' (browser)' : ''}` },
++      cost_usd_total: state === 'RUNNING' ? Math.round((0.2 + (i % 7) * 0.31) * 100) / 100 : null,
++      cost_incomplete: true,
++      browser_used: browser ? true : null,
++    }
++    // One browser agent asks for a person at its browser: a hand-off (Handoff.tsx).
++    if (i === 2) {
++      Object.assign(extra, {
++        human_wait: { reason: 'Sign in to the staging admin with a two-factor code', expect: 'admin.roombook.example.com',
++          requested_at: at(3), deadline: at(-27), controller: null },
++      })
++    }
++    out.push(mk(`task_${hex(i)}`, state as TaskState, browser ? 'claude-code-browser' : 'claude-code', 2 + i, extra))
++  }
++  // Waiting: 30 more (with the hard case's 25, its merge task and the small workflows' 30 waiting steps, 86 waiting).
++  for (let i = 0; i < 30; i += 1) {
++    const w = WAIT_REASONS[i % WAIT_REASONS.length]!
++    out.push(mk(`task_${hex(100 + i)}`, w.state, i % 5 === 0 ? 'claude-code-browser' : 'claude-code', 8 + i * 3, {
++      submitted_by: OWNERS[i % OWNERS.length],
++      repository_url: REPOS[i % 2],
++      park_reason: w.park,
++      next_eligible_at: w.state === 'PARKED' ? at(-6) : null,
++      metadata: { title: TOPICS[(i + 3) % TOPICS.length] },
++      waiting: { reason: w.reason, summary: w.summary },
++      attempt_count: w.state === 'PARKED' ? 1 : 0,
++      current_generation: w.state === 'PARKED' ? 1 : 0,
++      started_at: w.state === 'PARKED' ? at(10 + i * 3) : null,
++    } as Partial<Task>))
++  }
++  // Recent: 110 finished over the last two days.
++  for (let i = 0; i < 110; i += 1) {
++    const state = RECENT_STATES[i % RECENT_STATES.length]!
++    out.push(mk(`task_${hex(300 + i)}`, state, i % 4 === 0 ? 'claude-code-browser' : 'claude-code', 50 + i * 25, {
++      submitted_by: OWNERS[i % OWNERS.length],
++      repository_url: REPOS[i % 2],
++      metadata: { title: TOPICS[(i + 5) % TOPICS.length] },
++      cost_usd_total: Math.round((0.15 + (i % 11) * 0.27) * 100) / 100,
++      cost_incomplete: false,
++      attempts: 1,
++      attempts_with_cost: 1,
++      browser_used: i % 4 === 0,
++    } as Partial<Task>))
++  }
++  return out
++}
++
++// --------------------------------------------------------------------------
++// Workflows: the hard case and 39 more across running, parked, failed, done
++// --------------------------------------------------------------------------
++
++const WF_NAMES = [
++  'nightly-crm-audit', 'roombook-a11y-sweep', 'invoice-export-fix', 'contacts-dedupe', 'search-speedup',
++  'release-notes-draft', 'pricing-page-qa', 'calendar-tz-fix', 'onboarding-copy', 'reports-smoke',
++]
++
++/** Small workflows' step tasks: a chain of 3, states chosen by the workflow's bucket. */
++function smallWorkflows(): { workflows: Workflow[]; tasks: Task[] } {
++  const workflows: Workflow[] = []
++  const tasks: Task[] = []
++  const BUCKETS: Array<{ wf: string; steps: TaskState[] }> = [
++    { wf: 'RUNNING', steps: ['SUCCEEDED', 'RUNNING', 'QUEUED'] },
++    { wf: 'PARKED', steps: ['SUCCEEDED', 'PARKED', 'QUEUED'] },
++    { wf: 'FAILED', steps: ['SUCCEEDED', 'FAILED', 'CANCELLED'] },
++    { wf: 'SUCCEEDED', steps: ['SUCCEEDED', 'SUCCEEDED', 'SUCCEEDED'] },
++  ]
++  for (let i = 0; i < 39; i += 1) {
++    const bucket = BUCKETS[i % 4]!
++    const id = `wf_${hex(700 + i)}${hex(800 + i)}`
++    const title = `${WF_NAMES[i % WF_NAMES.length]}${i >= WF_NAMES.length ? `-${Math.floor(i / WF_NAMES.length) + 1}` : ''}`
++    const stepIds = ['plan', 'do', 'check']
++    const minsAgo = 30 + i * 70
++    const steps: WorkflowStep[] = stepIds.map((s, k) => {
++      const tid = `task_${hex(900 + i * 3 + k)}`
++      const st = bucket.steps[k]!
++      // Live steps of these workflows are not on the Agents list's counts: they are terminal or waiting.
++      const state: TaskState = st === 'RUNNING' ? 'SUCCEEDED' : st
++      tasks.push(mk(tid, state, k === 1 && i % 3 === 0 ? 'claude-code-browser' : 'claude-code', minsAgo - k * 10, {
++        workflow_id: id, step_id: s, depends_on: k === 0 ? [] : [stepIds[k - 1]],
++        submitted_by: OWNERS[i % OWNERS.length], metadata: { title },
++        repository_url: REPOS[i % 2],
++        park_reason: state === 'PARKED' ? 'CI_PENDING' : null,
++        waiting: state === 'PARKED' ? { reason: 'CI_PENDING', summary: 'CI on the pull request: 3 checks pending' }
++          : state === 'QUEUED' ? { reason: 'DEPENDENCY_INCOMPLETE', summary: `Waiting on 1 earlier step: ${stepIds[k - 1]}` } : undefined,
++        cost_usd_total: state === 'SUCCEEDED' || state === 'FAILED' ? 0.4 + k * 0.2 : null,
++      } as Partial<Task>))
++      return {
++        step_id: s, runner_profile: 'claude-code', resource_class: 'standard',
++        depends_on: k === 0 ? [] : [stepIds[k - 1]], input_from: {}, timeout_seconds: 3600, task_id: tid,
++        input: { prompt: `${s} for ${title}` },
++      } as WorkflowStep
++    })
++    workflows.push(wfDoc(id, bucket.wf, steps, OWNERS[i % OWNERS.length]!, at(minsAgo + 6), at(Math.max(1, minsAgo - 25))))
++  }
++  return { workflows, tasks }
++}
++
++function wfDoc(id: string, state: string, steps: WorkflowStep[], by: string, created: string, updated: string,
++  extra: Partial<Workflow> = {}): Workflow {
++  return {
++    workflow_id: id,
++    tenant_id: MOCK_TENANT,
++    state,
++    stored_state: state,
++    state_source: 'derived',
++    rollup: {
++      state, complete: true, reason: null, counts: {}, unreadable_steps: [],
++      unstarted_steps: steps.filter((s) => !s.task_id).map((s) => s.step_id), steps_read: steps.length,
++    },
++    drift: { stored: state, derived: state, agrees: true, reason: null, steps_read: steps.length, unreadable_steps: [], repaired: false },
++    created_at: created,
++    updated_at: updated,
++    submitted_by: by,
++    priority: 0,
++    on_step_failure: 'CONTINUE',
++    cancel_requested: false,
++    steps,
++    ...extra,
++  } as unknown as Workflow
++}
++
++function hardWorkflow(): Workflow {
++  const steps: WorkflowStep[] = []
++  HARD_STAGES.forEach((stage, si) => {
++    HARD_FEATURES.forEach((feature) => {
++      const deps = si === 0 ? [] : [hardStepId(HARD_STAGES[si - 1]!, feature)]
++      steps.push({
++        step_id: hardStepId(stage, feature),
++        runner_profile: 'claude-code-browser',
++        resource_class: 'browser',
++        depends_on: deps,
++        input_from: si === 0 ? {} : { [deps[0]!]: 'report.md' },
++        timeout_seconds: 5400,
++        task_id: hardTaskId(stage, feature),
++        input: { prompt: `${stage} the ${feature} screen from the picked design, in a browser, and open a pull request.` },
++      } as WorkflowStep)
++    })
++  })
++  return wfDoc(HARD_WF, 'RUNNING', steps, PEOPLE.bogdan, at(52), at(1), {
++    after_pull_requests: { pull_requests: [2401, 2402], state: 'waiting' } as unknown as Workflow['after_pull_requests'],
++  })
++}
++
++// --------------------------------------------------------------------------
++// What api.ts reads
++// --------------------------------------------------------------------------
++
++let cache: { tasks: Task[]; workflows: Workflow[] } | null = null
++
++function build(): { tasks: Task[]; workflows: Workflow[] } {
++  if (cache !== null) return cache
++  const small = smallWorkflows()
++  const tasks = [...hardTasks(), ...otherTasks(), ...small.tasks]
++  const byId = new Map(tasks.map((t) => [t.id, t]))
++  const workflows = [hardWorkflow(), ...small.workflows].map((w) => {
++    const counts: Record<string, number> = {}
++    for (const st of w.steps) {
++      const key = !st.task_id ? 'unstarted' : (byId.get(st.task_id)?.state ?? 'unreadable')
++      counts[key] = (counts[key] ?? 0) + 1
++    }
++    return { ...w, rollup: w.rollup ? { ...w.rollup, counts } : w.rollup } as Workflow
++  })
++  cache = { tasks, workflows }
++  return cache
++}
++
++/** Every mock task: the hard case's 41, 24 live, 30 waiting, 110 recent, and 117 small-workflow steps. */
++export function mockTaskRows(): Task[] {
++  return build().tasks
++}
++
++/** Every mock workflow: the hard case first, then 39 across running, parked, failed and done. */
++export function mockWorkflowRows(): Workflow[] {
++  return build().workflows
++}
++
++export const MOCK_SPEND = { workflowUsd: HARD_SPENT_USD, earlierAttemptsUsd: MOCK_EARLIER_ATTEMPTS_USD }
++
++/** Whether a mock task has a live browser session (a RUNNING browser agent). */
++export function mockLiveTask(taskId: string): boolean {
++  if (!mockWorkOn()) return false
++  const t = build().tasks.find((x) => x.id === taskId)
++  return t !== undefined && t.runner_profile === 'claude-code-browser' && t.state === 'RUNNING'
++}
++
++const PRESETS = ['desktop', 'desktop', 'iphone-15', 'desktop', 'ipad-7', 'desktop', 'pixel-8'] as const
++
++/** The device a mock browser agent's session reports, deterministic per id. */
++export function mockDevice(taskId: string): { preset: string; orientation: 'portrait' | 'landscape'; touch: boolean } {
++  const preset = PRESETS[stillIndex(taskId) % PRESETS.length]!
++  const mobile = preset !== 'desktop'
++  return { preset, orientation: mobile && preset !== 'ipad-7' ? 'portrait' : preset === 'ipad-7' ? 'portrait' : 'landscape', touch: mobile }
++}
++
++// --------------------------------------------------------------------------
++// The browser agents' still images: a plausible page per agent, as SVG
++// --------------------------------------------------------------------------
++
++function stillIndex(taskId: string): number {
++  let h = 0
++  for (const c of taskId) h = (h * 31 + c.charCodeAt(0)) >>> 0
++  return h
++}
++
++const KINDS = ['form', 'table', 'dashboard', 'calendar', 'login', 'kanban'] as const
++export type StillKind = (typeof KINDS)[number]
++
++export function stillKind(taskId: string): StillKind {
++  // The hard case draws the page its feature names, so a wall of them reads as different screens.
++  const f = HARD_FEATURES.findIndex((x) => taskId.endsWith(`_${x}`) && taskId.startsWith('task_dpb_'))
++  if (f >= 0) return (['login', 'table', 'calendar', 'table', 'form', 'dashboard', 'form', 'calendar', 'table', 'kanban'] as const)[f]!
++  return KINDS[stillIndex(taskId) % KINDS.length]!
++}
++
++const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
++
++function stillBody(kind: StillKind, w: number, h: number, seed: number): string {
++  const r = (i: number) => ((seed >>> (i % 24)) % 7) / 7
++  const parts: string[] = []
++  const rect = (x: number, y: number, ww: number, hh: number, fill: string, rx = 4) =>
++    parts.push(`<rect x="${x}" y="${y}" width="${ww}" height="${hh}" rx="${rx}" fill="${fill}"/>`)
++  const text = (x: number, y: number, s: string, size = 14, fill = '#1f2933', weight = 400) =>
++    parts.push(`<text x="${x}" y="${y}" font-family="Inter, Arial, sans-serif" font-size="${size}" font-weight="${weight}" fill="${fill}">${esc(s)}</text>`)
++  const top = 56
++  if (kind === 'login') {
++    const cx = w / 2 - 170
++    rect(cx, 150, 340, 330, '#ffffff', 10)
++    text(cx + 30, 200, 'Sign in to Northwind CRM', 20, '#111827', 600)
++    text(cx + 30, 245, 'Email', 13, '#4b5563'); rect(cx + 30, 255, 280, 38, '#f3f4f6')
++    text(cx + 42, 279, 'ana.moreau@example.com', 13, '#374151')
++    text(cx + 30, 320, 'Password', 13, '#4b5563'); rect(cx + 30, 330, 280, 38, '#f3f4f6')
++    rect(cx + 30, 395, 280, 42, '#2563eb', 6); text(cx + 140, 421, 'Sign in', 15, '#ffffff', 600)
++  } else if (kind === 'table') {
++    text(32, top + 44, 'Invoices', 22, '#111827', 600)
++    rect(w - 180, top + 22, 148, 34, '#2563eb', 6); text(w - 160, top + 44, 'New invoice', 14, '#fff', 600)
++    const cols = ['Number', 'Customer', 'Due', 'Amount', 'Status']
++    rect(32, top + 72, w - 64, 36, '#eef2f7', 0)
++    cols.forEach((c, i) => text(48 + i * ((w - 96) / 5), top + 95, c, 13, '#4b5563', 600))
++    for (let row = 0; row < 12; row += 1) {
++      const y = top + 108 + row * 40
++      if (y > h - 40) break
++      rect(32, y, w - 64, 40, row % 2 ? '#ffffff' : '#fafbfc', 0)
++      const vals = [`INV-${1040 + row}`, ['Kenji Sato', 'Ana Moreau', 'Roombook Ltd', 'Lea Fontaine'][row % 4] ?? '', `Oct ${10 + row}`,
++        `$${(120 + row * 37 + Math.round(r(row) * 90)).toFixed(2)}`, row % 3 === 0 ? 'Overdue' : 'Paid']
++      vals.forEach((v: string, i: number) => text(48 + i * ((w - 96) / 5), y + 25, v, 13, i === 4 && row % 3 === 0 ? '#b91c1c' : '#1f2933'))
++    }
++  } else if (kind === 'dashboard') {
++    text(32, top + 44, 'Reports', 22, '#111827', 600)
++    const cw = (w - 64 - 48) / 4
++    ;['Revenue', 'New contacts', 'Bookings', 'Churn'].forEach((label, i) => {
++      rect(32 + i * (cw + 16), top + 68, cw, 92, '#ffffff', 8)
++      text(48 + i * (cw + 16), top + 96, label, 13, '#6b7280')
++      text(48 + i * (cw + 16), top + 136, ['$48.2k', '312', '1,094', '2.1%'][i] ?? '', 26, '#111827', 600)
++    })
++    rect(32, top + 180, w - 64, h - top - 220, '#ffffff', 8)
++    const bars = 18
++    const bw = (w - 128) / bars
++    for (let i = 0; i < bars; i += 1) {
++      const bh = 40 + ((seed >>> (i % 20)) % 9) * 22
++      rect(64 + i * bw, h - 70 - bh, bw * 0.6, bh, '#60a5fa', 2)
++    }
++  } else if (kind === 'calendar') {
++    text(32, top + 44, 'Roombook: October', 22, '#111827', 600)
++    const gw = (w - 64) / 7
++    const gh = (h - top - 110) / 5
++    ;['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach((d, i) => text(40 + i * gw, top + 80, d, 13, '#6b7280', 600))
++    for (let i = 0; i < 35; i += 1) {
++      const x = 32 + (i % 7) * gw
++      const y = top + 92 + Math.floor(i / 7) * gh
++      rect(x + 2, y + 2, gw - 4, gh - 4, '#ffffff', 4)
++      text(x + 10, y + 22, String((i % 31) + 1), 12, '#9ca3af')
++      if ((seed >>> (i % 23)) % 4 === 0) { rect(x + 8, y + 32, gw - 20, 20, '#c7d2fe', 4); text(x + 14, y + 46, 'Room A', 12, '#3730a3') }
++    }
++  } else if (kind === 'kanban') {
++    text(32, top + 44, 'Onboarding', 22, '#111827', 600)
++    const cw = (w - 64 - 32) / 3
++    ;['To do', 'Doing', 'Done'].forEach((c, i) => {
++      rect(32 + i * (cw + 16), top + 68, cw, h - top - 100, '#eef2f7', 8)
++      text(48 + i * (cw + 16), top + 94, c, 14, '#374151', 600)
++      for (let k = 0; k < 4 - i; k += 1) {
++        rect(44 + i * (cw + 16), top + 110 + k * 76, cw - 24, 64, '#ffffff', 6)
++        text(56 + i * (cw + 16), top + 136 + k * 76, TOPICS[(seed + i * 3 + k) % TOPICS.length]!.slice(0, 26), 13)
++      }
++    })
++  } else {
++    text(32, top + 44, 'New contact', 22, '#111827', 600)
++    ;['Full name', 'Email', 'Company', 'Phone', 'Notes'].forEach((label, i) => {
++      text(32, top + 90 + i * 72, label, 13, '#4b5563')
++      rect(32, top + 100 + i * 72, Math.min(520, w - 64), i === 4 ? 60 : 38, '#ffffff')
++      const v = ['Kenji Sato', 'kenji.sato@example.com', 'Northwind', '', ''][i]
++      if (v) text(44, top + 124 + i * 72, v, 13, '#1f2933')
++    })
++    rect(32, top + 470, 120, 40, '#2563eb', 6); text(62, top + 495, 'Save', 15, '#fff', 600)
++  }
++  return parts.join('')
++}
++
++const stillCache = new Map<string, string>()
++
++/** A data: URL of the still image drawn where the live canvas goes, or null when the task has no live browser. */
++export function mockStillUrl(taskId: string, mobile = false): string | null {
++  if (!mockLiveTask(taskId)) return null
++  const key = `${taskId}:${mobile}`
++  const hit = stillCache.get(key)
++  if (hit !== undefined) return hit
++  const [w, h] = mobile ? [393, 852] : [1440, 900]
++  const seed = stillIndex(taskId)
++  const kind = stillKind(taskId)
++  const host = taskId.startsWith('task_dpb_') ? 'staging.northwind-crm.example.com' : 'app.roombook.example.com'
++  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`
++    + `<rect width="${w}" height="${h}" fill="#f5f7fa"/>`
++    + `<rect width="${w}" height="44" fill="#ffffff"/><rect y="44" width="${w}" height="1" fill="#e5e7eb"/>`
++    + `<circle cx="22" cy="22" r="8" fill="#2563eb"/>`
++    + `<text x="40" y="27" font-family="Inter, Arial, sans-serif" font-size="13" fill="#6b7280">${host}</text>`
++    + stillBody(kind, w, h, seed)
++    + `</svg>`
++  const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
++  stillCache.set(key, url)
++  return url
++}
+diff --git a/apps/swarm-ui/src/workredesign/parts.tsx b/apps/swarm-ui/src/workredesign/parts.tsx
+new file mode 100644
+index 0000000..2b898ab
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/parts.tsx
+@@ -0,0 +1,329 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only. Shared building blocks every direction can reuse.
++//
++// Everything reads through the console's own api.ts loaders, which the
++// work-redesign dataset (fixtures.ts) answers; nothing here calls a service.
++import { useEffect, useMemo, useState, type ReactNode } from 'react'
++
++import { loadTasks, loadWorkflowBoard } from '../api'
++import { Chip, Count, LiveChip, StatePill } from '../components'
++import { ownerQuestionsHold, handoffOf } from '../Handoff'
++import { CONCURRENCY_STATES, TERMINAL_STATES, WAITING_STATES, type Task, type Workflow } from '../types'
++import { MOCK_NOW, mockStillUrl, HARD_WF, HARD_SPENT_USD } from './fixtures'
++import type { WorkScreen } from './switches'
++import './workredesign.css'
++
++// --------------------------------------------------------------------------
++// Navigation inside the mock-up: one click, context kept
++// --------------------------------------------------------------------------
++
++/** Where a mock-up screen is: the screen and the agent or workflow it shows. */
++export type WorkAt = { screen: WorkScreen; id: string | null }
++export type WorkNav = (to: WorkAt) => void
++
++// --------------------------------------------------------------------------
++// The data every screen reads: the whole task list and the workflow board
++// --------------------------------------------------------------------------
++
++export type WorkData =
++  | { status: 'loading' }
++  | { status: 'error'; why: string }
++  | { status: 'ok'; tasks: Task[]; taskById: Map<string, Task>; workflows: Workflow[] }
++
++/** The Agents list's page and the Workflows board, read once. */
++export function useWorkData(): WorkData {
++  const [data, setData] = useState<WorkData>({ status: 'loading' })
++  useEffect(() => {
++    let live = true
++    void Promise.all([loadTasks(500, { view: 'summary' }), loadWorkflowBoard()]).then(([t, w]) => {
++      if (!live) return
++      if (t.status !== 'ok' || w.status !== 'ok') {
++        setData({ status: 'error', why: t.status === 'error' ? t.error.message : w.status === 'error' ? w.error.message : 'nothing was read' })
++        return
++      }
++      const tasks = t.data.tasks
++      setData({ status: 'ok', tasks, taskById: new Map(tasks.map((x) => [x.id, x])), workflows: w.data.workflows })
++    })
++    return () => {
++      live = false
++    }
++  }, [])
++  return data
++}
++
++/** The three lists' counts, as the Agents list splits them. */
++export function splitCounts(tasks: Task[]): { live: number; waiting: number; recent: number; browsers: number } {
++  let live = 0, waiting = 0, recent = 0, browsers = 0
++  for (const t of tasks) {
++    if (CONCURRENCY_STATES.has(t.state)) {
++      live += 1
++      if (t.runner_profile === 'claude-code-browser') browsers += 1
++    } else if (WAITING_STATES.has(t.state)) waiting += 1
++    else if (TERMINAL_STATES.has(t.state)) recent += 1
++  }
++  return { live, waiting, recent, browsers }
++}
++
++// --------------------------------------------------------------------------
++// What needs Bogdan: failed steps, owner questions, merges waiting, hand-offs, approvals
++// --------------------------------------------------------------------------
++
++export type NeedItem = {
++  kind: 'failed' | 'question' | 'merge' | 'handoff' | 'approval'
++  /** One line: what, where. */
++  label: string
++  taskId: string | null
++  workflowId: string | null
++}
++
++export const NEED_WORD: Readonly<Record<NeedItem['kind'], string>> = {
++  failed: 'Failed',
++  question: 'Question',
++  merge: 'Merge waiting',
++  handoff: 'Your turn in a browser',
++  approval: 'Approval',
++}
++
++/** Every item that waits on the owner, newest first, from the task list alone. */
++export function needsYou(tasks: Task[], workflowId: string | null = null): NeedItem[] {
++  const out: NeedItem[] = []
++  const inScope = (t: Task) => workflowId === null || t.workflow_id === workflowId
++  for (const t of tasks) {
++    if (!inScope(t)) continue
++    const hold = ownerQuestionsHold(t)
++    if (hold !== null) {
++      for (const q of hold.questions) {
++        out.push({ kind: 'question', label: `${q.step_id ?? q.task_id}: ${q.question ?? 'question not readable'}`, taskId: q.task_id, workflowId: t.workflow_id })
++      }
++      out.push({ kind: 'merge', label: `${t.metadata?.title ?? t.id}: held by ${hold.questions.length} questions`, taskId: t.id, workflowId: t.workflow_id })
++      continue
++    }
++    if (t.state === 'PARKED' && t.park_reason === 'AWAITING_INPUT') {
++      out.push({ kind: 'question', label: `${t.metadata?.title ?? t.id}: asked a question`, taskId: t.id, workflowId: t.workflow_id })
++    }
++    if (t.state === 'FAILED' && t.workflow_id !== null && t.workflow_id !== undefined) {
++      out.push({ kind: 'failed', label: `${t.step_id ?? t.id}: ${t.last_error ?? 'failed'}`, taskId: t.id, workflowId: t.workflow_id })
++    }
++    if (handoffOf(t) !== null) {
++      out.push({ kind: 'handoff', label: `${t.metadata?.title ?? t.id}: ${t.human_wait?.reason ?? 'asks for a person'}`, taskId: t.id, workflowId: t.workflow_id })
++    }
++  }
++  return out
++}
++
++/** The needs-you strip: counts per kind, then (open) one line per item. Approvals are not in this dataset and say so. */
++export function NeedsYou({ items, open, nav }: { items: NeedItem[]; open: boolean; nav: WorkNav }) {
++  const kinds: NeedItem['kind'][] = ['failed', 'question', 'merge', 'handoff']
++  return (
++    <section className="wr-needs" aria-label="Needs you">
++      <div className="wr-needs-head">
++        <h2 className="wr-h">Needs you</h2>
++        {kinds.map((k) => (
++          <Chip key={k} tone={k === 'failed' ? 'bad' : 'park'}>
++            {NEED_WORD[k]} <b>{items.filter((i) => i.kind === k).length}</b>
++          </Chip>
++        ))}
++        <Chip faint title="Approvals are read on Automate › Approvals; this mock-up's dataset has none to count.">
++          Approvals <b>not read here</b>
++        </Chip>
++      </div>
++      {open && (
++        <ul className="wr-needs-list">
++          {items.map((i, n) => (
++            <li key={n}>
++              <span className={`wr-need-kind is-${i.kind}`}>{NEED_WORD[i.kind]}</span>{' '}
++              {i.taskId !== null ? (
++                <button type="button" className="ctl-link" onClick={() => nav({ screen: 'agent', id: i.taskId })}>
++                  {i.label}
++                </button>
++              ) : (
++                i.label
++              )}
++              {i.workflowId && (
++                <>
++                  {' '}
++                  <button type="button" className="ctl-link wr-dim" onClick={() => nav({ screen: 'workflow', id: i.workflowId })}>
++                    workflow
++                  </button>
++                </>
++              )}
++            </li>
++          ))}
++        </ul>
++      )}
++    </section>
++  )
++}
++
++// --------------------------------------------------------------------------
++// Browser agents: the still image drawn where the live canvas goes
++// --------------------------------------------------------------------------
++
++/** One browser agent's picture, marked live as the console marks it, with its name under it. */
++export function BrowserStill({ task, nav, size = 'thumb' }: { task: Task; nav: WorkNav; size?: 'thumb' | 'large' }) {
++  const url = mockStillUrl(task.id)
++  return (
++    <figure className={`wr-still is-${size}`}>
++      <button type="button" className="wr-still-pic" onClick={() => nav({ screen: 'agent', id: task.id })} aria-label={`Open ${task.step_id ?? task.id}`}>
++        {url !== null ? <img src={url} alt={`${task.step_id ?? task.id}: still image of its browser page`} /> : <span className="wr-dim">No picture: not a live browser.</span>}
++        {url !== null && (
++          <span className="wr-still-live">
++            <LiveChip />
++          </span>
++        )}
++      </button>
++      <figcaption>
++        <span className="wr-mono">{task.step_id ?? task.id}</span>
++        {task.human_wait ? <Chip tone="park">your turn</Chip> : null}
++      </figcaption>
++    </figure>
++  )
++}
++
++/** Several browser agents at once; one of them large on demand. */
++export function BrowserWall({ tasks, nav, large = null }: { tasks: Task[]; nav: WorkNav; large?: string | null }) {
++  const [big, setBig] = useState<string | null>(large)
++  const live = tasks.filter((t) => t.runner_profile === 'claude-code-browser' && t.state === 'RUNNING')
++  const bigTask = live.find((t) => t.id === big) ?? null
++  return (
++    <section className="wr-wall" aria-label="Live browsers">
++      <div className="wr-row">
++        <h2 className="wr-h">Live browsers</h2>
++        <Count n={live.length} label="running browser agents" bare />
++      </div>
++      {bigTask && (
++        <div className="wr-wall-big">
++          <BrowserStill task={bigTask} nav={nav} size="large" />
++          <button type="button" className="ctl-link" onClick={() => setBig(null)}>Make it small again</button>
++        </div>
++      )}
++      <div className="wr-wall-grid">
++        {live.map((t) => (
++          <div key={t.id} className="wr-wall-cell">
++            <BrowserStill task={t} nav={nav} />
++            <button type="button" className="ctl-link" onClick={() => setBig(t.id)}>Watch large</button>
++          </div>
++        ))}
++      </div>
++    </section>
++  )
++}
++
++// --------------------------------------------------------------------------
++// A big workflow at a glance: one row per stage, one cell per step
++// --------------------------------------------------------------------------
++
++/** Each step's stage: the length of its longest chain of dependencies. */
++export function stagesOf(w: Workflow): string[][] {
++  const depth = new Map<string, number>()
++  const byId = new Map(w.steps.map((s) => [s.step_id, s]))
++  const d = (id: string, seen: Set<string>): number => {
++    const hit = depth.get(id)
++    if (hit !== undefined) return hit
++    if (seen.has(id)) return 0
++    seen.add(id)
++    const s = byId.get(id)
++    const v = s === undefined || s.depends_on.length === 0 ? 0 : 1 + Math.max(...s.depends_on.map((x) => d(x, seen)))
++    depth.set(id, v)
++    return v
++  }
++  const rows: string[][] = []
++  for (const s of w.steps) {
++    const k = d(s.step_id, new Set())
++    ;(rows[k] ??= []).push(s.step_id)
++  }
++  return rows
++}
++
++/** The stage grid: every step a cell with its state, its pull request and a mark for what needs you. */
++export function StageGrid({ workflow, taskById, nav, selected = null, onSelect }: {
++  workflow: Workflow
++  taskById: Map<string, Task>
++  nav: WorkNav
++  selected?: string | null
++  onSelect?: (stepId: string) => void
++}) {
++  const rows = stagesOf(workflow)
++  const stepById = new Map(workflow.steps.map((s) => [s.step_id, s]))
++  const stageName = (k: number, ids: string[]) => {
++    const prefix = ids[0]?.split('-').slice(0, -1).join('-')
++    return prefix && ids.every((i) => i.startsWith(`${prefix}-`)) ? prefix : `Stage ${k + 1}`
++  }
++  return (
++    <div className="wr-grid" role="table" aria-label={`${workflow.steps.length} steps by stage`}>
++      {rows.map((ids, k) => (
++        <div key={k} className="wr-grid-row" role="row">
++          <span className="wr-grid-stage" role="rowheader">
++            {stageName(k, ids)} <span className="wr-dim">{ids.length}</span>
++          </span>
++          {ids.map((id) => {
++            const step = stepById.get(id)
++            const task = step?.task_id ? taskById.get(step.task_id) : undefined
++            const pr = (task?.result_summary as { git?: { pull_request?: { number: number } } } | null)?.git?.pull_request?.number
++            const asks = (task?.owner_answers ?? []).some((a) => a.choice === null && a.text === null)
++            return (
++              <button
++                key={id}
++                type="button"
++                role="cell"
++                className={`wr-cell is-${(task?.state ?? 'unstarted').toLowerCase()}${selected === id ? ' is-selected' : ''}`}
++                aria-pressed={selected === id}
++                onClick={() => (onSelect ? onSelect(id) : task && nav({ screen: 'agent', id: task.id }))}
++                title={`${id}: ${task ? task.state.toLowerCase() : 'not started'}${pr ? `, pull request #${pr}` : ''}`}
++              >
++                <span className="wr-cell-name">{id.split('-').slice(-1)[0]}</span>
++                <span className="wr-cell-meta">
++                  {task ? <StatePill state={task.state} form="mark" /> : <span className="wr-dim">not started</span>}
++                  {pr ? <span className="wr-mono">#{pr}</span> : null}
++                  {asks ? <span className="wr-ask" aria-label="Open owner question">?</span> : null}
++                </span>
++              </button>
++            )
++          })}
++        </div>
++      ))}
++    </div>
++  )
++}
++
++// --------------------------------------------------------------------------
++// Small pieces
++// --------------------------------------------------------------------------
++
++/** A workflow's spend: the hard case carries the brief's figure; elsewhere the steps' summed cost, or not known. */
++export function workflowSpend(w: Workflow, taskById: Map<string, Task>): string {
++  if (w.workflow_id === HARD_WF) return `$${HARD_SPENT_USD.toFixed(2)}`
++  let sum = 0, known = 0
++  for (const s of w.steps) {
++    const c = s.task_id ? taskById.get(s.task_id)?.cost_usd_total : null
++    if (typeof c === 'number') {
++      sum += c
++      known += 1
++    }
++  }
++  return known === 0 ? 'not known' : `$${sum.toFixed(2)}${known < w.steps.length ? ' so far' : ''}`
++}
++
++/** Minutes since an instant, against the fixture clock: "4 min", "2 h", "3 d". */
++export function ageWords(iso: string | null | undefined): string {
++  if (!iso) return 'not known'
++  const m = Math.max(0, Math.round((MOCK_NOW - Date.parse(iso)) / 60_000))
++  return m < 60 ? `${m} min` : m < 48 * 60 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`
++}
++
++/** A labelled region of the scaffold: a plain heading and its parts. */
++export function Region({ title, note, children }: { title: string; note?: ReactNode; children: ReactNode }) {
++  return (
++    <section className="wr-region" aria-label={title}>
++      <div className="wr-row">
++        <h2 className="wr-h">{title}</h2>
++        {note ? <span className="wr-dim">{note}</span> : null}
++      </div>
++      {children}
++    </section>
++  )
++}
++
++/** The memoised needs list for one scope. */
++export function useNeeds(data: WorkData, workflowId: string | null = null): NeedItem[] {
++  return useMemo(() => (data.status === 'ok' ? needsYou(data.tasks, workflowId) : []), [data, workflowId])
++}
+diff --git a/apps/swarm-ui/src/workredesign/switches.ts b/apps/swarm-ui/src/workredesign/switches.ts
+new file mode 100644
+index 0000000..00024f3
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/switches.ts
+@@ -0,0 +1,48 @@
++// MOCK-HOOK FILE -- work-redesign mock-ups only. The URL switches, read once at load.
++//
++// ?wa=<direction>  base | a | b | c | d | e | f   (absent: today's console, untouched)
++// ?ws=<screen>     agents | agent | workflows | workflow   (default: agents)
++// ?wst=<state>     rest | open | watch | needs | logs     (default: rest)
++// ?wid=<id>        optional: the agent (ws=agent) or workflow (ws=workflow) to show;
++//                  defaults to the hard case's running browser agent / design-picks-build
++// ?wfx=off         serve the console's ordinary fixtures instead of the work-redesign dataset
++// The theme is the console's own switch (Profile, or `data-theme` on <html>); the snapshot kit's
++// frames also take ?theme=light|dark.
++//
++// Read ONCE at module load: App rewrites the address to its canonical form on
++// mount, which drops query keys it does not know.
++
++export type WorkDirection = 'base' | 'a' | 'b' | 'c' | 'd' | 'e' | 'f'
++export type WorkScreen = 'agents' | 'agent' | 'workflows' | 'workflow'
++export type WorkState = 'rest' | 'open' | 'watch' | 'needs' | 'logs'
++
++const DIRECTIONS: readonly WorkDirection[] = ['base', 'a', 'b', 'c', 'd', 'e', 'f']
++const SCREENS: readonly WorkScreen[] = ['agents', 'agent', 'workflows', 'workflow']
++const STATES: readonly WorkState[] = ['rest', 'open', 'watch', 'needs', 'logs']
++
++function pick<T extends string>(raw: string | null, allowed: readonly T[], fallback: T): T {
++  return raw !== null && (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback
++}
++
++const q = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search)
++const rawWa = q.get('wa')
++
++export const WORK_SWITCHES: {
++  /** null: no ?wa, today's console. */
++  wa: WorkDirection | null
++  ws: WorkScreen
++  wst: WorkState
++  wid: string | null
++} = {
++  wa: rawWa === null ? null : pick(rawWa, DIRECTIONS, 'base'),
++  ws: pick(q.get('ws'), SCREENS, 'agents'),
++  wst: pick(q.get('wst'), STATES, 'rest'),
++  wid: q.get('wid'),
++}
++
++/** The address of one mock-up frame: path `/agents` keeps the spine on Work. */
++export function workMockHref(wa: WorkDirection, ws: WorkScreen, wst: WorkState = 'rest', wid?: string): string {
++  const p = new URLSearchParams({ wa, ws, wst })
++  if (wid !== undefined) p.set('wid', wid)
++  return `/agents?${p.toString()}`
++}
+diff --git a/apps/swarm-ui/src/workredesign/workredesign.css b/apps/swarm-ui/src/workredesign/workredesign.css
+new file mode 100644
+index 0000000..c045432
+--- /dev/null
++++ b/apps/swarm-ui/src/workredesign/workredesign.css
+@@ -0,0 +1,46 @@
++/* MOCK-HOOK FILE -- work-redesign mock-ups only. The scaffold's plain layout, on the console's tokens. */
++.wr-root { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; max-width: 100%; }
++.wr-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
++.wr-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
++.wr-col { display: flex; flex-direction: column; gap: var(--ctl-s2); }
++.wr-h { font: 600 var(--t-body) / var(--lh-body) var(--font); margin: 0; color: var(--text); }
++.wr-dim { color: var(--text-dim); font-size: var(--t-meta); }
++.wr-bad { color: var(--bad-ink, var(--s-bad)); margin: 0; }
++.wr-mono { font-family: var(--mono); font-size: var(--t-meta); }
++.wr-region { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
++.wr-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--ctl-s3); align-items: start; }
++@media (max-width: 900px) { .wr-split { grid-template-columns: minmax(0, 1fr); } }
++.wr-inline-agent { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
++.wr-needs { border: 1px solid var(--line); border-radius: var(--radius); padding: var(--ctl-s2) var(--ctl-s3); background: var(--surface); }
++.wr-needs-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
++.wr-needs-list { list-style: none; margin: var(--ctl-s2) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s1); font-size: var(--t-meta); }
++.wr-need-kind { display: inline-block; min-width: 7.5em; color: var(--text-dim); }
++.wr-need-kind.is-failed { color: var(--bad-ink, var(--s-bad)); }
++.wr-wall-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--ctl-s2); }
++.wr-wall-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
++.wr-wall-big { display: flex; flex-direction: column; gap: var(--ctl-s1); max-width: 960px; }
++.wr-still { margin: 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
++.wr-still-pic { position: relative; display: block; padding: 0; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface-2); cursor: pointer; overflow: hidden; aspect-ratio: 16 / 10; width: 100%; }
++.wr-still-pic img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
++.wr-still.is-large .wr-still-pic { max-width: 960px; }
++.wr-still-live { position: absolute; top: 6px; left: 6px; background: var(--surface); border-radius: 999px; padding: 0 6px; }
++.wr-still figcaption { display: flex; gap: var(--ctl-s1); align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.wr-grid { display: flex; flex-direction: column; gap: var(--ctl-s1); overflow-x: auto; }
++.wr-grid-row { display: grid; grid-template-columns: 7em repeat(10, minmax(84px, 1fr)); gap: 4px; align-items: stretch; }
++.wr-grid-stage { font-size: var(--t-meta); color: var(--text); align-self: center; }
++.wr-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 4px 6px; min-width: 0; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); text-align: left; cursor: pointer; }
++.wr-cell.is-running { border-color: var(--s-live); }
++.wr-cell.is-failed { border-color: var(--s-bad); background: var(--s-badb, var(--surface)); }
++.wr-cell.is-parked, .wr-cell.is-queued, .wr-cell.is-unstarted { color: var(--text-dim); }
++.wr-cell.is-selected { outline: 2px solid var(--info); outline-offset: 1px; }
++.wr-cell-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.wr-cell-meta { display: flex; gap: 4px; align-items: center; }
++.wr-ask { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--s-park); color: var(--surface); font-weight: 600; font-size: 12px; }
++/* The still image where the live canvas goes (LiveBrowser's .live-screen). */
++.live-screen .mock-still { display: block; width: 100%; height: 100%; object-fit: contain; }
++/* A link-styled button inside the scaffold: no box, the link's own colour. */
++.wr-root button.ctl-link { border: 0; background: none; padding: 0; font: inherit; color: var(--info); text-decoration: underline; cursor: pointer; text-align: left; }
++.wr-root button.ctl-link.wr-dim { color: var(--text-dim); }
++/* The console's agent drawer, drawn in the page rather than over it. */
++.wr-inline-agent .drawer.ag-split { position: relative; top: auto; right: auto; bottom: auto; left: auto; width: 100%; max-height: none; z-index: auto; box-shadow: none; }
++.wr-inline-agent .ag-divider, .wr-inline-agent .ag-scrim { display: none; }
