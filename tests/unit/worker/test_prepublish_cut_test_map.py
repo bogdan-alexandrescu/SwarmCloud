@@ -22,8 +22,9 @@ from agent_worker import prepublish
 from graphmcp_fixtures import graph_of, write_snapshot
 from test_prepublish_gate import _change, _env, _git, _tool_calls, _tools
 from test_prepublish_graph_gate import MOD, _by_name, _fixture_repo, _node_bins, _snap
-
-pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+# The graph gate's own "git is not installed" skip, not a second marker of its
+# own: docs record the tree's marker counts (test_agent_quality_inventory.py).
+from test_prepublish_graph_gate import pytestmark  # noqa: F401 - read by pytest
 
 IMPORTED = "tests/test_imported.py"
 IMPORTED_UI = "apps/ui/src/Other.test.tsx"
