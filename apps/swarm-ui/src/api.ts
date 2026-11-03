@@ -9190,8 +9190,11 @@ export type GraphCacheReplica =
  * One group of served answer latency (swarm_graph/stats.py `answer_latency`):
  * the middle (p50), slow (p95, p99) and slowest answer of `count` answers.
  * Every figure is null with a count of 0, never a 0 ms that was not measured.
- * `exact` false: several replicas answered, and each percentile is the
- * slowest replica's, an upper bound (graph_cache.py `merge_summaries`).
+ * `exact` true: one replica answered, or every replica that answered served
+ * its histogram counts and the route read each percentile off their sum.
+ * `exact` false: a replica served no counts (mixed versions during a
+ * roll-out), so each percentile is the slowest replica's, an upper bound
+ * (graph_cache.py `merge_summaries`).
  */
 export interface GraphCacheLatencyGroup {
   count: number
