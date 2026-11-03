@@ -170,7 +170,7 @@ def test_the_build_stage_checks_and_sets_up_gstack_at_its_final_path(path: Path,
     # setup writes there (a Stop hook, ~/.claude.json, ~/.gstack) ships.
     assert re.search(r'HOME="\$\{scratch\}/home"', run) and re.search(r'GSTACK_STATE_ROOT="\$\{scratch\}/', run)
     check = run.index("gstack-layers check")
-    staged = run.index(f"gstack-layers stage")
+    staged = run.index("gstack-layers stage")
     assert check < staged, "the lists are staged before they are checked"
     assert "--measure /tmp/gstack-build/gstack_packaging_measure.py" in run
     assert f"--list {listed} --out /out/gstack" in run
