@@ -107,9 +107,32 @@ fix a timeout. So:
   section of the pull request.
 * a guard run that TIMED OUT (`guards_timed_out`: the script's `ran past` line,
   or this runner's kill) is reported as a timeout, is left out of the fix
-  prompt, and runs once more as the parts the script advised
-  (`guards_parts`), each its own command under the check limit -- never
-  as-is. Parts that time out too are published as a timeout.
+  prompt, and runs once more in at least the parts the script advised
+  (`guards_parts`) -- never as-is. Under the time box below, only a script
+  that could not list its selection still runs as one command and can time
+  out that way.
+
+THE GUARD RUN IS TIME-BOXED AND ITS PARTS RUN SIDE BY SIDE (GUARDS-TIMEBOX,
+owner decision 2026-11-03, "1+3"). Measured over each task's final attempt,
+72 hours before the gate change against 22.5 hours after: builder steps went
+from 8.5 to 15.6 minutes of gate a run (the slowest tenth 36.8 to 64.3), 96%
+of it the guard check, its shards one after another (90th percentile 79.5
+minutes). So `timeboxed_guards`:
+
+* runs the guards RELATED to the files the step changed (the selection
+  `scripts/related-tests.sh` prints, within the script's own `--list`) first,
+  with the contract-parity check and the stylesheet guards, as one command
+  on every CPU (`changed-guards.sh --only`);
+* then the rest, cut in the listing's order into parts of about equal CI
+  weight (`cut_in_order`, `GUARDS_WEIGHTS`), as many side by side as the pod
+  has CPUs (`pod_cpus`: affinity, cgroup CPU limit, the platform's
+  `PYTEST_XDIST_AUTO_NUM_WORKERS`), each with its share of them
+  (`--workers`) -- and only while `GUARDS_BUDGET_SECONDS` of wall time lasts;
+* names what the budget did not reach LEFT TO CI, in the round's record
+  (`left_to_ci` on the guard check) and in the advisory section of the pull
+  request, never as passed. A part stopped at the budget is not a timeout;
+  a failure it printed before the stop still fails the check, and every
+  failing part's output reaches the fix prompt.
 
 A CHECK THAT CANNOT RUN IS NOT A FAILURE. A tool missing from the image,
 `tflint --init` that cannot reach its plugin source, an unknown base: the check
@@ -227,6 +250,7 @@ import stat
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -343,6 +367,40 @@ _GUARDS_SHARDS = re.compile(r"--shard 1/(\d+)")
 #: Parts to split a timed-out run into when its output advised none: the
 #: script's own minimum (`parts` in changed-guards.sh).
 GUARDS_MIN_PARTS = 2
+#: THE GUARD BUDGET (GUARDS-TIMEBOX, owner decision 2026-11-03, "1+3"): the
+#: wall time the changed-guards check may take, related guards included.
+#: Measured over each task's final attempt, 72 h before the gate change
+#: against 22.5 h after: builder steps went from 8.5 to 15.6 minutes of gate
+#: a run (the slowest tenth 36.8 to 64.3), 96% of it this check, its shards
+#: one after another (90th percentile 79.5 minutes). Ten minutes is the limit
+#: one check already had (`CHECK_TIMEOUT_SECONDS`): the related guards, the
+#: ones a change most often turns red, run first, and what the budget does
+#: not reach is LEFT TO CI -- named, never passed -- which runs all of it.
+GUARDS_BUDGET_SECONDS = 600.0
+#: Parts cut per CPU the rest of the selection runs on: three, so a budget
+#: that runs out stops at most the last third of each CPU's share, and a part
+#: that ends early hands its CPU to the next.
+GUARDS_PARTS_PER_SLOT = 3
+#: The lightest part worth its own command, in CI-seconds: each part pays the
+#: script's selection (~4 s measured 2026-11-03) and a pytest start before its
+#: first test, so a part under ~30 CI-seconds spends a quarter of itself there.
+GUARDS_MIN_PART_WEIGHT = 30.0
+#: Entries left to CI named in the advisory section; the rest are counted.
+GUARDS_LEFT_SHOWN = 40
+#: The related selection (`scripts/related-tests.sh`): the tests the files the
+#: step changed reach, the ones the time-boxed guard run runs first.
+RELATED_SCRIPT = "scripts/related-tests.sh"
+#: CI's per-file weights (`DURATIONS` in scripts/changed-guards.sh), by which
+#: the rest is cut into parts of about equal weight.
+GUARDS_WEIGHTS = "tests/unit/scripts/unit_test_durations.json"
+#: The `--list` lines that are not test files: the contract-parity command and
+#: a swarm-ui stylesheet guard (`apps/swarm-ui/<vitest file>`).
+_GUARDS_PARITY = re.compile(r"^bash \S+\.sh$")
+_GUARDS_STYLE = re.compile(r"^apps/swarm-ui/\S+\.(?:test|spec)\.[cm]?[jt]sx?$")
+#: Where the container's CPU limit is read (`pod_cpus`).
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+#: The platform's test-worker count for the pod, which `pytest -n auto` reads.
+XDIST_WORKERS_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 
 #: The check that reports `.swarm/test-services.toml` and the services it
 #: names, when there is something to report (TS-GATE, #1627; design §5.3).
@@ -540,6 +598,8 @@ class Outcome:
     reason: str | None = None
     #: A failure by running out of time, which no fix turn can fix.
     timed_out: bool = False
+    #: What the time-boxed guard run did not reach: left to CI, never passed.
+    left_to_ci: tuple[str, ...] = ()
 
     def record(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -552,6 +612,8 @@ class Outcome:
             out["reason"] = self.reason
         if self.timed_out:
             out["timed_out"] = True
+        if self.left_to_ci:
+            out["left_to_ci"] = list(self.left_to_ci)
         return out
 
 
@@ -677,28 +739,6 @@ def guards_pass_on(repo: Path, base: str, *, runner: Runner = run_command,
 GUARDS_LIST_SECONDS = 120.0
 
 
-def guards_split(repo: Path, base: str, *, runner: Runner, env: Mapping[str, str],
-                 timeout: float = GUARDS_LIST_SECONDS) -> int:
-    """The parts the guard script advises for this selection BEFORE it runs,
-    or 0 when one run can hold it (#2981).
-
-    THE THRESHOLD IS THE SCRIPT'S OWN: `changed-guards.sh --list` prints its
-    `--shard 1/<n>` hint when the selection weighs more than its
-    `SHARD_HINT_WEIGHT` (540 CI-seconds, ~400 s of wall clock in a SwarmCloud
-    container, the 540 s pytest limit less a quarter). Unsharded, such a
-    selection runs its parts in turn inside ONE command -- up to n x 540 s --
-    so under the gate's 600 s check limit it was always killed: measured on
-    #2981, every one of 15 steps burned its first 600 s that way (645-681
-    files) and only then ran as 10 shards. The weight is read from the
-    script, never restated here, so the gate and the script cannot disagree."""
-    if not (repo / GUARDS_SCRIPT).is_file():
-        return 0
-    ran = runner(["bash", GUARDS_SCRIPT, "--base", base, "--list"], repo, env, timeout)
-    if ran.code != 0 or ran.timed_out or not _GUARDS_SHARDS.search(ran.output):
-        return 0
-    return guards_parts(ran.output)
-
-
 def adds_nothing(repo: Path, base: str, patches: Sequence[str | Path], *,
                  runner: Runner = run_command, env: Mapping[str, str] | None = None
                  ) -> str | None:
@@ -740,32 +780,246 @@ def adds_nothing(repo: Path, base: str, patches: Sequence[str | Path], *,
             "checks on it, and CI is the gate")
 
 
-def _sharded_guards(argv: Sequence[str], parts: int, remaining: Callable[[], float]
-                    ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
-    """The guard script as `parts` commands, `--shard 1/n` ... `--shard n/n`,
-    each under the check limit: how a timed-out run runs again.
+@dataclass
+class GuardsRun:
+    """What one time-boxed guard run did (`timeboxed_guards`): the test files
+    and checks it left to CI, and its notes for the advisory section."""
 
-    A passing part is one summary line, its last; the failing and timed-out
-    parts follow in full, then the budget note. `clean_output` keeps only
-    the END of the output for the fix prompt and the pull request, so a long
-    passing part after a failing one cut the failure away (#2927)."""
+    notes: list[str] = field(default_factory=list)
+    left_to_ci: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class GuardsListing:
+    """`changed-guards.sh --list`: the selected test files, in the script's
+    order (the fixed guards first), and the extra lines it runs -- the
+    contract-parity check and the swarm-ui stylesheet guards."""
+
+    tests: tuple[str, ...]
+    extras: tuple[str, ...]
+
+
+def parse_guards_listing(output: str) -> GuardsListing:
+    """The entries of a `--list` output, each once. The script's own notes
+    (`==>`, `warn`) are prose and never match."""
+    tests: list[str] = []
+    extras: list[str] = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.endswith(_PY_SUFFIX) and " " not in line:
+            if line not in tests:
+                tests.append(line)
+        elif (_GUARDS_PARITY.match(line) or _GUARDS_STYLE.match(line)) and line not in extras:
+            extras.append(line)
+    return GuardsListing(tuple(tests), tuple(extras))
+
+
+def parse_related(output: str) -> set[str]:
+    """The pytest files `related-tests.sh` names: its first block, one a line,
+    before the blank line and the commands."""
+    related: set[str] = set()
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line and related:
+            break
+        if line.endswith(_PY_SUFFIX) and " " not in line:
+            related.add(line)
+    return related
+
+
+def _cgroup_cpus(root: Path) -> int | None:
+    """The CPUs the container's CPU limit allows, whole: cgroup v2's
+    `cpu.max`, else v1's CFS quota; None when unlimited or unreadable."""
+    try:
+        quota, period = (root / "cpu.max").read_text(encoding="utf-8").split()[:2]
+        return None if quota == "max" else max(1, int(quota) // int(period))
+    except (OSError, ValueError):
+        pass
+    try:
+        quota_us = int((root / "cpu" / "cpu.cfs_quota_us").read_text(encoding="utf-8"))
+        period_us = int((root / "cpu" / "cpu.cfs_period_us").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return None if quota_us <= 0 or period_us <= 0 else max(1, quota_us // period_us)
+
+
+def pod_cpus(env: Mapping[str, str], *, cgroup: Path = CGROUP_ROOT) -> int:
+    """The CPUs the guard parts may use side by side: the CPUs this process
+    may run on, bounded by the container's CPU limit and by
+    `PYTEST_XDIST_AUTO_NUM_WORKERS`, the test-worker count the platform sets
+    for this pod's memory (what `pytest -n auto` already reads). Whatever the
+    resource class gives the pod, so a larger class runs more parts at once
+    with no change here."""
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpus = os.cpu_count() or 1
+    limit = _cgroup_cpus(cgroup)
+    if limit is not None:
+        cpus = min(cpus, limit)
+    cap = str(env.get(XDIST_WORKERS_ENV, "")).strip()
+    if cap.isdigit() and int(cap) > 0:
+        cpus = min(cpus, int(cap))
+    return max(1, cpus)
+
+
+def guards_weights(repo: Path) -> Callable[[str], float]:
+    """Each test file's CI-seconds (`GUARDS_WEIGHTS`), a file it does not
+    record at the median, as the script weighs them; 1 each without it."""
+    try:
+        raw = json.loads((repo / GUARDS_WEIGHTS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    known = {str(k): float(v) for k, v in raw.items()
+             if isinstance(v, (int, float))} if isinstance(raw, dict) else {}
+    ordered = sorted(known.values())
+    median = ordered[len(ordered) // 2] if ordered else 1.0
+    return lambda path: known.get(path, median)
+
+
+def cut_in_order(files: Sequence[str], parts: int, weight: Callable[[str], float]
+                 ) -> list[list[str]]:
+    """`files` as at most `parts` runs of neighbours of about equal weight, in
+    their order: the script lists its fixed guards first, so they run first
+    and a budget that runs out drops the end of the list, never its head."""
+    if not files:
+        return []
+    parts = max(1, min(parts, len(files)))
+    total = sum(weight(f) for f in files) or float(len(files))
+    out: list[list[str]] = [[]]
+    done = 0.0
+    for name in files:
+        # A file starts the next part when its middle lies past this part's share.
+        if out[-1] and len(out) < parts and done + weight(name) / 2 >= total * len(out) / parts:
+            out.append([])
+        out[-1].append(name)
+        done += weight(name)
+    return out
+
+
+def _no_timeout_marker(output: str) -> str:
+    """A part's output with the timeout lines reworded: a part the BUDGET
+    stopped is left to CI, never the check's timeout, and a failure printed
+    before the stop must still reach the fix turn (`run_checks` reads these
+    markers as a timeout no turn can fix)."""
+    return _GUARDS_TIMEOUT.sub("[stopped: the guard budget ran out]", output)
+
+
+def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
+                     remaining: Callable[[], float], clock: Callable[[], float] = time.monotonic,
+                     budget: float = GUARDS_BUDGET_SECONDS, min_parts: int = 0,
+                     related_argv: Sequence[str] | None = None, scratch: Path | None = None
+                     ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
+    """The guard script, time-boxed and in parallel (GUARDS-TIMEBOX, owner
+    decision 2026-11-03).
+
+    1. `--list` names the selection; `related_argv` (`related-tests.sh`) names
+       the tests related to the files the step changed. Those of the selection,
+       with the parity check and stylesheet guards, run FIRST, as one command
+       on every CPU (`--only`).
+    2. The rest runs as parts cut in the listing's order (`cut_in_order`),
+       `min(cpus, parts)` of them side by side, each `--workers cpus // slots`,
+       a part started only while the budget lasts: `budget` seconds of wall
+       time from the start of the check, never past the step's own
+       (`remaining` less `CHECK_MARGIN_SECONDS`).
+    3. A part not started, or stopped at the budget with no failure of its
+       own, is LEFT TO CI: its entries go to `report.left_to_ci`, never
+       counted as passed. A failing part fails the check, with its output for
+       the fix turn. A list the script cannot give runs the script as one
+       command, as before."""
     def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
-        status, passed, failed = PASSED, [], []
-        for k in range(1, parts + 1):
-            left = remaining()
-            if left < MIN_GATE_SECONDS:
-                note = f"[the step's budget ran out before part {k} of {parts}]"
-                return ERROR, "\n".join([*passed, *failed, note])
-            ran = runner([*argv, "--shard", f"{k}/{parts}"], repo, env,
-                         max(MIN_CHECK_SECONDS, min(timeout, left - CHECK_MARGIN_SECONDS)))
-            if ran.code != 0 or ran.timed_out:
-                status = FAILED
-                failed.append(f"--- part {k}/{parts} ---\n{ran.output}")
-            else:
-                last = next((line.strip() for line in reversed(ran.output.splitlines())
+        end = clock() + min(budget, timeout)
+
+        def left() -> float:
+            return min(end - clock(), remaining() - CHECK_MARGIN_SECONDS)
+
+        listed = runner([*argv, "--list"], repo, env,
+                        max(MIN_CHECK_SECONDS, min(GUARDS_LIST_SECONDS, left())))
+        listing = parse_guards_listing(listed.output) if (
+            listed.code == 0 and not listed.timed_out) else GuardsListing((), ())
+        if not listing.tests and not listing.extras:
+            # Nothing changed, or no list: the script as one command decides.
+            return _verdict(runner(argv, repo, env, max(MIN_CHECK_SECONDS, left())))
+        related: set[str] = set()
+        if related_argv is not None and (repo / RELATED_SCRIPT).is_file():
+            ran = runner(list(related_argv), repo, env,
+                         max(MIN_CHECK_SECONDS, min(GUARDS_LIST_SECONDS, left())))
+            if ran.code == 0 and not ran.timed_out:
+                related = parse_related(ran.output)
+        first = [t for t in listing.tests if t in related] + list(listing.extras)
+        rest = [t for t in listing.tests if t not in related]
+        weight = guards_weights(repo)
+        total = sum(weight(t) for t in rest)
+        count = max(min_parts, min(cpus * GUARDS_PARTS_PER_SLOT,
+                                   math.ceil(total / GUARDS_MIN_PART_WEIGHT)))
+        parts = cut_in_order(rest, count, weight)
+        slots = max(1, min(cpus, len(parts)))
+        workers = max(1, cpus // slots)
+        folder = Path(tempfile.mkdtemp(prefix="prepublish-guards-",
+                                       dir=scratch or _outside(repo, env)))
+
+        def one(label: str, entries: Sequence[str], workers: int | None) -> tuple[str, str]:
+            limit = left()
+            if limit < MIN_CHECK_SECONDS:
+                return "not_started", ""
+            listfile = folder / f"{label.replace('/', '-')}.txt"
+            listfile.write_text("".join(f"{e}\n" for e in entries), encoding="utf-8")
+            more = [] if workers is None else ["--workers", str(workers)]
+            ran = runner([*argv, "--only", str(listfile), *more], repo, env, limit)
+            if ran.code == 0 and not ran.timed_out:
+                return "passed", ran.output
+            if ((ran.timed_out or guards_timed_out(ran.output))
+                    and not failed_before_timeout(ran.output)):
+                return "stopped", ran.output
+            return "failed", ran.output
+
+        results: list[tuple[str, Sequence[str], str, str]] = []
+        try:
+            if first:
+                kind, output = one("related", first, None)
+                results.append(("the related guards", first, kind, output))
+            if parts:
+                with ThreadPoolExecutor(max_workers=slots) as pool:
+                    futures = [pool.submit(one, f"part-{k}-of-{len(parts)}", part, workers)
+                               for k, part in enumerate(parts, 1)]
+                    results += [(f"part {k}/{len(parts)}", part, *future.result())
+                                for k, (part, future) in enumerate(zip(parts, futures), 1)]
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+        passed, failed, left_out = [], [], []
+        for label, entries, kind, output in results:
+            if kind == "passed":
+                last = next((line.strip() for line in reversed(output.splitlines())
                              if line.strip()), "")
-                passed.append(f"--- part {k}/{parts} passed --- {last}".rstrip())
-        return status, "\n".join([*passed, *failed])
+                passed.append(f"--- {label} passed --- {last}".rstrip())
+            elif kind == "failed":
+                failed.append(f"--- {label} ---\n{_no_timeout_marker(output)}")
+            else:
+                left_out += entries
+        report.left_to_ci[:] = left_out
+        ran_files = len(listing.tests) - sum(1 for e in left_out if e in listing.tests)
+        note = (f"ran {len(first) - len(listing.extras)} related test file(s) first, then "
+                f"{len(rest)} more as {len(parts)} part(s), {slots} at a time on {cpus} "
+                f"CPU(s) with {workers} pytest worker(s) each, within a {int(min(budget, timeout))} s "
+                f"budget: {ran_files} of {len(listing.tests)} test file(s) ran")
+        if left_out:
+            shown = ", ".join(f"`{e}`" for e in left_out[:GUARDS_LEFT_SHOWN])
+            more = (f" and {len(left_out) - GUARDS_LEFT_SHOWN} more"
+                    if len(left_out) > GUARDS_LEFT_SHOWN else "")
+            note += (f"; {len(left_out)} not run in time are LEFT TO CI, not passed: "
+                     f"{shown}{more}")
+        report.notes.append(note + ".")
+        summary = [*passed, *failed]
+        if left_out:
+            summary.append(f"[{len(left_out)} guard entr(ies) not run within the budget: "
+                           "left to CI]")
+        if failed:
+            return FAILED, "\n".join(summary)
+        if not passed:
+            return SKIPPED, (f"the guard budget ran out before any part ran; "
+                             f"{len(left_out)} entr(ies) left to CI")
+        return PASSED, "\n".join(summary)
     return run
 
 
@@ -2294,6 +2548,8 @@ class Gate:
     #: The paths a check changed, put back (or not) after its round (#1964).
     _restored: set[str] = field(default_factory=set, init=False, repr=False)
     _unrestored: set[str] = field(default_factory=set, init=False, repr=False)
+    #: This round's time-boxed guard run (`timeboxed_guards`), or None.
+    _guards_run: GuardsRun | None = field(default=None, init=False, repr=False)
 
     def run(self) -> dict[str, Any]:
         record = self.record
@@ -2491,6 +2747,7 @@ class Gate:
             services.stop()
         if services.outcome is not None:
             outcomes.insert(0, services.outcome)
+        self._left_to_ci(outcomes)
         self._restore(state)
         self.record["rounds"].append([o.record() for o in outcomes])
         self.log.info("pre-publish checks ran", changed_files=len(files),
@@ -2570,31 +2827,35 @@ class Gate:
 
     def _guards_check(self, check: Check, base: str, parts: int) -> Check:
         """The guard script's check for this round: skipped when a run already
-        passed on this tree from this base, else as `parts` shards after a
-        timeout, else as selected."""
-        if check.run is None:
+        passed on this tree from this base, else time-boxed and in parallel
+        (`timeboxed_guards`), in at least `parts` parts after a timeout."""
+        self._guards_run = None
+        if check.run is None or not (self.repo / GUARDS_SCRIPT).is_file():
             return check
         why = guards_pass_on(self.repo, base, runner=self.runner, env=self.env)
         if why:
             self._guards.append(f"skipped: {why}.")
             self.log.info("the guard script already passed on this tree; not run again")
             return Check(check.name, check.files, check.command, skipped=why)
-        why = "the previous run timed out"
-        if not parts:
-            parts = guards_split(self.repo, base, runner=self.runner, env=self.env,
-                                 timeout=max(MIN_CHECK_SECONDS, min(
-                                     GUARDS_LIST_SECONDS,
-                                     self.remaining() - CHECK_MARGIN_SECONDS)))
-            why = "the script said its selection is too heavy for one run"
-        if parts:
-            argv = ["bash", GUARDS_SCRIPT, "--base", base]
-            shards = " ... ".join(f"--shard {k}/{parts}" for k in (1, parts))
-            self._guards.append(f"{why}, so this round ran it as {parts} "
-                                f"parts ({shards}), each its own command under the "
-                                f"{int(CHECK_TIMEOUT_SECONDS)} s check limit.")
-            return Check(check.name, check.files, f"{' '.join(argv)} {shards}",
-                         run=_sharded_guards(argv, parts, self.remaining))
-        return check
+        argv = ["bash", GUARDS_SCRIPT, "--base", base]
+        self._guards_run = GuardsRun(notes=self._guards)
+        return Check(check.name, check.files, check.command, run=timeboxed_guards(
+            argv, report=self._guards_run, cpus=pod_cpus(self.env), remaining=self.remaining,
+            clock=self.clock, min_parts=parts,
+            related_argv=["bash", RELATED_SCRIPT, "--base", base]))
+
+    def _left_to_ci(self, outcomes: Sequence[Outcome]) -> None:
+        """The guard entries the budget did not reach, on the guard check's
+        outcome and so in the round's record: left to CI, never passed."""
+        run = self._guards_run
+        if run is None or not run.left_to_ci:
+            return
+        for outcome in outcomes:
+            if outcome.name == GUARDS_CHECK:
+                outcome.left_to_ci = tuple(run.left_to_ci)
+                if outcome.status != SKIPPED:
+                    outcome.reason = (f"{len(run.left_to_ci)} guard entr(ies) not run within "
+                                      f"the {int(GUARDS_BUDGET_SECONDS)} s budget: left to CI")
 
     # -- the rebase ---------------------------------------------------------
 

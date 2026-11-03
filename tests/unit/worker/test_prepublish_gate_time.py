@@ -10,8 +10,9 @@ while its gate was still running. What holds now:
 * a branch that adds nothing of the step's own -- no change at all, or exactly
   its staged input patch applied to its base -- runs no checks, and the record
   says why (`adds_nothing`); read from git, never from the step's name;
-* a selection the guard script itself says is too heavy for one run starts
-  as the parts it advises (`guards_split`);
+* a selection too heavy for one run starts as parts, never as one command
+  that runs its parts in turn (GUARDS-TIMEBOX since 2026-11-03: the parts run
+  side by side, `test_prepublish_guards_timebox.py`);
 * a check killed at its limit returns even when a process it started left
   its process group and holds the output pipe open (`run_command`'s drain).
 
@@ -192,7 +193,7 @@ def test_a_patch_that_does_not_reproduce_the_tree_is_not_a_skip(lane):
 
 
 # ---------------------------------------------------------------------------
-# 2. A selection too heavy for one run starts sharded
+# 2. A selection too heavy for one run starts as parts, side by side
 # ---------------------------------------------------------------------------
 
 
@@ -206,27 +207,29 @@ def _heavy(lane: dict[str, Any], seconds: int) -> None:
     _git(lane["repo"], "commit", "-q", "-m", "change")
 
 
-def test_a_selection_the_script_says_is_too_heavy_starts_as_its_parts(lane):
-    _heavy(lane, 400)  # 1,600 CI-seconds: the script advises 3 parts of 540
+def test_a_heavy_selection_starts_as_parts_never_as_one_command(lane):
+    _heavy(lane, 400)  # 1,600 CI-seconds: one part per guard file
     record = _gate(lane).run()
     (round_,) = record["rounds"]
     (guards,) = [c for c in round_ if c["name"] == "changed-guards"]
-    # MUTATION: dropping `guards_split` from `Gate._guards_check` runs it
-    # unsharded first (one command, its parts in turn inside it, which the
-    # 600 s check limit killed on every step of #2981) and turns this red.
-    (note,) = record["guards"]
-    assert "too heavy for one run" in note and "--shard 1/3 ... --shard 3/3" in note
+    # MUTATION: running the selection unsharded first (one command, its parts
+    # in turn inside it, which the 600 s check limit killed on every step of
+    # #2981) turns this red: one call naming every guard.
+    calls = _calls(lane)
+    assert len(calls) == len(GUARDS), calls
+    assert all(sum(g in call for g in GUARDS) == 1 for call in calls)
     assert guards["status"] == "passed"
-    assert len(_calls(lane)) == 3
+    (note,) = record["guards"]
+    assert f"as {len(GUARDS)} part(s)" in note
     advisory = (lane["tmp"] / "artifacts" / prepublish.ADVISORY_SECTION_NAME).read_text()
-    assert "too heavy for one run" in advisory
+    assert f"as {len(GUARDS)} part(s)" in advisory
 
 
-def test_a_selection_one_run_holds_runs_as_one_command(lane):
-    _heavy(lane, 10)
+def test_a_light_selection_runs_as_one_part(lane):
+    _heavy(lane, 5)
     record = _gate(lane).run()
     (guards,) = [c for c in record["rounds"][0] if c["name"] == "changed-guards"]
-    assert record["guards"] == [] and guards["status"] == "passed"
+    assert guards["status"] == "passed"
     assert len(_calls(lane)) == 1
 
 
@@ -270,16 +273,26 @@ def test_a_check_killed_at_its_limit_returns_though_a_process_it_started_holds_i
 
 
 def test_a_part_never_starts_with_less_than_the_gate_needs(lane):
-    """The parts stop once less than `MIN_GATE_SECONDS` is left, and each part
-    keeps `CHECK_MARGIN_SECONDS` back from the deadline."""
+    """The parts stop once less than `MIN_CHECK_SECONDS` is left of the step
+    (each keeps `CHECK_MARGIN_SECONDS` back from its deadline), and what they
+    did not reach is left to CI."""
+    _heavy(lane, 400)
     given: list[float] = []
-    left = iter([3000.0, 400.0, 100.0])
+    left = iter([3000.0, 3000.0, 3000.0, 400.0] + [30.0] * 10)
 
     def runner(argv, cwd, env, timeout):
+        if "--list" in argv:
+            return prepublish.run_command(argv, cwd, env, timeout)
         given.append(timeout)
         return prepublish.Ran(0, "ok")
 
-    run = prepublish._sharded_guards(["bash", prepublish.GUARDS_SCRIPT], 3, lambda: next(left))
+    report = prepublish.GuardsRun()
+    run = prepublish.timeboxed_guards(["bash", prepublish.GUARDS_SCRIPT, "--base", lane["base"]],
+                                      report=report, cpus=1, remaining=lambda: next(left))
     status, output = run(runner, lane["repo"], lane["env"], 600.0)
-    assert given == [600.0, 400.0 - prepublish.CHECK_MARGIN_SECONDS]
-    assert status == prepublish.ERROR and "before part 3 of 3" in output
+    # The related run (parity alone here) and part 1 get the full limit; part
+    # 2 starts with 400 s left of the step, less the margin; part 3 never.
+    assert len(given) == 3, given
+    assert given[2] == pytest.approx(400.0 - prepublish.CHECK_MARGIN_SECONDS)
+    assert status == prepublish.PASSED and report.left_to_ci == [GUARDS[-1]]
+    assert "left to CI" in output
