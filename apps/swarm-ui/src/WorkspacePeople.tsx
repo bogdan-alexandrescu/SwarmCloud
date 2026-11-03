@@ -192,6 +192,13 @@ function PeopleLead({ state, inviteId }: { state: Result<WorkspaceRoles>; invite
  */
 type PeopleView = 'roles' | 'members'
 
+/**
+ * Which of the Roles view's cards to draw: `all`, Config › People and roles as
+ * it stands; `people`, one workspace's People tab, where the page's own Roles
+ * tab holds what each role permits, Set the default and Role events.
+ */
+export type PeoplePart = 'all' | 'people'
+
 const PEOPLE_TABS: readonly TabDef[] = [
   { key: 'roles', label: 'Roles' },
   { key: 'members', label: "Members' GitHub" },
@@ -236,7 +243,19 @@ function usePlatformAdmin(): boolean | null {
   return admin
 }
 
-export function WorkspacePeopleScreen({ view: routed }: { view?: string | null } = {}) {
+/**
+ * EMBEDDED (lane workspace-admin-page; part of #2688): drawn as the People tab
+ * of one workspace's page (WorkspacePage.tsx), which carries the heading and
+ * the tabs, so this screen draws neither its "People and roles" heading nor
+ * its Roles / Members' GitHub strip, and shows the view `view` names; nothing
+ * is written into the address bar.
+ *
+ * PART (owner's pick, PR #3128 question 0: split the screen): `part="people"`
+ * draws the roster, Give a person their own role and the join cards only, so
+ * the page's Roles tab shows the permits, the default and the role events
+ * once rather than on both tabs.
+ */
+export function WorkspacePeopleScreen({ view: routed, embedded = false, part = 'all' }: { view?: string | null; embedded?: boolean; part?: PeoplePart } = {}) {
   const named = peopleViewOf(routed)
   const [view, setViewState] = useState<PeopleView>(named)
   // A new routed address names its tab; a tab picked here is written in place
@@ -253,12 +272,12 @@ export function WorkspacePeopleScreen({ view: routed }: { view?: string | null }
   }
   return (
     <div className="pk-page wp-page">
-      <PageHead title="People and roles" />
+      {!embedded && <PageHead title="People and roles" />}
       {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
-      {(admin === true || view === 'members') && (
+      {!embedded && (admin === true || view === 'members') && (
         <Tabs tabs={PEOPLE_TABS} current={view} label="People and roles" className="cfg-parts" onSelect={(k) => setView(k === 'members' ? 'members' : 'roles')} />
       )}
-      {view === 'members' ? <Members /> : <RolesPage />}
+      {view === 'members' ? <Members /> : <RolesPage part={part} />}
     </div>
   )
 }
@@ -282,8 +301,12 @@ type Note = { at: NoteAt; text: string; bad: boolean }
  *
  * Every card reads the one roles read. Each write's outcome is said in the
  * card that made it (`Note`), and every write re-reads.
+ *
+ * `part="people"` drops what each role permits, Set the default and Role
+ * events (the workspace page's Roles tab draws them), and draws Give a person
+ * their own role alone.
  */
-function RolesPage() {
+function RolesPage({ part }: { part: PeoplePart }) {
   const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
   const inviteId = useId()
   const [note, setNote] = useState<Note | null>(null)
@@ -291,6 +314,7 @@ function RolesPage() {
   const data = state.status === 'ok' || state.status === 'stale' ? state.data : null
   const group = data !== null && data.kind === 'group'
   const readOnly = group && !data.can_manage
+  const whole = part === 'all'
 
   /** One write: its outcome in words, or the API's refusal, and a fresh read on success. */
   async function act<T>(at: NoteAt, run: () => Promise<Result<T>>, said: (answer: T) => string, notDone: string): Promise<boolean> {
@@ -306,11 +330,19 @@ function RolesPage() {
   }
   const said = (at: NoteAt) => (note !== null && note.at === at ? <Said note={note} /> : null)
 
-  const events = data !== null && group ? (
+  const events = data !== null && group && whole ? (
     <Card title="Role events">
       <Events events={data.audit} />
     </Card>
   ) : null
+
+  const give = (
+    <Card title="Give a person their own role">
+      <PersonForm emailId={inviteId}
+        onSet={(email, role, reason) => act('person', () => setWorkspacePersonRole(email, role, reason), personSaid, `${email.trim()}'s role was not changed`)} />
+      {said('person')}
+    </Card>
+  )
 
   return (
     <>
@@ -327,6 +359,7 @@ function RolesPage() {
           {(d) => (
             <Roster data={d}
               said={said}
+              whole={whole}
               onClear={(email) => act('roster', () => clearWorkspacePersonRole(email),
                 (a) => `${a.email} holds the default again (${a.role}).`, `${email} was not returned to the default`)}
               onDefault={(role) => act('default', () => setWorkspaceDefaultRole(role),
@@ -334,16 +367,12 @@ function RolesPage() {
           )}
         </UrRegion>
       </Card>
-      {data !== null && group && data.can_manage && (
+      {data !== null && group && data.can_manage && (whole ? (
         <div className="ws-grid wp-row">
-          <Card title="Give a person their own role">
-            <PersonForm emailId={inviteId}
-              onSet={(email, role, reason) => act('person', () => setWorkspacePersonRole(email, role, reason), personSaid, `${email.trim()}'s role was not changed`)} />
-            {said('person')}
-          </Card>
+          {give}
           {events}
         </div>
-      )}
+      ) : give)}
       {readOnly && events}
       {data !== null && group && data.can_manage && (
         <JoinCards name={data.tenant_id || 'this workspace'} />
@@ -472,10 +501,15 @@ function PersonalOnly() {
   )
 }
 
-/** The Roles in this workspace card's body: who you are, the default, the roster, and S5b's "as built" rest. */
-function Roster({ data, said, onClear, onDefault }: {
+/**
+ * The Roles in this workspace card's body: who you are, the default, the
+ * roster, and, when `whole`, S5b's "as built" rest (what each role permits and
+ * Set the default).
+ */
+function Roster({ data, said, whole, onClear, onDefault }: {
   data: WorkspaceRoles
   said: (at: NoteAt) => ReactNode
+  whole: boolean
   onClear: (email: string) => Promise<boolean>
   onDefault: (role: string) => Promise<boolean>
 }) {
@@ -516,10 +550,10 @@ function Roster({ data, said, onClear, onDefault }: {
         <p className="ur-small">Only this workspace&rsquo;s admins change roles. You can read them here.</p>
       )}
 
-      <RoleTable summaries={data.roles} />
+      {whole && <RoleTable summaries={data.roles} />}
 
-      {data.can_manage && <DefaultForm current={data.default_role} onSet={onDefault} />}
-      {said('default')}
+      {whole && data.can_manage && <DefaultForm current={data.default_role} onSet={onDefault} />}
+      {whole && said('default')}
     </>
   )
 }

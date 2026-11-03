@@ -183,7 +183,8 @@ def _ctx(work: Path, prompt: str = "Answer from the knowledge base.") -> RunnerC
 
 
 def _run_body(module, monkeypatch, work: Path, relay_file: Path | None, *,
-              git_spool: str | None = None) -> dict[str, Any]:
+              git_spool: str | None = None,
+              prompt: str = "Answer from the knowledge base.") -> dict[str, Any]:
     seen: dict[str, Any] = {}
 
     def fake_run(ctx, spec, *, extra_args=(), extra_env=None):
@@ -205,7 +206,7 @@ def _run_body(module, monkeypatch, work: Path, relay_file: Path | None, *,
         monkeypatch.delenv(attach_mod.RELAY_ENV, raising=False)
     else:
         monkeypatch.setenv(attach_mod.RELAY_ENV, str(relay_file))
-    module.body(_ctx(work))
+    module.body(_ctx(work, prompt))
     return seen
 
 
@@ -255,8 +256,11 @@ def test_claude_code_config_holds_the_relay_url_and_local_token_never_the_creden
 def test_claude_code_puts_every_server_beside_the_platforms_in_one_config(monkeypatch, tmp_path):
     att = attach(tmp_path / "private", fake_credential(), names=("kb", "docs"))
     try:
+        # A brief that names the git tools: swarm-git is registered only for
+        # a step that uses it (ONE-PLACE, test_runner_instructions_once.py).
         seen = _run_body(claude_code, monkeypatch, tmp_path / "work", att.path,
-                         git_spool=str(tmp_path / ".swarm-git"))
+                         git_spool=str(tmp_path / ".swarm-git"),
+                         prompt="Answer from the knowledge base; read the run with run_view.")
         servers = _mcp_config(seen)["mcpServers"]
         assert set(servers) == {"swarm-git", "kb", "docs"}
         assert servers["docs"]["url"] == att.relay.url_for("docs")

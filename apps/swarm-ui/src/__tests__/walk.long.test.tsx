@@ -86,7 +86,7 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
   // `review` at its hyphen. One line, never broken, in a tile wide enough
   // for it (qa.u11b.overview.test.tsx), cut with its title past that.
   it('draws each Headroom tile’s profile name on one line, never hyphen-broken, in the sans face', async () => {
-    const tile = await page('/', '.ov-hp > .ov-idc')
+    const tile = await page('/overview', '.ov-hp > .ov-idc')
     const names = [...document.querySelectorAll('.ov-hp > .ov-idc')]
     expect(names.length).toBeGreaterThan(0)
     for (const n of names) {
@@ -99,7 +99,7 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
   })
 
   it('clamps an agent’s name on the Overview cards', async () => {
-    await page('/', '.ov-page')
+    await page('/overview', '.ov-page')
     const names = await waitFor(() => {
       const n = [...document.querySelectorAll('a.ov-name')]
       expect(n.length).toBeGreaterThan(0)

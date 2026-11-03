@@ -99,6 +99,14 @@ def test_memory_and_ephemeral_storage_request_equals_limit():
         assert _quantity(resources["requests"][name]) == _quantity(resources["limits"][name]), name
 
 
+def test_memory_is_2gi_for_the_planner_s_claude_code_child():
+    # Each planner turn runs a Claude Code child in this pod; 1Gi left it no
+    # headroom beside the sidebands (owner's pick on PR #3112).
+    resources = _container()["resources"]
+    assert _quantity(resources["requests"]["memory"]) == _quantity("2Gi")
+    assert _quantity(resources["limits"]["memory"]) == _quantity("2Gi")
+
+
 def test_cpu_request_is_at_most_the_limit_and_the_limit_at_most_the_burst_ratio():
     resources = _container()["resources"]
     request = _quantity(resources["requests"]["cpu"])

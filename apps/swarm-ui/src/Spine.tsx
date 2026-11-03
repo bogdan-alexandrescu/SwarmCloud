@@ -66,8 +66,9 @@ import { NEAR_CEILING } from './AdminSettings'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
 import { voiceItOpen } from './voice/Section'
+import { HOME_JUMPS } from './Home'
 
-export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
+export type SpineSection = 'profile' | 'home' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
 
 /** The spine sections that draw a panel of pages. */
 type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice'
@@ -205,7 +206,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
     // administers, last. The only Admin page a workspace admin who is not a
     // platform admin is shown (`adminPagesFor`).
-    { key: WORKSPACES_YOU_ADMIN_TAB, label: 'Workspaces you admin', icon: 'tenants', to: `admin/${WORKSPACES_YOU_ADMIN_TAB}` },
+    { key: WORKSPACES_YOU_ADMIN_TAB, label: 'Workspaces', icon: 'tenants', to: `admin/${WORKSPACES_YOU_ADMIN_TAB}` },
     // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
     // every tenant's schedules are Automate › Schedules, All tenants.
   ],
@@ -351,6 +352,8 @@ export function litPage(section: PanelSection, tab: string, agentTab: AgentTab):
 
 /** The path an address is written as, for a link's `href`. */
 export function hrefOf(to: string): string {
+  // Home is the console's root, `/` (App.tsx `HOME`): no address writes it.
+  if (to === HOME_ADDRESS) return '/'
   return addressToPath(to)
 }
 
@@ -1338,6 +1341,12 @@ function CountMark({ c }: { c: PanelCount | undefined }) {
 // ---------------------------------------------------------------------------
 
 const ICONS: Readonly<Record<string, ReactNode>> = {
+  home: (
+    <>
+      <path d="M4 11 12 4.5 20 11" />
+      <path d="M6.5 9.5V19.5h4v-5h3v5h4V9.5" />
+    </>
+  ),
   overview: (
     <>
       <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
@@ -1566,7 +1575,14 @@ export function Icon({ name, className = 'sk-ic' }: { name: string; className?: 
  */
 const PROFILE_ITEM: { key: 'profile'; label: string; to: string } = { key: 'profile', label: 'Profile', to: PROFILE_ADDRESS }
 
+/** Home's address, as `go()` takes it (App.tsx `HOME`); its path is the root, `/`. */
+const HOME_ADDRESS = 'home'
+
 const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[] = [
+  // HOME, THE FIRST ENTRY, ABOVE OVERVIEW (the owner's pick of the 'desk'
+  // mock-up, 2026-11-02): the signed-in person's own page at the console's
+  // root. App.tsx's navigation comment says why it passes the section test.
+  { key: 'home', label: 'Home', to: HOME_ADDRESS },
   { key: 'overview', label: 'Overview', to: 'overview/now' },
   // WORK STILL OPENS AGENTS (QA-112, part of #1680, left as it is): the same
   // click opens the Work panel, where Workflows is the row after Agents, so
@@ -2224,7 +2240,7 @@ export function SkyShell({
           // once and stays until a choice, Escape or a click elsewhere;
           // `Open the panel` in it, and the spine's own expand, still
           // undo the collapse. Overview has no pages, so it expands.
-          if (collapsed && on && s.key !== 'overview' && !drawer) {
+          if (collapsed && on && s.key !== 'overview' && s.key !== 'home' && !drawer) {
             if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
             setFly(s.key)
             return
@@ -3308,6 +3324,29 @@ function PanelPages({
           <a key={s.key} className="sk-pk" {...routed(s.to, () => nav(s.to))}>
             <Icon name={s.key} />
             <span className="sk-pl">{s.label}</span>
+          </a>
+        ))}
+      </>
+    )
+  }
+  // HOME'S PANEL IS ITS OWN REGIONS, as Overview's is (Home.tsx `HOME_JUMPS`).
+  if (section === 'home') {
+    return (
+      <>
+        <div className="sk-pt">On this page</div>
+        {HOME_JUMPS.map((j) => (
+          <a
+            key={j.id}
+            className="sk-pk"
+            href={`/#${j.id}`}
+            onClick={(e) => {
+              if (!routedClick(e)) return
+              e.preventDefault()
+              if (onJump === undefined) jumpTo(j.id)
+              else onJump(j.id)
+            }}
+          >
+            <span className="sk-pl">{j.label}</span>
           </a>
         ))}
       </>

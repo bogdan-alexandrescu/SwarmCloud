@@ -10,8 +10,8 @@ deadline the watched loop terminates the CLI without a word to the agent.
 
 So every prompt carries one platform line, built by `cliagent.time_limit_line`,
 naming the limit in minutes and its end time in UTC, and telling the agent to
-commit and write its pull request's title and body before then -- and not to
-run the whole suite in the background and poll it with sleep. A fresh start
+commit before then -- and not to run tests in the background and poll them
+with sleep. A fresh start
 with a repository has it just before PUBLISH_PARAGRAPH, which still ends the
 prompt; one without a repository has it last. A session resumed to wrap up
 before the limit is told what is left (test_cli_wrap_up_before_deadline.py).
@@ -180,9 +180,11 @@ def test_limit_line_forbids_background_suites_polled_with_sleep():
     # Minutes rounded down: 7259 s is still 120 whole minutes.
     assert "120 minutes" in cliagent.time_limit_line(7259, now=now)
     lowered = line.lower()
-    for phrase in ("commit", "pull request's title and body", "before",
-                   "whole test suite", "background", "sleep"):
+    for phrase in ("commit", "before", "background", "sleep", "foreground"):
         assert phrase in lowered, phrase
+    # ONE-PLACE (2026-11-03): the pull request's files are PUBLISH_PARAGRAPH's
+    # and which tests to run is RELATED_TESTS_NOTE's; neither is restated here.
+    assert "pull request" not in lowered and "related" not in lowered, line
     # A CLI that echoes the line is not misread as a 429 or a dead credential,
     # at any limit a profile is likely to carry.
     markers = (*cliagent._RATE_LIMIT_MARKERS, *cliagent._CREDENTIAL_MARKERS)
