@@ -206,6 +206,8 @@ def test_a_block_a_model_must_fill_in_is_not_run(block):
         'echo "${GSTACK_SKIP_ASIDE:-}" "$HOME" "$TMPDIR"',
         "for f in a b; do echo $f; done",
         "cat <<'JSON_END'\n{}\nJSON_END",
+        'GSTACK_STATE_ROOT=$(gstack-paths --get GSTACK_STATE_ROOT); echo "$GSTACK_STATE_ROOT"',
+        'eval "$(gstack-slug)"; gstack-slug --get SLUG',
     ],
 )
 def test_a_block_that_runs_as_written_has_no_placeholder(block):
