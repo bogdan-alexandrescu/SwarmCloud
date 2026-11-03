@@ -903,4 +903,7 @@ def test_j0_failure_leaves_the_pack_byte_identical_to_local_only(work, tmp_path,
     local = _prepared(work, tmp_path, AD_HOC, None)
     local_bytes = _pack_bytes(work)
     jev = _prepared(work, tmp_path, AD_HOC, FAILURES[failure](tmp_path))
+    # The artifact's `seconds` is the pack's wall time (lane
+    # REVIEW-STARTUP-WAIT): a timing, never the same twice.
+    assert isinstance(jev.pop("seconds"), float) and isinstance(local.pop("seconds"), float)
     assert _pack_bytes(work) == local_bytes and jev == local
