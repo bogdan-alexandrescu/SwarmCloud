@@ -385,3 +385,29 @@ def test_the_sweep_keeps_every_version_swarm_api_keeps_readable(tool, shards, tm
     # MUTATION: a sweep that counts only the retired manifests' blobs as
     # free deletes blobs the kept incremental graphs carry, and a read above fails.
     assert report["deleted_copies"] >= 2
+
+
+def test_a_version_a_running_workflow_pins_is_kept_through_its_day():
+    """A workflow's steps read the graph at the version their ticket names
+    (graph_ticket.py `index_sha`), and nothing records that pin for
+    retention: the version survives because it is recorded within the last
+    KEEP_VERSIONS_MIN_AGE_HOURS, even after newer versions push it past the
+    newest `keep_versions`. Past that age only the count keeps it; that gap is
+    the owner's question (questions.json), not a default changed here."""
+    from swarm_api import repoindex
+
+    now = datetime(2026, 11, 3, 9, 0, tzinfo=timezone.utc)
+    hours = repoindex.KEEP_VERSIONS_MIN_AGE_HOURS
+    pinned = "a" * 40
+    newer = [f"{n:040x}" for n in range(1, 6)]
+    rows = [{"commit_sha": pinned, "recorded_at": now - timedelta(hours=hours - 1)}]
+    rows += [{"commit_sha": c, "recorded_at": now - timedelta(minutes=n + 1)}
+             for n, c in enumerate(newer)]
+
+    keep = repoindex.kept_commits(rows, keep_versions=2, current_sha=newer[0],
+                                  own=newer[0], now=now)
+
+    # Past the newest two, still inside the day: the pinned version is kept.
+    assert pinned in keep
+    # MUTATION: retention by count alone (the day floor dropped) retires it.
+    assert set(keep) == {pinned, *newer}
