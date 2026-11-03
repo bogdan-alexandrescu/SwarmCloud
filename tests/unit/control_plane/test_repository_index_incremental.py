@@ -187,6 +187,19 @@ def test_a_graph_the_extractor_would_not_carry_forces_full(record, why):
     assert why in choice.reason
 
 
+@pytest.mark.parametrize("cut", [["symbol_test_map"], ["file_test_map"],
+                                 ["file_test_map", "symbol_test_map"]])
+def test_a_graph_cut_only_in_its_test_maps_is_carried(cut):
+    """2026-11-03: every SwarmCloud run of a week was full, refused on
+    "truncated (symbol_test_map)". An incremental run recomputes both test
+    maps from the carried edges, so a cut there is no reason to rebuild."""
+    version = {"commit_sha": ONE, "graph_digest": GRAPH,
+               "graph_extractor": dict(CARRIED, truncated=cut)}
+    # MUTATION: refuse any `truncated` entry and this is a ~42-minute full run.
+    assert repoindex.graph_carry_refusal(version["graph_extractor"]) is None
+    assert _choose(version=version) == repoindex.KindChoice("incremental", base_sha=ONE)
+
+
 def test_the_graph_extractor_record_is_read_from_the_manifest():
     version = repoindex.INDEXER_EXTRACTOR_VERSION
     manifest = {"extractor": {"version": version, "blob_ids": True, "files_not_listed": 0},
@@ -404,6 +417,25 @@ def test_the_weekly_full_run_is_given_the_promoted_index_for_the_servers_answers
     assert choice == repoindex.KindChoice(
         "full", base_sha=None, reason=choice.reason, lsp_base_sha=ONE)
     assert "due every 7" in choice.reason
+
+
+@pytest.mark.parametrize("make,why", [
+    (lambda: _choose(changes={"status": "diverged", "files": ["src/a.py"]}), "not an ancestor"),
+    (lambda: _choose(changes={"status": "ahead", "files": [
+        f"src/f{n}.py" for n in range(repoindex.MAX_INCREMENTAL_CHANGES)]}), "300"),
+    (lambda: repoindex.choose_kind(
+        _state(), TWO, requested="incremental",
+        version={"commit_sha": ONE, "graph_digest": GRAPH, "graph_extractor": dict(CARRIED)},
+        changes=None, now=NOW), "GitHub could not say"),
+    (lambda: _choose(_state(last_kind="incremental", last_indexed_at=NOW)), "no full run"),
+], ids=["not_ancestor", "too_many_changes", "relation_unknown", "no_full_recorded"])
+def test_every_full_run_on_a_carriable_graph_keeps_the_servers_answers(make, why):
+    """Not only the weekly one: the extractor keeps each unchanged file's
+    answers whatever the diff's size or shape, and re-asks what changed."""
+    choice = make()
+    # MUTATION: return before the weekly branch and pyright starts over.
+    assert choice.kind == "full" and why in choice.reason
+    assert choice.base_sha is None and choice.lsp_base_sha == ONE
 
 
 @pytest.mark.parametrize("make", [

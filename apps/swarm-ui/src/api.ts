@@ -8473,16 +8473,20 @@ function fixtureGraphCache(url: string): unknown {
   const digest = (seed: string) => `sha256:${seed.repeat(Math.ceil(64 / seed.length)).slice(0, 64)}`
   const current = digest(`${r.sha}c`)
   const warm = { digest: current, ms: 2140, shards: 46, replayed: 200 }
+  // One served-latency group (graph_cache.py `merge_summaries`'s shape).
+  const lat = (count: number, p50: number, p95: number, p99: number, max: number, exact: boolean) => ({ count, p50_ms: p50, p95_ms: p95, p99_ms: p99, max_ms: max, exact })
   const replicas = [
     {
       replica: 'swarm-graph-0', state: 'read', started_at: fixtureAgo(3 * 24 * FIXTURE_HOUR), uptime_seconds: 3 * 24 * 3600,
       result_bytes: 61 * MiB, result_bound: 256 * MiB, shard_bytes: 188 * MiB, shard_bound: 512 * MiB,
       answers_hot: 412, shards_hot: 31, last_warm: warm,
+      answer_latency: { ...lat(900, 6, 30, 80, 410, true), by_temperature: { warm: lat(820, 5, 20, 40, 60, true), cold: lat(80, 60, 300, 410, 410, true) } },
     },
     {
       replica: 'swarm-graph-1', state: 'read', started_at: fixtureAgo(5 * FIXTURE_HOUR), uptime_seconds: 5 * 3600,
       result_bytes: 23 * MiB, result_bound: 256 * MiB, shard_bytes: 97 * MiB, shard_bound: 512 * MiB,
       answers_hot: 140, shards_hot: 18, last_warm: { ...warm, ms: 1870 },
+      answer_latency: { ...lat(384, 8, 40, 120, 380, true), by_temperature: { warm: lat(340, 6, 25, 50, 90, true), cold: lat(44, 80, 380, 380, 380, true) } },
     },
     { replica: 'swarm-graph-2', state: 'not_read', reason: 'timeout' },
   ]
@@ -8508,6 +8512,16 @@ function fixtureGraphCache(url: string): unknown {
     facts: {
       window_hours: 5, answers: 1284, hit: 1168, carried: null, miss: 116, hit_rate: 1168 / 1284,
       reused_share: null, served_p95_ms: 38, last_warm: warm,
+      // Two replicas answered, so a percentile is the slower one's (an upper
+      // bound); swarm-graph-2 was not read and is named, never counted as 0.
+      answer_latency: {
+        state: 'read', replicas_read: 2, not_read: ['swarm-graph-2'], window_hours: 5, ...lat(1284, 8, 40, 120, 410, false),
+        by_outcome: {
+          hit: lat(1168, 6, 25, 50, 90, false), carried: { count: 0, p50_ms: null, p95_ms: null, p99_ms: null, max_ms: null, exact: true }, miss: lat(104, 70, 300, 410, 410, false),
+          partial: lat(2, 7000, 7000, 7000, 7000, true), uncached: lat(10, 9, 30, 30, 30, true),
+        },
+        by_temperature: { warm: lat(1160, 6, 25, 50, 90, false), cold: lat(124, 80, 380, 410, 410, false) },
+      },
     },
     replicas,
     stats: { state: 'read' },
@@ -9135,8 +9149,47 @@ export type GraphCacheReplica =
       answers_hot: number | null
       shards_hot: number | null
       last_warm: GraphCacheWarm | null
+      /** This replica's own served answer latency; null when it served none. */
+      answer_latency: GraphCacheReplicaLatency | null
     }
   | { replica: string; state: 'not_read'; reason: GraphCacheReason }
+
+/**
+ * One group of served answer latency (swarm_graph/stats.py `answer_latency`):
+ * the middle (p50), slow (p95, p99) and slowest answer of `count` answers.
+ * Every figure is null with a count of 0, never a 0 ms that was not measured.
+ * `exact` false: several replicas answered, and each percentile is the
+ * slowest replica's, an upper bound (graph_cache.py `merge_summaries`).
+ */
+export interface GraphCacheLatencyGroup {
+  count: number
+  p50_ms: number | null
+  p95_ms: number | null
+  p99_ms: number | null
+  max_ms: number | null
+  exact: boolean
+}
+
+export interface GraphCacheReplicaLatency extends GraphCacheLatencyGroup {
+  by_temperature: Partial<Record<'warm' | 'cold', GraphCacheLatencyGroup>>
+}
+
+/**
+ * `facts.answer_latency` (lane graph-cache-panel-latency, part of #2688): the
+ * replicas' served answer latency merged, by outcome and by temperature, with
+ * the replicas whose figure was not read named in `not_read`; or not read
+ * with its reason when no replica's figure was.
+ */
+export type GraphCacheServedLatency =
+  | (GraphCacheLatencyGroup & {
+      state: 'read'
+      replicas_read: number
+      not_read: string[]
+      window_hours: number | null
+      by_outcome: Partial<Record<string, GraphCacheLatencyGroup>>
+      by_temperature: Partial<Record<'warm' | 'cold', GraphCacheLatencyGroup>>
+    })
+  | { state: 'not_read'; reason: GraphCacheReason; not_read: string[] }
 
 /** §5.2's tiles, summed over the replicas read; null where nothing was read. */
 export interface GraphCacheFacts {
@@ -9150,6 +9203,8 @@ export interface GraphCacheFacts {
   reused_share: number | null
   served_p95_ms: number | null
   last_warm: GraphCacheWarm | null
+  /** The replicas' served answer latency, beside `latency`, the indexer's uncached one. */
+  answer_latency: GraphCacheServedLatency
 }
 
 /**
@@ -9206,6 +9261,53 @@ function normGraphCacheWarm(v: unknown): GraphCacheWarm | null {
   return digest === null ? null : { digest, ms: gcNum(w.ms), shards: gcNum(w.shards), replayed: gcNum(w.replayed) }
 }
 
+/** One latency group, or null when it is not one: a count is a number. */
+function normGraphCacheLatencyGroup(v: unknown): GraphCacheLatencyGroup | null {
+  const g = gcRec(v)
+  const count = gcNum(g.count)
+  if (count === null) return null
+  const ms = (x: unknown) => (count === 0 ? null : gcNum(x))
+  return { count, p50_ms: ms(g.p50_ms), p95_ms: ms(g.p95_ms), p99_ms: ms(g.p99_ms), max_ms: ms(g.max_ms), exact: g.exact !== false }
+}
+
+function normGraphCacheGroups<K extends string>(v: unknown, names: readonly K[]): Partial<Record<K, GraphCacheLatencyGroup>> {
+  const t = gcRec(v)
+  const out: Partial<Record<K, GraphCacheLatencyGroup>> = {}
+  for (const name of names) {
+    const g = normGraphCacheLatencyGroup(t[name])
+    if (g !== null) out[name] = g
+  }
+  return out
+}
+
+/** swarm-graph's answer outcomes and temperatures (stats.LATENCY_OUTCOMES, TEMPERATURES). */
+export const GRAPH_CACHE_OUTCOMES = ['hit', 'carried', 'miss', 'partial', 'uncached'] as const
+export const GRAPH_CACHE_TEMPERATURES = ['warm', 'cold'] as const
+
+const gcNames = (v: unknown): string[] => (Array.isArray(v) ? v.flatMap((x) => (gcStr(x) === null ? [] : [x as string])) : [])
+
+function normGraphCacheReplicaLatency(v: unknown): GraphCacheReplicaLatency | null {
+  const g = normGraphCacheLatencyGroup(v)
+  return g === null ? null : { ...g, by_temperature: normGraphCacheGroups(gcRec(v).by_temperature, GRAPH_CACHE_TEMPERATURES) }
+}
+
+/** Anything but a figure the route says it read is one not read, never a zero. */
+function normGraphCacheServedLatency(v: unknown): GraphCacheServedLatency {
+  const l = gcRec(v)
+  const notRead = gcNames(l.not_read)
+  const g = l.state === 'read' ? normGraphCacheLatencyGroup(l) : null
+  if (g === null) return { state: 'not_read', reason: gcStr(l.reason) ?? 'bad_response', not_read: notRead }
+  return {
+    ...g,
+    state: 'read',
+    replicas_read: gcNum(l.replicas_read) ?? 0,
+    not_read: notRead,
+    window_hours: gcNum(l.window_hours),
+    by_outcome: normGraphCacheGroups(l.by_outcome, GRAPH_CACHE_OUTCOMES),
+    by_temperature: normGraphCacheGroups(l.by_temperature, GRAPH_CACHE_TEMPERATURES),
+  }
+}
+
 function normGraphCacheReplica(v: unknown): GraphCacheReplica | null {
   const r = gcRec(v)
   const replica = gcStr(r.replica)
@@ -9224,6 +9326,7 @@ function normGraphCacheReplica(v: unknown): GraphCacheReplica | null {
     answers_hot: gcNum(r.answers_hot),
     shards_hot: gcNum(r.shards_hot),
     last_warm: normGraphCacheWarm(r.last_warm),
+    answer_latency: normGraphCacheReplicaLatency(r.answer_latency),
   }
 }
 
@@ -9296,6 +9399,7 @@ export function normGraphCache(raw: unknown): GraphCacheDoc {
       reused_share: gcNum(f.reused_share),
       served_p95_ms: gcNum(f.served_p95_ms),
       last_warm: normGraphCacheWarm(f.last_warm),
+      answer_latency: normGraphCacheServedLatency(f.answer_latency),
     },
     replicas: (Array.isArray(d.replicas) ? d.replicas : []).map(normGraphCacheReplica).filter((r): r is GraphCacheReplica => r !== null),
     stats: stats.state === 'read' ? { state: 'read' } : { state: 'not_read', reason: gcStr(stats.reason) ?? 'bad_response' },

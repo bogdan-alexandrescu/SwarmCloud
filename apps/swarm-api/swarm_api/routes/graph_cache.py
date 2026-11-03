@@ -36,6 +36,18 @@ WHY EACH RULE:
     only for a blob the current manifest names. A replica's two MiB totals are
     numbers across every tenant and are shown because a full cache is why this
     repository misses (§5.2).
+  * THE SERVED ANSWER LATENCY IS MERGED, NEVER INVENTED (lane
+    graph-cache-panel-latency, part of #2688). Each replica serves its own
+    `answer_latency` (swarm_graph/stats.py): count, p50, p95, p99 and max over
+    its window, by outcome, by temperature and by both. `facts.answer_latency`
+    sums the counts, takes the slowest max, and takes a percentile as it is
+    when one replica answered and as the slowest replica's otherwise: a
+    replica serves percentiles, not its histogram, and the merged p95 is never
+    above the slowest replica's p95, so that figure is an upper bound and says
+    so (`exact: false`). A replica that did not answer, or answered without
+    the figure, is named in `not_read`, never counted as zero answers; with no
+    replica's figure at all the fact is `{state: "not_read", reason}`. It sits
+    beside `latency`, the indexer's uncached measurement, which is unchanged.
   * THE MANIFEST COMPARISON IS CACHED PER DIGEST PAIR. A promoted graph is
     immutable per digest (repograph.py), so the comparison of two is too; it is
     kept in `RepoGraph.view`'s bounded cache under a key that begins with the
@@ -89,6 +101,10 @@ NOT_CONFIGURED = "not_configured"
 NO_KEY = "no_ticket_key"
 NO_INDEX = "no_index"
 NO_GRAPH = "no_graph"
+#: `facts.answer_latency.reason` when swarm-graph answered: no replica was
+#: read, or every replica read served no `answer_latency`.
+NO_REPLICA_READ = "no_replica_read"
+NOT_SERVED = "not_served"
 TIMEOUT = "timeout"
 REFUSED = "refused"
 TICKET_REFUSED = "ticket_refused"
@@ -97,6 +113,11 @@ BAD_RESPONSE = "bad_response"
 #: The replica fields §5.3 names, passed on as they are when they are numbers.
 _REPLICA_NUMBERS = ("result_bytes", "result_bound", "shard_bytes", "shard_bound")
 _PEER_REASONS = frozenset({TIMEOUT, REFUSED, "disabled", TICKET_REFUSED, BAD_RESPONSE})
+#: `answer_latency`'s groups as swarm-graph serves them (stats.LATENCY_OUTCOMES,
+#: stats.TEMPERATURES); a name outside these is not passed on.
+LATENCY_OUTCOMES = ("hit", "carried", "miss", "partial", "uncached")
+TEMPERATURES = ("warm", "cold")
+_PERCENTILES = ("p50_ms", "p95_ms", "p99_ms")
 
 Send = Callable[[str, Mapping[str, str], float], "tuple[int, bytes]"]
 
@@ -274,8 +295,20 @@ def _outcomes(value: Any) -> dict[str, int | None]:
 
 
 def _histogram(value: Any) -> dict[float, int]:
-    """`{"<upper ms>": count}`, the served-ms histogram, as numbers."""
+    """The served-ms histogram as `{upper ms: count}`: from swarm-graph's
+    `{"bounds_ms": [...], "counts": [len + 1]}` (the last count is above the
+    last bound, kept at that bound) or from `{"<upper ms>": count}`."""
     out: dict[float, int] = {}
+    if isinstance(value, dict) and isinstance(value.get("bounds_ms"), list) \
+            and isinstance(value.get("counts"), list):
+        bounds = [b for b in value["bounds_ms"] if isinstance(b, (int, float))
+                  and not isinstance(b, bool)]
+        if bounds and len(bounds) == len(value["bounds_ms"]):
+            for index, count in enumerate(value["counts"]):
+                bound = float(bounds[min(index, len(bounds) - 1)])
+                if _int(count):
+                    out[bound] = out.get(bound, 0) + count
+        return out
     for upper, count in (value.items() if isinstance(value, dict) else []):
         try:
             bound = float(upper)
@@ -298,6 +331,81 @@ def p95(histogram: Mapping[float, int]) -> float | None:
     return max(histogram)
 
 
+def _ms(value: Any) -> float | int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if value >= 0 and value == value and value != float("inf") else None
+
+
+def _summary(value: Any) -> dict[str, Any] | None:
+    """One `answer_latency` group (`count`, the percentiles, `max_ms`) held to
+    numbers, or None when it is not one. A count of 0 has no percentile."""
+    if not isinstance(value, dict):
+        return None
+    count = _int(value.get("count"))
+    if count is None:
+        return None
+    out: dict[str, Any] = {"count": count}
+    for name in (*_PERCENTILES, "max_ms"):
+        out[name] = _ms(value.get(name)) if count else None
+    return out
+
+
+def replica_latency(value: Any) -> dict[str, Any] | None:
+    """A replica's `answer_latency`: the overall group, `by_outcome`,
+    `by_temperature` and `cells`, only the groups swarm-graph names; None
+    when the replica served none (an older swarm-graph, or not the document)."""
+    overall = _summary(value)
+    if overall is None or not isinstance(value, dict):
+        return None
+
+    def groups(field: str, names: Sequence[str]) -> dict[str, dict[str, Any]]:
+        table = value.get(field)
+        table = table if isinstance(table, dict) else {}
+        return {n: g for n in names if (g := _summary(table.get(n))) is not None}
+
+    cells = [f"{o}/{t}" for o in LATENCY_OUTCOMES for t in TEMPERATURES]
+    window = _int(value.get("window_hours"))
+    return {**overall, "window_hours": window,
+            "by_outcome": groups("by_outcome", LATENCY_OUTCOMES),
+            "by_temperature": groups("by_temperature", TEMPERATURES),
+            "cells": groups("cells", cells)}
+
+
+def merge_summaries(groups: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Several replicas' summaries of one group as one. The counts add and
+    the max is the slowest; a percentile is exact when one replica answered
+    and otherwise the slowest replica's, an upper bound (`exact` false)."""
+    answered = [g for g in groups if g.get("count")]
+    out: dict[str, Any] = {"count": sum(g.get("count") or 0 for g in groups)}
+    for name in (*_PERCENTILES, "max_ms"):
+        values = [g[name] for g in answered if g.get(name) is not None]
+        out[name] = max(values) if values else None
+    out["exact"] = len(answered) <= 1
+    return out
+
+
+def merge_latency(latencies: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The replicas' `replica_latency` merged, group by group."""
+    def merged(field: str, names: Sequence[str]) -> dict[str, dict[str, Any]]:
+        out = {}
+        for name in names:
+            groups = [lat[field][name] for lat in latencies if name in lat[field]]
+            if groups:
+                out[name] = merge_summaries(groups)
+        return out
+
+    cells = [f"{o}/{t}" for o in LATENCY_OUTCOMES for t in TEMPERATURES]
+    return {**merge_summaries(latencies),
+            "by_outcome": merged("by_outcome", LATENCY_OUTCOMES),
+            "by_temperature": merged("by_temperature", TEMPERATURES),
+            "cells": merged("cells", cells)}
+
+
+def latency_not_read(reason: str) -> dict[str, Any]:
+    return {"state": NOT_READ, "reason": reason}
+
+
 class Replicas:
     """The service's document, held to what §5.3 names and this ticket's digests."""
 
@@ -309,8 +417,11 @@ class Replicas:
         self.panels = [self._panel(r) for r in self.raw]
 
     def _repository(self, replica: Mapping[str, Any]) -> Mapping[str, Any]:
+        # swarm-graph serves the ticket's repository's figures at the top of
+        # each replica's document (stats.local_document); a `repository`
+        # object holding them is read the same way.
         repository = replica.get("repository")
-        return repository if isinstance(repository, dict) else {}
+        return repository if isinstance(repository, dict) else replica
 
     def _panel(self, replica: Mapping[str, Any]) -> dict[str, Any]:
         name = _str(replica.get("replica"), 120) or "unknown"
@@ -330,6 +441,9 @@ class Replicas:
         panel["answers_hot"] = _int(repository.get("answers_hot"))
         panel["shards_hot"] = _int(repository.get("shards_hot"))
         panel["last_warm"] = self._warm(repository.get("last_warm"))
+        latency = replica_latency(repository.get("answer_latency"))
+        panel["answer_latency"] = None if latency is None else {
+            k: latency[k] for k in ("count", *_PERCENTILES, "max_ms", "by_temperature")}
         return panel
 
     def _warm(self, warm: Any) -> dict[str, Any] | None:
@@ -364,6 +478,7 @@ class Replicas:
                  if p["last_warm"] and p["last_warm"]["digest"] == current_digest]
         slowest = max(warms, key=lambda w: w["ms"] or 0) if warms else None
         return {
+            "answer_latency": self.answer_latency(),
             "window_hours": window,
             "answers": answers if read else None,
             "hit": totals["hit"] if read else None,
@@ -376,11 +491,31 @@ class Replicas:
             "last_warm": slowest,
         }
 
+    def answer_latency(self) -> dict[str, Any]:
+        """`facts.answer_latency`: every read replica's figure merged, the
+        replicas whose figure was not read named, never counted as zero."""
+        latencies, missing = [], []
+        for panel, raw in zip(self.panels, self.raw):
+            latency = replica_latency(self._repository(raw).get("answer_latency")) \
+                if panel["state"] == "read" else None
+            if latency is None:
+                missing.append(panel["replica"])
+            else:
+                latencies.append(latency)
+        if not latencies:
+            reason = NOT_SERVED if self._read() else NO_REPLICA_READ
+            return {**latency_not_read(reason), "not_read": missing}
+        windows = [lat["window_hours"] for lat in latencies if lat["window_hours"] is not None]
+        return {"state": "read", "replicas_read": len(latencies), "not_read": missing,
+                "window_hours": min(windows) if windows else None,
+                **merge_latency(latencies)}
+
     def marks(self) -> list[tuple[str, Mapping[str, Any]]]:
         """(replica, its `{blob hex: mark}`) for each replica read."""
         out = []
         for panel, raw in self._read():
-            blobs = self._repository(raw).get("blobs")
+            repository = self._repository(raw)
+            blobs = repository.get("blobs", repository.get("shards"))
             table = {_hex(k): v for k, v in (blobs.items() if isinstance(blobs, dict) else [])
                      if isinstance(v, dict)}
             out.append((panel["replica"], table))
@@ -420,6 +555,14 @@ def _not_read(reason: str) -> dict[str, Any]:
     return {"state": NOT_READ, "reason": reason}
 
 
+def _no_facts(reason: str) -> dict[str, Any]:
+    """The facts when no replica was read: every figure null, never zero, and
+    the served latency not read for the same reason as the section."""
+    return {"window_hours": None, "answers": None, "hit": None, "carried": None,
+            "miss": None, "hit_rate": None, "reused_share": None, "served_p95_ms": None,
+            "last_warm": None, "answer_latency": latency_not_read(reason)}
+
+
 def graph_cache(ctx: AppContext, tenant_id: str, repo_id: str, *, shards: bool, page: int,
                 reader: StatsReader, clock: Callable[[], float] = time.time) -> dict[str, Any]:
     index = RepoIndex.from_context(ctx)
@@ -432,6 +575,7 @@ def graph_cache(ctx: AppContext, tenant_id: str, repo_id: str, *, shards: bool, 
     current = index.version(tenant_id, repo_id) if current_sha else None
     if current is None:
         body["stats"] = _not_read(NO_INDEX)
+        body["facts"] = _no_facts(NO_INDEX)
         return body
     latency = current.get("answer_latency")
     body["latency"] = dict(latency) if isinstance(latency, dict) else {
@@ -439,6 +583,7 @@ def graph_cache(ctx: AppContext, tenant_id: str, repo_id: str, *, shards: bool, 
     current_digest = current.get("graph_digest")
     if not current_digest:
         body["stats"] = _not_read(NO_GRAPH)
+        body["facts"] = _no_facts(NO_GRAPH)
         return body
     rows = [{"commit_sha": s.id, **(s.to_dict() or {})} for s in _versions(ctx, repo_id).stream()]
     previous = previous_version(rows, current)
@@ -471,9 +616,7 @@ def graph_cache(ctx: AppContext, tenant_id: str, repo_id: str, *, shards: bool, 
             body["replicas"] = replicas.panels
             body["facts"] = replicas.facts(current_digest)
     if body["facts"] is None:
-        body["facts"] = {"window_hours": None, "answers": None, "hit": None, "carried": None,
-                         "miss": None, "hit_rate": None, "reused_share": None,
-                         "served_p95_ms": None, "last_warm": None}
+        body["facts"] = _no_facts(body["stats"]["reason"])
     if shards:
         body["shards"] = _shards(ctx, tenant_id, repo_id, current, previous, replicas, page)
     return body
@@ -529,7 +672,8 @@ async def get_graph_cache(
 
 
 __all__ = [
-    "MAX_STATS_BYTES", "NOT_READ", "SHARD_PAGE_ROWS", "STATS_TIMEOUT_SECONDS", "Replicas",
-    "StatsReader", "compare_manifests", "graph_cache", "p95", "previous_version", "router",
-    "shard_rows", "stats_reader", "stats_url",
+    "LATENCY_OUTCOMES", "MAX_STATS_BYTES", "NOT_READ", "SHARD_PAGE_ROWS",
+    "STATS_TIMEOUT_SECONDS", "TEMPERATURES", "Replicas", "StatsReader", "compare_manifests", "graph_cache", "merge_latency",
+    "merge_summaries", "p95", "previous_version", "replica_latency",
+    "router", "shard_rows", "stats_reader", "stats_url",
 ]

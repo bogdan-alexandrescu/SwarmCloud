@@ -206,6 +206,13 @@ FULL_EVERY_DAYS_RANGE = (1, 30)
 #: one 41-byte line each, and every kept manifest is read by every sweep.
 KEEP_VERSIONS_DEFAULT = 20
 KEEP_VERSIONS_RANGE = (1, 100)
+#: Retention keeps by age as well as by count (2026-11-03): every version
+#: recorded in the last 24 hours is kept too, up to KEEP_VERSIONS_RANGE's 100
+#: (`repoindex.retained_versions`). By count alone SwarmCloud's 20 covered
+#: ~15 hours of runs, so a step whose base was from earlier the same day
+#: found no index for it. A day is the longest a step's base is expected to
+#: wait for its index; at the two-hour change interval it is 12 versions.
+KEEP_VERSIONS_MIN_AGE_HOURS = 24
 
 # The graph settings (repo-index.md §6.2, revised 2026-10-04). Stored with
 # their defaults so lane RI9 reads a value rather than a gap; not patchable

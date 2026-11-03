@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
@@ -88,6 +89,17 @@ TICKET_FILE_ENV = "SWARM_GRAPH_TICKET_FILE"
 #: The shim's per-answer timeout (§4.4). A pack that cannot be read in time is
 #: one prompt line, never a late start.
 SERVICE_TIMEOUT_SECONDS = 10.0
+#: The WHOLE pack's bound, every page of every shard and J1 included (lane
+#: REVIEW-STARTUP-WAIT, part of #2688). MEASURED in experiment batch two: 10
+#: of 12 review steps with code intelligence on showed no agent output for 28
+#: to 30 minutes at about 0.04 of a CPU core, while their graph was pinned in
+#: 3.4 to 6.0 s: the pack was reading a review's shards from the service one
+#: 4 KiB page at a time, each page bounded by `SERVICE_TIMEOUT_SECONDS` and
+#: the whole by nothing. A review's agent is to start within a minute of its
+#: pod; the clone and the staging before this (graph_ready's p90 20.4 s)
+#: leave it 30 s. Past it the pack is one prompt line saying so, and the
+#: swarm-graph tools answer the rest.
+PACK_DEADLINE_SECONDS = 30.0
 #: An answer is at most `tools.ANSWER_CAP` of text in a JSON-RPC envelope;
 #: anything much larger is not the service's.
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -104,6 +116,40 @@ SERVICE_STATUS = {
 Transport = Callable[[dict], dict]
 
 
+class PackDeadlineExceeded(SnapshotError):
+    """The pack was not built within its `Deadline`: the step starts without it."""
+
+
+class Deadline:
+    """One pack's time bound on the monotonic clock (`PACK_DEADLINE_SECONDS`).
+
+    `ServiceSource` checks it before every page and `HttpService` bounds each
+    answer by what is left, so a slow service ends the pack at the deadline,
+    never one 10 s answer per page later."""
+
+    def __init__(self, seconds: float, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self.seconds = float(seconds)
+        self._clock = clock
+        self._started = clock()
+        #: The service's answers read so far, for the message.
+        self.answers = 0
+
+    def elapsed(self) -> float:
+        return round(self._clock() - self._started, 3)
+
+    def remaining(self) -> float:
+        return self.seconds - (self._clock() - self._started)
+
+    def expired(self) -> PackDeadlineExceeded:
+        return PackDeadlineExceeded(
+            f"it was not built within {self.seconds:.1f} s ({self.answers} answers read "
+            "from the graph service)")
+
+    def check(self) -> None:
+        if self.remaining() <= 0:
+            raise self.expired()
+
+
 class HttpService:
     """swarm-graph over MCP streamable HTTP (§2.2): one POST per message, the
     attempt's ticket as the bearer credential, re-read from its file on every
@@ -111,19 +157,29 @@ class HttpService:
     and nowhere else."""
 
     def __init__(self, url: str, ticket_file: Path | str, *,
-                 timeout: float = SERVICE_TIMEOUT_SECONDS) -> None:
+                 timeout: float = SERVICE_TIMEOUT_SECONDS,
+                 deadline: Deadline | None = None) -> None:
         self.url = url
         self.ticket_file = Path(ticket_file)
         self.timeout = timeout
+        self.deadline = deadline
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     @classmethod
-    def from_env(cls) -> "HttpService":
+    def from_env(cls, *, deadline: Deadline | None = None) -> "HttpService":
         named = os.environ.get(TICKET_FILE_ENV, "").strip()
         if not named:
             raise SnapshotError("the graph is pinned to the service, but no graph ticket "
                                 "file was named for this attempt")
-        return cls(os.environ.get(SERVICE_URL_ENV, "").strip() or DEFAULT_SERVICE_URL, named)
+        return cls(os.environ.get(SERVICE_URL_ENV, "").strip() or DEFAULT_SERVICE_URL, named,
+                   deadline=deadline)
+
+    def _timeout(self) -> float:
+        """One answer's bound: never past the pack's deadline."""
+        if self.deadline is None:
+            return self.timeout
+        self.deadline.check()
+        return max(0.05, min(self.timeout, self.deadline.remaining()))
 
     def _ticket(self) -> str:
         try:
@@ -140,13 +196,17 @@ class HttpService:
             headers={"Authorization": f"Bearer {self._ticket()}",
                      "Content-Type": "application/json", "Accept": "application/json"})
         try:
-            with self._opener.open(request, timeout=self.timeout) as response:
+            with self._opener.open(request, timeout=self._timeout()) as response:
                 body = response.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
             exc.close()
             raise SnapshotError(SERVICE_STATUS.get(
                 exc.code, f"the graph service answered HTTP {exc.code}")) from None
         except (urllib.error.URLError, OSError, ValueError) as exc:
+            # An answer cut short by the deadline is the deadline, not an
+            # unreachable service.
+            if self.deadline is not None and self.deadline.remaining() <= 0:
+                raise self.deadline.expired() from None
             raise SnapshotError(f"the graph service is unreachable "
                                 f"({type(exc).__name__})") from None
         if len(body) > MAX_RESPONSE_BYTES:
@@ -179,8 +239,10 @@ class ServiceSource:
     one attempt's, so one tenant's (invariant 9), and dropped with the pack.
     """
 
-    def __init__(self, call: Transport, *, cache_raw_bytes: int = CACHE_RAW_BYTES) -> None:
+    def __init__(self, call: Transport, *, cache_raw_bytes: int = CACHE_RAW_BYTES,
+                 deadline: Deadline | None = None) -> None:
         self._call = call
+        self._deadline = deadline
         self._names: dict[str, tuple[str, str, Any]] = {}
         self._cache: OrderedDict[str, _Shard] = OrderedDict()
         self._cache_bytes = 0
@@ -205,8 +267,12 @@ class ServiceSource:
         arguments: dict[str, Any] = {"layer": layer, "key": key}
         if cursor:
             arguments["cursor"] = str(cursor)
+        if self._deadline is not None:
+            self._deadline.check()
         response = self._call({"jsonrpc": "2.0", "id": self._next_id, "method": "tools/call",
                                "params": {"name": "index", "arguments": arguments}})
+        if self._deadline is not None:
+            self._deadline.answers += 1
         where = f"index({layer}, {key})"
         error = response.get("error")
         if error is not None:
@@ -301,8 +367,8 @@ class _CountedDirectory:
         return None
 
 
-def _open(where: Path, stage: Mapping[str, Any],
-          service: Transport | None) -> tuple[Snapshot, dict | None, Any, str]:
+def _open(where: Path, stage: Mapping[str, Any], service: Transport | None,
+          deadline: Deadline | None = None) -> tuple[Snapshot, dict | None, Any, str]:
     """(snapshot, freshness record, its source, delivery) for this step."""
     if stage.get("delivery") == DELIVERY_SERVICE:
         pin = read_json(where / PIN_FILE)
@@ -313,7 +379,8 @@ def _open(where: Path, stage: Mapping[str, Any],
             raw = (where / PIN_MANIFEST_FILE).read_bytes()
         except OSError as exc:
             raise SnapshotError(f"no pinned manifest: {exc.strerror}") from None
-        source = ServiceSource(service if service is not None else HttpService.from_env())
+        source = ServiceSource(service if service is not None
+                               else HttpService.from_env(deadline=deadline), deadline=deadline)
         snap = Snapshot.from_manifest(raw, manifest_digest=digest, source=source)
         source.name_blobs(snap.manifest)
         return snap, pin, source, DELIVERY_SERVICE
@@ -361,7 +428,8 @@ def _jev(stage: Mapping[str, Any], j1: Mapping[str, Any] | None = None) -> dict[
 
 def build_pack(where: Path, *, checkout: Path, work_dir: Path, payload: Mapping[str, Any],
                task_type: str | None = None, judge: Any = None,
-               service: Transport | None = None) -> dict[str, Any]:
+               service: Transport | None = None,
+               deadline: Deadline | None = None) -> dict[str, Any]:
     """Write CONTEXT.md and pack.json into `where`; return the pack.
 
     `judge` is the attempt's Jev client (`judge.attempt.load`) or None. With
@@ -370,7 +438,12 @@ def build_pack(where: Path, *, checkout: Path, work_dir: Path, payload: Mapping[
 
     `service` is how a pinned graph is read (`ServiceSource`); None is
     `HttpService.from_env()`, the attempt's ticket file and the worker's URL.
+
+    `deadline` bounds the whole build (`PACK_DEADLINE_SECONDS` when None):
+    past it, `PackDeadlineExceeded`, and J1 is not asked once it has passed.
     """
+    if deadline is None:
+        deadline = Deadline(PACK_DEADLINE_SECONDS)
     where, checkout, work_dir = Path(where), Path(checkout), Path(work_dir)
     if _inside(where, checkout):
         raise ContextPackError(f"the context directory {where} is inside the checkout; the "
@@ -378,29 +451,38 @@ def build_pack(where: Path, *, checkout: Path, work_dir: Path, payload: Mapping[
     stage = read_stage(where)
     kind = task_type or classify(payload, work_dir, stage)
 
-    snap, record, source, delivery = _open(where, stage, service)
+    snap, record, source, delivery = _open(where, stage, service, deadline)
     try:
         return _build(where, snap, record, source, delivery, stage=stage, kind=kind,
-                      checkout=checkout, work_dir=work_dir, payload=payload, judge=judge)
+                      checkout=checkout, work_dir=work_dir, payload=payload, judge=judge,
+                      deadline=deadline)
     finally:
         source.drop()
 
 
 def _build(where: Path, snap: Snapshot, record: dict | None, source: Any, delivery: str, *,
            stage: Mapping[str, Any], kind: str, checkout: Path, work_dir: Path,
-           payload: Mapping[str, Any], judge: Any) -> dict[str, Any]:
+           payload: Mapping[str, Any], judge: Any,
+           deadline: Deadline | None = None) -> dict[str, Any]:
     fresh = Freshness.establish(snap.commit_sha, workdir=None if record else checkout,
                                 record=record)
     observed = fresh.observe()
     freshness = {k: v for k, v in observed.block.items() if k != "dirty"}
     freshness["format_version"] = snap.format_version
 
+    # Between the stages too: each git call is bounded alone, not together.
+    check = deadline.check if deadline is not None else (lambda: None)
     seeds = seeds_for(kind, payload, snap=snap, checkout=checkout, work_dir=work_dir)
     pool = retrieve.Pool()
+    check()
     retrieve.graph(pool, snap, seeds, kind)
+    check()
     retrieve.rules(pool, checkout, seeds, (), retrieve.tracked_files(checkout))
+    check()
     blocked = retrieve.index_rules(pool, snap, seeds)
+    check()
     retrieve.history(pool, snap, checkout, seeds)
+    check()
     territory = list(dict.fromkeys(
         [*seeds.paths(), *(c.path for c in pool.rows() if c.kind == "caller" and c.hops == 1)]))
     in_flight = retrieve.in_flight(pool, read_json(where / INFLIGHT_FILE), territory)
@@ -413,7 +495,9 @@ def _build(where: Path, snap: Snapshot, record: dict | None, source: Any, delive
         if cand.kind not in retrieve.ALWAYS:
             cand.stale = observed.stale(cand.path)
     brief = payload.get("prompt") if isinstance(payload.get("prompt"), str) else ""
-    j1 = rerank(rows, kind, brief, judge) if judge is not None else None
+    # J1 only while the deadline lasts: the local ranking is a whole pack.
+    j1 = rerank(rows, kind, brief, judge) if judge is not None and (
+        deadline is None or deadline.remaining() > 0) else None
     ranked = select(rows, kind)
     header = {"task_type": kind, "freshness": freshness, "jev": _jev(stage, j1),
               "seeds": seeds.as_dict()}
