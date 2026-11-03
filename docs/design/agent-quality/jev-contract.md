@@ -281,7 +281,7 @@ and J5 in `runners/cliagent._jev_post_steps`:
 * it runs after the agent's process tree has exited, so the agent cannot see
   or answer the call, and before the attempt ends;
 * it runs on GKE, where the workspace's backend is reachable today, through
-  the same `JudgeClient`, sanitizer and per-task ledger as J1-J5;
+  the same `JudgeClient`, sanitizer and per-agent ledger as J1-J5;
 * the worker does **not** write the verdict. It posts it to a new state route,
   `POST /v1/attempts/{attempt_id}/state/contract-verdict`, signed by the
   attempt proof like every state route, and swarm-api runs every check and
@@ -357,17 +357,17 @@ swarm-api, in the state route's transaction:
 | Every judged requirement | Result |
 |---|---|
 | `met` | one `Evidence(requirement_id, digest, commit, kind="judgment", passed=True)` each; the step's contract status is `unmet(...)` over all its evidence, and acceptance continues under [section 6](#6-the-strict-acceptance-default) |
-| any `unmet` | **sent back**: the `unmet` requirements get `passed=False` evidence, and the task takes the existing retry transition (`RetryBody`) with cause `contract_unmet`, back to `READY` (`AttemptState.retry`) |
+| any `unmet` | **sent back**: the `unmet` requirements get `passed=False` evidence, and the agent takes the existing retry transition (`RetryBody`) with cause `contract_unmet`, back to `READY` (`AttemptState.retry`) |
 | any `cannot_judge`, no `unmet` | no evidence for those requirements; the step's acceptance is `judgment_pending` and goes to the owner (Q5) |
 
 **A send-back** gives the next attempt, in its brief, one block per unmet
 requirement: its id, Jev's reason code, the cited file and hunk, and the
 words "Jev judged this requirement unmet at commit <sha>". It resumes from
 the last checkpoint (invariant 8), under the same contract revision. The
-number of send-backs per task is capped (**Q11**); past the cap, the step goes
+number of send-backs per agent is capped (**Q11**); past the cap, the step goes
 to the owner as `judgment_pending` with every verdict attached, never into a
-loop. The retry transition spends one of the task's signed `max_attempts`
-(3 unless the spec says otherwise) and turns the task `FAILED` when they are
+loop. The retry transition spends one of the agent's signed `max_attempts`
+(3 unless the spec says otherwise) and turns the agent `FAILED` when they are
 exhausted, so the state route checks the cap and the remaining attempts
 together: a send-back that would exhaust `max_attempts` goes to the owner as
 `judgment_pending` instead, because a step that did its work and was judged
@@ -424,19 +424,19 @@ set, the usage page prints no figure, never $0.
 
 **Which budget pays.**
 
-* JC1 has no task yet. Its usage is charged to the workspace's month in
+* JC1 has no agent yet. Its usage is charged to the workspace's month in
   `jev_usage` under kind `contract_review`, in a row of its own
   (`<tenant>_contract_<contract_id>_r<revision>`), written by swarm-api in
   the same transaction that stores the revision. It is admitted only while the
   month's spend is under `code_intelligence.jev_monthly_cap_tokens`.
-* JC2 is a call of the task, so it is in the per-task ledger (8 calls and
+* JC2 is a call of the agent, so it is in the per-agent ledger (8 calls and
   120,000 input tokens across attempts) and charged to the month by
   `settle_attempt`. Because the agent's `jev_decide` and J0-J5 spend from the
   same ledger, a talkative agent could leave nothing for its own acceptance
   judgment. Whether JC2 gets a reserved slot is **Q8**.
 
 **When the cap is reached** the call is skipped as `skipped:budget_monthly`
-(or `budget_calls`, `budget_tokens` for the task), exactly as the client
+(or `budget_calls`, `budget_tokens` for the agent), exactly as the client
 skips today, and the site's unavailability rule in section 8 applies. A cap
 never turns into a pass.
 
@@ -450,7 +450,7 @@ which is the point of it, and the experiment counts it in end-to-end latency.
 ## 8. When Jev is unavailable, times out or is over its cap
 
 "Unavailable" here is any `Decision` that is not `ok`: a timeout, a 429, a
-5xx, a malformed answer, an open breaker, a spent task or monthly budget, no
+5xx, a malformed answer, an open breaker, a spent per-agent or monthly budget, no
 route to the backend, no key, or the workspace not opted in. Each site has
 options; the owner chooses (**Q2**, **Q5**). This design does not.
 
@@ -484,11 +484,11 @@ new method `contract_verdict`) checks, in the one Firestore transaction that
 writes the evidence:
 
 1. the attempt proof, as every state route does;
-2. the task's current generation equals the posted one, and the attempt is the
-   task's current attempt: otherwise **409, nothing written**, and the worker
+2. the agent's current generation equals the posted one, and the attempt is the
+   agent's current attempt: otherwise **409, nothing written**, and the worker
    exits without running anything further and without touching the lease
    (invariant 5);
-3. the digest equals the signed reference's digest on the task: a contract
+3. the digest equals the signed reference's digest on the agent: a contract
    amended while the attempt ran makes the verdict stale, and it is refused
    the same way;
 4. the commit equals the commit the attempt reported at finish: a verdict
@@ -569,7 +569,7 @@ Under the protocol's rules ([experiment-protocol.md](experiment-protocol.md)):
   MERGE), missed defect (Jev `met`, hidden tests fail), `cannot_judge` rate,
   and calibration (Brier score of p against the hidden-test outcome), which is
   what moves the 0.6 and 0.7 thresholds.
-* **Outcome and cost**, as the protocol defines them: accepted-task success
+* **Outcome and cost**, as the protocol defines them: the accepted-item success rate
   with its Wilson interval, cost per accepted item with Jev tokens priced at
   `jev_token_rates` (an unpriced arm reports no cost, never $0), and
   end-to-end latency p50 and p95 with send-back rounds included.
@@ -622,16 +622,16 @@ recommendation. None blocks this document; each blocks the lane named.
 | Q5 | The end of a step when Jev is unavailable or cannot judge | the owner decides on the approval screen | 5 |
 | Q6 | What the strict acceptance default is | the `acceptance` field, `strict` by default: a person's approval, with Jev's verdict as evidence and its `unmet` sending back first | 2, 5 |
 | Q7 | How a 422 `validation_failed` refusal ships switched off | a refusal switch keyed on `detail.reason` in `refusals.py` | 4 |
-| Q8 | Whether JC2 has a reserved slot in the per-task ledger | reserve one call and 30,000 tokens that `jev_decide` and J0-J5 cannot spend | 6 |
+| Q8 | Whether JC2 has a reserved slot in the per-agent ledger | reserve one call and 30,000 tokens that `jev_decide` and J0-J5 cannot spend | 6 |
 | Q9 | Which opt-in gates JC1 | the same signed `code_intelligence.jev` | 4 |
 | Q10 | How swarm-api and the worker share the Jev client | a new shared package, as `swarm-redaction` is | 1 |
-| Q11 | The send-back cap per task | two | 5 |
+| Q11 | The send-back cap per agent | two | 5 |
 | Q12 | Whether a Jev judgment of `protected.interfaces` counts as enforcing it | no | 2 |
 
 ## 15. CONTRACT.md invariants
 
 1. **Demand.** A send-back takes the existing retry transition to `READY`,
-   which costs nothing; JC1 runs inside a request and creates no task, lease
+   which costs nothing; JC1 runs inside a request and creates no agent, lease
    or pod. No pending pod is used as a backlog.
 2. **All-or-nothing reservation.** Untouched: a send-back's next attempt is
    leased by the existing transaction like any other.
