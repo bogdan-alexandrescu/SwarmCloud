@@ -12,7 +12,7 @@ import {
 } from 'react'
 
 import { clampPane, readPane, writePane, type PaneSpec } from '../panes'
-import './inspector.css'
+import './inspectorShell.css'
 
 /**
  * THE WORK SECTION'S DOCKED INSPECTOR (the owner's pick of 2026-11-03: the
@@ -58,7 +58,7 @@ export const HANDLE_W = 9
 export const RAIL_W = 36
 /** Under this viewport width a page starts the inspector folded at rest (graph-notes: D·8b at 1280). */
 export const FOLD_BELOW = 1366
-/** The phone: one column, the inspector a sheet. The same width as `inspector.css`'s media query. */
+/** The phone: one column, the inspector a sheet. The same width as `inspectorShell.css`'s media query. */
 export const PHONE_QUERY = '(max-width: 720px)'
 
 /**

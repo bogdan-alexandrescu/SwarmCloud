@@ -11,6 +11,7 @@ import {
   MAIN_MIN,
   HANDLE_W,
   inspectorMax,
+  inspectorSpec,
   startsFolded,
   widthClassOf,
   type WidthClass,
@@ -29,7 +30,8 @@ if (typeof window.PointerEvent === 'undefined') {
 }
 
 const PAGE = 1440
-const KEY = 'swarm.work.inspector.agents.w'
+// From the spec, not a literal: the screen's key is built per screen, and a per-browser pane width (kept on sign-out).
+const KEY = inspectorSpec('agents').key
 
 /** Every element measures as a page `PAGE` wide whose right edge is at `PAGE`: jsdom lays nothing out. */
 function pageOf(width: number) {
