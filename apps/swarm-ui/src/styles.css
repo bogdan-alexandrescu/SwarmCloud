@@ -2555,7 +2555,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .ag-wall-open:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .ag-wall-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: var(--t-meta); }
 .ag-wall-card .wf-live { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ag-wall-card .wf-live-head, .ag-wall-card .wf-live-links { font-size: var(--t-micro); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-wall-card .wf-live-head, .ag-wall-card .wf-live-links { font-size: var(--t-micro); min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--ctl-s1); }
 .ag-wall-card .wf-live-thumb { display: block; width: 100%; aspect-ratio: 16 / 10; height: auto; background: var(--surface-2); border-radius: 4px; }
 .ag-wall-count { white-space: nowrap; }
 /* On a phone the wall is a sheet, opened from this one button over the list. */

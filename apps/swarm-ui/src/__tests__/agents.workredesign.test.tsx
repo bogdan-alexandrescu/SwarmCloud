@@ -39,7 +39,7 @@ vi.mock('../LiveThumb', async (importOriginal) => {
   return { ...actual, LiveThumb: ({ taskId }: { taskId: string }) => <span className="still-stub" data-still={taskId} /> }
 })
 
-import { AgentsScreen, DROP_CLASS, agentNeeds, bySpent, costCell, droppedColumns, rowPullRequest } from '../Agents'
+import { AgentsScreen, DROP_CLASS, WALL_WIDTH, agentNeeds, bySpent, costCell, droppedColumns, rowPullRequest } from '../Agents'
 import { resetListSnap } from '../listSnap'
 
 const NOW = '2026-09-23T12:00:00.000Z'
@@ -145,6 +145,8 @@ describe('the list is the left pane of the docked inspector', () => {
     const c = await land([CHEAP, BROWSER], null)
     const shell = c.querySelector<HTMLElement>('.wi[data-screen="agents"]')
     expect(shell?.classList.contains('is-docked')).toBe(true)
+    // At the design's resting width, two stills a row, every column kept beside it.
+    expect(shell?.style.getPropertyValue('--wi-dock')).toBe(`${WALL_WIDTH}px`)
     const dock = screen.getByRole('complementary', { name: 'Live browsers' })
     const cards = within(dock).getAllByRole('listitem')
     expect(cards.map((li) => li.getAttribute('data-task-id'))).toEqual([BROWSER.id])
@@ -212,9 +214,9 @@ describe('a row carries its cost and pull request', () => {
     expect(rowOf(c, 'Book the demo').querySelector('.cr-cost')?.textContent).toBe('$1.50')
     expect(rowOf(c, 'Cheap one').querySelector('.cr-cost')?.textContent).toBe('$0.25+')
     const unknown = rowOf(c, 'Never measured').querySelector('.cr-cost')
-    expect(unknown?.textContent).toBe('not known')
+    expect(unknown?.textContent).toBe('cost not known')
     expect(unknown?.classList.contains('is-unknown')).toBe(true)
-    expect(costCell({ cost_usd_total: undefined, cost_incomplete: null }).text).toBe('not known')
+    expect(costCell({ cost_usd_total: undefined, cost_incomplete: null }).text).toBe('cost not known')
   })
 
   it('links the pull request the row carries and says when it is not known', async () => {
@@ -233,11 +235,12 @@ describe('a row carries its cost and pull request', () => {
 })
 
 describe('the columns give way as the inspector widens', () => {
-  it('drops attempt and owner first, then cost, then the pull request', () => {
+  it('keeps every column beside the wall at rest, then drops attempt and owner, then cost and the pull request', () => {
     expect(droppedColumns('wide')).toEqual([])
-    expect(droppedColumns('medium')).toEqual(['attempt', 'owner'])
-    expect(droppedColumns('narrow')).toEqual(['attempt', 'owner', 'cost'])
+    expect(droppedColumns('medium')).toEqual([])
+    expect(droppedColumns('narrow')).toEqual(['attempt', 'owner'])
     expect(droppedColumns('slim')).toEqual(['attempt', 'owner', 'cost', 'pr'])
+    expect(DROP_CLASS).toEqual({ attempt: 'wi-hide-narrow', owner: 'wi-hide-narrow', cost: 'wi-hide-slim', pr: 'wi-hide-slim' })
   })
 
   it('marks each cell with the shell class that hides it at that width', async () => {

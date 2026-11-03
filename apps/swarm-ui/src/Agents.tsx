@@ -573,25 +573,29 @@ export type DroppedColumn = 'attempt' | 'owner' | 'cost' | 'pr'
 
 /**
  * Which row columns the left pane drops at a width class: attempt and owner
- * first, then cost, then the pull request, so beside a wide inspector a row is
- * its still, state, agent and time. The cells carry the matching
- * `wi-hide-*` class (inspectorShell.css), whose container queries use the
- * same bounds as `widthClassOf`.
+ * first, then cost and the pull request, so beside a wide inspector a row is
+ * its state, agent and time. Beside the wall at rest (`WALL_WIDTH`) the list
+ * is at least `medium` from 1280 up and keeps every column (graph-fixes.md,
+ * finding 8); they go as the inspector is dragged wider or an agent opens
+ * beside the list. The cells carry the matching `wi-hide-*` class
+ * (inspectorShell.css), whose container queries use `widthClassOf`'s bounds.
  */
 export function droppedColumns(cls: WidthClass): DroppedColumn[] {
-  if (cls === 'wide') return []
-  if (cls === 'medium') return ['attempt', 'owner']
-  if (cls === 'narrow') return ['attempt', 'owner', 'cost']
+  if (cls === 'wide' || cls === 'medium') return []
+  if (cls === 'narrow') return ['attempt', 'owner']
   return ['attempt', 'owner', 'cost', 'pr']
 }
 
 /** The `wi-hide-*` class a column's cell carries: the width class it leaves at. */
 export const DROP_CLASS: Readonly<Record<DroppedColumn, string>> = {
-  attempt: 'wi-hide-medium',
-  owner: 'wi-hide-medium',
-  cost: 'wi-hide-narrow',
+  attempt: 'wi-hide-narrow',
+  owner: 'wi-hide-narrow',
+  cost: 'wi-hide-slim',
   pr: 'wi-hide-slim',
 }
+
+/** The wall's resting width: two stills a row, and every column kept beside it (the design's 340). */
+export const WALL_WIDTH = 340
 
 /**
  * WHAT WAITS ON THE PERSON AMONG THE ROWS READ, for the Needs-you row: a
@@ -624,7 +628,7 @@ export function agentNeeds(tasks: readonly Task[], title: (t: Task) => string): 
 /** The row's cost: the measured spend, "+" when some attempt has not reported, "not known" when none measured it (never $0). */
 export function costCell(t: Pick<Task, 'cost_usd_total' | 'cost_incomplete'>): { text: string; say: string } {
   const usd = t.cost_usd_total
-  if (usd === null || usd === undefined || !Number.isFinite(usd)) return { text: 'not known', say: 'Cost not known: no attempt of this agent has reported what it spent' }
+  if (usd === null || usd === undefined || !Number.isFinite(usd)) return { text: 'cost not known', say: 'Cost not known: no attempt of this agent has reported what it spent' }
   const v = `$${usd.toFixed(2)}`
   return t.cost_incomplete === true
     ? { text: `${v}+`, say: `At least ${v}: an attempt has not reported what it spent yet` }
@@ -1259,6 +1263,7 @@ function AgentsBody({
   return (
     <Inspector
       screen="agents"
+      initialWidth={WALL_WIDTH}
       label="Live browsers"
       title="Live browsers"
       state={<span className="ag-wall-count">{liveBrowsers} live</span>}
@@ -2789,7 +2794,7 @@ function CompactRow({
         </span>
         <span className={DROP_CLASS.cost}>
           {' · '}
-          <span className={`cr-cost${cost.text === 'not known' ? ' is-unknown' : ''}`} title={cost.say}>
+          <span className={`cr-cost${cost.text === 'cost not known' ? ' is-unknown' : ''}`} title={cost.say}>
             {cost.text}
           </span>
         </span>
