@@ -1703,6 +1703,107 @@ def step_task_summary(
         "completed_at": task.completed_at,
         **totals,
         "last_error_line": line or None,
+        "needs": step_needs(task, masking),
+    }
+
+
+def _iso(value: Any) -> str | None:
+    """A served instant: a datetime as ISO 8601, a string as stored, else None."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value if isinstance(value, str) else None
+
+
+def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
+    """What the Workflows list's Needs-you bar draws for one step, off its task
+    document alone (the owner's pick on PR #3147, "Widen view=summary").
+
+    No artifact, event or approval is read, so the list costs no read more for
+    it. Every text an agent or a worker wrote is masked by the task's masker:
+
+    * `park_reason`, and the hand-off's clock: `next_eligible_at` and
+      `updated_at`, the instants the parked hand-off's deadline counts from.
+    * `human_wait`: a RUNNING task's browser hand-off, `{reason, expect,
+      deadline}`; null for every other task.
+    * `owner_questions`: a merge held by the owner's questions (#2313), its
+      park's `owner_questions` record, `{questions, unreadable}`, each
+      question `{task_id, step_id, question_index, question}`; else null.
+    * `questions`: the open questions of the wait the task parks on (or last
+      parked on), each `{index, question, options, recommended}` -- the
+      blocking indices with no stored answer -- and `questions_unread`: the
+      indices of the questions in the agent's `questions.json` (the count the
+      worker validated, `result_summary.questions`) with no stored answer,
+      whose words are in that artifact and not served here; the task's page
+      reads them (`GET /v1/tasks/{id}/questions`).
+    * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
+    """
+    from .agent_questions import blocking_unanswered, current_wait, question_count, unanswered_indices
+
+    def masked(value: Any) -> str | None:
+        return masking.text(value)[0] if isinstance(value, str) else None
+
+    wait = task.human_wait if isinstance(task.human_wait, dict) else None
+    human_wait = (
+        {"reason": masked(wait.get("reason")), "expect": masked(wait.get("expect")),
+         "deadline": _iso(wait.get("deadline"))}
+        if wait is not None and task.state == TaskState.RUNNING else None
+    )
+    hold: dict[str, Any] | None = None
+    if task.state == TaskState.PARKED and task.park_reason == ParkReason.HUMAN_REQUIRED:
+        for entry in task.blocked_by or ():
+            if (not isinstance(entry, dict) or entry.get("reason") != ParkReason.HUMAN_REQUIRED.value
+                    or entry.get("park_phase") != "owner_questions"):
+                continue
+            record = entry.get("owner_questions") if isinstance(entry.get("owner_questions"), dict) else {}
+            questions = []
+            for q in record.get("questions") or ():
+                if not isinstance(q, dict):
+                    # Served as null, which the console counts as unreadable:
+                    # never the stored value, which no masker has read.
+                    questions.append(None)
+                    continue
+                questions.append({
+                    "task_id": q.get("task_id") if isinstance(q.get("task_id"), str) else None,
+                    "step_id": q.get("step_id") if isinstance(q.get("step_id"), str) else None,
+                    "question_index": q.get("question_index") if isinstance(q.get("question_index"), int) else None,
+                    "question": masked(q.get("question")),
+                })
+            unreadable = record.get("unreadable")
+            hold = {"questions": questions,
+                    "unreadable": unreadable if isinstance(unreadable, int) and not isinstance(unreadable, bool) else None}
+            break
+    open_questions: list[dict[str, Any]] = []
+    question_wait, _ = current_wait(task)
+    if question_wait is not None:
+        asked = question_wait["questions"]
+        for index in blocking_unanswered(question_wait, task.metadata):
+            entry = asked[index]
+            options = [
+                {"label": masked(o.get("label")), "description": masked(o.get("description"))}
+                for o in entry.get("options") or () if isinstance(o, dict)
+            ]
+            open_questions.append({
+                "index": index,
+                "question": masked(entry.get("question")),
+                "options": options,
+                "recommended": masked(entry.get("recommended")),
+            })
+    git = (task.result_summary or {}).get("git") if isinstance(task.result_summary, dict) else None
+    pr = git.get("pull_request") if isinstance(git, dict) else None
+    number = pr.get("number") if isinstance(pr, dict) else None
+    pull_request = (
+        {"number": number, "url": pr.get("url") if isinstance(pr.get("url"), str) else None}
+        if isinstance(number, int) and not isinstance(number, bool) else None
+    )
+    return {
+        "park_reason": task.park_reason.value if task.park_reason else None,
+        "next_eligible_at": _iso(task.next_eligible_at),
+        "updated_at": _iso(task.updated_at),
+        "human_wait": human_wait,
+        "owner_questions": hold,
+        "questions": open_questions,
+        "questions_unread": unanswered_indices(question_count(task.result_summary), task.metadata),
+        "pull_request": pull_request,
     }
 
 
