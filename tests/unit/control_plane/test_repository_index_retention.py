@@ -252,6 +252,101 @@ def test_the_prune_spares_the_last_days_versions(db, repo_id):
                                       now=T0 + timedelta(hours=39))) == set(shas[15:])
 
 
+# --------------------------------------------------------------------------
+# a version a live workflow pins (owner's pick `record-pins`, PR #3105)
+# --------------------------------------------------------------------------
+
+def _pin(db, repo_id, commit, *, holder="workflows", holder_id="wf_long", tenant="eng"):
+    db.docs[f"repositories/{repo_id}/index_pins/"
+            f"{repoindex.pin_id(holder, holder_id, commit)}"] = {
+        "commit_sha": commit, "holder": holder, "holder_id": holder_id, "tenant_id": tenant,
+    }
+
+
+def _pins(db, repo_id):
+    prefix = f"repositories/{repo_id}/index_pins/"
+    return {path[len(prefix):] for path in db.docs if path.startswith(prefix)}
+
+
+def test_kept_commits_keep_a_pinned_commit_however_old():
+    now = T0 + timedelta(days=30)
+    rows = [{"commit_sha": sha(f"v{n}"), "recorded_at": T0 + timedelta(hours=n)}
+            for n in range(10)]
+    kept = repoindex.kept_commits(rows, keep_versions=2, current_sha=None, own=sha("own"),
+                                  now=now, pinned={sha("v0"), "not a sha"})
+    # MUTATION: `pinned` ignored, and the month-old version a workflow reads is swept.
+    assert kept == sorted({sha("v0"), sha("v8"), sha("v9"), sha("own")})
+
+
+def test_the_prune_keeps_a_version_a_running_workflow_pins(db, repo_id):
+    shas = _seed_versions(db, repo_id, 10)  # a month older than the service's now
+    db.docs["workflows/wf_long"] = {"workflow_id": "wf_long", "tenant_id": "eng",
+                                    "state": "RUNNING"}
+    _pin(db, repo_id, shas[0])
+    service = _service(db)
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    # MUTATION: `_prune_versions` not reading the pins prunes shas[0] by count.
+    assert _versions(db, repo_id) == {shas[0], *shas[-2:]}
+    assert len(_pins(db, repo_id)) == 1
+
+
+@pytest.mark.parametrize("holder", [
+    {"workflow_id": "wf_long", "tenant_id": "eng", "state": "SUCCEEDED"},
+    {"workflow_id": "wf_long", "tenant_id": "eng", "state": "CANCELLED"},
+    {"workflow_id": "wf_long", "tenant_id": "research", "state": "RUNNING"},
+    None,
+])
+def test_a_settled_workflows_pin_is_dropped_and_its_version_pruned(db, repo_id, holder):
+    shas = _seed_versions(db, repo_id, 10)
+    if holder is not None:
+        db.docs["workflows/wf_long"] = holder
+    _pin(db, repo_id, shas[0])
+    service = _service(db)
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    # MUTATION: a pin outliving its workflow keeps the version for ever.
+    assert _versions(db, repo_id) == set(shas[-2:])
+    assert _pins(db, repo_id) == set()
+
+
+def test_a_task_outside_a_workflow_pins_until_it_ends(db, repo_id):
+    shas = _seed_versions(db, repo_id, 10)
+    db.docs["tasks/task_alone"] = {"tenant_id": "eng", "state": "RUNNING"}
+    _pin(db, repo_id, shas[0], holder="tasks", holder_id="task_alone")
+    service = _service(db)
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    assert shas[0] in _versions(db, repo_id)
+    db.docs["tasks/task_alone"]["state"] = "FAILED"
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    assert shas[0] not in _versions(db, repo_id)
+
+
+def test_unreadable_pins_prune_nothing(db, repo_id, monkeypatch):
+    shas = _seed_versions(db, repo_id, 10)
+    service = _service(db)
+
+    def unreadable(self, repo):
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(repoindex.RepoIndex, "_pinned_commits", unreadable)
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    # MUTATION: pruning on without the pins deletes a version a step may read.
+    assert _versions(db, repo_id) == set(shas)
+
+
+def test_the_signed_keep_line_names_a_pinned_commit(client, db, repo_id):
+    shas = _seed_versions(db, repo_id, 6)
+    db.docs["workflows/wf_long"] = {"workflow_id": "wf_long", "tenant_id": "eng",
+                                    "state": "RUNNING"}
+    _pin(db, repo_id, shas[0])
+    assert _patch(client, repo_id, {"keep_versions": 2}).status_code == 200
+    task = db.docs[f"tasks/{_index_now(client, repo_id)}"]
+    [line] = [line for line in task["input"]["prompt"].splitlines()
+              if line.startswith(repoindex.KEEP_LINE)]
+    # MUTATION: `_kept_for_run` not passing the pins, and the bucket sweep
+    # deletes the graph the workflow's next step is pinned to.
+    assert shas[0] in line.split(": ", 1)[1].split()
+
+
 def test_the_signed_prompt_names_the_kept_commits(client, db, objects, repo_id, github):
     first = _index_now(client, repo_id)
     # The very first run keeps only its own commit: there is nothing else yet.

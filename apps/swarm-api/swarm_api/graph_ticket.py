@@ -67,10 +67,20 @@ the pins (`swarm_rollup.settled_unpin`). Because the pin and a settle both
 read the workflow inside a transaction, a pin never lands on a workflow that
 settled first. A pin that cannot be written is a 503 and no ticket: a ticket
 without its pin could name a version retention then sweeps. A task with no
-workflow pins nothing.
+workflow pins nothing here.
 
-The pin is the only write. Nothing here logs, stores or serves a key, a
-signature or a ticket, other than the one ticket in the response body.
+THE HOLDER PIN (owner's pick `record-pins`, PR #3105). Minting also writes
+a pin under the repository, `repositories/{repo_id}/index_pins/` (`record_pin`),
+naming the ticket's `index_sha` and its holder -- the task's workflow, or the
+task itself when it runs outside one. Index retention keeps a pinned version,
+however old, until that holder settles (`repoindex.RepoIndex._pinned_commits`),
+so a long workflow's later steps still find the graph its first step read. A
+pin that cannot be written is logged and the ticket still minted: the graph
+is read now, and the day's age floor still keeps a recent version.
+
+The two pins are the only writes; retention keeps a version either one holds
+(`repoindex.RepoIndex._all_pinned`). Nothing here logs, stores or serves a
+key, a signature or a ticket, other than the one ticket in the response body.
 """
 
 from __future__ import annotations
@@ -80,6 +90,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
@@ -100,11 +111,13 @@ from .codeintel import OFF, CodeIntelligenceStore, effective_context
 from .judgment import settings_mac
 from .errors import ApiError, Conflict, Forbidden, ValidationFailed
 from .live import LiveSessionOpen
-from .repoindex import VERSIONS_COLLECTION
+from .repoindex import PINS_COLLECTION, VERSIONS_COLLECTION, pin_id
 from .repograph import NoGraph
 from .repositories import COLLECTION as REPOSITORIES
 from .repositories import Repositories, parse_repository, readable_by_tasks_of, repo_id_for
 from .store import LEASES, TASKS
+
+log = logging.getLogger(__name__)
 
 #: The worker's signing purpose for this route; never another route's (§3.2).
 TICKET_PURPOSE = "swarm-graph-ticket-request/v1"
@@ -424,6 +437,24 @@ class GraphTicketService:
                 "the graph version this ticket names could not be pinned for the workflow, so "
                 "index retention could sweep it; no graph ticket was minted") from None
 
+    def record_pin(self, tenant_id: str, repo_id: str, task: dict[str, Any], task_id: str,
+                   index_sha: str) -> None:
+        """Record that `index_sha` is pinned until this step's workflow -- or
+        the task, outside one -- settles (module docstring, THE PIN). One
+        document per holder and commit, rewritten on every renewal. Best
+        effort: a failed write is logged and never refuses the ticket."""
+        workflow_id = task.get("workflow_id")
+        holder, holder_id = (("workflows", workflow_id) if isinstance(workflow_id, str)
+                             and workflow_id else ("tasks", task_id))
+        try:
+            (self._db.collection(REPOSITORIES).document(repo_id)
+             .collection(PINS_COLLECTION).document(pin_id(holder, holder_id, index_sha))
+             .set({"commit_sha": index_sha, "holder": holder, "holder_id": holder_id,
+                   "tenant_id": tenant_id, "task_id": task_id, "pinned_at": self._now()}))
+        except Exception as failed:  # the pin never stops a step reading its graph
+            log.warning("graph ticket pin unrecorded tenant=%s repo_id=%s error=%s",
+                        tenant_id, repo_id, type(failed).__name__)
+
     def mint(self, authorization: str | None, attempt_id: str, raw: bytes, *, path: str,
              proof: str | None, timestamp: str | None) -> dict[str, Any]:
         key = self._s("graph_ticket_key", "")
@@ -458,6 +489,7 @@ class GraphTicketService:
                 "setting; no graph ticket was minted", detail={"reason": CONTEXT_DISABLED})
         digest = self._digest(repo_id, body.index_sha)
         self._pin(tenant_id, task, repo_id, body.index_sha)
+        self.record_pin(tenant_id, repo_id, task, attempt.task_id, body.index_sha)
 
         seconds = ticket_seconds(self._s("graph_ticket_seconds", 600))
         ticket = mint_graph_ticket(
