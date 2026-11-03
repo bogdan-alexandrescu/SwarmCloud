@@ -402,6 +402,55 @@ def classify(events: Sequence[Mapping[str, Any]], pending_path: Path) -> tuple[s
     return PARKED, pending
 
 
+def read_stream(path: Path) -> list[dict[str, Any]]:
+    """The JSON objects of a stream-json capture, skipping lines that are not
+    one (the CLI's own warnings); [] when there is no capture."""
+    events: list[dict[str, Any]] = []
+    try:
+        handle = path.open(encoding="utf-8", errors="replace")
+    except OSError:
+        return events
+    with handle:
+        for line in handle:
+            if not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+    return events
+
+
+def unanswered(events: Iterable[Mapping[str, Any]], pending_path: Path) -> str | None:
+    """Why an attempt that asked a question must not end as a success, or None.
+
+    Until the worker parks (not wired: the spike's brief), a run that asked
+    has no answer, and whatever the CLI did after the stop -- the runner's
+    repair or finish turns resume the session without one -- is not the
+    task done. A recorded question is `question_unanswered`; a question the
+    stream shows and nothing recorded, or a record that is not the hook's, is
+    `question_bridge_failed`.
+    """
+    try:
+        pending = read_pending(pending_path)
+    except (OSError, ValueError) as exc:
+        return f"question_bridge_failed: the pending question is not the hook's ({exc})"
+    if pending is not None:
+        first = pending.questions[0].question
+        return (f"question_unanswered: the agent asked {len(pending.questions)} question(s) through "
+                f"{QUESTION_TOOL} and this worker does not park for an answer yet; first: {first[:200]}")
+    asked = any(
+        isinstance(block, Mapping) and block.get("type") == "tool_use" and block.get("name") == QUESTION_TOOL
+        for event in events if event.get("type") == "assistant"
+        for block in (event.get("message") or {}).get("content") or []
+    )
+    if asked:
+        return f"question_bridge_failed: the agent called {QUESTION_TOOL} and no question was recorded"
+    return None
+
+
 def session_files(home: Path, session_id: str) -> list[Path]:
     """What the CLI keeps for `session_id` under HOME, to checkpoint before a
     park: `.claude/projects/<slug>/<session>.jsonl` (the transcript --resume

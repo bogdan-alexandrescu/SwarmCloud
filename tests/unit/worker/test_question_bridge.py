@@ -396,3 +396,86 @@ def test_session_files_include_the_sessions_tool_results(tmp_path):
     (slug / f"{sid}.jsonl").write_text("{}\n")
     (slug / f"{uuid.uuid4()}.jsonl").write_text("{}\n")
     assert qb.session_files(tmp_path, sid) == [slug / f"{sid}.jsonl", slug / sid]
+
+
+# --- the safety net while nothing parks ---------------------------------------
+
+
+def test_a_recorded_question_is_unanswered_not_a_success(tmp_path):
+    pending = tmp_path / qb.PENDING_NAME
+    _hook(_call(), pending)
+    reason = qb.unanswered([], pending)
+    assert reason.startswith("question_unanswered:") and "Which database" in reason
+
+
+def test_a_question_the_stream_shows_and_nothing_recorded_is_a_bridge_failure(tmp_path):
+    events = _events(str(uuid.uuid4()))
+    assert qb.unanswered(events, tmp_path / qb.PENDING_NAME).startswith("question_bridge_failed:")
+    bad = tmp_path / "bad.json"
+    bad.write_text("[]")
+    assert qb.unanswered([], bad).startswith("question_bridge_failed:")
+
+
+def test_a_run_that_asked_nothing_is_not_held_back(tmp_path):
+    events = _events(str(uuid.uuid4()), tool="Bash", terminal="completed")
+    assert qb.unanswered(events, tmp_path / qb.PENDING_NAME) is None
+
+
+def test_read_stream_skips_what_is_not_an_event(tmp_path):
+    stream = tmp_path / "stdout.jsonl"
+    stream.write_text('warning: something\n{"type": "result"}\n{broken\n[1]\n')
+    assert qb.read_stream(stream) == [{"type": "result"}]
+    assert qb.read_stream(tmp_path / "missing") == []
+
+
+def _body_with_stream(monkeypatch, tmp_path, env, stream_events, *, hook_payload=None):
+    """claude_code's body, its fake CLI run writing `stream_events` and, when
+    given, running the real hook on `hook_payload` as the CLI would."""
+
+    def fake_run(ctx, spec, *, extra_args=(), extra_env=None):
+        args = list(extra_args)
+        if hook_payload is not None:
+            settings = json.loads(Path(args[args.index("--settings") + 1]).read_text())
+            entry = next(e for e in settings["hooks"]["PreToolUse"] if e["matcher"] == qb.QUESTION_TOOL)
+            subprocess.run(entry["hooks"][0]["command"], shell=True, input=json.dumps(hook_payload),
+                           capture_output=True, text=True, check=True)
+        ctx.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        (ctx.artifacts_dir / cli_stream_files(spec).stdout).write_text(
+            "".join(json.dumps(e) + "\n" for e in stream_events))
+        return {"summary": "", "stdout_truncated": False, "metrics": {"duration_seconds": 1.0}}
+
+    monkeypatch.setattr(claude_code, "run_cli_agent", fake_run)
+    for name in _CLEARED:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    work = tmp_path / "work"
+    (work / "repo").mkdir(parents=True, exist_ok=True)
+    ctx = RunnerContext(work_dir=work, artifacts_dir=work / "artifacts", input_path=work / "input.json",
+                        result_path=work / "result.json", quota_path=work / "quota.json",
+                        payload={"prompt": "Plan the storage layer."}, repo_dir=work / "repo")
+    return claude_code.body(ctx)
+
+
+def test_on_a_question_the_runner_fails_the_attempt_instead_of_reporting_success(tmp_path, monkeypatch):
+    payload = _call()
+    events = _events(payload["session_id"])
+    # MUTATION: drop the check after `run_cli_agent` in `body` -> this fails.
+    with pytest.raises(claude_code.RunnerFailure, match="question_unanswered"):
+        _body_with_stream(monkeypatch, tmp_path, {qb.ENABLE_ENV: "1"}, events, hook_payload=payload)
+
+
+def test_on_a_stale_pending_file_from_an_earlier_run_is_not_this_runs(tmp_path, monkeypatch):
+    stale = tmp_path / "work" / claude_code.SETTINGS_DIR_NAME / qb.PENDING_NAME
+    stale.parent.mkdir(parents=True)
+    _hook(_call(), stale)
+    events = _events(str(uuid.uuid4()), tool="Bash", terminal="completed")
+    result = _body_with_stream(monkeypatch, tmp_path, {qb.ENABLE_ENV: "1"}, events)
+    assert result["summary"] == ""
+    assert not stale.exists()
+
+
+def test_off_the_runner_does_not_look_for_questions(tmp_path, monkeypatch):
+    events = _events(str(uuid.uuid4()))
+    result = _body_with_stream(monkeypatch, tmp_path, {}, events)
+    assert result["summary"] == ""
