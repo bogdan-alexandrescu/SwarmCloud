@@ -169,7 +169,12 @@ resource "google_cloud_run_v2_service_iam_member" "voice_invokes_api" {
 # service, nothing else, as the workers' invokers (main.tf, the broker's
 # `invokers`) are admitted. Which routes swarm-voice may use is the broker's
 # decision, by the caller's email in VOICE_SERVICE_ACCOUNTS: the voice lease,
-# renew and release, and nothing a worker or swarm-api calls.
+# renew and release, and nothing a worker or swarm-api calls. The planner's
+# Claude account (docs/design/voice-it.md §3.6, owner 2026-11-02) rides the
+# same invoker and adds no binding: one `POST /v1/accounts/assign` per turn as
+# a service holder for the session person's own workspace, renewed and released
+# through the voice hold routes. The broker admitting that caller on the assign
+# route is its own code (apps/quota-broker), held for the owner's approval.
 resource "google_cloud_run_v2_service_iam_member" "voice_invokes_broker" {
   count = local.voice_on ? 1 : 0
 
