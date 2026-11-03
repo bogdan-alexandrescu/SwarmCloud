@@ -279,6 +279,8 @@ class _Worker:
         self.ws = SimpleNamespace(private=private)
         self.dispatch: dict[str, Any] = {}
         self._graph_env: dict[str, str] | None = None
+        #: The clone's repository (`Worker._repo_url`), None before a clone.
+        self._repo_url: str | None = None
 
     def _emit_startup_mark(self, cause: str, detail: dict) -> None:
         self.marks.append((cause, detail))
@@ -295,6 +297,7 @@ class _Worker:
 
 def _attempt(tmp_path: Path, monkeypatch, block: Any, *, at_dispatch: Any = "same",
              environ: dict[str, str] | None = None, dispatch: dict[str, Any] | None = None,
+             repo_url: str | None = None, world: tuple[Any, Any] | None = None,
              **dispatch_kw: Any
              ) -> tuple[dict[str, str], dict, _Worker]:
     """One claude-code attempt's gates, as the lifecycle builds them, and its
@@ -305,7 +308,7 @@ def _attempt(tmp_path: Path, monkeypatch, block: Any, *, at_dispatch: Any = "sam
     from agent_worker import qualitygates
     from agent_worker.lifecycle import Worker
 
-    db, client = _world(gates=None, tenant_key=_fake_key())
+    db, client = world or _world(gates=None, tenant_key=_fake_key())
     dispatched = block if at_dispatch == "same" else at_dispatch
     if dispatched is not None:
         db.docs["workspace_settings/eng"] = {"tenant_id": "eng", "quality_gates": dispatched}
@@ -321,6 +324,7 @@ def _attempt(tmp_path: Path, monkeypatch, block: Any, *, at_dispatch: Any = "sam
     private.mkdir(parents=True, exist_ok=True)
     worker = _Worker(db, client, private)
     worker.dispatch = dict(dispatch or {})
+    worker._repo_url = repo_url
     env = Worker._quality_gates_env(worker, worker.ws, SimpleNamespace(secrets=()))
     summary: dict[str, Any] = {}
     Worker._record_quality_gates(worker, summary)
@@ -862,6 +866,24 @@ def test_the_job_repository_url_is_read_when_none_is_given(tmp_path, monkeypatch
     _registration(db, "eng", ["infra/prod/**"])
     env, _log, _private = _prepare(tmp_path, db, client)
     config = json.loads(Path(next(iter(env.values()))).read_text())
+    assert config["hard_stop_paths"] == ["infra/prod/**"]
+
+
+def test_a_gated_attempts_config_carries_the_clones_repositorys_hard_stop_paths(
+        tmp_path, monkeypatch):
+    """The lifecycle passes the clone's repository (`Worker._repo_url`), not
+    the job's REPOSITORY_URL, which names another repository here (owner,
+    2026-11-02: "Pass repository_url from the lifecycle")."""
+    from agent_worker import qualitygates
+
+    monkeypatch.setenv("REPOSITORY_URL", "https://github.com/acme/other")
+    world = _world(gates=None, tenant_key=_fake_key())
+    _registration(world[0], "eng", ["infra/prod/**"])
+    env, _summary, _worker = _attempt(tmp_path, monkeypatch, _signed(True), repo_url=REPO_URL,
+                                      world=world)
+    config = json.loads(Path(env[qualitygates.CONFIG_ENV]).read_text())
+    # MUTATION: drop `repository_url=self._repo_url` and prepare reads the
+    # job's REPOSITORY_URL, whose repository registered no hard-stop path.
     assert config["hard_stop_paths"] == ["infra/prod/**"]
 
 

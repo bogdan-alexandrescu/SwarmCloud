@@ -10236,6 +10236,8 @@ class Worker:
                     # The signed workflow switch (2026-11-01), which only
                     # narrows what the stored, signed setting allows.
                     switch=self._dispatch_block().get(qualitygates_mod.SWITCH),
+                    # The clone's repository: its registration's hard_stop_paths.
+                    repository_url=self._repo_url,
                 )
         return dict(self._gates_env)
 
