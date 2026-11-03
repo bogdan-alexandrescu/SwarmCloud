@@ -82,6 +82,7 @@ from swarm_common.states import (
     can_transition,
 )
 from swarm_rollup import _TERMINAL_SEVERITY
+from swarm_rollup import settled_unpin
 
 from .codec import (
     attempt_from_dict,
@@ -2216,11 +2217,14 @@ class Store:
         never does -- QUEUED straight to RUNNING when the first step is admitted,
         or RUNNING back to PARKED when the last live step parks on quota. Running
         the task machine over it would reject the truth.
+
+        A terminal state clears the workflow's graph pins in the same write
+        (`swarm_rollup.settled_unpin`, #3116).
         """
         (
             self._db.collection(WORKFLOWS)
             .document(workflow_id)
-            .update({"state": state.value, "updated_at": self._now()})
+            .update({"state": state.value, "updated_at": self._now(), **settled_unpin(state)})
         )
 
     def cancel_workflow(

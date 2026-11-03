@@ -107,7 +107,8 @@ from pydantic import (
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
-from swarm_common.states import TaskState
+from swarm_common.states import TERMINAL_STATES, TaskState
+from swarm_rollup import GRAPH_PIN_REPOS, GRAPH_PINS, WORKFLOWS
 
 from .auth import AuthContext
 from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable, ValidationFailed
@@ -412,6 +413,8 @@ _TERMINAL = {
     TaskState.SUCCEEDED.value, TaskState.FAILED.value, TaskState.DEAD_LETTERED.value,
     TaskState.CANCELLED.value,
 }
+#: A workflow's stored states whose graph pins hold nothing (`pinned_commits`).
+_SETTLED_WORKFLOW = frozenset(state.value for state in TERMINAL_STATES)
 #: The run states that are not the task's own: the task document is gone.
 RUN_MISSING = "MISSING"
 
@@ -838,15 +841,20 @@ def _lsp_base_paragraph(lsp_base_sha: str) -> str:
 
 
 def retained_versions(rows: Iterable[Mapping[str, Any]], *, keep_versions: int,
-                      now: datetime) -> list[Mapping[str, Any]]:
+                      now: datetime, pinned: Iterable[str] = ()) -> list[Mapping[str, Any]]:
     """The versions retention keeps, newest first: the newest `keep_versions`
     by `recorded_at`, and every other one recorded in the last
-    KEEP_VERSIONS_MIN_AGE_HOURS, up to KEEP_VERSIONS_RANGE's most.
+    KEEP_VERSIONS_MIN_AGE_HOURS, up to KEEP_VERSIONS_RANGE's most; then every
+    version a running workflow's graph ticket pinned (`pinned`,
+    `pinned_commits`), however old.
 
     By count alone, 20 versions covered ~15 hours of SwarmCloud's runs
     (2026-11-03), so a step whose base was a few hours old found its index
     swept. `_prune_versions` and `kept_commits` both keep exactly these, so
-    the registration and the bucket agree on what is kept.
+    the registration and the bucket agree on what is kept. The pins are kept
+    outside both rules (#3116): a long workflow's steps read the version
+    their tickets name until the workflow settles, and the pins are bounded
+    by the live workflows, not by a setting.
     """
     listed = sorted(rows, key=lambda r: _parse_time(r.get("recorded_at")) or datetime.min.replace(
         tzinfo=timezone.utc), reverse=True)
@@ -857,27 +865,62 @@ def retained_versions(rows: Iterable[Mapping[str, Any]], *, keep_versions: int,
         if len(kept) >= KEEP_VERSIONS_RANGE[1] or recorded is None or recorded < floor:
             break
         kept.append(row)
+    pins = set(pinned)
+    if pins:
+        held = {id(row) for row in kept}
+        kept.extend(row for row in listed
+                    if id(row) not in held and row.get("commit_sha") in pins)
     return kept
+
+
+def pinned_commits(db: Any, tenant_id: str, repo_id: str) -> set[str]:
+    """The commits of `repo_id` a running workflow of `tenant_id` holds a graph
+    pin on (#3116; `swarm_api.graph_ticket` writes them).
+
+    ONE QUERY: `workflows` where `graph_pin_repos` contains `repo_id`, served
+    by Firestore's automatic single-field index. The pins live on the
+    workflow document, not beside the versions, because the write that
+    settles a workflow clears them in the same update
+    (`swarm_rollup.settled_unpin`) without first having to find them, and
+    retention reads the workflow's own state with them: a pin on a workflow
+    whose stored state is terminal holds nothing, even if its clearing write
+    has not landed. Another tenant's workflow never pins this tenant's
+    repository. A READ THAT FAILS RAISES: "nothing is pinned" and "the pins
+    could not be read" must never look alike to a sweep that deletes.
+    """
+    query = db.collection(WORKFLOWS).where(
+        filter=FieldFilter(GRAPH_PIN_REPOS, "array_contains", repo_id))
+    pinned: set[str] = set()
+    for snap in query.stream():
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id or data.get("state") in _SETTLED_WORKFLOW:
+            continue
+        shas = (data.get(GRAPH_PINS) or {}).get(repo_id)
+        if isinstance(shas, list):
+            pinned.update(c for c in shas if isinstance(c, str) and _SHA.match(c))
+    return pinned
 
 
 def kept_commits(
     rows: Iterable[Mapping[str, Any]], *, keep_versions: int, current_sha: str | None,
-    own: str, now: datetime | None = None,
+    own: str, now: datetime | None = None, pinned: Iterable[str] = (),
 ) -> list[str] | None:
     """The commits an index run's sweep must keep, or None when they cannot be named.
 
-    The versions `retained_versions` keeps -- what `_prune_versions` keeps --
-    plus the promoted `current_sha` and the run's own commit, sorted. None
-    when any version names no commit: the sweep would then delete objects a
-    version still points at, so it is given no keep set and retires nothing.
-    `now` defaults to the wall clock.
+    The versions `retained_versions` keeps -- what `_prune_versions` keeps,
+    running workflows' pins (`pinned`) included -- plus the promoted
+    `current_sha` and the run's own commit, sorted. None when any version
+    names no commit: the sweep would then delete objects a version still
+    points at, so it is given no keep set and retires nothing. `now`
+    defaults to the wall clock.
     """
     listed = list(rows)
     if any(not isinstance(row.get("commit_sha"), str) or not _SHA.match(row["commit_sha"])
            for row in listed):
         return None
     kept = {row["commit_sha"] for row in retained_versions(
-        listed, keep_versions=keep_versions, now=now or datetime.now(timezone.utc))}
+        listed, keep_versions=keep_versions, now=now or datetime.now(timezone.utc),
+        pinned=pinned)}
     for commit in (current_sha, own):
         if isinstance(commit, str) and _SHA.match(commit):
             kept.add(commit)
@@ -2507,20 +2550,29 @@ class RepoIndex:
         for row in ended:
             self._run_ref(row["task_id"]).delete()
 
-    def _prune_versions(self, repo_id: str, keep: str | None,
+    def _prune_versions(self, tenant_id: str, repo_id: str, keep: str | None,
                         keep_versions: int = KEPT_VERSIONS) -> None:
         """Delete every version but `retained_versions`' (the newest
-        `keep_versions`, and the last day's) and `keep`.
+        `keep_versions`, the last day's and those a running workflow of
+        `tenant_id` pinned) and `keep`.
 
         `keep_versions` is the registration's own (`keep_versions_of`). Their
         objects under repos/ go at the next index run's sweep, which this
         service cannot run: it reads the bucket and may not delete in it.
+        When the pins cannot be read nothing is deleted: retention waits for
+        the next promotion, a running step's version is never the cost.
         """
+        try:
+            pinned = pinned_commits(self._db, tenant_id, repo_id)
+        except Exception as failed:  # retention never stops a promotion
+            log.warning("repo index pins unread tenant=%s repo_id=%s error=%s",
+                        tenant_id, repo_id, type(failed).__name__)
+            return
         coll = self._repo_ref(repo_id).collection(VERSIONS_COLLECTION)
         rows = [snap.to_dict() for snap in coll.stream()]
         rows = [row for row in rows if row]
         retained = {id(row) for row in retained_versions(
-            rows, keep_versions=max(1, keep_versions), now=self._now())}
+            rows, keep_versions=max(1, keep_versions), now=self._now(), pinned=pinned)}
         for row in rows:
             if id(row) not in retained and row.get("commit_sha") != keep:
                 self._version_ref(repo_id, row["commit_sha"]).delete()
@@ -2645,12 +2697,14 @@ class RepoIndex:
         try:
             rows = [{"commit_sha": snap.id, **(snap.to_dict() or {})} for snap in
                     self._repo_ref(repo_id).collection(VERSIONS_COLLECTION).stream()]
+            pinned = pinned_commits(self._db, tenant_id, repo_id)
         except Exception as failed:  # retention never stops a run
             log.warning("repo index keep set tenant=%s repo_id=%s error=%s",
                         tenant_id, repo_id, type(failed).__name__)
             return None
         return kept_commits(rows, keep_versions=keep_versions_of(index),
-                            current_sha=index.get("current_sha"), own=sha, now=self._now())
+                            current_sha=index.get("current_sha"), own=sha, now=self._now(),
+                            pinned=pinned)
 
     def _start(
         self, auth: AuthContext, tenant_id: str, record: Mapping[str, Any], sha: str, *,
@@ -3098,7 +3152,7 @@ class RepoIndex:
                     f"for {int(PROMOTION_RETRY_WINDOW.total_seconds() // 60)} minutes",
                 )
             return
-        self._prune_versions(repo_id, keep=None if outcome != "promoted" else new,
+        self._prune_versions(tenant_id, repo_id, keep=None if outcome != "promoted" else new,
                              keep_versions=keep_versions_of(record.get("index")))
         log.info("repo index run tenant=%s repo_id=%s task=%s sha=%s promotion=%s",
                  tenant_id, repo_id, task.id, new[:12], outcome)
@@ -3697,7 +3751,7 @@ def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
 __all__ = [
     "BASE_INDEX_FILE", "BASE_LINE", "KEEP_LINE", "LSP_BASE_LINE", "LSP_COST_LINE",
     "INDEX_TIMEOUT_TABLE",
-    "MAX_INDEX_TIMEOUT_SECONDS", "index_timeout_seconds", "lsp_costs_of", "source_files_of", "SWEEP_PHASE", "kept_commits", "retention_of",
+    "MAX_INDEX_TIMEOUT_SECONDS", "index_timeout_seconds", "lsp_costs_of", "source_files_of", "SWEEP_PHASE", "kept_commits", "pinned_commits", "retention_of",
     "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",
     "EXTRACTOR_COMMAND", "GRAPH_WRITER_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE",
     "INDEXER_MODEL_CLASS", "INDEXER_EXTRACTOR_VERSION", "index_model_class", "KindChoice", "MAX_INCREMENTAL_CHANGES", "NO_RUN", "PHASES_FILE",

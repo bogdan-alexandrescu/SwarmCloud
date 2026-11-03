@@ -517,6 +517,40 @@ def drift_of(rollup: WorkflowRollup, stored: TaskState) -> dict[str, Any]:
 TASKS = "tasks"
 WORKFLOWS = "workflows"
 
+#: The code-graph versions a live workflow's graph tickets name (#3116), on
+#: the workflow document: `graph_pins` maps a repo_id to the `index_sha`s
+#: swarm-api minted a ticket for (`swarm_api.graph_ticket`), and
+#: `graph_pin_repos` lists those repo_ids so index retention finds a
+#: repository's pins with one `array_contains` query
+#: (`swarm_api.repoindex.pinned_commits`). Retention keeps them only while the
+#: workflow's stored state is not terminal; the write that settles it clears
+#: both (`settled_unpin`), so the query never grows with finished workflows.
+GRAPH_PINS = "graph_pins"
+GRAPH_PIN_REPOS = "graph_pin_repos"
+
+
+def settled_unpin(state: Any, stored: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The fields that clear a workflow's graph pins when `state` settles it.
+
+    Empty -- nothing to add to the write -- while `state` is live, and when
+    `stored` (the workflow document as read, if the caller has it) holds no
+    pin. Every writer of a terminal `workflows/{id}.state` adds this to the
+    same write: `derived_state_write` here (a step's own transition), the
+    API's `Store.set_workflow_state` and the reconciler's `state_drift`
+    repair, which settles a workflow whose worker crashed between its pin and
+    its step's end. Written as empty values, not deletes, so every Firestore
+    client and fake applies it the same way.
+    """
+    try:
+        terminal = TaskState(getattr(state, "value", state)) in TERMINAL_STATES
+    except ValueError:
+        return {}
+    if not terminal:
+        return {}
+    if stored is not None and not stored.get(GRAPH_PINS) and not stored.get(GRAPH_PIN_REPOS):
+        return {}
+    return {GRAPH_PINS: {}, GRAPH_PIN_REPOS: []}
+
 
 # --------------------------------------------------------------------------
 # Writing the derived state where a step's state is written (#2838)
@@ -622,4 +656,5 @@ def derived_state_write(
         return None
     if rollup.state == data.get("state"):
         return None
-    return ref, {"state": TaskState(rollup.state).value, "updated_at": now}
+    return ref, {"state": TaskState(rollup.state).value, "updated_at": now,
+                 **settled_unpin(rollup.state, data)}
