@@ -5,10 +5,9 @@ holds each `RemoteControlPlane` method on its own; the owner's agent quality
 program (3 November 2026) asks that the CYCLE works through the routes --
 that what one attempt wrote is what the next one resumes from, that a
 cancellation reaches the worker and ends the task, that publication (the
-merge slot, the merge train) is this generation's alone, and that the Jev
-ledger an attempt spends is settled -- with a stale generation refused at
-every step after a newer one took over. The worker's own `ChildApi` and
-`StateCall` speak to swarm-api's real app in process
+merge slot, the merge train) is this generation's alone -- with a stale
+generation refused at every step after a newer one took over. The worker's
+own `ChildApi` and `StateCall` speak to swarm-api's real app in process
 (`state_routes_harness`); nothing here reaches Firestore except through a
 route. Offline: no credentials, no emulator.
 """
@@ -168,28 +167,3 @@ def test_publication_is_the_current_generations_alone(api_db, opener):
     held, _woken = RemoteMergeSlots(second._calls, tenant_id=TENANT).acquire("main", updates=0)
     assert isinstance(held, Held)
 
-
-def test_the_jev_ledger_is_read_and_settled_through_the_routes(api_db, opener):
-    control = _first_attempt(api_db, opener)
-    calls = control._calls
-
-    assert calls.jev_usage(deadline_seconds=5) == (0, 0, 0)
-    split = {"J1": {"calls": 2, "input_tokens": 300, "output_tokens": None,
-                    "outcomes": {"ok": 2}}}
-    assert calls.jev_settle(calls=2, input_tokens=300, by_kind=split,
-                            deadline_seconds=5) == (2, 300)
-
-    assert calls.jev_usage(deadline_seconds=5) == (300, 2, 300)
-    row = api_db.docs[f"jev_usage/{TENANT}_{TASK}_g1"]
-    assert (row["tenant_id"], row["task_id"], row["generation"]) == (TENANT, TASK, 1)
-
-
-def test_a_parked_generations_jev_settle_is_refused_and_writes_nothing(api_db, opener):
-    first = _first_attempt(api_db, opener)
-    first.park(reason=ParkReason.PROVIDER_QUOTA_EXHAUSTED,
-               next_eligible_at=utcnow() + timedelta(minutes=5))
-    _requeued(api_db, opener)
-
-    with pytest.raises(FencedWriteRefused):
-        first._calls.jev_settle(calls=1, input_tokens=5, by_kind={}, deadline_seconds=5)
-    assert not [p for p in api_db.docs if p.startswith("jev_usage/")]

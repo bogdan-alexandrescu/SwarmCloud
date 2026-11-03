@@ -216,13 +216,12 @@ POST_BODIES: dict[str, dict[str, Any]] = {
     "merge-train": {"op": "register", "base": "main", "number": 7, "head": "b" * 40,
                     "title": "t", "message": "m"},
     "ci-fix-tasks": {"pull_request": 7, "root_task_id": TASK},
-    "jev-settle": {"request_id": "j-1", "calls": 1, "input_tokens": 10, "by_kind": {}},
 }
 GET_ROUTES = {"poll": "provider=anthropic", "context": "", "upstream": "upstream_task_id=task_up",
-              "repository": "", "jev-usage": ""}
+              "repository": ""}
 #: The routes that write a task, a lease, a slot or an entry: each fenced.
 FENCED_WRITES = ("transition", "attempt-start", "checkpoint", "heartbeat", "park", "finish",
-                 "retry", "merge-slot", "merge-train", "jev-settle")
+                 "retry", "merge-slot", "merge-train")
 
 
 def test_every_route_in_the_row_is_mounted(client):

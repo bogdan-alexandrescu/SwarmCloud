@@ -17,7 +17,7 @@ deployment). Where a value is unknown it says **unknown**, never zero.
 | Item | Status |
 |---|---|
 | State routes for every worker write and read of Firestore (§2) | implemented, behaviourally tested (before this package) |
-| `state/jev-usage` and `state/jev-settle` (§3) | implemented and behaviourally tested in this package; **not called by the judge yet** (§3.2) |
+| The Jev ledger over the state routes (§3) | owned by the Jev accounting pull request, not by this package (§3.2) |
 | The four refusals: another tenant, another attempt, a stale generation after a newer one, a peer or policy document (§4) | behaviourally tested in this package |
 | Checkpoint, park, resume, cancellation, publication over the routes, as one cycle (§5) | behaviourally tested in this package |
 | `state_via_api_tenants = ["u-bogdan", "eng"]` in dev | enabled in configuration (`terraform/environments/dev/dev.tfvars`); whether it is applied in dev is **unknown** here |
@@ -87,8 +87,8 @@ switch off, which is still every tenant not listed.
 | Merge train | `mergetrain.RemoteTrainEntries` | `POST state/merge-train` (entry id from the tuple) | `merge_train_entries` |
 | Tenant, workspace and tenant settings, forge grant, TypeSafe key records | `secrets.py`, `qualitygates.py`, `jevkey.py`, `judge/attempt.py` | `GET state/context` (own tenant only) | `tenants`, `workspace_settings`, `tenant_settings`, grants, key records |
 | Repository registration and index versions | `qualitygates.py`, `indexrun.py`, `graphstage.py`, `judge/attempt.py` | `GET state/repository` (the signed repository's) | `repositories` and its versions |
-| **Jev ledger: month and agent spend** | `judge/attempt._carried` | **`GET state/jev-usage` (added here, not yet called, §3)** | `jev_usage` month document and attempt rows |
-| **Jev ledger: settle the attempt** | `judge/attempt.settle` | **`POST state/jev-settle` (added here, not yet called, §3)** | `jev_usage`, fenced transaction |
+| **Jev ledger: month and agent spend** | `judge/attempt._carried` | **the Jev accounting pull request's route (§3)** | `jev_usage` month document and attempt rows |
+| **Jev ledger: settle the attempt** | `judge/attempt.settle` | **the Jev accounting pull request's route; settled even when fenced (§3.2)** | `jev_usage` |
 | Platform settings: extra-repository size budget | `extrarepos.budget_bytes` | **none**: the switched path uses the default and says so in the log | `control/settings` |
 | Quota report, account error | `control.py` | quota broker HTTP on both paths (no Firestore) | the same |
 | Child agents, child key | `children.py` | `/v1/attempts/{id}/child-key`, `/v1/tasks/{id}/children` (signed, child purpose) | the same |
@@ -117,65 +117,37 @@ What still needs a direct privilege, then:
    does not read it. The cost is a default the admin's setting does not reach
    (§3.3).
 
-## 3. The Jev ledger over the routes (implemented in this package)
+## 3. The Jev ledger over the routes (owned by the Jev accounting pull request)
 
-### 3.1 Why
+### 3.1 Why it matters
 
-On the switched path, `judge/attempt._carried` returned the workspace's monthly
+On the switched path, `judge/attempt._carried` returns the workspace's monthly
 cap as the month's use ("an unread month counts as spent, never as free"). That
-is the correct fallback, but it means **no Jev judgment ran for a switched
-tenant whose workspace set a cap**. `judge/attempt.settle` returned None, so
-**the spend of any Jev call a switched attempt made was never recorded**. dev
+is the correct fallback, but it means **no Jev judgment runs for a switched
+tenant whose workspace set a cap**. `judge/attempt.settle` returns None, so
+**the spend of any Jev call a switched attempt makes is never recorded**. dev
 lists `u-bogdan` and `eng` in `state_via_api_tenants`, so both apply to them
 there. The program's rules say missing verification is not a pass and cost
 accounting covers every attempt. Both gaps break those rules.
 
-### 3.2 What was added
+### 3.2 Where it is built
 
-* `GET state/jev-usage` answers `{month, month_used_tokens, task_calls,
-  task_input_tokens}`. swarm-api reads them for THIS tuple's tenant and agent:
-  the month document `jev_usage/<tenant>_<YYYY-MM>` and the attempt rows
-  where `tenant_id`, `task_id` and `kind == "attempt"` match. The month is
-  swarm-api's clock's. A failed read is a 503, never a zero.
-* `POST state/jev-settle` takes `{request_id, calls, input_tokens, by_kind}`
-  and nothing else. In one transaction it fences first (the direct path's
-  settle is fenced the same way, invariant 5), then adds to the month's total
-  and to the row `<tenant>_<task>_g<generation>`, never replacing either. It
-  merges `by_kind` as `judge.budget._merge_by_kind` does, and an output count
-  neither side recorded stays None (unknown, not 0). A request id the row
-  already holds is answered without a write, so a retry after a lost answer
-  counts once. Each kind, outcome and count is validated, and a body naming a
-  tenant, agent, month or document is a 422.
-* `StateCall.jev_usage` and `StateCall.jev_settle` are the worker's client. An
-  answer missing a count raises `ControlPlaneError`: the caller turns the
-  judgments off rather than run them against a month it takes to be empty.
+The owner decided on 3 November 2026 (answer to this package's question on
+#3110) that the **Jev accounting pull request** owns the Jev ledger's state
+routes: it owns Jev spend and already wires `judge/attempt.py` to them. This
+package therefore adds **no** `state/jev-usage` or `state/jev-settle` route and
+no `StateCall` method for them; an earlier draft did, and it was dropped so
+that the platform carries one set of Jev routes, not two.
 
-**Not yet wired.** `judge/attempt.py` is outside this package's territory. The
-two edits that complete it are below, and they are asked in the PR's questions:
-
-```python
-# judge/attempt._carried, the switched branch:
-state = indexrun.state_routes(db)
-if state is not None:
-    month_used, calls, tokens = state.jev_usage(deadline_seconds=indexrun.STATE_CALL_SECONDS)
-    return (month_used if given.monthly_cap_tokens is not None else 0), calls, tokens
-
-# judge/attempt.settle, the switched branch (after the ledger path is read):
-state = indexrun.state_routes(db)
-if state is not None:
-    ledger = budget.Ledger(Path(ledger_path))
-    calls, tokens, audit = ledger.take_unsettled_attempt()
-    try:
-        return state.jev_settle(calls=calls, input_tokens=tokens,
-                                by_kind=budget.split_by_kind(audit, calls=calls, tokens=tokens),
-                                deadline_seconds=indexrun.STATE_CALL_SECONDS)
-    except Exception as exc:  # accounting never fails the attempt
-        ledger.restore_unsettled(calls, tokens, len(audit))
-        ...
-```
-
-`_carried` already raises into `setup`'s "off" on any read error, which is the
-fallback the program asks for: bounded and deterministic.
+The owner also decided, on the same day, that **a fenced (superseded)
+attempt's Jev spend is settled**: the settle writes the stale generation's own
+row (`<tenant>_<task>_g<generation>`, its own generation's id) and the month's
+total even when the fence refuses every other write, so cost accounting covers
+reclaimed attempts. It still touches no agent document, lease or pool, and a stale
+generation still never publishes, merges or changes the agent (invariant 5
+holds for every write that is not its own ledger row). That rule is for the
+Jev accounting pull request's settle route to carry; nothing in this package
+writes `jev_usage`.
 
 ### 3.3 Still degraded on the switched path
 
@@ -185,11 +157,7 @@ fallback the program asks for: bounded and deterministic.
   `GET state/context` read from `control/settings`, and a one-line change in
   `extrarepos.py` (outside this territory). It is listed as an operator
   question.
-* **A fenced attempt's Jev spend.** The settle is fenced on both paths, so the
-  calls an attempt made before the reconciler reclaimed it are not settled. The
-  amount is unknown, not zero. Recording it unfenced would make the ledger
-  honest at the cost of letting a stale generation write one row of its own.
-  That is the owner's call (question in the PR).
+* **The Jev ledger**, until the Jev accounting pull request merges (§3.2).
 
 ## 4. The refusals, tested
 
@@ -212,7 +180,7 @@ tuple, a stale generation simulated by editing the task document).
    unreleased, so only the fence can refuse it. Every fenced write by
    generation 1 is a 409 with nothing written, while generation 2 still beats
    and finishes. After generation 2 parks, generation 1's finish, retry,
-   transition, checkpoint, Jev settle and merge-train register are each
+   transition, checkpoint and merge-train register are each
    refused, and the park stands. A mutation that disables `_fenced`'s check
    turns 12 of these 13 tests red; the 13th, re-opening, is refused by the key
    registration independently.
@@ -222,7 +190,7 @@ tuple, a stale generation simulated by editing the task document).
      invariant 10).
    * Every POST route, accepted (200) with its well-formed body, changes only
      documents in `tasks`, `leases`, `attempts`, `pools`, `merge_slots`,
-     `merge_train_entries`, `jev_usage` and `child_keys`. It never changes
+     `merge_train_entries` and `child_keys`. It never changes
      `tenants/*`, `tenant_settings/*`, `workspace_settings/*`, `quota/*`,
      `control/settings`, `repositories/*`, or a peer agent's task document, lease or
      attempt.
@@ -252,8 +220,6 @@ tuple, a stale generation simulated by editing the task document).
   generation opens and runs.
 * **Publication.** The parked generation's merge-slot acquire is refused with
   no slot written. The current generation takes the slot.
-* **The Jev ledger** reads 0/0/0, settles, then reads what it settled. A parked
-  generation's settle is refused and writes no row.
 
 ## 6. How a parked attempt resumes today, and what the plugins plan needs
 
@@ -335,8 +301,8 @@ Plan-time guards already refuse an `*_off_*` entry that is not in
 
 ### 7.2 Rollout
 
-0. **Prerequisite (new): wire §3.2's two edits into `judge/attempt.py`** and
-   let CI pass. Until then a switched tenant runs no capped Jev judgment and
+0. **Prerequisite (new): merge the Jev accounting pull request (§3.2)**, which
+   wires `judge/attempt.py` to its Jev routes, and let CI pass. Until then a switched tenant runs no capped Jev judgment and
    records no Jev spend. That is a quality regression, not a security one,
    but it should not spread to every tenant.
 1. **dev, the tenants already listed.** Confirm in the dev project that the
@@ -370,20 +336,21 @@ Plan: 0 to add, 1 to change, 1 to destroy.
   `worker_firestore_off_tenants_iam` first (its binding is created again),
   then out of `state_via_api_tenants`. The scheduler's next dispatch is direct
   again. Running attempts finish on the path they started on.
-* **The Jev routes alone:** revert the `judge/attempt.py` wiring. The switched
-  path falls back to "month counted as spent; nothing settled", which is
+* **The Jev routes alone:** revert the Jev accounting pull request's
+  `judge/attempt.py` wiring. The switched path falls back to "month counted as spent; nothing settled", which is
   today's behaviour.
 * **Never roll back by restoring the role while the tenant stays switched.**
   It restores the privilege and buys nothing.
 
 ### 7.4 Operator action list
 
-1. Answer the PR's questions (wiring `judge/attempt.py`; the extra-repository
-   budget over `state/context`; settling a fenced attempt's Jev spend).
+1. Answer the PR's remaining question (the extra-repository budget over
+   `state/context`). The Jev ones are answered (§3.2).
 2. After merge, in dev: confirm the state switch and the `eng` role removal
    are applied (the runbook's "What to watch"), and record the date. Until
    then they are "enabled in configuration", not live.
-3. Run one capped Jev step for `eng` in dev after the wiring merges, and read
+3. Run one capped Jev step for `eng` in dev after the Jev accounting pull
+   request merges, and read
    the `jev_usage/eng_<task>_g<n>` row (Admin › Jev usage).
 4. Continue the runbook at c1 when (3) holds.
 5. The GCS prefix grants and the per-secret accessors stay. No action.
@@ -391,19 +358,17 @@ Plan: 0 to add, 1 to change, 1 to destroy.
 ## 8. CONTRACT.md invariants
 
 * **1 and 3** (only leased states cost; concurrency counts from LEASED): no
-  route here creates or releases demand. `jev-settle` and `jev-usage` touch no
-  lease or pool.
+  route here creates or releases demand.
 * **2** (all-or-nothing reservation): untouched. Release still goes through
   `release_lease_in_transaction`.
 * **4** (no sleeping through a wait): unchanged. §6.2 keeps park, release and
   exit, and resumes in a new attempt.
-* **5** (fencing): `jev-settle` fences inside its own transaction before any
-  write. §4.3 tests that a stale generation is refused after a newer one
+* **5** (fencing): every write this package's routes take is fenced. §4.3 tests that a stale generation is refused after a newer one
   opened.
 * **6 and 7** (Spot, resources): untouched.
 * **8** (checkpointing): untouched. §5 tests that the next generation resumes
   from the recorded digest.
 * **9** (per-tenant isolation): every id is derived from the tuple. §4, items 1 and 4,
   test that tenant and policy documents are unreachable.
-* **10** (callers name a profile only): the new bodies are strict, and a
+* **10** (callers name a profile only): the bodies are strict, and a
   `runner_profile` or `pools` key is a 422.

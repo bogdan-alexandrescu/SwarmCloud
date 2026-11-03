@@ -45,7 +45,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable, Literal, Mapping
 
 from google.api_core import exceptions as gexc
@@ -77,9 +77,6 @@ from .children import (
 )
 from .errors import ApiError, ValidationFailed
 from .forgeapp import GRANTS
-from .jevusage import ATTEMPT_KIND as JEV_ATTEMPT_KIND
-from .jevusage import COLLECTION as JEV_USAGE
-from .jevusage import OUTCOME_FAILED, OUTCOME_OK, SKIPPED_PREFIX
 from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
 from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
 from .repositories import parse_repository, repo_id_for
@@ -392,37 +389,6 @@ class CiFixBody(_Tuple):
     pull_request: int = Field(ge=1)
     root_task_id: str = Field(min_length=1, max_length=128)
     limit: int = Field(default=20, ge=1, le=MAX_CI_FIX_TASKS)
-
-
-#: A Jev call kind (`jevusage.KIND_GROUPS`'s names, and any later one) and a
-#: skip reason: short identifiers, as `jevusage._IDENT` reads them back.
-_JEV_KIND = r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,39}$"
-_JEV_OUTCOME = re.compile(r"^(?:ok|failed|skipped:[A-Za-z0-9_][A-Za-z0-9_.-]{0,39})$")
-#: More kinds than the worker has ever asked is a body no worker built.
-MAX_JEV_KINDS = 32
-#: The request ids a row remembers, newest last: an attempt settles once at
-#: its end, and again only after a retried failure, so a handful is ample.
-JEV_SETTLE_REQUESTS_KEPT = 16
-
-
-class JevKindIn(_Strict):
-    """One kind's share of a settle (`judge.budget.split_by_kind`)."""
-
-    calls: int = Field(ge=0, le=1_000_000)
-    input_tokens: int = Field(ge=0, le=10**12)
-    #: None: the calls of this kind recorded no output count (unknown, not 0).
-    output_tokens: int | None = Field(default=None, ge=0, le=10**12)
-    #: Absent: the outcomes were not recorded (`jevusage` counts them unrecorded).
-    outcomes: dict[str, int] | None = None
-
-
-class JevSettleBody(_Requested):
-    """`judge.attempt.settle`: this attempt's not-yet-settled Jev calls. No
-    tenant, task, month or row id: each is derived here from the tuple."""
-
-    calls: int = Field(ge=0, le=1_000_000)
-    input_tokens: int = Field(ge=0, le=10**12)
-    by_kind: dict[str, JevKindIn] = Field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------
@@ -2345,132 +2311,6 @@ class AttemptState:
             return entry
 
         return {"ok": True, "entry": jsonable(self._run(_apply))}
-
-
-    # -- the Jev ledger (docs/design/agent-quality/trusted-state.md §3) -----
-
-    def jev_usage(self, attempt: AttemptTuple) -> dict[str, Any]:
-        """`judge.attempt._carried`: the workspace's month total and what this
-        task's settled attempts spent, read server-side for THIS tuple's tenant
-        and task. Without it a switched attempt counted its month as spent and
-        never judged. A read that fails is a 503, never a zero: an unread month
-        is unknown, not free."""
-        self._own_task(attempt)
-        month = self._now().astimezone(timezone.utc).strftime("%Y-%m")
-        month_doc = self._read(self._ref(JEV_USAGE, f"{attempt.tenant_id}_{month}")) or {}
-        query = (
-            self._db.collection(JEV_USAGE)
-            .where(filter=FieldFilter("tenant_id", "==", attempt.tenant_id))
-            .where(filter=FieldFilter("task_id", "==", attempt.task_id))
-            .where(filter=FieldFilter("kind", "==", JEV_ATTEMPT_KIND))
-        )
-        try:
-            rows = [snap.to_dict() or {} for snap in query.stream()]
-        except gexc.GoogleAPIError as exc:
-            raise StateUnavailable(f"the state store did not answer ({type(exc).__name__})") \
-                from None
-        calls = tokens = 0
-        for row in rows:
-            if (row.get("tenant_id") != attempt.tenant_id
-                    or row.get("task_id") != attempt.task_id
-                    or row.get("kind") != JEV_ATTEMPT_KIND):
-                continue
-            calls += _count(row.get("calls"))
-            tokens += _count(row.get("input_tokens"))
-        used = month_doc.get("input_tokens") if month_doc.get("tenant_id") == attempt.tenant_id \
-            else 0
-        return {"ok": True, "month": month, "month_used_tokens": _count(used),
-                "task_calls": calls, "task_input_tokens": tokens}
-
-    def jev_settle(self, call: Call) -> dict[str, Any]:
-        """`budget.FirestoreMonthlyLedger.settle_attempt`, for this tuple: in ONE
-        transaction, fenced first as the direct path's settle is (invariant 5),
-        the month's total and this attempt's row each added to, never replaced.
-        The row is `<tenant>_<task>_g<generation>` and the month is swarm-api's
-        clock's, so a body can name neither another workspace's month nor a
-        peer's row. A request id the row already holds is answered without a
-        write: a retry after a lost answer counts once."""
-        body: JevSettleBody = call.body
-        attempt = call.attempt
-        if len(body.by_kind) > MAX_JEV_KINDS:
-            raise ValidationFailed(f"by_kind names at most {MAX_JEV_KINDS} kinds")
-        for kind, share in body.by_kind.items():
-            if not re.fullmatch(_JEV_KIND, kind):
-                raise ValidationFailed("a by_kind kind must be a short identifier")
-            for outcome, n in (share.outcomes or {}).items():
-                if not _JEV_OUTCOME.fullmatch(outcome) or n < 0:
-                    raise ValidationFailed(
-                        f"an outcome is {OUTCOME_OK}, {OUTCOME_FAILED} or "
-                        f"{SKIPPED_PREFIX}<reason>, counted from zero")
-        now = self._now()
-        month = now.astimezone(timezone.utc).strftime("%Y-%m")
-        month_ref = self._ref(JEV_USAGE, f"{attempt.tenant_id}_{month}")
-        row_ref = self._ref(
-            JEV_USAGE, f"{attempt.tenant_id}_{attempt.task_id}_g{attempt.generation}")
-
-        def _apply(txn: Any) -> dict[str, Any]:
-            self._fenced(txn, attempt)
-            month_snap = _snapshot(txn.get(month_ref))
-            row_snap = _snapshot(txn.get(row_ref))
-            month_doc = (month_snap.to_dict() or {}) if month_snap.exists else {}
-            row = (row_snap.to_dict() or {}) if row_snap.exists else {}
-            if row and row.get("tenant_id") != attempt.tenant_id:
-                raise AttemptFenced("this attempt's ledger row is not its tenant's")
-            seen = [r for r in row.get("settle_requests") or () if isinstance(r, str)]
-            if body.request_id in seen:
-                return {"ok": True, "repeated": True,
-                        "settled": {"calls": 0, "input_tokens": 0}}
-            if body.input_tokens:
-                before = month_doc.get("input_tokens") \
-                    if month_doc.get("tenant_id") == attempt.tenant_id else 0
-                txn.set(month_ref, {"tenant_id": attempt.tenant_id, "month": month,
-                                    "input_tokens": _count(before) + body.input_tokens})
-            txn.set(row_ref, {
-                "kind": JEV_ATTEMPT_KIND, "tenant_id": attempt.tenant_id,
-                "task_id": attempt.task_id, "generation": attempt.generation,
-                "month": month,
-                "calls": _count(row.get("calls")) + body.calls,
-                "input_tokens": _count(row.get("input_tokens")) + body.input_tokens,
-                "settled_at": now,
-                "by_kind": merge_jev_kinds(row.get("by_kind"), body.by_kind),
-                "settle_requests": [*seen, body.request_id][-JEV_SETTLE_REQUESTS_KEPT:],
-            })
-            return {"ok": True, "repeated": False,
-                    "settled": {"calls": body.calls, "input_tokens": body.input_tokens}}
-
-        return self._run(_apply)
-
-
-def merge_jev_kinds(before: Any, added: Mapping[str, JevKindIn]) -> dict[str, Any]:
-    """The row's `by_kind` with one settle's split added
-    (`judge.budget._merge_by_kind`): counts summed, an output count that
-    neither side recorded left None, outcomes summed where either recorded
-    them."""
-    merged: dict[str, Any] = {
-        kind: dict(value) for kind, value in (before.items() if isinstance(before, Mapping)
-                                              else ())
-        if isinstance(kind, str) and isinstance(value, Mapping)}
-    for kind, share in added.items():
-        old = merged.get(kind, {})
-        entry: dict[str, Any] = {
-            "calls": _count(old.get("calls")) + share.calls,
-            "input_tokens": _count(old.get("input_tokens")) + share.input_tokens,
-            "output_tokens": None,
-        }
-        for side in (old.get("output_tokens"), share.output_tokens):
-            if side is not None:
-                entry["output_tokens"] = (entry["output_tokens"] or 0) + _count(side)
-        old_outcomes = old.get("outcomes")
-        if isinstance(old_outcomes, Mapping) or share.outcomes is not None:
-            outcomes: dict[str, int] = {}
-            for side in (old_outcomes if isinstance(old_outcomes, Mapping) else {},
-                         share.outcomes or {}):
-                for outcome, n in side.items():
-                    if isinstance(outcome, str):
-                        outcomes[outcome] = outcomes.get(outcome, 0) + _count(n)
-            entry["outcomes"] = outcomes
-        merged[kind] = entry
-    return merged
 
 
 def _typesafe_secret(tenant_id: str) -> str:

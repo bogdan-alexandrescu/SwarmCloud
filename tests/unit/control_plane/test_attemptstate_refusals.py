@@ -53,7 +53,7 @@ POLICY_DOCS = (
 )
 #: Every top-level collection a state route may write for its own tuple.
 WRITABLE = {"tasks", "leases", "attempts", "pools", "merge_slots", "merge_train_entries",
-            "jev_usage", "child_keys"}
+            "child_keys"}
 
 
 def _seed_policy(db) -> None:
@@ -218,7 +218,7 @@ def test_a_stale_generation_cannot_finish_over_the_newer_ones_end(client, db):
     assert parked.status_code == 200, parked.text
     before = copy.deepcopy(db.docs)
 
-    for op in ("finish", "retry", "transition", "checkpoint", "jev-settle", "merge-train"):
+    for op in ("finish", "retry", "transition", "checkpoint", "merge-train"):
         response = old.post(client, op, POST_BODIES[op])
         assert response.status_code == 409, (op, response.text)
     assert db.docs == before
