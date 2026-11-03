@@ -63,6 +63,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from . import buildinfo
 from .logs import StructuredLogger
 
 #: The exit code for a worker that a SIGTERM (or SIGINT) stopped BEFORE its
@@ -387,11 +388,14 @@ class Phases:
         return round(self._clock() - self._t0, 3)
 
     def started(self, **fields: Any) -> None:
-        """The first line the process writes, before anything can fail."""
+        """The first line the process writes, before anything can fail. It
+        names the build (`buildinfo.describe`, which never raises): which
+        commit, image and code this attempt ran (part of #2688)."""
         self.log.info(
             "worker process started",
             pid=os.getpid(),
             python=platform.python_version(),
+            build=buildinfo.describe(),
             **fields,
         )
 
