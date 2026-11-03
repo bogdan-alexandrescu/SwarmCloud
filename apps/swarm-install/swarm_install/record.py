@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .state import InstallState, refuse_secrets
+from .state import STEP_DONE, InstallState, refuse_secrets
 
 COLLECTION = "swarm-install"
 #: The Firestore database terraform/infra creates (`firestore_database`);
@@ -65,6 +65,11 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
                 # Admin › Setup's Sign-in client step reads `applied` from it
                 # (issue #2964). None until one is.
                 "sign_in_client",
+                # When each pass Admin › Setup times began and, once it has,
+                # ended (`TIMED_PASSES`, `state.outputs["pass_times"]`): the
+                # page shows how long a running pass has taken, since no
+                # usual length is measured for either yet.
+                "passes",
             }
         ),
     ),
@@ -74,7 +79,7 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
             {"state_hash", "id", "slug", "client_id", "name", "installed_on", "secrets_written_at", "self_check"}
         ),
     ),
-    # Fields keyed per account label: owner, link_hash, link_expires, signed_in_at.
+    # Fields keyed per account label: owner, link_hash, link_made_at, link_expires, signed_in_at.
     "swarm-install/{env}/console/accounts": (SWARM_API, frozenset()),
     # A collection under the env document: `console/teams/<id>` has five
     # segments, which real Firestore refuses as a document (audit 3, A2).
@@ -113,9 +118,75 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
 
 #: Each stage's entry in `stages[0..15]`.
 STAGE_FIELDS = frozenset({"state", "at", "by"})
+#: `detail` is verify's one-line cause, present only while `result` is
+#: "failed": the terminal prints it, and Admin › Setup serves it as
+#: `engine.verify.detail` so the console's verify step says why too.
 VERIFY_FIELDS = frozenset(
-    {"check", "done", "total", "started", "expected_end", "deadline", "result"}
+    {"check", "done", "total", "started", "expected_end", "deadline", "result", "detail"}
 )
+
+#: The passes Admin › Setup times, each by its steps in the order they run:
+#: the sign-in pass (bootstrap pass 2, then the latest infra pass, with the
+#: saved Desktop client) and infra pass 3 (the GitHub App's ids). Neither has a
+#: measured usual length, so the page shows the time since `started_at`.
+TIMED_PASSES: dict[str, tuple[str, ...]] = {
+    "sign_in_pass": ("handoff.sign-in-bootstrap", "handoff.sign-in-infra"),
+    "infra_pass_3": ("github.pass-3",),
+}
+#: The `state.outputs` key the engine keeps the passes' times under.
+PASS_TIMES = "pass_times"
+#: Each pass's entry in `passes`: `started_at` when its first step began
+#: applying, then `ended_at` and `result` (the step's recorded state: done,
+#: failed or paused) once its last step is done or any step of it stops.
+PASS_FIELDS = frozenset({"started_at", "ended_at", "result"})
+
+
+def pass_of(step_id: str) -> str | None:
+    """The timed pass a step belongs to, or None."""
+    for name, steps in TIMED_PASSES.items():
+        if step_id in steps:
+            return name
+    return None
+
+
+def pass_started(times: Mapping[str, Any], step_id: str, now: float) -> dict[str, Any] | None:
+    """`times` with the step's pass started at `now`, or None when nothing
+    changes: the pass is already running (its first step is done and a later
+    one applies) or the step is in no timed pass. A pass's first step, or a
+    pass with no open start (never started, or ended), starts the clock again."""
+    name = pass_of(step_id)
+    if name is None:
+        return None
+    current = times.get(name) if isinstance(times.get(name), Mapping) else {}
+    running = bool(current.get("started_at")) and "ended_at" not in current
+    if running and step_id != TIMED_PASSES[name][0]:
+        return None
+    return {**times, name: {"started_at": now}}
+
+
+def pass_ended(times: Mapping[str, Any], step_id: str, state: str, now: float) -> dict[str, Any] | None:
+    """`times` with the step's pass ended at `now` as `state`, or None when
+    nothing changes: no open start, or a step that is not the pass's last
+    recorded done (the pass runs on)."""
+    name = pass_of(step_id)
+    if name is None:
+        return None
+    current = times.get(name) if isinstance(times.get(name), Mapping) else {}
+    if not current.get("started_at") or "ended_at" in current:
+        return None
+    if state == STEP_DONE and step_id != TIMED_PASSES[name][-1]:
+        return None
+    return {**times, name: {"started_at": current["started_at"], "ended_at": now, "result": state}}
+
+
+def _passes(value: Any) -> dict[str, dict[str, Any]] | None:
+    """`passes` from `state.outputs["pass_times"]`: only the timed passes and
+    their known fields; None before any of them started."""
+    if not isinstance(value, Mapping):
+        return None
+    passes = {name: {key: entry[key] for key in PASS_FIELDS if key in entry}
+              for name, entry in value.items() if name in TIMED_PASSES and isinstance(entry, Mapping)}
+    return passes or None
 
 
 def engine_document(env: str) -> str:
@@ -253,6 +324,7 @@ class InstallRecord:
             "installer": str(state.outputs.get("installer") or "") or None,
             "workspace_groups": _workspace_groups(state.outputs.get("workspace_groups")),
             "sign_in_client": _sign_in_client(state.outputs.get("iap_programmatic_client")),
+            "passes": _passes(state.outputs.get(PASS_TIMES)),
         }
         if verify is not None:
             unknown = set(verify) - VERIFY_FIELDS

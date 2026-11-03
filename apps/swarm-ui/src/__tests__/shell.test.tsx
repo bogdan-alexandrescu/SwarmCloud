@@ -108,6 +108,9 @@ describe('B2: the section question is printed once, not on every pane', () => {
   })
 
   it('carries the question behind the head glyph, and opens it on FOCUS', async () => {
+    // Overview's own route: the root is Home (part of #2688), one page that
+    // is not a section, so it has no section question.
+    window.history.replaceState(null, '', '/overview')
     render(<App />)
     // By the page's title now (visual QA Q2): the row it sat on is gone.
     const glyph = document.querySelector<HTMLButtonElement>('main.work h1 ~ .ctl-q .ctl-q-glyph')

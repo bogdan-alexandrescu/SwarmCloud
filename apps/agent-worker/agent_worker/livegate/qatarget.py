@@ -67,13 +67,21 @@ by `QaTarget.judge`:
   `idp_token_path` with its `extra_origin` has exactly `POST
   <extra_origin><idp_token_path>` continued, compared as the whole URL
   (`idp_token_url`: no query, no fragment, no other port, case or encoding),
-  and only while the gate's own sign-in has completed (`signed_in`, not
-  wiped): never before it, never after one that failed or met a challenge,
-  never on a target that does not sign in. An app that refreshes its SSO
-  token after sign-in (Keycloak's `/protocol/openid-connect/token`) would
-  otherwise render signed out. Every other method or path to that origin
-  is refused as above, a top frame posted there still leaves the target, and
-  a redirect of the POST is a pause of its own, judged by its own URL;
+  from the moment the gate's own sign-in begins until it ends (`in_flight`:
+  its steps, then the agent's tab sent to `base_url` and the agent released,
+  before `finished`), and while that sign-in has completed (`signed_in`),
+  never wiped: never before the sign-in begins, never after one that failed
+  or met a challenge, never on a target that does not sign in. An app that
+  refreshes its SSO token after sign-in (Keycloak's
+  `/protocol/openid-connect/token`) would otherwise render signed out, and
+  one that exchanges it as its page loads (a production chooser checking its
+  saved session) would read the refusal as an unreachable provider: on
+  2026-11-03 five production legs failed sign-in so, their exchange sent in
+  the hand-back, after `signing_in` was cleared and before `signed_in` was
+  set. Every other method or path to that origin outside the gate's own
+  steps is refused as above, a top frame posted there still leaves the
+  target, and a redirect of the POST is a pause of its own, judged by its
+  own URL;
 * a top-frame navigation outside the approved origins, or to an excluded
   path, gets the gate's page instead (`left_page`, `qa_target_left`). The
   login's other origin (`extra_origin`, approved with the host) is a
@@ -436,7 +444,11 @@ class QaTarget:
         self.state = STATE_NONE
         self.cause: str | None = None
         self.sign_ins = 0
-        self.signing_in = False
+        self._signing_in = False
+        #: QA-IDP-POST: the gate's own sign-in has begun (`signing_in` was set)
+        #: and has not ended (`finished`, `wipe`). Longer than `signing_in`,
+        #: which the proxy clears before it hands the agent back.
+        self.in_flight = False
         self.wiped = False
         self._next_navigation = 0.0
         self._next_request = 0.0
@@ -447,6 +459,20 @@ class QaTarget:
     def armed(self) -> bool:
         """A target was handed over: its rules apply for the rest of the gate."""
         return self.target_id is not None
+
+    @property
+    def signing_in(self) -> bool:
+        """The gate's own tab is signing in: every write to an approved origin
+        continues, and the login's other origin is a top-frame destination."""
+        return self._signing_in
+
+    @signing_in.setter
+    def signing_in(self, value: bool) -> None:
+        # Set by the proxy as the sign-in begins; it ends only at `finished`
+        # or `wipe`, so clearing it here does not end `in_flight`.
+        self._signing_in = value
+        if value:
+            self.in_flight = True
 
     @property
     def held(self) -> bool:
@@ -573,6 +599,7 @@ class QaTarget:
     def finished(self, state: str, cause: str | None = None) -> None:
         """The sign-in ended: `signed_in`, `challenge` or `failed` with a cause."""
         self.signing_in = False
+        self.in_flight = False
         if self.wiped:
             return
         self.state = state if state in FINAL else STATE_FAILED
@@ -592,6 +619,7 @@ class QaTarget:
         self._password = None
         self._bypass_value = None
         self.signing_in = False
+        self.in_flight = False
         self._record("qa_target_wiped", {"target_id": self.target_id})
 
     # ------------------------------------------------------------- scrub
@@ -815,21 +843,23 @@ class QaTarget:
             return Verdict("refuse", origin, verb)
         if verb not in _WRITE_METHODS:
             return CONTINUE
+        if verb == "POST" and self._idp_token(url):
+            # Before the sign-in's own blanket rule, so the run is told the
+            # provider was reached while the gate signed in as well.
+            return Verdict("continue", origin, verb, allowed=IDP_TOKEN_ALLOWED)
         if self.signing_in or self.mutating:
             return CONTINUE
         if verb == "POST" and origin == self.base_origin and self._read_post(str(url)):
             return CONTINUE
-        if verb == "POST" and self._idp_token(url):
-            return Verdict("continue", origin, verb, allowed=IDP_TOKEN_ALLOWED)
         return Verdict("refuse", origin, verb)
 
     def _idp_token(self, url: Any) -> bool:
         """QA-IDP-POST: `url` is exactly the approved token URL, and the gate's
-        own sign-in has completed and holds (module docstring). The whole URL
-        is compared as a string: a query, a fragment, a port, userinfo, case
-        or an encoding is another URL."""
+        own sign-in is under way or has completed and holds (module
+        docstring). The whole URL is compared as a string: a query, a
+        fragment, a port, userinfo, case or an encoding is another URL."""
         return (self.idp_token_url is not None and isinstance(url, str) and url == self.idp_token_url
-                and self.state == STATE_SIGNED_IN and not self.signing_in and not self.wiped)
+                and (self.in_flight or self.state == STATE_SIGNED_IN) and not self.wiped)
 
     def _excluded(self, url: str) -> bool:
         path = _path_of(url)

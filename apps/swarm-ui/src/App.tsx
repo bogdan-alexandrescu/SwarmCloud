@@ -78,6 +78,7 @@ import { AGE_TICK_MS, useNow } from './useNow'
 import { useRecentName, WorkflowsScreen } from './Workflows'
 import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceTalkScreen } from './voice/Section'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
+import { HomeScreen } from './Home'
 
 /**
  * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.
@@ -98,6 +99,18 @@ import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist
  * does the same -- with three of them rather than six:
  *
  *   Overview · Work · Automate · Capacity · Admin
+ *
+ * HOME PASSES THE SAME TEST, AND IS THE RAIL'S FIRST ENTRY, ABOVE OVERVIEW
+ * (the owner's pick of the 'desk' mock-up, 2026-11-02; part of #2688). The
+ * test is that a section answers its own QUESTION, not that it re-labels a
+ * subsystem, and Home's is "what waits on me, and what of mine is moving":
+ * the signed-in person's owner questions, approvals, requests, hand-offs and
+ * failures, then their own work. Overview answered that only by mixing a
+ * personal setup card and a personal approvals card into the deployment's
+ * page. Home is the console's root, `/`; Overview keeps its own route
+ * (`/overview`), its own reads and its own content, and no screen is merged.
+ * It costs one more rail entry on every screen, which is the price the owner
+ * accepted for it.
  *
  * AUTOMATE IS THE ONE SECTION ADDED SINCE THE COLLAPSE, AND IT IS THE OWNER'S
  * DECISION, NOT A WIDENING (docs/schedules.md §6.1, SD1, 2026-10-08). The
@@ -675,6 +688,21 @@ const JOIN = 'join'
 const SETUP_LINK = 'setup-link'
 
 /**
+ * HOME (`/`): the signed-in person's own page, the console's root and the
+ * rail's first entry (Home.tsx). Not a section with tabs: one page. The root
+ * used to fall through `pathToAddress` to Overview, which keeps `/overview`,
+ * so a bookmarked Overview still opens Overview.
+ */
+export const HOME = 'home'
+const HOME_PATH = '/'
+const HOME_ROUTE: Route = { sectionId: HOME, tab: '', taskId: null, taskPane: 'detail' }
+
+/** Whether a path is the console's root, which is Home. */
+function isHomePath(pathname: string): boolean {
+  return (pathname.replace(/\/+$/, '') || '/') === HOME_PATH
+}
+
+/**
  * SETTINGS (KEYS-UI, then PROFILE-NAV): the person's own pages, not a
  * section, for the reason API reads was not one. It held Settings › API keys
  * until SSC-UI (part of #2158) moved it into Config › Secrets as Keys for
@@ -1014,6 +1042,7 @@ export function fromLocation(): Route {
   // Setup, the admin's page, with the token taken for a page of it.
   if (isSetupLinkPath(pathname)) return { sectionId: SETUP_LINK, tab: '', taskId: null, taskPane: 'detail' }
   if (isLegacyHash(hash, LEGACY_HEADS, pathname)) return fromHash()
+  if (isHomePath(pathname)) return HOME_ROUTE
   const p = pathToAddress(pathname, search, hash)
   if (p === null) return { ...fromAddress(''), missing: pathname }
   const r = fromAddress(p.address)
@@ -1041,6 +1070,7 @@ export function fromAddress(full: string): Route {
   // and `#settings/people` as the eleven-item nav's Pool limits.
   const movedTo = movedToConfig(full)
   if (movedTo !== null) return fromAddress(movedTo)
+  if (full === HOME) return HOME_ROUTE
   const queryAt = full.indexOf('?')
   const hash = queryAt === -1 ? full : full.slice(0, queryAt)
   const query = queryAt === -1 ? '' : full.slice(queryAt + 1)
@@ -1268,6 +1298,7 @@ export function canonical(r: Route): string {
   if (r.sectionId === ADMIN_SECTION && r.page === SETUP_CALLBACK_PAGE) return SETUP_CALLBACK
   if (r.sectionId === JOIN) return JOIN
   if (r.sectionId === SETUP_LINK) return SETUP_LINK
+  if (r.sectionId === HOME) return HOME
   if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
@@ -1390,6 +1421,7 @@ export function App() {
       if (r.missing != null) return r.missing
       if (r.sectionId === JOIN) return JOIN_PATH
       if (r.sectionId === SETUP_LINK) return SETUP_LINK_PATH
+      if (r.sectionId === HOME) return HOME_PATH
       const list = r.list ?? lastList.current
       const path = addressToPath(canonical(r), list?.tab ?? 'live')
       // AN OPEN AGENT KEEPS ITS LIST'S STATE AND TOGGLES in its query (G2-22),
@@ -1409,7 +1441,7 @@ export function App() {
       if (to.startsWith('/')) {
         const u = new URL(to, window.location.origin)
         const p = pathToAddress(u.pathname, u.search, u.hash)
-        r = p === null ? { ...fromAddress(''), missing: u.pathname } : fromAddress(p.address)
+        r = isHomePath(u.pathname) ? HOME_ROUTE : p === null ? { ...fromAddress(''), missing: u.pathname } : fromAddress(p.address)
         if (p !== null && p.agentTab !== null) r = { ...r, list: p.list ?? { tab: p.agentTab, state: null } }
       } else {
         r = fromAddress(to.replace(/^#/, ''))
@@ -1582,6 +1614,8 @@ export function App() {
             ? 'Join a workspace'
             : at.sectionId === SETUP_LINK
               ? 'Your setup link'
+            : at.sectionId === HOME
+              ? 'Home'
             : at.sectionId === SETTINGS
               ? PROFILE_LABEL
               : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
@@ -1699,6 +1733,8 @@ export function App() {
                   <JoinWorkspaceScreen key={joinCode ?? ''} code={joinCode} />
                 ) : at.sectionId === SETUP_LINK ? (
                   <SetupLinkScreen token={setupToken} />
+                ) : at.sectionId === HOME ? (
+                  <HomeScreen />
                 ) : (
                   // Settings › Profile: the last page that is not a section.
                   // API keys was beside it until SSC-UI moved it to Config ›
@@ -1802,6 +1838,9 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
     // which would send a person who administers nothing to Overview.
     case SETUP_LINK:
       return 'capacity'
+    // Home is its own entry, the rail's first.
+    case HOME:
+      return 'home'
     // EVERY SETTINGS PAGE LIGHTS PROFILE (NAV-PROFILE; part of #1633): its
     // panel holds them. Only Profile's exact address is one since SSC-UI;
     // `#settings/<anything else>` is Pool limits (LEGACY), and lights Admin.

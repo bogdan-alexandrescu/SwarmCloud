@@ -143,6 +143,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 133 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | ACCEPTED by the owner (BGD) 2 November 2026 ("Accept and build"; owner accepted 2 November 2026; requested 2026-10-28 by lane CONTRACT-MAXTURNS on PR 2682 as 127, renumbered 2026-11-02 by lane CARRY-TURN-CAP). APPLIED 2026-11-02 by the pull request that adds this line (lane TURN-CAP-APPLIED, part of #2688): spec format 7; `supports_max_turns=True` on the six claude-code-runner profiles and `max_turns` None on every profile; swarm-api resolves `max_turns` beside `validate_timeout` on a task, a workflow step, a child and both profiles of a `browser_if_ui` step; the worker passes the verified `Task.max_turns` as `--max-turns`; the requirements check asks for 30 turns and its prompt no longer does |
 | 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (BGD, answering question 0 of PR 3095: merge as built on the current class, and file this request) |
 | 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
+| 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | open, REQUESTED 2026-11-03; not applied |
 
 ---
 
@@ -16397,3 +16398,92 @@ and request a 12-CPU, 16 GiB builder class as a frozen-contract change
 8-requested, 12-limit reading of "12 CPU", forced by Cloud Run's ceiling on
 the request, and the proposal of shape B over shape A are this request's;
 both are the owner's to accept.
+
+## 136. A shared `workcontract.py`, a `"plugins"` settings block and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, part of #2688)
+
+**Status:** open, REQUESTED 2026-11-03 by lane aq-work-contract, the work
+contract package of the owner's agent quality program (BGD, 3 November 2026).
+Not applied: `apps/common/swarm_common/` is frozen. Nothing built by that lane
+depends on it; what it unblocks is listed under "What reads it".
+
+### What is true today
+
+Read on main (3e3a987) on 2026-11-03.
+
+* `swarm_api.workcontract` (added by the pull request that adds this entry)
+  decodes a versioned work contract, digests it as RFC 8785 under the purpose
+  `swarm.work-contract/v1` through the frozen `swarm_common.specsign.jcs`, and
+  compiles it into today's step fields plus a reference
+  (`id`, `revision`, `digest`, `strictness`, `requirements`) written at
+  `metadata.dispatch.work_contract`. `dispatch` is in
+  `swarm_common.specsign.SIGNED_METADATA_KEYS`, so the step-spec signature
+  already covers the reference: no spec format bump is needed to sign it.
+* The digest function lives in swarm-api only. A worker that wanted to check
+  a stored contract body against the signed reference would need a second
+  copy of it, and two copies are two opinions about what is signed (the
+  reason `canonical_step_spec` is in `swarm_common`).
+* `swarm_api.workcontract.WORKER_ENFORCED_TODAY` is the repository binding
+  and the limits only, because those compile into signed task fields the
+  worker already acts on. `compile_contract` refuses
+  (`work_contract_not_enforceable`) a strict contract that sets a write or
+  read scope, protected paths, runtime capabilities, plugins, verification or
+  artifacts.
+* `swarm_common.specsign.SETTINGS_MAC_FIELDS` has no block saying which
+  catalogue plugins a workspace may use, and `RunnerProfile` has no field
+  naming the runtime capabilities a runner provides
+  (`dom_automation`, `screenshots`, `write_isolation` ...), so swarm-api
+  cannot check a contract's capabilities against the profile it names.
+
+### The change
+
+* **A.** `apps/common/swarm_common/workcontract.py`: `CONTRACT_PURPOSE`,
+  `SCHEMA_VERSION`, the canonical projection (`WorkContract.to_document` as
+  built in swarm-api) and `contract_digest(document) -> str`, moved from
+  `swarm_api.workcontract` unchanged in bytes (the pinned-bytes test in
+  `tests/unit/control_plane/test_work_contract.py` holds that). swarm-api then
+  imports them and keeps the schema validation and amendment protocol.
+* **B.** `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`: the workspace's
+  admin-only, signed list of catalogue plugins its steps may name
+  (docs/design/agent-plugins.md, "A closed plugin catalogue").
+* **C.** `RunnerProfile.runtime_capabilities: tuple[str, ...] = ()`, each a
+  name from `swarm_api.workcontract.RUNTIME_CAPABILITIES`, empty on every
+  profile until the routing package fills them in.
+
+### What reads it
+
+* A: the worker, verifying a contract body it fetched against the reference
+  inside its verified spec before it enforces anything of it.
+* B: swarm-api, refusing a contract that names a plugin its workspace has not
+  allowed; the worker, loading only allowed plugins.
+* C: swarm-api, refusing a strict contract whose runtime capabilities its
+  profile does not provide; the routing package.
+
+### What it would break if accepted
+
+Nothing stored: no task document carries a contract while
+`SWARM_WORK_CONTRACTS` is off, and none of A-C changes a spec's signed bytes.
+B adds a block every reader of `SETTINGS_MAC_FIELDS` must re-sign in the
+rollout that adds it (empty on every workspace, so nothing to re-sign).
+
+### If it is declined
+
+Strict contracts stay refused for every component but the repository binding
+and the limits, and advisory contracts carry the rest as text the agent reads
+and the platform does not enforce. The plugins plan's per-step selection has
+no signed workspace allow-list.
+
+### Invariants
+
+No capacity, lease, fencing or tenant-isolation rule changes. Invariant 10
+holds: a contract names a runner profile, model class, plugins, skills and
+capabilities by name only, never an image, command, path or resource spec.
+
+### How it is tested
+
+`tests/unit/control_plane/test_work_contract.py` pins schema 1's bytes, so
+moving A into `swarm_common` must leave that test green unchanged.
+
+### Who decided
+
+Nobody yet: this is a request. The program's rule that a strict contract never
+silently degrades to advisory is the owner's (BGD, 3 November 2026).
