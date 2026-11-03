@@ -205,7 +205,9 @@ def test_on_the_runner_adds_the_flag_the_withheld_tools_and_the_hook(tmp_path, m
     command = entries[0]["hooks"][0]["command"]
     assert str(qb.HOOK) in command and qb.PENDING_NAME in command and " -I " in command
     # The pending file sits beside the settings in work/, never in the checkout.
-    assert "/repo/" not in command
+    settings_dir = Path(args[args.index("--settings") + 1]).parent
+    assert command.endswith(str(settings_dir / qb.PENDING_NAME))
+    assert settings_dir.name == claude_code.SETTINGS_DIR_NAME
 
 
 # --- the hook ---------------------------------------------------------------
@@ -343,8 +345,8 @@ def test_resume_args_refuse_what_is_not_a_session_id():
 
 
 def test_without_the_flag_the_fake_cli_offers_no_question_tool(tmp_path, monkeypatch):
-    settings = Path(_body_args(monkeypatch, tmp_path, {})[-1])
     args = _body_args(monkeypatch, tmp_path, {})
+    settings = Path(args[args.index("--settings") + 1])
     code, events = _run_cli(_fake_cli(tmp_path), tmp_path / "home", tmp_path / "ws",
                             ["--print", *args], "Plan.")
     assert code == 0 and "AskUserQuestion" not in events[0]["tools"]

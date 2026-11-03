@@ -347,7 +347,7 @@ from ..qa_identity import requested as qa_identity_requested
 from ..qa_target import NOTICE_NAME as QA_TARGET_NOTICE_NAME
 from .base import RunnerContext, RunnerFailure, run_runner
 from ..livegate.presets import PRESETS as DEVICE_PRESETS
-from . import ceiling
+from . import ceiling, question_bridge
 from .cliagent import (
     CliAgentSpec,
     agent_working_directory,
@@ -1128,6 +1128,13 @@ def write_headless_settings(directory: Path) -> Path:
             "matcher": JEV_ENFORCE_EDIT_MATCHER,
             "hooks": [_jev_gate_hook(gates, "enforce-edit", JEV_ENFORCE_TIMEOUT)],
         })
+    if question_bridge.enabled(os.environ):
+        # The question bridge spike, behind its switch, which nothing sets
+        # (`question_bridge`; docs/design/agent-plugins-question-bridge.md):
+        # a question tool call is recorded beside these settings and stops
+        # the turn. Nothing parks on it yet.
+        settings["hooks"]["PreToolUse"].append(
+            question_bridge.hook_entry(directory / question_bridge.PENDING_NAME))
     if post_tool_use:
         settings["hooks"]["PostToolUse"] = post_tool_use
     path = directory / "settings.json"
@@ -1706,6 +1713,9 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     # leave background commands switched on by replacing the flag set.
     settings = write_headless_settings(Path(ctx.work_dir) / SETTINGS_DIR_NAME)
     extra += ["--settings", str(settings)]
+    # The question bridge spike's flags, only while its switch is on: print
+    # mode offers the question tool only with a permission prompt tool.
+    extra += question_bridge.cli_args(os.environ)
     # HOME is `work/` (cliagent), so `work/.claude.json` is the config the CLI
     # reads. Only a checkout is trusted: with none the agent starts in HOME,
     # where there are no repository settings to apply.
