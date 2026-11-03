@@ -46,7 +46,7 @@ import { useRoleGate } from '../Profile'
 import { prefillTask } from '../submitPrefill'
 import { type Task } from '../types'
 import { useNow } from '../useNow'
-import './needsyou.css'
+import './needs-you.css'
 
 export type NeedKind = 'failed' | 'question' | 'merge' | 'handoff' | 'approval'
 
