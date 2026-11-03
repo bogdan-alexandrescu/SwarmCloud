@@ -210,7 +210,7 @@ describe('Settings › Profile', () => {
   it('links each summary to the page that owns it', async () => {
     await drawn()
     const link = (name: string) => within(region(name)).getAllByRole('link').map((a) => a.getAttribute('href'))
-    expect(link('You and your workspaces')).toContain('/config/workspace/setup')
+    expect(link('You and your workspaces')).toContain('/admin/workspaces?tab=setup')
     expect(link('Your connections')).toEqual(expect.arrayContaining(['/config/github', '/config/secrets']))
     expect(link('Claude accounts')).toContain('/capacity/accounts')
   })
@@ -297,7 +297,7 @@ describe('Settings › Profile names the Config pages by their Config addresses 
     await drawn()
     expect(visible(document.body)).not.toMatch(OLD)
     const you = within(region('You and your workspaces'))
-    expect(you.getByRole('link', { name: /^Config › Workspace Settings › Workspace setup/ }).getAttribute('href')).toBe('/config/workspace/setup')
+    expect(you.getByRole('link', { name: /^Config › Workspace Settings › Workspace setup/ }).getAttribute('href')).toBe('/admin/workspaces?tab=setup')
     const github = within(region('Your connections'))
     expect(github.getByRole('link', { name: /^Config › GitHub access/ }).getAttribute('href')).toBe('/config/github')
     const rows = github.getAllByRole('link', { name: /^Open Config › GitHub access/ })
@@ -312,7 +312,7 @@ describe('Settings › Profile names the Config pages by their Config addresses 
     expect(visible(document.body)).not.toMatch(OLD)
     expect(visible(region('You and your workspaces'))).toContain('Request one on Config › Workspace Settings › Workspace setup.')
     const request = screen.getByRole('link', { name: 'Request one on Config › Workspace Settings › Workspace setup.' })
-    expect(request.getAttribute('href')).toBe('/config/workspace/setup')
+    expect(request.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
   })
 
   it('keeps the Claude accounts sentence\'s closing period inside its link, so a wrapped link does not leave it on a line of its own', async () => {
@@ -320,7 +320,7 @@ describe('Settings › Profile names the Config pages by their Config addresses 
     await drawn({ ...f, claude_accounts: { ...(f.claude_accounts as Json), personal_workspace: null, accounts: [] } })
     const claude = within(region('Claude accounts'))
     const request = claude.getByRole('link', { name: 'Request one on Config › Workspace Settings › Workspace setup.' })
-    expect(request.getAttribute('href')).toBe('/config/workspace/setup')
+    expect(request.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
     expect(request.parentElement?.lastChild).toBe(request)
   })
 })
