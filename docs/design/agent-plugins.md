@@ -1,6 +1,12 @@
 # Agent plugins: gstack's skills in SwarmCloud agents, chosen per step, unattended or as a planner and designer
 
-**Status: plan, 3 November 2026. Nothing here is built.** The owner (BGD) asked on 3 November 2026 for agents to
+**Status: plan, 3 November 2026. Nothing here is built. Merged into the agent quality program the same day:** BGD
+chose that a step's plugins, mode and skills ride in the program's versioned work contract (its capabilities
+section) instead of a contract request of their own, that the plugin catalogue is a runtime capability manifest
+entry, and that the question bridge builds on the program's trusted park and resume. The packaging and question
+bridge spikes run now; the build order below follows the program's work-contract and trusted-state packages.
+
+The owner (BGD) asked on 3 November 2026 for agents to
 use Claude Code plugins chosen per runtime and per task, starting with gstack, whose planner, designer and reviewer
 skills "could be super useful in making sc agents a lot more powerful and capable", and for a plan to build it as
 soon as possible. Every fact below was read on 3 November 2026 on `origin/main`; files are named, lines are not,
