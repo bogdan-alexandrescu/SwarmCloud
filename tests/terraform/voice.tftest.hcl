@@ -12,13 +12,12 @@
 #   * swarm-voice is READ, never created: terraform/bootstrap makes it
 #     (platform_service_accounts.tf, whose description carries
 #     managed-by=swarm-terraform), and voice.tf binds on the account it read;
-#   * each Secret Manager grant names ONE secret, the platform owner's own
-#     OpenAI secret, and only the two roles credential.py needs: read, and
-#     add-version for a rotated refresh token;
-#   * the owner's personal tenant is computed as
-#     swarm_common.identity.tenant_id_for_user computes it (the expected
-#     values below were printed by that function);
-#   * run.invoker on swarm-api is the only other grant;
+#   * swarm-voice holds NO Secret Manager grant: each session's ChatGPT plan
+#     account is leased from the quota broker's Voice it pool (owner,
+#     2026-11-02), and the lease carries the access token;
+#   * its grants are run.invoker on swarm-api and run.invoker on
+#     swarm-quota-broker, and nothing else; the pod is handed the broker's
+#     URL and audience, and its egress admits the broker's host;
 #   * off by default nothing exists, and swarm-api has no SWARM_VOICE_URL.
 #
 # The infra root's setup is live.tftest.hcl's.
@@ -128,9 +127,8 @@ run "off_by_default_nothing_exists_and_swarm_api_has_no_address" {
     condition = (
       length(data.google_service_account.voice) == 0
       && length(google_service_account_iam_member.voice_workload_identity) == 0
-      && length(google_secret_manager_secret_iam_member.voice_reads_openai) == 0
-      && length(google_secret_manager_secret_iam_member.voice_stores_openai) == 0
       && length(google_cloud_run_v2_service_iam_member.voice_invokes_api) == 0
+      && length(google_cloud_run_v2_service_iam_member.voice_invokes_broker) == 0
       && length(google_compute_address.voice) == 0
       && length(google_storage_bucket_iam_member.api_voice_blob_writer) == 0
       && length(google_storage_bucket_iam_member.api_voice_blob_deleter) == 0
@@ -167,9 +165,8 @@ run "account_reads_the_bootstrap_account_holding_nothing" {
   assert {
     condition = (
       length(google_service_account_iam_member.voice_workload_identity) == 0
-      && length(google_secret_manager_secret_iam_member.voice_reads_openai) == 0
-      && length(google_secret_manager_secret_iam_member.voice_stores_openai) == 0
       && length(google_cloud_run_v2_service_iam_member.voice_invokes_api) == 0
+      && length(google_cloud_run_v2_service_iam_member.voice_invokes_broker) == 0
       && output.swarm_voice_manifest == null
     )
     error_message = "step 1's account holds nothing and nothing runs as it"
@@ -194,14 +191,13 @@ run "on_every_labelled_resource_carries_managed_by" {
       for m in regexall("(?m)^resource \"([a-z0-9_]+)\" \"([a-z0-9_]+)\"", file("${var.tf_root}/voice.tf")) : "${m[0]}.${m[1]}"
       ]) == toset([
       "google_service_account_iam_member.voice_workload_identity",
-      "google_secret_manager_secret_iam_member.voice_reads_openai",
-      "google_secret_manager_secret_iam_member.voice_stores_openai",
       "google_cloud_run_v2_service_iam_member.voice_invokes_api",
+      "google_cloud_run_v2_service_iam_member.voice_invokes_broker",
       "google_compute_address.voice",
       "google_storage_bucket_iam_member.api_voice_blob_writer",
       "google_storage_bucket_iam_member.api_voice_blob_deleter",
     ])
-    error_message = "voice.tf declares the account's Workload Identity binding, two secret bindings, the invoker, the address and swarm-api's two conditioned blob grants (voice_storage.tftest.hcl holds those), and nothing else"
+    error_message = "voice.tf declares the account's Workload Identity binding, the two invokers (swarm-api, swarm-quota-broker), the address and swarm-api's two conditioned blob grants (voice_storage.tftest.hcl holds those), and nothing else"
   }
 
   # The account is bootstrap's: infra reads it and never declares one.
@@ -240,7 +236,7 @@ run "on_every_labelled_resource_carries_managed_by" {
   }
 }
 
-run "on_each_secret_grant_names_only_the_owners_openai_secret" {
+run "on_swarm_voice_holds_no_secret_grant_and_reaches_the_voice_it_pool" {
   command = plan
 
   module {
@@ -251,41 +247,34 @@ run "on_each_secret_grant_names_only_the_owners_openai_secret" {
     voice_it = "on"
   }
 
-  # tenant_id_for_user("bgd@example.com") == "u-bgd".
-  assert {
-    condition     = output.voice.openai_secret == "swarm-tenant-u-bgd-openai"
-    error_message = "the secret is the platform owner's own OpenAI secret, swarm-tenant-<tenant_id_for_user(owner)>-openai"
-  }
-
-  assert {
-    condition = (
-      google_secret_manager_secret_iam_member.voice_reads_openai[0].secret_id == "swarm-tenant-u-bgd-openai"
-      && google_secret_manager_secret_iam_member.voice_reads_openai[0].role == "roles/secretmanager.secretAccessor"
-      && google_secret_manager_secret_iam_member.voice_reads_openai[0].member == "serviceAccount:swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
-    )
-    error_message = "read is roles/secretmanager.secretAccessor for swarm-voice on swarm-tenant-u-bgd-openai, and on no other secret"
-  }
-
-  assert {
-    condition = (
-      google_secret_manager_secret_iam_member.voice_stores_openai[0].secret_id == "swarm-tenant-u-bgd-openai"
-      && google_secret_manager_secret_iam_member.voice_stores_openai[0].role == "roles/secretmanager.secretVersionAdder"
-      && google_secret_manager_secret_iam_member.voice_stores_openai[0].member == "serviceAccount:swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
-    )
-    error_message = "storing a rotated refresh token is roles/secretmanager.secretVersionAdder for swarm-voice on swarm-tenant-u-bgd-openai, and on no other secret"
-  }
-
-  # Each is a binding ON the secret, never a project-level grant: voice.tf
-  # makes no google_project_iam_* and no google_secret_manager_secret_iam_binding
-  # (which would replace the secret's other members) or _policy.
+  # No Secret Manager grant of any shape, and no project-level grant: the
+  # Voice it pool's lease carries the access token (swarm_voice/accountlease.py).
   assert {
     condition = (
       !strcontains(file("${var.tf_root}/voice.tf"), "resource \"google_project_iam")
-      && !strcontains(file("${var.tf_root}/voice.tf"), "google_secret_manager_secret_iam_binding")
-      && !strcontains(file("${var.tf_root}/voice.tf"), "google_secret_manager_secret_iam_policy")
-      && !strcontains(file("${var.tf_root}/voice.tf"), "google_secret_manager_secret_version")
+      && !strcontains(file("${var.tf_root}/voice.tf"), "resource \"google_secret_manager")
+      && !strcontains(file("${var.tf_root}/voice.tf"), "roles/secretmanager.")
     )
-    error_message = "voice.tf grants on the one secret only, replaces no member list, and never holds a secret value"
+    error_message = "voice.tf grants swarm-voice nothing in Secret Manager and nothing on the project"
+  }
+
+  assert {
+    condition = (
+      google_cloud_run_v2_service_iam_member.voice_invokes_broker[0].name == "swarm-quota-broker"
+      && google_cloud_run_v2_service_iam_member.voice_invokes_broker[0].role == "roles/run.invoker"
+      && google_cloud_run_v2_service_iam_member.voice_invokes_broker[0].member == "serviceAccount:swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
+    )
+    error_message = "swarm-voice reaches the quota broker by run.invoker on swarm-quota-broker, and nothing else there"
+  }
+
+  assert {
+    condition = (
+      strcontains(output.swarm_voice_manifest, "value: ${local.quota_broker_url}")
+      && strcontains(output.swarm_voice_manifest, "value: ${local.push_audiences["swarm-quota-broker"]}")
+      && strcontains(output.swarm_voice_manifest, "- name: ${trimprefix(local.quota_broker_url, "https://")}")
+      && !strcontains(output.swarm_voice_manifest, "auth.openai.com")
+    )
+    error_message = "the pod is handed the broker's URL and audience as every other broker caller is, and its egress admits the broker's host and no OpenAI token endpoint"
   }
 
   assert {
@@ -294,7 +283,7 @@ run "on_each_secret_grant_names_only_the_owners_openai_secret" {
       && google_cloud_run_v2_service_iam_member.voice_invokes_api[0].role == "roles/run.invoker"
       && google_cloud_run_v2_service_iam_member.voice_invokes_api[0].member == "serviceAccount:swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
     )
-    error_message = "swarm-voice's one other grant is run.invoker on swarm-api"
+    error_message = "swarm-voice's grant on swarm-api is run.invoker"
   }
 
   # Only the KSA swarm-system/swarm-voice acts as the account.
@@ -304,44 +293,6 @@ run "on_each_secret_grant_names_only_the_owners_openai_secret" {
       && google_service_account_iam_member.voice_workload_identity[0].member == "serviceAccount:saga-agents-staging.svc.id.goog[swarm-system/swarm-voice]"
     )
     error_message = "the Workload Identity binding admits exactly the KSA swarm-system/swarm-voice"
-  }
-}
-
-run "a_lossy_owner_address_names_the_digested_tenant" {
-  command = plan
-
-  module {
-    source = "../../terraform/infra"
-  }
-
-  variables {
-    voice_it       = "on"
-    platform_owner = "first.last@example.com"
-  }
-
-  # tenant_id_for_user("first.last@example.com") == "u-fi-ed5404".
-  assert {
-    condition     = google_secret_manager_secret_iam_member.voice_reads_openai[0].secret_id == "swarm-tenant-u-fi-ed5404-openai"
-    error_message = "a local part slugification changes is cut and digested exactly as tenant_id_for_user does"
-  }
-}
-
-run "a_long_owner_address_names_the_digested_tenant" {
-  command = plan
-
-  module {
-    source = "../../terraform/infra"
-  }
-
-  variables {
-    voice_it       = "on"
-    platform_owner = "abcdefghij@example.com"
-  }
-
-  # tenant_id_for_user("abcdefghij@example.com") == "u-ab-e1b541".
-  assert {
-    condition     = google_secret_manager_secret_iam_member.voice_stores_openai[0].secret_id == "swarm-tenant-u-ab-e1b541-openai"
-    error_message = "a local part longer than nine characters is cut and digested exactly as tenant_id_for_user does"
   }
 }
 

@@ -359,7 +359,7 @@ def test_the_spoken_summary_keeps_two_sentences(text, expected):
 
 
 def test_the_live_session_delegates_and_speaks_the_planners_result():
-    from test_live_session import Clock, FakeOpenAI, FakeSecrets as OpenAISecrets, Harness, _seed, _start_body
+    from test_live_session import Clock, FakeBroker, FakeOpenAI, Harness, _start_body
     from websockets.asyncio.server import serve
 
     from swarm_voice import live
@@ -402,14 +402,12 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
         planner = FakePlanner()
         grant = _grant()
         async with serve(openai.sideband, "127.0.0.1", 0) as server:
-            h = Harness(openai, OpenAISecrets(), Clock(), server)
-            h.sessions = live.Sessions(h.api, credentials=cred.CredentialFactory(
-                store=h.store, http=h.upstream, project="voice-test-project", clock=h.clock),
-                close_grace=2.0, planner=planner)
+            h = Harness(openai, FakeBroker(openai), Clock(), server)
+            h.sessions = live.Sessions(h.api, leases=h.leases, close_grace=2.0, planner=planner)
             h.app = create_app(sessions=h.sessions, verify_caller=lambda t: _ok(t))
             h.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=h.app), base_url="http://voice")
             try:
-                body = {**_start_body(_seed(h), voice_id=grant.session_id), "project_id": grant.project_id,
+                body = {**_start_body(voice_id=grant.session_id), "project_id": grant.project_id,
                         "grant": grant.headers()[GRANT_HEADER]}
                 r = await h.post("/internal/sessions", body)
                 assert r.status_code == 201, r.text
@@ -424,7 +422,7 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
                 assert said == [{"type": "session.commentary.append", "event_id": f"planner_{delegation_id}",
                                  "delegation_id": delegation_id, "content": "The question is on screen."}]
                 call = planner.calls[0]
-                assert call["person"] == "person@example.com" and call["grant"] is not None
+                assert call["person"] == "bogdan@saga.xyz" and call["grant"] is not None
                 assert call["grant"].session_id == grant.session_id
                 assert call["transcript"] == [("person", "Ask me which repository.")]
             finally:

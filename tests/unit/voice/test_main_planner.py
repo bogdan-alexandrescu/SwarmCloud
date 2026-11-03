@@ -28,6 +28,12 @@ from swarm_voice.planner import Planner  # noqa: E402
 API_URL = "http://swarm-api.swarm-system.svc.cluster.local:8080"
 
 
+@pytest.fixture(autouse=True)
+def broker(monkeypatch):
+    # Every session leases from the quota broker's Voice it pool; nothing is called while building.
+    monkeypatch.setenv("QUOTA_BROKER_URL", "https://swarm-quota-broker.test")
+
+
 @pytest.fixture
 def http():
     client = httpx.AsyncClient()

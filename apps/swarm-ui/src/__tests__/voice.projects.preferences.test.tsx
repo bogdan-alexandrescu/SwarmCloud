@@ -36,7 +36,7 @@ vi.mock('../api', async (importOriginal) => ({
 
 import { VoiceProjectsScreen } from '../voice/Section'
 import { RESUME_KEY, TALK_PATH, VOICE_PROJECT, VOICE_PROJECTS, VoiceProjects, takeResumedProject } from '../voice/Projects'
-import { VOICE_CHATGPT, VOICE_PREFERENCES, VOICE_PREFERENCES_UNDO, VoiceStandingPreferences } from '../voice/Preferences'
+import { VOICE_POOL, VOICE_PREFERENCES, VOICE_PREFERENCES_UNDO, VoiceStandingPreferences } from '../voice/Preferences'
 
 function ok(data: unknown) {
   return { status: 'ok', data, fetchedAt: Date.now() }
@@ -241,7 +241,7 @@ function prefsView(preferences: Record<string, unknown>, revision: number, previ
 function servePreferences(data: unknown): void {
   fetchMock.read.mockImplementation(async (target: { url: string }) => {
     if (target.url === VOICE_PREFERENCES) return ok(data)
-    if (target.url === VOICE_CHATGPT) return ok({ stored: false, stored_at: null })
+    if (target.url === VOICE_POOL) return ok({ pool: 'voice-it', account: null, reason: 'no_voice_account_available' })
     throw new Error(`unexpected read ${target.url}`)
   })
 }

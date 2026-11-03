@@ -438,6 +438,9 @@ _DEVELOPER_STATE = frozenset(
         "sc.cmd_account_state",
         "sc.cmd_account_remove",
         "sc.cmd_account_max_agents",
+        # voice-it-pool: moving an account between the workspace and Voice it
+        # pools changes who may run on it; typed back, never granted.
+        "sc.cmd_account_pool",
         "sc.cmd_account_add",
         # #454: creating an issue run submits a planner task, and moving its
         # plan submits a workflow or ends the run. They write to the cluster,
