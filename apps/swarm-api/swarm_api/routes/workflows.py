@@ -72,6 +72,7 @@ from ..deps import (
 from ..rollup import RollupResult, SweepReport
 from ..schemas import McpCredentialCreate, WorkflowCreate, _mcp_credentials_field
 from ..stalls import stalled_workflows
+from ..steprerun import RERUN_OF_METADATA_KEY
 from ..store import CancelContended, workflow_listing_token
 from ..waker import ring
 
@@ -578,6 +579,25 @@ def _by_ids(
     return payload
 
 
+def _without_rerun_replaced(workflow: Any, tasks: list[Task]) -> list[Task]:
+    """`tasks` less each task a step re-run replaced: one naming this
+    workflow and a step whose task is now another one that was re-run
+    (`metadata.rerun_of`). Every other task is kept as it was."""
+    pointers = {s.step_id: s.task_id for s in workflow.steps}
+    by_id = {t.id: t for t in tasks}
+    rerun_steps = {
+        step_id for step_id, task_id in pointers.items()
+        if task_id in by_id and (by_id[task_id].metadata or {}).get(RERUN_OF_METADATA_KEY)
+    }
+    return [
+        t for t in tasks
+        if not (
+            t.workflow_id == workflow.workflow_id and t.step_id in rerun_steps
+            and pointers.get(t.step_id) != t.id
+        )
+    ]
+
+
 @router.get("/{workflow_id}")
 def get_workflow(
     workflow_id: str,
@@ -611,6 +631,12 @@ def get_workflow(
             found[i] for i in dict.fromkeys(named)
             if i in found and (submitted_by is None or found[i].submitted_by == submitted_by)
         ]
+    # A STEP RE-RUN'S OLD TASK IS NOT SERVED AS A STEP (`swarm_api.steprerun`).
+    # It still names this workflow, so the query returns it beside the task
+    # that replaced it, and a reader would show the step twice -- once still
+    # FAILED, asking to be retried again. Only for a step whose task records
+    # `rerun_of`; the old task is still read by id.
+    tasks = _without_rerun_replaced(workflow, tasks)
     # Derived from the tasks this route already loaded rather than from a second
     # read of the same documents.
     result = ctx.rollups.for_workflow_from_tasks(workflow, tasks, complete=True)
@@ -727,6 +753,34 @@ def cancel_workflow(
             headers={"Retry-After": str(max(1, int(refused.retry_after_seconds) + 1))},
         )
     return result
+
+
+@router.post("/{workflow_id}/steps/{step_id}/rerun")
+def rerun_workflow_step(
+    workflow_id: str,
+    step_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Re-run a failed step inside its workflow (`swarm_api.steprerun`; the
+    owner's pick on PR #3123). The body is empty: the caller names a step,
+    and the step's runner profile and spec are the ones swarm-api resolved at
+    submission (invariant 10).
+
+    A `member` or above, as cancel is (Q8): re-running spends what the steps
+    spend. Refused 409 `workflow_still_running` until every step has
+    finished, `step_not_failed` for a step that did not fail,
+    `workflow_cancelled`, and `step_rerun_raced` when another re-run or a
+    cancel landed first; 404 `step_not_found` for a step the workflow has not.
+    Answers each re-run step's old and new task id."""
+    require_member(ctx, auth)
+    result = ctx.submissions.rerun_workflow_step(auth, tenant_id, workflow_id, step_id)
+    return {
+        "workflow_id": result.workflow_id,
+        "step_id": result.step_id,
+        "replaced": result.replaced,
+    }
 
 
 # --------------------------------------------------------------------------
