@@ -177,14 +177,17 @@ def budget_line(memory_max: int, workers: int) -> str:
     With #2507's rules: two heavy commands at once, a test run backgrounded
     and forgotten, and a timed-out command whose children outlived it are the
     other ways the container reached its limit. Node's heap is capped
-    `OLD_SPACE_HEADROOM_BYTES` below the limit, never below 256 MiB.
+    `OLD_SPACE_HEADROOM_BYTES` below the limit, never below 256 MiB. The
+    backgrounded test run is `time_limit_line`'s one sentence, never restated
+    here (ONE-PLACE, the owner's ask of 2026-11-03 for prompts without
+    repeated instructions).
     """
     old_space = max(256, (memory_max - OLD_SPACE_HEADROOM_BYTES) // (1 << 20))
     return (
         f"Memory budget: this container has {_gib(memory_max)} (${MEMORY_LIMIT_ENV}), and "
         "at that limit the kernel kills the whole container, this attempt with it. Run "
-        "one heavy command (a test run, tsc, a build) at a time, and never background a "
-        "test run with & or nohup; when a command times out, kill its process group "
+        "one heavy command (a test run, tsc, a build) at a time; when a command times "
+        "out, kill its process group "
         "(kill -- -PGID) before starting another. Stop any dev server you started (next "
         "dev, uvicorn, postgres) before running tsc or the tests; never pass pytest -n "
         f"above {workers} (${XDIST_WORKERS_ENV}, which -n auto already uses); never set "
@@ -1601,6 +1604,22 @@ PUBLISH_PARAGRAPH = (
 )
 
 
+#: WHETHER THIS STEP PUBLISHES (ONE-PLACE, the owner's ask of 2026-11-03 for
+#: prompts without bloat). The worker knows whether a step's branch or pull
+#: request is its deliverable (`lifecycle.Worker._deliverable_branch`); the
+#: runner is told through this variable, platform-set and never from
+#: `input`. "0" is a step that publishes nothing -- a review, a `collect`
+#: step, a `single-pr` reader -- and gets no PUBLISH_PARAGRAPH. Unset, or any
+#: other value, keeps the paragraph: a worker that predates the variable
+#: never leaves a publishing step without it.
+STEP_PUBLISHES_ENV = "SWARM_STEP_PUBLISHES"
+
+
+def step_publishes(environ: Mapping[str, str]) -> bool:
+    """False only when the worker said this step publishes nothing."""
+    return (environ.get(STEP_PUBLISHES_ENV) or "").strip() != "0"
+
+
 #: THE STEP'S WALL CLOCK, TOLD TO THE AGENT (#2139). Measured 2026-10-23 by the
 #: failure-review schedule: three claude-code agents (f-003, f-007, f-015)
 #: started the tenant's whole pytest suite in the background, polled it with
@@ -1612,7 +1631,11 @@ PUBLISH_PARAGRAPH = (
 #: a test can hold it; minutes rounded down and the end time in UTC, so it is
 #: never later than the deadline it names. It carries no rate-limit or
 #: credential marker for a CLI that echoes it -- the minutes are the one number
-#: in it, and only a 429-minute limit would spell one.
+#: in it, and only a 429-minute limit would spell one. ONE PLACE (2026-11-03):
+#: the pull request's files are PUBLISH_PARAGRAPH's alone, which a step that
+#: publishes nothing does not get, and which tests to run is the related-tests
+#: note's (`claude_code.RELATED_TESTS_NOTE`); this line keeps only the
+#: deadline and the one background-test rule every step shares.
 def time_limit_line(timeout_seconds: float, now: datetime | None = None) -> str:
     """The one platform line naming this run's limit and when it ends."""
     start = now if now is not None else datetime.now(timezone.utc)
@@ -1622,10 +1645,9 @@ def time_limit_line(timeout_seconds: float, now: datetime | None = None) -> str:
         f"This step has a wall-clock limit of {minutes} minute{'' if minutes == 1 else 's'} "
         f"and is stopped at "
         f"{end.strftime('%Y-%m-%dT%H:%M:%SZ')} (UTC), whatever it is doing; work "
-        "that is not committed by then is lost. Commit your work and write the "
-        "pull request's title and body well before that time. Do not run the "
-        "whole test suite in the background and poll it with sleep: run the "
-        "tests related to your change, in the foreground."
+        "that is not committed by then is lost, so commit well before that time. "
+        "Never run tests in the background (`&`, `nohup`) and poll them with "
+        "sleep: run them in the foreground."
     )
 
 
@@ -1988,10 +2010,13 @@ def run_cli_agent(
         # A continuation at the time limit with no session to resume (BGD,
         # 2026-11-02): the task again, in the restored workspace, and the note.
         first_prompt = f"{TIME_LIMIT_RESUME_PROMPT}\n\n{first_prompt}"
-    if cwd != ctx.work_dir:
+    if cwd != ctx.work_dir and step_publishes(os.environ):
         # A task with a repository (Proposal A, owner decision 2026-10-08):
         # the platform paragraph, last. Not on a resume: the session
-        # already holds it.
+        # already holds it. Nor on a step the worker says publishes nothing
+        # (`step_publishes`): 88 of 90 measured steps wrote pr-title.txt
+        # and pr-body.md because this paragraph asked, where no pull
+        # request was ever opened.
         task_prompt = f"{task_prompt}\n\n{PUBLISH_PARAGRAPH}"
         first_prompt = f"{first_prompt}\n\n{PUBLISH_PARAGRAPH}"
     if resume:

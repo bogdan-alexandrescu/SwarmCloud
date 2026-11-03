@@ -979,7 +979,12 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # way; the "write" check below still reads it.
     notes = (cachedirs.scratch_note(own_volume=True), cachedirs.scratch_note(own_volume=False))
     assert sum(line in notes for line in lines) == 1 and lines[0] in notes, lines
-    after_note = lines[1:]
+    # Then the saved-output line (ONE-PLACE): how to read a big tool result,
+    # never where anything goes.
+    from agent_worker.runners import claude_code as claude_code_runner
+
+    assert lines[1] == claude_code_runner.SAVED_OUTPUT_NOTE, lines
+    after_note = lines[2:]
     context = [line for line in after_note if line.startswith(CONTEXT_LINE_START)]
     assert len(context) <= 1 and (not context or after_note[0] == context[0]), lines
     rest = after_note[len(context):]
