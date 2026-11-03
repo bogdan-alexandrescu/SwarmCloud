@@ -5083,24 +5083,27 @@ These rules live in `select_unit_tests.py`'s `import_closure`, so pull-request
 CI selects by them too; main's push run and a merge-train run still run the
 whole suite, so a miss there costs a red main, never an untested release.
 
-**Where the code graph is staged, its `tests_for` answers first.** With a
-snapshot beside the checkout (`$SWARM_CONTEXT_DIR/snapshot`, else
+**Where the code graph is staged, its `tests_for` is added to the import
+map.** With a snapshot beside the checkout (`$SWARM_CONTEXT_DIR/snapshot`, else
 `../.swarm-context/snapshot`, where the pre-publish gate reads it), a changed
-file the graph knows a covering test for selects the graph's tests for it: the
-file's own test rows and its symbols', as `swarm-graph`'s `tests_for` answers.
-A file it does not know, or knows no test for, selects by imports: no coverage
-on record is not no coverage. The snapshot is read with the standard library,
-each blob checked against its digest name; one that cannot be read is named in
-a warning and the import map selects alone.
+file the graph knows a covering test for also selects the graph's tests for it:
+the file's own test rows and its symbols', as `swarm-graph`'s `tests_for`
+answers. They are added to what its imports select, never put in its place
+(owner decision on PR 3099, 2026-11-03: union, not replace). The graph catches
+a test no import reaches (a fixture, a subprocess, a URL), and the import map
+keeps a test the graph's coverage run missed: no coverage on record is not no
+coverage. So the graph widens a selection, never narrows it. The snapshot is
+read with the standard library, each blob checked against its digest name; one
+that cannot be read is named in a warning and the import map selects alone.
 
 **Wide by design.** What CI runs the whole suite for (the frozen contract
 `apps/common/swarm_common/`, which every component imports; a `conftest.py`;
 `pyproject.toml`; `uv.lock` ...) still selects every test that imports or reads
 it here, about 1,500 files for `swarm_common/models.py`, and a warning says it
 is wide by design and that CI runs the whole suite. A staged graph never
-narrows these: they select by imports whatever its `tests_for` names. Other modules many
-components import (`swarm_api/store.py`, the worker's runners) still select
-hundreds by import; the graph's `tests_for` is what narrows those.
+adds to these: they select by imports alone, so the warning's count is exact.
+Other modules many components import (`swarm_api/store.py`, the worker's
+runners) still select hundreds by import.
 
 **A stylesheet change also selects the stylesheet guards** (RELATED-CSS-GUARDS,
 part of #1914, owner decision 2026-10-22). Any `.css` under `apps/swarm-ui/`

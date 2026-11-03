@@ -430,18 +430,24 @@ def _graph_tree(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     return root, context
 
 
-def test_a_change_the_graph_covers_selects_its_tests_for_not_every_importer(tmp_path, monkeypatch):
+def test_a_change_the_graph_covers_adds_its_tests_for_to_every_importer(tmp_path, monkeypatch):
+    # Owner pick on PR 3099 (2026-11-03): the graph's tests_for is ADDED to
+    # the import map's selection, never put in its place.
     root, _ = _graph_tree(tmp_path, monkeypatch)
     got = _select(root, "apps/foo/foo/core.py", f"{UI}/src/widget.ts")
-    # MUTATION: ignore the staged graph -> test_edge.py (an importer of an
-    # importer) and every vitest file importing widget.ts come back; read
-    # only the file row -> test_lone.py (its symbol's test) is lost.
+    # MUTATION: ignore the staged graph -> test_lone.py (only core.py's
+    # symbol's graph row names it; no import reaches it) is lost. MUTATION:
+    # let the graph replace the import map -> test_edge.py (an importer of
+    # an importer) and panel.test.tsx (an importer of widget.ts) are lost.
     assert _files(got["pytest"]) == [
         "tests/unit/foo/test_core.py",
+        "tests/unit/foo/test_edge.py",
         "tests/unit/foo/test_lone.py",
         "tests/unit/foo/test_reads.py",   # the text rule still applies
     ]
-    assert _files(got["vitest"]) == ["src/__tests__/mocked.test.ts"]
+    assert "src/__tests__/mocked.test.ts" in _files(got["vitest"])
+    assert "src/__tests__/panel.test.tsx" in _files(got["vitest"])
+    assert "src/__tests__/other.test.tsx" not in _files(got["vitest"])
     assert any("code graph snapshot of aaaaaaaaaaaa" in n for n in got["note"]), got["note"]
 
 

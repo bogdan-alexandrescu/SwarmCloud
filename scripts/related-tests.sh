@@ -32,7 +32,7 @@
 # routes/platform.py, swarm_api/__init__'s lazy import of main as an eager
 # one, and main.py mounting every route), so agents hand-picked tests. Now an
 # import counts as Python resolves it, a mounted router reaches only the tests
-# that request its URLs, a staged code graph's tests_for answers for the
+# that request its URLs, a staged code graph's tests_for is added for the
 # files it covers, and a frozen-contract change says why it selects widely.
 # A selection too big for one run comes
 # back as a few runs of named files, printed to run ONE AFTER ANOTHER in the

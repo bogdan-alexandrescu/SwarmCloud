@@ -20,8 +20,9 @@ WHAT IS RELATED:
     a changed path (or a script that names one) -- select_unit_tests.py's
     rules, imported rather than restated, so the two cannot drift;
   * where the code graph's snapshot is staged (load_graph), a changed file it
-    knows a covering test for selects the graph's tests_for instead of its
-    importers, on both sides; any other file selects by imports. A type-only
+    knows a covering test for also selects the graph's tests_for, added to its
+    importers, on both sides (owner pick: union, not replace); every changed
+    file still selects by imports. A type-only
     import (`import type`) is no edge: vitest does not run it (_TYPE_ONLY);
   * a change CI's selector runs the whole suite for -- the frozen contract,
     a conftest.py, pyproject.toml ... -- still selects every test that
@@ -204,9 +205,8 @@ def _resolve(importer: str, spec: str, known: set[str]) -> str | None:
 
 
 def ui_related(ui_root: Path, changed_ui: list[str], graph: "Graph | None" = None) -> list[str]:
-    """Vitest files (relative to ui_root) that are, or import, a changed file;
-    a changed module the code graph covers selects the graph's tests for it
-    instead of its importers."""
+    """Vitest files (relative to ui_root) that are, or import, a changed file,
+    and the tests the code graph names for a changed module it covers."""
     files = _ui_files(ui_root)
     known = set(files)
     importers: dict[str, set[str]] = {}
@@ -223,10 +223,10 @@ def ui_related(ui_root: Path, changed_ui: list[str], graph: "Graph | None" = Non
                 target = _resolve(rel, spec, known)
                 if target and target != rel:
                     importers.setdefault(target, set()).add(rel)
-    by_graph, by_imports = graph_split(graph, [c for c in changed_ui if c in known], is_vitest_file,
-                                       {k for k in known if is_vitest_file(k)}, prefix=f"{UI}/")
+    by_graph = graph_tests(graph, [c for c in changed_ui if c in known], is_vitest_file,
+                           {k for k in known if is_vitest_file(k)}, prefix=f"{UI}/")
     reached: set[str] = set()
-    todo = list(by_imports)
+    todo = [c for c in changed_ui if c in known]
     while todo:
         rel = todo.pop()
         if rel in reached:
@@ -406,11 +406,12 @@ def stylesheet_guards(known: set[str]) -> list[str]:
 # has the repository's graph snapshot staged beside the checkout -- where the
 # worker's pre-publish gate reads it (agent_worker/prepublish.py's
 # context_dir and _graph_tests) -- a changed file the graph knows a covering
-# test for selects the tests the graph names for it, the file's own test rows
-# and every one of its symbols': the tests that exercise it, not every test
-# that imports something that imports it. A file the graph does not know, or
-# knows no test for, falls back to the import map: no coverage on record is
-# not no coverage. The snapshot is read here with the standard library, and
+# test for also selects the tests the graph names for it, the file's own test
+# rows and every one of its symbols'. They are ADDED to what the import map
+# selects, never put in its place (owner pick on PR 3099, 2026-11-03: union,
+# not replace): a test the graph names but no import reaches -- a fixture, a
+# subprocess, a URL -- is caught, and one the graph's coverage run missed is
+# never dropped. The snapshot is read here with the standard library, and
 # every blob is checked against its digest name, as graphmcp/snapshot.py does.
 CONTEXT_DIR_ENV = "SWARM_CONTEXT_DIR"
 CONTEXT_DIR_NAME = ".swarm-context"
@@ -503,50 +504,40 @@ def load_graph(root: Path, env: dict[str, str] | None = None) -> tuple[Graph | N
     return graph, ""
 
 
-def graph_split(graph: Graph | None, changed: list[str], is_test, known: set[str],
-                prefix: str = "") -> tuple[set[str], list[str]]:
-    """(the tests the graph names for the changed files it covers, the changed
-    files left to the import map). `prefix` is what the graph's paths carry
+def graph_tests(graph: Graph | None, changed: list[str], is_test, known: set[str],
+                prefix: str = "") -> set[str]:
+    """The tests the graph names for the changed files it covers, to add to
+    the import map's selection. `prefix` is what the graph's paths carry
     before `known`'s (apps/swarm-ui/ for vitest files)."""
     if graph is None:
-        return set(), list(changed)
+        return set()
     chosen: set[str] = set()
-    rest: list[str] = []
     for path in changed:
         if is_test(path):
-            rest.append(path)
             continue
         try:
             found = graph.tests_for(prefix + path)
         except GraphError:
             found = set()
-        tests = {t[len(prefix):] for t in found if t.startswith(prefix) and t[len(prefix):] in known}
-        if tests:
-            chosen.update(tests)
-        else:
-            rest.append(path)
-    return chosen, rest
+        chosen.update(t[len(prefix):] for t in found if t.startswith(prefix) and t[len(prefix):] in known)
+    return chosen
 
 
 def python_related(root: Path, changed: list[str], graph: Graph | None = None) -> list[str]:
     """tests/unit files related to the change, by select_unit_tests.py's rules
-    without its fall-back to the whole suite; a changed module the code graph
-    covers selects the graph's tests for it instead of its importers."""
+    without its fall-back to the whole suite, and the tests the code graph
+    names for a changed module it covers."""
     all_tests = sorted(str(p.relative_to(root)) for p in sut._python_files(root, "tests/unit")
                        if sut.is_test(str(p.relative_to(root))))
     known = set(all_tests)
     chosen = {c for c in changed if c in known}
     changed_py = [c for c in changed if c.endswith(".py") and c.startswith(("apps/", "scripts/", "tests/unit/"))]
     # What CI runs the whole suite for (the frozen contract, a conftest.py
-    # ...) selects by imports whatever the graph says, so it stays wide.
+    # ...) selects by imports alone, so its "wide by design" count is exact.
     wide = [c for c in changed_py if sut.fallback_reason([c])]
-    by_graph, by_imports = graph_split(graph, [c for c in changed_py if c not in wide], sut.is_test, known)
-    by_imports = wide + by_imports
-    chosen.update(by_graph)
-    # The closure parses every module in the repository (~20 s here): only
-    # worth it when a Python file the graph does not cover changed.
-    if by_imports:
-        chosen.update(r for r in sut.import_closure(root, by_imports) if r in known)
+    chosen.update(graph_tests(graph, [c for c in changed_py if c not in wide], sut.is_test, known))
+    if changed_py:
+        chosen.update(r for r in sut.import_closure(root, changed_py) if r in known)
     # The same text rule as CI and changed-guards.sh (#2299): a test naming a
     # doc that cites a changed path reaches the change through the doc.
     virtual = sut.script_closure(root, sut.doc_closure(root, changed))
@@ -648,7 +639,7 @@ def main(argv: list[str]) -> int:
         print(f"note\t{unusable}")
     elif graph is not None:
         print(f"note\tcode graph snapshot of {graph.commit}: a changed file it knows a covering test for "
-              "selects its tests_for; every other file selects by imports")
+              "also selects its tests_for; every changed file selects by imports")
     python = python_related(root, changed, graph)
     # WIDE BY DESIGN: what CI's selector runs the whole suite for (the frozen
     # contract every component imports, a conftest.py, pyproject.toml, uv.lock
