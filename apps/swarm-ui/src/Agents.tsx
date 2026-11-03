@@ -1161,6 +1161,23 @@ function AgentsBody({
   }
   const idQuery = WHOLE_TASK_ID.test(needle) ? needle : null
 
+  // A PASTED WHOLE TASK ID OPENS THAT AGENT (the Work redesign, graph-notes
+  // A2): when the tab's rows hold it, its view opens in the inspector. Once
+  // per id, so a reader who closes it is not sent back on the next re-read;
+  // an id the rows do not hold is still looked up by `IdLookup` below.
+  const pastedOpened = useRef<string | null>(null)
+  useEffect(() => {
+    if (idQuery === null) {
+      pastedOpened.current = null
+      return
+    }
+    if (pastedOpened.current === idQuery || openTaskId === idQuery) return
+    if (!rows.some((t) => t.id === idQuery)) return
+    pastedOpened.current = idQuery
+    openRow(idQuery)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idQuery, rows, openTaskId])
+
   // THE OPEN AGENT'S ROW IS SCROLLED INTO VIEW, ONCE, when it is first drawn
   // (live QA WA-15). A deep link marked the row `aria-current` and left it at
   // y=2030, below the fold. Once per agent: a reader who then scrolls the
