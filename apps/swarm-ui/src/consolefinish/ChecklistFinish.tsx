@@ -53,7 +53,7 @@ import {
 import { restartSetupSmoke, type SetupState } from '../api'
 import { Button, Chip, CodeBlock } from '../components'
 import '../styles/admin-setup.css'
-import './checklist.css'
+import '../styles/console-finish.css'
 
 /** Who acts on a step now. `console` is this deployment's own machinery (a workspace build, the smoke agent). */
 export type Actor = 'you' | 'teammate' | 'google' | 'github' | 'install' | 'console'
