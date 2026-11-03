@@ -143,7 +143,7 @@ async function mount(handler: (method: string, url: string, body: unknown, tenan
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
   render(<PeopleScreen />)
-  await screen.findByRole('heading', { name: 'People and roles', level: 1 }, WAIT)
+  await screen.findByRole('heading', { name: 'Platform people', level: 1 }, WAIT)
   await waitFor(() => expect(document.querySelector('.pp-people tbody tr')).not.toBeNull(), WAIT)
   return calls
 }

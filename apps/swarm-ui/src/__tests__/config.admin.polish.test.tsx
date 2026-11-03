@@ -116,7 +116,7 @@ describe('the Admin panel\'s badges (S1b)', () => {
     // MUTATION: draw no badge on the Admin rows -> every line below fails.
     await waitFor(() => expect(count('Tenants')).toBe('1 waiting'))
     await waitFor(() => expect(count('Pool limits')).toBe('1 near ceiling'))
-    expect(count('People and roles')).toBe('2')
+    expect(count('Platform people')).toBe('2')
     expect(count('Workspaces')).toBe('2')
     expect(count('Platform secrets')).toBe('3')
     // Something waiting is amber; how many workspaces you admin is only a count.
@@ -167,9 +167,9 @@ describe('the Admin panel\'s badges (S1b)', () => {
       feed: FEED({ admin_pending: 4, items: [item('admin:join:r1'), item('admin:join:r2'), item('admin:workspace:w-1'), item('task:t1', 'task')] }),
     })
     await app('/admin/workspaces')
-    // MUTATION: draw a workspace admin no People and roles badge -> null and this fails.
-    await waitFor(() => expect(count('People and roles')).toBe('2'))
-    expect(row('People and roles')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert')
+    // MUTATION: draw a workspace admin no Platform people badge -> null and this fails.
+    await waitFor(() => expect(count('Platform people')).toBe('2'))
+    expect(row('Platform people')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert')
   })
 })
 
@@ -177,19 +177,19 @@ describe('the Config panel in a personal workspace (S1e) and the panel foot (S1a
   const NOTE = 'A personal workspace has no People and roles: nobody else is in it.'
   const notes = () => [...document.querySelectorAll('.sk-panel .sk-pnote')].map((n) => n.textContent)
 
-  it('says why a personal workspace has no People and roles', async () => {
-    serve(ME(false, 'u-ana'), [PERSONAL])
+  // People and roles left Config for the workspace page's People tab (admin
+  // routes lane, part of #2688): no workspace's Config draws it, so none needs
+  // the S1e note that said why a personal one did not.
+  it.each([
+    ['a personal workspace', ME(false, 'u-ana'), [PERSONAL]],
+    ['a group workspace', ME(false), [PERSONAL, group('eng', 'member')]],
+  ])('draws %s Config with no People and roles row and no note about it', async (_where, me, mine) => {
+    serve(me, mine)
     await app('/config/github')
-    // MUTATION: draw no note -> fails.
-    await waitFor(() => expect(notes()).toEqual([NOTE]))
-  })
-
-  it('says nothing of it in a group workspace', async () => {
-    serve(ME(false), [PERSONAL, group('eng', 'member')])
-    await app('/config/github')
-    await waitFor(() => expect(row('People and roles')).not.toBeNull())
-    // MUTATION: draw the note whatever the workspace -> fails.
-    expect(notes()).toEqual([])
+    await waitFor(() => expect(row('MCP servers')).not.toBeNull())
+    // MUTATION: put People and roles back in PANEL_PAGES.config -> fails.
+    expect(row('People and roles')).toBeNull()
+    expect(notes()).not.toContain(NOTE)
   })
 
   it.each([
@@ -225,14 +225,12 @@ describe('Workspaces you admin\'s lead and links (S10a)', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/config/repositories'))
   })
 
-  it('links each workspace to its Config pages by their tab names', async () => {
+  it('links each workspace to its own page, and no longer to four Config pages', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin')], { setups: { eng: onboarding('done', 'eng', PEOPLE(true, 2)) } })
     await app('/admin/workspaces')
-    const nav = await screen.findByRole('navigation', { name: 'eng settings' })
-    const links = [...nav.querySelectorAll('a')]
-    // MUTATION: keep "Workspace" -> settings/workspace and MCP servers -> settings/mcp-servers -> fails.
-    expect(links.map((a) => a.textContent)).toEqual(['Workspace Settings', 'MCP servers', 'People and roles', 'Secrets'])
-    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/config/workspace', '/config/mcp-servers', '/config/people', '/config/secrets'])
+    await waitFor(() => expect(document.querySelector('.wya-row[data-tenant="eng"] .wya-name a')?.getAttribute('href')).toBe('/admin/workspaces/eng'))
+    // MUTATION: keep the interim per-row Config links (admin routes lane) -> the nav is found and this fails.
+    expect(screen.queryByRole('navigation', { name: 'eng settings' })).toBeNull()
   })
 })
 
@@ -271,7 +269,7 @@ describe('the Admin panel\'s worded counts are chips (S1b)', () => {
     expect(cls('Tenants')?.contains('is-chip')).toBe(true)
     expect(cls('Pool limits')?.contains('is-chip')).toBe(true)
     // MUTATION: chip every count -> these fail. Amber numbers stay bare numbers.
-    for (const label of ['People and roles', 'Platform secrets', 'Workspaces']) expect(cls(label)?.contains('is-chip'), label).toBe(false)
+    for (const label of ['Platform people', 'Platform secrets', 'Workspaces']) expect(cls(label)?.contains('is-chip'), label).toBe(false)
     expect(count('Platform secrets')).toBe('3')
   })
 
