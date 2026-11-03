@@ -83,7 +83,8 @@ class JevServer:
             key = Path(key_file).read_text().strip() if key_file else None
             backend = Backend(str(spec["name"]), str(spec["url"]), str(spec["model"]),
                               stringify_state=bool(spec["stringify_state"]), key=key or None)
-            ledger = budget.Ledger(Path(config["ledger"]))
+            ledger = budget.Ledger(Path(config["ledger"]),
+                                   authority=budget.Grant.from_mapping(config.get("grant")))
             stops = tuple(p for p in config.get("hard_stop_paths") or [] if isinstance(p, str))
             names = [n for n in config.get("secret_env_names") or [] if isinstance(n, str)]
         except (OSError, ValueError, KeyError, TypeError) as exc:

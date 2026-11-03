@@ -34,11 +34,14 @@ send anything. A key file -- the switch off -- is read exactly as before.
 
 THE OUTBOUND FILTER'S INPUTS (follow-up lane, owner 2026-11-02). The image's
 wrapper runs every request body through the outbound filter
-(`swarm-jev-gate.mjs` `guardBrowserFetch`), which reads two variables this
-sets on the server's environment, both names and paths, never a value:
+(`swarm-jev-gate.mjs` `guardBrowserFetch`), which reads three variables this
+sets on the server's environment, all names and paths, never a value:
 SWARM_JEV_BROWSER_COUNTS, `jev-browser.counts` beside the key (or shim) file
 in `private/`, where the wrapper appends one line of counts per call and
 `agent_worker.qualitygates.finish` sums them into the attempt's summary; and
+SWARM_JEV_BROWSER_CALLS, `jev-browser.calls` beside it, where the wrapper
+appends one record per Jev call, which `agent_worker.judge.account
+.record_tool_calls` sends through swarm-api's `state/jev-usage` on every exit;
 SWARM_JEV_SECRET_ENV_NAMES, the comma-separated NAMES of the registered
 secrets whose values the filter scrubs: the profile's declared secrets
 (`swarm_common.profiles`, by SWARM_RUNNER_PROFILE, the one import outside
@@ -71,6 +74,11 @@ SECRET_NAMES_ENV = "SWARM_JEV_SECRET_ENV_NAMES"
 #: `qualitygates.BROWSER_COUNTS_FILE_NAME`, restated (standard library);
 #: tests/unit/worker/test_quality_gates.py holds them equal.
 BROWSER_COUNTS_FILE_NAME = "jev-browser.counts"
+#: The wrapper's per-call records (`swarm-jev-gate.mjs` `recordedSend`):
+#: `judge.account.TOOL_CALL_FILES`' browser file, restated (standard library);
+#: tests/unit/worker/test_jev_tool_calls.py holds them equal.
+CALLS_ENV = "SWARM_JEV_BROWSER_CALLS"
+BROWSER_CALLS_FILE_NAME = "jev-browser.calls"
 #: Where the names come from: the worker's profile variable
 #: (`cliagent.RUNNER_PROFILE_ENV`) and the gates' config
 #: (`qualitygates.CONFIG_ENV`, field `secret_env_names`).
@@ -129,9 +137,10 @@ def secret_env_names(environ: dict[str, str]) -> str:
 
 
 def filter_env(env: dict[str, str], key_file: str) -> None:
-    """The outbound filter's two variables, on the server's `env`."""
-    env[COUNTS_ENV] = os.path.join(os.path.dirname(os.path.abspath(key_file)),
-                                   BROWSER_COUNTS_FILE_NAME)
+    """The outbound filter's variables, on the server's `env`."""
+    private = os.path.dirname(os.path.abspath(key_file))
+    env[COUNTS_ENV] = os.path.join(private, BROWSER_COUNTS_FILE_NAME)
+    env[CALLS_ENV] = os.path.join(private, BROWSER_CALLS_FILE_NAME)
     env[SECRET_NAMES_ENV] = secret_env_names(env)
 
 
