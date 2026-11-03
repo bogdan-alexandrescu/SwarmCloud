@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { summaryTask, summaryTaskById, type StepNeeds } from '../stepviews'
 import type { Workflow } from '../types'
 import { listNeedItems } from '../work/listNeeds'
+import { needsOf } from '../workflowlist'
 
 const { NeedsYou } = await import('../work/NeedsYou')
 const { WorkflowsScreen } = await import('../Workflows')
@@ -74,12 +75,24 @@ describe('summaryTask joins the needs block', () => {
     expect(merge.result_summary).toEqual({ git: { pull_request: { number: 7, url: 'https://github.com/o/r/pull/7' } } })
   })
 
-  it('leaves them empty for a block from an API older than the needs', () => {
-    const w = workflow([{ id: 'old', summary: { state: 'SUCCEEDED' } }])
+  it('reads "not known" for a block from an API older than the needs, never 0', () => {
+    const w = workflow([
+      { id: 'old', summary: { state: 'PARKED' }, waiting: parkedHuman },
+      { id: 'broke', summary: { state: 'FAILED' } },
+    ])
     const t = summaryTask(w, w.steps[0]!)!
     expect(t.human_wait).toBeNull()
     expect(t.blocked_by).toBeNull()
     expect(t.result_summary).toBeNull()
+    // The page cannot know whether the park is a question wait, a merge's
+    // hold or a browser hand-off, nor what the agent asked: those chips say
+    // so. Failed is the step's state, which the old block serves.
+    render(<NeedsYou items={listNeedItems([w], summaryTaskById([w]), () => 'Old')} approvals={null} />)
+    for (const word of ['Question', 'Merge waiting', 'Your turn in a browser', 'Approvals']) {
+      const chip = screen.getByText(word).closest('.ny-chip')!
+      expect(chip.textContent).toContain('not known')
+    }
+    expect(screen.getByRole('button', { name: 'Failed: 1' })).toBeTruthy()
   })
 })
 
@@ -129,6 +142,29 @@ describe('listNeedItems', () => {
     const row = screen.getByText('Its words are on its page').closest('li')!
     const answer = within(row).getByRole('button', { name: /Answer/ })
     expect(answer.getAttribute('aria-disabled') === 'true' || (answer as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe("a row's Needs mark and the bar classify a step alike", () => {
+  const w = workflow([
+    { id: 'ask', summary: block('PARKED', { question_wait: true, questions: [{ index: 0, question: 'Which?', options: [], recommended: null }] }), waiting: parkedHuman },
+    { id: 'review', summary: block('SUCCEEDED', { questions_unread: [0, 2] }) },
+    { id: 'merge', summary: block('PARKED', { owner_questions: { questions: [], unreadable: 1 } }), waiting: parkedHuman },
+    { id: 'browse', summary: block('PARKED', {}), waiting: parkedHuman },
+    { id: 'input', summary: block('PARKED', {}), waiting: { reason: 'AWAITING_INPUT', summary: 'waits for input' } },
+    { id: 'build', summary: block('FAILED', {}) },
+  ])
+  Object.assign(w, { state_source: 'derived', rollup: { state: 'PARKED', complete: true } })
+  const tasks = summaryTaskById([w])
+  const items = listNeedItems([w], tasks, () => 'Ship it')
+  const of = (...kinds: string[]) => items.filter((i) => kinds.includes(i.kind)).length
+
+  it("counts a question-wait park and a finished step's artifact questions as questions, as the bar does", () => {
+    expect(needsOf(w, tasks)).toEqual({ failed: 1, questions: 4, held: 2 })
+  })
+
+  it('agrees with the bar kind by kind', () => {
+    expect(needsOf(w, tasks)).toEqual({ failed: of('failed'), questions: of('question'), held: of('merge', 'handoff') })
   })
 })
 
