@@ -79,7 +79,7 @@ class FakePool:
         self.accounts = {a["account_id"]: dict(a) for a in accounts}
         self.calls: list[tuple] = []
 
-    def list_accounts(self, tenant_id: str) -> dict[str, Any]:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict[str, Any]:
         self.calls.append(("list_accounts", tenant_id))
         return {"accounts": [dict(a) for a in self.accounts.values()
                              if a["owner_tenant"] == tenant_id or tenant_id in a["lend_to"]]}
