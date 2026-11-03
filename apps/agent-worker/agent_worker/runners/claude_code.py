@@ -319,7 +319,7 @@ from swarm_common.models import (
     RESERVED_MCP_SERVER_PREFIX,
 )
 
-from .. import browser_tools, graphstage, lightpanda
+from .. import browser_tools, graphstage, lightpanda, stepservers
 from ..budget import NOTE_ENV as BUDGET_NOTE_ENV
 from ..cachedirs import image_browsers_path, scratch_note
 from ..children import CHILDREN_ENV, SCREEN_REVIEW_GUIDE_NAME, git_shim_argv, search_shim_argv
@@ -329,12 +329,10 @@ from ..mcp_relay import LOOPBACK as MCP_RELAY_HOST
 from ..mcp_relay import PATH_PREFIX as MCP_RELAY_PATH
 from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
-from ..gitmcp.server import TOOL_NAMES as GIT_TOOL_NAMES
 from ..searchmcp.server import SERVER_NAME as SEARCH_MCP_SERVER_NAME
 from ..searchmcp.server import SPOOL_ENV as SEARCH_SPOOL_ENV
 from ..statemcp.server import SERVER_NAME as STATE_MCP_SERVER_NAME
 from ..statemcp.server import SPOOL_ENV as STATE_SPOOL_ENV
-from ..statemcp.server import TOOL_NAMES as STATE_TOOL_NAMES
 from ..statemcp.server import shim_argv as state_shim_argv
 from ..handoff import AGENT_PASSTHROUGH_ENV, EGRESS_NOTICE_NAME, HANDOFF_ENV, RESUME_NAME
 from ..jevkey import BACKEND_ENV as JEV_BACKEND_ENV
@@ -1077,24 +1075,14 @@ SAVED_OUTPUT_NOTE = (
 #: 2026-11-03). Measured in batches one and two: swarm-git and swarm-state, 22
 #: tools, were registered in 91 steps and never called, and Lightpanda's 29
 #: tools on build steps that never rendered a page; every registered server
-#: costs its tool names and its instructions in every turn. The spools stay
-#: exported either way: the runner's own pre-publish rebase and the `swarm-git`
-#: CLI in the Bash tool read `$SWARM_GIT`, not the MCP config.
+#: costs its tool names and its instructions in every turn. Which steps get
+#: swarm-git and swarm-state is the worker's list (`stepservers`). The spools
+#: stay exported either way: the runner's own pre-publish rebase and the
+#: `swarm-git` CLI in the Bash tool read `$SWARM_GIT`, not the MCP config.
 _RENDERS = re.compile(
     r"https?://|\brender|\bbrows(?:er|ers|e|ing)\b|\bscreenshot|\bnavigat|"
     r"\blightpanda\b|\bweb ?pages?\b|\bpages\b|\bweb ?sites?\b|\bscrap(?:e|es|ing)\b|\bcrawl",
     re.IGNORECASE)
-
-
-def names_server(prompt: Any, server: str, tools: tuple[str, ...]) -> bool:
-    """Whether the step's prompt names `server` or one of its `tools`: the
-    step that will call them says so in its brief (a ci-fix step's `run_view`,
-    a review's `pr_checks`, a supervisor's `agent_view`)."""
-    if not isinstance(prompt, str):
-        return False
-    if server in prompt:
-        return True
-    return any(re.search(rf"\b{re.escape(tool)}\b", prompt) for tool in tools)
 
 
 def step_renders(payload: Mapping[str, Any]) -> bool:
@@ -1877,8 +1865,6 @@ def step_max_turns(env: Mapping[str, str]) -> int | None:
 
 def body(ctx: RunnerContext) -> dict[str, Any]:
     extra: list[str] = []
-    # The caller's brief before any platform note: what the step itself asks for.
-    caller_prompt = ctx.payload.get("prompt")
     max_turns = step_max_turns(os.environ)
     if max_turns is not None:
         extra += ["--max-turns", str(max_turns)]
@@ -2098,13 +2084,17 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         # A new dict on the same context: `run_runner` holds this object.
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
-    # swarm-git and swarm-state only where the step uses them: its brief names
-    # them, or (swarm-git) it renders with the live browser, whose screen
-    # review pushes the branch first (`children` SCREEN_REVIEW guide).
-    if not (live_endpoint or names_server(caller_prompt, GIT_MCP_SERVER_NAME, GIT_TOOL_NAMES)):
-        git_spool = ""
-    if not names_server(caller_prompt, STATE_MCP_SERVER_NAME, STATE_TOOL_NAMES):
-        state_spool = ""
+    # swarm-git and swarm-state only where the step uses them: the worker's
+    # per-step list names them (`stepservers`), or (swarm-git) the step renders
+    # with the live browser, whose screen review pushes the branch first
+    # (`children` SCREEN_REVIEW guide). No list -- a worker that predates it --
+    # keeps every server the attempt was offered.
+    handed = stepservers.parse(os.environ)
+    if handed is not None:
+        if not (live_endpoint or GIT_MCP_SERVER_NAME in handed):
+            git_spool = ""
+        if STATE_MCP_SERVER_NAME not in handed:
+            state_spool = ""
     # ONE `--mcp-config` for every server this attempt has (module docstring).
     if (live_endpoint or git_spool or search_spool or state_spool or graph_snapshot
             or graph_served or relay[1] or lightpanda_env or judge_config):

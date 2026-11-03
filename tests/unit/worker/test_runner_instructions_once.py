@@ -20,9 +20,10 @@ So, held here against the real runner and a fake CLI that records its stdin:
   twice in any step kind's first message: a build step, a review, a task with
   no repository, a rendered step's notes;
 * the live-browser note is under 3,000 characters;
-* swarm-git and swarm-state are registered only when the brief names them
-  (swarm-git also on a live-browser step, whose screen review pushes first),
-  and Lightpanda's server only on a step that renders a page;
+* swarm-git and swarm-state are registered only when the worker's per-step
+  list names them (`SWARM_STEP_MCP_SERVERS`; swarm-git also on a live-browser
+  step, whose screen review pushes first), every offered one when the worker
+  sets no list, and Lightpanda's server only on a step that renders a page;
 * every claude-code start is told to read a saved oversized output by window.
 
 MUTATIONS: drop `step_publishes` from `run_cli_agent` (the publishes-nothing
@@ -30,7 +31,7 @@ test fails); restore "Commit your work and write the pull request's title and
 body" or "the tests related to your change" in `time_limit_line`, "never
 background a test run" in `budget_line`, or the path in
 EXPLORATION_CHILDREN_CLAUSE (the once tests fail); register the git or state
-shim whatever the brief says, or Lightpanda on every step of its profile (the
+shim whatever the worker's list says, or Lightpanda on every step of its profile (the
 server tests fail); stop appending SAVED_OUTPUT_NOTE (its test fails).
 """
 
@@ -44,7 +45,7 @@ from typing import Any
 
 import pytest
 
-from agent_worker import browser_tools, lightpanda
+from agent_worker import browser_tools, lightpanda, stepservers
 from agent_worker.runners import claude_code, cliagent
 from agent_worker.runners.base import RunnerContext
 from agent_worker.runners.limits import TIMEOUT_ENV
@@ -104,7 +105,8 @@ def _ctx(tmp_path: Path, payload: dict[str, Any], *, repo: bool = True) -> Runne
     )
 
 
-def _install(tmp_path: Path, monkeypatch, *, publishes: str | None) -> None:
+def _install(tmp_path: Path, monkeypatch, *, publishes: str | None,
+             servers: str | None = stepservers.NONE) -> None:
     cli = tmp_path / "fake-cli"
     cli.write_text(FAKE_CLI)
     cli.chmod(0o755)
@@ -130,6 +132,10 @@ def _install(tmp_path: Path, monkeypatch, *, publishes: str | None) -> None:
         monkeypatch.delenv(cliagent.STEP_PUBLISHES_ENV, raising=False)
     else:
         monkeypatch.setenv(cliagent.STEP_PUBLISHES_ENV, publishes)
+    if servers is None:
+        monkeypatch.delenv(stepservers.ENV, raising=False)
+    else:
+        monkeypatch.setenv(stepservers.ENV, servers)
 
 
 def _first_start(ctx: RunnerContext) -> dict[str, Any]:
@@ -239,17 +245,32 @@ def test_a_build_step_registers_neither_the_git_nor_the_state_tools(tmp_path, mo
     assert claude_code.STATE_MCP_SERVER_NAME not in servers
 
 
-@pytest.mark.parametrize("brief, git, state", [
-    ("Read the failing run with `run_view` and fix it.", True, False),
-    ("Use the swarm-git tools to read the pull request.", True, False),
-    ("Check the sibling agents with agent_view first.", False, True),
-    ("Use swarm-state and pr_checks.", True, True),
+@pytest.mark.parametrize("handed, git, state", [
+    ("swarm-git", True, False),
+    ("swarm-state", False, True),
+    ("swarm-git,swarm-state", True, True),
 ])
-def test_a_brief_that_names_the_tools_registers_them(tmp_path, monkeypatch, brief, git, state):
-    _install(tmp_path, monkeypatch, publishes=None)
-    servers = _servers(_first_start(_ctx(tmp_path, {"prompt": brief})))
+def test_the_workers_list_registers_what_it_names(tmp_path, monkeypatch, handed, git, state):
+    # The brief names neither: the worker's list, not the brief, decides.
+    _install(tmp_path, monkeypatch, publishes=None, servers=handed)
+    servers = _servers(_first_start(_ctx(tmp_path, {"prompt": BRIEF})))
     assert (claude_code.GIT_MCP_SERVER_NAME in servers) is git
     assert (claude_code.STATE_MCP_SERVER_NAME in servers) is state
+
+
+def test_a_brief_that_names_the_tools_does_not_register_them(tmp_path, monkeypatch):
+    _install(tmp_path, monkeypatch, publishes=None)
+    servers = _servers(_first_start(_ctx(tmp_path, {"prompt": "Use swarm-state and pr_checks."})))
+    assert claude_code.GIT_MCP_SERVER_NAME not in servers
+    assert claude_code.STATE_MCP_SERVER_NAME not in servers
+
+
+def test_no_list_keeps_every_offered_server(tmp_path, monkeypatch):
+    # A worker that predates the variable: the attempt keeps what it was offered.
+    _install(tmp_path, monkeypatch, publishes=None, servers=None)
+    servers = _servers(_first_start(_ctx(tmp_path, {"prompt": BRIEF})))
+    assert claude_code.GIT_MCP_SERVER_NAME in servers
+    assert claude_code.STATE_MCP_SERVER_NAME in servers
 
 
 def test_the_spools_stay_exported_for_the_bash_tool(tmp_path, monkeypatch):

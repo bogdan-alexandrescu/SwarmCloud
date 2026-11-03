@@ -1001,12 +1001,15 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # Between them, the context-ceiling note (#2524): a note for the session
     # that may carry the task on, not a destination for the deliverable. The
     # step's time-limit line (#2139) comes just before the publish paragraph.
-    assert len(rest) == 5, appended
+    # This task is `collect` (no dispatch block): its branch is not its
+    # deliverable, so the worker says it publishes nothing
+    # (`SWARM_STEP_PUBLISHES=0`, ONE-PLACE) and the paragraph is left out.
+    assert len(rest) == 4, appended
     assert rest[0].startswith(LINE_START) and rest[0].endswith(LINE_END), rest[0]
     assert rest[1] == QUESTIONS_LINE, rest[1]
     assert rest[2] == ceiling.HANDOFF_NOTE, rest[2]
     assert is_limit_line(rest[3]), rest[3]
-    assert rest[4] == cliagent.PUBLISH_PARAGRAPH, rest[4]
+    assert cliagent.PUBLISH_PARAGRAPH not in prompt, prompt
     assert "Write deliverables" not in prompt, prompt
     assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
 
