@@ -40,7 +40,9 @@ import './styles/workspace-page.css'
  * (`WorkspaceSettingsScreen`). Each is drawn `embedded`: without its own
  * heading or Config tab strip, which this page's header and tabs replace.
  * Roles is the page's own card set over the same roles read: what each role
- * may do, the default with Set default, and the role events.
+ * may do, the default with Set default, and the role events. The owner split
+ * the screen (PR #3128 question 0): People is drawn `part="people"`, so those
+ * three appear on Roles only, not on both tabs.
  *
  * A COUNT THE CONSOLE CANNOT KNOW reads "not known", never 0.
  */
@@ -188,14 +190,15 @@ export function WorkspacePage({
 }
 
 /**
- * PEOPLE: Config › People and roles, embedded, and under it Members' GitHub,
+ * PEOPLE: Config › People and roles, embedded as its people part (the roster,
+ * Give a person their own role, the join cards), and under it Members' GitHub,
  * which was that page's second tab and is offered as it was, to a platform
  * admin (its route answers anyone else 403).
  */
 function PeopleTab({ platformAdmin }: { platformAdmin: boolean }) {
   return (
     <div className="wpg-embed">
-      <WorkspacePeopleScreen embedded view="view=roles" />
+      <WorkspacePeopleScreen embedded part="people" view="view=roles" />
       {platformAdmin && (
         <details className="wpg-fold">
           <summary>Members&rsquo; GitHub</summary>

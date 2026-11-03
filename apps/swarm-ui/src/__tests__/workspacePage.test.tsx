@@ -155,6 +155,19 @@ describe('People: Config › People and roles, embedded', () => {
     expect(screen.queryByText('Members’ GitHub')).toBeNull()
   })
 
+  it('draws the permits, the default form and the role events on Roles only, not on People (owner: split the screen)', async () => {
+    await open('wsadmin', 'people')
+    await screen.findByRole('heading', { name: 'Give a person their own role' })
+    // MUTATION: embed the screen without `part="people"` -> each of these is drawn, fails.
+    expect(screen.queryByRole('heading', { name: 'What each role permits' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Set the default' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Set default' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Role events' })).toBeNull()
+    // The roster and the default's sentence stay.
+    expect(await screen.findByText('kim@example.com')).toBeTruthy()
+    expect(screen.getByLabelText('Default role').textContent).toContain('member')
+  })
+
   it("a platform admin also has Members' GitHub, under the roster", async () => {
     await open('platform', 'people')
     const fold = (await screen.findByText('Members’ GitHub')).closest('details') as HTMLElement
@@ -168,6 +181,8 @@ describe('People: Config › People and roles, embedded', () => {
     expect(await screen.findByRole('heading', { name: 'Roles in this workspace' })).toBeTruthy()
     expect(await screen.findByText('read only for members')).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'Give a person their own role' })).toBeNull()
+    // A member's Role events card is on Roles only.
+    expect(screen.queryByRole('heading', { name: 'Role events' })).toBeNull()
   })
 })
 
@@ -257,5 +272,9 @@ describe('the embedding props on the screens embedded', () => {
     await screen.findByRole('heading', { name: 'Roles in this workspace' })
     expect(document.querySelector('h1')).toBeNull()
     expect(screen.queryByRole('tablist', { name: 'People and roles' })).toBeNull()
+    // Without `part`, Config › People and roles keeps every card it draws today.
+    expect(await screen.findByRole('heading', { name: 'What each role permits' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Set default' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Role events' })).toBeTruthy()
   })
 })
