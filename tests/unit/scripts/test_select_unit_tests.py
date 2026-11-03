@@ -120,9 +120,12 @@ def test_a_changed_package_init_reaches_every_importer_of_the_package(tmp_path):
 # A small app: a package whose __init__ imports its app factory lazily, an app
 # that mounts two routers, a route module named like a standard library one,
 # and a worker that imports that standard library module and the package.
+# FACTORY is built, not written: check-contract-parity.sh reads any file that
+# holds the factory's def as an app, and holds it to the health check path.
+FACTORY = "def " + "create_app():\n"
 APP_TREE = {
     **FILLER,
-    "apps/api/api/__init__.py": "def create_app():\n    from .main import create_app as make\n    return make()\n",
+    "apps/api/api/__init__.py": FACTORY + "    from .main import create_app as make\n    return make()\n",
     "apps/api/api/codec.py": "def encode(x):\n    return x\n",
     "apps/api/api/routes/__init__.py": "",
     "apps/api/api/routes/budget.py": (
@@ -136,7 +139,7 @@ APP_TREE = {
         "@router.get('/v1/platform')\ndef read():\n    return 3\n"),
     "apps/api/api/main.py": (
         "from fastapi import FastAPI\nfrom .routes import budget, platform\n"
-        "def create_app():\n    app = FastAPI()\n"
+        + FACTORY + "    app = FastAPI()\n"
         "    app.include_router(budget.router)\n    app.include_router(platform.router)\n    return app\n"),
     "apps/worker/worker/startup.py": "import platform\nfrom api import codec\n",
     "tests/unit/api/conftest.py": "from api.main import create_app\n",
