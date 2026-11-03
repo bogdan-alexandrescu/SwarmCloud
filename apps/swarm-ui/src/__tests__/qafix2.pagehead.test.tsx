@@ -82,7 +82,7 @@ describe('admin-008 / work-b-008: the page head `?` has an edge in light as in d
 
 describe('a11y-keyboard-004: every `?` draws the app focus ring', () => {
   it("rings HelpCard's `?` (`.help-glyph`) and the head's `?` 2px solid --info", async () => {
-    window.history.replaceState(null, '', '/')
+    window.history.replaceState(null, '', '/overview')
     render(<App />)
     const glyphs = await waitFor(() => {
       const found = [...document.querySelectorAll<HTMLElement>('button.help-glyph')]
