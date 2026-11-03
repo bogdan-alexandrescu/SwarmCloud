@@ -15,6 +15,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import type { Result } from '../fetch'
 import type { WorkflowBoard } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
+import { painted } from './marks'
+import type { CascadeEnv } from './cssgate'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -218,7 +220,9 @@ describe('the list', () => {
     expect(dock.textContent).toContain('alex')
     expect(dock.textContent).toContain('failed at fix')
     expect(document.querySelector('.wfg.has-inspector')).not.toBeNull()
-    expect(document.querySelector('tr[data-workflow="wf_fail"]')?.getAttribute('aria-selected')).toBe('true')
+    // A plain table's row ignores aria-selected; aria-current says which row is open (as AccountsTable's does).
+    expect(document.querySelector('tr[data-workflow="wf_fail"]')?.getAttribute('aria-selected')).toBeNull()
+    expect(document.querySelector('tr[data-workflow="wf_fail"]')?.getAttribute('aria-current')).toBe('true')
     expect(api.loadWorkflow).not.toHaveBeenCalled()
     expect(api.loadWorkflowBoard.mock.calls.length).toBe(reads)
   })
@@ -227,5 +231,101 @@ describe('the list', () => {
     await list()
     const link = document.querySelector<HTMLAnchorElement>('tr[data-workflow="wf_run"] [data-col="workflow"] a')!
     expect(link.getAttribute('href')).toBe('/workflows/wf_run')
+  })
+})
+
+describe('review findings on the list (part of #2688)', () => {
+  // The comment on `open` promised that a pick the filters drop closes the
+  // inspector; it was looked up among every row read, so it stayed open.
+  // MUTATION: look the pick up in `all` again.
+  it('closes the inspector when the filters drop the open workflow', async () => {
+    await list()
+    fireEvent.click(document.querySelector<HTMLElement>('tr[data-workflow="wf_fail"] [data-col="state"]')!)
+    await screen.findByRole('complementary', { name: 'Workflow inspector' })
+    expect(document.querySelector('.wfg.has-inspector')).not.toBeNull()
+    fireEvent.change(screen.getByLabelText('Find a workflow or step'), { target: { value: 'wf_run' } })
+    await waitFor(() => expect(document.querySelectorAll('.wfg-table tbody tr').length).toBe(1))
+    expect(document.querySelector('.wfg.has-inspector')).toBeNull()
+  })
+})
+
+describe('the list draws at 1440, 580 beside the inspector and 390 (review findings, part of #2688)', () => {
+  const WIDE: CascadeEnv = { width: 1440, container: 1100 }
+  const BESIDE: CascadeEnv = { width: 1440, container: 580 }
+  const PHONE: CascadeEnv = { width: 390, container: 356 }
+
+  function table(open = false): HTMLElement {
+    const root = document.createElement('div')
+    root.className = `wfg${open ? ' has-inspector' : ''}`
+    root.innerHTML =
+      '<div class="wfg-tools"><label class="wfg-pick"><span class="vh">owner</span><select></select></label></div>' +
+      '<div class="table-wrap wfg-scroll"><table class="wfg-table"><thead><tr>' +
+      '<th data-col="state">State</th><th data-col="workflow">Workflow</th><th data-col="steps">Steps</th><th data-col="needs">Needs you</th>' +
+      '<th data-col="spent">Spent</th><th data-col="owner">Owner</th><th data-col="changed">Changed</th></tr></thead><tbody>' +
+      '<tr class="wfg-row"><td class="wfg-state" data-col="state"><span class="sk-st is-bad"><svg></svg><span class="sk-st-w">failed</span></span></td>' +
+      '<td class="wfg-name" data-col="workflow"><a>name</a></td><td class="wfg-steps" data-col="steps"><span class="wfg-bar"></span></td>' +
+      '<td class="wfg-needs" data-col="needs"><span class="wfg-need is-bad"><span>✗</span> 1<span class="vh"> failed</span></span></td>' +
+      '<td data-col="spent">$1</td><td data-col="owner">alex</td><td data-col="changed">2m ago</td></tr></tbody></table></div>'
+    document.body.replaceChildren(root)
+    return root
+  }
+
+  // The class `vh` was drawn only inside `.pp-page`: on the list the words
+  // "owner", "profile", "sort" and every Needs-you word were painted.
+  // MUTATION: drop the `.wfg .vh` rule.
+  it('hides the filter labels and the Needs-you words visually, inside a positioned box', () => {
+    const root = table()
+    for (const vh of root.querySelectorAll('.vh')) {
+      for (const env of [WIDE, PHONE]) {
+        expect(painted(vh, 'position', env)).toBe('absolute')
+        expect(painted(vh, 'width', env)).toBe('1px')
+        expect(painted(vh, 'overflow', env)).toBe('hidden')
+        expect(painted(vh.parentElement!, 'position', env)).toBe('relative')
+      }
+    }
+  })
+
+  // At 1440 with the inspector open the left pane is about 580px: only
+  // Owner is hidden and Changed moved to the inspector; Spent stays (frame
+  // graph-workflows-rest). MUTATION: hide Spent at 600 again.
+  it('keeps Spent beside the open inspector and hides only Owner and Changed', () => {
+    const root = table(true)
+    const td = (col: string) => root.querySelector(`td[data-col="${col}"]`)!
+    expect(painted(td('spent'), 'display', BESIDE)).not.toBe('none')
+    expect(painted(td('owner'), 'display', BESIDE)).toBe('none')
+    expect(painted(td('changed'), 'display', BESIDE)).toBe('none')
+    for (const col of ['state', 'workflow', 'steps', 'needs']) expect(painted(td(col), 'display', BESIDE)).not.toBe('none')
+  })
+
+  // At 390 the phone row was 411px in a 356px box and the Needs-you cell
+  // was clipped off its right edge. The row is laid out fixed: the state is
+  // its glyph (the word stays read), steps and needs hold their widths and
+  // the name takes the rest. MUTATION: drop the phone's fixed layout or a
+  // column width.
+  it('fits state, name, steps and needs in a 356px box at 390', () => {
+    const root = table()
+    const tbl = root.querySelector('table')!
+    expect(painted(tbl, 'table-layout', PHONE)).toBe('fixed')
+    expect(painted(tbl, 'table-layout', WIDE)).not.toBe('fixed')
+    const th = (col: string) => root.querySelector(`th[data-col="${col}"]`)!
+    const px = (v: string | null) => {
+      const m = /^(\d+)px$/.exec(v ?? '')
+      expect(m, `${v} is a width in px`).not.toBeNull()
+      return Number(m![1])
+    }
+    const fixed = px(painted(th('state'), 'width', PHONE)) + px(painted(th('steps'), 'width', PHONE)) + px(painted(th('needs'), 'width', PHONE))
+    // What is left for the name, at least 120px of a 356px box.
+    expect(356 - fixed).toBeGreaterThanOrEqual(120)
+    expect(painted(root.querySelector('td[data-col="workflow"]')!, 'min-width', PHONE)).toBe('0')
+    const word = root.querySelector('td[data-col="state"] .sk-st-w')!
+    expect(painted(word, 'position', PHONE)).toBe('absolute')
+    expect(painted(word, 'position', WIDE)).not.toBe('absolute')
+    expect(painted(root.querySelector('td[data-col="state"]')!, 'position', PHONE)).toBe('relative')
+    for (const col of ['steps', 'needs']) {
+      const td = root.querySelector(`td[data-col="${col}"]`)!
+      expect(painted(td, 'overflow', PHONE)).toBe('hidden')
+      expect(painted(td, 'text-overflow', PHONE)).toBe('ellipsis')
+    }
+    for (const col of ['spent', 'owner', 'changed']) expect(painted(root.querySelector(`td[data-col="${col}"]`)!, 'display', PHONE)).toBe('none')
   })
 })

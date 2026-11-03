@@ -205,7 +205,7 @@ function rowIds(): string[] {
 async function summaryFact(id: string, term: 'Submitted' | 'Duration'): Promise<HTMLElement> {
   // A second click on the picked row closes its summary, so only an unpicked row is clicked.
   const row = document.querySelector<HTMLElement>(`tr[data-workflow="${id}"]`)!
-  if (row.getAttribute('aria-selected') !== 'true') fireEvent.click(row.querySelector<HTMLElement>('[data-col="state"]')!)
+  if (row.getAttribute('aria-current') !== 'true') fireEvent.click(row.querySelector<HTMLElement>('[data-col="state"]')!)
   return waitFor(() => {
     const sum = document.querySelector<HTMLElement>(`aside[aria-label="Workflow inspector"] .wfg-sum[data-workflow="${id}"]`)
     const dt = [...(sum?.querySelectorAll('dt') ?? [])].find((d) => d.textContent === term)
