@@ -40,7 +40,10 @@ DOCS = Path("docs") / "design" / "agent-quality"
 LOCALS = Path("terraform") / "infra" / "locals.tf"
 FLAKY = Path("tests") / "flaky.txt"
 
-_PYTEST_ID = re.compile(r"`((?:tests|apps)/[^`\s]+?\.py)::([A-Za-z_][A-Za-z0-9_]*)[^`]*`")
+#: A test module is `test_*.py`; `apps/x/cache.py::ResultCache` cites code.
+_PYTEST_ID = re.compile(
+    r"`((?:tests|apps)/(?:[^`\s]+/)?test_[^`\s/]*\.py)::([A-Za-z_][A-Za-z0-9_]*)[^`]*`"
+)
 _VITEST_FILE = re.compile(r"`(apps/swarm-ui/[^`\s]+\.test\.tsx?)`")
 
 #: Kinds of marker, matched on code joined token by token with one space.

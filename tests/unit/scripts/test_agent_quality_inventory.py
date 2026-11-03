@@ -48,6 +48,7 @@ def test_a_cited_pytest_id_is_found_in_inline_code_and_split_at_the_double_colon
         "| x | `tests/unit/worker/test_a.py::test_one` and "
         "`tests/unit/worker/test_b.py::test_two[case]` |\n"
         "plain tests/unit/worker/test_c.py::test_not_in_code is prose\n"
+        "| `apps/swarm-graph/swarm_graph/cache.py::ResultCache` is code, not a test |\n"
     )
     assert inv.cited_pytest_ids(text) == [
         ("tests/unit/worker/test_a.py", "test_one"),
