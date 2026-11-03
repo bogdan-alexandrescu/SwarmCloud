@@ -130,11 +130,12 @@ _LIMIT_KEYS = ("runner_profile", "model_class", "budget", "max_turns", "timeout_
 class WorkContractError(ValueError):
     """A contract refusal, as a domain error with a stable `code` and `detail`.
 
-    Deliberately NOT an `ApiError`: no route raises these yet, and a new
-    refusal in swarm-api ships switched off (`swarm_api.refusals`, observer
-    proposal I). The lane that wires a route maps each code to an `ApiError`,
-    registers a `refusals.Switch` for it and raises it through
-    `refusals.refuse()`; until then nothing a caller sends can meet one."""
+    Deliberately NOT an `ApiError`: a new refusal in swarm-api ships switched
+    off (`swarm_api.refusals`, observer proposal I). Submission
+    (`SubmissionService._work_contract`) raises each as the established 422
+    `validation_failed` naming this `code` in `detail.work_contract`, and
+    only while SWARM_WORK_CONTRACTS is on, so with the switch off nothing a
+    caller sends can meet one."""
 
     code = "work_contract_refused"
 
