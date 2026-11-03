@@ -172,6 +172,12 @@ spec:
             # Who may call: swarm-api's service account, and no one else.
             - name: SWARM_VOICE_CALLERS
               value: __SWARM_VOICE_CALLERS__
+            # Where the planner reads and draws cards as the session's person,
+            # through the session grant (swarm_voice/planner.py). swarm-api is
+            # Cloud Run: its run.app host, the one the egress policy admits;
+            # the ID token's audience defaults to this URL, swarm-api's own.
+            - name: SWARM_API_URL
+              value: https://__SWARM_API_HOST__
           resources:
             requests:
               cpu: 500m

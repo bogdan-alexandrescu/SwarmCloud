@@ -19,6 +19,11 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
                            egress (egress_ticket.py; the agent's prompt carries it)
       qa-identity.md       this worker's: present while a task that named the QA
                            identity has no credential in the gate (qa_identity.py)
+      qa-target.md         this worker's: present while the QA target's sign-in left
+                           the browser signed out of it (qa_target.py)
+      qa-target.json       this worker's: the gate's QA sign-in state, public fields
+                           only, which the visual-QA capture copies into its
+                           manifest's `gate_refusals.sign_in` (qa_target.py)
       browser.json         the runner's: the browser tools it registered for the
                            task's `browser_tool`, which this worker forwards to the
                            gate (`browser_tools` on ctl.sock; browser_tools.py)

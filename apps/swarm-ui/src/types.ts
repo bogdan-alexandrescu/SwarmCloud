@@ -44,11 +44,13 @@ export interface PoolLoweredBy {
   input: 'adaptive_target' | 'quota_derived_limit' | 'override'
   value: number
   /**
-   * When the value was set: the override's audit instant, else the rate limit
-   * that last cut it (`set_by` says which); null where no record dates it.
+   * When the value was set: the adaptive target's last change
+   * (`target_changed_at`), else the override's audit instant or the rate limit
+   * that last cut it; `set_by` says which made it, `climb` for a target that
+   * rose after the last cut. Null where no record dates it.
    */
   set_at: string | null
-  set_by?: 'override' | 'rate_limit' | null
+  set_by?: 'override' | 'rate_limit' | 'climb' | null
   /** The broker's quota document's last write: any success bumps it. */
   quota_written_at?: string | null
   /** The override's audit action (`adaptive_target_reset`, `hard_max_set`). */

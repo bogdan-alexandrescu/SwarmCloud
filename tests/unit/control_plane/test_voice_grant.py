@@ -373,7 +373,7 @@ def test_no_typed_confirmation_or_secret_value_route_is_on_the_allowlist(client)
                  if any(_SENSITIVE_FIELD.search(f) for f in _body_fields(r))
                  or re.search(r"secret|credential", p, re.I)]
     assert sensitive, "the walk found no typed-confirmation or secret-value route"
-    assert not set(sensitive) & vg.ALLOWED_ROUTES
+    assert not set(sensitive) & (vg.ALLOWED_ROUTES | vg.WRITE_ROUTES)
 
 
 def _fill(path: str) -> str:
@@ -385,7 +385,7 @@ def test_every_route_off_the_allowlist_refuses_a_live_grant(client, db, voice):
     headers = _grant_headers(call)
     walked, reachable = 0, []
     for method, path, _route in _authenticated(client.app):
-        if (method, path) in vg.ALLOWED_ROUTES:
+        if (method, path) in vg.ALLOWED_ROUTES or (method, path) in vg.WRITE_ROUTES:
             continue
         walked += 1
         response = client.request(method, _fill(path), headers=headers)

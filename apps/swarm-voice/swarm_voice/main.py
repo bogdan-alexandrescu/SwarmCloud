@@ -44,6 +44,11 @@ Configuration, read once at start (never at import):
   credential reference may name.
 * `SWARM_VOICE_AUDIENCE` -- the audience swarm-api mints its ID token for.
 * `SWARM_VOICE_CALLERS` -- comma-separated service account emails admitted.
+* `SWARM_API_URL` (and optionally `SWARM_API_AUDIENCE`) -- swarm-api's
+  in-cluster address, where the planner (planner.build_planner) reads and
+  draws cards as the session's person through the session grant. Unset, no
+  session offers delegation. Until the person's Anthropic secret is readable
+  by swarm-voice, the planner refuses each turn with its spoken reason.
 """
 
 from __future__ import annotations
@@ -61,6 +66,7 @@ from pydantic import BaseModel, Field, SecretStr
 from .credential import VERSION_REF, CredentialError, CredentialFactory, CredentialRefused, SecretManagerStore
 from .grant import GrantInvalid, SessionGrant
 from .live import MAX_OFFER_BYTES, LiveApi, LiveError, SessionExists, Sessions
+from .planner import build_planner
 
 log = logging.getLogger("swarm_voice")
 
@@ -130,8 +136,12 @@ def build_sessions(http: Any) -> Sessions:
     project = os.environ.get("PROJECT_ID", "").strip()
     if not project:
         raise RuntimeError("PROJECT_ID is not set: no credential reference could be checked against it")
-    credentials = CredentialFactory(store=SecretManagerStore(), http=http, project=project)
-    return Sessions(LiveApi(http), credentials=credentials)
+    store = SecretManagerStore()
+    credentials = CredentialFactory(store=store, http=http, project=project)
+    # The planner (§3.3) reaches swarm-api at SWARM_API_URL through the session
+    # grant; without that address it is None and no session offers delegation.
+    return Sessions(LiveApi(http), credentials=credentials,
+                    planner=build_planner(http, store=store))
 
 
 def build_caller_check() -> CallerCheck:

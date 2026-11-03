@@ -652,8 +652,8 @@ const LOWERED_INPUT: Record<string, string> = {
  * The ceiling's title: the configured hard limit, the applied value, and which
  * input lowered it and what dates it (#3047), so a cap of 7 against 40 says why
  * without a trip to the broker's documents. The instant is the rate limit that
- * cut the value or the override that set it (`set_by`), never the quota
- * document's last write, which every success bumps.
+ * cut the value, the climb that raised it since, or the override that set it
+ * (`set_by`), never the quota document's last write, which every success bumps.
  */
 export function ceilingTitle(pool: Pool): string {
   const base = `Configured hard limit is ${pool.hard_limit}; ${pool.effective_limit} applies`
@@ -661,6 +661,7 @@ export function ceilingTitle(pool: Pool): string {
     const what = `${LOWERED_INPUT[entry.input] ?? entry.input} (${entry.value})`
     if (!entry.set_at) return what
     if (entry.set_by === 'rate_limit') return `${what}, since the rate limit at ${entry.set_at}`
+    if (entry.set_by === 'climb') return `${what}, raised ${entry.set_at}`
     return `${what}, set ${entry.set_at}`
   })
   return why.length ? `${base}, lowered by ${why.join(' and ')}.` : `${base}.`
