@@ -590,7 +590,7 @@ export const SECTIONS: SectionDef[] = [
       // caller is admin, with its four settings pages. Not marked `admin`:
       // it reads `/v1/tenants/mine`, which everyone may, and a workspace
       // admin who is not a platform admin is shown only this page.
-      { id: 'workspaces', label: 'Workspaces you admin' },
+      { id: 'workspaces', label: 'Workspaces' },
     ],
   },
   {

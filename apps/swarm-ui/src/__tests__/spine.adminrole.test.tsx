@@ -157,7 +157,7 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     expect(adminItem()!.querySelector('.sk-lkd, .sk-ic.sk-lk')).toBeNull()
     // ADMIN-PEOPLE-ROLES (part of #2157): People and roles is theirs too,
     // scoped to the workspaces they administer.
-    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin'])
+    expect(panelRows()).toEqual(['People and roles', 'Workspaces'])
   })
 
   it('shows a platform admin the seven Admin pages, their workspaces\' group first and Runner sizes beside Pool limits (SIZES-UI)', async () => {
@@ -168,7 +168,7 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     // Their workspaces' group first, then the platform's (S1b, CONFIG-PANEL-E).
     // Platform secrets (SSC-UI, part of #2158) after Platform counts, as proposal E S1b draws it;
     // Setup and Health (DAYONE-SETUP-UI-3, part of #2688) after it, so Admin still opens Pool limits.
-    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'])
+    expect(panelRows()).toEqual(['People and roles', 'Workspaces', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'])
   })
 })
 

@@ -117,11 +117,11 @@ describe('the Admin panel\'s badges (S1b)', () => {
     await waitFor(() => expect(count('Tenants')).toBe('1 waiting'))
     await waitFor(() => expect(count('Pool limits')).toBe('1 near ceiling'))
     expect(count('People and roles')).toBe('2')
-    expect(count('Workspaces you admin')).toBe('2')
+    expect(count('Workspaces')).toBe('2')
     expect(count('Platform secrets')).toBe('3')
     // Something waiting is amber; how many workspaces you admin is only a count.
     expect(row('Tenants')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt is-alert is-chip')
-    expect(row('Workspaces you admin')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt')
+    expect(row('Workspaces')?.querySelector('.sk-cnt')?.className).toBe('sk-cnt')
     // Nothing counts Runner sizes or Platform counts.
     expect(count('Runner sizes')).toBeNull()
     expect(count('Platform counts')).toBeNull()
@@ -131,7 +131,7 @@ describe('the Admin panel\'s badges (S1b)', () => {
     // An API whose feed serves neither new count (an older one), a capacity read that failed, and nothing waiting.
     serve(ME(true), [PERSONAL, group('eng', 'admin')], { feed: FEED({ tenants_waiting: null }), capacity: 500 })
     await app('/admin/limits')
-    await waitFor(() => expect(count('Workspaces you admin')).toBe('1'))
+    await waitFor(() => expect(count('Workspaces')).toBe('1'))
     const asked = () => vi.mocked(globalThis.fetch).mock.calls.map((c) => String(c[0]))
     await waitFor(() => expect(asked().some((u) => u.includes('/v1/capacity')) && asked().some((u) => u.includes('/v1/notifications'))).toBe(true))
     await new Promise((r) => setTimeout(r, 50))
@@ -144,7 +144,7 @@ describe('the Admin panel\'s badges (S1b)', () => {
     await app('/admin/limits')
     await waitFor(() => expect(count('Tenants')).toBe('2 waiting'))
     // MUTATION: count an unread list as 0 workspaces -> "0" and this fails.
-    expect(count('Workspaces you admin')).toBeNull()
+    expect(count('Workspaces')).toBeNull()
   })
 
   it('draws a workspace admin only their own badges (S1c)', async () => {
@@ -154,7 +154,7 @@ describe('the Admin panel\'s badges (S1b)', () => {
       capacity: CAPACITY([pool('global', 50, 50)]),
     })
     await app('/admin/workspaces')
-    await waitFor(() => expect(count('Workspaces you admin')).toBe('2'))
+    await waitFor(() => expect(count('Workspaces')).toBe('2'))
     // MUTATION: hand a workspace admin the platform's request count -> "4" and this fails.
     expect(count('People and roles')).toBeNull()
     expect([...document.querySelectorAll('.sk-panel [aria-label="Your workspaces"] .sk-cnt')].map((c) => c.textContent)).toEqual(['2'])
@@ -271,7 +271,7 @@ describe('the Admin panel\'s worded counts are chips (S1b)', () => {
     expect(cls('Tenants')?.contains('is-chip')).toBe(true)
     expect(cls('Pool limits')?.contains('is-chip')).toBe(true)
     // MUTATION: chip every count -> these fail. Amber numbers stay bare numbers.
-    for (const label of ['People and roles', 'Platform secrets', 'Workspaces you admin']) expect(cls(label)?.contains('is-chip'), label).toBe(false)
+    for (const label of ['People and roles', 'Platform secrets', 'Workspaces']) expect(cls(label)?.contains('is-chip'), label).toBe(false)
     expect(count('Platform secrets')).toBe('3')
   })
 
