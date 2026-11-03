@@ -8,7 +8,10 @@
  *   * furthest behind on setup first, a setup not read after every measured
  *     one, and A to Z on the switch;
  *   * each row links to its workspace's page and says what waits in it; a
- *     count the page cannot know says "not known", never 0.
+ *     count the page cannot know says "not known", never 0;
+ *   * each row's roster facts are read on the list (the owner's pick,
+ *     2026-11-03): roles for every row, who joined by request only where the
+ *     caller administers it, the admin route for a platform admin.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -50,9 +53,25 @@ const setup = (tenant: string, done: 1 | 2 | 3 | 4, github = 'done'): Json => ({
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
-function serve(me: Json, mine: Json[] | 'empty', setups: Readonly<Record<string, Json | number>>) {
+const grant = (email: string, role: string): Json => ({ email, role, source: 'override', granted_by: 'ana.b@example.com', granted_at: '2026-10-20T09:00:00Z', granted_via: 'console', reason: '' })
+const roster = (tenant: string, people: Json[], defaultRole = 'member'): Json => ({ tenant_id: tenant, kind: 'group', default_role: defaultRole, default_source: 'grant', people, roles: [], audit: [] })
+const joinedBy = (email: string, extra: Json = {}): Json => ({ email, by: 'ana.b@example.com', at: '2026-10-21T09:00:00Z', via: 'join_request', group_changed: false, still_in_group: false, ...extra })
+
+type Named = Readonly<Record<string, Json | number>>
+const named = (table: Named | undefined, tenant: string) => {
+  const answer = table?.[tenant]
+  if (answer === undefined) return json({ code: 'tenant_not_member', message: 'not a member' }, 403)
+  return typeof answer === 'number' ? json({ detail: 'Internal Server Error' }, answer) : json(answer)
+}
+
+function serve(me: Json, mine: Json[] | 'empty', setups: Named, people: { roles?: Named; members?: Named; adminRoles?: Named } = {}) {
   globalThis.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
+    const tenantOf = () => ((init?.headers ?? {}) as Record<string, string>)['X-Swarm-Tenant'] ?? ''
+    const admin = /\/v1\/admin\/workspaces\/([^/?]+)\/roles/.exec(url)
+    if (admin !== null) return Promise.resolve(named(people.adminRoles, decodeURIComponent(admin[1]!)))
+    if (url.includes('/v1/workspace/roles')) return Promise.resolve(named(people.roles, tenantOf()))
+    if (url.includes('/v1/workspace/members')) return Promise.resolve(named(people.members, tenantOf()))
     if (url.includes('/v1/tenants/mine')) return Promise.resolve(json(mine === 'empty' ? [] : mine))
     if (url.includes('/v1/tenants/me')) return Promise.resolve(json(me))
     if (url.includes('/v1/onboarding')) {
@@ -181,7 +200,67 @@ describe('Admin › Workspaces orders and counts', () => {
   })
 })
 
+describe('Admin › Workspaces reads each workspace\'s roster', () => {
+  const calls = (path: string) => (globalThis.fetch as unknown as { mock: { calls: [RequestInfo | URL, RequestInit | undefined][] } }).mock.calls
+    .filter(([u]) => String(u).includes(path))
+    .map(([, init]) => ((init?.headers ?? {}) as Record<string, string>)['X-Swarm-Tenant'])
+  const facts = (r: HTMLElement) => [...r.querySelectorAll('.wya-facts .c-chip')].map((c) => c.textContent)
+
+  it('draws the default role, own roles, admins, a role waiting for its person and who joined by request', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'admin')], { eng: setup('eng', 4) }, {
+      roles: { eng: roster('eng', [grant('ana.b@example.com', 'admin'), grant('bo@example.com', 'member'), grant('cy@example.com', 'viewer')]) },
+      members: { eng: { platform_memberships: true, members: [joinedBy('cy@example.com', { group_changed: true }), joinedBy('ed@example.com')] } },
+    })
+    await page()
+    await waitFor(() => expect(document.querySelector('.wya-row[data-tenant="eng"] .wya-facts .c-chip')).not.toBeNull())
+    // MUTATION: drop the roster read (the branch before the pick) -> no facts and this fails.
+    expect(facts(rows()[0]!)).toEqual(['default role: member', '3 with a role of their own', '1 admin', '1 role waits for its person', '2 let in by request'])
+    expect(calls('/v1/workspace/roles')).toEqual(['eng'])
+    expect(calls('/v1/workspace/members')).toEqual(['eng'])
+  })
+
+  it('reads a member\'s rows for their roles only: who joined by request is admin only', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'member'), group('ops', 'viewer')], { eng: setup('eng', 4), ops: setup('ops', 2) }, {
+      roles: { eng: roster('eng', [grant('dee@example.com', 'admin')], 'viewer'), ops: roster('ops', []) },
+    })
+    await page()
+    await waitFor(() => expect(rows().every((r) => r.querySelector('.wya-facts .c-chip') !== null)).toBe(true))
+    const eng = document.querySelector<HTMLElement>('.wya-row[data-tenant="eng"]')!
+    expect(facts(eng)).toEqual(['default role: viewer', '1 with a role of their own', '1 admin'])
+    expect(calls('/v1/workspace/roles').sort()).toEqual(['eng', 'ops'])
+    // MUTATION: ask for every row's members -> both are asked and refused, and this fails.
+    expect(calls('/v1/workspace/members')).toEqual([])
+  })
+
+  it('says a roster it could not read is not known, never 0', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'admin')], { eng: setup('eng', 4) }, { roles: { eng: 500 }, members: { eng: 500 } })
+    await page()
+    await waitFor(() => expect(document.querySelector('.wya-row[data-tenant="eng"] .wya-facts .c-chip')).not.toBeNull())
+    // MUTATION: draw an unread roster as an empty one -> "0 admins" and this fails.
+    expect(facts(rows()[0]!)).toEqual(['roles not known'])
+  })
+
+  it('reads a platform admin\'s rosters on the admin route, which reaches a workspace they are not in', async () => {
+    serve(ME(true), [PERSONAL, group('far', 'admin', { via: 'platform_admin', role: { name: 'admin', source: 'platform_admin' } })], { far: setup('far', 1) }, {
+      adminRoles: { far: roster('far', []) },
+    })
+    await page()
+    await waitFor(() => expect(document.querySelector('.wya-row[data-tenant="far"] .wya-facts .c-chip')).not.toBeNull())
+    // MUTATION: read the workspace route for a reach entry -> refused, "roles not known" and this fails.
+    expect(facts(rows()[0]!).slice(0, 3)).toEqual(['default role: member', '0 with a role of their own', '0 admins'])
+    expect(calls('/v1/workspace/roles')).toEqual([])
+  })
+})
+
 describe('the list\'s rules, as functions', () => {
+  it('says the roster facts in the frame\'s words', async () => {
+    const { rosterFacts } = await import('../WorkspacesYouAdmin')
+    const r = { tenant_id: 'eng', kind: 'group' as const, default_role: null, default_source: null, people: [], roles: [], audit: [] }
+    expect(rosterFacts(null, undefined)).toEqual([{ text: 'roles not known', tone: null }])
+    expect(rosterFacts(r, null).map((f) => f.text)).toEqual(['default role: not known', '0 with a role of their own', '0 admins', 'let in by request: not known'])
+    expect(rosterFacts(r, undefined).map((f) => f.text)).toHaveLength(3)
+  })
+
   it('orders furthest behind first, unread last, ties by name', async () => {
     const { orderWorkspaces } = await import('../WorkspacesYouAdmin')
     const s = (n: number) => Array.from({ length: 4 }, (_, i) => ({ key: 'github' as const, label: 'x', state: i < n ? ('done' as const) : ('todo' as const), line: '', to: '' }))

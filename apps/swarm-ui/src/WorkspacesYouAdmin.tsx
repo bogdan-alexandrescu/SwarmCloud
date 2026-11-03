@@ -23,11 +23,22 @@
  * "not read", never done, and a count that needs a read the page lacks says
  * "not known", never 0.
  *
- * EACH ROW: the workspace's name, linking to its own page
- * (`admin/workspaces/<tenant>`); its setup progress (the Config strip's own
- * `SetupProgress`); what waits in it (a failed step, a step to re-check, the
+ * EACH ROW, ONE GRID LINE (styles/config.css, the frame's columns): the
+ * workspace's name, linking to its own page (`admin/workspaces/<tenant>`); its
+ * setup progress (the Config strip's own `SetupProgress`); its roster facts
+ * (`rosterFacts`); what waits in it (a failed step, a step to re-check, the
  * next step, or nothing); the caller's role there; and, for a workspace they
- * administer, today's four Config links. EACH CONFIG LINK SELECTS ITS
+ * administer, today's four Config links.
+ *
+ * THE ROSTER FACTS ARE READ ON THE LIST (the owner picked "Read each
+ * workspace's roster on the list", 2026-11-03): per workspace, its roles
+ * (`GET /v1/workspace/roles` naming it in `X-Swarm-Tenant`, readable by every
+ * role; for a platform admin, `GET /v1/admin/workspaces/{tenant_id}/roles`,
+ * which reads a workspace they reach without being in it) and, where the
+ * caller administers it, who joined by request (`GET /v1/workspace/members`,
+ * admin only, so a member's row never asks for it). A platform admin of N
+ * workspaces so makes up to 2N more reads here. A fact whose read failed
+ * says "not known", never 0. EACH CONFIG LINK SELECTS ITS
  * WORKSPACE FIRST, then navigates (`chooseTenant`, the tenant block's switch),
  * so the page it lands on reads that workspace. A member's row has no Config
  * links: what they may change is not here.
@@ -42,12 +53,12 @@
  * never calls it a stored role, and marks such a row "admin as a platform
  * admin", the words People and roles uses for the same answer.
  */
-import { useEffect, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from 'react'
-import { loadMe, loadMyTenants, type TenantChoice } from './api'
+import { useEffect, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from 'react'
+import { loadAdminWorkspaceRoles, loadMe, loadMyTenants, type TenantChoice } from './api'
 import { SetupProgress, behindOf, setupCount, setupNext, setupSteps, type SetupStep } from './ConfigSetup'
-import { loadWorkspaceSetup } from './configSetupApi'
+import { loadWorkspaceJoined, loadWorkspaceRoster, loadWorkspaceSetup } from './configSetupApi'
 import type { Result } from './fetch'
-import type { OnboardingDoc } from './types'
+import type { JoinedMembers, OnboardingDoc, WorkspaceRoster } from './types'
 import { ButtonLink, Chip, EmptyState, Segmented, routedClick } from './components'
 import { chooseTenant } from './fetch'
 import { AdminLead } from './AdminSettings'
@@ -126,6 +137,34 @@ export function setupWaits(steps: readonly SetupStep[] | null): { text: string; 
   return [{ text: done === of ? 'nothing waits' : 'not known', tone: null }]
 }
 
+export type Fact = { text: string; tone: 'park' | null }
+
+/**
+ * A workspace's roster, in the frame's words: its default role, how many hold
+ * a role of their own, how many of those hold admin, the roles that wait for
+ * their person (held by someone whose only way in, a membership by request,
+ * admits nobody since the group was replaced), and the people let in by
+ * request. `roster` null is its read failed; `joined` undefined is a read the
+ * row does not make (the caller does not administer it), null one that failed.
+ */
+export function rosterFacts(roster: WorkspaceRoster | null, joined: JoinedMembers | null | undefined): Fact[] {
+  if (roster === null) return [{ text: 'roles not known', tone: null }]
+  const own = roster.people.length
+  const admins = roster.people.filter((p) => p.role === 'admin').length
+  const facts: Fact[] = [
+    { text: roster.default_role === null || roster.default_role === '' ? 'default role: not known' : `default role: ${roster.default_role}`, tone: null },
+    { text: `${own} with a role of their own`, tone: null },
+    { text: `${admins} ${admins === 1 ? 'admin' : 'admins'}`, tone: admins === 0 ? 'park' : null },
+  ]
+  if (joined === undefined) return facts
+  if (joined === null) return [...facts, { text: 'let in by request: not known', tone: null }]
+  const stale = new Set(joined.members.filter((m) => m.group_changed && m.still_in_group !== true).map((m) => m.email.toLowerCase()))
+  const waiting = roster.people.filter((p) => stale.has(p.email.toLowerCase())).length
+  if (waiting > 0) facts.push({ text: `${waiting} ${waiting === 1 ? 'role waits' : 'roles wait'} for ${waiting === 1 ? 'its person' : 'their people'}`, tone: 'park' })
+  facts.push({ text: `${joined.members.length} let in by request`, tone: null })
+  return facts
+}
+
 const SUB: Readonly<Record<WorkspacesView, string>> = {
   platform: 'Every group workspace; you are admin in each as a platform admin. A Config link selects that workspace, then opens the page.',
   admin: 'The group workspaces you administer, and your own. A Config link selects that workspace, then opens the page.',
@@ -154,15 +193,17 @@ function EmptyList({ view }: { view: WorkspacesView | null }) {
   )
 }
 
-/** Each listed workspace's setup read, by tenant id; absent while in flight. */
-function useWorkspaceSetups(ids: readonly string[]): Readonly<Record<string, Result<OnboardingDoc>>> {
-  const [reads, setReads] = useState<Record<string, Result<OnboardingDoc>>>({})
+/** One read per listed workspace, by tenant id; absent while in flight. `load` is read when the ids change. */
+function useNamedReads<T>(ids: readonly string[], load: (id: string, signal: AbortSignal) => Promise<Result<T>>): Readonly<Record<string, Result<T>>> {
+  const [reads, setReads] = useState<Record<string, Result<T>>>({})
+  const loader = useRef(load)
+  loader.current = load
   const key = ids.join('\n')
   useEffect(() => {
     const controller = new AbortController()
     setReads({})
     for (const id of key === '' ? [] : key.split('\n')) {
-      void loadWorkspaceSetup(id, controller.signal).then((r) => {
+      void loader.current(id, controller.signal).then((r) => {
         if (!controller.signal.aborted) setReads((was) => ({ ...was, [id]: r }))
       })
     }
@@ -171,7 +212,8 @@ function useWorkspaceSetups(ids: readonly string[]): Readonly<Record<string, Res
   return reads
 }
 
-const docOf = (r: Result<OnboardingDoc> | undefined): OnboardingDoc | null => (r !== undefined && (r.status === 'ok' || r.status === 'stale') ? r.data : null)
+const dataOf = <T,>(r: Result<T> | undefined): T | null => (r !== undefined && (r.status === 'ok' || r.status === 'stale') ? r.data : null)
+const docOf = (r: Result<OnboardingDoc> | undefined): OnboardingDoc | null => dataOf(r)
 
 type Open = (e: ReactMouseEvent, tenantId: string, to: string) => void
 type Go = (e: ReactMouseEvent, to: string) => void
@@ -207,7 +249,11 @@ function WorkspaceList({ choices, platformAdmin, open, openPage }: { choices: re
   const asPlatformAdmin = new Set(listed.filter((c) => view === 'platform' || c.role?.source === 'platform_admin').map((c) => c.tenant_id))
   const roles = new Map(listed.map((c) => [c.tenant_id, roleOf(c)]))
   const named = nameTenants(listed, null)
-  const setups = useWorkspaceSetups(named.map((w) => w.tenant_id))
+  const setups = useNamedReads(named.map((w) => w.tenant_id), loadWorkspaceSetup)
+  // A platform admin's roster read is the admin route: it reads a workspace they only reach.
+  const rosters = useNamedReads(named.map((w) => w.tenant_id), (id, signal) => (view === 'platform' ? loadAdminWorkspaceRoles(id) : loadWorkspaceRoster(id, signal)))
+  // Who joined by request is admin only: a row the caller does not administer never asks.
+  const joins = useNamedReads(named.filter((w) => admins.has(w.tenant_id)).map((w) => w.tenant_id), loadWorkspaceJoined)
   if (named.length === 0) return <EmptyList view={view} />
   // Every listed workspace is a group one, so each has four steps.
   const rows = named.map((w) => {
@@ -261,6 +307,8 @@ function WorkspaceList({ choices, platformAdmin, open, openPage }: { choices: re
         {orderWorkspaces(rows, order).map(({ w, read, steps }) => {
           const admin = admins.has(w.tenant_id)
           const role = roles.get(w.tenant_id) ?? null
+          const roster = rosters[w.tenant_id]
+          const join = joins[w.tenant_id]
           return (
             <li key={w.tenant_id} className="wya-row" data-tenant={w.tenant_id} data-admin={admin ? 'yes' : 'no'}>
               <span className="wya-name">
@@ -268,28 +316,7 @@ function WorkspaceList({ choices, platformAdmin, open, openPage }: { choices: re
                   <b>{w.display_name}</b>
                 </a>
                 <small>{w.group !== w.display_name ? w.group : w.tenant_id}</small>
-                {asPlatformAdmin.has(w.tenant_id) ? (
-                  <small className="wya-role" data-via="platform_admin">admin as a platform admin</small>
-                ) : (
-                  <small className="wya-role" data-role={role ?? 'unknown'}>{role === null ? 'your role: not known' : `your role: ${role}`}</small>
-                )}
               </span>
-              <span className="wya-waits" aria-label={`What waits in ${w.display_name}`}>
-                {setupWaits(steps).map((t) => (
-                  <Chip key={t.text} tone={t.tone ?? undefined} faint={t.tone === null}>
-                    {t.text}
-                  </Chip>
-                ))}
-              </span>
-              {admin && (
-                <nav className="wya-links" aria-label={`${w.display_name} settings`}>
-                  {WORKSPACE_ADMIN_LINKS.map((l) => (
-                    <a key={l.to} href={addressToPath(l.to)} onClick={(e) => open(e, w.tenant_id, l.to)}>
-                      {l.label}
-                    </a>
-                  ))}
-                </nav>
-              )}
               <div className="wya-setup">
                 {read === undefined ? (
                   <small className="wya-reading">Reading setup…</small>
@@ -299,6 +326,38 @@ function WorkspaceList({ choices, platformAdmin, open, openPage }: { choices: re
                   <SetupProgress name={w.display_name} steps={steps ?? setupSteps(null, false)} onNext={(s, e) => open(e, w.tenant_id, s.to)} />
                 )}
               </div>
+              <span className="wya-facts" aria-label={`Who holds a role in ${w.display_name}`}>
+                {roster === undefined || (admin && join === undefined) ? (
+                  <small className="wya-facts-note">Reading roles…</small>
+                ) : (
+                  rosterFacts(dataOf(roster), admin ? dataOf(join) : undefined).map((f) => (
+                    <Chip key={f.text} tone={f.tone ?? undefined} faint={f.tone === null}>
+                      {f.text}
+                    </Chip>
+                  ))
+                )}
+              </span>
+              <span className="wya-waits" aria-label={`What waits in ${w.display_name}`}>
+                {setupWaits(steps).map((t) => (
+                  <Chip key={t.text} tone={t.tone ?? undefined} faint={t.tone === null}>
+                    {t.text}
+                  </Chip>
+                ))}
+              </span>
+              {asPlatformAdmin.has(w.tenant_id) ? (
+                <small className="wya-role" data-via="platform_admin">admin as a platform admin</small>
+              ) : (
+                <small className="wya-role" data-role={role ?? 'unknown'}>{role === null ? 'your role: not known' : `your role: ${role}`}</small>
+              )}
+              {admin && (
+                <nav className="wya-links" aria-label={`${w.display_name} settings`}>
+                  {WORKSPACE_ADMIN_LINKS.map((l) => (
+                    <a key={l.to} href={addressToPath(l.to)} onClick={(e) => open(e, w.tenant_id, l.to)}>
+                      {l.label}
+                    </a>
+                  ))}
+                </nav>
+              )}
             </li>
           )
         })}

@@ -12193,10 +12193,13 @@ export async function setJoinLink(on: boolean, rotate = false): Promise<Result<J
 
 /** `GET /v1/workspace/members` (admin): who holds a platform membership here, by an approved request. */
 export async function loadJoinedMembers(): Promise<Result<JoinedMembers>> {
-  return readAs(route('/v1/workspace/members'), (raw) => {
-    const r = isObj(raw) ? raw : {}
-    return { platform_memberships: r.platform_memberships === true, members: list(r.members, normJoinedMember) }
-  })
+  return readAs(route('/v1/workspace/members'), normJoinedMembers)
+}
+
+/** `GET /v1/workspace/members`' body as `JoinedMembers`: an entry without an email is dropped. */
+export function normJoinedMembers(raw: unknown): JoinedMembers {
+  const r = isObj(raw) ? raw : {}
+  return { platform_memberships: r.platform_memberships === true, members: list(r.members, normJoinedMember) }
 }
 
 /** `DELETE /v1/workspace/members/person {email, reason?}` (admin): ends a platform membership; the email in the body. */
