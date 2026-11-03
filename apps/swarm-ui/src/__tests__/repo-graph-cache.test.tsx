@@ -339,3 +339,90 @@ describe('the fixture build draws the hard case', () => {
     }
   })
 })
+
+// The served answer latency (lane graph-cache-panel-latency, part of #2688):
+// the route merges every replica's `answer_latency` into `facts`, and the
+// section draws it in its tiles, a table by outcome and temperature, and each
+// replica's panel. A replica not read is named, never counted as zero.
+describe('the served answer latency', () => {
+  const g = (count: number, p50: number | null, p95: number | null, max: number | null, exact = true) => ({ count, p50_ms: p50, p95_ms: p95, p99_ms: p95, max_ms: max, exact })
+  const served = (over: Record<string, unknown> = {}) => ({
+    state: 'read', replicas_read: 2, not_read: [], window_hours: 24, ...g(1284, 8, 40, 410, false),
+    by_outcome: { hit: g(1168, 6, 25, 90, false), carried: g(12, 5, 9, 9), miss: g(104, 70, 300, 410, false), partial: g(0, null, null, null), uncached: g(0, null, null, null) },
+    by_temperature: { warm: g(1160, 6, 25, 90, false), cold: g(124, 80, 380, 410, false) },
+    ...over,
+  })
+  const withServed = (answerLatency: Record<string, unknown>, replicas?: unknown[]) => {
+    const b = body()
+    return body({ facts: { ...(b.facts as Record<string, unknown>), answer_latency: answerLatency }, ...(replicas === undefined ? {} : { replicas }) })
+  }
+
+  it('draws the merged figures as upper bounds, by outcome with carried apart, and cold or warm', async () => {
+    render(<RepoGraphCache repoId={REPO} indexSha="4c1e9a0000" load={async () => ok(withServed(served()))} />)
+    await open()
+    const t = tile('Answer latency, served')
+    expect(t.getAttribute('data-form')).toBe('value')
+    expect(t.querySelector('b')?.textContent).toBe('≤ 8 ms / ≤ 40 ms')
+    expect(t.textContent).toMatch(/of 1,284 answers · slowest 410 ms/)
+    const table = screen.getByRole('table', { name: /Served answer latency/ })
+    const row = (k: string) => table.querySelector<HTMLElement>(`[data-latency-row="${k}"]`)!
+    expect(row('carried').textContent).toBe('Carried from the last index125 ms9 ms9 ms')
+    expect(row('hit').textContent).toContain('≤ 25 ms')
+    expect(row('cold').textContent).toContain('≤ 380 ms')
+    // Nothing cut at the deadline: dashes, never a 0 ms.
+    expect(row('partial').textContent).not.toMatch(/0 ms/)
+    expect(row('partial').querySelectorAll('.c-dash')).toHaveLength(3)
+    // The indexer's uncached measurement is still its own tile.
+    expect(tile('p95 served / uncached').textContent).toMatch(/152 ms/)
+  })
+
+  it('names a replica whose figure was not read, and draws its panel with no latency', async () => {
+    const replicas = [
+      { replica: 'swarm-graph-0', state: 'read', started_at: null, uptime_seconds: 60, result_bytes: MiB, result_bound: 4 * MiB, shard_bytes: MiB, shard_bound: 4 * MiB, answers_hot: 1, shards_hot: 1, last_warm: null, answer_latency: { ...g(5, 4, 9, 12), by_temperature: { cold: g(1, 12, 12, 12) } } },
+      { replica: 'swarm-graph-1', state: 'not_read', reason: 'timeout' },
+    ]
+    const doc = withServed(served({ replicas_read: 1, not_read: ['swarm-graph-1'], ...g(5, 4, 9, 12) }), replicas)
+    render(<RepoGraphCache repoId={REPO} indexSha="4c1e9a0000" load={async () => ok(doc)} />)
+    await open()
+    const t = tile('Answer latency, served')
+    expect(t.getAttribute('data-form')).toBe('partial')
+    expect(t.querySelector('b')?.textContent).toBe('4 ms / 9 ms')
+    expect(t.textContent).toMatch(/1 of 2 replicas; not read: swarm-graph-1/)
+    expect(panel('swarm-graph-0').querySelector('[data-row="replica-latency"]')?.textContent).toBe('Answer latency: middle 4 ms, slow 9 ms, slowest 12 ms over 5 answers · cold slow 12 ms')
+    expect(panel('swarm-graph-1').textContent).not.toMatch(/latency|0 ms/i)
+  })
+
+  it('is not read, with its reason and no figure, when no replica served it', async () => {
+    render(<RepoGraphCache repoId={REPO} indexSha="4c1e9a0000" load={async () => ok(withServed({ state: 'not_read', reason: 'no_replica_read', not_read: ['swarm-graph-0'] }))} />)
+    await open()
+    const t = tile('Answer latency, served')
+    expect(t.getAttribute('data-form')).toBe('unknown')
+    expect(t.textContent).toMatch(/Not read: no replica was read \(0 of 1 replicas; not read: swarm-graph-0\)/)
+    expect(t.textContent).not.toMatch(/\d+ ms/)
+    expect(screen.queryByRole('table', { name: /Served answer latency/ })).toBeNull()
+    // A body with no figure at all (an older swarm-api) reads as not read too.
+    expect(normGraphCache(body()).facts.answer_latency).toEqual({ state: 'not_read', reason: 'bad_response', not_read: [] })
+  })
+
+  it('renders from the fixture build: two replicas merged, the third named not read', async () => {
+    vi.useRealTimers()
+    vi.unstubAllEnvs()
+    vi.resetModules()
+    const api = await import('../api')
+    const read = await api.loadRepositoryGraphCache('repo_5e1f0c2a9b3d4e61')
+    expect(read.status).toBe('ok')
+    const doc = (read as { data: GraphCacheDoc }).data
+    const s = doc.facts.answer_latency
+    expect(s.state).toBe('read')
+    if (s.state === 'read') {
+      expect(s.not_read).toEqual(['swarm-graph-2'])
+      expect(s.exact).toBe(false)
+      expect(s.by_outcome.carried?.p95_ms).toBeNull()
+    }
+    render(<RepoGraphCache repoId="repo_5e1f0c2a9b3d4e61" indexSha="4c1e9a0000" load={async () => read} />)
+    fireEvent.click(opener())
+    await waitFor(() => expect(document.querySelector('[data-row="answer-latency"]')).not.toBeNull())
+    expect(tile('Answer latency, served').textContent).toMatch(/2 of 3 replicas; not read: swarm-graph-2/)
+    expect(panel('swarm-graph-0').querySelector('[data-row="replica-latency"]')?.textContent).toMatch(/middle 6 ms, slow 30 ms/)
+  })
+})
