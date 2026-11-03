@@ -149,6 +149,15 @@ export interface QaEnvironment {
   credential: QaCredentialStatus
   challenge_bypass: QaChallengeBypass | null
   challenge_bypass_value: QaCredentialStatus
+  /** The plain `key=value` pairs every URL this leg opens carries (`qaspec.entry_query`), e.g. `env=production`. */
+  entry_query: string | null
+  /**
+   * The entry's registration fields as served (`_entry_api`: name, base_url,
+   * environment, sign_in, read_posts, rate, challenge_bypass, entry_query), so
+   * a change of one leg's field sends every entry back whole; null for the
+   * one-origin shape.
+   */
+  spec: Record<string, unknown> | null
   discovered: QaScreen[]
   discovered_at: string | null
   discovery_error: string | null
@@ -175,6 +184,8 @@ export interface QaTarget {
   challenge_bypass: QaChallengeBypass | null
   /** Whether the bypass's value is set: status only, as `credential`. */
   challenge_bypass_value: QaCredentialStatus
+  /** A one-origin target's entry query (`qaspec.entry_query`); a target of entries keeps it per entry. */
+  entry_query: string | null
   screens: QaScreen[]
   environment: 'production' | 'non_production'
   /** The tool its flows run with; an unset field is Playwright, `qaspec`'s default. */
@@ -210,6 +221,10 @@ export interface QaTargetBody {
   flows_browser_tool?: FlowBrowserTool
   /** `{kind, name}`; null on a change removes it (and the API removes its value). */
   challenge_bypass?: QaChallengeBypass | null
+  /** A one-origin target's entry query; null on a change removes it. */
+  entry_query?: string | null
+  /** A target of entries: every entry, whole, each with its `entry_query`. */
+  environments?: Record<string, unknown>[]
 }
 
 /** A body: the form's fields, and any `MORE_FIELDS` (null clears one on a change). */
@@ -323,6 +338,9 @@ function normHostState(state: unknown): HostState | null {
   return state === 'pending' || state === 'approved' || state === 'revoked' ? state : null
 }
 
+/** `qatargets._ENTRY_KEYS`: what an entry of `environments` registers with. */
+const ENTRY_SPEC_FIELDS = ['name', 'base_url', 'environment', 'sign_in', 'read_posts', 'rate', 'challenge_bypass', 'entry_query'] as const
+
 /** One served entry, field by field: its credential and bypass as status only. */
 function normEnvironment(raw: unknown): QaEnvironment | null {
   const e = rec(raw)
@@ -343,6 +361,10 @@ function normEnvironment(raw: unknown): QaEnvironment | null {
     credential: normCredential(e.credential),
     challenge_bypass: normBypass(e.challenge_bypass),
     challenge_bypass_value: normCredential(e.challenge_bypass_value),
+    entry_query: str(e.entry_query),
+    spec: Object.fromEntries(
+      ENTRY_SPEC_FIELDS.flatMap((k) => (e[k] === undefined || e[k] === null ? [] : [[k, e[k]]])),
+    ),
     discovered: normScreens(e.discovered),
     discovered_at: str(e.discovered_at),
     discovery_error: str(e.discovery_error),
@@ -378,6 +400,7 @@ export function normQaTarget(raw: unknown): QaTarget | null {
     credential: normCredential(t.credential),
     challenge_bypass: normBypass(t.challenge_bypass),
     challenge_bypass_value: normCredential(t.challenge_bypass_value),
+    entry_query: str(t.entry_query),
     screens,
     environment: t.environment === 'non_production' ? 'non_production' : 'production',
     flows_browser_tool: t.flows_browser_tool === 'jev' ? 'jev' : 'playwright',
@@ -416,6 +439,8 @@ export function legsOf(t: QaTarget): QaEnvironment[] {
       credential: t.credential,
       challenge_bypass: t.challenge_bypass,
       challenge_bypass_value: t.challenge_bypass_value,
+      entry_query: t.entry_query,
+      spec: null,
       discovered: t.discovered,
       discovered_at: t.discovered_at,
       discovery_error: t.discovery_error,

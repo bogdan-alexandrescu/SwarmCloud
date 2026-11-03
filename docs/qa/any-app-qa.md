@@ -24,17 +24,42 @@ names (invariant 10). A run is started by `POST /v1/qa-targets/{id}:run`
 | more than 60 screens in one run | `qa_target_too_many_screens` | the discovery cap; at most 8 groups of at most 8 |
 | no `screens` and nothing `discovered` | `qa_target_no_screens` | run the target's discovery first |
 | a `base_url` that is not `https://host[:port]/[path]`; userinfo, a query, a fragment or an IP literal | `qa_target_invalid` | the base is a command-line argument in the capture prompt. Whether the host is public is the registration's check (`swarm_egress.policy`, lane VQ-2), not restated here |
+| an `entry_query` that is not up to 8 plain `key=value` pairs joined by `&` (letters, digits, `. _ ~ -`, a value also `, :`; at most 256 characters; each key once), or whose key reads as a credential (`token`, `secret`, `passw…`, `key`, `auth`, `session`, `code`, …) | `qa_target_invalid` | §1.1 below: a query travels in every proxy's log, so it never carries a secret, and plain characters leave no percent-encoding to hide one |
 | a screen path that is not origin-relative (`https://…`, `//host`), or carries whitespace or a backtick | `qa_target_invalid` | a path is joined to the approved origin and nothing else |
 | a width that is not one of the live gate's presets | `qa_target_invalid` | the gate refuses a viewport; a preset is chosen by name. `PRESETS` is held equal to `agent_worker.livegate.presets` by the test |
 | `file.max_issues` above 30, `file.evidence` other than `console_link` or `branch` | `qa_target_invalid` | 30 is the broker's per-agent bound (agent-autonomy.md §3.2) |
 
 No message quotes a value from the target.
 
+### 1.1 A leg's entry query (QA-ENTRY-QUERY)
+
+Some apps pick their backend from the address: one deployment serves a
+production and a staging leg, and the page chooses by `?env=` on the URL,
+then a tab slot a link wrote, then the browser's last leg, else staging.
+MEASURED 2026-11-03 on a five-leg production target: a fresh browser per
+screen group landed on staging (`/settings/defaults?env=staging`, Staging
+pre-selected), signed in to the wrong realm, and every leg failed its
+sign-in. `base_url` refuses a query (above), so a leg says which with its
+own field, `entry_query` (`env=production`), registered and changed with the
+leg (beside `base_url` on a one-origin target, in each entry of
+`environments` otherwise; the console's QA target form edits it).
+
+It is applied to **every URL the leg opens**: swarm-api serves the gate's
+sign-in entry (`login_url`) and the page it leaves the agent on (`base_url`)
+with it, and each capture step passes it to the tool as `--entry-query`,
+which merges it into the persona entry, every route and every page the crawl
+walks. A route's own query is kept and the leg's keys win (`?tab=a&env=staging`
+opens as `?tab=a&env=production`); a hash route's fragment stays after it.
+
+It is **not part of the host**: a change of the entry query alone keeps the
+leg's approval. Only the host and the login's `extra_origin` are what a
+platform admin approved.
+
 ## 2. The steps
 
 | step | profile, model | what it does |
 |---|---|---|
-| `capture-g<n>` | `claude-code-browser`, haiku, Playwright | writes its group's route list from the prompt, then `python -m swarm_qa capture --routes … --group g<n> --base <base_url> --presets … --themes … --settle generic --axe [--keep-storage] [--clock]` |
+| `capture-g<n>` | `claude-code-browser`, haiku, Playwright | writes its group's route list from the prompt, then `python -m swarm_qa capture --routes … --group g<n> --base <base_url> --presets … --themes … --settle generic --axe [--keep-storage] [--clock] [--entry-query <pairs>]` |
 | `review-g<n>` | `claude-code`, opus | stages `capture-g<n>.tar`; reads the app's own design docs first (`design_docs`, default `DESIGN.md`, `docs/design*/**`, `**/style-guide*`); the §4.3 checklist; writes `findings-g<n>.json` and a crop per finding |
 | `flow-<id>` | `claude-code-browser`, sonnet, jev | one per declared flow, recorded once per width (`flow-<id>-<preset>.gif`) |
 | `report` | `claude-code`, opus | stages every capture and review tar; checks each review's `reviewed` against its manifest; writes `findings.json` and `report.md` |
@@ -118,3 +143,18 @@ target's host (lane VQ-2); VQ-Q2 "One secret per tenant,
 swarm-tenant-<t>-qa" holds the test credential (lane VQ-3); VQ-Q3 "Console
 link by default; evidence branch as a per-target opt-in for private
 repositories" is `file.evidence`, default `console_link`.
+
+## 7. Device and theme switches are answered apart from the worker's loop (PHONE-SWITCH)
+
+The capture switches the live browser by `swarm-handoff device <preset>` and
+`swarm-handoff theme <name>`, and each waits 30 s for the worker's answer.
+The worker used to answer them only on its poll, which runs on the
+lifecycle's loop behind the control poll, the child requests and the
+tickets, and not at all during the periodic checkpoint, which uploads the
+work tree with a 60 s timeout per upload. MEASURED 2026-11-03: every
+phone-390 route of every leg failed with "the worker did not answer the
+device switch" or "... the theme change": the phone switches came after the
+desktop sweep had filled the tree with PNGs. A thread of the worker's own
+(`handoff.SWITCH_POLL_SECONDS`, 0.5 s) now answers device and theme requests
+whatever the loop is doing; the poll still answers them, first, under the
+same lock, and `Gate.call` takes one call at a time on the gate's channel.
