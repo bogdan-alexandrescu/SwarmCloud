@@ -10,22 +10,35 @@ import {
   setAccountModelClasses,
   setAccountName,
   setAccountState,
+  loadMe,
   type AccountsBoard,
   type ServedAccount,
 } from './api'
 import { accountName } from './accountName'
 import { agentName } from './agentlist'
-import { errorHeading, read, route, type ApiError, type Result } from './fetch'
+import { errorHeading, read, route, write, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
-import { Button, CIcon, Chip, Dialog, ToneMark, WarnMark } from './components'
+import { Button, CIcon, Chip, Dialog, Table, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
-import { AccountsTable, ProviderName } from './AccountsTable'
+import {
+  ACCOUNT_POOLS,
+  AccountsTable,
+  POOL_WORD,
+  ProviderName,
+  WindowCell,
+  inVoiceItPool,
+  poolsOf,
+  poolsWord,
+  voiceItHolderOf,
+  voiceItPeopleOf,
+  type AccountPoolName,
+} from './AccountsTable'
 import { AcctState } from './AccountState'
 import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
 import { agoPastDay, utcAt, type PoolAccount } from './accountsPool'
@@ -1004,6 +1017,9 @@ function Pool({
           <HelpCard topic="projected-not-measured" />
         </p>
         <Forecast accounts={accounts as PoolAccount[]} scope={board.page.tenant_id} now={now} />
+        {/* THE VOICE IT POOL (the owner, 2026-11-02): drawn only when an
+            account is in it, so a pool without one reads as it always did. */}
+        <VoiceItPool accounts={accounts} now={now} phone={phone} />
       </section>
       {sheet}
     </div>
@@ -1337,6 +1353,9 @@ function Detail({
   const [lending, setLending] = useState(false)
 
   const lent = (account.lend_to ?? []).length > 0
+  // POOLS… IS A PLATFORM ADMIN'S (PUT /v1/accounts/{id}/pools refuses anyone
+  // else), on any account the admin can open, owned or borrowed.
+  const admin = usePlatformAdmin()
   return (
     <div className="acct-detail">
       {/* THE HEAD: the label, WHOSE it is -- the line that decides whether the
@@ -1457,10 +1476,14 @@ function Detail({
           <Reauth account={account} ui={ui} patch={patch} reload={reload} />
           <RefreshControl account={account} ui={ui} patch={patch} reload={reload} />
           <ModelClasses account={account} reload={reload} />
+          {admin && <PoolsControl account={account} reload={reload} />}
           <Remove account={account} reload={reload} />
         </>
       ) : (
-        <Borrowed account={account} />
+        <>
+          <Borrowed account={account} />
+          {admin && <PoolsControl account={account} reload={reload} />}
+        </>
       )}
     </div>
   )
@@ -2821,6 +2844,289 @@ function ModelClasses({ account, reload }: { account: Account; reload: () => voi
         </p>
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Pools: the workspace pool and the Voice it pool (the owner, 2026-11-02)
+// ---------------------------------------------------------------------------
+
+/**
+ * `PUT /v1/accounts/{account_id}/pools`, platform admins only. The label is
+ * typed back as `confirm_label`, which the broker checks again; it answers
+ * 409 `pool_in_use` when a live lease holds the account in a pool being
+ * removed, and the dialog says so where it was asked.
+ */
+export const ACCOUNT_POOLS_ROUTE = '/v1/accounts/{account_id}/pools'
+
+export function setAccountPools(accountId: string, pools: readonly string[], confirmLabel: string): Promise<Result<unknown>> {
+  return write(route(ACCOUNT_POOLS_ROUTE, { account_id: accountId }), 'PUT', { pools: [...pools], confirm_label: confirmLabel })
+}
+
+/** Who may use a Voice it pool account, version one (the owner, 2026-11-02). */
+export const VOICE_IT_PEOPLE_NOTE = 'Version one: the platform owner only'
+
+/**
+ * WHETHER THE READER IS A PLATFORM ADMIN, for the one admin-only control here.
+ * `null` is "not known yet, or the read failed", which draws no control: the
+ * server is the real gate. The read is the frame's own `loadMe`; a test that
+ * mocks `api` without it draws no control rather than throwing.
+ */
+function usePlatformAdmin(): boolean {
+  const [admin, setAdmin] = useState(false)
+  useEffect(() => {
+    let live = true
+    let answer: unknown
+    try {
+      answer = loadMe({ frame: true })
+    } catch {
+      return
+    }
+    Promise.resolve(answer as ReturnType<typeof loadMe> | undefined).then(
+      (r) => {
+        if (live && r !== undefined && (r.status === 'ok' || r.status === 'stale')) setAdmin(r.data.principal?.is_admin === true)
+      },
+      () => {},
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  return admin
+}
+
+/** Whether a 409 is the broker's "a live lease holds it in that pool". */
+export function poolInUse(e: ApiError): boolean {
+  const d = e.detail as { reason?: unknown } | null | undefined
+  return e.httpStatus === 409 && (d?.reason === 'pool_in_use' || e.code === 'pool_in_use')
+}
+
+/** The pools to send: the ticked ones, in the canonical order. */
+export function poolsToSave(checked: readonly string[]): AccountPoolName[] {
+  return ACCOUNT_POOLS.filter((p) => checked.includes(p))
+}
+
+/**
+ * POOLS…: which pools an account serves, for a platform admin. A checkbox per
+ * pool, the Voice it people read-only, and the label typed back -- the same
+ * typed confirm Remove uses, because taking an account out of a pool takes it
+ * away from everyone who leases through that pool. At least one pool stays
+ * ticked: an account in no pool is one nobody can lease, and the broker
+ * refuses it besides.
+ */
+function PoolsControl({ account, reload }: { account: Account; reload: () => void }) {
+  const served = poolsOf(account) ?? ['workspace']
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState<string[]>(served)
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<ApiError | null>(null)
+  const [saved, setSaved] = useState(false)
+  const whyId = useId()
+
+  const willSave = poolsToSave(draft)
+  const dirty = willSave.join(' ') !== poolsToSave(served).join(' ')
+  const armed = typed === account.label
+  const why =
+    willSave.length === 0
+      ? 'keep at least one pool ticked'
+      : !dirty
+        ? 'no change to save'
+        : !armed
+          ? `off until you type ${account.label} below`
+          : null
+  const people = voiceItPeopleOf(account)
+
+  const close = () => {
+    if (busy) return
+    setOpen(false)
+    setTyped('')
+    setError(null)
+  }
+
+  const save = async () => {
+    if (why !== null) return
+    setBusy(true)
+    setError(null)
+    const res = await setAccountPools(account.account_id, willSave, typed)
+    setBusy(false)
+    if (res.status === 'ok') {
+      setOpen(false)
+      setTyped('')
+      setSaved(true)
+      reload()
+    } else if (res.status === 'error' || res.status === 'stale') {
+      setError(res.error)
+    }
+  }
+
+  return (
+    <div className="acct-action">
+      <h4>Pools</h4>
+      <span className="limit-edit">
+        <span data-pools={poolsToSave(served).join(' ')}>{poolsWord(served)}</span>
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(served)
+            setSaved(false)
+            setError(null)
+            setOpen(true)
+          }}
+        >
+          Pools…
+        </button>
+        {saved && <ToneMark tone="is-ok">saved</ToneMark>}
+      </span>
+      {open && (
+        <Dialog
+          title={`Pools for ${accountName(account)}`}
+          onClose={close}
+          actions={
+            <>
+              <Button kind="ghost" onClick={close}>
+                Leave them
+              </Button>
+              <Button
+                kind="primary"
+                disabled={why !== null}
+                aria-describedby={why === null ? undefined : whyId}
+                busy={busy ? 'Saving…' : false}
+                onClick={() => void save()}
+              >
+                Save pools
+              </Button>
+            </>
+          }
+        >
+          <fieldset className="acct-classes" disabled={busy} aria-label={`Pools ${account.account_id} serves`}>
+            {ACCOUNT_POOLS.map((p) => (
+              <label key={p} className="acct-class">
+                <input
+                  type="checkbox"
+                  checked={draft.includes(p)}
+                  onChange={(e) => setDraft(e.target.checked ? [...draft, p] : draft.filter((d) => d !== p))}
+                />{' '}
+                {POOL_WORD[p]}
+              </label>
+            ))}
+          </fieldset>
+          <ul className="ctl-facts">
+            <li className="ctl-fact">
+              <b>account</b>
+              <Id>{account.account_id}</Id>
+            </li>
+            <li className="ctl-fact rt-fact-wide">
+              <b>Voice it people</b>
+              <span>
+                {people.length > 0 ? <span className="mono">{people.join(', ')}</span> : 'set by the broker when Voice it is added'}{' '}
+                <span className="muted small">({VOICE_IT_PEOPLE_NOTE})</span>
+              </span>
+            </li>
+          </ul>
+          <label className="c-field">
+            <span className="c-lbl">Type {account.label} to confirm</span>
+            <input
+              type="text"
+              className="c-inp mono"
+              value={typed}
+              disabled={busy}
+              placeholder={account.label}
+              aria-label={`Type ${account.label} to confirm the pools`}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+          </label>
+          {why !== null && (
+            <p className="client-side" id={whyId}>
+              Save is {why}.
+            </p>
+          )}
+          {error && (
+            <p className="c-hint" role="alert">
+              {poolInUse(error)
+                ? 'Pool in use: a live lease holds this account in a pool you are removing. Wait for it to end, then try again.'
+                : errorHeading(error)}{' '}
+              &mdash; {error.message} The pools were not changed.
+            </p>
+          )}
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
+/**
+ * THE VOICE IT POOL: the accounts whose pools include Voice it -- the
+ * provider, both windows as the table draws them, who may use it (read-only)
+ * and which Voice it session holds it now, or `free`.
+ */
+export function VoiceItPool({ accounts, now, phone }: { accounts: readonly Account[]; now: number; phone: boolean }) {
+  const rows = (accounts as PoolAccount[]).filter((a) => inVoiceItPool(a))
+  if (rows.length === 0) return null
+  const holder = (a: PoolAccount) => {
+    const h = voiceItHolderOf(a)
+    if (h === null) return <span data-holder="free">free</span>
+    return (
+      <span data-holder={h.voice_session_id}>
+        <span className="mono">{h.voice_session_id}</span>
+        {h.person !== '' && <> &middot; {h.person}</>}
+        {h.since !== null && <> &middot; since {givenAt(h.since, now)}</>}
+      </span>
+    )
+  }
+  const people = (a: PoolAccount) => {
+    const p = voiceItPeopleOf(a)
+    return p.length === 0 ? '—' : <span className="mono">{p.join(', ')}</span>
+  }
+  return (
+    <section className="acct-voice-it" aria-label="Voice it pool">
+      <h3>
+        Voice it pool
+        <span className="ctl-card-note is-end">{pluralise(rows.length, 'account')}</span>
+      </h3>
+      {phone ? (
+        <div className="acct-cards">
+          {rows.map((a) => (
+            <article key={a.account_id} className="acct-card" data-account={a.account_id}>
+              <div className="acct-card-top">
+                <span className="acct-nm">{accountName(a)}</span>
+                <span className="acct-prov" data-provider={a.provider}>
+                  <ProviderName provider={a.provider} />
+                </span>
+              </div>
+              <div className="acct-card-w2">
+                <WindowCell a={a} k={FIVE_HOUR} now={now} />
+                <WindowCell a={a} k={SEVEN_DAY} now={now} />
+              </div>
+              <p className="acct-card-meta">Who may use it: {people(a)}</p>
+              <p className="acct-card-meta">Held by: {holder(a)}</p>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <Table
+          caption="Voice it pool"
+          rows={rows}
+          rowKey={(a) => a.account_id}
+          columns={[
+            { key: 'account', head: 'Account', cell: (a) => <span className="acct-nm">{accountName(a)}</span> },
+            {
+              key: 'provider',
+              head: 'Provider',
+              cell: (a) => (
+                <span className="acct-prov" data-provider={a.provider}>
+                  <ProviderName provider={a.provider} />
+                </span>
+              ),
+            },
+            { key: '5h', head: '5-hour', cell: (a) => <WindowCell a={a} k={FIVE_HOUR} now={now} /> },
+            { key: '7d', head: '7-day', cell: (a) => <WindowCell a={a} k={SEVEN_DAY} now={now} /> },
+            { key: 'people', head: 'Who may use it', cell: people },
+            { key: 'holder', head: 'Held by', cell: holder },
+          ]}
+        />
+      )}
+    </section>
   )
 }
 

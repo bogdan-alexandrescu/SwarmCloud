@@ -728,6 +728,11 @@ class AccountStore:
                 # a new reading, so it neither restarts nor clears it.
                 possible_duplicate_of=current.possible_duplicate_of,
                 identical_readings=current.identical_readings,
+                # CARRIED OVER, for the reason the classes are: a lending
+                # change or a re-sign-in must never put a reserved Voice it
+                # account back in the workspace pool.
+                pools=current.pools,
+                voice_it_people=current.voice_it_people,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next

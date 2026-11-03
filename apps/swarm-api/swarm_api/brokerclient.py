@@ -76,7 +76,7 @@ import urllib.request
 from typing import Any, Callable, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
-from .errors import Conflict, Forbidden, UpstreamUnavailable, ValidationFailed
+from .errors import ApiError, Conflict, Forbidden, UpstreamUnavailable, ValidationFailed
 
 log = logging.getLogger(__name__)
 
@@ -282,6 +282,18 @@ class AccountPool(Protocol):
         reason: str,
     ) -> dict[str, Any]: ...
 
+    # THE VOICE IT POOL (owner, 2026-11-02): the ChatGPT plan account reserved
+    # for Voice it. Both PLATFORM calls. `set_pools` moves an account between
+    # the "workspace" and "voice-it" pools (a platform admin's, through
+    # `routes/accounts.py`); `voice_pool` names the account the person's NEXT
+    # Voice it session would lease, without leasing it (Voice it ›
+    # Preferences, through `routes/voice.py`).
+    def set_pools(
+        self, account_id: str, *, pools: list[str], confirm_label: str
+    ) -> dict[str, Any]: ...
+
+    def voice_pool(self, person: str) -> dict[str, Any]: ...
+
 
 def urllib_transport(
     method: str,
@@ -326,6 +338,18 @@ def _parse(raw: str) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         return text
+
+
+def _broker_message(data: Any) -> str:
+    """The sentence in a broker refusal: `{code, message}`, or FastAPI's
+    `{"detail": "..."}`. Empty when there is none."""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("message", "detail"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _host(url: str) -> str:
@@ -678,6 +702,22 @@ class BrokerClient:
             },
         )
 
+    def set_pools(
+        self, account_id: str, *, pools: list[str], confirm_label: str
+    ) -> dict[str, Any]:
+        # The broker's 400 (a confirm_label that is not the account's label,
+        # an empty or unknown pool) is the CALLER's, in the broker's words; its
+        # 409 `pool_in_use` is `Conflict` as every broker 409 is.
+        return self._call(
+            "PUT",
+            f"/v1/accounts/{quote(account_id, safe='')}/pools",
+            payload={"pools": list(pools), "confirm_label": confirm_label},
+            callers_400=True,
+        )
+
+    def voice_pool(self, person: str) -> dict[str, Any]:
+        return self._call("GET", "/v1/voice/pool", params={"person": person})
+
     # ----------------------------------------------------------------- plumbing
 
     def _call(
@@ -687,7 +727,11 @@ class BrokerClient:
         *,
         params: dict[str, str] | None = None,
         payload: dict[str, Any] | None = None,
+        callers_400: bool = False,
     ) -> dict[str, Any]:
+        """`callers_400`: the broker's 400 is the human caller's own mistake
+        on this route (`set_pools`), answered 400 with the broker's message,
+        rather than read as the pool being unavailable."""
         if not self._base:
             # Refuse, rather than degrade into some local write path. There is
             # no local write path: this service is not allowed to be a second
@@ -740,6 +784,8 @@ class BrokerClient:
             ) from None
 
         log.info("account pool %s %s -> %s", method, path, status)
+        if callers_400 and status == 400:
+            raise ApiError(_broker_message(data) or "the account pool refused this request")
         return self._result(status, data, path)
 
     def _result(self, status: int, data: Any, path: str) -> dict[str, Any]:
@@ -791,10 +837,17 @@ class BrokerClient:
                 "PLATFORM_SERVICE_ACCOUNTS, and the ID token audience must match "
                 "the broker's BROKER_AUDIENCE"
             )
+        if status == 409 and not broker_said and _broker_message(data):
+            # FastAPI's own `{"detail": "..."}` shape: still the broker's 409.
+            broker_said, message = True, _broker_message(data)
         if broker_said and status == 409:
             # The request was allowed and well-formed; the state it acts on
-            # refuses it (an EXHAUSTED quota reset without clear_cooldown).
-            raise Conflict(message or "the quota broker refused this change in the current state")
+            # refuses it (an EXHAUSTED quota reset without clear_cooldown; a
+            # pool move off an account holding a live lease, `pool_in_use`).
+            detail = {"reason": data["code"]} if isinstance(data, dict) and \
+                isinstance(data.get("code"), str) and data.get("code") else None
+            raise Conflict(message or "the quota broker refused this change in the current state",
+                           detail=detail)
         if broker_said and status == 422:
             # BrokerValidationError -- "the thing you named does not exist", or
             # a credential with no refresh token, refused at paste time.

@@ -506,7 +506,40 @@ original state on every exit path.
 
 ---
 
-## 7. What to look at when it misbehaves
+## 6a. Pools: the workspace pool and the Voice it pool
+
+An account's `pools` is a set (owner, 2026-11-02, "A separate Voice it
+pool"; 2026-11-03, "We should allow accounts to be in more than one pool at
+a time"). A document without the field is in `workspace` alone, so nothing
+changed for an existing account.
+
+* **`workspace`.** Tasks of the owner's workspace and of the workspaces in
+  `lend_to` lease it through `/v1/accounts/assign`, as before.
+* **`voice-it`.** Only swarm-voice leases it, through `/v1/voice/lease`,
+  for a Voice it session of a person in `voice_it_people`. Version one lists
+  the platform owner only (`VOICE_IT_PEOPLE`, else `PLATFORM_OWNER`).
+* **In `voice-it` only, the account is reserved.** `Account.may_serve` (and
+  `_raw_may_serve`, where a hold commits) refuses it to every tenant. So
+  `accounts_serving` never lists it, admission never counts it as a
+  workspace's pool, no task lease of any workspace or profile is handed it,
+  and the lending route refuses to lend it.
+* **In both, the account is shared.** Both sides lease it. Its `max_agents`,
+  its one-agent-before-a-reading rule and its window floors hold across both,
+  because a Voice it hold is one more entry in the same `holds`. A Voice it
+  hold carries `pool: voice-it`, its person and its session, and no tenant.
+  It is therefore no workspace's capacity, and it makes no demand on any
+  capacity pool (`pool_limits`). The capacity invariants are unchanged: only
+  leased or running work creates demand, and every lease is counted on its
+  account.
+* **Moving an account between pools.** `PUT /v1/accounts/{id}/pools`
+  `{pools, confirm_label}` is for platform callers only. The label must be
+  typed back, at least one pool stays, and the change is audited in the log
+  with the caller (swarm-api also writes an `admin_audit` row). It is refused
+  with 409 `pool_in_use` while the account holds a live lease of a pool being
+  removed. The broker is still the only writer of the account document and
+  keeps refreshing the plan whichever pool it is in.
+
+
 
 **Every refusal on a limit says which value it applied, and why (#3047).** On
 24 October 2026 admission refused up to 48 steps on the provider concurrency
