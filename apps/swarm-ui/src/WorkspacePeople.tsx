@@ -236,7 +236,14 @@ function usePlatformAdmin(): boolean | null {
   return admin
 }
 
-export function WorkspacePeopleScreen({ view: routed }: { view?: string | null } = {}) {
+/**
+ * EMBEDDED (lane workspace-admin-page; part of #2688): drawn as the People tab
+ * of one workspace's page (WorkspacePage.tsx), which carries the heading and
+ * the tabs, so this screen draws neither its "People and roles" heading nor
+ * its Roles / Members' GitHub strip, and shows the view `view` names; nothing
+ * is written into the address bar.
+ */
+export function WorkspacePeopleScreen({ view: routed, embedded = false }: { view?: string | null; embedded?: boolean } = {}) {
   const named = peopleViewOf(routed)
   const [view, setViewState] = useState<PeopleView>(named)
   // A new routed address names its tab; a tab picked here is written in place
@@ -253,9 +260,9 @@ export function WorkspacePeopleScreen({ view: routed }: { view?: string | null }
   }
   return (
     <div className="pk-page wp-page">
-      <PageHead title="People and roles" />
+      {!embedded && <PageHead title="People and roles" />}
       {/* `cfg-parts` (config.css): the Config pages' tab strip, as GitHub access draws it. */}
-      {(admin === true || view === 'members') && (
+      {!embedded && (admin === true || view === 'members') && (
         <Tabs tabs={PEOPLE_TABS} current={view} label="People and roles" className="cfg-parts" onSelect={(k) => setView(k === 'members' ? 'members' : 'roles')} />
       )}
       {view === 'members' ? <Members /> : <RolesPage />}
