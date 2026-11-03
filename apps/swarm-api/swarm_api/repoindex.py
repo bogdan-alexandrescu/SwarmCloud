@@ -107,7 +107,7 @@ from pydantic import (
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
-from swarm_common.states import TaskState
+from swarm_common.states import TERMINAL_STATES, TaskState
 
 from .auth import AuthContext
 from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable, ValidationFailed
@@ -345,6 +345,15 @@ RUN_KINDS = ("full", "incremental")
 RUNS_COLLECTION = "repo_index_runs"
 #: Under each registration: one entry per promoted-or-kept commit sha.
 VERSIONS_COLLECTION = "index_versions"
+#: Under each registration: one pin per holder and commit a graph ticket
+#: names (graph_ticket.py `record_pin`). Retention keeps a pinned commit,
+#: however old, until its holder settles -- the step's workflow, or the task
+#: itself when it runs outside one (owner's pick `record-pins`, PR #3105):
+#: by age and count alone, a long workflow's steps found the version they
+#: were pinned to swept.
+PINS_COLLECTION = "index_pins"
+#: The collections a pin's holder is read from; nothing else is a holder.
+PIN_HOLDERS = ("workflows", "tasks")
 #: §2.3: the last 20 versions are kept; older entries are deleted here, and
 #: their manifest and index copy under repos/ by the next index run's sweep
 #: (lane IX3), which then sweeps the blobs no kept manifest names. A
@@ -860,14 +869,33 @@ def retained_versions(rows: Iterable[Mapping[str, Any]], *, keep_versions: int,
     return kept
 
 
+def pin_id(holder: str, holder_id: str, commit_sha: str) -> str:
+    """The pin document's id: one per holder and commit, so a ticket renewed
+    every few minutes rewrites one pin rather than adding another."""
+    return f"{holder}-{holder_id}-{commit_sha}"
+
+
+def pin_settled(holder: Mapping[str, Any] | None, tenant_id: Any) -> bool:
+    """True when a pin's holder no longer holds it: gone, another tenant's,
+    or in a terminal state. An unknown state holds: retention keeps too much
+    for a run rather than sweep a version a step still reads."""
+    if holder is None or holder.get("tenant_id") != tenant_id:
+        return True
+    try:
+        return TaskState(holder.get("state")) in TERMINAL_STATES
+    except ValueError:
+        return False
+
+
 def kept_commits(
     rows: Iterable[Mapping[str, Any]], *, keep_versions: int, current_sha: str | None,
-    own: str, now: datetime | None = None,
+    own: str, now: datetime | None = None, pinned: Iterable[str] = (),
 ) -> list[str] | None:
     """The commits an index run's sweep must keep, or None when they cannot be named.
 
     The versions `retained_versions` keeps -- what `_prune_versions` keeps --
-    plus the promoted `current_sha` and the run's own commit, sorted. None
+    plus the promoted `current_sha`, the run's own commit and every commit a
+    live workflow pins (`pinned`, `RepoIndex._pinned_commits`), sorted. None
     when any version names no commit: the sweep would then delete objects a
     version still points at, so it is given no keep set and retires nothing.
     `now` defaults to the wall clock.
@@ -878,7 +906,7 @@ def kept_commits(
         return None
     kept = {row["commit_sha"] for row in retained_versions(
         listed, keep_versions=keep_versions, now=now or datetime.now(timezone.utc))}
-    for commit in (current_sha, own):
+    for commit in (current_sha, own, *pinned):
         if isinstance(commit, str) and _SHA.match(commit):
             kept.add(commit)
     return sorted(kept)
@@ -2669,20 +2697,53 @@ class RepoIndex:
     def _prune_versions(self, repo_id: str, keep: str | None,
                         keep_versions: int = KEPT_VERSIONS) -> None:
         """Delete every version but `retained_versions`' (the newest
-        `keep_versions`, and the last day's) and `keep`.
+        `keep_versions`, and the last day's), the ones a live workflow pins
+        (`_pinned_commits`) and `keep`.
 
         `keep_versions` is the registration's own (`keep_versions_of`). Their
         objects under repos/ go at the next index run's sweep, which this
         service cannot run: it reads the bucket and may not delete in it.
+        When the pins cannot be read nothing is deleted: the prune waits for
+        the next promotion rather than delete a version a step reads.
         """
+        try:
+            pinned = self._pinned_commits(repo_id)
+        except Exception as failed:  # retention never stops a promotion
+            log.warning("repo index prune repo_id=%s pins unread error=%s",
+                        repo_id, type(failed).__name__)
+            return
         coll = self._repo_ref(repo_id).collection(VERSIONS_COLLECTION)
         rows = [snap.to_dict() for snap in coll.stream()]
         rows = [row for row in rows if row]
         retained = {id(row) for row in retained_versions(
             rows, keep_versions=max(1, keep_versions), now=self._now())}
         for row in rows:
-            if id(row) not in retained and row.get("commit_sha") != keep:
+            if (id(row) not in retained and row.get("commit_sha") != keep
+                    and row.get("commit_sha") not in pinned):
                 self._version_ref(repo_id, row["commit_sha"]).delete()
+
+    def _pinned_commits(self, repo_id: str) -> set[str]:
+        """The commits a live holder pins (`PINS_COLLECTION`). A pin whose
+        holder has settled (`pin_settled`), or that names no holder or commit,
+        is deleted here, so a pin lasts exactly as long as its workflow. Raises
+        when the pins cannot be read: the caller then retires nothing."""
+        coll = self._repo_ref(repo_id).collection(PINS_COLLECTION)
+        pinned: set[str] = set()
+        for snap in list(coll.stream()):
+            pin = snap.to_dict() or {}
+            commit, holder, holder_id = (pin.get("commit_sha"), pin.get("holder"),
+                                         pin.get("holder_id"))
+            if (not isinstance(commit, str) or not _SHA.match(commit)
+                    or holder not in PIN_HOLDERS or not isinstance(holder_id, str)
+                    or not holder_id):
+                coll.document(snap.id).delete()
+                continue
+            held = self._db.collection(holder).document(holder_id).get()
+            if pin_settled(held.to_dict() if held.exists else None, pin.get("tenant_id")):
+                coll.document(snap.id).delete()
+                continue
+            pinned.add(commit)
+        return pinned
 
     # -- starting a run ----------------------------------------------------
     def _claim(
@@ -2804,12 +2865,14 @@ class RepoIndex:
         try:
             rows = [{"commit_sha": snap.id, **(snap.to_dict() or {})} for snap in
                     self._repo_ref(repo_id).collection(VERSIONS_COLLECTION).stream()]
+            pinned = self._pinned_commits(repo_id)
         except Exception as failed:  # retention never stops a run
             log.warning("repo index keep set tenant=%s repo_id=%s error=%s",
                         tenant_id, repo_id, type(failed).__name__)
             return None
         return kept_commits(rows, keep_versions=keep_versions_of(index),
-                            current_sha=index.get("current_sha"), own=sha, now=self._now())
+                            current_sha=index.get("current_sha"), own=sha, now=self._now(),
+                            pinned=pinned)
 
     def _start(
         self, auth: AuthContext, tenant_id: str, record: Mapping[str, Any], sha: str, *,
@@ -3870,7 +3933,7 @@ __all__ = [
     "EXTRACTOR_COMMAND", "GRAPH_WRITER_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE",
     "INDEXER_MODEL_CLASS", "INDEXER_EXTRACTOR_VERSION", "index_model_class", "KindChoice", "MAX_INCREMENTAL_CHANGES", "NO_RUN", "PHASES_FILE",
     "RUN_KINDS", "UNCHANGED",
-    "VERSIONS_COLLECTION", "choose_kind", "graph_carry_refusal", "graph_extractor_record",
+    "VERSIONS_COLLECTION", "PINS_COLLECTION", "PIN_HOLDERS", "pin_id", "pin_settled", "choose_kind", "graph_carry_refusal", "graph_extractor_record",
     "is_config_path", "last_full_at", "read_changes",
     "IndexDigestMismatch",
     "IndexPaused", "IndexRunRequest", "IndexUnavailable", "InvalidIndex", "MAX_INDEX_BYTES",

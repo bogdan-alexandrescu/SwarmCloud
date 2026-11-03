@@ -389,11 +389,10 @@ def test_the_sweep_keeps_every_version_swarm_api_keeps_readable(tool, shards, tm
 
 def test_a_version_a_running_workflow_pins_is_kept_through_its_day():
     """A workflow's steps read the graph at the version their ticket names
-    (graph_ticket.py `index_sha`), and nothing records that pin for
-    retention: the version survives because it is recorded within the last
-    KEEP_VERSIONS_MIN_AGE_HOURS, even after newer versions push it past the
-    newest `keep_versions`. Past that age only the count keeps it; that gap is
-    the owner's question (questions.json), not a default changed here."""
+    (graph_ticket.py `index_sha`). Within the day the age floor alone keeps
+    it, even after newer versions push it past the newest `keep_versions`;
+    past that age the pin the ticket records keeps it until the workflow
+    settles (owner's pick `record-pins`; test_repository_index_retention.py)."""
     from swarm_api import repoindex
 
     now = datetime(2026, 11, 3, 9, 0, tzinfo=timezone.utc)
