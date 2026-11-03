@@ -206,7 +206,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
     // administers, last. The only Admin page a workspace admin who is not a
     // platform admin is shown (`adminPagesFor`).
-    { key: WORKSPACES_YOU_ADMIN_TAB, label: 'Workspaces you admin', icon: 'tenants', to: `admin/${WORKSPACES_YOU_ADMIN_TAB}` },
+    { key: WORKSPACES_YOU_ADMIN_TAB, label: 'Workspaces', icon: 'tenants', to: `admin/${WORKSPACES_YOU_ADMIN_TAB}` },
     // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
     // every tenant's schedules are Automate › Schedules, All tenants.
   ],

@@ -75,10 +75,10 @@ describe('Admin pages do not repeat admin (#136)', () => {
     const pages = [...document.querySelectorAll('.sk-panel .sk-pk:not(.sk-pk-out)')]
     // Platform secrets joined after Platform counts: SSC-UI, part of #2158.
     // Setup and Health joined last of the platform's: DAYONE-SETUP-UI-3, part of #2688.
-    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'])
+    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['People and roles', 'Workspaces', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'])
     for (const p of pages) {
       // "Workspaces you admin" says admin in its name; what is held is the mark.
-      if (p.querySelector('.sk-pl')?.textContent !== 'Workspaces you admin') expect(p.textContent ?? '').not.toMatch(/admin/i)
+      if (p.querySelector('.sk-pl')?.textContent !== 'Workspaces') expect(p.textContent ?? '').not.toMatch(/admin/i)
       expect(p.querySelector('.sk-adm')).toBeNull()
     }
   })
