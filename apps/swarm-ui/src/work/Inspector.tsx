@@ -164,6 +164,13 @@ export interface InspectorProps {
   onWidthClass?: (cls: WidthClass) => void
   /** Called when the inspector folds (true) or unfolds (false). */
   onFold?: (folded: boolean) => void
+  /**
+   * The subject the inspector holds (an agent's id), or null. A new subject
+   * unfolds a folded inspector, so what the reader picked is shown, not a rail.
+   */
+  subject?: string | null
+  /** The body handles Escape itself (an open agent closes on it), so the phone sheet's back does not as well. */
+  ownEscape?: boolean
 }
 
 /** The page: the left pane, a drag handle, the docked inspector -- or its rail, or on a phone its sheet. */
@@ -183,6 +190,8 @@ export function Inspector({
   backLabel,
   onWidthClass,
   onFold,
+  subject = null,
+  ownEscape = false,
 }: InspectorProps) {
   const root = useRef<HTMLDivElement>(null)
   const spec = inspectorSpec(screen, initialWidth)
@@ -197,6 +206,11 @@ export function Inspector({
   useEffect(() => {
     setStored(readPane(inspectorSpec(screen, initialWidth)))
   }, [screen, initialWidth])
+
+  // A newly picked subject is shown: a folded inspector opens for it.
+  useEffect(() => {
+    if (subject !== null) setFolded(false)
+  }, [subject])
 
   const max = inspectorMax(pageWidth)
   const width = clampPane(stored, INSPECTOR_MIN, max)
@@ -267,13 +281,13 @@ export function Inspector({
   const back = onBack ?? onClose
   const sheet = phone && has && phoneOpen
   useEffect(() => {
-    if (!sheet || back === undefined) return
+    if (!sheet || back === undefined || ownEscape) return
     const esc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') back()
     }
     window.addEventListener('keydown', esc)
     return () => window.removeEventListener('keydown', esc)
-  }, [sheet, back])
+  }, [sheet, back, ownEscape])
 
   const cls = [
     'wi',

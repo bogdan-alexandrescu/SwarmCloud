@@ -2536,11 +2536,10 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 
 /* THE AGENTS PAGE IN THE WORK SECTION'S DOCKED INSPECTOR (the owner's pick of
    2026-11-03, the Graph Work redesign; Agents.tsx, work/inspectorShell.css).
-   With the wall docked the two panes are one viewport tall under the screen's
-   own header, each scrolling on its own, so the list never moves. Alone --
-   no browser live, or an agent open in the console's own split beside the
-   page -- the list scrolls with the page as it did. */
-.wi[data-screen='agents'] { --wi-height: calc(100dvh - 160px); }
+   With the wall or an open agent docked the two panes are one viewport tall,
+   the screen's own header in the left pane, each scrolling on its own, so the
+   list never moves. Alone -- no browser live and no agent open -- the list
+   scrolls with the page as it did. */
 .wi[data-screen='agents'].is-alone { height: auto; min-height: 0; }
 .wi[data-screen='agents'].is-alone > .wi-main { overflow: visible; }
 .wi[data-screen='agents'] > .wi-main > .ny { margin-bottom: var(--ctl-s2); }
@@ -2569,9 +2568,26 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .cr-figs a.cr-pr { position: relative; z-index: 1; }
 .cr-cost, .cr-pr { white-space: nowrap; }
 .cr-cost.is-unknown, .cr-pr.is-unknown { color: var(--text-faint); }
-/* Folded to the 64px strip beside an open agent, the list is its marks alone: no Needs-you row, no wall button. */
-:root[data-agent-list='strip'] .app.has-inspector > .work .wi[data-screen='agents'] .ny,
-:root[data-agent-list='strip'] .app.has-inspector > .work .wi[data-screen='agents'] .ag-wall-phone { display: none; }
+/* AN OPEN AGENT IN THE INSPECTOR (the owner's pick on #3146, "Host it in the inspector"; work/hostedAgent.ts). The
+   agent's view (`.ag-split.is-hosted`) is the inspector's body, not the fixed overlay or grid column `.drawer` and
+   `.app.has-inspector` make it elsewhere: it fills the dock, the inspector's handle sizes it and its fold folds it, and
+   on a phone the inspector's sheet is the page. Its tab strip and panes keep their own scrolling inside it. */
+.wi[data-screen='agents'] > .wi-dock:has(> .wi-body > .ag-split.is-hosted) { overflow: hidden; }
+.wi[data-screen='agents'] .wi-body:has(> .ag-split.is-hosted) { padding-bottom: 0; min-height: 0; }
+.wi[data-screen='agents'] .wi-body > .ag-split.ctl-drawer.is-hosted {
+  position: static;
+  inset: auto;
+  width: auto;
+  height: auto;
+  max-height: none;
+  flex: 1 1 0;
+  min-height: 0;
+  z-index: auto;
+  border: 0;
+  box-shadow: none;
+  padding-left: 0;
+  padding-right: 0;
+}
 
 /* `.filters` IS GONE FROM HERE AND FROM THE NAV BLOCK. It was two unrelated
    rule families 1,300 lines apart -- pill buttons up there, a label-and-select

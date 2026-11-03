@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
@@ -24,6 +24,7 @@ import { listMayStart, panelWaiters, wakePanelWaiters } from './agentPanel'
 import { focusSplitOnOpen } from './agent-split/focus'
 import { tabStep } from './agent-split/tabs'
 import './styles/agents.css'
+import { HostedAgent } from './work/hostedAgent'
 import { Inspector, startsFolded, useIsPhone, type WidthClass } from './work/Inspector'
 import { NeedsYou, heldName, type NeedItem } from './work/NeedsYou'
 import { PARK_WORD, Segmented, StateMark, ToneMark } from './components'
@@ -800,8 +801,58 @@ export function AgentsScreen({
     }
   }
 
+  // THE DOCKED INSPECTOR IS AROUND THE WHOLE LIST, read or not (#3146). It
+  // holds the wall while no agent is open and a browser is live or starting,
+  // and AN OPEN AGENT IS HOSTED IN IT (the owner's pick on #3146, "Host it in
+  // the inspector"): App builds the agent's view and hands it here
+  // (`HostedAgent`), so the inspector's drag handle sizes it, its fold folds
+  // it, and on a phone it is the inspector's sheet with its back control; the
+  // list stays the left pane and never moves. It is outside `Screen` because
+  // the list's first read waits for the agent panel (`listMayStart`): inside
+  // the list's body the panel would wait for the list it holds back.
+  const agent = useContext(HostedAgent)
+  // The rows the body holds (`onRows`), for the wall and the title. The same
+  // rows twice are no change, so a page rebuilt per render does not loop.
+  const [rows, setRows] = useState<readonly Task[]>([])
+  const onRows = useCallback((tasks: readonly Task[]) => {
+    setRows((was) => (was.length === tasks.length && was.every((t, i) => t === tasks[i]) ? was : tasks))
+  }, [])
+  // The rows' titles: a lone agent's title, else the step's workflow and step
+  // as the row draws them. One read for the wall, the Needs-you row and the title.
+  const allTitles = useRowTitles(rows.filter((t) => isStep(t) && stepWorkflowTitle(t, null) === null))
+  const nameOf = useCallback((t: Task): string => ownTitle(t) ?? rowLabel(t, stepWorkflowTitle(t, allTitles)), [allTitles])
+  const phone = useIsPhone()
+  // ON A PHONE THE WALL IS A SHEET, opened from the toolbar and closed by its back control.
+  const [wallOpen, setWallOpen] = useState(false)
+  const wallTasks = useMemo(() => browserRows(rows), [rows])
+  const wall = taskId === null && wallTasks.length > 0 ? <LiveWall tasks={rows} onOpen={onOpen} title={nameOf} /> : null
+  const [foldAtRest] = useState(() => typeof window !== 'undefined' && startsFolded(window.innerWidth))
+  const openRowTask = agent === null ? undefined : rows.find((t) => t.id === agent.taskId)
+
   return (
     <>
+    <Inspector
+      screen="agents"
+      initialWidth={WALL_WIDTH}
+      {...(agent !== null
+        ? {
+            label: 'Agent inspector',
+            title: openRowTask !== undefined ? nameOf(openRowTask) : agent.taskId,
+            subject: agent.taskId,
+            phoneOpen: true,
+            onBack: agent.close,
+            ownEscape: true,
+          }
+        : {
+            label: 'Live browsers',
+            title: 'Live browsers',
+            state: <span className="ag-wall-count">{wallTasks.length} live</span>,
+            phoneOpen: wallOpen,
+            onBack: () => setWallOpen(false),
+          })}
+      startFolded={foldAtRest}
+      backLabel="Agents"
+      main={
       <Screen
         title="Agents"
         load={load}
@@ -854,15 +905,23 @@ export function AgentsScreen({
             setFailedFirst={setFailedFirst}
             browserUnused={browserUnused}
             setBrowserUnused={setBrowserUnused}
+            nameOf={nameOf}
+            onRows={onRows}
+            watchWall={phone && wall !== null ? () => setWallOpen(true) : null}
           />
         )}
       </Screen>
+      }
+    >
+      {agent !== null ? agent.view : wall}
+    </Inspector>
       {/* A SCRIM WHILE AN AGENT IS OPEN (BT-017, #2423): from 760px to 1099px
           the agent is an overlay on this list, and with no backdrop its edge
           cut the rows mid-word (`…NOT_YET, not`) as if they were one page.
           Drawn only in that band (agents.css `.ag-scrim`); it takes no pointer,
-          so a row under it still opens, as it did. */}
-      {taskId !== null && <div className="ag-scrim" aria-hidden="true" />}
+          so a row under it still opens, as it did. An agent hosted in the
+          inspector (#3146) is beside the list, never over it: no scrim. */}
+      {taskId !== null && agent === null && <div className="ag-scrim" aria-hidden="true" />}
     </>
   )
 }
@@ -900,6 +959,9 @@ function AgentsBody({
   setFailedFirst,
   browserUnused,
   setBrowserUnused,
+  nameOf,
+  onRows,
+  watchWall,
 }: {
   onOpen: (taskId: string) => void
   openTaskId: string | null
@@ -930,6 +992,12 @@ function AgentsBody({
   /** Only the browser agents whose browser was not used (`?browser=unused`, #2322). */
   browserUnused: boolean
   setBrowserUnused: (b: boolean) => void
+  /** A row's name, as the wall and the Needs-you row draw it. */
+  nameOf: (t: Task) => string
+  /** Told the rows this page holds, for the wall and the inspector's title around the list. */
+  onRows: (tasks: readonly Task[]) => void
+  /** Open the wall's phone sheet; null where there is no sheet to open. */
+  watchWall: (() => void) | null
 }) {
   // One clock for every ticking duration on the screen, so a hundred rows do
   // not each hold their own interval. The SHARED 1s clock (useNow.ts), the
@@ -1261,39 +1329,20 @@ function AgentsBody({
   const devices = useRowDevices(rows.filter((t) => t.state === 'RUNNING' && isLiveBrowser(t)).map((t) => t.id), readAt)
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
-  // THE NEEDS-YOU ROW AND THE WALL read the rows this page holds, nothing more.
-  // Their titles are the rows' own: a lone agent's title, else the step's
-  // workflow and step as the row draws them.
-  const allTitles = useRowTitles(page.tasks.filter((t) => isStep(t) && stepWorkflowTitle(t, null) === null))
-  const nameOf = (t: Task): string => ownTitle(t) ?? rowLabel(t, stepWorkflowTitle(t, allTitles))
-  const needs = useMemo(() => agentNeeds(page.tasks, nameOf), [page.tasks, allTitles]) // eslint-disable-line react-hooks/exhaustive-deps
-  const phone = useIsPhone()
-  // ON A PHONE THE WALL IS A SHEET, opened from the toolbar and closed by its back control.
-  const [wallOpen, setWallOpen] = useState(false)
-  const wallTasks = useMemo(() => browserRows(page.tasks), [page.tasks])
-  // The inspector at rest: the wall while no agent is open and a browser is
-  // live or starting. An open agent is the console's own agent view, which
-  // App mounts beside this page (AgentSplit) -- so the left pane is the page.
-  const wall = openTaskId === null && wallTasks.length > 0 ? <LiveWall tasks={page.tasks} onOpen={openRow} title={nameOf} /> : null
-  const [foldAtRest] = useState(() => typeof window !== 'undefined' && startsFolded(window.innerWidth))
+  // THE NEEDS-YOU ROW reads the rows this page holds, nothing more, named as
+  // the wall names them (`nameOf`, AgentsScreen's).
+  const needs = useMemo(() => agentNeeds(page.tasks, nameOf), [page.tasks, nameOf])
+  // The wall and the inspector's title are AgentsScreen's, which holds the
+  // inspector around the list (#3146): they read the rows this page holds.
+  useEffect(() => onRows(page.tasks), [page.tasks, onRows])
+  const hosting = useContext(HostedAgent) !== null
 
   return (
-    <Inspector
-      screen="agents"
-      initialWidth={WALL_WIDTH}
-      label="Live browsers"
-      title="Live browsers"
-      state={<span className="ag-wall-count">{liveBrowsers} live</span>}
-      startFolded={foldAtRest}
-      phoneOpen={wallOpen}
-      onBack={() => setWallOpen(false)}
-      backLabel="Agents"
-      main={
     <RowDevices.Provider value={devices}>
     <RowTitleOf.Provider value={titleOf}>
       <NeedsYou items={needs} approvals={null} />
-      {phone && wall !== null && (
-        <button type="button" className="ag-wall-phone" onClick={() => setWallOpen(true)}>
+      {watchWall !== null && (
+        <button type="button" className="ag-wall-phone" onClick={watchWall}>
           Watch {liveBrowsers} live {liveBrowsers === 1 ? 'browser' : 'browsers'}
         </button>
       )}
@@ -1341,8 +1390,10 @@ function AgentsBody({
         {/* THE COLLAPSE TOGGLE IS THE LIST'S (#503): it sat as a boxed button
             at the top of the detail. « folds the list to its 64px strip of
             state marks and » brings it back, as `[` does; only beside an
-            open agent, where there is a detail to give the room to. */}
-        {openTaskId !== null && <AgCollapse />}
+            open agent, where there is a detail to give the room to. Not
+            where the agent is hosted in the inspector (#3146): its handle
+            and fold give the room there. */}
+        {openTaskId !== null && !hosting && <AgCollapse />}
 
         {/* THE SCOPE RIDES WITH THE SEARCH (V147, visual QA #1038). It was the
             toolbar's last, `is-end` item, and whenever the toolbar wrapped
@@ -1668,10 +1719,6 @@ function AgentsBody({
       )}
     </RowTitleOf.Provider>
     </RowDevices.Provider>
-      }
-    >
-      {wall}
-    </Inspector>
   )
 }
 
