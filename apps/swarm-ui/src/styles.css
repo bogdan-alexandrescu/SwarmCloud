@@ -2588,6 +2588,8 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   padding-left: 0;
   padding-right: 0;
 }
+/* Beside the list there is nothing to go back to; on the phone sheet the agent's own back link names the list. */
+.wi[data-screen='agents']:not(.is-sheet) .ag-split.is-hosted > .ctl-agent-back { display: none; }
 
 /* `.filters` IS GONE FROM HERE AND FROM THE NAV BLOCK. It was two unrelated
    rule families 1,300 lines apart -- pill buttons up there, a label-and-select

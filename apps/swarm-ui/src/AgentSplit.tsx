@@ -383,10 +383,10 @@ export function AgentSplit({
       {/* THE WAY BACK TO THE LIST: on a phone the list and the agent are two
           pages, and this is the agent page's back link. Shown wherever the
           agent covers the list (below 1100px). */}
-      {/* Hosted, the inspector's phone sheet draws the way back (`wi-back`). */}
-      {!hosted && <button type="button" className="ctl-agent-back" onClick={close} aria-label={`Back to ${backLabel(closeTo)}`}>
+      {/* Hosted in the inspector, it is drawn only on the phone sheet (styles.css). */}
+      <button type="button" className="ctl-agent-back" onClick={close} aria-label={`Back to ${backLabel(closeTo)}`}>
         ‹ {backLabel(closeTo)}
-      </button>}
+      </button>
       {/* THE ✕ IS IN THE HEADER'S ACTION ROW, after Copy link (walkthrough
           B, 2026-10-03): a sticky band of its own on the column, it was
           drawn over Copy link. */}

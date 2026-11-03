@@ -1589,7 +1589,7 @@ export function App() {
       />
     ) : null
   const hostedView: HostedAgentView | null =
-    hosted && at.taskId !== null ? { taskId: at.taskId, view: split, close: () => go(listAddress) } : null
+    hosted && at.taskId !== null ? { taskId: at.taskId, view: split } : null
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
   // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
   // a page that is not Overview, because the spine lights the nearest section.

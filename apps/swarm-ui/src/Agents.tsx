@@ -839,9 +839,9 @@ export function AgentsScreen({
             label: 'Agent inspector',
             title: openRowTask !== undefined ? nameOf(openRowTask) : agent.taskId,
             subject: agent.taskId,
+            // The phone sheet's way back and Escape are the agent's own
+            // (`.ctl-agent-back`, naming the list it goes back to).
             phoneOpen: true,
-            onBack: agent.close,
-            ownEscape: true,
           }
         : {
             label: 'Live browsers',

@@ -14,10 +14,8 @@ import { createContext, type ReactNode } from 'react'
 export interface HostedAgentView {
   /** The open agent's id. */
   taskId: string
-  /** The agent's view, `AgentSplit` with `hosted`. */
+  /** The agent's view, `AgentSplit` with `hosted`: its own header closes it, and its back link on a phone. */
   view: ReactNode
-  /** Close the agent: back to the list address it was opened from. */
-  close: () => void
 }
 
 export const HostedAgent = createContext<HostedAgentView | null>(null)

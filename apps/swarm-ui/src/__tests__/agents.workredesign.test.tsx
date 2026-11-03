@@ -14,7 +14,14 @@
 // MUTATIONS, one per block: drop the `wi-hide-*` class from a cell; pass the
 // wall when an agent is open; open the phone sheet without the button; leave
 // the owner filter out of the rows; count a null cost as $0.00; drop the
-// failed rows from `agentNeeds`; open nothing on a pasted whole task id.
+// failed rows from `agentNeeds`; open nothing on a pasted whole task id;
+// mount the hosted agent inside `Screen` (it then waits on the list's read
+// that waits on it), leave the inspector folded when an agent opens, or keep
+// the list's strip toggle beside a hosted agent.
+//
+// AN OPEN AGENT IS HOSTED IN THE INSPECTOR (the owner's pick on #3146, "Host
+// it in the inspector"): App hands its view through `HostedAgent`, and the
+// page docks it with the inspector's handle, fold and phone sheet.
 
 import SHELL_CSS from '../work/inspectorShell.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -39,6 +46,7 @@ vi.mock('../LiveThumb', async (importOriginal) => {
   return { ...actual, LiveThumb: ({ taskId }: { taskId: string }) => <span className="still-stub" data-still={taskId} /> }
 })
 
+import { HostedAgent } from '../work/hostedAgent'
 import { AgentsScreen, DROP_CLASS, WALL_WIDTH, agentNeeds, bySpent, costCell, droppedColumns, rowPullRequest } from '../Agents'
 import { resetListSnap } from '../listSnap'
 
@@ -164,7 +172,7 @@ describe('the list is the left pane of the docked inspector', () => {
     expect(open).toHaveBeenCalledWith(BROWSER.id)
   })
 
-  it('gives the page to the list while an agent is open beside it', async () => {
+  it('docks no wall while an agent is open, and with no host for it gives the page to the list', async () => {
     media(false)
     const c = await land([BROWSER, CHEAP], CHEAP.id)
     expect(c.querySelector('.wi[data-screen="agents"]')?.classList.contains('is-alone')).toBe(true)
@@ -175,6 +183,67 @@ describe('the list is the left pane of the docked inspector', () => {
     media(false)
     const c = await land([CHEAP], null)
     expect(c.querySelector('.wi[data-screen="agents"]')?.classList.contains('is-alone')).toBe(true)
+  })
+})
+
+/** The page with App's agent view handed in, as App hands it on the Agents page; the list's read as given. */
+function host(taskId: string, read: Promise<Result<TaskPage>> | Result<TaskPage>): HTMLElement {
+  api.loadTasks.mockReturnValue(read instanceof Promise ? read : Promise.resolve(read))
+  const { container } = render(
+    <HostedAgent.Provider value={{ taskId, view: <div className="agent-probe" data-agent={taskId} /> }}>
+      <AgentsScreen onOpen={() => {}} taskId={taskId} list={{ tab: 'live', state: null }} />
+    </HostedAgent.Provider>,
+  )
+  return container as HTMLElement
+}
+
+const ok = (tasks: Task[]): Result<TaskPage> => ({ status: 'ok', data: { tasks, tenant_id: 'acme' }, fetchedAt: Date.now() })
+
+describe('an open agent is hosted in the docked inspector', () => {
+  it('docks the agent beside the list, with the handle that resizes it, named by its row', async () => {
+    media(false)
+    const c = host(CHEAP.id, ok([BROWSER, CHEAP]))
+    await waitFor(() => expect(c.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
+    await act(async () => {})
+    const shell = c.querySelector<HTMLElement>('.wi[data-screen="agents"]')
+    expect(shell?.classList.contains('is-docked')).toBe(true)
+    const dock = screen.getByRole('complementary', { name: 'Agent inspector' })
+    expect(dock.querySelector('.wi-body > .agent-probe')?.getAttribute('data-agent')).toBe(CHEAP.id)
+    expect(dock.querySelector('.wi-title-text')?.textContent).toBe('Cheap one')
+    expect(screen.getByRole('separator', { name: 'Resize the inspector' })).toBeTruthy()
+    // The list is the left pane, and the wall, the scrim and the strip toggle are not drawn.
+    expect(shell?.querySelector('.wi-main .row.is-compact')).not.toBeNull()
+    expect(screen.queryByRole('complementary', { name: 'Live browsers' })).toBeNull()
+    expect(c.querySelector('.ag-scrim')).toBeNull()
+    expect(c.querySelector('.ag-collapse')).toBeNull()
+  })
+
+  it('draws the agent before the list has read anything, since the list waits for it', () => {
+    media(false)
+    const c = host(CHEAP.id, new Promise<Result<TaskPage>>(() => {}))
+    expect(c.querySelector('.ag-list-tabs')).toBeNull()
+    const dock = screen.getByRole('complementary', { name: 'Agent inspector' })
+    expect(dock.querySelector('.agent-probe')).not.toBeNull()
+    // No row is read yet, so the title is the agent's id.
+    expect(dock.querySelector('.wi-title-text')?.textContent).toBe(CHEAP.id)
+  })
+
+  it('opens unfolded at 1280, where the wall rests folded', async () => {
+    media(false, 1280)
+    host(CHEAP.id, ok([BROWSER, CHEAP]))
+    expect(screen.getByRole('complementary', { name: 'Agent inspector' }).querySelector('.agent-probe')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Fold the inspector' }))
+    expect(screen.queryByRole('complementary', { name: 'Agent inspector' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open the inspector' }))
+    expect(screen.getByRole('complementary', { name: 'Agent inspector' })).toBeTruthy()
+    await act(async () => {})
+  })
+
+  it('is the sheet on a phone, at once', async () => {
+    media(true)
+    host(CHEAP.id, ok([CHEAP]))
+    expect(screen.getByRole('dialog', { name: 'Agent inspector' }).querySelector('.agent-probe')).not.toBeNull()
+    await act(async () => {})
   })
 })
 

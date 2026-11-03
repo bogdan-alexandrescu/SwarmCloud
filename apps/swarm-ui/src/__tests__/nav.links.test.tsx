@@ -260,6 +260,9 @@ describe('the links the frame draws itself', () => {
     // The ✕ is in the agent header's action row (walkthrough B, 2026-10-03).
     const close = document.querySelector<HTMLButtonElement>('.ctl-drawer .ag-head-actions > button.drawer-close')
     expect(close, 'the drawer did not open').not.toBeNull()
+    // App hands the agent to the Agents page's inspector (#3146): no column of its own beside the page.
+    expect(document.querySelector('.ctl-drawer.ag-split')?.classList.contains('is-hosted')).toBe(true)
+    expect(document.querySelector('.app.has-inspector')).toBeNull()
     await act(async () => {
       close!.click()
     })
