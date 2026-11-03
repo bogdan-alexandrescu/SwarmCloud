@@ -105,27 +105,23 @@ _RESET: dict[str, Any] = {
 }
 
 
-class StepNotFound(NotFound):
-    code = "step_not_found"
+#: Why a re-run was refused, in the refusal's `detail.reason`. The codes are
+#: the established `not_found` and `conflict` (a new code ships behind a
+#: switch, `swarm_api.refusals`); the reason is what tells them apart.
+STEP_NOT_FOUND = "step_not_found"
+WORKFLOW_CANCELLED = "workflow_cancelled"
+WORKFLOW_STILL_RUNNING = "workflow_still_running"
+STEP_NOT_FAILED = "step_not_failed"
+STEP_RERUN_RACED = "step_rerun_raced"
 
 
-class WorkflowCancelled(Conflict):
-    code = "workflow_cancelled"
-
-
-class WorkflowStillRunning(Conflict):
-    code = "workflow_still_running"
-
-
-class StepNotFailed(Conflict):
-    code = "step_not_failed"
-
-
-class StepRerunRaced(Conflict):
+def raced(workflow_id: str) -> Conflict:
     """The workflow changed between the read and the write: someone else
     re-ran or cancelled it first. Read it again."""
-
-    code = "step_rerun_raced"
+    return Conflict(
+        "this workflow changed while the re-run was prepared; read it again",
+        detail={"workflow_id": workflow_id, "reason": STEP_RERUN_RACED},
+    )
 
 
 @dataclass(frozen=True)
@@ -160,14 +156,15 @@ def plan(workflow: Workflow, tasks: Mapping[str, Task], step_id: str) -> list[st
     by_step = {s.step_id: s for s in workflow.steps}
     step = by_step.get(step_id)
     if step is None:
-        raise StepNotFound(
+        raise NotFound(
             f"workflow {workflow.workflow_id!r} has no step {step_id!r}",
-            detail={"workflow_id": workflow.workflow_id, "step_id": step_id},
+            detail={"workflow_id": workflow.workflow_id, "step_id": step_id,
+                    "reason": STEP_NOT_FOUND},
         )
     if workflow.cancel_requested:
-        raise WorkflowCancelled(
+        raise Conflict(
             "this workflow was cancelled; a cancelled workflow's steps are not re-run",
-            detail={"workflow_id": workflow.workflow_id},
+            detail={"workflow_id": workflow.workflow_id, "reason": WORKFLOW_CANCELLED},
         )
     running = [
         s.step_id for s in workflow.steps
@@ -175,16 +172,17 @@ def plan(workflow: Workflow, tasks: Mapping[str, Task], step_id: str) -> list[st
         or tasks[s.task_id].state not in TERMINAL_STATES
     ]
     if running:
-        raise WorkflowStillRunning(
+        raise Conflict(
             "a step can be re-run once every step of its workflow has finished",
-            detail={"workflow_id": workflow.workflow_id, "steps": running},
+            detail={"workflow_id": workflow.workflow_id, "steps": running,
+                    "reason": WORKFLOW_STILL_RUNNING},
         )
     own = tasks[step.task_id or ""]
     if own.state not in RERUNNABLE_STATES:
-        raise StepNotFailed(
+        raise Conflict(
             f"step {step_id!r} ended {own.state.value}; only a failed step is re-run",
             detail={"workflow_id": workflow.workflow_id, "step_id": step_id,
-                    "state": own.state.value},
+                    "state": own.state.value, "reason": STEP_NOT_FAILED},
         )
     seeds = {step_id} | {
         s.step_id for s in workflow.steps

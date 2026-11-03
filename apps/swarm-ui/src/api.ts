@@ -2229,6 +2229,38 @@ export async function cancelWorkflow(workflowId: string): Promise<Result<CancelW
   >
 }
 
+/**
+ * RE-RUN ONE FAILED WORKFLOW STEP INSIDE ITS WORKFLOW.
+ * `POST /v1/workflows/{id}/steps/{step}/rerun`
+ * (apps/swarm-api/swarm_api/routes/workflows.py `rerun_workflow_step`,
+ * `swarm_api/steprerun.py`). The body is empty: the step's runner profile and
+ * spec are the ones the API resolved at submission (invariant 10). The failed
+ * step, and the steps its failure cancelled, get new tasks; the answer names
+ * each step's old and new task id. Refused 409 `conflict` while a step still
+ * runs, for a step that did not fail, for a cancelled workflow, and when
+ * another re-run or a cancel landed first (`detail.reason` says which; the
+ * message says it in words). Called by Needs you's Retry on a
+ * failed step (work/NeedsYou.tsx). The fixture build sends nothing.
+ */
+export async function rerunWorkflowStep(workflowId: string, stepId: string): Promise<Result<StepRerunResult>> {
+  const target = route('/v1/workflows/{id}/steps/{step}/rerun', { id: workflowId, step: stepId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, false)
+    return {
+      status: 'error',
+      error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build re-runs no steps.' },
+    }
+  }
+  return (await write(target, 'POST')) as Result<StepRerunResult>
+}
+
+/** What `rerun_workflow_step` answers: each re-run step's old and new task id. */
+export interface StepRerunResult {
+  workflow_id: string
+  step_id: string
+  replaced: Record<string, { from: string; to: string }>
+}
+
 /** Only what this client reads of the cancel response (store.py `cancel_workflow`). */
 export interface CancelWorkflowResult {
   workflow_id: string

@@ -2243,14 +2243,14 @@ class Store:
         `replaced` is step id -> the task id the re-run read for it; `tasks`
         are the new tasks, signed, each carrying its step id. Inside the
         transaction, before any write, the workflow is read again and refused
-        `step_rerun_raced` unless it is still this tenant's, not cancelled,
+        409 (`detail.reason` `step_rerun_raced`) unless it is still this tenant's, not cancelled,
         every replaced step still points at the task the re-run read, and
         every step's task is terminal -- so two Retries of one step write one
         set of tasks, and a cancel or a re-run that landed first wins. The
         old tasks are not written: a FAILED task stays FAILED. The workflow's
         stored state is set to QUEUED, which is what its new steps derive.
         """
-        from .steprerun import StepRerunRaced
+        from .steprerun import raced as rerun_raced
 
         wf_ref = self._db.collection(WORKFLOWS).document(workflow_id)
         now = self._now()
@@ -2274,10 +2274,7 @@ class Store:
                         raced = True
                         break
             if raced:
-                raise StepRerunRaced(
-                    "this workflow changed while the re-run was prepared; read it again",
-                    detail={"workflow_id": workflow_id},
-                )
+                raise rerun_raced(workflow_id)
             new_by_step = {t.step_id: t.id for t in tasks}
             for task in tasks:
                 ref = self._db.collection(TASKS).document(task.id)

@@ -10,12 +10,14 @@
  *   Question         Answer opens the answer box IN THE ROW and sends it
  *                    through `answerQuestion`, the call "Questions for you"
  *                    makes (`POST /v1/tasks/{id}/answers`).
- *   Failed           Retry is the agent page's Run again: Submit opened with
- *                    the same runner profile BY NAME (invariant 10), the
- *                    masked prompt and the repository (`prefillTask`); nothing
- *                    is sent from here. A workflow step is not offered it, as
- *                    Run again does not offer it: its prompt alone is not the
- *                    step it was.
+ *   Failed           A lone agent's Retry is the agent page's Run again:
+ *                    Submit opened with the same runner profile BY NAME
+ *                    (invariant 10), the masked prompt and the repository
+ *                    (`prefillTask`); nothing is sent from here. A workflow
+ *                    step's Retry re-runs the step INSIDE its workflow
+ *                    (`rerunWorkflowStep`, `POST /v1/workflows/{id}/steps/
+ *                    {step}/rerun`; the owner's pick on PR #3123): its prompt
+ *                    alone, submitted as a lone agent, is not the step it was.
  *   Merge waiting    Approve merge is `approveApproval` with the digest of the
  *                    approval the page read. While owner questions hold the
  *                    merge (`ownerQuestionsHold`) it is disabled and names
@@ -35,7 +37,7 @@
  * prompt a Retry carries over.
  */
 import { useEffect, useId, useRef, useState, type MouseEvent } from 'react'
-import { answerQuestion, approveApproval, loadTaskInputOnce, type ApprovalItem, type QuestionOption } from '../api'
+import { answerQuestion, approveApproval, loadTaskInputOnce, rerunWorkflowStep, type ApprovalItem, type QuestionOption } from '../api'
 import { Button, buttonClass } from '../components'
 import { errorHeading, type ApiError } from '../fetch'
 import { handoffOf, humanReady, ownerQuestionsHold, timeLeft, type HeldQuestion } from '../Handoff'
@@ -326,7 +328,7 @@ function OpenLink({ href, name }: { href: string; name: string }) {
 function NeedRow({ item, onChanged }: { item: NeedItem; onChanged?: () => void }) {
   switch (item.kind) {
     case 'failed':
-      return <FailedRow item={item} />
+      return <FailedRow item={item} onChanged={onChanged} />
     case 'question':
       return <QuestionRow item={item} onChanged={onChanged} />
     case 'merge':
@@ -336,8 +338,10 @@ function NeedRow({ item, onChanged }: { item: NeedItem; onChanged?: () => void }
   }
 }
 
-function FailedRow({ item }: { item: FailedNeed }) {
-  const step = item.task.workflow_id !== null && item.task.workflow_id !== undefined
+function FailedRow({ item, onChanged }: { item: FailedNeed; onChanged?: () => void }) {
+  const workflowId = item.task.workflow_id ?? null
+  const stepId = item.task.step_id ?? null
+  const [failed, setFailed] = useState<ApiError | null>(null)
   return (
     <li className="ny-row is-failed">
       <Kind k="failed" />
@@ -347,10 +351,83 @@ function FailedRow({ item }: { item: FailedNeed }) {
       </span>
       <Pr pr={item.pr} />
       <span className="ny-acts">
-        {!step && <RetryLink task={item.task} name={item.title} />}
+        {workflowId === null ? (
+          <RetryLink task={item.task} name={item.title} />
+        ) : stepId !== null ? (
+          <StepRetryButton workflowId={workflowId} stepId={stepId} name={item.title} onFailed={setFailed} onChanged={onChanged} />
+        ) : null}
         <OpenLink href={openPath(item.task.id, 'logs')} name={item.title} />
       </span>
+      {failed !== null && (
+        <span className="ny-err" role="alert">
+          Not re-run: {failed.message || errorHeading(failed)}
+        </span>
+      )}
     </li>
+  )
+}
+
+/**
+ * RETRY ON A WORKFLOW STEP: the step re-run inside its workflow
+ * (`rerunWorkflowStep`). Sent on the press, by a member or above as a cancel
+ * is; the API refuses it while any step of the workflow still runs and says
+ * why, which the row shows. Accepted, the row reads "Re-running" and the page
+ * reads again.
+ */
+function StepRetryButton({
+  workflowId,
+  stepId,
+  name,
+  onFailed,
+  onChanged,
+}: {
+  workflowId: string
+  stepId: string
+  name: string
+  onFailed: (e: ApiError | null) => void
+  onChanged?: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(false)
+  const roleGate = useRoleGate('member', 're-run steps')
+  if (done) {
+    return (
+      <span className="ny-done" role="status">
+        Re-running
+      </span>
+    )
+  }
+  if (roleGate !== null) {
+    return (
+      <Button size="sm" disabledReason={roleGate}>
+        Retry
+      </Button>
+    )
+  }
+  const send = async () => {
+    if (busy) return
+    setBusy(true)
+    onFailed(null)
+    const r = await rerunWorkflowStep(workflowId, stepId)
+    setBusy(false)
+    if (r.status === 'ok' || r.status === 'stale') {
+      setDone(true)
+      onChanged?.()
+    } else if (r.status === 'error') {
+      onFailed(r.error)
+    }
+  }
+  return (
+    <Button
+      size="sm"
+      kind="primary"
+      aria-busy={busy || undefined}
+      aria-label={`Retry ${name}`}
+      title="Re-run this step inside its workflow, with the steps its failure stopped."
+      onClick={() => void send()}
+    >
+      Retry
+    </Button>
   )
 }
 

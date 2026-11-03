@@ -19,6 +19,7 @@ const api = vi.hoisted(() => ({
   answerQuestion: vi.fn(),
   approveApproval: vi.fn(),
   loadTaskInputOnce: vi.fn(),
+  rerunWorkflowStep: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -109,6 +110,7 @@ beforeEach(() => {
   api.answerQuestion.mockReset()
   api.approveApproval.mockReset()
   api.loadTaskInputOnce.mockReset()
+  api.rerunWorkflowStep.mockReset()
 })
 
 describe('the counted chips', () => {
@@ -236,12 +238,45 @@ describe('Answer', () => {
 })
 
 describe('the other rows act as the console does today', () => {
-  it('offers Retry for a lone agent, not for a workflow step, and opens the logs of either', () => {
+  it('offers Retry for a lone agent as Submit, for a workflow step as a re-run, and opens the logs of either', () => {
     render(<NeedsYou items={[failed('lone'), failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} />)
     const retry = screen.getByRole('link', { name: 'Retry agent lone' }) as HTMLAnchorElement
     expect(retry.getAttribute('href')).toBe('/submit/task')
     expect(screen.queryByRole('link', { name: 'Retry agent step' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Retry agent step' })).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Open agent step' }).getAttribute('href')).toBe('/agents/live/step/logs')
+  })
+
+  it("a workflow step's Retry re-runs the step inside its workflow, then the page reads again", async () => {
+    api.rerunWorkflowStep.mockResolvedValue({
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: { workflow_id: 'wf_one', step_id: 'build', replaced: { build: { from: 'step', to: 'task_new' } } },
+    })
+    const onChanged = vi.fn()
+    render(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} onChanged={onChanged} />)
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
+    })
+    expect(api.rerunWorkflowStep).toHaveBeenCalledWith('wf_one', 'build')
+    expect(api.loadTaskInputOnce).not.toHaveBeenCalledWith('step')
+    expect(screen.getByRole('status').textContent).toBe('Re-running')
+    expect(onChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it("a refused step re-run says why and leaves Retry to press again", async () => {
+    api.rerunWorkflowStep.mockResolvedValue({
+      status: 'error',
+      error: { kind: 'conflict', httpStatus: 409, code: 'conflict', message: 'a step can be re-run once every step of its workflow has finished' },
+    })
+    const onChanged = vi.fn()
+    render(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} onChanged={onChanged} />)
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
+    })
+    expect(screen.getByRole('alert').textContent).toContain('every step of its workflow has finished')
+    expect(screen.getByRole('button', { name: 'Retry agent step' })).toBeTruthy()
+    expect(onChanged).not.toHaveBeenCalled()
   })
 
   it('Retry fills Submit as Run again does: the profile by name, the masked prompt and the repository', async () => {

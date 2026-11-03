@@ -138,7 +138,7 @@ def test_refused_while_a_step_still_runs(client, db) -> None:
     response = rerun(client, wf, "test")
 
     assert response.status_code == 409
-    assert response.json()["code"] == "workflow_still_running"
+    assert response.json()["detail"]["reason"] == "workflow_still_running"
     assert db.docs[f"workflows/{wf['workflow_id']}"]["steps"][1]["task_id"] == wf["steps"]["test"]
 
 
@@ -149,7 +149,7 @@ def test_refused_for_a_step_that_did_not_fail(client, db) -> None:
     response = rerun(client, wf, "build")
 
     assert response.status_code == 409
-    assert response.json()["code"] == "step_not_failed"
+    assert response.json()["detail"]["reason"] == "step_not_failed"
 
 
 def test_refused_for_a_cancelled_workflow(client, db) -> None:
@@ -160,7 +160,7 @@ def test_refused_for_a_cancelled_workflow(client, db) -> None:
     response = rerun(client, wf, "test")
 
     assert response.status_code == 409
-    assert response.json()["code"] == "workflow_cancelled"
+    assert response.json()["detail"]["reason"] == "workflow_cancelled"
 
 
 def test_unknown_step_is_404(client, db) -> None:
@@ -170,7 +170,7 @@ def test_unknown_step_is_404(client, db) -> None:
     response = rerun(client, wf, "nope")
 
     assert response.status_code == 404
-    assert response.json()["code"] == "step_not_found"
+    assert response.json()["detail"]["reason"] == "step_not_found"
 
 
 def test_a_second_retry_of_the_same_step_is_refused(client, db) -> None:
@@ -183,7 +183,7 @@ def test_a_second_retry_of_the_same_step_is_refused(client, db) -> None:
 
     # The new step is PARKED, so the workflow is running again.
     assert second.status_code == 409
-    assert second.json()["code"] == "workflow_still_running"
+    assert second.json()["detail"]["reason"] == "workflow_still_running"
     tasks_after = sorted(k for k in db.docs if k.startswith("tasks/") and k.count("/") == 1)
     assert tasks_after == tasks_before
 
@@ -193,14 +193,16 @@ def test_the_store_refuses_a_rerun_that_raced(client, db, api_store) -> None:
     failed_at_test(db, wf)
     assert rerun(client, wf, "test").status_code == 200
     # The same re-run, prepared from the read before the first one landed.
-    from swarm_api.steprerun import StepRerunRaced
     import pytest
 
-    with pytest.raises(StepRerunRaced):
+    from swarm_api.errors import Conflict
+
+    with pytest.raises(Conflict) as refused:
         api_store.rerun_workflow_steps(
             "eng", wf["workflow_id"], replaced={"test": wf["steps"]["test"]},
             tasks=[], by="alice@example.com",
         )
+    assert refused.value.detail["reason"] == "step_rerun_raced"
 
 
 def test_the_workflow_read_serves_each_rerun_step_once(client, db) -> None:
