@@ -69,8 +69,7 @@ def _prompt_given_to_the_cli(ctx: RunnerContext, monkeypatch) -> str:
     "never run vitest without file arguments",
     "never run pytest over a whole directory",
     "-n auto",
-    "never start parallel shards",
-    "sleep",
+    "never start parallel test shards",
     "Do not run scripts/changed-guards.sh yourself: the worker's pre-publish "
     "gate runs it after your turn and hands you back what fails",
 ])
