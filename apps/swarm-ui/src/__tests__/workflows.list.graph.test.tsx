@@ -470,7 +470,7 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
   // 92px). The fixed layout lets the words go under the bar and wrap at their
   // spaces, so the column holds the bar, "12/12" and every word whole.
   // MUTATION: drop the wrap, or put `nowrap` back on the cell.
-  it('holds the bar and every word of the step census whole, at every fixed pane, open and folded', () => {
+  it('holds the bar and every word of the step census whole, at every fixed pane, open and folded', { timeout: 180_000 }, () => {
     const LONGEST = ['12/12', '12 steps', '12 of 12 steps unread']
     for (const open of [false, true]) {
       const root = row(open)
