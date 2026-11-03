@@ -119,14 +119,18 @@ class FakePool:
         if self._error is not None:
             raise self._error
 
-    def list_accounts(self, tenant_id: str) -> dict:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict:
         self.calls.append(("list_accounts", tenant_id))
         self._maybe_fail()
-        visible = [
-            dict(a)
-            for a in self.accounts.values()
-            if a["owner_tenant"] == tenant_id or tenant_id in a["lend_to"]
-        ]
+        # The broker's rule: an account in the Voice it pool only serves no
+        # tenant, so a scoped listing names it only to its owner, and only
+        # when `include_reserved` asks for it.
+        def serves(a: dict) -> bool:
+            if "workspace" not in a.get("pools", ["workspace"]):
+                return include_reserved and a["owner_tenant"] == tenant_id
+            return a["owner_tenant"] == tenant_id or tenant_id in a["lend_to"]
+
+        visible = [dict(a) for a in self.accounts.values() if serves(a)]
         return {"accounts": visible, "tenant_id": tenant_id}
 
     def register(self, *, owner_tenant, label, provider, lend_to, credential) -> dict:

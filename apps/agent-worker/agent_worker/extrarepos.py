@@ -61,6 +61,7 @@ from typing import Any, Callable, Mapping
 
 from swarm_common.models import check_additional_repositories
 
+from .errors import FencedWriteRefused
 from .gitops import GitError, GitTransient, clone_at_commit, retry_clone
 from .workspace import REPOS_DIR_NAME, Workspace, tree_bytes, walk_tree
 
@@ -170,22 +171,28 @@ def budget_bytes(db: Any, *, logger: Any, call_options: Mapping[str, Any] | None
 
     Read from `control/settings` at every call, never cached, so an admin's
     change reaches the next attempt. The default when the setting is absent,
-    malformed, or cannot be read -- and for a tenant switched to the state
-    routes, which builds no Firestore client and has no route serving the
-    platform settings (`indexrun.state_routes`) -- said in the log.
+    malformed, or cannot be read, said in the log. A tenant switched to the
+    state routes builds no Firestore client (`indexrun.state_routes`): its
+    worker reads the same field from `state/context`'s `platform_settings`.
     """
-    from .indexrun import state_routes  # lazy, as `indexrun.state_routes` imports lazily
+    from .indexrun import route_context, state_routes  # lazy, as `indexrun` imports lazily
 
     default = DEFAULT_BUDGET_GIB * _GIB
-    if db is None or state_routes(db) is not None:
+    if db is None:
         logger.info("additional repositories: the default size budget applies",
                     budget_gib=DEFAULT_BUDGET_GIB, why="no platform settings read")
         return default
     try:
-        snap = db.collection(CONTROL_COLLECTION).document(SETTINGS_DOC).get(
-            **dict(call_options or {})
-        )
-        data = (snap.to_dict() or {}) if snap.exists else {}
+        if state_routes(db) is not None:
+            served = route_context(db).get("platform_settings")
+            data = served if isinstance(served, dict) else {}
+        else:
+            snap = db.collection(CONTROL_COLLECTION).document(SETTINGS_DOC).get(
+                **dict(call_options or {})
+            )
+            data = (snap.to_dict() or {}) if snap.exists else {}
+    except FencedWriteRefused:
+        raise  # a newer generation owns the task: the attempt exits (invariant 5)
     except Exception as exc:  # noqa: BLE001 -- said by type, never fatal
         logger.warning("additional repositories: the platform settings could not be read; "
                        "the default size budget applies", error=type(exc).__name__,

@@ -433,7 +433,8 @@ def _run_body(module: Any, monkeypatch: pytest.MonkeyPatch, work: Path,
 
     monkeypatch.setattr(module, "run_cli_agent", fake_run)
     for name in ("SWARM_GIT", "SWARM_CHILDREN", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH",
-                 "SWARM_CDP_ENDPOINT", graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV):
+                 "SWARM_CDP_ENDPOINT", graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV,
+                 graphstage.SHAPE_ENV):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -457,7 +458,8 @@ def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
     work = tmp_path / "work"
     snapshot = str(work / ".swarm-context" / "snapshot")
     seen = _run_body(claude_code, monkeypatch, work, {
-        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context")})
+        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context"),
+        graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS})
     servers = _mcp_servers(seen)
     assert servers == {graphstage.SERVER_NAME: {
         "type": "stdio", "command": sys.executable,
@@ -466,7 +468,8 @@ def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
     assert seen["env"][graphstage.CONTEXT_ENV] == str(work / ".swarm-context")
     # What to ask the graph first (AGENTS-USE-TOOLS, 2026-11-02), then its
     # exploration line (LANE CAPS, part of #2524), and nothing else.
-    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.GRAPH_FIRST_NOTE + "\n\n"
+    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
+                              + claude_code.GRAPH_FIRST_NOTE + "\n\n"
                               + claude_code.exploration_note(graph=True, children=""))
 
     # The control: nothing staged, no server and no config at all.

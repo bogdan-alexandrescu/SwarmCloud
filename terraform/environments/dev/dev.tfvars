@@ -69,14 +69,16 @@ gke_enable_private_endpoint = false
 #     back to false without planning a cluster rebuild.
 gke_enable_fqdn_network_policy = true
 
-# Voice it's swarm-voice (terraform/infra/voice.tf), step 1 of its three:
-# "account" reads the swarm-voice service account that terraform/bootstrap
-# created and grants NOTHING, so this needs no IAM approval. Back from "on" on
-# 2026-11-02: the owner chose that Voice it takes its ChatGPT plan from the
-# Voice it pool only ("Pool only, wait for it"), so swarm-voice will be granted
-# the quota broker's lease routes, not read of the owner's own sign-in. The
-# Voice it pool lane rewrites step 3 to match and turns it on.
-voice_it = "account"
+# Voice it's swarm-voice (terraform/infra/voice.tf), step 3 of its three:
+# "on". The owner picked the Voice it pool on 2 Nov 2026 ("Pool only, wait for
+# it"): swarm-voice reads NO secret -- no Secret Manager grant at all -- and
+# only leases a ChatGPT plan account from the quota broker for each session.
+# So "on" grants it exactly the Workload Identity binding, run.invoker on
+# swarm-api and run.invoker on swarm-quota-broker (which admits swarm-voice's
+# own service account to the voice lease, renew and release routes), and reserves its
+# internal address. These are IAM changes: the release carrying them waits at
+# the IAM gate for the owner.
+voice_it = "on"
 
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
 # apply time as the operator's own /32. That is no longer what this does.

@@ -102,7 +102,6 @@ from .routes import join_requests
 from .routes import setup
 from .routes import addon_probe
 from .routes import voice
-from .routes import voice_signin
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -185,9 +184,6 @@ UNCAPTURED_ROUTES = frozenset({
     # The Desktop sign-in client's secret (day-one-plan.md §5.6, part of
     # #2964), which the route adds to Secret Manager and nowhere else.
     "/v1/admin/setup/sign-in-client",
-    # Voice it's ChatGPT sign-in: the address it ended on carries the OAuth
-    # authorization code that redeems for the person's refresh token.
-    voice_signin.EXCHANGE_ROUTE,
 })
 
 # --------------------------------------------------------------------------
@@ -597,7 +593,6 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # people VOICE_IT_PEOPLE names (else the platform owner) only, in the
     # console's selected workspace; 503 while swarm-voice is not deployed.
     app.include_router(voice.router)
-    app.include_router(voice_signin.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and

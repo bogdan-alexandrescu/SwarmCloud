@@ -65,7 +65,7 @@ def dirty(*paths: str) -> Observation:
 
 def test_both_tools_are_listed_and_served():
     assert tools.TOOL_NAMES[-2:] == ("call_graph", "index")
-    assert set(tools.HANDLERS) == set(tools.TOOL_NAMES)
+    assert set(tools.HANDLERS) == {*tools.TOOL_NAMES, tools.SLICE_TOOL["name"]}
     schema = {t["name"]: t["inputSchema"] for t in tools.TOOLS}
     assert schema["call_graph"]["required"] == ["symbol"]
     assert schema["call_graph"]["properties"]["direction"]["enum"] == ["callers", "callees",

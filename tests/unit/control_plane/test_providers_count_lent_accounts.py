@@ -57,7 +57,7 @@ class Pool:
         self.error = error
         self.calls: list[str] = []
 
-    def list_accounts(self, tenant_id: str) -> dict:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict:
         self.calls.append(tenant_id)
         if self.error is not None:
             raise self.error
@@ -142,7 +142,7 @@ def test_a_listing_that_still_carries_a_withdrawn_loan_is_not_trusted(api_contex
     seed_tenant(db, "eng", credentials=())
 
     class Unscoped(Pool):
-        def list_accounts(self, tenant_id: str) -> dict:
+        def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict:
             return {"accounts": [dict(a) for a in self.accounts], "tenant_id": tenant_id}
 
     _, entry = _read(_client(api_context, Unscoped(_account("research", "shared"))))
