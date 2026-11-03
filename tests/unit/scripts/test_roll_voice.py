@@ -75,6 +75,9 @@ def _voice_manifest(image: str = IMAGE) -> str:
         "__SWARM_VOICE_CALLERS__": f"swarm-api@{PROJECT}.iam.gserviceaccount.com",
         "__SWARM_API_EGRESS_CIDR__": "10.20.0.0/24",
         "__SWARM_API_HOST__": "swarm-api-abc123-uc.a.run.app",
+        "__QUOTA_BROKER_URL__": "https://swarm-quota-broker-abc123-uc.a.run.app",
+        "__QUOTA_BROKER_AUDIENCE__": "https://swarm-quota-broker-abc123-uc.a.run.app",
+        "__QUOTA_BROKER_HOST__": "swarm-quota-broker-abc123-uc.a.run.app",
     }
     text = "---\n".join([TEMPLATE.read_text(), POLICIES.read_text()])
     for key, value in values.items():

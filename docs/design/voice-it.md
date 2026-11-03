@@ -304,9 +304,8 @@ Voice it, because it is the same route.
 
 **Keys.**
 
-* **OpenAI:** a personal secret BGD adds through Config › Secrets with
-  provider `openai`. It is new, because eng's existing key was refused by
-  OpenAI on 2026-09-23 (`profiles.py`, the `codex` entry).
+* **OpenAI:** a ChatGPT plan account in the quota broker's **Voice it
+  pool** (below). No person's own OpenAI secret is read any more.
 * **Anthropic:** the planner calls the Messages API, so it needs an
   **API key**, not a subscription. It resolves the way every secret does,
   the person's before the workspace's (`docs/design/secrets-scopes.md`).
@@ -316,24 +315,53 @@ Voice it, because it is the same route.
   reads its key (`terraform/infra/live.tf`). It never writes them, logs
   them, or sends them to the browser.
 
-**How a session reaches the OpenAI credential (owner, 2026-11-02).** The
-OpenAI secret's first version is the ChatGPT sign-in the person makes under
-Voice it › Preferences (`swarm_api/voice/signin.py`). swarm-api's start call
-sends swarm-voice's `StartRequest` field for field: `voice_session_id`,
-`person`, `offer`, the grant and its project, and as `credential` the
-version reference `ChatGPTSignIn.stored_version` names. It reads swarm-voice's
-`201 {voice_session_id, live_session_id, answer}` and keeps the live id on the
-session document. Only the reference travels, never the value. swarm-api
-sends it only when it is a numbered version of the caller's own personal
-secret in this deployment's project, and swarm-voice's `check_scope` checks
-the same again. A person with no stored sign-in is refused with a 403 that
-tells them to sign in under Voice it › Preferences. That happens before a
-session is written or swarm-voice is called. swarm-voice refreshes the
-credential the way the ChatGPT-plan pool refreshes the same Codex client's
-tokens (`quota_broker.openai_plan`, measured live). It sends a form POST to
-`https://auth.openai.com/oauth/token` with `grant_type`, `client_id` and
-`refresh_token`, and no `resource`. That address is stated once, as
-`swarm_voice.credential.TOKEN_URL`.
+**How a session reaches the OpenAI credential: the Voice it pool (owner,
+2026-11-02 and 2026-11-03).** The owner connected a ChatGPT plan and asked
+that it be "reserved for the voice it feature ... and its not used by any
+other agent or any other user besides voice it". They picked "A separate
+Voice it pool" and "Pool only, wait for it", then on 3 November: "We should
+allow accounts to be in more than one pool at a time".
+
+* **The pools.** A pool account's `pools` is a set: `workspace`, which every
+  account was in before, and `voice-it`, which also lists `voice_it_people`.
+  Version one lists the platform owner only. An account in `voice-it` only is
+  **reserved**. `Account.may_serve` refuses it to every tenant, so no agent of
+  any workspace or profile is ever assigned it, it is never lent, and the
+  scheduler's admission count (`accounts_serving`) leaves it out. An account
+  in **both** pools is shared. Either side may lease it, and its `max_agents`
+  and windows hold across both, because every hold of either kind sits on
+  the one document's `holds`.
+* **Moving an account between pools.** `PUT /v1/accounts/{id}/pools` is for
+  platform admins only and is audited. It needs the label typed back, keeps
+  at least one pool, and refuses (`pool_in_use`) to remove a pool the
+  account holds a lease of. You can do it from Capacity › Accounts'
+  "Pools…" or with `sc account pool <label> --add|--remove`.
+* **The lease.** At session start swarm-voice calls the broker's
+  `POST /v1/voice/lease` for the session's person
+  (`swarm_voice/accountlease.py`, shaped like the worker's
+  `agent_worker/accountlease.py`). The broker picks an account with
+  `choose_voice`: it must be in the Voice it pool, list the person, be
+  AVAILABLE with a free slot and no window under its floor. The broker
+  records a hold with `pool: voice-it`, the person, the session id and no
+  tenant. It hands back the plan's current access token and account id,
+  read from the account's published `{base}` secret. swarm-voice renews the
+  hold every four minutes and gets the token again each time, because the
+  broker's refresh sweep keeps it fresh. It releases the hold when the
+  session ends or fails. If swarm-voice dies, the hold lapses on its own
+  after `VOICE_HOLD_TTL` (ten minutes).
+* **Pool only.** With no account free, or for a person the pool does not
+  list, the session is refused with a spoken reason and nothing starts.
+  There is no fallback to a personal sign-in. That path is removed: the
+  Preferences sign-in, swarm-api's `/v1/voice/chatgpt*` routes, and
+  swarm-voice's personal-secret read and add-version. Voice it ›
+  Preferences says which pool account the next session will use
+  (`GET /v1/voice/pool`).
+* **Nothing secret travels further.** The token goes from the broker to
+  swarm-voice's process, in memory. It never reaches a log, a card, a
+  transcript, the browser or the console. swarm-voice holds no Secret
+  Manager binding at all (`terraform/infra/voice.tf`). Its only new grant
+  is run.invoker on the quota broker, and the broker admits only its
+  service account to the voice routes.
 
 **Why not the account pool.** The pool holds Claude subscriptions, which the
 quota broker refreshes and hands to workers with leases. Their five-hour

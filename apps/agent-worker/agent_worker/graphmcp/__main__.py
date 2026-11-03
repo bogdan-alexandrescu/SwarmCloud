@@ -1,4 +1,4 @@
-"""`python -m agent_worker.graphmcp --snapshot <dir> [--workdir <checkout>]`.
+"""`python -m agent_worker.graphmcp --snapshot <dir> [--workdir <checkout>] [--shape skill|tools]`.
 
 The worker starts it with this fixed argv (§5.4: a caller names no command,
 server, bucket or sha); lane KG5 writes it into `--mcp-config`. It refuses to
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from agent_worker.graphmcp import tools
 from agent_worker.graphmcp.freshness import Freshness
 from agent_worker.graphmcp.server import GraphServer
 from agent_worker.graphmcp.snapshot import Snapshot, SnapshotError, load_freshness_record
@@ -22,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="the staged snapshot directory (manifest.json, blobs/)")
     parser.add_argument("--workdir", default=None,
                         help="the step's checkout, for the paths dirtied in this step")
+    parser.add_argument("--shape", default=None, choices=sorted(tools.SHAPE_LISTS),
+                        help="what tools/list answers: the slice alone or the ten")
     args = parser.parse_args(argv)
     try:
         record = load_freshness_record(args.snapshot)
@@ -31,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"swarm-graph: {exc}", file=sys.stderr)
         return 2
     freshness = Freshness.establish(snapshot.commit_sha, workdir=args.workdir, record=record)
-    GraphServer(snapshot, freshness).serve(sys.stdin.buffer, sys.stdout.buffer)
+    GraphServer(snapshot, freshness, shape=args.shape).serve(sys.stdin.buffer, sys.stdout.buffer)
     return 0
 
 

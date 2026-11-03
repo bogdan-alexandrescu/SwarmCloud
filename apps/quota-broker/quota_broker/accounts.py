@@ -438,6 +438,59 @@ class IdenticalReadings:
         return cls(other, polls, _aware(mine), _aware(theirs))
 
 
+#: The pools an account may belong to (owner, 2026-11-02/03: "A separate
+#: Voice it pool", "We should allow accounts to be in more than one pool at a
+#: time"). An account's pools are a SET:
+#:
+#:   * `workspace` -- every account before this field: its owner's workspace
+#:     and the workspaces in `lend_to` may lease it for a task;
+#:   * `voice-it` -- swarm-voice may lease it for a Voice it session of one of
+#:     the people in `voice_it_people`, and for nothing else.
+#:
+#: An account in `voice-it` ONLY is reserved: `may_serve` refuses every
+#: tenant, so no task lease of any workspace or profile is ever handed it, it
+#: is never lent, and its slots count toward no workspace's capacity. An
+#: account in both is shared: either side leases it, and its `max_agents` and
+#: windows hold across both, because every hold of either kind is counted on
+#: the one document.
+POOL_WORKSPACE = "workspace"
+POOL_VOICE_IT = "voice-it"
+POOLS = (POOL_WORKSPACE, POOL_VOICE_IT)
+#: What a document written before the field reads as: the workspace pool.
+DEFAULT_POOLS = (POOL_WORKSPACE,)
+
+
+def validate_pools(pools: Iterable[Any]) -> tuple[str, ...]:
+    """A non-empty set of known pool names, in `POOLS`' order."""
+    asked = list(pools)
+    unknown = [p for p in asked if p not in POOLS]
+    if unknown:
+        raise AccountError(f"an account's pools are {', '.join(POOLS)}, not {unknown[0]!r}")
+    chosen = tuple(p for p in POOLS if p in asked)
+    if not chosen:
+        raise AccountError("an account keeps at least one pool")
+    return chosen
+
+
+def _pools_from_firestore(raw: Any) -> tuple[str, ...]:
+    """Absent is the workspace pool, as every account was before the field.
+
+    NOT descriptive: a malformed value raises, so the document is unreadable --
+    out of every pool -- rather than read as the workspace pool, which would
+    hand a reserved Voice it account to a task."""
+    if raw is None:
+        return DEFAULT_POOLS
+    if not isinstance(raw, (list, tuple)):
+        raise AccountError(f"pools must be a list, not {type(raw).__name__}")
+    return validate_pools(raw)
+
+
+def _people_from_firestore(raw: Any) -> tuple[str, ...]:
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(p.strip().lower() for p in raw if isinstance(p, str) and p.strip())
+
+
 @dataclass(frozen=True)
 class Hold:
     """One agent's claim on an account, with a deadline.
@@ -473,6 +526,14 @@ class Hold:
     #: account the attempt came from and why it moved. None on every other.
     swapped_from: str | None = None
     swap_reason: str | None = None
+
+    #: Which pool this hold was taken from: `workspace` (a task's, every hold
+    #: before this field) or `voice-it` (a Voice it session's). A Voice it
+    #: hold names its session and person instead of a task and attempt, and
+    #: its `tenant_id` is empty: it is no workspace's.
+    pool: str = POOL_WORKSPACE
+    person: str | None = None
+    voice_session_id: str | None = None
 
     def is_expired(self, now: datetime) -> bool:
         return now >= self.expires_at
@@ -656,6 +717,26 @@ class Account:
     limited_until: datetime | None = None
     limited_window: str | None = None
 
+    #: The pools this account belongs to (`POOLS`), never empty; a document
+    #: written before the field is in the workspace pool alone.
+    pools: tuple[str, ...] = DEFAULT_POOLS
+
+    #: Who may use this account through the Voice it pool, lower-cased emails.
+    #: Version one: the platform owner only, written by the broker when the
+    #: pool is added; read-only everywhere else.
+    voice_it_people: tuple[str, ...] = ()
+
+    def in_pool(self, pool: str) -> bool:
+        return pool in self.pools
+
+    def may_serve_voice(self, person: str) -> bool:
+        """Whether a Voice it session of `person` may lease this account."""
+        return (
+            POOL_VOICE_IT in self.pools
+            and bool(person)
+            and person.strip().lower() in self.voice_it_people
+        )
+
     def serves_class(self, model_class: str | None) -> bool:
         """Whether a step of `model_class` may run on this account.
 
@@ -738,6 +819,9 @@ class Account:
         "the same project" or "the same domain": invariant 9 is about which pod
         can reach which credential, and a pod is not made safe by being nearby.
         """
+        if POOL_WORKSPACE not in self.pools:
+            # Reserved for Voice it: no workspace's task, owned or lent.
+            return False
         return tenant_id == self.owner_tenant or tenant_id in self.lend_to
 
     def headroom(
@@ -1043,6 +1127,8 @@ class Account:
             ),
             "limited_until": self.limited_until,
             "limited_window": self.limited_window,
+            "pools": list(self.pools),
+            "voice_it_people": list(self.voice_it_people),
         }
 
     @classmethod
@@ -1121,6 +1207,8 @@ class Account:
             # over a field whose whole job is to take it out for a while.
             limited_until=_optional_instant(data.get("limited_until")),
             limited_window=_optional_text(data.get("limited_window")),
+            pools=_pools_from_firestore(data.get("pools")),
+            voice_it_people=_people_from_firestore(data.get("voice_it_people")),
         )
 
 
@@ -1277,6 +1365,12 @@ def holds_to_firestore(holds: Iterable[Hold]) -> list[dict[str, Any]]:
             item["swapped_from"] = h.swapped_from
         if h.swap_reason:
             item["swap_reason"] = h.swap_reason
+        if h.pool != POOL_WORKSPACE:
+            item["pool"] = h.pool
+        if h.person:
+            item["person"] = h.person
+        if h.voice_session_id:
+            item["voice_session_id"] = h.voice_session_id
         out.append(item)
     return out
 
@@ -1339,6 +1433,8 @@ def hold_log_entry(
         # How it ENDED, when a swap ended it.
         "swapped_to": swapped_to if end == HOLD_END_SWAPPED else None,
         "swapped_to_reason": swap_reason if end == HOLD_END_SWAPPED else None,
+        "pool": hold.pool,
+        "voice_session_id": hold.voice_session_id,
     }
 
 
@@ -1379,6 +1475,9 @@ def holds_from_firestore(raw: Any) -> tuple[Hold, ...]:
                 move=_optional_text(item.get("move")),
                 swapped_from=_optional_text(item.get("swapped_from")),
                 swap_reason=_optional_text(item.get("swap_reason")),
+                pool=_optional_text(item.get("pool")) or POOL_WORKSPACE,
+                person=_optional_text(item.get("person")),
+                voice_session_id=_optional_text(item.get("voice_session_id")),
             )
         )
     return tuple(holds)
@@ -1551,6 +1650,52 @@ def withheld_mark(account: Account, listed: dict[str, Account] | None = None) ->
         return False
     other = (listed or {}).get(getattr(account, "duplicate_of", None) or "")
     return other is None or one_subscription(account, other)
+
+
+#: Why a Voice it session got no account (`choose_voice`), as the lease route
+#: says it. `not_in_voice_pool`: no Voice it pool account lists this person.
+VOICE_NOT_IN_POOL = "not_in_voice_pool"
+#: No account of the provider is in the Voice it pool at all.
+VOICE_NONE_REGISTERED = "no_voice_account_registered"
+#: Some are, and none can take a session now: held, paused, or spent.
+VOICE_NONE_AVAILABLE = "no_voice_account_available"
+
+
+def choose_voice(
+    accounts: Iterable[Account], person: str, provider: str, now: datetime
+) -> tuple[Account | None, str]:
+    """The Voice it pool account a session of `person` should lease, or why none.
+
+    ONLY THE VOICE IT POOL (owner, 2026-11-02, "Pool only, wait for it"): an
+    account in the workspace pool alone is never a candidate, and an account
+    in the Voice it pool is a candidate only for the people it lists. The
+    rest is `choose()`'s rule for a task: AVAILABLE, not a withheld
+    duplicate, no window under its floor and no recorded 429
+    (`assignable`), a free slot under `max_agents` -- counted over EVERY live
+    hold, a task's and a session's, so an account in both pools never passes
+    its agent limit -- and one agent before its first reading. Fewest holds
+    first, then most headroom.
+    """
+    listed = [a for a in accounts if a.provider == provider and a.in_pool(POOL_VOICE_IT)]
+    if not listed:
+        return None, VOICE_NONE_REGISTERED
+    mine = [a for a in listed if a.may_serve_voice(person)]
+    if not mine:
+        return None, VOICE_NOT_IN_POOL
+    withheld = _withheld(list(accounts))
+    free = [
+        a
+        for a in mine
+        if a.state in ASSIGNABLE_STATES
+        and a.account_id not in withheld
+        and a.assignable(now)
+        and not a.is_full(now)
+        and not a.awaits_first_reading(now)
+    ]
+    if not free:
+        return None, VOICE_NONE_AVAILABLE
+    free.sort(key=lambda a: (len(a.live_holds(now)), -a.headroom(now), a.account_id))
+    return free[0], ""
 
 
 def _withheld(accounts: list[Account]) -> set[str]:
@@ -1917,6 +2062,15 @@ def due_for_refresh(
 
 
 __all__ = [
+    "VOICE_NONE_AVAILABLE",
+    "VOICE_NONE_REGISTERED",
+    "VOICE_NOT_IN_POOL",
+    "choose_voice",
+    "DEFAULT_POOLS",
+    "POOLS",
+    "POOL_VOICE_IT",
+    "POOL_WORKSPACE",
+    "validate_pools",
     "Account",
     "AccountError",
     "AccountState",
