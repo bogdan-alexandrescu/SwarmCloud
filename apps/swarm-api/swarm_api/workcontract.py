@@ -653,6 +653,96 @@ def attach(options: Any, compiled: CompiledContract, *, environ: Mapping[str, st
     return options.with_work_contract(compiled.reference)
 
 
+# --- on submission ----------------------------------------------------------
+
+#: The key a caller's task or workflow-step `metadata` carries its contract
+#: document under. While the switch is off it is the caller's free-form
+#: metadata, stored as sent, exactly as before contracts existed.
+METADATA_KEY = "work_contract"
+
+
+class ContractMismatch(WorkContractError):
+    """`work_contract_mismatch`: the contract and the step it rides on name
+    different limits or a different repository. The contract is never a
+    second source of truth for a limit, so the two must agree."""
+
+    code = "work_contract_mismatch"
+
+
+@dataclass(frozen=True)
+class Prepared:
+    """What `prepare` makes of one step's contract.
+
+    `fields` holds the limits the contract sets and the step left unset, for
+    the submission path to put on the step before its usual validation;
+    `metadata` is the step's metadata with the canonical document at
+    `METADATA_KEY`, which `compiled.reference` (signed in the dispatch
+    block) binds by digest."""
+
+    contract: WorkContract
+    compiled: CompiledContract
+    fields: Mapping[str, Any] = field(hash=False)
+    metadata: Mapping[str, Any] = field(hash=False)
+
+
+def _same_repository(a: str | None, b: str | None) -> bool:
+    def norm(url: str | None) -> str | None:
+        if url is None:
+            return None
+        url = url.rstrip("/")
+        return (url[:-4] if url.endswith(".git") else url).lower()
+    return norm(a) == norm(b)
+
+
+def prepare(metadata: Mapping[str, Any], *, tenant_id: str, step_id: str | None,
+            step_fields: Mapping[str, Any], repository_url: str | None,
+            repository_ref: str | None, environ: Mapping[str, str],
+            enforced: frozenset[str] = WORKER_ENFORCED_TODAY) -> Prepared | None:
+    """One task's or workflow step's contract, decoded, compiled and checked
+    against the step, or None when the switch is off or the step carries none.
+
+    `step_fields` are the step's own `runner_profile`, `model_class`,
+    `budget` (a `{usd, tokens}` map), `max_turns` and `timeout_seconds`, None
+    where unset; `repository_url` and `repository_ref` are the ones the step
+    runs at. Refuses (a `WorkContractError`) a document that is not a
+    contract, one of another tenant (invariant 9), a strict one no worker
+    enforces (`compile_contract`), a limit that differs from the step's, a
+    repository other than the step's, and a strict contract pinning a ref the
+    step does not run at. An advisory contract pinning a ref on a step with
+    none keeps the pin as its text: the digest still names it."""
+    if not enabled(environ) or METADATA_KEY not in metadata:
+        return None
+    contract = decode(metadata[METADATA_KEY])
+    if contract.tenant_id != tenant_id:
+        raise _fail("the contract is another workspace's", field="tenant_id")
+    compiled = compile_contract(contract, step_id=step_id or "", enforced=enforced)
+    fill: dict[str, Any] = {}
+    for key in _LIMIT_KEYS:
+        want, have = compiled.step.get(key), step_fields.get(key)
+        if want is None:
+            continue
+        if have is None:
+            fill[key] = want
+        elif have != want:
+            raise ContractMismatch(
+                f"the contract's {key} is {want!r} and the step's is {have!r}",
+                detail={"field": f"limits.{key}", "contract": want, "step": have})
+    want_url = compiled.step.get("repository_url")
+    if want_url is not None and not _same_repository(want_url, repository_url):
+        raise ContractMismatch("the contract binds another repository than the step's",
+                               detail={"field": "repositories", "contract": want_url,
+                                       "step": repository_url})
+    want_ref = compiled.step.get("repository_ref")
+    if want_ref is not None and repository_ref != want_ref and (
+            repository_ref is not None or contract.strictness == STRICT):
+        raise ContractMismatch("the contract pins a ref the step does not run at",
+                               detail={"field": "repositories", "contract": want_ref,
+                                       "step": repository_ref})
+    out = dict(metadata)
+    out[METADATA_KEY] = contract.to_document()
+    return Prepared(contract=contract, compiled=compiled, fields=fill, metadata=out)
+
+
 # --- verification evidence --------------------------------------------------
 
 
@@ -753,14 +843,20 @@ def _covered(pattern: str, by: Sequence[str]) -> bool:
     return False
 
 
+def _scope_wider(old: Sequence[str], new: Sequence[str]) -> bool:
+    """An empty scope is unrestricted: anything narrows it, and returning to
+    it from a pattern widens. Otherwise every new pattern must be covered."""
+    if not old:
+        return False
+    return not new or not all(_covered(p, old) for p in new)
+
+
 def widening(old: WorkContract, new: WorkContract) -> tuple[str, ...]:
     """How `new` grants more than `old`, as component names; empty when it does not."""
     out = []
-    if not all(_covered(p, old.write_scope) for p in new.write_scope) or \
-            (new.write_scope == () and old.write_scope != ()):
+    if _scope_wider(old.write_scope, new.write_scope):
         out.append(COMPONENT_WRITE_SCOPE)
-    if not all(_covered(p, old.read_scope) for p in new.read_scope) or \
-            (new.read_scope == () and old.read_scope != ()):
+    if _scope_wider(old.read_scope, new.read_scope):
         out.append(COMPONENT_READ_SCOPE)
     if not set(old.protected_paths) <= set(new.protected_paths) or \
             not set(old.protected_interfaces) <= set(new.protected_interfaces):
@@ -808,8 +904,9 @@ def amend(old: WorkContract, proposed: Any, *, author_is_agent: bool,
     `proposed` and not in `withdraw` is a silent drop and is refused. An unmet
     requirement (judged by `evidence` at `commit` against `old`) is never
     withdrawn by an agent, and an agent's amendment never widens its own
-    contract (`widening`). The result still needs a person's approval of the
-    new digest; `approved` holds no earlier approval for it."""
+    contract (`widening`), never changes its owner, and never drops a
+    dependency or an expected artifact. The result still needs a person's
+    approval of the new digest; `approved` holds no earlier approval for it."""
     raw = dict(_map(proposed, "contract"))
     raw["revision"] = old.revision + 1
     raw["previous_digest"] = digest(old)
@@ -860,15 +957,36 @@ def amend(old: WorkContract, proposed: Any, *, author_is_agent: bool,
         # drop by another name: only a person does it.
         raise AmendmentRefused("an agent never rewrites a requirement or its verification",
                                detail={"changed": list(changed)})
+    if author_is_agent:
+        _refuse_dropped_obligations(old, new)
     return Amendment(contract=new, reverify=new.requirement_ids(), added=added,
                      changed=changed, withdrawn=tuple(sorted(withdraw)))
+
+
+def _refuse_dropped_obligations(old: WorkContract, new: WorkContract) -> None:
+    """An agent's amendment keeps who owns the contract, every contract it
+    depends on and every artifact it must leave: dropping one is dropping an
+    unmet requirement by another name. It may add a dependency or an
+    artifact, which only asks more of it. A person may do any of these."""
+    if new.owner != old.owner:
+        raise AmendmentRefused("an agent never changes its contract's owner",
+                               detail={"field": "ownership.owner"})
+    dropped = sorted(set(old.depends_on) - set(new.depends_on))
+    if dropped:
+        raise AmendmentRefused("an agent never drops a dependency of its contract",
+                               detail={"field": "ownership.depends_on", "dropped": dropped})
+    kept = {(a["kind"], a["path"]) for a in new.artifacts}
+    lost = [dict(a) for a in old.artifacts if (a["kind"], a["path"]) not in kept]
+    if lost:
+        raise AmendmentRefused("an agent never drops an artifact its contract expects",
+                               detail={"field": "artifacts", "dropped": lost})
 
 
 # --- from an approved issue-run plan ----------------------------------------
 
 
 def from_plan_step(*, run_id: str, tenant_id: str, owner: str, plan: Mapping[str, Any],
-                   step: Mapping[str, Any], repository_url: str, commit: str,
+                   step: Mapping[str, Any], repository_url: str, commit: str | None,
                    runner_profile: str) -> WorkContract:
     """An advisory contract for one step of an approved issue-run plan
     (`swarm_api.issueruns.PlanSpec`), so issue runs can carry contracts
@@ -879,7 +997,8 @@ def from_plan_step(*, run_id: str, tenant_id: str, owner: str, plan: Mapping[str
     become its write scope; a step that names `tests` asks `unit_tests` of
     every requirement, else `ci`. The repository is bound at the commit the
     run planned against. Advisory, because no worker enforces a write scope
-    or verification yet (`WORKER_ENFORCED_TODAY`)."""
+    or verification yet (`WORKER_ENFORCED_TODAY`). `commit` None binds the
+    repository alone, for a run that planned from no indexed commit."""
     step_id = str(step.get("step_id") or "")
     verification = ["unit_tests"] if step.get("tests") else ["ci"]
     lines = [line for line in (plan.get("requirements") or []) if isinstance(line, str)]
