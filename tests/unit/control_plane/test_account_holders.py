@@ -141,7 +141,7 @@ class FakeBroker:
         #: first, as the real broker does.
         self.history_rows: list[dict] | None = None
 
-    def list_accounts(self, tenant_id: str) -> dict:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict:
         return {"accounts": [
             dict(a) for a in self.accounts.values()
             if a["owner_tenant"] == tenant_id or tenant_id in a["lend_to"]

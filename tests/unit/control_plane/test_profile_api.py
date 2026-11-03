@@ -68,7 +68,7 @@ class FakePool:
         self.fail = fail
         self.calls: list[str] = []
 
-    def list_accounts(self, tenant_id: str) -> dict[str, Any]:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict[str, Any]:
         self.calls.append(tenant_id)
         if self.fail:
             raise AccountPoolUnavailable("the account pool could not be reached")

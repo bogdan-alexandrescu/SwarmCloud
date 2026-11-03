@@ -38,7 +38,7 @@ SWARM-VOICE'S INTERNAL CALLS. swarm-api POSTs, with a Google ID token for
 `voice_audience` (else the URL) as its bearer:
 
   {SWARM_VOICE_URL}/internal/sessions
-      {"voice_session_id", "project_id", "person", "credential", "offer", "grant"}
+      {"voice_session_id", "project_id", "person", "offer", "grant"}
       -> 201 {"voice_session_id", "live_session_id", "answer": "<SDP>"}
   {SWARM_VOICE_URL}/internal/sessions/{session_id}/end
       {"session_id", "cause"} -> 200
@@ -48,14 +48,21 @@ main.py) field for field (owner, 2026-11-02: "swarm-api follows swarm-voice").
 An answer for another session id is read as a refusal; the live session's id
 is kept on the session document.
 
-THE CREDENTIAL (owner, 2026-11-02: "Session lane sends stored_version"). The
-start's `credential` is the Secret Manager VERSION reference of the person's
-own ChatGPT sign-in, `ChatGPTSignIn.stored_version` (voice/signin.py), never
-its value: swarm-voice reads the value itself. A person with no stored
-sign-in, or whose stored reference is not a numbered version of their own
-personal secret in this deployment's project (invariant 9), is refused with
-`VoiceNotSignedIn`, which names Voice it › Preferences, before anything is
-written or sent. The reference is kept out of every repr and log line.
+THE ACCOUNT (owner, 2026-11-02: the ChatGPT plan account is reserved for
+Voice it through the quota broker's "Voice it pool"). swarm-api sends no
+credential: swarm-voice leases the pool account from the broker itself for
+each session (`POST /v1/voice/lease`), so the start body is
+{voice_session_id, person, offer, project_id, grant} and nothing here reads a
+person's secret. swarm-voice's refusals of the pool reach the browser with
+swarm-voice's own sentence, under the established codes:
+
+  403 (the person is not in the Voice it pool)        -> 403 `forbidden`,
+      detail.reason `voice_pool_refused`
+  409 `voice_pool_busy` / `voice_pool_refused`        -> 409 `conflict`,
+      detail.reason the code swarm-voice sent
+
+Either way the session is ended at once (cause `voice_pool_refused`) and the
+person's marker freed, so the next try is not a 409 of ours.
 
 A start swarm-voice refuses or does not answer ends the session at once with
 the cause `voice_unreachable` and frees the person's marker, so the next try
@@ -84,7 +91,6 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 
 from ..errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable
-from .signin import personal_secret_id
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +116,15 @@ STARTING_STALE_SECONDS = 120
 
 END_BY_PERSON = "ended_by_person"
 END_VOICE_UNREACHABLE = "voice_unreachable"
+END_VOICE_POOL_REFUSED = "voice_pool_refused"
+
+#: swarm-voice's 409 codes for the Voice it pool, carried to the browser as
+#: `detail.reason` (a 403 from swarm-voice is always `voice_pool_refused`).
+POOL_BUSY = "voice_pool_busy"
+POOL_REFUSED = "voice_pool_refused"
+POOL_REASONS = frozenset({POOL_BUSY, POOL_REFUSED})
+#: A refusal sentence longer than this is cut: it is shown, not parsed.
+MAX_REFUSAL_MESSAGE = 500
 
 AUDIT_STARTED = "voice_session_started"
 AUDIT_ENDED = "voice_session_ended"
@@ -139,8 +154,19 @@ class VoiceUnavailable(UpstreamUnavailable):
     code = "voice_unavailable"
 
 
-class VoiceNotSignedIn(Forbidden):
-    pass
+class VoicePoolRefused(Forbidden):
+    """swarm-voice's 403: the person is not in the Voice it pool. Keeps the
+    established `forbidden` code; `detail.reason` is `voice_pool_refused`."""
+
+
+class VoicePoolBusy(Conflict):
+    """swarm-voice's 409: the Voice it pool account is busy or refused the
+    lease. Keeps the established `conflict` code; `detail.reason` is the code
+    swarm-voice sent (`voice_pool_busy` or `voice_pool_refused`)."""
+
+
+#: Either pool refusal; `start` ends the session on both.
+VoicePoolUnavailable = (VoicePoolRefused, VoicePoolBusy)
 
 
 class VoiceSessionLive(Conflict):
@@ -164,22 +190,40 @@ def unavailable() -> VoiceUnavailable:
         "(SWARM_VOICE_URL is unset). Nothing was started.")
 
 
-def not_signed_in() -> VoiceNotSignedIn:
-    return VoiceNotSignedIn(
-        "Voice it talks on your own ChatGPT plan, and no ChatGPT sign-in of yours is "
-        "stored. Open Voice it › Preferences, press Sign in with ChatGPT, then start "
-        "again. Nothing was started.")
+def _refusal_body(raw: bytes) -> tuple[str, str]:
+    """(code, message) from swarm-voice's refusal body: `{code, message}`, or
+    FastAPI's `{detail: {code, message}}` / `{detail: "<sentence>"}`."""
+    try:
+        body = json.loads(raw.decode("utf-8")) if raw else None
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and "detail" in body and "message" not in body:
+        body = body["detail"]
+    if isinstance(body, str):
+        return "", body.strip()[:MAX_REFUSAL_MESSAGE]
+    if not isinstance(body, dict):
+        return "", ""
+    code = body.get("code") if isinstance(body.get("code"), str) else ""
+    message = body.get("message") if isinstance(body.get("message"), str) else ""
+    return code.strip(), message.strip()[:MAX_REFUSAL_MESSAGE]
 
 
-def own_credential(ref: str | None, *, person: str, project: str) -> bool:
-    """Whether `ref` is a numbered version of `person`'s own OpenAI secret in this
-    deployment's project, the only reference swarm-voice is sent (invariant 9)."""
-    if not isinstance(ref, str) or not project:
-        return False
-    prefix = f"projects/{project}/secrets/{personal_secret_id(person)}/versions/"
-    version = ref[len(prefix):] if ref.startswith(prefix) else ""
-    return version.isascii() and version.isdigit() and not version.startswith("0") \
-        and len(version) <= 9
+def pool_refusal(status: int, raw: bytes) -> VoicePoolRefused | VoicePoolBusy | None:
+    """The browser's refusal for swarm-voice's 403, or its 409 naming a pool
+    code, carrying its sentence. None for any other answer (a 409 for the
+    voice session already being live is not the pool's, and reads as the
+    generic refusal)."""
+    code, message = _refusal_body(raw)
+    if status == 403:
+        return VoicePoolRefused(
+            message or "You are not in the Voice it pool, so no ChatGPT account can be "
+            "leased for you. Nothing was started.", detail={"reason": POOL_REFUSED})
+    if status != 409 or code not in POOL_REASONS:
+        return None
+    reason = code
+    return VoicePoolBusy(
+        message or "The Voice it pool's ChatGPT account is busy; try again shortly. "
+        "Nothing was started.", detail={"reason": reason})
 
 
 def is_allowed(people: tuple[str, ...], email: str) -> bool:
@@ -220,8 +264,6 @@ class StartCall:
     #: Kept for the caller's own record; swarm-voice's body has no tenant.
     tenant_id: str
     person: str
-    #: The version reference of the person's own OpenAI secret (module docstring).
-    credential: str
     offer: str
     #: Excluded from the repr: it is the session's credential.
     grant: str
@@ -241,7 +283,8 @@ class StartAnswer:
 
 class VoiceClient(Protocol):
     def start(self, call: StartCall) -> StartAnswer:
-        """swarm-voice's answer, or `VoiceUnreachable`."""
+        """swarm-voice's answer, or `VoiceUnreachable`, or a pool refusal
+        (`VoicePoolRefused`/`VoicePoolBusy`)."""
         ...
 
     def end(self, session_id: str, *, cause: str) -> bool:
@@ -279,18 +322,28 @@ class HttpVoiceClient:
             with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - our own internal URL
                 return response.status, response.read(MAX_SDP_BYTES + 1024)
         except urllib.error.HTTPError as exc:
-            return exc.code, b""
+            # A refusal's body is swarm-voice's {code, message}: read so the
+            # pool's sentence reaches the browser; never logged.
+            try:
+                raw = exc.read(16 * 1024) if exc.fp is not None else b""
+            except OSError:
+                raw = b""
+            return exc.code, raw or b""
 
     def start(self, call: StartCall) -> StartAnswer:
         body = {"voice_session_id": call.session_id, "project_id": call.project_id,
-                "person": call.person, "credential": call.credential,
-                "offer": call.offer, "grant": call.grant}
+                "person": call.person, "offer": call.offer, "grant": call.grant}
         try:
             status, raw = self._post("/internal/sessions", body, START_TIMEOUT_SECONDS)
         except (OSError, ValueError) as exc:
             log.warning("voice start for session=%s did not reach swarm-voice (%s)",
                         call.session_id, type(exc).__name__)
             raise VoiceUnreachable("swarm-voice could not be reached; the session was ended.") from None
+        refusal = pool_refusal(status, raw) if status in (403, 409) else None
+        if refusal is not None:
+            log.warning("swarm-voice refused the Voice it pool for session=%s (HTTP %s, %s)",
+                        call.session_id, status, refusal.detail.get("reason"))
+            raise refusal
         if status != 201:
             log.warning("swarm-voice refused the start for session=%s (HTTP %s)", call.session_id, status)
             raise VoiceUnreachable(f"swarm-voice refused the session (HTTP {status}); it was ended.")
@@ -349,12 +402,10 @@ class VoiceSessions:
     """Starts and ends one person's sessions in one tenant."""
 
     def __init__(self, db: Any, client: VoiceClient, *, marker_key: str = "",
-                 project: str = "", now: Callable[[], datetime]) -> None:
+                 now: Callable[[], datetime]) -> None:
         self._db = db
         self._client = client
         self._marker_key = marker_key
-        #: This deployment's project: the only one a credential reference may name.
-        self._project = project
         self._now = now
 
     def _project_ref(self, project_id: str) -> Any:
@@ -391,13 +442,10 @@ class VoiceSessions:
                 self._now() - created < timedelta(seconds=STARTING_STALE_SECONDS)
         return False
 
-    def start(self, *, tenant_id: str, person: str, offer: str, project_id: str | None,
-              credential: str | None) -> dict[str, Any]:
-        """`credential` is `ChatGPTSignIn.stored_version(person)`: refused before
-        anything is written unless it is the person's own (module docstring)."""
+    def start(self, *, tenant_id: str, person: str, offer: str,
+              project_id: str | None) -> dict[str, Any]:
+        """No credential: swarm-voice leases the Voice it pool account itself."""
         person = person.strip().lower()
-        if credential is None or not own_credential(credential, person=person, project=self._project):
-            raise not_signed_in()
         session_id = "vs_" + secrets.token_hex(16)
         new_project = project_id is None
         project_id = project_id or "vp_" + secrets.token_hex(16)
@@ -438,7 +486,7 @@ class VoiceSessions:
         _open(self._db.transaction())
 
         call = StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
-                         person=person, credential=credential, offer=offer, grant=grant)
+                         person=person, offer=offer, grant=grant)
         try:
             started = self._client.start(call)
             if not isinstance(started, StartAnswer) or not _valid_answer(started.answer):
@@ -446,6 +494,10 @@ class VoiceSessions:
         except VoiceUnreachable:
             self._close(tenant_id=tenant_id, person=person, project_id=project_id,
                         session_id=session_id, cause=END_VOICE_UNREACHABLE)
+            raise
+        except VoicePoolUnavailable:
+            self._close(tenant_id=tenant_id, person=person, project_id=project_id,
+                        session_id=session_id, cause=END_VOICE_POOL_REFUSED)
             raise
         self._session_ref(project_id, session_id).update(
             {"state": LIVE, "live_at": self._now(), "live_session_id": started.live_session_id})

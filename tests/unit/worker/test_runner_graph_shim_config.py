@@ -152,7 +152,8 @@ def test_claude_code_registers_the_shim_with_the_url_in_its_env(monkeypatch, tmp
     from agent_worker.runners import claude_code
 
     work = tmp_path / "work"
-    env = _served(work, tmp_path)
+    # The `tools` shape: batch two's loaded tools (SKILL-ON-DEMAND).
+    env = {**_served(work, tmp_path), graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS}
     seen = _run(claude_code, monkeypatch, work, env)
     servers = _mcp_servers(seen)
     command, *args = _shim_argv(env, work)
@@ -168,14 +169,15 @@ def test_claude_code_registers_the_shim_with_the_url_in_its_env(monkeypatch, tmp
     # part of #2524), and nothing else.
     # ... after the line saying what to ask the graph first (AGENTS-USE-TOOLS).
     assert seen["prompt"] == ("Implement it.\n\n" + claude_code.GRAPH_FIRST_NOTE + "\n\n"
-                              + claude_code.exploration_note(graph=True, children=""))
+                              + claude_code.exploration_note(graph=True, children="",
+                                                             shape=graphstage.SHAPE_TOOLS))
 
 
 def test_claude_code_browser_registers_the_shim_beside_the_live_browser(monkeypatch, tmp_path):
     from agent_worker.runners import claude_code
 
     work = tmp_path / "work"
-    env = {**_served(work, tmp_path), "PLAYWRIGHT_BROWSERS_PATH": "/opt/playwright",
+    env = {**_served(work, tmp_path), graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS, "PLAYWRIGHT_BROWSERS_PATH": "/opt/playwright",
            "SWARM_CDP_ENDPOINT": "http://127.0.0.1:9222"}
     seen = _run(claude_code, monkeypatch, work, env)
     assert seen["args"].count("--mcp-config") == 1
@@ -204,7 +206,8 @@ def test_claude_code_with_a_snapshot_still_registers_the_local_server(monkeypatc
     work = tmp_path / "work"
     snapshot = str(work / ".swarm-context" / "snapshot")
     servers = _mcp_servers(_run(claude_code, monkeypatch, work, {
-        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context")}))
+        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context"),
+        graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS}))
     assert servers == {graphstage.SERVER_NAME: {
         "type": "stdio", "command": sys.executable,
         "args": ["-I", "-m", "agent_worker.graphmcp", "--snapshot", snapshot,

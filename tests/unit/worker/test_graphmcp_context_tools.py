@@ -128,7 +128,7 @@ def rows(answer: dict, rel: str) -> list[dict]:
 def test_both_tools_are_served_and_listed():
     assert "similar_changes" in tools.TOOL_NAMES
     assert "rules_for" in tools.TOOL_NAMES
-    assert set(tools.HANDLERS) == set(tools.TOOL_NAMES)
+    assert set(tools.HANDLERS) == {*tools.TOOL_NAMES, tools.SLICE_TOOL["name"]}
 
 
 def test_the_two_new_schemas_fit_in_the_budget_the_six_left():

@@ -100,9 +100,10 @@ from ..accountholds import (
     own_page,
     viewer_of,
 )
+from ..admins import AUDIT_COLLECTION
 from ..auth import AuthContext, require_admin
 from ..brokerclient import AccountPool, BrokerClient
-from ..deps import AppContext, current_auth, get_context
+from ..deps import AppContext, admin_auth, current_auth, get_context
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..schemas import (
     ACCOUNT_HEALTH_KINDS,
@@ -280,12 +281,14 @@ def list_accounts(
     there are five with nothing to say so.
     """
     tenant_id = _tenant_id(ctx, auth)
-    payload = pool.list_accounts(tenant_id)
+    # With the tenant's own Voice-it-only accounts (`include_reserved`), so
+    # the page's Voice it pool section and Pools… can reach a reserved one.
+    payload = pool.list_accounts(tenant_id, include_reserved=True)
     return {
         # Each through `_own_view` (#2222): another tenant's account is never
         # named by a duplicate mark, whatever the broker sent.
         "accounts": [
-            _with_hold_deadline(_with_health_row(_own_view(a, tenant_id)))
+            _with_voice_pool(_with_hold_deadline(_with_health_row(_own_view(a, tenant_id))))
             for a in payload.get("accounts") or []
         ],
         "tenant_id": tenant_id,
@@ -357,6 +360,37 @@ def _with_hold_deadline(account: Any) -> Any:
         if parsed is not None and parsed.tzinfo is not None:
             at = raw
     return {**account, ACCOUNT_HOLD_DEADLINE: at}
+
+
+#: The broker's pool names (the Voice it pool, owner 2026-11-02): an account
+#: runs workspace agents, is reserved for Voice it, or both.
+ACCOUNT_POOLS = ("workspace", "voice-it")
+VOICE_POOL = "voice-it"
+
+
+def _with_voice_pool(account: Any) -> Any:
+    """A row's three Voice it pool fields, as the broker's `account_to_api`
+    serves them, by the allow-list: `pools` (only the known names; absent or
+    empty reads as ["workspace"], the broker's own default), `voice_it_people`
+    (emails, [] outside the Voice it pool) and `voice_it_holder` (the live
+    Voice it hold, `{voice_session_id, person, since}`, or None). A row whose
+    broker sent none of them -- a broker older than the pool -- is unchanged,
+    so the page tells "not served" from "workspace only"."""
+    if not isinstance(account, dict) or not any(
+            k in account for k in ("pools", "voice_it_people", "voice_it_holder")):
+        return account
+    raw_pools = account.get("pools")
+    pools = [p for p in ACCOUNT_POOLS if isinstance(raw_pools, list) and p in raw_pools] \
+        or ["workspace"]
+    people = account.get("voice_it_people")
+    people = [p for p in people if isinstance(p, str)] if isinstance(people, list) else []
+    holder = account.get("voice_it_holder")
+    if isinstance(holder, dict):
+        holder = {k: holder.get(k) if isinstance(holder.get(k), str) else None
+                  for k in ("voice_session_id", "person", "since")}
+    else:
+        holder = None
+    return {**account, "pools": pools, "voice_it_people": people, "voice_it_holder": holder}
 
 
 def _refresh_sweep(raw: Any) -> dict[str, Any]:
@@ -710,6 +744,81 @@ def remove_account(
     """
     _owned(pool, _writer_tenant_id(ctx, auth), account_id)
     return pool.remove(account_id)
+
+
+class AccountPools(StrictModel):
+    """Which pools an account is in (the Voice it pool, owner 2026-11-02), and
+    the account's label typed back. What a pool name may be, and whether the
+    label matches, is the broker's (`PUT /v1/accounts/{id}/pools`): its 400
+    reaches the caller in its own words. The bounds only stop an unbounded
+    body."""
+
+    pools: list[str] = Field(min_length=1, max_length=len(ACCOUNT_POOLS) + 2)
+    confirm_label: str = Field(min_length=1, max_length=256)
+
+
+#: The `admin_audit` action a pool move is recorded under.
+ACCOUNT_POOLS_AUDIT_ACTION = "account_pools_set"
+
+
+@router.put("/{account_id}/pools")
+def set_account_pools(
+    account_id: str,
+    body: AccountPools,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Move an account between the workspace pool and the Voice it pool.
+
+    A PLATFORM ADMIN's only (`admin_auth`, the gate every admin route
+    declares; not in `POOL_ADMIN_ROUTES`, so a pool admin is refused like
+    any non-admin): the Voice it pool is the one ChatGPT plan account the
+    platform reserves for Voice it, and moving it takes it from, or gives it
+    to, every workspace's agents. The account must exist (404 before the
+    broker is asked to change anything). `confirm_label` is forwarded as
+    typed: the broker refuses 400 unless it is the account's label, and 409
+    `pool_in_use` when the move would take a pool the account holds a live
+    lease of; both reach the caller with the broker's sentence.
+
+    AUDITED: one `admin_audit` row once the broker has answered -- who (the
+    admin's verified email, never a body field), the account, the pools
+    before and after.
+    """
+    owner = account_id.split(":", 1)[0] if ":" in account_id else ""
+    before = None
+    if owner:
+        # `include_reserved`: a Voice-it-only account serves no tenant, so
+        # the default listing leaves it out and it could never move back.
+        for row in pool.list_accounts(owner, include_reserved=True).get("accounts") or []:
+            if isinstance(row, dict) and row.get("account_id") == account_id \
+                    and row.get("owner_tenant") == owner:
+                before = row
+                break
+    if before is None:
+        raise NotFound(f"no account {account_id!r} in the pool")
+    result = pool.set_pools(account_id, pools=list(body.pools), confirm_label=body.confirm_label)
+    after = result.get("account") if isinstance(result, dict) else None
+    after = _with_voice_pool(after) if isinstance(after, dict) else None
+    from_pools = (_with_voice_pool({**before, "pools": before.get("pools")}) or {}).get("pools")
+    change = {
+        "account_id": account_id,
+        "label": before.get("label"),
+        "from_pools": from_pools,
+        "to_pools": (after or {}).get("pools", list(body.pools)),
+    }
+    ctx.db.collection(AUDIT_COLLECTION).document().set({
+        "action": ACCOUNT_POOLS_AUDIT_ACTION,
+        "target_tenant_id": owner,
+        "by": auth.email,
+        "at": ctx.now(),
+        "detail": change,
+    })
+    ctx.metrics.admin_actions.labels(action=ACCOUNT_POOLS_AUDIT_ACTION).inc()
+    out = dict(result) if isinstance(result, dict) else {}
+    if after is not None:
+        out["account"] = after
+    return {**out, "change": {**change, "requested_by": auth.email}}
 
 
 # --------------------------------------------------------------------------

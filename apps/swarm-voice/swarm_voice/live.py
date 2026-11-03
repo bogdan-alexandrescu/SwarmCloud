@@ -24,6 +24,12 @@ instructions. The caller (swarm-api) passes the offer and nothing else that
 shapes the session: the model and the instructions are this module's own
 (the spirit of invariant 10).
 
+THE ACCOUNT IS LEASED (owner, 2026-11-02: the Voice it pool). Each session
+leases a ChatGPT plan account from the quota broker's Voice it pool before it
+creates anything (accountlease.py); every Live call of the session -- create,
+sideband, re-attach -- presents that lease's token, and the lease is released
+when the session is forgotten or its start fails. No account, no session.
+
 ENDING IS WHAT STOPS THE BILLING. GPT-Live bills per second until the session
 closes (§6), so every path that forgets a session closes it first: an end from
 swarm-api, a process shutdown (`Sessions.end_all`), and a sideband that drops
@@ -113,8 +119,19 @@ class LiveError(RuntimeError):
     """OpenAI refused or failed a Live call. The message names a status, never a value."""
 
 
-class Credentials(Protocol):
-    async def for_person(self, ref: str, *, person: str) -> Credential: ...
+class LeasedCredential(Credential, Protocol):
+    """A credential held for one session (accountlease.PoolCredential)."""
+
+    def start_renewing(self) -> None: ...
+
+    async def release(self) -> None: ...
+
+
+class Leases(Protocol):
+    """Where a session's credential comes from: the quota broker's Voice it pool
+    (accountlease.VoiceBroker). Raises accountlease.VoicePoolRefused when it leases none."""
+
+    async def lease(self, *, person: str, voice_session_id: str) -> LeasedCredential: ...
 
 
 EventSink = Callable[[str, dict], Awaitable[None]]
@@ -136,7 +153,7 @@ class LiveApi:
                 response = await self.http.post(
                     f"{self.base_url}/v1/live/sessions",
                     json={"session": session, "transport": {"type": "webrtc", "sdp": offer}},
-                    headers={"Authorization": f"Bearer {bearer.reveal()}"},
+                    headers=bearer.headers(),
                     timeout=30,
                 )
             except httpx.HTTPError as exc:
@@ -164,7 +181,7 @@ class LiveApi:
         try:
             socket = await ws_connect(
                 f"{self.ws_base}/v1/live/sessions/{live_id}/attach",
-                additional_headers={"Authorization": f"Bearer {bearer.reveal()}"},
+                additional_headers=bearer.headers(),
                 open_timeout=ATTACH_SECONDS,
                 logger=_ws_log,
                 max_size=4 * 1024 * 1024,
@@ -185,7 +202,7 @@ class LiveApi:
 class LiveSession:
     """One GPT-Live session and the sideband held for it."""
 
-    def __init__(self, voice_id: str, live_id: str, credential: Credential, api: LiveApi,
+    def __init__(self, voice_id: str, live_id: str, credential: LeasedCredential, api: LiveApi,
                  *, on_event: EventSink | None, on_closed: Callable[["LiveSession"], None],
                  person: str = "", planner: "Planner | None" = None) -> None:
         self.voice_id = voice_id
@@ -351,15 +368,16 @@ class Sessions:
     One process (a one-replica StatefulSet, §3.4) so one voice session's GPT-Live
     session is held exactly once."""
 
-    def __init__(self, api: LiveApi, *, credentials: Credentials, close_grace: float = 5.0,
+    def __init__(self, api: LiveApi, *, leases: Leases, close_grace: float = 5.0,
                  on_event: EventSink | None = None, planner: "Planner | None" = None) -> None:
         self.api = api
         self._planner = planner
-        self._credentials = credentials
+        self._leases = leases
         self._grace = close_grace
         self._on_event = on_event
         self._live: dict[str, LiveSession] = {}
         self._starting: set[str] = set()
+        self._releases: set[asyncio.Task] = set()
 
     def get(self, voice_id: str) -> LiveSession | None:
         return self._live.get(voice_id)
@@ -375,16 +393,34 @@ class Sessions:
             self._planner.forget(session.voice_id)
         if self._live.get(session.voice_id) is session:
             del self._live[session.voice_id]
+        # The Voice it pool account goes back with the session: an end, a
+        # shutdown, or OpenAI's own `session.closed` on the sideband.
+        self._release(session._credential)
 
-    async def start(self, voice_id: str, *, person: str, credential_ref: str, offer: str,
+    def _release(self, credential: LeasedCredential) -> None:
+        task = asyncio.get_running_loop().create_task(credential.release(),
+                                                      name="voice-lease-release")
+        self._releases.add(task)
+        task.add_done_callback(self._releases.discard)
+
+    async def drain_releases(self) -> None:
+        """Wait for the releases in flight (a shutdown must not drop one)."""
+        while self._releases:
+            await asyncio.gather(*list(self._releases), return_exceptions=True)
+
+    async def start(self, voice_id: str, *, person: str, offer: str,
                     grant: SessionGrant | None = None) -> LiveSession:
-        """Create the GPT-Live session for `offer`, attach its sideband, and hold it.
-        Raises SessionExists, CredentialRefused, CredentialError or LiveError."""
+        """Lease a Voice it pool account for `person`, create the GPT-Live session for
+        `offer` on it, attach its sideband, and hold it. Raises SessionExists,
+        accountlease.VoicePoolRefused (nothing started), CredentialError or LiveError;
+        on any failure after the lease, the lease is released before raising."""
         if voice_id in self._live or voice_id in self._starting:
             raise SessionExists(voice_id)
         self._starting.add(voice_id)
+        credential: LeasedCredential | None = None
         try:
-            credential = await self._credentials.for_person(credential_ref, person=person)
+            credential = await self._leases.lease(person=person, voice_session_id=voice_id)
+            credential.start_renewing()
             config: dict[str, Any] = {"model": MODEL, "instructions": INSTRUCTIONS}
             if self._planner is not None:
                 config = {"model": MODEL, "instructions": INSTRUCTIONS + DELEGATE_INSTRUCTIONS,
@@ -400,7 +436,12 @@ class Sessions:
             await session.attach()
             self._live[voice_id] = session
             log.info("voice session %s: live session %s attached", voice_id, live_id)
+            credential = None  # held by the session now; released when it is forgotten
             return session
+        except BaseException:
+            if credential is not None:
+                await credential.release()
+            raise
         finally:
             self._starting.discard(voice_id)
 
@@ -424,3 +465,4 @@ class Sessions:
                 await self.end(voice_id)
             except (LiveError, CredentialError) as exc:
                 log.warning("voice session %s: could not end at shutdown: %s", voice_id, exc)
+        await self.drain_releases()

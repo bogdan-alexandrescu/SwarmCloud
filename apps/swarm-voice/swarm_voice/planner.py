@@ -50,18 +50,20 @@ name the session, kinds, counts and statuses only.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 from swarm_common.identity import tenant_id_for_user
 
 from . import prompts, tools_read
-from .credential import CredentialError, SecretManagerStore, SecretStore
+from .credential import CredentialError
 from .grant import SessionGrant
 
 log = logging.getLogger("swarm_voice.planner")
@@ -125,6 +127,47 @@ class ApiKey:
     __str__ = __repr__
 
 
+SECRET_MANAGER = "https://secretmanager.googleapis.com/v1/"
+
+
+class SecretStore(Protocol):
+    async def access(self, version_ref: str) -> bytes: ...
+
+
+class SecretManagerStore:
+    """Secret Manager READ over REST with the pod's own Workload Identity, for the
+    planner's Anthropic key only (this module's docstring, "THE KEY"). It adds no
+    version and reads no OpenAI credential: the voice's ChatGPT plan account is
+    leased from the quota broker's Voice it pool (accountlease.py), and nothing in
+    swarm-voice reads a person's ChatGPT sign-in. google-auth's session is
+    synchronous, so each call runs in a thread."""
+
+    def __init__(self) -> None:
+        self._session = None
+
+    def _authorized(self):
+        if self._session is None:
+            import google.auth
+            from google.auth.transport.requests import AuthorizedSession
+
+            credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+            self._session = AuthorizedSession(credentials)
+        return self._session
+
+    def _access(self, version_ref: str) -> bytes:
+        response = self._authorized().get(SECRET_MANAGER + version_ref + ":access", timeout=30)
+        if response.status_code != 200:
+            # The status only: an error body may quote the request.
+            raise CredentialError(f"the secret version could not be read (HTTP {response.status_code})")
+        try:
+            return base64.b64decode(response.json()["payload"]["data"])
+        except (KeyError, TypeError, ValueError, binascii.Error):
+            raise CredentialError("Secret Manager returned no payload") from None
+
+    async def access(self, version_ref: str) -> bytes:
+        return await asyncio.to_thread(self._access, version_ref)
+
+
 class AnthropicKeys:
     """Reads the person's own Anthropic key, once per turn, from Secret Manager."""
 
@@ -139,8 +182,8 @@ class AnthropicKeys:
             secret = anthropic_secret_id(person)
         except ValueError:
             raise PlannerUnavailable("the session's person is not an email address", SAY_NO_KEY) from None
-        # `latest`: swarm-api's start call names only the OpenAI version, and an
-        # API key is replaced, never refreshed, so the newest version is the key.
+        # `latest`: an API key is replaced, never refreshed, so the newest
+        # version is the key.
         ref = f"projects/{self._project}/secrets/{secret}/versions/latest"
         try:
             raw = await self._store.access(ref)

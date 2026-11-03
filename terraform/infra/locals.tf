@@ -1374,6 +1374,11 @@ locals {
       # production-shaped in every way except that label. So the guard written
       # to make this impossible was itself disarmed in the only place it ran.
       BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
+
+      # Who a Voice it pool account lists when the pool is added: the
+      # platform owner alone in version one (VOICE_IT_PEOPLE unset on
+      # purpose; quota_broker.main reads it, else this).
+      PLATFORM_OWNER = var.platform_owner
     })
     "swarm-reconciler" = merge(local.common_env, {
       # No GKE_CLUSTER/GKE_LOCATION here: the reconciler talks to the cluster

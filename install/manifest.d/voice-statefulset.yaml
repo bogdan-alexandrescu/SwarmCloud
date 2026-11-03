@@ -60,31 +60,28 @@ entries:
     terraform:
     - infra/data.google_service_account.voice
     - infra/google_service_account_iam_member.voice_workload_identity
-- id: iam-binding.swarm-voice-openai-secret
+- id: iam-binding.swarm-voice-invokes-broker
   kind: iam-binding
   scope: core
   stage: 6
   provider: engine
-  check: gcloud secrets get-iam-policy swarm-tenant-<owner's personal tenant>-openai --project=$P
-  apply: terraform/infra/voice.tf:171 (secretAccessor) and voice.tf:183 (secretVersionAdder), both bindings on the
-    platform owner's own OpenAI secret only, once voice_it is "on"
-  verify: swarm-voice reads the person's credential and stores a rotated refresh token as a new version of that
-    secret, and is refused on any other secret
-  explain: The person's own OpenAI subscription credential, which credential.py reads by version reference and
-    writes each rotated refresh token back to (docs/design/voice-it.md section 3.6).
-  guards: the secret must exist before the binding is applied; the platform owner stores it in Config › Secrets
-    (personal scope, provider openai)
+  check: gcloud run services get-iam-policy swarm-quota-broker --project=$P --region=$R
+  apply: terraform/infra/voice.tf:173 google_cloud_run_v2_service_iam_member.voice_invokes_broker, once voice_it is
+    "on"
+  verify: swarm-quota-broker's policy lists serviceAccount:swarm-voice@$P.iam.gserviceaccount.com under roles/run.invoker
+  explain: swarm-voice leases, renews and releases a Voice it pool account at the quota broker; which routes it may
+    use is the broker's decision, by the caller's email in VOICE_SERVICE_ACCOUNTS.
+  guards: 'null'
   secret_entry: 'null'
   depends_on:
   - sa.swarm-voice
   evidence:
-  - terraform/infra/voice.tf:171-190
+  - terraform/infra/voice.tf:173-183
   notes: 'null'
   step: infra.pass-1
   refs:
     terraform:
-    - infra/google_secret_manager_secret_iam_member.voice_reads_openai
-    - infra/google_secret_manager_secret_iam_member.voice_stores_openai
+    - infra/google_cloud_run_v2_service_iam_member.voice_invokes_broker
 - id: iam-binding.swarm-voice-invokes-api
   kind: iam-binding
   scope: core
@@ -133,3 +130,8 @@ entries:
     - swarm-system/swarm-voice.yaml
     terraform:
     - infra/google_compute_address.voice
+env:
+  VOICE_SERVICE_ACCOUNTS:
+    setter: 'internal: read at apps/quota-broker/quota_broker/main.py:2837; unset on purpose, so the broker answers
+      its /v1/voice/ lease routes for swarm-voice@<PROJECT_ID>.iam.gserviceaccount.com alone, the account
+      terraform/bootstrap creates'

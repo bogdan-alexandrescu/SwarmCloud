@@ -895,6 +895,15 @@ versions covering only about 15 hours. Three rules changed together.
   `_prune_versions` and `kept_commits`, so the registration and the sweep
   agree). A step whose base is from earlier the same day finds its index
   still there.
+* **Retention keeps what a running workflow pins.** Each graph ticket
+  (`graph_ticket.py`) records a pin under the repository's `index_pins`
+  naming its `index_sha` and its holder -- the step's workflow, or the agent
+  outside one. `_prune_versions` and `kept_commits` keep every pinned
+  version, however old, until the holder reaches a terminal state; then the
+  pin is deleted and the version goes at the next prune and sweep. Without
+  it, a workflow running past the day's floor found the graph its steps were
+  pinned to swept (owner's pick `record-pins`, PR #3105). Pins that cannot be
+  read prune nothing and name no keep set.
 
 Expected effect on SwarmCloud's repository: a change run becomes
 incremental, re-asking the language servers only about the affected files
