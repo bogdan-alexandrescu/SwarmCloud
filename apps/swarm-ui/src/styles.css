@@ -11607,6 +11607,7 @@ span.sk-ttile { cursor: default; }
    nothing is wider than the viewport. Tokens only, so both themes draw it.
    --------------------------------------------------------------------------- */
 .wfg { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.wfg > .c-count-note { margin: 0; }
 .wfg-filters { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
 .wfg-filters > .wfg-seg { max-width: 100%; overflow-x: auto; align-self: flex-start; }
 .wfg-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }

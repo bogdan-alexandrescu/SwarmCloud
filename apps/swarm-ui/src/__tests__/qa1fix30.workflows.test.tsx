@@ -97,10 +97,28 @@ const flat = (el: Element | null | undefined) => (el?.textContent ?? '').replace
 
 async function list(): Promise<void> {
   render(<WorkflowsScreen view="" onView={() => {}} />)
-  await waitFor(() => expect(document.querySelector(`.wfl-table tr[data-workflow="${AUDIT}"]`)).toBeTruthy(), { timeout: 4000 })
+  await waitFor(() => expect(document.querySelector(`.wfg-table tr[data-workflow="${AUDIT}"]`)).toBeTruthy(), { timeout: 4000 })
 }
 
-const row = (id: string) => document.querySelector<HTMLElement>(`.wfl-table tr[data-workflow="${id}"]`)!
+const row = (id: string) => document.querySelector<HTMLElement>(`.wfg-table tr[data-workflow="${id}"]`)!
+
+/**
+ * The row's summary in the docked inspector (the picked Work redesign, frame
+ * graph-workflows-rest), opened by a click on the row's state cell: the id,
+ * the runners and the submission moved there from the row.
+ */
+async function summary(id: string): Promise<HTMLElement> {
+  fireEvent.click(row(id).querySelector<HTMLElement>('[data-col="state"]')!)
+  return waitFor(() => {
+    const s = document.querySelector<HTMLElement>(`aside[aria-label="Workflow inspector"] .wfg-sum[data-workflow="${id}"]`)
+    expect(s).toBeTruthy()
+    return s!
+  })
+}
+
+/** The summary's `dd` for one `dt`. */
+const fact = (sum: HTMLElement, term: string) =>
+  ([...sum.querySelectorAll('dt')].find((d) => d.textContent === term)?.nextElementSibling ?? null) as HTMLElement | null
 
 async function page(id: string, tab = ''): Promise<void> {
   render(<WorkflowsScreen view={`wf=${id}${tab ? `&tab=${tab}` : ''}`} onView={() => {}} />)
@@ -114,16 +132,17 @@ async function page(id: string, tab = ''): Promise<void> {
 describe('61: the id is the line under the title, not a cut beside it', () => {
   it('draws the title alone on its line and the id under it, whole in its title', async () => {
     await list()
-    await waitFor(() => expect(row(AUDIT).querySelector('.wfl-line > a')?.textContent).toBe(AUDIT_TITLE))
+    await waitFor(() => expect(row(AUDIT).querySelector('td[data-col="workflow"] > a')?.textContent).toBe(AUDIT_TITLE))
     const td = row(AUDIT).querySelector<HTMLElement>('td[data-col="workflow"]')!
-    // MUTATION: put `<Id>` back inside `.wfl-line` in `WorkflowListRow` -- the
+    // The one-line row (the picked Work redesign, frame graph-workflows-rest)
+    // draws the title alone; the id is the summary's line under the title.
+    // MUTATION: put `<Id>` back in the name cell of `WorkflowListRow` -- the
     // id takes its 10ch of the title's line and the title is cut at 1440.
-    expect(td.querySelector('.wfl-line > .id'), 'the id is still beside the title').toBeNull()
-    const id = td.querySelector<HTMLElement>(':scope > .id')
+    expect(td.querySelector('.id'), 'the id is still beside the title').toBeNull()
+    const sum = await summary(AUDIT)
+    const id = sum.querySelector<HTMLElement>(':scope > .id')
     expect(id?.textContent).toBe(AUDIT)
     expect(id?.getAttribute('title')).toBe(AUDIT)
-    // Under the title: after its line in the cell.
-    expect(td.querySelector('.wfl-line')!.compareDocumentPosition(id!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('gives the id its own one-line micro rule, and the sheet no longer cuts it at 10ch beside the title', async () => {
@@ -142,8 +161,10 @@ describe('61: the id is the line under the title, not a cut beside it', () => {
 describe('C-11: a lone runner chip keeps its step count', () => {
   it('draws the profile and the count as two boxes, the count never cut', async () => {
     await list()
+    // Runners moved from the row into the summary (frame graph-workflows-rest).
+    const sum = await summary(STORED)
     const chip = await waitFor(() => {
-      const c = row(STORED).querySelector<HTMLElement>('.wf-mix > .c-chip')
+      const c = fact(sum, 'Runners')?.querySelector<HTMLElement>('.wf-mix > .c-chip')
       expect(c).toBeTruthy()
       return c!
     })
@@ -170,12 +191,14 @@ describe('C-10: times are UTC, written with Z', () => {
     expect(utcStamp('not a time', now)).toBeNull()
   })
 
-  it('prints the list’s Submitted cell and the page’s start in UTC with Z', async () => {
+  it('prints the list’s Submitted fact and the page’s start in UTC with Z', async () => {
     await list()
+    // Submitted moved from the row into the summary (frame graph-workflows-rest).
+    const sum = await summary(AUDIT)
     // MUTATION: print `started.submitted` (`clockTime`, local, no zone) in
-    // the Submitted cell, as before.
-    await waitFor(() => expect(row(AUDIT).querySelector('.wfl-submitted')?.textContent).toMatch(/Z$/))
-    expect(row(AUDIT).querySelector('.wfl-submitted')?.getAttribute('title')).toMatch(/submitted \d{4}-\d\d-\d\dT/)
+    // the Submitted fact, as before.
+    await waitFor(() => expect(fact(sum, 'Submitted')?.textContent).toMatch(/Z$/))
+    expect(fact(sum, 'Submitted')?.getAttribute('title')).toMatch(/submitted \d{4}-\d\d-\d\dT/)
     cleanup()
     await page(AUDIT)
     // MUTATION: use `workflowStartText` in `pageSummary` -- `started 02:21:40`.
@@ -194,10 +217,13 @@ describe('62: a state the API did not derive reads `state unknown`, the why in i
     // MUTATION: pass `h.word` straight through in `WorkflowStateMark`.
     expect(flat(row(STORED).querySelector('td[data-col="state"]'))).toBe('state unknown')
     expect(mark.closest('[title]')?.getAttribute('title') ?? mark.getAttribute('title')).toMatch(/did not derive the state/)
-    // MUTATION: drop the not-derived arm from `listRowWhy` -- the row's second
-    // line says `this API did not derive the state from the steps` again.
-    expect(row(STORED).querySelector('.wfl-why'), 'the API’s explanation is still the row’s second line').toBeNull()
     expect(flat(row(STORED))).not.toMatch(/not derived/)
+    // The why line is the summary's now (frame graph-workflows-rest).
+    // MUTATION: drop the not-derived arm from `listRowWhy` -- the summary's why
+    // line says `this API did not derive the state from the steps` again.
+    const sum = await summary(STORED)
+    expect(sum.querySelector('.wfl-why'), 'the API’s explanation is still the why line').toBeNull()
+    expect(flat(sum)).not.toMatch(/not derived/)
   })
 })
 
