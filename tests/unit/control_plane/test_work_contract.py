@@ -553,3 +553,54 @@ def test_a_plan_without_requirements_still_states_one():
                           commit=COMMIT, runner_profile="claude-code")
     assert c.contract_id == "wc-run-1-a"
     assert [(r.id, r.text, r.verification) for r in c.requirements] == [("REQ-1", "Do A", ("ci",))]
+
+
+# --- the review's carried findings: an agent never drops what it owes ---------
+
+
+def test_an_agent_never_changes_the_owner():
+    old = wc.decode(_doc())
+    moved = _proposal(old, lambda d: d["ownership"].update(owner="agent@example.com"))
+    with pytest.raises(wc.AmendmentRefused) as raised:
+        wc.amend(old, moved, author_is_agent=True)
+    assert raised.value.detail["field"] == "ownership.owner"
+    # A person may hand the contract to someone else.
+    assert wc.amend(old, moved, author_is_agent=False).contract.owner == "agent@example.com"
+
+
+def test_an_agent_never_drops_a_dependency_but_may_add_one():
+    old = wc.decode(_doc())
+    dropped = _proposal(old, lambda d: d["ownership"].update(depends_on=[]))
+    with pytest.raises(wc.AmendmentRefused) as raised:
+        wc.amend(old, dropped, author_is_agent=True)
+    assert raised.value.detail == {"field": "ownership.depends_on", "dropped": ["wc-sso-config"]}
+    assert wc.amend(old, dropped, author_is_agent=False).contract.depends_on == ()
+    added = _proposal(old, lambda d: d["ownership"]["depends_on"].append("wc-audit-log"))
+    assert wc.amend(old, added, author_is_agent=True).contract.depends_on == (
+        "wc-audit-log", "wc-sso-config")
+
+
+def test_an_agent_never_drops_an_expected_artifact_but_may_add_one():
+    old = wc.decode(_doc())
+    dropped = _proposal(old, lambda d: d.update(artifacts=[{"kind": "pull_request"}]))
+    with pytest.raises(wc.AmendmentRefused) as raised:
+        wc.amend(old, dropped, author_is_agent=True)
+    assert raised.value.detail == {"field": "artifacts",
+                                   "dropped": [{"kind": "file", "path": "docs/login.md"}]}
+    assert len(wc.amend(old, dropped, author_is_agent=False).contract.artifacts) == 1
+    added = _proposal(old, lambda d: d["artifacts"].append({"kind": "report"}))
+    assert len(wc.amend(old, added, author_is_agent=True).contract.artifacts) == 3
+
+
+@pytest.mark.parametrize("which", ["write", "read"])
+def test_narrowing_an_unrestricted_scope_to_a_pattern_is_narrowing(which):
+    base = _doc()
+    base["scope"] = {k: v for k, v in base["scope"].items() if k != which}
+    old = wc.decode(base)
+    assert getattr(old, f"{which}_scope") == ()
+    new = wc.amend(old, _proposal(old, lambda d: d["scope"].update({which: ["src/login/**"]})),
+                   author_is_agent=True).contract
+    assert getattr(new, f"{which}_scope") == ("src/login/**",)
+    assert wc.widening(old, new) == ()
+    # And back to unrestricted is widening.
+    assert f"{which}_scope" in wc.widening(new, old)
