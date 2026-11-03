@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   loadStats: vi.fn(),
   loadOnboarding: vi.fn(),
   loadLiveSession: vi.fn(),
+  takeLiveControl: vi.fn(),
   answerQuestion: vi.fn(),
   approveWorkspace: vi.fn(),
   denyWorkspace: vi.fn(),
@@ -98,6 +99,29 @@ const merge = task('task_merge1', 'PARKED', {
 })
 /** A browser agent parked for a person: I'm ready. */
 const parkedForMe = task('task_browser1', 'PARKED', { runner_profile: 'claude-code-browser', park_reason: 'HUMAN_REQUIRED', metadata: { title: 'Sign in to the vendor' } })
+/** A running browser agent holding for a person at its browser: Take control. */
+const heldForMe = task('task_held1', 'RUNNING', {
+  runner_profile: 'claude-code-browser',
+  metadata: { title: 'Pass the captcha' },
+  human_wait: { reason: 'a captcha', expect: null, requested_at: iso(NOW - 60_000), deadline: iso(NOW + 600_000), controller: null },
+} as Partial<Task>)
+/** The held agent's live session: open, with what this caller may do. */
+function liveRead(you: Record<string, boolean>, controller: { email: string; since: string } | null = null) {
+  return {
+    live_browser: true,
+    session: {
+      session_id: 'ls_1',
+      state: 'open' as const,
+      origin: null,
+      human_wait: { reason: 'a captcha', expect: null, requested_at: iso(NOW - 60_000), deadline: iso(NOW + 600_000) },
+      controller,
+      open_to_members: false,
+      device: null,
+      presets: [],
+      you: { email: 'ada@acme.test', can_control: true, can_preempt: true, can_open: true, can_switch_device: false, ...you },
+    },
+  }
+}
 const failedToday = task('task_fail1', 'FAILED', { metadata: { title: 'Port the parser' }, last_error: 'tests failed', updated_at: iso(NOW - 120_000) })
 const running = task('task_run1', 'RUNNING', { metadata: { title: 'Write the docs' } })
 
@@ -280,6 +304,33 @@ describe('Home opens on what waits on the signed-in person', () => {
     fireEvent.click(within(item('handoff') as HTMLElement).getByRole('button', { name: "I'm ready" }))
     await waitFor(() => expect(item('handoff')).toBeNull())
     expect(handoff.humanReady).toHaveBeenCalledWith('task_browser1')
+  })
+
+  it('a held hand-off whose open session the person may control offers Take control, which calls the live take', async () => {
+    serve({ tasks: [heldForMe], approvals: [], people: refused(403), role: null })
+    api.loadLiveSession.mockResolvedValue(ok(liveRead({})))
+    api.takeLiveControl.mockResolvedValue(ok(liveRead({}).session))
+    render(<HomeScreen now={NOW} />)
+    await waitFor(() => expect(within(item('handoff') as HTMLElement).queryByRole('button', { name: 'Take control' })).not.toBeNull())
+    expect(api.loadLiveSession).toHaveBeenCalledWith('task_held1')
+    fireEvent.click(within(item('handoff') as HTMLElement).getByRole('button', { name: 'Take control' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Take control' }))
+    await waitFor(() => expect(api.takeLiveControl).toHaveBeenCalledWith('task_held1', {}))
+  })
+
+  it.each([
+    ['the session says the person may not control it', { can_control: false }, null],
+    ['the person already controls it', {}, { email: 'ada@acme.test', since: iso(NOW - 30_000) }],
+  ])('a held hand-off draws no Take control when %s', async (_why, you, controller) => {
+    serve({ tasks: [heldForMe], approvals: [], people: refused(403), role: null })
+    api.loadLiveSession.mockResolvedValue(ok(liveRead(you, controller)))
+    render(<HomeScreen now={NOW} />)
+    await waitFor(() => expect(api.loadLiveSession).toHaveBeenCalledWith('task_held1'))
+    await waitFor(() => expect(item('handoff')).not.toBeNull())
+    // The session read has answered and been drawn before the row is read.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(within(item('handoff') as HTMLElement).queryByRole('button', { name: /Take control/ })).toBeNull()
+    expect(api.takeLiveControl).not.toHaveBeenCalled()
   })
 
   it('a failed run of theirs today opens its agent page', async () => {
