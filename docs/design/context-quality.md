@@ -567,6 +567,39 @@ it is in the attempt's `result_summary.runner.metrics.tool_calls`
 `built_in` and `other_mcp`), counted from the session's stream, so an
 experiment reads it without parsing transcripts.
 
+**Told when, at the system prompt's weight (built, lane AGENTS-USE-TOOLS-WHEN,
+2026-11-03).** That was not enough. The owner stopped experiment batch two
+on 2 November 2026 ("Stop everything"). Its graph-on build steps called the
+graph 1, 0, 0, 0, 0 and 0 times, against 200-560 built-in calls each, and its
+Jev-on steps never called `jev_decide`. Batch three had the fix above
+deployed and did no better: two graph calls across four graph-on steps, and
+none to `jev_decide`. In both batches every session's init listed the tools
+with the servers `connected`, so the tools were loaded and the agents did
+not choose them. Three things outweighed the one line:
+- The line came after the whole brief, while the repository's CLAUDE.md sits
+  in the system context and says "`grep -n` or `rg` first". The agents
+  quoted that rule to their helpers word for word.
+- Nothing named a moment for either tool.
+- Both graph calls that were made asked `tests_for` by bare or
+  `Class.method` names and got back `unknown` and zero rows.
+
+So a step with the switch on now gets `--append-system-prompt`, carrying
+`claude_code.GRAPH_SYSTEM_NOTE` and/or `JEV_SYSTEM_NOTE`:
+- The graph block names three moments: `context` or `impact` before editing
+  an existing symbol, `tests_for` on the changed *files* before running
+  tests, and `impact` before finishing. It says when to skip them (new files,
+  docs-only changes, and an unknown answer, where grep takes over), and it
+  answers the grep-first rule directly.
+- The Jev block names three moments too: an open choice, the acceptance
+  check before finishing, and a failure whose cause is unclear. It never
+  covers a fact the agent can check itself.
+
+The system prompt reaches every session of the attempt, including a fresh
+one after a context handoff, whose own prompt is only the handoff. The graph
+and `jev_decide` tool descriptions say the same moments in a clause each,
+inside the schema budget. A step with both switches off gets no system-prompt
+block, as before.
+
 **The tools the brief names, against the KG4 tools.** No aliases, because the
 schema budget is under 2k tokens:
 
