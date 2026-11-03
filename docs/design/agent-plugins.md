@@ -1,7 +1,7 @@
 # Agent plugins: gstack's skills in SwarmCloud agents, chosen per step, unattended or as a planner and designer
 
-**Status: plan, 3 November 2026. Nothing here is built. Merged into the agent quality program the same day:** BGD
-chose that a step's plugins, mode and skills ride in the program's versioned work contract (its capabilities
+**Status: plan, 3 November 2026. Nothing here is built. Merged into the agent quality program the same day:** the
+owner chose that a step's plugins, mode and skills ride in the program's versioned work contract (its capabilities
 section) instead of a contract request of their own, that the plugin catalogue is a runtime capability manifest
 entry, and that the question bridge builds on the program's trusted park and resume. The packaging and question
 bridge spikes run now; the build order below follows the program's work-contract and trusted-state packages.
