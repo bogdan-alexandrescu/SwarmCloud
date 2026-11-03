@@ -53,7 +53,8 @@ def _system(seen: dict) -> str | None:
 
 @pytest.mark.parametrize("env_of", [_graph_env, _served_env], ids=["staged", "served"])
 def test_a_switched_on_graph_puts_its_moments_in_the_system_prompt(monkeypatch, tmp_path, env_of):
-    seen = _run(monkeypatch, tmp_path, env_of(tmp_path))
+    # The `tools` shape (SKILL-ON-DEMAND): batch two's moments.
+    seen = _run(monkeypatch, tmp_path, {**env_of(tmp_path), graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS})
     system = _system(seen)
     # MUTATION: leave the block in the user prompt only and it is weighed
     # below CLAUDE.md's grep-first rule again.
@@ -115,7 +116,8 @@ def test_the_jev_block_names_when_a_call_helps():
 
 
 def test_both_switches_on_get_both_blocks_in_one_flag(monkeypatch, tmp_path):
-    env = {**_graph_env(tmp_path), claude_code.JUDGE_CONFIG_ENV: str(_judge_config(tmp_path))}
+    env = {**_graph_env(tmp_path), claude_code.JUDGE_CONFIG_ENV: str(_judge_config(tmp_path)),
+           graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS}
     system = _system(_run(monkeypatch, tmp_path, env))
     assert system is not None
     assert claude_code.GRAPH_SYSTEM_NOTE in system and claude_code.JEV_SYSTEM_NOTE in system
