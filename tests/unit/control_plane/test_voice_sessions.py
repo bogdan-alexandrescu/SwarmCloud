@@ -36,7 +36,6 @@ from swarm_api.waker import NullWaker
 
 from .conftest import (
     ENG_GROUP,
-    PROJECT,
     RESEARCH_GROUP,
     NoForgeTokens,
     OfflineSecretMetadata,
