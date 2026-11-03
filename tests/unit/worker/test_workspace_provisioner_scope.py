@@ -330,15 +330,14 @@ def test_the_policy_and_the_call_guard_allow_the_same_kinds(policy_docs):
     guard = json.loads(CALLS.read_text())
     plural = {f"{g}/{r}": kind for kind, (g, r) in RESOURCES.items()}
     kinds = {plural[key] for key in _variable(scope, "names")} | {"Namespace"}
-    # Less the hostname policy: the job's call guard admits neither the kind
-    # nor the discovery read, so kubernetes/apply.sh never renders it under
-    # the guard (SWARM_CALL_GUARD) and the job never sends one. The scope
-    # policy names it for whoever applies a tenant render as the deployer
-    # without the guard, and for the day the guard admits it.
-    assert kinds - {"FQDNNetworkPolicy"} == set(guard["kube_kinds"])
-    assert "FQDNNetworkPolicy" not in guard["kube_kinds"]
+    # The hostname policy included: kubernetes/apply.sh renders it under the
+    # job's call guard where the cluster serves the kind, and the guard admits
+    # it by its one name (kube_kind_names), as the ClusterRole grants get and
+    # patch on that name alone.
+    assert kinds == set(guard["kube_kinds"])
+    assert guard["kube_kind_names"] == {"FQDNNetworkPolicy": ["swarm-allow-typesafe-direct"]}
     apply_sh = (KUBERNETES / "apply.sh").read_text()
-    assert 'if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then\n    info "hostname policy  skipped' in apply_sh
+    assert "hostname policy  skipped: the workspace call guard" not in apply_sh
 
 
 def test_the_kube_system_role_reads_two_named_objects_and_nothing_else(policy_docs):

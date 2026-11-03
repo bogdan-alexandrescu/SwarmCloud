@@ -17,8 +17,8 @@ in this order:
   1. the bearer verifies, through the same verifier and audience as every
      caller, as swarm-voice's own service account (`voice_account`), with a
      verified email: anyone else, a person included, is 401;
-  2. the route is on `ALLOWED_ROUTES`: anything else is 403, before any
-     document is read;
+  2. the route is on `ALLOWED_ROUTES` or `WRITE_ROUTES`: anything else is
+     403, before any document is read;
   3. the session document named by `X-Swarm-Voice-Session` exists, is `live`,
      still holds a grant hash, and that hash equals the presented grant's
      (`hmac.compare_digest`): anything else -- an ended session, a wrong or
@@ -43,6 +43,14 @@ on it (§3.6): typed confirmations, secret values, IAM, admin and platform
 routes, the merge switch, budget raises, approving a hold, destroy and purge.
 Phase three's acting routes join it in their own lane, with their audit rows
 stamped from `AuthContext.via`.
+
+THE WRITE LIST is one route, apart from the reads so the read list stays reads
+only: `POST /v1/voice/sessions/{session_id}/cards`, the card write path the
+planner draws through (§3.5, §4; routes/voice.py). The route writes only to
+the grant's own session (any other session id is 403), takes the tenant from
+that session, and validates the card against the catalogue, which has no
+field that can hold a credential value. A test walks the route table and
+fails when any other write is reachable with a grant.
 
 THE GRANT IS A CREDENTIAL. Nothing here logs, raises, returns or stores it:
 messages name the session id at most, and the stored value is its hash.
@@ -109,13 +117,20 @@ ALLOWED_ROUTES: frozenset[tuple[str, str]] = frozenset({
 })
 
 
+#: The one write a grant reaches: the planner's card write. Kept apart from
+#: `ALLOWED_ROUTES` so that list stays GETs only; see the module docstring.
+WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/v1/voice/sessions/{session_id}/cards"),
+})
+
+
 class GrantRefused(Unauthenticated):
     """401: not swarm-voice, or no live session holds this grant. One
     message per cause, none of which says whether the session exists."""
 
 
 class RouteNotGranted(Forbidden):
-    """403: the route is not on `ALLOWED_ROUTES`, or the grant would act
+    """403: the route is on neither `ALLOWED_ROUTES` nor `WRITE_ROUTES`, or the grant would act
     somewhere its session does not."""
 
 
@@ -156,7 +171,7 @@ def check_caller(claims: Mapping[str, Any], settings: Any) -> None:
 
 
 def check_route(route: tuple[str, str] | None) -> None:
-    if route is None or route not in ALLOWED_ROUTES:
+    if route is None or (route not in ALLOWED_ROUTES and route not in WRITE_ROUTES):
         raise RouteNotGranted("this route is not open to a Voice it session grant")
 
 

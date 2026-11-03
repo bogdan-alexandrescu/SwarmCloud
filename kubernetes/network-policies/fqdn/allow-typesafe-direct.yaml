@@ -26,10 +26,20 @@
 # namespace (render.py TENANT_FILES; test_tenant_netpol_apply.py holds the
 # set), and that render is NetworkPolicies only, applied to every cluster. An
 # FQDNNetworkPolicy is refused by a cluster without FQDN network policy (only
-# dev has it, dev.tfvars), and the workspace deployer's scope policy does not
-# admit the kind, so wiring it there would refuse onboarding on every other
-# cluster. Until render.py and apply.sh render it only where the cluster
-# admits it, the owner applies it per namespace (the runbook's command).
+# dev has it, dev.tfvars), so wiring it there would refuse onboarding on every
+# other cluster.
+#
+# WHO APPLIES IT: kubernetes/apply.sh --tenant, behind the cluster check, not
+# the owner per namespace. apply.sh asks the cluster's discovery whether it
+# serves fqdnnetworkpolicies.networking.gke.io and only then passes render.py
+# --fqdn-network-policy (TENANT_FQDN_FILES), so every tenant apply on such a
+# cluster -- the operator's and the workspace job's, under its call guard
+# (scripts/lib/workspace-calls.json admits this one name, in the tenant's own
+# namespace) -- carries it, and no other cluster is sent it. The forwarder's
+# own hostname policy (swarm-system-typesafe-fwd.yaml) is Terraform's: rendered
+# into swarm_typesafe_fwd_manifest only where gke_enable_fqdn_network_policy is
+# set (terraform/infra/typesafe_fwd.tf), and applied by apply.sh
+# --swarm-typesafe-fwd, which checks the cluster serves the kind first.
 apiVersion: networking.gke.io/v1alpha1
 kind: FQDNNetworkPolicy
 metadata:
