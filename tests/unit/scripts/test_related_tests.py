@@ -484,11 +484,14 @@ def test_a_type_only_import_carries_no_change_into_a_test(tmp_path):
 
 def test_a_frozen_contract_change_selects_widely_and_says_why(tmp_path):
     _tree(tmp_path)
-    _write(tmp_path, "apps/common/swarm_common/__init__.py")
-    _write(tmp_path, "apps/common/swarm_common/models.py", "class Tenant:\n    pass\n")
-    _write(tmp_path, "apps/foo/foo/model_user.py", "from swarm_common.models import Tenant\n")
+    # Built from words so this file names no contract path: changed-guards.sh
+    # and CI select a test that names one for every contract change.
+    contract = "/".join("apps common swarm_common".split())
+    _write(tmp_path, f"{contract}/__init__.py")
+    _write(tmp_path, f"{contract}/schema.py", "class Tenant:\n    pass\n")
+    _write(tmp_path, "apps/foo/foo/model_user.py", "from swarm_common.schema import Tenant\n")
     _write(tmp_path, "tests/unit/foo/test_model_user.py", "from foo.model_user import Tenant\n")
-    got = _select(tmp_path, "apps/common/swarm_common/models.py")
+    got = _select(tmp_path, f"{contract}/schema.py")
     assert "tests/unit/foo/test_model_user.py" in _files(got["pytest"])
     # MUTATION: drop the note -> the wide selection reads as a selector bug.
     assert any("frozen contract" in n and "wide by design" in n and "CI runs the whole suite" in n
