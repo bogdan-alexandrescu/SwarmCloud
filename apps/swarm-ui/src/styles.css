@@ -11639,12 +11639,61 @@ span.sk-ttile { cursor: default; }
 /* WHILE THE INSPECTOR IS OPEN, Owner is hidden and Changed is in the summary's facts line. */
 .wfg.has-inspector .wfg-table [data-col="owner"],
 .wfg.has-inspector .wfg-table [data-col="changed"] { display: none; }
-@container work-main (max-width: 760px) { .wfg-table [data-col="owner"] { display: none; } .wfg-bar > .c-bar { width: 72px; } }
-/* Spent stays beside the open inspector (a ~580px pane at 1440, frame
-   graph-workflows-rest); only a pane too narrow for the four phone columns
-   plus Spent gives it up. */
-@container work-main (max-width: 600px) { .wfg-table [data-col="changed"] { display: none; } }
-@container work-main (max-width: 460px) { .wfg-table [data-col="spent"] { display: none; } }
+/* THE TABLE NEVER EXCEEDS ITS PANE (review finding on PR #3147: beside the
+   open inspector at 1440 the table was 627px in a 578px box, and Spent's
+   "$0.518 3 of 4 reported" set its column to 179px, so the clipping pane cut
+   the header, the figures and the note). An auto table is as wide as its
+   cells' longest lines, which no rule here can bound, so a pane of 1024px or
+   less lays the table out FIXED: every column but the name has a width, the
+   name takes the rest and cuts with its ellipsis, and the thresholds below
+   are where the shown columns' widths and 8px paddings stop leaving the name
+   112px inside the pane's 1px borders. Columns give way in one order: Owner
+   (≤860), Changed (≤720), Spent's coverage note (≤612; it stays read, and the
+   inspector shows it), Spent (≤570), then the state's word (the phone row).
+   A wider pane (1440 with the inspector folded) keeps the auto table, where
+   everything fits. The widths hold the longest of each: "awaiting input"
+   after its 12px glyph, the 72px bar and "12/12", three need marks, "$12.92"
+   and "3 of 4 reported", a 14-character owner, "not recorded". */
+@container work-main (max-width: 1024px) {
+  .wfg-table { table-layout: fixed; }
+  .wfg-table td { overflow: hidden; text-overflow: ellipsis; }
+  .wfg-table [data-col="state"] { width: 116px; }
+  .wfg-table [data-col="steps"] { width: 116px; }
+  .wfg-table [data-col="needs"] { width: 88px; }
+  .wfg-table [data-col="spent"] { width: 112px; }
+  .wfg-table [data-col="owner"] { width: 112px; }
+  .wfg-table [data-col="changed"] { width: 88px; }
+  .wfg-table td[data-col="workflow"] { min-width: 0; }
+  .wfg-bar > .c-bar { width: 72px; }
+  /* The note never sets the column: it is a line of its own under the
+     figure, sized by the column (`contain: inline-size`), and wraps rather
+     than cuts when its count is longer. */
+  .wfg-table td[data-col="spent"] .wf-spend-cov { display: block; margin-left: 0; white-space: normal; contain: inline-size; line-height: 1.2; }
+}
+@container work-main (max-width: 860px) { .wfg-table [data-col="owner"] { display: none; } }
+@container work-main (max-width: 720px) { .wfg-table [data-col="changed"] { display: none; } }
+/* Spent stays beside the open inspector (a 580px pane at 1440, frame
+   graph-workflows-rest) as the figure alone; its coverage note is in the
+   inspector's summary, and in the row it stays read, drawn nowhere. */
+@container work-main (max-width: 612px) {
+  .wfg-table [data-col="spent"] { width: 72px; position: relative; }
+  .wfg-table td[data-col="spent"] .wf-spend-cov { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+}
+.wfg.has-inspector .wfg-table [data-col="spent"] { position: relative; }
+.wfg.has-inspector .wfg-table td[data-col="spent"] .wf-spend-cov { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+/* A pane too narrow for the four phone columns plus Spent draws the phone
+   row (below): the state is its glyph, steps and needs hold their widths. */
+@container work-main (max-width: 570px) {
+  .wfg-table [data-col="spent"] { display: none; }
+  .wfg-table thead { position: relative; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .wfg-table thead th { padding: 0; border: 0; }
+  .wfg-table td { height: 40px; padding: 4px 6px; }
+  .wfg-table [data-col="state"] { width: 28px; position: relative; }
+  .wfg-table [data-col="steps"] { width: 92px; }
+  .wfg-table [data-col="needs"] { width: 88px; }
+  .wfg-table [data-col="state"] .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+  .wfg-bar > .c-bar { width: 40px; }
+}
 /* VISUALLY HIDDEN, STILL READ: the filters' labels and the Needs-you words.
    The console's `.vh` is drawn only on the People pages, so the list scopes
    its own; the box it sits in is positioned so the absolute word is laid out
