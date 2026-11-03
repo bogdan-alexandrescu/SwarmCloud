@@ -2560,9 +2560,18 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .ag-wall-count { white-space: nowrap; }
 /* On a phone the wall is a sheet, opened from this one button over the list. */
 .ag-wall-phone { display: block; margin: 0 0 var(--ctl-s2); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); padding: var(--ctl-s1) var(--ctl-s2); cursor: pointer; max-width: 100%; }
-/* The row's cost and pull request: muted when not known, never drawn as $0. */
+/* The row's cost and pull request: their own cell under the time, right-aligned as the design's columns are;
+   muted when not known, never drawn as $0. The link sits above the row's opener (`.cr-open`). */
+.wi[data-screen='agents'] .row.is-compact > .cr-sub { grid-column: name; }
+.wi[data-screen='agents'] .row.is-compact > .when { justify-self: end; }
+.row.is-compact > .cr-figs { grid-column: age; justify-self: end; white-space: nowrap; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.row.is-compact > .cr-figs:empty { display: none; }
+.cr-figs a.cr-pr { position: relative; z-index: 1; }
 .cr-cost, .cr-pr { white-space: nowrap; }
 .cr-cost.is-unknown, .cr-pr.is-unknown { color: var(--text-faint); }
+/* Folded to the 64px strip beside an open agent, the list is its marks alone: no Needs-you row, no wall button. */
+:root[data-agent-list='strip'] .app.has-inspector > .work .wi[data-screen='agents'] .ny,
+:root[data-agent-list='strip'] .app.has-inspector > .work .wi[data-screen='agents'] .ag-wall-phone { display: none; }
 
 /* `.filters` IS GONE FROM HERE AND FROM THE NAV BLOCK. It was two unrelated
    rule families 1,300 lines apart -- pill buttons up there, a label-and-select

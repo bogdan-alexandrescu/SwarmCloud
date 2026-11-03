@@ -2806,25 +2806,6 @@ function CompactRow({
             <span className="cr-state">{el.text}</span>
           </>
         )}
-        {/* Cost and pull request after the run, so a finished row still reads profile, owner, then the run. */}
-        <span className={DROP_CLASS.cost}>
-          {' · '}
-          <span className={`cr-cost${cost.text === 'cost not known' ? ' is-unknown' : ''}`} title={cost.say}>
-            {cost.text}
-          </span>
-        </span>
-        <span className={DROP_CLASS.pr}>
-          {' · '}
-          {pr !== null ? (
-            <a className="cr-pr" href={pr.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
-              #{pr.number}
-            </a>
-          ) : (
-            <span className="cr-pr is-unknown" title="Pull request not known: the list's read does not carry it; the agent's Changes tab does">
-              PR not known
-            </span>
-          )}
-        </span>
         {/* THE TRY ON A LIVE ROW, as V1 draws it (leading the line, above)
             -- and on any row whose count is over its cap (AG-15), which a
             finished row must still show: that is the platform running past
@@ -2861,6 +2842,29 @@ function CompactRow({
             </span>
           </>
         )}
+      </span>
+      {/* COST AND PULL REQUEST, the design's right-hand columns: their own
+          cell under the time, so the line beside them keeps its order --
+          profile, owner, the run, and a cancelled run's note last. Each
+          gives way as the inspector widens (`droppedColumns`). */}
+      <span className="cr-figs">
+        <span className={DROP_CLASS.cost}>
+          <span className={`cr-cost${cost.text === 'cost not known' ? ' is-unknown' : ''}`} title={cost.say}>
+            {cost.text}
+          </span>
+        </span>
+        <span className={DROP_CLASS.pr}>
+          {' · '}
+          {pr !== null ? (
+            <a className="cr-pr" href={pr.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+              #{pr.number}
+            </a>
+          ) : (
+            <span className="cr-pr is-unknown" title="Pull request not known: the list's read does not carry it; the agent's Changes tab does">
+              PR not known
+              </span>
+            )}
+          </span>
       </span>
       {/* THE REASON IS CLAMPED AND WHOLE IN ITS TITLE (V061): a failed row
           printed its whole multi-line error. ON A FAILED ROW IT IS RED, as the
