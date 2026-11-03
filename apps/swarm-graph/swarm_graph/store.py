@@ -21,6 +21,12 @@ view of the process-wide `ShardCache` scoped to one tenant and one repository.
 Every blob it decodes goes through `snapshot.decode_blob`, so the
 sha256-against-name check holds here as it does for a staged directory.
 
+A DEADLINE, NOT A TIMEOUT (`Deadline`, `DeadlineSource`). A request reads
+cold shards on the load pool and waits for each only until
+ANSWER_DEADLINE_SECONDS after it arrived; what is not read by then is answered
+as empty and the answer says it is partial (server.py), while the read
+finishes into the shard cache for the next ask.
+
 TWO FAILURES ARE NOT ANSWERS, and are raised past the tool handlers to become
 HTTP statuses (§2.2, §10): `IndexMissing` (the pinned manifest or one of its
 blobs is gone, e.g. swept past KEPT_VERSIONS during a long attempt) is 404,
@@ -33,6 +39,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Callable, Protocol
 from urllib.parse import quote
 
@@ -52,6 +61,17 @@ from .ticket import GraphTicket
 GCS_OBJECTS = "https://storage.googleapis.com/storage/v1/b/"
 #: One object read; a GCS read that takes longer is the store unreachable.
 OBJECT_TIMEOUT_SECONDS = 10
+#: One answer's server-side deadline, from the request's arrival. The pod's
+#: shim gives a call 10 s; a cold replica (the first after each promotion)
+#: reads the manifest, then shard after shard, each read up to
+#: OBJECT_TIMEOUT_SECONDS. Past this the service stops waiting and answers
+#: with what it has read, marked partial, so the agent gets an answer and a
+#: retry rather than the shim's timeout; 3 s is left for the reply, the
+#: shim's own work and the network.
+ANSWER_DEADLINE_SECONDS = 7.0
+#: Storage reads in flight per replica for requests under a deadline; a read
+#: queued behind a full pool is waited for only until its deadline.
+LOAD_WORKERS = 16
 #: The largest object this service reads. A blob is one module's shard of one
 #: layer (this repository's largest is under 1 MB stored); a manifest is a
 #: table of contents. Anything larger is not one.
@@ -185,6 +205,78 @@ class TenantSource:
             self._on_load(hit, shard.raw_bytes)
         return shard
 
+    def held(self, hexdigest: str) -> _Shard | None:
+        """The shard when it is already decoded in the cache (counted as a
+        read), else None: never a storage read."""
+        if not _HEX.fullmatch(hexdigest):
+            raise SnapshotError("a blob is named by 64 hex characters")
+        shard = self._shards.get_counted((self.tenant_id, hexdigest))
+        if shard is not None and self._on_load is not None:
+            self._on_load(True, shard.raw_bytes)
+        return shard
+
+
+class Deadline:
+    """One answer's server-side deadline (ANSWER_DEADLINE_SECONDS from the
+    request's arrival), and what the request saw against it: whether it read
+    anything from storage (`cold`) and which blobs it gave up waiting for."""
+
+    def __init__(self, at: float, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self.at = at
+        self._clock = clock
+        self.cold = False
+        self.expired = False
+        self.unread: set[str] = set()
+
+    def remaining(self) -> float:
+        return self.at - self._clock()
+
+    @property
+    def partial(self) -> bool:
+        return bool(self.unread)
+
+
+class DeadlineSource:
+    """A request's `BlobSource`: a held shard at once; a cold one read on
+    the load pool and waited for only until the deadline. A shard not read
+    by then is answered as EMPTY and named in `deadline.unread`, so the answer
+    is complete in everything it could read and is marked partial; the read
+    itself goes on in the background into the shard cache, so the same
+    question asked again finds it. Once the deadline has passed no further
+    read is started, so a handler that walks many shards finishes at once."""
+
+    def __init__(self, source: TenantSource, deadline: Deadline,
+                 pool: ThreadPoolExecutor) -> None:
+        self._source = source
+        self._deadline = deadline
+        self._pool = pool
+        self.tenant_id = source.tenant_id
+        self.repo_id = source.repo_id
+
+    def decoded(self, hexdigest: str) -> _Shard:
+        shard = self._source.held(hexdigest)
+        if shard is not None:
+            return shard
+        deadline = self._deadline
+        deadline.cold = True
+        remaining = deadline.remaining()
+        if deadline.expired or remaining <= 0:
+            deadline.expired = True
+            deadline.unread.add(hexdigest)
+            return _Shard([], 0)
+        future = self._pool.submit(self._source.decoded, hexdigest)
+        try:
+            return future.result(timeout=remaining)
+        except FutureTimeout:
+            deadline.expired = True
+            deadline.unread.add(hexdigest)
+            return _Shard([], 0)
+
+
+def load_pool(workers: int = LOAD_WORKERS) -> ThreadPoolExecutor:
+    """The replica's shard and manifest reads for requests under a deadline."""
+    return ThreadPoolExecutor(max_workers=workers, thread_name_prefix="swarm-graph-load")
+
 
 def read_manifest(store: ObjectStore, ticket: GraphTicket) -> bytes:
     """The pinned manifest's bytes, checked against the ticket's digest."""
@@ -211,7 +303,11 @@ def open_snapshot(store: ObjectStore, ticket: GraphTicket, source: TenantSource)
 
 
 __all__ = [
+    "ANSWER_DEADLINE_SECONDS",
+    "Deadline",
+    "DeadlineSource",
     "GCS_OBJECTS",
+    "LOAD_WORKERS",
     "GcsStore",
     "IndexMissing",
     "ManifestMismatch",
@@ -221,6 +317,7 @@ __all__ = [
     "TenantSource",
     "blob_name",
     "graph_root",
+    "load_pool",
     "manifest_name",
     "open_snapshot",
     "read_manifest",
