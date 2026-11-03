@@ -126,18 +126,25 @@ TASK_SUMMARY_UNREAD: tuple[str, ...] = (
     "spec_format",
 )
 
-#: The two `result_summary` keys a summary row DOES serve: the codec lifts
-#: `browser_used` and `browser_use` out of the summary
-#: (`codec.browser_use_to_api`, BROWSER-USE-FLAG #2322) so the Agents page's
-#: list row carries the browser-use mark, so the read keeps these dotted paths
-#: and nothing else of `result_summary`.
+#: The `result_summary` keys a summary row DOES serve, as dotted paths, and
+#: nothing else of `result_summary`:
+#: * `browser_used` and `browser_use`: the codec lifts them out of the summary
+#:   (`codec.browser_use_to_api`, BROWSER-USE-FLAG #2322) so the Agents page's
+#:   list row carries the browser-use mark;
+#: * `cost_incomplete`: the worker's mark that a session's usage was not read,
+#:   so the attempts' cost is a floor. `attempt_totals.totals_for_page` folds
+#:   it from the task document into the row's `cost_incomplete`, so the
+#:   Overview and Agents rows draw "at least" (owner's pick, 2026-11-03,
+#:   part of #2688). Without this path the summary read never fetched it and
+#:   served such a total as complete.
 TASK_SUMMARY_NESTED: tuple[str, ...] = (
     "result_summary.browser_used",
     "result_summary.browser_use",
+    "result_summary.cost_incomplete",
 )
 
 #: The field paths a summary page reads: every `Task` field but the four
-#: above, plus the two nested browser-use paths.
+#: above, plus the nested `result_summary` paths.
 TASK_SUMMARY_FIELDS: tuple[str, ...] = tuple(
     f.name for f in dataclass_fields(Task) if f.name not in TASK_SUMMARY_UNREAD
 ) + TASK_SUMMARY_NESTED
@@ -151,6 +158,10 @@ def _state_values(state: TaskState | Sequence[TaskState] | None) -> list[str]:
         return [state.value]
     return list(dict.fromkeys(s.value for s in state))
 WORKFLOWS = "workflows"
+#: A field of the workflow DOCUMENT, beside the frozen `Workflow`'s (rule 1):
+#: the task ids a step re-run replaced (`Store.rerun_workflow_steps`). The
+#: scheduler reads the same name (`scheduler.store.SUPERSEDED_TASK_IDS`).
+SUPERSEDED_TASK_IDS = "superseded_task_ids"
 TENANTS = "tenants"
 #: The tenant document's wave-epic field (#638); see `Store.get_findings_epic`.
 TENANT_FINDINGS_EPIC = "findings_epic"
@@ -2226,6 +2237,101 @@ class Store:
             .document(workflow_id)
             .update({"state": state.value, "updated_at": self._now(), **settled_unpin(state)})
         )
+
+    def rerun_workflow_steps(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        replaced: dict[str, str],
+        tasks: Sequence[Task],
+        by: str,
+        tenant_member: str = "",
+    ) -> None:
+        """Write a step re-run's new tasks and point their steps at them, in
+        ONE transaction (`swarm_api.steprerun`).
+
+        `replaced` is step id -> the task id the re-run read for it; `tasks`
+        are the new tasks, signed, each carrying its step id. Inside the
+        transaction, before any write, the workflow is read again and refused
+        409 (`detail.reason` `step_rerun_raced`) unless it is still this tenant's, not cancelled,
+        every replaced step still points at the task the re-run read, and
+        every step's task is terminal -- so two Retries of one step write one
+        set of tasks, and a cancel or a re-run that landed first wins. The
+        old tasks are not written: a FAILED task stays FAILED. The workflow's
+        stored state is set to QUEUED, which is what its new steps derive.
+        """
+        from .steprerun import raced as rerun_raced
+
+        wf_ref = self._db.collection(WORKFLOWS).document(workflow_id)
+        now = self._now()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(wf_ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                raise NotFound(f"workflow {workflow_id!r} not found")
+            workflow = workflow_from_dict(data)
+            pointers = {s.step_id: s.task_id for s in workflow.steps}
+            raced = workflow.cancel_requested or any(
+                pointers.get(step_id) != old for step_id, old in replaced.items()
+            )
+            if not raced:
+                for task_id in (t for t in pointers.values() if t):
+                    task_snap = _snapshot(txn.get(self._db.collection(TASKS).document(task_id)))
+                    state = (task_snap.to_dict() or {}).get("state") if task_snap.exists else None
+                    if state not in {s.value for s in TERMINAL_STATES}:
+                        raced = True
+                        break
+            if raced:
+                raise rerun_raced(workflow_id)
+            new_by_step = {t.step_id: t.id for t in tasks}
+            for task in tasks:
+                ref = self._db.collection(TASKS).document(task.id)
+                txn.set(ref, task_to_firestore(task))
+                event = TaskEvent(
+                    event_id=new_id("ev"),
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    type=EventType.SUBMITTED,
+                    at=now,
+                    detail=_with_tenant_member(
+                        {
+                            "runner_profile": task.runner_profile,
+                            "resource_class": task.resource_class,
+                            "state": task.state.value,
+                            "workflow_id": task.workflow_id,
+                            "submitted_by": task.submitted_by,
+                            "rerun_of": replaced.get(task.step_id or ""),
+                            "rerun_by": by,
+                        },
+                        tenant_member,
+                    ),
+                )
+                txn.set(ref.collection(EVENTS).document(event.event_id),
+                        event_to_firestore(event))
+            for step in workflow.steps:
+                if step.step_id in new_by_step:
+                    step.task_id = new_by_step[step.step_id]
+            # The fields this write owns and nothing else: the document holds
+            # fields beside the frozen `Workflow`'s, which a whole `set` of
+            # `workflow_to_firestore` would drop. `superseded_task_ids` is the
+            # old tasks: they still name this workflow, and the scheduler's
+            # `fail_workflow` verdict, which finds failed steps by a query on
+            # `workflow_id`, leaves them out (`scheduler.loop.
+            # read_workflow_failure`) -- else the old FAILED task would sweep
+            # the new ones away on the next drain.
+            superseded = [str(t) for t in (data.get(SUPERSEDED_TASK_IDS) or []) if t]
+            superseded += [old for old in replaced.values() if old not in superseded]
+            txn.update(wf_ref, {
+                "steps": workflow_to_firestore(workflow)["steps"],
+                "state": TaskState.QUEUED.value,
+                "updated_at": now,
+                SUPERSEDED_TASK_IDS: superseded,
+            })
+
+        _apply(self._db.transaction())
 
     def cancel_workflow(
         self,
