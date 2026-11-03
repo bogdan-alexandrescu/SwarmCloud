@@ -36,6 +36,7 @@ from swarm_api.graph_ticket import (
     ticket_seconds,
     verify_graph_ticket,
 )
+from swarm_api import repoindex
 from swarm_api.repositories import repo_id_for
 from swarm_api.settings import ApiSettings
 
@@ -276,6 +277,43 @@ def test_the_ticket_pins_tenant_repository_attempt_commit_and_digest(ready):
         "tenant_id": "eng", "repo_id": REPO_ID, "task_id": TASK, "attempt_id": ATTEMPT,
         "generation": 2, "index_sha": SHA, "manifest_digest": DIGEST,
     }
+
+
+def _pins(db) -> dict[str, dict[str, Any]]:
+    prefix = f"repositories/{REPO_ID}/index_pins/"
+    return {path[len(prefix):]: doc for path, doc in db.docs.items() if path.startswith(prefix)}
+
+
+def test_a_ticket_pins_its_version_for_the_tasks_workflow(ready, ldb):
+    """Owner's pick `record-pins` (PR #3105): retention keeps the version
+    until the workflow settles (test_repository_index_retention.py)."""
+    client, attempt = ready
+    ldb.docs[f"tasks/{TASK}"]["workflow_id"] = "wf_long"
+    assert ask(client, attempt).status_code == 200
+    assert ask(client, attempt).status_code == 200  # a renewal rewrites the one pin
+    # MUTATION: minting without `record_pin`, or one pin per renewal.
+    [(pin_id, pin)] = _pins(ldb).items()
+    assert pin_id == repoindex.pin_id("workflows", "wf_long", SHA)
+    assert {k: pin[k] for k in ("commit_sha", "holder", "holder_id", "tenant_id", "task_id")} \
+        == {"commit_sha": SHA, "holder": "workflows", "holder_id": "wf_long",
+            "tenant_id": "eng", "task_id": TASK}
+
+
+def test_a_task_outside_a_workflow_pins_its_version_itself(ready, ldb):
+    client, attempt = ready
+    ldb.docs[f"tasks/{TASK}"].pop("workflow_id", None)
+    assert ask(client, attempt).status_code == 200
+    assert set(_pins(ldb)) == {repoindex.pin_id("tasks", TASK, SHA)}
+
+
+def test_a_refused_ticket_pins_nothing(ready, ldb):
+    client, attempt = ready
+    refused(ask(client, attempt, index_sha=OTHER_SHA), 404)
+    ldb.docs[f"tasks/{TASK}"]["current_generation"] = 3
+    ldb.docs[f"leases/{attempt.tuple.lease_id}"]["generation"] = 3
+    refused(ask(client, attempt), 409)
+    # MUTATION: pinning before the fence or the digest check.
+    assert _pins(ldb) == {}
 
 
 def test_an_unsigned_or_wrongly_purposed_request_is_refused(ready):

@@ -1,20 +1,23 @@
 // ADMIN › SETUP, THE PAGE (DAYONE-SETUP-UI-2; part of #2688; plan §5.1,
 // frames B05, B06, B09a, B15).
 //
-// WHAT EACH CASE HOLDS:
+// WHAT EACH CASE HOLDS (the page is the console finish the owner picked on
+// 2026-11-02, a checklist beside a working panel; its own cases are in
+// consoleFinish.test.tsx):
 //   * a first run, with swarm install's cloud stages done and nothing done
-//     on this page, draws the strip with the CLI's step done and every
-//     console step pending, in BGD's order (the sign-in client, GitHub App,
-//     first team, Claude accounts, verify, Send to your team), and the lead
-//     names the next one;
+//     on this page, draws the checklist's eight steps in BGD's order (the
+//     sign-in client, GitHub App, first team, Claude accounts, the smoke
+//     agent, verify, Send to your team) after the CLI's cloud step, and the
+//     panel is on the next step the person can act on;
 //   * the sign-in client step (issue #2964, the owner's pick of 2026-11-01)
 //     sits after the CLI's cloud part and before the GitHub App, its state
-//     read only from the route's `sign_in_client`: waiting is next and the
-//     lead names it, saved is in progress, applied is done, and a route that
-//     serves none is not read yet, never done;
-//   * when no CLI holds the install lease (`cli_running` false, R8) the page
-//     says to run swarm install in a terminal to continue, and the console
-//     steps stay usable;
+//     read only from the route's `sign_in_client`: waiting is the person's
+//     step and the panel opens on it, saved is in progress with swarm
+//     install acting, applied is done, and a route that serves none is not
+//     read yet, never done;
+//   * when no CLI holds the install lease (`cli_running` false, R8) the
+//     status line says swarm install is not running and to run it again, and
+//     the console steps stay usable;
 //   * once the first team exists, Add a team is the same team panel as its
 //     own flow, with the `swarm team add` line beside it, following the form,
 //     and its submit is the setup API's team route (B15).
@@ -95,9 +98,11 @@ async function mountPage(doc: Json) {
   return calls
 }
 
-const strip = () => document.querySelector('[aria-label="Install setup"]') as HTMLElement
-const stripStep = (key: string) => strip().querySelector(`[data-step="${key}"]`) as HTMLElement
-const row = (key: string) => document.querySelector(`ol[aria-label="Setup steps"] > [data-step="${key}"]`) as HTMLElement
+const step = (key: string) => document.querySelector(`nav[aria-label="Setup steps"] [data-step="${key}"]`) as HTMLElement
+const keys = () => [...document.querySelectorAll('nav[aria-label="Setup steps"] [data-step]')].map((li) => li.getAttribute('data-step'))
+const status = () => visible(screen.getByRole('status', { name: 'What swarm install is doing' }))
+const panel = () => document.querySelector('.cfc-panel') as HTMLElement
+const pick = (key: string) => fireEvent.click(within(step(key)).getByRole('button'))
 
 afterEach(() => {
   cleanup()
@@ -107,40 +112,33 @@ afterEach(() => {
 describe('Admin › Setup, the page', () => {
   it("first run shows the CLI's stages done and the console's steps pending", async () => {
     await mountPage(firstRun())
-    // The strip, in BGD's order: the CLI's part, then the console's.
+    // The checklist, in BGD's order: the CLI's part, then the console's.
     // MUTATION: draw the accounts before the first team (the P1-B frames' order) -> fails.
-    // MUTATION: leave the sign-in client out of the strip, or draw it after the GitHub App -> fails.
-    expect([...strip().querySelectorAll('[data-step]')].map((s) => s.getAttribute('data-step'))).toEqual(['cloud', 'sign-in-client', 'github', 'team', 'accounts', 'verify', 'send'])
+    // MUTATION: leave the sign-in client out, or draw it after the GitHub App -> fails.
+    expect(keys()).toEqual(['cloud', 'sign-in-client', 'github', 'team', 'accounts', 'smoke', 'verify', 'send'])
     // MUTATION: read the cloud step off anything but the engine's stages -> fails.
-    expect(stripStep('cloud').className).toContain('is-done')
-    expect(visible(stripStep('cloud'))).toMatch(/swarm install.*11 of 11 stages/)
-    for (const k of ['github', 'team', 'accounts', 'verify', 'send']) expect(stripStep(k).className).not.toContain('is-done')
-    // The next step is the GitHub App's, and the strip and the lead say so.
-    expect(stripStep('github').className).toContain('is-next')
-    expect(stripStep('sign-in-client').className).toContain('is-done')
-    expect(visible(strip())).toMatch(/2 of 7 done/)
-    const lead = document.querySelector('.ws-lead') as HTMLElement
-    expect(visible(lead)).toMatch(/Step 3 of 7/)
-    expect(visible(lead)).toMatch(/GitHub App/)
-    expect(visible(lead)).toMatch(/swarm install did the cloud part/)
-    // The checklist SETUP-UI-1 built, composed here: the cloud row done, the console's to do.
-    expect(row('cloud').className).toContain('is-done')
-    for (const k of ['github', 'team', 'accounts']) expect(row(k).className).toContain('is-todo')
-    expect(row('send').className).toContain('is-todo')
-    // And the installer card beside it.
-    expect(screen.getByText('The installer')).toBeTruthy()
+    expect(step('cloud').className).toContain('is-done')
+    expect(visible(step('cloud'))).toMatch(/11 of 11 stages, by swarm install/)
+    expect(step('sign-in-client').className).toContain('is-done')
+    for (const k of ['github', 'team', 'accounts', 'smoke', 'verify', 'send']) expect(step(k).className).not.toContain('is-done')
+    // The next step is the GitHub App's: the person acts on it, and the panel follows it.
+    expect(visible(step('github'))).toContain('You')
+    expect(step('github').className).toContain('is-selected')
+    expect(status()).toMatch(/2 of 8 done/)
+    expect(panel().getAttribute('aria-label')).toBe('Step 3: GitHub App')
+    expect(visible(panel())).toMatch(/Step 3 of 8 · the panel follows the next step you can act on/)
+    // The panel holds today's GitHub step.
+    expect(within(panel()).getByRole('button', { name: /Create the GitHub App/ })).toBeTruthy()
   })
 
   it('when no CLI holds the lease the page says run swarm install to continue', async () => {
     await mountPage(firstRun({ cli_running: false }))
-    // MUTATION: drop the R8 banner, or read `cli_running` as true -> fails.
-    expect(screen.getByText('swarm install is not running')).toBeTruthy()
-    expect(visible(document.body)).toMatch(/Run swarm install in a terminal to continue/)
-    // The strip's count says what it is waiting on, rather than "waiting on this page".
-    expect(visible(strip())).toMatch(/swarm install is not running/)
-    expect(visible(strip())).not.toMatch(/the CLI is waiting on this page/)
+    // MUTATION: drop the R8 line, or read `cli_running` as true -> fails.
+    expect(status()).toMatch(/swarm install is not running · last seen 10 s ago/)
+    expect(status()).toMatch(/run swarm install again in a terminal/)
+    expect(status()).not.toMatch(/waiting on this page/)
     // The console steps stay usable: the GitHub App's button is live.
-    const create = within(row('github')).getByRole('button', { name: /Create the GitHub App/ }) as HTMLButtonElement
+    const create = within(panel()).getByRole('button', { name: /Create the GitHub App/ }) as HTMLButtonElement
     expect(create.disabled).toBe(false)
   })
 
@@ -195,69 +193,67 @@ describe('Admin › Setup, one person and the doctor', () => {
     github_app: { started: true, id: 4242, slug: 'swarmcloud-example', installed_on: 'example-org', secrets_written_at: '2026-10-29T14:50:00Z', self_check: { ok: true, reason: null, at: '2026-10-29T14:52:00Z' } },
   }
 
-  it('the strip counts the personal workspace as the first workspace, and the accounts are next', async () => {
+  it('the checklist counts the personal workspace as the first workspace, and the accounts are next', async () => {
     await mountPage(firstRun(ONE_PERSON))
-    // MUTATION: keep the strip's team step on `state.teams`, which one person never has.
-    expect(stripStep('team').className).toContain('is-done')
-    expect(visible(stripStep('team'))).toContain('u-ana')
-    expect(visible(stripStep('accounts'))).not.toContain('after the first team')
-    expect(stripStep('accounts').className).toContain('is-next')
-    const lead = visible(document.querySelector('.ws-lead'))
-    expect(lead).toContain('Claude accounts')
-    // MUTATION: keep "or sc account add" in the lead.
-    expect(lead).not.toContain('sc account add')
-    expect(lead).toContain('your personal workspace')
+    // MUTATION: keep the team step on `state.teams`, which one person never has.
+    expect(step('team').className).toContain('is-done')
+    expect(visible(step('team'))).toContain('Your workspace')
+    expect(visible(step('team'))).toContain('u-ana')
+    expect(visible(step('accounts'))).not.toContain('after the first team')
+    expect(panel().getAttribute('aria-label')).toBe('Step 5: Claude accounts')
+    // MUTATION: keep "or sc account add" in the step.
+    expect(visible(panel())).not.toContain('sc account add')
   })
 
-  // DAYONE-SETUP-WORDS (part of #2688): the lead says what the step panel says,
-  // that the page makes the link and opens it for the person's own account; nothing is sent.
-  it('the accounts lead says the page makes the one-time link and opens it for your own account', async () => {
+  // DAYONE-SETUP-WORDS (part of #2688): the accounts step says the page makes the link; nothing is sent.
+  it('the accounts step says the page makes the one-time link', async () => {
     await mountPage(firstRun(ONE_PERSON))
-    const lead = visible(document.querySelector('.ws-lead'))
     // MUTATION: say the page sends the link.
-    expect(lead).not.toContain('this page sends')
-    expect(lead).toContain('a one-time link this page makes')
-    expect(lead).toContain('opens it for you')
+    expect(visible(panel())).not.toContain('this page sends')
+    expect(visible(panel())).toContain('a one-time link this page makes')
   })
 
-  // Review of DAYONE-SETUP-UI-5A: the strip and the lead rest on the smoke as the hand-over does.
+  // The smoke agent is its own step (the owner's pick of 2026-11-02), and the hand-over waits on it.
   const SIGNED_IN = { ana: { owner: 'ana@example.com', link_expires: '2026-10-30T14:54:00Z' } }
   const withSmoke = (smoke: Json) => ({ ...ONE_PERSON, personal: { ...ONE_PERSON.personal, pool_accounts: ['ana'], smoke }, accounts: SIGNED_IN })
 
-  it('a failed smoke keeps the first workspace failed, and the lead never says hand over', async () => {
+  it('a failed smoke is the smoke step failed with its Retry, and no hand over is offered', async () => {
     await mountPage(firstRun(withSmoke({ state: 'failed', reason: 'no_capacity' })))
-    // MUTATION: tick the first workspace on its apply alone, with the smoke failed.
-    expect(stripStep('team').className).not.toContain('is-done')
-    expect(stripStep('team').className).toContain('is-failed')
-    const lead = visible(document.querySelector('.ws-lead'))
-    // MUTATION: say "hand over" while the page offers no hand-over button.
-    expect(lead).not.toMatch(/hand over/i)
-    expect(lead).toContain('smoke')
+    // MUTATION: tick the smoke step with the smoke failed.
+    expect(step('smoke').className).toContain('is-failed')
+    expect(panel().getAttribute('aria-label')).toBe('Step 6: Smoke agent')
+    expect(visible(panel())).toContain('no_capacity')
+    expect(within(panel()).getByRole('button', { name: 'Retry the smoke agent' })).toBeTruthy()
+    pick('verify')
+    // MUTATION: offer the hand-over before the smoke succeeded.
+    expect(within(panel()).queryByRole('button', { name: /Hand over to swarm install/ })).toBeNull()
   })
 
-  it('a running smoke keeps the first workspace in progress; a succeeded one lets the lead say hand over', async () => {
+  it('a running smoke keeps its step in progress; a succeeded one offers the hand-over', async () => {
     await mountPage(firstRun(withSmoke({ state: 'running', task_id: 'task_smoke' })))
-    expect(stripStep('team').className).toContain('is-in_progress')
-    expect(visible(document.querySelector('.ws-lead'))).not.toMatch(/hand over/i)
+    expect(step('smoke').className).toContain('is-in_progress')
+    pick('verify')
+    expect(within(panel()).queryByRole('button', { name: /Hand over to swarm install/ })).toBeNull()
     cleanup()
     await mountPage(firstRun(withSmoke({ state: 'succeeded', task_id: 'task_smoke' })))
-    expect(stripStep('team').className).toContain('is-done')
-    expect(visible(document.querySelector('.ws-lead'))).toMatch(/hand over to swarm install/)
+    expect(step('smoke').className).toContain('is-done')
+    expect(panel().getAttribute('aria-label')).toBe('Step 7: Verify')
+    expect(within(panel()).getByRole('button', { name: /Hand over to swarm install/ })).toBeTruthy()
   })
 
-  it('a team’s failed smoke keeps the first team failed in the strip', async () => {
+  it('a team’s failed smoke keeps the smoke step failed', async () => {
     await mountPage(firstRun({ github_app: ONE_PERSON.github_app, teams: [{ ...FIRST_TEAM, smoke: { state: 'failed', detail: 'quota_exceeded', url: null } }] }))
-    // MUTATION: count the first team done once it exists, whatever its smoke.
-    expect(stripStep('team').className).not.toContain('is-done')
-    expect(visible(document.querySelector('.ws-lead'))).not.toMatch(/hand over/i)
+    // MUTATION: count the smoke done once the team exists, whatever its state.
+    expect(step('smoke').className).toContain('is-failed')
+    expect(step('verify').className).not.toContain('is-done')
   })
 
   it('names swarm doctor only for what it does, and the hourly doctor’s findings on Health', async () => {
     await mountPage(firstRun())
-    const card = visible(screen.getByRole('heading', { name: 'Health' }).closest('section'))
-    // MUTATION: say the Health card shows what swarm doctor runs (it shows the hourly doctor's run).
-    expect(card).not.toContain('The checks swarm doctor runs')
-    expect(card).toContain('Admin › Setup › Health')
+    const about = visible(screen.getByRole('region', { name: 'This install' }))
+    // MUTATION: say the page shows what swarm doctor runs (Health shows the hourly doctor's run).
+    expect(about).not.toContain('The checks swarm doctor runs')
+    expect(about).toContain('Admin › Setup › Health')
   })
 })
 
@@ -266,49 +262,42 @@ describe('Admin › Setup, one person and the doctor', () => {
 // and the lead carry the step too, after the CLI's cloud part and before the
 // GitHub App, from the same `sign_in_client` field.
 describe('Admin › Setup, the sign-in client step', () => {
-  const lead = () => visible(document.querySelector('.ws-lead'))
-
-  it('while the client waits, the strip and the lead name the sign-in client, not the GitHub App', async () => {
+  it('while the client waits, the sign-in client is the person’s step and the panel opens on it, not on the GitHub App', async () => {
     await mountPage(firstRun({ sign_in_client: signInClient('waiting') }))
-    // MUTATION: leave the step out of the strip -> the GitHub App is next and this fails.
-    expect(stripStep('sign-in-client').className).toContain('is-next')
-    expect(stripStep('sign-in-client').className).not.toContain('is-done')
-    expect(stripStep('github').className).not.toContain('is-next')
-    expect(visible(strip())).toMatch(/1 of 7 done/)
-    expect(visible(strip())).toMatch(/Next: Sign-in client/)
-    // MUTATION: draw the lead from the GitHub App while the client waits -> fails.
-    expect(lead()).toMatch(/Step 2 of 7/)
-    expect(lead()).toContain('Sign-in client')
-    expect(lead()).not.toMatch(/GitHub App/)
-    expect(lead()).toMatch(/Branding, Audience and Create client/)
+    // MUTATION: leave the step out -> the GitHub App is next and this fails.
+    expect(step('sign-in-client').className).not.toContain('is-done')
+    expect(step('sign-in-client').className).toContain('is-selected')
+    expect(step('github').className).not.toContain('is-selected')
+    expect(status()).toMatch(/1 of 8 done/)
+    expect(panel().getAttribute('aria-label')).toBe('Step 2: Sign-in client')
+    expect(within(panel()).getByRole('list', { name: 'Google pages' })).toBeTruthy()
   })
 
   it('a saved client is in progress until the infra pass applies it, then done, and the GitHub App is next', async () => {
     await mountPage(firstRun({ sign_in_client: signInClient('saved') }))
     // MUTATION: count a saved client done before IAP holds it -> fails.
-    expect(stripStep('sign-in-client').className).toContain('is-in_progress')
-    expect(stripStep('sign-in-client').className).toContain('is-next')
-    expect(visible(stripStep('sign-in-client'))).toContain('desktop-example.apps.googleusercontent.com')
-    expect(lead()).toContain('Sign-in client')
-    expect(lead()).toMatch(/infra pass/)
+    expect(step('sign-in-client').className).toContain('is-in_progress')
+    expect(visible(step('sign-in-client'))).toContain('swarm install')
+    expect(status()).toMatch(/infra pass/)
+    pick('sign-in-client')
+    expect(visible(panel())).toContain('desktop-example.apps.googleusercontent.com')
     cleanup()
     await mountPage(firstRun({ sign_in_client: signInClient('applied') }))
-    expect(stripStep('sign-in-client').className).toContain('is-done')
-    expect(visible(stripStep('sign-in-client'))).toContain('desktop-example.apps.googleusercontent.com')
-    expect(stripStep('github').className).toContain('is-next')
+    expect(step('sign-in-client').className).toContain('is-done')
+    expect(panel().getAttribute('aria-label')).toBe('Step 3: GitHub App')
+    pick('sign-in-client')
+    expect(visible(panel())).toContain('desktop-example.apps.googleusercontent.com')
   })
 
   it('a route that serves no sign_in_client is not read yet, never done', async () => {
     await mountPage(firstRun({ sign_in_client: undefined }))
     // MUTATION: read an absent field as done -> fails.
-    expect(stripStep('sign-in-client').className).not.toContain('is-done')
-    expect(stripStep('sign-in-client').className).toContain('is-next')
-    expect(visible(stripStep('sign-in-client'))).toMatch(/not read yet/i)
-    expect(lead()).toMatch(/not read yet/i)
+    expect(step('sign-in-client').className).not.toContain('is-done')
+    expect(visible(step('sign-in-client'))).toMatch(/not read yet/i)
     cleanup()
     // A state the route never writes is the same.
     await mountPage(firstRun({ sign_in_client: { ...signInClient('applied'), state: 'done' } }))
-    expect(stripStep('sign-in-client').className).not.toContain('is-done')
-    expect(visible(stripStep('sign-in-client'))).toMatch(/not read yet/i)
+    expect(step('sign-in-client').className).not.toContain('is-done')
+    expect(visible(step('sign-in-client'))).toMatch(/not read yet/i)
   })
 })

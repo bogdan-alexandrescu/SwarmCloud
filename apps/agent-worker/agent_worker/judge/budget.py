@@ -20,6 +20,16 @@ agent, not a security boundary. The backend's own records (the Internal
 API's logs, TypeSafe's billing) are the authority when they disagree with
 the ledger.
 
+THE GRANT (lane AQ-JEV-ACCOUNTING, 2026-11-03). On the state routes the
+allowance is not the file's: swarm-api reserves it at admission
+(`judge.account`, `state/jev-reserve`) from its own documents, and a
+`Ledger` built with that `Grant` as its `authority` admits a call only
+within it. The file's limits can only narrow the grant, never widen it, and
+the counts this process has seen are a floor the file cannot lower: editing
+the ledger raises no authority. What the agent's own process does with its
+copy is the residual above; what it spent is charged per call when the
+worker transports the audit rows (`take_unsettled_attempt`), keyed by call.
+
 MONTHLY CAP. `monthly_cap_tokens` and `month_used_tokens` are read by the
 worker when the attempt starts; a call is admitted only while this task's
 spend still fits under what was left of the month. The task's spend is added
@@ -75,9 +85,40 @@ MAX_AUDIT_ROWS = 200
 LEDGER_VERSION = 1
 
 
+class Grant:
+    """What swarm-api reserved for this task at admission: the most calls
+    and input tokens the task may have spent in all (its earlier attempts'
+    spend included). Held in the worker's memory and in the config the
+    worker writes; never read back from the ledger."""
+
+    __slots__ = ("calls", "input_tokens")
+
+    def __init__(self, calls: int, input_tokens: int) -> None:
+        self.calls = max(0, int(calls))
+        self.input_tokens = max(0, int(input_tokens))
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "Grant | None":
+        """`{calls, input_tokens}` as the config stores it, or None."""
+        if not isinstance(value, Mapping):
+            return None
+        calls, tokens = value.get("calls"), value.get("input_tokens")
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in (calls, tokens)):
+            return None
+        return cls(calls, tokens)
+
+    def as_dict(self) -> dict[str, int]:
+        return {"calls": self.calls, "input_tokens": self.input_tokens}
+
+
 class Ledger:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, authority: Grant | None = None) -> None:
         self.path = Path(path)
+        #: The trusted grant: the file's limits only narrow it.
+        self.authority = authority
+        #: The highest counts this process has seen: the file cannot lower them.
+        self._floor_calls = 0
+        self._floor_tokens = 0
 
     @classmethod
     def create(cls, path: Path, *, max_calls: int = MAX_CALLS_PER_TASK,
@@ -137,13 +178,29 @@ class Ledger:
                     "breaker_open": True, "unavailable_logged": True, "audit": []}
         return state
 
+    def _held(self, state: dict[str, Any]) -> None:
+        """Hold the file to this process's authority: the counts never below
+        what this process saw, the limits never above the grant."""
+        state["calls"] = max(int(state["calls"]), self._floor_calls)
+        state["input_tokens"] = max(int(state["input_tokens"]), self._floor_tokens)
+        if self.authority is not None:
+            state["max_calls"] = min(int(state["max_calls"]), self.authority.calls)
+            state["max_input_tokens"] = min(int(state["max_input_tokens"]),
+                                            self.authority.input_tokens)
+
+    def _seen(self, state: Mapping[str, Any]) -> None:
+        self._floor_calls = max(self._floor_calls, int(state["calls"]))
+        self._floor_tokens = max(self._floor_tokens, int(state["input_tokens"]))
+
     def admit(self, *, estimate: int) -> str | None:
         """Reserve one call, or say why not: `breaker_open`, `budget_calls`,
         `budget_tokens` or `budget_monthly`."""
         with self._locked() as state:
+            self._held(state)
             reason = _refusal(state, max(estimate, MEASURED_TOKENS_PER_CALL))
             if reason is None:
                 state["calls"] = int(state["calls"]) + 1
+            self._seen(state)
             return reason
 
     def record(self, row: Mapping[str, Any], *, succeeded: bool | None) -> bool:
@@ -151,7 +208,9 @@ class Ledger:
         (None: a skip, which is neither). True exactly once: when this row
         opened the breaker, so `jev_unavailable` is logged once per attempt."""
         with self._locked() as state:
+            self._held(state)
             state["input_tokens"] = int(state["input_tokens"]) + int(row.get("input_tokens") or 0)
+            self._seen(state)
             audit = state.setdefault("audit", [])
             if len(audit) < MAX_AUDIT_ROWS:
                 audit.append(dict(row))

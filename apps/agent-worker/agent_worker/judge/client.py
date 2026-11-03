@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping
 
 from agent_worker.judge import sanitize
-from agent_worker.judge.budget import Ledger
+from agent_worker.judge.budget import MEASURED_TOKENS_PER_CALL, Ledger
 from agent_worker.judge.settings import Backend
 
 #: §5.5: 10 s per call, against jev.mjs's 60 s default. A lane waits on these.
@@ -189,6 +189,35 @@ def _valid_answer(question: Mapping[str, Any], answer: Any) -> bool:
     return _numbers_only(dict(answer))
 
 
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 \
+        else None
+
+
+def _usage(parsed: Any, *, estimate: int) -> tuple[int, dict[str, Any]]:
+    """`(input_tokens, the row's served fields)` of an answered call.
+
+    A response that states no usable `usage.input_tokens` (missing, negative,
+    a string, a bool, or no JSON at all) is charged what the call was admitted
+    at -- `estimate`, never below `MEASURED_TOKENS_PER_CALL` -- and the row
+    says so (`tokens_estimated`): an invalid response cannot make a call free
+    to the budget's deterministic check. `output_tokens` and `served_model`
+    are recorded only when the response states them: unknown, never 0."""
+    usage = parsed.get("usage") if isinstance(parsed, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    stated = _count(usage.get("input_tokens"))
+    served: dict[str, Any] = {"tokens_estimated": stated is None}
+    output = _count(usage.get("output_tokens"))
+    if output is not None:
+        served["output_tokens"] = output
+    model = parsed.get("model") if isinstance(parsed, dict) else None
+    if isinstance(model, str) and 0 < len(model) <= 128:
+        served["served_model"] = model
+    if stated is None:
+        return max(estimate, MEASURED_TOKENS_PER_CALL), served
+    return stated, served
+
+
 @dataclass
 class JudgeClient:
     backend: Backend
@@ -215,14 +244,22 @@ class JudgeClient:
 
         def finish(outcome: str, *, reason: str | None = None, answers: Any = None,
                    tokens: int = 0, size: int = 0, ms: int = 0,
-                   succeeded: bool | None = None) -> Decision:
-            opened = self.ledger.record({"call_id": call_id, "kind": kind,
-                                         "backend": self.backend.name, "bytes": size,
-                                         "input_tokens": tokens, "ms": ms,
-                                         # a skip says why, so the pack can
-                                         "outcome": f"skipped:{reason}" if outcome == "skipped"
-                                         else outcome},
-                                        succeeded=succeeded)
+                   succeeded: bool | None = None,
+                   served: Mapping[str, Any] | None = None) -> Decision:
+            row: dict[str, Any] = {"call_id": call_id, "kind": kind,
+                                   "backend": self.backend.name, "bytes": size,
+                                   "input_tokens": tokens, "ms": ms,
+                                   # a skip says why, so the pack can
+                                   "outcome": f"skipped:{reason}" if outcome == "skipped"
+                                   else outcome,
+                                   # the model asked for and, when the
+                                   # response states them, the model that
+                                   # served and its output (`_usage`):
+                                   # names and counts, never a payload
+                                   "requested_model": self.backend.model or None,
+                                   "tokens_estimated": False}
+            row.update(served or {})
+            opened = self.ledger.record(row, succeeded=succeeded)
             if opened:
                 self.log("jev_unavailable", backend=self.backend.name, call_id=call_id)
             return Decision(outcome, answers, reason, tokens, call_id, clean.dropped, clean.denied)
@@ -268,14 +305,11 @@ class JudgeClient:
             parsed = json.loads(raw)
         except ValueError:
             parsed = None
-        usage = parsed.get("usage") if isinstance(parsed, dict) else None
-        tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
-        tokens = tokens if isinstance(tokens, int) and not isinstance(tokens, bool) \
-            and tokens >= 0 else 0
+        tokens, served = _usage(parsed, estimate=len(body) // 3)
         answers = parsed.get("answers") if isinstance(parsed, dict) else None
         if not isinstance(answers, dict) or \
                 not all(_valid_answer(q, answers.get(n)) for n, q in asked.items()):
             return finish("malformed", reason="malformed", tokens=tokens, size=len(body),
-                          ms=ms, succeeded=False)
+                          ms=ms, succeeded=False, served=served)
         return finish("ok", answers={n: answers[n] for n in asked}, tokens=tokens,
-                      size=len(body), ms=ms, succeeded=True)
+                      size=len(body), ms=ms, succeeded=True, served=served)

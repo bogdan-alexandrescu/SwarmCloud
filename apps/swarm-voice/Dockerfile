@@ -41,6 +41,14 @@
 # Digest resolved from the registry on 2026-09-15; the same base every service
 # image pins, so all of them move together.
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
+# THE CLAUDE CODE CLI (docs/design/voice-it.md §3.6): the planner runs each
+# turn as `claude -p` on a Claude account leased from the pool. It is installed
+# at the version images/agent-runtime-base/Dockerfile pins (`ARG
+# CLAUDE_CODE_VERSION=`), read from that file in the `claudecli` stage below:
+# one source for the version, never a second copy. Node is the same pinned
+# image agent-runtime-base copies its `node` from (kept equal by
+# tests/unit/voice/test_planner_image.py).
+ARG NODE_IMAGE=node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
 # The uv the other service images use (images/swarm-api/Dockerfile says why
 # 0.12.15 and not older).
 ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
@@ -60,6 +68,19 @@ ARG MIRROR_DOCKER_HUB=
 ARG MIRROR_GHCR=
 
 FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
+
+# ---------------------------------------------------------------------------
+# claudecli: Claude Code at agent-runtime-base's pinned version, in /opt/claude
+# ---------------------------------------------------------------------------
+FROM ${MIRROR_DOCKER_HUB}/library/${NODE_IMAGE} AS claudecli
+
+COPY images/agent-runtime-base/Dockerfile /tmp/agent-runtime-base.Dockerfile
+RUN version="$(sed -n 's/^ARG CLAUDE_CODE_VERSION=\([0-9][0-9.]*\)$/\1/p' /tmp/agent-runtime-base.Dockerfile)" \
+ && test -n "${version}" \
+ && npm install -g --prefix /opt/claude --no-audit --no-fund "@anthropic-ai/claude-code@${version}" \
+ && npm cache clean --force \
+ && /opt/claude/bin/claude --version | grep -F "${version}" \
+ && rm /tmp/agent-runtime-base.Dockerfile
 
 # ---------------------------------------------------------------------------
 # builder: wheels for the frozen contract and swarm-voice, then /opt/venv
@@ -123,7 +144,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     NO_COLOR=1 \
-    PATH="/opt/venv/bin:/usr/local/bin:/usr/bin:/bin"
+    PATH="/opt/venv/bin:/opt/claude/bin:/usr/local/bin:/usr/bin:/bin"
 
 # ca-certificates for the quota broker, OpenAI, Anthropic and swarm-api; tini so a SIGTERM
 # reaches the service, which closes its sidebands inside the pod's grace. `apt-get upgrade` because a pinned base is a frozen
@@ -145,6 +166,9 @@ RUN /usr/local/bin/python3 -m pip uninstall --yes setuptools wheel \
  && ! /usr/local/bin/python3 -c "import pip" 2>/dev/null
 
 COPY --from=builder /opt/venv /opt/venv
+# The planner's Claude Code (the `claudecli` stage) and the Node it runs on.
+COPY --from=claudecli /usr/local/bin/node /usr/local/bin/node
+COPY --from=claudecli /opt/claude /opt/claude
 
 # ABSOLUTE PATHS ON PURPOSE: the runtime PATH omits /usr/sbin.
 RUN /usr/sbin/groupadd --gid 10001 swarm \
@@ -156,7 +180,8 @@ WORKDIR /home/swarm
 # The build proves the service imports. Import only: it leases each session's
 # account from the quota broker's Voice it pool with a workload identity token,
 # which a build does not have.
-RUN python -c "import swarm_voice.main, swarm_voice.accountlease, swarm_voice.credential, swarm_voice.live; print('swarm-voice ok')"
+RUN python -c "import swarm_voice.main, swarm_voice.accountlease, swarm_voice.credential, swarm_voice.live, swarm_voice.mcp_server, swarm_voice.claudeturn; print('swarm-voice ok')" \
+ && claude --version
 
 ARG GIT_SHA=""
 ARG BUILD_TIME=""
