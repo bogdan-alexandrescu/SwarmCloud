@@ -251,6 +251,37 @@ class StateCall:
                            **{k: v for k, v in (params or {}).items() if v is not None}})
         return self._send("GET", f"{self.prefix}/{op}?{query}", b"", deadline_seconds, write=op)
 
+    # -- the Jev ledger (docs/design/agent-quality/trusted-state.md §3) -----
+
+    def jev_usage(self, *, deadline_seconds: float) -> tuple[int, int, int]:
+        """`GET state/jev-usage`: `(month_used_tokens, task_calls,
+        task_input_tokens)`, the switched path's `judge.attempt._carried`,
+        each read by swarm-api for this tuple's tenant and task. An answer
+        missing a count raises `ControlPlaneError`: an unread count is
+        unknown, and the judgments run against no month taken to be empty."""
+        answer = self.get("jev-usage", deadline_seconds=deadline_seconds)
+        counts = [answer.get(name) for name in
+                  ("month_used_tokens", "task_calls", "task_input_tokens")]
+        if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in counts):
+            raise ControlPlaneError("swarm-api's state/jev-usage answered no usable counts")
+        return counts[0], counts[1], counts[2]
+
+    def jev_settle(self, *, calls: int, input_tokens: int,
+                   by_kind: Mapping[str, Mapping[str, Any]],
+                   deadline_seconds: float) -> tuple[int, int]:
+        """`POST state/jev-settle`: this attempt's not-yet-settled Jev calls
+        into its `jev_usage` row and its workspace's month, the switched
+        path's `budget.FirestoreMonthlyLedger.settle_attempt`. One request id
+        for every retry of the same bytes, so a settle whose answer was lost
+        counts once. Returns what was settled; raises `FencedWriteRefused`
+        for a superseded attempt (nothing written) and what `post` raises
+        otherwise, so the caller restores the counts as unsettled."""
+        self.post("jev-settle", {"request_id": new_request_id(), "calls": int(calls),
+                                 "input_tokens": int(input_tokens),
+                                 "by_kind": {k: dict(v) for k, v in by_kind.items()}},
+                  deadline_seconds=deadline_seconds)
+        return int(calls), int(input_tokens)
+
     # -- the wire -----------------------------------------------------------
 
     def _headers(self, method: str, path: str, raw: bytes) -> dict[str, str]:
