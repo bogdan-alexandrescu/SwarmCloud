@@ -309,7 +309,10 @@ def _typesafe(tmp_path: Path, key: str, transport: client.Transport) -> client.J
 
 
 QUESTION = {"q": {"type": "noul", "instructions": "Is `x` relevant?"}}
-AUDIT_KEYS = {"call_id", "kind", "backend", "bytes", "input_tokens", "ms", "outcome"}
+#: The model asked for and whether the tokens were estimated (lane
+#: AQ-JEV-ACCOUNTING) are a name and a flag, never a payload.
+AUDIT_KEYS = {"call_id", "kind", "backend", "bytes", "input_tokens", "ms", "outcome",
+              "requested_model", "tokens_estimated"}
 
 
 @pytest.mark.parametrize("status", [200, 503])

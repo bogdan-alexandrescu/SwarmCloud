@@ -1,0 +1,8 @@
+# Lane voice-planner-pool-account (part of #2688): Voice it's planner runs each
+# turn as Claude Code on a Claude account leased from the pool
+# (docs/design/voice-it.md §3.6). The CLI's path is the one environment name
+# it adds; the image installs the CLI and the manifest sets the path.
+version: 1
+env:
+  CLAUDE_CODE_BIN:
+    setter: kubernetes/swarm-system/swarm-voice.yaml:195

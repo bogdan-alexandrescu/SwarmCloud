@@ -1,0 +1,65 @@
+/* The Work section's docked inspector (Inspector.tsx): the left pane | the handle | the inspector, each scrolling on
+   its own, one viewport tall, so the page itself never scrolls and the left pane never moves. Tokens only, so both
+   themes draw it. */
+
+.wi {
+  --wi-dock: 440px;
+  /* The page's height: the viewport less the shell's top bar, the reads footer and the page's padding. A page that
+     sits elsewhere sets its own. */
+  --wi-height: calc(100dvh - 93px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  height: var(--wi-height);
+  min-height: 480px;
+  min-width: 0;
+  max-width: 100%;
+}
+.wi.is-docked { grid-template-columns: minmax(0, 1fr) 9px minmax(0, var(--wi-dock)); }
+.wi.is-folded { grid-template-columns: minmax(0, 1fr) 36px; }
+.wi.is-dragging { cursor: col-resize; user-select: none; }
+
+/* The left pane. `work-main` is the container a page's own @container rules ask, to drop columns as it narrows. */
+.wi-main { min-width: 0; overflow: auto; padding-right: var(--ctl-s3); container: work-main / inline-size; }
+.wi.is-alone .wi-main { padding-right: 0; }
+
+/* The handle: a line with a grip, lit on hover and on keyboard focus. */
+.wi-handle { cursor: col-resize; position: relative; touch-action: none; outline: none; }
+.wi-handle::before { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--line); }
+.wi-handle::after { content: ''; position: absolute; top: 50%; left: 2px; width: 5px; height: 36px; margin-top: -18px; border-radius: 3px; background: var(--line); }
+.wi-handle:hover::before, .wi-handle:focus-visible::before, .wi.is-dragging .wi-handle::before { left: 3px; width: 3px; background: var(--info); }
+.wi-handle:focus-visible::after { background: var(--info); }
+
+/* The inspector: its header sticks while its body scrolls. */
+.wi-dock { min-width: 0; overflow: auto; padding-left: var(--ctl-s2); container: work-inspector / inline-size; display: flex; flex-direction: column; }
+.wi-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: var(--ctl-s2); padding: 2px 0 var(--ctl-s2); background: var(--bg); border-bottom: 1px solid var(--line-soft); min-width: 0; flex: none; }
+.wi-title { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; flex: 1 1 auto; }
+.wi-title-text { font: 600 var(--t-body) / 1.3 var(--font); color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wi-state { flex: none; display: inline-flex; align-items: center; gap: var(--ctl-s1); color: var(--text-dim); font-size: var(--t-meta); }
+.wi-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1); flex: none; max-width: 60%; }
+.wi-body { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; flex: 1 1 auto; padding: var(--ctl-s2) 0 var(--ctl-s4); }
+.wi-btn { border: 1px solid var(--line); background: var(--surface); color: var(--text); width: 28px; height: 28px; border-radius: var(--ctl-radius-sm, 6px); font-size: 16px; line-height: 1; cursor: pointer; flex: none; padding: 0; }
+.wi-btn:hover { background: var(--surface-2); }
+.wi-btn:focus-visible, .wi-back:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wi-x { font-size: 18px; }
+
+/* The rail: the folded inspector, one button and its subject's name turned on its side. */
+.wi-rail { display: flex; flex-direction: column; align-items: center; gap: var(--ctl-s2); padding-top: 2px; border-left: 1px solid var(--line); min-width: 0; overflow: hidden; }
+.wi-rail-title { writing-mode: vertical-rl; color: var(--text-dim); font-size: var(--t-meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-height: 60vh; }
+
+/* The left pane's columns give way as it narrows: a page marks a column with the class that names the width it
+   leaves at. The same bounds as `widthClassOf` in Inspector.tsx. */
+@container work-main (max-width: 700px) { .wi-hide-medium { display: none !important; } }
+@container work-main (max-width: 560px) { .wi-hide-narrow { display: none !important; } }
+@container work-main (max-width: 420px) { .wi-hide-slim { display: none !important; } }
+
+/* The phone: one column; the inspector is a full-screen sheet over the page once something is picked, with a back
+   control where the fold and close buttons were. The same width as PHONE_QUERY in Inspector.tsx. */
+.wi-back { border: 0; background: none; padding: 0 var(--ctl-s1) 0 0; font: inherit; font-size: var(--t-body); color: var(--info); cursor: pointer; white-space: nowrap; flex: none; min-height: 32px; }
+@media (max-width: 720px) {
+  .wi { display: block; height: auto; min-height: 0; }
+  .wi-main { overflow: visible; padding-right: 0; }
+  .wi-handle, .wi-rail { display: none; }
+  .wi-dock { display: none; }
+  .wi.is-sheet .wi-dock { display: flex; position: fixed; inset: 0; z-index: 40; background: var(--bg); padding: 0 var(--ctl-s2); box-shadow: var(--ctl-shadow-pop); max-width: 100vw; overflow-x: hidden; }
+  .wi.is-sheet .wi-head { padding-top: var(--ctl-s2); }
+}

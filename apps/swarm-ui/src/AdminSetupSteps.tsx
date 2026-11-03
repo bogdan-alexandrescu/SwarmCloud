@@ -262,7 +262,7 @@ export function pluginLine(hostname: string, release: string | null): string {
 }
 
 /** The page's clock: the given instant (a test, a capture) or the browser's, ticking each second. */
-function useNow(fixed: number | undefined): number {
+export function useNow(fixed: number | undefined): number {
   const [now, setNow] = useState(() => fixed ?? Date.now())
   useEffect(() => {
     if (fixed !== undefined) return undefined
@@ -298,7 +298,7 @@ export function useSetupState(intervalMs: number = SETUP_REFRESH_MS): { result: 
 // the parts each row is drawn from
 // ---------------------------------------------------------------------------
 
-interface Row {
+export interface Row {
   key: string
   title: string
   state: StepState
@@ -359,7 +359,7 @@ function ErrorLine({ error }: { error: ApiError | null }) {
 }
 
 /** One write in flight at a time per panel, its error kept until the next try. */
-function useAction(onChanged: () => void): { busy: string | null; error: ApiError | null; run: <T>(name: string, call: () => Promise<Result<T>>, then?: (data: T) => void) => void } {
+export function useAction(onChanged: () => void): { busy: string | null; error: ApiError | null; run: <T>(name: string, call: () => Promise<Result<T>>, then?: (data: T) => void) => void } {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<ApiError | null>(null)
   const run = useCallback(
@@ -547,7 +547,7 @@ function SignInReplace({ links, onChanged }: { links: SetupSignInClient['links']
   )
 }
 
-function signInRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
+export function signInRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
   const client = state.sign_in_client
   const base = { key: 'sign-in-client', title: 'Sign-in client', by: 'this page' }
   if (client === null) {
@@ -656,7 +656,7 @@ function GitHubAppPanel({ state, onChanged, act }: { state: SetupState; onChange
   )
 }
 
-function githubRow(state: SetupState, onChanged: () => void, act: ReturnType<typeof useAction>): Row {
+export function githubRow(state: SetupState, onChanged: () => void, act: ReturnType<typeof useAction>): Row {
   const app = state.github_app
   const org = state.github_org ?? 'your GitHub organisation'
   const create = (
@@ -1078,7 +1078,7 @@ function personalRow(state: SetupState, onChanged: () => void): Row {
   }
 }
 
-function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
+export function teamRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
   if (isOnePerson(state)) return personalRow(state, onChanged)
   const team = state.teams[0]
   if (team === undefined) {
@@ -1288,7 +1288,7 @@ function AccountLinkForm({ onChanged, onePerson, installer, waitingFor }: { onCh
   )
 }
 
-function accountsRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
+export function accountsRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
   const onePerson = isOnePerson(state)
   const pool = onePerson ? 'your personal workspace’s pool' : 'the first team’s pool'
   if (state.teams.length === 0 && !onePerson) {
@@ -1329,7 +1329,7 @@ function accountsRow(state: SetupState, onChanged: () => void, nowMs: number): R
   }
 }
 
-function addonsRow(state: SetupState): Row {
+export function addonsRow(state: SetupState): Row {
   return {
     key: 'addons',
     title: 'Add-ons',
@@ -1437,7 +1437,7 @@ function runFact(name: string, id: string, href: string, got: RunRead, repositor
  * once a run has spent its fresh starts does "Run the console checks again"
  * show, disabled with why, as the route answers 409 for it.
  */
-function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () => void }) {
+export function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () => void }) {
   const act = useAction(onChanged)
   const [posted, setPosted] = useState<SetupVerifyRuns | null>(null)
   const runs = state.verify_runs ?? posted
@@ -1500,7 +1500,7 @@ function ConsoleChecks({ state, onChanged }: { state: SetupState; onChanged: () 
   )
 }
 
-function verifyRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
+export function verifyRow(state: SetupState, onChanged: () => void, nowMs: number): Row {
   const v = state.engine?.verify ?? null
   const base = { key: 'verify', title: 'Verify, run by swarm install', by: 'swarm install' }
   const checks = <ConsoleChecks state={state} onChanged={onChanged} />
@@ -1704,7 +1704,7 @@ export function selfCheckDue(state: SetupState): boolean {
  * on a later read, at most once per SELF_CHECK_RETRY_MS; a failed one waits
  * for its Retry.
  */
-function useAutoSelfCheck(state: SetupState, act: ReturnType<typeof useAction>): void {
+export function useAutoSelfCheck(state: SetupState, act: ReturnType<typeof useAction>): void {
   const due = selfCheckDue(state)
   const last = useRef<number | null>(null)
   const { busy, run } = act

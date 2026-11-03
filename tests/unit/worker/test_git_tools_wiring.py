@@ -114,7 +114,9 @@ def _ctx(tmp_path: Path):
         input_path=tmp_path / "input.json",
         result_path=tmp_path / "result.json",
         quota_path=tmp_path / "quota.json",
-        payload={"prompt": "Rebase onto main and push."},
+        # It names the tools: swarm-git is registered only for a step that
+        # uses it (ONE-PLACE, test_runner_instructions_once.py).
+        payload={"prompt": "Rebase onto main with git_rebase_onto and push with git_push_branch."},
     )
 
 

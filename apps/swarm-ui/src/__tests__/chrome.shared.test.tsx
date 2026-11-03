@@ -482,7 +482,8 @@ describe('CH-21: a position in the navigation means one thing, at every width', 
     for (const hash of ROUTES) {
       window.history.replaceState(null, '', `/${hash}`)
       const { container, unmount } = render(<App />)
-      // Links since #503 (`a.sk-ri`): Submit, five sections (Config since
+      // Links since #503 (`a.sk-ri`): Submit, Home (the console's root,
+      // above Overview; part of #2688), five sections (Config since
       // CONFIG-NAV, part of #2157), Help, then
       // Profile at the foot (NAV-FOOT, #1672; API reads is a Capacity page
       // now) -- each by its label, as Profile's icon is the person's
@@ -490,7 +491,7 @@ describe('CH-21: a position in the navigation means one thing, at every width', 
       // is known to administer anything.
       const items = [...container.querySelectorAll('.sk-spine .sk-ri')].map((b) => ((b.querySelector('small') ?? b).textContent ?? '').trim())
       unmount()
-      expect(items.length, `${hash}: the spine holds fewer than Submit, five sections, Help and Profile`).toBe(8)
+      expect(items.length, `${hash}: the spine holds fewer than Submit, Home, five sections, Help and Profile`).toBe(9)
       if (first === null) first = items
       expect(items, `${hash}: the spine is not the one every other route draws`).toEqual(first)
     }

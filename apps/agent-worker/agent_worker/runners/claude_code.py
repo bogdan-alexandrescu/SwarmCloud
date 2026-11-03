@@ -319,7 +319,7 @@ from swarm_common.models import (
     RESERVED_MCP_SERVER_PREFIX,
 )
 
-from .. import browser_tools, graphstage, lightpanda
+from .. import browser_tools, graphstage, lightpanda, stepservers
 from ..budget import NOTE_ENV as BUDGET_NOTE_ENV
 from ..cachedirs import image_browsers_path, scratch_note
 from ..children import CHILDREN_ENV, SCREEN_REVIEW_GUIDE_NAME, git_shim_argv, search_shim_argv
@@ -420,16 +420,19 @@ BROWSER_NOTE = (
 #: The helper whose presence in the checkout turns the note below on.
 RELATED_TESTS_SCRIPT = "scripts/related-tests.sh"
 
-#: The standing test rule, once, after the prompt (module docstring).
+#: The standing test rule, once, after the prompt (module docstring). The ONE
+#: place a first message says which tests to run (ONE-PLACE, 2026-11-03: the
+#: rule was said four times); the background-and-sleep rule is the time-limit
+#: line's (`cliagent.time_limit_line`), not restated here.
 RELATED_TESTS_NOTE = (
     "Run tests narrowly: only the tests related to what you change. "
     "`scripts/related-tests.sh` prints the related test files and the runs of "
     "named files that test them; `scripts/related-tests.sh --run` runs those "
     "one after another in the foreground. You must never run vitest without "
     "file arguments, never run pytest over a whole directory or with `-n auto` "
-    "across the suite, and never start parallel shards or background test "
-    "batches polled with sleep: whole-suite runs cost lanes hours and parallel "
-    "shards are what ran containers out of memory. Do not run "
+    "across the suite, and never start parallel test shards: whole-suite runs "
+    "cost lanes hours and parallel shards are what ran containers out of "
+    "memory. Do not run "
     "scripts/changed-guards.sh yourself: the worker's pre-publish gate runs it "
     "after your turn and hands you back what fails, to fix in a further turn; "
     "CI runs everything else."
@@ -441,10 +444,11 @@ EXPLORATION_GRAPH_CLAUSE = (
     "use the swarm-graph `search` and `call_graph` tools before a `grep -rn` "
     "across the tree"
 )
+#: The children clause names no path: the child path's own line
+#: (`children.prompt_line`) names it, once (ONE-PLACE, 2026-11-03).
 EXPLORATION_CHILDREN_CLAUSE = (
-    "send broad exploration to a child task through .swarm-children "
-    "($SWARM_CHILDREN) with `model_class` \"sonnet\" or \"haiku\" rather "
-    "than reading the tree yourself"
+    "send broad exploration to a child task with `model_class` \"sonnet\" or "
+    "\"haiku\" rather than reading the tree yourself"
 )
 
 #: AGENTS-USE-TOOLS (owner's choice, 2026-11-02; part of #2688). The first
@@ -718,16 +722,19 @@ LIVE_BROWSER_UNAVAILABLE = "live_browser_unavailable"
 VENV_BIN = "/opt/venv/bin"
 
 #: What an agent is told, once, after its prompt, when the live browser exists.
+#: ONE-PLACE (the owner's ask of 2026-11-03): each rule once, in as few words
+#: as hold it -- the note was 4,754 characters with every lead and strength
+#: line, and said the CAPTCHA rule, the hand-off wait and where captures go
+#: twice each. What `swarm-handoff wait` prints on return (`handoff.NEXT`)
+#: says the rest of how to read the page again, so the note does not.
 LIVE_BROWSER_NOTE = (
-    "This task has a live browser that a person watches on the console. It is "
-    "the only browser here: starting your own Chromium (`chromium.launch()`, "
-    "headless or not) fails by design. Drive it with the browser_* tools "
-    "(browser_navigate, browser_snapshot, browser_click, browser_tabs, "
-    "browser_take_screenshot), which are already connected to it. From Python, "
-    "`from swarm_browser import live; playwright, browser, context = live()` "
-    "connects over CDP to $SWARM_CDP_ENDPOINT; call `playwright.stop()` when "
-    "done, never `browser.close()`. Open each new page in its own tab so the "
-    "person sees it. "
+    "This task has a live browser that a person watches on the console, the "
+    "only browser here: your own `chromium.launch()` fails by design. Drive it "
+    "with the browser_* tools (browser_navigate, browser_snapshot, "
+    "browser_click, browser_tabs, browser_take_screenshot), or from Python "
+    "with `from swarm_browser import live; playwright, browser, context = "
+    "live()` (CDP to $SWARM_CDP_ENDPOINT; `playwright.stop()` when done, never "
+    "`browser.close()`). Open each new page in its own tab. "
     # CAPTCHA-AVOID (BGD, 2026-10-23; part of #2058): do not provoke the
     # challenges below. The 2026-10-15 benchmark met 11 to 21 Google 429s a
     # batch from searches typed into google.com in this browser. WebSearch is
@@ -741,55 +748,37 @@ LIVE_BROWSER_NOTE = (
     # CAPTCHA-HANDOFF (BGD, 2026-10-23; part of #2058): the gate raises the
     # hand-off itself when it sees a challenge on the agent's page.
     "Never try to solve or get around a CAPTCHA yourself: the platform asks a "
-    "person to solve it, so when the browser stops answering on one, run "
-    "`swarm-handoff wait` and carry on once it returns. "
-    "When a site shows a CAPTCHA, a bot check, a consent wall "
-    "or a sign-in, do not try to get around it and do not switch to a "
-    "different site than the one asked for: run `swarm-handoff request "
-    "--reason \"<what the person should do>\" --expect <domain>`, then "
-    "`swarm-handoff wait`, and carry on once control comes back -- reading the "
-    "page again from the tab the person left (in Python a fresh `live()` and "
-    "`swarm_browser.handoff_page(context)`; with the tools, browser_tabs to "
-    "select it, then browser_snapshot), never from a handle, snapshot or value "
-    "taken before the hand-off. Until then: "
-    "wait, do not poll the browser -- run `swarm-handoff wait` "
-    "in the foreground and nothing else (no `curl /json/version`, no "
-    "snapshots in a loop); on exit 75 run it again, on exit 3 (nobody came) "
-    "write where you stopped into $SWARM_HANDOFF/notes.md and stop -- the task "
-    "parks until the person is ready. Only if the hand-off is refused (exit "
-    "5), say so in your answer and then use an alternative, naming it. Save "
-    "screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
-    "they are uploaded. "
+    "person to solve it. On a CAPTCHA, a bot check, a consent wall or a "
+    "sign-in, do not switch to a different site: run `swarm-handoff request "
+    "--reason \"<what the person should do>\" --expect <domain>` (when the "
+    "browser has stopped answering on one, the gate has asked already), then "
+    "wait, do not poll the browser: run `swarm-handoff wait` in the foreground "
+    "and nothing else; on exit 75 run it again, on exit 3 (nobody came) write "
+    "where you stopped into $SWARM_HANDOFF/notes.md and stop, on exit 5 (refused) "
+    "say so and name the alternative you use. Then read the page again from the "
+    "tab the person left (`swarm_browser.handoff_page(context)` on a fresh "
+    "`live()`, or browser_tabs then browser_snapshot), never from a handle "
+    "taken before the hand-off. "
     # QA-KIT (owner decision 2026-10-19): one line each, built from the
     # gate's own list so a preset added there is named here.
-    "Device: `swarm-handoff device <preset>` makes the browser one of "
-    + ", ".join(f"{p.name} ({p.width}x{p.height})" for p in DEVICE_PRESETS.values())
-    + ". Theme: `swarm-handoff theme dark|light|system` sets the colour scheme "
-    "every page is told to prefer (prefers-color-scheme); it holds across "
-    "navigation and new tabs, and system lifts it. browser_resize is refused: "
-    "the gate owns the browser's size, so the person watching sees the device "
-    "the page is laid out for; pick a preset instead. Take screenshots with "
+    "Read a page with browser_snapshot; take screenshots with "
     "browser_take_screenshot without a filename: each is saved under "
-    "$SWARM_ARTIFACTS_DIR/screenshots and does not come back to you as an image "
-    "(with a filename it lands in the checkout instead). Use browser_snapshot to "
-    "read a page; open a screenshot with Read only when you must see it, since an "
-    "image stays in your context for the rest of the task. "
+    "$SWARM_ARTIFACTS_DIR/screenshots and does not come back to you as an image. "
     # TOKEN-RENDER (BGD 2026-10-27, #2524 item 2): IMAGE_RESPONSES.
-    "To judge rendered frames (a review, or an implement step that renders), "
-    "send each screen to one Sonnet child per screen, as "
+    "To judge rendered frames, send them to one Sonnet child per screen, as "
     f"$SWARM_CHILDREN/{SCREEN_REVIEW_GUIDE_NAME} says, and keep its text verdict; "
-    "`swarm-handoff compare` prints the changed boxes and writes a crop beside "
-    "the diff image, and you Read only the crop of a frame over threshold, "
-    "never the diff image or the render (docs/browser-qa.md §6.5). Without "
-    "$SWARM_CHILDREN (a child itself) you read your own shots. "
+    "`swarm-handoff compare` writes a crop of a frame over threshold and you "
+    "Read only the crop (a child itself reads its own shots). "
+    "`swarm-handoff device <preset>` makes the browser one of "
+    + ", ".join(f"{p.name} ({p.width}x{p.height})" for p in DEVICE_PRESETS.values())
+    + "; browser_resize is refused, as the gate owns the browser's size. "
+    "`swarm-handoff theme dark|light|system` sets prefers-color-scheme. "
     # QA-FLOWS (owner decision 2026-10-19, part of #1649): one line each.
-    "Flow GIFs: `swarm-handoff record start <name>`, do the flow, then "
-    "`swarm-handoff record stop` saves $SWARM_ARTIFACTS_DIR/flows/<name>.gif (a "
-    "frame at each navigation and every second; it stops itself at 200 frames, "
-    "8 MiB or 15 minutes). "
-    "Mockups: `swarm-handoff serve <dir>` serves that directory at the "
-    "http://127.0.0.1:<port>/ it prints, for the live browser to open in a tab "
-    "of its own beside the app (file:// is blocked)."
+    "`swarm-handoff record start <name>`, the flow, then `swarm-handoff record "
+    "stop` saves $SWARM_ARTIFACTS_DIR/flows/<name>.gif (a frame at each "
+    "navigation and every second, up to 200 frames, 8 MiB or 15 minutes). "
+    "`swarm-handoff serve <dir>` serves a mockup at the http://127.0.0.1:<port>/ "
+    "it prints (file:// is blocked)."
 )
 
 #: dev-browser (DEVB-INSTALL, owner decision 2026-10-14, part of #1030): the
@@ -1069,6 +1058,41 @@ def exploration_note(*, graph: bool, children: str,
     if not clauses:
         return None
     return f"Explore cheaply: {'; and '.join(clauses)}."
+
+
+#: A tool result too big for the session is saved to a file and the agent is
+#: handed its path and a preview (Claude Code's persisted output). Measured in
+#: batches one and two: 37 such files read back whole, about 175,000 tokens --
+#: the size the CLI had just kept out of the context. Once, after the prompt,
+#: on every claude-code start with a repository.
+SAVED_OUTPUT_NOTE = (
+    "A tool result too large to show is saved to a file whose path you are "
+    "given: read that file by window (`grep -n` it, then Read with an offset "
+    "and a limit), never whole."
+)
+
+#: SERVERS ONLY FOR THE STEPS THAT USE THEM (ONE-PLACE, the owner's ask of
+#: 2026-11-03). Measured in batches one and two: swarm-git and swarm-state, 22
+#: tools, were registered in 91 steps and never called, and Lightpanda's 29
+#: tools on build steps that never rendered a page; every registered server
+#: costs its tool names and its instructions in every turn. Which steps get
+#: swarm-git and swarm-state is the worker's list (`stepservers`). The spools
+#: stay exported either way: the runner's own pre-publish rebase and the
+#: `swarm-git` CLI in the Bash tool read `$SWARM_GIT`, not the MCP config.
+_RENDERS = re.compile(
+    r"https?://|\brender|\bbrows(?:er|ers|e|ing)\b|\bscreenshot|\bnavigat|"
+    r"\blightpanda\b|\bweb ?pages?\b|\bpages\b|\bweb ?sites?\b|\bscrap(?:e|es|ing)\b|\bcrawl",
+    re.IGNORECASE)
+
+
+def step_renders(payload: Mapping[str, Any]) -> bool:
+    """Whether the step renders pages: its brief names a URL, a browser, a
+    page, a screenshot or a render, or the task named a browser tool. Read
+    wide on purpose: a step read as rendering keeps every tool it had."""
+    if payload.get("browser_tool"):
+        return True
+    prompt = payload.get("prompt")
+    return isinstance(prompt, str) and bool(_RENDERS.search(prompt))
 
 
 def egress_notice(spool: str) -> str | None:
@@ -1856,7 +1880,10 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     # claude-code-lightpanda (docs/design/lightpanda-runtime.md §6.2): the
     # profile the worker named, never input. Its three denied tools go before
     # `--settings`, because the CLI's flag is variadic.
-    on_lightpanda = lightpanda.is_lightpanda(os.environ)
+    # Only on a step that renders a page (`step_renders`): a build step on
+    # this profile is a plain claude-code step, with no `serve` child, no
+    # 29 Lightpanda tools and no note about them.
+    on_lightpanda = lightpanda.is_lightpanda(os.environ) and step_renders(ctx.payload)
     if on_lightpanda:
         extra += lightpanda.disallowed_tools_args()
     # After the platform's flags, so a deployment's CLAUDE_CODE_ARGS cannot
@@ -1959,6 +1986,11 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     scratch = scratch_note_for(os.environ) if ctx.repo_dir is not None else None
     if scratch and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{scratch}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # Saved oversized outputs, by window: every repository step, after the
+    # scratch note (a task with no repository keeps the prompt it had).
+    if ctx.repo_dir is not None and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{SAVED_OUTPUT_NOTE}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     # The graph, loaded up front, and what to ask it first (AGENTS-USE-TOOLS):
     # only when it is registered below.
@@ -2064,6 +2096,17 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         # A new dict on the same context: `run_runner` holds this object.
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
+    # swarm-git and swarm-state only where the step uses them: the worker's
+    # per-step list names them (`stepservers`), or (swarm-git) the step renders
+    # with the live browser, whose screen review pushes the branch first
+    # (`children` SCREEN_REVIEW guide). No list -- a worker that predates it --
+    # keeps every server the attempt was offered.
+    handed = stepservers.parse(os.environ)
+    if handed is not None:
+        if not (live_endpoint or GIT_MCP_SERVER_NAME in handed):
+            git_spool = ""
+        if STATE_MCP_SERVER_NAME not in handed:
+            state_spool = ""
     # ONE `--mcp-config` for every server this attempt has (module docstring).
     if (live_endpoint or git_spool or search_spool or state_spool or graph_snapshot
             or graph_served or relay[1] or lightpanda_env or judge_config):
