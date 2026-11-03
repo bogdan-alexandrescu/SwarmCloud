@@ -1,9 +1,10 @@
 /* Admin › Setup's console finish: the status line, the compact checklist and the working panel beside it (ChecklistFinish.tsx). Tokens only, no literal colour. */
+/* The four boxes' corner is 10px, styles.css's --radius, written as its number: the spacing sweep resolves var() only in src/styles/*.css, so a var() radius here read as unresolved there. */
 .cfc-page { min-width: 0; }
 .cfc-page code { font-family: var(--mono); font-size: 0.92em; }
 
 /* The status line: what swarm install is doing now. */
-.cfc-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 10px 14px; margin: 0 0 12px; border: 1px solid var(--line); border-left: 4px solid var(--sk-ac, var(--info)); border-radius: var(--radius); background: var(--surface); min-width: 0; }
+.cfc-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 10px 14px; margin: 0 0 12px; border: 1px solid var(--line); border-left: 4px solid var(--sk-ac, var(--info)); border-radius: 10px; background: var(--surface); min-width: 0; }
 .cfc-status.is-ok { border-left-color: var(--s-live); }
 .cfc-status.is-bad { border-left-color: var(--s-bad); }
 .cfc-status.is-warn { border-left-color: var(--s-warn, var(--warn)); }
@@ -25,7 +26,7 @@
 .cfc-left, .cfc-right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
 /* The compact checklist. */
-.cfc-list { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 6px; min-width: 0; }
+.cfc-list { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 6px; min-width: 0; }
 .cfc-list ol { list-style: none; margin: 0; padding: 0; }
 .cfc-item { border-radius: 8px; }
 .cfc-item + .cfc-item { margin-top: 2px; }
@@ -65,7 +66,7 @@
 .cfc-note { margin: 4px 8px 4px; font-size: 12px; line-height: 18px; color: var(--text-dim); }
 
 /* The working panel. */
-.cfc-panel { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); min-width: 0; }
+.cfc-panel { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); min-width: 0; }
 .cfc-panel-head { padding: 12px 16px 10px; border-bottom: 1px solid var(--line-soft); }
 .cfc-kicker { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-dim); }
 .cfc-panel-h { display: flex; gap: 8px; align-items: center; margin: 2px 0 4px; font-size: 20px; line-height: 28px; font-weight: 650; color: var(--text); }
@@ -87,7 +88,7 @@
 .cfc-prov { margin: 0 4px; font-size: 12px; color: var(--text-faint); }
 
 /* This install: the sizing and the release, compact. */
-.cfc-about { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 10px 12px; }
+.cfc-about { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 10px 12px; }
 .cfc-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 0; }
 .cfc-facts div { min-width: 0; }
 .cfc-facts dt { font-size: 12px; color: var(--text-dim); }
