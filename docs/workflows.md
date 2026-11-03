@@ -2412,6 +2412,51 @@ not-started state (a quota park, or a reconciler reclaim back to READY), is
 PARKED or READY when the scheduler next meets it. Under `fail_workflow` it is
 then cancelled like any other step that has not started.
 
+### Re-running a failed step inside its workflow
+
+```bash
+./scripts/api.sh POST "/workflows/$WORKFLOW_ID/steps/$STEP_ID/rerun"
+```
+
+The console's **Needs you** row offers this as **Retry** on a failed step (the
+owner's pick on PR #3123). A lone agent's Retry opens Submit prefilled instead.
+A step's prompt submitted alone as a lone agent is not the step it was: it
+would have no parents' artifacts, no gate, no place in the merge. The rules
+that are not obvious (`swarm_api/steprerun.py`):
+
+* **A failed agent stays failed.** FAILED and DEAD_LETTERED are terminal in
+  the frozen state machine, and the old agent's attempts, fencing generation
+  and events belong to the run that happened. So the re-run writes a **new
+  agent** per step, copied from the old one, and moves `WorkflowStep.task_id`
+  to it. The rollup, cancel and the step totals all read steps through that
+  pointer, so the old agent drops out of the workflow's state at once. It can
+  still be read by id, and the new agent's `metadata.rerun_of` names it.
+* **What is re-run:** the failed step, every step the platform cancelled
+  because of a failure (`end_cause` `failed_parent`, or `workflow_sweep`
+  under `fail_workflow`), and everything downstream of those. Without the
+  cancelled ones the workflow could never succeed. A step that SUCCEEDED is
+  never re-run, and a re-run step that reads it reads the same agent's
+  output. A step a person stopped stays stopped.
+* **Only a finished workflow.** It is refused 409 while any step still runs,
+  because the scheduler is still deciding what the failure cancels, and a
+  re-run racing that sweep could be swept by it. It is also refused for a
+  cancelled workflow and for a step that did not fail. The store checks all
+  of this again inside the one transaction that writes, so two people pressing
+  Retry re-run the step once.
+* **The spec is the one submitted, signed again.** Every old id in the copy is
+  remapped to its new one (`depends_on`, `metadata.input_from`, the dispatch
+  routing). The copy is then re-signed, because the id is inside the signed
+  bytes. The caller names a step, never a profile or a spec (invariant 10).
+  The new agents are READY, or PARKED on their parents, so they cost nothing
+  until admission leases them (invariants 1 and 3).
+* **The scheduler leaves the replaced agents out.** They still name the
+  workflow, and the `fail_workflow` verdict finds failed steps with a query on
+  `workflow_id`. Counted, the old FAILED agent would sweep the re-run away on
+  the next drain. The workflow document lists the replaced ids in
+  `superseded_task_ids` (a field beside the frozen `Workflow`'s), and
+  `read_workflow_failure` skips them. `GET /v1/workflows/{id}` serves only
+  the new agent of each re-run step.
+
 ## Workflow state
 
 `workflow.state` is **derived from the step agents on every read**, and the stored
