@@ -137,7 +137,9 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         # #641's shape: the base's Dockerfile reaches the base and both images
         # built FROM it; the repo-index package lives beside the indexer since
         # #625, so it reaches the indexer alone.
-        (["images/agent-runtime-base/Dockerfile"], WORKER),
+        # swarm-voice reads Claude Code's pinned version from it (its
+        # `claudecli` stage COPYs the file), so a version bump rebuilds it.
+        (["images/agent-runtime-base/Dockerfile"], WORKER | {"swarm-voice"}),
         (["images/agent-runtime-indexer/repo-index/lsp/servers.py"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/Dockerfile"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/cloudbuild.yaml"], {"agent-runtime-indexer"}),
