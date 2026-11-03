@@ -433,7 +433,8 @@ def _run_body(module: Any, monkeypatch: pytest.MonkeyPatch, work: Path,
 
     monkeypatch.setattr(module, "run_cli_agent", fake_run)
     for name in ("SWARM_GIT", "SWARM_CHILDREN", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH",
-                 "SWARM_CDP_ENDPOINT", graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV):
+                 "SWARM_CDP_ENDPOINT", graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV,
+                 graphstage.SHAPE_ENV):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -457,7 +458,8 @@ def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
     work = tmp_path / "work"
     snapshot = str(work / ".swarm-context" / "snapshot")
     seen = _run_body(claude_code, monkeypatch, work, {
-        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context")})
+        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context"),
+        graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS})
     servers = _mcp_servers(seen)
     assert servers == {graphstage.SERVER_NAME: {
         "type": "stdio", "command": sys.executable,
