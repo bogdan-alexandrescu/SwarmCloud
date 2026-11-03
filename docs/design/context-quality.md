@@ -634,7 +634,7 @@ no switch the shape is `skill`.
     exact `slice` call. This happens at most three times a step and never
     twice for one name. A plain word, a regex, an all-caps constant or a
     phrase gets nothing.
-  - Every prompt the agent writes for a subagent (Task or Agent) gets the
+  - Every prompt the agent writes for a subagent (the `Task` or `Agent` tool) gets the
     skill's line, once, through `updatedInput`.
 
   The system prompt carries one line, `GRAPH_SKILL_SYSTEM_NOTE`, which
