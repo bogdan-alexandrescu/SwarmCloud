@@ -11668,7 +11668,7 @@ span.sk-ttile { cursor: default; }
   /* The note never sets the column: it is a line of its own under the
      figure, sized by the column (`contain: inline-size`), and wraps rather
      than cuts when its count is longer. */
-  .wfg-table td[data-col="spent"] .wf-spend-cov { display: block; margin-left: 0; white-space: normal; contain: inline-size; line-height: 1.2; }
+  .wfg-table td[data-col="spent"] .wf-spend-cov { display: block; margin-left: 0; white-space: normal; contain: inline-size; }
 }
 @container work-main (max-width: 860px) { .wfg-table [data-col="owner"] { display: none; } }
 @container work-main (max-width: 720px) { .wfg-table [data-col="changed"] { display: none; } }
