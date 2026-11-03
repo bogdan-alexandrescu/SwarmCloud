@@ -125,7 +125,7 @@ describe.each(THEMES)('the %s theme', (theme) => {
         expect(value(ul, 'list-style', env)).toBe('none')
         expect(value(ul, 'padding-left', env)).toBe('0')
         for (const li of ul.querySelectorAll(':scope > li')) {
-          expect(value(li, 'border-left', env)).toBe('2px solid var(--vt-glass-line)')
+          expect(value(li, 'box-shadow', env)).toBe('inset 2px 0 0 var(--vt-glass-line)')
         }
       }
       const territory = list.querySelector('.vt-card-territory') as HTMLElement
