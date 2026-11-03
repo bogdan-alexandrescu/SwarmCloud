@@ -1714,6 +1714,13 @@ def _iso(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+#: The most questions one `questions.json` holds: the worker refuses a file
+#: with more (`agent_worker.questions.MAX_QUESTIONS`, which swarm-api does not
+#: import), so a larger `result_summary.questions` on the tenant-writable task
+#: document is never served as that many indices. A test pins the two equal.
+MAX_ARTIFACT_QUESTIONS = 20
+
+
 def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
     """What the Workflows list's Needs-you bar draws for one step, off its task
     document alone (the owner's pick on PR #3147, "Widen view=summary").
@@ -1730,15 +1737,20 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
       question `{task_id, step_id, question_index, question}`; else null.
     * `question_wait`: whether the task is PARKED on a question wait, which
       is HUMAN_REQUIRED as a browser hand-off is, and is not one.
-    * `questions`: the open questions of the wait the task parks on (or last
-      parked on), each `{index, question, options, recommended}` -- the
-      blocking indices with no stored answer -- and `questions_unread`: the
-      indices of the questions in the agent's `questions.json` (the count the
-      worker validated, `result_summary.questions`) with no stored answer,
-      whose words are in that artifact and not served here; the task's page
-      reads them (`GET /v1/tasks/{id}/questions`).
+    * `questions`: the open questions of the wait the task is PARKED on, each
+      `{index, question, options, recommended}` -- the blocking indices with
+      no answer of that wait's own -- and empty for every other task: a wait
+      it parked on once is not one it waits on now.
+    * `questions_unread`: for an ended task only, as the bell counts them,
+      the indices of the questions in the agent's `questions.json` (the count
+      the worker validated, `result_summary.questions`, at most
+      `MAX_ARTIFACT_QUESTIONS`) with no stored answer, whose words are in
+      that artifact and not served here; the task's page reads them
+      (`GET /v1/tasks/{id}/questions`).
     * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
     """
+    from swarm_common.states import TERMINAL_STATES
+
     from .agent_questions import blocking_unanswered, current_wait, parked_wait, question_count, unanswered_indices
 
     def masked(value: Any) -> str | None:
@@ -1775,10 +1787,14 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
                     "unreadable": unreadable if isinstance(unreadable, int) and not isinstance(unreadable, bool) else None}
             break
     open_questions: list[dict[str, Any]] = []
-    question_wait, _ = current_wait(task)
+    question_wait = parked_wait(task)
     if question_wait is not None:
+        # The stored answers are this wait's only once swarm-api adopted it
+        # (the same attempt); an earlier wait's answers never hide its
+        # questions. notifications._asked_item reads them the same way.
+        _, adopted = current_wait(task)
         asked = question_wait["questions"]
-        for index in blocking_unanswered(question_wait, task.metadata):
+        for index in blocking_unanswered(question_wait, task.metadata if adopted else None):
             entry = asked[index]
             options = [
                 {"label": masked(o.get("label")), "description": masked(o.get("description"))}
@@ -1803,9 +1819,12 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
         "updated_at": _iso(task.updated_at),
         "human_wait": human_wait,
         "owner_questions": hold,
-        "question_wait": parked_wait(task) is not None,
+        "question_wait": question_wait is not None,
         "questions": open_questions,
-        "questions_unread": unanswered_indices(question_count(task.result_summary), task.metadata),
+        "questions_unread": (
+            unanswered_indices(min(question_count(task.result_summary), MAX_ARTIFACT_QUESTIONS), task.metadata)
+            if task.state in TERMINAL_STATES else []
+        ),
         "pull_request": pull_request,
     }
 
