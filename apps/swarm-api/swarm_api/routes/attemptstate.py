@@ -26,6 +26,7 @@ from ..attemptstate import (
     EventBody,
     FinishBody,
     HeartbeatBody,
+    JevSettleBody,
     MergeSlotBody,
     MergeTrainBody,
     ParkBody,
@@ -83,6 +84,7 @@ _POSTS: dict[str, tuple[type, Callable[[AttemptState], Callable[..., dict]]]] = 
     "merge-slot": (MergeSlotBody, lambda s: s.merge_slot),
     "merge-train": (MergeTrainBody, lambda s: s.merge_train),
     "ci-fix-tasks": (CiFixBody, lambda s: s.ci_fix_tasks),
+    "jev-settle": (JevSettleBody, lambda s: s.jev_settle),
 }
 
 
@@ -161,7 +163,7 @@ def _get_route(op: str, run: Callable[[AttemptState, Any, Request], dict]) -> No
 
         return await run_in_threadpool(_run)
 
-    handler.__name__ = f"state_{op}"
+    handler.__name__ = f"state_{op.replace('-', '_')}"
     router.add_api_route(f"{PREFIX}/{op}", handler, methods=["GET"], name=handler.__name__)
 
 
@@ -178,3 +180,4 @@ _get_route("poll", lambda s, a, r: s.poll(a, r.query_params.get("provider")))
 _get_route("context", lambda s, a, r: s.context(a))
 _get_route("upstream", _upstream)
 _get_route("repository", lambda s, a, r: s.repository(a))
+_get_route("jev-usage", lambda s, a, r: s.jev_usage(a))
