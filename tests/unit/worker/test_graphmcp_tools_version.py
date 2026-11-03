@@ -30,6 +30,8 @@ from agent_worker.graphmcp.snapshot import ALL_LAYERS, Snapshot
 #: PR that introduced it put `context`'s `stale` back ahead of its `note`.
 FINGERPRINTS = {
     "1": "6e49f1dcd02131125fcac182ae7ecbd1dfa1b0317a325fdaaf0b36b99141875d",
+    #: SKILL-ON-DEMAND: `slice`, and an ambiguous name's best match.
+    "2": "31f36ea32a94b3f95ffccb28b6575d597f0613228e95e49272624d3831905c86",
 }
 
 HANDLE = f"{APP}#handle"
@@ -52,6 +54,12 @@ def battery(snap: Snapshot) -> list[tuple[str, dict]]:
         ("call_graph", {"symbol": SAVE, "direction": "callers", "depth": 3}),
         ("call_graph", {"symbol": STORE, "direction": "callees"}),
         ("index", {"layer": "files", "path": TEST}),
+        # "2": the skill's one query (SKILL-ON-DEMAND), and the best match
+        # answered for an ambiguous name.
+        ("slice", {"symbols": [HANDLE]}),
+        ("slice", {"files": [APP, STORE], "depth": 3,
+                   "include": ["callers", "callees", "tests", "docs"]}),
+        ("slice", {"symbols": ["nothing_named_this"], "include": ["callees"]}),
         ("nope", {}),
     ]
     for layer in ALL_LAYERS:
