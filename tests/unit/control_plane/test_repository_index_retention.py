@@ -87,6 +87,7 @@ def _versions(db, repo_id):
 def _service(db):
     service = repoindex.RepoIndex.__new__(repoindex.RepoIndex)
     service._db = db
+    service._now = lambda: T0 + timedelta(days=30)
     return service
 
 
@@ -204,6 +205,44 @@ def test_a_version_that_names_no_commit_makes_no_keep_set():
     rows = [{"commit_sha": sha("a"), "recorded_at": T0}, {"recorded_at": T0}]
     # MUTATION: skipping the broken row would let the sweep delete the objects it stands for.
     assert repoindex.kept_commits(rows, keep_versions=20, current_sha=None, own=sha("x")) is None
+
+
+def test_a_version_younger_than_the_age_floor_is_never_swept():
+    """A step's base from the last day keeps an index (2026-11-03: 20 kept
+    versions covered only ~15 hours of SwarmCloud's runs)."""
+    now = T0 + timedelta(hours=30)
+    rows = [{"commit_sha": sha(f"v{n}"), "recorded_at": T0 + timedelta(hours=n)}
+            for n in range(31)]  # one an hour, the newest `now - 0 h`
+    floor = now - timedelta(hours=repositories.KEEP_VERSIONS_MIN_AGE_HOURS)
+    young = {r["commit_sha"] for r in rows if r["recorded_at"] >= floor}
+    kept = repoindex.kept_commits(rows, keep_versions=5, current_sha=None, own=sha("own"),
+                                  now=now)
+    # MUTATION: keep by count alone and 20 of the last day's versions are swept.
+    assert set(kept) == young | {sha("own")}
+    assert len(young) > 5
+
+
+def test_the_age_floor_keeps_no_more_than_the_most_a_repository_may_keep():
+    now = T0 + timedelta(hours=1)
+    rows = [{"commit_sha": sha(f"v{n}"), "recorded_at": now - timedelta(seconds=n)}
+            for n in range(150)]
+    kept = repoindex.kept_commits(rows, keep_versions=5, current_sha=None, own=sha("own"),
+                                  now=now)
+    high = repositories.KEEP_VERSIONS_RANGE[1]
+    assert set(kept) == {r["commit_sha"] for r in rows[:high]} | {sha("own")}
+
+
+def test_the_prune_spares_the_last_days_versions(db, repo_id):
+    shas = _seed_versions(db, repo_id, 40)  # one an hour from T0
+    service = _service(db)
+    service._now = lambda: T0 + timedelta(hours=39)
+    service._prune_versions(repo_id, keep=None, keep_versions=5)
+    # The newest 25 (hours 15..39) are younger than a day; the prune and the
+    # sweep's keep set agree on them.
+    assert _versions(db, repo_id) == set(shas[15:])
+    rows = [dict(db.docs[f"repositories/{repo_id}/index_versions/{c}"]) for c in shas]
+    assert set(repoindex.kept_commits(rows, keep_versions=5, current_sha=None, own=shas[-1],
+                                      now=T0 + timedelta(hours=39))) == set(shas[15:])
 
 
 def test_the_signed_prompt_names_the_kept_commits(client, db, objects, repo_id, github):

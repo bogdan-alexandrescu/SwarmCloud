@@ -361,6 +361,51 @@ def test_the_api_reads_a_full_runs_manifest_as_carriable(tool, shards, tmp_path)
     assert repoindex.graph_carry_refusal(record) is None
 
 
+def test_a_base_whose_only_cut_is_the_test_map_is_carried(tool, shards, tmp_path, monkeypatch):
+    """The test maps are derived, never carried: a cut there does not stop a carry.
+
+    2026-11-03: SwarmCloud's 222 index runs of a week were every one a full
+    ~42-minute rebuild, "the promoted graph was truncated (symbol_test_map),
+    so it cannot be carried". An incremental run carries the base's files,
+    edges and language-server answers and recomputes both test maps from
+    them, so a base cut only there is as carriable as an uncut one.
+    """
+    from swarm_api import repoindex
+
+    repo = fx.build_repo(tmp_path / "repo", FILES)
+    store = shards.LocalStore(tmp_path / "bucket")
+    caps = tool.MAX_SYMBOL_TEST_MAP, tool.MAX_FILE_TEST_MAP
+    monkeypatch.setattr(tool, "MAX_SYMBOL_TEST_MAP", 1)
+    monkeypatch.setattr(tool, "MAX_FILE_TEST_MAP", 1)
+    base, facts = _base(tool, shards, store, repo)
+    assert {"symbol_test_map", "file_test_map"} <= set(base.graph["truncated"])
+    record = repoindex.graph_extractor_record(_manifest(store, facts["commit_sha"]))
+    # MUTATION: refuse every truncated graph and this is the full rebuild again.
+    assert repoindex.graph_carry_refusal(record) is None
+    monkeypatch.setattr(tool, "MAX_SYMBOL_TEST_MAP", caps[0])
+    monkeypatch.setattr(tool, "MAX_FILE_TEST_MAP", caps[1])
+    _commit(repo, {"lib/c.py": "def only_here():\n    return 2\n"}, 1_780_000_000 + DAY)
+
+    carried = tool.extract(repo, tool.Budget(), base=base)
+
+    assert carried["kind"] == "incremental", carried["extractor"].get("incremental")
+    assert carried["extractor"]["incremental"]["ran"] is True
+    # The maps are rebuilt whole from the carried edges, not read from the cut base.
+    full = tool.extract(repo, tool.Budget())
+    for key in ("symbol_test_map", "test_map", "call_edges", "truncated"):
+        assert carried[key] == full[key], key
+
+
+@pytest.mark.parametrize("cut", ["symbols", "call_edges", "files", "call_edges:below_0.4"])
+def test_a_base_cut_anywhere_else_is_still_not_carried(tool, cut):
+    """What a run carries verbatim cannot be carried from a cut list."""
+    from swarm_api import repoindex
+
+    record = {"version": tool.EXTRACTOR_VERSION, "blob_ids": True, "files_not_listed": 0,
+              "truncated": ["symbol_test_map", cut]}
+    assert f"truncated (symbol_test_map, {cut})" in repoindex.graph_carry_refusal(record)
+
+
 # --------------------------------------------------------------------------
 # the command lines the worker runs
 # --------------------------------------------------------------------------
@@ -464,6 +509,7 @@ def test_swarm_api_applies_the_extractors_full_run_rules(tool):
     assert repoindex.CONFIG_FILENAMES == tool.CONFIG_FILENAMES
     assert repoindex.CONFIG_GLOBS == tool.CONFIG_GLOBS
     assert repoindex.CONFIG_DIRECTORIES == tool.CONFIG_DIRECTORIES
+    assert repoindex.DERIVED_TRUNCATIONS == tool.DERIVED_TRUNCATIONS
     for path in ("Makefile", "web/package.json", ".github/workflows/x.yml",
                  "tests/conftest.py", "src/app.py", "requirements-dev.txt", "docs/x.md"):
         assert repoindex.is_config_path(path) == tool.is_config_path(path), path
