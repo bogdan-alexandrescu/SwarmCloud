@@ -1832,6 +1832,83 @@
       "stdin": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: x\n  namespace: {namespace}\n"
     },
     {
+      "name": "the tenant's TypeSafe hostname policy, by its one name, in this namespace",
+      "rule": "C7",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\napiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+    },
+    {
+      "name": "a hostname policy under any other name, which could admit any host",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-anything\n  namespace: {namespace}\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+    },
+    {
+      "name": "the TypeSafe hostname policy in another person's namespace",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: swarm-tenant-u-bob\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+    },
+    {
+      "name": "the TypeSafe hostname policy in swarm-system",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: swarm-system\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+    },
+    {
+      "name": "another kind under the hostname policy's name",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\n"
+    },
+    {
+      "name": "the TypeSafe hostname policy through the current context, the other team's agents-staging",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+    },
+    {
       "name": "apply through the current context, the other team's agents-staging",
       "rule": "C7",
       "expect": "refuse",
@@ -2568,6 +2645,70 @@
         "--project",
         "{project_id}",
         "--format=json"
+      ]
+    },
+    {
+      "name": "the discovery read for the hostname policy's kind, on our context",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "api-resources",
+        "--api-group=networking.gke.io",
+        "-o",
+        "name"
+      ]
+    },
+    {
+      "name": "the discovery read with the flag spelled apart",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context",
+        "gke_{project_id}_{gke_location}_{gke_cluster}",
+        "api-resources",
+        "--api-group",
+        "networking.gke.io",
+        "--output=name"
+      ]
+    },
+    {
+      "name": "discovery of every API group, which the job never asks",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "api-resources",
+        "-o",
+        "name"
+      ]
+    },
+    {
+      "name": "discovery of another API group",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "api-resources",
+        "--api-group=rbac.authorization.k8s.io",
+        "-o",
+        "name"
+      ]
+    },
+    {
+      "name": "discovery through the current context, the other team's agents-staging",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "api-resources",
+        "--api-group=networking.gke.io",
+        "-o",
+        "name"
       ]
     },
     {
