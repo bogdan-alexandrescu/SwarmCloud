@@ -56,7 +56,7 @@ class SentinelPool:
     def __init__(self, sentinel: str) -> None:
         self.sentinel = sentinel
 
-    def list_accounts(self, tenant_id: str) -> dict[str, Any]:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict[str, Any]:
         s = self.sentinel
         return {
             "accounts": [{

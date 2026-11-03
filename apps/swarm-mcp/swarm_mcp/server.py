@@ -2772,7 +2772,10 @@ TOOLS: list[dict[str, Any]] = [
             "The subscription account pool, in the columns `cs status` uses: "
             "account, 5-hour and 7-day utilisation with bars, when the binding "
             "window clears, and state (available / paused / draining / reauth "
-            "needed). Carries no credential material of any kind. A stale "
+            "needed); POOLS says which pools each account serves (workspace, "
+            "voice-it or both) and a line under the table names who holds a "
+            "voice-it account for Voice it now. Carries no credential "
+            "material of any kind. A stale "
             "reading is marked '~' and an unread one is an em dash."
         ),
         "inputSchema": {

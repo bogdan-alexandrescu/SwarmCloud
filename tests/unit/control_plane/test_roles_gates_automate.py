@@ -105,7 +105,7 @@ class Recorder:
 class Pool(Recorder):
     """The broker's account pool: one account, owned by eng."""
 
-    def list_accounts(self, tenant_id: str) -> dict:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict:
         self.calls.append("list_accounts")
         return {"accounts": [{"account_id": ACCOUNT, "owner_tenant": "eng", "lend_to": []}]}
 

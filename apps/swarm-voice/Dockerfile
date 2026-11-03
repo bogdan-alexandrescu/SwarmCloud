@@ -125,7 +125,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NO_COLOR=1 \
     PATH="/opt/venv/bin:/usr/local/bin:/usr/bin:/bin"
 
-# ca-certificates for Secret Manager, OpenAI and swarm-api; tini so a SIGTERM
+# ca-certificates for the quota broker, OpenAI, Anthropic and swarm-api; tini so a SIGTERM
 # reaches the service, which closes its sidebands inside the pod's grace. `apt-get upgrade` because a pinned base is a frozen
 # set of CVEs, not a safe one (images/swarm-reconciler/Dockerfile).
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
@@ -153,10 +153,10 @@ RUN /usr/sbin/groupadd --gid 10001 swarm \
 USER swarm:swarm
 WORKDIR /home/swarm
 
-# The build proves the service imports. Import only: it reads the person's
-# credential from Secret Manager per session, which needs an identity a build
-# does not have.
-RUN python -c "import swarm_voice.main, swarm_voice.credential, swarm_voice.live; print('swarm-voice ok')"
+# The build proves the service imports. Import only: it leases each session's
+# account from the quota broker's Voice it pool with a workload identity token,
+# which a build does not have.
+RUN python -c "import swarm_voice.main, swarm_voice.accountlease, swarm_voice.credential, swarm_voice.live; print('swarm-voice ok')"
 
 ARG GIT_SHA=""
 ARG BUILD_TIME=""

@@ -84,7 +84,7 @@ def test_there_are_at_most_ten_tools_and_they_are_the_designs():
     assert tools.TOOL_NAMES == ("search", "context", "impact", "tests_for", "neighbours",
                                 "territory", "similar_changes", "rules_for",
                                 "call_graph", "index")
-    assert set(tools.HANDLERS) == set(tools.TOOL_NAMES)
+    assert set(tools.HANDLERS) == {*tools.TOOL_NAMES, tools.SLICE_TOOL["name"]}
 
 
 def test_the_two_service_tools_fit_in_what_the_eight_left():

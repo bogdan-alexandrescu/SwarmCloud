@@ -178,6 +178,14 @@ spec:
             # the ID token's audience defaults to this URL, swarm-api's own.
             - name: SWARM_API_URL
               value: https://__SWARM_API_HOST__
+            # The quota broker, whose Voice it pool leases each session's
+            # ChatGPT plan account (swarm_voice/accountlease.py), and the
+            # audience its ID-token check pins. swarm-voice reads no secret
+            # for the voice: the lease carries the access token.
+            - name: QUOTA_BROKER_URL
+              value: __QUOTA_BROKER_URL__
+            - name: QUOTA_BROKER_AUDIENCE
+              value: __QUOTA_BROKER_AUDIENCE__
           resources:
             requests:
               cpu: 500m
