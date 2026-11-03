@@ -15,10 +15,15 @@ cloud credential) and says what no longer holds, so these tests hold:
   * every model id in terraform/infra/locals.tf `runner_models` is the one
     baseline.md states for its class;
   * the skip, expected-failure and quarantine counts known-failures.md states
-    are the ones the tree has.
+    are the ones the tree has;
+  * every capability matrix row has its four columns, and its live-verified
+    cell names a record, says "not read from here" or says why it does not
+    apply ("n/a: ..."); a bare "none", "no" or "yes" is refused, because an
+    unknown is recorded as unknown, never as zero.
 
 BREAK IT: rename a cited test function, re-pin a model class in locals.tf or
-add a `pytest.mark.xfail` under tests/: the matching test below names it.
+add a `pytest.mark.xfail` under tests/, or write `none` in a live-verified
+cell: the matching test below names it.
 """
 
 from __future__ import annotations
@@ -152,6 +157,50 @@ def test_the_report_is_json_and_exits_non_zero_when_a_cited_test_is_missing(tmp_
     assert report["commit"] is None
 
 
+def test_a_bare_live_verified_cell_and_a_short_row_are_both_named():
+    matrix = "\n".join(
+        [
+            "| Capability | Implemented | Behaviourally tested | Enabled in configuration | Live-verified |",
+            "|---|---|---|---|---|",
+            "| A | `a.py` | `t` | on | not read from here |",
+            "| B | `b.py` | `t` | on | none |",
+            "| C | `c.py` | `t` | on | Yes |",
+            "| D | `d.py` | `t` | on |",
+            "| E | not implemented | none | none | n/a: not implemented |",
+            "| F | `f.py` | `t` | on | Batch three, `wf_x`: called twice |",
+            "| G \\| H | `g.py` | `t` | on | not read from here |",
+        ]
+    )
+    assert inv.unnamed_live_verified(matrix) == [
+        "B: live-verified is 'none'",
+        "C: live-verified is 'Yes'",
+        "D: 4 columns, not 5",
+    ]
+
+
+def test_the_report_counts_matrix_rows_and_fails_on_an_unnamed_live_cell(tmp_path):
+    docs = tmp_path / "docs" / "design" / "agent-quality"
+    docs.mkdir(parents=True)
+    (docs / "capability-matrix.md").write_text(
+        "| Capability | Implemented | Behaviourally tested | Enabled in configuration | Live-verified |\n"
+        "|---|---|---|---|---|\n"
+        "| A | `a.py` | `t` | on | no |\n"
+    )
+    (tmp_path / "terraform" / "infra").mkdir(parents=True)
+    (tmp_path / "terraform" / "infra" / "locals.tf").write_text("locals {\n}\n")
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 1, done.stderr
+    report = json.loads(done.stdout)
+    assert report["matrix_rows"] == 1
+    assert report["unnamed_live_verified"] == ["A: live-verified is 'no'"]
+    assert report["missing"] == []
+
+
 # --- the documents, against this tree -----------------------------------------
 
 
@@ -183,3 +232,9 @@ def test_known_failures_states_the_tree_s_marker_counts_and_quarantine():
         assert f"| `{kind}` | {count} |" in known, f"known-failures.md does not say {kind}: {count}"
     entries = inv.quarantined(REPO)
     assert f"| `tests/flaky.txt` entries | {len(entries)} |" in known
+
+
+def test_every_matrix_row_has_four_columns_and_a_named_or_unknown_live_cell():
+    matrix = (DOCS / "capability-matrix.md").read_text()
+    assert inv.unnamed_live_verified(matrix) == []
+    assert inv.matrix_rows(matrix) >= 60
