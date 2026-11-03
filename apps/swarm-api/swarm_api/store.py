@@ -125,18 +125,25 @@ TASK_SUMMARY_UNREAD: tuple[str, ...] = (
     "spec_format",
 )
 
-#: The two `result_summary` keys a summary row DOES serve: the codec lifts
-#: `browser_used` and `browser_use` out of the summary
-#: (`codec.browser_use_to_api`, BROWSER-USE-FLAG #2322) so the Agents page's
-#: list row carries the browser-use mark, so the read keeps these dotted paths
-#: and nothing else of `result_summary`.
+#: The `result_summary` keys a summary row DOES serve, as dotted paths, and
+#: nothing else of `result_summary`:
+#: * `browser_used` and `browser_use`: the codec lifts them out of the summary
+#:   (`codec.browser_use_to_api`, BROWSER-USE-FLAG #2322) so the Agents page's
+#:   list row carries the browser-use mark;
+#: * `cost_incomplete`: the worker's mark that a session's usage was not read,
+#:   so the attempts' cost is a floor. `attempt_totals.totals_for_page` folds
+#:   it from the task document into the row's `cost_incomplete`, so the
+#:   Overview and Agents rows draw "at least" (owner's pick, 2026-11-03,
+#:   part of #2688). Without this path the summary read never fetched it and
+#:   served such a total as complete.
 TASK_SUMMARY_NESTED: tuple[str, ...] = (
     "result_summary.browser_used",
     "result_summary.browser_use",
+    "result_summary.cost_incomplete",
 )
 
 #: The field paths a summary page reads: every `Task` field but the four
-#: above, plus the two nested browser-use paths.
+#: above, plus the nested `result_summary` paths.
 TASK_SUMMARY_FIELDS: tuple[str, ...] = tuple(
     f.name for f in dataclass_fields(Task) if f.name not in TASK_SUMMARY_UNREAD
 ) + TASK_SUMMARY_NESTED
