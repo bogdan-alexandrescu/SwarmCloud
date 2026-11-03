@@ -800,8 +800,9 @@ shaped the way it is:
   it is full.
 * **A base the extractor would refuse is a full run before it is submitted.**
   The extractor also refuses a base graph of another extractor version, a
-  truncated one (`files_not_listed`, or any `truncated` entry, the shard
-  writer's ceiling cuts included) and one without blob ids. swarm-api cannot
+  truncated one (`files_not_listed`, or any `truncated` entry but the test
+  maps', the shard writer's ceiling cuts included; §3.4a) and one without
+  blob ids. swarm-api cannot
   see those in GitHub's compare, so promotion records them on the version
   (`graph_extractor`: the manifest's extractor `version`, its `blob_ids`
   marker, `files_not_listed` and `truncated`), and `choose_kind` refuses the
@@ -850,6 +851,56 @@ shaped the way it is:
 §3.5 asks for a configuration change to force a full run *for that
 language*; it forces the whole run full, because one index carries one
 `kind`.
+
+### 3.4a A test-map cut is carried, every full run keeps the servers' answers, and a day's versions are kept (2026-11-03)
+
+Measured over the seven days to 2026-11-03, SwarmCloud's own index ran 222
+times and every run was a full rebuild, each with the reason "the promoted
+graph was truncated (symbol_test_map), so it cannot be carried": about 42
+minutes a run (36 of them in the extractor), about 22 pod-hours and $17 of
+Sonnet a day, the index 45 to 90 minutes behind main, and the 20 kept
+versions covering only about 15 hours. Three rules changed together.
+
+* **A cut in the test maps does not stop a carry.** The extractor caps
+  `symbol_test_map` and the file-level test map at 200,000 rows each
+  (`MAX_SYMBOL_TEST_MAP`, `MAX_FILE_TEST_MAP`), and SwarmCloud's symbol map
+  passes that, so every graph it promoted was truncated. Both maps are
+  derived: every run, incremental or full, walks them again from its symbols
+  and its call edges (the base's verbatim for untouched files, fresh for
+  the affected ones) and reads neither from the base. So a base whose only
+  cuts are those two is carried exactly as an uncut one is
+  (`repo_index_extract.DERIVED_TRUNCATIONS`, and
+  `repoindex.DERIVED_TRUNCATIONS` on swarm-api's side, held equal by
+  `tests/unit/worker/test_repo_index_incremental.py`). The served graph
+  still says `symbol_test_map` in `truncated` when it is cut, keeping the
+  nearest and most certain rows. A cut anywhere else -- `symbols`,
+  `call_edges`, `files`, or a shard-writer ceiling such as
+  `call_edges:below_0.4` -- is a list a run carries verbatim, and is still
+  refused.
+* **Every full run on a carriable graph is given it for the servers'
+  answers.** Until now only the weekly full run named the promoted index on
+  `LSP_BASE_LINE` (#2991). Now `choose_kind` gives it to every full run
+  after the graph passes `graph_carry_refusal`: no full run recorded, the
+  weekly one, GitHub unable to say how the head relates, a head the base is
+  not an ancestor of, and 300 or more changed files. The extractor compares
+  by blob id, so it keeps an unchanged file's answers whatever the diff's
+  size or shape and re-asks the changed files and what points into them.
+  Two full runs still start over: one a person asks for, and one after a
+  build, test or language-server configuration change, which changes what
+  every answer means (the extractor refuses that base anyway).
+* **Retention keeps by age as well as by count.** Besides the newest
+  `keep_versions`, every version recorded in the last 24 hours is kept
+  (`repositories.KEEP_VERSIONS_MIN_AGE_HOURS`), up to the 100 a repository
+  may keep at most (`repoindex.retained_versions`, read by both
+  `_prune_versions` and `kept_commits`, so the registration and the sweep
+  agree). A step whose base is from earlier the same day finds its index
+  still there.
+
+Expected effect on SwarmCloud's repository: a change run becomes
+incremental, re-asking the language servers only about the affected files
+inside the incremental timeout (900 s and up, §3.5) instead of a ~42-minute
+full rebuild; the weekly or fallback full run keeps the unchanged files'
+answers instead of starting pyright over.
 
 ### 3.5 The AST and LSP passes (revised 2026-10-04, owner)
 
