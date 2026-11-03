@@ -11640,14 +11640,34 @@ span.sk-ttile { cursor: default; }
 .wfg.has-inspector .wfg-table [data-col="owner"],
 .wfg.has-inspector .wfg-table [data-col="changed"] { display: none; }
 @container work-main (max-width: 760px) { .wfg-table [data-col="owner"] { display: none; } .wfg-bar > .c-bar { width: 72px; } }
-@container work-main (max-width: 600px) { .wfg-table [data-col="spent"], .wfg-table [data-col="changed"] { display: none; } }
+/* Spent stays beside the open inspector (a ~580px pane at 1440, frame
+   graph-workflows-rest); only a pane too narrow for the four phone columns
+   plus Spent gives it up. */
+@container work-main (max-width: 600px) { .wfg-table [data-col="changed"] { display: none; } }
+@container work-main (max-width: 460px) { .wfg-table [data-col="spent"] { display: none; } }
+/* VISUALLY HIDDEN, STILL READ: the filters' labels and the Needs-you words.
+   The console's `.vh` is drawn only on the People pages, so the list scopes
+   its own; the box it sits in is positioned so the absolute word is laid out
+   there, not far down the page (see `.ctl-scroll`). */
+.wfg .vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+.wfg-pick, .wfg-need { position: relative; }
 /* THE PHONE ROW: state, name, steps and needs (frame graph-workflow-rest-390); the head is not drawn but stays read. */
 @media (max-width: 720px) {
   .wfg-table [data-col="spent"], .wfg-table [data-col="owner"], .wfg-table [data-col="changed"] { display: none; }
   .wfg-table thead { position: relative; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .wfg-table thead th { padding: 0; border: 0; }
   .wfg-table td { height: 40px; padding: 4px 6px; }
-  .wfg-bar > .c-bar { width: 48px; }
+  /* THE ROW FITS 356px (review finding: it was 411px and Needs was clipped
+     off the edge). Fixed layout: the state is its glyph (the word stays read),
+     steps and needs hold their widths, the name takes the rest and cuts. */
+  .wfg-table { table-layout: fixed; }
+  .wfg-table [data-col="state"] { width: 28px; position: relative; }
+  .wfg-table [data-col="steps"] { width: 92px; }
+  .wfg-table [data-col="needs"] { width: 88px; }
+  .wfg-table td[data-col="workflow"] { min-width: 0; }
+  .wfg-table td[data-col="steps"], .wfg-table td[data-col="needs"] { overflow: hidden; text-overflow: ellipsis; }
+  .wfg-table [data-col="state"] .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+  .wfg-bar > .c-bar { width: 40px; }
   .wfg-tools .wfg-pick { flex: 1 1 40%; }
   .wfg-tools .wfg-pick > select { width: 100%; }
 }

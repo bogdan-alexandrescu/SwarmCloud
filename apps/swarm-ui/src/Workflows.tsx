@@ -5859,9 +5859,9 @@ function WorkflowList({
   ]
     .filter((c): c is string => c !== null)
     .join(' · ')
-  // The picked workflow, from the rows the list holds; a pick the filters or
+  // The picked workflow, from the rows the list shows; a pick the filters or
   // a re-read dropped closes the inspector rather than showing a stale one.
-  const open = picked === null ? null : (all.find((w) => w.workflow_id === picked) ?? null)
+  const open = picked === null ? null : (rows.find((w) => w.workflow_id === picked) ?? null)
   const main = (
     <div className={`wfg${open !== null ? ' has-inspector' : ''}`}>
       <WorkflowListFilters query={query} choose={choose} counts={counts} owners={owners} profiles={profiles} />
@@ -6142,7 +6142,9 @@ function WorkflowListRow({
     <tr
       className={`wfg-row${failed ? ' is-failed' : ''}${picked ? ' is-picked' : ''}`}
       data-workflow={workflow.workflow_id}
-      aria-selected={picked}
+      // A plain table's row has no selected state; aria-current says which
+      // row is open in the inspector (as AccountsTable's chosen row does).
+      aria-current={picked ? 'true' : undefined}
       tabIndex={0}
       onClick={onPick}
       onKeyDown={(e) => {
