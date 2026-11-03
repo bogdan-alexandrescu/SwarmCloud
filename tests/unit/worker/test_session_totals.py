@@ -172,6 +172,55 @@ def test_a_session_whose_usage_is_missing_marks_the_cost_incomplete(ctx, worker_
     assert total.get("total_cost_usd") != pytest.approx(0.20) or total.get("cost_estimated") is True
 
 
+def _summary_after(worker_factory, result: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The worker's spend and the summary's top level after reading `result`
+    as one runner's whole result.json (output and metrics)."""
+    from agent_worker import workspace as workspace_mod
+
+    worker, config, _ = worker_factory()
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    worker.spend_pricer = TokenPricer()
+    worker._note_runner_spend_start(resumed=False)
+    worker.ws.result_path.write_text(json.dumps(result))
+    worker._spend_pending = True
+    worker._collect_spend()
+    summary: dict[str, Any] = {}
+    worker._add_runner_block(summary)
+    return worker._spend, summary
+
+
+def test_the_worker_says_the_attempts_cost_is_incomplete(ctx, worker_factory):
+    ctx.payload[ceiling.PAYLOAD_KEY] = {"tool_calls": 1}
+    _plan(ctx, UNREAD, LAST)
+    out = run_cli_agent(ctx, _spec())
+
+    spend, summary = _summary_after(worker_factory, {"status": "succeeded", "output": out})
+    # MUTATION: leave `cost_incomplete` to the runner's output and the
+    # attempt's summary says nothing of the unread session.
+    assert spend["cost_incomplete"] is True
+    assert summary["cost_incomplete"] is True
+
+
+def test_the_sessions_metric_alone_marks_the_cost_incomplete(worker_factory):
+    # A runner whose spend lost the flag still said so in its metrics.
+    result = {"status": "succeeded",
+              "output": {"structured_output": {"total_cost_usd": 0.2}},
+              "metrics": {ceiling.SESSIONS_METRIC: {
+                  "count": 2, "usage_unread": [1], "cost_complete": False}}}
+    spend, summary = _summary_after(worker_factory, result)
+    assert spend["cost_incomplete"] is True
+    assert summary["cost_incomplete"] is True
+
+
+def test_a_complete_cost_is_not_marked_incomplete(ctx, worker_factory):
+    _plan(ctx, STOPPED, LAST)
+    out = run_cli_agent(ctx, _spec())
+
+    spend, summary = _summary_after(worker_factory, {"status": "succeeded", "output": out})
+    assert "cost_incomplete" not in spend
+    assert "cost_incomplete" not in summary
+
+
 def test_a_single_session_attempt_says_it_ran_one(ctx):
     _plan(ctx, LAST)
     out = run_cli_agent(ctx, _spec())
