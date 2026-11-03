@@ -8,7 +8,7 @@
 | Implemented | `apps/swarm-api/swarm_api/workcontract.py`, and `DispatchOptions.work_contract` in `apps/swarm-api/swarm_api/validation.py` |
 | Behaviourally tested | `tests/unit/control_plane/test_work_contract.py` (offline: schema, canonical bytes, compiler, signed reference, tamper, amendments, refusal, compatibility matrix) and `tests/unit/control_plane/test_work_contract_submission.py` (the submission doors and issue runs) |
 | Enabled in configuration | **no**: `SWARM_WORK_CONTRACTS` is unset everywhere, so no agent's task document carries a contract |
-| Wired into submission | **yes, behind the switch**: a task's or a workflow step's `metadata.work_contract` (`SubmissionService._build_task`), and every implementer step of an issue run (`issueruns._attach_plan_contract`) |
+| Wired into submission | **yes, behind the switch**: an agent's or a workflow step's `metadata.work_contract` (`SubmissionService._build_task`), and every implementer step of an issue run (`issueruns._attach_plan_contract`) |
 | Enforced by the worker | the repository binding and the limits only, through fields it already enforces; everything else waits for contract request 136 and the worker packages |
 | Live-verified | **unknown**: never run against a deployment |
 
@@ -173,7 +173,7 @@ were outside the wiring lane; its pull request asks for it.
 
 ## On submission
 
-With `SWARM_WORK_CONTRACTS` exactly `on`, a task (`POST /v1/tasks`, a batch
+With `SWARM_WORK_CONTRACTS` exactly `on`, an agent (`POST /v1/tasks`, a batch
 entry) and a workflow step carry a contract as `metadata.work_contract`.
 `SubmissionService._build_task` calls `workcontract.prepare` before any other
 check, which:
@@ -234,7 +234,7 @@ No contract changes demand, capacity reservation, lease counting, fencing,
 spot, resource requests and limits, checkpointing or tenant isolation: the
 module is pure and writes nothing, and its only stored effects (with the switch
 on) are one key inside the signed dispatch block and the canonical document
-beside it in the task's metadata. A contract's limits only fill step fields
+beside it in the agent's metadata. A contract's limits only fill step fields
 the existing validation resolves, so a contract can lower a limit or name a
 profile by name but never raise one past what a caller could ask. Invariant 9
 is held at submission: a contract of another workspace is refused. Invariant
