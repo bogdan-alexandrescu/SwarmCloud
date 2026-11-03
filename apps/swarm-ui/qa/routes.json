@@ -41,12 +41,6 @@
         "address": "settings/profile",
         "path": "/settings/profile",
         "ready": "main h1"
-      },
-      {
-        "id": "config-people",
-        "address": "config/people",
-        "path": "/config/people",
-        "ready": "main h1"
       }
     ],
     "work-a": [
