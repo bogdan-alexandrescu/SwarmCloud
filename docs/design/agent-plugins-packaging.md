@@ -204,7 +204,7 @@ realistic arguments.
    * all six scanners (gitleaks, osv, semgrep, zizmor, trivy, schemathesis) need container images that agent pods
      cannot run.
 
-   This is an owner question (below).
+   This is the owner's question below.
 6. **The design skills report `DESIGN_NOT_AVAILABLE` without the `design` binary.** That is intended while outside
    AI services are off. Every `design` command (generate, variants, iterate, check, evolve, extract, ...) calls an
    outside image model. The four blocks that probe it ran either way; what the skills do next, after the probe, was
@@ -304,6 +304,17 @@ It also writes `GSTACK_HOME/config.yaml` with `update_check: false`, `telemetry:
 
 **Bumping the pin** is one PR: the ARGs, the two mirror rows, and the regenerated base and browser lists. CI runs this
 script's smoke on the new tag, read-only, and refuses a list that changed without the PR saying why.
+
+## The owner's question
+
+**`/cso` in the first catalogue.** It is on the offered list, but as packaged it cannot run (finding 5). The options:
+
+* **Leave `/cso` out of the first catalogue (proposed, and what the build above assumes).** Setup keeps
+  `GSTACK_SETUP_SKIP_CSO_BUILD=1`, and the base adds nothing for it. The catalogue does not list it, so no step can name it and then get
+  "not assessed" back.
+* **Build it.** About 82.9 MB more in the base and 7 s more setup, the launcher re-moded 0755 in the image, the
+  workspace's ancestors checked in an agent pod, and still no scanner, because agent pods run no container images.
+  Its static snapshot would be the only part that works, and only if the pod's ancestors pass.
 
 ## What this spike did not verify
 
