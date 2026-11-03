@@ -193,7 +193,11 @@ export function Inspector({
   const root = useRef<HTMLDivElement>(null)
   const spec = inspectorSpec(screen, initialWidth)
   const [stored, setStored] = useState(() => readPane(spec))
-  const [folded, setFolded] = useState(startFolded)
+  // THE FOLD IS THE SUBJECT'S: folded for the subject it was folded on (null
+  // at rest), so a newly picked subject is shown, not a rail, in the same
+  // render that picks it -- an effect would mount it a commit late.
+  const [fold, setFold] = useState<{ folded: boolean; subject: string | null }>({ folded: startFolded, subject: null })
+  const folded = fold.folded && fold.subject === subject
   const [dragging, setDragging] = useState(false)
   const drag = useRef<{ right: number; at: number } | null>(null)
   const phone = useIsPhone()
@@ -203,11 +207,6 @@ export function Inspector({
   useEffect(() => {
     setStored(readPane(inspectorSpec(screen, initialWidth)))
   }, [screen, initialWidth])
-
-  // A newly picked subject is shown: a folded inspector opens for it.
-  useEffect(() => {
-    if (subject !== null) setFolded(false)
-  }, [subject])
 
   const max = inspectorMax(pageWidth)
   const width = clampPane(stored, INSPECTOR_MIN, max)
@@ -231,8 +230,8 @@ export function Inspector({
     [max, screen, initialWidth],
   )
 
-  const fold = (to: boolean) => {
-    setFolded(to)
+  const foldTo = (to: boolean) => {
+    setFold({ folded: to, subject })
     onFold?.(to)
   }
 
@@ -312,7 +311,7 @@ export function Inspector({
         <button
           type="button"
           className="wi-btn wi-fold"
-          onClick={() => fold(true)}
+          onClick={() => foldTo(true)}
           aria-label="Fold the inspector"
           title="Fold the inspector"
         >
@@ -337,7 +336,7 @@ export function Inspector({
           <button
             type="button"
             className="wi-btn wi-unfold"
-            onClick={() => fold(false)}
+            onClick={() => foldTo(false)}
             aria-label="Open the inspector"
             title="Open the inspector"
           >
