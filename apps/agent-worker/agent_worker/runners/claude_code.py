@@ -308,6 +308,7 @@ import os
 import shlex
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -346,7 +347,14 @@ from ..qa_identity import requested as qa_identity_requested
 from ..qa_target import NOTICE_NAME as QA_TARGET_NOTICE_NAME
 from .base import RunnerContext, RunnerFailure, run_runner
 from ..livegate.presets import PRESETS as DEVICE_PRESETS
-from .cliagent import CliAgentSpec, agent_working_directory, cli_stream_files, run_cli_agent
+from . import ceiling
+from .cliagent import (
+    CliAgentSpec,
+    agent_working_directory,
+    ceiling_state_file,
+    cli_stream_files,
+    run_cli_agent,
+)
 
 #: The CLI's documented switch for every background-task feature: the Bash and
 #: subagent `run_in_background` parameter, auto-backgrounding and Ctrl+B.
@@ -458,6 +466,60 @@ JEV_DECIDE_NOTE = (
     "typed questions first and weigh its advisory answer; it shares this task's "
     "Jev budget, and credential-shaped text is removed before anything is sent."
 )
+
+#: AGENTS-USE-TOOLS-WHEN (part of #2688). Experiment batch two was stopped on
+#: 2 November 2026: graph-on build steps called the graph 1, 0, 0, 0, 0 and 0
+#: times against 200-560 built-in calls, and Jev-on steps never called
+#: `jev_decide`. Their transcripts show both servers `connected` and their
+#: tools listed: loaded, not chosen. The one line naming them sat after the
+#: whole brief while CLAUDE.md, in the system context, says "`grep -n` or
+#: `rg` first", and nothing named a moment for either tool. So the moments go
+#: in `--append-system-prompt` (`system_note`), at CLAUDE.md's weight and in
+#: every session of the attempt -- a resumed one, and a fresh one after a
+#: context handoff whose prompt is only the handoff -- and only when the
+#: switch is on. Each names where the tool beats grep or a solo call, and
+#: when to skip it, so no call is forced where it adds nothing.
+GRAPH_SYSTEM_NOTE = (
+    "Code intelligence is on for this step: the swarm-graph tools hold this "
+    "repository's symbols, call edges, covering tests and history. A text search "
+    "misses calls through imports, aliases and methods and cannot tell a call from "
+    "a mention, so use the graph at these three moments:\n"
+    "1. Before you edit an existing function, class or file, call `context` on the "
+    "symbol (callers, callees and covering tests in one call) or `impact` on the "
+    "file: those callers are what your change must keep working.\n"
+    "2. Before you run tests, call `tests_for` with the files you changed (`files`, "
+    "repo-relative paths) and run what it lists beside the tests you chose.\n"
+    "3. Before you finish, call `impact` on each existing file you changed and "
+    "check every caller it lists still holds.\n"
+    "Skip them for a file you created in this step and for a docs-only change. A "
+    "row marked `stale` is on a path changed since the index, and zero callers or "
+    "tests is unknown, not none: then grep. A repository rule to grep first and "
+    "read big files by window is about reading files; it is not a reason to skip "
+    "these calls."
+)
+JEV_SYSTEM_NOTE = (
+    f"Jev is on for this step: the `{JEV_DECIDE_TOOL}` tool gives an independent "
+    "second judgement on a state you pass. Call it where you would otherwise "
+    "decide alone:\n"
+    "1. a choice the brief leaves open between designs, wordings or approaches: "
+    "ask which option fits, with the options as criteria;\n"
+    "2. before you finish, the acceptance check: ask whether each requirement the "
+    "brief states is met, giving your evidence for each;\n"
+    "3. when a test or check fails and it is unclear whether the code or the test "
+    "is wrong.\n"
+    "Do not call it for a fact you can check yourself. Its answer is advisory: "
+    "weigh it. It shares this task's Jev budget, and credential-shaped text is "
+    "removed before anything is sent."
+)
+#: The CLI flag carrying `system_note` (Claude Code 2.1.283: "Append a custom
+#: system prompt to the default system prompt", print mode included).
+APPEND_SYSTEM_PROMPT_FLAG = "--append-system-prompt"
+
+
+def system_note(*, graph: bool, jev: bool) -> str | None:
+    """The system-prompt block for the switched-on tools, or None with both off."""
+    blocks = [note for on, note in ((graph, GRAPH_SYSTEM_NOTE), (jev, JEV_SYSTEM_NOTE)) if on]
+    return "\n\n".join(blocks) or None
 
 #: Set by the dispatcher on the worker container only with the live browser's
 #: display sidecar (scheduler/dispatch.py); the lifecycle passes it on.
@@ -1526,6 +1588,18 @@ def tool_use(stream: Path, *, complete: bool = True) -> dict[str, Any]:
             "families": tool_calls_by_family(events) if events is not None else None}
 
 
+def attempt_tool_use(stream: Path, state: Path | None, *, complete: bool = True) -> dict[str, Any]:
+    """`tool_use` over every session of the attempt (COST-ACROSS-SESSIONS):
+    this runner process's capture holds the sessions it ran, and the counts of
+    the attempt's earlier runner processes come from its ceiling state
+    (`ceiling.carry_tool_calls`), which this adds to and writes back. Only
+    the last runner's metrics reach the summary, so without the carry a
+    runner restarted inside the attempt reported its own sessions alone."""
+    mine = tool_use(stream, complete=complete)
+    total = ceiling.carry_tool_calls(state, mine["families"])
+    return {**mine, "families": total} if total is not None else mine
+
+
 def produced_images(directory: Path) -> int:
     """How many image files (`IMAGE_SUFFIXES`) are under `directory`, the
     task's artifacts: screenshots, flow GIFs and anything a script rendered.
@@ -1845,7 +1919,15 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             raise RunnerFailure(f"{LIVE_BROWSER_UNAVAILABLE}: Playwright MCP is not registered; "
                                 "the agent was not started")
         extra += ["--mcp-config", str(mcp)]
+    # When each switched-on tool helps, at the system prompt's weight and in
+    # every session of the attempt (AGENTS-USE-TOOLS-WHEN; `system_note`).
+    moments = system_note(graph=bool(graph_snapshot or graph_served), jev=bool(judge_config))
+    if moments:
+        extra += [APPEND_SYSTEM_PROMPT_FLAG, moments]
     supervisor: lightpanda.Supervisor | None = None
+    agent_stream = Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout
+    cli_started: float | None = None
+    calls_carried = False
     try:
         if lightpanda_env:
             # Started here, in the runner the worker starts only after its
@@ -1856,14 +1938,17 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 lightpanda_env,
                 log=StructuredLogger(stream=sys.stderr, component="claude-code-runner").warning)
             supervisor.start()
+        cli_started = time.time()
         result = run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
         if isinstance(result, dict):
-            # AGENTS-USE-TOOLS: the session's calls per tool family, on every
-            # step, in the metrics the worker copies whole into the summary.
+            # AGENTS-USE-TOOLS: the calls per tool family of every session of
+            # the attempt, in the metrics the worker copies whole into the
+            # summary.
             metrics = result.get("metrics")
+            calls_carried = True
             result["metrics"] = {**(metrics if isinstance(metrics, dict) else {}),
-                                 TOOL_CALLS_METRIC: tool_use(
-                                     Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout,
+                                 TOOL_CALLS_METRIC: attempt_tool_use(
+                                     agent_stream, ceiling_state_file(),
                                      complete=not result.get("stdout_truncated"))}
         if live_endpoint and isinstance(result, dict):
             # QA-KIT: what the model was given of its screenshots, read off the
@@ -1880,9 +1965,24 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     finally:
         if supervisor is not None:
             supervisor.stop()
+        if not calls_carried and cli_started is not None:
+            _carry_unreported_calls(agent_stream, cli_started)
         # The worker's key file, whether or not jev was registered: the agent
         # is done, so nothing reads it again (`jev_launch.py`).
         _remove_jev_key_file()
+
+
+def _carry_unreported_calls(stream: Path, cli_started: float) -> None:
+    """A runner that ended without a result -- a swap, a park, a failure --
+    still carries its sessions' tool calls to the next runner of the attempt,
+    which reports them. Only a capture this runner wrote: one older than its
+    start is an earlier runner's, already carried. Never raises."""
+    try:
+        if stream.stat().st_mtime < cli_started:
+            return
+    except OSError:
+        return
+    attempt_tool_use(stream, ceiling_state_file())
 
 
 def _jev_backend_key() -> tuple[str, bool]:

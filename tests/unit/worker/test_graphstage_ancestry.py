@@ -169,6 +169,10 @@ def test_a_recorded_compare_for_another_head_no_longer_blocks_a_provable_step(
     # MUTATION: dropping `history_seconds` from the result hides what the
     # fetch cost from stage.json.
     assert isinstance(result.record()["history_seconds"], float)
+    # MUTATION: a `graph_ready` mark without it leaves the fetch's seconds
+    # only in the pod-local stage.json (lane REVIEW-STARTUP-WAIT).
+    assert graphstage.ready_detail(result)["graph"]["history_seconds"] == \
+        result.history_seconds
 
 
 def test_a_fetch_that_times_out_leaves_a_reason_and_no_graph_and_the_attempt_goes_on(

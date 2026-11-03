@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -97,7 +98,7 @@ __all__ = [
     "ARTIFACT_NAME", "BUDGET_BYTES", "CONTEXT_DIR_NAME", "CONTEXT_ENV", "CONTEXT_FILE",
     "DELIVERY_SERVICE", "INFLIGHT_FILE", "PACK_FILE", "PIN_FILE", "PIN_MANIFEST_FILE",
     "SNAPSHOT_DIR", "STAGE_FILE", "TASK_TYPES",
-    "ContextPackError", "context_dir", "prepare", "prompt_line",
+    "ContextPackError", "context_dir", "failed_line", "prepare", "prompt_line",
 ]
 
 #: A stager's reason is shown in the prompt: one line, bounded.
@@ -112,6 +113,21 @@ def prompt_line(context_file: Path | str) -> str:
         "work and a checklist for this kind of step. Read it before editing. The "
         "swarm-graph tools answer anything it pages out."
     )
+
+
+def failed_line(error: str, *, graph: bool) -> str:
+    """The one line when the pack could not be built (lane REVIEW-STARTUP-WAIT).
+
+    It names the PACK, never the graph: in five batch-one steps the line
+    "Repository context could not be built ...; work from the checkout as
+    usual" made the agent report the graph unavailable while swarm-graph was
+    connected. With a graph delivered (`graph`), the line says the tools are
+    there; the runner's own graph line stays as it is."""
+    head = f"The context pack for this step could not be built ({error})."
+    if graph:
+        return (f"{head} Only the pack (CONTEXT.md) is missing: the swarm-graph tools are "
+                "connected and answer callers, covering tests and rules directly.")
+    return f"{head} Work from the checkout as usual."
 
 
 def _one_line(text: str) -> str:
@@ -136,8 +152,13 @@ def prepare(ctx: "RunnerContext", checkout: Path, judge: Any = None) -> str | No
 
     None when nothing was staged. A stager that decided to stage nothing (an
     index-less or stale-beyond-ancestry repository) gets its one line, with
-    its reason. Any failure to build is one line too, and the step goes on.
+    its reason. Any failure to build is one line too (`failed_line`), and the
+    step goes on, its artifact saying so. The pack is bounded as a whole
+    (`build.PACK_DEADLINE_SECONDS`) and its seconds are in the artifact.
     """
+    started = time.monotonic()
+    graph = False
+    stage: dict[str, Any] = {}
     try:
         where = context_dir(ctx.work_dir)
         if where is None:
@@ -147,17 +168,45 @@ def prepare(ctx: "RunnerContext", checkout: Path, judge: Any = None) -> str | No
         if not served and (stage.get("staged") is False or not (where / SNAPSHOT_DIR).is_dir()):
             reason = _one_line(str(stage.get("reason") or "no graph snapshot was staged"))
             return f"No repository context was staged for this step: {reason}."
-        from .build import build_pack, write_artifact
+        # From here a graph was delivered, staged or served: a failure below
+        # is the pack's alone.
+        graph = True
+        from .build import PACK_DEADLINE_SECONDS, Deadline, build_pack, write_artifact
         from .tasktype import classify_with_jev
 
         # J0 types the step only where the local rules fall back to implement,
         # and only with a Jev client (Jev for code on): `classify_with_jev`.
+        # One deadline for the whole of it, J0's classification included.
+        deadline = Deadline(PACK_DEADLINE_SECONDS)
         kind = classify_with_jev(ctx.payload, Path(ctx.work_dir), stage, judge)
         pack = build_pack(where, checkout=Path(checkout), work_dir=Path(ctx.work_dir),
-                          payload=ctx.payload, task_type=kind, judge=judge)
-        write_artifact(Path(ctx.artifacts_dir), pack)
+                          payload=ctx.payload, task_type=kind, judge=judge,
+                          deadline=deadline)
+        # The seconds go in the artifact only: pack.json stays the same
+        # bytes for the same step.
+        write_artifact(Path(ctx.artifacts_dir), {
+            **pack, "built": True, "seconds": round(time.monotonic() - started, 3),
+            "deadline_seconds": deadline.seconds})
         return prompt_line(where / CONTEXT_FILE)
     except Exception as exc:  # noqa: BLE001 -- a pack is never worth a failed step
-        return (f"Repository context could not be built for this step "
-                f"({type(exc).__name__}: {_one_line(str(exc))[:120]}); work from the "
-                "checkout as usual.")
+        error = f"{type(exc).__name__}: {_one_line(str(exc))[:160]}"
+        _record_failure(ctx, stage, error, round(time.monotonic() - started, 3), graph)
+        return failed_line(error, graph=graph)
+
+
+def _record_failure(ctx: "RunnerContext", stage: dict[str, Any], error: str,
+                    seconds: float, graph: bool) -> None:
+    """`context-pack.json` for a pack that was not built: the error, its
+    seconds and the arm, so §6 reads the step's arm and not a missing pack.
+    Never raises."""
+    if not graph:
+        return
+    try:
+        from .build import PACK_DEADLINE_SECONDS, SCHEMA, _arm, write_artifact
+
+        write_artifact(Path(ctx.artifacts_dir), {
+            "schema": SCHEMA, "built": False, "error": error, "seconds": seconds,
+            "deadline_seconds": PACK_DEADLINE_SECONDS, "arm": _arm(stage),
+            "delivery": stage.get("delivery")})
+    except Exception:  # noqa: BLE001 -- a record is never worth a failed step
+        return

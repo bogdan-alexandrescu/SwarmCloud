@@ -140,6 +140,8 @@ from .repositories import (
     FULL_EVERY_DAYS_DEFAULT,
     INTERVAL_HOURS_DEFAULT,
     KEEP_VERSIONS_DEFAULT,
+    KEEP_VERSIONS_MIN_AGE_HOURS,
+    KEEP_VERSIONS_RANGE,
     ON_CHANGE_DEFAULT,
     ON_CHANGE_POLLED,
     ON_CHANGE_PUSHED,
@@ -305,6 +307,12 @@ MAX_INCREMENTAL_CHANGES = 300
 #: (#1693): HCL is asked of terraform-ls, and a version-4 graph's HCL row is
 #: `unsupported` with no `lsp` edge an incremental run could carry.
 INDEXER_EXTRACTOR_VERSION = "5"
+#: The `truncated` entries a promoted graph may carry and still be built on
+#: (`repo_index_extract.DERIVED_TRUNCATIONS`, held equal by
+#: tests/unit/worker/test_repo_index_incremental.py): both test maps are
+#: walked again by every run, never read from its base. Refusing them made
+#: every one of SwarmCloud's 222 runs of a week (2026-11-03) a full rebuild.
+DERIVED_TRUNCATIONS = frozenset({"symbol_test_map", "file_test_map"})
 #: §3.4 and §3.5: a change to a build or test configuration, a lockfile, a CI
 #: workflow or a language server's configuration changes what `commands`,
 #: `test_map` and the graph mean everywhere, so it forces a full run. The
@@ -829,25 +837,47 @@ def _lsp_base_paragraph(lsp_base_sha: str) -> str:
     )
 
 
+def retained_versions(rows: Iterable[Mapping[str, Any]], *, keep_versions: int,
+                      now: datetime) -> list[Mapping[str, Any]]:
+    """The versions retention keeps, newest first: the newest `keep_versions`
+    by `recorded_at`, and every other one recorded in the last
+    KEEP_VERSIONS_MIN_AGE_HOURS, up to KEEP_VERSIONS_RANGE's most.
+
+    By count alone, 20 versions covered ~15 hours of SwarmCloud's runs
+    (2026-11-03), so a step whose base was a few hours old found its index
+    swept. `_prune_versions` and `kept_commits` both keep exactly these, so
+    the registration and the bucket agree on what is kept.
+    """
+    listed = sorted(rows, key=lambda r: _parse_time(r.get("recorded_at")) or datetime.min.replace(
+        tzinfo=timezone.utc), reverse=True)
+    kept = listed[:max(0, keep_versions)]
+    floor = now - timedelta(hours=KEEP_VERSIONS_MIN_AGE_HOURS)
+    for row in listed[len(kept):]:
+        recorded = _parse_time(row.get("recorded_at"))
+        if len(kept) >= KEEP_VERSIONS_RANGE[1] or recorded is None or recorded < floor:
+            break
+        kept.append(row)
+    return kept
+
+
 def kept_commits(
     rows: Iterable[Mapping[str, Any]], *, keep_versions: int, current_sha: str | None,
-    own: str,
+    own: str, now: datetime | None = None,
 ) -> list[str] | None:
     """The commits an index run's sweep must keep, or None when they cannot be named.
 
-    The newest `keep_versions` versions by `recorded_at` -- what
-    `_prune_versions` keeps -- plus the promoted `current_sha` and the run's
-    own commit, sorted. None when any version names no commit: the sweep would
-    then delete objects a version still points at, so it is given no keep set
-    and retires nothing.
+    The versions `retained_versions` keeps -- what `_prune_versions` keeps --
+    plus the promoted `current_sha` and the run's own commit, sorted. None
+    when any version names no commit: the sweep would then delete objects a
+    version still points at, so it is given no keep set and retires nothing.
+    `now` defaults to the wall clock.
     """
     listed = list(rows)
     if any(not isinstance(row.get("commit_sha"), str) or not _SHA.match(row["commit_sha"])
            for row in listed):
         return None
-    listed.sort(key=lambda r: _parse_time(r.get("recorded_at")) or datetime.min.replace(
-        tzinfo=timezone.utc), reverse=True)
-    kept = {row["commit_sha"] for row in listed[:max(0, keep_versions)]}
+    kept = {row["commit_sha"] for row in retained_versions(
+        listed, keep_versions=keep_versions, now=now or datetime.now(timezone.utc))}
     for commit in (current_sha, own):
         if isinstance(commit, str) and _SHA.match(commit):
             kept.add(commit)
@@ -1419,7 +1449,9 @@ def choose_kind(
     the caller reads both. The conditions, in the order a reader checks them:
     a previous index exists, is kept and has a graph; the last full run is
     younger than `full_every_days` (the weekly full run, §3.3, which is
-    still given the promoted index as `lsp_base_sha`, #2991); it is an
+    still given the promoted index as `lsp_base_sha`, #2991, as is every
+    full run on a graph the extractor would carry but a configuration
+    change's); it is an
     ANCESTOR of the head; the diff touches fewer than
     MAX_INCREMENTAL_CHANGES files; and no build or test configuration changed.
 
@@ -1442,10 +1474,16 @@ def choose_kind(
     carried = graph_carry_refusal(version.get("graph_extractor"))
     if carried is not None:
         return KindChoice("full", reason=carried)
+    # From here on the graph is one the extractor would carry, so every full
+    # run but a configuration change's is given it for the servers' answers
+    # (2026-11-03): the extractor keeps an unchanged file's answers whatever
+    # the diff's size or shape, re-asks the changed files and what points
+    # into them, and refuses the base itself when it cannot compare.
     days = _int_or(index.get("full_every_days"), FULL_EVERY_DAYS_DEFAULT)
     full_at = last_full_at(index)
     if full_at is None:
-        return KindChoice("full", reason="no full run is recorded for this repository")
+        return KindChoice("full", reason="no full run is recorded for this repository",
+                          lsp_base_sha=current)
     if now - full_at >= timedelta(days=days):
         # The weekly full run rebuilds the tree-sitter half whole, but builds
         # on the promoted index's language-server answers (owner, 2026-11-01,
@@ -1460,17 +1498,20 @@ def choose_kind(
             lsp_base_sha=current)
     if changes is None:
         return KindChoice("full", reason=(
-            "GitHub could not say how the head relates to the promoted index"))
+            "GitHub could not say how the head relates to the promoted index"),
+            lsp_base_sha=current)
     if changes.get("status") != "ahead":
         return KindChoice("full", reason=(
-            f"the promoted index is not an ancestor of the head ({changes.get('status')})"))
+            f"the promoted index is not an ancestor of the head ({changes.get('status')})"),
+            lsp_base_sha=current)
     files = list(changes.get("files") or [])
     if len(files) >= MAX_INCREMENTAL_CHANGES:
         return KindChoice("full", reason=(
             f"{len(files)} or more files changed, at or over the "
-            f"{MAX_INCREMENTAL_CHANGES} an incremental run takes"))
+            f"{MAX_INCREMENTAL_CHANGES} an incremental run takes"), lsp_base_sha=current)
     config = [name for name in files if is_config_path(name)]
     if config:
+        # A configuration change changes what every answer means: no base.
         more = f" and {len(config) - 1} more" if len(config) > 1 else ""
         return KindChoice("full", reason=(
             f"a build, test or language-server configuration changed ({config[0]}{more})"))
@@ -1566,9 +1607,10 @@ def graph_carry_refusal(record: Any) -> str | None:
     if record.get("blob_ids") is not True:
         return ("the promoted graph records no per-file blob id (it was extracted before "
                 "incremental runs existed)")
-    if _int_or(record.get("files_not_listed"), 0) or record.get("truncated"):
-        cut = ", ".join(record.get("truncated") or []) or "files"
-        return f"the promoted graph was truncated ({cut}), so it cannot be carried"
+    cut = [str(name) for name in record.get("truncated") or []]
+    if _int_or(record.get("files_not_listed"), 0) or set(cut) - DERIVED_TRUNCATIONS:
+        return (f"the promoted graph was truncated ({', '.join(cut) or 'files'}), "
+                "so it cannot be carried")
     return None
 
 
@@ -2467,7 +2509,8 @@ class RepoIndex:
 
     def _prune_versions(self, repo_id: str, keep: str | None,
                         keep_versions: int = KEPT_VERSIONS) -> None:
-        """Delete every version but the newest `keep_versions` and `keep`.
+        """Delete every version but `retained_versions`' (the newest
+        `keep_versions`, and the last day's) and `keep`.
 
         `keep_versions` is the registration's own (`keep_versions_of`). Their
         objects under repos/ go at the next index run's sweep, which this
@@ -2476,10 +2519,10 @@ class RepoIndex:
         coll = self._repo_ref(repo_id).collection(VERSIONS_COLLECTION)
         rows = [snap.to_dict() for snap in coll.stream()]
         rows = [row for row in rows if row]
-        rows.sort(key=lambda r: _parse_time(r.get("recorded_at")) or datetime.min.replace(
-            tzinfo=timezone.utc), reverse=True)
-        for row in rows[max(1, keep_versions):]:
-            if row.get("commit_sha") != keep:
+        retained = {id(row) for row in retained_versions(
+            rows, keep_versions=max(1, keep_versions), now=self._now())}
+        for row in rows:
+            if id(row) not in retained and row.get("commit_sha") != keep:
                 self._version_ref(repo_id, row["commit_sha"]).delete()
 
     # -- starting a run ----------------------------------------------------
@@ -2607,7 +2650,7 @@ class RepoIndex:
                         tenant_id, repo_id, type(failed).__name__)
             return None
         return kept_commits(rows, keep_versions=keep_versions_of(index),
-                            current_sha=index.get("current_sha"), own=sha)
+                            current_sha=index.get("current_sha"), own=sha, now=self._now())
 
     def _start(
         self, auth: AuthContext, tenant_id: str, record: Mapping[str, Any], sha: str, *,
