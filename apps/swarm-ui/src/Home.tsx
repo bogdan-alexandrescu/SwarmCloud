@@ -94,9 +94,16 @@ const STATE_SAY: Readonly<Record<string, string>> = {
   CANCELLED: 'cancelled',
 }
 
-/** Why one of the person's tasks waits, in the words the chips use. */
+/**
+ * Why one of the person's tasks waits, in the words the chips use. An
+ * await-input step (AWAITING_INPUT, human-steps.md §3.4) is not a hand-off:
+ * `needsYou` is false for it, so it is not an "At a browser" row and has no
+ * I'm ready. It waits in Your work, saying it waits on the person's input,
+ * which its own page takes.
+ */
 const PARK_SAY: Readonly<Record<string, string>> = {
   HUMAN_REQUIRED: 'a person',
+  AWAITING_INPUT: 'your input',
   PROVIDER_QUOTA_EXHAUSTED: 'provider quota to return',
   CI_PENDING: 'CI to finish',
 }

@@ -233,7 +233,13 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
     const group = await waitFor(() => screen.getByRole('group', { name: 'Recent workflows' }))
     expect(group.querySelectorAll('button')).toHaveLength(0)
     const hrefs = [...group.querySelectorAll<HTMLAnchorElement>('a')].map((a) => a.getAttribute('href'))
-    expect(hrefs).toEqual(['/workflows/wf_a', '/workflows'])
+    // The opened workflow first and All workflows last. Between them Recent
+    // fills to five from the list read's newest (`recentWorkflows`), which
+    // lands before this line once an earlier test has warmed that read, so
+    // the fill is not counted, only drawn as links.
+    expect(hrefs[0]).toBe('/workflows/wf_a')
+    expect(hrefs[hrefs.length - 1]).toBe('/workflows')
+    for (const h of hrefs.slice(1, -1)) expect(h).toMatch(/^\/workflows\/wf_[0-9a-z_]+$/)
     const row = group.querySelector<HTMLAnchorElement>('a[href="/workflows/wf_a"]')!
     const ctrl = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true })
     row.dispatchEvent(ctrl)

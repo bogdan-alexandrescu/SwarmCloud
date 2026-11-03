@@ -38,7 +38,7 @@ vi.mock('../Handoff', async (importOriginal) => {
   return { ...actual, ...handoff }
 })
 
-import { HomeScreen, ownerQuestionsOf } from '../Home'
+import { HomeScreen, ownerQuestionsOf, waitWhy } from '../Home'
 
 const NOW = Date.parse('2026-11-02T12:00:00.000Z')
 const iso = (ms: number): string => new Date(ms).toISOString()
@@ -215,13 +215,18 @@ describe('Home opens on what waits on the signed-in person', () => {
     render(<HomeScreen now={NOW} />)
     await waitFor(() => expect(total()).toBe('2 need you'))
     const rows = () => [...document.querySelectorAll('.hm-items [data-kind="approval"]')] as HTMLElement[]
-    fireEvent.click(within(rows()[0]).getByRole('button', { name: 'Approve' }))
+    const firstRow = (): HTMLElement => {
+      const r = rows()[0]
+      if (r === undefined) throw new Error('no approval row')
+      return r
+    }
+    fireEvent.click(within(firstRow()).getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(rows()).toHaveLength(1))
     expect(api.approveApproval).toHaveBeenCalledWith('appr_1', { digest: 'd-1' })
-    fireEvent.click(within(rows()[0]).getByRole('button', { name: 'Decline…' }))
-    const decline = within(rows()[0]).getByRole('button', { name: 'Decline' })
+    fireEvent.click(within(firstRow()).getByRole('button', { name: 'Decline…' }))
+    const decline = within(firstRow()).getByRole('button', { name: 'Decline' })
     expect(decline).toHaveProperty('disabled', true)
-    fireEvent.change(within(rows()[0]).getByLabelText('Reason, required'), { target: { value: 'not tonight' } })
+    fireEvent.change(within(firstRow()).getByLabelText('Reason, required'), { target: { value: 'not tonight' } })
     fireEvent.click(decline)
     await waitFor(() => expect(rows()).toHaveLength(0))
     expect(api.rejectApproval).toHaveBeenCalledWith('appr_2', { reason: 'not tonight' })
@@ -308,6 +313,16 @@ describe('Home opens on what waits on the signed-in person', () => {
     await waitFor(() => expect(api.loadApprovals).toHaveBeenCalled())
     await waitFor(() => expect(total()).toBe('— need you'))
     expect(screen.queryByTestId('home-clear')).toBeNull()
+  })
+
+  it('an await-input park is not a hand-off: it waits in Your work on your input', async () => {
+    const awaiting = task('task_await1', 'PARKED', { park_reason: 'AWAITING_INPUT', metadata: { title: 'Pick a release name' } })
+    expect(waitWhy(awaiting)).toBe('your input')
+    serve({ tasks: [awaiting], approvals: [], people: refused(403), role: null })
+    render(<HomeScreen now={NOW} />)
+    await waitFor(() => expect(total()).toBe('0 need you'))
+    expect(item('handoff')).toBeNull()
+    expect(document.getElementById('home-work')?.textContent).toContain('your input')
   })
 
   it('reads owner questions from the merge park only', () => {
