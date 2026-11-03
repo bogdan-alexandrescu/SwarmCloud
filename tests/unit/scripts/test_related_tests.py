@@ -24,6 +24,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "related-tests.sh"
 SELECTOR = REPO / "scripts" / "lib" / "related_tests.py"
@@ -371,6 +373,143 @@ def test_a_heavy_pytest_selection_splits_by_ci_weight(tmp_path):
     # MUTATION: ignore unit_test_durations.json -> one 1,800 CI-second run.
     assert len(got["pytest"]) >= 3
     assert len(_files(got["pytest"])) == 9
+
+
+# --- the code graph, type-only imports, the frozen contract ------------------
+# (RELATED-NARROW, part of #2688.) Agents reported ~1,972 files selected for a
+# change to a handful, and hand-picked tests instead.
+
+SNAPSHOT_SCHEMA = "swarm.repo-graph-manifest/v1"
+
+
+def _blob(rows: list[dict]) -> bytes:
+    import gzip
+
+    return gzip.compress(b"".join(json.dumps(r, sort_keys=True).encode() + b"\n" for r in rows), mtime=0)
+
+
+def _snapshot(context: Path, files: list[dict], symbols: list[dict], tests: list[dict]) -> Path:
+    """A graph snapshot as the stager writes it: manifest.json and one
+    sha256-named gzip JSON-lines blob per (layer, directory)."""
+    import hashlib
+    import posixpath
+
+    directory = context / "snapshot"
+    (directory / "blobs").mkdir(parents=True)
+    shards: dict[str, dict] = {}
+    for layer, rows, key in (("files", files, "path"), ("symbols", symbols, "path"), ("tests", tests, "symbol")):
+        grouped: dict[str, list[dict]] = {}
+        for row in rows:
+            grouped.setdefault(posixpath.dirname(row[key].split("#", 1)[0]) or ".", []).append(row)
+        shards[layer] = {}
+        for module, group in grouped.items():
+            data = _blob(group)
+            hexdigest = hashlib.sha256(data).hexdigest()
+            (directory / "blobs" / f"{hexdigest}.jsonl.gz").write_bytes(data)
+            shards[layer][module] = {"blob": f"sha256:{hexdigest}", "records": len(group), "bytes": len(data)}
+    manifest = {"schema": SNAPSHOT_SCHEMA, "format_version": 2, "commit_sha": "a" * 40,
+                "compression": "gzip", "blob_suffix": ".jsonl.gz", "shards": shards}
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+    return directory
+
+
+def _graph_tree(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    root = tmp_path / "repo"
+    _tree(root)
+    context = tmp_path / "context"
+    monkeypatch.setenv("SWARM_CONTEXT_DIR", str(context))
+    # The graph knows core.py: its file row names test_core, its symbol X
+    # names test_lone; it knows widget.ts, covered by mocked.test.ts only.
+    _snapshot(
+        context,
+        files=[{"path": "apps/foo/foo/core.py", "tests": [{"test": "tests/unit/foo/test_core.py"}]},
+               {"path": f"{UI}/src/widget.ts", "tests": [{"test": f"{UI}/src/__tests__/mocked.test.ts"}]}],
+        symbols=[{"id": "apps/foo/foo/core.py#X", "path": "apps/foo/foo/core.py"}],
+        tests=[{"symbol": "apps/foo/foo/core.py#X", "test": "tests/unit/foo/test_lone.py#test_y"}],
+    )
+    return root, context
+
+
+def test_a_change_the_graph_covers_selects_its_tests_for_not_every_importer(tmp_path, monkeypatch):
+    root, _ = _graph_tree(tmp_path, monkeypatch)
+    got = _select(root, "apps/foo/foo/core.py", f"{UI}/src/widget.ts")
+    # MUTATION: ignore the staged graph -> test_edge.py (an importer of an
+    # importer) and every vitest file importing widget.ts come back; read
+    # only the file row -> test_lone.py (its symbol's test) is lost.
+    assert _files(got["pytest"]) == [
+        "tests/unit/foo/test_core.py",
+        "tests/unit/foo/test_lone.py",
+        "tests/unit/foo/test_reads.py",   # the text rule still applies
+    ]
+    assert _files(got["vitest"]) == ["src/__tests__/mocked.test.ts"]
+    assert any("code graph snapshot of aaaaaaaaaaaa" in n for n in got["note"]), got["note"]
+
+
+def test_a_file_the_graph_does_not_cover_selects_by_imports(tmp_path, monkeypatch):
+    root, _ = _graph_tree(tmp_path, monkeypatch)
+    got = _select(root, "apps/foo/foo/lone.py")
+    assert _files(got["pytest"]) == ["tests/unit/foo/test_lone.py"]
+
+
+def test_an_unreadable_graph_is_named_and_the_import_map_selects(tmp_path, monkeypatch):
+    root, context = _graph_tree(tmp_path, monkeypatch)
+    for blob in (context / "snapshot" / "blobs").iterdir():
+        blob.write_bytes(b"not the blob its name says")
+    got = _select(root, "apps/foo/foo/core.py")
+    # MUTATION: trust a blob without checking its digest -> the selector
+    # fails on the garbage, or reads it as the graph.
+    assert _files(got["pytest"]) == [
+        "tests/unit/foo/test_core.py", "tests/unit/foo/test_edge.py", "tests/unit/foo/test_reads.py"]
+    # A blob is read only when asked for, so the manifest loads; the selector
+    # falls back per file and never fails.
+    (context / "snapshot" / "manifest.json").write_text("{}")
+    got = _select(root, "apps/foo/foo/core.py")
+    assert any("is not used" in n for n in got["note"]), got["note"]
+    assert "tests/unit/foo/test_edge.py" in _files(got["pytest"])
+
+
+def test_a_type_only_import_carries_no_change_into_a_test(tmp_path):
+    _tree(tmp_path)
+    _write(tmp_path, f"{UI}/src/types.ts", "export type T = { a: number }\nexport const V = 1\n")
+    _write(tmp_path, f"{UI}/src/__tests__/typeonly.test.ts", "import type { T } from '../types'\n")
+    _write(tmp_path, f"{UI}/src/__tests__/reexport.test.ts", "export type { T } from '../types'\n")
+    _write(tmp_path, f"{UI}/src/__tests__/value.test.ts", "import { type T, V } from '../types'\n")
+    _write(tmp_path, f"{UI}/src/__tests__/both.test.ts",
+           "import type { T } from '../types'\nimport { V } from '../types'\n")
+    got = _select(tmp_path, f"{UI}/src/types.ts")
+    # MUTATION: follow `import type` edges -> typeonly and reexport come back;
+    # drop every line naming `type` -> value.test.ts is lost.
+    assert _files(got["vitest"]) == ["src/__tests__/both.test.ts", "src/__tests__/value.test.ts"]
+
+
+def test_a_frozen_contract_change_selects_widely_and_says_why(tmp_path):
+    _tree(tmp_path)
+    _write(tmp_path, "apps/common/swarm_common/__init__.py")
+    _write(tmp_path, "apps/common/swarm_common/models.py", "class Tenant:\n    pass\n")
+    _write(tmp_path, "apps/foo/foo/model_user.py", "from swarm_common.models import Tenant\n")
+    _write(tmp_path, "tests/unit/foo/test_model_user.py", "from foo.model_user import Tenant\n")
+    got = _select(tmp_path, "apps/common/swarm_common/models.py")
+    assert "tests/unit/foo/test_model_user.py" in _files(got["pytest"])
+    # MUTATION: drop the note -> the wide selection reads as a selector bug.
+    assert any("frozen contract" in n and "wide by design" in n and "CI runs the whole suite" in n
+               for n in got["note"]), got["note"]
+
+
+def test_the_script_selects_one_swarm_api_routes_tests_and_none_of_the_workers(tmp_path):
+    """Red first for RELATED-NARROW: on main at 0409b8d this change named
+    1,428 test files, the worker's among them."""
+    route = "apps/swarm-api/swarm_api/routes/budget_settings.py"
+    if not (REPO / route).is_file():
+        pytest.skip("the budget route moved; pick another route")
+    diff = tmp_path / "diff.txt"
+    diff.write_text(f"{route}\n")
+    result = _run("--files", str(diff), env_extra={"SWARM_CONTEXT_DIR": str(tmp_path / "no-graph")})
+    assert result.returncode == 0, result.stderr
+    listed = _listed(result.stdout)
+    assert "tests/unit/control_plane/test_budget_contract_switch.py" in listed, listed
+    assert not [t for t in listed if t.startswith("tests/unit/worker/")], listed
+    assert len(listed) < 60, len(listed)
+    _assert_every_command_names_files(_commands(result.stdout))
 
 
 def test_a_runner_wide_ui_change_selects_no_suite_and_says_ci_runs_it(tmp_path):
