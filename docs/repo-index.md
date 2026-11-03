@@ -897,7 +897,7 @@ versions covering only about 15 hours. Three rules changed together.
   still there.
 * **Retention keeps what a running workflow pins.** Each graph ticket
   (`graph_ticket.py`) records a pin under the repository's `index_pins`
-  naming its `index_sha` and its holder -- the step's workflow, or the task
+  naming its `index_sha` and its holder -- the step's workflow, or the agent
   outside one. `_prune_versions` and `kept_commits` keep every pinned
   version, however old, until the holder reaches a terminal state; then the
   pin is deleted and the version goes at the next prune and sweep. Without
