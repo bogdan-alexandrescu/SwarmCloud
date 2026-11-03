@@ -119,15 +119,19 @@ from 8.5 to 15.6 minutes of gate a run (the slowest tenth 36.8 to 64.3), 96%
 of it the guard check, its shards one after another (90th percentile 79.5
 minutes). So `timeboxed_guards`:
 
-* runs the guards RELATED to the files the step changed (the selection
-  `scripts/related-tests.sh` prints, within the script's own `--list`) first,
-  with the contract-parity check and the stylesheet guards, as one command
-  on every CPU (`changed-guards.sh --only`);
-* then the rest, cut in the listing's order into parts of about equal CI
-  weight (`cut_in_order`, `GUARDS_WEIGHTS`), as many side by side as the pod
-  has CPUs (`pod_cpus`: affinity, cgroup CPU limit, the platform's
+* cuts the selection into parts of about equal CI weight, in the listing's
+  order (`cut_in_order`, `GUARDS_WEIGHTS`), the guards RELATED to the files
+  the step changed (the selection `scripts/related-tests.sh` prints, within
+  the script's own `--list`) apart from the rest, with the contract-parity
+  check and the stylesheet guards a part of their own, first
+  (`changed-guards.sh --only`);
+* starts every related part before any of the rest, as many side by side as
+  the pod has CPUs (`pod_cpus`: affinity, cgroup CPU limit, the platform's
   `PYTEST_XDIST_AUTO_NUM_WORKERS`), each with its share of them
-  (`--workers`) -- and only while `GUARDS_BUDGET_SECONDS` of wall time lasts;
+  (`--workers`) -- and starts a part only while `GUARDS_BUDGET_SECONDS` of
+  wall time lasts. Measured 2026-11-03 on this change's own selection: the
+  related set was 326 of 343 files, so it is cut like the rest, never run as
+  one command that one kill at the budget would wipe out;
 * names what the budget did not reach LEFT TO CI, in the round's record
   (`left_to_ci` on the guard check) and in the advisory section of the pull
   request, never as passed. A part stopped at the budget is not a timeout;
@@ -377,14 +381,16 @@ GUARDS_MIN_PARTS = 2
 #: ones a change most often turns red, run first, and what the budget does
 #: not reach is LEFT TO CI -- named, never passed -- which runs all of it.
 GUARDS_BUDGET_SECONDS = 600.0
-#: Parts cut per CPU the rest of the selection runs on: three, so a budget
-#: that runs out stops at most the last third of each CPU's share, and a part
-#: that ends early hands its CPU to the next.
-GUARDS_PARTS_PER_SLOT = 3
-#: The lightest part worth its own command, in CI-seconds: each part pays the
-#: script's selection (~4 s measured 2026-11-03) and a pytest start before its
-#: first test, so a part under ~30 CI-seconds spends a quarter of itself there.
-GUARDS_MIN_PART_WEIGHT = 30.0
+#: The weight of one part, in CI-seconds. A part still running when the
+#: budget runs out is lost whole, so parts are small: measured 2026-11-03 on
+#: this change's 343-file selection with six parts side by side at one
+#: pytest worker each, parts of 150-250 CI-seconds took 6-8 minutes and the
+#: six still running at the budget lost about 1,000 CI-seconds of work. At 40,
+#: about two minutes a part, at most a minute's work a CPU is lost; each part
+#: still pays the script's selection (~4 s) and a pytest start.
+GUARDS_PART_WEIGHT = 40.0
+#: At most this many parts, whatever the weight: each starts a script.
+GUARDS_MAX_PARTS = 120
 #: Entries left to CI named in the advisory section; the rest are counted.
 GUARDS_LEFT_SHOWN = 40
 #: The related selection (`scripts/related-tests.sh`): the tests the files the
@@ -914,14 +920,14 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
     decision 2026-11-03).
 
     1. `--list` names the selection; `related_argv` (`related-tests.sh`) names
-       the tests related to the files the step changed. Those of the selection,
-       with the parity check and stylesheet guards, run FIRST, as one command
-       on every CPU (`--only`).
-    2. The rest runs as parts cut in the listing's order (`cut_in_order`),
-       `min(cpus, parts)` of them side by side, each `--workers cpus // slots`,
-       a part started only while the budget lasts: `budget` seconds of wall
-       time from the start of the check, never past the step's own
-       (`remaining` less `CHECK_MARGIN_SECONDS`).
+       the tests related to the files the step changed. Both groups are cut
+       into parts of one weight, in the listing's order (`cut_in_order`); the
+       parity check and stylesheet guards are a part of their own, first.
+    2. The parts run `min(cpus, parts)` side by side, each `--workers cpus //
+       slots` (`--only`), every related part started FIRST, and a part
+       started only while the budget lasts: `budget` seconds of wall time
+       from the start of the check, never past the step's own (`remaining`
+       less `CHECK_MARGIN_SECONDS`).
     3. A part not started, or stopped at the budget with no failure of its
        own, is LEFT TO CI: its entries go to `report.left_to_ci`, never
        counted as passed. A failing part fails the check, with its output for
@@ -946,26 +952,38 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
                          max(MIN_CHECK_SECONDS, min(GUARDS_LIST_SECONDS, left())))
             if ran.code == 0 and not ran.timed_out:
                 related = parse_related(ran.output)
-        first = [t for t in listing.tests if t in related] + list(listing.extras)
+        first = [t for t in listing.tests if t in related]
         rest = [t for t in listing.tests if t not in related]
         weight = guards_weights(repo)
-        total = sum(weight(t) for t in rest)
-        count = max(min_parts, min(cpus * GUARDS_PARTS_PER_SLOT,
-                                   math.ceil(total / GUARDS_MIN_PART_WEIGHT)))
-        parts = cut_in_order(rest, count, weight)
-        slots = max(1, min(cpus, len(parts)))
+        heft = {"first": sum(weight(t) for t in first), "rest": sum(weight(t) for t in rest)}
+        count = max(1, min_parts, min(GUARDS_MAX_PARTS, math.ceil(
+            (heft["first"] + heft["rest"]) / GUARDS_PART_WEIGHT)))
+        # One part weight for both: a related selection can be most of the
+        # whole (a widely imported module), and as one command it would hold
+        # every CPU's work hostage to one kill at the budget.
+        share = (heft["first"] + heft["rest"]) / count or 1.0
+        firsts = cut_in_order(first, math.ceil(heft["first"] / share), weight)
+        if listing.extras:
+            # A part of their own, first: behind 50 test files under five
+            # other parts, the parity check ran past its 60 s limit
+            # (measured 2026-11-03), a red no change of the step's caused.
+            firsts = [list(listing.extras), *firsts]
+        rests = cut_in_order(rest, math.ceil(heft["rest"] / share), weight)
+        labelled = ([(f"related part {k}/{len(firsts)}", p) for k, p in enumerate(firsts, 1)]
+                    + [(f"part {k}/{len(rests)}", p) for k, p in enumerate(rests, 1)])
+        slots = max(1, min(cpus, len(labelled)))
         workers = max(1, cpus // slots)
         folder = Path(tempfile.mkdtemp(prefix="prepublish-guards-",
                                        dir=scratch or _outside(repo, env)))
 
-        def one(label: str, entries: Sequence[str], workers: int | None) -> tuple[str, str]:
+        def one(label: str, entries: Sequence[str]) -> tuple[str, str]:
             limit = left()
             if limit < MIN_CHECK_SECONDS:
                 return "not_started", ""
-            listfile = folder / f"{label.replace('/', '-')}.txt"
+            listfile = folder / f"{label.replace('/', '-').replace(' ', '-')}.txt"
             listfile.write_text("".join(f"{e}\n" for e in entries), encoding="utf-8")
-            more = [] if workers is None else ["--workers", str(workers)]
-            ran = runner([*argv, "--only", str(listfile), *more], repo, env, limit)
+            ran = runner([*argv, "--only", str(listfile), "--workers", str(workers)],
+                         repo, env, limit)
             if ran.code == 0 and not ran.timed_out:
                 return "passed", ran.output
             if ((ran.timed_out or guards_timed_out(ran.output))
@@ -975,15 +993,12 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
 
         results: list[tuple[str, Sequence[str], str, str]] = []
         try:
-            if first:
-                kind, output = one("related", first, None)
-                results.append(("the related guards", first, kind, output))
-            if parts:
-                with ThreadPoolExecutor(max_workers=slots) as pool:
-                    futures = [pool.submit(one, f"part-{k}-of-{len(parts)}", part, workers)
-                               for k, part in enumerate(parts, 1)]
-                    results += [(f"part {k}/{len(parts)}", part, *future.result())
-                                for k, (part, future) in enumerate(zip(parts, futures), 1)]
+            # The pool starts parts in the order given: every related part
+            # before any of the rest.
+            with ThreadPoolExecutor(max_workers=slots) as pool:
+                futures = [pool.submit(one, label, part) for label, part in labelled]
+                results = [(label, part, *future.result())
+                           for (label, part), future in zip(labelled, futures)]
         finally:
             shutil.rmtree(folder, ignore_errors=True)
 
@@ -999,10 +1014,11 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
                 left_out += entries
         report.left_to_ci[:] = left_out
         ran_files = len(listing.tests) - sum(1 for e in left_out if e in listing.tests)
-        note = (f"ran {len(first) - len(listing.extras)} related test file(s) first, then "
-                f"{len(rest)} more as {len(parts)} part(s), {slots} at a time on {cpus} "
-                f"CPU(s) with {workers} pytest worker(s) each, within a {int(min(budget, timeout))} s "
-                f"budget: {ran_files} of {len(listing.tests)} test file(s) ran")
+        note = (f"ran {len(first)} related test file(s) first ({len(firsts)} part(s)), then "
+                f"{len(rest)} more ({len(rests)} part(s)), {slots} part(s) at a time on {cpus} "
+                f"CPU(s) with {workers} pytest worker(s) each, within a "
+                f"{int(min(budget, timeout))} s budget: {ran_files} of {len(listing.tests)} "
+                "test file(s) ran")
         if left_out:
             shown = ", ".join(f"`{e}`" for e in left_out[:GUARDS_LEFT_SHOWN])
             more = (f" and {len(left_out) - GUARDS_LEFT_SHOWN} more"

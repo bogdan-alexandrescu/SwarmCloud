@@ -114,26 +114,24 @@ def _run(tmp_path: Path, script: Script, *, cpus: int = 4, remaining: Any = None
 # ---------------------------------------------------------------------------
 
 
-def test_the_related_guards_run_first_with_the_parity_check_on_every_cpu(tmp_path):
+def test_the_parity_check_then_the_related_guards_start_before_the_rest(tmp_path):
     script = Script()
-    status, _, report = _run(tmp_path, script, min_parts=3)
-    first, *rest = script.parts()
-    # MUTATION: running the selection in its listed order, or the related
-    # guards among the parts, turns this red.
-    assert first[1] == [*RELATED, PARITY]
-    assert "--workers" not in first[0]
-    assert sorted(e for c in rest for e in c[1]) == sorted(set(SELECTION) - set(RELATED))
-    assert all(PARITY not in c[1] for c in rest)
+    # One CPU: the parts start one at a time, in the order the gate queues them.
+    status, _, report = _run(tmp_path, script, cpus=1, min_parts=3)
+    started = [e for c in script.parts() for e in c[1]]
+    rest = [e for e in SELECTION if e not in RELATED]
+    # MUTATION: queueing the selection in its listed order, or the related
+    # guards among the rest, turns this red.
+    assert started == [PARITY, *RELATED, *rest]
+    assert script.parts()[0][1] == [PARITY]
     assert status == prepublish.PASSED and report.left_to_ci == []
     assert "ran 2 related test file(s) first" in report.notes[0]
 
 
-def test_without_a_related_selection_every_guard_is_a_part_and_parity_still_runs_first(tmp_path):
+def test_without_a_related_selection_the_parity_check_still_starts_first(tmp_path):
     script = Script()
-    status, _, _ = _run(tmp_path, script, related_script=False, min_parts=2)
-    first, *rest = script.parts()
-    assert first[1] == [PARITY]
-    assert sorted(e for c in rest for e in c[1]) == sorted(SELECTION)
+    status, _, _ = _run(tmp_path, script, cpus=1, related_script=False, min_parts=2)
+    assert [e for c in script.parts() for e in c[1]] == [PARITY, *SELECTION]
     assert status == prepublish.PASSED
 
 
@@ -191,7 +189,7 @@ def test_the_budget_stops_the_rest_and_records_them_as_left_to_ci(tmp_path):
 
 def test_a_part_stopped_at_the_budget_is_left_to_ci_not_a_timeout(tmp_path):
     def act(entries: list[str], timeout: float) -> prepublish.Ran:
-        if RELATED[0] in entries:
+        if RELATED[0] in entries or PARITY in entries:
             return prepublish.Ran(0, "ok")
         return prepublish.Ran(124, "....\n[timed out after 350s]", timed_out=True)
 
@@ -229,15 +227,16 @@ def test_the_parts_run_concurrently_up_to_the_cpu_count(tmp_path):
     assert elapsed < 6 * 0.3
     # Three slots on three CPUs: one pytest worker each.
     assert all(c[0][c[0].index("--workers") + 1] == "1" for c in parts)
-    assert "3 at a time on 3 CPU(s)" in report.notes[0]
+    assert "3 part(s) at a time on 3 CPU(s)" in report.notes[0]
 
 
 def test_fewer_parts_than_cpus_share_the_cpus_out(tmp_path):
     script = Script()
     _run(tmp_path, script, cpus=6, min_parts=2, related_script=False)
-    parts = script.parts()[1:]
-    assert len(parts) == 2
-    assert all(c[0][c[0].index("--workers") + 1] == "3" for c in parts)
+    parts = script.parts()
+    # The parity part and two parts of the guards: three slots of two CPUs.
+    assert len(parts) == 3
+    assert all(c[0][c[0].index("--workers") + 1] == "2" for c in parts)
 
 
 def test_the_pods_cpus_are_read_from_its_limit_and_the_platforms_worker_count(tmp_path):
@@ -431,7 +430,7 @@ def test_the_gate_runs_the_real_script_related_first_then_the_parts(lane):
     (guards,) = [c for c in record["rounds"][0] if c["name"] == prepublish.GUARDS_CHECK]
     assert guards["status"] == "passed" and "left_to_ci" not in guards
     calls = _calls(lane)
-    # Parity first (the related run: no related-tests.sh here), then the guards.
-    assert calls[0] == "parity"
-    assert sorted(g for c in calls[1:] for g in GUARDS if g in c) == sorted(GUARDS)
+    # The parity part, and the guards (no related-tests.sh here), side by side.
+    assert "parity" in calls and len(calls) == 2
+    assert sorted(g for c in calls if c != "parity" for g in GUARDS if g in c) == sorted(GUARDS)
     assert "related test file(s) first" in record["guards"][0]

@@ -220,9 +220,9 @@ def test_a_heavy_selection_starts_as_parts_never_as_one_command(lane):
     assert all(sum(g in call for g in GUARDS) == 1 for call in calls)
     assert guards["status"] == "passed"
     (note,) = record["guards"]
-    assert f"as {len(GUARDS)} part(s)" in note
+    assert f"then {len(GUARDS)} more ({len(GUARDS)} part(s))" in note
     advisory = (lane["tmp"] / "artifacts" / prepublish.ADVISORY_SECTION_NAME).read_text()
-    assert f"as {len(GUARDS)} part(s)" in advisory
+    assert f"then {len(GUARDS)} more ({len(GUARDS)} part(s))" in advisory
 
 
 def test_a_light_selection_runs_as_one_part(lane):
@@ -290,9 +290,9 @@ def test_a_part_never_starts_with_less_than_the_gate_needs(lane):
     run = prepublish.timeboxed_guards(["bash", prepublish.GUARDS_SCRIPT, "--base", lane["base"]],
                                       report=report, cpus=1, remaining=lambda: next(left))
     status, output = run(runner, lane["repo"], lane["env"], 600.0)
-    # The related run (parity alone here) and part 1 get the full limit; part
-    # 2 starts with 400 s left of the step, less the margin; part 3 never.
+    # The parity part and part 1 get the full limit; part 2 starts with 400 s
+    # left of the step, less the margin; parts 3 and 4 never.
     assert len(given) == 3, given
     assert given[2] == pytest.approx(400.0 - prepublish.CHECK_MARGIN_SECONDS)
-    assert status == prepublish.PASSED and report.left_to_ci == [GUARDS[-1]]
+    assert status == prepublish.PASSED and report.left_to_ci == list(GUARDS[2:])
     assert "left to CI" in output
