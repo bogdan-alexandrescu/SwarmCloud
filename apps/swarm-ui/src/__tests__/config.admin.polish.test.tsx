@@ -213,7 +213,7 @@ describe('Workspaces you admin\'s lead and links (S10a)', () => {
     })
     await app('/admin/workspaces')
     const lead = await screen.findByRole('region', { name: 'Your workspaces' })
-    expect(lead.querySelector('b')?.textContent).toBe('ops is behind')
+    expect(lead.querySelector('b')?.textContent).toBe('ops is furthest behind')
     const buttons = [...lead.querySelectorAll('a, button')]
     // MUTATION: draw the old status line with no button -> fails.
     expect(buttons.map((b) => b.textContent)).toEqual(['Open ops’s Config'])

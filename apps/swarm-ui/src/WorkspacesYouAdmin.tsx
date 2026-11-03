@@ -269,9 +269,9 @@ function WorkspaceList({ choices, platformAdmin, open, openPage }: { choices: re
                 </a>
                 <small>{w.group !== w.display_name ? w.group : w.tenant_id}</small>
                 {asPlatformAdmin.has(w.tenant_id) ? (
-                  <small className="wya-reading" data-via="platform_admin">admin as a platform admin</small>
+                  <small className="wya-role" data-via="platform_admin">admin as a platform admin</small>
                 ) : (
-                  <small className="wya-reading" data-role={role ?? 'unknown'}>{role === null ? 'your role: not known' : `your role: ${role}`}</small>
+                  <small className="wya-role" data-role={role ?? 'unknown'}>{role === null ? 'your role: not known' : `your role: ${role}`}</small>
                 )}
               </span>
               <span className="wya-waits" aria-label={`What waits in ${w.display_name}`}>

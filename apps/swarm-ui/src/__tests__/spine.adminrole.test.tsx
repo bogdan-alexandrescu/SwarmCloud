@@ -180,7 +180,8 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     window.history.replaceState(null, '', path)
     render(<App />)
   }
-  const rows = () => [...document.querySelectorAll<HTMLElement>('.wya-row')]
+  // The group workspaces' rows; the caller's own personal workspace leads the list as its own row (HOME-ADMIN).
+  const rows = () => [...document.querySelectorAll<HTMLElement>('.wya-row:not(.is-personal)')]
 
   it('lists eng, and its People and roles link selects eng and lands on Config › People and roles', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'member')])
@@ -204,24 +205,25 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/config/people'))
   })
 
-  it('lists for a platform admin the group workspaces they are in, marked as a platform admin\'s, not every one they reach', async () => {
+  it('lists for a platform admin every group workspace, the ones they reach too, each marked as a platform admin\'s', async () => {
     serve(ME(true), [
       PERSONAL,
       group('eng', 'admin', { role: { name: 'admin', source: 'platform_admin' } }),
       group('far', 'admin', { via: 'platform_admin', role: { name: 'admin', source: 'platform_admin' } }),
     ])
     await app('/admin/workspaces')
-    await waitFor(() => expect(rows()).toHaveLength(1))
-    expect(rows()[0]!.getAttribute('data-tenant')).toBe('eng')
+    // HOME-ADMIN (the place mock-up, picked 2026-11-03): every group workspace for a platform admin.
+    await waitFor(() => expect(rows()).toHaveLength(2))
+    expect(rows().map((r) => r.getAttribute('data-tenant')).sort()).toEqual(['eng', 'far'])
     // VQ-044: the API resolved this admin as a platform admin, whatever eng stores for them; never "stored role".
-    expect(rows()[0]!.querySelector('[data-via="platform_admin"]')?.textContent).toBe('admin as a platform admin')
+    for (const r of rows()) expect(r.querySelector('[data-via="platform_admin"]')?.textContent).toBe('admin as a platform admin')
     expect(document.querySelector('.wya-page .ur-sub')?.textContent).not.toContain('stored role')
   })
 
-  it('says plainly that you administer no group workspace', async () => {
-    serve(ME(true), [PERSONAL, group('eng', 'member')])
+  it('says plainly that a platform admin has no group workspace yet', async () => {
+    serve(ME(true), [PERSONAL])
     await app('/admin/workspaces')
-    await waitFor(() => expect(document.querySelector('.wya-page .c-emp h3')?.textContent).toContain('You administer no group workspace'))
+    await waitFor(() => expect(document.querySelector('.wya-page .c-emp h3')?.textContent).toContain('No group workspace yet'))
     expect(rows()).toHaveLength(0)
   })
 

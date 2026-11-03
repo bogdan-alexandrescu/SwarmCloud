@@ -282,7 +282,8 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     await waitFor(() => expect(strips()).toHaveLength(2))
     // MUTATION: read every workspace's setup without naming it -> both read eng and this fails.
     expect(seen).toEqual(expect.arrayContaining(['eng', 'ops']))
-    const [eng, ops] = strips()
+    // Furthest behind first (HOME-ADMIN): ops, 2 of 4, before eng, 3 of 4.
+    const [ops, eng] = strips()
     expect(eng!.getAttribute('aria-label')).toBe('eng setup')
     expect(eng!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 3 of 4 steps')
     expect(eng!.querySelector('.cfg-progress-next')?.textContent).toBe('Next: Set secrets (3 to set: linear and 2 more)')
@@ -290,7 +291,7 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     expect(ops!.querySelector('.cfg-progress-next a')?.getAttribute('href')).toBe('/config/repositories')
     // MUTATION: drop the comparison -> nothing says which is behind and this fails.
     const lead = screen.getByRole('region', { name: 'Your workspaces' })
-    expect(lead.querySelector('b')?.textContent).toBe('ops is behind')
+    expect(lead.querySelector('b')?.textContent).toBe('ops is furthest behind')
     expect(lead.querySelector('.ws-lead-s')?.textContent).toBe('Next: repositories chosen (not yet).')
     // Reading one workspace's setup does not switch the one in hand.
     const { chosenTenant } = await import('../fetch')
