@@ -313,7 +313,7 @@ def test_a_stats_ticket_lives_sixty_seconds_and_names_one_repository(world):
     too_long = get(svc, "/v1/stats", mint_stats(key, raw=raw, exp=now + 3600))
     assert json.loads(too_long.body) == {"error": "ticket_refused", "reason": "invalid"}
     for bad in ({"repo_id": "../x"}, {"tenant_id": "Eng/"}, {"manifest_digest": "sha256:x"},
-                {"previous_manifest_digest": "nope"}, {"extra": 1}):
+                {"previous_digest": "nope"}, {"nonce": "zz"}, {"extra": 1}):
         reply = get(svc, "/v1/stats", mint_stats(key, raw=raw, **bad))
         assert reply.status == 401, bad
     assert get(svc, "/v1/stats", mint_stats(key, raw=raw, previous=digest(b"x"))).status == 200

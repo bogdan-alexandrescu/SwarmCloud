@@ -858,6 +858,11 @@ class StageResult:
     #: Seconds the ancestry proof's history fetch took (lane GRAPH-ANCESTRY);
     #: None when no fetch was needed. In `stage.json` only when it ran.
     history_seconds: float | None = None
+    #: Seconds of each start-up phase `prepare` runs before the agent (lane
+    #: REVIEW-STARTUP-WAIT): `stage` (this decision, `seconds`), `additional`
+    #: (the additional repositories' graphs) and `jev_setup`. In `stage.json`
+    #: and the `graph_ready` mark, so a slow start is placed from the record.
+    phases: dict[str, float] = field(default_factory=dict)
 
     @property
     def delivery(self) -> str:
@@ -892,6 +897,7 @@ class StageResult:
             **({"fallback": self.fallback} if self.fallback else {}),
             **({"history_seconds": self.history_seconds}
                if self.history_seconds is not None else {}),
+            **({"phases": dict(self.phases)} if self.phases else {}),
             **self.facts,
         }
 
@@ -911,6 +917,10 @@ def ready_detail(result: StageResult) -> dict[str, Any]:
         "bytes": result.facts.get("bytes") if delivered else None,
         "blobs": result.facts.get("blobs") if delivered else None,
         "reason": result.reason,
+        # The ancestry fetch's seconds (None when none ran) and every timed
+        # start-up phase: the batch-two wait had no number to show it.
+        "history_seconds": result.history_seconds,
+        "phases": dict(result.phases),
     }}
 
 
@@ -1267,6 +1277,7 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                                url=service_url, probe=probe)
         switch = graph_switch(dispatch)
         shape = shape_of(dispatch)
+        began = time.monotonic()
         result = stage(db=db, store=store, tenant_id=tenant_id, repository_url=repository_url,
                        task_id=task_id, checkout=checkout, base_sha=base_sha,
                        context_dir=context_dir, call_options=call_options, service=service,
@@ -1279,6 +1290,7 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                            repository_url, private_dir if private_dir is not None
                            else context_dir,
                            token=forge_token if private_dir is not None else None))
+        result.phases["stage"] = _since(began)
         if not result.served:
             # A restored checkpoint's pin is not this attempt's decision either.
             remove_pin(context_dir)
@@ -1296,6 +1308,7 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                      delivery=result.delivery, seconds=result.seconds,
                      bytes=result.facts.get("bytes"), blobs=result.facts.get("blobs"),
                      fallback=result.fallback, route=result.route)
+        began = time.monotonic()
         prepare_additional(
             # The switch `off` runs no graph, so no additional repository's
             # either: `prepare_additional` still clears what a checkpoint left.
@@ -1305,23 +1318,30 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
             repos_dir=repos_dir if repos_dir is not None else work / REPOS_DIR_NAME,
             call_options=call_options, graph_ticket=graph_ticket, private_dir=private_dir,
             backend=backend, service_url=service_url, probe=probe, log=log)
-        if mark is not None and result.wanted:
-            try:
-                mark(ready_detail(result))
-            except Exception as exc:  # noqa: BLE001 -- a measurement is never worth the graph
-                if log is not None:
-                    log.warning("graph_ready not marked", error=type(exc).__name__)
+        result.phases["additional"] = _since(began)
         # Jev for J1-J5 (lane CTXQ-JW): decided by the workspace's own stored
         # opt-in, written as `<attempt>/judge/config.json` or not at all.
         # Here, not in the lifecycle, because this is its one setup call.
         from .judge import attempt as judge_attempt
 
         judgments: dict[str, Any] = {}
-        jev = judge_attempt.setup(work=work, db=db, tenant_id=tenant_id,
-                                  repository_url=repository_url, call_options=call_options,
-                                  log=log, secret_env_names=secret_env_names,
-                                  switch=switch_of(dispatch, judge_attempt.SWITCH),
-                                  resolve_key=jev_key, record=judgments)
+        began = time.monotonic()
+        try:
+            jev = judge_attempt.setup(work=work, db=db, tenant_id=tenant_id,
+                                      repository_url=repository_url, call_options=call_options,
+                                      log=log, secret_env_names=secret_env_names,
+                                      switch=switch_of(dispatch, judge_attempt.SWITCH),
+                                      resolve_key=jev_key, record=judgments)
+        finally:
+            result.phases["jev_setup"] = _since(began)
+            # After every timed phase, so the mark carries them all; marked
+            # even when Jev's setup raised.
+            if mark is not None and result.wanted:
+                try:
+                    mark(ready_detail(result))
+                except Exception as exc:  # noqa: BLE001 -- a measurement is never worth the graph
+                    if log is not None:
+                        log.warning("graph_ready not marked", error=type(exc).__name__)
         # What this attempt ran with, and why (2026-11-01): the experiment
         # proves each step's condition from this record.
         (context_dir / STAGE_RECORD_NAME).write_text(
@@ -1348,6 +1368,10 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         if log is not None:
             log.warning("graph context not staged", error=type(exc).__name__)
         return {}
+
+
+def _since(began: float) -> float:
+    return round(time.monotonic() - began, 3)
 
 
 def _clear(path: Path) -> None:

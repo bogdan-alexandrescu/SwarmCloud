@@ -188,8 +188,9 @@ default explained next to its value.
 
 Cost is turns × context ([measured](docs/working-in-this-repository.md#lanes)).
 
-* **Read by window.** Never read a whole file over 1,000 lines; `grep -n` or
-  `rg` first, then read 100-300 lines around the hit.
+* **Read by window.** Never read a whole file over 1,000 lines; when the
+  code graph is loaded, ask it first where a symbol lives and who calls it,
+  otherwise `grep -n` or `rg` first; then read 100-300 lines around the hit.
 * **Never wait or poll.** No `sleep` loops, `gh run watch`, `--watch`, or
   waiting for a PR to merge; the orchestrator waits for CI.
 * **Red first.** Push the tests alone to the PR branch, the fix to

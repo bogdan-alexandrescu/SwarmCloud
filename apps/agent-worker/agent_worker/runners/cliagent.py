@@ -1769,10 +1769,42 @@ def _stopped_start_spend(watcher: ceiling_mod.CeilingWatcher, result: Any) -> di
     for the worker to price (`ceiling.UNPRICED_KEY`, #2896), and its wall
     time as `duration_ms`, so the attempt's duration adds up every session."""
     spend = watcher.start_spend()
+    if not watcher.start_usage_read:
+        # A stopped session whose stream showed no usage is not a free one:
+        # its cost is unknown, and the attempt's is never reported complete
+        # (`ceiling.COST_INCOMPLETE_KEY`).
+        watcher.note_unread()
     seconds = getattr(result, "duration_seconds", None)
     if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
         spend["duration_ms"] = int(round(seconds * 1000))
     return spend
+
+
+def ceiling_state_file() -> Path | None:
+    """The attempt's context-ceiling state (`ceiling.STATE_NAME`), beside the
+    worker's channel or session file, or None when the worker named neither."""
+    return ceiling_mod.state_path(
+        os.environ.get(ACCOUNT_STREAM_ENV, "").strip()
+        or os.environ.get(SESSION_FILE_ENV, "").strip()
+        or None
+    )
+
+
+def _attempt_spend(
+    spend: dict[str, Any], watcher: ceiling_mod.CeilingWatcher | None
+) -> dict[str, Any]:
+    """The spend this runner reports for every session it ran.
+
+    When one of them was stopped with its usage unread, the cost the others
+    reported is not the attempt's: `total_cost_usd` is dropped, so the worker
+    prices the whole capture and marks the figure estimated, and the spend
+    says it is incomplete (`ceiling.COST_INCOMPLETE_KEY`). Never a partial
+    figure presented as the whole."""
+    if watcher is None or not watcher.unread_here or not spend:
+        return spend
+    out = {k: v for k, v in spend.items() if k != "total_cost_usd"}
+    out[ceiling_mod.COST_INCOMPLETE_KEY] = True
+    return out
 
 
 def run_cli_agent(
@@ -1895,16 +1927,15 @@ def run_cli_agent(
     ceiling_seed: dict[str, Any] | None = None
     resumed_over: str | None = None
     if spec.context_ceiling:
-        ceiling_state_path = ceiling_mod.state_path(
-            os.environ.get(ACCOUNT_STREAM_ENV, "").strip()
-            or os.environ.get(SESSION_FILE_ENV, "").strip()
-            or None
-        )
+        ceiling_state_path = ceiling_state_file()
         ceiling_seed = ceiling_mod.read_state(ceiling_state_path)
         ceiling_watcher = ceiling_mod.CeilingWatcher(
             ceiling_mod.resolve_limits(payload, os.environ.get(RUNNER_PROFILE_ENV)),
             fresh_sessions=ceiling_mod.spent_sessions(ceiling_seed),
         )
+        # The attempt's sessions so far, an earlier runner process's included,
+        # so the count and the cost's completeness cover every one of them.
+        ceiling_watcher.carry(ceiling_seed)
         if resume and ceiling_watcher.armed:
             resumed_over = ceiling_mod.over_state(ceiling_seed, resume, ceiling_watcher.limits)
             if resumed_over is not None:
@@ -2133,6 +2164,8 @@ def run_cli_agent(
         last_watcher[0] = run_watcher
         if ceiling_watcher is not None:
             ceiling_watcher.begin(fresh=fresh, seed=seed)
+            # The session count, for a runner restarted inside this attempt.
+            ceiling_mod.write_state(ceiling_state_path, ceiling_watcher.state())
         if run_watcher is None and budget is None and ceiling_watcher is None:
             run_result = run_child(
                 run_argv,
@@ -2385,6 +2418,7 @@ def run_cli_agent(
         # Stopped at the ceiling before the CLI printed its totals (#2524).
         assert ceiling_watcher is not None
         spend = _stopped_start_spend(ceiling_watcher, result)
+        ceiling_mod.write_state(ceiling_state_path, ceiling_watcher.state())
     combined = detection_text(raw_stdout, parsed)
     if not ceiling_stop_pending():
         judge(result, watcher, spend, combined)
@@ -2402,6 +2436,7 @@ def run_cli_agent(
     # current one: a resume's totals are its session's alone (#2524).
     ended_spend: dict[str, Any] = {}
     session_spend = spend
+    spend = _attempt_spend(spend, ceiling_watcher)
 
     def resume_pass(session: str | None, pass_prompt: str, remaining: float) -> Any:
         """Continue `session` once with `pass_prompt`; return that pass's own parsed output.
@@ -2451,12 +2486,14 @@ def run_cli_agent(
         if ceiling_stop_pending() and not pass_spend:
             assert ceiling_watcher is not None
             pass_spend = _stopped_start_spend(ceiling_watcher, result)
+            ceiling_mod.write_state(ceiling_state_path, ceiling_watcher.state())
         if fresh:
             ended_spend = _combined_spend(ended_spend, session_spend, fresh=True)
             session_spend = pass_spend
         else:
             session_spend = _combined_spend(session_spend, pass_spend)
-        spend = _combined_spend(ended_spend, session_spend, fresh=True)
+        spend = _attempt_spend(
+            _combined_spend(ended_spend, session_spend, fresh=True), ceiling_watcher)
         combined = detection_text(pass_raw, pass_parsed)
         if not ceiling_stop_pending():
             judge(result, watcher, spend, combined)
@@ -2897,6 +2934,10 @@ def run_cli_agent(
             "duration_seconds": round(duration_seconds, 3),
             "stdout_bytes": stdout_bytes,
             "stderr_bytes": stderr_bytes,
+            # How many sessions the attempt ran -- a context-ceiling restart
+            # starts another -- and whether every one's usage was read.
+            **({ceiling_mod.SESSIONS_METRIC: ceiling_watcher.sessions_record()}
+               if ceiling_watcher is not None else {}),
         },
     }
 

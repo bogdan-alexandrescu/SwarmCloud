@@ -106,6 +106,25 @@ USAGE_FIELDS = (
 #: and adds them to the reported cost, so the attempt's cost is every
 #: session's. The shape is `lifecycle._stream_usage`'s `usage_by_model`.
 UNPRICED_KEY = "unpriced_usage_by_model"
+#: What a spend says when one of its sessions' usage was not read
+#: (COST-ACROSS-SESSIONS, part of #2688): measured in experiment batches one
+#: and two, 17 steps restarted at the ceiling and their recorded cost left the
+#: stopped session out ($17.04 recorded against about $85 read off the
+#: streams). A session whose stream showed no usage is not a free one, so the
+#: runner never reports such a cost as complete: it drops the reported
+#: `total_cost_usd`, which the worker then prices from the whole capture and
+#: marks estimated (`lifecycle._collect_spend`), and says so under this key.
+COST_INCOMPLETE_KEY = "cost_incomplete"
+#: Where the runner reports the attempt's sessions, in its `metrics` (copied
+#: whole into `result_summary.runner.metrics`): `count`, `usage_unread` (the
+#: session numbers whose usage was not read) and `cost_complete`.
+SESSIONS_METRIC = "sessions"
+#: The state key the tool calls per family of this attempt's ENDED runner
+#: processes are carried under, so a runner restarted inside the attempt (an
+#: account swap, a credential reload, a resume over the ceiling) reports every
+#: session's calls, not only those of its own capture.
+EARLIER_TOOL_CALLS_KEY = "earlier_tool_calls"
+
 #: The width, in prompt tokens, of a `prompt_buckets` row: equal to
 #: `lifecycle._PROMPT_BUCKET_TOKENS` (a test holds the two equal).
 PROMPT_BUCKET_TOKENS = 1_000
@@ -209,7 +228,25 @@ class CeilingWatcher:
         self._start_usage = {}
         self._start_spend_messages: dict[str, tuple[str, dict[str, int]]] = {}
         self._start_turns = 0
+        #: The sessions this attempt has run, an earlier runner process's
+        #: included (`carry`), and the numbers of those whose usage was not
+        #: read; `_unread_here` is whether one of THIS process's was.
+        self.sessions = 0
+        self.unread_sessions: list[int] = []
+        self._unread_here = False
+        self.earlier_tool_calls: dict[str, int] | None = None
         self._reset()
+
+    def carry(self, state: Mapping[str, Any] | None) -> None:
+        """Carry on the attempt's session record from the state an earlier
+        runner process of the same attempt left (`STATE_NAME`)."""
+        state = state or {}
+        self.sessions = max(self.sessions, _count(state.get("sessions")))
+        unread = state.get("unread_sessions")
+        for number in unread if isinstance(unread, list) else []:
+            if _count(number) and number not in self.unread_sessions:
+                self.unread_sessions.append(number)
+        self.earlier_tool_calls = family_counts(state.get(EARLIER_TOOL_CALLS_KEY))
 
     def _reset(self) -> None:
         self.session_id: str | None = None
@@ -257,7 +294,12 @@ class CeilingWatcher:
         self._start_turns = 0
         if fresh:
             self._reset()
+            self.sessions += 1
         else:
+            # A resume carries on a session already counted -- by this
+            # process, or by the earlier one whose state was carried; one
+            # that left no state is still a session.
+            self.sessions = max(self.sessions, 1)
             self.stopped_for = None
             self.passed = None
             if seed:
@@ -401,6 +443,33 @@ class CeilingWatcher:
             spend[UNPRICED_KEY] = by_model
         return spend
 
+    @property
+    def start_usage_read(self) -> bool:
+        """Whether this start's stream showed the usage of any message."""
+        return bool(self._start_usage or self._start_spend_messages)
+
+    def note_unread(self) -> None:
+        """This start's usage was not read: the current session's cost is
+        unknown, so the attempt's is never reported complete."""
+        number = max(self.sessions, 1)
+        if number not in self.unread_sessions:
+            self.unread_sessions.append(number)
+        self._unread_here = True
+
+    @property
+    def unread_here(self) -> bool:
+        """Whether a session THIS process ran had its usage unread."""
+        return self._unread_here
+
+    def sessions_record(self) -> dict[str, Any]:
+        """`SESSIONS_METRIC`: how many sessions the attempt ran, and whether
+        every one's usage was read."""
+        return {
+            "count": max(self.sessions, 1),
+            "usage_unread": sorted(self.unread_sessions),
+            "cost_complete": not self.unread_sessions,
+        }
+
     def record_stop(self, *, at: str, why: str, **extra: Any) -> dict[str, Any]:
         """Note a ceiling stop the runner acts on: a fresh session follows."""
         self.fresh_sessions += 1
@@ -425,6 +494,10 @@ class CeilingWatcher:
             "tool_calls": self.tool_calls,
             "turns": self.turns,
             "fresh_sessions": self.fresh_sessions,
+            "sessions": self.sessions,
+            "unread_sessions": sorted(self.unread_sessions),
+            **({EARLIER_TOOL_CALLS_KEY: dict(self.earlier_tool_calls)}
+               if self.earlier_tool_calls is not None else {}),
         }
 
     def summary(self) -> dict[str, Any]:
@@ -435,6 +508,7 @@ class CeilingWatcher:
             "fresh_sessions": self.fresh_sessions,
             "stops": list(self.stops),
             "skipped": self.skipped,
+            **self.sessions_record(),
         }
 
 
@@ -484,6 +558,32 @@ def merged_usage_by_model(first: Any, second: Any) -> dict[str, dict[str, Any]]:
             mine["prompt_buckets"] = _merged_buckets(
                 mine["prompt_buckets"], counts.get("prompt_buckets"))
     return out
+
+
+def family_counts(value: Any) -> dict[str, int] | None:
+    """A `{family: calls}` map with only non-negative integer counts, or None."""
+    if not isinstance(value, Mapping):
+        return None
+    return {str(k): _count(v) for k, v in value.items()}
+
+
+def carry_tool_calls(
+    path: Path | None, families: Mapping[str, int] | None
+) -> dict[str, int] | None:
+    """This runner process's tool calls per family, plus those of the
+    attempt's runner processes before it (`EARLIER_TOOL_CALLS_KEY`); the sum
+    is written back for the next one. `families` None (the capture could not
+    be read) carries the earlier counts on unchanged and returns None."""
+    state = read_state(path) or {}
+    earlier = family_counts(state.get(EARLIER_TOOL_CALLS_KEY)) or {}
+    if families is None:
+        return None
+    total = dict(earlier)
+    for family, calls in families.items():
+        total[family] = total.get(family, 0) + _count(calls)
+    if path is not None:
+        write_state(path, {**state, EARLIER_TOOL_CALLS_KEY: total})
+    return total
 
 
 def over_state(state: Mapping[str, Any] | None, session: str, limits: CeilingLimits) -> str | None:

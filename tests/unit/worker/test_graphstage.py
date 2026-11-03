@@ -743,6 +743,8 @@ def test_the_default_record_is_the_one_staging_wrote_before_this_lane(db, store,
     after = _prepare(db, store, checkout, second, ticket=_FakeTicket())
     new = _record(checkout)
     old.pop("seconds"), new.pop("seconds")
+    # Timings, as `seconds` is (lane REVIEW-STARTUP-WAIT): the shape is the same.
+    assert set(old.pop("phases")) == set(new.pop("phases"))
     assert before == after and old == new
 
 
@@ -781,7 +783,13 @@ def test_service_pins_instead_of_copying_and_hands_the_runner_the_shims_variable
     assert stage["blobs"] == 0 and stage["bytes"] == len(manifest)
     assert marks == [{"graph": {"delivery": "service", "seconds": stage["seconds"],
                                 "bytes": len(manifest), "blobs": 0,
-                                "reason": stage["reason"]}}]
+                                "reason": stage["reason"], "history_seconds": None,
+                                "phases": stage["phases"]}}]
+    # Every start-up phase the worker runs before the agent, timed, in the
+    # mark and in stage.json (lane REVIEW-STARTUP-WAIT). MUTATION: a phase
+    # left untimed is the next half hour no record can place.
+    assert set(stage["phases"]) == {"stage", "additional", "jev_setup"}
+    assert all(isinstance(v, float) and v >= 0 for v in stage["phases"].values())
 
 
 def test_the_pin_is_what_the_shim_and_the_pack_open(db, store, clone):

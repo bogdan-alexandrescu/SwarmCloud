@@ -119,12 +119,19 @@ def _b64(raw: bytes) -> str:
 def mint_stats(key: str, *, raw: bytes, tenant_id: str = TENANT, repo_id: str = REPO_ID,
                previous: str | None = None, exp: int | None = None,
                domain: bytes = STATS_DOMAIN, **overrides: Any) -> str:
-    """A stats ticket as swarm-api mints it (§5.3): the claims, base64url JSON,
-    MAC'd under `swarm-graph-ticket-key` behind the stats domain."""
-    claims: dict[str, Any] = {
-        "tenant_id": tenant_id, "repo_id": repo_id, "manifest_digest": digest(raw),
-        "previous_manifest_digest": previous,
-        "exp": int(time.time()) + 60 if exp is None else exp}
+    """A stats ticket as swarm-api mints it (§5.3). With no override it IS
+    swarm-api's: `reference.mint_stats_ticket`, so the graph's stats tests
+    never verify a claim set the console's mint does not send. An override or
+    another domain forges one under the same key, starting from the
+    reference's claims, nonce included."""
+    exp = int(time.time()) + 60 if exp is None else exp
+    ticket = reference.mint_stats_ticket(key, tenant_id=tenant_id, repo_id=repo_id,
+                                         manifest_digest=digest(raw), previous_digest=previous,
+                                         exp=exp)
+    if not overrides and domain == STATS_DOMAIN:
+        return ticket
+    claims: dict[str, Any] = json.loads(base64.urlsafe_b64decode(
+        ticket.split(".")[0] + "=" * (-len(ticket.split(".")[0]) % 4)))
     claims.update(overrides)
     payload = _b64(json.dumps(claims, sort_keys=True, separators=(",", ":")).encode())
     mac = hmac.new(key.encode("utf-8"), domain + payload.encode("ascii"), hashlib.sha256)

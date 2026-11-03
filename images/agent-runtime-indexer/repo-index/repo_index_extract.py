@@ -253,6 +253,15 @@ MAX_SYMBOL_TEST_MAP = 200_000
 # level does not fit; every file-level edge is in the graph, on the source
 # file's row (`files[].tests`), so a reader pages it by the file's module.
 MAX_FILE_TEST_MAP = 200_000
+#: The cuts an incremental run can build on (2026-11-03). Both test maps are
+#: derived: every run walks them again from its symbols and its edges (the
+#: base's verbatim, the changed files' fresh), and reads neither from the base.
+#: A base cut only there is as carriable as an uncut one. SwarmCloud's map
+#: passes MAX_SYMBOL_TEST_MAP, and refusing it made each of a week's 222 runs
+#: a ~42-minute full rebuild. Any other cut is a list a run carries verbatim,
+#: and still refuses. `swarm_api.repoindex.DERIVED_TRUNCATIONS` is the same
+#: set, held equal by tests/unit/worker/test_repo_index_incremental.py.
+DERIVED_TRUNCATIONS = frozenset({"symbol_test_map", "file_test_map"})
 
 # How often the walk looks at the clock. Cheap enough to be frequent.
 _CLOCK_EVERY = 256
@@ -1581,9 +1590,10 @@ def incremental_changes(base: Base, head_blobs: dict[str, str] | None, budget: B
                 f"{EXTRACTOR_NAME}, this is version {EXTRACTOR_VERSION!r}")
     if extractor.get("budget") != _budget_record(budget):
         return "the base was extracted under another size budget"
-    if extractor.get("files_not_listed") or graph.get("truncated"):
+    cut = [str(name) for name in graph.get("truncated") or []]
+    if extractor.get("files_not_listed") or set(cut) - DERIVED_TRUNCATIONS:
         return ("the base graph was truncated "
-                f"({', '.join(graph.get('truncated') or ['files'])}), so it cannot be carried")
+                f"({', '.join(cut or ['files'])}), so it cannot be carried")
     rows = graph.get("files")
     if not isinstance(rows, list):
         return "the base graph lists no files"

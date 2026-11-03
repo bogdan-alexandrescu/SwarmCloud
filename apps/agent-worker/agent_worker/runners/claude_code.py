@@ -309,6 +309,7 @@ import shlex
 import shutil
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -347,7 +348,14 @@ from ..qa_identity import requested as qa_identity_requested
 from ..qa_target import NOTICE_NAME as QA_TARGET_NOTICE_NAME
 from .base import RunnerContext, RunnerFailure, run_runner
 from ..livegate.presets import PRESETS as DEVICE_PRESETS
-from .cliagent import CliAgentSpec, agent_working_directory, cli_stream_files, run_cli_agent
+from . import ceiling
+from .cliagent import (
+    CliAgentSpec,
+    agent_working_directory,
+    ceiling_state_file,
+    cli_stream_files,
+    run_cli_agent,
+)
 
 #: The CLI's documented switch for every background-task feature: the Bash and
 #: subagent `run_in_background` parameter, auto-backgrounding and Ctrl+B.
@@ -1728,6 +1736,18 @@ def tool_use(stream: Path, *, complete: bool = True) -> dict[str, Any]:
             "families": tool_calls_by_family(events) if events is not None else None}
 
 
+def attempt_tool_use(stream: Path, state: Path | None, *, complete: bool = True) -> dict[str, Any]:
+    """`tool_use` over every session of the attempt (COST-ACROSS-SESSIONS):
+    this runner process's capture holds the sessions it ran, and the counts of
+    the attempt's earlier runner processes come from its ceiling state
+    (`ceiling.carry_tool_calls`), which this adds to and writes back. Only
+    the last runner's metrics reach the summary, so without the carry a
+    runner restarted inside the attempt reported its own sessions alone."""
+    mine = tool_use(stream, complete=complete)
+    total = ceiling.carry_tool_calls(state, mine["families"])
+    return {**mine, "families": total} if total is not None else mine
+
+
 def produced_images(directory: Path) -> int:
     """How many image files (`IMAGE_SUFFIXES`) are under `directory`, the
     task's artifacts: screenshots, flow GIFs and anything a script rendered.
@@ -2062,6 +2082,9 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if moments:
         extra += [APPEND_SYSTEM_PROMPT_FLAG, moments]
     supervisor: lightpanda.Supervisor | None = None
+    agent_stream = Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout
+    cli_started: float | None = None
+    calls_carried = False
     try:
         if lightpanda_env:
             # Started here, in the runner the worker starts only after its
@@ -2072,14 +2095,17 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 lightpanda_env,
                 log=StructuredLogger(stream=sys.stderr, component="claude-code-runner").warning)
             supervisor.start()
+        cli_started = time.time()
         result = run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
         if isinstance(result, dict):
-            # AGENTS-USE-TOOLS: the session's calls per tool family, on every
-            # step, in the metrics the worker copies whole into the summary.
+            # AGENTS-USE-TOOLS: the calls per tool family of every session of
+            # the attempt, in the metrics the worker copies whole into the
+            # summary.
             metrics = result.get("metrics")
+            calls_carried = True
             result["metrics"] = {**(metrics if isinstance(metrics, dict) else {}),
-                                 TOOL_CALLS_METRIC: tool_use(
-                                     Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout,
+                                 TOOL_CALLS_METRIC: attempt_tool_use(
+                                     agent_stream, ceiling_state_file(),
                                      complete=not result.get("stdout_truncated"))}
         if live_endpoint and isinstance(result, dict):
             # QA-KIT: what the model was given of its screenshots, read off the
@@ -2096,9 +2122,24 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     finally:
         if supervisor is not None:
             supervisor.stop()
+        if not calls_carried and cli_started is not None:
+            _carry_unreported_calls(agent_stream, cli_started)
         # The worker's key file, whether or not jev was registered: the agent
         # is done, so nothing reads it again (`jev_launch.py`).
         _remove_jev_key_file()
+
+
+def _carry_unreported_calls(stream: Path, cli_started: float) -> None:
+    """A runner that ended without a result -- a swap, a park, a failure --
+    still carries its sessions' tool calls to the next runner of the attempt,
+    which reports them. Only a capture this runner wrote: one older than its
+    start is an earlier runner's, already carried. Never raises."""
+    try:
+        if stream.stat().st_mtime < cli_started:
+            return
+    except OSError:
+        return
+    attempt_tool_use(stream, ceiling_state_file())
 
 
 def _jev_backend_key() -> tuple[str, bool]:

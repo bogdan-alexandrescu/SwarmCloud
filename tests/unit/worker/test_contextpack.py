@@ -886,3 +886,165 @@ def test_the_default_context_directory_is_found_by_its_pin(work, monkeypatch):
     monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
     _as_service_pin(work)
     assert contextpack.context_dir(work) == work / contextpack.CONTEXT_DIR_NAME
+
+
+# --- the start-up wait (lane REVIEW-STARTUP-WAIT, part of #2688) -----------------
+#
+# MEASURED in experiment batch two: 10 of 12 review steps with code
+# intelligence on showed no agent output for 28 to 30 minutes at about 0.04 of
+# a CPU core, while the graph itself was pinned in 3.4 to 6.0 s. The wait was
+# the pack, read page by page from the service with a 10 s bound on each
+# answer and none on the whole. A slow service now ends the pack at
+# `build.PACK_DEADLINE_SECONDS`, and the agent starts with the pack's line.
+
+class _SlowService(_FakeService):
+    """The service answering every page, but `delay` seconds late."""
+
+    def __init__(self, snapshot: Path, delay: float) -> None:
+        super().__init__(snapshot)
+        self.delay = delay
+
+    def __call__(self, message: dict) -> dict:
+        import time
+
+        time.sleep(self.delay)
+        return super().__call__(message)
+
+
+def _review_prompt(files: list[str]) -> str:
+    return ("Review the pull request. step: review-1\n\nChanged files:\n"
+            + "\n".join(f"- {p}" for p in files))
+
+
+def test_a_slow_service_ends_the_pack_at_its_deadline_and_says_so(work, monkeypatch):
+    import time
+
+    from agent_worker.contextpack import build
+    from agent_worker.graphmcp.snapshot import SnapshotError
+
+    _where, served = _as_service_pin(work)
+    monkeypatch.setattr(build, "PACK_DEADLINE_SECONDS", 0.5, raising=False)
+    service = _SlowService(served, delay=0.4)
+    started = time.monotonic()
+    with pytest.raises(SnapshotError, match="within 0.5 s"):
+        _pack(work, {"prompt": _review_prompt(["src/pkg/store.py", "src/pkg/users.py"])},
+              service=service)
+    # MUTATION: no deadline on the whole pack reads every page, each a slow
+    # answer, before the agent may start: the batch-two half hour.
+    assert time.monotonic() - started < 0.5 + 0.4 + 0.4
+    assert len(service.calls) <= 2
+
+
+def test_a_review_with_a_slow_graph_service_reaches_its_agent_within_the_bound(
+        work, tmp_path, monkeypatch):
+    import time
+
+    from agent_worker import graphstage
+    from agent_worker.contextpack import build
+    from agent_worker.runners import claude_code, cliagent
+
+    _where, served = _as_service_pin(work)
+    ticket_file, ticket = _ticket_file(tmp_path)
+    slow = _SlowService(served, delay=0.75)
+    http = _HttpService(slow, ticket)
+    cli = tmp_path / "fake-cli"
+    cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, pathlib, sys, time\n"
+        "pathlib.Path(os.environ['HOME'], 'stdin.txt').write_text(sys.stdin.read())\n"
+        "pathlib.Path(os.environ['HOME'], 'first-turn').write_text(repr(time.time()))\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
+        " 'session_id': 's', 'result': 'done', 'total_cost_usd': 0.0, 'num_turns': 1}))\n")
+    cli.chmod(0o755)
+    monkeypatch.setenv("CLAUDE_CODE_BIN", str(cli))
+    for name in ("CLAUDE_CODE_ARGS", "CLAUDE_CODE_OAUTH_TOKEN", "MODEL", "SWARM_CHILDREN",
+                 graphstage.SNAPSHOT_ENV, graphstage.UNSTAGED_ENV,
+                 cliagent.ACCOUNT_STREAM_ENV, cliagent.RESUME_SESSION_ENV,
+                 cliagent.RESUME_REASON_ENV):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-" + "api03-" + os.urandom(16).hex())
+    monkeypatch.setenv(contextpack.CONTEXT_ENV, str(work / contextpack.CONTEXT_DIR_NAME))
+    monkeypatch.setenv(graphstage.PIN_ENV, str(work / contextpack.CONTEXT_DIR_NAME
+                                               / contextpack.PIN_FILE))
+    monkeypatch.setenv(graphstage.TICKET_FILE_ENV, str(ticket_file))
+    monkeypatch.setenv(graphstage.URL_ENV, http.url)
+    # The tools shape, whose prompt carries the graph line asserted below.
+    monkeypatch.setenv(graphstage.SHAPE_ENV, graphstage.SHAPE_TOOLS)
+    monkeypatch.setattr(build, "PACK_DEADLINE_SECONDS", 1.0, raising=False)
+    ctx = _ctx(work, tmp_path, {"prompt": _review_prompt(
+        ["src/pkg/store.py", "src/pkg/users.py", "src/pkg/routes.py"])})
+    started = time.time()
+    try:
+        claude_code.body(ctx)
+    finally:
+        http.close()
+
+    first_turn = float((work / "first-turn").read_text())
+    # MUTATION: a pack with no deadline holds the CLI until every page of
+    # every shard has arrived, however slowly the service answers.
+    assert first_turn - started < 1.0 + 0.75 + 1.5
+    stdin = (work / "stdin.txt").read_text()
+    # The pack's own message, and the graph line left as it was: the graph
+    # is connected; only the pack is missing (batch one's five steps said
+    # "the graph is unavailable").
+    assert "The context pack for this step could not be built" in stdin
+    assert "within 1.0 s" in stdin
+    assert claude_code.GRAPH_FIRST_NOTE in stdin
+    assert "work from the checkout as usual" not in stdin
+    record = json.loads((ctx.artifacts_dir / contextpack.ARTIFACT_NAME).read_text())
+    assert record["built"] is False and isinstance(record["seconds"], float)
+    assert ticket not in stdin and ticket not in json.dumps(record)
+
+
+def test_a_pack_failure_says_the_pack_failed_and_never_that_the_graph_is_missing(
+        work, tmp_path, monkeypatch):
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+    where, served = _as_service_pin(work)
+
+    from agent_worker.graphmcp import tools
+
+    class OverCap(_FakeService):
+        def answer(self, name, arguments):
+            return json.dumps({"rows": [tools.ONE_ROW_OVER], "next_cursor": None,
+                               "total": 1}), False
+
+    from agent_worker.contextpack import build
+
+    monkeypatch.setattr(build.HttpService, "from_env",
+                        classmethod(lambda cls, **kwargs: OverCap(served)))
+    ctx = _ctx(work, tmp_path, {"prompt": _step_prompt(["src/pkg/store.py"])})
+    line = contextpack.prepare(ctx, work / "repo")
+    assert line is not None and "\n" not in line
+    # MUTATION: the old line ("Repository context could not be built ...;
+    # work from the checkout as usual") read as the graph being gone.
+    assert line.startswith("The context pack for this step could not be built")
+    assert "4 KiB" in line
+    assert "swarm-graph tools are connected" in line
+    assert "work from the checkout as usual" not in line
+    record = json.loads((ctx.artifacts_dir / contextpack.ARTIFACT_NAME).read_text())
+    assert record["built"] is False and "4 KiB" in record["error"]
+
+
+def test_a_built_pack_records_its_seconds(work, tmp_path, monkeypatch):
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+    ctx = _ctx(work, tmp_path, {"prompt": _step_prompt(["src/pkg/store.py"])})
+    contextpack.prepare(ctx, work / "repo")
+    artifact = json.loads((ctx.artifacts_dir / contextpack.ARTIFACT_NAME).read_text())
+    # MUTATION: a pack that does not time itself leaves the start-up's one
+    # untimed phase untimed again.
+    assert isinstance(artifact["seconds"], float) and artifact["seconds"] >= 0
+    assert artifact["deadline_seconds"] > 0
+
+
+def test_a_staged_pack_past_its_deadline_stops_between_its_stages(work):
+    from agent_worker.contextpack import build
+    from agent_worker.graphmcp.snapshot import SnapshotError
+
+    # A clock that has already run out: the staged snapshot is local, but its
+    # git-backed stages are bounded only one call at a time.
+    ticks = iter([0.0] + [100.0] * 50)
+    deadline = build.Deadline(30.0, clock=lambda: next(ticks))
+    # MUTATION: no check between `_build`'s stages builds the whole pack late.
+    with pytest.raises(SnapshotError, match="within 30.0 s"):
+        _pack(work, {"prompt": _step_prompt(["src/pkg/store.py"])}, deadline=deadline)
+    assert not (work / contextpack.CONTEXT_DIR_NAME / contextpack.CONTEXT_FILE).exists()
