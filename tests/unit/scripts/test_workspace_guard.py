@@ -470,11 +470,11 @@ def test_init_refuses_a_second_workspace(tmp_path: Path, ready: dict[str, str]) 
 # --------------------------------------------------------------------------
 
 
-def _render(tenant: str) -> str:
+def _render(tenant: str, *extra: str) -> str:
     out = subprocess.run(
         [sys.executable, str(REPO / "kubernetes" / "render.py"), "tenant", "--tenant", tenant,
          "--bound-ksa", "swarm-worker",
-         "--scheduler-uid", "1" * 21, "--reconciler-uid", "2" * 21],
+         "--scheduler-uid", "1" * 21, "--reconciler-uid", "2" * 21, *extra],
         capture_output=True, text=True, check=True, timeout=120,
     )
     return out.stdout
@@ -489,6 +489,27 @@ def test_the_real_tenant_render_passes_c7_for_its_own_tenant(ready: dict[str, st
 def test_the_real_tenant_render_of_another_tenant_is_refused(ready: dict[str, str]) -> None:
     out = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=ready, stdin=_render("u-bob"))
     assert out.returncode == REFUSED and "rule C7" in out.stderr
+
+
+def test_the_real_tenant_render_with_its_hostname_policy_passes_c7(ready: dict[str, str]) -> None:
+    """kubernetes/apply.sh renders swarm-allow-typesafe-direct on a cluster that
+    serves its kind (docs/runbooks/typesafe-egress.md); the guard admits it
+    for its own tenant, and for no other."""
+    manifest = _render("u-alice", "--fqdn-network-policy")
+    assert "kind: FQDNNetworkPolicy" in manifest, "the render holds no hostname policy; nothing was judged"
+    out = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=ready, stdin=manifest)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "allow C7"
+    other = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=ready,
+                   stdin=_render("u-bob", "--fqdn-network-policy"))
+    assert other.returncode == REFUSED and "rule C7" in other.stderr
+
+
+def test_only_the_hostname_policy_s_one_name_is_admitted_for_its_kind() -> None:
+    """The guard admits the FQDNNetworkPolicy kind for swarm-allow-typesafe-direct
+    alone: a hostname policy under another name could open egress to any host."""
+    assert "FQDNNetworkPolicy" in RULE_DOC["kube_kinds"]
+    assert RULE_DOC["kube_kind_names"] == {"FQDNNetworkPolicy": ["swarm-allow-typesafe-direct"]}
 
 
 def _assignment_lines(path: Path, names: tuple[str, ...]) -> list[str]:
