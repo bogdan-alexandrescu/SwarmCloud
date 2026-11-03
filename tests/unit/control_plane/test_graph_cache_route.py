@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import secrets
 import socket
 import sys
@@ -469,6 +470,96 @@ def test_two_replicas_latencies_are_merged_into_the_facts(client, repo):
     # Each replica's panel carries its own figure.
     assert body["replicas"][1]["answer_latency"]["p95_ms"] == 120
     assert body["replicas"][1]["answer_latency"]["by_temperature"]["cold"]["count"] == 1
+
+
+#: swarm_graph/stats.py's LATENCY_BOUNDS_MS head, enough for the samples below.
+_BOUNDS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100, 120, 150]
+
+
+def _counted(*samples: int) -> dict:
+    """A group as a swarm-graph that serves its histogram counts: the counts
+    over `_BOUNDS` and the percentiles stats._percentiles reads off them."""
+    counts = [0] * (len(_BOUNDS) + 1)
+    for ms in samples:
+        counts[next((i for i, b in enumerate(_BOUNDS) if ms <= b), len(_BOUNDS))] += 1
+    slowest = max(samples, default=0)
+
+    def at(q: float) -> int | None:
+        if not samples:
+            return None
+        rank, seen = max(1, math.ceil(round(q * len(samples), 6))), 0
+        for index, n in enumerate(counts):
+            seen += n
+            if seen >= rank:
+                return min(_BOUNDS[index] if index < len(_BOUNDS) else slowest, slowest)
+        return None
+
+    return {"count": len(samples), "p50_ms": at(0.5), "p95_ms": at(0.95), "p99_ms": at(0.99),
+            "max_ms": slowest if samples else None, "counts": counts}
+
+
+def _counted_latency(*samples: int, outcome: str = "hit") -> dict:
+    overall = _counted(*samples)
+    return {**_latency(overall, by_outcome={outcome: overall},
+                       by_temperature={"warm": overall},
+                       cells={f"{outcome}/warm": overall}),
+            "bounds_ms": _BOUNDS}
+
+
+def test_two_replicas_histograms_merge_into_the_exact_percentile(client, repo):
+    # The owner's pick (3 November 2026): every replica served its counts,
+    # so the merged figure is read off the summed histogram, exact.
+    digest = repo["now"]["graph_digest"]
+    zero = _counted_latency(*([3] * 90))                  # p95 3 ms alone
+    one = _counted_latency(*([3] * 5 + [40] * 5))         # p95 40 ms alone
+    _use(client, Graph(reply={"replicas": [_served("swarm-graph-0", digest, zero),
+                                           _served("swarm-graph-1", digest, one)]}))
+    served = _get(client, repo["repo_id"]).json()["facts"]["answer_latency"]
+    # 100 answers, 95 of them at 3 ms: the merged p95 is 3 ms, where the
+    # slowest replica's bound would say 40 ms; the p99 is in the 40 ms bucket.
+    assert (served["count"], served["max_ms"]) == (100, 40)
+    assert (served["p50_ms"], served["p95_ms"], served["p99_ms"]) == (3, 3, 40)
+    assert served["exact"] is True
+    hit = served["by_outcome"]["hit"]
+    assert (hit["count"], hit["p95_ms"], hit["exact"]) == (100, 3, True)
+    assert served["by_temperature"]["warm"]["p95_ms"] == 3
+    assert served["cells"]["hit/warm"]["exact"] is True
+    # A group neither replica saw stays a count of 0 with no figure.
+    assert served["by_outcome"]["miss"] == {"count": 0, "p50_ms": None, "p95_ms": None,
+                                            "p99_ms": None, "max_ms": None, "exact": True}
+
+
+def test_a_replica_without_counts_keeps_the_merge_an_upper_bound(client, repo):
+    # Mixed versions during a roll-out: one replica serves percentiles only,
+    # so the merge falls back to the slowest replica's figure, not exact.
+    digest = repo["now"]["graph_digest"]
+    counted = _counted_latency(*([3] * 90))
+    older = _counted_latency(*([3] * 5 + [40] * 5))
+    for group in (older, *older["by_outcome"].values(), *older["by_temperature"].values(),
+                  *older["cells"].values()):
+        group.pop("counts", None)
+    _use(client, Graph(reply={"replicas": [_served("swarm-graph-0", digest, counted),
+                                           _served("swarm-graph-1", digest, older)]}))
+    served = _get(client, repo["repo_id"]).json()["facts"]["answer_latency"]
+    assert served["count"] == 100
+    assert (served["p50_ms"], served["p95_ms"], served["exact"]) == (3, 40, False)
+    assert served["by_outcome"]["hit"]["exact"] is False
+
+
+def test_counts_that_do_not_add_up_are_not_merged_as_exact(client, repo):
+    # Counts are only trusted when they are the served count over the served
+    # bounds: a histogram that disagrees with its own count is a bound.
+    digest = repo["now"]["graph_digest"]
+    zero = _counted_latency(*([3] * 90))
+    one = _counted_latency(*([3] * 5 + [40] * 5))
+    one["counts"] = one["counts"][:-1]
+    one["by_outcome"]["hit"] = {**one["by_outcome"]["hit"], "count": 11}
+    _use(client, Graph(reply={"replicas": [_served("swarm-graph-0", digest, zero),
+                                           _served("swarm-graph-1", digest, one)]}))
+    served = _get(client, repo["repo_id"]).json()["facts"]["answer_latency"]
+    assert (served["p95_ms"], served["exact"]) == (40, False)
+    assert served["by_outcome"]["hit"]["exact"] is False
+    assert served["by_temperature"]["warm"]["exact"] is True
 
 
 def test_the_document_swarm_graph_serves_is_read_at_its_top_level(client, repo):
