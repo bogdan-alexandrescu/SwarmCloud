@@ -372,7 +372,7 @@ It now runs each delegation turn the way a worker runs an agent:
   `voice-planner`, the session's person and the voice session id. The broker
   resolves the person's OWN workspace (never one the body names), picks the
   account with `choose()` over that workspace's pool, and records the hold on
-  the account like a task's, so `max_agents` and the windows see it. The hold
+  the account like an agent's, so `max_agents` and the windows see it. The hold
   is renewed every four minutes and released in a `finally` whatever the turn
   did. If swarm-voice dies the hold lapses on the broker's TTL, which a turn
   (four minutes at most) never outlives unrenewed.
