@@ -50,7 +50,6 @@ const WAIT = { timeout: 5000 } as const
 /** The longest page names in App.tsx's SECTIONS, and the two the decision named. */
 const LONG_LABELS = [
   'Submit from a GitHub issue',
-  'Workspaces you admin',
   'Workspace Settings',
   'Submit a workflow',
   'By runner profile',
