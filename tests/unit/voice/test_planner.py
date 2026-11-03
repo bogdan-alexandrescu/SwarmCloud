@@ -95,9 +95,9 @@ for i, (name, args) in enumerate(PLAN["calls"]):
          "content": [{{"type": "tool_use", "id": "t%d" % i, "name": "mcp__planner__" + name, "input": args}}]}}}})
     answer = rpc("tools/call", {{"name": name, "arguments": args}})
     results.append(answer)
+    json.dump(results, open({dump!r} + ".results", "w"))
     out({{"type": "user", "message": {{"content": [{{"type": "tool_result", "tool_use_id": "t%d" % i,
          "content": answer["result"]["content"]}}]}}}})
-json.dump(results, open({dump!r} + ".results", "w"))
 if PLAN.get("hang"):
     time.sleep(60)
 if PLAN.get("exit"):
@@ -205,7 +205,9 @@ class World:
 
     def planner(self) -> pl.Planner:
         broker = accountlease.VoiceBroker(self.http, BROKER, token_fetcher=self.broker_id_token)
-        claude = claudeturn.ClaudeCode(binary=self.claude_binary(), tmp_root=str(self.tmp))
+        # The private HOME under the default temporary directory: a unix socket path
+        # must stay under 108 bytes, which pytest's own tmp_path can pass.
+        claude = claudeturn.ClaudeCode(binary=self.claude_binary())
         return pl.Planner(self.http, api_base=API, id_tokens=self.id_tokens,
                           accounts=plannerlease.PlannerAccounts(broker), claude=claude)
 
