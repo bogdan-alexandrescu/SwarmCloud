@@ -14,7 +14,7 @@
 // sees it); offer it for any name (report.md grows one); drop `redaction=none`
 // from the link (the href is the redacted one); drop the note.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
 
 import STYLES from '../styles.css?raw'
@@ -34,6 +34,15 @@ const agentsStub = vi.hoisted(() => async () => {
   return { AgentsScreen: () => useContext(HostedAgent)?.view ?? null }
 })
 vi.mock('../Agents', agentsStub)
+
+// THE CONSOLE'S MODULES ARE BUILT ONCE, HERE, not inside the first test: each
+// test re-imports App after `resetModules`, and the first import also
+// transforms App's whole graph -- the agent hosted in the Agents page's
+// inspector included -- which under a loaded runner took the first test past
+// its 30s. Later imports re-run built modules.
+beforeAll(async () => {
+  await import('../App')
+}, 120_000)
 
 const REF = 'task_5be0c1a7d2e94f3a8c61'
 const SUBMITTER = 'alice@example.com'
