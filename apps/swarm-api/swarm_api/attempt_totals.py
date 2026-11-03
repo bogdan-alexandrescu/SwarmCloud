@@ -14,8 +14,10 @@ So `GET /v1/tasks/{id}` and `GET /v1/workflows/{id}` serve, on each task:
   attempts                 how many attempt documents the task has;
   attempts_with_cost       how many of them recorded a `cost_usd`;
   cost_usd_total           every recorded `cost_usd`, summed;
-  cost_incomplete          true when any attempt recorded no cost, so the
-                           total is a FLOOR ("at least $X");
+  cost_incomplete          true when any attempt recorded no cost, or the
+                           task's `result_summary.cost_incomplete` is true
+                           (a session's usage the worker could not read), so
+                           the total is a FLOOR ("at least $X");
   duration_s_total         every ended attempt's started_at -> completed_at;
   duration_incomplete      true when any attempt has no start or no end;
   first_started_at         the earliest attempt start;
@@ -190,9 +192,35 @@ def _chunk_totals(db: Any, tenant_id: str, chunk: list[str]) -> dict[str, dict[s
     return {t: {**attempt_totals(rows), "attempts_read": "ok"} for t, rows in by_task.items()}
 
 
+def summary_says_incomplete(summary: Any) -> bool:
+    """Whether the worker marked the task's cost a floor in `result_summary`.
+
+    WHY (owner's pick "Worker follow-up", 2026-11-03, part of #2688). The
+    worker writes `result_summary.cost_incomplete: true` when a session's
+    usage was not read, so an attempt can record a PARTIAL `cost_usd`; the
+    attempt count alone would serve that total as complete. Only a literal
+    true counts: a summary without the key keeps the attempts' answer.
+    """
+    return isinstance(summary, Mapping) and summary.get("cost_incomplete") is True
+
+
+def _floored(found: dict[str, Any], summary: Any) -> dict[str, Any]:
+    """`found` with `cost_incomplete` true when the summary says so. Only over
+    read totals: an unread task keeps every figure null."""
+    if found.get("attempts_read") != "ok" or not summary_says_incomplete(summary):
+        return found
+    return {**found, "cost_incomplete": True}
+
+
 def with_totals(row: dict[str, Any], totals: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """`row` (a `task_to_api` row) with its task's totals added beside it."""
-    row.update(totals.get(str(row.get("id")), unread_totals()))
+    """`row` (a `task_to_api` row) with its task's totals added beside it.
+
+    The row's own `result_summary` can mark the cost a floor
+    (`summary_says_incomplete`); the summary view drops that key from the
+    row, so `totals_for_page` folds it in from the task document instead.
+    """
+    found = totals.get(str(row.get("id")), unread_totals())
+    row.update(_floored(found, row.get("result_summary")))
     return row
 
 
@@ -303,4 +331,9 @@ def totals_for_page(db: Any, tenant_id: str, tasks: Sequence[Task]) -> dict[str,
             pending.append(task.id)
     if pending:
         out.update(totals_for(db, tenant_id, pending))
+    # The list's summary view serves no `result_summary` for `with_totals` to
+    # read, so the worker's floor mark is folded in here, off the document.
+    for task in tasks:
+        if task.id in out:
+            out[task.id] = _floored(out[task.id], task.result_summary)
     return out
