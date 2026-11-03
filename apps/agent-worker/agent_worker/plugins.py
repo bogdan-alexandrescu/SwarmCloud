@@ -132,8 +132,6 @@ BRIDGE_REASON = (
 
 #: The profiles whose image carries a Chromium gstack's browser drives.
 BROWSER_PROFILES = ("claude-code-browser",)
-#: The browser image's Playwright browsers (images/agent-runtime-browser).
-DEFAULT_BROWSERS_PATH = "/opt/playwright"
 
 #: Where gstack keeps its state: under `work/` (HOME), so it is checkpointed.
 HOME_DIR_NAME = ".swarm-gstack"
@@ -368,11 +366,14 @@ def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile
         _require_install(p, installs[p.name], image=image)
     chromium = None
     if profile in BROWSER_PROFILES:
-        browsers = environ.get("PLAYWRIGHT_BROWSERS_PATH") or DEFAULT_BROWSERS_PATH
+        # The browser image's own PLAYWRIGHT_BROWSERS_PATH (its Dockerfile
+        # states the path once), as `livegate.find_chromium` reads it.
+        browsers = environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
         chromium = find_chromium(browsers)
         if chromium is None:
             raise PluginUnavailable(
-                f"the image {image} has no Chromium under {browsers} for "
+                f"the image {image} has no Chromium under "
+                f"{browsers or 'PLAYWRIGHT_BROWSERS_PATH (not set)'} for "
                 f"{', '.join(p.name for p in plugins)}'s browser on the {profile} profile")
 
     home = Path(work) / HOME_DIR_NAME
