@@ -514,7 +514,12 @@ def test_two_replicas_histograms_merge_into_the_exact_percentile(client, repo):
     one = _counted_latency(*([3] * 5 + [40] * 5))         # p95 40 ms alone
     _use(client, Graph(reply={"replicas": [_served("swarm-graph-0", digest, zero),
                                            _served("swarm-graph-1", digest, one)]}))
-    served = _get(client, repo["repo_id"]).json()["facts"]["answer_latency"]
+    body = _get(client, repo["repo_id"]).json()
+    served = body["facts"]["answer_latency"]
+    # The histograms stay in the route: the console gets figures.
+    assert "counts" not in served and "counts" not in served["by_outcome"]["hit"]
+    panel = body["replicas"][1]["answer_latency"]
+    assert "counts" not in panel and "counts" not in panel["by_temperature"]["warm"]
     # 100 answers, 95 of them at 3 ms: the merged p95 is 3 ms, where the
     # slowest replica's bound would say 40 ms; the p99 is in the 40 ms bucket.
     assert (served["count"], served["max_ms"]) == (100, 40)
