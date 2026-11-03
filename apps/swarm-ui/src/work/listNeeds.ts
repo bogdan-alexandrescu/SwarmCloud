@@ -21,6 +21,12 @@
  *              that waits only for one is under Approvals, "not known".
  *   Hand-off   `handoffOf` the step's task, unless it parks on a question
  *              wait, which is HUMAN_REQUIRED too and is answered, not taken.
+ *
+ * AN AWAITING_INPUT PARK (an await-input step, docs/design/human-steps.md
+ * §3.4) is never a hand-off or a merge hold -- both read HUMAN_REQUIRED only.
+ * It waits for the person's input, given on its page (the step's input card,
+ * not `answerQuestion`), so it is one Question row `onItsPage`: counted,
+ * named and opened, and its Answer disabled here.
  */
 import { handoffOf, ownerQuestionsHold } from '../Handoff'
 import { stepNeedsOf, summaryTask } from '../stepviews'
@@ -71,6 +77,9 @@ export function listNeedItems(
       }
       for (const index of needs?.questions_unread ?? []) {
         out.push({ kind: 'question', taskId: task.id, index, title, question: null, onItsPage: true })
+      }
+      if (task.state === 'PARKED' && task.park_reason === 'AWAITING_INPUT') {
+        out.push({ kind: 'question', taskId: task.id, index: 0, title, question: null, onItsPage: true })
       }
       if (ownerQuestionsHold(task) !== null) out.push({ kind: 'merge', task, title, pr })
       else if (needs?.question_wait !== true && handoffOf(task) !== null) out.push({ kind: 'handoff', task, title })

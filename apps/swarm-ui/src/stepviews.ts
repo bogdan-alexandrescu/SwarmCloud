@@ -2069,6 +2069,9 @@ export function summaryTask(workflow: Workflow, step: WorkflowStep): Task | null
   // WHAT THE NEEDS-YOU BAR READS (PR #3147): a hand-off's wait and clock, a
   // merge's owner-questions hold as its park records it (`ownerQuestionsHold`)
   // and the pull request (`pullRequestOf`), each only when the block served it.
+  // The hold is a HUMAN_REQUIRED park's only: an AWAITING_INPUT step (an
+  // await-input step, docs/design/human-steps.md §3.4) never carries one,
+  // and its park reason is joined from `waiting` as before.
   const needs = typeof s.needs === 'object' && s.needs !== null ? s.needs : null
   const wait = needs?.human_wait ?? null
   const hold = needs?.owner_questions ?? null

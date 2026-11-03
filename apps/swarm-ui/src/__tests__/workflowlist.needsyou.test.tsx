@@ -97,6 +97,7 @@ describe('listNeedItems', () => {
     { id: 'review', summary: block('SUCCEEDED', { questions_unread: [1] }) },
     { id: 'merge', summary: block('PARKED', { owner_questions: { questions: [], unreadable: 1 } }), waiting: parkedHuman },
     { id: 'browse', summary: block('PARKED', { next_eligible_at: '2026-11-03T10:20:00Z' }), waiting: parkedHuman },
+    { id: 'input', summary: block('PARKED', {}), waiting: { reason: 'AWAITING_INPUT', summary: 'waits for input' } },
     { id: 'done', summary: block('SUCCEEDED', {}) },
   ])
   const items = listNeedItems([w], summaryTaskById([w]), () => 'Ship it')
@@ -108,6 +109,8 @@ describe('listNeedItems', () => {
       ['question', 'Ship it › review'],
       ['merge', 'Ship it › merge'],
       ['handoff', 'Ship it › browse'],
+      // An await-input step: its input is given on its page, never a hand-off.
+      ['question', 'Ship it › input'],
     ])
   })
 
