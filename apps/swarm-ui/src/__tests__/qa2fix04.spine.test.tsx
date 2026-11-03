@@ -101,7 +101,7 @@ describe('admin-shell-12: a 404 in no section', () => {
     expect(document.querySelector('.sk-panel .sk-pscroll .sk-pt')?.textContent).toBe('Go to')
     expect(document.querySelector('.sk-panel .sk-pscroll .sk-pnote')?.textContent).toBe('This page is not in any section.')
     const links = [...document.querySelectorAll<HTMLAnchorElement>('.sk-panel .sk-pscroll a.sk-pk')]
-    expect(links.map((a) => a.textContent)).toEqual(['Overview', 'Work', 'Automate', 'Capacity', 'Config'])
+    expect(links.map((a) => a.textContent)).toEqual(['Home', 'Overview', 'Work', 'Automate', 'Capacity', 'Config'])
     // The rail's own links, the same addresses.
     const rail = [...document.querySelectorAll<HTMLAnchorElement>('.sk-spine a[data-sec]')].filter((a) => a.dataset.sec !== 'profile')
     expect(links.map((a) => a.getAttribute('href'))).toEqual(rail.map((a) => a.getAttribute('href')))
