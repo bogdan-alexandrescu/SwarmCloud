@@ -199,8 +199,10 @@ def test_the_stats_route_carries_answer_latency_percentiles():
     assert latency["by_outcome"]["hit"]["count"] == 3
     assert latency["by_outcome"]["miss"]["count"] == 1
     assert latency["by_outcome"]["uncached"]["count"] == 1
+    width = len(stats_mod.LATENCY_BOUNDS_MS) + 1
     assert latency["by_outcome"]["carried"] == {"count": 0, "p50_ms": None, "p95_ms": None,
-                                                "p99_ms": None, "max_ms": None}
+                                                "p99_ms": None, "max_ms": None,
+                                                "counts": [0] * width}
     assert latency["by_temperature"]["cold"]["count"] == 1
     assert latency["by_temperature"]["warm"]["count"] == 4
     assert latency["cells"]["miss/cold"]["count"] == 1
@@ -229,3 +231,29 @@ def test_a_tenants_latency_is_read_only_under_its_own_ticket():
     counters.record(TENANT, REPO_ID, "miss", 40, now=now, cold=True)
     assert counters.view("ops", REPO_ID, now=now)["answer_latency"]["count"] == 0
     assert counters.view(TENANT, REPO_ID, now=now)["answer_latency"]["count"] == 1
+
+
+def test_every_latency_group_serves_its_histogram_counts_beside_its_percentiles():
+    # The owner's pick (3 November 2026): swarm-api merges replicas' counts
+    # exactly, so each group serves its histogram over `bounds_ms`.
+    counters = stats_mod.AnswerCounters()
+    now = 1_800_000_000.0
+    for ms, cache, cold in ((3, "hit", False), (3, "hit", False), (45, "miss", True),
+                            (70000, "miss", True)):
+        counters.record(TENANT, REPO_ID, cache, ms, now=now, cold=cold)
+    latency = counters.view(TENANT, REPO_ID, now=now)["answer_latency"]
+    bounds = latency["bounds_ms"]
+
+    def counts(*samples: int) -> list[int]:
+        out = [0] * (len(bounds) + 1)
+        for ms in samples:
+            out[next((i for i, b in enumerate(bounds) if ms <= b), len(bounds))] += 1
+        return out
+
+    assert latency["counts"] == counts(3, 3, 45, 70000)
+    assert latency["by_outcome"]["hit"]["counts"] == counts(3, 3)
+    assert latency["by_outcome"]["miss"]["counts"] == counts(45, 70000)
+    assert latency["by_outcome"]["partial"]["counts"] == counts()
+    assert latency["by_temperature"]["cold"]["counts"] == counts(45, 70000)
+    assert latency["cells"]["hit/warm"]["counts"] == counts(3, 3)
+    assert sum(latency["counts"]) == latency["count"]

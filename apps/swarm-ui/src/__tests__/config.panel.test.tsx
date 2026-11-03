@@ -248,7 +248,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     await waitFor(() => expect(groups().length).toBe(3))
     const [ws, platform, automate] = groups()
     // MUTATION: draw PANEL_PAGES.admin as one list -> no groups and this fails.
-    expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['People and roles', 'Workspaces you admin'] })
+    expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['People and roles', 'Workspaces'] })
     expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'] })
     // MUTATION: draw Schedules or Approvals as Admin pages -> their links leave Automate and this fails.
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules?scope=all', '/automate/approvals'] })
@@ -262,7 +262,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     await waitFor(() => expect(groups().length).toBe(2))
     const [ws, automate] = groups()
     // MUTATION: hand a workspace admin the Platform group -> fails.
-    expect(ws).toMatchObject({ name: 'Your workspaces', rows: ['People and roles', 'Workspaces you admin'] })
+    expect(ws).toMatchObject({ name: 'Your workspaces', rows: ['People and roles', 'Workspaces'] })
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules', '/automate/approvals'] })
     expect(document.querySelector('.sk-panel')?.textContent).not.toMatch(/Pool limits|Tenants|Platform counts/)
     expect(document.querySelector('.sk-pnote')?.textContent).toBe('Showing eng and ops, the workspaces you administer. The platform’s own pages are shown to platform admins only.')
@@ -282,7 +282,8 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     await waitFor(() => expect(strips()).toHaveLength(2))
     // MUTATION: read every workspace's setup without naming it -> both read eng and this fails.
     expect(seen).toEqual(expect.arrayContaining(['eng', 'ops']))
-    const [eng, ops] = strips()
+    // Furthest behind first (HOME-ADMIN): ops, 2 of 4, before eng, 3 of 4.
+    const [ops, eng] = strips()
     expect(eng!.getAttribute('aria-label')).toBe('eng setup')
     expect(eng!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 3 of 4 steps')
     expect(eng!.querySelector('.cfg-progress-next')?.textContent).toBe('Next: Set secrets (3 to set: linear and 2 more)')
@@ -290,7 +291,7 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     expect(ops!.querySelector('.cfg-progress-next a')?.getAttribute('href')).toBe('/config/repositories')
     // MUTATION: drop the comparison -> nothing says which is behind and this fails.
     const lead = screen.getByRole('region', { name: 'Your workspaces' })
-    expect(lead.querySelector('b')?.textContent).toBe('ops is behind')
+    expect(lead.querySelector('b')?.textContent).toBe('ops is furthest behind')
     expect(lead.querySelector('.ws-lead-s')?.textContent).toBe('Next: repositories chosen (not yet).')
     // Reading one workspace's setup does not switch the one in hand.
     const { chosenTenant } = await import('../fetch')

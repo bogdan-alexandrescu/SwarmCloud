@@ -109,6 +109,7 @@ from .schemas import StepBudget, TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
+from . import steprerun
 from .store import Store, derived_service_account
 from .task_accounts import takes_pool_account
 from .validation import (
@@ -2770,6 +2771,26 @@ class SubmissionService:
                 if isinstance(provider, str) and provider:
                     served.add(provider)
         return "read", served
+
+    def rerun_workflow_step(
+        self, ctx: AuthContext, tenant_id: str, workflow_id: str, step_id: str
+    ) -> steprerun.RerunResult:
+        """Re-run a failed step inside its workflow (`swarm_api.steprerun`):
+        new tasks for it and for what its failure cancelled, signed like a
+        submission's, swapped in with one transaction, then a wake so
+        admission sees them now rather than on the safety tick."""
+        result = steprerun.rerun(
+            store=self._store,
+            sign=self._sign,
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            step_id=step_id,
+            by=ctx.email,
+            tenant_member=ctx.tenant_member,
+            now=self._now(),
+        )
+        self._wake("workflow_step_rerun", tenant_id=tenant_id, workflow_id=workflow_id)
+        return result
 
     # -- plumbing ---------------------------------------------------------
 

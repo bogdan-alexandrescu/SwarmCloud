@@ -96,7 +96,7 @@ describe('admin2-02: the frame refuses a workspace admin’s own page as such', 
     await waitFor(() => expect(refusal()).not.toBeNull())
     // MUTATION: drop `audience` from the frame's AdminRoleRefusal and this reads "platform".
     expect(refusal()!.getAttribute('data-audience')).toBe('workspace')
-    expect(refusal()!.textContent).toContain('Workspaces you admin is for workspace admins')
+    expect(refusal()!.textContent).toContain('Workspaces is for workspace admins')
     expect(refusal()!.textContent).toContain('you administer none')
   })
 
