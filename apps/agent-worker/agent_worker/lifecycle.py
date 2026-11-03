@@ -10304,15 +10304,20 @@ class Worker:
             self.log.warning("jev_settle_failed", error=type(exc).__name__)
 
     def _settle_jev_at_exit(self) -> None:
-        """`judge.attempt.settle_at_exit` with this attempt's committed end."""
+        """`judge.attempt.settle_at_exit` with this attempt's committed end,
+        and the workspace's `private/`, where the quality hooks and the Jev
+        browser left one record per call: those are sent even when the
+        judgments are off."""
         from .judge import attempt as judge_attempt
 
-        if self._graph_env:
+        ws = self.ws
+        private_dir = getattr(ws, "private", None) if ws is not None else None
+        if self._graph_env or private_dir is not None:
             judge_attempt.settle_at_exit(
-                self._graph_env, db=self.db,
+                self._graph_env or {}, db=self.db,
                 committed_end=getattr(self.control, "committed_end", None),
                 tenant_id=self.cfg.tenant_id, task_id=self.cfg.task_id,
-                generation=self.cfg.generation, log=self.log)
+                generation=self.cfg.generation, log=self.log, private_dir=private_dir)
 
     def _record_switches(self, summary: dict[str, Any]) -> None:
         """The workflow switches' record (`graphstage.switches_summary`), only

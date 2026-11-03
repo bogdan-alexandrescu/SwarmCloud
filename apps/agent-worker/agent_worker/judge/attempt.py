@@ -395,17 +395,28 @@ def settle(env: Mapping[str, str], *, db: Any,
 
 def settle_at_exit(env: Mapping[str, str], *, db: Any, committed_end: Any,
                    tenant_id: str, task_id: str, generation: int,
-                   log: Any = None) -> tuple[int, int] | None:
+                   log: Any = None, private_dir: Path | None = None) -> tuple[int, int] | None:
     """On EVERY exit, before the workspace holding the ledger goes: on the
-    state routes, the calls not yet recorded and the settlement with how the
-    attempt ended (`account.outcome_of(committed_end)`: succeeded, failed,
-    parked, cancelled, retried, or crashed when no end was committed). The
-    direct path settles after the agent (`settle`, fenced): nothing here.
-    Never raises."""
+    state routes, the quality hooks' and the Jev browser's calls `private_dir`
+    holds (`account.record_tool_calls`, one record each, whether or not the
+    judgments are on), then the judgments' calls not yet recorded and the
+    settlement with how the attempt ended (`account.outcome_of(committed_end)`:
+    succeeded, failed, parked, cancelled, retried, or crashed when no end was
+    committed). The tools' records go first, so the reservation the
+    settlement releases has counted them. The direct path settles after the
+    agent (`settle`, fenced): nothing here. Never raises."""
     from agent_worker import indexrun
 
     if indexrun.state_routes(db) is None:
         return None
+    if private_dir is not None:
+        try:
+            sent = account.record_tool_calls(db, Path(private_dir))
+            if sent and log is not None:
+                log.info("jev_tool_calls_recorded", records=sent)
+        except Exception as exc:  # noqa: BLE001 -- accounting is never worth the attempt
+            if log is not None:
+                log.warning("jev_tool_calls_unrecorded", error=type(exc).__name__)
     return settle(env, db=db, run_transaction=lambda fn: None, tenant_id=tenant_id,
                   task_id=task_id, generation=generation, log=log,
                   outcome=account.outcome_of(committed_end))

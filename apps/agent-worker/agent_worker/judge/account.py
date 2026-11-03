@@ -28,13 +28,28 @@ goes through three routes beside the others (`swarm_api.jevaccount`):
 The records are the ledger's audit rows, sent by the WORKER after the agent
 (the agent's own process cannot sign a state call). Nothing here sends a
 payload, an answer, a key or a question: the fields named in `call_record`.
+
+THE QUALITY HOOKS AND THE JEV BROWSER (owner's pick on #3111). jev-belay,
+jev-enforce and the live browser call Jev themselves, through the image's
+launcher (`swarm-jev-gate.mjs`), which appends one record per call to
+`private/jev-gates.calls` or `private/jev-browser.calls`. On every exit,
+before the settlement, `record_tool_calls` sends each one through the same
+`state/jev-usage`, with source `quality_hook` or `browser`: the month's
+total and the reservation's remainder count them beside the judgments'. A
+file's sent offset is kept beside it (`.sent`), so a second exit sends only
+what is new, and a resend after a lost answer is a replay that charges
+nothing. These tools are not admitted against the ledger -- they are the
+workspace's hooks, not the judgments' budget -- so their records are spend
+reported, never refused; a record the file cannot hold is skipped.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Iterable, Mapping
 
 from agent_worker.judge import budget
 
@@ -44,7 +59,21 @@ SETTLE_OP = "jev-settle"
 #: Who made a call: the worker's and the agent's judgments (every ledger row
 #: today), a quality hook (jev-belay, jev-enforce), the live browser.
 SOURCE_JUDGMENT = "judgment"
-SOURCES = (SOURCE_JUDGMENT, "quality_hook", "browser")
+SOURCE_QUALITY_HOOK = "quality_hook"
+SOURCE_BROWSER = "browser"
+SOURCES = (SOURCE_JUDGMENT, SOURCE_QUALITY_HOOK, SOURCE_BROWSER)
+#: The launcher's per-call files, in `private/`: the hooks' (the gates'
+#: config `calls_file`, `qualitygates.CALLS_FILE_NAME`) and the browser's
+#: (`runners/jev_launch.BROWSER_CALLS_FILE_NAME`), with the source each may
+#: name. tests/unit/worker/test_jev_tool_calls.py holds the names equal.
+TOOL_CALL_FILES = (("jev-gates.calls", SOURCE_QUALITY_HOOK),
+                   ("jev-browser.calls", SOURCE_BROWSER))
+#: A file's sent offset, beside it.
+SENT_SUFFIX = ".sent"
+#: A calls file larger than this is not the launcher's: nothing is read
+#: past it. One line longer than MAX_LINE_BYTES is not a record.
+MAX_CALLS_BYTES = 4 * 1024 * 1024
+MAX_LINE_BYTES = 4096
 #: How an attempt ended, as `state/jev-settle` takes it.
 OUTCOMES = ("succeeded", "failed", "parked", "cancelled", "retried", "crashed")
 #: The end the attempt committed (`control.committed_end`, a `TaskState`
@@ -107,9 +136,13 @@ def _ident(value: Any, pattern: re.Pattern[str]) -> str | None:
     return value if isinstance(value, str) and pattern.fullmatch(value) else None
 
 
-def call_record(row: Mapping[str, Any]) -> dict[str, Any] | None:
+def call_record(row: Mapping[str, Any], *,
+                source: str = SOURCE_JUDGMENT) -> dict[str, Any] | None:
     """One audit row as `state/jev-usage` takes it, or None when it cannot
-    be one (no usable call id): its spend is then settled as unrecorded."""
+    be one (no usable call id): its spend is then settled as unrecorded.
+    `source` is who made the call (`SOURCES`), never the row's word."""
+    if source not in SOURCES:
+        raise ValueError(f"unknown jev call source {source!r}")
     call_id = _ident(row.get("call_id"), CALL_ID)
     if call_id is None:
         return None
@@ -120,7 +153,7 @@ def call_record(row: Mapping[str, Any]) -> dict[str, Any] | None:
     output = row.get("output_tokens")
     return {
         "call_id": call_id,
-        "source": SOURCE_JUDGMENT,
+        "source": source,
         "kind": _ident(row.get("kind"), IDENT) or budget.UNATTRIBUTED_KIND,
         "backend": _ident(row.get("backend"), IDENT),
         "requested_model": _ident(row.get("requested_model"), MODEL),
@@ -168,3 +201,69 @@ def settle(state: Any, ledger: budget.Ledger, *, outcome: str | None) -> dict[st
         ledger.restore_unsettled(calls, tokens, len(rows))
         raise
     return answer
+
+
+def _sent_offset(path: Path) -> int:
+    try:
+        value = int(Path(f"{path}{SENT_SUFFIX}").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0
+    return value if value >= 0 else 0
+
+
+def _new_lines(path: Path) -> tuple[list[bytes], int]:
+    """The complete lines past the sent offset, and the offset after them.
+    A symlink, a non-file or a missing file is nothing."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return [], 0
+        with path.open("rb") as handle:
+            data = handle.read(MAX_CALLS_BYTES)
+    except OSError:
+        return [], 0
+    start = _sent_offset(path)
+    if start > len(data):
+        start = 0  # the file was replaced: everything in it is new
+    end = data.rfind(b"\n") + 1
+    if end <= start:
+        return [], start
+    return data[start:end].splitlines(), end
+
+
+def _tool_rows(lines: Iterable[bytes], source: str) -> list[dict[str, Any]]:
+    out = []
+    for line in lines:
+        if len(line) > MAX_LINE_BYTES:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("source") != source:
+            continue
+        record = call_record(row, source=source)
+        if record is not None:
+            out.append(record)
+    return out
+
+
+def record_tool_calls(state: Any, private_dir: Path) -> int:
+    """Every quality-hook and Jev-browser call `private_dir`'s calls files
+    hold that was not yet sent, one `state/jev-usage` record each; then each
+    file's sent offset. Returns how many were sent. Raises what a call
+    raises: the offset of that file is not advanced, and sending again
+    charges nothing twice."""
+    sent = 0
+    for name, source in TOOL_CALL_FILES:
+        path = Path(private_dir) / name
+        lines, end = _new_lines(path)
+        if not lines:
+            continue
+        for record in _tool_rows(lines, source):
+            state.post(USAGE_OP, record, deadline_seconds=CALL_SECONDS)
+            sent += 1
+        marker = Path(f"{path}{SENT_SUFFIX}")
+        if marker.is_symlink():
+            marker.unlink()
+        marker.write_text(str(end), encoding="utf-8")
+    return sent

@@ -57,3 +57,23 @@ def test_cleanup_settles_nothing_without_jev(db, worker_factory, monkeypatch):
     worker._graph_env = {}
     worker._cleanup()
     assert called == []
+
+
+def test_cleanup_hands_the_tools_calls_over_even_with_the_judgments_off(
+        db, worker_factory, monkeypatch, tmp_path):
+    """The quality hooks and the Jev browser call Jev without the judgments'
+    config: their records in `private/` are sent on every exit regardless
+    (`account.record_tool_calls`, owner's pick on #3111)."""
+    seed_attempt(db)
+    worker, _config, _exporter = worker_factory(sign_spec=False)
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(judge_attempt, "settle_at_exit",
+                        lambda env, **kwargs: seen.update(kwargs, env=env))
+    monkeypatch.setattr(lifecycle.workspace_mod, "destroy", lambda ws: None)
+    monkeypatch.setattr(lifecycle.extrarepos_mod, "release", lambda ws: None)
+    monkeypatch.setattr(lifecycle.secretrelease_mod, "remove", lambda private: None)
+    worker._graph_env = {}
+    worker.ws = object.__new__(type("Ws", (), {"private": tmp_path}))
+    worker._cleanup()
+    assert seen["env"] == {}
+    assert seen["private_dir"] == tmp_path
