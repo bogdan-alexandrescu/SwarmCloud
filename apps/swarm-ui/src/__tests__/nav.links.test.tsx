@@ -35,12 +35,17 @@ import { PANEL_PAGES, SkyShell, hrefOf } from '../Spine'
  * it is replaced by a recorder, and every other screen renders for real.
  */
 const agentsProps = vi.hoisted(() => [] as Record<string, unknown>[])
-vi.mock('../Agents', () => ({
-  AgentsScreen: (props: Record<string, unknown>) => {
-    agentsProps.push(props)
-    return null
-  },
-}))
+// It still draws the open agent App hosts in the page's inspector (#3146).
+vi.mock('../Agents', async () => {
+  const { useContext } = await import('react')
+  const { HostedAgent } = await import('../work/hostedAgent')
+  return {
+    AgentsScreen: (props: Record<string, unknown>) => {
+      agentsProps.push(props)
+      return useContext(HostedAgent)?.view ?? null
+    },
+  }
+})
 
 const SRC = join(__dirname, '..')
 

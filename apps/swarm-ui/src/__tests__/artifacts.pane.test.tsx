@@ -36,7 +36,15 @@ import type { Task } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 import { task as baseTask } from './runfixture'
 
-vi.mock('../Agents', () => ({ AgentsScreen: () => null }))
+// The page is stubbed for speed; it still draws the open agent App hosts in its
+// inspector (#3146). Mocked again after each `resetModules`, so the stub reads
+// the same context module as the App imported after it.
+const agentsStub = vi.hoisted(() => async () => {
+  const { useContext } = await import('react')
+  const { HostedAgent } = await import('../work/hostedAgent')
+  return { AgentsScreen: () => useContext(HostedAgent)?.view ?? null }
+})
+vi.mock('../Agents', agentsStub)
 
 const REF = 'task_73b5f4d9ca3641fbb914'
 const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
@@ -273,6 +281,7 @@ interface Api {
 async function openPane(routes: Record<string, Route>, hash = `#work/task/${REF}/artifacts`): Promise<Api> {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
+  vi.doMock('../Agents', agentsStub)
   const calls: string[] = []
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const raw = String(input)
