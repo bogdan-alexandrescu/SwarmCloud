@@ -376,6 +376,23 @@ describe('the served answer latency', () => {
     expect(tile('p95 served / uncached').textContent).toMatch(/152 ms/)
   })
 
+  it('draws a figure merged exactly from every replica\'s counts without "≤", and says why a bound is one', async () => {
+    // The owner's pick (3 November 2026): every replica served its histogram,
+    // so the route merged the counts and the figure is exact over both.
+    const exact = served({ ...g(1284, 8, 25, 410), by_outcome: { hit: g(1168, 6, 25, 90), miss: g(104, 70, 300, 410, false) } })
+    render(<RepoGraphCache repoId={REPO} indexSha="4c1e9a0000" load={async () => ok(withServed(exact))} />)
+    await open()
+    const t = tile('Answer latency, served')
+    expect(t.querySelector('b')?.textContent).toBe('8 ms / 25 ms')
+    const table = screen.getByRole('table', { name: /Served answer latency/ })
+    const row = (k: string) => table.querySelector<HTMLElement>(`[data-latency-row="${k}"]`)!
+    expect(row('hit').textContent).not.toContain('≤')
+    // A bound remains only where a replica served no counts (mixed versions).
+    const bound = row('miss').querySelector<HTMLElement>('span[title]')!
+    expect(bound.textContent).toBe('≤ 70 ms')
+    expect(bound.getAttribute('title')).toMatch(/served no histogram/)
+  })
+
   it('names a replica whose figure was not read, and draws its panel with no latency', async () => {
     const replicas = [
       { replica: 'swarm-graph-0', state: 'read', started_at: null, uptime_seconds: 60, result_bytes: MiB, result_bound: 4 * MiB, shard_bytes: MiB, shard_bound: 4 * MiB, answers_hot: 1, shards_hot: 1, last_warm: null, answer_latency: { ...g(5, 4, 9, 12), by_temperature: { cold: g(1, 12, 12, 12) } } },

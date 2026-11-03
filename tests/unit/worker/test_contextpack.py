@@ -50,6 +50,7 @@ from agent_worker import contextpack
 from agent_worker.contextpack import checklists, rank, tasktype
 from agent_worker.contextpack.build import build_pack
 from agent_worker.contextpack.retrieve import Candidate
+from agent_worker.contextpack.render import render_markdown
 
 LOAD_USER = "src/pkg/users.py#load_user"
 GET_USER = "src/pkg/users.py#get_user"
@@ -451,7 +452,23 @@ def test_the_pack_says_jev_is_off_and_why_and_spends_nothing(work):
     assert pack["jev"] == {"state": "off", "reason": "workspace not opted in"}
     assert pack["jev_calls"] == 0 and pack["jev_input_tokens"] == 0
     text = (work / contextpack.CONTEXT_DIR_NAME / contextpack.CONTEXT_FILE).read_text()
-    assert "Jev: off (workspace not opted in)" in text
+    # The header prints no Jev line for a step Jev is off for (owner's pick,
+    # 2026-11-03): pack.json still records the state and why.
+    assert "Jev:" not in text
+    assert "workspace not opted in" not in text
+
+
+def test_the_header_names_jev_only_when_it_is_on():
+    fresh = {"index_sha": "a" * 40, "base_sha": "b" * 40, "behind_by": 0,
+             "changed_since_index": 0}
+    header = {"task_type": "build", "freshness": fresh,
+              "seeds": {"files": [], "tests": [], "symbols": []}}
+    off, _, _ = render_markdown({**header, "jev": {"state": "off", "reason": "not set up"}},
+                                [], [], 0)
+    on, _, _ = render_markdown({**header, "jev": {"state": "on", "reason": "J1 reranked"}},
+                               [], [], 0)
+    assert "Jev:" not in off
+    assert "Jev: on (J1 reranked)" in on.splitlines()
 
 
 def test_the_summary_line_names_the_arm_rows_and_tokens(work):
