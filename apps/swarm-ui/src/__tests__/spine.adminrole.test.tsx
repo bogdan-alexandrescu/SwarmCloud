@@ -211,6 +211,32 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     await waitFor(() => expect(chosenTenant(), 'the page did not select eng').toBe('eng'))
   })
 
+  it('moves the page to the workspace the switcher picks, on the same tab', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'admin')])
+    await app('/admin/workspaces/eng?tab=settings')
+    const fetchMod = await import('../fetch')
+    await waitFor(() => expect(fetchMod.chosenTenant()).toBe('eng'))
+    // What the switcher does (Spine `choose`): it notes the switch, then selects.
+    act(() => {
+      fetchMod.noteTenantSwitch({ from: { id: 'eng', name: 'eng' }, to: { id: 'ops', name: 'ops' }, kept: false })
+      fetchMod.chooseTenant('ops')
+    })
+    // MUTATION: drop the follow-the-switch branch from WorkspacePageRoute -> it selects eng again and this fails.
+    await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces/ops'))
+    expect(window.location.search).toBe('?tab=settings')
+    expect(fetchMod.chosenTenant()).toBe('ops')
+  })
+
+  it('opens an old Config › People and roles address on the selected workspace\'s People tab, named in the bar', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'admin')])
+    const fetchMod = await import('../fetch')
+    fetchMod.chooseTenant('eng')
+    await app('/config/people')
+    // MUTATION: leave the address unnamed (drop the tenant === null branch) -> the bar stays /admin/workspaces?tab=people and this fails.
+    await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces/eng'))
+    expect(window.location.search).toBe('')
+  })
+
   it('lists for a platform admin every group workspace, the ones they reach too, each marked as a platform admin\'s', async () => {
     serve(ME(true), [
       PERSONAL,
