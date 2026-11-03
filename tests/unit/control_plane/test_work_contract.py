@@ -465,27 +465,37 @@ def test_an_agent_never_rewrites_a_requirement():
             wc.amend(old, _proposal(old, mutate), author_is_agent=True)
 
 
-@pytest.mark.parametrize("mutate, widens", [
-    (lambda d: d["scope"].update(write=["src/**"]), "write_scope"),
-    (lambda d: d["scope"].update(write=[]), "write_scope"),
-    (lambda d: d["scope"].update(read=["**"]), "read_scope"),
-    (lambda d: d["protected"].update(paths=[]), "protected"),
+@pytest.mark.parametrize("mutate, widens, scope", [
+    (lambda d: d["scope"].update(write=["src/**"]), "write_scope", None),
+    (lambda d: d["scope"].update(write=[]), "write_scope", None),
+    (lambda d: d["scope"].update(read=["**"]), "read_scope", None),
+    (lambda d: d["protected"].update(paths=[]), "protected", None),
     (lambda d: d["capabilities"].update(runtime=["screenshots", "human_takeover"]),
-     "runtime_capabilities"),
-    (lambda d: d["capabilities"]["plugins"]["gstack"]["skills"].append("ship"), "plugins"),
+     "runtime_capabilities", None),
+    (lambda d: d["capabilities"]["plugins"]["gstack"]["skills"].append("ship"), "plugins", None),
     (lambda d: d["capabilities"]["plugins"]["gstack"].update(mode="planner", skills=["spec"]),
-     "plugins"),
-    (lambda d: d["limits"].update(max_turns=81), "limits"),
-    (lambda d: d["limits"].update(budget={"usd": 6}), "limits"),
-    (lambda d: d["limits"].update(budget=None), "limits"),
-    (lambda d: d["limits"].update(model_class="opus"), "limits"),
-    (lambda d: d["limits"].update(runner_profile="claude-code-large"), "limits"),
+     "plugins", None),
+    (lambda d: d["limits"].update(max_turns=81), "limits", None),
+    (lambda d: d["limits"].update(budget={"usd": 6}), "limits", None),
+    (lambda d: d["limits"].update(budget=None), "limits", None),
+    (lambda d: d["limits"].update(model_class="opus"), "limits", None),
+    (lambda d: d["limits"].update(runner_profile="claude-code-large"), "limits", None),
     (lambda d: d["repositories"][0].update(repository_url="https://github.com/acme/other"),
-     "repositories"),
-    (lambda d: d.update(strictness="advisory"), "strictness"),
+     "repositories", None),
+    (lambda d: d.update(strictness="advisory"), "strictness", None),
+    # A glob in the old pattern must not match the new pattern's glob as text.
+    (lambda d: d["scope"].update(write=["src/*"]), "write_scope", {"write": ["src/?"]}),
+    (lambda d: d["scope"].update(write=["docs/a*"]), "write_scope", {"write": ["docs/a?"]}),
+    (lambda d: d["scope"].update(write=["src/[!x]*"]), "write_scope",
+     {"write": ["src/[!z]*"]}),
+    (lambda d: d["scope"].update(read=["src/*"]), "read_scope",
+     {"read": ["src/?"], "write": []}),
+    (lambda d: d["scope"].update(write=["src*"]), "write_scope", {"write": ["src/**"]}),
 ])
-def test_an_agent_cannot_widen_its_own_scope(mutate, widens):
+def test_an_agent_cannot_widen_its_own_scope(mutate, widens, scope):
     base = _doc(strictness="strict") if widens == "strictness" else _doc()
+    if scope is not None:
+        base["scope"] = scope
     old = wc.decode(base)
     with pytest.raises(wc.ScopeWideningRefused) as raised:
         wc.amend(old, _proposal(old, mutate), author_is_agent=True)
