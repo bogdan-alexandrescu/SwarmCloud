@@ -159,12 +159,10 @@ _GIT_TIMEOUT_SECONDS = 60.0
 HANDOFF_NOTE = (
     "This session may be stopped at a turn boundary once its context passes "
     f"{CONTEXT_CEILING_TOKENS:,} tokens or it has made {TOOL_CALL_CEILING} tool "
-    "calls, and the task continued by a fresh session that starts from a "
-    "handoff. As you work, keep a short note for that session in "
-    f"$SWARM_ARTIFACTS_DIR/{AGENT_HANDOFF_NAME}: what is done, what is left, "
-    "and anything you learnt that it would otherwise have to find again. Keep "
-    "findings and working notes in files under $SWARM_ARTIFACTS_DIR as you go, "
-    "never only in your context: the fresh session does not see your context."
+    "calls, and the task continued by a fresh session that sees only a handoff. "
+    f"As you work, keep a short note for it in $SWARM_ARTIFACTS_DIR/{AGENT_HANDOFF_NAME} "
+    "(what is done, what is left, what you learnt) and your findings in files "
+    "under $SWARM_ARTIFACTS_DIR, never only in your context."
 )
 
 

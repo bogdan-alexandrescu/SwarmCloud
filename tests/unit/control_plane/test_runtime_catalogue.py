@@ -83,6 +83,13 @@ def test_each_runtime_matches_the_frozen_catalogue_field_for_field(client):
                 "units": rc.units,
                 "size_version": 0,
             },
+            # #3118: what the agent's container gets, the display's share and
+            # the pod's total. This fixture sets no relay, so no pod carries a
+            # display and the agent gets the whole class
+            # (tests/unit/mcp/test_profiles_browser_memory.py has the split).
+            "agent_memory_gib": rc.memory_gib,
+            "display_memory_gib": None,
+            "pod_memory_gib": rc.memory_gib,
             # Served for EVERY profile, including disabled ones. A caller
             # reading a task that names a disabled profile still needs its
             # shape to render that task.

@@ -48,17 +48,18 @@ in memory only (accountlease.PoolCredential) and never logged.
 
 Configuration, read once at start (never at import):
 
-* `PROJECT_ID` -- this deployment's project (the planner's key, planner.py).
+* `PROJECT_ID` -- this deployment's project.
 * `QUOTA_BROKER_URL` (and `QUOTA_BROKER_AUDIENCE`) -- the quota broker, whose
-  Voice it pool leases each session's account. Required: without it no
-  session could start.
+  Voice it pool leases each session's account and whose workspace pool leases
+  each planner turn's Claude account (plannerlease.py). Required: without it
+  no session could start.
 * `SWARM_VOICE_AUDIENCE` -- the audience swarm-api mints its ID token for.
 * `SWARM_VOICE_CALLERS` -- comma-separated service account emails admitted.
 * `SWARM_API_URL` (and optionally `SWARM_API_AUDIENCE`) -- swarm-api's
   in-cluster address, where the planner (planner.build_planner) reads and
   draws cards as the session's person through the session grant. Unset, no
-  session offers delegation. Until the person's Anthropic secret is readable
-  by swarm-voice, the planner refuses each turn with its spoken reason.
+  session offers delegation. Each turn runs Claude Code (`CLAUDE_CODE_BIN`,
+  `claude` on PATH) on a pool lease; a full pool is a spoken refusal.
 """
 
 from __future__ import annotations
@@ -165,7 +166,8 @@ def build_sessions(http: Any) -> Sessions:
     leases = build_broker(http)
     # The planner (§3.3) reaches swarm-api at SWARM_API_URL through the session
     # grant; without that address it is None and no session offers delegation.
-    return Sessions(LiveApi(http), leases=leases, planner=build_planner(http))
+    # Each planner turn leases its Claude account through the same broker client.
+    return Sessions(LiveApi(http), leases=leases, planner=build_planner(http, broker=leases))
 
 
 def build_caller_check() -> CallerCheck:

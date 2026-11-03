@@ -41,7 +41,9 @@ from swarm_common.profiles import (
     RESOURCE_CLASSES,
     RUNNER_PROFILES,
     InputRefused,
+    ResourceSize,
     RunnerInput,
+    RunnerProfile,
     effective_size,
     resolve_backend,
     step_model_class,
@@ -267,8 +269,10 @@ def public_profile(name: str) -> dict[str, Any]:
         "cpu": size.cpu_request,
         "cpu_request": size.cpu_request,
         "cpu_limit": size.cpu_limit,
-        # Request AND limit: memory never bursts (invariant 7).
+        # Request AND limit: memory never bursts (invariant 7). The POD's:
+        # size a step by `agent_memory_gib` (`_memory_split`, #3118).
         "memory_gib": size.memory_gib,
+        **_memory_split(profile, size),
         # A slice OF memory, not extra capacity: the workspace is a tmpfs. Named
         # `workspace_gib` rather than `disk_gib` because "disk" is what made
         # people read it as additional storage in the first place.
@@ -310,6 +314,26 @@ def public_profile(name: str) -> dict[str, Any]:
 # answer to "which model does `haiku` run", wrong the day the pin moves. So
 # the bundled copy serves the classes and the default, which ARE frozen, and
 # says which family each class is and where the ID is read.
+
+
+def _memory_split(profile: RunnerProfile, size: ResourceSize) -> dict[str, Any]:
+    """The copy's `agent_memory_gib`, `display_memory_gib` and `pod_memory_gib` (#3118).
+
+    A live-browser pod is the worker's container and the display's, and the
+    class's `memory_gib` is their sum: on 3 November 2026 this tool read 10
+    GiB for `claude-code-browser` while its agent was OOM-killed at 5.
+    Whether a deployment runs the display is its own setting, which this
+    copy cannot read, so a live profile serves the split's worker share: the
+    smaller figure, which a step sized by is never killed for. The platform's
+    answer (`_served_entry`) says which one it runs.
+    """
+    split = size.live_split if profile.live_browser else None
+    if split is None:
+        return {"agent_memory_gib": size.memory_gib, "display_memory_gib": None,
+                "pod_memory_gib": size.memory_gib}
+    worker, display = split
+    return {"agent_memory_gib": worker.memory_gib, "display_memory_gib": display.memory_gib,
+            "pod_memory_gib": size.memory_gib}
 
 
 def _models_note(classes: tuple[str, ...] | list[str], why: str) -> str:
@@ -490,6 +514,12 @@ def _served_entry(name: str, served: dict[str, Any]) -> dict[str, Any] | None:
         "cpu_request": cpu_request,
         "cpu_limit": resources.get("cpu_limit"),
         "memory_gib": resources.get("memory_gib"),
+        # WHAT THE AGENT GETS, beside the display's share and the pod's total
+        # (#3118). None from a platform that served none: the total is NOT
+        # what a live-browser agent gets, so it is never filled in from it.
+        "agent_memory_gib": served.get("agent_memory_gib"),
+        "display_memory_gib": served.get("display_memory_gib"),
+        "pod_memory_gib": served.get("pod_memory_gib", resources.get("memory_gib")),
         "workspace_gib": resources.get("disk_gib"),
         "units": resources.get("units"),
         # The entry's own, not the platform's current version: a Cloud Run
