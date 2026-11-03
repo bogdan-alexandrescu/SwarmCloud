@@ -686,6 +686,13 @@ def read_workflow_failure(
                 tenant_id, workflow_id, state, _FAILED_STEPS_NAMED)
             if not reviewgate_mod.is_requirements_check(step.metadata)
         )
+    if failed:
+        # A step re-run (swarm-api's `steprerun`) leaves the task it replaced
+        # FAILED and still naming this workflow; it is no step of the workflow
+        # any more, and counting it would sweep the re-run away. Read only
+        # when something failed, so a healthy drain pays nothing for it.
+        superseded = store.workflow_superseded_task_ids(tenant_id, workflow_id)
+        failed = [step for step in failed if step.id not in superseded]
     if not failed:
         return None
     failed.sort(key=lambda step: (step.step_id or "", step.id))

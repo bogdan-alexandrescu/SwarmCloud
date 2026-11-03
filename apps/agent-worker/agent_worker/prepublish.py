@@ -59,7 +59,10 @@ vitest, no `tsc` and no `terraform fmt`. So the check set also holds:
   (`CONTEXT_DIR_NAME`/`SNAPSHOT_DIR_NAME`, the `tests` layer `swarm-graph`'s
   `tests_for` answers from), plus the changed test files themselves, plus a
   script's sibling `X.test.tsx` -- the one selection that needs no graph, so
-  an unstaged step still runs it. Python files `changed-guards.sh --list`
+  an unstaged step still runs it. When the snapshot's manifest lists
+  `symbol_test_map` or `file_test_map` as truncated, the tests
+  `scripts/related-tests.sh` names by imports are added, and the check's
+  output says so (`pick_tests`, owner decision 2026-11-03). Python files `changed-guards.sh --list`
   already selected are not run twice; JavaScript ones run with the
   package's OWN `node_modules/.bin/vitest`, from the package, so its config
   applies. Blocking, with the same one fix turn as every other check.
@@ -347,9 +350,11 @@ J4_MAX_SYMBOLS = 64
 #: Test files one graph check runs. Past this the graph's ranking is too wide
 #: to be a selection, and CI runs the whole suite anyway.
 GRAPH_TESTS_MAX = 60
-#: The graph's test maps. A staged snapshot whose manifest lists either as
-#: `truncated` names only part of a file's covering tests, so graph-pytest
-#: adds `related-tests.sh`'s import pick to its selection (owner's pick
+#: The graph's test maps: the indexer's two derived test maps
+#: (`repo_index_extract.DERIVED_TRUNCATIONS`). A staged snapshot whose
+#: manifest lists either as `truncated` names only part of a file's covering
+#: tests, so the selection is widened by `related-tests.sh`'s import pick
+#: (`pick_tests`, and graph-pytest at run time; owner's pick
 #: `widen-in-prepublish`, PR #3105): the cut can then only fail to add a
 #: test, never drop one the imports reach.
 GRAPH_TEST_MAPS = frozenset({"symbol_test_map", "file_test_map"})
@@ -1213,9 +1218,92 @@ def _sibling_tests(path: str) -> list[str]:
             for suffix in ("ts", "tsx", "js", "jsx")]
 
 
+def truncated_test_maps(snapshot: Snapshot | None) -> list[str]:
+    """The test maps (`GRAPH_TEST_MAPS`) the snapshot's manifest lists as truncated:
+    `symbol_test_map`, or `symbol_test_map:<why>`, by its map's name."""
+    if snapshot is None:
+        return []
+    listed = (snapshot.manifest or {}).get("truncated")
+    names = ({str(entry).split(":", 1)[0] for entry in listed}
+             if isinstance(listed, (list, tuple)) else set())
+    return sorted(names & GRAPH_TEST_MAPS)
+
+
+def parse_related_tests(output: str) -> list[str]:
+    """Every test file `related-tests.sh` names, Python and JavaScript, in its
+    order: one a line, no spaces -- its `==>` header and its commands never match."""
+    named: list[str] = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line and " " not in line and is_test_path(line) and line not in named:
+            named.append(line)
+    return named
+
+
+def import_pick(repo: Path, base: str | None, *, runner: Runner, env: Mapping[str, str],
+                timeout: float = GUARDS_LIST_SECONDS) -> tuple[list[str] | None, str]:
+    """The test files `RELATED_SCRIPT` (scripts/lib/related_tests.py: the
+    tests that import a changed module, transitively, and the vitest files
+    its imports reach) names for the diff from `base`, listed, never run; and
+    why there are none when the script is absent or fails (None)."""
+    if not (repo / RELATED_SCRIPT).is_file():
+        return None, f"the repository has no {RELATED_SCRIPT}"
+    argv = ["bash", RELATED_SCRIPT, *(["--base", base] if base else [])]
+    ran = runner(argv, repo, env, timeout)
+    if ran.timed_out:
+        return None, f"{RELATED_SCRIPT} did not list its selection within {timeout:.0f} s"
+    if ran.code != 0:
+        return None, f"{RELATED_SCRIPT} exited {ran.code}"
+    return parse_related_tests(ran.output), ""
+
+
+@dataclass(frozen=True)
+class TestPick:
+    """`select_tests`'s selection (each test file and why) and, when the
+    graph's test map was cut, the line saying how the import pick widened it."""
+
+    __test__ = False  # a gate record, not a pytest class
+
+    tests: dict[str, str]
+    note: str = ""
+
+
+def pick_tests(repo: Path, files: Sequence[str], snapshot: Snapshot | None, *,
+               base: str | None, env: Mapping[str, str], runner: Runner = run_command
+               ) -> TestPick:
+    """`select_tests`, widened by the import pick when the snapshot's test
+    map is truncated (owner decision 2026-11-03, `widen-in-prepublish`).
+
+    WHY. The indexer caps `symbol_test_map` and `file_test_map` on a large
+    repository and lists the cut map in the manifest's `truncated`. A cut map
+    is silent about the edges it dropped: a changed module whose covering
+    test fell off the map selects no test here, and the gate passed a change
+    whose own test was red. So when either map is cut, the tests the related
+    selection names by imports are added (why `import`), after the graph's,
+    and the check's output says so. A whole map selects exactly as before:
+    the script is not even run."""
+    cut = truncated_test_maps(snapshot)
+    if not cut or not files:
+        return TestPick(select_tests(repo, files, snapshot))
+    picked, why = import_pick(repo, base, runner=runner, env=env)
+    tests = select_tests(repo, files, snapshot, imported=picked or ())
+    maps = " and ".join(cut)
+    if picked is None:
+        return TestPick(tests, f"the staged graph's {maps} is truncated and the import pick "
+                               f"could not widen the selection ({why}); the graph's "
+                               "selection runs alone")
+    added = sum(1 for reason in tests.values() if reason == "import")
+    return TestPick(tests, f"the staged graph's {maps} is truncated, so the selection is "
+                           f"widened by the import pick ({RELATED_SCRIPT}): it named "
+                           f"{len(picked)} test file(s), {added} not already selected")
+
+
 def select_tests(repo: Path, files: Sequence[str],
-                 snapshot: Snapshot | None) -> dict[str, str]:
-    """Each test file that covers `files`, and why: `changed`, `graph` or `sibling`.
+                 snapshot: Snapshot | None, *, imported: Iterable[str] = ()
+                 ) -> dict[str, str]:
+    """Each test file that covers `files`, and why: `changed`, `graph`,
+    `sibling` or `import` (`imported`, the import pick `pick_tests` adds
+    when the graph's test map is cut).
 
     Only files present in the checkout: a test the change deleted, or one the
     graph remembers from before a rename, has nothing left to run.
@@ -1237,6 +1325,8 @@ def select_tests(repo: Path, files: Sequence[str],
                 add(test, "graph")
         for test in _sibling_tests(path):
             add(test, "sibling")
+    for test in imported:
+        add(test, "import")
     return chosen
 
 
@@ -1557,11 +1647,7 @@ def watched(check: Check, stopped: Callable[[], str | None]) -> Check:
 def test_maps_truncated(snapshot: Snapshot | None) -> bool:
     """Whether the staged graph's manifest lists a test map (`GRAPH_TEST_MAPS`)
     as truncated: its tests rows then name only part of a file's tests."""
-    if snapshot is None:
-        return False
-    cut = (snapshot.manifest or {}).get("truncated")
-    return isinstance(cut, (list, tuple)) and any(
-        isinstance(name, str) and name in GRAPH_TEST_MAPS for name in cut)
+    return bool(truncated_test_maps(snapshot))
 
 
 def _import_pick(runner: Runner, repo: Path, env: Mapping[str, str], base: str,
@@ -1657,22 +1743,46 @@ def _terraform_fmt(files: Sequence[str]
     return run
 
 
+def _noted(note: str, run: Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]
+           ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
+    """`run`, its output led by `note`: how the selection was widened."""
+    if not note:
+        return run
+
+    def noted(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float
+              ) -> tuple[str, str]:
+        status, output = run(runner, repo, env, timeout)
+        return status, f"{note}\n{output}"
+    return noted
+
+
 def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[str, str],
-                 snapshot: Snapshot | None) -> list[Check]:
+                 snapshot: Snapshot | None, pick: TestPick | None = None,
+                 runner: Runner = run_command) -> list[Check]:
     """graph-pytest, vitest, tsc, node-tests and terraform-fmt for this diff
-    (CTXQ-G; node-tests #2455)."""
+    (CTXQ-G; node-tests #2455). `pick` is the round's `pick_tests`, else it
+    is made here with `runner`."""
     present = [f for f in files if (repo / f).is_file()]
     checks: list[Check] = []
-    tests = list(select_tests(repo, files, snapshot))[:GRAPH_TESTS_MAX]
+    if pick is None:
+        pick = pick_tests(repo, files, snapshot, base=base, env=env, runner=runner)
+    tests = list(pick.tests)[:GRAPH_TESTS_MAX]
+    note = pick.note
+    if note and len(pick.tests) > GRAPH_TESTS_MAX:
+        note += (f"; {len(pick.tests)} selected, the first {GRAPH_TESTS_MAX} run here "
+                 "and CI runs the rest")
 
     py_tests = [t for t in tests if t.endswith(_PY_SUFFIX)]
     # A cut test map names only some of a changed module's tests, or none:
     # the import pick is added (GRAPH_TEST_MAPS), so the check runs then too.
-    widen = (test_maps_truncated(snapshot) and (repo / RELATED_SCRIPT).is_file()
+    # When `pick` already holds the import pick's tests, it is not asked again.
+    imported = any(reason == "import" for reason in pick.tests.values())
+    widen = (not imported and test_maps_truncated(snapshot)
+             and (repo / RELATED_SCRIPT).is_file()
              and any(f.endswith(_PY_SUFFIX) and not is_test_path(f) for f in files))
     if py_tests or widen:
-        selection = ("<graph-selected files and related-tests' import pick>" if widen
-                     else "<graph-selected files>")
+        selection = ("<graph-selected files and related-tests' import pick>"
+                     if widen or imported else "<graph-selected files>")
         if not _which("uv", env):
             checks.append(Check("graph-pytest", tuple(py_tests), "uv run pytest -n auto",
                                 skipped="uv is not on PATH in this image"))
@@ -1680,7 +1790,7 @@ def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[st
             checks.append(Check("graph-pytest", tuple(py_tests),
                                 f"uv run pytest -q -n auto {selection} "
                                 "(in each Python project)",
-                                run=_graph_pytest(py_tests, base, widen=widen)))
+                                run=_noted(note, _graph_pytest(py_tests, base, widen=widen))))
 
     by_package: dict[str, list[str]] = {}
     for test in tests:
@@ -1701,7 +1811,7 @@ def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[st
         # simply not collected; it is not the agent's failure.
         args = ["run", "--passWithNoTests", *(_relative(package, t) for t in members)]
         checks.append(Check("vitest", tuple(members), f"vitest run <files> (in {where})",
-                            run=_in_package(repo, package, binary, args)))
+                            run=_noted(note, _in_package(repo, package, binary, args))))
 
     ts_packages: dict[str, list[str]] = {}
     for path in files:
@@ -1969,8 +2079,10 @@ def jev_test_gap(judge: Any, repo: Path, base: str, files: Sequence[str],
 
 def select_checks(repo: Path, files: Sequence[str], *, base: str,
                   env: Mapping[str, str], python: str = "python3",
-                  snapshot: Snapshot | None = None) -> list[Check]:
-    """The fixed check set, narrowed to the kinds of file `files` holds.
+                  snapshot: Snapshot | None = None, pick: TestPick | None = None,
+                  runner: Runner = run_command) -> list[Check]:
+    """The fixed check set, narrowed to the kinds of file `files` holds
+    (`pick`, the round's graph selection, as `graph_checks`).
 
     A check whose files are all deleted is not chosen: there is nothing left
     to lint. A check chosen but unable to run is returned with `skipped`.
@@ -2067,7 +2179,8 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
             argv = ["uv", "run", "--quiet", "pytest", "-q", "-p", "no:cacheprovider", *tests]
             checks.append(Check("build-mirror", tuple(mirror),
                                 "uv run pytest " + " ".join(tests), run=_simple(argv)))
-    checks += graph_checks(repo, files, base=base, env=env, snapshot=snapshot)
+    checks += graph_checks(repo, files, base=base, env=env, snapshot=snapshot, pick=pick,
+                           runner=runner)
     return checks
 
 
@@ -2475,6 +2588,8 @@ def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
                      f"{', '.join(shown)}{more}.")
     else:
         parts.append("No test file was found covering the changed files.")
+    if graph.get("widened"):
+        parts.append(f"Widened: {graph['widened']}.")
     ran = [o for o in outcomes if o.name in ("graph-pytest", "vitest", "tsc", "node-tests",
                                                 "terraform-fmt")]
     if ran:
@@ -2788,10 +2903,15 @@ class Gate:
             self.record["rounds"].append([outcome.record()])
             return [outcome]
         self._diff = (resolved, files)
-        self.record.setdefault("graph", {})["selected"] = select_tests(
-            self.repo, files, self._snapshot)
+        pick = pick_tests(self.repo, files, self._snapshot, base=resolved, env=self.env,
+                          runner=self.runner)
+        graph = self.record.setdefault("graph", {})
+        graph["selected"] = pick.tests
+        graph.pop("widened", None)
+        if pick.note:
+            graph["widened"] = pick.note
         checks = select_checks(self.repo, files, base=resolved, env=self.env, python=self.python,
-                               snapshot=self._snapshot)
+                               snapshot=self._snapshot, pick=pick, runner=self.runner)
         if only is not None:
             checks = [c for c in checks if c.name == only]
         checks = [self._guards_check(c, resolved, guard_parts) if c.name == GUARDS_CHECK else c

@@ -23,7 +23,7 @@ import pytest
 
 from swarm_api.attempt_totals import attempt_totals, totals_for_page, unread_totals, with_totals
 from swarm_api.codec import task_from_dict
-from swarm_api.store import ATTEMPTS
+from swarm_api.store import ATTEMPTS, TASK_SUMMARY_FIELDS
 
 from .conftest import auth_header, seed_task, seed_tenant
 from .test_task_attempt_totals import _attempt_doc, _finished_task, _get, _seed
@@ -72,12 +72,13 @@ def test_a_summary_marked_complete_keeps_todays_answer(client, db):
     assert _get(client)["cost_incomplete"] is False
 
 
-@pytest.mark.parametrize("view", [None, "full"])
-def test_the_full_list_serves_the_floor(client, db, view):
-    """The full list rows. `view=summary` reads a projection of the task
-    (`store.TASK_SUMMARY_FIELDS`) that does not fetch
-    `result_summary.cost_incomplete`; adding it there is outside this
-    change's file and is asked of the owner (questions.json)."""
+@pytest.mark.parametrize("view", [None, "full", "summary"])
+def test_the_list_serves_the_floor(client, db, view):
+    """Every list view. `view=summary` reads a projection of the task
+    (`store.TASK_SUMMARY_FIELDS`), which fetches
+    `result_summary.cost_incomplete` and no other summary key but the
+    browser-use pair (the owner's pick, 2026-11-03), so its rows carry the
+    floor the Overview and Agents rows draw as "at least"."""
     seed_tenant(db, "eng")
     _two_costed_attempts(db, "t_flagged", flagged=True)
     _two_costed_attempts(db, "t_plain", flagged=None)
@@ -90,6 +91,14 @@ def test_the_full_list_serves_the_floor(client, db, view):
     assert rows["t_flagged"]["cost_incomplete"] is True
     assert rows["t_plain"]["cost_incomplete"] is False
     assert rows["t_flagged"]["cost_usd_total"] == 9.64
+    if view == "summary":
+        assert all("result_summary" not in row for row in rows.values()), "the summary row drops it"
+
+
+def test_the_summary_projection_reads_the_cost_floor_flag():
+    """The flag is one dotted path of the read, not the whole summary."""
+    assert "result_summary.cost_incomplete" in TASK_SUMMARY_FIELDS
+    assert "result_summary" not in TASK_SUMMARY_FIELDS
 
 
 def test_the_workflow_read_serves_the_floor(client, db):

@@ -1,0 +1,77 @@
+/*
+ * ONE WORKSPACE'S PAGE (WorkspacePage.tsx; lane workspace-admin-page, part of
+ * #2688), from the picked 'place' mock-up's workspace page: the workspace's
+ * name over a row of chips (its id, the default, your role, setup's count,
+ * "as a platform admin", "read only for you"), its tabs, and each tab's
+ * cards in a main column with a 340px side column that stacks under 1100px.
+ * Every colour is a theme token, so light and dark both hold.
+ */
+.wpg-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.wpg-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; justify-content: space-between; min-width: 0; }
+.wpg-head-t { min-width: 0; }
+.wpg-head h1 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); overflow-wrap: anywhere; }
+.wpg-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 6px 0 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.wpg-dim { color: var(--text-dim); }
+.wpg-small { font-size: var(--t-meta); line-height: var(--lh-meta); margin: 0; }
+.wpg-num { font-variant-numeric: tabular-nums; }
+.wpg-tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: var(--t-micro); line-height: var(--lh-micro); border: 1px solid var(--line); background: var(--surface-2); color: var(--text); white-space: nowrap; }
+
+.wpg-role { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; border: 1px solid var(--line); color: var(--text-dim); background: var(--surface); }
+.wpg-role.is-admin { color: var(--text); background: var(--s-neub); border-color: color-mix(in srgb, var(--s-neu) 45%, transparent); }
+.wpg-role.is-member { color: var(--text); background: var(--s-liveb); border-color: color-mix(in srgb, var(--s-live) 45%, transparent); }
+.wpg-role.is-def { font-weight: 500; border-style: dashed; }
+
+.wpg-setup-chip { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); max-width: 100%; }
+.wpg-setup-chip:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.wpg-setup-chip .c-bar { width: 80px; flex: none; }
+.wpg-setup-chip.is-warn { background: var(--s-warnb); border-color: color-mix(in srgb, var(--s-warn) 45%, transparent); }
+.wpg-setup-chip .is-bad { color: var(--bad-ink); }
+
+.wpg-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.wpg-embed { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.wpg-embed > .c-card { margin: 0; }
+/* An embedded screen's refresh, right-aligned above its part, where its heading was. */
+.wpg-page .ws-embed-head { display: flex; justify-content: flex-end; }
+
+.wpg-two { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.wpg-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.wpg-col > .c-card { margin: 0; }
+
+.wpg-rolelist, .wpg-events, .wpg-links { list-style: none; margin: 0; padding: 0; }
+.wpg-rolelist { display: flex; flex-direction: column; gap: 10px; }
+.wpg-rolelist li { display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; gap: 12px; align-items: baseline; font-size: var(--t-body); line-height: var(--lh-body); }
+.wpg-rolelist small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.wpg-events { display: flex; flex-direction: column; gap: 6px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.wpg-events li { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px; align-items: baseline; overflow-wrap: anywhere; }
+.wpg-events li small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-faint); }
+.wpg-why { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); margin-top: 8px; }
+.wpg-why summary { cursor: pointer; }
+.wpg-why p { margin: 6px 0 0; max-width: 72ch; }
+.wpg-give { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.wpg-said { margin: 10px 0 0; padding: 8px 12px; border-radius: var(--r-tile, 8px); background: var(--s-liveb); border: 1px solid color-mix(in srgb, var(--s-live) 45%, transparent); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.wpg-said.is-bad { background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); }
+
+.wpg-links { display: flex; flex-direction: column; }
+.wpg-links li { display: grid; grid-template-columns: 160px minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line-soft, var(--line)); font-size: var(--t-body); line-height: var(--lh-body); }
+.wpg-links li:first-child { border-top: 0; padding-top: 2px; }
+.wpg-links small { font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0; }
+.wpg-state { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); white-space: nowrap; }
+.wpg-state.is-done { color: var(--ok-ink); }
+.wpg-state.is-failed { color: var(--bad-ink); }
+.wpg-state.is-todo, .wpg-state.is-in_progress, .wpg-state.is-stale { color: var(--warn-ink); }
+
+.wpg-fold { padding: 12px 16px; border: 1px solid var(--line); border-radius: var(--r-card, 10px); background: var(--surface); }
+.wpg-fold > summary { cursor: pointer; font-weight: 600; font-size: var(--t-body); line-height: var(--lh-body); }
+.wpg-fold[open] > summary { margin-bottom: 10px; }
+
+@media (max-width: 1100px) {
+  .wpg-two { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 760px) {
+  .wpg-tabs { overflow-x: auto; flex-wrap: nowrap; }
+  .wpg-links li { grid-template-columns: minmax(0, 1fr) auto; }
+  .wpg-links small { grid-column: 1 / -1; grid-row: 2; }
+  .wpg-rolelist li { grid-template-columns: 70px minmax(0, 1fr); }
+  .wpg-rolelist small { grid-column: 2; }
+}
