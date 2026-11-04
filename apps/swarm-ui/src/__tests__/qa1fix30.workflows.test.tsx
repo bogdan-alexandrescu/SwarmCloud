@@ -144,17 +144,31 @@ describe('61: the id is the line under the title, not a cut beside it', () => {
     expect(id?.textContent).toBe(AUDIT)
     expect(id?.getAttribute('title')).toBe(AUDIT)
   })
+})
 
-  it('gives the id its own one-line micro rule, and the sheet no longer cuts it at 10ch beside the title', async () => {
-    const CSS = (await import('../styles/workflows.css?raw')).default
-    // MUTATION: drop the `.wfl .wfl-name > .id` rule -- the id is an inline
-    // span run on after the title.
-    const rule = CSS.match(/\.wfl \.wfl-name > \.id\s*\{([^}]*)\}/)
-    expect(rule, 'no rule lays the id under the title').not.toBeNull()
-    expect(rule![1]).toMatch(/display:\s*block/)
-    expect(rule![1]).toMatch(/white-space:\s*nowrap/)
-    expect(rule![1]).toMatch(/font-size:\s*var\(--t-micro\)/)
-    expect(CSS).not.toMatch(/\.wfl-line > \.id/)
+describe('the old list’s rules are gone (owner, 2026-11-03)', () => {
+  // The redesigned list is `.wfg`; the old one's sheet -- its fixed column
+  // widths, its phone card grid, `.wfl-line` and `.wfl-mix` -- styled markup
+  // no component draws. A `.wfl` class left in workflows.css is one a
+  // component still renders.
+  // MUTATION: put back any of the old list's rules, e.g.
+  // `.wfl .wfl-name > .wfl-line { display: flex }`.
+  it('styles no `.wfl` class that no component draws', async () => {
+    const CSS = (await import('../styles/workflows.css?raw')).default.replace(/\/\*[\s\S]*?\*\//g, '')
+    // The console's own sources: not the tests, which still name the old
+    // classes in what they assert is gone.
+    const sources = Object.values(
+      import.meta.glob(['../**/*.{ts,tsx}', '!../__tests__/**', '!./**'], { eager: true, query: '?raw', import: 'default' }) as Record<
+        string,
+        string
+      >,
+    )
+    expect(sources.some((text) => text.includes('export function WorkflowsScreen'))).toBe(true)
+    const styled = [...new Set(CSS.match(/\.wfl(?:-[a-z0-9]+)*(?![\w-])/g) ?? [])].map((c) => c.slice(1))
+    // The control: the sheet still styles classes the list draws.
+    expect(styled).toContain('wfl-done-ends')
+    const drawn = (c: string) => sources.some((text) => new RegExp(`(?<![\\w-])${c}(?![\\w-])`).test(text))
+    expect(styled.filter((c) => !drawn(c)), 'styled in workflows.css, drawn by no component').toEqual([])
   })
 })
 

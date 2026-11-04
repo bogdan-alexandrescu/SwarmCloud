@@ -1,15 +1,13 @@
-// VISUAL QA RE-RUN, LANE R7 (#1427): THE WORKFLOW LIST AND THE WORKFLOW PAGE.
+// VISUAL QA RE-RUN, LANE R7 (#1427): THE WORKFLOW PAGE.
 //
-// Ten rendering findings from the 2026-10-16 re-run, each pinned by the
-// property that was wrong rather than by the markup that fixed it. The browser
-// renders that confirmed them are in the PR (vqa2-r7-<id>.png); what jsdom can
-// hold is held here: the value the cascade gives a property at a width, which
+// The rendering findings from the 2026-10-16 re-run that still hold, each
+// pinned by the property that was wrong rather than by the markup that fixed
+// it (V101, V163 and V164 were the old list's, whose markup is gone). The
+// browser renders that confirmed them are in the PR (vqa2-r7-<id>.png); what
+// jsdom can hold is held here: the value the cascade gives a property at a width, which
 // element a value is in, the width a column asks for.
 //
-//   V101  a failed list card at 400 is tinted across the card, not in its State cell
 //   V103  the page head is two chip lines in both states at a phone
-//   V163  the list's Cost cell keeps "N of M reported" whole, on its own line
-//   V164  the list prints the cost and the runner mix below 900px
 //   V200  (workflows.liveqa.test.tsx, WF-6) ◀ position ▶ is one unit
 //   V201  every Stop-step fact is one key column and one value column
 //   V202  the step table's figure columns hold their values; Why takes the rest
@@ -172,35 +170,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-/** The list's markup as Workflows.tsx draws it: a card per row at 640 and below. */
-function listRow(failed: boolean): HTMLElement {
-  return html(
-    '<div class="wfl"><div class="table-wrap is-scroll wfl-scroll"><table class="wfl-table"><thead><tr><th data-col="state">State</th></tr></thead><tbody>' +
-      `<tr class="wfl-row${failed ? ' is-failed' : ''}">` +
-      '<td class="wfl-state" data-col="state">failed</td>' +
-      '<td class="wfl-name" data-col="workflow"><a href="#">wf</a><span class="wfl-mix"><span class="wf-mix"><span class="c-chip">claude-code</span></span></span></td>' +
-      '<td class="num" data-col="cost"><span class="wf-spend">$0.426<span class="wf-spend-cov">3 of 4 reported</span></span></td>' +
-      '<td data-col="runners"><span class="wf-mix"><span class="c-chip">claude-code</span></span></td>' +
-      '</tr></tbody></table></div></div>',
-  )
-}
 const fill = ['background', 'background-color']
-
-describe('V101: a failed list card is tinted across the card', () => {
-  // MUTATION: drop the card's row tint, or the held-cell `background: none`:
-  // the State cell alone is red again, a bar that stops short of the card.
-  it('tints the row and no cell at 400, the held State cell included', () => {
-    const host = listRow(true)
-    const row = host.querySelector('tr.wfl-row')!
-    expect(painted(row, fill, { width: 400 })).toBe('var(--s-badb)')
-    for (const td of host.querySelectorAll('tr.wfl-row > td')) {
-      expect(painted(td, fill, { width: 400 }), (td as HTMLElement).dataset.col).toBe('none')
-    }
-    // The control: a healthy card is not tinted.
-    const ok = listRow(false).querySelector('tr.wfl-row')!
-    expect(painted(ok, fill, { width: 400 })).not.toBe('var(--s-badb)')
-  })
-})
 
 describe('V103: the page head is the same height while it reads as when it has read', () => {
   // MUTATION: drop the phone rule that gives the cost its own line: the
@@ -246,41 +216,6 @@ describe('V103: the page head is the same height while it reads as when it has r
     for (const width of [400, 1440]) {
       expect(painted(absent, 'line-height', { width })).toBe('var(--lh-micro)')
       expect(painted(absent, 'margin-bottom', { width })).toBe('-1px')
-    }
-  })
-})
-
-describe('V163: the list’s Cost cell keeps its coverage whole', () => {
-  // MUTATION: drop the coverage line's `display: block` or its wrapping:
-  // the cell's nowrap clip takes "reported" off "3 of 4".
-  it('puts the coverage on its own line, wrapping at its spaces, in a column that holds its longest word', () => {
-    const host = listRow(false)
-    const cov = host.querySelector('.wf-spend-cov')!
-    // Below 1280: from 1280 the column is wide enough for the coverage on one
-    // line (owner decision c28, 2026-10-22; qafix4.workflows.test.tsx).
-    const env = { width: 1100 }
-    expect(painted(cov, 'display', env)).toBe('block')
-    expect(painted(cov, 'margin-left', env)).toBe('0')
-    expect(painted(cov, 'white-space', env)).toBe('normal')
-    // The control: the cell itself still clips on one line, so the coverage's
-    // own wrapping is what keeps it whole.
-    expect(painted(cov.closest('td')!, 'white-space', env)).toBe('nowrap')
-    // "reported", its longest word, is 8 characters of 12px mono; the cell pads 10px a side.
-    const th = html('<div class="wfl"><table class="wfl-table"><thead><tr><th data-col="cost">Cost</th></tr></thead></table></div>').querySelector('th')!
-    expect(Number.parseFloat(painted(th, 'width', env) ?? '0')).toBeGreaterThanOrEqual('reported'.length * 0.6 * 12 + 20)
-  })
-})
-
-describe('V164: the list prints the cost and the runner mix below 900px', () => {
-  // MUTATION: put back the old list bar's `.wf-spend` / `.wf-mix`
-  // `display: none` in either narrow block.
-  it('hides neither at a phone, a tablet or a desktop', () => {
-    const host = listRow(false)
-    const spend = host.querySelector('.wf-spend')!
-    const mixes = [...host.querySelectorAll('.wf-mix')]
-    for (const width of [390, 400, 600, 700, 899, 1440]) {
-      expect(painted(spend, 'display', { width }), `cost at ${width}`).not.toBe('none')
-      for (const m of mixes) expect(painted(m, 'display', { width }), `runner mix at ${width}`).not.toBe('none')
     }
   })
 })
