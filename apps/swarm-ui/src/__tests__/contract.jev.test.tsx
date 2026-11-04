@@ -35,8 +35,6 @@ const PHONE: CascadeEnv = { width: 390 }
 const LAPTOP: CascadeEnv = { width: 1280 }
 const WIDE: CascadeEnv = { width: 1440 }
 
-type Json = Record<string, unknown>
-
 const DIGEST = 'ab'.repeat(32)
 const COMMIT = 'c0ffee1' + '2'.repeat(33)
 const CALL = `call-${'7'.repeat(8)}`
@@ -142,6 +140,13 @@ describe('the submission refusal', () => {
     refuseWrite('/v1/workflows', { status: 422, body: REFUSAL })
     fireEvent.click(go)
     await waitFor(() => expectJevRefusal(container), WAIT)
+  })
+
+  it('has the fixture build refuse the one prompt the review submits, and only that one', async () => {
+    const { FIXTURE_CONTRACT_REFUSAL_PROMPT, fixtureContractRefusal } = await import('../api')
+    const refused = fixtureContractRefusal({ runner_profile: 'mock', input: { prompt: FIXTURE_CONTRACT_REFUSAL_PROMPT } })
+    expect(contractRefusal(refused?.detail)?.requirements.map((r) => r.id)).toEqual(['REQ-2', 'REQ-4'])
+    expect(fixtureContractRefusal({ runner_profile: 'mock', input: { prompt: 'Fix the lease release path' } })).toBeNull()
   })
 
   it('leaves Jev’s part out of the workflow refusal’s facts', () => {

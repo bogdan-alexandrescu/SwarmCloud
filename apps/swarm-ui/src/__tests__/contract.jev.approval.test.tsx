@@ -163,3 +163,26 @@ describe('the approval screen', () => {
   })
 })
 
+describe('the fixture build', () => {
+  it('serves each Jev judgment the review renders, by address, with the inbox still empty', async () => {
+    vi.resetModules()
+    const { ApprovalsScreen } = await import('../Approvals')
+    const { FIXTURE_CONTRACT_APPROVALS } = await import('../api')
+    // What tells the three apart: the verdicts each row carries, and whether Jev ran.
+    const want: Record<string, { status: string; verdicts: string[] }> = {
+      apr_fixture_contract_judged: { status: 'judgment_pending', verdicts: ['met', 'unmet', 'met'] },
+      apr_fixture_contract_not_run: { status: 'not_run', verdicts: [] },
+      apr_fixture_contract_cannot_judge: { status: 'judgment_pending', verdicts: ['met', 'cannot_judge'] },
+    }
+    for (const id of FIXTURE_CONTRACT_APPROVALS) {
+      const view = render(<ApprovalsScreen view={`approval=${id}`} go={vi.fn()} />)
+      const card = await screen.findByRole('region', { name: 'Jev’s judgment of the work contract' }, WAIT)
+      // MUTATION: serve one record for all three, and the review measures one case.
+      expect(within(card).getByTestId('cj-status').getAttribute('data-status')).toBe(want[id]!.status)
+      expect([...card.querySelectorAll('[data-verdict]')].map((r) => r.getAttribute('data-verdict'))).toEqual(want[id]!.verdicts)
+      expect(visible(card)).toContain('they approve nothing')
+      view.unmount()
+    }
+  })
+})
+

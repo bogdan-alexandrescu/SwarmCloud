@@ -25,6 +25,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { approveApproval, loadApproval, loadSchedule, rejectApproval, type ApprovalDetail, type ApprovalItem } from './api'
 import { Dash } from './components'
+import { AcceptanceVerdicts, contractAcceptance } from './ContractJev'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { PersonName } from './PersonName'
 import { useRoleGate } from './Profile'
@@ -600,6 +601,11 @@ function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
       ),
     })
   }
+  // JEV'S JUDGMENT OF THE WORK CONTRACT (jev-contract.md section 5.4): each
+  // verdict beside what it cites, labelled as Jev's. Evidence, never the
+  // decision: the card says so, and the bar below is still the only verb.
+  const acceptance = contractAcceptance(d.contract_acceptance)
+  if (acceptance !== null) cards.push({ title: 'Jev’s judgment of the work contract', side: 'l', body: <AcceptanceVerdicts acceptance={acceptance} /> })
   // Why it is held reads before what you approve, in the left column as the
   // mock-up draws it, so the DOM, the Tab order and the numbers agree
   // (visual QA automate2-04: the right column put 2 after 3 in the DOM).

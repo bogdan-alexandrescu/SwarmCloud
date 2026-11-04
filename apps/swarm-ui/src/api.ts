@@ -12859,12 +12859,119 @@ export interface ApprovalDetail {
     requirements_unmet?: string[]
     files_checked_head?: string | null
   }
+  /**
+   * The step's `contract_acceptance` record (jev-contract.md sections 5.4 and
+   * 8.2), where the item decides a step whose work contract Jev judged: read
+   * by `ContractJev.contractAcceptance`, and drawn as Jev's, never as the
+   * platform's.
+   */
+  contract_acceptance?: unknown
 }
 
 export async function loadApproval(itemId: string): Promise<Result<ApprovalDetail>> {
   const target = route('/v1/approvals/{id}', { id: itemId })
-  if (USE_FIXTURES) return scheduleNotServed(target)
+  if (USE_FIXTURES) {
+    const made = fixtureContractApproval(itemId)
+    if (made === null) return scheduleNotServed(target)
+    noteFixtureProbe(target, 0, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: made }
+  }
   return read(target, () => false)
+}
+
+/**
+ * THE FIXTURE BUILD'S JEV JUDGMENTS (jev-contract.md lane 7), each a merge
+ * waiting on its owner and opened by address, `/automate/approvals/<id>`: the
+ * inbox stays empty, as the fixture build's inbox always is.
+ *
+ *   * `apr_fixture_contract_judged`: Jev judged three requirements, one unmet,
+ *     and the step was already sent back twice;
+ *   * `apr_fixture_contract_not_run`: Jev did not run, and the control plane's
+ *     three re-asks did not get a verdict either;
+ *   * `apr_fixture_contract_cannot_judge`: Jev could not judge one requirement
+ *     after the three re-asks.
+ *
+ * The records are the shape `contractreask.ACCEPTANCE_FIELD` stores. Digests
+ * and commits are built, never written as literals.
+ */
+export const FIXTURE_CONTRACT_APPROVALS = ['apr_fixture_contract_judged', 'apr_fixture_contract_not_run', 'apr_fixture_contract_cannot_judge'] as const
+
+function fixtureContractApproval(itemId: string): ApprovalDetail | null {
+  if (!(FIXTURE_CONTRACT_APPROVALS as readonly string[]).includes(itemId)) return null
+  const at = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString()
+  const commit = '4be1d07' + '3'.repeat(33)
+  const changed = ['apps/swarm-api/swarm_api/leases.py', 'tests/unit/control_plane/test_leases.py', 'docs/leases.md']
+  const mechanical = [{ kind: 'unit_tests', passed: true, named: ['tests/unit/control_plane/test_leases.py'] }, { kind: 'ci', passed: null }]
+  const spent = { tries: 3, first_at: at(-1), next_at: at(-0.6), deadline: at(-0.5), last: { try: 3, at: at(-0.6), outcome: 'not_run', reason: 'timeout', call_id: null } }
+  const base = {
+    status: 'judgment_pending', waiting_on: 'owner', attempt_id: 'att_fixture_contract', generation: 2,
+    contract_id: 'wc-lease-release', revision: 2, digest: '9d'.repeat(32), commit, outcome: 'judged', reason: null,
+    call_id: 'jc2-fixture-0001', changed, mechanical, at: at(-0.5),
+  }
+  const acceptance =
+    itemId === 'apr_fixture_contract_judged'
+      ? {
+          ...base, owner_reason: 'send_back_cap', reask: null,
+          verdicts: [
+            { requirement_id: 'REQ-1', verdict: 'met', reason: 'satisfied', evidence_item: 'i0', p: 0.92 },
+            { requirement_id: 'REQ-2', verdict: 'unmet', reason: 'partially_done', evidence_item: 'i2', p: 0.81 },
+            { requirement_id: 'REQ-3', verdict: 'met', reason: 'satisfied', evidence_item: 'm0', p: 0.88 },
+          ],
+        }
+      : itemId === 'apr_fixture_contract_not_run'
+        ? { ...base, owner_reason: 'reask_exhausted', outcome: 'not_run', reason: 'skipped:budget_calls', call_id: null, verdicts: [], reask: spent }
+        : {
+            ...base, owner_reason: 'reask_exhausted', reask: { ...spent, last: { ...spent.last, outcome: 'judged', call_id: 'jc2-fixture-0004' } },
+            call_id: 'jc2-fixture-0004',
+            verdicts: [
+              { requirement_id: 'REQ-1', verdict: 'met', reason: 'satisfied', evidence_item: 'i0', p: 0.9 },
+              { requirement_id: 'REQ-2', verdict: 'cannot_judge', reason: 'evidence_missing', evidence_item: null, p: 0.45 },
+            ],
+          }
+  return {
+    approval: {
+      approval_id: itemId, kind: 'merge',
+      subject: { run_id: 'run_fixture_contract', issue: 'example-org/example-api#2364' },
+      digest: { head_sha: commit, verdict: 'MERGE' },
+      summary: 'example-org/example-api#2364: pull request #2392 releases a lease on cancel',
+      approvers: 'owner_only', state: 'pending', requested_at: at(-0.5), expires_at: at(71.5),
+      may_decide: { approve: true, reject: true, why: null, deciders: ['owner_only'] },
+    } as ApprovalDetail['approval'],
+    merge: {
+      green_sha: commit,
+      pull_request: { number: 2392, url: 'https://github.com/example-org/example-api/pull/2392' },
+      requirements_met: true, requirements_unmet: [], files_checked_head: commit,
+    },
+    contract_acceptance: acceptance,
+  }
+}
+
+/**
+ * THE FIXTURE BUILD'S CONTRACT REFUSAL (jev-contract.md section 4.5): the task
+ * form's submit answers it when the prompt is exactly this sentence, so the
+ * refusal can be seen and measured without a work contract editor. Any other
+ * submit is the fixture's 201, as before.
+ */
+export const FIXTURE_CONTRACT_REFUSAL_PROMPT = 'Show Jev’s contract refusal'
+
+export function fixtureContractRefusal(body: Record<string, unknown>): { code: string; message: string; detail: Record<string, unknown> } | null {
+  const input = body.input
+  if (typeof input !== 'object' || input === null || (input as Record<string, unknown>).prompt !== FIXTURE_CONTRACT_REFUSAL_PROMPT) return null
+  noteFixtureProbe(route('/v1/tasks'), 0, true)
+  return {
+    code: 'validation_failed',
+    message: 'contract wc-lease-release is strict, and Jev found requirements no worker could enforce: REQ-2, REQ-4',
+    detail: {
+      reason: 'work_contract_not_enforceable', contract_id: 'wc-lease-release', revision: 1, digest: '5e'.repeat(32), unenforced: [],
+      jev: {
+        call_id: 'jc1-fixture-0001', backend: 'internal-jev',
+        requirements: [
+          { id: 'REQ-2', class: 'unenforceable', reason: 'vague_outcome', p: 0.83 },
+          { id: 'REQ-4', class: 'unenforceable', reason: 'depends_on_a_later_event', p: 0.71 },
+        ],
+      },
+    },
+  }
 }
 
 /**
