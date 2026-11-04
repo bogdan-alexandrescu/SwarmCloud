@@ -222,6 +222,11 @@ export function NeedsYou({
               <span
                 key={k}
                 className={`ny-chip is-${k} is-faint`}
+                // ON A PHONE THE WORD IS HIDDEN (needs-you.css), so the label
+                // names the kind, as a counted chip's "Failed: 2" does; `img`
+                // reads the chip as that one name, not a bare "not known".
+                role="img"
+                aria-label={`${NEED_WORD[k]}: not known`}
                 title={
                   k === 'approval'
                     ? 'Approvals are not read on this screen, so their count is not known; Automate › Approvals lists them'
