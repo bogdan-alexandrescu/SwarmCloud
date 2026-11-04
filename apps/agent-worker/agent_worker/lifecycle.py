@@ -270,6 +270,8 @@ from .gitops import (
     own_branch_tip,
     own_moved_head,
     prepare_publish_repo,
+    keep_work_bundle,
+    WORK_BUNDLE_NAME,
     push_branch,
     read_agent_excludes,
     read_head_as_data,
@@ -9213,6 +9215,23 @@ class Worker:
                 + (f" ({git['patch_note']})" if git.get("patch_note") else "")
                 + "; the work is in the attempt's final checkpoint."
             )
+        bundle = next(
+            (
+                entry.get("uri")
+                for entry in summary.get("artifacts") or []
+                if isinstance(entry, dict) and entry.get("name") == WORK_BUNDLE_NAME
+                and entry.get("uri")
+            ),
+            None,
+        )
+        if bundle and git.get("bundle") == WORK_BUNDLE_NAME:
+            # The branch itself, merges included (#3174): what a re-dispatch
+            # or a hand push takes, where the patch is the final tree flat.
+            where += (
+                f" The agent's branch, merge commits included, is kept as a git bundle in "
+                f"{bundle} (ref {git.get('bundle_ref') or 'swarm-work'}, on "
+                f"{git.get('bundle_base')})."
+            )
         located = credential_locator(cause)
         if located:
             # A REFUSAL A BRIEF CAN BE CORRECTED FROM (part of #2524): which
@@ -14290,6 +14309,20 @@ class Worker:
             # agent's TREE against the base, so it is taken from a repository
             # holding the base alone, whatever the clone's history lacks.
             out.update(self._harvest_tree_patch(repo, fetched_base))
+            # AND THE BRANCH ITSELF, MERGES INCLUDED (#3174): the patch is the
+            # final tree flat, so a re-dispatch or a hand push from it redid
+            # the merge the agent had made. Named in the failure text, so a
+            # reader of the failure finds it.
+            out.update(self._keep_work_bundle(
+                repo, EMPTY_CLONE_BASE if floor == EMPTY_CLONE_BASE else fetched_base
+            ))
+            if out.get("bundle"):
+                kept = (f"; the agent's branch, merge commits included, is kept in "
+                        f"{WORK_BUNDLE_NAME} ({out['bundle_commits']} commits on "
+                        f"{out['bundle_base']})")
+                out["error"] += kept
+                if "publish_reason" in out:
+                    out["publish_reason"] += kept
             return out
 
         out.update(
@@ -14553,6 +14586,75 @@ class Worker:
             "took the patch from the agent's tree after the publish repository failed",
             patch=work.patch_name, patch_bytes=work.patch_bytes,
         )
+        return out
+
+    def _keep_work_bundle(self, repo: Path, base: str | None) -> dict[str, Any]:
+        """`swarm-work.bundle`, the agent's branch with its merge commits, for
+        a harvest whose clean repository could not be built (#3174). Never
+        raises. Built in a repository of the worker's own and scanned commit
+        by commit with the publish's leak test (`gitops.keep_work_bundle`);
+        under the patch's cap. Returns the `result_summary["git"]` fields:
+        `bundle` (its artifact name, or None) and, when none was kept,
+        `bundle_note` saying why."""
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        git = ["git", *_NO_HOOKS]
+        overlap = self._scan_overlap()
+
+        def leaks(bundle_repo: Path, commits: list[str]) -> str | None:
+            code, empty_tree = _git_text(
+                [*git, "hash-object", "-t", "tree", "/dev/null"], repo=bundle_repo,
+                private_dir=ws.private, logs_dir=ws.logs, slug="bundle-scan-empty",
+                timeout_seconds=cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            empty_tree = empty_tree.strip()
+            if code != 0 or not _FULL_SHA_RE.fullmatch(empty_tree):
+                raise GitError("could not name the empty tree")
+            for sha in commits:
+                code, parents = _git_text(
+                    [*git, "rev-list", "--parents", "-n", "1", sha], repo=bundle_repo,
+                    private_dir=ws.private, logs_dir=ws.logs, slug="bundle-scan-parents",
+                    timeout_seconds=cfg.git_harvest_timeout_seconds, logger=self.log,
+                )
+                listed = parents.split()
+                if code != 0 or not listed or listed[0] != sha:
+                    raise GitError("could not read a bundled commit's parents")
+                # The first parent, or the empty tree for a root (or a commit
+                # the clone was cut off at): its whole tree is what it adds.
+                before = listed[1] if len(listed) > 1 else empty_tree
+                code, hit = _scan_diff_stream(
+                    [
+                        *git, "-c", "core.quotePath=false", "diff", "--no-color",
+                        "--no-ext-diff", "--no-textconv", "--text", "--no-renames",
+                        "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
+                        before, sha, "--",
+                    ],
+                    leaks=self._leaks_in_added_text, overlap=overlap, new_rev=sha, git=git,
+                    repo=bundle_repo, private_dir=ws.private, logs_dir=ws.logs,
+                    slug="bundle-scan-diff", timeout_seconds=cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
+                if code != 0:
+                    raise GitError(f"could not diff commit {sha[:12]} against its parent")
+                if hit is not None:
+                    return sha
+            return None
+
+        kept = keep_work_bundle(
+            source_repo=repo, base=base, private_dir=ws.private, logs_dir=ws.logs,
+            bundle_path=ws.artifacts / WORK_BUNDLE_NAME, max_bytes=cfg.max_patch_bytes,
+            timeout_seconds=cfg.git_harvest_timeout_seconds, logger=self.log, leaks=leaks,
+        )
+        out: dict[str, Any] = {"bundle": kept.name, "bundle_bytes": kept.bytes,
+                               "bundle_omitted": kept.omitted}
+        if kept.name is not None:
+            out["bundle_commits"] = kept.commits
+            out["bundle_base"] = kept.base
+            out["bundle_ref"] = "swarm-work"
+        else:
+            out["bundle_note"] = self._scrub(str(kept.note or "no bundle was kept")[:500])
+            self.log.warning("kept no bundle of the agent's branch", reason=out["bundle_note"])
         return out
 
     def _build_clean_repo(
@@ -17200,6 +17302,8 @@ class Worker:
         if files is not None:
             first += files.names()
         first.append(PATCH_NAME)
+        # Beside the patch, the branch a failed publish kept (#3174).
+        first.append(WORK_BUNDLE_NAME)
         return first
 
     def _upload_outputs(
