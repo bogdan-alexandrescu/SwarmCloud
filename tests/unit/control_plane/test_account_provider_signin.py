@@ -280,7 +280,7 @@ def test_register_refuses_an_unknown_provider_by_name_with_the_known_ones(
     body = r.json()
     assert body["code"] == "validation_failed"
     assert repr(provider) in body["message"]
-    assert body["detail"]["known_providers"] == ["anthropic", "openai"]
+    assert body["detail"]["known_providers"] == ["anthropic", "openai", "openai-api"]
     assert api.bridge.sent("/v1/accounts") == []
 
 
@@ -292,3 +292,74 @@ def test_swarm_api_knows_the_same_providers_the_broker_accepts():
     from swarm_api import schemas
 
     assert tuple(schemas.ACCOUNT_PROVIDERS) == tuple(broker_providers)
+
+
+def test_swarm_api_keeps_the_brokers_voice_only_providers_apart():
+    """The broker's `VOICE_ONLY_PROVIDERS` split, restated: an OpenAI API key
+    is Voice it's alone and never one of the workspace pool's pairs."""
+    from quota_broker.main import VOICE_ONLY_PROVIDERS as broker_voice_only
+
+    from swarm_api import schemas
+
+    assert tuple(schemas.VOICE_ONLY_PROVIDERS) == tuple(broker_voice_only) == ("openai-api",)
+    assert not set(schemas.VOICE_ONLY_PROVIDERS) & set(schemas.ACCOUNT_PROVIDERS)
+
+
+# -- Voice it's OpenAI API key (`openai-api`, the owner, 4 November 2026) -------
+
+
+def _voice_key() -> str:
+    return "sk-proj-" + secrets.token_hex(24)
+
+
+def test_a_platform_admin_registers_voice_its_key_into_the_voice_it_pool(
+    api, broker_app, caplog
+):
+    caplog.set_level(logging.DEBUG)
+    key = _voice_key()
+    r = api.post(
+        "/v1/accounts",
+        headers=auth_header("root"),
+        json={"label": "voice-key", "provider": "openai-api", "credential": key},
+    )
+
+    assert r.status_code == 201, r.text
+    account = r.json()["account"]
+    assert account["provider"] == "openai-api"
+    assert account["measured"] is False
+    assert account["owner_tenant"] == TENANT
+    sent = api.bridge.sent("/v1/accounts")
+    assert [b["provider"] for b in sent] == ["openai-api"]
+    assert sent[0]["lend_to"] == []
+    assert key not in r.text
+    assert key not in caplog.text
+
+
+@pytest.mark.parametrize("user", ["alice", "carol"])
+def test_voice_its_key_is_refused_to_anyone_but_a_platform_admin_before_the_broker(
+    api, user
+):
+    """swarm-api is a platform caller to the broker, so the broker's own
+    platform-only check would let a workspace member through: swarm-api
+    refuses first."""
+    r = api.post(
+        "/v1/accounts",
+        headers=auth_header(user),
+        json={"label": "voice-key", "provider": "openai-api", "credential": _voice_key()},
+    )
+
+    assert r.status_code == 403, r.text
+    assert api.bridge.sent("/v1/accounts") == []
+
+
+def test_voice_its_key_is_never_lent(api):
+    r = api.post(
+        "/v1/accounts",
+        headers=auth_header("root"),
+        json={"label": "voice-key", "provider": "openai-api", "lend_to": ["research"],
+              "credential": _voice_key()},
+    )
+
+    assert r.status_code == 422, r.text
+    assert "never lent" in r.json()["message"]
+    assert api.bridge.sent("/v1/accounts") == []
