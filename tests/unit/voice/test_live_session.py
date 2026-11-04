@@ -7,8 +7,9 @@ sideband on a real local `websockets` server -- and a fake quota broker on the
 same transport, this holds that:
 
 * each session leases a Voice it pool account for its person before anything is
-  created, and every Live call presents that lease's token (and the plan's
-  `ChatGPT-Account-Id`);
+  created, asking for a Live-capable account, and every Live call presents that
+  lease's OpenAI API key as `Authorization` alone, with no `ChatGPT-Account-Id`
+  (OpenAI refused the ChatGPT plan for GPT-Live on 4 November 2026);
 * a person the broker refuses, or a pool whose account is busy or missing, gets a
   clear refusal and nothing starts;
 * the lease is released when the session ends, when its start fails and when
@@ -81,6 +82,8 @@ class FakeBroker:
         self.people = {PERSON}
         self.registered = True
         self.account_id = "acct_" + secrets.token_hex(4)
+        #: A plan account id the broker must NOT send for a key; kept so a
+        #: header carrying it would be caught.
         self.plan_account = "chatgpt-" + secrets.token_hex(4)
         self.holder: dict | None = None
         self.leases: list[dict] = []
@@ -90,9 +93,9 @@ class FakeBroker:
         self.audiences: list[str] = []
 
     def _token(self) -> dict:
-        access = "at_" + secrets.token_hex(16)
+        access = "sk-" + secrets.token_hex(16)
         self.openai.valid.add(access)
-        return {"access_token": access, "account_id": self.plan_account}
+        return {"access_token": access, "kind": "api_key"}
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.id_tokens.append(request.headers.get("authorization", ""))
@@ -297,12 +300,12 @@ def test_the_offer_is_answered_on_a_leased_voice_pool_account():
         # The lease came first, for this person and this session, from the openai pool,
         # with an ID token minted for the broker's audience.
         assert h.broker.leases == [{"person": PERSON, "voice_session_id": body["voice_session_id"],
-                                    "provider": "openai"}]
+                                    "provider": "openai", "capability": "live"}]
         assert h.broker.audiences and set(h.broker.audiences) == {BROKER_AUDIENCE}
         assert all(t.startswith("Bearer idt_") for t in h.broker.id_tokens)
-        # The Live create presented the leased token and the plan's account id.
+        # The Live create presented the leased API key, and no plan account id.
         assert h.openai.create_headers[0]["authorization"].removeprefix("Bearer ") in h.openai.valid
-        assert h.openai.create_headers[0]["chatgpt-account-id"] == h.broker.plan_account
+        assert h.openai.create_headers[0]["chatgpt-account-id"] is None
         create = h.openai.creates[0]
         assert create["transport"] == {"type": "webrtc", "sdp": body["offer"]}
         assert create["session"]["model"] == "gpt-live-1"
@@ -505,7 +508,7 @@ def test_the_lease_is_renewed_with_a_fresh_token_before_it_goes_stale():
         h.clock.now += al.RENEW_SECONDS
         fresh = await lease.bearer()
         assert fresh.reveal() != first.reveal() and len(h.broker.renewals) == 1
-        assert fresh.account_id == h.broker.plan_account
+        assert fresh.account_id is None and fresh.headers().keys() == {"Authorization"}
         # OpenAI refused a bearer: the next one is renewed, never reused.
         await lease.refused()
         assert (await lease.bearer()).reveal() != fresh.reveal() and len(h.broker.renewals) == 2
@@ -600,3 +603,17 @@ def test_nothing_is_built_at_import_and_a_start_without_the_broker_refuses(monke
     monkeypatch.delenv("QUOTA_BROKER_URL", raising=False)
     with pytest.raises(RuntimeError, match="QUOTA_BROKER_URL"):
         build_sessions(http=None)
+
+
+def test_an_api_key_bearer_sends_authorization_only_even_when_given_an_account_id():
+    """A key is the whole credential: `ChatGPT-Account-Id` names a ChatGPT
+    plan's account, and a broker that sent one beside a key is not obeyed."""
+    from swarm_voice.credential import Bearer
+
+    key = "sk-" + secrets.token_hex(16)
+    bearer = al._credential({"credential": {"access_token": key, "kind": "api_key",
+                                            "account_id": "chatgpt-" + secrets.token_hex(4)}})
+    assert bearer.headers() == {"Authorization": f"Bearer {key}"}
+    assert bearer.account_id is None and bearer.kind == "api_key"
+    assert key not in repr(bearer)
+    assert Bearer(key, kind="api_key", account_id="x").headers() == {"Authorization": f"Bearer {key}"}
