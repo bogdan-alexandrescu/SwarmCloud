@@ -2043,8 +2043,12 @@ jobs:
 
       - name: install trivy, at the release's pin
         if: steps.plan.outputs.build == 'true'
-        # The release installs it the same way (.github/actions/release-images),
-        # with bounded retries here because a failed download is not a finding.
+        # The release's tarball and checksums come straight from GitHub,
+        # sha256-checked, as security.yml installs it, not through
+        # contrib/install.sh: v0.74.0's script fetches the tarball from
+        # get.trivy.dev, and its curl is silent, so PR #3150's run at 11e0627b
+        # found v0.74.0 three times and exited 1 with no reason given. curl
+        # retries, because a failed download is not a finding.
         # Into a directory this job owns, put on PATH for the steps after it:
         # run 38663457125 (2026-10-15) was refused `/usr/local/bin` on this
         # hosted runner ("install: cannot create regular file
@@ -2052,14 +2056,15 @@ jobs:
         run: |
           set -euo pipefail
           bin="${RUNNER_TEMP}/trivy-bin"
-          mkdir -p "${bin}"
-          curl -sSfL --retry 5 --retry-all-errors -o "${RUNNER_TEMP}/trivy-install.sh" \
-            "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh"
-          for attempt in 1 2 3; do
-            if sh "${RUNNER_TEMP}/trivy-install.sh" -b "${bin}" "v${TRIVY_VERSION}"; then break; fi
-            [ "${attempt}" -lt 3 ] || exit 1
-            sleep $((10 * attempt))
-          done
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          dl="${RUNNER_TEMP}/trivy-dl"
+          mkdir -p "${bin}" "${dl}"
+          curl -sSfL --retry 5 --retry-all-errors -o "${dl}/${tarball}" "${base}/${tarball}"
+          curl -sSfL --retry 5 --retry-all-errors -o "${dl}/checksums.txt" \
+            "${base}/trivy_${TRIVY_VERSION}_checksums.txt"
+          (cd "${dl}" && grep " ${tarball}\$" checksums.txt | sha256sum -c -)
+          tar -xzf "${dl}/${tarball}" -C "${bin}" trivy
           echo "${bin}" >> "$GITHUB_PATH"
           "${bin}/trivy" --version
 
