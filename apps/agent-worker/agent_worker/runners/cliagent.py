@@ -2916,8 +2916,9 @@ def run_cli_agent(
     # owner's answers 4 and 8). After the agent and the gate's turns, so the
     # agent can neither see nor answer it, and over the commit the gate left.
     # One bounded round on the budget's reserve; with Jev unavailable it is
-    # `not_run`, never a pass. The worker posts it to `state/contract-verdict`
-    # once the step is published (`poststeps.deliver_contract_verdict`).
+    # `not_run`, never a pass. It is recorded in the report only: posting it to
+    # `state/contract-verdict` (`poststeps.deliver_contract_verdict`) is wired
+    # by a follow-up lane, which also turns `workcontract.JC2_AT_END_OF_STEP` on.
     if result.exit_code == 0 and cwd != ctx.work_dir and not parked_on_question():
         verdict = _contract_post_step(jev, cwd, log)
         if verdict is not None:

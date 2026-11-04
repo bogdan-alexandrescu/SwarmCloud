@@ -84,13 +84,13 @@ def test_a_strict_contract_naming_judgment_is_refused_where_jev_cannot_run():
     assert compiled.advisory == ()
 
 
-def test_judgment_counts_as_enforced_only_where_jc2_runs(monkeypatch):
+def test_judgment_counts_as_enforced_only_where_jc2_runs():
     """The owner's pick "Gate on JC2" (4 November 2026): Jev being able to
     review a contract is not enough; `judgment` is enforced only where the
-    worker's post-step runs JC2 -- which, since lane 6, it does."""
-    assert wc.JC2_AT_END_OF_STEP is True
+    worker's post-step runs JC2 and its verdict is delivered, which no worker
+    does yet: the switch ships off until the lane that wires the delivery."""
+    assert wc.JC2_AT_END_OF_STEP is False
     base = wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION}
-    monkeypatch.setattr(wc, "JC2_AT_END_OF_STEP", False)
     assert wc.enforced_with_judgment(base, jc2_runs=wc.JC2_AT_END_OF_STEP) == base
     assert wc.enforced_with_judgment(base, jc2_runs=False) == base
     assert wc.enforced_with_judgment(base, jc2_runs=True) == base | {wc.COMPONENT_JUDGMENT}
@@ -103,14 +103,16 @@ def test_judgment_counts_as_enforced_only_where_jc2_runs(monkeypatch):
 
 
 def test_a_strict_contract_naming_judgment_is_accepted_only_with_the_switch_on(monkeypatch):
-    """Lane 6 ships the worker's end-of-step judgment and turns the switch on
-    in the same change: with it on (the shipped value) a strict contract that
-    names `judgment` compiles; with it off it is refused as unenforced."""
+    """The switch ships off (the owner's answer, 5 November 2026) until the
+    lane that delivers the end-of-step verdict turns it on: with it on a strict
+    contract that names `judgment` compiles; off (the shipped value) it is
+    refused as unenforced."""
     base = wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION}
     doc = _doc(strictness="strict", scope={}, protected={}, artifacts=[])
     doc["requirements"] = [{"id": "REQ-1", "text": "Clear copy.", "verification": ["judgment"]}]
     contract = wc.decode(doc)
-    assert wc.JC2_AT_END_OF_STEP is True
+    assert wc.JC2_AT_END_OF_STEP is False
+    monkeypatch.setattr(wc, "JC2_AT_END_OF_STEP", True)
     compiled = wc.compile_contract(contract, step_id="s", enforced=wc.enforced_with_judgment(
         base, jc2_runs=wc.JC2_AT_END_OF_STEP))
     assert compiled.advisory == ()
