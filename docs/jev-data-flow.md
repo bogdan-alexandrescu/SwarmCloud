@@ -598,7 +598,7 @@ hooks, launcher redaction and URL pin, counts and event) and
   opted-in workspace, J0 for an `implement` step, J1 before the agent, J3 on
   a review, J4 in the gate, J2/J5 after it and the agent's `jev_decide`
   tool; codex steps the same, without the tool. The effect is read in the
-  ledger as `jev_usage` attempt rows' calls grouped by the task's
+  ledger as `jev_usage` attempt rows' calls grouped by the agent's
   `runner_profile` after the release that carries this.
 
 ### Closed by lane AQ-JEV-ACCOUNTING (2026-11-03)
