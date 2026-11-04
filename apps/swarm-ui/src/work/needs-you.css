@@ -75,7 +75,8 @@
   .ny-title { max-width: 16ch; }
 }
 
-/* The phone: the chips go to their marks (the word stays the label and tooltip),
+/* The phone: the chips go to their marks (the word stays the label and tooltip:
+   a faint chip's aria-label names its kind, as a counted chip's does),
    and a row goes to two lines: what, then its actions. */
 @media (max-width: 720px) {
   .ny-chip .ny-word { display: none; }
@@ -86,4 +87,21 @@
   .ny-row .ny-acts { grid-column: 1 / -1; grid-row: 3; justify-content: flex-start; }
   .ny-row .ny-left { grid-column: 3; grid-row: 1; }
   .ny-title { max-width: none; }
+}
+
+/* THE ROW AT REST IS ONE LINE ON A PHONE, ON EVERY WORK SCREEN (#139 at 390,
+   #3146; the owner's pick, 4 November 2026). The row is on top of every Work
+   screen, the phone included, but with nothing waiting its box, its wrapped
+   chips and "Nothing waits on you here" stood three lines over the list. At
+   rest it is the chips' one line, unboxed, and `Needs you 0` says what the
+   quiet line said; a line too long for the screen scrolls sideways (as the
+   agent's tabs do, V148) rather than wrapping. Built for Work › Agents (in
+   agents.css, scoped to it), it is unscoped here, so the Workflows list, Agents
+   and the workflow page all show it. When something waits (`.has-some`) the
+   row keeps its box, its chips and its list: what needs you comes before the
+   list. 560px is the Work screens' phone (agents.css); the gap is --ctl-s1. */
+@media (max-width: 560px) {
+  .ny-bar { flex-wrap: nowrap; overflow-x: auto; gap: 4px; }
+  .ny:not(.has-some) { padding: 0; border: 0; background: none; }
+  .ny:not(.has-some) > .ny-quiet { display: none; }
 }
