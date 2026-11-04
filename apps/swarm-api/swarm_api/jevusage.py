@@ -20,6 +20,14 @@ attempt row may also carry, and this read sums when it does:
   tool, `browser` the Jev browser. `outcomes` counts `ok`, `failed` and
   `skipped:<reason>`, the outcome strings the worker's audit rows hold.
 
+THE CONTRACT REVIEW (docs/design/agent-quality/jev-contract.md section 7).
+swarm-api's own Jev call at a work contract's submission has no agent and no
+attempt, so it is filed in a row of its own, kind `contract_review`, id
+`<tenant>_contract_<contract_id>_r<revision>`, with the same `calls`,
+`input_tokens`, `settled_at` and `by_kind` fields, and its tokens are added to
+the same month document in the same transaction (`record_contract_review`).
+This read sums those rows beside the attempt rows, as kind `contract_review`.
+
 A row without `by_kind` is counted under kind `unattributed` with its calls
 and input tokens and no outcomes: the worker's audit rows hold the split, but
 they live in the attempt's own directory, and a row is never guessed apart.
@@ -53,12 +61,20 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
+
+from swarm_common.admission import _snapshot
 
 #: The worker's collection and its attempt rows' `kind`
 #: (`agent_worker.judge.budget.MONTHLY_COLLECTION`, `ATTEMPT_KIND`).
 COLLECTION = "jev_usage"
 ATTEMPT_KIND = "attempt"
+#: swarm-api's submission review (`swarm_api.contractreview`): the row's
+#: `kind` and its one `by_kind` key.
+CONTRACT_REVIEW_KIND = "contract_review"
+#: The row kinds this read sums.
+ROW_KINDS = (ATTEMPT_KIND, CONTRACT_REVIEW_KIND)
 #: The page's window: a daily table and its total over the last 30 days, UTC.
 WINDOW_DAYS = 30
 #: The platform setting holding Jev's per-token rate (`store`).
@@ -78,6 +94,7 @@ KIND_GROUPS: dict[str, str] = {
     "J4": "quality_gate",
     "agent": "decision_tool",
     "browser": "jev_browser",
+    CONTRACT_REVIEW_KIND: "contract_review",
     UNATTRIBUTED: UNATTRIBUTED,
 }
 OUTCOME_OK = "ok"
@@ -267,13 +284,13 @@ class UsageRow:
 def summarise(tenant_id: str, rows: Iterable[UsageRow], *, now: datetime,
               rates: Mapping[str, float | None], month_used_tokens: int,
               cap_tokens: int | None) -> dict[str, Any]:
-    """The page's answer from `tenant_id`'s attempt rows."""
+    """The page's answer from `tenant_id`'s attempt and contract review rows."""
     first, last = window(now)
     by_day: dict[date, dict[str, Tally]] = {}
     undated = Tally()
     for row in rows:
         data = row.data
-        if data.get("tenant_id") != tenant_id or data.get("kind") != ATTEMPT_KIND:
+        if data.get("tenant_id") != tenant_id or data.get("kind") not in ROW_KINDS:
             continue
         day = row_day(data, row.update_time)
         kinds = row_kinds(data)
@@ -334,14 +351,16 @@ class JevUsageReader:
     def rows(self, tenant_id: str, months: Iterable[str]) -> list[UsageRow]:
         out: list[UsageRow] = []
         for month in months:
-            # Equality filters only, so Firestore serves them from its
-            # single-field indexes with no composite index to deploy.
-            query = (self._db.collection(COLLECTION)
-                     .where(filter=FieldFilter("tenant_id", "==", tenant_id))
-                     .where(filter=FieldFilter("kind", "==", ATTEMPT_KIND))
-                     .where(filter=FieldFilter("month", "==", month)))
-            for snap in query.stream():
-                out.append(UsageRow(snap.to_dict() or {}, getattr(snap, "update_time", None)))
+            for kind in ROW_KINDS:
+                # Equality filters only, so Firestore serves them from its
+                # single-field indexes with no composite index to deploy.
+                query = (self._db.collection(COLLECTION)
+                         .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+                         .where(filter=FieldFilter("kind", "==", kind))
+                         .where(filter=FieldFilter("month", "==", month)))
+                for snap in query.stream():
+                    out.append(UsageRow(snap.to_dict() or {},
+                                        getattr(snap, "update_time", None)))
         return out
 
     def month_used(self, tenant_id: str, month: str) -> int:
@@ -366,3 +385,63 @@ def cap_of(block: Mapping[str, Any] | None) -> int | None:
     non-negative integer, else no cap."""
     cap = (block or {}).get("jev_monthly_cap_tokens")
     return cap if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0 else None
+
+
+def contract_review_row_id(tenant_id: str, contract_id: str, revision: int) -> str:
+    """`<tenant>_contract_<contract_id>_r<revision>` (jev-contract.md section 7)."""
+    return f"{tenant_id}_contract_{contract_id}_r{int(revision)}"
+
+
+def _merge_outcomes(before: Any, added: Mapping[str, int]) -> dict[str, int]:
+    out = {k: _count(v) for k, v in before.items() if isinstance(k, str)} \
+        if isinstance(before, Mapping) else {}
+    for outcome, n in added.items():
+        out[outcome] = out.get(outcome, 0) + _count(n)
+    return out
+
+
+def record_contract_review(db: Any, tenant_id: str, *, contract_id: str, revision: int,
+                           calls: int, input_tokens: int, outcomes: Mapping[str, int],
+                           output_tokens: int | None, at: datetime) -> None:
+    """Charge one submission review to the workspace's month, in ONE transaction:
+    the month document's `input_tokens` and the review's own row, each added
+    to, never replaced, so a revision reviewed twice (two submissions of the
+    same contract) counts both. `outcomes` are the client's outcome strings
+    (`ok`, `failed`, `malformed`, `skipped:<reason>`) with their counts.
+    Raises what Firestore raises; the caller decides that accounting never
+    fails a submission."""
+    when = at.astimezone(timezone.utc)
+    month = when.strftime("%Y-%m")
+    month_ref = db.collection(COLLECTION).document(f"{tenant_id}_{month}")
+    row_ref = db.collection(COLLECTION).document(
+        contract_review_row_id(tenant_id, contract_id, revision))
+    tokens = _count(input_tokens)
+
+    @firestore.transactional
+    def _apply(txn: Any) -> None:
+        month_snap = _snapshot(txn.get(month_ref))
+        row_snap = _snapshot(txn.get(row_ref))
+        month_data = (month_snap.to_dict() if month_snap.exists else None) or {}
+        row_data = (row_snap.to_dict() if row_snap.exists else None) or {}
+        if tokens:
+            txn.set(month_ref, {"tenant_id": tenant_id, "month": month,
+                                "input_tokens": _count(month_data.get("input_tokens")) + tokens})
+        split = row_data.get("by_kind")
+        before = split.get(CONTRACT_REVIEW_KIND) if isinstance(split, Mapping) else None
+        before = before if isinstance(before, Mapping) else {}
+        kind: dict[str, Any] = {
+            "calls": _count(before.get("calls")) + _count(calls),
+            "input_tokens": _count(before.get("input_tokens")) + tokens,
+            "outcomes": _merge_outcomes(before.get("outcomes"), outcomes),
+        }
+        if output_tokens is not None or before.get("output_tokens") is not None:
+            kind["output_tokens"] = _count(before.get("output_tokens")) + _count(output_tokens)
+        txn.set(row_ref, {"kind": CONTRACT_REVIEW_KIND, "tenant_id": tenant_id,
+                          "contract_id": contract_id, "revision": int(revision),
+                          "month": month,
+                          "calls": _count(row_data.get("calls")) + _count(calls),
+                          "input_tokens": _count(row_data.get("input_tokens")) + tokens,
+                          "settled_at": when,
+                          "by_kind": {CONTRACT_REVIEW_KIND: kind}})
+
+    _apply(db.transaction())
