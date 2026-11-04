@@ -18,6 +18,7 @@
  *                    (`rerunWorkflowStep`, `POST /v1/workflows/{id}/steps/
  *                    {step}/rerun`; the owner's pick on PR #3123): its prompt
  *                    alone, submitted as a lone agent, is not the step it was.
+ *                    It asks first, in the row, naming the step.
  *   Merge waiting    Approve merge is `approveApproval` with the digest of the
  *                    approval the page read. While owner questions hold the
  *                    merge (`ownerQuestionsHold`) it is disabled and names
@@ -369,10 +370,13 @@ function FailedRow({ item, onChanged }: { item: FailedNeed; onChanged?: () => vo
 
 /**
  * RETRY ON A WORKFLOW STEP: the step re-run inside its workflow
- * (`rerunWorkflowStep`). Sent on the press, by a member or above as a cancel
- * is; the API refuses it while any step of the workflow still runs and says
- * why, which the row shows. Accepted, the row reads "Re-running" and the page
- * reads again.
+ * (`rerunWorkflowStep`). Retry asks first, in the row, naming the step: a
+ * re-run spends what the steps spend, and it re-runs the steps the failure
+ * stopped too. Re-run sends it, by a member or above as a cancel is; Keep it
+ * puts Retry back. The API refuses it while any step of the workflow still
+ * runs, and a second Retry once one landed, and says why, which the row shows
+ * with Retry back to press again. Accepted, the row names the steps re-run
+ * (the answer's `replaced`) and the page reads again.
  */
 function StepRetryButton({
   workflowId,
@@ -387,13 +391,14 @@ function StepRetryButton({
   onFailed: (e: ApiError | null) => void
   onChanged?: () => void
 }) {
+  const [asking, setAsking] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [done, setDone] = useState(false)
+  const [rerun, setRerun] = useState<readonly string[] | null>(null)
   const roleGate = useRoleGate('member', 're-run steps')
-  if (done) {
+  if (rerun !== null) {
     return (
       <span className="ny-done" role="status">
-        Re-running
+        Re-running {rerun.join(', ')}
       </span>
     )
   }
@@ -410,21 +415,38 @@ function StepRetryButton({
     onFailed(null)
     const r = await rerunWorkflowStep(workflowId, stepId)
     setBusy(false)
+    setAsking(false)
     if (r.status === 'ok' || r.status === 'stale') {
-      setDone(true)
+      const steps = Object.keys(r.data.replaced ?? {})
+      setRerun(steps.length > 0 ? steps : [stepId])
       onChanged?.()
     } else if (r.status === 'error') {
       onFailed(r.error)
     }
   }
+  if (asking) {
+    return (
+      <span role="group" aria-label={`Re-run step ${stepId}?`}>
+        <span>Re-run step {stepId} inside its workflow, with the steps its failure stopped?</span>
+        <Button size="sm" kind="primary" busy={busy} aria-label={`Re-run ${stepId}`} onClick={() => void send()}>
+          Re-run
+        </Button>
+        <Button size="sm" disabled={busy} onClick={() => setAsking(false)}>
+          Keep it
+        </Button>
+      </span>
+    )
+  }
   return (
     <Button
       size="sm"
       kind="primary"
-      aria-busy={busy || undefined}
       aria-label={`Retry ${name}`}
       title="Re-run this step inside its workflow, with the steps its failure stopped."
-      onClick={() => void send()}
+      onClick={() => {
+        onFailed(null)
+        setAsking(true)
+      }}
     >
       Retry
     </Button>
