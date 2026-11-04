@@ -222,6 +222,11 @@ export function NeedsYou({
               <span
                 key={k}
                 className={`ny-chip is-${k} is-faint`}
+                // ON A PHONE THE WORD IS HIDDEN (needs-you.css), so the label
+                // names the kind, as a counted chip's "Failed: 2" does; `img`
+                // reads the chip as that one name, not a bare "not known".
+                role="img"
+                aria-label={`${NEED_WORD[k]}: not known`}
                 title={
                   k === 'approval'
                     ? 'Approvals are not read on this screen, so their count is not known; Automate › Approvals lists them'
@@ -269,7 +274,7 @@ function NeedsList({
   onChanged,
 }: {
   id: string
-  items: readonly NeedItem[]
+  items: NeedItems
   approvals: readonly ApprovalItem[]
   kind: NeedKind | null
   unfolded: boolean
@@ -277,9 +282,15 @@ function NeedsList({
   onChanged?: () => void
 }) {
   if (items.length === 0 && approvals.length === 0) {
+    // A KIND THE READ COULD NOT COUNT IS NOT A QUIET ONE: with questions or a
+    // merge "not known", "Nothing waits on you here" would claim what the read
+    // never said, so the line names what it does not know.
+    const unknown = (items.unknownKinds ?? []).filter((k) => k !== 'approval')
     return (
       <p className="ny-quiet" id={id}>
-        Nothing waits on you here
+        {unknown.length === 0
+          ? 'Nothing waits on you here'
+          : `Nothing this screen read waits on you; ${unknown.map((k) => NEED_WORD[k]).join(', ')} not known here`}
       </p>
     )
   }

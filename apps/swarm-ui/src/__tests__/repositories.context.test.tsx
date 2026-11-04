@@ -33,10 +33,14 @@ function detail(fields: Record<string, unknown> = {}) {
   }
 }
 
+/** The selected workspace, as `GET /v1/tenants/me` serves it: a group named "Platform team". */
+const ME = { tenant: { tenant_id: 'eng', kind: 'group', display_name: 'Platform team' }, principal: { email: 'dev@example.com', domain: 'example.com', groups: [], is_admin: false } }
+
 function routes(start: unknown, write?: (m: string, url: string, body: unknown) => { status: number; body: unknown } | null) {
   let current = start
   const calls = serve((m, url, body) => {
     if (m === 'GET' && url === `/v1/repositories/${ID}`) return { status: 200, body: current }
+    if (m === 'GET' && url === '/v1/tenants/me') return { status: 200, body: ME }
     if (m !== 'GET' && write) {
       const r = write(m, url, body)
       if (r !== null && r.status < 300) current = r.body
@@ -80,11 +84,13 @@ describe('Settings: the Code intelligence override', () => {
     const g = await group()
     const card = g.closest('section, .c-card, [class*="card"]') ?? document.body
     expect(visible(card as Element)).toMatch(/nothing leaves the platform/i)
-    expect(visible(card as Element)).toContain('Config › Workspace Settings')
+    // The workspace's switch is on its own page's Settings tab, named by the workspace's name (admin routes lane, part of #2688).
+    expect(await within(card as HTMLElement).findByRole('link', { name: 'Admin › Workspaces › Platform team › Settings' }, WAIT)).toBeTruthy()
+    expect(visible(card as Element)).not.toContain('Config › Workspace Settings')
     // CONFIG-COPY (part of #2157): never the old Settings › Workspace, and the
     // link is Workspace Settings' own path, not the old address's redirect.
     expect(visible(document.body)).not.toMatch(/\bWork › (Setup|Access|Repositories)|(?<!Workspace )Settings › (Workspace|MCP servers)/)
-    expect(within(card as HTMLElement).getByRole('link', { name: 'Config › Workspace Settings' }).getAttribute('href')).toBe('/admin/workspaces?tab=settings')
+    expect(within(card as HTMLElement).getByRole('link', { name: 'Admin › Workspaces › Platform team › Settings' }).getAttribute('href')).toBe('/admin/workspaces?tab=settings')
   })
 
   for (const [name, value] of [

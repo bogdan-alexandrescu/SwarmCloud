@@ -1,4 +1,4 @@
-"""A step's agent plugins at the start of a step: gstack's skills, linked from the image's read-only install.
+"""A step's agent plugins at the start of a step: gstack's and the security audit skill's skills, linked from the image's read-only install.
 
 The owner (BGD, 3 November 2026) chose plugins per step, gstack first, baked
 into the agent images at a pinned version (docs/design/agent-plugins.md, "The
@@ -36,8 +36,13 @@ THE LINKS. gstack's rendered skills call the literal path
 ONLY the step's skills: the agent's skill list, and its prompt, carry
 nothing else. Links a previous attempt left (a checkpoint restores them) are
 removed first, so a resumed step never keeps a skill it no longer names.
+Cloudflare's security audit skill (the second plugin, owner, 4 November
+2026) is one folder whose SKILL.md reads the method files and validators
+beside it by relative path, so `work/.claude/skills/security-audit` links
+to that whole read-only folder instead; there is no plugin-root link.
 
-THE ENVIRONMENT (the packaging doc's list). `GSTACK_SESSION_KIND` for the
+THE ENVIRONMENT (the packaging doc's list), for a step that runs gstack
+only. `GSTACK_SESSION_KIND` for the
 mode; `GSTACK_HOME` under `work/` (checkpointed, so a resumed step keeps
 gstack's own state); `GSTACK_EPHEMERAL=1`; `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`
 (Bun's cache would otherwise land in the checkpointed HOME); and on the
@@ -89,6 +94,9 @@ class PluginEntry:
     install_path: str
     runner_profiles: tuple[str, ...]
     skills: Mapping[str, tuple[str, ...]] = field(hash=False)
+    #: Where whole skill folders sit under the install, or None for gstack's
+    #: shape (`link_skills` says how each is linked).
+    skill_folders: str | None = None
 
 
 #: `swarm_api.plugincatalogue`, restated (the worker imports nothing from
@@ -121,7 +129,15 @@ GSTACK = PluginEntry(
         ),
     },
 )
-CATALOGUE: Mapping[str, PluginEntry] = {GSTACK.name: GSTACK}
+SECURITY_AUDIT = PluginEntry(
+    name="security-audit",
+    version="c1c8a8c1471069fb0e188eeaff69b8e8db6564a8",
+    install_path="/opt/swarm/plugins/security-audit",
+    runner_profiles=CLAUDE_CODE_PROFILES,
+    skills={"unattended": ("security-audit",)},
+    skill_folders="skills",
+)
+CATALOGUE: Mapping[str, PluginEntry] = {GSTACK.name: GSTACK, SECURITY_AUDIT.name: SECURITY_AUDIT}
 
 #: The modes that run today; `swarm_api.plugincatalogue.SUPPORTED_MODES`.
 SUPPORTED_MODES = ("unattended",)
@@ -148,6 +164,16 @@ CONFIG = (
     "codex_reviews: disabled\n"
     "design_detector: off\n"
 )
+
+#: Per plugin, a line the prompt's plugin section adds for it.
+NOTES: Mapping[str, str] = {
+    # Full audit mode writes its reports to an output folder outside the
+    # target checkout; the artifacts folder is outside it and is uploaded.
+    "security-audit": (
+        "A full security-audit run writes its output folder (coverage-ledger.json, "
+        "findings.json, REPORT.md, FINDINGS-DETAIL.md, NEEDS-VALIDATION.md) to "
+        "$SWARM_ARTIFACTS_DIR/security-audit, never inside the checkout."),
+}
 
 #: The attempt summary's key.
 SUMMARY_KEY = "plugins"
@@ -252,6 +278,12 @@ def check(selection: Mapping[str, Mapping[str, Any]], *, profile: str) -> tuple[
 # --- the start of a step ------------------------------------------------------
 
 
+def _skill_path(plugin: Plugin, install: Path, skill: str) -> Path:
+    """The folder holding `skill`'s SKILL.md in the install."""
+    folders = CATALOGUE[plugin.name].skill_folders
+    return (install / folders / skill) if folders is not None else (install / skill)
+
+
 def _install_of(plugin: Plugin, install_paths: Mapping[str, Path] | None) -> Path:
     if install_paths is not None and plugin.name in install_paths:
         return Path(install_paths[plugin.name])
@@ -265,7 +297,8 @@ def _require_install(plugin: Plugin, install: Path, *, image: str) -> None:
         raise PluginUnavailable(
             f"the image {image} has no {plugin.name} {plugin.version} install at {install}: "
             f"this step names {plugin.name}, so it needs an image built with it")
-    missing = [s for s in plugin.skills if not (install / s / "SKILL.md").is_file()]
+    missing = [s for s in plugin.skills
+               if not (_skill_path(plugin, install, s) / "SKILL.md").is_file()]
     if missing:
         raise PluginUnavailable(
             f"the image {image}'s {plugin.name} install at {install} lacks the skills "
@@ -296,14 +329,34 @@ def _remove(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def link_skills(work: Path, plugin: Plugin, install: Path) -> Path:
-    """`work/.claude/skills/<plugin>` to the install, and one
-    `<skill>/SKILL.md` link per step skill, after removing every catalogue
-    name a previous attempt left. Returns the skills folder."""
+def clear_links(work: Path) -> Path:
+    """Remove every catalogue name a previous attempt left (a checkpoint
+    restores them) from `work/.claude/skills`, once, before any plugin is
+    linked. Returns the skills folder."""
     skills_dir = Path(work) / SKILLS_DIR
     skills_dir.mkdir(parents=True, exist_ok=True)
     for name in _offered_anywhere():
         _remove(skills_dir / name)
+    return skills_dir
+
+
+def link_skills(work: Path, plugin: Plugin, install: Path) -> Path:
+    """Link ONLY the step's skills of one plugin into `work/.claude/skills`,
+    which `clear_links` emptied of catalogue names. Returns the folder.
+
+    gstack's shape: `<plugin>` to the install (its skills call
+    `~/.claude/skills/gstack/...`) and one `<skill>/SKILL.md` link per step
+    skill. A plugin with `skill_folders` (security-audit): `<skill>` to the
+    install's whole, read-only skill folder, because its SKILL.md reads the
+    method files and validators beside it by relative path; no plugin-root
+    link, so nothing but the step's skills is reachable by name."""
+    skills_dir = Path(work) / SKILLS_DIR
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    if CATALOGUE[plugin.name].skill_folders is not None:
+        for skill in plugin.skills:
+            (skills_dir / skill).symlink_to(_skill_path(plugin, install, skill),
+                                            target_is_directory=True)
+        return skills_dir
     (skills_dir / plugin.name).symlink_to(install, target_is_directory=True)
     for skill in plugin.skills:
         folder = skills_dir / skill
@@ -338,11 +391,13 @@ def guidance(plugins: Iterable[Plugin]) -> str:
         lines.append(
             f"- {p.name} {p.version}, {p.mode} mode, with only these skills: "
             f"{', '.join(p.skills)}.")
+        if p.name in NOTES:
+            lines.append(f"  {NOTES[p.name]}")
     return (
         "\n\n## Plugins for this step\n\n"
         + "\n".join(lines)
         + "\n\nThey run unattended: a question with a recommended option is answered with "
-        "it and logged. A question gstack leaves open (a consent, a question with no "
+        "it and logged. A question a plugin leaves open (a consent, a question with no "
         "recommendation, a final gate) is the owner's: never answer it yourself. Write each "
         "one to questions.json in $SWARM_ARTIFACTS_DIR as an owner question, with its "
         "options and the recommended one if there is one, say in your answer that it is "
@@ -365,7 +420,7 @@ def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile
     for p in plugins:
         _require_install(p, installs[p.name], image=image)
     chromium = None
-    if profile in BROWSER_PROFILES:
+    if profile in BROWSER_PROFILES and any(p.name == GSTACK.name for p in plugins):
         # The browser image's own PLAYWRIGHT_BROWSERS_PATH (its Dockerfile
         # states the path once), as `livegate.find_chromium` reads it.
         browsers = environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
@@ -376,22 +431,28 @@ def start(task: Mapping[str, Any], *, work: Path, checkout: Path | None, profile
                 f"{browsers or 'PLAYWRIGHT_BROWSERS_PATH (not set)'} for "
                 f"{', '.join(p.name for p in plugins)}'s browser on the {profile} profile")
 
-    home = Path(work) / HOME_DIR_NAME
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text(CONFIG, encoding="utf-8")
+    clear_links(Path(work))
     for p in plugins:
         link_skills(Path(work), p, installs[p.name])
-    exclude_project_state(checkout)
 
-    env = {
-        "GSTACK_SESSION_KIND": plugins[0].mode,
-        "GSTACK_HOME": str(home),
-        "GSTACK_EPHEMERAL": "1",
-        "BUN_RUNTIME_TRANSPILER_CACHE_PATH": "0",
-    }
-    if chromium is not None:
-        env["GSTACK_CHROMIUM_PATH"] = chromium
-        env["GSTACK_CHROMIUM_NO_SANDBOX"] = "1"
+    # gstack's state, config, project folder and variables, only for a step
+    # that runs gstack: security-audit keeps no state and reads none of them.
+    gstack = next((p for p in plugins if p.name == GSTACK.name), None)
+    env: dict[str, str] = {}
+    if gstack is not None:
+        home = Path(work) / HOME_DIR_NAME
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(CONFIG, encoding="utf-8")
+        exclude_project_state(checkout)
+        env = {
+            "GSTACK_SESSION_KIND": gstack.mode,
+            "GSTACK_HOME": str(home),
+            "GSTACK_EPHEMERAL": "1",
+            "BUN_RUNTIME_TRANSPILER_CACHE_PATH": "0",
+        }
+        if chromium is not None:
+            env["GSTACK_CHROMIUM_PATH"] = chromium
+            env["GSTACK_CHROMIUM_NO_SANDBOX"] = "1"
     return Started(plugins=plugins, env=env, guidance=guidance(plugins))
 
 
@@ -449,11 +510,14 @@ __all__ = [
     "GSTACK",
     "HOME_DIR_NAME",
     "Plugin",
+    "NOTES",
     "PluginUnavailable",
+    "SECURITY_AUDIT",
     "SUMMARY_KEY",
     "SUPPORTED_MODES",
     "Started",
     "check",
+    "clear_links",
     "exclude_project_state",
     "find_chromium",
     "guidance",

@@ -12,6 +12,7 @@ import { UrCap, UrRadio, UrRefresh, UrRegion, useUrRead } from './RepositoriesPa
 import { notServed, type CapCell } from './RepositoriesData'
 import { githubTokenState } from './githubTokenState'
 import { PageHead } from './Shell'
+import { WorkspaceTabWords } from './Profile'
 import { usePhoneTables } from './capacityPoll'
 import type {
   AccessDisableResponse, AccessGrant, AccessMode, AccessOverview, AccessOwner, AccessRepository, GitHubConnection,
@@ -476,7 +477,7 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
               {connection.failure !== null ? ` (${connection.failure})` : ''}, so SwarmCloud cannot act as you until you
               reconnect: Reconnect is above.{' '}
               {/* The address CONFIG-NAV's SECTIONS spell, linked at its own path rather than `/setup`'s redirect. */}
-              <a href={addressToPath(WORKSPACE_SETUP_ADDRESS)}>Config › Workspace Settings › Workspace setup</a> carries the
+              <a href={addressToPath(WORKSPACE_SETUP_ADDRESS)}><WorkspaceTabWords tab="Setup" /></a> carries the
               recovery steps.
             </p>
           )}

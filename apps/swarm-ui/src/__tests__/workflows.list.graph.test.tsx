@@ -531,7 +531,11 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
   // Below it the figure stays drawn at 72px and the note is read, not drawn;
   // the figure's title and accessible label carry the caveat (Workflows.tsx's
   // spend cell). MUTATION: move the note's threshold off the derived sum.
-  it('hides the note only where the name would lose its floor, from the ladder', () => {
+  // Like the ladder above, this reads the cascade at a dozen panes, two to
+  // three seconds each: 25-29s on an idle container, past vitest's 30s
+  // default on a loaded CI shard (35s in the merge train, 4 November 2026),
+  // so it carries its own timeout as the ladder's tests do.
+  it('hides the note only where the name would lose its floor, from the ladder', { timeout: 120_000 }, () => {
     const root = row(true)
     // A band where Owner and Changed are gone and Spent is at its full width.
     const full: CascadeEnv = { width: 1440, container: 700 }
@@ -622,7 +626,11 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
   // floor, the box's two 1px borders, the state's glyph, Steps, Needs and the
   // figure-only Spent), read from the cascade, not a fixed number.
   // MUTATION: move Spent's threshold off the derived sum.
-  it('hides Spent only where its figure-only width breaks the name\'s floor, from the ladder', () => {
+  // Like the ladder above, this reads the cascade at a dozen panes, two to
+  // three seconds each: 25-29s on an idle container, past vitest's 30s
+  // default on a loaded CI shard (35s in the merge train, 4 November 2026),
+  // so it carries its own timeout as the ladder's tests do.
+  it('hides Spent only where its figure-only width breaks the name\'s floor, from the ladder', { timeout: 120_000 }, () => {
     const root = row(true)
     const phone: CascadeEnv = { width: 1280, container: 500 }
     expect(painted(root.querySelector('thead')!, 'clip-path', phone), 'the phone row at 500').toBe('inset(50%)')

@@ -209,6 +209,25 @@ describe('the page states what SwarmCloud may do as you', () => {
   })
 })
 
+// THE OLD MENU WORDING (admin routes lane follow-up, part of #2688): a
+// connection that is not active points at the selected workspace's own Setup
+// tab, named by the workspace, never at Config › Workspace Settings.
+describe('a connection that is not active', () => {
+  it("names the selected workspace's Setup tab as the place with the recovery steps", async () => {
+    api((m, url) => {
+      if (m === 'GET' && url === '/v1/access') return { status: 200, body: overview({ connection: { ...CONNECTION, state: 'refresh_failed', failure: 'REFRESH_FAILED' } }) }
+      if (m === 'GET' && url === '/v1/tenants/me') return { status: 200, body: { tenant: { tenant_id: 'eng', kind: 'group', display_name: 'Platform team' } } }
+      return null
+    })
+    await mount()
+    await policyDrawn()
+    const link = await screen.findByRole('link', { name: 'Admin › Workspaces › Platform team › Setup' }, { timeout: 4000 })
+    expect(link.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
+    expect(visible(link.parentElement)).toContain('Admin › Workspaces › Platform team › Setup carries the recovery steps.')
+    expect(visible(document.body)).not.toContain('Workspace Settings')
+  })
+})
+
 // QUOTA-THROTTLE (#1483): GET /v1/access serves `github_quota`, one entry
 // per credential the person may see; the page draws one line each, amber
 // (the warn mark) while the server says it is low, and nothing for a

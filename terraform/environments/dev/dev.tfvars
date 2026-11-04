@@ -1140,3 +1140,9 @@ settings_mac_key_ready = true
 # settings; checks on request").
 settings_mac_tenants  = ["eng"]
 settings_mac_required = true
+
+# The Jev review of a contract at submission (swarm-api's SWARM_CONTRACT_REVIEW,
+# terraform/infra/variables.tf contract_review_mode). Rendered from 2026-11-04
+# (owner's choice) and left off, what swarm-api read while it was unset, so the
+# live plan changes no behaviour. "report" reviews and logs; "enforce" refuses.
+contract_review_mode = "off"

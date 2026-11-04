@@ -439,7 +439,7 @@ def test_the_audit_row_holds_counts_never_the_payload_the_answer_or_the_key(
 
 
 def test_where_jev_runs_names_swarm_apis_contract_review() -> None:
-    """Lane CONTRACT-REVIEW-SUBMIT (4 November 2026): swarm-api makes one Jev
+    """Lane CONTRACT-REVIEW-SUBMIT (4 November 2026): swarm-api makes a Jev
     call, the contract review at submission, and the record says so, gated
     by its own mode and its own workspace setting, charged to the month."""
     text = DOC.read_text(encoding="utf-8")

@@ -352,41 +352,50 @@ describe('WF-6: the attempt stepper and the table count the same thing, or say w
       data: { attempts: [5, 4, 3, 2, 1].map((n) => attempt(n, 't_merge', n === 5 ? { exit_code: 0 } : { error: 'CI_PENDING' })) },
       fetchedAt: T0,
     })
-    render(<WorkflowsScreen view="wf=wf_plugin&tab=table" />)
-    const pickButton = await waitFor(() => {
-      const b = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="merge"]')
-      expect(b).not.toBeNull()
-      return b!
-    })
-    if (document.querySelector('.wf-inspect') === null) fireEvent.click(pickButton)
-    const pos = await waitFor(() => {
-      const p = document.querySelector<HTMLElement>('[data-scrub="attempt"] .wf-scrub-pos')
-      expect(p).not.toBeNull()
-      return p!
-    })
-    // Not "attempt 5 of 5" beside a table saying "1 of 10".
-    expect(pos.textContent).not.toMatch(/^attempt 5 of 5$/)
-    expect(pos.textContent).toBe('run 5 of 5')
-    // V200 (#1427): ◀ position ▶ is one unit that never wraps -- at 400 the
-    // whole sentence filled the line and ▶ wrapped alone -- and the counted
-    // figure is after it, outside it, where it may wrap on its own.
-    // MUTATION: put the counted figure back inside the position, or the
-    // buttons back outside `.wf-scrub-nav`.
-    const scrub = document.querySelector<HTMLElement>('[data-scrub="attempt"]')!
-    const nav = pos.parentElement!
-    expect(nav.classList.contains('wf-scrub-nav')).toBe(true)
-    expect(within(nav).getByRole('button', { name: 'Previous attempt' })).toBeTruthy()
-    expect(within(nav).getByRole('button', { name: 'Next attempt' })).toBeTruthy()
-    const counted = scrub.querySelector<HTMLElement>(':scope > .wf-scrub-counted')!
-    expect(counted.textContent).toBe('1 of 10 counted')
-    expect(nav.nextElementSibling).toBe(counted)
-    expect(counted.title).toMatch(/a wait for CI is refunded and not counted/)
-    expect(painted(nav, 'white-space', { width: 400 })).toBe('nowrap')
-    // WF-20: a park is not filed under `error`. Step back to a CI park.
-    fireEvent.click(within(document.querySelector<HTMLElement>('[data-scrub="attempt"]')!).getByRole('button', { name: 'Previous attempt' }))
-    const keys = [...document.querySelectorAll('[data-scrub="attempt"] .ctl-fact > b')].map((b) => b.textContent)
-    expect(keys).toContain('parked')
-    expect(keys).not.toContain('error')
+    // A picked step opens in the docked inspector, which starts folded below
+    // 1366px (jsdom's default innerWidth is 1024); widen the page so the
+    // dock -- and this scrub control -- actually renders.
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+    try {
+      render(<WorkflowsScreen view="wf=wf_plugin&tab=table" />)
+      const pickButton = await waitFor(() => {
+        const b = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="merge"]')
+        expect(b).not.toBeNull()
+        return b!
+      })
+      if (document.querySelector('.wf-inspect') === null) fireEvent.click(pickButton)
+      const pos = await waitFor(() => {
+        const p = document.querySelector<HTMLElement>('[data-scrub="attempt"] .wf-scrub-pos')
+        expect(p).not.toBeNull()
+        return p!
+      })
+      // Not "attempt 5 of 5" beside a table saying "1 of 10".
+      expect(pos.textContent).not.toMatch(/^attempt 5 of 5$/)
+      expect(pos.textContent).toBe('run 5 of 5')
+      // V200 (#1427): ◀ position ▶ is one unit that never wraps -- at 400 the
+      // whole sentence filled the line and ▶ wrapped alone -- and the counted
+      // figure is after it, outside it, where it may wrap on its own.
+      // MUTATION: put the counted figure back inside the position, or the
+      // buttons back outside `.wf-scrub-nav`.
+      const scrub = document.querySelector<HTMLElement>('[data-scrub="attempt"]')!
+      const nav = pos.parentElement!
+      expect(nav.classList.contains('wf-scrub-nav')).toBe(true)
+      expect(within(nav).getByRole('button', { name: 'Previous attempt' })).toBeTruthy()
+      expect(within(nav).getByRole('button', { name: 'Next attempt' })).toBeTruthy()
+      const counted = scrub.querySelector<HTMLElement>(':scope > .wf-scrub-counted')!
+      expect(counted.textContent).toBe('1 of 10 counted')
+      expect(nav.nextElementSibling).toBe(counted)
+      expect(counted.title).toMatch(/a wait for CI is refunded and not counted/)
+      expect(painted(nav, 'white-space', { width: 400 })).toBe('nowrap')
+      // WF-20: a park is not filed under `error`. Step back to a CI park.
+      fireEvent.click(within(document.querySelector<HTMLElement>('[data-scrub="attempt"]')!).getByRole('button', { name: 'Previous attempt' }))
+      const keys = [...document.querySelectorAll('[data-scrub="attempt"] .ctl-fact > b')].map((b) => b.textContent)
+      expect(keys).toContain('parked')
+      expect(keys).not.toContain('error')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
+    }
   })
 })
 

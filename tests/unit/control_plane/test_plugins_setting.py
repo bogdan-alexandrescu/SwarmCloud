@@ -99,13 +99,20 @@ def test_none_are_allowed_until_set(client, db, seeded):
     assert body["plugins"] == {"allowed": []}
     assert body["defaults"] == {"plugins": {"allowed": []}}
     assert body["can_edit"] is False
-    (gstack,) = body["catalogue"]
-    assert gstack["name"] == "gstack" and gstack["version"] == "1.92.55.0"
+    served = {entry["name"]: entry for entry in body["catalogue"]}
+    assert sorted(served) == ["gstack", "security-audit"]
+    gstack = served["gstack"]
+    assert gstack["version"] == "1.92.55.0"
     assert gstack["modes"]["unattended"]["available"] is True
     assert gstack["modes"]["planner"]["available"] is False
     assert "question bridge" in gstack["modes"]["planner"]["reason"]
-    # Never a path from the image.
-    assert "install_path" not in gstack
+    # The second plugin (owner, 4 November 2026): one skill, unattended only.
+    audit = served["security-audit"]
+    assert audit["version"] == "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8"
+    assert audit["modes"] == {"unattended": {"skills": ["security-audit"], "available": True}}
+    # Never a path from the image, nor how its folders are laid out.
+    for entry in served.values():
+        assert "install_path" not in entry and "skill_folders" not in entry
     selected = client.get("/v1/plugins", headers={**auth_header("alice"), "X-Swarm-Tenant": "eng"})
     assert selected.status_code == 200, selected.text
     assert selected.json()["plugins"] == {"allowed": []}

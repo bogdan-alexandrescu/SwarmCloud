@@ -5,6 +5,7 @@ import type { ApiError } from './fetch'
 import { connectionOf, Refusal } from './GitHubConnect'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
+import { WorkspaceTabWords } from './Profile'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
 import { timeAgo } from './types'
@@ -17,7 +18,7 @@ import './styles/onboarding.css'
  *
  *   * `SetupCard`, on Overview, where a person already lands -- shown while
  *     the checklist is not complete, gone by itself once it is (Entry A);
- *   * `OnboardingScreen`, Config › Workspace Settings › Workspace setup, the
+ *   * `OnboardingScreen`, Admin › Workspaces › <workspace> › Setup, the
  *     same steps as a part of that page, which the nav reaches whether or not
  *     the card was hidden. It was Work › Setup, a page of its own, until
  *     WS-SETTINGS-PAGE (part of #2157, proposal E S6b) made it a part: it
@@ -491,14 +492,14 @@ export function SetupCard() {
       <Checklist doc={d} reload={doc.reload} />
       <p className="ur-hint">
         This card leaves Overview by itself once every step is done. Hide keeps every step as it is, for you in every
-        browser; Config › Workspace Settings › Workspace setup still shows them.
+        browser; <WorkspaceTabWords tab="Setup" /> still shows them.
       </p>
     </Card>
   )
 }
 
 /**
- * Workspace setup, a part of Config › Workspace Settings (WS-SETTINGS-PAGE):
+ * Workspace setup, the Setup tab of Admin › Workspaces › <workspace> (WS-SETTINGS-PAGE):
  * the checklist, under the page's own heading and parts, so it draws no h1.
  * Its read control rides in the checklist card's head.
  */

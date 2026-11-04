@@ -19,6 +19,9 @@ answers in the decision API's wire shape. No credentials, no network.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import secrets
 from datetime import datetime, timezone
@@ -410,10 +413,15 @@ def test_the_re_sign_pass_signs_an_unsigned_opt_in_only_as_stored(db):
 
 
 def test_the_signing_list_names_the_new_block_only():
+    """Contract request 138, applied: the frozen list names the block, and
+    swarm-api keeps no signing list of its own."""
     from swarm_common.specsign import SETTINGS_MAC_FIELDS
 
-    assert dict(judgment.API_SETTINGS_MAC_FIELDS) == {"contract_review": ("enabled",)}
-    assert not set(judgment.API_SETTINGS_MAC_FIELDS) & set(SETTINGS_MAC_FIELDS)
+    assert SETTINGS_MAC_FIELDS[cr.MAC_BLOCK] == (cr.ENABLED,)
+    assert judgment.WRITER_FIELDS[cr.MAC_BLOCK] == (cr.ENABLED,)
+    assert judgment.unowned_covered_keys(cr.MAC_BLOCK) == ()
+    assert not hasattr(judgment, "API_SETTINGS_MAC_FIELDS")
+    assert not hasattr(judgment, "_canonical_block")
 
 
 def test_the_route_reads_and_writes_the_setting(client, db, monkeypatch):
@@ -576,22 +584,31 @@ def test_a_contract_whose_every_text_is_dropped_sends_nothing_and_is_not_judged(
     assert task["metadata"][wc.METADATA_KEY]["revision"] == 1
 
 
-def test_the_blocks_bytes_are_the_frozen_functions_so_applying_request_138_re_signs_nothing(
-        monkeypatch):
-    """Contract request 138 moves `contract_review` into the frozen
-    `SETTINGS_MAC_FIELDS`. swarm-api's own bytes for it must be exactly
-    `canonical_settings_block`'s once the frozen list names it, so every MAC
-    stored before the change still verifies after it."""
-    from types import MappingProxyType
+#: The bytes swarm-api's own `judgment._canonical_block` signed for the block
+#: before contract request 138 was applied (read off main at b29e1ce).
+SIGNED_BEFORE_138 = (b'{"block":"contract_review","fields":{"enabled":true},'
+                     b'"purpose":"swarm.settings/v1","tenant_id":"eng"}')
 
-    from swarm_common import specsign
 
-    fields = {cr.ENABLED: True, cr.SET_BY: "alice@example.com", "mac": {"v": 1}}
-    ours = judgment._canonical_block("eng", cr.MAC_BLOCK, fields)
-    monkeypatch.setattr(specsign, "SETTINGS_MAC_FIELDS", MappingProxyType(
-        {**specsign.SETTINGS_MAC_FIELDS, cr.MAC_BLOCK: ("enabled",)}))
-    assert ours == specsign.canonical_settings_block(tenant_id="eng", block=cr.MAC_BLOCK,
-                                                     fields=fields)
+def test_an_opt_in_signed_before_request_138_still_verifies_and_is_not_re_signed(db):
+    """A MAC swarm-api stored over the pre-138 bytes verifies through the
+    frozen `canonical_settings_block`, and the first re-sign pass after
+    applying finds it `signed` and writes nothing."""
+    key = secrets.token_hex(16)
+    sig = hmac.new(key.encode("utf-8"), SIGNED_BEFORE_138, hashlib.sha256).digest()
+    block = {cr.ENABLED: True, cr.SET_AT: NOW, cr.SET_BY: "alice@example.com",
+             judgment.MAC_FIELD: {"v": judgment.MAC_VERSION, "key": judgment.key_id(key),
+                                  "sig": base64.b64encode(sig).decode("ascii")}}
+    db.collection(judgment.SETTINGS_COLLECTION).document("eng").set({cr.FIELD: block})
+
+    assert judgment.block_verifies("eng", cr.MAC_BLOCK, block, (key,))
+    mac = judgment.SettingsMac(keys=(key,), tenants=("eng",))
+    doc = cr.ContractReviewStore(db, now=lambda: NOW).document("eng")
+    assert cr.stored_enabled(doc, tenant_id="eng", mac=mac) is True
+    out = judgment.resign_workspace_settings(db, key, apply=True)
+    assert out["written"] == 0
+    assert [r["status"] for r in out["blocks"] if r["block"] == cr.MAC_BLOCK] == [
+        judgment.RESIGN_SIGNED]
 
 
 @pytest.mark.parametrize(("jc2", "jev", "unenforced"), [
