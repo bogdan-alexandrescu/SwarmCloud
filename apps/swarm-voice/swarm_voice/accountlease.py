@@ -19,6 +19,10 @@ THE BROKER'S ROUTES (artifacts interface, apps/quota-broker):
   developer API key and never a ChatGPT plan (OpenAI answered the plan's
   token 403 on /v1/live/sessions, 4 November 2026): with no key in the pool
   the broker refuses `no_voice_account_registered` before taking any hold.
+  `capability: text` (a text conversation, textchat.py) asks for the Voice it
+  pool's ChatGPT plan and is answered with its access token and plan account
+  id, `{"access_token", "account_id"}`, the same credential the broker served
+  the plan before Live needed a key.
 * `POST /v1/voice/lease/{account_id}/renew` `{"assignment_id",
   "voice_session_id"}` -> `{"expires_at", "credential": {...}}` with a FRESH
   access token; 404/409 when the hold is gone.
@@ -63,8 +67,13 @@ METADATA_IDENTITY_URL = (
 )
 
 PROVIDER = "openai"
-#: What every Voice it session leases its account for: a GPT-Live session.
+#: What a Live Voice it session leases its account for: a GPT-Live session,
+#: which only an OpenAI developer API key can open.
 CAPABILITY = "live"
+#: What a text conversation leases its account for (textchat.py): the ChatGPT
+#: plan's Responses wire, which serves text on the plan but refuses Live (owner,
+#: 4 November 2026: "both paths"). The broker offers a plan for it, never a key.
+CAPABILITY_TEXT = "text"
 #: The broker's voice hold lives ten minutes; renewing every four leaves two
 #: renewals' slack before it lapses, and each renewal brings a fresh token.
 RENEW_SECONDS = 240.0
@@ -151,12 +160,17 @@ class VoiceBroker:
         planner's lease (plannerlease.py) goes through it."""
         return await self._post(path, payload)
 
-    async def lease(self, *, person: str, voice_session_id: str) -> "PoolCredential":
-        """Lease a Voice it pool account for `person`'s session. Raises
-        VoicePoolRefused with the broker's reason, or CredentialError."""
+    async def lease(self, *, person: str, voice_session_id: str,
+                    capability: str = CAPABILITY) -> "PoolCredential":
+        """Lease a Voice it pool account for `person`'s session: a key for a Live
+        session (`CAPABILITY`), the ChatGPT plan for a text one
+        (`CAPABILITY_TEXT`). Raises VoicePoolRefused with the broker's reason,
+        or CredentialError."""
+        if capability not in (CAPABILITY, CAPABILITY_TEXT):
+            raise CredentialError(f"no Voice it lease is asked for {capability!r}")
         status, body = await self._post("/v1/voice/lease", {
             "person": person, "voice_session_id": voice_session_id, "provider": PROVIDER,
-            "capability": CAPABILITY})
+            "capability": capability})
         if status != 200 or not isinstance(body, dict):
             # The status only: an error body may quote the request.
             raise CredentialError(f"the quota broker refused the voice lease (HTTP {status})")

@@ -1,7 +1,9 @@
 """Voice it session routes (docs/design/voice-it.md §3.6, §3.7, §10 phase 1).
 
-    POST /v1/voice/sessions                   {offer_sdp, project_id?}
-        -> {project_id, session_id, state, new_project, answer_sdp}
+    POST /v1/voice/sessions                   {offer_sdp?, project_id?}
+        -> {project_id, session_id, state, new_project, mode, answer_sdp (live only)}
+    POST /v1/voice/sessions/{session_id}/turns  {text}
+        -> {turn_id, reply, cards}
     POST /v1/voice/sessions/{session_id}/end
         -> {project_id, session_id, state, changed, voice_told}
 
@@ -94,6 +96,23 @@ broker's Voice it pool itself, and its pool refusals (403, or 409
 browser's offer goes to swarm-voice unchanged and its answer comes back
 unchanged; neither is logged or stored.
 
+THE MODE AND THE TURNS (owner, 4 November 2026: "both paths"; voice/
+sessions.py, `pick_mode`). The start asks the broker what the Voice it pool
+holds: with an OpenAI API key the session is `live` (GPT-Live, today's path:
+`offer_sdp` is required and `answer_sdp` comes back); with none it is `text`,
+on the pool's ChatGPT plan, which serves text but not Live: no SDP, any
+offer sent is dropped unread, and the browser posts each spoken turn to
+`/turns` as `{"text": 1..4000 characters}`, answered `{turn_id, reply,
+cards}`. A turn passes the same guards as every Voice it action -- the
+person on the Voice it list (403), the console's selected workspace through
+`tenant_scope`, the session the caller's own there (else the same 404) --
+and is 409 `conflict` (`voice_session_not_live`) on a session that is not a
+live text one; the plan's usage limit is 429 `rate_limited` with
+`detail.resets_at`. It is not on the grant's lists (voice/grant.py): the
+session grant is what swarm-voice's planner acts with during the turn, and
+never what posts one. The person's text is never logged: it rides in the
+body alone, and nothing here writes it anywhere.
+
 swarm-voice's client is `app.state.voice_client` when one is set (a test's
 fake), else the deployment's from SWARM_VOICE_URL, else none.
 """
@@ -132,8 +151,16 @@ class StartSession(BaseModel):
     #: Not stripped: the SDP goes to swarm-voice byte for byte.
     model_config = ConfigDict(extra="forbid")
 
-    offer_sdp: str = Field(min_length=1, max_length=vs.MAX_SDP_BYTES)
+    #: Required for a Live session; a text session (no OpenAI API key in the
+    #: Voice it pool) has no WebRTC and drops it unread.
+    offer_sdp: str | None = Field(default=None, min_length=1, max_length=vs.MAX_SDP_BYTES)
     project_id: str | None = Field(default=None, min_length=1, max_length=_ID_MAX)
+
+
+class TextTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=vs.MAX_TURN_CHARS)
 
 
 def voice_client(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
@@ -206,18 +233,37 @@ async def start_session(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
     client: Any = Depends(voice_client),
+    pool: AccountPool = Depends(account_pool),
 ) -> dict:
     service = _service(ctx, client)
-    if not body.offer_sdp.startswith("v=0"):
-        raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
     if body.project_id is not None:
         _check_id(body.project_id, "vp_", "project_id")
+    mode = await run_in_threadpool(vs.pick_mode, pool, person)
+    if mode == vs.MODE_LIVE and (body.offer_sdp is None or not body.offer_sdp.startswith("v=0")):
+        raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
 
     def _start() -> dict:
-        return service.start(tenant_id=tenant_id, person=person, offer=body.offer_sdp,
-                             project_id=body.project_id)
+        return service.start(tenant_id=tenant_id, person=person, offer=body.offer_sdp or "",
+                             project_id=body.project_id, mode=mode)
 
     return await run_in_threadpool(_start)
+
+
+@router.post("/sessions/{session_id}/turns")
+async def text_turn(
+    session_id: str,
+    body: TextTurn,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    client: Any = Depends(voice_client),
+) -> dict:
+    service = _service(ctx, client)
+    _check_id(session_id, "vs_", "session_id")
+    if not body.text.strip():
+        raise ValidationFailed("a turn needs some text", detail={"field": "text"})
+    return await run_in_threadpool(
+        service.turn, tenant_id=tenant_id, person=person, session_id=session_id, text=body.text)
 
 
 @router.post("/sessions/{session_id}/end")
