@@ -20,7 +20,14 @@ What each test holds:
   answer as recorded;
 * the resumed session's one message is the answer, and a resume whose
   answer did not reach the runner is refused;
-* with the switch off nothing parks on a question.
+* with the switch off nothing parks on a question;
+* after a hook-stopped question the runner takes no finish, repair,
+  pre-publish, wrap-up or context-ceiling handoff turn, and an answered
+  resume over the ceiling still resumes the parked session;
+* the park's checkpoint holds the transcript, its sidecar directory and
+  GSTACK_HOME; a transcript missing from work/, a GSTACK_HOME outside it, or
+  a record and stream that disagree when the worker reads them, fail the
+  attempt instead of parking; the record names the checkout's HEAD.
 
 No credentials, no network, no emulator: the production worker and the
 production claude-code runner around a stand-in CLI that behaves as the
@@ -89,6 +96,10 @@ slug = os.getcwd().replace("/", "-").replace(".", "-")
 transcript = home / ".claude" / "projects" / slug / f"{sid}.jsonl"
 transcript.parent.mkdir(parents=True, exist_ok=True)
 transcript.write_text(json.dumps({"type": "user", "sessionId": sid, "content": "go"}) + "\n")
+# The session's sidecar directory, beside its transcript (tool results, subagents).
+sidecar = transcript.parent / sid / "tool-results"
+sidecar.mkdir(parents=True, exist_ok=True)
+(sidecar / "r1.txt").write_text("ok")
 tools = ["Bash"] + (["AskUserQuestion"] if opt("--permission-prompt-tool") == "stdio" else [])
 out({"type": "system", "subtype": "init", "session_id": sid, "tools": tools})
 if "AskUserQuestion" not in tools:
@@ -144,6 +155,7 @@ def plugin_step(monkeypatch: pytest.MonkeyPatch) -> None:
     def start(task: Any, *, work: Path, **_: Any) -> plugins_mod.Started:
         home = Path(work) / plugins_mod.HOME_DIR_NAME
         home.mkdir(parents=True, exist_ok=True)
+        (home / "state.json").write_text("{}")
         return plugins_mod.Started(
             plugins=(plugins_mod.Plugin(name="gstack", version="1", mode="unattended", skills=()),),
             env={"GSTACK_HOME": str(home)}, guidance="")
@@ -561,3 +573,113 @@ def test_an_answered_resume_over_the_ceiling_still_resumes_the_parked_session(
     assert only["stdin"].startswith(answer + "\n")
     assert "CONTEXT CEILING HANDOFF" not in only["stdin"]
     assert out["context_ceiling"]["stops"] == []
+
+
+class _QuietLog:
+    def info(self, *a: Any, **k: Any) -> None: ...
+    def warning(self, *a: Any, **k: Any) -> None: ...
+    def error(self, *a: Any, **k: Any) -> None: ...
+
+
+def test_the_parks_checkpoint_holds_the_transcript_its_sidecar_and_gstack_home(
+        db, store, tmp_path, worker_factory, bridge_cli, plugin_step, monkeypatch):
+    """Brief item 2: the checkpoint the park takes holds the session's
+    transcript, its sidecar directory and GSTACK_HOME, so the answer's
+    attempt restores all three."""
+    monkeypatch.setenv(qb.ENABLE_ENV, "1")
+    _seed(db, {})
+    assert _run(worker_factory) == ExitCode.PARKED
+    task = _task(db)
+    sid = task["blocked_by"][0][questions_mod.QUESTION_WAIT_KEY][qb.BRIDGE_KEY]["session_id"]
+
+    manager = CheckpointManager(store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_9",
+                                generation=2, logger=_QuietLog())
+    record = manager.find_by_uri(task["latest_checkpoint"])
+    assert record is not None
+    fresh = workspace_mod.create(tmp_path / "restored-ws", "att_9")
+    manager.restore(record, fresh)
+    # MUTATION: exclude work/.claude from the checkpoint -> no transcript, no sidecar.
+    assert qb.restored_session(fresh.work, sid)
+    (sidecar,) = [p for p in (fresh.work / ".claude" / "projects").glob(f"*/{sid}") if p.is_dir()]
+    assert (sidecar / "tool-results" / "r1.txt").read_text() == "ok"
+    assert (fresh.work / plugins_mod.HOME_DIR_NAME / "state.json").read_text() == "{}"
+
+
+def test_a_park_whose_transcript_is_missing_is_refused(
+        db, tmp_path, worker_factory, bridge_cli, plugin_step, monkeypatch):
+    """A checkpoint without the session's transcript resumes nothing: the
+    park is refused and the attempt fails."""
+    monkeypatch.setenv(qb.ENABLE_ENV, "1")
+    text = bridge_cli.read_text()
+    # The CLI drops its transcript after the hook stopped it.
+    marker = 'out({"type": "result", "subtype": "success", "is_error": False, "session_id": sid,\n     "stop_reason"'
+    assert text.count(marker) == 1
+    bridge_cli.write_text(text.replace(marker, "transcript.unlink()\n" + marker))
+    _seed(db, {})
+
+    # MUTATION: drop the transcript check in `_bridge_checkpoint_gaps` -> PARKED.
+    assert _run(worker_factory) == ExitCode.FAILED
+    task = _task(db)
+    assert task["state"] != TaskState.PARKED.value
+    assert "question_park_refused" in str(task.get("last_error"))
+    assert "transcript" in str(task.get("last_error"))
+
+
+def test_a_park_whose_gstack_home_is_outside_work_is_refused(
+        db, tmp_path, worker_factory, bridge_cli, monkeypatch):
+    """gstack's state outside `work/` is in no checkpoint: the park is refused."""
+    outside = tmp_path / "gstack-outside"
+
+    def start(task: Any, *, work: Path, **_: Any) -> plugins_mod.Started:
+        outside.mkdir(parents=True, exist_ok=True)
+        return plugins_mod.Started(
+            plugins=(plugins_mod.Plugin(name="gstack", version="1", mode="unattended", skills=()),),
+            env={"GSTACK_HOME": str(outside)}, guidance="")
+
+    monkeypatch.setattr(lifecycle.plugins_mod, "start", start)
+    monkeypatch.setenv(qb.ENABLE_ENV, "1")
+    _seed(db, {})
+
+    # MUTATION: drop the GSTACK_HOME check in `_bridge_checkpoint_gaps` -> PARKED.
+    assert _run(worker_factory) == ExitCode.FAILED
+    task = _task(db)
+    assert task["state"] != TaskState.PARKED.value
+    assert "GSTACK_HOME" in str(task.get("last_error"))
+
+
+def test_a_record_the_worker_finds_disagreeing_with_the_stream_fails_the_attempt(
+        db, tmp_path, worker_factory, bridge_cli, plugin_step, monkeypatch):
+    """Defence in depth behind the runner's own check: when the worker reads
+    the hook's record and the stream at park and they disagree (here, the
+    stream the worker reads is gone), the step does not park."""
+    monkeypatch.setenv(qb.ENABLE_ENV, "1")
+    monkeypatch.setattr(lifecycle, "agent_stream_files", lambda profile: None)
+    _seed(db, {})
+
+    # MUTATION: treat `bridge_failed` as not asked -> the step SUCCEEDS with nobody's answer.
+    assert _run(worker_factory) == ExitCode.FAILED
+    task = _task(db)
+    assert task["state"] != TaskState.PARKED.value
+    assert "question_bridge_failed" in str(task.get("last_error"))
+
+
+def test_the_parked_record_names_the_checkouts_head(tmp_path):
+    """`Worker._checkout_revision`: the full SHA of the checkout's HEAD, the
+    revision the question was asked about; None without a checkout."""
+    import subprocess
+    from types import SimpleNamespace
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.email=q@example.invalid", "-c", "user.name=q"]
+    subprocess.run([*git, "init", "-q", "-b", "main"], check=True)
+    (repo / "a.txt").write_text("a\n")
+    subprocess.run([*git, "add", "a.txt"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "a"], check=True)
+    head = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True,
+                          text=True).stdout.strip()
+    ws = SimpleNamespace(checkout=lambda: repo)
+
+    worker = SimpleNamespace(ws=ws, _repo_url="https://example.invalid/r.git")
+    assert lifecycle.Worker._checkout_revision(worker) == head and len(head) == 40
+    assert lifecycle.Worker._checkout_revision(SimpleNamespace(ws=ws, _repo_url=None)) is None
