@@ -49,10 +49,25 @@ swarm-graph pods of swarm-system on TCP 8081 (the stats), each rule one port
 and nothing else: swarm-api never reaches /mcp and a tenant never reaches the
 stats. `check_graph_ingress` judges it, against the same `--live` input.
 
+THE JEV TAILNET EGRESS (docs/runbooks/tailscale-egress.md; jev-contract.md
+section 4.1; the owner's choice of 4 November 2026), with
+`--jev-egress-ingress`. `decision-api-egress-ingress`
+(kubernetes/swarm-system/tailscale-egress.yaml, rendered by
+terraform/infra/tailscale.tf from local.decision_api_swarm_api_cidr, terraform's
+own copy of the subnet) admits a `swarm-judge: internal` pod of a tenant
+namespace, and swarm-api's Direct VPC egress range, each on TCP 8443 only.
+A range that is not the one swarm-api egresses from closes swarm-api's one
+route to the Jev backend while every manifest check passes, so
+`kubernetes/apply.sh --swarm-system --confirm` judges the policy as the API
+server holds it with `check_jev_egress_ingress`, against the same `--live`
+input, whenever it applied the tailnet egress; a difference names both ranges.
+
 The shape rules for those policies -- `check_live_egress`, `check_live_ingress`,
-`check_system_deny` and `check_graph_ingress` -- live here, once: tests/unit/scripts/test_live_netpol.py
-judges the RENDERED policies with the same functions, so a rule cannot be
-restated in the tests and drift from what is checked against the cluster.
+`check_system_deny`, `check_graph_ingress` and `check_jev_egress_ingress` --
+live here, once: tests/unit/scripts/test_live_netpol.py (and
+test_graph_service_manifest.py, test_tailscale_egress.py) judges the RENDERED
+policies with the same functions, so a rule cannot be restated in the tests
+and drift from what is checked against the cluster.
 They compare exact shapes, not "allows at least": every widening -- a second
 port, a peer split into two (an OR), a selector dropped -- is a failure.
 """
@@ -129,6 +144,23 @@ GRAPH_POD_SELECTOR = {"matchLabels": {"app.kubernetes.io/name": "swarm-graph"}}
 GRAPH_TENANT_PEER = {"namespaceSelector": TENANT_NAMESPACE_SELECTOR}
 #: The swarm-graph pods of the policy's own namespace: a bare pod selector.
 GRAPH_PEER_PODS = {"podSelector": GRAPH_POD_SELECTOR}
+
+# -- the Jev tailnet egress (JUDGE-NET; jev-contract.md section 4.1) -------------
+
+#: kubernetes/swarm-system/tailscale-egress.yaml's ingress policy; present only
+#: while enable_tailscale_egress is on.
+JEV_EGRESS_INGRESS_POLICY = "decision-api-egress-ingress"
+JEV_EGRESS_POD_SELECTOR = {"matchLabels": {"app.kubernetes.io/name": "decision-api-egress"}}
+#: The forwarder's one port, behind decision-api:443 and the internal load
+#: balancer; tests/unit/scripts/test_tailscale_egress.py holds it to the manifest.
+JEV_EGRESS_PORT = 8443
+JEV_EGRESS_PORTS = [{"protocol": "TCP", "port": JEV_EGRESS_PORT}]
+#: The pods the dispatcher marks for internal judging, in a tenant namespace:
+#: ONE peer with both selectors (two would be an OR).
+JEV_JUDGE_PEER = {
+    "namespaceSelector": TENANT_NAMESPACE_SELECTOR,
+    "podSelector": {"matchLabels": {"swarm-judge": "internal"}},
+}
 
 
 def namespace_selector_matches(selector: dict[str, Any], labels: dict[str, str]) -> bool:
@@ -246,6 +278,61 @@ def check_graph_ingress(policy: dict[str, Any], api_cidr: str) -> list[str]:
     for rule, (_, port, name) in zip(expected, wanted):
         if rules.count(rule) != 1:
             problems.append(f"{what}: does not admit {name} on TCP {port} exactly once")
+    return problems
+
+
+def check_jev_egress_ingress(policy: dict[str, Any], api_cidr: str) -> list[str]:
+    """`decision-api-egress-ingress`: exactly two rules -- a `swarm-judge:
+    internal` tenant pod on 8443, and swarm-api's range `api_cidr` as the one
+    ipBlock on 8443 -- and nothing more. A drifted range or port is named
+    beside the value it should be."""
+    what = JEV_EGRESS_INGRESS_POLICY
+    metadata = policy.get("metadata") or {}
+    spec = policy.get("spec") or {}
+    problems: list[str] = []
+    if metadata.get("namespace") != SYSTEM_NAMESPACE:
+        problems.append(f"{what}: in namespace {metadata.get('namespace')}, not {SYSTEM_NAMESPACE}")
+    if spec.get("podSelector") != JEV_EGRESS_POD_SELECTOR:
+        problems.append(f"{what}: selects {spec.get('podSelector')}, not {JEV_EGRESS_POD_SELECTOR}")
+    if spec.get("policyTypes") != ["Ingress"]:
+        problems.append(f"{what}: policyTypes {spec.get('policyTypes')}, not ['Ingress']")
+    rules = spec.get("ingress") or []
+    # The rule for swarm-api is the one with an ipBlock; there must be exactly
+    # one, holding exactly one peer, so its range and port can be named.
+    blocks = [(i, peer) for i, rule in enumerate(rules) for peer in rule.get("from") or [] if "ipBlock" in peer]
+    if len(blocks) != 1:
+        ranges = [json.dumps(peer["ipBlock"], sort_keys=True) for _, peer in blocks]
+        problems.append(
+            f"{what}: admits {len(blocks)} ipBlocks ({', '.join(ranges) or 'none'}), "
+            f"not one for swarm-api's {api_cidr}"
+        )
+    else:
+        ((i, peer),) = blocks
+        admitted = peer["ipBlock"].get("cidr")
+        if admitted != api_cidr:
+            problems.append(f"{what}: admits swarm-api's range as {admitted}, but swarm-api egresses from {api_cidr}")
+        if peer != {"ipBlock": {"cidr": admitted}}:
+            problems.append(f"{what}: rule {i}'s ipBlock is {json.dumps(peer, sort_keys=True)}, not a bare cidr")
+        ports = rules[i].get("ports")
+        if ports != JEV_EGRESS_PORTS:
+            problems.append(
+                f"{what}: admits swarm-api's range on {json.dumps(ports) if ports else 'every port'}, "
+                f"not exactly TCP {JEV_EGRESS_PORT}"
+            )
+    wanted = [
+        (JEV_JUDGE_PEER, "a swarm-judge: internal tenant pod"),
+        ({"ipBlock": {"cidr": api_cidr}}, f"swarm-api's {api_cidr}"),
+    ]
+    expected = [{"from": [peer], "ports": JEV_EGRESS_PORTS} for peer, _ in wanted]
+    # Exact rules, in any order, as check_graph_ingress: a second port, a
+    # second peer (an OR), a selector widened or dropped, or a rule with no
+    # ports or no peer (every port, every peer) is none of the two.
+    for i, rule in enumerate(rules):
+        if rule not in expected:
+            problems.append(f"{what}: rule {i} admits {json.dumps(rule, sort_keys=True)}, which is neither of its two rules")
+    for rule, (_, name) in zip(expected, wanted):
+        if rules.count(rule) != 1:
+            problems.append(f"{what}: does not admit {name} on TCP {JEV_EGRESS_PORT} exactly once")
     return problems
 
 
@@ -397,19 +484,29 @@ def _main_live_ingress(live: dict[str, Any], items: list[dict[str, Any]]) -> int
 
 def _main_graph_ingress(live: dict[str, Any], items: list[dict[str, Any]]) -> int:
     """The graph service's ingress in swarm-system, against swarm-api's live range."""
+    return _main_one_policy(live, items, GRAPH_INGRESS_POLICY, check_graph_ingress)
+
+
+def _main_jev_egress_ingress(live: dict[str, Any], items: list[dict[str, Any]]) -> int:
+    """The Jev tailnet egress's ingress in swarm-system, against swarm-api's live range."""
+    return _main_one_policy(live, items, JEV_EGRESS_INGRESS_POLICY, check_jev_egress_ingress)
+
+
+def _main_one_policy(live: dict[str, Any], items: list[dict[str, Any]], name: str, check: Any) -> int:
+    """One policy of swarm-system, `name`, judged by `check` against swarm-api's live range."""
     api_cidr = live.get("swarm_api_egress_cidr")
     source = live.get("source", "swarm-api's subnet")
     if not api_cidr:
         print("FAIL the live input has no swarm_api_egress_cidr; nothing was compared")
         return 1
-    where = f"{SYSTEM_NAMESPACE}/{GRAPH_INGRESS_POLICY}"
+    where = f"{SYSTEM_NAMESPACE}/{name}"
     found = [
         p for p in items
         if (p.get("metadata") or {}).get("namespace") == SYSTEM_NAMESPACE
-        and (p.get("metadata") or {}).get("name") == GRAPH_INGRESS_POLICY
+        and (p.get("metadata") or {}).get("name") == name
     ]
     # A missing policy is a failure, never a pass: nothing was compared.
-    problems = check_graph_ingress(found[0], api_cidr) if found else [f"{where} does not exist"]
+    problems = check(found[0], api_cidr) if found else [f"{where} does not exist"]
     if problems:
         print(f"FAIL {where}")
         for problem in problems:
@@ -440,6 +537,14 @@ def main(argv: list[str] | None = None) -> int:
             "instead of the tenant egress policies"
         ),
     )
+    parser.add_argument(
+        "--jev-egress-ingress",
+        action="store_true",
+        help=(
+            f"compare {SYSTEM_NAMESPACE}'s {JEV_EGRESS_INGRESS_POLICY} with --live's swarm_api_egress_cidr "
+            "instead of the tenant egress policies"
+        ),
+    )
     args = parser.parse_args(argv)
 
     with open(args.live, encoding="utf-8") as handle:
@@ -450,6 +555,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.graph_ingress:
         with open(args.policies, encoding="utf-8") as handle:
             return _main_graph_ingress(live, _items(json.load(handle)))
+    if args.jev_egress_ingress:
+        with open(args.policies, encoding="utf-8") as handle:
+            return _main_jev_egress_ingress(live, _items(json.load(handle)))
     missing = [key for key, _ in RENDERED if not live.get(key)]
     if missing:
         print(f"FAIL the live network is incomplete: missing {', '.join(missing)}")
