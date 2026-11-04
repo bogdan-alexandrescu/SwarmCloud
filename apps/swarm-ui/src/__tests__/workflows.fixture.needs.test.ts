@@ -65,8 +65,8 @@ const wait = (attempt_id: string) => ({
 describe('the fixture board serves each step a needs block, as codec.step_needs builds it', () => {
   it('gives every step with a task a block, so the bar counts rather than reads "not known"', async () => {
     const r = await loadWorkflowBoard()
-    expect(r.status).toBe('ok')
-    const board = r.data!
+    if (r.status !== 'ok') throw new Error(`the fixture board answered ${r.status}`)
+    const board = r.data
     let withTask = 0
     for (const w of board.workflows) {
       for (const s of w.steps) {
