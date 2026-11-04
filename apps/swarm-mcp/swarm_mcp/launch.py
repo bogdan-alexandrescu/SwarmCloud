@@ -299,12 +299,77 @@ def _checkout() -> Path:
     return Path(_repo_root())
 
 
+#: The plugin cache's shape around a configured root: `<cache>/swarmcloud/sc/<version>`.
+PLUGIN_CACHE_PARENTS = ("swarmcloud", "sc")
+_VERSION_NAME = re.compile(r"\d+(?:\.\d+)*")
+
+
+def _version(name: str) -> tuple[int, ...] | None:
+    """`0.5.10` as `(0, 5, 10)`, so 0.5.10 sorts after 0.5.9; None for a name
+    that is not a version."""
+    if not _VERSION_NAME.fullmatch(name):
+        return None
+    return tuple(int(part) for part in name.split("."))
+
+
+def _sibling_root(root: Path) -> Path | None:
+    """The newest version folder beside `root` that holds run.js, when `root`
+    sits in the plugin cache (`<cache>/swarmcloud/sc/<version>`); else None.
+
+    SC-BRIDGE-SURVIVES-UPDATE (4 November 2026): the sc plugin updated from
+    0.5.74 to 0.5.76 under a long-running session, Claude Code removed the
+    0.5.74 folder, and the session's bridge -- started with
+    SWARM_SC_PLUGIN_ROOT on that folder -- failed every titled launch while
+    dispatch kept working. Only a sibling of the configured root is ever
+    taken: nothing elsewhere is searched, and a symlinked sibling, which could
+    point anywhere, is skipped."""
+    if _version(root.name) is None or (root.parent.parent.name, root.parent.name) != PLUGIN_CACHE_PARENTS:
+        return None
+    try:
+        siblings = list(root.parent.iterdir())
+    except OSError:
+        return None
+    usable = [
+        (version, sibling) for sibling in siblings
+        if sibling != root and not sibling.is_symlink() and (version := _version(sibling.name)) is not None
+        and (sibling / RUN_SCRIPT).is_file() and not (sibling / RUN_SCRIPT).is_symlink()
+    ]
+    return max(usable)[1] if usable else None
+
+
+def _configured_root() -> tuple[Path, str | None]:
+    """`(root, note)`: the root `plugin_root` returns, and the one plain line
+    the launch reply carries when it is a sibling of the configured root
+    rather than the configured root itself (None otherwise)."""
+    configured = Path(os.environ.get(PLUGIN_ROOT_ENV, "").strip()).expanduser()
+    if (configured / RUN_SCRIPT).is_file():
+        return configured, None
+    sibling = _sibling_root(configured)
+    if sibling is None:
+        return configured, None
+    return sibling, (
+        f"The sc plugin {configured.name} this bridge was started with is gone (a plugin update "
+        f"removed its folder), so this run's script comes from {sibling.name}, the newest version "
+        f"beside it; run /reload-plugins so the session picks up the rest of {sibling.name}"
+    )
+
+
+def plugin_root_note() -> str | None:
+    """The launch reply's line about a sibling root (`_configured_root`), or
+    None when the configured root, or the repo-local default, is used as is."""
+    if not os.environ.get(PLUGIN_ROOT_ENV, "").strip():
+        return None
+    return _configured_root()[1]
+
+
 def plugin_root() -> Path:
     """The sc plugin's directory: SWARM_SC_PLUGIN_ROOT, else this checkout's
-    `plugin/` on the repo-local bridge. Raises when neither applies."""
+    `plugin/` on the repo-local bridge. Raises when neither applies. A
+    configured root whose run.js is gone gives way to its newest version
+    sibling in the plugin cache (`_sibling_root`)."""
     root = os.environ.get(PLUGIN_ROOT_ENV, "").strip()
     if root:
-        return Path(root).expanduser()
+        return _configured_root()[0]
     if config.repo_mode():
         return _checkout() / "plugin"
     raise SwarmError(
@@ -324,7 +389,11 @@ def template() -> str:
                 f"{path} is not a file: {PLUGIN_ROOT_ENV} is not set and this repo-local bridge "
                 f"found no sc plugin in its checkout ({path.parent.parent}). Nothing was written"
             )
-        raise SwarmError(f"{path} is not a file: {PLUGIN_ROOT_ENV} does not point at the sc plugin")
+        raise SwarmError(
+            f"{path} is not a file: {PLUGIN_ROOT_ENV} does not point at the sc plugin. A plugin "
+            "update may have removed this folder, and no version beside it has run.js; run "
+            "/reload-plugins so the bridge restarts on the installed version. Nothing was written"
+        )
     return path.read_text(encoding="utf-8")
 
 
@@ -776,6 +845,9 @@ def _launch(
     head = details.line(workspace, facts or details.empty(), labels)
     script = write_script(title, head + " · " + description)
     out: dict[str, Any] = {"title": title, "script_path": str(script), "details": head}
+    root_note = plugin_root_note()
+    if root_note:
+        out["plugin_root_note"] = root_note
     if args is not None:
         # The copy this run is meant to be launched from: a session that
         # falls back to `sc:swarmcloud` by name hands it on in the same args,
