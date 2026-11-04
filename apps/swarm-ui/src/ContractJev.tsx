@@ -283,6 +283,8 @@ function Status({ a }: { a: Acceptance }) {
         {a.reask?.nextAt ? <> and asks again at {new Date(a.reask.nextAt).toLocaleTimeString()}</> : null}, over 30 minutes, before it hands the step to its owner.
       </>
     )
+  } else if (a.waitingOn === 'owner' && notRun && a.ownerReason === 'reask_exhausted') {
+    said = 'Jev did not judge this step, and neither did the control plane’s three re-asks over 30 minutes, so it is yours to decide.'
   } else if (a.waitingOn === 'owner') {
     said = (
       <>
