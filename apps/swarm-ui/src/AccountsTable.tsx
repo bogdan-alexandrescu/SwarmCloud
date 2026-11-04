@@ -65,6 +65,18 @@ import './styles/accounts-ranked.css'
 const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   anthropic: 'Claude subscription',
   openai: 'ChatGPT plan',
+  'openai-api': 'OpenAI API key',
+}
+
+/**
+ * AN ACCOUNT NOBODY MEASURES: the broker's `measured: false`, which an OpenAI
+ * developer API key is (Voice it's, the owner, 4 November 2026). OpenAI
+ * publishes no plan window for a key, so its windows read "not measured" and
+ * never 0, and never "no reading yet": no reading will ever come. A broker
+ * that sends no `measured` means a measured account, as before.
+ */
+export function notMeasured(a: object): boolean {
+  return (a as { measured?: unknown }).measured === false
 }
 
 export function providerName(provider: string): string | null {
@@ -148,7 +160,13 @@ export function whyOf(
     return (
       <>
         <b>Nothing.</b>
-        {said.length > 0 ? ` ${said.join('; ')}` : a.observed_at === null ? ' Not measured yet; it takes one agent until it is' : ''}
+        {said.length > 0
+          ? ` ${said.join('; ')}`
+          : notMeasured(a)
+            ? ' Not measured: OpenAI gives an API key no usage window'
+            : a.observed_at === null
+              ? ' Not measured yet; it takes one agent until it is'
+              : ''}
       </>
     )
   }
@@ -228,6 +246,16 @@ export function WindowCell({ a, k, now }: { a: PoolAccount; k: string; now: numb
   const floor = floorOf(a, k)
   const tick = `${(1 - floor) * 100}%`
   const label = windowName(k)
+  if (notMeasured(a)) {
+    return (
+      <div className="acct-win" data-measured="false">
+        <div className="acct-win-l">
+          <b>{label}</b> <span className="acct-dash">&mdash;</span>
+        </div>
+        <small>not measured: OpenAI gives an API key no usage window</small>
+      </div>
+    )
+  }
   if (r.kind === 'never' || r.kind === 'absent') {
     return (
       <div className="acct-win">
@@ -297,6 +325,7 @@ function FloorTrack({ pct: p, tone, tick, label }: { pct: number | null; tone?: 
 
 /** `read 4m ago`, `read 52m ago · counts at half`, or `no reading yet`. */
 export function ageOf(a: PoolAccount, now: number): string {
+  if (notMeasured(a)) return 'not measured'
   if (a.observed_at === null) return 'no reading yet'
   const at = Date.parse(a.observed_at)
   const age = Number.isFinite(at) ? `read ${ageSpan(now - at)} ago` : 'read at an unknown time'
