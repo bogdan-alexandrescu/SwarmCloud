@@ -99,7 +99,7 @@ describe('capacity-14: a backend pool is named in words', () => {
 })
 
 describe('admin-shell-17: help says where the platform roles come from', () => {
-  it('People and roles names PLATFORM_OWNER and ADMIN_GROUPS', () => {
+  it('Platform people names PLATFORM_OWNER and ADMIN_GROUPS', () => {
     const text = HELP['people-and-roles-scope'].long.join(' ')
     expect(text).toContain('PLATFORM_OWNER')
     expect(text).toContain('ADMIN_GROUPS')
@@ -110,7 +110,7 @@ describe('admin-shell-17: help says where the platform roles come from', () => {
     const text = HELP['people-and-roles-scope'].long.join(' ')
     // MUTATION: put back `it is not switched here`.
     expect(text).not.toMatch(/\bthis page\b|\bswitched here\b/)
-    expect(text).toContain('no switch on People and roles changes it')
+    expect(text).toContain('no switch on Platform people changes it')
   })
 })
 

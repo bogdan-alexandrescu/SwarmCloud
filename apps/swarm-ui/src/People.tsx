@@ -2889,7 +2889,8 @@ export function PeopleScreen() {
   const named = useMemo(() => nameTenants(choices, null), [choices])
   return (
     <div className="ur-page pp-page">
-      <PageHead title="People and roles">
+      {/* Platform people since the admin routes lane (part of #2688): the Admin tab's new name. */}
+      <PageHead title="Platform people">
         <UrRefresh reads={[people]} />
       </PageHead>
       <p className="ur-sub">

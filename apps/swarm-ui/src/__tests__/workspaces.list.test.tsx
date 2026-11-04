@@ -130,13 +130,15 @@ describe('Admin › Workspaces lists by role', () => {
     expect(personal.querySelector('a')?.getAttribute('href')).toBe('/admin/workspaces/u-ana')
   })
 
-  it('lists for a workspace admin only the workspaces they administer, each with its Config links', async () => {
+  it('lists for a workspace admin only the workspaces they administer, each opening its page, with no interim Config links', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'member'), group('lab', 'admin')], { eng: setup('eng', 4), lab: setup('lab', 2) })
     await page()
     await waitFor(() => expect(measuredRows()).toHaveLength(2))
     // MUTATION: list every group workspace for a workspace admin -> ops appears and this fails.
     expect(ids()).toEqual(['lab', 'eng'])
-    expect(rows().map((r) => r.querySelector('.wya-links')?.getAttribute('aria-label'))).toEqual(['lab settings', 'eng settings'])
+    // MUTATION: keep the interim per-row Config links -> a row has a .wya-links and this fails.
+    expect(rows().filter((r) => r.querySelector('.wya-links') !== null)).toHaveLength(0)
+    expect(rows().map((r) => r.querySelector('.wya-name a')?.getAttribute('href'))).toEqual(['/admin/workspaces/lab', '/admin/workspaces/eng'])
     expect(rows()[0]!.querySelector('[data-role]')?.textContent).toBe('your role: admin')
     expect(screen.queryByRole('link', { name: 'Add a new workspace' })).toBeNull()
   })
@@ -171,7 +173,7 @@ describe('Admin › Workspaces orders and counts', () => {
     expect(ids()).toEqual(['lab', 'eng', 'bad'])
     const counts = screen.getByRole('list', { name: 'Workspaces, counted' })
     // MUTATION: count the unread one as not set up -> "1 behind" and this fails.
-    expect([...counts.querySelectorAll('[role="listitem"]')].map((c) => c.textContent)).toEqual(['3 group workspaces', 'not known set up', 'not known behind', 'not known requests wait in People and roles'])
+    expect([...counts.querySelectorAll('[role="listitem"]')].map((c) => c.textContent)).toEqual(['3 group workspaces', 'not known set up', 'not known behind', 'not known requests wait in Platform people'])
     expect(document.querySelector('.wya-row[data-tenant="bad"] .wya-waits')?.textContent).toBe('not known')
   })
 
@@ -194,9 +196,10 @@ describe('Admin › Workspaces orders and counts', () => {
     // MUTATION: say nothing waits while a step failed -> fails.
     expect(lab!.querySelector('.wya-waits')?.textContent).toBe('GitHub connected: failed')
     expect(eng!.querySelector('.wya-waits')?.textContent).toBe('nothing waits')
-    // Until the router knows the address, the click is a plain link, never a route to Overview.
+    // The router knows the address: the click routes in place to the workspace's page.
     fireEvent.click(lab!.querySelector('.wya-name a')!)
-    expect(go).not.toHaveBeenCalled()
+    // MUTATION: follow it as a plain link (the interim guard) -> go is never called and this fails.
+    expect(go).toHaveBeenCalledWith('admin/workspaces/lab')
   })
 })
 

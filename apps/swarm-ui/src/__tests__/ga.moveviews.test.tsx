@@ -83,15 +83,16 @@ async function routing() {
 
 describe('the old addresses land on the new places', () => {
   const MOVED: readonly [string, string][] = [
-    ['/config/github?view=members', '/config/people?view=members'],
+    // Members' GitHub is a fold of the workspace page's People tab since the admin routes lane (part of #2688).
+    ['/config/github?view=members', '/admin/workspaces?tab=people'],
     ['/config/github?view=logins', '/config/secrets?view=logins'],
-    ['/access?view=members', '/config/people?view=members'],
+    ['/access?view=members', '/admin/workspaces?tab=people'],
     ['/access?view=logins', '/config/secrets?view=logins'],
     // The two GitHub access tabs stay where they are.
     ['/config/github?view=choose', '/config/github?view=choose'],
     ['/config/github', '/config/github'],
     // The new addresses are their own spelling.
-    ['/config/people?view=members', '/config/people?view=members'],
+    ['/config/people?view=members', '/admin/workspaces?tab=people'],
     ['/config/secrets?view=logins', '/config/secrets?view=logins'],
   ]
   it.each(MOVED)('%s -> %s', async (old, now) => {
@@ -103,7 +104,7 @@ describe('the old addresses land on the new places', () => {
   it('the hash router\'s old addresses land there too', async () => {
     const { App, paths } = await routing()
     const at = (hash: string) => paths.addressToPath(App.canonical(App.fromAddress(hash)))
-    expect(at('work/access?view=members')).toBe('/config/people?view=members')
+    expect(at('work/access?view=members')).toBe('/admin/workspaces?tab=people')
     expect(at('work/access?view=logins')).toBe('/config/secrets?view=logins')
     expect(at('config/github?view=logins')).toBe('/config/secrets?view=logins')
   })
@@ -129,7 +130,7 @@ describe('the old addresses land on the new places', () => {
     window.history.replaceState(null, '', '/config/github?view=members')
     const push = vi.spyOn(window.history, 'pushState')
     render(<mod.App />)
-    await waitFor(() => expect(window.location.pathname + window.location.search).toBe('/config/people?view=members'))
+    await waitFor(() => expect(window.location.pathname + window.location.search).toBe('/admin/workspaces?tab=people'))
     // MUTATION: write the redirect with pushState -> fails.
     expect(push).not.toHaveBeenCalled()
     push.mockRestore()
@@ -175,7 +176,7 @@ describe('Config › GitHub access is S2\'s two tabs and nothing else', () => {
     const ws = config.tabs.find((t) => t.id === 'workspace')!.label
     const link = await screen.findByRole('link', { name: `Config › ${ws} › Workspace setup` })
     // MUTATION: link `/setup` (the redirect) or leave the words unlinked -> fails.
-    expect(link.getAttribute('href')).toBe('/config/workspace/setup')
+    expect(link.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
     expect(visible(document.body)).not.toMatch(/Work › Setup/)
   })
 })
@@ -375,11 +376,7 @@ describe('an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEW
   const LANDS: readonly [string, string, string][] = [
     ['/#work/access?view=logins', '/config/secrets?view=logins', 'Browser logins'],
     ['/#config/github?view=logins', '/config/secrets?view=logins', 'Browser logins'],
-    ['/#config/github?view=members', '/config/people?view=members', "Members' GitHub"],
-    ['/#work/access?view=members', '/config/people?view=members', "Members' GitHub"],
-    ['/#config/people?view=members', '/config/people?view=members', "Members' GitHub"],
     ['/config/github?view=logins', '/config/secrets?view=logins', 'Browser logins'],
-    ['/config/github?view=members', '/config/people?view=members', "Members' GitHub"],
   ]
   it.each(LANDS)('%s opens %s on %s', async (old, now, tab) => {
     api()
@@ -391,5 +388,20 @@ describe('an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEW
     await waitFor(() => expect(window.location.pathname + window.location.search).toBe(now))
     // MUTATION: read the tab off window.location at mount again (peopleViewFromUrl / secretsViewFromUrl) -> the hash rows fail.
     await waitFor(() => expect(screen.getByRole('tab', { name: tab }).getAttribute('aria-selected')).toBe('true'))
+  })
+
+  // MEMBERS' GITHUB is a fold of the workspace page's People tab since the
+  // admin routes lane (part of #2688): every old bookmark of it opens that tab,
+  // the fold offered to a platform admin as the tab was.
+  it.each(['/#config/github?view=members', '/#work/access?view=members', '/#config/people?view=members', '/config/github?view=members'])('%s opens the workspace page\'s People tab, where Members\' GitHub now lives', async (old) => {
+    api()
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const mod = await import('../App')
+    window.history.replaceState(null, '', old)
+    render(<mod.App />)
+    await waitFor(() => expect(window.location.pathname + window.location.search).toBe('/admin/workspaces?tab=people'))
+    // The People tab is drawn; its Members' GitHub fold (a platform admin's) is held by workspacePage.test.tsx.
+    await waitFor(() => expect(document.querySelector('.wpg-embed')).not.toBeNull())
   })
 })

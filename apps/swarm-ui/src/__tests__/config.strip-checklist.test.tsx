@@ -95,6 +95,6 @@ describe('the strip names the checklist’s count beside its own', () => {
     const steps = within(section).getByRole('list', { name: 'Workspace setup steps' })
     expect(steps.querySelector('.cfg-step.is-failed')?.textContent).toContain('Next: Enable orgs failed')
     const link = within(section).getByRole('link', { name: 'Setup checklist: 4 of 7 done' })
-    expect(link.getAttribute('href')).toBe('/config/workspace/setup')
+    expect(link.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
   })
 })
