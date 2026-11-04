@@ -421,6 +421,18 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
     return n!
   }
 
+  /**
+   * A fixed column's width as the browser lays it out: the stylesheet's `*`
+   * rule makes every cell `box-sizing: border-box`, so its 8px paddings sit
+   * inside its width (the fourth review measured State at 116px, its declared
+   * width), and a content-box cell adds them.
+   */
+  function columnPx(th: HTMLElement, env: CascadeEnv, what: string): number {
+    const [pl, pr] = paddingX(th, env)
+    const width = px(painted(th, 'width', env), what)
+    return painted(th, 'box-sizing', env) === 'border-box' ? Math.max(width, pl + pr) : width + pl + pr
+  }
+
   /** What the shown columns leave the name in a pane `pane` px wide, and which columns are hidden. */
   function fit(root: HTMLElement, env: CascadeEnv, pane: number): { name: number; hidden: string[] } {
     const tbl = root.querySelector('table')!
@@ -435,8 +447,7 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
         continue
       }
       if (col === 'workflow') continue
-      const [pl, pr] = paddingX(th, env)
-      used += px(painted(th, 'width', env), `${col} at ${pane}`) + pl + pr
+      used += columnPx(th, env, `${col} at ${pane}`)
     }
     // The scroll box's two 1px borders.
     return { name: pane - 2 - used, hidden }
@@ -484,23 +495,66 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
     }
   })
 
-  it('keeps Spent, whole, beside the open inspector at 1440 (a 580px pane), its note not setting the column', () => {
+  // THE FOURTH REVIEW OF PR #3147: at 1440 with the inspector docked the box
+  // is 580px, and a row not in the inspector showed its partial figure with
+  // "3 of 4 reported" clipped to 1px, so the caveat was drawn nowhere; yet
+  // with Spent at its full 112px and the note drawn the name keeps
+  // 580 - 2 - (116 + 116 + 88 + 112) = 146px, above its 112px floor.
+  // MUTATION: hide the note at a fixed pane above the name's floor (612 again).
+  it("draws a partial row's note under its figure beside the docked inspector, in a 580px box", () => {
     const root = row(true)
     const env: CascadeEnv = { width: 1440, container: 580 }
     const { name, hidden } = fit(root, env, 580)
     expect(hidden).not.toContain('spent')
     expect(name).toBeGreaterThanOrEqual(112)
     const th = root.querySelector<HTMLElement>('th[data-col="spent"]')!
-    const td = root.querySelector<HTMLElement>('td[data-col="spent"]')!
     const width = px(painted(th, 'width', env), 'spent')
+    expect(width).toBe(112)
     expect(textPx('Spent', th, env)).toBeLessThanOrEqual(width)
     expect(textPx('$12.92', root.querySelector('.wf-spend')!, env)).toBeLessThanOrEqual(width)
-    // The coverage note is in the inspector's summary while it is open; in
-    // the row it stays read, drawn nowhere.
-    const note = td.querySelector('.wf-spend-cov')!
-    expect(painted(note, 'position', env)).toBe('absolute')
-    expect(painted(note, 'width', env)).toBe('1px')
-    expect(painted(td, 'position', env)).toBe('relative')
+    const note = root.querySelector('.wf-spend-cov')!
+    expect(painted(note, 'display', env)).toBe('block')
+    expect(painted(note, 'position', env)).not.toBe('absolute')
+    expect(painted(note, 'width', env)).not.toBe('1px')
+    expect(painted(note, 'clip-path', env)).toBeNull()
+    expect(textPx(NOTE, note, env), `"${NOTE}" on its own line`).toBeLessThanOrEqual(width)
+  })
+
+  // The note gives way where the name would lose its floor with Spent at its
+  // full width, and nowhere above: the threshold is the ladder's own sum (the
+  // name's 112px floor, the box's two 1px borders, State, Steps, Needs and
+  // Spent at their full widths), read from the cascade, not a fixed number.
+  // Below it the figure stays drawn at 72px and the note is read, not drawn;
+  // the figure's title and accessible label carry the caveat (Workflows.tsx's
+  // spend cell). MUTATION: move the note's threshold off the derived sum.
+  it('hides the note only where the name would lose its floor, from the ladder', () => {
+    const root = row(true)
+    // A band where Owner and Changed are gone and Spent is at its full width.
+    const full: CascadeEnv = { width: 1440, container: 700 }
+    let shown = 0
+    for (const col of ['state', 'steps', 'needs', 'spent']) {
+      shown += columnPx(root.querySelector<HTMLElement>(`th[data-col="${col}"]`)!, full, col)
+    }
+    const threshold = 112 + 2 + shown
+    expect(threshold, 'the name keeps its floor at the review\'s 580px box').toBeLessThanOrEqual(580)
+    const note = root.querySelector('.wf-spend-cov')!
+    const td = root.querySelector<HTMLElement>('td[data-col="spent"]')!
+    const th = root.querySelector<HTMLElement>('th[data-col="spent"]')!
+    for (const pane of [threshold, threshold + 1, 571, 580, 592, 612, 613, 640]) {
+      const env: CascadeEnv = { width: 1440, container: pane }
+      expect(painted(note, 'position', env), `drawn at ${pane}`).not.toBe('absolute')
+      expect(painted(note, 'width', env), `drawn at ${pane}`).not.toBe('1px')
+      expect(px(painted(th, 'width', env), `spent at ${pane}`), `${pane}`).toBe(112)
+      if (painted(th, 'display', env) !== 'none') {
+        expect(fit(root, env, pane).name, `the name with the note drawn at ${pane}`).toBeGreaterThanOrEqual(112)
+      }
+    }
+    const below: CascadeEnv = { width: 1440, container: threshold - 1 }
+    expect(painted(note, 'position', below)).toBe('absolute')
+    expect(painted(note, 'width', below)).toBe('1px')
+    expect(painted(note, 'overflow', below)).toBe('hidden')
+    expect(painted(td, 'position', below)).toBe('relative')
+    expect(px(painted(th, 'width', below), 'spent below')).toBe(72)
   })
 
   // THE THIRD REVIEW OF PR #3147: with a workflow picked and the inspector
