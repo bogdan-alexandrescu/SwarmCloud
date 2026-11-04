@@ -14170,7 +14170,8 @@ export interface SetupLink {
   expires_at: string | null
 }
 
-export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret'
+/** `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes. */
+export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key'
 
 /**
  * One check's last result in `health/latest`, read from the row
@@ -14385,7 +14386,7 @@ export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner:
       const d = objOf(raw) ?? {}
       return { kind: strOf(d.kind) ?? body.kind, label: strOf(d.label) ?? body.label, owner: strOf(d.owner) ?? body.owner, url: strOf(d.url), path: strOf(d.path) ?? '', expires_at: strOf(d.expires_at) }
     },
-    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + 24 * 3_600_000).toISOString() }),
+    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
   )
 }
 

@@ -65,6 +65,18 @@ import './styles/accounts-ranked.css'
 const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   anthropic: 'Claude subscription',
   openai: 'ChatGPT plan',
+  'openai-api': 'OpenAI API key',
+}
+
+/**
+ * AN ACCOUNT NOBODY MEASURES: the broker's `measured: false`, which an OpenAI
+ * developer API key is (Voice it's, the owner, 4 November 2026). OpenAI
+ * publishes no plan window for a key, so its windows read "not measured" and
+ * never 0, and never "no reading yet": no reading will ever come. A broker
+ * that sends no `measured` means a measured account, as before.
+ */
+export function notMeasured(a: object): boolean {
+  return (a as { measured?: unknown }).measured === false
 }
 
 export function providerName(provider: string): string | null {
@@ -228,6 +240,16 @@ export function WindowCell({ a, k, now }: { a: PoolAccount; k: string; now: numb
   const floor = floorOf(a, k)
   const tick = `${(1 - floor) * 100}%`
   const label = windowName(k)
+  if (notMeasured(a)) {
+    return (
+      <div className="acct-win" data-measured="false">
+        <div className="acct-win-l">
+          <b>{label}</b> <span className="acct-dash">&mdash;</span>
+        </div>
+        <small>not measured: OpenAI gives an API key no usage window</small>
+      </div>
+    )
+  }
   if (r.kind === 'never' || r.kind === 'absent') {
     return (
       <div className="acct-win">
