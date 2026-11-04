@@ -477,9 +477,10 @@ WRITER_FIELDS: Mapping[str, tuple[str, ...]] = {
     "budget": ("unit", "amount"),
     # Contract request 128: `qualitygates.QualityGatesStore.put` writes it.
     "quality_gates": ("jev",),
-    # Contract request 136: no route writes `plugins.allowed` yet, so a stored
-    # one is only a forger's, held by the re-sign pass and never signed.
-    "plugins": (),
+    # Contract request 136: PUT /v1/workspaces/{tenant_id}/plugins
+    # (`plugins.PluginsStore.put`) writes and signs it, so a key rotation's
+    # re-sign pass signs the stored list again rather than holding it.
+    "plugins": ("allowed",),
 }
 
 
