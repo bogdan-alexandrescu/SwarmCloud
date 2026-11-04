@@ -130,7 +130,12 @@ CRAWL_SECONDS = 600
 CRAWL_CAPTURE_TIMEOUT = 2700
 #: `swarm_qa`'s own bound (`MAX_SEGMENTS`, beside `NAME`), which the capture
 #: tool refuses past; restated so a target is refused at registration, not at run.
-MAX_SEGMENTS = 12
+#: 120 viewports, because AI Studio's /docs (2026-11-04, part of #2688) is about
+#: 65,300 px at 390 px wide (78 of phone-390's 844 px) and 49,600 px at the
+#: desktop (56 of 900 px), and the capture now takes a page to its end up to
+#: it (swarm_qa says why next to its own); test_qaspec_segment_bound holds the
+#: two equal.
+MAX_SEGMENTS = 120
 #: The flows one target (each leg) may hold (QA-FLOWS-CAP, part of #2136).
 #: BGD, 2026-10-26: AI Studio's ai-studio-staging needs 132 read-only
 #: frame-state flows; 150 holds them with room. Stated HERE ONLY: a flow runs
@@ -1311,9 +1316,12 @@ def _report_prompt(target: Mapping[str, Any], groups: Sequence[tuple[str, Sequen
         f"{', '.join(names)}. For each group, count the images its capture's manifest.json lists and check "
         f"the review's `reviewed` against that number; a shortfall is a finding about the run, naming both "
         f"numbers. A staged tar that is missing is a finding about the run, naming the tar; when a capture "
-        f"tar is missing, the group's expected count is its stored routes x {len(widths)} widths x "
-        f"{len(themes)} themes x each route's segments (4 when unset), and say which count you used and that "
-        f"the found routes' count is unknown. Merge every finding "
+        f"tar is missing, the group's expected count is at least its stored routes x {len(widths)} widths x "
+        f"{len(themes)} themes (each page is captured to its end, in as many segments as it is tall, up to "
+        f"{MAX_SEGMENTS}), and say which count you used and that the found routes' count is unknown. A "
+        f"capture manifest's `truncated` lists each page taller than that bound, with its height and the "
+        f"segments taken: name each in about_run as a page cut at the bound, never as the app's defect. "
+        f"Merge every finding "
         f"into findings.json, {{\"format\": 1, \"findings\": [...], \"about_run\": [...]}}, de-duplicating the "
         f"same defect seen at several widths or themes into one finding whose `also_seen` lists the others. "
         f"A finding is kept only when every file its `evidence` names is in a staged tar; one that names "

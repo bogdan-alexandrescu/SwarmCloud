@@ -240,7 +240,8 @@ RUN4_CUT = ("limits", "pools", "holders", "now", "timeline")
 def test_a_phone_capture_runs_to_the_end_and_segments_governs_the_desktop():
     """The owner's decision c49 (2026-10-22): at phone-390 every route is
     captured until its scroller ends, up to MAX_SEGMENTS; a route's
-    `segments` governs the desktop preset only."""
+    `segments` governs the desktop preset only, which takes segments to its
+    end, up to MAX_SEGMENTS, when the route names none."""
     spec = importlib.util.spec_from_file_location("swarm_qa_budget_check", SWARM_QA)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -251,8 +252,10 @@ def test_a_phone_capture_runs_to_the_end_and_segments_governs_the_desktop():
         # MUTATION: keep the route's `segments` as the phone budget and this
         # fails on `now` (3) and on every route at the default (4).
         assert module.segment_budget(route, "phone-390") == module.MAX_SEGMENTS, rid
-        # MUTATION: give the desktop MAX_SEGMENTS too and this fails.
-        assert module.segment_budget(route, "desktop") == route.get("segments", module.DEFAULT_SEGMENTS), rid
+        # MUTATION: ignore a route's own `segments` at the desktop and this
+        # fails; a route naming none is captured to its end there
+        # (QA-CAPTURE-REVIEWABLE-TALL, part of #2688).
+        assert module.segment_budget(route, "desktop") == route.get("segments", module.MAX_SEGMENTS), rid
 
 
 #: The admin group's routes, captured as a platform admin who also administers
