@@ -110,8 +110,11 @@ STATUS_NAME = "qa-target.json"
 #: Where `swarm-handoff sign-in` writes its requests, in the spool.
 SIGN_INS_DIR = "sign-ins"
 #: How long the first sign-in is awaited before the runner starts: the gate's
-#: own bound is 30 s for the form and 30 s after submit, plus the return.
-FIRST_WAIT_SECONDS = 75.0
+#: own bound is 30 s for the form (`livegate.qatarget.FORM_SECONDS`) and, for
+#: a page still loading after the submit, 60 s for its verdict
+#: (`SIGNED_IN_MAX_SECONDS`, part of #2688), plus the return. Start clicks
+#: can take longer; the agent is held until the gate is done all the same.
+FIRST_WAIT_SECONDS = 95.0
 POLL_SECONDS = 0.5
 
 SIGNED_IN = "signed_in"
