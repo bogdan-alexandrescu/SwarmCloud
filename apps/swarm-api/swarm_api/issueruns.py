@@ -389,6 +389,14 @@ FIX_STEP = "fix"
 #: latest verdict from it and submission recognises it.
 REREVIEW_STEP = REREVIEW_STEP_ID
 IMPLEMENT_PREFIX = "impl-"
+#: The optional security review (`IssueRun.security_review`, owner decision
+#: 2026-11-04, docs/design/security-review-step.md): its step id -- ending in
+#: `review`, so the worker holds it to a `verdict.json` -- and the catalogue
+#: plugin its signed work contract loads, unattended, with its one skill. A
+#: plan step never takes the id: implementers are `impl-<id>`.
+SECURITY_REVIEW_STEP = "security-review"
+SECURITY_PLUGIN = "security-audit"
+SECURITY_PLUGIN_MODE = "unattended"
 
 #: How the compiled review is told to write a finding. Objects, each saying
 #: where its blocker is, so the console can pin it beside its line (diff
@@ -2443,8 +2451,8 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
         raise InvalidPlan("this run has no plan to compile")
     plan = parse_plan(run.plan, stored=True)
     if _uses_dependencies(plan["steps"]):
-        return _workflow(run, _compile_staged(run, plan, review_context,
-                                              class_models=class_models))
+        staged = _compile_staged(run, plan, review_context, class_models=class_models)
+        return _workflow(run, _with_security_review(run, staged))
     ref = run.issue
     steps: list[dict[str, Any]] = []
     previous: str | None = None
@@ -2523,7 +2531,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             ),
         },
     })
-    return _workflow(run, _with_rereview(steps))
+    return _workflow(run, _with_security_review(run, _with_rereview(steps)))
 
 
 def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2558,6 +2566,72 @@ def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # are reserved away from the re-review's: unreachable.
         raise InvalidPlan("the compiled review and fix admit no re-review")
     return [*steps, rereview]
+
+
+def _with_security_review(run: "IssueRun", steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`steps`, then the security review when the run asked for one (off by default).
+
+    The step runs after the fix, on its pushed head (`builds_on`), beside the
+    re-review: `claude-code`, with a work contract whose capabilities load the
+    `security-audit` plugin in unattended mode. The worker knows the step by
+    that signed contract, tells the agent the owner's run settings (full
+    audit, `quick` profile, the pull request's diff, the sub-agent budget, no
+    sandbox, the output directory under `$SWARM_ARTIFACTS_DIR`), validates the
+    audit and writes its verdict (`agent_worker.security_review`). A plugin
+    loads only through a signed work contract, so with SWARM_WORK_CONTRACTS
+    off the option is refused here rather than compiled into a step that
+    would audit nothing.
+    """
+    if not getattr(run, "security_review", False):
+        return steps
+    if not workcontract.enabled(os.environ):
+        raise InvalidPlan(
+            "this run asked for a security review, which loads the security-audit plugin "
+            "through a signed work contract, and work contracts are off in this "
+            "deployment (SWARM_WORK_CONTRACTS)")
+    ref = run.issue
+    sha = run.index_sha if isinstance(run.index_sha, str) and re.fullmatch(
+        r"[0-9a-f]{40}", run.index_sha) else None
+    try:
+        contract = workcontract.decode({
+            "schema": workcontract.SCHEMA_VERSION,
+            "contract_id": "wc-" + re.sub(
+                r"[^a-z0-9-]+", "-", f"{run.id}-{SECURITY_REVIEW_STEP}".lower())[:62],
+            "tenant_id": run.tenant_id,
+            "revision": 1,
+            "strictness": workcontract.ADVISORY,
+            "requirements": [{
+                "id": "REQ-1",
+                "text": ("Audit this pull request's diff with the security-audit skill and "
+                         "report every finding; change no file."),
+                "verification": ["artifact_present"],
+            }],
+            "repositories": [{"repository_url": ref.repository_url, "ref": None, "commit": sha}],
+            "scope": {"write": []},
+            "capabilities": {"plugins": {SECURITY_PLUGIN: {
+                "mode": SECURITY_PLUGIN_MODE, "skills": [SECURITY_PLUGIN]}}},
+            "limits": {"runner_profile": STEP_PROFILE, "model_class": None},
+            "artifacts": [{"kind": "report"}],
+            "ownership": {"owner": run.approved_by or run.created_by},
+        })
+    except workcontract.WorkContractError as exc:
+        raise InvalidPlan(f"the security review step has no work contract: {exc.message}") from exc
+    return [*steps, {
+        "step_id": SECURITY_REVIEW_STEP,
+        "runner_profile": STEP_PROFILE,
+        "depends_on": [FIX_STEP],
+        "builds_on": FIX_STEP,
+        "allow_empty_diff": True,
+        "metadata": {workcontract.METADATA_KEY: contract.to_document()},
+        "input": {
+            "issue": ref.number,
+            "prompt": (
+                f"Security review of the pull request for GitHub issue {ref.short}. Your "
+                "checkout is the pull request's head. Use the security-audit skill as the "
+                "instructions below say. Do not edit files. " + NO_CLOSING_KEYWORD
+            ),
+        },
+    }]
 
 
 def _step_class(step: Mapping[str, Any]) -> dict[str, Any]:
@@ -3245,6 +3319,9 @@ class IssueRun:
     #: `sessiontag`), stored as `metadata.claude_session` beside the
     #: schedule's mark, and copied onto every task and workflow it starts.
     claude_session: str | None = None
+    #: The optional security review step (`_with_security_review`), off unless
+    #: the run asked for it.
+    security_review: bool = False
     #: `sign_owner`'s map, written with the document by `routes.runs.start_run`
     #: and by nothing else: what `owner_refusal` verifies before every
     #: submission. None on a run created before #1569 -- which is refused --
@@ -3264,6 +3341,8 @@ class IssueRun:
             "plan_approval": self.plan_approval,
             "auto_merge": self.auto_merge,
             "fix_rounds": self.fix_rounds,
+            # Written only when asked for: a run without it stores what it did.
+            **({"security_review": True} if self.security_review else {}),
             "planner_task_id": self.planner_task_id,
             "plan": self.plan,
             "plan_digest": self.plan_digest,
@@ -3412,6 +3491,7 @@ class IssueRun:
             ),
             schedule=_schedule_mark(data.get("metadata")),
             claude_session=sessiontag.of(data.get("metadata")),
+            security_review=data.get("security_review") is True,
             owner_signature=(
                 dict(data[OWNER_SIGNATURE]) if isinstance(data.get(OWNER_SIGNATURE), Mapping)
                 else None
@@ -3559,6 +3639,7 @@ class IssueRun:
             "schedule": None if self.schedule is None else dict(self.schedule),
             # SC-SESSION-SCOPE: the Claude Code session that asked, or null.
             "claude_session": self.claude_session,
+            "security_review": self.security_review,
         }
 
 
