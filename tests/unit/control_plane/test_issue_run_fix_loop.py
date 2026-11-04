@@ -102,13 +102,6 @@ def test_while_the_profile_is_unavailable_the_plan_keeps_its_one_rereview():
     assert workflow.metadata["issue_run"]["review_rounds_compiled"] == 1
 
 
-def test_a_plan_step_cannot_take_the_loops_id(loop_enabled):
-    plan = {**FULL_PLAN,
-            "steps": [{**FULL_PLAN["steps"][0], "step_id": issueruns.FIX_LOOP_STEP}]}
-    with pytest.raises(Exception):
-        issueruns.parse_plan(plan)
-
-
 # --------------------------------------------------------------------------
 # 2. What issueci reads: the loop's verified final review
 # --------------------------------------------------------------------------

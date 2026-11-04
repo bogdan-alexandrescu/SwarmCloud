@@ -108,20 +108,24 @@ WHAT IS COMPILED, AND THE FIX-ROUND CAP. The plan's steps become a chain of
 implementer steps, each building on the previous one's branch, followed by
 the review shape #264 built: a review that writes `verdict.json`, and a fix
 gated on `NOT_YET` that is the workflow's one publisher (`integrate`), then
-the ONE re-review of the fix's pushed head that `metadata.merge`
-"on_merge_verdict" appends (`validation.rereview_step_for`, #2217): gated
-like the fix, so its agent runs only after a fix, and on MERGE the worker
-re-publishes the review's verdict as its own. Its `verdict.json` is the
-latest verdict, the one `auto_merge` merges on (`issueci._review_verdict`);
-without it a fix that resolved every finding still failed the merge on the
-first review's NOT_YET. The run's `fix_rounds` (1-5, default 3) is the cap
-on review-then-fix rounds and travels in the workflow's metadata; ONE fix
-round is what the platform compiles, because under `integrate` only the
-integrator and that one re-review may be gated, and a second fix needs a
-gated step that is neither (docs/workflows.md, "What this does not do"). A
-re-review that still says NOT_YET leaves the pull request to a person. The
-same cap also bounds the CI loop's fix rounds after the pull request opens
-(`issueci`): one continuation per red reading, at most `fix_rounds` of them.
+a `fix-loop` step on that review and fix (FL-ISSUE, docs/design/fix-loop.md
+§5.3, BGD Q9 (a)). The run's `fix_rounds` (1-5, default 3) is the cap on
+the review-fix LOOP's rounds: it is compiled as the loop's `max_rounds`.
+The gated fix is round 1; swarm-api then appends `re-review:1` of its pushed
+head, and on NOT_YET `review-fix:2` and `re-review:2`, and so on, until a
+re-review says MERGE or `fix_rounds` rounds are spent, when the loop parks
+for a person, who may add a round or stop it (`fixloop`). A first review
+that says MERGE runs no round. `issueci` reads the loop's verified final
+review (`result_summary.fix_loop.final_review`) for `Closes #N` and for the
+merge, never the first review. While the catalogue ships `fix-loop`
+unavailable (`fix_loop_compiles`) a plan compiles, as before, ONE round:
+the re-review of the fix's pushed head that `metadata.merge`
+"on_merge_verdict" appends (`validation.rereview_step_for`, #2217), gated
+like the fix, whose `verdict.json` is the latest verdict, and a re-review
+that still says NOT_YET leaves the pull request to a person. The cap
+travels in the workflow's metadata either way, and also bounds the CI
+loop's fix rounds after the pull request opens (`issueci`): one
+continuation per red reading, at most `fix_rounds` of them.
 
 THE REVIEW ANSWERS EACH REQUIREMENT. Its prompt numbers the plan's
 `requirements` and asks for `requirements: [{index, met, note}]` in
@@ -215,6 +219,8 @@ from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_cla
 from . import sessiontag, workcontract
 from .specsigning import SpecSigningUnavailable
 from .validation import (
+    FIX_LOOP_FIELD,
+    FIX_LOOP_PROFILE,
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
     MERGE_METADATA_KEY,
@@ -388,6 +394,11 @@ FIX_STEP = "fix"
 #: "on_merge_verdict"'s own step, by its own id, so `issueci` reads the
 #: latest verdict from it and submission recognises it.
 REREVIEW_STEP = REREVIEW_STEP_ID
+#: The review-fix loop after the gated fix (FL-ISSUE, docs/design/fix-loop.md
+#: §5.3, BGD Q9 (a)): a `fix-loop` step whose rounds swarm-api appends as
+#: `review-fix:<k>` / `re-review:<k>`. Plan steps are compiled as
+#: `impl-<id>`, so no plan step can take it.
+FIX_LOOP_STEP = "fix-loop"
 IMPLEMENT_PREFIX = "impl-"
 
 #: How the compiled review is told to write a finding. Objects, each saying
@@ -416,9 +427,10 @@ FINDINGS_LOCATION_NOTE = (
     "line is still a blocker. "
 )
 
-#: The review-then-fix rounds `compile_plan` emits, whatever the cap (module
-#: docstring): one review, one gated fix. The re-review after the fix judges
-#: that one round and starts no second fix, so it does not count (#2217).
+#: The review-then-fix rounds `compile_plan` emits when it cannot compile the
+#: fix loop (`fix_loop_compiles`): one review, one gated fix. The re-review
+#: after the fix judges that one round and starts no second fix, so it does
+#: not count (#2217). With the loop the run's `fix_rounds` is compiled.
 COMPILED_REVIEW_ROUNDS = 1
 
 #: The most of the review's `verdict.json` read for its requirements: the
@@ -2424,7 +2436,7 @@ def verification_text(readings: list[tuple[str, str | None, str | None]]) -> str
 
 def compile_plan(run: "IssueRun", review_context: str | None = None, *,
                  class_models: Mapping[str, str] | None = None) -> WorkflowCreate:
-    """The approved plan as a workflow: implementers, review, gated fix, re-review.
+    """The approved plan as a workflow: implementers, review, gated fix, fix loop.
 
     A plan whose steps state no `depends_on` compiles to a chain; one that
     states them compiles to stages (`_compile_staged`). A `mode: single` plan
@@ -2523,7 +2535,45 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             ),
         },
     })
-    return _workflow(run, _with_rereview(steps))
+    return _workflow(run, _with_review_rounds(steps, run.fix_rounds))
+
+
+def fix_loop_compiles() -> bool:
+    """Whether a compiled plan carries the fix loop: only while the catalogue
+    offers `fix-loop`. It ships unavailable until its acceptance run passes
+    (FL-CONTRACT), and submission refuses an unavailable profile, so until
+    then a plan compiles the one re-review (`_with_rereview`) and every issue
+    run still submits."""
+    profile = RUNNER_PROFILES.get(FIX_LOOP_PROFILE)
+    return profile is not None and profile.available
+
+
+def _with_review_rounds(steps: list[dict[str, Any]], fix_rounds: int) -> list[dict[str, Any]]:
+    """`steps`, then the loop of up to `fix_rounds` review-fix rounds after the
+    gated fix (docs/design/fix-loop.md §5.3, BGD Q9 (a)), or, while the
+    `fix-loop` profile is unavailable, the one re-review (#2217)."""
+    if fix_loop_compiles():
+        return _with_fix_loop(steps, fix_rounds)
+    return _with_rereview(steps)
+
+
+def _with_fix_loop(steps: list[dict[str, Any]], fix_rounds: int) -> list[dict[str, Any]]:
+    """`steps`, then the `fix-loop` step on the review and its gated fix.
+
+    The fix is round 1 and stays the integrator; the loop's first action is
+    `re-review:1` of the fix's pushed head -- the re-review `_with_rereview`
+    would have added -- and on NOT_YET `review-fix:2`, until MERGE or
+    `max_rounds` = the run's `fix_rounds`, after which the loop parks for a
+    person (§4.4, §4.5). The rounds repeat the review's and the fix's own
+    profiles and prompts (invariant 10). A first review that says MERGE runs
+    no round. `issueci` reads the loop's final review (§4.6).
+    """
+    return [*steps, {
+        "step_id": FIX_LOOP_STEP,
+        "runner_profile": FIX_LOOP_PROFILE,
+        "depends_on": [FIX_STEP],
+        FIX_LOOP_FIELD: {"review": REVIEW_STEP, "fix": FIX_STEP, "max_rounds": fix_rounds},
+    }]
 
 
 def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2748,7 +2798,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             ),
         },
     })
-    return _with_rereview(steps)
+    return _with_review_rounds(steps, run.fix_rounds)
 
 
 #: The most characters a compiled workflow's `title` keeps. A list row and a
@@ -2803,7 +2853,11 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
                 "issue": ref.short,
                 "plan_digest": run.plan_digest,
                 "fix_rounds": run.fix_rounds,
-                "review_rounds_compiled": COMPILED_REVIEW_ROUNDS,
+                "review_rounds_compiled": (
+                    run.fix_rounds if any(s.get("runner_profile") == FIX_LOOP_PROFILE
+                                          for s in steps)
+                    else COMPILED_REVIEW_ROUNDS
+                ),
             }
         },
     })

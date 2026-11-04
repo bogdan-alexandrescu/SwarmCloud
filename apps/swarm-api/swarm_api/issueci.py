@@ -97,7 +97,9 @@ merged is DONE, and `green_sha` is set only if CI was green at its head.
 `Closes #N` ONLY WHEN THE REVIEW CONFIRMED EVERY REQUIREMENT (owner
 decision on #454). The compiled review writes, in its verdict.json beside
 `verdict` and `findings`, `requirements: [{index, met, note}]` for the
-plan's numbered requirements. `evaluate_requirements` reads that file
+plan's numbered requirements. `evaluate_requirements` reads that file --
+the run's LATEST review's: a fix loop's verified final review when the
+workflow has a loop (FL-ISSUE), else the re-review's or the review's --
 through the API's masked artifact reader, under the run's tenant, when the
 pull request opens and again after every fix round, and stores
 `requirements_met` -- True only for a complete, well-formed list with every
@@ -220,7 +222,9 @@ from .reviewcontext import EARLIER_FIXES, read_fix_context
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
 from . import sessiontag
-from .validation import DISPATCH_METADATA_KEY, MERGE_METADATA_KEY, MERGE_STEP_ID, IssueRef
+from .validation import (
+    DISPATCH_METADATA_KEY, FIX_LOOP_PROFILE, MERGE_METADATA_KEY, MERGE_STEP_ID, IssueRef,
+)
 
 log = logging.getLogger(__name__)
 
@@ -357,29 +361,87 @@ def keyword_pending(run: IssueRun) -> bool:
 
 
 def _review_task_id(ctx: Any, tenant_id: str, run: IssueRun, workflow: Any) -> str | None:
-    """The task whose verdict.json is the run's LATEST verdict (#2217).
+    """The task whose verdict.json is the run's LATEST verdict (#2217, FL-ISSUE)."""
+    return _review_source(ctx, tenant_id, run, workflow)[0]
 
-    The re-review's, when the workflow has one: after a fix it judged the
-    fixed head, and on MERGE its shut gate re-published the review's verdict
-    as its own, so it is the verdict on both paths. The review's for a
-    workflow compiled before the re-review was, which has none.
+
+def _review_source(
+    ctx: Any, tenant_id: str, run: IssueRun, workflow: Any
+) -> tuple[str | None, str | None]:
+    """`(task, problem)`: the task whose verdict.json is the run's LATEST verdict.
+
+    A workflow with a `fix-loop` step (FL-ISSUE, docs/design/fix-loop.md §5.3,
+    BGD Q9 (a)): the loop's verified final review (`_loop_final_review`), or
+    none with the reason -- never the first review, whose NOT_YET the loop
+    may have fixed. Otherwise the re-review's, when the workflow has one:
+    after a fix it judged the fixed head, and on MERGE its shut gate
+    re-published the review's verdict as its own, so it is the verdict on
+    both paths. The review's for a workflow compiled before the re-review
+    was, which has none.
     """
     if workflow is None and run.workflow_id:
         try:
             workflow = ctx.store.get_workflow(tenant_id, run.workflow_id, submitted_by=None)
         except NotFound:
-            return None
-    found = {
-        getattr(step, "step_id", None): getattr(step, "task_id", None)
-        for step in getattr(workflow, "steps", None) or []
-    }
+            return None, None
+    steps = getattr(workflow, "steps", None) or []
+    found = {getattr(step, "step_id", None): getattr(step, "task_id", None) for step in steps}
+    loops = [step for step in steps if getattr(step, "runner_profile", None) == FIX_LOOP_PROFILE]
+    if loops:
+        return _loop_final_review(ctx, tenant_id, getattr(workflow, "workflow_id", None),
+                                  getattr(loops[0], "task_id", None), found)
     if REREVIEW_STEP in found:
-        return found[REREVIEW_STEP]
-    return found.get(REVIEW_STEP)
+        return found[REREVIEW_STEP], None
+    return found.get(REVIEW_STEP), None
+
+
+def _loop_final_review(
+    ctx: Any, tenant_id: str, workflow_id: str | None, loop_id: str | None,
+    found: Mapping[Any, Any],
+) -> tuple[str | None, str | None]:
+    """`(task, problem)`: the review a SUCCEEDED fix loop ended on, verified as
+    the worker's merge verifies it (docs/design/fix-loop.md §4.6).
+
+    The loop's `result_summary` is tenant-writable, so nothing in it is read
+    on trust: the loop is SUCCEEDED, of this tenant and workflow, on a
+    verified `fix-loop` spec (`fixloop._signed_block`); the review it names
+    -- the loop's own `review` for a loop that ran no round -- is of this
+    tenant, SUCCEEDED, with a verified spec, and is either the loop's own
+    review or a round whose signed `fix_loop_round` names this loop. A loop
+    still running or parked for a person has no final review: nothing said
+    MERGE, so the run reads no verdict (`part of #N`, no merge).
+    """
+    from . import fixloop  # fixloop imports this module
+
+    loop = fixloop._doc(ctx.store.db, tenant_id, loop_id)
+    if loop is None:
+        return None, "the run's fix loop has no task to read"
+    if workflow_id and loop.get("workflow_id") not in (None, workflow_id):
+        return None, "the run's fix loop is not of its workflow"
+    if loop.get("state") != TaskState.SUCCEEDED.value:
+        return None, (f"the run's fix loop {loop_id} is {loop.get('state')}, so no "
+                      "review it ran said MERGE")
+    block = fixloop._signed_block(ctx, loop)
+    if block is None:
+        return None, f"the run's fix loop {loop_id} has no verified fix_loop block"
+    own_review = found.get(block.get("review"))
+    summary = fixloop._mapping(fixloop._mapping(loop.get("result_summary")).get("fix_loop"))
+    final = summary.get("final_review") or own_review
+    review = fixloop._doc(ctx.store.db, tenant_id, final)
+    if review is None:
+        return None, f"the fix loop {loop_id}'s final review is no task of this tenant"
+    if review.get("state") != TaskState.SUCCEEDED.value:
+        return None, f"the fix loop {loop_id}'s final review did not succeed"
+    if final == own_review:
+        if fixloop.spec_refusal(ctx.settings, review, str(final)) is not None:
+            return None, f"the fix loop {loop_id}'s review's spec does not verify"
+    elif fixloop._signed_round(ctx, review, str(loop_id)) is None:
+        return None, f"the fix loop {loop_id}'s final review is not a round of that loop"
+    return str(final), None
 
 
 def _read_review_verdict(
-    ctx: Any, tenant_id: str, task_id: str | None
+    ctx: Any, tenant_id: str, task_id: str | None, why_none: str | None = None
 ) -> tuple[str | None, str | None]:
     """`(content, problem)`: the review's verdict.json, through the API's masked reader.
 
@@ -388,7 +450,7 @@ def _read_review_verdict(
     never a guess: `requirements_finding` turns it into "not all met".
     """
     if not task_id:
-        return None, f"the run's workflow has no {REVIEW_STEP!r} step to read"
+        return None, why_none or f"the run's workflow has no {REVIEW_STEP!r} step to read"
     try:
         window = ctx.inspection.read_artifact(
             tenant_id, task_id, submitted_by=None, name=VERDICT_FILE,
@@ -418,7 +480,7 @@ def evaluate_requirements(
     the reason in `requirements_note`.
     """
     content, problem = _read_review_verdict(
-        ctx, tenant_id, _review_task_id(ctx, tenant_id, run, workflow)
+        ctx, tenant_id, *_review_source(ctx, tenant_id, run, workflow)
     )
     met, unmet, note = requirements_finding(run.plan, content, problem=problem)
     log.info(
@@ -2015,7 +2077,7 @@ def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None
     import json
 
     content, problem = _read_review_verdict(
-        ctx, tenant_id, _review_task_id(ctx, tenant_id, run, None)
+        ctx, tenant_id, *_review_source(ctx, tenant_id, run, None)
     )
     if content is None:
         return None, problem or f"the review's {VERDICT_FILE} could not be read"
