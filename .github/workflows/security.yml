@@ -79,12 +79,22 @@ jobs:
         # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
         # no trivy-fs.sarif). The install goes into the job's temp dir (the
         # self-hosted runner user cannot write /usr/local/bin) and works the same
-        # on both runner kinds.
+        # on both runner kinds. Retried: on PR #3160 the release download
+        # failed with curl exit 6 (the runner could not resolve the host) while
+        # the release assets were there, and the job read red with no finding.
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
-          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+          for attempt in 1 2 3; do
+            if curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+              | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"; then
+              echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+              exit 0
+            fi
+            echo "::warning::trivy install failed (attempt ${attempt} of 3)"
+            if [ "${attempt}" -lt 3 ]; then sleep $((attempt * 10)); fi
+          done
+          echo "::error::trivy v${TRIVY_VERSION} could not be installed"
+          exit 1
 
       - name: download the trivy vulnerability DB
         # Its own step, retried, because the download is the flaky part
