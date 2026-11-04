@@ -67,3 +67,5 @@ def test_the_report_does_not_count_a_missing_capture_at_four_segments_a_route():
     # MUTATION: keep "(4 when unset)" and a missing tall capture is counted short.
     assert "4 when unset" not in report
     assert "at least" in report and "to its end" in report
+    # MUTATION: drop the `truncated` sentence and a page cut at the bound reads as whole.
+    assert "`truncated`" in report
