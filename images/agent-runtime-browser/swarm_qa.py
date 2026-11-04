@@ -168,6 +168,11 @@ The gate lets that token path through only while its own sign-in reads
 the worker's `$SWARM_HANDOFF/qa-target.json` (part of #2688: a sign-in that
 landed on a page without its `signed_in_selector` ended `failed`, and every
 screen's token exchange was refused while the pages showed signed in).
+The manifest's `worker` is the gate's build, from the same record
+(`{commit, image, code}`, agent_worker.buildinfo; null when the record names
+none): the manifest's `commit` is the app's checkout, and on 2026-11-03
+nothing a run kept said whether the gate that refused it had the change two
+releases had just deployed (part of #2688).
 
 A LEG THAT NEVER GOT PAST SIGN-IN IS NOT REVIEWABLE (part of #2688). On
 2026-11-02 a run on an own-login target captured only the app's "Couldn't
@@ -1287,6 +1292,12 @@ def _gate_sign_in() -> dict | None:
             "cause": cause if isinstance(cause, str) and _SIGN_IN_CAUSE.fullmatch(cause) else None}
 
 
+_BUILD_COMMIT = re.compile(r"[0-9A-Za-z._-]{1,64}")
+_BUILD_IMAGE = re.compile(r"[a-z0-9.-]{1,253}(?::[0-9]{1,5})?/[A-Za-z0-9._/-]{1,255}"
+                          r"(?::[A-Za-z0-9._-]{1,128})?(?:@sha256:[0-9a-f]{64})?")
+_BUILD_CODE = re.compile(r"sha256:[0-9a-f]{64}")
+
+
 def _refusal(raw: Any) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -1295,6 +1306,18 @@ def _refusal(raw: Any) -> dict | None:
     if not isinstance(n, int) or not isinstance(at, (int, float)) or not all(isinstance(v, str) for v in fields.values()):
         return None
     return {"n": n, "at": float(at), **{k: v[:MAX_ERROR_CHARS] for k, v in fields.items()}}
+
+
+def _worker_build(raw: Any) -> dict | None:
+    """The gate's `build` (agent_worker.buildinfo: commit, image, code), each
+    field kept only in its own shape, else null; None when the gate named none.
+    The manifest's `worker`: which build of the gate made its refusals (part
+    of #2688), since `commit` is the app's checkout, not the worker's."""
+    if not isinstance(raw, dict):
+        return None
+    shapes = {"commit": _BUILD_COMMIT, "image": _BUILD_IMAGE, "code": _BUILD_CODE}
+    return {k: raw[k] if isinstance(raw.get(k), str) and shape.fullmatch(raw[k]) else None
+            for k, shape in shapes.items()}
 
 
 def _gate_key(origin: str, path: str) -> str:
@@ -1313,6 +1336,8 @@ class _GateRefusals:
         self.given: set[int] = set()
         #: The record's `allowed` (QA-IDP-POST): let through, never refused.
         self.allowed: dict[int, dict] = {}
+        #: The gate's build (`_worker_build`): the manifest's `worker`.
+        self.build: dict | None = None
 
     def _read(self) -> bool:
         if self.why is not None:
@@ -1323,6 +1348,7 @@ class _GateRefusals:
             self.why = f"{type(exc).__name__}: {_one_line(exc)}"
             return False
         self.armed = document.get("armed") is True
+        self.build = _worker_build(document.get("build"))
         for raw in document["refusals"]:
             record = _refusal(raw)
             if record is not None and record["at"] >= self.started:
@@ -2127,6 +2153,7 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
                 pass
         playwright.stop()
         manifest["gate_refusals"] = gate.summary()
+        manifest["worker"] = gate.build
         blocked = sign_in_blocked(manifest["routes"], out, base, list(gate.seen.values()))
         manifest["sign_in_blocked"] = blocked
         manifest["reviewable"] = blocked is None

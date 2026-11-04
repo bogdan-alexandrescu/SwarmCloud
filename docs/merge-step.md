@@ -39,8 +39,100 @@ builds it, and compares every answered question that names `built` -- and a
 merge held on owner questions whose pull request was merged or closed
 outside the workflow finishes on its own -- the third and fourth sections below.**
 **Revised 2026-10-29: the merge step's CI, conflict and pick rounds wait while a
-plain continuation of the lane is live on the same branch -- the first section
+plain continuation of the lane is live on the same branch -- the second section
 below.**
+**Revised 2026-11-03: in a repository whose own merge train is on, the merge
+step labels its pull request `ready` and parks on the train instead of taking
+the merge slot -- the first section below.**
+
+## Revised 2026-11-03: the repository's merge train boards the merge step's pull request (part of #2688)
+
+The owner decided on 14 October 2026 to use a merge train ("A1 Merge train")
+and on 3 November 2026 chose to turn it on. The train is a workflow, not a
+SwarmCloud feature: `.github/workflows/merge-train.yml` runs
+`scripts/merge-train.sh tick`, which boards up to four green `ready` pull
+requests, squashes them in order onto main as `train/<id>`, tests that once,
+and squash-merges each; a red train is bisected and its culprit ejected
+([runbooks/merge-train.md](runbooks/merge-train.md)). Before this change the
+merge step ignored it: it took the repository's merge slot, updated its
+branch and merged by itself, one pull request at a time, re-running CI after
+every other merge -- exactly the cost the train exists to remove. With the
+ruleset change the runbook describes (`merge-train` required), its direct
+merge would be refused outright.
+
+This is a different train from TRAIN-WS (the first paragraph of this page,
+[merge-trains.md](merge-trains.md)): that one is a workspace setting run by
+swarm-api's coordinator, signed into the step as `merge_mode: train`; this one
+is the repository's own GitHub workflow. A step whose target says
+`merge_mode: train` never reads the repository's switch.
+
+**The switch.** One switch, the one both workflows read: the repository
+variable `MERGE_TRAIN`, exactly `on` (`merge-train.sh tick`; auto-merge.yml's
+gate, step 5b). The step reads it with the tenant's `-git` token through
+`GET /repos/{owner}/{repo}/actions/variables/MERGE_TRAIN`
+(`merge.repository_train`), once per green reading. Unset (404), or anything
+but `on`, is the train off. A token without the *Variables: Read* permission
+(401/403) cannot see it: the train is then on only when the base's required
+checks include `merge-train` -- the runbook's ruleset change -- because a
+direct merge into such a base is refused whatever the variable says. The
+switch is read nowhere else: the step stores no copy, so turning the variable
+off takes effect at every step's next green reading.
+
+**With the train on** (`merge._board`). Everything up to the green reading
+runs as before: the verdict, the head walk, conflicts and their fix rounds,
+red checks and their CI-fix rounds, the person-push rule. Then, instead of the
+slot:
+
+1. Not yet `ready`: behind the fencing and cancel recheck, the step adds the
+   `ready` label with the tenant's token (`POST .../issues/{n}/labels`) and
+   parks `merge_train_waiting`. auto-merge.yml's gate then says "Left to the
+   merge train" once and arms nothing, as it does for any `ready` pull request
+   while the train is on.
+2. Already `ready`: parks `merge_train_waiting` again; nothing is written.
+3. The park is the TRAIN-WS park code, so it is handled as that one already
+   is: swarm-api's CI wake tick leaves it alone, the lifecycle counts it as a
+   `train_waits` wake (200, two days at the 15-minute fallback) off the CI
+   clock, so a long train queue never reads as `checks_timeout`. It wakes on
+   the fallback instant. It takes no merge slot, updates no branch and calls
+   no merge; a step that held the slot when the train went on hands it to the
+   next waiter as it boards (`_RELEASE_ON_PARK`).
+
+**The wake.**
+
+* **Merged** at an accepted head: SUCCEEDED. When the train posted its
+  `merge-train` status green at that head, the merge is this step's
+  (`merged_by_this_task`, `merged_through_repository_train`), recorded on the
+  pull request with the train named, its issues closed and its branch
+  deleted, as a direct merge's are. Merged with no `merge-train` status (a
+  person's merge while it waited): `already_merged`, also SUCCEEDED.
+* **Open, `ready` gone, at the head it parked at:** the train ejected it
+  (`merge-train.sh eject_pr`: a comment linking the failing job, `ready`
+  removed) or auto-merge.yml's gate removed `ready` with its reason. This
+  takes the path a refused merge takes: the gate runs first, so a pull request
+  that now conflicts with main goes to its conflict fix round, and a red check
+  at its head to its CI-fix round; a round's new head is labelled `ready`
+  afresh. Green and still not `ready`, it ends FAILED `train_ejected`
+  (`merge_refused`) quoting the train's ejection comment, or else the latest
+  comment an App wrote, and is never labelled again -- as a dequeued pull
+  request is never enqueued again, so a change the train keeps ejecting does
+  not loop.
+* **Open and `ready`:** parks again.
+
+**With the train off** nothing changes: no label is read or written, the slot,
+the branch update and the merge run exactly as before. The only new call is
+the one variable read at a green reading.
+
+**Invariants.** Invariant 1: the wait is a park, the lease released and no
+capacity held, waking on its fallback instant. Invariant 5: the only new forge
+write, the label, is behind `ctx.recheck()`, the fencing recheck every forge
+write takes; a stale attempt labels nothing and parks nothing. The merge
+itself is GitHub's, made by the train's App token, not by the step.
+
+**What a deployment needs.** The tenant GitHub App's permissions
+(`swarm_api.setup_github.PERMISSIONS`) do not include *Variables: Read*, so a
+fresh deployment's step reads the switch through the `merge-train` required
+check only. Granting it is a question for the owner in this change's pull
+request, outside this lane's files.
 
 ## Revised 2026-11-02: advisory owner questions do not hold a merge (part of #2688)
 

@@ -44,6 +44,8 @@ BLOCK_KEYS = {
     "attempts", "attempts_with_cost", "cost_usd_total", "cost_incomplete",
     "duration_s_total", "duration_incomplete", "first_started_at",
     "last_attempt_cost_usd", "last_attempt_duration_s", "attempts_read",
+    # What the list's Needs-you bar draws (PR #3147; test_workflow_step_needs.py).
+    "needs",
 }
 
 

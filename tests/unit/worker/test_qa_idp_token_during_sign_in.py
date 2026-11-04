@@ -22,7 +22,9 @@ Held here: the exact approved token URL is let through, and recorded as an
 IdP token refresh, from the moment the gate's own sign-in begins until it
 ends, as well as after it completes; and nothing else is: no other path on
 the provider's origin outside the gate's own steps, no other origin, no other
-method, nothing before the sign-in begins, nothing after one that failed.
+method, nothing before the sign-in begins, nothing after the wipe. (Since
+the same day's later run, a sign-in that ended failed keeps it too:
+test_qa_idp_token_production_legs.)
 
 The end-to-end half is test_qa_target_signin's scripted Chromium and the real
 `QaTarget`, `QaTargetGuard`, `SignIn` and `CdpProxy`. No Chromium, network or
@@ -126,16 +128,19 @@ def test_nothing_before_the_sign_in_begins():
 
 
 @pytest.mark.parametrize("state", [gate_qt.STATE_FAILED, gate_qt.STATE_CHALLENGE])
-def test_nothing_once_a_sign_in_ended_without_completing(state):
+def test_the_token_post_still_goes_once_a_sign_in_ended_without_completing(state):
     target = _target()
     target.signing_in = True
     target.signing_in = False
     target.finished(state, gate_qt.SIGN_IN_FAILED)
-    # MUTATION: leave the in-flight flag set past `finished` and this continues.
-    assert _post(target, TOKEN_URL).action == "refuse"
-    # A second hand-off queues a sign-in: still nothing until it begins.
+    assert not target.in_flight
+    # MUTATION: hold the exception on `in_flight or state == signed_in` and
+    # this is refused (part of #2688, test_qa_idp_token_production_legs).
+    assert _post(target, TOKEN_URL).action == "continue"
+    # A second hand-off queues a sign-in: the first one has begun, so it holds.
     target.handle(_leg_args(target_id=target.target_id))
-    assert _post(target, TOKEN_URL).action == "refuse"
+    assert _post(target, TOKEN_URL).action == "continue"
+    assert _post(target, OTHER_IDP_PATH).action == "refuse"
 
 
 def test_nothing_after_the_wipe_even_mid_sign_in():

@@ -195,7 +195,9 @@ def test_an_advisory_contract_compiles_into_todays_step_fields():
         "budget": {"usd": 5}, "max_turns": 80, "timeout_seconds": 3600,
         "repository_url": "https://github.com/acme/app", "repository_ref": COMMIT,
     }
-    assert compiled.advisory == ("artifacts", "plugins", "protected", "read_scope",
+    # Plugins are enforced: the worker reads them only from the digested,
+    # signed contract (agent_worker.plugins), so they are never advisory.
+    assert compiled.advisory == ("artifacts", "protected", "read_scope",
                                  "runtime_capabilities", "verification", "write_scope")
     assert "REQ-1: The login page accepts SSO." in compiled.brief
     assert "Advisory, not enforced by the platform" in compiled.brief
@@ -214,8 +216,6 @@ def test_the_reference_names_the_exact_revision():
     ("read_scope", {"scope": {"read": ["src/**"]}}),
     ("protected", {"protected": {"paths": ["apps/common/**"]}}),
     ("runtime_capabilities", {"capabilities": {"runtime": ["screenshots"]}}),
-    ("plugins", {"capabilities": {"plugins": {"gstack": {"mode": "planner",
-                                                         "skills": ["spec"]}}}}),
     ("artifacts", {"artifacts": [{"kind": "pull_request"}]}),
 ])
 def test_a_strict_contract_a_worker_cannot_enforce_is_refused(component, over):
@@ -224,6 +224,12 @@ def test_a_strict_contract_a_worker_cannot_enforce_is_refused(component, over):
         wc.compile_contract(contract, step_id="s")
     assert raised.value.detail["unenforced"] == [component]
     assert raised.value.code == "work_contract_not_enforceable"
+
+
+def test_a_strict_contract_naming_plugins_compiles_because_the_worker_enforces_them():
+    contract = wc.decode(_strict_enforceable(capabilities={"plugins": {
+        "gstack": {"mode": "unattended", "skills": ["review"]}}}))
+    assert wc.compile_contract(contract, step_id="s").advisory == ()
 
 
 def test_a_strict_contract_with_verification_is_refused_not_degraded():

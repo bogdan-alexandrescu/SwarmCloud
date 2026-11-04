@@ -67,6 +67,7 @@ from .objects import (
     ObjectSlice,
     ObjectUnreadable,
     UnsafeKeySegment,
+    safe_artifact_name,
     safe_segment,
 )
 from .redaction import (
@@ -1372,17 +1373,21 @@ class InspectionService:
 
         `name` may legitimately contain slashes -- `_upload_outputs` walks
         `artifacts/` recursively and records `rel` as a POSIX relative path --
-        so it is validated segment by segment rather than as one segment.
+        so it is validated segment by segment rather than as one segment, by
+        `safe_artifact_name`: the listing serves any printable name the agent
+        wrote (`_export.yaml`, `a b.txt`), so a name segment is refused only
+        for what can leave the prefix. The tenant, task and attempt ids that
+        BUILD the prefix still pass the strict `safe_segment`.
         """
         base = attempt_prefix(
             tenant_id=self._segment(task.tenant_id, what="tenant id"),
             task_id=self._segment(task.id, what="task id"),
             attempt_id=self._segment(attempt_id, what="attempt id"),
         )
-        parts = name.split("/")
-        safe = "/".join(
-            self._segment(part, what="artifact name segment") for part in parts
-        )
+        try:
+            safe = safe_artifact_name(name, what="artifact name")
+        except UnsafeKeySegment as exc:
+            raise ValidationFailed(str(exc)) from None
         return f"{base}/{ARTIFACTS_SEGMENT}/{safe}"
 
     def _looks_binary(

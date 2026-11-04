@@ -74,6 +74,7 @@ from .routes import (
     provider_keys,
     people,
     platform,
+    plugin_settings,
     qa_identity,
     qa_settings,
     qatargets,
@@ -425,6 +426,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's quality gates: whether its claude-code lanes run
     # jev-belay and jev-enforce (JEV-LANES): its owner or admin, audited.
     app.include_router(quality_gates.router)
+    # A workspace's allowed agent plugins, from the platform's closed
+    # catalogue (docs/design/agent-plugins.md): its owner or admin, audited.
+    app.include_router(plugin_settings.router)
     # A workspace's per-agent budget, which a step may only lower and the
     # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
     app.include_router(budget_settings.router)

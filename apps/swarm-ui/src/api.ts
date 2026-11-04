@@ -18,7 +18,7 @@ import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
-import { stateEnteredAt, summaryTaskById, type StepTaskSummary } from './stepviews'
+import { stateEnteredAt, summaryTaskById, type StepNeedQuestion, type StepNeeds, type StepTaskSummary } from './stepviews'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
 import { noteProfile, revisionAfterZoneSaves } from './timezone'
@@ -6157,11 +6157,113 @@ function withTaskSummaries(workflows: Workflow[], tasks: readonly Task[]): Workf
         last_attempt_duration_s: null,
         attempts_read: 'ok',
         last_error_line: t.last_error ? (t.last_error.split('\n')[0] ?? null) : null,
+        needs: fixtureStepNeeds(t),
       }
       return { ...s, task_summary }
     }),
   }))
 }
+
+const isIndex = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
+const textOf = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+
+/** A question wait as the worker writes it (`agent_questions._wait_shape`), else null. */
+function fixtureWaitShape(value: unknown): { questions: Record<string, unknown>[]; blocking: number[]; attempt_id: string } | null {
+  if (!isRecord(value)) return null
+  const { questions, blocking, attempt_id } = value
+  if (!Array.isArray(questions) || questions.length === 0 || !questions.every(isRecord)) return null
+  if (!Array.isArray(blocking) || blocking.length === 0 || !blocking.every((i) => isIndex(i) && i < questions.length)) return null
+  if (typeof attempt_id !== 'string') return null
+  return { questions, blocking: blocking as number[], attempt_id }
+}
+
+/** The indices `metadata.owner_answers` answers (`codec.owner_answers_by_index`). */
+function fixtureAnswered(metadata: Record<string, unknown> | null): Set<number> {
+  const raw = metadata?.owner_answers
+  return new Set((Array.isArray(raw) ? raw : []).filter(isRecord).map((e) => e.question_index).filter(isIndex))
+}
+
+/**
+ * Each fixture step's `task_summary.needs`, as `codec.step_needs` builds it
+ * off the step's task document, so the fixture build's Needs-you bar counts
+ * the fixture's own hand-offs, holds, questions and pull requests rather than
+ * reading "not known". The fixture's texts are its own, so nothing is masked.
+ */
+export function fixtureStepNeeds(t: Task): StepNeeds {
+  const wait = isRecord(t.human_wait) ? t.human_wait : null
+  const human_wait = wait !== null && t.state === 'RUNNING'
+    ? { reason: textOf(wait.reason), expect: textOf(wait.expect), deadline: textOf(wait.deadline) }
+    : null
+  const humanPark = t.state === 'PARKED' && t.park_reason === 'HUMAN_REQUIRED'
+  const blockers = ((t.blocked_by ?? []) as unknown[]).filter(isRecord).filter((b) => b.reason === 'HUMAN_REQUIRED')
+  let owner_questions: StepNeeds['owner_questions'] = null
+  const held = humanPark ? blockers.find((b) => b.park_phase === 'owner_questions') : undefined
+  if (held !== undefined) {
+    const record = isRecord(held.owner_questions) ? held.owner_questions : {}
+    const questions = (Array.isArray(record.questions) ? record.questions : []).map((q) =>
+      isRecord(q)
+        ? {
+            task_id: textOf(q.task_id),
+            step_id: textOf(q.step_id),
+            question_index: isIndex(q.question_index) ? q.question_index : null,
+            question: textOf(q.question),
+          }
+        : null,
+    )
+    owner_questions = { questions, unreadable: isIndex(record.unreadable) ? record.unreadable : null }
+  }
+  // THE WAIT THE TASK IS PARKED ON NOW (`agent_questions.parked_wait`); its
+  // stored answers are its own only once adopted (`current_wait`).
+  let parked: ReturnType<typeof fixtureWaitShape> = null
+  if (humanPark) {
+    for (const b of blockers) {
+      parked = fixtureWaitShape(b.question_wait)
+      if (parked !== null) break
+    }
+  }
+  const metadata = isRecord(t.metadata) ? t.metadata : null
+  const questions: StepNeedQuestion[] = []
+  if (parked !== null) {
+    const recorded = fixtureWaitShape(metadata?.question_wait)
+    const answered = recorded !== null && recorded.attempt_id === parked.attempt_id ? fixtureAnswered(metadata) : new Set<number>()
+    for (const index of parked.blocking) {
+      if (answered.has(index)) continue
+      const entry = parked.questions[index]!
+      questions.push({
+        index,
+        question: textOf(entry.question),
+        options: (Array.isArray(entry.options) ? entry.options : [])
+          .filter(isRecord)
+          .map((o) => ({ label: textOf(o.label), description: textOf(o.description) })),
+        recommended: textOf(entry.recommended),
+      })
+    }
+  }
+  // `questions_unread`: an ended task's questions.json, at most the worker's cap.
+  const counted = t.result_summary?.questions
+  const count = isIndex(counted) ? Math.min(counted, FIXTURE_MAX_ARTIFACT_QUESTIONS) : 0
+  const answeredAll = fixtureAnswered(metadata)
+  const questions_unread = TERMINAL_STATES.has(t.state)
+    ? Array.from({ length: count }, (_, i) => i).filter((i) => !answeredAll.has(i))
+    : []
+  const git = t.result_summary?.git
+  const pr = isRecord(git) && isRecord(git.pull_request) ? git.pull_request : null
+  const pull_request = pr !== null && isIndex(pr.number) ? { number: pr.number, url: textOf(pr.url) } : null
+  return {
+    park_reason: t.park_reason ?? null,
+    next_eligible_at: t.next_eligible_at,
+    updated_at: t.updated_at,
+    human_wait,
+    owner_questions,
+    question_wait: parked !== null,
+    questions,
+    questions_unread,
+    pull_request,
+  }
+}
+
+/** `codec.MAX_ARTIFACT_QUESTIONS`: the most questions one questions.json holds. */
+const FIXTURE_MAX_ARTIFACT_QUESTIONS = 20
 
 /**
  * The workflow rows, ONCE, because two screens read them.
@@ -7296,6 +7398,21 @@ let fixtureAccounts: ServedAccount[] = [
       seven_day: { utilization: 0.35, resets_at: ISO(5 * 86_400_000), reset: false },
     },
   }),
+  // VOICE IT'S OPENAI API KEY (the owner, 4 November 2026): in the Voice it
+  // pool alone, so it serves no workspace and draws only in that section,
+  // where its windows read "not measured" (`measured: false`), never 0.
+  fixtureAccount('u-bogdan', 'openai-key', {
+    provider: 'openai-api',
+    max_agents: 1,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
+    observed_at: null,
+    measured: false,
+    pools: ['voice-it'],
+    voice_it_people: ['alice@example.com'],
+    voice_it_holder: null,
+  } as Partial<ServedAccount>),
   fixtureAccount('u-bogdan', 'team-copy', {
     max_agents: 6,
     can_take_new_agent: false,
@@ -14170,7 +14287,8 @@ export interface SetupLink {
   expires_at: string | null
 }
 
-export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret'
+/** `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes. */
+export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key'
 
 /**
  * One check's last result in `health/latest`, read from the row
@@ -14385,7 +14503,7 @@ export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner:
       const d = objOf(raw) ?? {}
       return { kind: strOf(d.kind) ?? body.kind, label: strOf(d.label) ?? body.label, owner: strOf(d.owner) ?? body.owner, url: strOf(d.url), path: strOf(d.path) ?? '', expires_at: strOf(d.expires_at) }
     },
-    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + 24 * 3_600_000).toISOString() }),
+    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
   )
 }
 
