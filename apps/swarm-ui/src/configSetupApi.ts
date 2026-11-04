@@ -20,9 +20,9 @@
  * field missing or of the wrong type here is read the same way, so a payload
  * the console does not understand is drawn as unknown and never as done.
  */
-import { USE_FIXTURES, loadOnboarding } from './api'
+import { USE_FIXTURES, loadJoinedMembers, loadOnboarding, loadWorkspaceRoles, normJoinedMembers, normWorkspaceRoster } from './api'
 import { TENANT_HEADER, classifyFailure, route, type ErrorEnvelope, type Result } from './fetch'
-import type { OnboardingDoc } from './types'
+import type { JoinedMembers, OnboardingDoc, WorkspaceRoster } from './types'
 
 /** One thing a registered consumer needs and nobody has stored. */
 export interface SetupSecretItem {
@@ -134,7 +134,29 @@ const READ_INIT = { sameOrigin: 'same-origin' } as const satisfies Record<string
 export async function loadWorkspaceSetup(tenantId: string, signal?: AbortSignal): Promise<Result<OnboardingDoc>> {
   // The fixture build has one workspace's onboarding read; every workspace reads it.
   if (USE_FIXTURES) return loadOnboarding()
-  const target = route('/v1/onboarding')
+  return readNamed('/v1/onboarding', tenantId, (body) => body as unknown as OnboardingDoc, 'The setup read was not readable.', signal)
+}
+
+/**
+ * ONE NAMED WORKSPACE'S ROSTER: `GET /v1/workspace/roles` with
+ * `X-Swarm-Tenant`, readable by every role (Q7), for the list's per-row facts
+ * (the owner picked reading each workspace's roster on the list, 2026-11-03).
+ * Names and roles only: the route serves no secret.
+ */
+export async function loadWorkspaceRoster(tenantId: string, signal?: AbortSignal): Promise<Result<WorkspaceRoster>> {
+  if (USE_FIXTURES) return loadWorkspaceRoles()
+  return readNamed('/v1/workspace/roles', tenantId, normWorkspaceRoster, 'The roles read was not readable.', signal)
+}
+
+/** ONE NAMED WORKSPACE'S MEMBERSHIPS BY REQUEST: `GET /v1/workspace/members` with `X-Swarm-Tenant` (admin). */
+export async function loadWorkspaceJoined(tenantId: string, signal?: AbortSignal): Promise<Result<JoinedMembers>> {
+  if (USE_FIXTURES) return loadJoinedMembers()
+  return readNamed('/v1/workspace/members', tenantId, normJoinedMembers, 'The members read was not readable.', signal)
+}
+
+/** A read of `path` for the workspace `tenantId` names, its body normalised by `norm`. */
+async function readNamed<T>(path: string, tenantId: string, norm: (body: Record<string, unknown>) => T, unreadable: string, signal?: AbortSignal): Promise<Result<T>> {
+  const target = route(path)
   let res: Response
   try {
     // Behind IAP the browser holds the session cookie; nothing here handles a token.
@@ -156,6 +178,7 @@ export async function loadWorkspaceSetup(tenantId: string, signal?: AbortSignal)
     const envelope: ErrorEnvelope | null = env === null ? null : typeof env.message === 'string' ? env : { message: text(env.detail) ?? undefined }
     return { status: 'error', error: classifyFailure(res.status, envelope, undefined) }
   }
-  if (record(body) === null) return { status: 'error', error: { kind: 'server_error', httpStatus: res.status, code: null, message: 'The setup read was not readable.' } }
-  return { status: 'ok', data: body as OnboardingDoc, fetchedAt: Date.now() }
+  const doc = record(body)
+  if (doc === null) return { status: 'error', error: { kind: 'server_error', httpStatus: res.status, code: null, message: unreadable } }
+  return { status: 'ok', data: norm(doc), fetchedAt: Date.now() }
 }
