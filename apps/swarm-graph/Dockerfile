@@ -88,11 +88,15 @@ COPY apps/agent-worker/ /src/apps/agent-worker/
 # here, `uv pip check` refused this image on 2026-10-31 and the release shipped
 # nothing.
 COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
+# The Jev client the worker's judge.client and judge.sanitize re-export, shared
+# with swarm-api (docs/design/agent-quality/jev-contract.md, answer 10).
+COPY apps/jev-client/ /src/apps/jev-client/
 COPY apps/swarm-graph/ /src/apps/swarm-graph/
 
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
+ && uv build --wheel --out-dir /wheels /src/apps/jev-client \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker \
  && uv build --wheel --out-dir /wheels /src/apps/swarm-graph
 
@@ -101,7 +105,7 @@ RUN uv build --wheel --out-dir /wheels /src/apps/common \
 RUN python -m venv --without-pip /opt/venv
 
 # Third-party dependencies, exported from apps/swarm-graph/uv.lock with a hash
-# for every file. `--no-emit-local` leaves our five packages out:
+# for every file. `--no-emit-local` leaves our six packages out:
 # they come from /wheels, below. `--no-hashes` must never be added here.
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
       --project /src/apps/swarm-graph > /tmp/requirements.txt
@@ -113,7 +117,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # Our own packages, from the wheelhouse ONLY: `--no-index`, so no index is ever
 # asked for a name that is ours (dependency confusion, #663).
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-redaction swarm-workflow-rollup swarm-agent-worker swarm-graph
+      swarm-common swarm-redaction swarm-workflow-rollup swarm-jev swarm-agent-worker swarm-graph
 
 RUN uv pip check --python /opt/venv/bin/python
 

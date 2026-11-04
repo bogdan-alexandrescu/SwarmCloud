@@ -119,7 +119,7 @@ def test_the_guard_reads_real_cites_and_refuses_a_dead_one() -> None:
     assert len(cites) >= 20, cites
     assert ("apps/agent-worker/agent_worker/judge/sanitize.py", "is_denied_path") in cites
     assert _resolves("apps/agent-worker/agent_worker/judge/sanitize.py", "NEVER_SENT_KEYS")
-    assert _resolves("apps/agent-worker/agent_worker/judge/client.py", "JudgeClient.decide")
+    assert _resolves("apps/jev-client/swarm_jev/client.py", "JudgeClient.decide")
     assert not _resolves("apps/agent-worker/agent_worker/judge/sanitize.py", "is_denied_paths")
     assert not _resolves("tests/unit/worker/test_judge_sanitize.py", "test_no_such_test")
 
