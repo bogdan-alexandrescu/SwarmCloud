@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import { loadQaSettings, loadRepositories, type QaSettings } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
@@ -681,6 +681,7 @@ function TargetCard({
                   </td>
                   <td data-label="Host" className="qa-env-host">
                     {leg.base_url ?? leg.host ?? '—'}
+                    {leg.entry_query !== null && <small data-entry-query="">{` ?${leg.entry_query}`}</small>}
                   </td>
                   <td data-label="Host approval">
                     <span className={leg.host_state === 'approved' ? 'qa-ok' : 'ur-bad'}>{hostWords(leg)}</span>
@@ -1231,6 +1232,10 @@ interface Draft {
   /** The challenge bypass's kind (§2.5), `none` for none, and its header or cookie name. */
   bypass_kind: 'none' | 'header' | 'cookie'
   bypass_name: string
+  /** A one-origin target's entry query (`qaspec.entry_query`): `key=value` pairs every URL it opens carries. */
+  entry_query: string
+  /** A target of entries: each entry as served, and its entry query as typed. */
+  legs: { name: string; spec: Record<string, unknown>; entry_query: string }[]
 }
 
 /** `qaspec.MAX_START_CLICKS`: the API refuses a fourth. */
@@ -1256,7 +1261,16 @@ function draftOf(t: QaTarget | null): Draft {
     more: t === null || Object.keys(t.more).length === 0 ? '' : JSON.stringify(t.more, null, 2),
     bypass_kind: t?.challenge_bypass?.kind ?? 'none',
     bypass_name: t?.challenge_bypass?.name ?? '',
+    entry_query: t?.entry_query ?? '',
+    legs: (t?.environments ?? []).flatMap((e) =>
+      e.name === null || e.spec === null ? [] : [{ name: e.name, spec: e.spec, entry_query: e.entry_query ?? '' }],
+    ),
   }
+}
+
+/** An entry query as the API stores it: trimmed, no leading `?`; empty is none. */
+function queryOf(text: string): string {
+  return text.trim().replace(/^\?/, '')
 }
 
 /** The More settings box: an object of `MORE_FIELDS` only, or the refusal in words. */
@@ -1306,6 +1320,18 @@ function bodyOf(d: Draft, was: Draft | null): QaTargetSend | string {
     flows_browser_tool: d.flows_browser_tool,
   }
   if (d.bypass_kind !== 'none') full.challenge_bypass = { kind: d.bypass_kind, name: d.bypass_name.trim() }
+  if (d.legs.length > 0) {
+    // A target of entries takes a leg's field in `environments` alone: every
+    // entry is sent back whole, so the one that changed is the only change.
+    full.environments = d.legs.map(({ spec, entry_query }) => {
+      const rest = { ...spec }
+      delete rest.entry_query
+      const query = queryOf(entry_query)
+      return query === '' ? rest : { ...rest, entry_query: query }
+    })
+  } else if (queryOf(d.entry_query) !== '') {
+    full.entry_query = queryOf(d.entry_query)
+  }
   if (was === null) return full
   const old = bodyOf(was, null)
   if (typeof old === 'string') return full
@@ -1402,6 +1428,56 @@ function TargetForm({
               <p className="ur-hint">{`Changing the address's host sets ${target.host}'s approval back to pending.`}</p>
             )}
           </div>
+          {d.legs.length === 0 ? (
+            <>
+              <label className="ur-fl" htmlFor={`${fid}-entry_query`}>
+                Entry query<small>optional</small>
+              </label>
+              <div>
+                <input
+                  id={`${fid}-entry_query`}
+                  name="entry_query"
+                  value={d.entry_query}
+                  onChange={set('entry_query')}
+                  placeholder="env=production"
+                  maxLength={257}
+                />
+                <p className="ur-hint">
+                  Plain key=value pairs, joined by &amp;, added to every address the run opens, sign-in included: for an app
+                  that picks its environment from the address. Never a token or a password. Changing it keeps the host&apos;s
+                  approval.
+                </p>
+              </div>
+            </>
+          ) : (
+            d.legs.map((leg, i) => (
+              <Fragment key={leg.name}>
+                <label className="ur-fl" htmlFor={`${fid}-entry_query-${leg.name}`}>
+                  {`Entry query, ${leg.name}`}
+                  <small>optional</small>
+                </label>
+                <div>
+                  <input
+                    id={`${fid}-entry_query-${leg.name}`}
+                    name={`entry_query-${leg.name}`}
+                    value={leg.entry_query}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      setD((was) => ({ ...was, legs: was.legs.map((l, j) => (j === i ? { ...l, entry_query: value } : l)) }))
+                    }}
+                    placeholder="env=production"
+                    maxLength={257}
+                  />
+                  {i === d.legs.length - 1 && (
+                    <p className="ur-hint">
+                      Plain key=value pairs, joined by &amp;, added to every address that environment&apos;s runs open, sign-in
+                      included. Never a token or a password. Changing one keeps its host&apos;s approval.
+                    </p>
+                  )}
+                </div>
+              </Fragment>
+            ))
+          )}
           <label className="ur-fl" htmlFor={`${fid}-repository`}>
             Files findings in
           </label>
