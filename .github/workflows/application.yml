@@ -528,6 +528,8 @@ jobs:
       tests: ${{ steps.select.outputs.tests }}
       # The unit shards' matrix, sized by the measured weight of what runs.
       unit_shards: ${{ steps.shards.outputs.shards }}
+      # The swarm-ui component-test shards' matrix, sized the same way.
+      ui_shards: ${{ steps.ui_shards.outputs.shards }}
       # A pull request's changed paths as a JSON list, for the shell job;
       # empty everywhere else, which checks every script.
       changed: ${{ steps.changed.outputs.changed }}
@@ -779,6 +781,21 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/lib/unit_shards.py count
+
+      - name: how many swarm-ui component-test shards this run needs
+        id: ui_shards
+        # Owner request 2026-11-03 (part of #2688): the vitest suite's fixed
+        # four shards split by file COUNT, and the shard that drew several of
+        # the 259-485 s spacing slices ran 15-25 minutes against 10-14 for the
+        # others. The count follows the measured weight, about 600 s a shard up
+        # to eight (scripts/lib/ui_shards.py says why); the pick step in
+        # ui-tests splits with the same code. Computed on every run, as the unit
+        # count is: ui-tests' own `if:` decides whether the shards run.
+        env:
+          DURATIONS: tests/unit/scripts/ui_test_durations.json
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/ui_shards.py count
 
       - name: the pull request's changed paths, for shellcheck
         id: changed
@@ -1568,9 +1585,17 @@ jobs:
 
   ui-tests:
     # THE VITEST SUITE, SHARDED (owner request 2026-10-07). ~520 s of jsdom in
-    # one job was the other long pole beside the Python unit suite. vitest's
-    # own `--shard=k/N` splits the test files; every file runs in exactly one
-    # shard. Four, as for Python: ~130 s of tests and ~60 s of install each.
+    # one job was the other long pole beside the Python unit suite.
+    #
+    # SHARDED BY WEIGHT (owner request 2026-11-03, part of #2688). vitest's own
+    # `--shard=k/4` split by file count, and the shard that drew several of the
+    # 259-485 s spacing slices took 15-25 minutes while the others took 10-14;
+    # with main required up to date, that shard set the merge queue's pace. The
+    # `changes` job now sizes the matrix by the measured weight
+    # (tests/unit/scripts/ui_test_durations.json), and each shard's pick step
+    # splits longest-first onto the lightest shard, deterministically, so every
+    # file runs in exactly one shard (scripts/lib/ui_shards.py,
+    # tests/unit/scripts/test_ui_shards.py).
     #
     # WORKERS STAY AT VITEST'S DEFAULT, and that is a measured choice (#605).
     # vitest 3.2's forks pool runs `availableParallelism() - 1` workers outside
@@ -1593,9 +1618,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: ${{ fromJSON(needs.changes.outputs.ui_shards) }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: pick this shard's test files
+        id: pick
+        # scripts/lib/ui_shards.py, which the `changes` job's count shares,
+        # lists the files vitest.config.ts includes and writes this shard's
+        # part of the weighted split, relative to apps/swarm-ui.
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+          DURATIONS: tests/unit/scripts/ui_test_durations.json
+          SHARD_FILES: ${{ runner.temp }}/ui-shard-files
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/ui_shards.py pick
 
       - name: read the Node major the swarm-ui image builds with
         id: node
@@ -1665,11 +1704,15 @@ jobs:
         # `npm run test:components` is `vitest run`; the arguments after `--`
         # reach vitest because it is the only command in that script (`npm
         # test` chains three, and a trailing argument would reach the last).
+        # vitest runs exactly the files the pick step wrote, one argument a
+        # line: the pick refuses a path with whitespace or a glob character
+        # and fails rather than write an empty list (`vitest run` with no file
+        # argument runs the WHOLE suite), and this step runs only after it
+        # passed.
         working-directory: apps/swarm-ui
         env:
-          SHARD: ${{ matrix.shard }}
-          SHARDS: ${{ strategy.job-total }}
-        run: npm run test:components -- --shard="${SHARD}/${SHARDS}"
+          SHARD_FILES: ${{ runner.temp }}/ui-shard-files
+        run: npm run test:components -- $(cat "${SHARD_FILES}")
 
   ui:
     # THE CHECK NAME `swarm-ui typecheck / component tests` IS KEPT, on a job
