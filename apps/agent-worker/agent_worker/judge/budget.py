@@ -68,15 +68,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol
 
+from swarm_jev.client import MEASURED_TOKENS_PER_CALL
+
 #: Owner decision 2026-10-14 (§8 Q4 A): hard per-task limits.
 MAX_CALLS_PER_TASK = 8
 MAX_INPUT_TOKENS_PER_TASK = 120_000
-#: What a call is assumed to cost before it is made: jev-browser's measured
-#: average (RESULTS.md, 2026-09-17, about 2,850 input tokens per call). A
-#: character count of the state would under-count -- the API's own prompt
-#: costs tokens too -- and admitting a call the budget cannot afford is the
-#: one outcome the hard cap exists to prevent.
-MEASURED_TOKENS_PER_CALL = 2_850
+#: What a call is assumed to cost before it is made, MEASURED_TOKENS_PER_CALL
+#: (imported above): jev-browser's measured average (RESULTS.md, 2026-09-17).
+#: Stated once, in `swarm_jev.client` (owner, 4 November 2026). A character
+#: count of the state would under-count -- the API's own prompt costs tokens
+#: too -- and admitting a call the budget cannot afford is the one outcome the
+#: hard cap exists to prevent.
 #: §5.5: two consecutive failures in one attempt open the breaker.
 BREAKER_FAILURES = 2
 #: The audit is bounded so a looping caller cannot grow the file without end.

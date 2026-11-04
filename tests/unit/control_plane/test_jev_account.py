@@ -58,7 +58,8 @@ def test_the_limits_are_the_workers():
 
     assert jevaccount.MAX_CALLS_PER_TASK == budget.MAX_CALLS_PER_TASK
     assert jevaccount.MAX_INPUT_TOKENS_PER_TASK == budget.MAX_INPUT_TOKENS_PER_TASK
-    assert jevaccount.MEASURED_TOKENS_PER_CALL == budget.MEASURED_TOKENS_PER_CALL
+    # MEASURED_TOKENS_PER_CALL is the shared package's own object:
+    # tests/unit/jev_client/test_shared_client.py holds it.
 
 
 def test_reserve_grants_the_task_allowance_bounded_by_the_month(client, db):
