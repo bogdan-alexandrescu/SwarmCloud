@@ -213,12 +213,8 @@ describe('the workflow page', () => {
     const chip = await page()
     expect(chip.getAttribute('aria-label')).toContain('waiting for a member')
     expect(chip.getAttribute('aria-label')).not.toContain('waiting for you')
-    // LOST ON THE PAGE (not papered over, per the brief): `StageGrid`'s
-    // `waitWordOf` stops at the park reason's words (StageGrid.tsx ~294-304)
-    // and nothing else on the grid or its chip prints the deadline; a reader
-    // scanning the grid for who has the least time left cannot tell without
-    // picking the step and waiting for `AwaitInputCard`'s own fetch to land.
-    // The canvas node above still carries it -- this assertion is the gap.
+    // The grid's chip carries the deadline in its tip too, so a reader scanning
+    // the grid sees who has the least time left without picking the step.
     expect(chip.getAttribute('aria-label')).toContain('expires in 3 h 20 m')
   })
 

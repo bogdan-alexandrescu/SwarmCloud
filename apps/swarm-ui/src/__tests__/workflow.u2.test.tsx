@@ -873,11 +873,7 @@ describe('a step skipped by its verdict gate never reads as one that ran', () =>
     serve([w], tasks)
     await page('wf=wf_pr')
     // What the page's graph shows: the stage grid's chip (the old canvas's
-    // `.node` is gone from the page). `ChipKind` (work/StageGrid.tsx) has no
-    // `skipped` kind and `ChipMark` never reads `skippedByVerdict`, so this is
-    // left failing: a step the verdict gate skipped reads exactly as one that
-    // ran on the page's graph now, which the brand marks page (#503) and this
-    // very describe block say it must not.
+    // `.node` is gone from the page), which marks a skipped step as such.
     const node = await waitFor(() => {
       const n = document.querySelector<HTMLElement>('.sg [data-step="fix"]')
       expect(n).toBeTruthy()
