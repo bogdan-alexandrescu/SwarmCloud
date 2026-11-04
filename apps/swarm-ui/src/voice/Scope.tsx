@@ -15,6 +15,11 @@
  * refs, not React state: sixty renders a second of the whole pane would be
  * the cost of a moving line. With `prefers-reduced-motion` the ring is still
  * and a level bar shows the voice instead.
+ *
+ * A TEXT SESSION (the ChatGPT plan, speech.ts) has no remote stream: the
+ * browser's speechSynthesis gives the page no audio to tap. Its playback
+ * comes in as `level`, 0..1 while a reply is spoken, and is drawn as the same
+ * level bar; the mic's tap draws the person as it does in a live call.
  */
 
 import { useEffect, useId, useRef, useState } from 'react'
@@ -105,9 +110,20 @@ function tap(ctx: AudioContext, stream: MediaStream): Tap {
 /**
  * The ring. `voice` is the agent's remote stream, `mic` the person's; either
  * may be null (not connected yet, or a browser with no Web Audio, where the
- * ring stays still and says its state in words).
+ * ring stays still and says its state in words). `level` is a text
+ * session's speech playback, null when nothing is spoken that way.
  */
-export function Ring({ state, voice, mic }: { state: ScopeState; voice: MediaStream | null; mic: MediaStream | null }) {
+export function Ring({
+  state,
+  voice,
+  mic,
+  level = null,
+}: {
+  state: ScopeState
+  voice: MediaStream | null
+  mic: MediaStream | null
+  level?: number | null
+}) {
   const gid = useId().replace(/:/g, '')
   const wave = useRef<SVGPathElement | null>(null)
   const glow = useRef<SVGPathElement | null>(null)
@@ -152,6 +168,11 @@ export function Ring({ state, voice, mic }: { state: ScopeState; voice: MediaStr
     }
   }, [voice, mic, still])
 
+  // The speech playback's level is set on the bar directly, as the analyser's is.
+  useEffect(() => {
+    if (level !== null) bar.current?.style.setProperty('--vt-level', `${Math.round(Math.min(1, Math.max(0, level)) * 100)}%`)
+  }, [level])
+
   const word = WORD[state]
   return (
     <figure className={`vt-ring is-${state}${still ? ' is-still' : ''}`} data-state={state}>
@@ -177,8 +198,8 @@ export function Ring({ state, voice, mic }: { state: ScopeState; voice: MediaStr
         <span className="vt-ring-name">Voice it</span>
         <span className="vt-ring-state">{word}</span>
       </figcaption>
-      {still && voice !== null && (
-        <span className="vt-ring-level" aria-hidden="true">
+      {((still && voice !== null) || level !== null) && (
+        <span className="vt-ring-level" aria-hidden="true" data-level={level === null ? undefined : Math.round(level * 100)}>
           <span ref={bar} className="vt-ring-level-fill" />
         </span>
       )}
