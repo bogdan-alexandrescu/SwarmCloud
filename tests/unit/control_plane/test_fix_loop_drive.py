@@ -742,3 +742,57 @@ def test_an_exhausted_loop_ends_failed_fix_loop_exhausted_through_end(loop_clien
     doc = loop.doc()
     assert doc["state"] == "FAILED"
     assert doc["end_cause"] == EndCause.FIX_LOOP_EXHAUSTED.value
+
+
+# --------------------------------------------------------------------------
+# Later rounds' minors go to the wave epic (§6.5, BGD's Q7 (a))
+# --------------------------------------------------------------------------
+
+EPIC = 77
+MINOR = {"severity": "minor", "file": "apps/swarm-api/ttl.py", "where": "expire()",
+         "problem": "the TTL is a magic number", "fix": "name it"}
+FILED = {"severity": "minor", "file": "apps/swarm-api/ttl.py", "call_site": "renew()",
+         "summary": "renew() logs at INFO"}
+
+
+def test_a_re_reviews_minors_are_filed_on_the_epic_once(loop_client, db, objects, github):
+    loop_client.app.state.ctx.store.set_findings_epic("eng", EPIC)
+    # A person filed one already, in the epic's shape: it is not posted again.
+    github.add_comment(EPIC, "- [ ] **renew() logs at INFO** · `apps/swarm-api/ttl.py` "
+                             "`renew()` · found by hand")
+    # Round 0's minors are the gated integrator's: the loop never files them.
+    review_minor = {**MINOR, "problem": "round zero's minor"}
+    loop = integrate_to_first_round(loop_client, db, objects,
+                                    review={**NOT_YET, "findings": [*NOT_YET["findings"],
+                                                                    review_minor]})
+    rereview = round_task(loop, "re-review:1")
+    finish(db, objects, rereview,
+           verdict={"verdict": "MERGE", "findings": [MINOR, FILED, "a string is no minor"]})
+
+    push(loop_client, rereview)
+    push(loop_client, rereview)
+
+    assert loop.doc()["state"] == "SUCCEEDED"
+    bodies = [c["body"] for c in github.on_issue(EPIC)]
+    assert len(bodies) == 2, bodies
+    posted = bodies[1]
+    # MUTATION: dedup off posts FILED again; the round-0 minor would show here.
+    assert "the TTL is a magic number" in posted and "`expire()`" in posted
+    assert f"re-review `{rereview}`" in posted and "suggested fix: name it" in posted
+    assert not any("round zero" in b for b in bodies)
+    (entry,) = loop.state()["rounds"]
+    assert entry["findings_epic"] == {"epic": EPIC, "minors": 2, "filed": 1,
+                                      "already_filed": 1}
+
+
+def test_with_no_epic_a_rounds_minors_are_recorded_not_filed(loop_client, db, objects, github):
+    loop = integrate_to_first_round(loop_client, db, objects)
+    rereview = round_task(loop, "re-review:1")
+    finish(db, objects, rereview, verdict={"verdict": "MERGE", "findings": [MINOR]})
+
+    push(loop_client, rereview)
+
+    assert loop.doc()["state"] == "SUCCEEDED"
+    assert github.on_issue(EPIC) == []
+    (entry,) = loop.state()["rounds"]
+    assert entry["findings_epic"]["not_filed"] == "the workspace names no findings epic"

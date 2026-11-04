@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -69,6 +70,7 @@ from swarm_common.states import TERMINAL_STATES, ParkReason, TaskState
 from . import mergewake
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Conflict, NotFound, UpstreamUnavailable, ValidationFailed
+from .issuecomments import neutralise_mentions
 from .issueci import LOST_ROUND_SECONDS
 from .issueruns import NO_CLOSING_KEYWORD, failure_text
 from .redaction import redact
@@ -86,6 +88,7 @@ from .validation import (
     IssueRef,
 )
 from .verdictpublish import (
+    MAX_FINDING_CHARS,
     MAX_FINDINGS,
     MAX_VERDICT_BYTES,
     Decline,
@@ -295,6 +298,49 @@ class Verdict:
     #: Blocker and major findings, as text, bounded (minors go to the wave epic).
     findings: tuple[str, ...]
     minors: int
+    #: The minor findings, bounded, in the worker's shape (Q7: filed on the epic).
+    minor_items: tuple["Minor", ...] = ()
+
+
+@dataclass(frozen=True)
+class Minor:
+    text: str
+    file: str = ""
+    call_site: str = ""
+    evidence: str = ""
+
+
+#: `agent_worker.verdict.minor_findings`' rules, restated: swarm-api does not
+#: import the worker. The fields a minor's text is read from, its bounds.
+MINOR_TEXT_FIELDS = ("summary", "title", "message", "problem", "what")
+MAX_MINORS = MAX_FINDINGS
+MAX_WHERE_CHARS = 300
+
+
+def _line(value: Any, limit: int) -> str:
+    text = " ".join(value.split()) if isinstance(value, str) else ""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _minor_items(items: list[Any]) -> tuple[Minor, ...]:
+    """The findings marked minor that say what the defect is, bounded."""
+    out: list[Minor] = []
+    for item in items:
+        if not isinstance(item, dict) or not _is_minor(item):
+            continue
+        text = next((_line(item[f], MAX_FINDING_CHARS) for f in MINOR_TEXT_FIELDS
+                     if isinstance(item.get(f), str) and item[f].strip()), "")
+        if not text:
+            continue
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), str) else ""
+        if not evidence.strip() and isinstance(item.get("fix"), str) and item["fix"].strip():
+            evidence = f"suggested fix: {item['fix']}"
+        call_site = item.get("call_site") if isinstance(item.get("call_site"), str) \
+            and item["call_site"].strip() else item.get("where")
+        out.append(Minor(text=text, file=_line(item.get("file"), MAX_WHERE_CHARS),
+                         call_site=_line(call_site, MAX_WHERE_CHARS),
+                         evidence=_line(evidence, MAX_WHERE_CHARS)))
+    return tuple(out[:MAX_MINORS])
 
 
 def read_verdict(ctx: Any, tenant_id: str, task_id: str) -> Verdict:
@@ -309,7 +355,118 @@ def read_verdict(ctx: Any, tenant_id: str, task_id: str) -> Verdict:
     items = raw if isinstance(raw, list) else ([raw] if raw not in (None, "") else [])
     blocking = [t for t in (_finding_text(i) for i in items if not _is_minor(i)) if t]
     return Verdict(verdict=read.verdict, findings=tuple(blocking[:MAX_FINDINGS]),
-                   minors=read.minors)
+                   minors=read.minors, minor_items=_minor_items(items))
+
+
+# --------------------------------------------------------------------------
+# Later rounds' minors, on the wave epic (§6.5, BGD's Q7 (a))
+# --------------------------------------------------------------------------
+#
+# Round 0's minors are the gated integrator's to file, as today; every
+# re-review's are the loop's, in the worker's comment shape
+# (`agent_worker.findings_epic`, restated: swarm-api does not import the
+# worker) so that one dedup reads both. The epic is the loop's signed
+# `findings_epic`, an issue in the loop's own repository, posted to with the
+# tenant's own `-git` token (invariant 9). Nothing here moves the loop: a
+# forge that refuses is recorded on the round.
+
+_EPIC_LINE = re.compile(r"^\s*[-*]\s+\[[ xX]\]\s+\*\*(?P<text>.+?)\*\*(?P<rest>.*)$")
+_TICKED = re.compile(r"`([^`]*)`")
+_ZWJ = "\u200d"
+#: Every comment `issue_comments_tail` reads (its pages are bounded): a key
+#: missed here is a duplicate posted, so the tail is the whole read.
+EPIC_COMMENTS_READ = 10_000
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.replace(_ZWJ, "").replace("\\", "").split()).casefold()
+
+
+def _bold(text: str) -> str:
+    return " ".join(text.split()).replace("*", "\\*")
+
+
+def _tick(text: str) -> str:
+    return " ".join(text.split()).replace("`", "'")
+
+
+def epic_keys(body: str) -> set[tuple[str, str, str]]:
+    """(text, file, call site) of every epic-shaped line in a comment."""
+    keys = set()
+    for line in body.splitlines():
+        match = _EPIC_LINE.match(line)
+        if match is None:
+            continue
+        rest = match.group("rest").split("·")
+        where = _TICKED.findall(rest[1]) if len(rest) > 1 else []
+        keys.add((_norm(match.group("text")), _norm(where[0] if where else ""),
+                  _norm(where[1] if len(where) > 1 else "")))
+    return keys
+
+
+def _clean(text: str) -> str:
+    return neutralise_mentions(redact(text).text)
+
+
+def epic_line(minor: Minor, *, found_by: str) -> str:
+    """The one line a minor is filed as: `agent_worker.findings_epic.render_comment`'s."""
+    file, call_site = _tick(minor.file), _tick(minor.call_site)
+    if file:
+        where = f"`{file}`" + (f" `{call_site}`" if call_site else " (no call site named)")
+    else:
+        where = "(no file named)"
+    how = found_by + (f"; {' '.join(minor.evidence.split())}" if minor.evidence else "")
+    return _clean(f"- [ ] **{_bold(minor.text)}** · {where} · {how}")
+
+
+def _epic(loop: "_Loop", root_doc: Mapping[str, Any]) -> Any:
+    """The epic round 1's minors went to: the gated integrator's signed
+    `findings_epic` (only a gated step carries one); else, under `direct-pr`
+    with no gated step, the workspace's setting, read now. Both are written
+    by the platform or an admin, never by an agent."""
+    if loop.strategy == "integrate":
+        if spec_refusal(loop.ctx.settings, root_doc, str(root_doc.get("id") or "")) is None:
+            return _dispatch(root_doc).get("findings_epic")
+        return None
+    return loop.ctx.store.get_findings_epic(loop.tenant_id)
+
+
+def _file_minors(loop: "_Loop", root_doc: Mapping[str, Any], task: str, k: int,
+                 verdict: Verdict) -> dict[str, Any] | None:
+    """Post round k's minors not already on the epic; what was filed, or why not."""
+    if not verdict.minor_items:
+        return None
+    epic = _epic(loop, root_doc)
+    if isinstance(epic, bool) or not isinstance(epic, int) or epic <= 0:
+        return {"epic": None, "minors": len(verdict.minor_items), "filed": 0,
+                "not_filed": "the workspace names no findings epic"}
+    result: dict[str, Any] = {"epic": epic, "minors": len(verdict.minor_items), "filed": 0,
+                              "already_filed": 0}
+    try:
+        owner, repo = parse_repository("/".join(str(loop.doc.get("repository_url") or "")
+                                                .removesuffix(".git").rstrip("/")
+                                                .split("/")[-2:]))
+        ref = IssueRef(owner=owner, repo=repo, number=epic)
+        token = loop.ctx.forge_tokens.token_for(loop.tenant)
+        writer = loop.ctx.forge_writer
+        seen: set[tuple[str, str, str]] = set()
+        for comment in writer.issue_comments_tail(ref, epic, token, keep=EPIC_COMMENTS_READ):
+            seen |= epic_keys(str(comment.get("body") or ""))
+        for minor in verdict.minor_items:
+            line = epic_line(minor, found_by=f"found by re-review `{task}` "
+                                             f"(fix loop `{loop.id}`, round {k})")
+            key = next(iter(epic_keys(line)), None)
+            if key is not None and key in seen:
+                result["already_filed"] += 1
+                continue
+            writer.create_comment(ref, line, token)
+            if key is not None:
+                seen.add(key)
+            result["filed"] += 1
+    except Exception as exc:  # noqa: BLE001 -- recorded on the round; never moves the loop
+        reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
+        result["not_filed"] = failure_text(f"posting stopped after {result['filed']}: {reason}")
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -800,9 +957,13 @@ def _drive(loop: _Loop) -> None:
         _park(loop, REVIEW_UNREADABLE, {"task_id": task, "round": k, "step": step,
                                         "head": head, "error": failure_text(reason)})
         return
-    _record(db, loop.tenant_id, loop.id, index,
-            {"verdict": verdict.verdict, "findings_count": len(verdict.findings),
-             "findings": list(verdict.findings), "minors": verdict.minors})
+    patch: dict[str, Any] = {"verdict": verdict.verdict, "findings_count": len(verdict.findings),
+                             "findings": list(verdict.findings), "minors": verdict.minors}
+    if "findings_epic" not in last:
+        filed = _file_minors(loop, root_doc, task, k, verdict)
+        if filed is not None:
+            patch["findings_epic"] = filed
+    _record(db, loop.tenant_id, loop.id, index, patch)
     loop.doc = _doc(db, loop.tenant_id, loop.id) or loop.doc
     if verdict.verdict == "MERGE":
         _finish(loop, TaskState.SUCCEEDED, final_review=task, final_head=head,
