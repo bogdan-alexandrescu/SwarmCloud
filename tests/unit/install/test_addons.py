@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import io
 import json
 import re
@@ -44,10 +45,38 @@ from swarm_install.exitcodes import MET
 from swarm_install.state import InstallState
 from swarm_install.verbs import discover
 
-ROOT = Path(__file__).resolve().parents[3]
 PROJECT = "acme-swarm-prod"
 INSTALLER = "alice@example.com"
 DIGEST = "sha256:" + "0" * 64
+#: swarm-api's Direct VPC egress range in these fakes (documentation range).
+API_EGRESS = "198.51.100.0/26"
+
+
+def _load_network_parity() -> Any:
+    """kubernetes/network_parity.py, the module the release bundle ships."""
+    spec = importlib.util.spec_from_file_location("network_parity_for_addons",
+                                                  ROOT / "kubernetes" / "network_parity.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ROOT = Path(__file__).resolve().parents[3]
+NETWORK_PARITY = _load_network_parity()
+
+
+def jev_egress_ingress(admitted: str) -> dict[str, Any]:
+    """kubernetes/swarm-system/tailscale-egress.yaml's decision-api-egress-ingress,
+    rendered with `admitted` as swarm-api's range, as the API server returns it."""
+    text = (ROOT / "kubernetes" / "swarm-system" / "tailscale-egress.yaml").read_text()
+    docs = [d for d in yaml.safe_load_all(text.replace("__SWARM_API_EGRESS_CIDR__", admitted))
+            if isinstance(d, dict)]
+    (policy,) = [d for d in docs if d.get("kind") == "NetworkPolicy"
+                 and d["metadata"]["name"] == "decision-api-egress-ingress"]
+    policy = {"apiVersion": policy["apiVersion"], "kind": policy["kind"], **policy}
+    policy["metadata"] = {**policy["metadata"], "uid": secrets.token_hex(8), "generation": 1}
+    return policy
 
 
 class FakeClock:
@@ -89,6 +118,11 @@ class FakeWorld:
         #: The repository's environments and their protection rule counts.
         self.environments: dict[str, int] = {"dev": 0, "prod": 1}
         self.created_environments: list[tuple[str, str | None]] = []
+        #: swarm-api's Direct VPC egress range, as read from its service, and
+        #: the range the live decision-api-egress-ingress admits.
+        self.api_egress = (API_EGRESS, f"run/{PROJECT}/us-central1/swarm-api/swarm-api-egress")
+        self.jev_admitted = API_EGRESS
+        self.jev_policy: Callable[[dict[str, Any]], None] = lambda policy: None
 
     # Secret Manager
     def secret_exists(self, name: str) -> bool:
@@ -171,6 +205,12 @@ class FakeWorld:
 
     def kube(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
         self.calls.append(("kube", args))
+        if args[:3] == ("get", "networkpolicy", "decision-api-egress-ingress"):
+            if "decision-api-egress" not in {w.split("/", 1)[1] for w in self.workloads}:
+                return 1, "", "networkpolicies.networking.k8s.io \"decision-api-egress-ingress\" not found"
+            policy = jev_egress_ingress(self.jev_admitted)
+            self.jev_policy(policy)
+            return 0, json.dumps(policy), ""
         if args[0] == "apply":
             self.workloads.update(f"{k.lower()}/{n}" for k, n in WORKLOAD.findall(str(stdin)))
             return 0, "applied", ""
@@ -183,6 +223,13 @@ class FakeWorld:
 
     def sync_tailscale_secret(self) -> None:
         self.calls.append(("sync_tailscale_secret", None))
+
+    def swarm_api_egress(self) -> tuple[str, str]:
+        self.calls.append(("swarm_api_egress", None))
+        return self.api_egress
+
+    def network_parity(self) -> Any:
+        return NETWORK_PARITY
 
     def github(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
         self.calls.append(("github", args))
@@ -996,3 +1043,121 @@ def test_real_world_reads_the_secrets_own_accessors() -> None:
     assert world.secret_accessors("swarm-search-api-key") == {SEARCH_ACCOUNT}
     assert asked == [("GET", "https://secretmanager.googleapis.com/v1/projects/"
                              f"{PROJECT}/secrets/swarm-search-api-key:getIamPolicy")]
+
+
+# -- the Jev egress rule (the owner's choice, 4 November 2026; part of #2688) --
+
+
+def _events(the_flow: addons.Flow) -> list[dict[str, Any]]:
+    return list(the_flow.events.record)
+
+
+def test_tailscale_fails_when_the_jev_egress_rule_admits_another_range() -> None:
+    """A drifted decision-api-egress-ingress fails the add-on at enable, not at
+    the next release, with both ranges named."""
+    world = FakeWorld()
+    world.jev_admitted = "203.0.113.0/26"
+    the_flow, _ = flow(world)
+    with pytest.raises(addons.AddonError) as raised:
+        the_flow.enable("tailscale", given=GIVEN["tailscale"])
+    message = str(raised.value)
+    assert "decision-api-egress-ingress" in message
+    assert "203.0.113.0/26" in message and API_EGRESS in message
+    assert world.api_egress[1] in message
+    failed = [e for e in _events(the_flow) if e["event"] == "step_failed"]
+    assert [e["step"] for e in failed] == ["addon.tailscale.jev-egress"]
+    assert "203.0.113.0/26" in failed[0]["detail"] and API_EGRESS in failed[0]["detail"]
+    # Judged after the apply, before the add-on goes on.
+    assert ("sync_tailscale_secret", None) not in world.calls
+    assert (addons.recorded(the_flow.state.outputs).get("tailscale") or {}).get("phase") == addons.ON
+    assert not [e for e in _events(the_flow) if e.get("step") == "addon.tailscale" and e["event"] == "step_done"]
+
+
+def test_tailscale_passes_when_the_jev_egress_rule_admits_swarm_apis_range() -> None:
+    world = FakeWorld()
+    the_flow, _ = flow(world)
+    assert the_flow.enable("tailscale", given=GIVEN["tailscale"]) == "tailscale is on"
+    gets = [c[1] for c in world.calls if c[0] == "kube" and c[1][:2] == ("get", "networkpolicy")]
+    assert gets == [("get", "networkpolicy", "decision-api-egress-ingress", "--namespace=swarm-system",
+                     "-o", "json")]
+    done = [e for e in _events(the_flow) if e.get("step") == "addon.tailscale.jev-egress"]
+    assert [e["event"] for e in done] == ["step_done"] and API_EGRESS in done[0]["detail"]
+
+
+def test_the_jev_egress_rule_is_judged_by_network_paritys_own_check() -> None:
+    """The same comparison kubernetes/apply.sh --swarm-system runs: a second
+    port beside the right range is a failure too, not just a range compare."""
+    world = FakeWorld()
+    world.jev_policy = lambda policy: policy["spec"]["ingress"][1]["ports"].append({"protocol": "TCP", "port": 22})
+    the_flow, _ = flow(world)
+    with pytest.raises(addons.AddonError, match="decision-api-egress-ingress"):
+        the_flow.enable("tailscale", given=GIVEN["tailscale"])
+
+
+def test_an_unreadable_jev_egress_rule_fails_the_addon() -> None:
+    world = FakeWorld()
+    real_kube = world.kube
+
+    def kube(*args: str, stdin: str | None = None) -> tuple[int, str, str]:
+        if args[:2] == ("get", "networkpolicy"):
+            return 1, "", "forbidden"
+        return real_kube(*args, stdin=stdin)
+
+    world.kube = kube  # type: ignore[method-assign]
+    the_flow, _ = flow(world)
+    with pytest.raises(addons.AddonError, match="could not be read back"):
+        the_flow.enable("tailscale", given=GIVEN["tailscale"])
+
+
+@pytest.mark.parametrize("name", ["bright-data-egress", "typesafe"])
+def test_other_workloads_judge_no_jev_egress_rule(name: str) -> None:
+    world = FakeWorld()
+    the_flow, _ = flow(world)
+    the_flow.enable(name, given=GIVEN[name])
+    assert ("swarm_api_egress", None) not in world.calls
+
+
+class _EgressGcp:
+    """preflight.Gcp's `_call`, answering swarm-api's service and its subnetwork."""
+
+    def __init__(self, service: Mapping[str, Any], subnet: Mapping[str, Any] | None) -> None:
+        self.service, self.subnet = service, subnet
+        self.urls: list[str] = []
+
+    def _call(self, method: str, url: str, body: Any = None, *, missing_ok: bool = False, **_: Any) -> Any:
+        self.urls.append(url)
+        if url.endswith("/services/swarm-api"):
+            return self.service
+        if "/subnetworks/" in url:
+            return self.subnet
+        raise AssertionError(url)
+
+
+def test_real_world_reads_swarm_apis_egress_range_from_its_service() -> None:
+    gcp = _EgressGcp({"template": {"vpcAccess": {"networkInterfaces": [
+        {"subnetwork": f"projects/{PROJECT}/regions/us-central1/subnetworks/swarm-api-egress"}]}}},
+        {"ipCidrRange": API_EGRESS})
+    world = _real_world(ready_state())
+    world.gcp = gcp
+    assert world.swarm_api_egress() == (API_EGRESS, f"run/{PROJECT}/us-central1/swarm-api/swarm-api-egress")
+    assert gcp.urls[0].endswith(f"/projects/{PROJECT}/locations/us-central1/services/swarm-api")
+    world.gcp = _EgressGcp({"template": {}}, None)
+    with pytest.raises(addons.AddonError, match="no Direct VPC egress"):
+        world.swarm_api_egress()
+
+
+def test_real_world_loads_network_parity_from_the_release_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarm_install.steps import cluster
+
+    fetched: list[Any] = []
+
+    def fetch(self: Any, ctx: Any) -> Path:
+        fetched.append(ctx)
+        return ROOT / "kubernetes"
+
+    monkeypatch.setattr(cluster.Bundle, "fetch", fetch)
+    world = _real_world(ready_state())
+    parity = world.network_parity()
+    assert len(fetched) == 1
+    assert Path(parity.__file__) == ROOT / "kubernetes" / "network_parity.py"
+    assert parity.check_jev_egress_ingress(jev_egress_ingress(API_EGRESS), API_EGRESS) == []
