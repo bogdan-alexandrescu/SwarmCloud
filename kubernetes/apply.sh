@@ -1427,6 +1427,8 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
     dim "  --confirm then compares swarm-system's policies with ${SWARM_API_EGRESS_CIDR}"
     dim "    (kubernetes/network_parity.py --live-ingress)"
     if [[ -n "${TAILSCALE_MANIFEST}" ]]; then
+      dim "  --confirm then compares swarm-system/decision-api-egress-ingress with ${SWARM_API_EGRESS_CIDR}"
+      dim "    (kubernetes/network_parity.py --jev-egress-ingress)"
       dim "  --confirm then copies Secret Manager ${TAILSCALE_OAUTH_GSM_NAME} into swarm-system/${TAILSCALE_K8S_OBJECT}"
       dim "    (never printed; a dry run does not read it)"
     fi
@@ -1553,6 +1555,28 @@ if [[ "${MODE}" == "swarm-system" ]]; then
       --live "${LIVE_WORK}/live.json" --policies "${LIVE_WORK}/policies.json"; then
     rm -rf "${LIVE_WORK}"
     die "applied, but swarm-system's ingress does not match what was rendered (above)."
+  fi
+  # THE JEV TAILNET EGRESS (the owner's choice, 4 November 2026; part of
+  # #2688). decision-api-egress-ingress admits swarm-api's range on 8443, and
+  # terraform rendered that range from local.decision_api_swarm_api_cidr, its
+  # own copy of the subnet: judged here, as the API server now holds it,
+  # against the range just READ from swarm-api's service. A stale range or a
+  # second port fails the apply with both values named; a range nothing
+  # compares closes swarm-api's route to the Jev backend silently. Only when
+  # this run applied the tailnet egress: with enable_tailscale_egress off the
+  # policy does not exist and there is nothing to compare.
+  if [[ -n "${TAILSCALE_MANIFEST}" ]]; then
+    info "comparing swarm-system/decision-api-egress-ingress with swarm-api's ${SWARM_API_EGRESS_CIDR}"
+    if ! "${PYTHON}" "${HERE}/network_parity.py" --jev-egress-ingress \
+        --live "${LIVE_WORK}/live.json" --policies "${LIVE_WORK}/policies.json"; then
+      JEV_ADMITTED="$(jq -r '[.items[]? | select(.metadata.namespace == "swarm-system"
+          and .metadata.name == "decision-api-egress-ingress") | .spec.ingress[]?.from[]?.ipBlock.cidr // empty]
+          | join(", ")' "${LIVE_WORK}/policies.json" 2>/dev/null || true)"
+      rm -rf "${LIVE_WORK}"
+      die "applied, but swarm-system/decision-api-egress-ingress admits swarm-api's range as '${JEV_ADMITTED:-nothing}',
+       but swarm-api egresses from ${SWARM_API_EGRESS_CIDR} (${SWARM_API_EGRESS_SOURCE}); the rule must admit exactly
+       that range, on TCP 8443 alone (above). terraform's local.decision_api_swarm_api_cidr is stale, or the rule was widened."
+    fi
   fi
   rm -rf "${LIVE_WORK}"
 fi
