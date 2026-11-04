@@ -355,7 +355,9 @@ describe('VQ-012: over a capped page Waiting is counted whole, as the panel coun
   it('puts the profile select and the sort on one row at phone width, in the sheet', () => {
     const phone = AGENTS_CSS.slice(AGENTS_CSS.indexOf('THE PROFILE AND THE SORT SHARE A ROW'))
     expect(phone).toMatch(/\.ag-list-head \.ag-tools-tail \{ display: contents; \}/)
-    expect(phone).toMatch(/\.ag-tools > \.ag-filter-profile \{ order: -2; flex: 1 1 7em; min-width: 7em; \}/)
+    // The profile leads the tools as one of the pickers' pair (#3146), the owner beside it.
+    expect(phone).toMatch(/\.ag-tools > \.ag-pickers \{ order: -2; flex: 1 1 100%; min-width: 0; display: flex; flex-wrap: nowrap;/)
+    expect(phone).toMatch(/\.ag-pickers > \.ag-filter \{ flex: 1 1 7em; min-width: 0; \}/)
     expect(phone).toMatch(/\.ag-tools-tail > \.ag-sort \{ order: -1; \}/)
   })
 })
