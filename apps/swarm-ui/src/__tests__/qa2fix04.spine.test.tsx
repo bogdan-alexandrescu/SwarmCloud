@@ -135,7 +135,7 @@ describe('admin2-01: a workspace admin on a platform page is told so in place', 
     await waitFor(() => expect(document.querySelector('[data-refused="admin"]')?.textContent).toContain('Pool limits is for platform admins'), WAIT)
     expect(window.location.pathname).toBe('/admin/limits')
     expect(document.querySelector('[data-refused="admin"]')?.textContent).toContain('You administer eng.')
-    const open = [...document.querySelectorAll<HTMLAnchorElement>('[data-refused="admin"] a')].find((a) => a.textContent === 'Open Workspaces you admin')
+    const open = [...document.querySelectorAll<HTMLAnchorElement>('[data-refused="admin"] a')].find((a) => a.textContent === 'Open Workspaces')
     expect(open?.getAttribute('href')).toBe('/admin/workspaces')
     fireEvent.click(open!)
     await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces'), WAIT)
