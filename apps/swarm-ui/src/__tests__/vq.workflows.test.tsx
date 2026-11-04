@@ -27,9 +27,8 @@ import { useState } from 'react'
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
-import { TABLES, painted } from './marks'
-import { resolveVars } from './spaceprobe'
-import { MONO_ADVANCE_EM, mixChipW, monoW } from '../dag'
+import { painted } from './marks'
+import { MONO_ADVANCE_EM, monoW } from '../dag'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -194,7 +193,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const row = (id: string) => document.querySelector<HTMLElement>(`.wfl-table tr[data-workflow="${id}"]`)!
+const row = (id: string) => document.querySelector<HTMLElement>(`.wfg-table tr[data-workflow="${id}"]`)!
 
 describe('VQ-013: the list is compact rows under one note', () => {
   // MUTATION: draw the two notes as two CountNotes again.
@@ -203,7 +202,7 @@ describe('VQ-013: the list is compact rows under one note', () => {
     serve([chain, older], chainTasks, ['page', 'two'].join('-'))
     render(<WorkflowsScreen />)
     await waitFor(() => expect(row('wf_older')).toBeTruthy())
-    const notes = document.querySelectorAll('.wfl .c-count-note')
+    const notes = document.querySelectorAll('.wfg .c-count-note')
     expect(notes).toHaveLength(1)
     expect(notes[0]!.textContent).toBe(
       'Counts and order are of the 2 newest workflows; older ones are on the server and not read yet · ' +
@@ -213,56 +212,33 @@ describe('VQ-013: the list is compact rows under one note', () => {
     expect(painted(notes[0]!, 'margin', { width: 1440 })).toBe('0')
   })
 
-  // MUTATION: put the runner mix back on a line of its own. The id is the
-  // line under the name since visual QA pass 1 (overview-agents-61, #2596).
-  it('draws the name and its runners on one line, the id under it, and the current step as the one line under that', async () => {
+  // THE ROW IS ONE LINE (the redesign, frame graph-workflows-rest): the name
+  // alone in its cell; the id, the runners and the current step moved into
+  // the inspector's summary the row opens.
+  // MUTATION: draw the id, the mix or the why line in the row again, or drop
+  // any of them from `WorkflowSummary`.
+  it('draws the name alone on the row, and the id, its runners and the current step in the summary the row opens', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(row('wf_chain')).toBeTruthy())
     const name = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-    const line = name.querySelector<HTMLElement>(':scope > .wfl-line')!
-    expect(line, 'no name line').toBeTruthy()
-    expect([...line.children].map((c) => c.className)).toEqual(['', 'wfl-mix'])
-    expect(line.querySelector(':scope > a')!.textContent).toBe('JOIN-UI-PERSON')
-    expect(name.querySelector(':scope > .id')!.textContent).toBe('wf_chain')
-    // The current step is outside the line: the row's only second line, cut with its title.
-    const why = name.querySelector<HTMLElement>(':scope > .wfl-why')!
+    expect([...name.children].map((c) => c.tagName)).toEqual(['A'])
+    expect(name.querySelector(':scope > a')!.textContent).toBe('JOIN-UI-PERSON')
+    expect(name.querySelector('.id, .wfl-why, .wf-mix')).toBeNull()
+    fireEvent.click(row('wf_chain').querySelector<HTMLElement>('[data-col="state"]')!)
+    const sum = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum')!
+    expect(sum, 'no summary').toBeTruthy()
+    expect(sum.querySelector(':scope > .id')!.textContent).toBe('wf_chain')
+    expect(sum.querySelector('.wf-mix')!.getAttribute('title')).toBe('Runner profiles: claude-code ×3')
+    const why = sum.querySelector<HTMLElement>('.wfg-sum-why > .wfl-why')!
     expect(why.textContent).toBe('build running')
     expect(why.title).toBe('build running')
-    expect(painted(why, 'white-space', { width: 1440 })).toBe('nowrap')
-    // One line in the table; the phone card lets it wrap.
-    expect(painted(line, 'display', { width: 1440 })).toBe('flex')
-    expect(painted(line, 'flex-wrap', { width: 1440 })).toBe('nowrap')
-    expect(painted(line, 'flex-wrap', { width: 390 })).toBe('wrap')
-    // The runner mix rides the line where the Runners column is not drawn, and not where it is.
-    const mix = line.querySelector(':scope > .wfl-mix')!
-    expect(painted(mix, 'display', { width: 1440 })).toBe('block')
-    expect(painted(mix, 'display', { width: 1680 })).toBe('none')
+    // The summary has the room: the step reads whole, wrapped, never cut.
+    expect(painted(why, 'white-space', { width: 1440 }) ?? 'normal').toBe('normal')
   })
 
-  // MUTATION: put back `flex: 1 0 0; min-width: 56px`, which left the mix
-  // 56px beside the name at 1440 and cut every row's runners to 'clau…'.
-  it('keeps room on the name’s line for one whole runner chip, and cuts the name instead', async () => {
-    render(<WorkflowsScreen />)
-    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-    const line = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"] > .wfl-line')!
-    const mix = line.querySelector(':scope > .wfl-mix')!
-    // One folded chip as `Mix` measures it: the `×N` chip plus the seven characters ' · N steps' adds.
-    const oneChip = mixChipW({ profile: 'claude-code', count: 5 }) + monoW(7, 12)
-    const px = (v: string | null) => {
-      const m = /^([\d.]+)(px|rem)$/.exec(v ?? '')
-      expect(m, `not a length: ${v}`).not.toBeNull()
-      return Number(m![1]) * (m![2] === 'rem' ? 16 : 1)
-    }
-    expect(px(painted(mix, 'min-width', { width: 1440 }))).toBeGreaterThanOrEqual(oneChip)
-    const [grow, shrink, basis] = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)
-    expect(grow).toBe('1')
-    expect(shrink, 'the mix gives way before the id and the name').toBe('0')
-    expect(px(basis!)).toBeGreaterThanOrEqual(oneChip)
-    // The name gives way, down to its floor; the id is not on this line (overview-agents-61).
-    expect(line.querySelector(':scope > .id')).toBeNull()
-    const [, nameShrink] = (painted(line.querySelector(':scope > a')!, 'flex', { width: 1440 }) ?? '').split(/\s+/)
-    expect(Number(nameShrink)).toBeGreaterThan(0)
-  })
+  // 'keeps room on the name’s line for one whole runner chip' went with the
+  // runners on the row: the redesign (frame graph-workflows-rest) draws them
+  // in the inspector's summary, tested above.
 })
 
 describe('VQ-014: a graph that fits across is as tall as it is', () => {
@@ -364,120 +340,10 @@ describe('VQ-016: the Table and the Timeline arrive whole', () => {
   }
 })
 
-/** Every `.wfl-line` reports `px` as its width; everything else is unmeasured (0), as jsdom leaves it. */
-function lineIs(px: number): void {
-  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
-    return this.classList.contains('wfl-line') ? px : 0
-  })
-}
-
-describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
-  /** The line's width the name keeps beside a mix on the line: less the mix's basis and its one gap (the id is the line under, overview-agents-61). */
-  const nameBesideMix = (line: number, mix: Element) => {
-    const basis = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)[2]!
-    const m = /^([\d.]+)rem$/.exec(basis)
-    expect(m, `the mix's basis is not a rem length: ${basis}`).not.toBeNull()
-    return line - Number(m![1]) * 16 - 8
-  }
-
-  // MUTATION: keep the mix on the name's line whatever the line's width: at
-  // 1440 with the nav open the line is 319px and the name got 127px of it
-  // ('Audit the operator s…').
-  it('moves the runners under the name, above the current step, when the name would keep under 200px', async () => {
-    viewport(1440)
-    lineIs(319)
-    render(<WorkflowsScreen />)
-    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-    const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-    const line = td.querySelector<HTMLElement>(':scope > .wfl-line')!
-    await waitFor(() => expect(line.querySelector(':scope > .wfl-mix'), 'the mix is still on the name’s line').toBeNull())
-    expect([...line.children].map((c) => c.className)).toEqual([''])
-    // The second line: the runners, then the current step.
-    const sub = td.querySelector<HTMLElement>(':scope > .wfl-sub')!
-    expect(sub, 'no second line').toBeTruthy()
-    expect([...sub.children].map((c) => c.className.split(' ')[0])).toEqual(['wfl-mix', 'wfl-why'])
-    expect(sub.querySelector('.wf-mix')!.getAttribute('title')).toBe('Runner profiles: claude-code ×3')
-    expect(painted(sub, 'display', { width: 1440 })).toBe('flex')
-    // It wraps: the step is a line of its own under the runners (#2391 comment 58).
-    expect(painted(sub, 'flex-wrap', { width: 1440 })).toBe('wrap')
-    const mix = sub.querySelector(':scope > .wfl-mix')!
-    expect(painted(mix, 'display', { width: 1440 }), 'the runners are not drawn where the Runners column is hidden').toBe('block')
-    expect(painted(mix, 'display', { width: 1680 }), 'the runners are drawn twice where the column is shown').toBe('none')
-    // One whole chip still: the mix does not give way to the step.
-    const oneChip = mixChipW({ profile: 'claude-code', count: 5 }) + monoW(7, 12)
-    const [grow, shrink, basis] = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)
-    expect([grow, shrink]).toEqual(['0', '0'])
-    expect(Number(/^([\d.]+)rem$/.exec(basis!)![1]) * 16).toBeGreaterThanOrEqual(oneChip)
-    // The step under it is one line, cut with its title, never wrapped.
-    const why = sub.querySelector<HTMLElement>(':scope > .wfl-why')!
-    expect(why.textContent).toBe('build running')
-    expect(painted(why, 'white-space', { width: 1440 })).toBe('nowrap')
-    expect(painted(why, 'text-overflow', { width: 1440 })).toBe('ellipsis')
-    expect(painted(why, 'min-width', { width: 1440 })).toBe('0')
-    // The arithmetic the row decided by: beside the mix the name had less than 200px.
-    expect(nameBesideMix(319, document.querySelector('.wfl-line > .wfl-mix, .wfl-sub > .wfl-mix')!)).toBeLessThan(200)
-  })
-
-  // The control: a line with room for both keeps the one-line row.
-  it('keeps the runners on the name’s line while the name keeps 200px beside them', async () => {
-    viewport(1440)
-    lineIs(420)
-    render(<WorkflowsScreen />)
-    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-    const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-    const line = td.querySelector<HTMLElement>(':scope > .wfl-line')!
-    const mix = line.querySelector(':scope > .wfl-mix')!
-    expect(mix, 'a 420px line moved the mix off it').toBeTruthy()
-    expect(td.querySelector(':scope > .wfl-sub')).toBeNull()
-    expect(nameBesideMix(420, mix)).toBeGreaterThanOrEqual(200)
-  })
-
-  // MUTATION: change `.wfl-mix`'s 11rem or `--ctl-s2` in the sheet and leave
-  // `LINE_MIX_PX` / `LINE_GAP_PX` (Workflows.tsx) as they are: the row then
-  // decides at a width the sheet no longer draws (re-review minor).
-  it('moves the runners at the width the sheet’s own basis and gap give, not at a restated one', async () => {
-    viewport(1440)
-    // The threshold from the sheet: the floor, the mix's basis, and the line's
-    // column gap once (the mix's; the id is the line under the name, overview-agents-61).
-    const host = document.createElement('table')
-    host.className = 'wfl'
-    host.innerHTML = '<tbody><tr><td class="wfl-name"><span class="wfl-line"><a>n</a><span class="wfl-mix"></span></span></td></tr></tbody>'
-    const probe = document.createElement('div')
-    probe.className = 'wfl'
-    probe.appendChild(host)
-    document.body.appendChild(probe)
-    const line = probe.querySelector('.wfl-line')!
-    const basisRem = /^([\d.]+)rem$/.exec((painted(line.querySelector('.wfl-mix')!, 'flex', { width: 1440 }) ?? '').split(/\s+/)[2] ?? '')
-    expect(basisRem, 'the mix’s basis is not a rem length').not.toBeNull()
-    const gaps = resolveVars(painted(line, 'gap', { width: 1440 }) ?? '', TABLES.dark).split(/\s+/)
-    const gap = Number.parseFloat(gaps[gaps.length - 1]!)
-    probe.remove()
-    expect(Number.isFinite(gap)).toBe(true)
-    const edge = 200 + Number(basisRem![1]) * 16 + gap
-    for (const [px, under] of [
-      [edge, false],
-      [edge - 1, true],
-    ] as const) {
-      lineIs(px)
-      render(<WorkflowsScreen />)
-      await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-      const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-      await waitFor(() => expect(td.querySelector(':scope > .wfl-sub > .wfl-mix') !== null, `a ${px}px line`).toBe(under))
-      cleanup()
-    }
-  })
-
-  // The control: the phone card is not the band; its mix keeps its own line in the card.
-  it('leaves the phone card’s runners where they were', async () => {
-    viewport(390)
-    lineIs(319)
-    render(<WorkflowsScreen />)
-    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-    const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-    expect(td.querySelector(':scope > .wfl-line > .wfl-mix')).toBeTruthy()
-    expect(td.querySelector(':scope > .wfl-sub')).toBeNull()
-  })
-})
+// VQ-013 RE-REVIEW (the name and the runners both read at 1440, by
+// `mixGoesUnder` measuring the name's line against LINE_MIX_PX) went with the
+// runners on the row: the redesign (frame graph-workflows-rest) draws the row
+// as one line and the runners in the inspector's summary.
 
 describe('VQ-WORKFLOWS re-review minors', () => {
   // MUTATION: drop the slot's grid, which leaves the stop control anchored to
