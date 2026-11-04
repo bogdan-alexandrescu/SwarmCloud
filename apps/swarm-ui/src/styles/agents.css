@@ -1137,17 +1137,8 @@
   .ag-list-head .ag-pickers > .ag-filter { flex: 1 1 7em; min-width: 0; }
   .ag-list-head .ag-pickers > .ag-filter > select { flex: 1 1 auto; width: 100%; }
   .ag-list-head .ag-tools-tail > .ag-sort { order: -1; }
-  /* THE NEEDS-YOU ROW AT REST IS ONE LINE (#139 at 390, #3146). The pick puts
-     it on top of every Work screen, the phone included, but with nothing
-     waiting its box, its wrapped chips and "Nothing waits on you here" stood
-     three lines over the list. At rest it is the chips' one line, unboxed, and
-     `Needs you 0` says what the quiet line said; a line too long for the
-     screen scrolls sideways (as the agent's tabs do, V148) rather than
-     wrapping. When something waits (`.has-some`) the row keeps its box and
-     its list: what needs you comes before the list. */
-  .wi[data-screen='agents'] .ny-bar { flex-wrap: nowrap; overflow-x: auto; gap: var(--ctl-s1); }
-  .wi[data-screen='agents'] .ny:not(.has-some) { padding: 0; border: 0; background: none; }
-  .wi[data-screen='agents'] .ny:not(.has-some) > .ny-quiet { display: none; }
+  /* THE NEEDS-YOU ROW AT REST IS ONE LINE on every Work screen now, so its
+     phone rule is in work/needs-you.css (the owner's pick, 4 November 2026). */
   .ag-head-actions { margin-inline-start: 0; }
   /* The back link replaces the ✕ on a phone, as it did on the column. */
   .ag-head-actions > .drawer-close { display: none; }
