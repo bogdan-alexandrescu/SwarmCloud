@@ -1023,6 +1023,28 @@ variable "platform_admin_reach" {
   default     = false
 }
 
+variable "contract_review_mode" {
+  description = <<-EOT
+    swarm-api's SWARM_CONTRACT_REVIEW (apps/swarm-api/swarm_api/contractreview.py;
+    docs/design/agent-quality/jev-contract.md Q7, owner's answer 7): the Jev
+    review of a contract at submission. "off" runs no review; "report"
+    reviews and logs the refusal it would make; "enforce" refuses. It runs
+    only for a workspace whose own contract_review setting is on. OFF by
+    default, the state swarm-api reads when the variable is unset, so the live
+    plan shows one new variable and no behaviour change; the owner turns it on
+    per environment (owner's choice, 2026-11-04). contractreview.mode() reads a
+    typo as off; the validation refuses one instead, so a misspelt "enforce"
+    never ships as a silent off.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "report", "enforce"], var.contract_review_mode)
+    error_message = "contract_review_mode is off, report or enforce (swarm_api.contractreview.MODES)."
+  }
+}
+
 variable "additional_repositories_enabled" {
   description = <<-EOT
     swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,

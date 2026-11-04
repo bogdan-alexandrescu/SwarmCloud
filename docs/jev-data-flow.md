@@ -115,11 +115,15 @@ the attempt's tuple):
 | `<tenant>_<task>_g<generation>` | `attempt` | as before (`calls`, `input_tokens`, `by_kind`, `settled_at`), plus `reservation` (the agent's carried spend, the grant, its reason, the cap and the month), `over_grant` when spend passed the grant, and `settlement` (the outcome, the unrecorded calls and tokens, the released tokens; or `abandoned` with its unreported spend null) |
 | `<tenant>_<task>_g<generation>_c<call_id>` | `call` | one call: source (`judgment`, `quality_hook`, `browser`), its kind, backend, requested and served model, input and output tokens, `tokens_estimated`, outcome, `recorded_at` |
 | `<tenant>_reservations` | `reservations` | `held`: each live reservation by `<task>_g<generation>`, with its remaining tokens and expiry |
+| `<tenant>_<task>_g<generation>_reask` | `attempt` | the control plane's re-ask of the attempt's acceptance judgment (`jevaccount.ReaskLedger`): `calls`, `input_tokens`, `settled_at` and `by_kind` under kind `contract_judgment`; each call also has its `_c<call_id>` `call` document, source `contract_reask` |
+| `<tenant>_contract_<contract_id>_r<revision>` | `contract_review` | swarm-api's review of a work contract at submission (`jevusage.record_contract_review`): `calls`, `input_tokens`, `settled_at` and `by_kind` under kind `contract_review` |
 
-`swarm_api.jevusage` reads only `kind: attempt` rows and the month documents,
-so the two new kinds change no total the usage page serves; the rows'
-`by_kind` now also carries the hooks' and the browser's kinds and
-`unattributed`.
+`swarm_api.jevusage` reads only `kind: attempt` and `kind: contract_review`
+rows and the month documents, so the `call` and `reservations` kinds change no
+total the usage page serves; the rows' `by_kind` now also carries the hooks'
+and the browser's kinds, the re-ask's `contract_judgment` and
+`unattributed`. Every row above adds to the same month document, so the
+monthly cap holds all of them.
 
 ## The rules
 
@@ -228,7 +232,7 @@ records are the authority on what was sent.
   MCP config, the prompt, a log or the summary. Its calls are counted in the
   attempt's `result_summary.runner.metrics.tool_calls` as `jev_decision`.
   Codex steps do not register it.
-* **swarm-api, for one call only: the work contract review at submission**
+* **swarm-api, first: the work contract review at submission**
   (JC1, docs/design/agent-quality/jev-contract.md section 4; lane
   CONTRACT-REVIEW-SUBMIT, 4 November 2026).
   `apps/swarm-api/swarm_api/contractreview.py::ContractReviewer.review` asks
@@ -258,6 +262,25 @@ records are the authority on what was sent.
   fails, times out or is over the cap is recorded `not_run` and the contract
   is accepted on the mechanical compile alone. Every other swarm-api read of
   Jev's work stays a file: `plan-advisory.json` (the J2/J5 result).
+* **swarm-api, second: the control plane's re-ask of a step's acceptance
+  judgment** (JC2 from the control plane, jev-contract.md sections 5.4, 8.2
+  and 9; the owner's answers of 3 November 2026).
+  `apps/swarm-api/swarm_api/contractreask.py::ForgeJudge` asks Jev again,
+  from the scheduled tick's bounded pass (`contractreask.run_pass`, one a
+  minute, never a sleep in a request), when the worker's end-of-step
+  judgment came back `not_run` or `cannot_judge`: at most three tries over
+  30 minutes, then the owner's approval screen. JC2 sends code -- the
+  published diff's hunks, read with the repository's read token -- so it
+  runs only while the workspace's signed `code_intelligence.jev` is on, and
+  through the same shared client and sanitizer, to the workspace's internal
+  `judgment_backend` only (`judgment.resolve_call_backend`), never TypeSafe.
+  Each call is admitted under `code_intelligence.jev_monthly_cap_tokens`
+  after every live reservation and charged to the same month document,
+  in a row of its own per attempt (`<attempt row>_reask`, `kind: attempt`)
+  under kind `contract_judgment`, which the usage page shows as the
+  control plane's re-ask (`jevaccount.ReaskLedger`); beside it, not in place
+  of it, the submission review's kind `contract_review`. A call the cap
+  refuses is a try without a verdict (`budget_monthly`).
 
 **Which verdict files J3 reads** (owner, 2 November 2026). A review step's
 verdict is not always one `verdict.json` with a `findings` list: the first

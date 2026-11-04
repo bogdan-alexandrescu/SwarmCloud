@@ -1607,6 +1607,8 @@ JEV_GROUP_LABEL = {
     "quality_gate": "Quality gate",
     "decision_tool": "Agent decision tool",
     "jev_browser": "Jev browser",
+    "control_plane_reask": "Control-plane re-ask",
+    "contract_review": "Contract review at submission",
     "unattributed": "Not split by kind",
     "other": "Other",
 }

@@ -12,9 +12,9 @@
  *
  * Each case fails without the change. Placeholders only.
  */
-import { render, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowRead, WorkflowUsage } from '../api'
@@ -33,7 +33,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowCard, WorkflowsScreen } = await import('../Workflows')
 const { StepsCard } = await import('../RunSteps')
 
 const T0 = Date.parse('2026-10-18T10:00:00.000Z')
@@ -144,12 +144,23 @@ beforeEach(() => {
   }
 })
 
+afterEach(() => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
+})
+
 function Routed({ initial }: { initial: string }) {
   const [view, setView] = useState(initial)
   return <WorkflowsScreen view={view} onView={setView} />
 }
 
+/** The page, docked (the inspector starts folded below 1366px: graph-notes D·8b). */
+const realWidth = window.innerWidth
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
+}
+
 async function page() {
+  atWidth(1440)
   serveView()
   api.loadWorkflowBoard.mockResolvedValue({
     status: 'ok',
@@ -159,24 +170,61 @@ async function page() {
   api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
   render(<Routed initial="wf=wf_rv" />)
   return waitFor(() => {
-    const n = document.querySelector<HTMLElement>('button.node[data-step="review"]')
+    // The canvas is off the page now (brief, "What moved where"): the step
+    // is a chip on the stage grid.
+    const n = document.querySelector<HTMLButtonElement>('.sg [data-step="review"]')
     expect(n).toBeTruthy()
     return n!
   })
 }
 
+/** `WorkflowCard` directly, for the pill the brief keeps as a canvas-only form. */
+function CardHarness({ workflow, taskById }: { workflow: Workflow; taskById: Map<string, Task> }) {
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  return (
+    <WorkflowCard
+      workflow={workflow}
+      taskById={taskById}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      reload={() => {}}
+    />
+  )
+}
+
 describe('the workflow page', () => {
   it('the waiting step’s pill reads "waiting for a member" and its row shows the deadline', async () => {
-    const node = await page()
+    // THE PILL AND ITS DEADLINE ARE THE CANVAS NODE'S OWN (`.node-state`,
+    // `.node-until`, drawn only by `WorkflowGraph`): the page is the stage
+    // grid now, so this renders `WorkflowCard` directly for them (brief,
+    // "What moved where" -- "render it directly").
+    render(<CardHarness workflow={workflow()} taskById={new Map([['t_draft', draft()], ['t_review', review()]])} />)
+    const node = await waitFor(() => {
+      const n = document.querySelector<HTMLElement>('button.node[data-step="review"]')
+      expect(n).toBeTruthy()
+      return n!
+    })
     expect(node.querySelector('.node-state')!.textContent).toBe('waiting for a member')
     expect(node.textContent).not.toContain('waiting for you')
     expect(node.querySelector('.node-until')!.textContent).toBe('expires in 3 h 20 m')
+
+    // The page's own stage-grid chip reads the same wait, in its tip (never "you").
+    const chip = await page()
+    expect(chip.getAttribute('aria-label')).toContain('waiting for a member')
+    expect(chip.getAttribute('aria-label')).not.toContain('waiting for you')
+    // The grid's chip carries the deadline in its tip too, so a reader scanning
+    // the grid sees who has the least time left without picking the step.
+    expect(chip.getAttribute('aria-label')).toContain('expires in 3 h 20 m')
   })
 
   it('opens the waiting step’s card on arrival, which reads the step and offers its form', async () => {
-    await page()
+    // NO ARRIVAL PICK ON THE PAGE ANY MORE (brief, "What moved where"): a
+    // reader picks the chip, which is this test's replacement.
+    const chip = await page()
+    fireEvent.click(chip)
     const card = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('.wf-inspect [data-testid="ai-card"]')
+      const el = document.querySelector<HTMLElement>('.wi-dock [data-testid="ai-card"]')
       expect(el).toBeTruthy()
       return el!
     })
