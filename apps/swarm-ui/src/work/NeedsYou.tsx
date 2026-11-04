@@ -82,6 +82,12 @@ export interface QuestionNeed {
   /** The API's `may_answer` for this task when the page read it; false disables Answer and says why. */
   mayAnswer?: boolean
   mayAnswerBecause?: string | null
+  /**
+   * Its words are on its task's page and not in what the page read (the
+   * Workflows list: the agent's `questions.json`, PR #3147). The row says so
+   * and Answer is disabled: nobody answers a question they cannot read.
+   */
+  onItsPage?: boolean
 }
 
 /** A merge step waiting. What holds it is read from the task's park (`ownerQuestionsHold`). */
@@ -102,6 +108,13 @@ export interface HandoffNeed {
 }
 
 export type NeedItem = FailedNeed | QuestionNeed | MergeNeed | HandoffNeed
+
+/**
+ * The rows a page draws, and the kinds whose count it cannot know
+ * (`unknownKinds`, e.g. the Workflows list's `listNeedItems` over a step the
+ * list served no needs for): those chips read "not known", never 0.
+ */
+export type NeedItems = readonly NeedItem[] & { readonly unknownKinds?: readonly NeedKind[] }
 
 /** The chips' order and words. */
 export const NEED_KINDS: readonly NeedKind[] = ['failed', 'question', 'merge', 'handoff', 'approval']
@@ -165,7 +178,7 @@ export function NeedsYou({
   onSelect,
   onChanged,
 }: {
-  items: readonly NeedItem[]
+  items: NeedItems
   /** The approvals waiting, or null when the page could not read them ("not known"). */
   approvals: readonly ApprovalItem[] | null
   /** The kind picked, when the page holds the pick; left out, the component holds it. */
@@ -180,7 +193,10 @@ export function NeedsYou({
   const kind = selected === undefined ? own : selected
   const listId = useId()
 
-  const count = (k: NeedKind): number | null => (k === 'approval' ? (approvals === null ? null : approvals.length) : items.filter((i) => i.kind === k).length)
+  const count = (k: NeedKind): number | null => {
+    if (k === 'approval') return approvals === null ? null : approvals.length
+    return items.unknownKinds?.includes(k) === true ? null : items.filter((i) => i.kind === k).length
+  }
   const total = items.length + (approvals?.length ?? 0)
 
   const pick = (k: NeedKind | null) => {
@@ -203,7 +219,15 @@ export function NeedsYou({
           const n = count(k)
           if (n === null) {
             return (
-              <span key={k} className="ny-chip is-approval is-faint" title="Approvals are not read on this screen, so their count is not known; Automate › Approvals lists them">
+              <span
+                key={k}
+                className={`ny-chip is-${k} is-faint`}
+                title={
+                  k === 'approval'
+                    ? 'Approvals are not read on this screen, so their count is not known; Automate › Approvals lists them'
+                    : `${NEED_WORD[k]}: not known. This screen's read does not say for every step; each step's page does`
+                }
+              >
                 <span className="ny-glyph" aria-hidden>
                   {NEED_GLYPH[k]}
                 </span>
@@ -511,7 +535,10 @@ function QuestionRow({ item, onChanged }: { item: QuestionNeed; onChanged?: () =
   const options = (item.options ?? []).filter((o): o is QuestionOption & { label: string } => typeof o.label === 'string' && o.label !== '')
   const choice = options.length === 0 ? OTHER : pick
   const ownWords = text.trim()
-  const notAllowed = roleGate ?? (item.mayAnswer === false ? (item.mayAnswerBecause ?? 'The API did not say you may answer') : null)
+  const notAllowed =
+    roleGate ??
+    (item.onItsPage === true ? 'Read the question on its page first: this list does not carry its words' : null) ??
+    (item.mayAnswer === false ? (item.mayAnswerBecause ?? 'The API did not say you may answer') : null)
   const ready = !busy && choice !== null && (choice !== OTHER || (ownWords.length > 0 && ownWords.length <= MAX_ANSWER_CHARS))
 
   useEffect(() => {
@@ -542,7 +569,7 @@ function QuestionRow({ item, onChanged }: { item: QuestionNeed; onChanged?: () =
       <Kind k="question" />
       <b className="ny-title">{item.title}</b>
       <span className="ny-text" title={item.question ?? undefined}>
-        {item.question ?? 'The question could not be read'}
+        {item.question ?? (item.onItsPage === true ? 'Its words are on its page' : 'The question could not be read')}
       </span>
       <span className="ny-acts">
         {saved ? (

@@ -35,8 +35,6 @@ import { painted } from './marks'
 import { cellStyle, fixedColumns, fontPx, lengthPx, nowrap, textPx } from './tablefit'
 
 const WF = 'wf_5e5ad3b6f7da4299a839'
-/** The list's box at 1440: 1440 less the 84px spine, the 236px panel and two 32px gutters. */
-const LIST_AT_1440 = 1440 - 84 - 236 - 64
 /** The step table's container (`.wf-table-box`) as measured in the browser QA. */
 const STEPS_CLOSED_1440 = 996
 /** The same box with the step card docked beside it (1100px and up: 400px card, 12px gap). */
@@ -207,31 +205,44 @@ async function list(): Promise<HTMLTableElement> {
   window.history.replaceState(null, '', '/workflows')
   render(<App />)
   return waitFor(() => {
-    const t = document.querySelector<HTMLTableElement>('.wfl .wfl-table')
-    expect(t!.querySelectorAll('tbody tr.wfl-row:not(.is-skel)').length).toBeGreaterThan(0)
+    const t = document.querySelector<HTMLTableElement>('.wfg .wfg-table')
+    expect(t!.querySelectorAll('tbody tr.wfg-row:not(.is-skel)').length).toBeGreaterThan(0)
     return t!
   })
 }
 
+// THE REDESIGN (frame graph-workflows-rest) moved Runners off the list row
+// into the inspector's summary, a row of its own with no column to fit: what
+// N7 asks is now that the summary names the runner, never only a count.
 describe('N7: the Runners cell names the runner', () => {
-  it('fits "claude-code ×3" whole in the Runners column at 1440', async () => {
+  it('names the runner in the summary a row opens, never only a "+N"', async () => {
     const t = await list()
-    const env = { width: 1440 }
-    const { cols } = fixedColumns(t, LIST_AT_1440, env)
-    const box = cols.find((c) => c.col === 'runners')!
-    const td = t.querySelector('tbody tr.wfl-row td[data-col="runners"]')!
-    const st = cellStyle(td, env)
-    const room = box.end - box.start - st.pl - st.pr
-    const { shown, rest } = foldMix([{ profile: 'claude-code', count: 3 }], room)
-    expect(shown.map((m) => m.profile)).toEqual(['claude-code'])
-    expect(rest).toBe(0)
+    const rows = [...t.querySelectorAll<HTMLElement>('tbody tr.wfg-row')]
+    let named = 0
+    for (const row of rows) {
+      fireEvent.click(row.querySelector('[data-col="state"]')!)
+      const aside = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"]')!
+      const dt = [...aside.querySelectorAll('.wfg-sum-dl > dt')].find((d) => d.textContent === 'Runners')
+      expect(dt, 'no Runners in the summary').toBeDefined()
+      const mix = dt!.nextElementSibling!.querySelector<HTMLElement>('.wf-mix')!
+      const title = mix.getAttribute('title')
+      if (title === null) continue
+      named++
+      // Every chip shown is a named profile with its step count.
+      const chips = [...mix.querySelectorAll('.wf-mix-p')]
+      expect(chips.length, title).toBeGreaterThan(0)
+      for (const c of chips) expect(title).toContain(`${c.textContent} ×`)
+      // A runner's row wraps rather than cutting a chip at the summary's edge.
+      expect(painted(dt!.nextElementSibling!, 'overflow-wrap', { width: 1440 })).toBe('anywhere')
+    }
+    expect(named, 'no workflow with runners: the case would pass without looking').toBeGreaterThan(0)
     // Two profiles: the commoner is named, the other counted.
     const two = foldMix(
       [
         { profile: 'claude-code', count: 20 },
         { profile: 'codex', count: 2 },
       ],
-      room,
+      null,
     )
     expect(two.shown.length).toBeGreaterThanOrEqual(1)
   })
@@ -246,15 +257,16 @@ describe('N7: the Runners cell names the runner', () => {
 describe('N8: the Workflow cell is the row\'s own cell', () => {
   it('lays the name cell out as a table cell, so its border is the row\'s', async () => {
     const t = await list()
-    const td = t.querySelector('tbody tr.wfl-row td[data-col="workflow"]')!
+    const td = t.querySelector('tbody tr.wfg-row td[data-col="workflow"]')!
     expect(painted(td, 'display', { width: 1440 }) ?? 'table-cell', 'at 1440').toBe('table-cell')
-    // At 390 the row is a card (WF-8): the cell is a block in the row's grid,
-    // and the border is the row's own, so the name cell still draws none.
-    expect(painted(td.parentElement!, 'display', { width: 390 }), 'the row at 390').toBe('grid')
-    // Its pieces still stack: the name's line (name, id and runners, VQ-013)
-    // is a block-level row of its own, the current step under it.
-    const line = td.querySelector(':scope > .wfl-line')!
-    expect(painted(line, 'display', { width: 1440 })).toBe('flex')
+    // The redesign's phone row (frame graph-workflow-rest-390) drops columns
+    // instead of turning the row into a card: at 390 the row is still a row
+    // and the name still its own cell.
+    expect(painted(td.parentElement!, 'display', { width: 390 }) ?? 'table-row', 'the row at 390').toBe('table-row')
+    expect(painted(td, 'display', { width: 390 }) ?? 'table-cell', 'at 390').toBe('table-cell')
+    // One line: the name is the cell's own link, with no inner flex line.
+    expect(td.querySelector(':scope > a')).not.toBeNull()
+    expect(td.querySelector('.wfl-line')).toBeNull()
   })
 })
 

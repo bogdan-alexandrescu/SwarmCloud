@@ -186,15 +186,25 @@ describe('QA-119: the workflow page head names its stages and its steps', () => 
   it('keeps the short forms in the list’s narrow cells', async () => {
     render(<WorkflowsScreen view="" onView={() => {}} />)
     const row = await waitFor(() => {
-      const r = document.querySelector<HTMLElement>('.wfl-table tbody tr[data-workflow="wf_fail"]')
+      const r = document.querySelector<HTMLElement>('.wfg-table tbody tr[data-workflow="wf_fail"]')
       expect(r).toBeTruthy()
       return r!
     })
     // MUTATION: apply the head's long forms in `rollupLine` or `Shape` rather
     // than in `pageSummary` -- the list's cells grow `in 2 stages` and `of 6 steps`.
-    await waitFor(() => expect(row.querySelector('.wfl-done small')?.textContent).toBe('4/6'))
-    expect(row.querySelector('.wf-shape-text')?.textContent).toBe('5 → 1')
+    await waitFor(() => expect(row.querySelector('.wfg-bar small')?.textContent).toBe('4/6'))
     expect(row.textContent).not.toContain('stages')
+    // The shape moved from the row into the inspector's summary (the picked
+    // Work redesign, frame graph-workflows-rest), and keeps its short form there.
+    fireEvent.click(row.querySelector<HTMLElement>('[data-col="state"]')!)
+    const sum = await waitFor(() => {
+      const s = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum')
+      expect(s).toBeTruthy()
+      return s!
+    })
+    const shape = sum.querySelector<HTMLElement>('.wf-shape-text')
+    expect(shape?.textContent).toBe('5 → 1')
+    expect(shape?.closest('dd')?.textContent).not.toContain('stages')
   })
 })
 

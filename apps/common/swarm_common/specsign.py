@@ -56,10 +56,15 @@ from typing import Any, Mapping
 #: 7 is contract request 133 (CONTRACT-MAXTURNS, part of #2524), accepted by
 #: the owner 2 November 2026: format 6's fields plus `max_turns`, so a task
 #: whose resolved turn cap was raised or removed fails its worker's check.
-SPEC_FORMAT = 7
+#:
+#: 8 is contract request 137 (part of #2688), accepted by the owner 4 November
+#: 2026 ("Sign the key"): format 7's fields plus `metadata.work_contract`, the
+#: stored work contract document whose digest the signed dispatch block names,
+#: so a task whose contract was rewritten fails its worker's check.
+SPEC_FORMAT = 8
 
 #: Every format a verifier accepts, oldest first.
-SPEC_FORMATS = (1, 2, 3, 4, 5, 6, 7)
+SPEC_FORMATS = (1, 2, 3, 4, 5, 6, 7, 8)
 
 #: The fields format 2 adds to format 1's projection.
 _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
@@ -92,6 +97,14 @@ _FORMAT_6_FIELDS = ("budget",)
 #: (non-None) is not canonical: the worker passes the cap to the agent CLI, so
 #: adding one to a task signed without it must fail verification.
 _FORMAT_7_FIELDS = ("max_turns",)
+
+#: The METADATA keys format 8 adds to the projection's `metadata` map
+#: (contract request 137). Formats 1-7 do not cover them: their `metadata` map
+#: keeps exactly the keys it had, so every stored signature still verifies,
+#: and a document at any of those that sets one (non-None) is not canonical:
+#: the worker reads the plugins it loads from the contract, so adding one to a
+#: task signed without it must fail verification.
+_FORMAT_8_METADATA_KEYS = ("work_contract",)
 
 #: The top-level fields every writer stores as integers (`Task`'s types).
 #: JCS gives 3600 and 3600.0 the same bytes, so without this a rewrite of one
@@ -144,7 +157,16 @@ def signing_format(doc: Mapping[str, Any]) -> int:
     signed at it, and swarm-api stores one only when the step or its profile
     sets one, so a task without a cap keeps the format and the bytes it had
     before format 7.
+
+    Format 8 too (contract request 137): only a task whose metadata carries a
+    work contract is signed at it, so a task without one keeps the format and
+    the bytes it had before format 8.
     """
+    metadata = doc.get("metadata")
+    if isinstance(metadata, Mapping) and any(
+        metadata.get(key) is not None for key in _FORMAT_8_METADATA_KEYS
+    ):
+        return 8
     if any(doc.get(key) is not None for key in _FORMAT_7_FIELDS):
         return 7
     if any(doc.get(key) is not None for key in _FORMAT_6_FIELDS):
@@ -170,7 +192,9 @@ SPEC_PURPOSE = "swarm.step-spec"
 
 #: The keys of `Task.metadata` that swarm-api writes and the worker acts on.
 #: Every other metadata key is the caller's label or another writer's record.
-SIGNED_METADATA_KEYS = ("dispatch", "input_from", "expected_outputs")
+#: `work_contract` is contract request 137, covered from format 8 only
+#: (`_FORMAT_8_METADATA_KEYS`).
+SIGNED_METADATA_KEYS = ("dispatch", "input_from", "expected_outputs", "work_contract")
 
 #: JCS numbers are IEEE doubles, so an integer is exact only within this bound.
 MAX_SAFE_INTEGER = 2**53 - 1
@@ -206,7 +230,9 @@ def canonical_step_spec(
     projected as stored, in submission order, and the order is in the bytes.
     And for a set `model_class` at formats 1-4 (contract request 104), and a
     set `budget` at formats 1-5 (contract request 120), and a set `max_turns`
-    at formats 1-6 (contract request 133).
+    at formats 1-6 (contract request 133), and a set `metadata.work_contract`
+    at formats 1-7 (contract request 137), whose `metadata` map holds only
+    the keys it held before format 8.
     """
     if spec_format not in SPEC_FORMATS or isinstance(spec_format, bool):
         raise SpecNotCanonical(f"spec format {spec_format!r} is not one of {SPEC_FORMATS}")
@@ -235,6 +261,14 @@ def canonical_step_spec(
         for key in _FORMAT_7_FIELDS:
             if doc.get(key) is not None:
                 raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
+    if spec_format < 8:
+        for key in _FORMAT_8_METADATA_KEYS:
+            if metadata.get(key) is not None:
+                raise SpecNotCanonical(
+                    f"metadata.{key} is set, and format {spec_format} does not cover it")
+        metadata_keys = tuple(k for k in SIGNED_METADATA_KEYS if k not in _FORMAT_8_METADATA_KEYS)
+    else:
+        metadata_keys = SIGNED_METADATA_KEYS
     for key in _INTEGER_FIELDS:
         value = doc.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
@@ -257,7 +291,7 @@ def canonical_step_spec(
         "depends_on": doc.get("depends_on"),
         "repository_url": doc.get("repository_url"),
         "repository_ref": doc.get("repository_ref"),
-        "metadata": {key: metadata.get(key) for key in SIGNED_METADATA_KEYS},
+        "metadata": {key: metadata.get(key) for key in metadata_keys},
     }
     if spec_format >= 2:
         for key in _FORMAT_2_FIELDS:

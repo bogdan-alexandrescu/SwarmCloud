@@ -21,6 +21,9 @@ dependencies = [
     # state, so it writes the workflow's derived state in the same fenced
     # transaction, by the rule the API and the reconciler use.
     "swarm-workflow-rollup",
+    # The Jev client (judge.client and judge.sanitize re-export it), shared
+    # with swarm-api's work-contract review (jev-contract.md, answer 10).
+    "swarm-jev",
     "google-cloud-firestore>=2.16",
     "google-cloud-storage>=2.18",
     "google-cloud-secret-manager>=2.20",
@@ -46,3 +49,4 @@ packages = ["agent_worker"]
 swarm-common = { path = "../common", editable = true }
 swarm-redaction = { path = "../redaction", editable = true }
 swarm-workflow-rollup = { path = "../workflow-rollup", editable = true }
+swarm-jev = { path = "../jev-client", editable = true }

@@ -99,6 +99,7 @@ from urllib.parse import urlsplit
 from swarm_common.config import Settings
 from swarm_common.profiles import RUNNER_PROFILES
 from swarm_redaction import redact
+from swarm_rollup.agentimage import QA_TOOL
 
 # --------------------------------------------------------------------------
 # Bounds and vocabularies
@@ -1151,7 +1152,7 @@ def _capture_prompt(target: Mapping[str, Any], base: str, group: str, routes: Ma
         f"step's share of it. Never add a route to it yourself: after this step's routes the tool walks the "
         f"app from the base and every stored route, and captures at most {found_per_step} new routes this "
         f"step owns, writing what it found to found.json in the tarball. "
-        f"Then run `python -m swarm_qa capture --routes /tmp/swarm-qa/routes-{group}.json --group {group} "
+        f"Then run `{QA_TOOL} capture --routes /tmp/swarm-qa/routes-{group}.json --group {group} "
         f"--base {_origin(base)} --presets {','.join(widths)} --themes {','.join(themes)} {' '.join(flags)} "
         f"{crawl} --out {out} --bundle {out}.tar`. It writes the tarball whatever happens: a route that failed is "
         f"listed in its manifest's `failed`, not a reason to stop. If it exits non-zero, put its last 40 "
@@ -1553,7 +1554,7 @@ def render_discovery(target: Mapping[str, Any]) -> dict[str, Any]:
     excludes = " ".join(f"--exclude '{p}'" for p in paths)
     prompt = (
         f"Discover the screens of {target['name']}, do not review them.{_sign_in_note(own_login, start_clicks(target))} Run "
-        f"`python -m swarm_qa discover --base {base} --max-pages {pages} --max-depth {depth} {excludes} "
+        f"`{QA_TOOL} discover --base {base} --max-pages {pages} --max-depth {depth} {excludes} "
         f"--out $SWARM_ARTIFACTS_DIR/screens.json`. It stays on the target's origin and honours its "
         f"robots.txt. If it exits non-zero, put its last 40 lines in your answer. "
         f"{_safety(target, _origin(base))} {NO_CHANGE}"
