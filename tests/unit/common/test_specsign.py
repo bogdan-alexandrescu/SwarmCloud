@@ -258,9 +258,10 @@ def test_the_golden_vector():
     assert canonical == GOLDEN_BYTES
     assert spec_digest(canonical).hex() == GOLDEN_SHA256
     # Format 6 is contract request 120 (`Task.budget`, #2459), format 7
-    # contract request 133 (`Task.max_turns`).
-    assert specsign.SPEC_FORMAT == 7
-    assert specsign.SPEC_FORMATS == (1, 2, 3, 4, 5, 6, 7)
+    # contract request 133 (`Task.max_turns`), format 8 contract request 137
+    # (`metadata.work_contract`).
+    assert specsign.SPEC_FORMAT == 8
+    assert specsign.SPEC_FORMATS == (1, 2, 3, 4, 5, 6, 7, 8)
     assert specsign.SPEC_PURPOSE == "swarm.step-spec"
 
 
@@ -332,7 +333,11 @@ def test_uncovered_fields_do_not_reach_the_bytes():
 
 def test_a_missing_key_reads_as_null_and_a_missing_metadata_as_empty():
     got = canonical_step_spec({}, task_id="t").decode()
-    assert '"metadata":{"dispatch":null,"expected_outputs":null,"input_from":null}' in got
+    assert ('"metadata":{"dispatch":null,"expected_outputs":null,"input_from":null,'
+            '"work_contract":null}') in got
+    # Contract request 137: formats 1-7 keep the map they had before format 8.
+    older = canonical_step_spec({}, task_id="t", spec_format=7).decode()
+    assert '"metadata":{"dispatch":null,"expected_outputs":null,"input_from":null}' in older
     assert '"input":null' in got and '"depends_on":null' in got
 
 
