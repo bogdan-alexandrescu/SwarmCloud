@@ -3628,42 +3628,54 @@ def prepare_publish_repo(
     # agent's content descends from it, so the walk still reaches every
     # commit the agent wrote. A line origin does not confirm -- one the agent
     # forged to cut its own key commit out of the walk -- is never added.
+    #
+    # THE BASE'S OWN HISTORY IS ORIGIN'S TOO (#3174). A sibling the agent
+    # fetched -- at full depth, or deep enough to reach the base's history --
+    # joins that history below the base, so the walk from HEAD crosses into
+    # it and needs every cut-off the clone has there: one per side branch a
+    # deepened clone (the pull base, the graph's ancestry fetch) cut. Asked
+    # of origin, those lines ran past the `_SHALLOW_MAX_LINES` question, or
+    # went unasked where the attempt has no git tools relay, and the walk
+    # read a parent the clone never had ("Could not read <sha>"). A line that
+    # is an ANCESTOR OF THE RECORDED BASE needs no question: the base is on
+    # origin and names its parents by hash, so everything under it is
+    # origin's. `_base_ancestry_shallow` proves it here, in this repository:
+    # the base alone is fetched with the clone's lines as its boundary, and
+    # only lines `git rev-list` then reaches from the base join. A line the
+    # agent forged on its own commits is no ancestor of a base recorded
+    # before it ran, so it still needs origin's word, as before.
     if empty:
         shallow_file = "/dev/null"
     else:
+        listed = [] if unknown else _clone_shallow_lines(source_repo)
+        lines = [sha for sha in listed if sha != floor]
+        proven = _base_ancestry_shallow(
+            run, source_repo=source_repo, publish_dir=publish_dir, floor=floor,
+            listed=listed, git_binary=git_binary, logger=logger,
+        ) if lines else []
+        unproven = [sha for sha in lines if sha not in proven]
+        if confirm_on_origin is not None and len(unproven) > _SHALLOW_MAX_LINES:
+            # More lines than one question holds: ask only those the walk
+            # from HEAD meets, so a stale cut-off (one a later, shallower
+            # fetch superseded) does not crowd out one the walk needs.
+            reached = _lines_head_reaches(
+                source_repo=source_repo, private_dir=private_dir, logs_dir=logs_dir,
+                target=target, listed=listed, git_binary=git_binary,
+                timeout_seconds=timeout_seconds, logger=logger,
+            )
+            if reached is not None:
+                unproven = [sha for sha in unproven if sha in reached]
         confirmed = _origin_confirmed_shallow(
-            source_repo, floor=floor, confirm_on_origin=confirm_on_origin, logger=logger
+            unproven, confirm_on_origin=confirm_on_origin, logger=logger,
         )
         boundary = publish_dir / ".git" / "swarm-source-shallow"
-        boundary.write_text("".join(f"{sha}\n" for sha in [floor, *confirmed]))
+        boundary.write_text("".join(f"{sha}\n" for sha in [floor, *proven, *confirmed]))
         shallow_file = str(boundary)
-    upload_pack = " ".join(
-        [
-            "env",
-            *_UPLOAD_PACK_ENV,
-            f"GIT_SHALLOW_FILE={shlex.quote(shallow_file)}",
-            shlex.quote(git_binary),
-            *_UPLOAD_PACK_CONFIG,
-            # The wants are shas, not advertised refs.
-            "-c", "uploadpack.allowAnySHA1InWant=true",
-            "upload-pack",
-        ]
-    )
     refspecs = [f"+{target}:refs/swarm/head"]
     if not empty and not unknown:
         refspecs.append(f"+{floor}:refs/swarm/base")
     fetch_code, _ = run(
-        [
-            git_binary, *_NO_HOOKS,
-            "-c", "transfer.fsckObjects=true",
-            "-c", "fetch.fsckObjects=true",
-            "-c", "fetch.recurseSubmodules=false",
-            "-c", "submodule.recurse=false",
-            *_NO_AUTO_MAINTENANCE,
-            "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--update-shallow",
-            f"--upload-pack={upload_pack}",
-            "--", str(source_repo), *refspecs,
-        ],
+        _publish_fetch_argv(git_binary, source_repo, shallow_file, refspecs),
         "publish-fetch",
     )
     if fetch_code != 0:
@@ -3699,32 +3711,171 @@ _SHALLOW_MAX_LINES = 16
 _STDERR_TAIL_CHARS = 500
 
 
-def _origin_confirmed_shallow(
-    source_repo: Path,
-    *,
-    floor: str,
-    confirm_on_origin: Callable[[list[str]], list[str]] | None,
-    logger: Any,
+def _publish_fetch_argv(
+    git_binary: str, source_repo: Path, shallow_file: str, refspecs: list[str]
 ) -> list[str]:
-    """The clone's shallow cut-offs that origin says it has (#2559).
+    """The object-checked fetch from the clone into a publish repository, its
+    upload side's shallow boundary `shallow_file` (see `prepare_publish_repo`)."""
+    upload_pack = " ".join(
+        [
+            "env",
+            *_UPLOAD_PACK_ENV,
+            f"GIT_SHALLOW_FILE={shlex.quote(shallow_file)}",
+            shlex.quote(git_binary),
+            *_UPLOAD_PACK_CONFIG,
+            # The wants are shas, not advertised refs.
+            "-c", "uploadpack.allowAnySHA1InWant=true",
+            "upload-pack",
+        ]
+    )
+    return [
+        git_binary, *_NO_HOOKS,
+        "-c", "transfer.fsckObjects=true",
+        "-c", "fetch.fsckObjects=true",
+        "-c", "fetch.recurseSubmodules=false",
+        "-c", "submodule.recurse=false",
+        *_NO_AUTO_MAINTENANCE,
+        "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--update-shallow",
+        f"--upload-pack={upload_pack}",
+        "--", str(source_repo), *refspecs,
+    ]
 
-    `.git/shallow` is read AS DATA (`_read_in_git_dir`: O_NOFOLLOW at every
-    component, a regular file only, capped), never through git in the clone.
-    Only full 40-hex lines are asked, the floor and duplicates dropped, at
-    most `_SHALLOW_MAX_LINES`; the answer is kept only where it names a sha
-    that was asked. A confirmer that raises answers nothing."""
-    if confirm_on_origin is None:
-        return []
+
+def _clone_shallow_lines(source_repo: Path) -> list[str]:
+    """The clone's `.git/shallow` lines, in file order.
+
+    Read AS DATA (`_read_in_git_dir`: O_NOFOLLOW at every component, a
+    regular file only, at most `_SHALLOW_MAX_BYTES`, nothing past it), never
+    through git in the clone. Only full 40-hex lines, duplicates dropped."""
     raw = _read_in_git_dir(source_repo, "shallow", cap=_SHALLOW_MAX_BYTES)
     if not raw:
         return []
-    asked: list[str] = []
+    lines: list[str] = []
+    seen: set[str] = set()
     for line in raw.decode("ascii", "replace").splitlines():
         sha = line.strip()
-        if _FULL_SHA_RE.match(sha) and sha != floor and sha not in asked:
-            asked.append(sha)
-            if len(asked) == _SHALLOW_MAX_LINES:
-                break
+        if _FULL_SHA_RE.match(sha) and sha not in seen:
+            seen.add(sha)
+            lines.append(sha)
+    return lines
+
+
+def _base_ancestry_shallow(
+    run: Callable[[list[str], str], tuple[int, str]],
+    *,
+    source_repo: Path,
+    publish_dir: Path,
+    floor: str,
+    listed: list[str],
+    git_binary: str,
+    logger: Any,
+) -> list[str]:
+    """The clone's shallow lines (`listed`) that are ancestors of `floor` (#3174).
+
+    `floor` is the clone base the worker recorded before the agent ran, so it
+    is origin's, and a commit names its parents by hash: any commit `git
+    rev-list floor` reaches over checked objects is origin's history. The
+    base is fetched into the publish repository `publish_dir` with the
+    clone's lines as the upload side's boundary -- the same pinned
+    `upload-pack`, object checks and `--update-shallow` as the publish fetch
+    -- and only lines `rev-list` there reaches are returned.
+
+    The lines the boundary is built from are the agent's to write, and that
+    is safe here: the walk is of the base's history alone, which holds none
+    of the agent's commits. A forged line only cuts that history short (fewer
+    lines proven: the publish fetch then fails as before), and a removed one
+    sends the walk into history the clone lacks: this fetch fails and proves
+    nothing. Never raises; a failure proves nothing."""
+    boundary = publish_dir / ".git" / "swarm-base-ancestry-shallow"
+    boundary.write_text("".join(f"{sha}\n" for sha in listed))
+    code, _ = run(
+        _publish_fetch_argv(git_binary, source_repo, str(boundary),
+                            [f"+{floor}:refs/swarm/base"]),
+        "publish-base-ancestry",
+    )
+    if code != 0:
+        logger.warning("could not fetch the clone base's history to place its shallow lines",
+                       lines=len(listed))
+        return []
+    code, text = run([git_binary, *_NO_HOOKS, "rev-list", "refs/swarm/base"],
+                     "publish-base-ancestry-list")
+    if code != 0:
+        return []
+    reached = set(text.split())
+    proven = [sha for sha in listed if sha != floor and sha in reached]
+    logger.info("clone shallow lines under the clone base", lines=len(listed),
+                proven=len(proven))
+    return proven
+
+
+def _lines_head_reaches(
+    *,
+    source_repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    target: str,
+    listed: list[str],
+    git_binary: str,
+    timeout_seconds: int,
+    logger: Any,
+) -> set[str] | None:
+    """The clone's shallow lines the walk from `target` meets, or None (#3174).
+
+    Only CHOOSES which lines to put to origin; it never adds one to a
+    boundary. `target` is fetched into a scratch repository of the worker's
+    with every listed line as the upload side's boundary (the same pinned
+    `upload-pack` and object checks), and `git rev-list` there names the
+    lines it reaches. A line the agent forged or removed can only change
+    which lines are asked, and a needed line left unasked fails the publish
+    fetch, as before. Removed afterwards; never raises."""
+    scratch: Path | None = None
+    try:
+        scratch = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="reach-"))
+
+        def run(argv: list[str], slug: str) -> tuple[int, str]:
+            return _git_text(argv, repo=scratch, private_dir=private_dir, logs_dir=logs_dir,
+                             slug=slug, timeout_seconds=timeout_seconds, logger=logger)
+
+        code, _ = run([git_binary, *_NO_HOOKS, "init", "--quiet", str(scratch)], "publish-reach-init")
+        if code != 0:
+            return None
+        boundary = scratch / ".git" / "swarm-source-shallow"
+        boundary.write_text("".join(f"{sha}\n" for sha in listed))
+        code, _ = run(_publish_fetch_argv(git_binary, source_repo, str(boundary),
+                                          [f"+{target}:refs/swarm/head"]), "publish-reach-fetch")
+        if code != 0:
+            return None
+        code, text = run([git_binary, *_NO_HOOKS, "rev-list", "refs/swarm/head"],
+                         "publish-reach-list")
+        if code != 0:
+            return None
+        commits = set(text.split())
+        return {sha for sha in listed if sha in commits}
+    except OSError as exc:
+        logger.warning("could not tell which shallow lines the walk meets", error=str(exc))
+        return None
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _origin_confirmed_shallow(
+    candidates: list[str],
+    *,
+    confirm_on_origin: Callable[[list[str]], list[str]] | None,
+    logger: Any,
+) -> list[str]:
+    """Which of the clone's shallow cut-offs `candidates` origin says it has (#2559).
+
+    The candidates are the clone's `.git/shallow` lines, read as data
+    (`_clone_shallow_lines`), less the floor and the lines already proven
+    ancestors of the base (`_base_ancestry_shallow`), so the question is
+    spent on the rest: at most `_SHALLOW_MAX_LINES` of them; the answer is
+    kept only where it names a sha that was asked. A confirmer that raises
+    answers nothing."""
+    if confirm_on_origin is None:
+        return []
+    asked = list(dict.fromkeys(candidates))[:_SHALLOW_MAX_LINES]
     if not asked:
         return []
     try:
@@ -3738,6 +3889,164 @@ def _origin_confirmed_shallow(
     logger.info("clone shallow lines confirmed on origin", asked=len(asked),
                 confirmed=len(confirmed))
     return confirmed
+
+
+#: The artifact a failed publish keeps the agent's branch in (#3174), beside
+#: `swarm-work.patch`: a patch is the final tree flat, and loses the merges
+#: the agent made; the bundle keeps every commit, merges included.
+WORK_BUNDLE_NAME = "swarm-work.bundle"
+#: The one ref the bundle carries. A hand push is
+#: `git fetch swarm-work.bundle swarm-work && git push origin FETCH_HEAD:<branch>`.
+WORK_BUNDLE_REF = "refs/heads/swarm-work"
+
+
+@dataclass
+class WorkBundle:
+    """What `keep_work_bundle` kept: `name` is None when no bundle was kept,
+    and `note` then says why."""
+
+    name: str | None = None
+    bytes: int = 0
+    omitted: bool = False
+    commits: int = 0
+    base: str | None = None
+    note: str | None = None
+
+
+def keep_work_bundle(
+    *,
+    source_repo: Path,
+    base: str | None,
+    private_dir: Path,
+    logs_dir: Path,
+    bundle_path: Path,
+    max_bytes: int,
+    timeout_seconds: int,
+    logger: Any,
+    leaks: Callable[[Path, list[str]], str | None],
+    git_binary: str = "git",
+) -> WorkBundle:
+    """Keep the agent's branch as a git bundle at `bundle_path` (#3174). Never raises.
+
+    For a publish that failed after the work exists: the clean publish
+    repository could not be built, so nothing was pushed, and the flat
+    `swarm-work.patch` loses the agent's merge commits. The bundle carries
+    `WORK_BUNDLE_REF` -- the clone's HEAD, read as data -- and every commit
+    under it that `base` does not reach, merges and the merged branch's own
+    commits included, with `base` as its one prerequisite. No other ref and
+    no object outside that range goes in.
+
+    WHERE IT IS BUILT: in a THIRD repository the worker `git init`s here,
+    neither the agent's clone nor the clean publish repository. Not the
+    clone: no git runs there but the pinned `upload-pack` (#259), and
+    `git bundle create` there would read the agent's config, grafts,
+    replacements and commit-graph. Not the publish repository: it is the one
+    that could not be built. The commits are fetched in exactly as the
+    publish fetches them (`_publish_fetch_argv`: object checks, no hooks),
+    with every shallow line the clone lists in the upload side's boundary,
+    UNCONFIRMED. That is safe here and only here: nothing is pushed from this
+    repository, and a line the agent forged only leaves commits out of the
+    bundle, so a hand push of it fails rather than publishes. What does go in
+    is scanned commit by commit (`leaks(repo, commits)`, the publish's own
+    per-commit scan, each commit against its first parent): a hit keeps no
+    bundle. Over `max_bytes` (the patch's cap) the bundle is discarded
+    whole, never truncated."""
+    out = WorkBundle(base=base)
+    empty = base == EMPTY_CLONE_BASE
+    floor = "" if empty else (base or "").strip()
+    if not empty and not _FULL_SHA_RE.match(floor):
+        out.note = "the clone base is unknown, so there was no base to bundle the branch from"
+        return out
+    try:
+        target = (read_head_as_data(Path(source_repo)) or "").strip()
+    except GitError as exc:
+        out.note = f"the clone's HEAD could not be read: {exc}"
+        return out
+    if not _FULL_SHA_RE.match(target):
+        out.note = "the clone's HEAD names no commit to bundle"
+        return out
+    private_dir = Path(private_dir)
+    bundle_dir: Path | None = None
+    staged: Path | None = None
+    try:
+        private_dir.mkdir(parents=True, exist_ok=True)
+        bundle_dir = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="bundle-"))
+
+        def run(argv: list[str], slug: str) -> tuple[int, str]:
+            return _git_text(
+                argv, repo=bundle_dir, private_dir=private_dir, logs_dir=logs_dir,
+                slug=slug, timeout_seconds=timeout_seconds, logger=logger,
+            )
+
+        code, _ = run([git_binary, *_NO_HOOKS, "init", "--quiet", str(bundle_dir)],
+                      "bundle-init")
+        if code != 0:
+            out.note = "the worker could not initialise a repository to bundle the branch in"
+            return out
+        refspecs = [f"+{target}:{WORK_BUNDLE_REF}"]
+        if empty:
+            shallow_file = "/dev/null"
+        else:
+            refspecs.append(f"+{floor}:refs/swarm/base")
+            boundary = bundle_dir / ".git" / "swarm-source-shallow"
+            listed = [sha for sha in _clone_shallow_lines(Path(source_repo)) if sha != floor]
+            boundary.write_text("".join(f"{sha}\n" for sha in [floor, *listed]))
+            shallow_file = str(boundary)
+        code, _ = run(_publish_fetch_argv(git_binary, Path(source_repo), shallow_file, refspecs),
+                      "bundle-fetch")
+        if code != 0:
+            out.note = ("the agent's commits could not be fetched to bundle them"
+                        + _stderr_tail(Path(logs_dir) / "git-bundle-fetch.err.log"))
+            return out
+        span = [WORK_BUNDLE_REF] if empty else [WORK_BUNDLE_REF, f"^{floor}"]
+        code, text = run([git_binary, *_NO_HOOKS, "rev-list", *span], "bundle-commits")
+        commits = text.split()
+        if code != 0 or not commits:
+            out.note = "the branch has no commit on top of the clone base to bundle"
+            return out
+        out.commits = len(commits)
+        try:
+            leaking = leaks(bundle_dir, commits)
+        except Exception as exc:  # noqa: BLE001 - an unscanned bundle is not kept
+            out.note = f"the bundle's commits could not be scanned ({type(exc).__name__}); none was kept"
+            return out
+        if leaking:
+            out.note = (f"commit {leaking[:12]} adds credential-shaped text, so the branch "
+                        "was not kept as a bundle")
+            return out
+        staged = private_dir / f"{bundle_dir.name}.bundle"
+        code, _ = run([git_binary, *_NO_HOOKS, "bundle", "create", "--quiet", str(staged), *span],
+                      "bundle-create")
+        if code != 0 or not staged.is_file():
+            out.note = "git could not write the bundle"
+            return out
+        size = staged.stat().st_size
+        out.bytes = size
+        if size > max_bytes:
+            out.omitted = True
+            out.note = (f"the bundle was {size} bytes, over the {max_bytes} cap, and was "
+                        "discarded rather than truncated")
+            return out
+        code, _ = run([git_binary, *_NO_HOOKS, "bundle", "verify", "--quiet", str(staged)],
+                      "bundle-verify")
+        if code != 0:
+            out.note = "the bundle git wrote did not verify"
+            return out
+        bundle_path = Path(bundle_path)
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(staged, bundle_path)
+        out.name = bundle_path.name
+        logger.info("kept the agent's branch as a bundle", bundle=out.name, bytes=size,
+                    commits=out.commits)
+        return out
+    except Exception as exc:  # noqa: BLE001 - the failure path never raises
+        out.note = f"the bundle could not be written ({type(exc).__name__})"
+        return out
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+        if bundle_dir is not None:
+            shutil.rmtree(bundle_dir, ignore_errors=True)
 
 
 def _stderr_tail(path: Path) -> str:
