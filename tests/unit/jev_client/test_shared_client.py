@@ -11,8 +11,9 @@ What this holds:
 * `swarm_jev` imports nothing of the worker or of swarm-api, so swarm-api can
   install it without the worker;
 * outside the worker, the shared scan still drops what the redaction rules
-  and the registered secrets catch; inside it, the worker's publish-gate
-  predicate is added, so the worker sends exactly what it sent before;
+  and the registered secrets catch, and it asks the publish gate's credential
+  check by default (test_shared_credential_check.py holds what only that
+  check catches); nothing is added to it at import any more;
 * every project and image that installs the worker or swarm-api installs
   `swarm-jev` too.
 
@@ -52,8 +53,8 @@ CLIENT_NAMES = (
 #: The same for the worker's sanitize module.
 SANITIZE_NAMES = (
     "DENIED_NAME_GLOBS", "DENIED_DIRECTORIES", "IDENTITY_KEYS", "NEVER_SENT_KEYS",
-    "Sanitized", "is_denied_path", "is_flagged", "sanitize_state", "_PATH_KEYS",
-    "_hard_stop_hit", "_Walker",
+    "Sanitized", "is_credential", "is_denied_path", "is_flagged", "sanitize_state",
+    "_PATH_KEYS", "_hard_stop_hit", "_Walker",
 )
 
 
@@ -107,11 +108,11 @@ def test_swarm_jev_imports_nothing_of_the_worker_or_swarm_api() -> None:
 
 
 def test_without_the_worker_the_shared_scan_still_drops_a_credential() -> None:
-    """swarm-api's process: no worker, no publish-gate predicate registered."""
+    """swarm-api's process: no worker imported."""
     probe = (
         "import json, secrets, sys\n"
         "from swarm_jev import sanitize\n"
-        "assert sanitize.credential_checks() == (), sanitize.credential_checks()\n"
+        "assert not any(m.split('.')[0] == 'agent_worker' for m in sys.modules)\n"
         "token = 'ghp_' + secrets.token_hex(18)\n"
         "secret = secrets.token_hex(8)\n"
         "out = sanitize.sanitize_state({'a': 'x = ' + token, 'b': 'keep',\n"
@@ -123,22 +124,18 @@ def test_without_the_worker_the_shared_scan_still_drops_a_credential() -> None:
     assert out.stdout.strip() == '[{"b": "keep"}, 2]', out.stdout
 
 
-def test_the_worker_adds_its_publish_gate_predicate() -> None:
-    checks = shared_sanitize.credential_checks()
-    assert len(checks) == 1, checks
-    # The predicate is the publish gate's own: a string only it refuses (a
-    # free run of random key material no redaction rule names) is flagged.
+def test_the_shared_scan_asks_the_publish_gates_own_predicate() -> None:
+    """The check is the publish gate's own at its strictest tier, the same
+    object in the worker and in the shared package; there is no registry of
+    further checks for a host process to add to."""
     from agent_worker.lifecycle import _credential_in
     probe = "x = '" + secrets.token_urlsafe(48) + "'"
-    assert checks[0](probe) == (_credential_in("", probe) is not None)
-    assert checks[0]("plain words") is False
-
-
-def test_registering_the_same_check_twice_keeps_one() -> None:
-    before = shared_sanitize.credential_checks()
-    for check in before:
-        shared_sanitize.add_credential_check(check)
-    assert shared_sanitize.credential_checks() == before
+    assert shared_sanitize.is_credential(probe) == (_credential_in("", probe) is not None)
+    assert shared_sanitize.is_credential("plain words") is False
+    assert worker_sanitize.is_credential is shared_sanitize.is_credential
+    for gone in ("add_credential_check", "credential_checks", "_CREDENTIAL_CHECKS"):
+        assert not hasattr(shared_sanitize, gone), gone
+        assert not hasattr(swarm_jev, gone), gone
 
 
 # -- packaging ---------------------------------------------------------------
