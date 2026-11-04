@@ -168,7 +168,7 @@ async function canvasOf(id: string): Promise<HTMLElement> {
 }
 
 /** The same canvas, as the old workflow page drew it: `page`, a step already picked on arrival. */
-function CanvasPageCard({ id, workflow, taskById, initialPicked }: { id: string; workflow: WorkflowRead['workflow']; taskById: Map<string, WorkflowRead['tasks'][number]>; initialPicked: string }) {
+function CanvasPageCard({ workflow, taskById, initialPicked }: { id: string; workflow: WorkflowRead['workflow']; taskById: Map<string, WorkflowRead['tasks'][number]>; initialPicked: string }) {
   const [stages, setStages] = useState<Record<string, boolean>>({})
   const [picked, setPicked] = useState<string | null>(initialPicked)
   return (
@@ -298,19 +298,18 @@ describe('62: a state the API did not derive reads `state unknown`, the why in i
 // One workflow's page
 // ---------------------------------------------------------------------------
 
-describe('80: the loading head reserves the loaded head’s buttons', () => {
-  it('draws Copy id and Copy link, disabled, while the page reads', async () => {
+describe('80: the loading head reserves what the loaded head draws', () => {
+  it('draws no buttons in the head while the page reads, as the loaded head has none: Copy id, Copy link and Stop are the Overview’s', async () => {
     api.loadWorkflow.mockImplementation(() => new Promise<Result<WorkflowRead>>(() => {}))
     render(<WorkflowsScreen view={`wf=${AUDIT}`} onView={() => {}} />)
     const head = await waitFor(() => {
-      const h = document.querySelector<HTMLElement>('.wfp.is-loading .wfp-actions')
+      const h = document.querySelector<HTMLElement>('.wfp.is-loading .wfp-head')
       expect(h).toBeTruthy()
       return h!
     })
-    // MUTATION: drop `<Button disabled>Copy id</Button>` from `WorkflowPageSkeleton`.
-    const buttons = [...head.querySelectorAll('button')]
-    expect(buttons.map((b) => b.textContent)).toEqual(['Copy id', 'Copy link'])
-    expect(buttons.every((b) => b.disabled)).toBe(true)
+    // MUTATION: put `<Button disabled>Copy id</Button>` back in `WorkflowPageSkeleton`'s head.
+    expect(head.querySelectorAll('button')).toHaveLength(0)
+    expect(head.querySelector('.wfp-actions')).toBeNull()
   })
 })
 

@@ -172,7 +172,6 @@ async function page(tab: string | null = null): Promise<void> {
   await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
 }
 
-const panel = () => document.querySelector<HTMLElement>('.wf-panel')
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
 const flat = (el: Element | null | undefined) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()

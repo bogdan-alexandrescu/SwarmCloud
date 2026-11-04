@@ -152,12 +152,14 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     const order = [...page!.children].map((c) => c.className.split(' ')[0])
     expect(order).toEqual(['wfp-head', 'c-tabs', 'wfp-skel-body'])
     const head = page!.querySelector<HTMLElement>('.wfp-head')!
-    const actions = within(head).getAllByRole('button')
-    // No Stop workflow before the state is read (WF-18a): it may have ended, or not exist.
-    // Copy id is reserved beside Copy link, as the loaded head draws them (overview-agents-80, #2596).
-    expect(actions.map((b) => b.textContent)).toEqual(['Copy id', 'Copy link'])
-    expect(head.querySelector('.wfp-skel-act')).not.toBeNull()
-    expect(actions.every((b) => (b as HTMLButtonElement).disabled)).toBe(true)
+    // No buttons in the head while it reads: Stop workflow, Copy id and Copy
+    // link are the Overview's now (the Graph Work redesign), so the loaded
+    // head has none either and nothing is reserved for them (WF-18a: no Stop
+    // before the state is read).
+    expect(within(head).queryAllByRole('button')).toHaveLength(0)
+    expect(head.querySelector('.wfp-skel-act')).toBeNull()
+    // The tally line's bar holds the line the loaded head's tally draws.
+    expect(head.querySelector('.wfp-tally > .wfl-skel')).not.toBeNull()
     // The chips are bars, not words: a skeleton answers nothing.
     const chips = head.querySelector('.wfp-chips')!
     expect(chips.querySelectorAll('.wfl-skel').length).toBeGreaterThan(0)

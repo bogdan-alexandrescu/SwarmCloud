@@ -30,6 +30,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 
+import type { WorkflowView } from '../stepviews'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Result } from '../fetch'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
@@ -270,7 +271,7 @@ function atWidth(px: number): void {
 function PageCard({
   initialPicked = 'checkpoints' as string | null,
   onView,
-}: { initialPicked?: string | null; onView?: (id: string, v: 'graph' | 'table' | 'timeline') => void } = {}) {
+}: { initialPicked?: string | null; onView?: (id: string, v: WorkflowView) => void } = {}) {
   const f = fan()
   const [stages, setStages] = useState<Record<string, boolean>>({})
   const [picked, setPicked] = useState<string | null>(initialPicked)

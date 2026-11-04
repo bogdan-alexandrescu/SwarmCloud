@@ -172,7 +172,6 @@ async function page(): Promise<void> {
   await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
 }
 
-const panel = () => document.querySelector<HTMLElement>('.wf-panel')
 const WIDE: CascadeEnv = { width: 1440 }
 
 const realWidth = window.innerWidth
@@ -204,12 +203,6 @@ function PageCard() {
       reload={() => {}}
     />
   )
-}
-
-async function openPanel(): Promise<HTMLElement> {
-  render(<PageCard />)
-  await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('checkpoints'))
-  return panel()!
 }
 
 /** The real page, the checkpoints chip picked from the grid: the inspector

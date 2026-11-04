@@ -206,11 +206,18 @@ describe('a 40-step workflow page reads its steps in one batched read', () => {
     // The ONE step whose inspector is open reads its own attempts
     // (`StepInspector`); no other step does.
     expect(perStep('attempts').length, `one attempts read per step:\n${perStep('attempts').join('\n')}`).toBeLessThanOrEqual(1)
-    // Both of the page's step reads went out, batched: the waits and the usage.
+    // The page's one step read went out, batched: the usage. The waits'
+    // entered-at digest fed only the old canvas's wait clocks, which the stage
+    // grid does not draw, so the page no longer asks for it.
     const batched = fetched.filter((u) => u.includes('/v1/tasks/digests'))
-    expect(batched.some((u) => u.includes('include=entered'))).toBe(true)
+    expect(batched.some((u) => u.includes('include=entered'))).toBe(false)
     expect(batched.some((u) => u.includes('include=usage'))).toBe(true)
-    expect(batched.length).toBeLessThanOrEqual(2)
+    expect(batched.length).toBeLessThanOrEqual(1)
+    // Ten browsers are live: the strip names them and draws no still (each
+    // still is a socket and a start-up read) until the reader asks.
+    const strip = document.querySelector<HTMLElement>('section[aria-label="Live browsers"]')!
+    expect(strip.querySelectorAll('.wfp-still')).toHaveLength(10)
+    expect(strip.querySelector('canvas')).toBeNull()
     // Every request the page made names at most a handful of routes, never
     // one per step: 40 steps, and no route was asked for more than twice.
     const byRoute = new Map<string, number>()
@@ -222,8 +229,14 @@ describe('a 40-step workflow page reads its steps in one batched read', () => {
     expect(fetched.length, fetched.join('\n')).toBeLessThan(12)
   })
 
-  it('asks for every waiting step at once, and only them, for their times', async () => {
-    render(<WorkflowsScreen view="wf=wf_big" />)
+  it('asks for every waiting step at once, and only them, for their times, where the canvas draws them', async () => {
+    // The canvas (`WorkflowCard`, no longer the page's Graph) is where a
+    // waiting step's clock is drawn, so it is where the batched read is asked.
+    const r = await (await import('../api')).loadWorkflow('wf_big')
+    expect(r.status).toBe('ok')
+    if (r.status !== 'ok') return
+    const tasks = new Map(r.data.tasks.map((t) => [t.id, t] as const))
+    render(<WorkflowCard workflow={r.data.workflow} taskById={tasks} usage={{ kind: 'reading' }} openStages={{}} onToggleStage={() => {}} reload={() => {}} page />)
     await waitFor(() => expect(fetched.some((u) => u.includes('include=entered'))).toBe(true))
     const asked = fetched.find((u) => u.includes('include=entered'))!
     const ids = new URL(asked, 'http://console.test').searchParams.get('ids')!.split(',')

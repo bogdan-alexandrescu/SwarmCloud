@@ -6641,18 +6641,22 @@ function WorkflowSplit({
       ) : (
         // THE TABLE AND STEPS OVER TIME, embedded without a head of their own:
         // the page's head above is the workflow's, and a picked row opens in
-        // the inspector, never under the row.
-        <WorkflowSteps
-          workflow={workflow}
-          taskById={taskById}
-          classes={classes}
-          usage={usage}
-          view={view}
-          picked={picked}
-          onPick={pickStep}
-          filter={view === 'table' ? focus.filter : null}
-          onClearFilter={focus.onClearFilter}
-        />
+        // the inspector, never under the row. In a `.wf-card` box because the
+        // Table's column widths, sticky head and phone rows are scoped to one
+        // (styles/workflows.css); the box draws no card edge of its own.
+        <div className="wf-card wfp-rows">
+          <WorkflowSteps
+            workflow={workflow}
+            taskById={taskById}
+            classes={classes}
+            usage={usage}
+            view={view}
+            picked={picked}
+            onPick={pickStep}
+            filter={view === 'table' ? focus.filter : null}
+            onClearFilter={focus.onClearFilter}
+          />
+        </div>
       )}
     </div>
   )
@@ -6792,13 +6796,15 @@ function WorkflowHead({
   const n = workflow.steps.length
   return (
     <div className="wfp-head wfp-top">
-      <p className="wfp-line">
+      {/* `.wfp-chips` AND `.wfp-cost`, the slots the skeleton draws its
+          bars in, so the line does not move when the read lands (V103). */}
+      <p className="wfp-chips wfp-line">
         <WorkflowStateMark workflow={workflow} />
         {pr !== null && <PullRequestLink pr={pr} className="c-chip is-link" />}
         <span className="wfp-fig">
           {n} {n === 1 ? 'step' : 'steps'}
         </span>
-        <span className="wfp-fig">
+        <span className="wfp-fig wfp-cost">
           {usage.kind === 'reading' ? (
             <Spend spend={spend} reading />
           ) : spend.usd === null ? (
@@ -6888,6 +6894,9 @@ function MergeStrip({ items, workflow, onAnswer }: { items: readonly { kind: str
   )
 }
 
+/** Live stills the strip draws on arrival; more than this, and they wait to be asked for. */
+export const LIVE_STILLS_AT_ONCE = 4
+
 /**
  * THE LIVE BROWSERS UNDER THE GRID (graph-workflow-rest): every step whose
  * browser is live now, its still and its step; picking one opens that step in
@@ -6907,19 +6916,28 @@ function LiveBrowsers({
   now: number
 }) {
   const live = liveSteps(workflow, taskById)
+  const [stills, setStills] = useState<boolean | null>(null)
   if (live.length === 0) return null
+  // EACH STILL OPENS ITS OWN SOCKET AND, UNTIL ITS FIRST PICTURE, ITS OWN
+  // START-UP READ (LiveThumb's StartupBar): a handful at once is the strip
+  // the design draws; past that the reader asks for them, so a 40-step page
+  // makes no read per step on arrival (#2688, WORK-READS-SPEED).
+  const shown = stills ?? live.length <= LIVE_STILLS_AT_ONCE
   return (
     <section className="wfp-live" aria-label="Live browsers">
       <h3 className="wfp-live-h">
         Live browsers <span className="wfp-live-n">{live.length}</span>
         <span className="wfp-live-hint">pick one to watch it</span>
+        <Button size="sm" onClick={() => setStills(!shown)} aria-pressed={shown}>
+          {shown ? 'Hide the stills' : `Show ${live.length} stills`}
+        </Button>
       </h3>
       <div className="wfp-live-row">
         {live.map(({ step, taskId }) => {
           const time = chipTimeOf(stepState(step, taskById), now)
           return (
-            <div key={taskId} className={`wfp-still${picked === step.step_id ? ' is-picked' : ''}`}>
-              <LiveThumb taskId={taskId} workflowId={workflow.workflow_id} />
+            <div key={taskId} className={`wfp-still${picked === step.step_id ? ' is-picked' : ''}${shown ? '' : ' is-named'}`}>
+              {shown && <LiveThumb taskId={taskId} workflowId={workflow.workflow_id} />}
               <button type="button" className="ctl-link wfp-still-name" onClick={() => onPick(step.step_id)} aria-pressed={picked === step.step_id}>
                 {step.step_id}
               </button>
@@ -7089,7 +7107,7 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
       <span className="wfl-skel wfp-skel-sum-2" style={{ width: '14em' }} />
     </p>
     <div className="wfp is-loading" aria-busy="true">
-      <div className="wfp-head">
+      <div className="wfp-head wfp-top">
         <div className="wfp-chips" aria-hidden="true">
           {PAGE_SKELETON_CHIPS.map((w, i) => {
             const chip = (
@@ -7108,18 +7126,12 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
             )
           })}
         </div>
-        <span className="wfp-actions">
-          {/* COPY ID TOO (visual QA pass 1 overview-agents-80, #2596): the
-              loaded head draws Copy id before Copy link, and the skeleton
-              drew Copy link alone, so the head shifted when the read landed. */}
-          <Button disabled>Copy id</Button>
-          <Button disabled>Copy link</Button>
-          {/* NO CANCEL BUTTON BEFORE THE STATE IS KNOWN (live QA WF-18a,
-              2026-10-11): a disabled "Cancel workflow" was drawn on every
-              page while it read, a succeeded or a nonexistent workflow's
-              included. A bar holds its place, and says nothing. */}
-          <span className="wfl-skel wfp-skel-act" aria-hidden="true" style={{ width: '9em' }} />
-        </span>
+        {/* THE TALLY LINE'S BAR: the loaded head draws the steps by state
+            under the figures (the Graph Work redesign), and Copy id, Copy
+            link and Stop are the Overview's now, so none is reserved here. */}
+        <p className="wfp-tally" aria-hidden="true">
+          <span className="wfl-skel" style={{ width: '22em' }} />
+        </p>
       </div>
       <WfTabs id={id} query={query} view={query.tab} steps={null} onView={(v) => choose({ ...query, tab: v, stage: null, stepState: null })} />
       <div className="wfp-skel-body" aria-hidden="true">

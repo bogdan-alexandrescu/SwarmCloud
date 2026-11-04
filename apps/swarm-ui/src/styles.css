@@ -11485,6 +11485,7 @@ span.sk-ttile { cursor: default; }
 .wfp-live-hint { font-weight: 400; color: var(--text-dim); }
 .wfp-live-row { display: flex; gap: var(--ctl-s2); overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
 .wfp-still { display: flex; flex-direction: column; gap: 2px; flex: 0 0 11em; min-width: 0; padding: 4px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.wfp-still.is-named { flex-basis: auto; }
 .wfp-still.is-picked { border-color: var(--info); box-shadow: 0 0 0 1px var(--info); }
 .wfp-still-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: var(--t-meta); }
 .wfp-still-time { font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
