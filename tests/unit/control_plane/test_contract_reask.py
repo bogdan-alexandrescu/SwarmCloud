@@ -178,6 +178,24 @@ def test_a_newer_generation_supersedes_the_record_with_nothing_written(db):
     assert db.docs == before
 
 
+def test_superseded_records_never_starve_a_live_one_out_of_the_pass(db):
+    seed_pending(db)
+    live = db.docs[f"tasks/{TASK}"]
+    for n in range(cr.PASS_LIMIT + 1):
+        stale = copy.deepcopy(live)
+        stale["current_generation"] = 2
+        # Due earlier than the live record, so they sort to the front.
+        stale[cr.ACCEPTANCE_FIELD]["reask"]["next_at"] = T0 - timedelta(minutes=1)
+        db.docs[f"tasks/task_stale_{n}"] = stale
+    before = {p: copy.deepcopy(d) for p, d in db.docs.items() if "task_stale_" in p}
+    judge, clock = Judge(met("REQ-1", "REQ-2")), Clock()
+    clock.now = T0 + cr.REASK_OFFSETS[0]
+    reask(db, judge, clock).run()
+    assert len(judge.asked) == 1
+    assert acceptance(db)["status"] != cj.JUDGMENT_PENDING
+    assert {p: d for p, d in db.docs.items() if "task_stale_" in p} == before
+
+
 def test_a_generation_that_moves_while_jev_is_asked_writes_no_verdict(db):
     seed_pending(db)
 

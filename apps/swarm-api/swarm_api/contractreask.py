@@ -249,7 +249,13 @@ class ContractReask:
         return firestore.transactional(body)(self.db.transaction())
 
     def due(self) -> list[str]:
-        """The task ids whose re-ask is due now, oldest due first, at most `limit`."""
+        """The task ids whose re-ask is due now, oldest due first, at most `limit`.
+
+        A record whose generation a newer attempt has superseded is skipped
+        here, before the limit, and nothing is written for it: it keeps its
+        old `next_at`, so were it counted it would hold the front of every
+        pass and starve every live record of its re-ask and its owner hand-off.
+        `_claim` checks the generation again inside its transaction."""
         now = self.now()
         query = (self.db.collection(TASKS)
                  .where(filter=FieldFilter(f"{ACCEPTANCE_FIELD}.status", "==", STATUS_PENDING))
@@ -257,7 +263,11 @@ class ContractReask:
                                            WAITING_REASK)))
         rows = []
         for snap in query.stream():
-            acc = (snap.to_dict() or {}).get(ACCEPTANCE_FIELD) or {}
+            task = snap.to_dict() or {}
+            acc = task.get(ACCEPTANCE_FIELD) or {}
+            if task.get("current_generation") != acc.get("generation"):
+                self.report["superseded"] += 1
+                continue
             due_at = _instant((acc.get("reask") or {}).get("next_at"))
             if due_at is not None and due_at <= now:
                 rows.append((due_at, snap.id))

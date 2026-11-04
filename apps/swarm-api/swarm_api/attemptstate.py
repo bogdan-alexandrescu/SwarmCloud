@@ -1803,7 +1803,11 @@ class AttemptState:
         `published` mark (`lifecycle._emit_published`, a RUNNING event with
         `detail.cause = "published"`, written through the proven `event`
         route), or None when it published nothing. Read before the verdict's
-        transaction: an event is an append-only record of its own tuple."""
+        transaction, outside it: an event is an append-only record of its own
+        tuple, so a read here can only miss a mark posted after it. A verdict
+        on a head published between this read and the transaction is therefore
+        refused (`ContractVerdictStale`, nothing written; the worker re-posts),
+        never accepted against a head this read did not see."""
         query = self._task_ref(attempt).collection(EVENTS).where(
             filter=FieldFilter("attempt_id", "==", attempt.attempt_id))
         try:
