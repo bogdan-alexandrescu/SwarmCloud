@@ -149,26 +149,31 @@ class NeverInView {
   }
 }
 
-function viewport(width: number) {
-  vi.stubGlobal('matchMedia', (query: string) => {
-    const max = /max-width:\s*(\d+)px/.exec(query)
-    const min = /min-width:\s*(\d+)px/.exec(query)
-    return {
-      matches: (max === null || width <= Number(max[1])) && (min === null || width >= Number(min[1])) && (max !== null || min !== null),
-      media: query,
-      onchange: null,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
-      dispatchEvent: () => false,
-    }
-  })
-}
-
 function Routed({ initial }: { initial: string }) {
   const [view, setView] = useState(initial)
   return <WorkflowsScreen view={view} onView={setView} />
+}
+
+/** `WorkflowCard` directly: the canvas is off the redesigned page (brief,
+ *  "What moved where" -- "render it directly"). */
+function CardHarness({ workflow: w, taskById }: { workflow: Workflow; taskById: Map<string, Task> }) {
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  return (
+    <WorkflowCard
+      workflow={w}
+      taskById={taskById}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      reload={() => {}}
+    />
+  )
+}
+
+const realWidth = window.innerWidth
+/** The inspector starts folded below 1366px (graph-notes D·8b); these cases pick a step in it. */
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
 }
 
 beforeEach(() => {
@@ -191,6 +196,7 @@ afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  atWidth(realWidth)
 })
 
 const row = (id: string) => document.querySelector<HTMLElement>(`.wfg-table tr[data-workflow="${id}"]`)!
@@ -244,8 +250,11 @@ describe('VQ-013: the list is compact rows under one note', () => {
 describe('VQ-014: a graph that fits across is as tall as it is', () => {
   // MUTATION: drop the `fits-x` class, or its rule: the canvas box is held to
   // the screen again and is a second scroller under the page's head.
+  // THE CANVAS IS OFF THE REDESIGNED PAGE (brief, "What moved where"): the
+  // stage grid has no second scroller to bound, so this renders `WorkflowCard`
+  // directly, where the canvas still lives.
   it('lets a short chain’s canvas box grow with the page, and keeps a wide one bounded', async () => {
-    render(<Routed initial="wf=wf_chain" />)
+    render(<CardHarness workflow={chain} taskById={chainTasks} />)
     const wrap = await waitFor(() => {
       const w = document.querySelector<HTMLElement>('.wf-canvas-row > .wf-canvas-wrap')
       expect(w).toBeTruthy()
@@ -298,12 +307,26 @@ describe('VQ-015: one back path, by name, and Stop step', () => {
 
   // MUTATION: hand the card StopRun's inline `stop` again.
   it('gives the step card a Stop step button in the page head’s danger style', async () => {
+    // `Stop workflow` is in the Overview now, not the head (brief, "What
+    // moved where"); the inspector starts folded below 1366px.
+    atWidth(1440)
     render(<Routed initial="wf=wf_chain" />)
+    const dock = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('.wi-dock[aria-label="Workflow overview"]')
+      expect(d).toBeTruthy()
+      return d!
+    })
+    const cancel = within(dock).getByRole('button', { name: 'Stop workflow' })
+    // Stop workflow: the danger outline at the default size.
+    expect(cancel.classList.contains('is-danger')).toBe(true)
+    // No arrival pick any more: picking the running step's chip opens its card.
+    const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="build"]')!
+    fireEvent.click(chip)
     // Found by selector, then by role inside it: a role query over the whole
     // page walks every node's accessible name and ran past findBy's 1s.
     const group = await waitFor(
       () => {
-        const g = document.querySelector<HTMLElement>('.wf-inspect-acts[role="group"]')
+        const g = document.querySelector<HTMLElement>('.wi-dock .wf-inspect-acts[role="group"]')
         expect(g).toBeTruthy()
         return g!
       },
@@ -312,30 +335,34 @@ describe('VQ-015: one back path, by name, and Stop step', () => {
     expect(group.getAttribute('aria-label')).toBe('Stop step')
     // `Stop`, and the head's `Stop workflow`: one verb (visual QA pass 1 overview-agents-83, #2596).
     const stop = within(group).getByRole('button', { name: 'Stop' })
-    const head = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')!
-    const cancel = within(head).getByRole('button', { name: 'Stop workflow' })
-    // The head's Stop workflow: the danger outline at the default size.
-    expect(cancel.classList.contains('is-danger')).toBe(true)
     expect(stop.classList.contains('is-danger'), 'Stop step is not the danger outline').toBe(true)
     expect(stop.classList.contains('is-sm'), 'Stop step is the small button').toBe(false)
   })
 })
 
 describe('VQ-016: the Table and the Timeline arrive whole', () => {
-  // MUTATION: draw the arrival pick's card under its row again.
+  // NO ARRIVAL PICK, AND NO CARD UNDER THE ROW EITHER, ANY MORE (brief, "What
+  // moved where"): the redesign's `Board` never hands `WorkflowSteps`
+  // a `detail` to draw under a row -- every pick opens in the docked
+  // inspector (`workflow.page.split.test.tsx` already covers "never under
+  // the row" as the new, permanent form of this). This checks the view
+  // arrives whole, with nothing picked, and that picking opens the dock.
   for (const tabName of ['table', 'timeline'] as const) {
     it(`opens no card under the running step on arrival in the ${tabName}, and opens it when the row is asked for`, async () => {
-      viewport(1099)
+      atWidth(1440)
       render(<Routed initial={`wf=wf_chain&tab=${tabName}`} />)
       const pick = await waitFor(() => {
         const b = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="build"]')
-        expect(b?.getAttribute('aria-pressed')).toBe('true')
+        expect(b).toBeTruthy()
         return b!
       })
-      expect(document.querySelector('.wf-inspect'), 'the arrival pick drew its card under the row').toBeNull()
+      expect(pick.getAttribute('aria-pressed')).toBe('false')
+      expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Workflow overview')
+      expect(document.querySelector('.wi-main .wf-inspect'), 'a card was drawn under the row').toBeNull()
       fireEvent.click(pick)
-      await waitFor(() => expect(document.querySelector('.wf-inspect')).toBeTruthy())
-      expect(document.activeElement?.classList.contains('wf-inspect-close')).toBe(true)
+      await waitFor(() => expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Step build'))
+      expect(pick.getAttribute('aria-pressed')).toBe('true')
+      expect(document.querySelector('.wi-main .wf-inspect'), 'still no card under the row').toBeNull()
     })
   }
 })
@@ -349,8 +376,11 @@ describe('VQ-WORKFLOWS re-review minors', () => {
   // MUTATION: drop the slot's grid, which leaves the stop control anchored to
   // the slot's foot while the card's rows run on under it (it covered
   // scan-terraform's `↑ plan (plan.md)` at 1440).
+  // THE CANVAS IS OFF THE REDESIGNED PAGE (brief, "What moved where"): the
+  // stop control's own grid cell is the canvas node's, so this renders
+  // `WorkflowCard` directly.
   it('gives the graph card’s stop control a place in the card’s own box, below everything the card draws', async () => {
-    render(<Routed initial="wf=wf_chain" />)
+    render(<CardHarness workflow={chain} taskById={chainTasks} />)
     const node = await waitFor(() => {
       const n = document.querySelector<HTMLElement>('.wf-canvas .node[data-step="build"]')
       expect(n).toBeTruthy()
@@ -382,8 +412,10 @@ describe('VQ-WORKFLOWS re-review minors', () => {
   // `min-height`. A grid with a fixed height holds its one row, and so the
   // card, to `layoutOf`'s figure in the browser, and the stop covered
   // `(plan.md)` at 1440 in both themes (VQ-WORKFLOWS-FIX3 review).
+  // THE CANVAS IS OFF THE REDESIGNED PAGE (brief, "What moved where"), so
+  // this renders `WorkflowCard` directly, as above.
   it('lets a card taller than its slot carry the stop below its last line, not over it', async () => {
-    render(<Routed initial="wf=wf_chain" />)
+    render(<CardHarness workflow={chain} taskById={chainTasks} />)
     const node = await waitFor(() => {
       const n = document.querySelector<HTMLElement>('.wf-canvas .node[data-step="build"]')
       expect(n).toBeTruthy()
@@ -530,6 +562,9 @@ describe('VQ-WORKFLOWS re-review minors', () => {
   it('draws the workflow id once, behind its Copy id control', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    // Copy id moved to the Overview (brief, "What moved where"); the
+    // inspector starts folded below 1366px.
+    atWidth(1440)
     render(<Routed initial="wf=wf_chain" />)
     const head = await waitFor(() => {
       const h = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')
@@ -538,7 +573,12 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     })
     expect(head.querySelector('.id'), 'the head prints the id as text').toBeNull()
     expect(head.textContent).not.toContain('wf_chain')
-    const copy = within(head).getByRole('button', { name: 'Copy workflow id wf_chain' })
+    const dock = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('.wi-dock[aria-label="Workflow overview"]')
+      expect(d).toBeTruthy()
+      return d!
+    })
+    const copy = within(dock).getByRole('button', { name: 'Copy workflow id wf_chain' })
     expect(copy.textContent).toBe('Copy id')
     expect(copy.getAttribute('title')).toBe('wf_chain')
     fireEvent.click(copy)
@@ -546,6 +586,8 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     await waitFor(() => expect(copy.textContent).toBe('Id copied'))
     // The inspector's same-step row does not render it again on the page:
     // not drawn and hidden, absent.
+    const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="build"]')!
+    fireEvent.click(chip)
     const scrub = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('.wfp-screen .wf-scrub[data-scrub="workflow"]')
       expect(el).toBeTruthy()

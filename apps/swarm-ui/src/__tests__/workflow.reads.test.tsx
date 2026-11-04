@@ -15,7 +15,7 @@
  * put `loadAttempts` per step back in `loadWorkflowUsage`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 
 import STYLES from '../styles.css?raw'
 import type { WorkflowBoard } from '../api'
@@ -38,7 +38,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, WorkflowCard, stageKey } = await import('../Workflows')
 const { USE_FIXTURES } = await import('../api')
 const { ownFromBoard } = await import('./workflowsById')
 
@@ -196,7 +196,8 @@ describe('a 40-step workflow page reads its steps in one batched read', () => {
 
   it('makes no per-step events or attempts read, and a bounded number of requests in all', async () => {
     render(<WorkflowsScreen view="wf=wf_big" />)
-    await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
+    // The graph tab draws the stage grid now; the old canvas is gone from the page.
+    await waitFor(() => expect(document.querySelector('.sg')).toBeTruthy())
     // Let the page's step reads go out and settle.
     await waitFor(() => expect(fetched.length).toBeGreaterThan(0))
     await new Promise((r) => setTimeout(r, 300))
@@ -205,11 +206,18 @@ describe('a 40-step workflow page reads its steps in one batched read', () => {
     // The ONE step whose inspector is open reads its own attempts
     // (`StepInspector`); no other step does.
     expect(perStep('attempts').length, `one attempts read per step:\n${perStep('attempts').join('\n')}`).toBeLessThanOrEqual(1)
-    // Both of the page's step reads went out, batched: the waits and the usage.
+    // The page's one step read went out, batched: the usage. The waits'
+    // entered-at digest fed only the old canvas's wait clocks, which the stage
+    // grid does not draw, so the page no longer asks for it.
     const batched = fetched.filter((u) => u.includes('/v1/tasks/digests'))
-    expect(batched.some((u) => u.includes('include=entered'))).toBe(true)
+    expect(batched.some((u) => u.includes('include=entered'))).toBe(false)
     expect(batched.some((u) => u.includes('include=usage'))).toBe(true)
-    expect(batched.length).toBeLessThanOrEqual(2)
+    expect(batched.length).toBeLessThanOrEqual(1)
+    // Ten browsers are live: the strip names them and draws no still (each
+    // still is a socket and a start-up read) until the reader asks.
+    const strip = document.querySelector<HTMLElement>('section[aria-label="Live browsers"]')!
+    expect(strip.querySelectorAll('.wfp-still')).toHaveLength(10)
+    expect(strip.querySelector('canvas')).toBeNull()
     // Every request the page made names at most a handful of routes, never
     // one per step: 40 steps, and no route was asked for more than twice.
     const byRoute = new Map<string, number>()
@@ -221,8 +229,14 @@ describe('a 40-step workflow page reads its steps in one batched read', () => {
     expect(fetched.length, fetched.join('\n')).toBeLessThan(12)
   })
 
-  it('asks for every waiting step at once, and only them, for their times', async () => {
-    render(<WorkflowsScreen view="wf=wf_big" />)
+  it('asks for every waiting step at once, and only them, for their times, where the canvas draws them', async () => {
+    // The canvas (`WorkflowCard`, no longer the page's Graph) is where a
+    // waiting step's clock is drawn, so it is where the batched read is asked.
+    const r = await (await import('../api')).loadWorkflow('wf_big')
+    expect(r.status).toBe('ok')
+    if (r.status !== 'ok') return
+    const tasks = new Map(r.data.tasks.map((t) => [t.id, t] as const))
+    render(<WorkflowCard workflow={r.data.workflow} taskById={tasks} usage={{ kind: 'reading' }} openStages={{}} onToggleStage={() => {}} reload={() => {}} page />)
     await waitFor(() => expect(fetched.some((u) => u.includes('include=entered'))).toBe(true))
     const asked = fetched.find((u) => u.includes('include=entered'))!
     const ids = new URL(asked, 'http://console.test').searchParams.get('ids')!.split(',')
@@ -249,7 +263,27 @@ describe('the Graph’s step inspector sits above the stage cards', () => {
   }
 
   it('docked: the panel’s layer is above every layer the canvas draws', async () => {
-    render(<WorkflowsScreen view="wf=wf_big" />)
+    // This is a CANVAS behaviour (the `WorkflowCard`'s own panel beside its own
+    // graph): the redesigned page no longer draws the canvas at all, so the
+    // card is rendered directly, as the brief for the Graph Work redesign
+    // instructs for anything that is a property of the canvas rather than of
+    // the page's stage grid.
+    const b = board()
+    const wf = b.workflows[0]!
+    render(
+      <WorkflowCard
+        workflow={wf}
+        taskById={b.taskById}
+        usage={{ kind: 'ready', usage: null }}
+        // s0's stage (index 0) has to be expanded, or the card draws only a
+        // band summary and no node to click.
+        openStages={{ [stageKey(wf.workflow_id, 0)]: true }}
+        onToggleStage={() => {}}
+        reload={() => {}}
+        page
+      />,
+    )
+    fireEvent.click(document.querySelector('.node[data-step="s0"]')!)
     await waitFor(() => expect(document.querySelector('.wf-split.has-panel > .wf-panel .wf-inspect')).toBeTruthy())
     // The canvas's layers are read from the stylesheet's own z-index rules
     // that reach a canvas element, the highest of them: an upper bound on

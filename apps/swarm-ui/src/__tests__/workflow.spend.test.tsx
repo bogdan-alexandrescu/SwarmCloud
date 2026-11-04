@@ -159,8 +159,10 @@ describe('one workflow, one total (WF-5)', () => {
       return el!.textContent ?? ''
     })
     const head = await waitFor(() => {
-      // The head's cost chip (the meta line moved to the shell's sub-line, #503).
-      const el = document.querySelector('.wfp-head .wfp-cost')
+      // The head's spend figure (now a `.wfp-fig` holding the `Spend` component,
+      // not a `.wfp-cost` chip: the Overview redesign moved the cost chip off
+      // the head, but the same total is still on the head's own line).
+      const el = document.querySelector('.wfp-head .wf-spend')
       expect(el?.textContent ?? '').toContain('$7.00')
       return el!.textContent ?? ''
     })

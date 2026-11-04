@@ -33,7 +33,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 
 import { PARK_WORD } from '../components'
-import { levelsOf } from '../dag'
+import { expiresAtOf, expiresWords, isWaitingForMember } from '../awaitInput'
+import { SKIPPED_WORD, levelsOf } from '../dag'
 import { NamedMark, STATE_MARK, StateMark } from '../marks'
 import { ownerQuestionsHold } from '../Handoff'
 import { questionCount } from '../QuestionsCard'
@@ -50,6 +51,7 @@ import {
   type WorkflowStep,
 } from '../types'
 import { useNow } from '../useNow'
+import { skippedByVerdict } from '../wfreview'
 import './stage-grid.css'
 
 // ---------------------------------------------------------------------------
@@ -320,6 +322,8 @@ interface Chip {
   readonly time: string | null
   readonly pr: number | null
   readonly asks: number
+  /** Its verdict gate kept its agent from running (#264): SUCCEEDED, but never read as a step that ran. */
+  readonly skipped: boolean
   /** The tooltip and the accessible name: everything the chip drops when narrow. */
   readonly tip: string
 }
@@ -328,19 +332,23 @@ function chipOf(step: WorkflowStep, stage: string, taskById: ReadonlyMap<string,
   const state = stepState(step, taskById)
   const kind = chipKindOf(state)
   const task = state.kind === 'state' ? state.task : null
-  const time = chipTimeOf(state, now)
+  const skipped = task !== null && task.state === 'SUCCEEDED' && skippedByVerdict(task)
+  const time = skipped ? null : chipTimeOf(state, now)
   const pr = pullRequestOf(task)
   const asks = step.task_id ? asking.get(step.task_id) ?? 0 : 0
   const why = waitWordOf(step, state)
   const parts = [
-    `${step.step_id} (${stage}): ${stateWordOf(state, kind)}`,
+    `${step.step_id} (${stage}): ${skipped ? SKIPPED_WORD : stateWordOf(state, kind)}`,
+    skipped ? 'agent not run' : null,
     why,
+    // A step waiting for a member carries the deadline the scheduler wrote at the park (human-steps.md §4.5).
+    task !== null && isWaitingForMember(task) ? expiresWords(expiresAtOf(task), now) : null,
     step.waiting?.summary ?? null,
     time === null ? null : TERMINAL_STATES.has(task!.state) ? `ran ${time}` : `running ${time}`,
     pr === null ? null : `pull request #${pr}`,
     asks > 0 ? `asks you ${asks === 1 ? 'a question' : `${asks} questions`}` : null,
   ]
-  return { step, state, kind, time, pr, asks, tip: parts.filter((p): p is string => p !== null).join(' · ') }
+  return { step, state, kind, time, pr, asks, skipped, tip: parts.filter((p): p is string => p !== null).join(' · ') }
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +472,7 @@ const MARK_OF: Readonly<Record<ChipKind, Parameters<typeof NamedMark>[0]['mark']
 }
 
 function ChipMark({ chip }: { chip: Chip }) {
+  if (chip.skipped) return <NamedMark mark="skipped" hue="neu" word={SKIPPED_WORD} bare />
   if (chip.state.kind === 'state') return <StateMark state={chip.state.task.state} bare />
   if (chip.state.kind === 'unknown') return <NamedMark mark="warn" hue="warn" word="not known" bare />
   return <NamedMark mark={MARK_OF.waiting} hue="neu" word="not started" bare />
@@ -569,7 +578,7 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
                       else chipRefs.current.delete(chip.step.step_id)
                     }}
                     type="button"
-                    className={`sg-chip is-${chip.kind}${selected === chip.step.step_id ? ' is-selected' : ''}${bright !== null && !bright.has(chip.step.step_id) ? ' is-dimmed' : ''}`}
+                    className={`sg-chip is-${chip.kind}${chip.skipped ? ' is-skipped' : ''}${selected === chip.step.step_id ? ' is-selected' : ''}${bright !== null && !bright.has(chip.step.step_id) ? ' is-dimmed' : ''}`}
                     data-step={chip.step.step_id}
                     title={chip.tip}
                     aria-label={chip.tip}

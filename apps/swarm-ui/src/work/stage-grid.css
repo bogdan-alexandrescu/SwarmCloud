@@ -47,6 +47,8 @@ button.sg-tally:focus-visible { outline: 2px solid var(--info); outline-offset: 
 .sg-chip:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; z-index: 1; }
 .sg-chip.is-running { border-color: color-mix(in srgb, var(--info) 60%, var(--line)); background: color-mix(in srgb, var(--info) 8%, var(--surface)); }
 .sg-chip.is-done { background: color-mix(in srgb, var(--ok) 9%, var(--surface)); }
+/* Skipped by its verdict gate (#264): striped and dashed, never the solid fill of a step that ran. */
+.sg-chip.is-skipped { border-style: dashed; background: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--ok) 12%, transparent) 4px 8px); }
 .sg-chip.is-failed { border: 2px solid var(--s-bad); background: var(--s-badb, var(--surface)); padding: 3px 5px; }
 .sg-chip.is-waiting { border-style: dashed; background: transparent; color: var(--text-dim); }
 .sg-chip.is-parked { border-color: var(--s-park); }
