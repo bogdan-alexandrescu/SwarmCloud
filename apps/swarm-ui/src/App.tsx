@@ -1671,6 +1671,7 @@ export function App() {
   const hostedView: HostedAgentView | null =
     hosted && at.taskId !== null ? { taskId: at.taskId, view: split } : null
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
+  const helpAt = topicTab(at, tabDef?.label)
   // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
   // a page that is not Overview, because the spine lights the nearest section.
   const title = at.missing
@@ -1773,7 +1774,7 @@ export function App() {
               head with no age of its own; a `Screen` carries its own on its
               refresh control and claims it (#98). */}
           <FrameAge.Provider value={true}>
-          <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} topic={PAGE_TOPIC[`${at.sectionId}/${at.tab}`] ?? null} title={pageQuestionTitle(helpSection.label, at.sectionId, at.tab, tabDef?.label)} />}>
+          <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} topic={PAGE_TOPIC[`${at.sectionId}/${helpAt.tab}`] ?? null} title={pageQuestionTitle(helpSection.label, at.sectionId, helpAt.tab, helpAt.label)} />}>
           <HeadAgeProvider at={at}>
           {/* THE HEADER BAR (#1206, proposal A), over both the page and an
               open agent beside it: the trail and the frame's age (`Head`).
@@ -2297,6 +2298,26 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'admin/counts': 'platform-counts',
   'admin/platform-secrets': 'platform-secrets',
   'admin/workspaces': 'workspaces-you-admin',
+  // ONE WORKSPACE'S PAGE, by its tab (owner, 3 November 2026): People and
+  // Roles are Config › People and roles' parts and Settings and Setup are
+  // Workspace Settings', so each says the topic its Config page said.
+  'admin/workspaces/people': 'workspace-roles',
+  'admin/workspaces/roles': 'workspace-roles',
+  'admin/workspaces/settings': 'workspace-settings',
+  'admin/workspaces/setup': 'workspace-settings',
+}
+
+/** The workspace page's tab labels (WorkspacePage.tsx), for its `?` card's title. */
+const WORKSPACE_TAB_LABEL: Readonly<Record<WorkspaceTab, string>> = { people: 'People', roles: 'Roles', settings: 'Settings', setup: 'Setup' }
+
+/**
+ * The `PAGE_TOPIC` tab and label of the page at a route: a workspace's page
+ * under Admin › Workspaces is keyed by its own tab (`workspaces/roles`), so
+ * its `?` says that tab's topic rather than the list's.
+ */
+function topicTab(at: Pick<Route, 'sectionId' | 'tab' | 'view'>, tabLabel: string | undefined): { tab: string; label: string | undefined } {
+  const page = workspacePageOf(at)
+  return page === null ? { tab: at.tab, label: tabLabel } : { tab: `${at.tab}/${page.tab}`, label: WORKSPACE_TAB_LABEL[page.tab] }
 }
 
 /**
