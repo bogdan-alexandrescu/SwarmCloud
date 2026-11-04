@@ -472,8 +472,12 @@ class ContractReviewer:
             record = cj.review_record(contract, None, call_id="", backend=backend.backend,
                                       at=at, not_run_reason=backend.code)
             return Reviewed(prepared, {**record, "mode": current})
-        cap = jevusage.cap_of(judgment.trusted_block(
-            tenant_id, "code_intelligence", doc.get("code_intelligence"), self._mac))
+        code_intelligence = judgment.trusted_block(
+            tenant_id, "code_intelligence", doc.get("code_intelligence"), self._mac)
+        cap = jevusage.cap_of(code_intelligence)
+        # JC2 sends code, so it is gated on `code_intelligence.jev` (answer 9),
+        # and runs only where the worker's post-step runs it at all.
+        jc2_runs = wc.JC2_AT_END_OF_STEP and code_intelligence.get("jev") is True
         classes, why, call_id = self._ask(tenant_id, contract, backend, cap)
         if classes is None:
             record = cj.review_record(contract, None, call_id=call_id, backend=backend.name,
@@ -497,24 +501,27 @@ class ContractReviewer:
                           add_judgment=list(outcome.add_judgment))
                 return Reviewed(prepared, record)
             return self._amend(prepared, outcome, record, call_id=call_id,
-                               backend=backend.name, step_id=step_id, enforced=enforced)
+                               backend=backend.name, step_id=step_id, enforced=enforced,
+                               jc2_runs=jc2_runs)
         return Reviewed(prepared, record)
 
     def _amend(self, prepared: wc.Prepared, outcome: cj.Review, record: dict[str, Any], *,
                call_id: str, backend: str, step_id: str | None,
-               enforced: frozenset[str]) -> Reviewed:
-        """Revision 2 by the reviewer, compiled where Jev runs (`judgment` is
-        enforced for this workspace: it opted in and the call answered). A
-        strict revision 2 that still names a component no worker enforces is
-        refused, as the mechanical compile refuses revision 1: a strict
-        contract never silently degrades."""
+               enforced: frozenset[str], jc2_runs: bool) -> Reviewed:
+        """Revision 2 by the reviewer. `judgment` counts as enforced only
+        where JC2 runs at the end of the step (`jc2_runs`, the owner's pick
+        "Gate on JC2"), never merely because this review answered. A strict
+        revision 2 that names a component no worker enforces, `judgment`
+        included while JC2 does not run, is refused, as the mechanical compile
+        refuses revision 1: a strict contract never silently degrades."""
         amendment = cj.review_amendment(prepared.contract, outcome)
         if amendment is None:
             return Reviewed(prepared, record)
         revised = amendment.contract
         try:
             compiled = wc.compile_contract(revised, step_id=step_id or "",
-                                           enforced=wc.enforced_with_judgment(enforced))
+                                           enforced=wc.enforced_with_judgment(
+                                               enforced, jc2_runs=jc2_runs))
         except wc.WorkContractError as exc:
             detail = {
                 "reason": exc.code,

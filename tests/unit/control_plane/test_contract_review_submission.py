@@ -489,8 +489,10 @@ def test_the_state_sent_never_names_the_tenant_the_owner_or_the_contract(
 def test_a_strict_revision_2_no_worker_enforces_is_refused_not_degraded(
         client, context, db, routed, monkeypatch):
     """Adding `judgment` adds the `verification` component, which no worker
-    enforces today: a strict revision 2 is refused rather than carried
-    advisory (a strict contract never silently degrades)."""
+    enforces today, and the `judgment` one, which no worker enforces while
+    JC2 does not run at the end of the step (the owner's pick "Gate on JC2"):
+    a strict revision 2 is refused rather than carried advisory (a strict
+    contract never silently degrades)."""
     monkeypatch.setenv(cr.MODE_ENV, "enforce")
     _opt_in(db)
     _reviewer(context, db, Jev({0: ("judgeable", "proof_kind_mismatch", 0.9)}))
@@ -503,7 +505,8 @@ def test_a_strict_revision_2_no_worker_enforces_is_refused_not_degraded(
     assert set(detail) == {"reason", "contract_id", "revision", "digest", "unenforced", "jev"}
     assert detail["reason"] == "work_contract_not_enforceable"
     assert detail["contract_id"] == "wc-sort-widgets"
-    assert detail["revision"] == 2 and detail["unenforced"] == ["verification"]
+    assert detail["revision"] == 2
+    assert detail["unenforced"] == ["judgment", "verification"]
     # The owner's answer 1 (4 November 2026): the digest is revision two's,
     # the one the reviewer made, never revision one's.
     revision_1 = wc.decode(sent)
@@ -589,3 +592,25 @@ def test_the_blocks_bytes_are_the_frozen_functions_so_applying_request_138_re_si
         {**specsign.SETTINGS_MAC_FIELDS, cr.MAC_BLOCK: ("enabled",)}))
     assert ours == specsign.canonical_settings_block(tenant_id="eng", block=cr.MAC_BLOCK,
                                                      fields=fields)
+
+
+@pytest.mark.parametrize(("jc2", "jev", "unenforced"), [
+    (False, True, ["judgment", "verification"]),
+    (True, False, ["judgment", "verification"]),
+    (True, True, ["verification"]),
+])
+def test_judgment_is_enforced_for_revision_2_only_where_jc2_runs(
+        client, context, db, routed, monkeypatch, jc2, jev, unenforced):
+    """The owner's pick "Gate on JC2" (4 November 2026): `judgment` counts as
+    enforced only where the worker's post-step runs JC2 and the workspace's
+    signed `code_intelligence.jev` lets it send code, never merely because
+    the submission review answered."""
+    monkeypatch.setenv(cr.MODE_ENV, "enforce")
+    monkeypatch.setattr(wc, "JC2_AT_END_OF_STEP", jc2)
+    _opt_in(db, code_intelligence={"jev": jev})
+    _reviewer(context, db, Jev({0: ("judgeable", "proof_kind_mismatch", 0.9)}))
+    response = _task(client, _contract())
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["revision"] == 2 and detail["unenforced"] == unenforced
+    assert _tasks(db) == []
