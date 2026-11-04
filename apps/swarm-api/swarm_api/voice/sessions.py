@@ -77,6 +77,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import urllib.error
 import urllib.parse
@@ -123,8 +124,23 @@ END_VOICE_POOL_REFUSED = "voice_pool_refused"
 POOL_BUSY = "voice_pool_busy"
 POOL_REFUSED = "voice_pool_refused"
 POOL_REASONS = frozenset({POOL_BUSY, POOL_REFUSED})
+#: What a start is told when the Voice it pool holds no OpenAI API key. Every
+#: Voice it session is a GPT-Live session, which only a developer API key can
+#: open (OpenAI refused the ChatGPT plan's token, 403 on /v1/live/sessions, 4
+#: November 2026), so the broker refuses the lease BEFORE taking any hold and
+#: swarm-voice answers 409 `voice_pool_refused`. That code means exactly this,
+#: so the person reads where to add one, whatever older sentence swarm-voice
+#: sent, and never a 502.
+NO_API_KEY_SENTENCE = (
+    "Voice it needs an OpenAI API key in the Voice it pool: add one on Admin \u203a Accounts")
 #: A refusal sentence longer than this is cut: it is shown, not parsed.
 MAX_REFUSAL_MESSAGE = 500
+#: swarm-voice's 502 when OpenAI refused the Live session: it carries OpenAI's
+#: status and its error's code and type, never the error's message.
+OPENAI_REFUSED = "openai_refused"
+#: The pattern swarm-voice holds OpenAI's code and type to (swarm_voice.live), held
+#: again here: anything else reads as "unreadable".
+OPENAI_ERROR_TOKEN = re.compile(r"[a-z0-9_.-]{1,64}")
 
 AUDIT_STARTED = "voice_session_started"
 AUDIT_ENDED = "voice_session_ended"
@@ -221,9 +237,39 @@ def pool_refusal(status: int, raw: bytes) -> VoicePoolRefused | VoicePoolBusy | 
     if status != 409 or code not in POOL_REASONS:
         return None
     reason = code
+    if code == POOL_REFUSED:
+        return VoicePoolBusy(NO_API_KEY_SENTENCE, detail={"reason": reason})
     return VoicePoolBusy(
         message or "The Voice it pool's ChatGPT account is busy; try again shortly. "
         "Nothing was started.", detail={"reason": reason})
+
+
+def openai_refusal(raw: bytes) -> VoiceUnreachable | None:
+    """The browser's refusal for swarm-voice's 502 `openai_refused`, saying what
+    OpenAI answered: its status and its error's code and type. None for any other
+    502 body."""
+    try:
+        body = json.loads(raw.decode("utf-8")) if raw else None
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and isinstance(body.get("detail"), dict):
+        body = body["detail"]
+    if not isinstance(body, dict) or body.get("code") != OPENAI_REFUSED:
+        return None
+
+    def kept(value: Any) -> str:
+        return value if isinstance(value, str) and OPENAI_ERROR_TOKEN.fullmatch(value) else "unreadable"
+
+    status = body.get("openai_status")
+    status = status if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599 else None
+    code, kind = kept(body.get("openai_code")), kept(body.get("openai_type"))
+    said = [str(status) if status is not None else "on the sideband", code]
+    if kind not in ("unreadable", code):
+        said.append(kind)
+    return VoiceUnreachable(
+        f"OpenAI refused the Live session for the Voice it account ({', '.join(said)}); "
+        "the session was ended.",
+        detail={"reason": OPENAI_REFUSED, "openai_status": status, "openai_code": code, "openai_type": kind})
 
 
 def is_allowed(people: tuple[str, ...], email: str) -> bool:
@@ -344,6 +390,12 @@ class HttpVoiceClient:
             log.warning("swarm-voice refused the Voice it pool for session=%s (HTTP %s, %s)",
                         call.session_id, status, refusal.detail.get("reason"))
             raise refusal
+        refused = openai_refusal(raw) if status == 502 else None
+        if refused is not None:
+            log.warning("OpenAI refused the Live session for session=%s (OpenAI HTTP %s, %s, %s)",
+                        call.session_id, refused.detail["openai_status"], refused.detail["openai_code"],
+                        refused.detail["openai_type"])
+            raise refused
         if status != 201:
             log.warning("swarm-voice refused the start for session=%s (HTTP %s)", call.session_id, status)
             raise VoiceUnreachable(f"swarm-voice refused the session (HTTP {status}); it was ended.")
