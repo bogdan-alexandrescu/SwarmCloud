@@ -140,6 +140,29 @@ describe('the tabs each person is offered', () => {
   })
 })
 
+describe("the header's `?` (the owner's follow-up of 3 November 2026)", () => {
+  it("draws the shell's section help beside the title, as PageHead does", async () => {
+    api('wsadmin')
+    const { WorkspacePage } = await load()
+    const { SectionHelp } = await import('../Shell')
+    render(
+      <SectionHelp.Provider value={<span data-testid="shell-help">?</span>}>
+        <WorkspacePage tab="people" />
+      </SectionHelp.Provider>,
+    )
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Engineering' })
+    // MUTATION: drop `useContext(SectionHelp)` from the header and the page has no `?`.
+    expect(h1.parentElement!.querySelector('[data-testid="shell-help"]')).not.toBeNull()
+    // Beside the title, not inside it: the heading's name stays the workspace's.
+    expect(h1.querySelector('[data-testid="shell-help"]')).toBeNull()
+  })
+
+  it('draws no `?` outside the shell, where there is no section to ask about', async () => {
+    await open('wsadmin')
+    expect(document.querySelector('.wpg-head .ctl-q')).toBeNull()
+  })
+})
+
 describe('People: Config › People and roles, embedded', () => {
   it("draws today's roster without its heading or its tab strip", async () => {
     await open('wsadmin', 'people')

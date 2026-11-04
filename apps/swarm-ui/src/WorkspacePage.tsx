@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { useContext, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
 import { loadProfile, loadWorkspaceRoles, setWorkspaceDefaultRole, type ApiError } from './api'
 import { Breadcrumb, Button, Card, Chip, Dash, ProgressBar, Segmented, Tabs, routedClick, type TabDef } from './components'
 import { setupCount, useSetupSteps, type SetupStep } from './ConfigSetup'
@@ -6,6 +6,7 @@ import { ACCESS as GITHUB_ACCESS_ADDRESS, REPOSITORIES as REPOSITORIES_ADDRESS }
 import { CONFIG_SECRETS_ADDRESS, addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { DEFAULT_ROLES, ROLES } from './roles'
+import { SectionHelp } from './Shell'
 import { OWN_WORKSPACE_LABEL } from './Spine'
 import { timeAgo, type Profile, type WorkspaceRoleEvent, type WorkspaceRoles } from './types'
 import { WorkspacePeopleScreen } from './WorkspacePeople'
@@ -133,6 +134,7 @@ export function WorkspacePage({
     setPicked(t)
     onTab?.(t)
   }
+  const sectionHelp = useContext(SectionHelp)
   const profile = useUrRead(loadProfile, 'profile')
   const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
   const p = dataOf(profile.state)
@@ -159,7 +161,14 @@ export function WorkspacePage({
       {back !== undefined && <Breadcrumb onGo={go} crumbs={[{ key: 'all', label: back.label, href: back.href }, { key: 'this', label: name || 'This workspace', href: null }]} />}
       <div className="wpg-head">
         <div className="wpg-head-t">
-          <h1>{name || (profile.state.status === 'loading' ? 'Reading the workspace…' : 'This workspace')}</h1>
+          {/* THE `?` BY THE TITLE (owner, 3 November 2026): the shell's, as
+              `PageHead` draws it, beside the heading rather than in it, so
+              the heading's name stays the workspace's. App.tsx `PAGE_TOPIC`
+              gives each tab its own topic; outside the shell there is none. */}
+          <div className="head">
+            <h1>{name || (profile.state.status === 'loading' ? 'Reading the workspace…' : 'This workspace')}</h1>
+            {sectionHelp}
+          </div>
           <p className="wpg-chips" aria-label="About this workspace">
             {ws !== null && <Chip title="The workspace's id">{ws.tenant_id}</Chip>}
             {ws !== null && personal && <span className="wpg-dim">personal</span>}
