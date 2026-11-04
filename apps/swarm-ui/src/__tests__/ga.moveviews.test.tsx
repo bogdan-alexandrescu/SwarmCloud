@@ -162,7 +162,7 @@ describe('Config › GitHub access is S2\'s two tabs and nothing else', () => {
     expect(screen.getByRole('tab', { name: 'Connection' }).getAttribute('aria-selected')).toBe('true')
   })
 
-  it('the recovery line names Workspace setup as SECTIONS spells it, linked at its own path', async () => {
+  it("the recovery line names the selected workspace's Setup tab, linked at its own path", async () => {
     serve((_m, url) =>
       url.includes('/v1/access') && !url.includes('owners')
         ? { status: 200, body: { tenant_id: 'eng', connection: { state: 'revoked_by_user', forge_login: 'ana', failure: 'token refused', method: 'app_user', access_expires_at: null, refreshed_at: null }, orgs: [], grants: [] } }
@@ -170,11 +170,11 @@ describe('Config › GitHub access is S2\'s two tabs and nothing else', () => {
     )
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
-    const [{ AccessScreen }, App] = await Promise.all([import('../Access'), import('../App')])
+    const { AccessScreen } = await import('../Access')
     render(<AccessScreen />)
-    const config = App.SECTIONS.find((s) => s.id === 'config')!
-    const ws = config.tabs.find((t) => t.id === 'workspace')!.label
-    const link = await screen.findByRole('link', { name: `Config › ${ws} › Workspace setup` })
+    // GET /v1/tenants/me is not served here, so the workspace has no name yet
+    // (admin routes lane follow-up, part of #2688).
+    const link = await screen.findByRole('link', { name: 'Admin › Workspaces › this workspace › Setup' })
     // MUTATION: link `/setup` (the redirect) or leave the words unlinked -> fails.
     expect(link.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
     expect(visible(document.body)).not.toMatch(/Work › Setup/)

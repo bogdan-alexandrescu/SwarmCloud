@@ -18,7 +18,7 @@ import {
   useUrRead, writeFailure,
 } from './RepositoriesParts'
 import { RepoPermissions, useForgePermissions } from './PermissionCards'
-import { useRoleGate } from './Profile'
+import { useRoleGate, WorkspaceTabWords } from './Profile'
 import { PageHead } from './Shell'
 import { GraphTab, type GraphOpen } from './RepoGraph'
 import { AlwaysRun, EdgeGroups, PathLookup, Suites } from './RepoTestMap'
@@ -962,7 +962,7 @@ function SettingsTab({
  * that writes (PATCH_WHY is about the others): `inherit` is sent as itself,
  * because that is what clears the override, as `merge_policy` does. Whether
  * Jev is ever sent code is NOT here -- it is the workspace's switch, on
- * Config › Workspace Settings, and a repository cannot turn it on for itself.
+ * Admin › Workspaces › <workspace> › Settings, and a repository cannot turn it on for itself.
  */
 const CONTEXT_OPTIONS: readonly { key: RepoContext; label: string }[] = [
   { key: 'inherit', label: 'Inherit' },
@@ -1003,7 +1003,7 @@ function CodeIntelligenceCard({ repoId, served, onWrite, go }: { repoId: string;
         Steps here get the repository&rsquo;s graph context: a ranked pack and the graph tools, built from its index.
         Nothing leaves the platform. Whether Jev is ever sent code is the workspace&rsquo;s switch, on{' '}
         <UrLink to={WORKSPACE_SETTINGS} go={go}>
-          Config › Workspace Settings
+          <WorkspaceTabWords tab="Settings" />
         </UrLink>
         .
       </p>
@@ -1140,7 +1140,7 @@ function KeepVersionsControl({ repoId, served, held, onWrite }: { repoId: string
 }
 
 /**
- * Config › Workspace Settings (Settings › Workspace until CONFIG-NAV), where
+ * Admin › Workspaces › <workspace> › Settings (Config › Workspace Settings until the admin routes lane), where
  * the workspace's Code intelligence switch is: its own address, so the link's
  * href is its path rather than the old one's redirect (CONFIG-COPY).
  */
