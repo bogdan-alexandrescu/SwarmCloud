@@ -3738,6 +3738,15 @@ def create_app(
         refuse_duplicate_organisation(
             store.list(), organisation, f"{owner_tenant}:{label}", owner_tenant
         )
+        # A KEY'S LABEL IS NEVER RE-REGISTERED AS A PLAN: it would rewrite the
+        # provider and bind the owner's worker to `{base}`, whose older
+        # version still holds the key the broker alone may read.
+        existing = store.get(f"{owner_tenant}:{label}")
+        if existing is not None and existing.provider == openai_api_key.PROVIDER:
+            raise BrokerValidationError(
+                f"{existing.account_id} is an OpenAI API key; a {provider} account "
+                "needs a label of its own"
+            )
         labels = {
             "managed-by": "swarm-secrets",
             "component": "swarm-account",
@@ -4340,6 +4349,14 @@ def create_app(
         if account is None:
             raise BrokerValidationError(f"no account {account_id!r}")
         _authorize(request, authorization, account.owner_tenant)
+        if account.provider == openai_api_key.PROVIDER:
+            # Even `lend_to: []` would bind the owner's worker as a reader of
+            # `{base}` (`_sync_lending`): the key's secret stays the broker's
+            # alone, so a key account has no lending to change.
+            raise BrokerValidationError(
+                f"{account_id} is an OpenAI API key, which serves Voice it alone; it "
+                "is never lent and no worker reads its secret"
+            )
         if body.lend_to and POOL_WORKSPACE not in account.pools:
             # Reserved for Voice it: never lent, and no borrower is granted
             # read of its secret.
