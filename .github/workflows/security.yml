@@ -79,11 +79,19 @@ jobs:
         # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
         # no trivy-fs.sarif). The install goes into the job's temp dir (the
         # self-hosted runner user cannot write /usr/local/bin) and works the same
-        # on both runner kinds.
+        # on both runner kinds. Retried as application.yml's image-scan install
+        # is, because a failed download is not a finding: PR #3150's run at
+        # fdc1578c found v0.74.0, then the install exited 6 (curl's
+        # could-not-resolve-host) and the job read red with no scan behind it.
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          curl -sSfL --retry 5 --retry-all-errors -o "${RUNNER_TEMP}/trivy-install.sh" \
+            "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh"
+          for attempt in 1 2 3; do
+            if sh "${RUNNER_TEMP}/trivy-install.sh" -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"; then break; fi
+            [ "${attempt}" -lt 3 ] || exit 1
+            sleep $((10 * attempt))
+          done
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
       - name: download the trivy vulnerability DB
@@ -345,11 +353,19 @@ jobs:
         # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
         # no trivy-fs.sarif). The install goes into the job's temp dir (the
         # self-hosted runner user cannot write /usr/local/bin) and works the same
-        # on both runner kinds.
+        # on both runner kinds. Retried as application.yml's image-scan install
+        # is, because a failed download is not a finding: PR #3150's run at
+        # fdc1578c found v0.74.0, then the install exited 6 (curl's
+        # could-not-resolve-host) and the job read red with no scan behind it.
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          curl -sSfL --retry 5 --retry-all-errors -o "${RUNNER_TEMP}/trivy-install.sh" \
+            "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh"
+          for attempt in 1 2 3; do
+            if sh "${RUNNER_TEMP}/trivy-install.sh" -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"; then break; fi
+            [ "${attempt}" -lt 3 ] || exit 1
+            sleep $((10 * attempt))
+          done
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
       # --- secret scan ---------------------------------------------------------
