@@ -37,6 +37,53 @@
 # dropped, a per-tenant namespace with default-deny egress -- and handing back a
 # capability to gain Chromium's inner sandbox would be a bad trade.
 ARG BASE_IMAGE=agent-runtime-base-nocodex:latest
+
+# gstack's browser files (owner decision 3 November 2026, part of #2688; the
+# packaging spike's image build proposal, docs/design/agent-plugins-packaging.md).
+# The base ships Bun and gstack's base list; this stage builds the same pinned
+# gstack again, the same way (images/agent-runtime-base/Dockerfile, the
+# gstack-build stage, says why each step), on the Bun the base already has,
+# and stages the browser list only: the compiled `browse`, the browse/src and
+# lib files its server imports, and playwright, sharp and their dependencies
+# (gstack-browser-files.txt beside this file). It builds AT
+# /opt/swarm/plugins/gstack, in a fresh tree (the base's copy there is the base
+# list only), because the compiled `browse` embeds the path it was built at
+# (finding 7). gstack-layers check fails the build when the closure differs
+# from either checked-in list. No Chromium is added: gstack's `browse` drives
+# the one below, through GSTACK_CHROMIUM_PATH, which the runner sets.
+# The GSTACK_* ARGs equal the base's (tests/unit/scripts/test_gstack_image.py).
+FROM ${BASE_IMAGE} AS gstack-browser-build
+USER root
+ARG GSTACK_VERSION=1.92.55.0
+ARG GSTACK_SHA256=63c118f13ccf0d72d06d7bff56231dc08ce3da29ce405ed567224dd303cf5bd2
+ARG GSTACK_COMMIT=2512dd7624a474fee036326989ea0c6bb8470e69
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    --mount=type=bind,source=scripts/gstack_packaging_measure.py,target=/tmp/gstack-build/gstack_packaging_measure.py \
+    --mount=type=bind,source=images/agent-runtime-base,target=/tmp/gstack-build/base \
+    --mount=type=bind,source=images/agent-runtime-browser/gstack-browser-files.txt,target=/tmp/gstack-build/gstack-browser-files.txt \
+    scratch="$(mktemp -d)" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/gstack.tar.gz \
+      "file:///tmp/tool-mirror/github.com/garrytan/gstack/archive/refs/tags/v${GSTACK_VERSION}.tar.gz" \
+ && echo "${GSTACK_SHA256}  /tmp/gstack.tar.gz" | sha256sum -c - \
+ && test "$(gzip -dc /tmp/gstack.tar.gz | git get-tar-commit-id)" = "${GSTACK_COMMIT}" \
+ && rm -rf /opt/swarm/plugins/gstack \
+ && mkdir -p /opt/swarm/plugins/gstack "${scratch}/home" \
+ && tar -xzf /tmp/gstack.tar.gz -C /opt/swarm/plugins/gstack --strip-components=1 \
+ && test "$(cat /opt/swarm/plugins/gstack/VERSION)" = "${GSTACK_VERSION}" \
+ && cd /opt/swarm/plugins/gstack \
+ && HOME="${scratch}/home" GSTACK_STATE_ROOT="${scratch}/state" BUN_INSTALL_CACHE_DIR="${scratch}/bun-cache" \
+    GSTACK_SKIP_FONTS=1 GSTACK_SETUP_SKIP_CSO_BUILD=1 GSTACK_SECURITY_OFF=1 \
+      ./setup --host claude --no-browser \
+ && python3 /tmp/gstack-build/base/gstack-layers check \
+      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
+      --base-list /tmp/gstack-build/base/gstack-base-files.txt \
+      --browser-list /tmp/gstack-build/gstack-browser-files.txt \
+ && python3 /tmp/gstack-build/base/gstack-layers stage \
+      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
+      --base-list /tmp/gstack-build/base/gstack-base-files.txt \
+      --browser-list /tmp/gstack-build/gstack-browser-files.txt --list browser --out /out/gstack \
+ && rm -rf "${scratch}" /tmp/gstack.tar.gz
+
 FROM ${BASE_IMAGE} AS runtime
 
 # Pinned on 2026-09-15 against PyPI.
@@ -280,6 +327,12 @@ RUN --mount=type=bind,source=images/agent-runtime-browser/jev-browser,target=/tm
  && install -o root -g root -m 0555 /tmp/jev-browser-build/bin/jev-browser-mcp /opt/swarm/jev-browser/bin/jev-browser-mcp \
  && chmod -R a+rX,a-w /opt/swarm/jev-browser \
  && rm -rf "${scratch}"
+
+# gstack's browser list, over the base's (the gstack-browser-build stage above).
+# COPY writes uid 0: root-owned, out of the agent's reach.
+# SIZE (measured 3 November 2026): +123.1 MB uncompressed, +49.8 MB gzip -6,
+# on top of the base's +86.2 MB / +38.8 MB.
+COPY --from=gstack-browser-build /out/gstack/ /opt/swarm/plugins/gstack/
 
 USER swarm:swarm
 # NO `WORKDIR /workspace` HERE: the base sets it and this image inherits it.

@@ -194,6 +194,88 @@ RUN uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
 RUN uv pip check --python /opt/venv/bin/python
 
 # ---------------------------------------------------------------------------
+# gstack-build: gstack and Bun, at their pins, for the runtime to copy from
+# ---------------------------------------------------------------------------
+# THE AGENT PLUGINS' FIRST PLUGIN (owner decision 3 November 2026, part of
+# #2688): gstack is baked into the agent images at a pinned version through
+# the build mirror, chosen per step by name from the platform's closed
+# catalogue; /cso is left out of the first catalogue and no outside AI is on.
+# This is the packaging spike's image build proposal exactly
+# (docs/design/agent-plugins-packaging.md, "The image build proposal"):
+#
+#   * Bun 1.4.2 (gstack's own tested pin, GSTACK_BUN_TESTED) and gstack
+#     v1.92.55.0's source archive are read from the tool mirror at the
+#     sha256 the spike downloaded them at (tool-mirror.sha256; Bun's matches
+#     the release's SHASUMS256.txt), and the archive's commit is checked
+#     against GSTACK_COMMIT, the tag's commit, by the pax header GitHub
+#     writes into it.
+#   * gstack is unpacked AT ITS FINAL PATH, /opt/swarm/plugins/gstack: the
+#     compiled `browse` embeds the path it was built at (finding 7), and the
+#     rendered skills name ~/.claude/skills/gstack, which the runner links to
+#     this path in the attempt's HOME (finding 1).
+#   * `./setup --host claude --no-browser` runs with HOME and gstack's state
+#     root in a throwaway folder (setup registers a Stop hook and writes
+#     ~/.claude.json and ~/.gstack there, none of which ships: finding 2), and
+#     GSTACK_SKIP_FONTS=1, GSTACK_SETUP_SKIP_CSO_BUILD=1 (no /cso launcher),
+#     GSTACK_SECURITY_OFF=1 (no scanner images, no 112 MB model). Its npm
+#     packages come from `bun install --frozen-lockfile` against gstack's own
+#     bun.lock, whose integrity hashes Bun checks, fetched in this stage only.
+#   * gstack-layers check then fails the build when the closure that
+#     scripts/gstack_packaging_measure.py walks differs from the checked-in
+#     lists (gstack-base-files.txt here, gstack-browser-files.txt beside the
+#     browser image's Dockerfile), naming every file; `gstack-layers stage`
+#     copies the base list to /out/gstack, directories 0755, files 0644,
+#     helpers 0755, and never `.git` (finding 3: with it, every skill start
+#     prints a lease warning). Everything else stays in this stage.
+#
+# Bumping the pin is one PR: the ARGs here and in the browser image's
+# Dockerfile, the two rows in tool-mirror.sha256, and both lists regenerated
+# with `gstack-layers derive` (tests/unit/scripts/test_gstack_image.py).
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS gstack-build
+
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
+ && apt-get install --no-install-recommends -y ca-certificates curl git \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG GSTACK_VERSION=1.92.55.0
+ARG GSTACK_SHA256=63c118f13ccf0d72d06d7bff56231dc08ce3da29ce405ed567224dd303cf5bd2
+ARG GSTACK_COMMIT=2512dd7624a474fee036326989ea0c6bb8470e69
+ARG BUN_VERSION=1.4.2
+ARG BUN_SHA256=36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    --mount=type=bind,source=scripts/gstack_packaging_measure.py,target=/tmp/gstack-build/gstack_packaging_measure.py \
+    --mount=type=bind,source=images/agent-runtime-base,target=/tmp/gstack-build/base \
+    --mount=type=bind,source=images/agent-runtime-browser/gstack-browser-files.txt,target=/tmp/gstack-build/gstack-browser-files.txt \
+    scratch="$(mktemp -d)" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/bun.zip \
+      "file:///tmp/tool-mirror/github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/gstack.tar.gz \
+      "file:///tmp/tool-mirror/github.com/garrytan/gstack/archive/refs/tags/v${GSTACK_VERSION}.tar.gz" \
+ && echo "${BUN_SHA256}  /tmp/bun.zip" | sha256sum -c - \
+ && echo "${GSTACK_SHA256}  /tmp/gstack.tar.gz" | sha256sum -c - \
+ && python3 -m zipfile -e /tmp/bun.zip "${scratch}/bun" \
+ && install -o root -g root -m 0755 "${scratch}/bun/bun-linux-x64/bun" /usr/local/bin/bun \
+ && test "$(/usr/local/bin/bun --version)" = "${BUN_VERSION}" \
+ && test "$(gzip -dc /tmp/gstack.tar.gz | git get-tar-commit-id)" = "${GSTACK_COMMIT}" \
+ && mkdir -p /opt/swarm/plugins/gstack "${scratch}/home" \
+ && tar -xzf /tmp/gstack.tar.gz -C /opt/swarm/plugins/gstack --strip-components=1 \
+ && test "$(cat /opt/swarm/plugins/gstack/VERSION)" = "${GSTACK_VERSION}" \
+ && cd /opt/swarm/plugins/gstack \
+ && HOME="${scratch}/home" GSTACK_STATE_ROOT="${scratch}/state" BUN_INSTALL_CACHE_DIR="${scratch}/bun-cache" \
+    GSTACK_SKIP_FONTS=1 GSTACK_SETUP_SKIP_CSO_BUILD=1 GSTACK_SECURITY_OFF=1 \
+      ./setup --host claude --no-browser \
+ && python3 /tmp/gstack-build/base/gstack-layers check \
+      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
+      --base-list /tmp/gstack-build/base/gstack-base-files.txt \
+      --browser-list /tmp/gstack-build/gstack-browser-files.txt \
+ && python3 /tmp/gstack-build/base/gstack-layers stage \
+      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
+      --base-list /tmp/gstack-build/base/gstack-base-files.txt --list base --out /out/gstack \
+ && rm -rf "${scratch}" /tmp/bun.zip /tmp/gstack.tar.gz
+
+# ---------------------------------------------------------------------------
 # runtime
 # ---------------------------------------------------------------------------
 FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS runtime
@@ -1104,6 +1186,22 @@ RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev
       && rm -rf /tmp/jev-enforce-src "${JE_TGZ}" ; \
     fi \
  && chmod -R a+rX,a-w /opt/swarm/jev-gates
+
+# gstack, the first agent plugin (the gstack-build stage above says how it is
+# built and why). Bun goes in /usr/local/bin, not under the plugin, because
+# gstack's helpers and the compiled `browse` run `bun` from PATH. The plugin is
+# the base list only: the 18 catalogue skills' pages and the helpers they run,
+# no node_modules and no compiled binary. COPY writes uid 0, so both are
+# root-owned and out of the agent's reach (gstack-layers stage wrote no write
+# bit for group or other, and no `.git`). The build stage ran
+# `bun --version` against BUN_VERSION.
+# An image ENV would not reach the agent's CLI (the runner builds its
+# environment from scratch), so the runner, not this image, sets gstack's
+# environment and links the step's skills into the attempt's HOME.
+# SIZE (measured 3 November 2026): +86.2 MB uncompressed, +38.8 MB gzip -6
+# (Bun 79.5 MB / 36.7 MB; the base list 6.7 MB / 2.1 MB as tar).
+COPY --from=gstack-build /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=gstack-build /out/gstack/ /opt/swarm/plugins/gstack/
 
 # A warmed npm cache for this repository's UI (docs/design/agent-autonomy.md
 # §3.10, lane AU-8). Built from apps/swarm-ui's lockfile with `npm ci --cache
