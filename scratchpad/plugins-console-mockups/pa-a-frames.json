@@ -3,7 +3,7 @@
   "name": "pa-a-config-rest",
   "screen": "config",
   "state": "rest",
-  "caption": "Config › Plugins at rest, as an admin: the facts strip (allowed, default none, signed, last change, you can change it), the catalogue table with gstack expanded to its skills per mode, each with what it does, and the never-offered skills with why",
+  "caption": "Config › Plugins at rest, as an admin: the facts strip (allowed, default none, signed, last change, you can change it), the catalogue table with skills per mode as plain counts and the row's Allowed here switch as the one control, gstack expanded to its skills per mode, each with what it does (information, no per-skill switch), and the never-offered skills with why",
   "viewport": "1440x900",
   "code": "PA A·1",
   "dark_png": "frames/dark/pa-a-config-rest.png"
@@ -12,7 +12,7 @@
   "name": "pa-a-config-open",
   "screen": "config",
   "state": "open",
-  "caption": "The admin mid-change: qa and document-release switched off, marked not saved, and the save bar saying saving signs the setting and records who and when",
+  "caption": "The admin mid-change: gstack switched off on its row, not saved; the save bar names that one change and the three steps of roombook: checkout redesign it would refuse from the next submission (plan-checkout, review, second-look), in check_step's words, and says saving signs the setting and records who and when",
   "viewport": "1440x900",
   "code": "PA A·2",
   "dark_png": "frames/dark/pa-a-config-open.png"
@@ -30,7 +30,7 @@
   "name": "pa-a-builder-open",
   "screen": "builder",
   "state": "open",
-  "caption": "The plugin picker open on the review step: unattended chosen, qa-only added and health and plan-eng-review taken off, marked not saved yet against the 4 skills the step shows at rest, and ship refused because the workspace switched it off",
+  "caption": "The plugin picker open on the review step: unattended chosen, all 12 of the mode's skills pickable, qa-only added and health and plan-eng-review taken off (3 of 12), marked not saved yet against the 4 skills the step shows at rest; scrolled so the codex step's 'cannot load plugins' refusal shows below it",
   "viewport": "1440x900",
   "code": "PA A·4",
   "dark_png": "frames/dark/pa-a-builder-open.png"
@@ -93,7 +93,7 @@
   "name": "pa-a-config-rest-390",
   "screen": "config",
   "state": "rest",
-  "caption": "Config › Plugins on a phone, located in the Config nav: the facts strip stacks, the catalogue row folds to name, version, profiles and modes",
+  "caption": "Config › Plugins on a phone: the facts strip stacks, the catalogue row folds to name, version, profiles, plain skill counts per mode and the Allowed here switch, then the skills listed with what each does",
   "viewport": "390x844",
   "code": "PA A·11",
   "dark_png": "frames/dark/pa-a-config-rest-390.png"
@@ -102,7 +102,7 @@
   "name": "pa-a-config-rest-viewer",
   "screen": "config",
   "state": "rest",
-  "caption": "Config › Plugins as a member who is not an admin: the same catalogue and setting, read only, with who can change it",
+  "caption": "Config › Plugins as a member who is not an admin: the same catalogue and setting, read only, with who can change which plugins are allowed and that each step picks its own skills",
   "viewport": "1440x900",
   "code": "PA A·12",
   "dark_png": "frames/dark/pa-a-config-rest-viewer.png"
