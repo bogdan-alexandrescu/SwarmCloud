@@ -82,8 +82,8 @@ jobs:
         # on both runner kinds.
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          # scripts/install-trivy.sh says why not trivy's own install.sh.
+          scripts/install-trivy.sh "${RUNNER_TEMP}/bin"
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
       - name: download the trivy vulnerability DB
@@ -348,8 +348,8 @@ jobs:
         # on both runner kinds.
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          # scripts/install-trivy.sh says why not trivy's own install.sh.
+          scripts/install-trivy.sh "${RUNNER_TEMP}/bin"
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
       # --- secret scan ---------------------------------------------------------
@@ -551,8 +551,8 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          # scripts/install-trivy.sh says why not trivy's own install.sh.
+          scripts/install-trivy.sh /usr/local/bin
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
           repo="${REGION}-docker.pkg.dev/${PROJECT_ID}/swarm-images"
           status=0
