@@ -12,7 +12,14 @@ from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from swarm_common.profiles import RUNNER_PROFILES, Backend, effective_size, resolve_backend
+from swarm_common.profiles import (
+    RUNNER_PROFILES,
+    Backend,
+    ResourceSize,
+    RunnerProfile,
+    effective_size,
+    resolve_backend,
+)
 
 from .. import runnersizes
 from ..auth import AuthContext
@@ -226,6 +233,8 @@ def runtimes(
     """
     class_models = ctx.settings.worker_class_models
     setting = runnersizes.current_or_defaults(getattr(ctx, "db", None))
+    # Whether a live-browser pod carries its display (`memory_view`).
+    live_display = bool(getattr(ctx.settings, "live_relay_url", "") or "")
     # EVERY profile, including disabled ones, each carrying its own
     # `available` flag and reason. A caller reading a task that names `codex`
     # still needs its image, backend and resource class to render that task;
@@ -287,5 +296,55 @@ def runtimes(
             # client-side join against /v1/resource-classes is the shape that
             # ends up hand-copied into a client instead.
             "resources": runnersizes.class_entry(profile.resource_class, size, size_version),
+            # WHAT THE AGENT GETS, beside `resources` and not in it (#3118):
+            # `resources` is the CLASS, field-identical to /v1/resource-classes,
+            # and two profiles of one class split it differently -- one runs a
+            # live display beside its agent, the other does not.
+            **memory_view(profile, size, backend, live_display=live_display),
         }
     return {"runtimes": catalogue}
+
+
+def _whole(value: Any) -> Any:
+    """A whole float as an int, as `runnersizes.class_entry` serves memory: a
+    stored 5.0 and the code's 5 are one figure on the page."""
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
+
+def memory_view(
+    profile: RunnerProfile, size: ResourceSize, backend: Backend, *, live_display: bool
+) -> dict[str, Any]:
+    """What a step's agent gets, the display's share, and the pod's total (#3118).
+
+    A live-browser pod is two containers, the worker and the display, whose
+    memories the size's live split holds to the class's (`check_size`). The
+    class's `memory_gib` is the POD's: serving it alone told a caller 10 GiB
+    while the agent's container was OOM-killed at 5. `agent_memory_gib` is the
+    worker container's, which is what a step is sized against;
+    `display_memory_gib` is null on a pod with no display; `pod_memory_gib` is
+    the total `memory_gib` keeps serving, since admission and the units charge
+    it.
+
+    The display is rendered exactly when the scheduler's
+    `live_display_on(profile, settings)` holds: a `live_browser` profile, on
+    GKE, with LIVE_BROWSER_SIDECAR on. That switch is the scheduler's, and
+    Terraform derives it and swarm-api's SWARM_LIVE_URL from the one
+    `live_relay_enabled` (terraform/infra locals.tf), so `live_display` is
+    whether this service has a relay address. The split is the size's own,
+    the one the scheduler renders when admission pinned it; a size with no
+    split on a live pod (none is accepted for the browser class, which
+    `runnersizes` refuses without one) serves the agent's memory as unknown
+    rather than guessing the scheduler's LIVE_DISPLAY_SHARE.
+    """
+    total = _whole(size.memory_gib)
+    live = live_display and bool(profile.live_browser) and backend is Backend.GKE_AUTOPILOT
+    if not live:
+        return {"agent_memory_gib": total, "display_memory_gib": None, "pod_memory_gib": total}
+    if size.live_split is None:
+        return {"agent_memory_gib": None, "display_memory_gib": None, "pod_memory_gib": total}
+    worker, display = size.live_split
+    return {
+        "agent_memory_gib": _whole(worker.memory_gib),
+        "display_memory_gib": _whole(display.memory_gib),
+        "pod_memory_gib": total,
+    }

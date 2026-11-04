@@ -171,6 +171,8 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
       // last item since NAV-FOOT (#1672).
       Profile: '/settings/profile',
       Submit: '/submit',
+      // Home is the console's root, above Overview (part of #2688).
+      Home: '/',
       Overview: '/overview',
       Work: '/agents',
       Automate: '/automate/schedules',
@@ -202,10 +204,10 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
   ])('leaves a %s-click on every section to the browser', async (_, init) => {
     // MUTATION: drop a clause from `routedClick`, or bind onClick without it.
     const c = await at('/overview')
-    // Profile and the five sections (Config since CONFIG-NAV) the fixture person is shown (NAV-PROFILE,
+    // Profile, Home (part of #2688) and the five sections (Config since CONFIG-NAV) the fixture person is shown (NAV-PROFILE,
     // #1633): no Admin, as they administer nothing (NAV-ADMIN-ROLE).
     const sections = [...c.querySelectorAll<HTMLAnchorElement>('.sk-spine a[data-sec]')]
-    expect(sections).toHaveLength(6)
+    expect(sections).toHaveLength(7)
     for (const a of sections) {
       const e = new MouseEvent('click', { bubbles: true, cancelable: true, ...init })
       a.dispatchEvent(e)
@@ -231,7 +233,13 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
     const group = await waitFor(() => screen.getByRole('group', { name: 'Recent workflows' }))
     expect(group.querySelectorAll('button')).toHaveLength(0)
     const hrefs = [...group.querySelectorAll<HTMLAnchorElement>('a')].map((a) => a.getAttribute('href'))
-    expect(hrefs).toEqual(['/workflows/wf_a', '/workflows'])
+    // The opened workflow first and All workflows last. Between them Recent
+    // fills to five from the list read's newest (`recentWorkflows`), which
+    // lands before this line once an earlier test has warmed that read, so
+    // the fill is not counted, only drawn as links.
+    expect(hrefs[0]).toBe('/workflows/wf_a')
+    expect(hrefs[hrefs.length - 1]).toBe('/workflows')
+    for (const h of hrefs.slice(1, -1)) expect(h).toMatch(/^\/workflows\/wf_[0-9a-z_]+$/)
     const row = group.querySelector<HTMLAnchorElement>('a[href="/workflows/wf_a"]')!
     const ctrl = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true })
     row.dispatchEvent(ctrl)
@@ -415,10 +423,10 @@ describe('states.html C: the takeover replaces the content area and keeps the na
     expect(panel).toBeTruthy()
     // The page is gone; the nav is not.
     expect(c.querySelector('main.work')).toBeNull()
-    // Profile and five sections (NAV-PROFILE, #1633; Config since CONFIG-NAV): with no read landed,
+    // Profile, Home (part of #2688) and five sections (NAV-PROFILE, #1633; Config since CONFIG-NAV): with no read landed,
     // nobody is known to administer anything, so there is no Admin
     // (NAV-ADMIN-ROLE), never a locked one.
-    expect(c.querySelectorAll('.sk-spine a[data-sec]')).toHaveLength(6)
+    expect(c.querySelectorAll('.sk-spine a[data-sec]')).toHaveLength(7)
     expect(c.querySelector('.sk-panel')).not.toBeNull()
     // The meter claims nothing during a whole-app state.
     expect(c.querySelector('.sk-meter b')?.textContent).toBe('not read')

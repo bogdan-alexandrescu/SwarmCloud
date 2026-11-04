@@ -19,7 +19,8 @@ against:
      "served_ms": {"bounds_ms": MS_BOUNDS, "counts": [len(MS_BOUNDS) + 1]},
      "answer_latency": {"window_hours": 24, "bounds_ms": LATENCY_BOUNDS_MS,
                         "count", "p50_ms", "p95_ms", "p99_ms", "max_ms",
-                        "by_outcome": {<LATENCY_OUTCOMES>: {"count", "p50_ms", ...}},
+                        "counts": [len(LATENCY_BOUNDS_MS) + 1],
+                        "by_outcome": {<LATENCY_OUTCOMES>: {"count", "p50_ms", ..., "counts"}},
                         "by_temperature": {"warm"|"cold": {...}},
                         "cells": {"<outcome>/<temperature>": {...}, only those seen}},
      "answers_hot": n,
@@ -50,7 +51,10 @@ THE FIGURES, and why each is what it is:
     (`cold` when the request read the manifest or a shard from storage,
     `warm` when it was answered from memory). The percentiles are read off a
     histogram whose bounds step about 25%, each capped at the slowest answer
-    seen, and are null with a count of 0, never a 0 ms that was not measured;
+    seen, and are null with a count of 0, never a 0 ms that was not measured.
+    Every group also serves its histogram's `counts` over `bounds_ms`, so
+    swarm-api merges the replicas' percentiles exactly (the owner's pick,
+    3 November 2026; graph_cache.py `merge_summaries`);
   * `answers_hot` counts this tenant's result-cache entries for the ticket's
     current digest;
   * `shards_hot` and `shards` are over the blobs of the ticket's CURRENT
@@ -142,7 +146,9 @@ def _bucket_of(ms: int, bounds: tuple[int, ...] = MS_BOUNDS) -> int:
 
 
 def _percentiles(counts: list[int], slowest: int) -> dict[str, Any]:
-    """`count`, `max_ms` and each PERCENTILES' bound over one latency histogram."""
+    """`count`, `max_ms`, each PERCENTILES' bound over one latency histogram,
+    and the histogram's `counts` (len(LATENCY_BOUNDS_MS) + 1), so swarm-api
+    can merge replicas exactly rather than take the slowest one's figure."""
     total = sum(counts)
     out: dict[str, Any] = {"count": total}
     for name, q in PERCENTILES:
@@ -158,6 +164,7 @@ def _percentiles(counts: list[int], slowest: int) -> dict[str, Any]:
                 out[name] = min(bound, slowest)
                 break
     out["max_ms"] = slowest if total else None
+    out["counts"] = list(counts)
     return out
 
 
