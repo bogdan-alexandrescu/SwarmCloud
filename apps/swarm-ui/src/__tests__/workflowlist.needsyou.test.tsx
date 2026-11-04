@@ -168,6 +168,44 @@ describe("a row's Needs mark and the bar classify a step alike", () => {
   })
 })
 
+// THE THIRD REVIEW OF PR #3147: a derived-state workflow whose step's task
+// summary had no needs gave the bar unknownKinds [question, merge, handoff]
+// but the row {failed 0, questions 0, held 0}, and a PARKED HUMAN_REQUIRED
+// step without a block counted '1 held' though it may be a question wait.
+// MUTATION: count a block-less step's kinds as 0 in `needsOf`, list its park
+// as a hand-off, or let the bar skip a step whose task is not in the read.
+describe('a step without its needs block reads not known in the row as in the bar', () => {
+  const derived = (w: Workflow) => Object.assign(w, { state_source: 'derived', rollup: { state: 'PARKED', complete: true } })
+  const w = derived(workflow([{ id: 'old', summary: { state: 'PARKED' }, waiting: parkedHuman }]))
+  const tasks = summaryTaskById([w])
+
+  it('gives the row the kinds the bar cannot count as null, never 0', () => {
+    const items = listNeedItems([w], tasks, () => 'Old')
+    expect(items.unknownKinds).toEqual(['question', 'merge', 'handoff'])
+    expect(items.map((i) => i.kind)).toEqual([])
+    expect(needsOf(w, tasks)).toEqual({ failed: 0, questions: null, held: null })
+  })
+
+  it('still counts a failed step beside a block-less one, in the row and the bar alike', () => {
+    const mixed = derived(
+      workflow([
+        { id: 'old', summary: { state: 'PARKED' }, waiting: parkedHuman },
+        { id: 'build', summary: block('FAILED', {}) },
+      ]),
+    )
+    const t = summaryTaskById([mixed])
+    expect(listNeedItems([mixed], t, () => 'Mixed').map((i) => i.kind)).toEqual(['failed'])
+    expect(needsOf(mixed, t)).toEqual({ failed: 1, questions: null, held: null })
+  })
+
+  it('reads every kind not known in the bar when a step has no task in the read, as the row does', () => {
+    const lost = derived(workflow([{ id: 'lost', summary: null }, { id: 'build', summary: block('FAILED', {}) }]))
+    const t = summaryTaskById([lost])
+    expect(listNeedItems([lost], t, () => 'Lost').unknownKinds).toEqual(['failed', 'question', 'merge', 'handoff'])
+    expect(needsOf(lost, t)).toBeNull()
+  })
+})
+
 describe('the Workflows list mounts the bar', () => {
   it('draws Needs you above the filters, with approvals not known', async () => {
     render(<WorkflowsScreen view="" onView={() => {}} />)

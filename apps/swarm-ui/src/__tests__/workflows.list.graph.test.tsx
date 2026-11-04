@@ -35,9 +35,13 @@ const wl = await import('../workflowlist')
 const T0 = Date.parse('2026-11-03T12:00:00.000Z')
 const iso = (s: number) => new Date(T0 + s * 1000).toISOString()
 
+// A step with a task carries the needs block the list serves
+// (`codec.step_needs`, PR #3147); `blockless` is one an API older than it served.
 function step(step_id: string, task_id: string | null, over: Partial<WorkflowStep> = {}): WorkflowStep {
-  return { step_id, runner_profile: 'claude-code', resource_class: 'standard', depends_on: [], input_from: {}, task_id, ...over }
+  const block = task_id === null ? {} : { task_summary: { needs: {} } }
+  return { step_id, runner_profile: 'claude-code', resource_class: 'standard', depends_on: [], input_from: {}, task_id, ...block, ...over }
 }
+const blockless = (step_id: string, task_id: string): WorkflowStep => step(step_id, task_id, { task_summary: { state: 'PARKED' } } as Partial<WorkflowStep>)
 
 function task(id: string, state: TaskState, over: Partial<Task> = {}): Task {
   return {
@@ -167,7 +171,34 @@ describe('what needs you, per workflow', () => {
 
   it('is not known, never zero, without the steps read', () => {
     expect(wl.needsOf(running, null)).toBeNull()
-    expect(wl.needsOf(unknown, tasks)).toBeNull()
+  })
+
+  // THE ROW AND THE BAR CLASSIFY ALIKE (third review of PR #3147): a step
+  // served without its needs block counted 0 questions and 0 held, and a
+  // PARKED HUMAN_REQUIRED one '1 held', while the bar read "not known".
+  // MUTATION: count a block-less step's kinds as 0, or list its park as a hand-off.
+  it('reads questions and held not known, never 0, for a step served without its needs block', () => {
+    const old = workflow('wf_old', 'PARKED', [blockless('merge', 't_merge'), step('fix', 't_fix')])
+    expect(wl.needsOf(old, tasks)).toEqual({ failed: 1, questions: null, held: null })
+    const only = workflow('wf_old', 'PARKED', [blockless('merge', 't_merge')])
+    expect(wl.needsOf(only, tasks)).toEqual({ failed: 0, questions: null, held: null })
+  })
+
+  // A workflow whose state could not be derived still has its steps read:
+  // the bar counted its failed step while the row said "not known".
+  // MUTATION: put back `derivedStateOf(w) === null` in `needsOf`.
+  it('counts a failed step of a workflow whose state could not be derived, as the bar does', () => {
+    const underived = workflow('wf_underived', null, [step('scan', 't_scan'), step('fix', 't_fix')])
+    expect(wl.derivedStateOf(underived)).toBeNull()
+    expect(wl.needsOf(underived, tasks)).toEqual({ failed: 1, questions: 0, held: 0 })
+    expect(wl.needsOf(unknown, tasks)).toEqual({ failed: 0, questions: 0, held: 0 })
+  })
+
+  // MUTATION: rank a row whose needs are not known as 0.
+  it('ranks a row whose needs are not known after a row with some and before one with none', () => {
+    const old = workflow('wf_old', 'PARKED', [blockless('merge', 't_merge')], { created_at: iso(-5000) })
+    const order = wl.sortWorkflows([done, running, old, failed], 'state', tasks).map((w) => w.workflow_id)
+    expect(order).toEqual(['wf_fail', 'wf_old', 'wf_run', 'wf_done'])
   })
 
   it('orders "Needs you first" by what waits on the person, then by state', () => {
@@ -206,8 +237,29 @@ describe('the list', () => {
     expect(fail.querySelector('[data-need="failed"]')?.textContent).toContain('1')
     // Nothing waits on the person: a dash, not a zero.
     expect(document.querySelector('tr[data-workflow="wf_done"] [data-col="needs"]')?.textContent).toBe('—')
-    // Unknown: said so.
-    expect(document.querySelector('tr[data-workflow="wf_unknown"] [data-col="needs"]')?.textContent).toBe('not known')
+    // A workflow whose state was not derived, with no step that ran: nothing waits.
+    expect(document.querySelector('tr[data-workflow="wf_unknown"] [data-col="needs"]')?.textContent).toBe('—')
+  })
+
+  // MUTATION: draw a block-less step's row as '—', or drop the "+" after a counted mark.
+  it("draws a block-less step's kinds not known in its row, as the bar does", async () => {
+    const old = workflow('wf_old', 'PARKED', [blockless('merge', 't_merge')])
+    const mixed = workflow('wf_mixed', 'FAILED', [blockless('merge', 't_merge'), step('fix', 't_fix')])
+    api.loadWorkflowBoard.mockResolvedValue({
+      status: 'ok',
+      data: { workflows: [old, mixed], taskById: tasks, statesDetail: null },
+      fetchedAt: T0,
+    } satisfies Result<WorkflowBoard>)
+    render(<WorkflowsScreen view="" />)
+    await waitFor(() => expect(document.querySelectorAll('.wfg-table tbody tr').length).toBe(2))
+    const cell = (id: string) => document.querySelector<HTMLElement>(`tr[data-workflow="${id}"] [data-col="needs"]`)!
+    expect(cell('wf_old').querySelector('[data-need="held"]')).toBeNull()
+    expect(cell('wf_old').textContent).toBe('not known: questions and holds')
+    expect(cell('wf_mixed').querySelector('[data-need="failed"]')?.textContent).toContain('1')
+    expect(cell('wf_mixed').querySelector('[data-need="unknown"]')?.textContent).toBe('+ questions and holds not known')
+    const bar = document.querySelector<HTMLElement>('.wfg section[aria-label="Needs you"]')!
+    const chip = (word: string) => [...bar.querySelectorAll('.ny-chip')].find((c) => c.querySelector('.ny-word')?.textContent === word)!
+    for (const word of ['Question', 'Merge waiting', 'Your turn in a browser']) expect(chip(word).textContent).toContain('not known')
   })
 
   it('opens the summary in the inspector on a row, folds Owner and Changed into it, and makes no read of its own', async () => {
@@ -394,15 +446,16 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
   // columns are the same across the band and the pane only shrinks), and the
   // pane one pixel under each threshold is where the next column must have
   // gone; the cascade costs seconds a width, so these are the widths read.
-  // [pane, hidden folded, hidden open]
+  // [pane, hidden folded, hidden open]: the same, since a column gives way
+  // by the pane's width alone, never by a pick being open (third review).
   const O = 'owner'
   const C = 'changed'
   const S = 'spent'
   const LADDER: readonly [number, string[], string[]][] = [
-    [1024, [], [O, C]],
-    [861, [], [O, C]],
-    [860, [O], [O, C]],
-    [721, [O], [O, C]],
+    [1024, [], []],
+    [861, [], []],
+    [860, [O], [O]],
+    [721, [O], [O]],
     [720, [O, C], [O, C]],
     [613, [O, C], [O, C]],
     [612, [O, C], [O, C]],
@@ -448,6 +501,22 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
     expect(painted(note, 'position', env)).toBe('absolute')
     expect(painted(note, 'width', env)).toBe('1px')
     expect(painted(td, 'position', env)).toBe('relative')
+  })
+
+  // THE THIRD REVIEW OF PR #3147: with a workflow picked and the inspector
+  // folded to its rail, the pane is 1005px at 1440, yet `.wfg.has-inspector`
+  // hid every row's coverage note and dropped Owner and Changed, so a partial
+  // figure showed without its caveat. MUTATION: key a rule on `.has-inspector`.
+  it('draws Owner, Changed and the note under the figure with a workflow picked and the inspector folded', () => {
+    const root = row(true)
+    const env: CascadeEnv = { width: 1440, container: 1005 }
+    for (const col of ['owner', 'changed', 'spent']) {
+      expect(painted(root.querySelector(`td[data-col="${col}"]`)!, 'display', env), col).not.toBe('none')
+    }
+    const note = root.querySelector('.wf-spend-cov')!
+    expect(painted(note, 'display', env)).toBe('block')
+    expect(painted(note, 'position', env)).not.toBe('absolute')
+    expect(painted(note, 'width', env)).not.toBe('1px')
   })
 
   it('wraps the note under the value, never setting the column, while the inspector is folded', () => {
