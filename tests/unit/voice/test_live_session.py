@@ -353,7 +353,7 @@ def test_a_busy_or_empty_pool_is_a_spoken_409_and_nothing_starts():
         busy = await h.post("/internal/sessions", _start_body(voice_id="vs_second0002"))
         assert busy.status_code == 409
         assert busy.json() == {"code": "voice_pool_busy", "message":
-                               "Voice it's ChatGPT plan is in use by another session; try again when it ends."}
+                               "Voice it's OpenAI API key is in use by another session; try again when it ends."}
         assert len(h.openai.creates) == 1 and h.sessions.get("vs_second0002") is None
         # Once the first ends, its account is free again.
         assert (await h.post(f"/internal/sessions/{first['voice_session_id']}/end")).status_code == 200
@@ -362,9 +362,21 @@ def test_a_busy_or_empty_pool_is_a_spoken_409_and_nothing_starts():
         h.broker.registered = False
         empty = await h.post("/internal/sessions", _start_body(voice_id="vs_third00003"))
         assert empty.status_code == 409 and empty.json()["code"] == "voice_pool_refused"
+        assert "OpenAI API key" in empty.json()["message"]
         assert len(h.openai.creates) == 1
 
     run(scenario)
+
+
+def test_every_pool_refusal_names_voice_its_openai_api_key_never_a_chatgpt_plan():
+    """A Live session runs on an OpenAI developer API key alone (OpenAI
+    refused the ChatGPT plan on 4 November 2026), so no sentence swarm-voice
+    speaks may send the person to look for a plan."""
+    from swarm_voice.main import POOL_REFUSALS, POOL_REFUSED_DEFAULT
+
+    for _, _, message in (*POOL_REFUSALS.values(), POOL_REFUSED_DEFAULT):
+        assert "ChatGPT" not in message
+        assert "OpenAI API key" in message and message.endswith(".")
 
 
 def test_an_end_closes_the_session_and_releases_the_lease():

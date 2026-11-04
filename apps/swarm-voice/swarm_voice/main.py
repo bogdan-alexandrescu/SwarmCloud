@@ -119,14 +119,16 @@ def session_grant(body: StartRequest) -> SessionGrant | None:
 
 #: What swarm-api is told when the Voice it pool leases no account: (status, code,
 #: one sentence the voice or the page can say). Nothing starts on any of them.
+#: A Live session runs on an OpenAI developer API key alone (OpenAI refused the
+#: ChatGPT plan, 4 November 2026), so each sentence names the key, never a plan.
 POOL_REFUSALS: dict[str, tuple[int, str, str]] = {
     NOT_IN_POOL: (403, "voice_pool_refused",
-                  "Voice it's ChatGPT plan isn't available to you, so this conversation can't start."),
+                  "Voice it's OpenAI API key isn't available to you, so this conversation can't start."),
     NONE_AVAILABLE: (409, "voice_pool_busy",
-                     "Voice it's ChatGPT plan is in use by another session; try again when it ends."),
+                     "Voice it's OpenAI API key is in use by another session; try again when it ends."),
 }
 POOL_REFUSED_DEFAULT = (409, "voice_pool_refused",
-                        "Voice it has no ChatGPT plan account set up yet, so this conversation can't start.")
+                        "Voice it has no OpenAI API key in its pool yet, so this conversation can't start.")
 
 
 def openai_refusal(exc: LiveRefused) -> JSONResponse:
