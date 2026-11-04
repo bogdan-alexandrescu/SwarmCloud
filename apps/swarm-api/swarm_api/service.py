@@ -53,7 +53,7 @@ from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backe
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from . import budget as budget_mod
-from . import gitidentity, publishtopr, runnersizes, workcontract
+from . import gitidentity, plugins as plugins_mod, publishtopr, runnersizes, workcontract
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import CI_FIX_METADATA_FIELD, stamp as stamp_ci_fix
@@ -722,6 +722,15 @@ class SubmissionService:
                         **({"step_id": step_id} if step_id else {})},
             ) from exc
 
+    def _workspace_settings(self, tenant_id: str) -> dict[str, Any]:
+        """`workspace_settings/{tenant_id}` as stored, or {} (and with no
+        database, which allows no plugin)."""
+        db = getattr(self._store, "db", None)
+        if db is None:
+            return {}
+        snap = db.collection(plugins_mod.COLLECTION).document(tenant_id).get()
+        return (snap.to_dict() or {}) if snap.exists else {}
+
     def _build_task(
         self,
         *,
@@ -763,6 +772,18 @@ class SubmissionService:
                 update["budget"] = StepBudget(**update["budget"])
             spec = spec.model_copy(update=update)
         profile = validate_runner_profile(spec.runner_profile)
+        # The step's plugins (docs/design/agent-plugins.md), from its work
+        # contract's capabilities section: catalogue names its runner profile
+        # can load, in a mode that runs today, and only those the workspace
+        # allowed under a signed settings block. The contract's digest rides
+        # in the signed dispatch block, which signs them with the step.
+        if contract is not None and contract.contract.plugins:
+            plugins_mod.check_step(
+                contract.contract.plugins, tenant_id=tenant.tenant_id,
+                runner_profile=profile.name,
+                settings_doc=self._workspace_settings(tenant.tenant_id),
+                mac=settings_mac(self._settings), step_id=step_id,
+            )
         # An `await-input` step only inside a workflow (docs/design/
         # human-steps.md §4.1): as a task, a batch entry or a child it has no
         # step to answer and no dependant to hand the answer to.
