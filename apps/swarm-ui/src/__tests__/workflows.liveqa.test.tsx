@@ -13,7 +13,10 @@
  *   WF-6       the attempt stepper and the table count one thing, or say
  *              which each counts;
  *   WF-7/17    another workflow or another tab is a new history entry;
- *   WF-8       the phone draws a card per row, not the desktop table.
+ *   WF-8       the phone draws a card per row, not the desktop table; since
+ *              the picked Work redesign (frame graph-workflow-rest-390), one
+ *              short row of state, name, steps and needs, the rest in the
+ *              row's summary.
  *
  * WF-5 (the merge card's CI clock) is held in merge.card.test.tsx.
  */
@@ -191,7 +194,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const rowIds = () => [...document.querySelectorAll<HTMLElement>('.wfl-table tbody tr')].map((r) => r.dataset.workflow ?? '')
+const rowIds = () => [...document.querySelectorAll<HTMLElement>('.wfg-table tbody tr')].map((r) => r.dataset.workflow ?? '')
 
 // ---------------------------------------------------------------------------
 // WF-1 (S1)
@@ -244,7 +247,7 @@ describe('WF-2: the list pages past its newest 100 and says what its counts are 
     render(<WorkflowsScreen view="sort=oldest" />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_old', 'wf_fresh']))
     // Before: the counts say they are of the newest read, not of everything.
-    expect(document.querySelector('.wfl')!.textContent).toMatch(/Counts and order are of the 2 newest workflows/)
+    expect(document.querySelector('.wfg')!.textContent).toMatch(/Counts and order are of the 2 newest workflows/)
     fireEvent.click(screen.getByRole('button', { name: 'Load 100 older' }))
     await waitFor(() => expect(rowIds()).toEqual(['wf_older_b', 'wf_older_a', 'wf_old', 'wf_fresh']))
     expect(api.loadOlderWorkflows).toHaveBeenCalledWith(cursor)
@@ -252,8 +255,8 @@ describe('WF-2: the list pages past its newest 100 and says what its counts are 
     // nothing is older, so the list stops offering more and stops qualifying.
     expect(screen.queryByRole('button', { name: 'Load 100 older' })).toBeNull()
     expect(document.querySelector('.wfl-foot')!.textContent).toMatch(/4 of 4 read .* no older workflows/)
-    expect(document.querySelector('.wfl')!.textContent).not.toMatch(/Counts and order are of/)
-    const failed = within(document.querySelector<HTMLElement>('.wfl-seg')!).getByText('Failed').closest('button, a')!
+    expect(document.querySelector('.wfg')!.textContent).not.toMatch(/Counts and order are of/)
+    const failed = within(document.querySelector<HTMLElement>('.wfg-seg')!).getByText('Failed').closest('button, a')!
     expect(failed.textContent).toMatch(/2/)
   })
 
@@ -417,19 +420,25 @@ describe('WF-8: the phone draws a card per workflow, not the desktop table', () 
   const SHEET = `${WF_CSS}\n${STYLES}`
   const at = (el: Element, prop: string, width: number) => cascade(SHEET, el, prop, { width, theme: 'dark' }).winner?.value ?? null
 
-  it('lays each row out as a card at 400 and as a table row at 1440', async () => {
+  // The card was replaced by the picked Work redesign's phone row (frame
+  // graph-workflow-rest-390): state, name, steps and needs on one short row,
+  // no sideways scroller, and the rest in the row's summary in the inspector.
+  it('draws the phone row as state, name, steps and needs at 400, and every column at 1440', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toHaveLength(2))
-    const tr = document.querySelector('tbody tr.wfl-row')!
-    expect(at(tr, 'display', 400)).toBe('grid')
-    expect(at(tr, 'display', 1440)).not.toBe('grid')
-    // The held State column is let go, so it no longer takes 40% of the width.
-    const state = tr.querySelector('td[data-col="state"]')!
-    expect(at(state, 'position', 400)).toBe('static')
-    // The figures the scroller hid are on the card.
-    for (const col of ['done', 'cost', 'owner', 'submitted', 'duration']) {
-      expect(at(tr.querySelector(`td[data-col="${col}"]`)!, 'display', 400), col).toBe('block')
+    const tr = document.querySelector('tbody tr.wfg-row')!
+    for (const col of ['state', 'workflow', 'steps', 'needs']) {
+      expect(at(tr.querySelector(`td[data-col="${col}"]`)!, 'display', 400), col).not.toBe('none')
     }
-    expect(at(document.querySelector('.wfl-table thead')!, 'display', 400)).toBe('none')
+    // MUTATION: drop the phone rule and Spent, Owner and Changed push the row past 400.
+    for (const col of ['spent', 'owner', 'changed']) {
+      expect(at(tr.querySelector(`td[data-col="${col}"]`)!, 'display', 400), col).toBe('none')
+      expect(at(tr.querySelector(`td[data-col="${col}"]`)!, 'display', 1440), col).not.toBe('none')
+    }
+    // The head is not drawn at 400 but stays read.
+    const thead = document.querySelector('.wfg-table thead')!
+    expect(at(thead, 'display', 400)).not.toBe('none')
+    expect(at(thead, 'clip-path', 400)).toBe('inset(50%)')
+    expect(at(thead, 'clip-path', 1440)).toBeNull()
   })
 })

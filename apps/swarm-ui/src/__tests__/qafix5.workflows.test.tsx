@@ -372,11 +372,12 @@ describe('D2: a workflow cost still being read reads "reading", never "not repor
     expect(cost.textContent).not.toMatch(/not reported/)
   })
 
-  it('the list’s Cost cell waits on no attempt read: its steps’ totals come with the list (console load speed, 2026-11-01)', async () => {
+  // Cost is the Spent column since the redesign (frame graph-workflows-rest).
+  it('the list’s Spent cell waits on no attempt read: its steps’ totals come with the list (console load speed, 2026-11-01)', async () => {
     api.loadWorkflowUsage.mockReturnValue(new Promise(() => {}))
     render(<WorkflowsScreen view="" onView={() => {}} />)
     const cell = await waitFor(() => {
-      const td = document.querySelector<HTMLElement>('.wfl-table tr[data-workflow="wf_fan"] td[data-col="cost"]')
+      const td = document.querySelector<HTMLElement>('.wfg-table tr[data-workflow="wf_fan"] td[data-col="spent"]')
       expect(td).toBeTruthy()
       return td!
     })

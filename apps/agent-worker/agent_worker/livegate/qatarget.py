@@ -67,11 +67,16 @@ by `QaTarget.judge`:
   `idp_token_path` with its `extra_origin` has exactly `POST
   <extra_origin><idp_token_path>` continued, compared as the whole URL
   (`idp_token_url`: no query, no fragment, no other port, case or encoding),
-  from the moment the gate's own sign-in begins until it ends (`in_flight`:
-  its steps, then the agent's tab sent to `base_url` and the agent released,
-  before `finished`), and while that sign-in has completed (`signed_in`),
-  never wiped: never before the sign-in begins, never after one that failed
-  or met a challenge, never on a target that does not sign in. An app that
+  from the moment the gate's own sign-in begins (`sign_in_begun`) until the
+  wipe, WHATEVER THAT SIGN-IN'S VERDICT: never before it begins, never after
+  the wipe, never on a target that does not sign in. The verdict is the
+  gate's reading of `signed_in_selector` on its own tab, not the provider's:
+  on 2026-11-03 (capture steps from 17:43) five production legs' sign-ins
+  ended `failed` while the provider's session was real, and every screen's
+  exchange, 69 to 79 a group, was refused as a write, so the approval was
+  undone by a selector. Refusing it after a `failed` or `challenge` verdict
+  protects nothing: the endpoint mints a token only for a code or session
+  the browser already holds (part of #2688). An app that
   refreshes its SSO token after sign-in (Keycloak's
   `/protocol/openid-connect/token`) would otherwise render signed out, and
   one that exchanges it as its page loads (a production chooser checking its
@@ -179,6 +184,8 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import quote, quote_plus, urlsplit
+
+from .. import buildinfo
 
 log = logging.getLogger(__name__)
 
@@ -334,6 +341,15 @@ def _path_of(url: str) -> str:
         return "/"
 
 
+def _has_query(url: str) -> bool:
+    """A `?` after the path, an empty query included."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return bool(parts.query) or url.split("#", 1)[0].endswith("?")
+
+
 def left_page(origin: str) -> str:
     """§3: what a top frame shows instead of a page off the QA target."""
     shown = html.escape(origin)
@@ -449,6 +465,9 @@ class QaTarget:
         #: and has not ended (`finished`, `wipe`). Longer than `signing_in`,
         #: which the proxy clears before it hands the agent back.
         self.in_flight = False
+        #: QA-IDP-POST: the gate's own sign-in has begun at least once. Never
+        #: cleared: the token exception holds from here until the wipe.
+        self.sign_in_begun = False
         self.wiped = False
         self._next_navigation = 0.0
         self._next_request = 0.0
@@ -473,6 +492,7 @@ class QaTarget:
         self._signing_in = value
         if value:
             self.in_flight = True
+            self.sign_in_begun = True
 
     @property
     def held(self) -> bool:
@@ -793,13 +813,16 @@ class QaTarget:
 
     def note_refusal(self, code: str, method: Any, url: Any) -> None:
         """Keep one request the guard answered itself (module docstring): its
-        origin and path alone, the path scrubbed of the held secrets."""
+        origin and path alone, the path scrubbed of the held secrets, and
+        whether it carried a query (`query`), never the query itself: a
+        refused `<token URL>?...` is another URL, and reads apart from it."""
         origin = origin_of(url) or "unknown"
         path = _path_of(str(url)) if isinstance(url, str) else "/"
         self._refused += 1
         self._refusals.append({
             "n": self._refused, "at": float(self._wall()), "method": str(method or "GET").upper()[:16],
             "origin": origin, "path": self._replace(path, [0])[:512], "code": code,
+            "query": isinstance(url, str) and _has_query(url),
         })
 
     def note_allowed(self, code: str, method: Any, url: Any) -> None:
@@ -817,6 +840,9 @@ class QaTarget:
         """What `REFUSALS_PATH` answers: the kept refusals, oldest first, and
         apart from them the token refreshes let through (`allowed`)."""
         return {"format": REFUSALS_FORMAT, "armed": self.armed, "refusals": [dict(r) for r in self._refusals],
+                # Which gate made them (agent_worker.buildinfo): the capture
+                # manifest's `worker`.
+                "build": buildinfo.describe(),
                 "dropped": self._refused - len(self._refusals),
                 "allowed": [dict(r) for r in self._allowed],
                 "allowed_dropped": self._allowed_count - len(self._allowed)}
@@ -855,11 +881,11 @@ class QaTarget:
 
     def _idp_token(self, url: Any) -> bool:
         """QA-IDP-POST: `url` is exactly the approved token URL, and the gate's
-        own sign-in is under way or has completed and holds (module
-        docstring). The whole URL is compared as a string: a query, a
-        fragment, a port, userinfo, case or an encoding is another URL."""
+        own sign-in has begun, whatever it ended as, and nothing was wiped
+        (module docstring). The whole URL is compared as a string: a query,
+        a fragment, a port, userinfo, case or an encoding is another URL."""
         return (self.idp_token_url is not None and isinstance(url, str) and url == self.idp_token_url
-                and (self.in_flight or self.state == STATE_SIGNED_IN) and not self.wiped)
+                and self.sign_in_begun and not self.wiped)
 
     def _excluded(self, url: str) -> bool:
         path = _path_of(url)

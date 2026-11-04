@@ -74,6 +74,8 @@ from typing import Any, Iterable
 
 from swarm_common.profiles import MODEL_CLASSES
 
+from . import openai_api_key
+
 #: Secret Manager holds the credential; Firestore holds everything else. The
 #: secret name is derived, never supplied, for the same reason tenant secret
 #: names are: a caller who could name the secret could name someone else's.
@@ -729,6 +731,23 @@ class Account:
     def in_pool(self, pool: str) -> bool:
         return pool in self.pools
 
+    @property
+    def measured(self) -> bool:
+        """Whether this account's kind has usage windows to read at all.
+
+        False for an OpenAI developer API key (`openai_api_key`): it is billed
+        per minute and has no plan window, so nothing polls it, its windows
+        read "not measured" rather than 0, and the "one agent before its first
+        reading" rule, which waits for a reading that never comes, does not
+        hold it to one session."""
+        return self.provider != openai_api_key.PROVIDER
+
+    @property
+    def refreshes(self) -> bool:
+        """Whether this account's credential is a pair the sweep exchanges. A
+        developer API key does not rotate: there is no `{base}-refresh`."""
+        return self.provider != openai_api_key.PROVIDER
+
     def may_serve_voice(self, person: str) -> bool:
         """Whether a Voice it session of `person` may lease this account."""
         return (
@@ -772,7 +791,8 @@ class Account:
         `max_agents` like any other.
         """
         return (
-            self.observed_at is None
+            self.measured
+            and self.observed_at is None
             and len(self.live_holds(now)) >= MAX_AGENTS_BEFORE_READING
         )
 
@@ -1659,10 +1679,20 @@ VOICE_NOT_IN_POOL = "not_in_voice_pool"
 VOICE_NONE_REGISTERED = "no_voice_account_registered"
 #: Some are, and none can take a session now: held, paused, or spent.
 VOICE_NONE_AVAILABLE = "no_voice_account_available"
+#: What a Voice it text conversation leases its account for
+#: (swarm_voice.textchat): the ChatGPT plan's Responses wire, which serves text
+#: on the plan. Beside `openai_api_key.CAPABILITY_LIVE`, the only other value
+#: `VoiceLease.capability` accepts.
+VOICE_CAPABILITY_TEXT = "text"
 
 
 def choose_voice(
-    accounts: Iterable[Account], person: str, provider: str, now: datetime
+    accounts: Iterable[Account],
+    person: str,
+    provider: str,
+    now: datetime,
+    *,
+    capability: str | None = None,
 ) -> tuple[Account | None, str]:
     """The Voice it pool account a session of `person` should lease, or why none.
 
@@ -1675,8 +1705,33 @@ def choose_voice(
     hold, a task's and a session's, so an account in both pools never passes
     its agent limit -- and one agent before its first reading. Fewest holds
     first, then most headroom.
+
+    A LIVE SESSION (`capability="live"`) is offered only an account kind that
+    can open one, `openai_api_key.LIVE_PROVIDERS`, whatever `provider` says:
+    OpenAI refused the ChatGPT plan's token for GPT-Live (403 on
+    /v1/live/sessions, 4 November 2026), so a plan in the Voice it pool is
+    never chosen for a session and, with no key beside it, the pool reads as
+    `VOICE_NONE_REGISTERED` -- refused before any hold is taken.
+
+    Any other capability (a text conversation, `VOICE_CAPABILITY_TEXT`) is
+    offered the pool's accounts of `provider` that are NOT Live-capable: a key
+    is the only kind a Live session can use, so a text lease naming the key's
+    provider finds none registered rather than taking a slot Live needs.
     """
-    listed = [a for a in accounts if a.provider == provider and a.in_pool(POOL_VOICE_IT)]
+    if capability == openai_api_key.CAPABILITY_LIVE:
+        listed = [
+            a
+            for a in accounts
+            if openai_api_key.is_live_capable(a.provider) and a.in_pool(POOL_VOICE_IT)
+        ]
+    else:
+        listed = [
+            a
+            for a in accounts
+            if a.provider == provider
+            and not openai_api_key.is_live_capable(a.provider)
+            and a.in_pool(POOL_VOICE_IT)
+        ]
     if not listed:
         return None, VOICE_NONE_REGISTERED
     mine = [a for a in listed if a.may_serve_voice(person)]
@@ -2058,7 +2113,9 @@ def due_for_refresh(
     to rediscover that every five minutes would make a broken account into a
     problem for the working ones.
     """
-    return [a for a in accounts if a.state is not AccountState.REAUTH_REQUIRED]
+    return [
+        a for a in accounts if a.state is not AccountState.REAUTH_REQUIRED and a.refreshes
+    ]
 
 
 __all__ = [

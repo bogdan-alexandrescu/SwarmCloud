@@ -148,17 +148,24 @@ describe('#109: the phone step Table keeps the columns that compare rows', () =>
     expect(cascade(STYLES, el, 'background-attachment', PHONE).winner).toBeNull()
   })
 
-  // VQA V109: the workflow LIST scrolls sideways at 400 too, and its columns
-  // were cut at the edge mid-word with no cue. MUTATION: draw the list in a
-  // plain `div`, or drop `.wfl-scroll.has-more`.
-  it('fades the workflow list’s right edge the same way, only while columns are off it (V109)', () => {
-    expect(WORKFLOWS_SRC).toMatch(/<MoreRight className="table-wrap is-scroll wfl-scroll">\s*<table className="wfl-table">/)
-    const el = document.createElement('div')
-    el.className = 'table-wrap is-scroll wfl-scroll has-more'
-    // The list's sheet (styles/workflows.css) as well as styles.css: `painted` reads the bundle.
-    expect(painted(el, 'mask-image', PHONE) ?? '').toMatch(/^linear-gradient\(to left/)
-    el.className = 'table-wrap is-scroll wfl-scroll'
-    expect(painted(el, 'mask-image', PHONE)).toBeNull()
+  // VQA V109: the workflow LIST used to scroll sideways at 400 with a fade
+  // on its right edge. The redesign (frame graph-workflows-rest) replaced
+  // that: the phone row drops Spent, Owner and Changed, so the list never
+  // scrolls sideways and needs no fade. MUTATION: draw the list in a
+  // `MoreRight` again, or keep Spent at 390.
+  it('fits the workflow list at 390 by dropping columns, never by scrolling sideways (V109, redesign)', () => {
+    expect(WORKFLOWS_SRC).toMatch(/<div className="table-wrap wfg-scroll">\s*<table className="wfg-table" aria-label="Workflows">/)
+    expect(WORKFLOWS_SRC).not.toMatch(/<MoreRight className="[^"]*wfg-scroll/)
+    const wrap = document.createElement('div')
+    wrap.className = 'table-wrap wfg-scroll'
+    wrap.innerHTML = '<table class="wfg-table"><tbody><tr class="wfg-row"><td data-col="state">s</td><td data-col="spent">x</td><td data-col="owner">o</td><td data-col="changed">c</td></tr></tbody></table>'
+    for (const col of ['spent', 'owner', 'changed']) {
+      const td = wrap.querySelector(`[data-col="${col}"]`)!
+      expect(painted(td, 'display', PHONE)).toBe('none')
+      expect(painted(td, 'display', WIDE)).not.toBe('none')
+    }
+    expect(painted(wrap.querySelector('[data-col="state"]')!, 'display', PHONE)).not.toBe('none')
+    expect(painted(wrap, 'mask-image', PHONE)).toBeNull()
   })
 
   it('sets `has-more` from the scroller, and clears it at the right edge', () => {
@@ -187,6 +194,6 @@ describe('#109: one mode switch per phone screen', () => {
     const segs = [...`${WORKFLOWS_SRC}\n${WORKFLOW_VIEWS_SRC}`.matchAll(/<Segmented\s+className="([\w-]+)"/g)].map((m) => m[1])
     // The list's state filter, the page's Graph/Table/Timeline, and the
     // canvas zoom (Graph only, and only when there is something to zoom).
-    expect(segs.sort()).toEqual(['wf-view-seg', 'wf-zoom-seg', 'wfl-seg'])
+    expect(segs.sort()).toEqual(['wf-view-seg', 'wf-zoom-seg', 'wfg-seg'])
   })
 })

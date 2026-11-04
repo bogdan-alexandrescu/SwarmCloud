@@ -161,7 +161,7 @@ afterEach(() => {
 })
 
 const rowName = (id: string) =>
-  document.querySelector(`.wfl-table tbody tr[data-workflow="${id}"] .wfl-line > a`)?.textContent ?? null
+  document.querySelector(`.wfg-table tbody tr[data-workflow="${id}"] [data-col="workflow"] > a`)?.textContent ?? null
 
 describe('the list: no per-row read', () => {
   it('reads no workflow by id and no attempts, with every row in view and a search typed', async () => {
@@ -186,7 +186,8 @@ describe('the list: no per-row read', () => {
   it('totals a row’s cost from its steps’ blocks, with no attempt read behind it', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowName('wf_fresh')).toBe('Fresh build'))
-    const cost = document.querySelector('.wfl-table tbody tr[data-workflow="wf_fresh"] [data-col="cost"]')
+    // The redesign (frame graph-workflows-rest) names the cost column Spent.
+    const cost = document.querySelector('.wfg-table tbody tr[data-workflow="wf_fresh"] [data-col="spent"]')
     expect(cost?.textContent).toMatch(/\$0\.50/)
     expect(cost?.textContent).not.toMatch(/reading/)
   })
@@ -194,7 +195,7 @@ describe('the list: no per-row read', () => {
   it('says the unserved rows once, as not served rather than as waiting to scroll in', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowName('wf_fresh')).toBe('Fresh build'))
-    const note = document.querySelector('.wfl .c-count-note')?.textContent ?? ''
+    const note = document.querySelector('.wfg .c-count-note')?.textContent ?? ''
     expect(note).toMatch(/1 of 2 rows have their steps read/)
     expect(note).not.toMatch(/scroll into view/)
   })

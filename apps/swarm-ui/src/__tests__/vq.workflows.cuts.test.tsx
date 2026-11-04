@@ -12,7 +12,7 @@
  *  SHAPE  the same-step row's 'shape: …' was cut beside the ◀ position ▶ nav
  *         at 390 (scrollWidth 317 > clientWidth 300).
  */
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 
@@ -215,23 +215,24 @@ describe('ID: the list draws every row’s id under its name (visual QA pass 1 o
     }
   })
 
-  // MUTATION: draw the id inside `.wfl-line` again: `mixGoesUnder` counts its
-  // width and a 420px line sends the runners under a name it no longer shares.
-  it('leaves the id out of the name line’s sum, so the runners stay beside a name that has the line', async () => {
+  // THE ROW IS ONE LINE NOW (the redesign, frame graph-workflows-rest): no id
+  // under the name and no `mixGoesUnder` measuring; the id is the name link's
+  // title and the inspector summary's own line, uncut.
+  // MUTATION: draw `<Id>` in the row's Workflow cell again, or drop it from
+  // `WorkflowSummary`.
+  it('leaves the id off the row’s one line and draws it whole in the summary the row opens', async () => {
     viewport(1440)
-    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
-      return this.classList.contains('wfl-line') ? 420 : 0
-    })
     render(<WorkflowsScreen />)
     const td = await waitFor(() => {
-      const t = document.querySelector<HTMLElement>(`.wfl-table tr[data-workflow="${chain.workflow_id}"] td[data-col="workflow"]`)
+      const t = document.querySelector<HTMLElement>(`.wfg-table tr[data-workflow="${chain.workflow_id}"] td[data-col="workflow"]`)
       expect(t).toBeTruthy()
       return t!
     })
-    expect(td.querySelector(':scope > .wfl-line > .id')).toBeNull()
-    expect(td.querySelector(':scope > .id')?.getAttribute('title')).toBe(chain.workflow_id)
-    // 420 less the mix's gap (8) and the mix (176) leaves the name 236px: over 200.
-    await waitFor(() => expect(td.querySelector(':scope > .wfl-line > .wfl-mix'), 'the runners went under a 236px name').not.toBeNull())
+    expect(td.querySelector('.id')).toBeNull()
+    fireEvent.click(td.closest('tr')!.querySelector<HTMLElement>('[data-col="state"]')!)
+    const id = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum .id')
+    expect(id?.getAttribute('title')).toBe(chain.workflow_id)
+    expect(id?.textContent).toBe(chain.workflow_id)
   })
 })
 

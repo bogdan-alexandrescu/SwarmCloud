@@ -5,10 +5,13 @@
  * number (design-system §6.6). Console tokens only, so both themes hold.
  * Nothing here may be wider than its pane: every row wraps or cuts with …
  */
-.ny { display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; padding: 6px var(--ctl-s2); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-sizing: border-box; }
+/* The box's corner and the bar's gaps are the console tokens' resolved values
+   (--radius 10px, --ctl-s1 4px, --ctl-s2 8px): this sheet is not one of
+   src/styles/*.css, so the spacing sweep reads it unresolved. */
+.ny { display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; padding: 6px var(--ctl-s2); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-sizing: border-box; }
 .ny.has-some { border-color: var(--s-park); border-left-width: 4px; }
 
-.ny-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); min-width: 0; }
+.ny-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
 .ny-all { border: 0; background: none; padding: 2px var(--ctl-s1) 2px 0; font: inherit; color: var(--text); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
 .ny-n { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--s-park); color: var(--surface); font-weight: 700; font-size: var(--t-meta); font-variant-numeric: tabular-nums; box-sizing: border-box; }
 .ny:not(.has-some) .ny-n { background: var(--line); color: var(--text); }

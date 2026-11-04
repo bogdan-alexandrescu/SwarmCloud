@@ -55,11 +55,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 import httpx
 from websockets.asyncio.client import connect as ws_connect
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import InvalidStatus, WebSocketException
 
 from .credential import Credential, CredentialError
 from .grant import SessionGrant
@@ -119,6 +120,62 @@ class LiveError(RuntimeError):
     """OpenAI refused or failed a Live call. The message names a status, never a value."""
 
 
+#: What of OpenAI's error is kept: `error.code` and `error.type`, each only when
+#: it matches this closed pattern. Never `error.message` or any other field: the
+#: message may quote the request, the bearer included (measured 2026-11-04: a
+#: 403 on a Voice it pool account nobody could explain, because only the status
+#: was kept).
+OPENAI_ERROR_TOKEN = re.compile(r"[a-z0-9_.-]{1,64}")
+#: Read in place of a code or type that is absent, not a string, or off the pattern.
+UNREADABLE = "unreadable"
+#: Largest error body parsed; anything longer reads as unreadable.
+MAX_ERROR_BYTES = 16 * 1024
+
+
+def openai_error(raw: bytes | bytearray | str | None) -> tuple[str, str]:
+    """(code, type) of OpenAI's `{"error": {"code", "type", ...}}`, each held to
+    OPENAI_ERROR_TOKEN or read as UNREADABLE. Never raises."""
+    try:
+        if isinstance(raw, (bytes, bytearray)):
+            if len(raw) > MAX_ERROR_BYTES:
+                return UNREADABLE, UNREADABLE
+            raw = bytes(raw).decode("utf-8")
+        if not isinstance(raw, str) or len(raw) > MAX_ERROR_BYTES:
+            return UNREADABLE, UNREADABLE
+        body = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return UNREADABLE, UNREADABLE
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return UNREADABLE, UNREADABLE
+
+    def kept(value: Any) -> str:
+        if isinstance(value, str) and OPENAI_ERROR_TOKEN.fullmatch(value):
+            return value
+        return UNREADABLE
+
+    return kept(error.get("code")), kept(error.get("type"))
+
+
+class LiveRefused(LiveError):
+    """OpenAI answered a Live call with a refusal. Carries the HTTP status (None
+    for a refusal sent as the sideband's first event) and OpenAI's error code and
+    type, already held to OPENAI_ERROR_TOKEN; never the error's message."""
+
+    def __init__(self, what: str, status: int | None, code: str, kind: str) -> None:
+        self.status = status
+        self.code = code
+        self.type = kind
+        where = f"HTTP {status}, " if status is not None else ""
+        super().__init__(f"OpenAI refused {what} ({where}code {code}, type {kind})")
+
+
+def _refused(what: str, status: int | None, raw: bytes | bytearray | str | None) -> LiveRefused:
+    code, kind = openai_error(raw)
+    log.warning("OpenAI refused %s: status %s, code %s, type %s", what, status, code, kind)
+    return LiveRefused(what, status, code, kind)
+
+
 class LeasedCredential(Credential, Protocol):
     """A credential held for one session (accountlease.PoolCredential)."""
 
@@ -162,8 +219,9 @@ class LiveApi:
                 await credential.refused()
                 continue
             if response.status_code not in (200, 201):
-                # The status only: OpenAI's error body may quote the request.
-                raise LiveError(f"OpenAI refused the Live session (HTTP {response.status_code})")
+                # The status, and the error's code and type held to a closed pattern:
+                # its message may quote the request.
+                raise _refused("the Live session", response.status_code, response.content)
             try:
                 body = response.json()
                 live_id = body["session"]["id"]
@@ -173,6 +231,7 @@ class LiveApi:
             if not isinstance(live_id, str) or not live_id or not isinstance(answer, str) or not answer:
                 raise LiveError("OpenAI's Live session create returned no session id or answer")
             return live_id, answer
+        # Unreached: the second attempt's 401 is refused above, with its code and type.
         raise LiveError("OpenAI refused the Live session (HTTP 401)")
 
     async def attach(self, credential: Credential, live_id: str) -> Any:
@@ -186,6 +245,8 @@ class LiveApi:
                 logger=_ws_log,
                 max_size=4 * 1024 * 1024,
             )
+        except InvalidStatus as exc:
+            raise _refused("the Live sideband", exc.response.status_code, exc.response.body) from None
         except (OSError, WebSocketException, asyncio.TimeoutError) as exc:
             raise LiveError(f"the Live sideband could not attach ({type(exc).__name__})") from None
         try:
@@ -193,6 +254,9 @@ class LiveApi:
         except (WebSocketException, asyncio.TimeoutError, ValueError, TypeError) as exc:
             await socket.close()
             raise LiveError(f"the Live sideband sent no session.updated ({type(exc).__name__})") from None
+        if isinstance(first, dict) and first.get("type") == "error":
+            await socket.close()
+            raise _refused("the Live sideband", None, json.dumps(first))
         if not isinstance(first, dict) or first.get("type") != "session.updated":
             await socket.close()
             raise LiveError("the Live sideband's first event was not session.updated")

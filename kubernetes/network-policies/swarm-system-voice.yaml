@@ -28,6 +28,10 @@
 #   2. `swarm-voice-egress-hosts`, a GKE FQDNNetworkPolicy, admits TCP 443 to
 #      the hosts by name, and only these:
 #        * api.openai.com   -- the GPT-Live call and its sideband;
+#        * chatgpt.com      -- the text conversation on the ChatGPT plan
+#                              (swarm_voice/textchat.py CODEX_BASE, the
+#                              plan's Codex Responses API), when the Voice it
+#                              pool holds no OpenAI API key;
 #        * api.anthropic.com -- the planner (phase two; named now so the
 #                              phase-two lane changes no network policy);
 #        * swarm-api's own run.app host -- every read and write (§3.6);
@@ -123,6 +127,7 @@ spec:
   egress:
     - matches:
         - name: api.openai.com
+        - name: chatgpt.com
         - name: api.anthropic.com
         - name: __SWARM_API_HOST__
         - name: __QUOTA_BROKER_HOST__

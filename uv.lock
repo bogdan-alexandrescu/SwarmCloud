@@ -15,6 +15,7 @@ dependencies = [
     { name = "swarm-agent-worker" },
     { name = "swarm-api" },
     { name = "swarm-common" },
+    { name = "swarm-jev" },
     { name = "swarm-mcp" },
     { name = "swarm-quota-broker" },
     { name = "swarm-reconciler" },
@@ -45,6 +46,7 @@ requires-dist = [
     { name = "swarm-agent-worker", editable = "apps/agent-worker" },
     { name = "swarm-api", editable = "apps/swarm-api" },
     { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-jev", editable = "apps/jev-client" },
     { name = "swarm-mcp", editable = "apps/swarm-mcp" },
     { name = "swarm-quota-broker", editable = "apps/quota-broker" },
     { name = "swarm-reconciler", editable = "apps/reconciler" },
@@ -1971,6 +1973,7 @@ dependencies = [
     { name = "google-cloud-secret-manager" },
     { name = "google-cloud-storage" },
     { name = "swarm-common" },
+    { name = "swarm-jev" },
     { name = "swarm-redaction" },
     { name = "swarm-workflow-rollup" },
 ]
@@ -1983,6 +1986,7 @@ requires-dist = [
     { name = "google-cloud-secret-manager", specifier = ">=2.20" },
     { name = "google-cloud-storage", specifier = ">=2.18" },
     { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-jev", editable = "apps/jev-client" },
     { name = "swarm-redaction", editable = "apps/redaction" },
     { name = "swarm-workflow-rollup", editable = "apps/workflow-rollup" },
 ]
@@ -2005,6 +2009,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pynacl" },
     { name = "swarm-common" },
+    { name = "swarm-jev" },
     { name = "swarm-redaction" },
     { name = "swarm-workflow-rollup" },
     { name = "uvicorn", extra = ["standard"] },
@@ -2025,6 +2030,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pynacl", specifier = ">=1.5" },
     { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-jev", editable = "apps/jev-client" },
     { name = "swarm-redaction", editable = "apps/redaction" },
     { name = "swarm-workflow-rollup", editable = "apps/workflow-rollup" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
@@ -2069,6 +2075,17 @@ requires-dist = [
     { name = "swarm-common", editable = "apps/common" },
     { name = "swarm-redaction", editable = "apps/redaction" },
 ]
+
+[[package]]
+name = "swarm-jev"
+version = "0.1.0"
+source = { editable = "apps/jev-client" }
+dependencies = [
+    { name = "swarm-redaction" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "swarm-redaction", editable = "apps/redaction" }]
 
 [[package]]
 name = "swarm-mcp"

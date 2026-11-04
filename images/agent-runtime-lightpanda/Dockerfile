@@ -140,6 +140,11 @@ RUN --mount=type=bind,source=images/agent-runtime-lightpanda,target=/tmp/swarm-l
       python /tmp/swarm-lightpanda-build/selftest.py \
  && rm -rf "${scratch}"
 
+# The commit above, for the worker's build line (agent_worker.buildinfo reads
+# SWARM_GIT_SHA; part of #2688). Set here, not inherited: the base image's
+# value is the commit the BASE was built from.
+ENV SWARM_GIT_SHA=${GIT_SHA}
+
 # The base's, restated because a derived image that sets nothing inherits it
 # but a reader of this file should not have to know that.
 ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "agent_worker"]
