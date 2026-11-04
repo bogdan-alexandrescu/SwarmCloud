@@ -230,6 +230,21 @@ SWITCHES: dict[str, Switch] = {
         "workflow_finished instead of 409 conflict with the same message. On once Product "
         "Oracle's re-store call reads the code",
     ),
+    # Lane FL-DRIVE (docs/design/fix-loop.md §4.5): a person's add-round or
+    # stop of a fix loop. The refusals are ALWAYS made; off, each is answered
+    # with the same 409 and message under the established `conflict` code.
+    "fix_loop_not_parked": Switch(
+        code="fix_loop_not_parked",
+        why="an add-round or stop of a fix loop that is not parked for a person (a round "
+        "is running, or it ended) is answered 409 fix_loop_not_parked instead of 409 "
+        "conflict with the same message. On once the console and the sc plugin read the code",
+    ),
+    "fix_loop_rounds_ceiling": Switch(
+        code="fix_loop_rounds_ceiling",
+        why="an add-round of a fix loop already at FIX_LOOP_ROUNDS_CEILING (10) rounds is "
+        "answered 409 fix_loop_rounds_ceiling instead of 409 conflict with the same "
+        "message. On once the console and the sc plugin read the code",
+    ),
     "mcp_credential_restore_forbidden": Switch(
         code="mcp_credential_restore_forbidden",
         why="a re-store of a workflow's MCP credentials by anyone but its submitter or a "
