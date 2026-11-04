@@ -287,17 +287,21 @@ describe('Settings › Profile', () => {
 })
 
 // CONFIG-COPY (part of #2157): CONFIG-NAV moved Work › Setup and Work › Access
-// into Config. The page names them as Config › Workspace Settings › Workspace
-// setup and Config › GitHub access, and links each at its own path rather
-// than at the old address's redirect.
+// into Config, and the admin routes lane (part of #2688) moved Workspace setup
+// to the selected workspace's own page. The page names them as Admin ›
+// Workspaces › <the acting workspace's name> › Setup and Config › GitHub
+// access, and links each at its own path rather than at the old address's
+// redirect. The old Config › Workspace Settings › Workspace setup words are gone.
 describe('Settings › Profile names the Config pages by their Config addresses (CONFIG-COPY)', () => {
   const OLD = /\bWork › (Setup|Access|Repositories)|(?<!Workspace )Settings › (Workspace|MCP servers)/
 
   it('draws no old address and links Workspace setup and GitHub access at their Config paths', async () => {
     await drawn()
     expect(visible(document.body)).not.toMatch(OLD)
+    expect(visible(document.body)).not.toContain('Workspace Settings')
     const you = within(region('You and your workspaces'))
-    expect(you.getByRole('link', { name: /^Config › Workspace Settings › Workspace setup/ }).getAttribute('href')).toBe('/admin/workspaces?tab=setup')
+    // The acting workspace is the person's own, named as its page's breadcrumb names it.
+    expect(you.getByRole('link', { name: 'Admin › Workspaces › Your workspace › Setup →' }).getAttribute('href')).toBe('/admin/workspaces?tab=setup')
     const github = within(region('Your connections'))
     expect(github.getByRole('link', { name: /^Config › GitHub access/ }).getAttribute('href')).toBe('/config/github')
     const rows = github.getAllByRole('link', { name: /^Open Config › GitHub access/ })
@@ -305,13 +309,15 @@ describe('Settings › Profile names the Config pages by their Config addresses 
     for (const a of rows) expect(a.getAttribute('href')).toBe('/config/github')
   })
 
-  it('sends a person with no personal workspace to Workspace setup by its Config address', async () => {
+  it('sends a person with no personal workspace to the acting workspace\'s Setup tab, by its name', async () => {
     const f = fixture()
-    const workspaces = (f.workspaces as Json[]).filter((w) => w.kind !== 'user')
+    // The group is the acting one; its served name is an address, so it is named by its id.
+    const workspaces = (f.workspaces as Json[]).filter((w) => w.kind !== 'user').map((w) => ({ ...w, is_acting: true }))
     await drawn({ ...f, workspaces, claude_accounts: { ...(f.claude_accounts as Json), personal_workspace: null, accounts: [] } })
     expect(visible(document.body)).not.toMatch(OLD)
-    expect(visible(region('You and your workspaces'))).toContain('Request one on Config › Workspace Settings › Workspace setup.')
-    const request = screen.getByRole('link', { name: 'Request one on Config › Workspace Settings › Workspace setup.' })
+    expect(visible(document.body)).not.toContain('Workspace Settings')
+    expect(visible(region('You and your workspaces'))).toContain('Request one on Admin › Workspaces › team-x › Setup.')
+    const request = screen.getByRole('link', { name: 'Request one on Admin › Workspaces › team-x › Setup.' })
     expect(request.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
   })
 
@@ -319,7 +325,7 @@ describe('Settings › Profile names the Config pages by their Config addresses 
     const f = fixture()
     await drawn({ ...f, claude_accounts: { ...(f.claude_accounts as Json), personal_workspace: null, accounts: [] } })
     const claude = within(region('Claude accounts'))
-    const request = claude.getByRole('link', { name: 'Request one on Config › Workspace Settings › Workspace setup.' })
+    const request = claude.getByRole('link', { name: 'Request one on Admin › Workspaces › Your workspace › Setup.' })
     expect(request.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
     expect(request.parentElement?.lastChild).toBe(request)
   })
