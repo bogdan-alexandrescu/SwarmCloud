@@ -452,11 +452,23 @@ prompt says the same so the agent does not fight its own gate.
     (or the default one spelled out), userinfo, upper case or a
     percent-encoded variant is another URL and refused;
   * only `POST`: a `PUT`, `PATCH` or `DELETE` to the same path is refused;
-  * only once **the gate's own sign-in has completed** (`signed_in`) and
-    holds: never before it, never after a sign-in that failed or met a
-    challenge (a later failed sign-in takes it back), never after the wipe,
-    and never on a target that does not sign in. During the sign-in the
-    gate's own submission rule already applies;
+  * only from the moment **the gate's own sign-in begins** (`sign_in_begun`)
+    until the wipe, **whatever that sign-in's verdict** (owner's decision,
+    2026-11-03, reversing the 2026-10-23 rule that let it through only
+    after a sign-in that had completed and held): never before the sign-in
+    begins, never after the wipe, and never on a target that does not sign
+    in. A verdict of `failed` or `challenge`, or a later sign-in that fails,
+    does not take it back. The reason: the verdict is the gate's reading of
+    `signed_in_selector` on its own tab, not the provider's. On 2026-11-03
+    (capture steps from 17:43) five production legs' sign-ins ended `failed`
+    while the provider's session was real, and every screen's token
+    exchange, 69 to 79 a group, was refused as a write: the approval was
+    undone by a selector. Those legs' production chooser exchanged its
+    token as the page loaded, in the hand-back after `signing_in` was
+    cleared and before `signed_in` was set, and read the refusal as an
+    unreachable provider. Refusing the request after a `failed` or
+    `challenge` verdict protects nothing, because the token endpoint mints a
+    token only for a code or session the browser already holds;
   * a top frame posted there is still a navigation off the target and gets
     the left page; a redirect of the `POST` is a pause of its own, judged by
     its own URL;
@@ -686,7 +698,8 @@ reason, and its first line says "Not reviewed:". The file step files nothing,
 and `qaspec.validate_findings` accepts no finding from such a report. This
 changes nothing the gate admits. The token refresh is let through only where
 a platform admin approved the exact `idp_token_path` with the extra origin
-(§1.2, §3), once the gate's own sign-in has completed. A leg approved
+(§1.2, §3), from the gate's own sign-in's start until the wipe, whatever
+that sign-in's verdict (owner's decision, 2026-11-03, §3). A leg approved
 without that path will keep showing the card, and it is now reported as not
 reviewed rather than as reviewed.
 
