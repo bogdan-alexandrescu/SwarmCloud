@@ -84,19 +84,40 @@ def test_a_strict_contract_naming_judgment_is_refused_where_jev_cannot_run():
     assert compiled.advisory == ()
 
 
-def test_judgment_counts_as_enforced_only_where_jc2_runs():
+def test_judgment_counts_as_enforced_only_where_jc2_runs(monkeypatch):
     """The owner's pick "Gate on JC2" (4 November 2026): Jev being able to
     review a contract is not enough; `judgment` is enforced only where the
-    worker's post-step runs JC2, which no worker does yet."""
-    assert wc.JC2_AT_END_OF_STEP is False
+    worker's post-step runs JC2 -- which, since lane 6, it does."""
+    assert wc.JC2_AT_END_OF_STEP is True
     base = wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION}
-    assert wc.enforced_with_judgment(base) == base
+    monkeypatch.setattr(wc, "JC2_AT_END_OF_STEP", False)
+    assert wc.enforced_with_judgment(base, jc2_runs=wc.JC2_AT_END_OF_STEP) == base
     assert wc.enforced_with_judgment(base, jc2_runs=False) == base
     assert wc.enforced_with_judgment(base, jc2_runs=True) == base | {wc.COMPONENT_JUDGMENT}
     doc = _doc(strictness="strict", scope={}, protected={}, artifacts=[])
     doc["requirements"] = [{"id": "REQ-1", "text": "Clear copy.", "verification": ["judgment"]}]
     with pytest.raises(wc.ContractNotEnforceable) as raised:
-        wc.compile_contract(wc.decode(doc), step_id="s", enforced=wc.enforced_with_judgment(base))
+        wc.compile_contract(wc.decode(doc), step_id="s", enforced=wc.enforced_with_judgment(
+            base, jc2_runs=wc.JC2_AT_END_OF_STEP))
+    assert raised.value.detail["unenforced"] == ["judgment"]
+
+
+def test_a_strict_contract_naming_judgment_is_accepted_only_with_the_switch_on(monkeypatch):
+    """Lane 6 ships the worker's end-of-step judgment and turns the switch on
+    in the same change: with it on (the shipped value) a strict contract that
+    names `judgment` compiles; with it off it is refused as unenforced."""
+    base = wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION}
+    doc = _doc(strictness="strict", scope={}, protected={}, artifacts=[])
+    doc["requirements"] = [{"id": "REQ-1", "text": "Clear copy.", "verification": ["judgment"]}]
+    contract = wc.decode(doc)
+    assert wc.JC2_AT_END_OF_STEP is True
+    compiled = wc.compile_contract(contract, step_id="s", enforced=wc.enforced_with_judgment(
+        base, jc2_runs=wc.JC2_AT_END_OF_STEP))
+    assert compiled.advisory == ()
+    monkeypatch.setattr(wc, "JC2_AT_END_OF_STEP", False)
+    with pytest.raises(wc.ContractNotEnforceable) as raised:
+        wc.compile_contract(contract, step_id="s", enforced=wc.enforced_with_judgment(
+            base, jc2_runs=wc.JC2_AT_END_OF_STEP))
     assert raised.value.detail["unenforced"] == ["judgment"]
 
 

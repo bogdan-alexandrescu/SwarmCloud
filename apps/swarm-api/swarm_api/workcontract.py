@@ -141,13 +141,15 @@ WORKER_ENFORCED_TODAY = frozenset({COMPONENT_REPOSITORIES, COMPONENT_LIMITS, COM
 
 
 #: Whether the worker's post-step runs JC2, the acceptance judgment at the end
-#: of a step (jev-contract.md section 5, lane 6 WORKER-CONTRACT-JUDGE). False:
-#: no worker runs it yet, so no `judgment` evidence is ever written and a
-#: requirement proven only by a judgment could never be met. The owner's pick
-#: of 4 November 2026 ("Gate on JC2"): `judgment` counts as enforced only where
-#: JC2 runs, not merely where Jev can review a contract at submission. Lane 6
-#: turns this on in the same change that wires the post-step.
-JC2_AT_END_OF_STEP = False
+#: of a step (jev-contract.md section 5, lane 6 WORKER-CONTRACT-JUDGE). True:
+#: the worker's post-step judges each requirement naming `judgment` at the
+#: step's commit (`agent_worker.judge.poststeps.contract_post_step`, on the
+#: budget's reserve) and posts it, or `not_run`, to `state/contract-verdict`.
+#: The owner's pick of 4 November 2026 ("Gate on JC2"): `judgment` counts as
+#: enforced only where JC2 runs, not merely where Jev can review a contract at
+#: submission; `contractreview` still requires the workspace's signed
+#: `code_intelligence.jev` too, because JC2 sends code.
+JC2_AT_END_OF_STEP = True
 
 
 def enforced_with_judgment(enforced: frozenset[str] = WORKER_ENFORCED_TODAY, *,
