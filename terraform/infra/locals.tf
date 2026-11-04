@@ -823,7 +823,10 @@ locals {
     # SETTINGS_MAC_REQUIRED (settings_mac.tf).
     # local.api_graph_stats_env: SWARM_GRAPH_STATS_URL, the graph service's
     # stats address (graph_service.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, {
+    # local.api_decision_route_env: INTERNAL_DECISION_API_ADDRESS, swarm-api's
+    # route to the decision API through the tailnet egress's internal load
+    # balancer (tailscale.tf; jev-contract.md section 4.1).
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, local.api_decision_route_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
