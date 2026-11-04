@@ -686,8 +686,13 @@ def _question(entry: dict[str, Any]) -> dict[str, Any]:
 
 def unanswered(count: int, metadata: dict[str, Any] | None) -> int:
     """How many of the `count` questions have no stored answer."""
+    return len(unanswered_indices(count, metadata))
+
+
+def unanswered_indices(count: int, metadata: dict[str, Any] | None) -> list[int]:
+    """The indices of the `count` questions with no stored answer, in order."""
     answered = owner_answers_by_index(metadata)
-    return sum(1 for index in range(count) if index not in answered)
+    return [index for index in range(count) if index not in answered]
 
 
 #: `GET /v1/tasks/open-questions` (#2835): how far back `since` may reach, its

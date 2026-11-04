@@ -194,7 +194,25 @@ function Routed({ initial, onView }: { initial: string; onView?: (v: string) => 
 }
 
 function rowIds(): string[] {
-  return [...document.querySelectorAll<HTMLElement>('.wfl-table tbody tr')].map((r) => r.dataset.workflow ?? '')
+  return [...document.querySelectorAll<HTMLElement>('.wfg-table tbody tr')].map((r) => r.dataset.workflow ?? '')
+}
+
+/**
+ * The row's summary in the docked inspector (the picked Work redesign, frame
+ * graph-workflows-rest): Submitted and Duration moved there from the row.
+ * Picks the row by its state cell and returns the summary's `dd` by its `dt`.
+ */
+async function summaryFact(id: string, term: 'Submitted' | 'Duration'): Promise<HTMLElement> {
+  // A second click on the picked row closes its summary, so only an unpicked row is clicked.
+  const row = document.querySelector<HTMLElement>(`tr[data-workflow="${id}"]`)!
+  if (row.getAttribute('aria-current') !== 'true') fireEvent.click(row.querySelector<HTMLElement>('[data-col="state"]')!)
+  return waitFor(() => {
+    const sum = document.querySelector<HTMLElement>(`aside[aria-label="Workflow inspector"] .wfg-sum[data-workflow="${id}"]`)
+    const dt = [...(sum?.querySelectorAll('dt') ?? [])].find((d) => d.textContent === term)
+    const dd = dt?.nextElementSibling as HTMLElement | null | undefined
+    expect(dd, `no ${term} in ${id}'s summary`).toBeTruthy()
+    return dd!
+  })
 }
 
 type Theme = 'dark' | 'light'
@@ -405,8 +423,9 @@ describe('#111: the workflows list sorts, and shows start and duration', () => {
     const b = fixture()
     const ids = (sort: import('../workflowlist').WorkflowSort) =>
       wl.sortWorkflows(b.workflows, sort, b.taskById).map((w) => w.workflow_id)
-    // The V2 grouping (#503, workflows.html frame 0): running first, then succeeded, failed after them.
-    expect(ids('state')).toEqual(['wf_new', 'wf_done', 'wf_one', 'wf_two'])
+    // Needs you first (the picked Work redesign): most failed steps waiting on
+    // the reader first, then the V2 grouping (#503) -- running before succeeded.
+    expect(ids('state')).toEqual(['wf_two', 'wf_one', 'wf_new', 'wf_done'])
     expect(ids('newest')).toEqual(['wf_new', 'wf_one', 'wf_two', 'wf_done'])
     expect(ids('oldest')).toEqual(['wf_done', 'wf_two', 'wf_one', 'wf_new'])
     expect(ids('failed')).toEqual(['wf_two', 'wf_one', 'wf_new', 'wf_done'])
@@ -426,19 +445,18 @@ describe('#111: the workflows list sorts, and shows start and duration', () => {
     expect(wl.workflowDuration(done!, noEnd, T0)).toMatchObject({ ms: null, text: 'not recorded' })
   })
 
-  it('draws Submitted and Duration columns, and one choice re-sorts the rows', async () => {
+  it('draws Submitted and Duration in the picked row’s summary, and one choice re-sorts the rows', async () => {
     const onView = vi.fn()
     render(<Routed initial="" onView={onView} />)
     await waitFor(() => expect(rowIds()).toHaveLength(4))
-    const heads = [...document.querySelectorAll('.wfl-table thead th')].map((th) => th.textContent)
-    // Submitted since QA G3-20 (2026-10-07): the column every order sorts by.
-    expect(heads).toContain('Submitted')
-    expect(heads).toContain('Duration')
+    const heads = [...document.querySelectorAll('.wfg-table thead th')].map((th) => th.textContent)
+    // The one-line row (frame graph-workflows-rest) keeps Changed; Submitted
+    // (QA G3-20) and Duration moved into the inspector's summary.
+    expect(heads).toEqual(['State', 'Workflow', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
     expect(heads).not.toContain('Age')
-    const row = document.querySelector<HTMLElement>('tr[data-workflow="wf_one"]')!
-    expect(row.querySelector('.wfl-dur')!.textContent).toBe('20m 0s')
-    expect(row.querySelector('.wfl-submitted')!.getAttribute('title')).toMatch(/submitted/)
-    expect(document.querySelector('tr[data-workflow="wf_new"] .wfl-dur')!.textContent).toBe('10m 0s so far')
+    expect((await summaryFact('wf_one', 'Duration')).textContent).toBe('20m 0s')
+    expect((await summaryFact('wf_one', 'Submitted')).getAttribute('title')).toMatch(/submitted/)
+    expect((await summaryFact('wf_new', 'Duration')).textContent).toBe('10m 0s so far')
 
     fireEvent.change(screen.getByRole('combobox', { name: /sort/ }), { target: { value: 'failed' } })
     expect(onView).toHaveBeenLastCalledWith('sort=failed')
@@ -450,9 +468,10 @@ describe('#111: the workflows list sorts, and shows start and duration', () => {
     render(<Routed initial="" />)
     await waitFor(() => expect(rowIds()).toHaveLength(4))
     fireEvent.click(within(screen.getByRole('group', { name: 'Which workflows' })).getByText('Failed'))
-    await waitFor(() => expect(rowIds()).toEqual(['wf_one', 'wf_two']))
+    // Needs you first: wf_two's two failed steps before wf_one's one.
+    await waitFor(() => expect(rowIds()).toEqual(['wf_two', 'wf_one']))
     for (const id of rowIds()) {
-      expect(document.querySelector(`tr[data-workflow="${id}"] .wfl-dur`)!.textContent).toMatch(/^\d+[smhd]/)
+      expect((await summaryFact(id, 'Duration')).textContent).toMatch(/^\d+[smhd]/)
     }
   })
 })
@@ -466,22 +485,22 @@ describe('#113: the workflows list loading skeleton', () => {
     let land: (r: Result<WorkflowBoard>) => void = () => {}
     api.loadWorkflowBoard.mockReturnValue(new Promise<Result<WorkflowBoard>>((r) => (land = r)))
     render(<Routed initial="state=failed" />)
-    const list = document.querySelector<HTMLElement>('.wfl.is-loading')
+    const list = document.querySelector<HTMLElement>('.wfg.is-loading')
     expect(list, 'no list frame while loading').toBeTruthy()
     expect(list!.getAttribute('aria-busy')).toBe('true')
     // The shared full-width bars are not drawn here; the list's own are.
     expect(document.querySelectorAll('.skeleton')).toHaveLength(0)
-    const filters = list!.querySelector('.wfl-filters')!
+    const filters = list!.querySelector('.wfg-filters')!
     const controls = [...filters.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button, input, select')]
     expect(controls.length).toBeGreaterThanOrEqual(7)
     expect(controls.every((c) => c.disabled)).toBe(true)
     // The address's choice is already shown.
     expect(within(filters as HTMLElement).getByText('Failed').closest('button')!.getAttribute('aria-pressed')).toBe('true')
-    const skelHeads = [...list!.querySelectorAll('.wfl-table thead th')].map((th) => th.textContent)
-    const skelRows = [...list!.querySelectorAll('.wfl-table tbody tr')]
+    const skelHeads = [...list!.querySelectorAll('.wfg-table thead th')].map((th) => th.textContent)
+    const skelRows = [...list!.querySelectorAll('.wfg-table tbody tr')]
     expect(skelRows.length).toBeGreaterThan(0)
     for (const tr of skelRows) {
-      expect(tr.className).toBe('wfl-row is-skel')
+      expect(tr.className).toBe('wfg-row is-skel')
       expect(tr.querySelectorAll('td')).toHaveLength(skelHeads.length)
       expect(tr.querySelectorAll('.wfl-skel').length).toBeGreaterThan(0)
       // No number in a skeleton: it answers nothing.
@@ -489,13 +508,13 @@ describe('#113: the workflows list loading skeleton', () => {
     }
 
     land({ status: 'ok', data: fixture(), fetchedAt: T0 })
-    await waitFor(() => expect(rowIds()).toEqual(['wf_one', 'wf_two']))
+    await waitFor(() => expect(rowIds()).toEqual(['wf_two', 'wf_one']))
     // The same toolbar and the same head: the first row lands where the
     // first skeleton row was.
-    const loaded = document.querySelector<HTMLElement>('.wfl')!
-    expect(loaded.className).toBe('wfl')
-    expect([...loaded.querySelectorAll('.wfl-table thead th')].map((th) => th.textContent)).toEqual(skelHeads)
-    expect(loaded.querySelectorAll('.wfl-filters button, .wfl-filters input, .wfl-filters select')).toHaveLength(controls.length)
+    const loaded = document.querySelector<HTMLElement>('.wfg')!
+    expect(loaded.className).toBe('wfg')
+    expect([...loaded.querySelectorAll('.wfg-table thead th')].map((th) => th.textContent)).toEqual(skelHeads)
+    expect(loaded.querySelectorAll('.wfg-filters button, .wfg-filters input, .wfg-filters select')).toHaveLength(controls.length)
   })
 
   it('is visible in both themes: the bars clear 1.5:1 against the page and the card, and they sweep', () => {
