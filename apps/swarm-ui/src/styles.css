@@ -11644,7 +11644,8 @@ span.sk-ttile { cursor: default; }
    no rule here keys on a pick being open (`.wfg.has-inspector`). With the
    inspector folded to its rail the pane is 1005px at 1440, so Owner, Changed
    and Spent's coverage note stay drawn; open, the pane's own container rules
-   below drop them, and a partial figure never shows without its caveat. */
+   below drop Owner and Changed, and a partial figure never shows without its
+   caveat. */
 /* THE TABLE NEVER EXCEEDS ITS PANE (review finding on PR #3147: beside the
    open inspector at 1440 the table was 627px in a 578px box, and Spent's
    "$0.518 3 of 4 reported" set its column to 179px, so the clipping pane cut
@@ -11652,10 +11653,12 @@ span.sk-ttile { cursor: default; }
    cells' longest lines, which no rule here can bound, so a pane of 1024px or
    less lays the table out FIXED: every column but the name has a width, the
    name takes the rest and cuts with its ellipsis, and the thresholds below
-   are where the shown columns' widths and 8px paddings stop leaving the name
-   112px inside the pane's 1px borders. Columns give way in one order: Owner
-   (≤860), Changed (≤720), Spent's coverage note (≤612; it stays read, and the
-   inspector shows it), Spent (≤570), then the state's word (the phone row).
+   are where the shown columns' widths stop leaving the name 112px inside the
+   pane's 1px borders (every cell is `box-sizing: border-box`, so its 8px
+   paddings sit inside its width). Columns give way in one order: Owner
+   (≤860), Changed (≤720), Spent (≤570), then the state's word (the phone
+   row); Spent's coverage note goes only where the name would lose its floor
+   (≤545, below).
    A wider pane (1440 with the inspector folded) keeps the auto table, where
    everything fits. The widths hold the longest of each: "awaiting input"
    after its 12px glyph, the 72px bar and "12/12", three need marks, "$12.92"
@@ -11683,10 +11686,17 @@ span.sk-ttile { cursor: default; }
 }
 @container work-main (max-width: 860px) { .wfg-table [data-col="owner"] { display: none; } }
 @container work-main (max-width: 720px) { .wfg-table [data-col="changed"] { display: none; } }
-/* Spent stays beside the open inspector (a 580px pane at 1440, frame
-   graph-workflows-rest) as the figure alone; its coverage note is in the
-   inspector's summary, and in the row it stays read, drawn nowhere. */
-@container work-main (max-width: 612px) {
+/* SPENT'S NOTE GIVES WAY ONLY BELOW THE NAME'S FLOOR (the fourth review of
+   PR #3147: at 1440 beside the docked inspector, a 580px box, a fixed 612px
+   threshold clipped "3 of 4 reported" to 1px with 34px to spare, so a partial
+   figure showed with its caveat drawn nowhere). The threshold is the ladder's
+   own sum: the name's 112px floor + the box's 2px of borders + State 116 +
+   Steps 116 + Needs 88 + Spent at its full 112 = 546px, so the note is drawn
+   at 546px and wider. Today the phone row (≤570) drops Spent before this, so
+   no width shows the figure without its note; should Spent's threshold move
+   lower, the figure keeps 72px here, the note stays read (not drawn), and the
+   figure's title and accessible label carry the caveat. */
+@container work-main (max-width: 545px) {
   .wfg-table [data-col="spent"] { width: 72px; position: relative; }
   .wfg-table td[data-col="spent"] .wf-spend-cov { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 }
