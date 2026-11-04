@@ -42,6 +42,12 @@ hold it to what reads it:
   each page by its path in `routes.json`, never by a nav trail (QA-038: the
   first run's brief said "Work > Submit a task", a trail the console does not
   draw -- Submit is its own rail item).
+* `test_every_swarm_qa_command_names_the_venv_python`: every `-m swarm_qa`
+  command in the template is `swarm_rollup.agentimage.QA_TOOL`, the venv's
+  interpreter by its full path. On 3 November 2026 a production capture leg's
+  bare `python -m swarm_qa capture` resolved /usr/local/bin/python and got
+  "No module named swarm_qa"; the owner chose the same day that this template
+  names the venv Python too.
 * `test_template_names_only_profiles_inputs_and_classes`: invariant 10. No
   `resource_class`, every `browser_tool` one of the declared choices, every
   `model_class` one of the frozen `MODEL_CLASSES` that its profile takes, and
@@ -74,6 +80,7 @@ from swarm_api.validation import (
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES
 from swarm_mcp import profiles as catalogue
 from swarm_mcp import server, workflows
+from swarm_rollup.agentimage import QA_TOOL, QA_TOOL_MODULE
 
 REPO = Path(__file__).resolve().parents[3]
 TEMPLATE = REPO / "docs" / "qa" / "console-qa.workflow.json"
@@ -121,11 +128,42 @@ def _swarm_qa():
     return module
 
 
+def _strings(node: object):
+    """Every string in the template, at any depth: prompts, inputs, notes."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
+
+
+#: A command that runs the tool, whatever interpreter it names: the token
+#: before `-m swarm_qa` is the interpreter.
+_QA_COMMAND = re.compile(rf"([^\s`'\"]+)\s+-m\s+{QA_TOOL_MODULE}\b")
+
+
 def _capture_argv(prompt: str) -> list[str]:
-    """The one `python -m swarm_qa ...` command a capture prompt tells the agent to run."""
-    commands = re.findall(r"`python -m swarm_qa ([^`]+)`", prompt)
+    """The one `<venv python> -m swarm_qa ...` command a capture prompt tells the agent to run."""
+    commands = re.findall(rf"`{re.escape(QA_TOOL)} ([^`]+)`", prompt)
     assert len(commands) == 1, f"a capture step runs exactly one swarm_qa command; found {len(commands)}"
     return shlex.split(commands[0])
+
+
+def test_every_swarm_qa_command_names_the_venv_python():
+    # MUTATION: write one capture prompt's command as `python -m swarm_qa
+    # capture ...` (the 3 November production failure) and this fails.
+    commands = [
+        f"{interpreter} -m {QA_TOOL_MODULE}"
+        for text in _strings(_template())
+        for interpreter in _QA_COMMAND.findall(text)
+    ]
+    captures = [s for s in _steps() if s.startswith(CAPTURE)]
+    assert len(commands) >= len(captures), f"found {len(commands)} swarm_qa commands for {len(captures)} captures"
+    wrong = sorted({c for c in commands if c != QA_TOOL})
+    assert not wrong, f"every swarm_qa command runs the venv's interpreter, {QA_TOOL!r}; found {wrong}"
 
 
 class _Recorder:
