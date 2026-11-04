@@ -165,10 +165,10 @@ export interface InspectorProps {
   /** Called when the inspector folds (true) or unfolds (false). */
   onFold?: (folded: boolean) => void
   /**
-   * What the inspector shows (a picked step's id); each new non-null value
-   * unfolds a folded rail, so a pick on a page that started folded opens.
+   * The subject the inspector holds (an agent's id), or null. A new subject
+   * unfolds a folded inspector, so what the reader picked is shown, not a rail.
    */
-  openFor?: string | null
+  subject?: string | null
 }
 
 /** The page: the left pane, a drag handle, the docked inspector -- or its rail, or on a phone its sheet. */
@@ -188,12 +188,16 @@ export function Inspector({
   backLabel,
   onWidthClass,
   onFold,
-  openFor = null,
+  subject = null,
 }: InspectorProps) {
   const root = useRef<HTMLDivElement>(null)
   const spec = inspectorSpec(screen, initialWidth)
   const [stored, setStored] = useState(() => readPane(spec))
-  const [folded, setFolded] = useState(startFolded)
+  // THE FOLD IS THE SUBJECT'S: folded for the subject it was folded on (null
+  // at rest), so a newly picked subject is shown, not a rail, in the same
+  // render that picks it -- an effect would mount it a commit late.
+  const [fold, setFold] = useState<{ folded: boolean; subject: string | null }>({ folded: startFolded, subject: null })
+  const folded = fold.folded && fold.subject === subject
   const [dragging, setDragging] = useState(false)
   const drag = useRef<{ right: number; at: number } | null>(null)
   const phone = useIsPhone()
@@ -226,21 +230,10 @@ export function Inspector({
     [max, screen, initialWidth],
   )
 
-  const fold = (to: boolean) => {
-    setFolded(to)
+  const foldTo = (to: boolean) => {
+    setFold({ folded: to, subject })
     onFold?.(to)
   }
-
-  // A NEW PICK OPENS THE RAIL: a page folded at rest (1280) would otherwise
-  // take a click on a step and show nothing for it.
-  const opened = useRef(openFor)
-  useEffect(() => {
-    if (openFor !== null && openFor !== opened.current && folded) {
-      setFolded(false)
-      onFold?.(false)
-    }
-    opened.current = openFor
-  }, [openFor, folded, onFold])
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -318,7 +311,7 @@ export function Inspector({
         <button
           type="button"
           className="wi-btn wi-fold"
-          onClick={() => fold(true)}
+          onClick={() => foldTo(true)}
           aria-label="Fold the inspector"
           title="Fold the inspector"
         >
@@ -343,7 +336,7 @@ export function Inspector({
           <button
             type="button"
             className="wi-btn wi-unfold"
-            onClick={() => fold(false)}
+            onClick={() => foldTo(false)}
             aria-label="Open the inspector"
             title="Open the inspector"
           >

@@ -18,22 +18,28 @@ import { AdminSetupHealthScreen, AdminSetupScreen } from './AdminSetup'
 import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
+import { HostedAgent, hostsAgent, type HostedAgentView } from './work/hostedAgent'
 import { AccountHealthScreen } from './AccountHealthPage'
 import { JevUsageScreen } from './JevUsagePage'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
   beginScreenReads,
+  chooseTenant,
+  chosenTenant,
+  clearTenantSwitch,
   probeSnapshot,
   screenReadsSnapshot,
   subscribeProbes,
   subscribeScreenReads,
+  subscribeTenant,
+  tenantSwitchSnapshot,
   type ProbeRecord,
   type ScreenReads,
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SETUP_LINK_PATH, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, isSetupLinkPath, movedToConfig, pathToAddress, secretsLinkToken, secretsLinkView, setupLinkToken } from './paths'
+import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SETUP_LINK_PATH, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, isSetupLinkPath, movedToConfig, movedToWorkspacePage, pathToAddress, secretsLinkToken, secretsLinkView, setupLinkToken, workspacePageAddress } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
 import { McpServersScreen } from './McpServers'
@@ -56,7 +62,7 @@ import { PlatformCountsScreen } from './PlatformCounts'
 import { RunnerSizesScreen } from './RunnerSizes'
 import { ProfilesScreen } from './Profiles'
 import { ProfileScreen } from './Profile'
-import { WorkspacePeopleScreen } from './WorkspacePeople'
+import { WorkspacePage, workspaceTabOf, type WorkspaceTab } from './WorkspacePage'
 import { JOIN_PATH, JoinWorkspaceScreen, joinCodeFrom } from './JoinWorkspace'
 import { SetupLinkScreen } from './SetupLink'
 import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
@@ -513,10 +519,14 @@ export const SECTIONS: SectionDef[] = [
       // Every old address and one-time link lands here (paths.ts).
       { id: 'secrets', label: 'Secrets' },
       { id: 'mcp-servers', label: 'MCP servers' },
-      // This workspace's people: every member reads it, its admins change it
-      // (BGD 2026-10-24 00:31Z). The panel leaves it out of a personal
-      // workspace, which has nobody to invite (S1e).
-      { id: 'people', label: 'People and roles' },
+      // PEOPLE AND ROLES AND WORKSPACE SETTINGS ARE A WORKSPACE'S OWN PAGE
+      // since the admin routes lane (part of #2688; the owner picked a page
+      // per workspace for administration): Admin › Workspaces › <workspace>,
+      // tabs People, Roles, Settings and Setup. Neither is in the Config
+      // panel, and their addresses open the selected workspace's page
+      // (paths.ts `movedToWorkspacePage`). This tab stays for one address
+      // only, a platform admin's Add a new workspace (`part=new`), which is
+      // no workspace's tab; the workspace page's Setup tab offers it too.
       { id: 'workspace', label: 'Workspace Settings' },
     ],
   },
@@ -598,7 +608,10 @@ export const SECTIONS: SectionDef[] = [
       // "People and roles" since ADMIN-PEOPLE-ROLES (part of #2157, S5c):
       // every person against every workspace, and for a workspace admin who
       // is not a platform admin only the workspaces they administer.
-      { id: 'people', label: 'People and roles', admin: true },
+      // PLATFORM PEOPLE since the admin routes lane (part of #2688): the
+      // deployment-wide page beside the per-workspace ones -- the same page
+      // and the same reads, renamed as the owner's picked mock-up names it.
+      { id: 'people', label: 'Platform people', admin: true },
       // NAV-ADMIN-ROLE: each group workspace whose stored role for the
       // caller is admin, with its four settings pages. Not marked `admin`:
       // it reads `/v1/tenants/mine`, which everyone may, and a workspace
@@ -1070,6 +1083,9 @@ export function fromAddress(full: string): Route {
   // and `#settings/people` as the eleven-item nav's Pool limits.
   const movedTo = movedToConfig(full)
   if (movedTo !== null) return fromAddress(movedTo)
+  // People and roles and Workspace Settings: the selected workspace's page.
+  const toPage = movedToWorkspacePage(full)
+  if (toPage !== null) return fromAddress(toPage)
   if (full === HOME) return HOME_ROUTE
   const queryAt = full.indexOf('?')
   const hash = queryAt === -1 ? full : full.slice(0, queryAt)
@@ -1196,6 +1212,19 @@ export function fromAddress(full: string): Route {
       : { sectionId: WORK, tab: 'running', ...blank, list }
   }
 
+  // ONE WORKSPACE'S PAGE (admin routes lane): `admin/workspaces/<tenant>`,
+  // its tab on the query; `admin/workspaces?tab=<tab>` is the workspace in
+  // hand's, not yet named. Both ride in `view`; the bare address is the list.
+  if (head === ADMIN_SECTION && tail[0] === WORKSPACES_TAB) {
+    const tab = workspaceTabOf(query)
+    if (tail.length >= 2 && tail.slice(1).join('/') !== '') {
+      return { sectionId: ADMIN_SECTION, tab: WORKSPACES_TAB, ...blank, view: workspacePageView(decodeSegment(tail.slice(1).join('/')), tab) }
+    }
+    if (tail.length === 1 && new URLSearchParams(query).get('tab') === tab) {
+      return { sectionId: ADMIN_SECTION, tab: WORKSPACES_TAB, ...blank, view: workspacePageView(null, tab) }
+    }
+  }
+
   const section = sectionOf(head)
   if (section) {
     const wanted = tail.join('/')
@@ -1243,6 +1272,22 @@ export function fromAddress(full: string): Route {
 
 const ADMIN_SECTION = 'admin'
 const LIMITS_TAB = 'limits'
+/** Admin › Workspaces: the list, and each workspace's own page under it. */
+const WORKSPACES_TAB = 'workspaces'
+const WORKSPACES_TAB_ADDRESS = `${ADMIN_SECTION}/${WORKSPACES_TAB}`
+
+/** The route's `view` for a workspace's page: the tenant (absent: the one in hand) and the tab. */
+function workspacePageView(tenantId: string | null, tab: WorkspaceTab): string {
+  return tenantId === null ? `tab=${tab}` : new URLSearchParams({ workspace: tenantId, tab }).toString()
+}
+
+/** A workspace page's tenant and tab off its route's `view`; null for the list. */
+export function workspacePageOf(r: Pick<Route, 'sectionId' | 'tab' | 'view'>): { tenant: string | null; tab: WorkspaceTab } | null {
+  if (r.sectionId !== ADMIN_SECTION || r.tab !== WORKSPACES_TAB || !r.view) return null
+  const v = new URLSearchParams(r.view)
+  const tenant = v.get('workspace')
+  return { tenant: tenant === null || tenant === '' ? null : tenant, tab: workspaceTabOf(r.view) }
+}
 const AUTOMATE = 'automate'
 const VOICE = 'voice'
 
@@ -1260,9 +1305,10 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   // One inbox item rides on the page's address (`/automate/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
-  // GitHub access' Choose repositories tab, and People and roles' Members'
-  // GitHub tab (GA-MOVE-VIEWS): each page reads `view` off the bar.
-  if (sectionId === CONFIG && (tab === 'github' || tab === 'people')) return ['view']
+  // GitHub access' Choose repositories tab (GA-MOVE-VIEWS): the page reads
+  // `view` off the bar. People and roles' Members' GitHub was the other; it is
+  // a fold of the workspace page's People tab now.
+  if (sectionId === CONFIG && tab === 'github') return ['view']
   if (sectionId !== CAPACITY) return []
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
@@ -1321,6 +1367,9 @@ export function canonical(r: Route): string {
   if (r.sectionId === CONFIG && (r.tab === 'repositories' || r.tab === CONFIG_SECRETS_TAB || r.tab === CONFIG_WORKSPACE_TAB) && r.view) {
     return `${CONFIG}/${r.tab}?${r.view}`
   }
+  // One workspace's page: `admin/workspaces/<tenant>?tab=<tab>` (paths.ts).
+  const wsPage = workspacePageOf(r)
+  if (wsPage !== null) return workspacePageAddress(wsPage.tenant, wsPage.tab)
   // And Pool limits' linked row, for the same reason (#134) -- and Pools' and
   // Holders' (#125, #128).
   if (keptKeys(r.sectionId, r.tab).length > 0 && r.view) {
@@ -1591,7 +1640,11 @@ export function App() {
   // chooser and its three forms (V062): their forms are Work tabs, but Work's
   // question is about what has run, so they ask Submit's own.
   const helpSection = isSubmitPage(at) ? SUBMIT_HELP : section
-  const inspector = at.taskId !== null
+  // THE OPEN AGENT IS THE AGENTS PAGE'S INSPECTOR (the owner's pick on #3146,
+  // "Host it in the inspector"): on that page App hands the view to the page
+  // (`HostedAgent`, work/hostedAgent.ts) and draws no column beside it.
+  const hosted = at.taskId !== null && !at.missing && hostsAgent(at.sectionId, at.tab)
+  const inspector = at.taskId !== null && !hosted
   const listAddress = canonical({
     sectionId: WORK,
     tab: 'running',
@@ -1599,6 +1652,24 @@ export function App() {
     taskPane: 'detail',
     list: lastList.current,
   })
+  const split =
+    at.taskId !== null ? (
+      <AgentSplit
+        taskId={at.taskId}
+        pane={at.taskPane}
+        artifact={at.artifact ?? null}
+        file={at.file ?? null}
+        theater={at.theater === true}
+        detailNamed={at.detailNamed === true}
+        closeTo={listAddress}
+        go={go}
+        onGroup={onGroup}
+        base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
+        hosted={hosted}
+      />
+    ) : null
+  const hostedView: HostedAgentView | null =
+    hosted && at.taskId !== null ? { taskId: at.taskId, view: split } : null
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
   // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
   // a page that is not Overview, because the spine lights the nearest section.
@@ -1718,6 +1789,7 @@ export function App() {
               <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
             </div>
           )}
+          <HostedAgent.Provider value={hostedView}>
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
 
@@ -1775,21 +1847,9 @@ export function App() {
               )}
             </main>
 
-            {at.taskId !== null && (
-              <AgentSplit
-                taskId={at.taskId}
-                pane={at.taskPane}
-                artifact={at.artifact ?? null}
-                file={at.file ?? null}
-                theater={at.theater === true}
-                detailNamed={at.detailNamed === true}
-                closeTo={listAddress}
-                go={go}
-                onGroup={onGroup}
-                base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
-              />
-            )}
+            {inspector && split}
           </div>
+          </HostedAgent.Provider>
           </HeadAgeProvider>
           </SectionHelp.Provider>
           </FrameAge.Provider>
@@ -2418,6 +2478,9 @@ function SectionBody({
   // Config › Repositories › QA targets: its address is that tab's `qarun=<id>`.
   const qarun = `${sectionId}/${tab}` === 'config/repositories' && view !== null ? new URLSearchParams(view).get('qarun') : null
   if (qarun !== null && qarun !== '') return <QaRunGroupScreen groupId={qarun} go={go} />
+  // One workspace's page under Admin › Workspaces (`/admin/workspaces/<tenant>`).
+  const wsPage = workspacePageOf({ sectionId, tab, view })
+  if (wsPage !== null) return <WorkspacePageRoute tenant={wsPage.tenant} tab={wsPage.tab} onView={onView} go={go} />
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
       return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
@@ -2472,8 +2535,6 @@ function SectionBody({
       return <SecretsScreen view={view} token={secretsLink} />
     case 'config/mcp-servers':
       return <McpServersScreen />
-    case 'config/people':
-      return <WorkspacePeopleScreen view={view} />
     case 'config/workspace':
       return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 
@@ -2527,6 +2588,71 @@ function SectionBody({
         </div>
       )
   }
+}
+
+/**
+ * ONE WORKSPACE'S PAGE, MOUNTED (admin routes lane; part of #2688). The page
+ * (WorkspacePage.tsx) reads the workspace in hand, so the route makes the
+ * address's workspace the one in hand first, and the two then stay one:
+ *
+ * THE SWITCHER FOLLOWS THE PAGE (the 'place' mock-up's notes: its member
+ * persona's menu showed their own workspace while the page showed another).
+ * Opening `/admin/workspaces/<tenant>` selects that workspace, as the
+ * switcher does (`chooseTenant`), so the menu, Config and every read after it
+ * name the workspace the page is about. The page is drawn only once they
+ * agree, never another workspace's answers under this one's address.
+ *
+ * THE PAGE FOLLOWS THE SWITCHER. A switch made while the page is open -- the
+ * switcher, its toast's "Back to", or "Back to default" -- moves the address to
+ * the workspace switched to, on the same tab, written in place. The shell
+ * remounts a page on a switch, so the switch is read off the note the
+ * switcher leaves (`tenantSwitchSnapshot`) as well as off this mount's own.
+ *
+ * An old Config address opens the page with no workspace named: the one in
+ * hand, named in the address as soon as a choice names it. A tab click is
+ * written in place, as a list's tab is.
+ */
+function WorkspacePageRoute({ tenant, tab, onView, go }: { tenant: string | null; tab: WorkspaceTab; onView: (view: string) => void; go: (to: string) => void }) {
+  const chosen = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
+  const seen = useRef(chosen)
+  useEffect(() => {
+    const was = seen.current
+    seen.current = chosen
+    if (tenant === null) {
+      if (chosen !== null) onView(workspacePageView(chosen, tab))
+      return
+    }
+    if (chosen === tenant) return
+    const switched = tenantSwitchSnapshot()
+    const followSwitch = was !== chosen || (switched !== null && switched.from.id === tenant && switched.to.id === chosen)
+    if (followSwitch && chosen !== null) {
+      clearTenantSwitch()
+      onView(workspacePageView(chosen, tab))
+      return
+    }
+    // "Back to default" names none: the page leaves for the list, which needs no workspace.
+    if (followSwitch) {
+      go(WORKSPACES_TAB_ADDRESS)
+      return
+    }
+    chooseTenant(tenant)
+  }, [tenant, chosen, tab, onView, go])
+  if (tenant !== null && chosen !== tenant) {
+    return (
+      <p className="ctl-empty" role="status">
+        Selecting {tenant}…
+      </p>
+    )
+  }
+  return (
+    <WorkspacePage
+      key={tenant ?? ''}
+      tab={tab}
+      onTab={(t) => onView(workspacePageView(tenant, t))}
+      go={go}
+      back={{ label: 'Workspaces', href: addressToPath(WORKSPACES_TAB_ADDRESS) }}
+    />
+  )
 }
 
 /**

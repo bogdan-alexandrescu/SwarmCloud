@@ -169,10 +169,14 @@ function merge(parts: Report[]): Report {
  * Resolved like the main sheet and placed BEFORE it -- the order the app loads
  * them, since main.tsx imports App (and so every screen's sheet) first. The
  * resolved copy comes after the injected one in the document, so it is the
- * one the cascade picks.
+ * one the cascade picks. The Needs-you row keeps its sheet beside it
+ * (`src/work/needs-you.css`) and Agents draws it (#3146), so it is read too.
+ * Not `src/work/*.css` whole: `inspectorShell.css` declares a custom property
+ * on its own selector (`--wi-height`), which the token tables, read from the
+ * theme blocks, do not hold, so resolving it throws.
  */
 const SECTION_SHEETS = Object.values(
-  import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true }),
+  import.meta.glob<string>(['../styles/*.css', '../work/needs-you.css'], { query: '?raw', import: 'default', eager: true }),
 )
 const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
 
@@ -487,10 +491,12 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // one route, and a slice is a file of its own (the slice test).
   // CONFIG-NAV (part of #2157): Repositories and Access left Work for Config;
   // the first two Config pages keep their place in this walk, and the other
-  // four are the `config` slice. Workspace setup (Work › Setup until then) is
-  // a part of Workspace Settings with no tab of its own, so no slice reaches it.
+  // Config pages are the `config` slice (People and roles is the workspace
+  // page's tab since the admin routes lane, part of #2688). Workspace setup
+  // (Work › Setup until then) is a part of Workspace Settings with no tab of
+  // its own, so no slice reaches it.
   { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals'], floor: 90 },
-  { name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/people', 'config/workspace'], floor: 60 },
+  { name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/workspace'], floor: 60 },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   // Account health (ACCOUNT-HEALTH-PAGE; part of #2302) sits beside Accounts, as in the rail.

@@ -21,8 +21,9 @@ where a step decides something:
     in the `changes` job, from the measured weight of what the change runs
     (LANE CI-EARLY, part of #1694): a full run gets more shards, a small
     selection fewer, so every shard carries about the same measured time;
-  * vitest is sharded with its own `--shard=k/N` over the same count, beside
-    one job for the typecheck, the node:test runners and the build;
+  * vitest is sharded over its own weighted count (scripts/lib/ui_shards.py,
+    held by test_ui_shards.py since 2026-11-03), beside one job for the
+    typecheck, the node:test runners and the build;
   * everything the old `python` job checked besides the unit suite still runs.
 
 The aggregating jobs' judgement and ci-gate's are run in test_ci_gate.py; the
@@ -515,24 +516,21 @@ def test_a_shard_that_does_not_exist_is_refused(tmp_path):
 # ---------------------------------------------------------------------------
 # The vitest shards.
 # ---------------------------------------------------------------------------
-def test_vitest_is_sharded_over_the_matrix_by_vitest_itself():
-    """vitest's own `--shard=k/N` runs every test file in exactly one shard.
-    MUTATION: hard-code `/4`, or run `npm test` (all three runners) per shard."""
-    shards = _shards("ui-tests")
-    assert shards == list(range(1, len(shards) + 1)) and len(shards) >= 2, shards
-    steps = [s for s in _jobs()["ui-tests"]["steps"] if "test:components" in str(s.get("run", ""))]
-    assert len(steps) == 1, steps
-    step = steps[0]
-    assert step["run"].strip() == 'npm run test:components -- --shard="${SHARD}/${SHARDS}"', step["run"]
-    assert step["env"] == {"SHARD": "${{ matrix.shard }}", "SHARDS": "${{ strategy.job-total }}"}, step["env"]
-    assert step.get("working-directory") == "apps/swarm-ui"
+def test_vitest_is_sharded_over_the_weighted_matrix():
+    """The split itself, the count and the step that hands vitest its files are
+    held by test_ui_shards.py; here, only that the shards are a matrix of their
+    own beside ui-build. MUTATION: hard-code a list, or run `npm test` (all
+    three runners) per shard."""
+    assert _jobs()["ui-tests"]["strategy"]["matrix"]["shard"] == "${{ fromJSON(needs.changes.outputs.ui_shards) }}"
+    steps = [s for s in _jobs()["ui-tests"]["steps"] if "npm run test:" in str(s.get("run", "")) or "npm test" in str(s.get("run", ""))]
+    assert len(steps) == 1 and steps[0]["run"].strip().startswith("npm run test:components -- "), steps
     assert _jobs()["ui-tests"]["strategy"].get("fail-fast") is False
 
 
 def test_the_npm_scripts_split_without_changing_npm_test():
     """`npm test` (scripts/ui-component-test.sh, a developer) still runs all
     three runners; CI runs vitest and the node runners as separate scripts so
-    `--shard` reaches vitest alone. MUTATION: put a second runner in
+    a shard's file list reaches vitest alone. MUTATION: put a second runner in
     test:components -- `--` would hand the flag to the last one."""
     scripts = json.loads(UI_PACKAGE.read_text())["scripts"]
     assert scripts["test:components"] == "vitest run", scripts

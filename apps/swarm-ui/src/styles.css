@@ -2534,6 +2534,63 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 /* Agents screen (Screen A)                                                  */
 /* ------------------------------------------------------------------------ */
 
+/* THE AGENTS PAGE IN THE WORK SECTION'S DOCKED INSPECTOR (the owner's pick of
+   2026-11-03, the Graph Work redesign; Agents.tsx, work/inspectorShell.css).
+   With the wall or an open agent docked the two panes are one viewport tall,
+   the screen's own header in the left pane, each scrolling on its own, so the
+   list never moves. Alone -- no browser live and no agent open -- the list
+   scrolls with the page as it did. */
+.wi[data-screen='agents'].is-alone { height: auto; min-height: 0; }
+.wi[data-screen='agents'].is-alone > .wi-main { overflow: visible; }
+.wi[data-screen='agents'] > .wi-main > .ny { margin-bottom: var(--ctl-s2); }
+/* The wall: every live browser's still, two a row at the inspector's resting width. */
+.ag-wall { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.ag-wall-note { margin: 0; color: var(--text-dim); font-size: var(--t-meta); }
+.ag-wall-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--ctl-s2); min-width: 0; }
+.ag-wall-card { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; border: 1px solid var(--line-soft); border-radius: var(--ctl-radius-sm, 6px); padding: var(--ctl-s1); background: var(--surface); }
+.ag-wall-card.is-your-turn { border-color: var(--warn); }
+.ag-wall-open { display: flex; align-items: center; gap: var(--ctl-s1); min-width: 0; border: 0; background: none; padding: 0; font: inherit; color: var(--text); cursor: pointer; text-align: left; }
+.ag-wall-open:hover .ag-wall-name { text-decoration: underline; }
+.ag-wall-open:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.ag-wall-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: var(--t-meta); }
+.ag-wall-card .wf-live { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ag-wall-card .wf-live-head, .ag-wall-card .wf-live-links { font-size: var(--t-micro); min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--ctl-s1); }
+.ag-wall-card .wf-live-thumb { display: block; width: 100%; aspect-ratio: 16 / 10; height: auto; background: var(--surface-2); border-radius: 4px; }
+.ag-wall-count { white-space: nowrap; }
+/* On a phone the wall is a sheet, opened from this one button over the list. */
+.ag-wall-phone { display: block; margin: 0 0 var(--ctl-s2); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); padding: var(--ctl-s1) var(--ctl-s2); cursor: pointer; max-width: 100%; }
+/* The row's cost and pull request: their own cell under the time, right-aligned as the design's columns are;
+   muted when not known, never drawn as $0. The link sits above the row's opener (`.cr-open`). */
+.wi[data-screen='agents'] .row.is-compact > .cr-sub { grid-column: name; }
+.wi[data-screen='agents'] .row.is-compact > .when { justify-self: end; }
+.row.is-compact > .cr-figs { grid-column: age; justify-self: end; white-space: nowrap; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.row.is-compact > .cr-figs:empty { display: none; }
+.cr-figs a.cr-pr { position: relative; z-index: 1; }
+.cr-cost, .cr-pr { white-space: nowrap; }
+.cr-cost.is-unknown, .cr-pr.is-unknown { color: var(--text-faint); }
+/* AN OPEN AGENT IN THE INSPECTOR (the owner's pick on #3146, "Host it in the inspector"; work/hostedAgent.ts). The
+   agent's view (`.ag-split.is-hosted`) is the inspector's body, not the fixed overlay or grid column `.drawer` and
+   `.app.has-inspector` make it elsewhere: it fills the dock, the inspector's handle sizes it and its fold folds it, and
+   on a phone the inspector's sheet is the page. Its tab strip and panes keep their own scrolling inside it. */
+.wi[data-screen='agents'] > .wi-dock:has(> .wi-body > .ag-split.is-hosted) { overflow: hidden; }
+.wi[data-screen='agents'] .wi-body:has(> .ag-split.is-hosted) { padding-bottom: 0; min-height: 0; }
+.wi[data-screen='agents'] .wi-body > .ag-split.ctl-drawer.is-hosted {
+  position: static;
+  inset: auto;
+  width: auto;
+  height: auto;
+  max-height: none;
+  flex: 1 1 0;
+  min-height: 0;
+  z-index: auto;
+  border: 0;
+  box-shadow: none;
+  padding-left: 0;
+  padding-right: 0;
+}
+/* Beside the list there is nothing to go back to; on the phone sheet the agent's own back link names the list. */
+.wi[data-screen='agents']:not(.is-sheet) .ag-split.is-hosted > .ctl-agent-back { display: none; }
+
 /* `.filters` IS GONE FROM HERE AND FROM THE NAV BLOCK. It was two unrelated
    rule families 1,300 lines apart -- pill buttons up there, a label-and-select
    row here -- that merged in the cascade into one element nobody ever drew:

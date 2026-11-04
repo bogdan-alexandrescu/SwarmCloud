@@ -6789,7 +6789,7 @@ function Board({
       }
       onClose={step === null ? (phone ? () => setOverviewSheet(false) : undefined) : closeStep}
       startFolded={folded}
-      openFor={step === null ? null : step.step_id}
+      subject={step === null ? null : step.step_id}
       phoneOpen={step !== null || overviewSheet}
       // A STEP'S SHEET GOES BACK TO WHERE IT CAME FROM: to the Overview sheet
       // when it was opened from there (which stays open under it), else to the

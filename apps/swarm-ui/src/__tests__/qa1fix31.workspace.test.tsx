@@ -88,7 +88,7 @@ describe('config-29: People and roles in a personal workspace', () => {
     await personalPeople(false)
     // MUTATION: draw the personal card as the bare sentence again and this is not found.
     const back = await screen.findByRole('link', { name: 'Open Workspace Settings' }, WAIT)
-    expect(back.getAttribute('href')).toBe('/config/workspace')
+    expect(back.getAttribute('href')).toBe('/admin/workspaces?tab=settings')
     // MUTATION (visual QA pass 2, config2-21): put back 'a platform admin adds one' -- adds a person, or a
     // workspace? -- and this is not found.
     expect(screen.getByText('Only a group workspace has people and roles; a platform admin creates group workspaces.')).toBeTruthy()

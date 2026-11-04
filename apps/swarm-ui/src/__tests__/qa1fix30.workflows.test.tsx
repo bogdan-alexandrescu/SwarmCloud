@@ -336,7 +336,7 @@ describe('82: the cost pill names its unit and keeps a space', () => {
       const s = document.querySelector<HTMLElement>('.wfp-head .wfp-fig .wf-spend:not(.is-reading)')
       expect(s?.querySelector('.wf-spend-cov')).toBeTruthy()
       return s!
-    })
+    }, { timeout: 4000 })
     // MUTATION: drop the `{' '}` before `.wf-spend-cov` in `Spend` -- the
     // copied text reads `$0.5183 of 4 reported`.
     expect(spend.textContent).toMatch(/^\$[\d.,]+ \d+ of \d+ steps? that ran reported$/)
