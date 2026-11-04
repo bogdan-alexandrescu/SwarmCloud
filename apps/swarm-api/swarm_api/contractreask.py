@@ -445,10 +445,11 @@ class ForgeJudge:
 
         ctx = self.ctx
         tenant_id = str(task.get("tenant_id"))
-        mac = settings_mac(ctx.settings)
-        if not CodeIntelligenceStore(ctx.db, now=ctx.now, mac=mac).get(tenant_id).jev:
+        if not CodeIntelligenceStore(ctx.db, now=ctx.now,
+                                     mac=settings_mac(ctx.settings)).get(tenant_id).jev:
             return ReaskResult(OUTCOME_NOT_RUN, reason="not_opted_in")
-        chosen = JudgmentSettings(ctx.db, now=ctx.now, mac=mac).read(tenant_id)["judgment_backend"]
+        chosen = JudgmentSettings(ctx.db, now=ctx.now, mac=settings_mac(ctx.settings)) \
+            .read(tenant_id)["judgment_backend"]
         if chosen not in INTERNAL_BACKENDS:
             return ReaskResult(OUTCOME_NOT_RUN, reason="backend_not_routed")
         backend = resolve_call_backend(
