@@ -518,3 +518,56 @@ def test_a_strict_revision_2_no_worker_enforces_is_refused_not_degraded(
         {"id": "REQ-1", "class": "judgeable", "reason": "proof_kind_mismatch", "p": 0.9}]
     assert "Widgets sort" not in response.text
     assert _tasks(db) == []
+
+
+def _credential_shaped() -> str:
+    """A GitHub-token-shaped string, built at runtime so no literal here looks
+    like a credential."""
+    return "ghp_" + secrets.token_hex(18)
+
+
+def test_a_requirement_whose_text_the_sanitizer_drops_is_not_judged_and_never_asked(
+        client, context, db, routed, monkeypatch):
+    """Section 4.2: a requirement text the shared sanitizer drops is reported
+    as not judged, never as enforceable. Before, the text was dropped but its
+    `c<k>`/`r<k>` were still asked, so Jev's answer about a requirement it
+    never read refused (or amended) the contract."""
+    from swarm_jev import sanitize
+
+    monkeypatch.setenv(cr.MODE_ENV, "enforce")
+    _opt_in(db)
+    token = _credential_shaped()
+    assert sanitize.is_flagged(f"Deploy with {token}.")
+    jev = Jev({0: ("unenforceable", "subjective", 0.9), 1: ("unenforceable", "subjective", 0.9)})
+    _reviewer(context, db, jev)
+    sent = _contract(requirements=[
+        {"id": "REQ-1", "text": f"Deploy with {token}.", "verification": []},
+        {"id": "REQ-2", "text": "It feels nicer.", "verification": []},
+    ])
+    response = _task(client, sent)
+    assert response.status_code == 422, response.text
+    # Refused on REQ-2 alone, the one Jev read; REQ-1 was never asked.
+    assert [r["id"] for r in response.json()["detail"]["jev"]["requirements"]] == ["REQ-2"]
+    (body,) = jev.bodies
+    assert token not in json.dumps(body)
+    assert set(body["questions"]) == {"c1", "r1"}
+    state = body["state"] if isinstance(body["state"], dict) else json.loads(body["state"])
+    assert [r["index"] for r in state["requirements"]] == [1]
+
+
+def test_a_contract_whose_every_text_is_dropped_sends_nothing_and_is_not_judged(
+        client, context, db, routed, monkeypatch):
+    monkeypatch.setenv(cr.MODE_ENV, "enforce")
+    _opt_in(db)
+    jev = Jev({0: ("unenforceable", "subjective", 0.9)})
+    _reviewer(context, db, jev)
+    sent = _contract(requirements=[
+        {"id": "REQ-1", "text": f"Deploy with {_credential_shaped()}.", "verification": []}])
+    assert _task(client, sent).status_code == 201
+    assert jev.bodies == []
+    (task,) = _tasks(db)
+    record = task["metadata"]["dispatch"][cr.DISPATCH_FIELD]
+    assert record["outcome"] == cj.REVIEW_OK
+    assert record["classes"] == [
+        {"id": "REQ-1", "class": cj.NOT_JUDGED, "reason": None, "p": 0.0}]
+    assert task["metadata"][wc.METADATA_KEY]["revision"] == 1

@@ -57,7 +57,8 @@ never fails the submission: accounting never refuses work.
 WHAT IS SENT. `contractjudge.review_state`: the contract's own text by index,
 its strictness, acceptance, artifacts and write scope, through the shared
 sanitizer. Never the tenant, the owner, the contract id, the repository URL
-or a commit. Nothing Jev returns is acted on but its closed choices.
+or a commit. A requirement whose text the sanitizer would drop is not asked
+about at all and is recorded `not_judged` (`unreadable`). Nothing Jev returns is acted on but its closed choices.
 """
 
 from __future__ import annotations
@@ -73,6 +74,7 @@ from typing import Any
 
 from google.cloud import firestore
 from pydantic import StrictBool
+from swarm_jev import sanitize
 from swarm_jev.client import Decision, JudgeClient, Transport
 
 from swarm_common.admission import _snapshot
@@ -412,14 +414,23 @@ class ContractReviewer:
              cap: int | None) -> tuple[tuple[cj.ReviewClass, ...] | None, str | None, str]:
         """Jev's classes for every requirement, or None and why not; with the
         first call's id."""
+        # Section 4.2: a requirement whose text the shared sanitizer would
+        # drop is never asked about -- Jev would answer for a text it never
+        # read -- and is recorded `not_judged`, never enforceable.
+        unread = unreadable(contract, backend)
+        classes: list[cj.ReviewClass] = [
+            cj.ReviewClass(r.id, k, cj.NOT_JUDGED, None, 0.0)
+            for k, r in enumerate(contract.requirements) if r.id in unread]
+        asked = [rid for rid in contract.requirement_ids() if rid not in unread]
+        if not asked:
+            return tuple(classes), None, ""
         ledger = _Ledger(used=self._month_used(tenant_id), cap=cap)
         deadline_at = self._clock() + DEADLINE_SECONDS
         raw = self._transport or backend.transport()
-        classes: list[cj.ReviewClass] = []
         call_id = ""
         why: str | None = None
         try:
-            for batch in cj.batches(contract.requirement_ids(), cj.REVIEW_PER_CALL):
+            for batch in cj.batches(asked, cj.REVIEW_PER_CALL):
                 client = JudgeClient(
                     backend=backend, ledger=ledger,
                     transport=bounded(raw, deadline_at=deadline_at, clock=self._clock),
@@ -438,7 +449,7 @@ class ContractReviewer:
             why = ERROR
         if ledger.rows:
             self._charge(tenant_id, contract, ledger.rows)
-        return (None if why else tuple(classes)), why, call_id
+        return (None if why else tuple(sorted(classes, key=lambda c: c.index))), why, call_id
 
     def review(self, prepared: wc.Prepared, *, tenant_id: str,
                submitter_tenant_id: str | None, step_id: str | None,
@@ -529,6 +540,14 @@ class ContractReviewer:
         return Reviewed(amended, record)
 
 
+def unreadable(contract: wc.WorkContract, backend: judgment.CallBackend) -> frozenset[str]:
+    """The requirements whose text the call's sanitizer drops: credential-
+    shaped, or holding the backend's own key (`swarm_jev.sanitize.is_flagged`,
+    the check `JudgeClient.decide` applies to every string it sends)."""
+    held = (backend.key,) if backend.key else ()
+    return frozenset(r.id for r in contract.requirements if sanitize.is_flagged(r.text, held))
+
+
 def refuse(contract: wc.WorkContract, outcome: cj.Review, *, call_id: str,
            backend: str) -> ValidationFailed:
     """Section 4.5's 422: `validation_failed`, the message naming the
@@ -561,5 +580,6 @@ __all__ = [
     "mode",
     "refuse",
     "stored_enabled",
+    "unreadable",
     "view",
 ]
