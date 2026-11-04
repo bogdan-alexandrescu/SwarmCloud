@@ -724,16 +724,14 @@ def _drive(loop: _Loop) -> None:
             loop.report.fail(loop.id, "resume_head_missing")
             return
         findings = tuple(resume.get("findings") or ())
-        if resume.get("kind") == REVIEW_KIND:
-            k = max((int(r.get("round") or 0) for r in rounds if r.get("kind") == FIX_KIND),
-                    default=1 if loop.strategy == "integrate" else 0) or 1
-            _next(loop, review, root_doc, kind=REVIEW_KIND, round_no=k, head=head,
-                  findings=findings)
-        else:
-            fixes = sum(1 for r in rounds if r.get("kind") == FIX_KIND) + (
-                1 if loop.strategy == "integrate" else 0)
-            _next(loop, review, root_doc, kind=FIX_KIND, round_no=fixes + 1, head=head,
-                  findings=findings, note=resume.get("note"))
+        # The added round is the next round: its step id is new and its
+        # number counts against the rounds the person granted. Under
+        # `integrate` the declared fix is round 1's, so a first added fix is 2.
+        kind = REVIEW_KIND if resume.get("kind") == REVIEW_KIND else FIX_KIND
+        base = 1 if loop.strategy == "integrate" and kind == FIX_KIND else 0
+        k = max((int(r.get("round") or 0) for r in rounds), default=base) + 1
+        _next(loop, review, root_doc, kind=kind, round_no=k, head=head, findings=findings,
+              note=resume.get("note") if kind == FIX_KIND else None)
         return
     if not rounds:
         _round_zero(loop, review, root_doc)

@@ -53,6 +53,7 @@ from .routes import (
     credentials,
     codeintel,
     failurefindings,
+    fix_loop,
     forgeapp,
     forgeperms,
     gittokens,
@@ -568,6 +569,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Await-input steps (docs/design/human-steps.md §4.6, lane HW-API-ANSWER):
     # a person answers a workflow step; the card and the bridge read it.
     app.include_router(await_input.router)
+    # A fix loop parked for a person (docs/design/fix-loop.md §4.5, lane
+    # FL-DRIVE): any full member adds rounds, up to the ceiling, or stops it.
+    app.include_router(fix_loop.router)
     # The QA identity (docs/design/qa-identity.md §4.3, lane QI-API): the
     # worker's credential, in UNCAPTURED_ROUTES; a member's read of its own
     # workspace's grant; and the platform admin's grants.

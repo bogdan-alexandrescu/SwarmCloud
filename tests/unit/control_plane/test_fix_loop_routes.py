@@ -95,11 +95,11 @@ def test_after_an_unreadable_review_the_added_round_is_a_re_review(loop_client, 
     response = _rounds(loop_client, loop)
 
     assert response.status_code == 200, response.text
+    # The added round is round 2, a re-review of the head round 1's could not
+    # judge: no fix runs on findings nobody could read.
     steps = loop.round_steps()
-    assert "re-review:2" not in steps and "review-fix:2" not in steps
-    reviews = [s for s in steps if s.startswith("re-review:")]
-    assert len(reviews) == 2, steps
-    again = loop.doc(task_id=steps[reviews[-1]]["task_id"])
+    assert list(steps) == ["re-review:1", "re-review:2"], steps
+    again = loop.doc(task_id=steps["re-review:2"]["task_id"])
     assert again["repository_ref"] == FIX_HEAD
 
 
