@@ -204,7 +204,8 @@ describe('the list: no per-row read', () => {
 describe('one workflow’s page: no task read', () => {
   it('reads the workflows around it at AROUND_LIMIT, never the task list, and only its own steps’ attempts', async () => {
     render(<WorkflowsScreen view="wf=wf_fresh" />)
-    await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
+    // The graph tab draws the stage grid now (the old canvas is gone from the page).
+    await waitFor(() => expect(document.querySelector('.sg')).toBeTruthy())
     await waitFor(() => expect(api.loadWorkflowBoard).toHaveBeenCalled())
     expect(AROUND_LIMIT).toBeLessThan(100)
     for (const call of api.loadWorkflowBoard.mock.calls) expect(call[0]).toBe(AROUND_LIMIT)

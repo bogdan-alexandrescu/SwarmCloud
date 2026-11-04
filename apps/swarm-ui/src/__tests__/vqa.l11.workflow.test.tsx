@@ -412,8 +412,13 @@ describe('V103: the page skeleton draws the count note’s line', () => {
     const { w, tasks } = fanIn()
     await act(async () => land({ status: 'ok', data: { workflows: [w], taskById: tasks, statesDetail: null }, fetchedAt: T0 }))
     await waitFor(() => expect(document.querySelector('.wfp.is-loading')).toBeNull())
+    // THE LOADED PAGE IS INSIDE THE DOCKED-INSPECTOR SHELL NOW (brief, "What
+    // moved where" -- `.wi[data-screen="workflow"]`), so the count note
+    // precedes that shell, not `.wfp` itself (the skeleton draws no shell,
+    // so its own check above is unchanged).
     const loaded = document.querySelector<HTMLElement>('.wfp')!
-    expect(loaded.parentElement!.querySelector(':scope > .c-count-note')).not.toBeNull()
+    const shell = loaded.closest<HTMLElement>('.wi[data-screen="workflow"]')!
+    expect(shell.previousElementSibling?.classList.contains('c-count-note')).toBe(true)
   })
 
   it('makes the page head two lines in both states at a phone', () => {

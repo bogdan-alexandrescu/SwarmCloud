@@ -23,7 +23,8 @@ import { fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { App } from '../App'
-import type { CascadeEnv } from './cssgate'
+import SHELL from '../work/inspectorShell.css?raw'
+import { cascade, type CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { cellStyle, crowded, fixedColumns, lengthPx, nowrap, textBox, type CellStyle, type TextBox } from './tablefit'
 
@@ -56,13 +57,29 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
-/** The table's container width with the step card docked beside it: the split's grid less the panel and the gap. */
-function besideCard(split: Element): number {
-  const cols = painted(split, 'grid-template-columns', WIDE) ?? ''
-  const panel = /minmax\(\s*[\d.]+px\s*,\s*([\d.]+)px\s*\)\s*$/.exec(cols)
-  expect(panel, `the split is not a column beside a panel: ${cols}`).not.toBeNull()
-  const gap = lengthPx(painted(split, ['column-gap', 'gap'], WIDE), 0) ?? 0
-  return AT_1440 - Number(panel![1]) - gap
+/** What the inspector shell's own sheet (src/work/, which `painted` does not read) gives `el`. */
+function shelled(el: Element, prop: string): string | null {
+  const r = cascade(SHELL, el, prop, WIDE)
+  expect(r.unsupported, `the resolver could not evaluate ${r.unsupported.join(', ')}`).toEqual([])
+  return r.winner?.value ?? null
+}
+
+/**
+ * The table's container width with the step card docked beside it. Since the
+ * Graph Work redesign (part of #2688) the card is the page's docked inspector
+ * (`.wi.is-docked`, inspectorShell.css): the shell's grid is the left pane, the
+ * handle and the dock, the dock as wide as the shell's own `--wi-dock`, and the
+ * left pane keeps a padding before the handle.
+ */
+function besideCard(shell: HTMLElement): number {
+  const cols = shelled(shell, 'grid-template-columns') ?? ''
+  const handle = /\)\s+([\d.]+)px\s+minmax\(/.exec(cols)
+  expect(handle, `the shell is not a pane beside a docked inspector: ${cols}`).not.toBeNull()
+  const dock = lengthPx(shell.style.getPropertyValue('--wi-dock'), 0)
+  expect(dock, 'the dock has no width').toBeGreaterThan(0)
+  const main = shell.querySelector(':scope > .wi-main')!
+  const pad = lengthPx(shelled(main, 'padding-right') ?? '0', 0) ?? 0
+  return AT_1440 - dock! - Number(handle![1]) - pad
 }
 
 /** Ten rows with long names, cloned from a drawn row so every one matches the shipped cascade. */
@@ -137,7 +154,7 @@ function boxesOf(row: Element, styles: ReadonlyMap<string, CellStyle>, cols: Ret
   return out
 }
 
-async function tableWithCard(): Promise<{ split: HTMLElement; wrap: HTMLElement; t: HTMLTableElement }> {
+async function tableWithCard(): Promise<{ shell: HTMLElement; wrap: HTMLElement; t: HTMLTableElement }> {
   window.history.replaceState(null, '', `/workflows/${WF}/table`)
   render(<App />)
   const wrap = await waitFor(() => {
@@ -146,12 +163,12 @@ async function tableWithCard(): Promise<{ split: HTMLElement; wrap: HTMLElement;
     return w!
   })
   fireEvent.click(wrap.querySelector<HTMLButtonElement>('tbody tr[data-step] .wf-pick')!)
-  const split = await waitFor(() => {
-    const s = document.querySelector<HTMLElement>('.wf-split.has-panel')
-    expect(s?.querySelector(':scope > .wf-panel'), 'the step card did not open beside the table').toBeTruthy()
+  const shell = await waitFor(() => {
+    const s = document.querySelector<HTMLElement>('.wi.is-docked')
+    expect(s?.querySelector(':scope > .wi-dock .wf-inspect'), 'the step card did not open beside the table').toBeTruthy()
     return s!
   })
-  return { split, wrap, t: wrap.querySelector('table')! }
+  return { shell, wrap, t: wrap.querySelector('table')! }
 }
 
 describe('item 1: the Steps table with the step card open', () => {
@@ -161,8 +178,8 @@ describe('item 1: the Steps table with the step card open', () => {
   // the fallback a browser without container queries draws: a scroll inside
   // the card, never a column pushing the card.
   it('scrolls inside its card below its minimum width, and its column never pushes the card', async () => {
-    const { split, wrap, t } = await tableWithCard()
-    const container = besideCard(split)
+    const { shell, wrap, t } = await tableWithCard()
+    const container = besideCard(shell)
     const { width } = fixedColumns(t, container, WIDE)
     expect(container, 'the card left the table its minimum width, so this case asks nothing').toBeLessThan(width)
     // BELOW ITS MINIMUM THE ROWS STACK (D12) rather than scroll: the wrapper
@@ -170,16 +187,16 @@ describe('item 1: the Steps table with the step card open', () => {
     // container query draws the table as stacked rows in this column.
     expect(painted(wrap, ['overflow-x', 'overflow'], WIDE)).toBe('clip')
     expect(painted(t, 'display', { ...WIDE, container }), 'the table is wider than its column and neither scrolls nor stacks').toBe('block')
-    expect(painted(split.querySelector(':scope > .wf-split-main')!, 'min-width', WIDE)).toBe('0')
+    expect(shelled(shell.querySelector(':scope > .wi-main')!, 'min-width')).toBe('0')
   })
 
   it('wraps ten long step names inside their own cells, apart from the state pill and the figures', async () => {
-    const { split, t } = await tableWithCard()
+    const { shell, t } = await tableWithCard()
     const rows = longRows(t)
     const styles = new Map<string, CellStyle>()
     for (const td of rows[0]!.querySelectorAll('td[data-col]')) styles.set(td.getAttribute('data-col')!, cellStyle(td, WIDE))
     let visited = 0
-    for (const container of [besideCard(split), AT_1440]) {
+    for (const container of [besideCard(shell), AT_1440]) {
       const { width, cols } = fixedColumns(t, container, WIDE)
       const step = cols.find((c) => c.col === 'step')!
       for (const row of rows) {

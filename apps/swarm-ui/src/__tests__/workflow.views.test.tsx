@@ -25,7 +25,7 @@
 //      in the next workflow, from the keyboard as well as the pointer.
 
 import STYLES from '../styles.css?raw'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
@@ -262,8 +262,14 @@ const PLAN_ATTEMPTS: AttemptRow[] = [
   attempt(1, { exit_code: 1, error: 'lease lost' }),
 ]
 
+// The step inspector is the docked inspector now, a sibling of the page's own
+// pane, which starts folded below 1366px (jsdom's default innerWidth is
+// 1024): widen the page so picking a step actually shows it.
+const realWidth = window.innerWidth
+
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
   const { board: b, usage } = board()
   api.loadWorkflowBoard.mockResolvedValue({ status: 'ok', data: b, fetchedAt: T0 } satisfies Result<WorkflowBoard>)
   // The page reads its own workflow first (live QA CH-21), as the API serves it.
@@ -274,6 +280,10 @@ beforeEach(() => {
       ? { status: 'ok', data: { attempts: PLAN_ATTEMPTS }, fetchedAt: T0 }
       : { status: 'empty', fetchedAt: T0 },
   )
+})
+
+afterEach(() => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
 })
 
 // ---------------------------------------------------------------------------
@@ -319,11 +329,16 @@ async function openPage(id: string, tab: 'graph' | 'timeline' | 'table' = 'graph
   return c
 }
 
-/** The page's card, asserting the page is `id`'s: its address and its heading. */
+/**
+ * The page's own frame, asserting the page is `id`'s: its address and its
+ * heading. Not `.wf-card` any more -- the Graph Work redesign draws the
+ * Graph, Table and Timeline straight into the left pane (`.wfp.wfp-main`,
+ * `Board`), with no card wrapping them.
+ */
 function cardOf(id: string): HTMLElement {
   expect(parseWorkflowQuery(address).wf, `the page open is not ${id}'s`).toBe(id)
   expect(document.querySelector('.head h1')?.textContent, `the page is not headed ${id}`).toBe(id)
-  const cards = document.querySelectorAll<HTMLElement>('.wf-card')
+  const cards = document.querySelectorAll<HTMLElement>('.wfp.wfp-main')
   expect(cards, `no card for ${id}`).toHaveLength(1)
   return cards[0]!
 }
@@ -405,8 +420,8 @@ describe('U2: the view modes', () => {
     const buttons = [...seg!.querySelectorAll<HTMLAnchorElement>('a')]
     expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Steps over time', 'Changes'])
     expect(c.querySelector('.wf-viewbar .c-seg'), 'the boxed control is still in the card').toBeNull()
-    // The Graph is what the page lands on.
-    expect(c.querySelector('.wf-canvas')).toBeTruthy()
+    // The Graph is what the page lands on: the stage grid now, not the canvas.
+    expect(c.querySelector('.sg')).toBeTruthy()
     expect(document.querySelector('.wf-chrome .c-seg'), 'a board-wide mode control is still drawn').toBeNull()
   })
 
@@ -430,10 +445,10 @@ describe('U2: the view modes', () => {
     chooseTab(c, 'Table')
     expect(parseWorkflowQuery(address).tab).toBe('table')
     expect(cardOf('wf_new').querySelector('.wf-table')).toBeTruthy()
-    expect(cardOf('wf_new').querySelector('.wf-canvas')).toBeNull()
+    expect(cardOf('wf_new').querySelector('.sg')).toBeNull()
     chooseTab(cardOf('wf_new'), 'Graph')
     expect(parseWorkflowQuery(address).tab).toBe('graph')
-    expect(cardOf('wf_new').querySelector('.wf-canvas')).toBeTruthy()
+    expect(cardOf('wf_new').querySelector('.sg')).toBeTruthy()
   })
 
   describe('the timeline', () => {
@@ -959,9 +974,15 @@ function pick(card: HTMLElement, stepId: string): void {
   fireEvent.click(b!)
 }
 
+/**
+ * The step inspector. Inside `card` when `card` is a standalone `WorkflowCard`
+ * (this file's own `Card`/`viewCard` helpers draw `.wf-panel > .wf-inspect`
+ * there); on the real page it is the docked inspector (`aside.wi-dock`), a
+ * SIBLING pane of `card` (the Graph Work redesign), so that is read too.
+ */
 function inspector(card: HTMLElement): HTMLElement {
-  const i = card.querySelector<HTMLElement>('.wf-inspect')
-  expect(i, 'the card holds no inspector').toBeTruthy()
+  const i = card.querySelector<HTMLElement>('.wf-inspect') ?? document.querySelector<HTMLElement>('.wi-dock .wf-inspect')
+  expect(i, 'no inspector, neither in the card nor in the dock').toBeTruthy()
   return i!
 }
 
@@ -1026,9 +1047,11 @@ describe('U5: scrubbing', () => {
     expect(alone.querySelector('[data-scrub="workflow"] button')).toBeNull()
     fireEvent.click(within(alone).getByRole('button', { name: 'Stop inspecting this step' }))
 
-    // wf_mid's page lands with its failed `plan` already picked (the step
-    // that needs a look), so it is not clicked again -- a click would put it down.
+    // No arrival pick any more (the Graph Work redesign): wf_mid's page lands
+    // with the Overview, so `plan` -- its failed step, the one that needs a
+    // look -- is picked here, same as a reader would.
     await openPage('wf_mid', 'table')
+    pick(cardOf('wf_mid'), 'plan')
     const first = await waitFor(() => inspector(cardOf('wf_mid')))
     expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     expect(within(first).getByText('workflow 1 of 2')).toBeTruthy()
@@ -1266,7 +1289,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     // Waiting for it here is also what proves the read has LANDED.
     await waitFor(() => expect(mark()?.textContent).toBe('2/3 sampled'))
     expect(mark()!.closest('.wf-table-head'), 'the mark is not in the table head row').not.toBeNull()
-    expect(mark()!.closest('.wf-card'), 'the mark is outside the card').not.toBeNull()
+    expect(mark()!.closest('.wfp.wfp-main'), 'the mark is outside the page').not.toBeNull()
     expect(document.querySelector('.wf-chrome'), 'an empty strip above the card').toBeNull()
     // The Timeline draws times from the task read, not the sample.
     chooseTab(c, 'Steps over time')
@@ -1284,9 +1307,13 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
       head!.querySelector('h1')!.compareDocumentPosition(glyph!) & Node.DOCUMENT_POSITION_FOLLOWING,
       'the `?` sits before the heading',
     ).toBeTruthy()
-    // Under the Graph the page draws the Steps table, and its head row carries the mark.
+    // NO STEP TABLE UNDER THE GRAPH any more (visual QA pass 1
+    // overview-agents-73, #2596; the Graph Work redesign keeps that rule):
+    // the graph tab draws the stage grid alone, so the mark -- which lives in
+    // the Steps table's own head row -- is not drawn there either.
     chooseTab(cardOf('wf_new'), 'Graph')
-    expect(mark()?.closest('.wfp-steps .wf-table-head'), 'the Steps table under the graph lost its mark').not.toBeNull()
+    expect(document.querySelector('.wfp-steps'), 'a step table is back under the graph').toBeNull()
+    expect(mark(), 'a sample mark with no table to qualify').toBeNull()
   })
 })
 
@@ -1673,10 +1700,12 @@ describe('the owner’s decisions: scrubbing across workflows (WF-10)', () => {
   it('keeps the view the reader chose, and the picked step, when the scrubber moves to another workflow', async () => {
     // MOVED TO THE PAGE (2026-10-01): the scrub opens the other workflow's
     // page, and the view it opens in is the tab the reader was on.
-    // `wf_mid` and `wf_old` are the two workflows of one shape (#112); wf_mid
-    // lands with its failed `plan` picked.
+    // `wf_mid` and `wf_old` are the two workflows of one shape (#112). No
+    // arrival pick any more (the Graph Work redesign): `plan`, wf_mid's
+    // failed step, is picked here, same as a reader would.
     const mid = await openPage('wf_mid')
     chooseTab(mid, 'Steps over time')
+    pick(cardOf('wf_mid'), 'plan')
     await waitFor(() => inspector(cardOf('wf_mid')))
     expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(within(inspector(cardOf('wf_mid'))).getByRole('button', { name: 'Same step, older workflow' }))

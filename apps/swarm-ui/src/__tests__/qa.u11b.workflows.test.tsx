@@ -270,34 +270,27 @@ describe('N8: the Workflow cell is the row\'s own cell', () => {
   })
 })
 
-describe('the graph: a picked node\'s card is scrolled to', () => {
-  it('scrolls the step card into view when a node opens it', async () => {
-    const seen: Element[] = []
-    const spy = vi.fn(function (this: Element) {
-      seen.push(this)
-    })
-    Object.defineProperty(Element.prototype, 'scrollIntoView', { value: spy, configurable: true, writable: true })
+describe('the graph: a picked chip opens beside the grid, never under it', () => {
+  // THE OLD CANVAS drew the picked node's card below the stages, so the page
+  // scrolled it into view. The redesign (graph-workflow-*) docks it in the
+  // inspector beside the stage grid -- even where the page started folded
+  // (this jsdom viewport is 1024 wide) -- and the grid itself never moves.
+  it('opens the picked chip in the docked inspector, with the grid unmoved', async () => {
     window.history.replaceState(null, '', `/workflows/${WF}`)
     render(<App />)
-    // A node the page did NOT pick on arrival: clicking the one it did closes
-    // its card, and the arrival pick itself is not scrolled to (QA G3-28).
-    // Queried AFTER the arrival pick has landed: the canvas redraws its nodes
-    // then, and a node taken before it is a detached element a click misses.
-    // ITS OWN CEILING, NOT THE SUITE'S 2000 ms: this wait's callback is one
-    // `querySelector`, so it is not #605's query cost. Measured 2026-10-14 on an
-    // idle box, the page's reads (workflow, tenants, stats, capacity, tasks) all
-    // land within ~530 ms of `render`, then the graph page's own render takes
-    // another ~2.3 s before a node carries `is-picked` -- 1.9-3.4 s in all, and
-    // red at 2000 ms both on CI (run 38581770106) and on that box.
-    // THE ARRIVAL PICK'S CARD, NOT ITS NODE (visual QA pass 2,
-    // overview-agents-63, #2694): the page's own pick no longer opens its
-    // folded stage, so the picked node is not on the canvas; its card is.
-    await waitFor(() => expect(document.querySelector('.wf-panel')).not.toBeNull(), {
-      timeout: 10_000,
-    })
-    const node = document.querySelector<HTMLButtonElement>('.wf-canvas button.node:not(.is-picked)')!
-    expect(node).not.toBeNull()
-    fireEvent.click(node)
-    await waitFor(() => expect(seen.some((el) => el.classList.contains('wf-panel'))).toBe(true))
+    const grid = await waitFor(
+      () => {
+        const g = document.querySelector<HTMLElement>('.wi-main .sg')
+        expect(g).not.toBeNull()
+        return g!
+      },
+      { timeout: 10_000 },
+    )
+    const chip = grid.querySelector<HTMLButtonElement>('button.sg-chip')!
+    expect(chip).not.toBeNull()
+    fireEvent.click(chip)
+    await waitFor(() => expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe(`Step ${chip.dataset.step}`))
+    expect(document.querySelector('.wi-main .sg')).toBe(grid)
+    expect(document.querySelector('.wi-main .wf-panel')).toBeNull()
   })
 })

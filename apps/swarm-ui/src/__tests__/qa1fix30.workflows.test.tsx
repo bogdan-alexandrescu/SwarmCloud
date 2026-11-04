@@ -24,6 +24,7 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useState } from 'react'
 
 import type { CancelWorkflowResult, WorkflowRead } from '../api'
 import type { Result } from '../fetch'
@@ -39,7 +40,8 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const real = await vi.importActual<typeof import('../api')>('../api')
-const { WorkflowsScreen, utcStamp } = await import('../Workflows')
+const { WorkflowsScreen, WorkflowCard, stageKey, utcStamp } = await import('../Workflows')
+const { levelsOf } = await import('../dag')
 
 const AUDIT = 'wf_audit_01'
 const AUDIT_TITLE = 'Audit the operator scripts and the Terraform'
@@ -60,6 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  atWidth(realWidth)
   for (const r of restore.splice(0).reverse()) r()
 })
 
@@ -123,6 +126,70 @@ const fact = (sum: HTMLElement, term: string) =>
 async function page(id: string, tab = ''): Promise<void> {
   render(<WorkflowsScreen view={`wf=${id}${tab ? `&tab=${tab}` : ''}`} onView={() => {}} />)
   await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy(), { timeout: 4000 })
+}
+
+const realWidth = window.innerWidth
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
+}
+
+/** The Overview, the inspector at rest (graph-workflow-rest): open at 1440,
+ *  where the dock is not folded. */
+async function overview(id: string, tab = ''): Promise<HTMLElement> {
+  atWidth(1440)
+  await page(id, tab)
+  return waitFor(() => {
+    const d = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Workflow overview"]')
+    expect(d, 'the Overview did not dock').toBeTruthy()
+    return d!
+  })
+}
+
+/** The fixture's own workflow and tasks, off the real (unmocked) api. */
+async function fixtureOf(id: string): Promise<{ workflow: WorkflowRead['workflow']; taskById: Map<string, WorkflowRead['tasks'][number]> }> {
+  const r = await real.loadWorkflow(id)
+  if (r.status !== 'ok') throw new Error(`fixture ${id} did not load: ${r.status}`)
+  return { workflow: r.data.workflow, taskById: new Map(r.data.tasks.map((t) => [t.id, t])) }
+}
+
+/**
+ * THE CANVAS, RENDERED DIRECTLY (the Graph Work redesign): node-level detail
+ * (`.node-dep`) is canvas chrome, and the page's Graph tab draws the stage
+ * grid instead, so these cases render `WorkflowCard` the way the old
+ * workflow page used to, every stage open so no node is folded into a band.
+ */
+async function canvasOf(id: string): Promise<HTMLElement> {
+  const { workflow, taskById } = await fixtureOf(id)
+  const stages = Object.fromEntries(levelsOf(workflow.steps).map((_, i) => [stageKey(id, i), true]))
+  const { container } = render(
+    <WorkflowCard workflow={workflow} taskById={taskById} usage={{ kind: 'ready', usage: null }} openStages={stages} onToggleStage={() => {}} reload={() => {}} />,
+  )
+  return container
+}
+
+/** The same canvas, as the old workflow page drew it: `page`, a step already picked on arrival. */
+function CanvasPageCard({ workflow, taskById, initialPicked }: { id: string; workflow: WorkflowRead['workflow']; taskById: Map<string, WorkflowRead['tasks'][number]>; initialPicked: string }) {
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  const [picked, setPicked] = useState<string | null>(initialPicked)
+  return (
+    <WorkflowCard
+      workflow={workflow}
+      taskById={taskById}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      picked={picked}
+      onPick={(_wid, stepId) => setPicked((p) => (p === stepId ? null : stepId))}
+      page
+      reload={() => {}}
+    />
+  )
+}
+
+async function canvasPageOf(id: string, initialPicked: string): Promise<HTMLElement> {
+  const { workflow, taskById } = await fixtureOf(id)
+  const { container } = render(<CanvasPageCard id={id} workflow={workflow} taskById={taskById} initialPicked={initialPicked} />)
+  return container
 }
 
 // ---------------------------------------------------------------------------
@@ -245,38 +312,42 @@ describe('62: a state the API did not derive reads `state unknown`, the why in i
 // One workflow's page
 // ---------------------------------------------------------------------------
 
-describe('80: the loading head reserves the loaded head’s buttons', () => {
-  it('draws Copy id and Copy link, disabled, while the page reads', async () => {
+describe('80: the loading head reserves what the loaded head draws', () => {
+  it('draws no buttons in the head while the page reads, as the loaded head has none: Copy id, Copy link and Stop are the Overview’s', async () => {
     api.loadWorkflow.mockImplementation(() => new Promise<Result<WorkflowRead>>(() => {}))
     render(<WorkflowsScreen view={`wf=${AUDIT}`} onView={() => {}} />)
     const head = await waitFor(() => {
-      const h = document.querySelector<HTMLElement>('.wfp.is-loading .wfp-actions')
+      const h = document.querySelector<HTMLElement>('.wfp.is-loading .wfp-head')
       expect(h).toBeTruthy()
       return h!
     })
-    // MUTATION: drop `<Button disabled>Copy id</Button>` from `WorkflowPageSkeleton`.
-    const buttons = [...head.querySelectorAll('button')]
-    expect(buttons.map((b) => b.textContent)).toEqual(['Copy id', 'Copy link'])
-    expect(buttons.every((b) => b.disabled)).toBe(true)
+    // MUTATION: put `<Button disabled>Copy id</Button>` back in `WorkflowPageSkeleton`'s head.
+    expect(head.querySelectorAll('button')).toHaveLength(0)
+    expect(head.querySelector('.wfp-actions')).toBeNull()
   })
 })
 
 describe('81: the page says one state', () => {
   it('draws no stored-state line on a workflow whose stored copy disagreed', async () => {
     await page(AUDIT)
-    await waitFor(() => expect(document.querySelector('.wf-card.is-page')).toBeTruthy())
-    // MUTATION: render `<StateDrift>` on the page again -- `stored as queued ·
-    // steps running · stored copy corrected` beside a head that says running.
-    expect(document.querySelector('.wf-drift')).toBeNull()
-    expect(flat(document.querySelector('.wfp'))).not.toMatch(/stored as|stored copy/)
+    await waitFor(() => expect(document.querySelector('.wfp.wfp-main')).toBeTruthy())
+    // THE DRIFT LINE IS BEHIND "Workflow id and reads" NOW (the redesign,
+    // graph-workflow-rest), not drawn directly under the head any more.
+    const main = document.querySelector<HTMLElement>('.wfp.wfp-main')!
+    // MUTATION: render `<StateDrift>` in the main pane again -- `stored as
+    // queued · steps running · stored copy corrected` beside a head that
+    // says running.
+    expect(main.querySelector('.wf-drift')).toBeNull()
+    expect(flat(main)).not.toMatch(/stored as|stored copy/)
   })
 })
 
 describe('82: the cost pill names its unit and keeps a space', () => {
   it('reads `$… N of M steps that ran reported`, with a space before the count', async () => {
     await page(AUDIT)
+    // THE COST IS ONE OF THE HEAD'S `.wfp-fig`s now, not a dedicated `.wfp-cost`.
     const spend = await waitFor(() => {
-      const s = document.querySelector<HTMLElement>('.wfp-cost .wf-spend:not(.is-reading)')
+      const s = document.querySelector<HTMLElement>('.wfp-head .wfp-fig .wf-spend:not(.is-reading)')
       expect(s?.querySelector('.wf-spend-cov')).toBeTruthy()
       return s!
     }, { timeout: 4000 })
@@ -287,31 +358,42 @@ describe('82: the cost pill names its unit and keeps a space', () => {
 })
 
 describe('83: one verb, Stop, for every stop on the page', () => {
-  it('labels the head Stop workflow, the step card Stop and the running node Stop', async () => {
-    await page(AUDIT)
-    const head = document.querySelector<HTMLElement>('.wfp-head')!
-    // MUTATION: put `Cancel workflow` back on the head's trigger.
-    await waitFor(() => expect(within(head).getByRole('button', { name: 'Stop workflow' })).toBeTruthy())
-    expect(within(head).queryByRole('button', { name: /cancel/i })).toBeNull()
-    // MUTATION: drop `label="Stop"` from the node's `StopRun` -- the node says
-    // lower-case `stop`.
-    const stops = await waitFor(() => {
-      const s = [...document.querySelectorAll<HTMLElement>('.node-stop button')]
-      expect(s.length).toBeGreaterThan(0)
-      return s
+  it('labels the Overview’s trigger Stop workflow and the step card Stop', async () => {
+    // Stop moved off the head into the Overview (graph-workflow-rest); the
+    // running node's own inline Stop is canvas chrome, not drawn by the
+    // page's Graph tab any more (the stage grid's chips are plain pick
+    // buttons) -- so the two surfaces the page still offers are the
+    // Overview's trigger and the picked step's card.
+    const ov = await overview(AUDIT)
+    // MUTATION: put `Cancel workflow` back on the Overview's trigger.
+    await waitFor(() => expect(within(ov).getByRole('button', { name: 'Stop workflow' })).toBeTruthy())
+    expect(within(ov).queryByRole('button', { name: /cancel/i })).toBeNull()
+    // The running step's card, opened from the grid.
+    const chip = await waitFor(() => {
+      const b = document.querySelector<HTMLButtonElement>('.sg [data-step="scan-terraform"]')
+      expect(b).toBeTruthy()
+      return b!
     })
-    for (const b of stops) expect(b.textContent).toBe('Stop')
+    fireEvent.click(chip)
+    const dock = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step scan-terraform"]')
+      expect(d).toBeTruthy()
+      return d!
+    })
     // MUTATION: put `label="Stop step"` back on the card's `StopRun`.
-    const card = document.querySelector<HTMLElement>('.wf-inspect-acts')
-    if (card !== null) expect(flat(card.querySelector('button'))).toBe('Stop')
+    const card = await waitFor(() => {
+      const c = dock.querySelector<HTMLElement>('.wf-inspect-acts')
+      expect(c).toBeTruthy()
+      return c!
+    })
+    expect(flat(card.querySelector('button'))).toBe('Stop')
   })
 })
 
 describe('overview-agents-85: the stop dialog asks for the id, and its hint says id', () => {
   it('says the button unlocks when the id matches exactly, then that the id matches', async () => {
-    await page(AUDIT)
-    const head = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')!
-    fireEvent.click(await waitFor(() => within(head).getByRole('button', { name: 'Stop workflow' })))
+    const ov = await overview(AUDIT)
+    fireEvent.click(await waitFor(() => within(ov).getByRole('button', { name: 'Stop workflow' })))
     const dialog = await screen.findByRole('dialog')
     // MUTATION: drop `noun="id"` from CancelWorkflow's TypedConfirm -- the
     // hint asks for a "name" the reader is told nowhere to type (QA1C-FOLLOWUPS).
@@ -328,9 +410,8 @@ describe('84: a recorded stop is said, and the head shows it pending', () => {
       fetchedAt: Date.now(),
       data: { workflow_id: AUDIT, tasks_cancelled: ['task_wf_scan_a', 'task_wf_scan_b'], tasks_already_terminal: ['task_wf_plan'] },
     } satisfies Result<CancelWorkflowResult>)
-    await page(AUDIT)
-    const head = () => document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')!
-    fireEvent.click(await waitFor(() => within(head()).getByRole('button', { name: 'Stop workflow' })))
+    const ov = await overview(AUDIT)
+    fireEvent.click(await waitFor(() => within(ov).getByRole('button', { name: 'Stop workflow' })))
     const dialog = await screen.findByRole('dialog')
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: AUDIT } })
     await act(async () => {
@@ -338,11 +419,13 @@ describe('84: a recorded stop is said, and the head shows it pending', () => {
     })
     expect(api.cancelWorkflow).toHaveBeenCalledWith(AUDIT)
     // The stop's own reload remounts the page; the answer is held above it.
+    // The trigger and the recorded answer moved into the Overview with it
+    // (graph-workflow-rest).
     // MUTATION: drop `setSent`/`onSent` in `CancelWorkflow.send` -- the dialog
-    // closes and the head is exactly as it was, `Stop workflow` and all.
+    // closes and the Overview is exactly as it was, `Stop workflow` and all.
     const said = await waitFor(
       () => {
-        const s = head()?.querySelector<HTMLElement>('.wfp-cancel-sent')
+        const s = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Workflow overview"] .wfp-cancel-sent')
         expect(s).toBeTruthy()
         return s!
       },
@@ -350,8 +433,13 @@ describe('84: a recorded stop is said, and the head shows it pending', () => {
     )
     expect(said.getAttribute('role')).toBe('status')
     expect(flat(said)).toBe('Stop recorded: 2 steps asked to stop, 1 step had already ended.')
-    expect(flat(head())).toContain('stop requested')
-    expect(within(head()).queryByRole('button', { name: 'Stop workflow' }), 'the trigger is still offered after the stop was recorded').toBeNull()
+    // "stop requested" is `CancelSent`'s own fallback tag, beside the
+    // recorded line, while the read itself has not caught up with
+    // `cancel_requested` yet -- both moved into the Overview with the
+    // control (graph-workflow-rest), not the head.
+    const ovAfter = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Workflow overview"]')!
+    expect(flat(ovAfter)).toContain('stop requested')
+    expect(within(ovAfter).queryByRole('button', { name: 'Stop workflow' }), 'the trigger is still offered after the stop was recorded').toBeNull()
   })
 
   it('says only that the stop was recorded when the API names no step', async () => {
@@ -360,16 +448,19 @@ describe('84: a recorded stop is said, and the head shows it pending', () => {
       fetchedAt: Date.now(),
       data: { workflow_id: AUDIT, tasks_cancelled: [], tasks_already_terminal: [] },
     } satisfies Result<CancelWorkflowResult>)
-    await page(AUDIT)
-    const head = () => document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')!
-    fireEvent.click(await waitFor(() => within(head()).getByRole('button', { name: 'Stop workflow' })))
+    const ov = await overview(AUDIT)
+    fireEvent.click(await waitFor(() => within(ov).getByRole('button', { name: 'Stop workflow' })))
     const dialog = await screen.findByRole('dialog')
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: AUDIT } })
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Stop the workflow' }))
     })
     // MUTATION: count `tasks_cancelled` whatever its length -- `0 steps asked to stop`.
-    await waitFor(() => expect(flat(head()?.querySelector('.wfp-cancel-sent'))).toBe('Stop recorded.'), { timeout: 4000 })
+    await waitFor(
+      () =>
+        expect(flat(document.querySelector('aside.wi-dock[aria-label="Workflow overview"] .wfp-cancel-sent'))).toBe('Stop recorded.'),
+      { timeout: 4000 },
+    )
   })
 })
 
@@ -388,8 +479,9 @@ describe('89: the workflow’s time view is not a second Timeline', () => {
 describe('73: the Graph tab draws the graph, the Table tab the table', () => {
   it('draws no steps table under the graph', async () => {
     await page(AUDIT)
-    await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
-    // MUTATION: put the `.wfp-steps` `WorkflowSteps` back under the graph.
+    // The Graph tab is the stage grid now (graph-workflow-rest), not the canvas.
+    await waitFor(() => expect(document.querySelector('.sg')).toBeTruthy())
+    // MUTATION: put the `.wfp-steps` `WorkflowSteps` back under the grid.
     expect(document.querySelector('.wfp-steps')).toBeNull()
     expect(document.querySelector('.wfp table')).toBeNull()
   })
@@ -397,9 +489,11 @@ describe('73: the Graph tab draws the graph, the Table tab the table', () => {
 
 describe('64: a step that reads many files says how many', () => {
   it('draws `↑ 5 steps · 5 files` on the synthesis node, the whole list its title', async () => {
-    await page(SYNTH)
+    // `.node-dep` is canvas chrome (the page's Graph tab is the stage grid
+    // now): render `WorkflowCard` directly, as the old workflow page did.
+    const container = await canvasOf(SYNTH)
     const dep = await waitFor(() => {
-      const d = document.querySelector<HTMLElement>('.node-slot:has(button.node[data-step="synthesis"]) .node-dep')
+      const d = container.querySelector<HTMLElement>('.node-slot:has(button.node[data-step="synthesis"]) .node-dep')
       expect(d).toBeTruthy()
       return d!
     })
@@ -411,9 +505,9 @@ describe('64: a step that reads many files says how many', () => {
   })
 
   it('keeps naming the file of a step that reads one', async () => {
-    await page(AUDIT)
+    const container = await canvasOf(AUDIT)
     const deps = await waitFor(() => {
-      const d = [...document.querySelectorAll<HTMLElement>('.node-dep')]
+      const d = [...container.querySelectorAll<HTMLElement>('.node-dep')]
       expect(d.length).toBeGreaterThan(0)
       return d
     })
@@ -430,14 +524,17 @@ describe('63: the graph brings the picked step round without cutting its neighbo
       el.classList.contains('wf-canvas-wrap') ? 72 + Number.parseFloat(el.querySelector<HTMLElement>('.wf-canvas')?.style.width ?? '0') : 0,
     )
     stubBox('offsetWidth', (el) => (el.classList.contains('wf-levels') ? 72 : 0))
-    await page(SYNTH)
+    // The arrival pick and the failure line are canvas chrome (the page's
+    // Graph tab is the stage grid now): `WorkflowCard`, `page`, rendered as
+    // the old workflow page used to.
+    const container = await canvasPageOf(SYNTH, 'checkpoints')
     // THE READER BRINGS IT ROUND (visual QA pass 2, overview-agents-63,
     // #2694): the page's own pick on arrival opens no stage and scrolls
     // nothing, so the scroll measured here is the one the failure line's
     // control makes.
-    fireEvent.click(await waitFor(() => document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!))
+    fireEvent.click(await waitFor(() => container.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!))
     const wrap = await waitFor(() => {
-      const w = document.querySelector<HTMLElement>('.wf-canvas-wrap')
+      const w = container.querySelector<HTMLElement>('.wf-canvas-wrap')
       expect(w?.querySelector('.node.is-picked')).toBeTruthy()
       return w!
     })
