@@ -196,6 +196,63 @@ def test_form_link_survives_a_missing_value_or_a_failed_write(setup_client, db,
     assert db.docs[ref]["used_at"] is not None
 
 
+def _served_expiry(response) -> datetime:
+    """The `expires_at` a refusal's detail carries, in universal time."""
+    served = datetime.fromisoformat(response.json()["detail"]["expires_at"])
+    assert served.utcoffset() == timedelta(0), served
+    return served
+
+
+def test_a_value_links_422_tells_its_owner_when_it_expires(setup_client, db,
+                                                           fake_secrets) -> None:
+    """The owner's pick (3 November 2026): the 422 that keeps a value link
+    unused carries the link's `expires_at`, so the teammate's page draws the
+    hours left on it."""
+    token = _token(_mint(setup_client, "addon-secret", "tailscale"))
+    record = db.docs[f"{COLLECTION}/{digest(token)}"]
+    empty = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("alice"))
+    assert empty.status_code == 422, empty.text
+    assert _served_expiry(empty) == record["expires_at"]
+    assert record["used_at"] is None
+
+
+def test_a_pool_links_409_tells_its_owner_when_it_expires(setup_client, db) -> None:
+    """The 409 for a workspace not ready yet keeps its workspace, state and
+    retry, and adds the link's `expires_at`."""
+    team = _team(setup_client, db)
+    assert db.docs[f"workspaces/{team}"]["state"] != "ready"
+    token = _token(_mint(setup_client, "pool-account", "pool-1"))
+    record = db.docs[f"{COLLECTION}/{digest(token)}"]
+    early = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("alice"))
+    assert early.status_code == 409, early.text
+    detail = early.json()["detail"]
+    assert detail["workspace"] == team and detail["retry"] is True
+    assert "workspace_state" in detail
+    assert _served_expiry(early) == record["expires_at"]
+    assert record["used_at"] is None
+
+
+def test_no_expiry_reaches_a_probe_or_a_dead_link(setup_client, db, fake_secrets) -> None:
+    """The 404 for a used, an expired or an unknown link stays one answer
+    with no expiry, and someone else holding the token learns none either."""
+    token = _token(_mint(setup_client, "addon-secret", "tailscale"))
+    other = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("carol"))
+    assert other.status_code == 403, other.text
+    assert "expires_at" not in json.dumps(other.json())
+    used = setup_client.post(REDEEM, json={"token": token, "value": secrets.token_hex(16)},
+                             headers=auth_header("alice"))
+    assert used.status_code == 200, used.text
+    stale = _token(_mint(setup_client, "addon-secret", "typesafe"))
+    ref = f"{COLLECTION}/{digest(stale)}"
+    db.docs[ref]["expires_at"] = datetime.now(db.docs[ref]["created_at"].tzinfo) \
+        - timedelta(seconds=1)
+    answers = [setup_client.post(REDEEM, json={"token": t}, headers=auth_header("alice"))
+               for t in (token, stale, secrets.token_hex(24))]
+    assert [a.status_code for a in answers] == [404, 404, 404]
+    assert len({json.dumps(a.json(), sort_keys=True) for a in answers}) == 1
+    assert "expires_at" not in json.dumps(answers[0].json())
+
+
 def test_pool_link_refused_before_first_team(setup_client, db) -> None:
     response = _mint(setup_client, "pool-account", "pool-1")
     assert response.status_code == 409, response.text

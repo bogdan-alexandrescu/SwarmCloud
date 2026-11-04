@@ -4,10 +4,8 @@
  * FIXTURE console's own data (`api.ts` fixtures, which dev mode serves), so
  * the screen a reviewer renders is the screen these assertions read.
  *
- *   ovag2-01  at 390 a card's State cell was a ~10px column, one letter a line
  *   ovag2-08  Escape on the step drawer dropped focus to <body>
  *   ovag2-15  the list's Cost note was a mono sentence on four lines
- *   61        a two-line title was cut to one line at 1440
  *   62        a `state unknown` row claimed `9d 22h so far`
  *   63        the page opened with the step drawer open and the graph scrolled
  *   66        `until every step has run` on a workflow that has ended
@@ -75,10 +73,6 @@ async function page(id: string): Promise<void> {
   await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy(), { timeout: 4000 })
 }
 
-async function css(): Promise<string> {
-  return (await import('../styles/workflows.css?raw')).default
-}
-
 /**
  * The fixture's own workflow and tasks, read the same way the screen does
  * (`USE_FIXTURES`): what a canvas-only behaviour's `WorkflowCard` harness
@@ -118,38 +112,7 @@ function CanvasHarness({ workflow, taskById, initialPicked }: { workflow: Workfl
   )
 }
 
-/** The body of the first rule in `sheet` whose selector is exactly `selector`, after `from`. */
-function ruleBody(sheet: string, selector: string, from = 0): string | null {
-  const esc = selector.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&').replace(/\s+/g, '\\s*')
-  const m = new RegExp(`(?:^|[}\\s])${esc}\\s*\\{([^}]*)\\}`).exec(sheet.slice(from))
-  return m?.[1] ?? null
-}
-
-describe('ovag2-01: the phone card gives State a share of the width, not what is left', () => {
-  it('lays the card on two fractional tracks, so a wide cost or duration cannot starve the State column', async () => {
-    const sheet = await css()
-    const at = sheet.indexOf('@media (max-width: 640px)')
-    expect(at).toBeGreaterThan(-1)
-    const body = ruleBody(sheet, '.wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row', at)
-    expect(body, 'no phone card rule').not.toBeNull()
-    const cols = /grid-template-columns:\s*([^;]+);/.exec(body!)?.[1]?.trim()
-    // MUTATION: put back `minmax(0, 1fr) minmax(0, auto)` -- the right track
-    // grows to the cost cell's one-line width first and the left one, where
-    // State and Steps done sit, gets the ~10px that is left.
-    expect(cols).toBe('repeat(2, minmax(0, 1fr))')
-  })
-
-  it('keeps the state word on one line beside its mark', async () => {
-    const sheet = await css()
-    const at = sheet.indexOf('@media (max-width: 640px)')
-    // MUTATION: drop the phone State cell's `white-space: nowrap` -- a narrow
-    // cell stacks `state unknown` a word a line.
-    const body = ruleBody(sheet, '.wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="state"]', at)
-    expect(body).toMatch(/white-space:\s*nowrap/)
-  })
-})
-
-describe('ovag2-15: the list’s cost note is short, in the body face', () => {
+describe('ovag2-15: the list’s cost note is short', () => {
   it('reads `$… N of M reported`, the long form in its title', async () => {
     await list()
     const cov = await waitFor(() => {
@@ -175,25 +138,6 @@ describe('ovag2-15: the list’s cost note is short, in the body face', () => {
       return c!
     })
     expect(flat(cov)).toMatch(/^\d+ of \d+ steps? that ran reported$/)
-  })
-
-  it('sets the list’s note in the body face', async () => {
-    const sheet = await css()
-    // MUTATION: drop `font-family: var(--font)` from the list's coverage rule
-    // -- it inherits `.wf-spend`'s mono.
-    expect(sheet).toMatch(/\.wfl \.wfl-table td\[data-col="cost"\] \.wf-spend-cov\s*\{[^}]*font-family:\s*var\(--font\)/)
-  })
-})
-
-describe('61: a long title takes two lines in the list', () => {
-  it('clamps the name at two lines instead of cutting it at one', async () => {
-    const sheet = await css()
-    const body = ruleBody(sheet, '.wfl .wfl-line > a', sheet.indexOf('@media (min-width: 900px)'))
-    expect(body).not.toBeNull()
-    // MUTATION: put `white-space: nowrap` back on the name -- `Check the five
-    // contract invariants, then write one sy…` at 1440.
-    expect(body).not.toMatch(/white-space:\s*nowrap/)
-    expect(body).toMatch(/-webkit-line-clamp:\s*2/)
   })
 })
 

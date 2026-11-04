@@ -1,12 +1,11 @@
 /**
- * THE LAST FOUR CUTS OF VISUAL QA PASS 1 ON WORK › WORKFLOWS (#2391 comment
- * 58, lane workflows-cuts, 2026-10-27). Each was text the screen cut where a
- * reader needed it, the whole of it only in a title:
+ * THE LAST CUTS OF VISUAL QA PASS 1 ON WORK › WORKFLOWS (#2391 comment 58,
+ * lane workflows-cuts, 2026-10-27). Each was text the screen cut where a
+ * reader needed it, the whole of it only in a title. (A fourth, WHY, was the
+ * old list's second line, which the redesigned list does not draw.)
  *
  *  ID     the list cut each row's id at a different width at 1440
  *         (`wf_aud…`, `wf_b…`, 0px): a shrink factor of 100 with no floor.
- *  WHY    with the runners drawn under the name, the current step kept
- *         ~135px beside them: 'failed at checkpoints: e…'.
  *  NOTE   the graph card of a step parked on DEPENDENCY_INCOMPLETE cut its
  *         fixed sentence to 'Waiting on an earlier…' on its one note line.
  *  SHAPE  the same-step row's 'shape: …' was cut beside the ◀ position ▶ nav
@@ -192,40 +191,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-/** A `<n>ch` length as a number of characters, or NaN for anything else. */
-const chOf = (v: string | null) => {
-  const m = /^([\d.]+)ch$/.exec(v ?? '')
-  return m === null ? Number.NaN : Number(m[1])
-}
-
 describe('ID: the list draws every row’s id under its name (visual QA pass 1 overview-agents-61, #2596)', () => {
-  /** A list row's name cell: a name of `name`'s length on its line, then the id under it. */
-  function nameWith(name: string, id: string): HTMLElement {
-    const host = document.createElement('div')
-    host.className = 'wfl'
-    host.innerHTML = `<table><tbody><tr><td class="wfl-name"><span class="wfl-line"><a>${name}</a></span><span class="id">${id}</span></td></tr></tbody></table>`
-    document.body.appendChild(host)
-    hosts.push(host)
-    return host.querySelector<HTMLElement>('.wfl-name > .id')!
-  }
-
-  // MUTATION: put the id back on the name's line with `flex: 0 100 auto;
-  // max-width: 10ch`: every 45-character title is cut again at 1440, and this
-  // rule no longer matches the id at all.
-  it('draws the id as its own line, cut with an ellipsis and never wrapped, under names of every length', () => {
-    const ids = [
-      nameWith('Audit the operator surface for every tenant', 'wf_audit7c52762aa41b9e0d3f'),
-      nameWith('Build', 'wf_b81f02c9e4d7a3b6150c'),
-    ]
-    for (const id of ids) {
-      expect(painted(id, 'display', WIDE)).toBe('block')
-      expect(painted(id, 'white-space', WIDE)).toBe('nowrap')
-      expect(painted(id, 'text-overflow', WIDE)).toBe('ellipsis')
-      // No 10ch cap: the id is cut by its cell, not at `wf_` and six characters.
-      expect(chOf(painted(id, 'max-width', WIDE))).toBeNaN()
-    }
-  })
-
   // THE ROW IS ONE LINE NOW (the redesign, frame graph-workflows-rest): no id
   // under the name and no `mixGoesUnder` measuring; the id is the name link's
   // title and the inspector summary's own line, uncut.
@@ -244,37 +210,6 @@ describe('ID: the list draws every row’s id under its name (visual QA pass 1 o
     const id = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum .id')
     expect(id?.getAttribute('title')).toBe(chain.workflow_id)
     expect(id?.textContent).toBe(chain.workflow_id)
-  })
-})
-
-describe('WHY: with the runners under the name, the current step has a line of its own', () => {
-  // MUTATION: put back `.wfl-sub { flex-wrap: nowrap }` and the step's
-  // `flex: 1 1 auto`: beside the mix's 11rem it keeps ~135px at 1440.
-  it('wraps the second line so the step takes the whole width under the runners, cut with its title', () => {
-    const why = build('div.wfl span.wfl-name span.wfl-sub span.wfl-why', hosts)
-    const sub = why.parentElement!
-    const mix = document.createElement('span')
-    mix.className = 'wfl-mix'
-    sub.insertBefore(mix, why)
-    expect(painted(sub, 'display', WIDE)).toBe('flex')
-    expect(painted(sub, 'flex-wrap', WIDE), 'the step shares a line with the runners').toBe('wrap')
-    const [, , basis] = (painted(why, 'flex', WIDE) ?? '').split(/\s+/)
-    expect(basis, 'the step does not take a line of its own').toBe('100%')
-    // The runners keep their one whole chip on the line above it.
-    expect((painted(mix, 'flex', WIDE) ?? '').split(/\s+/).slice(0, 2)).toEqual(['0', '0'])
-    // Still one line, cut, the whole text in the title.
-    expect(painted(why, 'white-space', WIDE)).toBe('nowrap')
-    expect(painted(why, 'text-overflow', WIDE)).toBe('ellipsis')
-  })
-
-  // The control: the phone card reads the step whole, as before.
-  it('leaves the phone card’s step uncut at 390', () => {
-    const under = build('div.wfl span.wfl-name span.wfl-sub span.wfl-why', hosts)
-    const alone = build('div.wfl span.wfl-name span.wfl-why', hosts)
-    for (const why of [under, alone]) {
-      expect(painted(why, 'white-space', PHONE) ?? 'normal').toBe('normal')
-      expect(painted(why, 'text-overflow', PHONE) ?? 'clip').toBe('clip')
-    }
   })
 })
 

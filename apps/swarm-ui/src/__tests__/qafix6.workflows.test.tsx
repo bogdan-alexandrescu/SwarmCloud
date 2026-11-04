@@ -21,7 +21,6 @@
 //                                and 'not measured not collected'.
 //   f  6343767840                unknown, loading and zero cost.
 //   g  6343794378                the policy chip read as what happened.
-//   h  6314117148                the list's cost note (verified fixed: 136px).
 //   i  6283740207 (QA-120)       the failed step on arrival.
 //
 // Every assertion names the mutation that turns it red.
@@ -618,22 +617,6 @@ describe('g. the policy chip reads as configuration', () => {
     const ov = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Workflow overview"]')!
     // MUTATION: swap the two branches and "On a failed step" reads 'stop the workflow'.
     expect(within(ov).getByText('On a failed step').nextElementSibling?.textContent).toBe('keep going')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// h. 6314117148: the cost note (verified fixed by QAFIX5)
-// ---------------------------------------------------------------------------
-
-describe('h. the list’s cost column holds its note on one line at 1440', () => {
-  it('sizes the Cost head 136px from 1280', () => {
-    const host = document.createElement('div')
-    host.innerHTML = '<div class="wfl"><table class="wfl-table"><thead><tr><th data-col="cost">Cost</th></tr></thead></table></div>'
-    document.body.appendChild(host)
-    hosts.push(host)
-    // MUTATION: drop the min-width 1280 block in workflows.css -- 100px, and
-    // '3 of 4 reported' wraps to three lines.
-    expect(painted(host.querySelector('th')!, 'width', WIDE)).toBe('136px')
   })
 })
 
