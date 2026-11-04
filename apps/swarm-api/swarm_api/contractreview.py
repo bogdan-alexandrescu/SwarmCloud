@@ -22,8 +22,7 @@ module builds to:
   sending code. Off (the default), nothing is sent to Jev; the review is
   recorded `not_run` with reason `not_opted_in`. The block carries
   swarm-api's MAC (`judgment.block_mac`, block `contract_review`, listed in
-  `judgment.API_SETTINGS_MAC_FIELDS` until the frozen
-  `SETTINGS_MAC_FIELDS` lists it, contract request 138); for a tenant cut over in
+  the frozen `SETTINGS_MAC_FIELDS` by contract request 138); for a tenant cut over in
   SETTINGS_MAC_TENANTS a block that does not verify reads as off.
 * **Open on failure (answer 2).** No route, no key, a timeout, a 429 or 5xx,
   a malformed answer, the month over its cap: the contract is accepted on the
@@ -117,7 +116,7 @@ ENABLED = "enabled"
 SET_AT = "set_at"
 SET_BY = "set_by"
 AUDIT_ACTION = "workspace_contract_review_set"
-#: The block's name in `judgment.API_SETTINGS_MAC_FIELDS`.
+#: The block's name in the frozen `SETTINGS_MAC_FIELDS`.
 MAC_BLOCK = FIELD
 OWNED_FIELDS = (ENABLED, SET_AT, SET_BY, judgment.MAC_FIELD)
 #: Off until the workspace's owner or admin turns it on: a contract's text
