@@ -14,12 +14,13 @@ import { fixtureJevUsage } from './jevUsage.fixture'
 
 export const JEV_USAGE_ROUTE = '/v1/jev-usage'
 
-/** Who asked: the worker's judgments (by question), the gate, the agent's tool, the browser. */
+/** Who asked: the worker's judgments (by question), the gate, the agent's tool, the browser, the control plane's re-ask. */
 export type JevUsageGroup =
   | 'worker_judgment'
   | 'quality_gate'
   | 'decision_tool'
   | 'jev_browser'
+  | 'control_plane_reask'
   | 'unattributed'
   | 'other'
 
@@ -28,6 +29,7 @@ export const JEV_GROUP_LABEL: Readonly<Record<JevUsageGroup, string>> = {
   quality_gate: 'Quality gate',
   decision_tool: 'Agent decision tool',
   jev_browser: 'Jev browser',
+  control_plane_reask: 'Control-plane re-ask',
   unattributed: 'Not split by kind',
   other: 'Other',
 }

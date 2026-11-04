@@ -249,6 +249,10 @@ def test_the_tick_identity_ticks(client) -> None:
     response = client.post("/v1/admin/schedules/tick", headers=TICK_HEADERS)
     assert response.status_code == 200, response.text
     assert response.json()["due"] == 0
+    # The contract re-ask rides the same minute (owner, 4 November 2026):
+    # its pass ran, over nothing due, and did not fail.
+    reask = response.json()["contract_reask"]
+    assert "errors" not in reask and reask["due"] == 0 and reask["asked"] == 0
 
 
 @pytest.mark.parametrize("who", ["root", "alice"])
