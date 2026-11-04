@@ -38,7 +38,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowCard, WorkflowsScreen } = await import('../Workflows')
 const wl = await import('../workflowlist')
 
 const T0 = Date.parse('2026-10-01T12:00:00.000Z')
@@ -178,6 +178,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  atWidth(realWidth)
 })
 
 function Routed({ initial, onView }: { initial: string; onView?: (v: string) => void }) {
@@ -191,6 +192,28 @@ function Routed({ initial, onView }: { initial: string; onView?: (v: string) => 
       }}
     />
   )
+}
+
+/** `WorkflowCard` directly: the canvas is off the redesigned page (brief,
+ *  "What moved where" -- "render it directly"). */
+function CardHarness({ workflow, taskById }: { workflow: Workflow; taskById: Map<string, Task> | null }) {
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  return (
+    <WorkflowCard
+      workflow={workflow}
+      taskById={taskById}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      reload={() => {}}
+    />
+  )
+}
+
+const realWidth = window.innerWidth
+/** The inspector starts folded below 1366px (graph-notes D·8b); #110 pins that threshold. */
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
 }
 
 function rowIds(): string[] {
@@ -239,8 +262,13 @@ const at = (el: Element, prop: string, width = 1440, theme: Theme = 'dark', redu
 // ---------------------------------------------------------------------------
 
 describe('#108: the workflow graph has a key for its edge kinds', () => {
+  // THE CANVAS AND ITS KEY ARE OFF THE REDESIGNED PAGE NOW (brief, "What
+  // moved where" -- `.wf-key` is named among what left with it), so each
+  // case here renders `WorkflowCard` directly, where the canvas still lives.
   it('names order, staged and declared beside the canvas, each drawn with the edge rule it names', async () => {
-    render(<WorkflowsScreen view="wf=wf_new" />)
+    const { workflows, taskById } = fixture()
+    const w = workflows.find((x) => x.workflow_id === 'wf_new')!
+    render(<CardHarness workflow={w} taskById={taskById} />)
     await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
     const key = screen.getByRole('list', { name: 'Edge key' })
     // NOT HIDDEN: the edge SVG is aria-hidden, so the key is the one place the
@@ -263,14 +291,18 @@ describe('#108: the workflow graph has a key for its edge kinds', () => {
   })
 
   it('is drawn even where the zoom control is not, on a chain the zoom cannot change', async () => {
-    render(<WorkflowsScreen view="wf=wf_one" />)
+    const { workflows, taskById } = fixture()
+    const w = workflows.find((x) => x.workflow_id === 'wf_one')!
+    render(<CardHarness workflow={w} taskById={taskById} />)
     await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
     expect(document.querySelector('.wf-zoom-seg'), 'a two-step chain grew a zoom control').toBeNull()
     expect(screen.getByRole('list', { name: 'Edge key' })).toBeTruthy()
   })
 
   it('reads at the 12px floor with no letter-spacing, and the declared sample is dashed in both themes', async () => {
-    render(<WorkflowsScreen view="wf=wf_new" />)
+    const { workflows, taskById } = fixture()
+    const w = workflows.find((x) => x.workflow_id === 'wf_new')!
+    render(<CardHarness workflow={w} taskById={taskById} />)
     await waitFor(() => expect(document.querySelector('.wf-key')).toBeTruthy())
     const word = document.querySelector('.wf-key-word')!
     for (const theme of THEMES) {
@@ -292,89 +324,125 @@ describe('#108: the workflow graph has a key for its edge kinds', () => {
 describe('#110: the workflow step inspector opens next to the picked step', () => {
   it('docks in the right-hand column at 1440 in the Table, labelled with its workflow', async () => {
     viewport(1440)
+    atWidth(1440)
     render(<Routed initial="wf=wf_one&tab=table" />)
-    // The page arrives with the failed step picked.
-    const panel = await waitFor(() => {
-      const p = document.querySelector<HTMLElement>('.wf-split.has-panel > .wf-panel')
+    // NO ARRIVAL PICK ANY MORE (brief, "What moved where"): the reader picks
+    // the failed step themselves.
+    const pick = await waitFor(() => {
+      const p = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')
       expect(p).toBeTruthy()
       return p!
     })
-    const split = panel.parentElement!
-    const main = split.querySelector(':scope > .wf-split-main')!
+    fireEvent.click(pick)
+    const dock = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('.wi-dock[aria-label="Step fix"]')
+      expect(d).toBeTruthy()
+      return d!
+    })
+    const main = document.querySelector('.wi-main')!
     expect(main.querySelector('.wf-table tr[data-step="fix"]')).toBeTruthy()
     expect(main.querySelector('.wf-inspect'), 'the inspector is still under the table').toBeNull()
-    const inspect = panel.querySelector<HTMLElement>('.wf-inspect')!
+    const inspect = dock.querySelector<HTMLElement>('.wf-inspect')!
     expect(inspect.getAttribute('aria-label')).toBe('Step fix of wf_one')
     // On the workflow's own page the card is headed by its step (QAFIX5,
     // QA-120): the page is titled by the workflow, which the label names.
     expect(inspect.querySelector('.wf-inspect-steph .wf-inspect-id')!.textContent).toBe('fix')
-    // And the shipped sheet docks it at 1100 and up.
-    expect(at(split, 'display', 1440)).toBe('grid')
-    expect(at(split, 'display', 1100)).toBe('grid')
+    // Docked, not folded or a phone sheet.
+    expect(document.querySelector('.wi.is-docked')).toBeTruthy()
   })
 
   it('docks in the Timeline too', async () => {
     viewport(1440)
+    atWidth(1440)
     render(<Routed initial="wf=wf_one&tab=timeline" />)
-    await waitFor(() => expect(document.querySelector('.wf-split.has-panel > .wf-panel .wf-inspect')).toBeTruthy())
-    expect(document.querySelector('.wf-split-main .wf-timeline')).toBeTruthy()
+    const pick = await waitFor(() => {
+      const p = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')
+      expect(p).toBeTruthy()
+      return p!
+    })
+    fireEvent.click(pick)
+    await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step fix"] .wf-inspect')).toBeTruthy())
+    expect(document.querySelector('.wi-main .wf-timeline')).toBeTruthy()
   })
 
+  // NO `.wf-panel`, NO `.wf-split`, NOTHING UNDER THE ROW, AT ANY WIDTH
+  // (brief, "What moved where"): below 1366px the shared inspector folds to
+  // a rail instead of drawing a card under the row.
   it('opens directly under the picked row below 1100, in the Table', async () => {
     viewport(1099)
+    atWidth(1099)
     render(<Routed initial="wf=wf_one&tab=table" />)
-    // The page's own pick on arrival opens no card under its row (VQ-016):
-    // the reader's click on it does.
-    await waitFor(() => expect(document.querySelector('.wf-pick[data-step="fix"]')?.getAttribute('aria-pressed')).toBe('true'))
-    fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
-    const row = await waitFor(() => {
-      const r = document.querySelector<HTMLElement>('.wf-table tr[data-step="fix"]')
-      expect(r?.nextElementSibling?.querySelector('.wf-inspect')).toBeTruthy()
-      return r!
+    const pick = await waitFor(() => {
+      const p = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')
+      expect(p).toBeTruthy()
+      return p!
     })
-    const under = row.nextElementSibling as HTMLTableRowElement
-    expect(under.className).toBe('wf-inline-row')
-    const cell = under.querySelector('td')!
-    expect(cell.colSpan).toBe(row.querySelectorAll('td').length)
+    expect(pick.getAttribute('aria-pressed')).toBe('false')
+    expect(document.querySelector('.wi.is-folded')).toBeTruthy()
+    fireEvent.click(pick)
+    await waitFor(() => expect(pick.getAttribute('aria-pressed')).toBe('true'))
+    const row = document.querySelector<HTMLElement>('.wf-table tr[data-step="fix"]')!
+    expect(row.nextElementSibling?.querySelector('.wf-inspect'), 'a card was drawn under the row').toBeFalsy()
     expect(document.querySelector('.wf-panel'), 'a docked panel as well').toBeNull()
+    expect(document.querySelector('.wi.is-folded'), 'still folded, not drawn under the row').toBeTruthy()
+    // The rail opens it instead.
+    fireEvent.click(screen.getByRole('button', { name: 'Open the inspector' }))
+    await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step fix"]')).toBeTruthy())
     expect(document.querySelectorAll('.wf-inspect')).toHaveLength(1)
   })
 
+  // ON A PHONE THE INSPECTOR IS A FULL-SCREEN SHEET (brief, "What moved
+  // where"), never a card under the track.
   it('opens directly under the picked track below 1100, in the Timeline, across the whole grid', async () => {
     viewport(390)
+    atWidth(390)
     render(<Routed initial="wf=wf_one&tab=timeline" />)
-    await waitFor(() => expect(document.querySelector('.wf-pick[data-step="fix"]')?.getAttribute('aria-pressed')).toBe('true'))
-    fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
-    const track = await waitFor(() => {
-      const t = document.querySelector<HTMLElement>('.wf-tl-track[data-step="fix"]')
-      expect(t?.nextElementSibling?.querySelector('.wf-inspect')).toBeTruthy()
-      return t!
+    const pick = await waitFor(() => {
+      const p = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')
+      expect(p).toBeTruthy()
+      return p!
     })
-    const under = track.nextElementSibling as HTMLElement
-    expect(under.className).toBe('wf-tl-inline')
-    expect(at(under, 'grid-column', 390)).toBe('1 / -1')
+    expect(pick.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(pick)
+    const sheet = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('.wi.is-phone .wi-dock[aria-label="Step fix"]')
+      expect(d).toBeTruthy()
+      return d!
+    })
+    expect(sheet.getAttribute('role')).toBe('dialog')
+    const track = document.querySelector<HTMLElement>('.wf-tl-track[data-step="fix"]')!
+    expect(track.nextElementSibling?.querySelector('.wf-inspect'), 'a card was drawn under the track').toBeFalsy()
     expect(document.querySelector('.wf-panel')).toBeNull()
   })
 
   it('moves the inspector when another row is picked, and puts it down when the row is picked again', async () => {
-    viewport(800)
+    // At a width wide enough to dock (the fold-below-1366 case has nothing
+    // to "move": it shows one rail either way).
+    viewport(1440)
+    atWidth(1440)
     render(<Routed initial="wf=wf_one&tab=table" />)
-    await waitFor(() => expect(document.querySelector('.wf-pick[data-step="fix"]')?.getAttribute('aria-pressed')).toBe('true'))
-    fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
-    await waitFor(() => expect(document.querySelector('.wf-inline-row .wf-inspect')).toBeTruthy())
+    const fix = await waitFor(() => {
+      const p = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')
+      expect(p).toBeTruthy()
+      return p!
+    })
+    fireEvent.click(fix)
+    await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step fix"]')).toBeTruthy())
+    // One shared inspector, which moves to the newly picked row rather than
+    // a second one appearing beside it.
     fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="scan"]')!)
-    const scan = document.querySelector<HTMLElement>('.wf-table tr[data-step="scan"]')!
-    await waitFor(() => expect(scan.nextElementSibling?.className).toBe('wf-inline-row'))
-    expect(document.querySelectorAll('.wf-inspect')).toHaveLength(1)
+    await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step scan"]')).toBeTruthy())
+    expect(document.querySelectorAll('.wi-dock')).toHaveLength(1)
+    // Picking the same row again puts it down, back to the Overview.
     fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="scan"]')!)
-    expect(document.querySelector('.wf-inspect')).toBeNull()
-    expect(document.querySelector('.wf-inline-row')).toBeNull()
+    await waitFor(() => expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Workflow overview'))
   })
 
   it('keeps the Table sort when a step is picked, because the table is not remounted', async () => {
     viewport(1440)
+    atWidth(1440)
     render(<Routed initial="wf=wf_one&tab=table" />)
-    await waitFor(() => expect(document.querySelector('.wf-panel')).toBeTruthy())
+    await waitFor(() => expect(document.querySelector('.wf-table')).toBeTruthy())
     const order = () => [...document.querySelectorAll<HTMLElement>('.wf-table tbody tr[data-step]')].map((r) => r.dataset.step)
     const before = order()
     // Sort by step id until the order is the reverse of the one the table
@@ -384,17 +452,16 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
     if (order()[0] === before[0]) fireEvent.click(byStep)
     const sorted = order()
     expect(sorted).toEqual([...before].reverse())
-    // Put the pick down and pick again: the order survives both. `fix` is the
-    // page's own pick on arrival, so its first click brings the card to the
-    // reader and the second puts it down (visual QA QA-120).
+    // Picking a step and putting it down survives the sort both ways: the
+    // table is not remounted.
     fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
-    expect(document.querySelector('.wf-panel')).toBeTruthy()
+    await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step fix"]')).toBeTruthy())
     expect(order()).toEqual(sorted)
     fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="fix"]')!)
-    expect(document.querySelector('.wf-panel')).toBeNull()
+    await waitFor(() => expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Workflow overview'))
     expect(order()).toEqual(sorted)
     fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-pick[data-step="scan"]')!)
-    expect(document.querySelector('.wf-panel')).toBeTruthy()
+    await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step scan"]')).toBeTruthy())
     expect(order()).toEqual(sorted)
   })
 })

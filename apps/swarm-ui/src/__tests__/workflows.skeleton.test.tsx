@@ -137,6 +137,10 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
   it('draws the head row with its actions disabled, the view tabs and a body card, then the page in the same places', async () => {
     let land: (r: Result<WorkflowBoard>) => void = () => {}
     api.loadWorkflowBoard.mockReturnValue(new Promise<Result<WorkflowBoard>>((r) => (land = r)))
+    // The loaded page's Overview lives in the docked inspector, which starts
+    // folded below 1366px (jsdom's default innerWidth is 1024).
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     render(<Routed initial="wf=wf_one&tab=table" />)
 
     const page = document.querySelector<HTMLElement>('.wfp.is-loading')
@@ -172,14 +176,21 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
 
     land({ status: 'ok', data: fixture(), fetchedAt: T0 })
     await waitFor(() => expect(document.querySelector('.wfp.is-loading')).toBeNull())
+    // The loaded page is `WorkflowSplit`'s own frame, `.wfp.wfp-main`, drawn in
+    // the inspector shell's left pane -- the head and the Needs-you row ahead
+    // of the view bar that now holds the tabs.
     const loaded = document.querySelector<HTMLElement>('.wfp')!
-    expect(loaded.className).toBe('wfp')
-    expect([...loaded.children].map((c) => c.className.split(' ')[0]).slice(0, 2)).toEqual(['wfp-head', 'c-tabs'])
-    expect(within(loaded.querySelector<HTMLElement>('.wfp-head')!).getByRole('button', { name: 'Copy link' })).not.toHaveProperty(
+    expect(loaded.className).toBe('wfp wfp-main')
+    expect([...loaded.children].map((c) => c.className.split(' ')[0]).slice(0, 3)).toEqual(['wfp-head', 'ny', 'wfp-viewbar'])
+    // Copy link moved into the Overview, the inspector at rest, and is no
+    // longer in the head once the read lands.
+    expect(within(loaded.querySelector<HTMLElement>('.wfp-head')!).queryByRole('button', { name: 'Copy link' })).toBeNull()
+    expect(within(document.querySelector<HTMLElement>('.wfp-ov')!).getByRole('button', { name: 'Copy link' })).not.toHaveProperty(
       'disabled',
       true,
     )
     expect(tabLabels(loaded)).toEqual(['Graph', 'Table', 'Steps over time', 'Changes'])
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
   })
 
   it('lets a tab be chosen during the load: each view is an address, not a control the data drives', () => {

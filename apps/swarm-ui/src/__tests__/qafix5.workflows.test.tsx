@@ -23,7 +23,8 @@
 // Every assertion names the mutation that turns it red.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
@@ -46,7 +47,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, WorkflowCard } = await import('../Workflows')
 const { WorkflowChangesTab } = await import('../WorkflowChanges')
 
 const T0 = Date.parse('2026-10-22T12:00:00.000Z')
@@ -162,6 +163,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  atWidth(realWidth)
   for (const h of hosts.splice(0)) h.remove()
 })
 
@@ -172,6 +174,61 @@ async function page(): Promise<void> {
 
 const panel = () => document.querySelector<HTMLElement>('.wf-panel')
 const WIDE: CascadeEnv = { width: 1440 }
+
+const realWidth = window.innerWidth
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
+}
+
+/**
+ * THE CANVAS, RENDERED DIRECTLY (the Graph Work redesign, part of #2688): the
+ * arrival pick and the `.wfp-fail-lead` banner are canvas chrome -- the
+ * page's Graph tab is the stage grid now, with no arrival pick and no
+ * banner at all -- so this renders `WorkflowCard` the way the old workflow
+ * page used to, the failed step already picked.
+ */
+function PageCard() {
+  const f = fan()
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  const [picked, setPicked] = useState<string | null>('checkpoints')
+  return (
+    <WorkflowCard
+      workflow={f.w}
+      taskById={f.tasks}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      picked={picked}
+      onPick={(_id, stepId) => setPicked((p) => (p === stepId ? null : stepId))}
+      page
+      reload={() => {}}
+    />
+  )
+}
+
+async function openPanel(): Promise<HTMLElement> {
+  render(<PageCard />)
+  await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('checkpoints'))
+  return panel()!
+}
+
+/** The real page, the checkpoints chip picked from the grid: the inspector
+ *  the page docks once a reader opens a step (there is no arrival pick). */
+async function openOnPage(): Promise<HTMLElement> {
+  atWidth(1440)
+  await page()
+  const chip = await waitFor(() => {
+    const b = document.querySelector<HTMLButtonElement>('.sg [data-step="checkpoints"]')
+    expect(b, 'no checkpoints chip on the stage grid').toBeTruthy()
+    return b!
+  })
+  fireEvent.click(chip)
+  return waitFor(() => {
+    const d = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step checkpoints"]')
+    expect(d, 'the inspector did not open on checkpoints').toBeTruthy()
+    return d!
+  })
+}
 
 // ---------------------------------------------------------------------------
 // QA-120: the card beside the graph, headed by its step
@@ -194,9 +251,10 @@ describe('QA-120: from 1280 the page docks the step card beside the graph, heade
   })
 
   it('heads the card with the step, not with the workflow the page is already titled by', async () => {
-    await page()
-    await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('checkpoints'))
-    const head = panel()!.querySelector<HTMLElement>('.wf-inspect-head')!
+    // No arrival pick on the page any more: the reader opens checkpoints
+    // themselves, from the stage grid, and the inspector draws its same head.
+    const dock = await openOnPage()
+    const head = dock.querySelector<HTMLElement>('.wf-inspect-head')!
     // MUTATION: drop the `stepHeading` branch in `StepInspector` -- the head
     // leads with the workflow's id again and has no heading at all.
     // Named by the step, then its state: the mark before it is decoration.
@@ -205,7 +263,9 @@ describe('QA-120: from 1280 the page docks the step card beside the graph, heade
   })
 
   it('says the arrival control opens the card, not that it is "below"', async () => {
-    await page()
+    // The arrival pick and its lead banner are canvas chrome, gone from the
+    // page on purpose; `WorkflowCard` still carries the behaviour.
+    render(<PageCard />)
     const lead = await screen.findByRole('region', { name: 'Why step checkpoints failed' })
     // MUTATION: put back 'Step details below: agent, logs, changes ↓' -- at
     // 1440 the card is beside the graph, and "below" sends the reader down.
@@ -219,9 +279,9 @@ describe('QA-120: from 1280 the page docks the step card beside the graph, heade
 
 describe('WG-4, WG-6: the step card says what its figures count', () => {
   it('says "why it failed" as a heading in the body ink, not a grey caption', async () => {
-    await page()
+    const dock = await openOnPage()
     const cause = await waitFor(() => {
-      const el = panel()?.querySelector<HTMLElement>('.wf-inspect-cause')
+      const el = dock.querySelector<HTMLElement>('.wf-inspect-cause')
       expect(el).toBeTruthy()
       return el!
     })
@@ -236,9 +296,9 @@ describe('WG-4, WG-6: the step card says what its figures count', () => {
   })
 
   it('says the same-step row compares this step across workflows of this shape, and says when there is no other', async () => {
-    await page()
+    const dock = await openOnPage()
     const row = await waitFor(() => {
-      const el = panel()?.querySelector<HTMLElement>('[data-scrub="workflow"]')
+      const el = dock.querySelector<HTMLElement>('[data-scrub="workflow"]')
       expect(el).toBeTruthy()
       return el!
     })
@@ -253,9 +313,9 @@ describe('WG-4, WG-6: the step card says what its figures count', () => {
   })
 
   it('names the generation as the lease’s and says what it is for, and the cost as this attempt’s', async () => {
-    await page()
+    const dock = await openOnPage()
     const facts = await waitFor(() => {
-      const el = panel()?.querySelector<HTMLElement>('.wf-inspect-facts')
+      const el = dock.querySelector<HTMLElement>('.wf-inspect-facts')
       expect(el).toBeTruthy()
       return el!
     })
@@ -302,9 +362,9 @@ describe('WG-7: each Changes scope says what it covers', () => {
   })
 
   it('names the step card’s link for the workflow’s Changes tab it opens', async () => {
-    await page()
+    const dock = await openOnPage()
     const link = await waitFor(() => {
-      const a = panel()?.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')
+      const a = dock.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')
       expect(a).toBeTruthy()
       return a!
     })
@@ -365,10 +425,12 @@ describe('D2: a workflow cost still being read reads "reading", never "not repor
   it('heads the page with "reading" while the attempt read is in flight', async () => {
     api.loadWorkflowUsage.mockReturnValue(new Promise(() => {}))
     await page()
-    const cost = document.querySelector<HTMLElement>('.wfp-head .wfp-cost')!
+    // The cost is one of the head's `.wfp-fig`s now, not a dedicated `.wfp-cost`.
+    const figs = [...document.querySelectorAll<HTMLElement>('.wfp-head .wfp-fig')]
+    const cost = figs.find((el) => /reading|not reported|\$/.test(el.textContent ?? ''))!
     // MUTATION: drop the `reading` branch in `WorkflowHead` -- 'cost not
     // reported' while the read is in flight, '$1.21' once it lands.
-    expect(cost.textContent).toMatch(/cost: reading/)
+    expect(cost.textContent).toMatch(/reading/)
     expect(cost.textContent).not.toMatch(/not reported/)
   })
 

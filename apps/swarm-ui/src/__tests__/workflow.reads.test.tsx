@@ -15,7 +15,7 @@
  * put `loadAttempts` per step back in `loadWorkflowUsage`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 
 import STYLES from '../styles.css?raw'
 import type { WorkflowBoard } from '../api'
@@ -38,7 +38,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, WorkflowCard, stageKey } = await import('../Workflows')
 const { USE_FIXTURES } = await import('../api')
 const { ownFromBoard } = await import('./workflowsById')
 
@@ -196,7 +196,8 @@ describe('a 40-step workflow page reads its steps in one batched read', () => {
 
   it('makes no per-step events or attempts read, and a bounded number of requests in all', async () => {
     render(<WorkflowsScreen view="wf=wf_big" />)
-    await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
+    // The graph tab draws the stage grid now; the old canvas is gone from the page.
+    await waitFor(() => expect(document.querySelector('.sg')).toBeTruthy())
     // Let the page's step reads go out and settle.
     await waitFor(() => expect(fetched.length).toBeGreaterThan(0))
     await new Promise((r) => setTimeout(r, 300))
@@ -249,7 +250,27 @@ describe('the Graph’s step inspector sits above the stage cards', () => {
   }
 
   it('docked: the panel’s layer is above every layer the canvas draws', async () => {
-    render(<WorkflowsScreen view="wf=wf_big" />)
+    // This is a CANVAS behaviour (the `WorkflowCard`'s own panel beside its own
+    // graph): the redesigned page no longer draws the canvas at all, so the
+    // card is rendered directly, as the brief for the Graph Work redesign
+    // instructs for anything that is a property of the canvas rather than of
+    // the page's stage grid.
+    const b = board()
+    const wf = b.workflows[0]!
+    render(
+      <WorkflowCard
+        workflow={wf}
+        taskById={b.taskById}
+        usage={{ kind: 'ready', usage: null }}
+        // s0's stage (index 0) has to be expanded, or the card draws only a
+        // band summary and no node to click.
+        openStages={{ [stageKey(wf.workflow_id, 0)]: true }}
+        onToggleStage={() => {}}
+        reload={() => {}}
+        page
+      />,
+    )
+    fireEvent.click(document.querySelector('.node[data-step="s0"]')!)
     await waitFor(() => expect(document.querySelector('.wf-split.has-panel > .wf-panel .wf-inspect')).toBeTruthy())
     // The canvas's layers are read from the stylesheet's own z-index rules
     // that reach a canvas element, the highest of them: an upper bound on

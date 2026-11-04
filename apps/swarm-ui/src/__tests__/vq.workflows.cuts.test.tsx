@@ -40,7 +40,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen, cardNote } = await import('../Workflows')
+const { WorkflowCard, WorkflowsScreen, cardNote } = await import('../Workflows')
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -151,9 +151,20 @@ function viewport(width: number) {
   })
 }
 
-function Routed({ initial }: { initial: string }) {
-  const [view, setView] = useState(initial)
-  return <WorkflowsScreen view={view} onView={setView} />
+/** `WorkflowCard` directly: the note is drawn by the canvas node, off the
+ *  redesigned page (brief, "What moved where" -- "render it directly"). */
+function CardHarness({ workflow, taskById }: { workflow: Workflow; taskById: Map<string, Task> }) {
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  return (
+    <WorkflowCard
+      workflow={workflow}
+      taskById={taskById}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      reload={() => {}}
+    />
+  )
 }
 
 const hosts: HTMLElement[] = []
@@ -278,7 +289,7 @@ describe('NOTE: a step waiting on its parents says so in a note that fits the ca
   // NODE_W box and was cut at the names tier Auto zoom picked (review of U02).
   it('draws the short form on the card, the whole sentence in its title', async () => {
     viewport(1440)
-    render(<Routed initial={`wf=${chain.workflow_id}`} />)
+    render(<CardHarness workflow={chain} taskById={chainTasks} />)
     const note = await waitFor(() => {
       const n = document.querySelector<HTMLElement>('button.node[data-step="report"] .node-note')
       expect(n).toBeTruthy()
