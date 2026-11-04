@@ -129,7 +129,7 @@ function rowHeight(ny: HTMLElement, theme: Theme): { px: number; barLines: numbe
   }
   const under = [...ny.children].filter((c) => c !== bar && shown(c, theme))
   const gap = px(won(ny, ['gap', 'row-gap'], theme)?.split(/\s+/)[0] ?? null, 'gap')
-  const underPx = under.reduce((n, c) => n + gap + Math.max(lineOf(bar.querySelector('.ny-chip')!, theme), 1), 0)
+  const underPx = under.length * (gap + lineOf(bar.querySelector('.ny-chip')!, theme))
   return { px: vertical(won(ny, 'padding', theme), 'padding') + borderY(ny, theme) + barLines * line + underPx, barLines }
 }
 
