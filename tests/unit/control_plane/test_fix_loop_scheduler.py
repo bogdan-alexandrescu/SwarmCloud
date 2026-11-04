@@ -259,7 +259,8 @@ def test_a_fix_loop_star_phase_is_the_loops_whatever_comes_after_the_prefix(
     db, make_scheduler
 ):
     _base(db)
-    _workflow(db)
+    # `continue`: under `fail_workflow` the first FAILED would sweep the other.
+    _workflow(db, "continue")
     young = _human_park(db, "task_young", "fix_loop_stopped_by_policy", hours_ago=2 * DAY)
     old = _human_park(db, "task_old", "fix_loop_stopped_by_policy", hours_ago=8 * DAY)
 
@@ -273,7 +274,8 @@ def test_the_loop_park_is_not_spared_as_an_owner_questions_hold_is(db, make_sche
     """The control: an owner-questions hold at the same age is never expired
     (owner decision 2026-10-23); the loop's park is (Q3 (c), not (a))."""
     _base(db)
-    _workflow(db)
+    # `continue`: under `fail_workflow` the first FAILED would sweep the other.
+    _workflow(db, "continue")
     loop = _human_park(db, "task_loop", "fix_loop_exhausted", hours_ago=8 * DAY)
     merge = _human_park(db, "task_merge", "owner_questions", hours_ago=8 * DAY, profile="mock")
     merge["blocked_by"] = [{"park_phase": "owner_questions",

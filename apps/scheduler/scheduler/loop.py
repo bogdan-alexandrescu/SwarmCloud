@@ -241,6 +241,45 @@ HUMAN_WAIT_EXPIRED = "human_wait_expired"
 #: day, and a parked task costs nothing while it waits (invariant 1).
 HUMAN_PARK_MAX_SECONDS = 86_400
 
+#: A workflow's fix loop (docs/design/fix-loop.md, lane FL-SCHED): the
+#: `control_plane` profile whose review-fix / re-review rounds swarm-api runs
+#: as agents of their own. The scheduler parks it FIX_ROUNDS_RUNNING (BGD Q2
+#: (a)) and never leases it, as it parks await-input AWAITING_INPUT.
+FIX_LOOP_PROFILE = "fix-loop"
+#: How long a fix loop's person-park (§4.5) waits before the scheduler ends
+#: the loop FAILED `fix_loop_exhausted`, as a person's "stop" would. 7 days:
+#: BGD 2026-10-27, Q3 (c), chosen over "no expiry" (a) and the 24-hour
+#: hand-off dead-letter (b). The park holds nothing while it waits
+#: (invariant 1), so the bound is about a loop nobody comes back to, not cost.
+FIX_LOOP_PARK_MAX_SECONDS = 7 * 86_400
+#: The `park_phase`s of a fix loop's person-park (§4.4's decision table):
+#: every `fix_loop_*` phase, and on a fix-loop agent these four, which do not
+#: carry the prefix.
+FIX_LOOP_PHASE_PREFIX = "fix_loop_"
+FIX_LOOP_OTHER_PHASES = frozenset(
+    {"fix_changed_nothing", "round_failed", "review_unreadable", "round_refused"}
+)
+
+
+def fix_loop_park_phase(task: Task) -> str | None:
+    """The `park_phase` of a fix loop's person-park on `task`, else None (§4.4, §4.5).
+
+    Read from `blocked_by[].park_phase`, where every person-park records its
+    phase (the merge's `owner_questions`, the agent's `question_wait`). A
+    `fix_loop_*` phase is the loop's on any agent; the loop's other phases
+    are the loop's only on a `fix-loop` agent, so an ordinary agent's park
+    that happens to share the name keeps the hand-off's rule.
+    """
+    for block in task.blocked_by or ():
+        phase = block.get("park_phase") if isinstance(block, dict) else None
+        if not isinstance(phase, str):
+            continue
+        if phase.startswith(FIX_LOOP_PHASE_PREFIX):
+            return phase
+        if phase in FIX_LOOP_OTHER_PHASES and task.runner_profile == FIX_LOOP_PROFILE:
+            return phase
+    return None
+
 
 def mcp_park_blocked_by(credential: CredentialAnswer, now: datetime) -> list[dict[str, Any]] | None:
     """The `blocked_by` a CREDENTIAL_MISSING park writes when it waits for
@@ -761,6 +800,9 @@ class DrainReport:
     #: READY or PARKED tasks ended FAILED before any lease because a per-run
     #: MCP credential they name expired or was revoked (contract request 99).
     failed_unrunnable: int = 0
+    #: Fix loops whose person-park nobody answered within 7 days, ended FAILED
+    #: `fix_loop_exhausted` (docs/design/fix-loop.md §4.5, BGD Q3 (c)).
+    fix_loops_expired: int = 0
     promoted_prewarm: int = 0
     #: SCHEDULED_RETRY parks returned to READY once `next_eligible_at` passed.
     promoted_scheduled_retries: int = 0
@@ -1602,7 +1644,7 @@ class Scheduler:
         # dependencies reaches READY this way, and so does one an operator
         # promotes by hand; the dependency rule parks the rest itself.
         if profile.control_plane:
-            self._park_awaiting_input(task, report)
+            self._park_control_plane(task, report)
             return False
 
         tenant = self._tenant(task.tenant_id)
@@ -2014,6 +2056,29 @@ class Scheduler:
         if task.workflow_id:
             self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
 
+    def _park_control_plane(self, task: Task, report: DrainReport) -> None:
+        """Park a READY `control_plane` step, which is never leased (invariant 1).
+
+        A fix loop parks FIX_ROUNDS_RUNNING (docs/design/fix-loop.md §4.7,
+        BGD Q2 (a)): its rounds are agents of their own, admitted like any
+        other, and swarm-api ends the loop or moves it to HUMAN_REQUIRED. No
+        sweep reads that reason, so nothing here promotes or expires it. The
+        park instant is `next_eligible_at`, as every control-plane park
+        records it. Every other control_plane profile is await-input's. No
+        capacity is read, reserved or counted for either (invariants 1-3).
+        """
+        if task.runner_profile != FIX_LOOP_PROFILE:
+            self._park_awaiting_input(task, report)
+            return
+        self._park(
+            task,
+            ParkReason.FIX_ROUNDS_RUNNING,
+            report,
+            detail={"runner_profile": FIX_LOOP_PROFILE},
+            next_eligible_at=self._now(),
+            blocked_by=[],
+        )
+
     def _park_awaiting_input(self, task: Task, report: DrainReport) -> None:
         """Park a READY await-input step AWAITING_INPUT, with its window (`store.park_awaiting_input`).
 
@@ -2045,7 +2110,7 @@ class Scheduler:
         if not is_control_plane(task.runner_profile):
             return True
         promoted = replace(task, state=TaskState.READY, park_reason=None, next_eligible_at=None)
-        self._park_awaiting_input(promoted, report)
+        self._park_control_plane(promoted, report)
         return False
 
     def _cancel(
@@ -2753,6 +2818,12 @@ class Scheduler:
         #2070), which swarm-api's answer route returns to READY once none is
         open and which never expires (owner decision 2026-10-23, "Resume on
         answer, no expiry"). Neither holds a lease while it waits (invariant 1).
+
+        A fix loop's person-park (`fix_loop_park_phase`, docs/design/fix-loop.md
+        §4.5) is neither spared nor held to the hand-off's bound: BGD's Q3 (c)
+        gives it `FIX_LOOP_PARK_MAX_SECONDS`, 7 days from the park, and then
+        ends it FAILED `fix_loop_exhausted` (`_expire_fix_loop`), counted in
+        `report.fix_loops_expired` rather than in this sweep's return.
         """
         ended = 0
         now = self._now()
@@ -2760,6 +2831,13 @@ class Scheduler:
         reason = ParkReason.HUMAN_REQUIRED
         for task in self._parked_window(reason):
             if self._stop_for_failed_workflow(task, report):
+                continue
+            phase = fix_loop_park_phase(task)
+            if phase is not None:
+                # Before the last-attempt end and the owner waits: the loop is
+                # never leased, so it has no attempts to spend, and a person's
+                # add-round or stop is what it waits for.
+                self._expire_fix_loop(task, phase, report, now=now)
                 continue
             if task.retries_exhausted():
                 # Counted into `report.dead_lettered` by `_end_exhausted_retry`
@@ -2812,6 +2890,45 @@ class Scheduler:
             else:
                 self._count_stale(outcome, report)
         return ended
+
+    def _expire_fix_loop(self, task: Task, phase: str, report: DrainReport, *,
+                         now: datetime) -> None:
+        """End a fix loop's person-park 7 days after it opened (BGD Q3 (c)); spare a younger one.
+
+        The park instant is `next_eligible_at`, which a park writes as the
+        moment it parked, with `updated_at` standing in for one that carries
+        none, exactly as the hand-off's expiry reads it. Past the bound the
+        loop ends PARKED -> FAILED with `end_cause` FIX_LOOP_EXHAUSTED
+        (`store.fail_before_lease`), as a person's "stop" ends it (§4.5), or
+        CANCELLED when a cancel was asked for. One guarded write: the loop is
+        `control_plane` and never held a lease, so nothing is released,
+        reserved or counted (invariants 1-3). Its dependants -- a merge step
+        behind it -- are resolved in this run like any end the drain writes.
+        """
+        parked_at = task.next_eligible_at or task.updated_at
+        if parked_at + timedelta(seconds=FIX_LOOP_PARK_MAX_SECONDS) > now:
+            return
+        cause = EndCause.FIX_LOOP_EXHAUSTED
+        text = (
+            f"{cause.value}: nobody added a round or stopped the loop within "
+            f"{FIX_LOOP_PARK_MAX_SECONDS} seconds of its park ({phase})"
+        )
+        if task.cancel_requested:
+            self._cancel(task, text, report, why="cancel_requested",
+                         end_cause=children_mod.cancel_end_cause(task.metadata))
+            return
+        outcome = self._store.fail_before_lease(
+            task, text, end_cause=cause,
+            detail={"park_reason": ParkReason.HUMAN_REQUIRED.value, "park_phase": phase,
+                    "cause": cause.value},
+        )
+        if not outcome.applied:
+            self._count_stale(outcome, report)
+            return
+        report.fix_loops_expired += 1
+        self._note_ended(task.id)
+        if task.workflow_id:
+            self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
 
     def _wake_owner_hold(self, task: Task, report: DrainReport) -> bool:
         """Return an owner-question hold to READY on the wake tick's marker (#2441).
