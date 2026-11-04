@@ -26,7 +26,8 @@ NOW = datetime(2026, 11, 4, 22, 0, tzinfo=timezone.utc)
 HEAD = "9c1e0f4b2d7a83e65f10c2b9a4d8e7f6031b5a2c"
 PR = 3190
 REPO = "https://github.com/bogdan-alexandrescu/SwarmCloud.git"
-PR_URL = f"https://github.com/bogdan-alexandrescu/SwarmCloud/pull/{PR}"
+#: The link the bridge builds (`check.pull_request_link`: its key is lowercased).
+PR_URL = f"https://github.com/bogdan-alexandrescu/swarmcloud/pull/{PR}"
 #: The events one re-check writes after its park, newest first: the lease is
 #: released, the step promoted, leased, dispatched and run again.
 CYCLE = ("lease_released", "ready", "leased", "starting", "running")
@@ -132,7 +133,7 @@ def test_a_train_park_of_61_minutes_across_five_re_parks_is_flagged_from_its_sta
     assert evidence["pull_request_url"] == PR_URL and evidence["head"] == HEAD
     assert evidence["failed_checks"] == []
     assert flag["next"] == PR_URL
-    assert checks.asked == [("github.com/bogdan-alexandrescu/SwarmCloud", PR, HEAD)]
+    assert checks.asked == [("github.com/bogdan-alexandrescu/swarmcloud", PR, HEAD)]
     assert "merge train for exact 61 min" in flag["reason"], flag["reason"]
 
 
@@ -173,16 +174,92 @@ def test_an_unreadable_pull_request_says_so():
 
 
 def test_train_parks_do_not_age_a_later_ci_wait():
-    """A CI park after three hours on the train (the train returned the
+    """A CI park after four hours on the train (the train returned the
     entry and its gate re-ran): the CI rule ages only the CI parks."""
     events = [_park(NOW - timedelta(minutes=2), "checks_pending"),
               {"type": "running", "at": _iso(NOW - timedelta(minutes=3))}]
-    events += _history(NOW - timedelta(hours=3), 4)[:check.EVENT_PAGE - 2]
-    task = {**_merge_step(NOW - timedelta(hours=3)), "waiting": None}
+    events += _history(NOW - timedelta(hours=4), 4)[:check.EVENT_PAGE - 2]
+    task = {**_merge_step(NOW - timedelta(hours=4)), "waiting": None}
 
     flag = check.classify_task(task, _Reads(events), now=NOW, window=20,
                                checks=check._PullChecks(_Checks([])))
 
     # MUTATION (check.py `_ci_entered`): count a train park as a CI park ->
-    # a CI wait of at least 90+ minutes, flagged `parked`.
+    # a CI wait of at least 120 minutes, flagged `parked`.
     assert flag is None, flag
+
+
+class _Client:
+    """The events route: two pages of a task's history, then its end."""
+
+    def __init__(self, tokens: bool = True) -> None:
+        self.tokens = tokens
+        self.paths: list[str] = []
+
+    def request(self, method: str, path: str) -> dict[str, Any]:
+        self.paths.append(path)
+        older = "page_token=" in path
+        page = {"events": [{"type": "parked", "at": _iso(NOW)}] * (1 if older else check.EVENT_PAGE)}
+        if self.tokens:
+            page["next_page_token"] = None if older else "tok-1"
+        return page
+
+
+def test_the_check_reads_older_event_pages_by_their_token_until_the_history_ends():
+    client = _Client()
+    reads = check._Reads(client, budget=10)
+
+    assert len(reads.events("task_a")) == check.EVENT_PAGE
+    # MUTATION (check.py `_Reads.older_events`): no paging -> None.
+    assert reads.older_events("task_a") == [{"type": "parked", "at": _iso(NOW)}]
+    assert "page_token=tok-1" in client.paths[-1] and "order=desc" in client.paths[-1]
+    assert reads.older_events("task_a") == [], "the history ended: no further read"
+    assert len(client.paths) == 2
+
+
+def test_an_api_that_serves_no_page_token_reads_no_older_page():
+    client = _Client(tokens=False)
+    reads = check._Reads(client, budget=10)
+    reads.events("task_a")
+
+    assert reads.older_events("task_a") is None
+    assert len(client.paths) == 1
+
+
+class _PagedClient:
+    """The events route over a whole history, by page token."""
+
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        self.pages = [events[i:i + check.EVENT_PAGE] for i in range(0, len(events), check.EVENT_PAGE)]
+
+    def request(self, method: str, path: str) -> dict[str, Any]:
+        query = dict(p.split("=", 1) for p in path.split("?", 1)[1].split("&"))
+        index = int(query.get("page_token", "p0")[1:])
+        more = index + 1 < len(self.pages)
+        return {"events": self.pages[index], "next_page_token": f"p{index + 1}" if more else None}
+
+
+def _board_waits(minutes: int) -> list[dict[str, Any]]:
+    from swarm_mcp import buildboard
+
+    first = NOW - timedelta(minutes=minutes)
+    reader = buildboard._Reader(_PagedClient(_history(first, 5)), {"tasks": {}}, NOW)
+    step = {"step_id": "merge", "runner_profile": "merge"}
+    lane = {"id": "wf_3190", "label": "the workflow page redesign"}
+    task = {**_merge_step(first), "result_summary": {"pull_request": PR}}
+    return buildboard._step_waits(reader, lane, [step], step, task)
+
+
+def test_the_build_board_lists_a_train_wait_over_60_minutes_from_its_start():
+    waits = _board_waits(61)
+
+    # MUTATION (buildboard.py `_step_waits`): no train branch -> the CI rule
+    # reads the newest park, a minute old, and lists nothing.
+    assert [w["kind"] for w in waits] == ["merge_train_stalled"], waits
+    assert waits[0]["since"] == _iso(NOW - timedelta(minutes=61))
+    assert waits[0]["next"] == PR_URL
+    assert f"PR #{PR} has waited on the merge train for 61 min" == waits[0]["item"]
+
+
+def test_the_build_board_does_not_list_a_train_wait_under_60_minutes():
+    assert _board_waits(59) == []

@@ -6,6 +6,22 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.80 (2026-11-04)
+
+* `/sc check` flags a merge step that waits on the merge train for more than
+  60 minutes, rule `merge_train_stalled` (STUCK; part of #2688). A train park
+  (CI_PENDING, code `merge_train_waiting`) stops the CI clock by design, so
+  the CI_PENDING rule never aged it: on 4 November a pull request whose
+  `queue for auto-merge` check had failed on a network timeout waited eight
+  hours, passed over on every train tick, and nothing said so. The wait is
+  aged from the first train park of its unbroken run, reading older event
+  pages by their token (exact, or "at least" past five pages); the evidence
+  names the pull request's failed or cancelled checks at its head, read from
+  GitHub's public API without a token, or says they were not read and why;
+  `next` is the pull request. A train park under 60 minutes is not flagged.
+* A train park no longer counts toward a later CI wait's 90 minutes.
+* The build board lists the same wait, `merge_train_stalled`, past 60 minutes.
+
 ## 0.5.79 (2026-11-04)
 
 * The bridge survives a plugin update that removes the folder it was started

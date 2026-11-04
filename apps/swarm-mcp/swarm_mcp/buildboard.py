@@ -19,8 +19,11 @@ Owner requirements and decisions, 2026-10-20 (#1773; lane BOARD-CORE):
 * WAITING ON SOMEONE lists exactly three kinds, from what SwarmCloud knows:
   owner questions (the recommended option marked); steps waiting for a
   person (AWAITING_INPUT, and HUMAN_REQUIRED parks), each with its
-  `/sc answer WF STEP`; merges refused (`check.MERGE_CODES`) and CI parks
-  over `CI_PARK_MINUTES`. A failed step in general is NOT listed.
+  `/sc answer WF STEP`; merges refused (`check.MERGE_CODES`), CI parks
+  over `CI_PARK_MINUTES`, and waits on the merge train over
+  `check.MERGE_TRAIN_MINUTES` (`check`'s rule `merge_train_stalled`, aged
+  the same way, `check._train_entered`). A failed step in general is NOT
+  listed.
 * AN OWNER QUESTION WAITS only while its lane is open (owner decision
   2026-10-27, "Yes, narrow it"; #1812): a finished step's question, in a
   workflow that has neither finished nor merged (a merge step SUCCEEDED),
@@ -77,7 +80,8 @@ from typing import Any, Callable
 from swarm_common.states import TERMINAL_STATES
 
 from . import awaitinput, checkout, progress, workflows
-from .check import EVENT_PAGE, MERGE_CODES, MERGE_PROFILE, _entered, _refusal_code, pull_request_link, repo_key
+from .check import (EVENT_PAGE, MERGE_CODES, MERGE_PROFILE, MERGE_TRAIN_MINUTES, _entered, _refusal_code,
+                    _train_entered, on_train, pull_request_link, repo_key)
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import console_link
 from .invocation import terminal_command
@@ -232,6 +236,38 @@ class _Reader:
         events = [e for e in (data.get("events") if isinstance(data, dict) else None) or [] if isinstance(e, dict)]
         return _iso(_entered(events, "PARKED", parse_time(task.get("created_at")))["since"])
 
+    def _events_page(self, task_id: str, token: str | None) -> tuple[list[dict[str, Any]], str | None, bool]:
+        """One page of a task's events, newest first: `(events, next token,
+        whether the API serves tokens at all)`."""
+        params: dict[str, Any] = {"order": "desc", "limit": EVENT_PAGE}
+        if token:
+            params["page_token"] = token
+        data = self.client.request("GET", f"/v1/tasks/{task_id}/events?{urllib.parse.urlencode(params)}")
+        events = [e for e in (data.get("events") if isinstance(data, dict) else None) or [] if isinstance(e, dict)]
+        paged = isinstance(data, dict) and "next_page_token" in data
+        nxt = data.get("next_page_token") if paged else None
+        return events, (str(nxt) if nxt else None), paged
+
+    def train_wait(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        """When a merge step's wait on the merge train began (`check.
+        _train_entered`, its older pages read here), or None when its
+        CI_PENDING park is not a train park."""
+        tid = str(task_id_of(task))
+        events, token, paged = self._events_page(tid, None)
+        if not on_train(task, events):
+            return None
+        state = {"token": token, "paged": paged}
+
+        def older() -> list[dict[str, Any]] | None:
+            if not state["paged"]:
+                return None
+            if state["token"] is None:
+                return []
+            page, state["token"], state["paged"] = self._events_page(tid, state["token"])
+            return page
+
+        return _train_entered(events, parse_time(task.get("created_at")), older)
+
 
 # --------------------------------------------------------------------------
 # Lanes
@@ -330,7 +366,23 @@ def _step_waits(reader: _Reader, lane: dict[str, Any], steps: list[dict[str, Any
                           "item": f"The merge of PR #{number} was refused" if number else "A merge was refused",
                           "since": _iso(task.get("completed_at")), "unlocks": f"{lane['label']} merging",
                           "detail": code + (f": {message}" if message else ""), "next": f"/sc status {wid}"})
-    if is_merge and state == "PARKED" and park == "CI_PENDING":
+    train = reader.train_wait(task) if is_merge and state == "PARKED" and park == "CI_PENDING" else None
+    if train is not None:
+        at = train["since"]
+        if at is not None and (reader.now - at).total_seconds() > MERGE_TRAIN_MINUTES * 60:
+            number = pull_request_of(task)
+            minutes = int((reader.now - at).total_seconds() // 60)
+            link = pull_request_link(task.get("repository_url"), number)
+            items.append({"kind": "merge_train_stalled", "who": "You",
+                          "item": ((f"PR #{number}" if number else "A merge")
+                                   + f" has waited on the merge train for {'' if train['exact'] else 'at least '}"
+                                   f"{minutes} min"),
+                          "since": _iso(at), "unlocks": f"{lane['label']} merging",
+                          "detail": (f"merge train over {MERGE_TRAIN_MINUTES} min: the train boards only "
+                                     "pull requests whose checks are all green; open the pull request "
+                                     "to see which is not"),
+                          "next": link or f"/sc status {wid}"})
+    elif is_merge and state == "PARKED" and park == "CI_PENDING":
         since = reader.parked_since(task)
         at = parse_time(since)
         if at is not None and (reader.now - at).total_seconds() > CI_PARK_MINUTES * 60:
