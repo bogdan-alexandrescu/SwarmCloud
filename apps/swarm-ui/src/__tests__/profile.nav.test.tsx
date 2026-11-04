@@ -74,7 +74,8 @@ describe('Settings › Profile', () => {
 
   it('leaves the old hashes where they were; Workspace, MCP servers (CONFIG-NAV) and API keys (SSC-UI) are Config\'s', () => {
     expect(fromAddress('settings/keys')).toMatchObject({ sectionId: 'config', tab: 'secrets' })
-    expect(fromAddress('settings/workspace')).toMatchObject({ sectionId: 'config', tab: 'workspace' })
+    // Workspace Settings is the selected workspace's page, Settings tab, since the admin routes lane (part of #2688).
+    expect(fromAddress('settings/workspace')).toMatchObject({ sectionId: 'admin', tab: 'workspaces', view: 'tab=settings' })
     expect(fromAddress('settings/mcp-servers')).toMatchObject({ sectionId: 'config', tab: 'mcp-servers' })
     expect(fromAddress('settings/anything-else')).toMatchObject({ sectionId: 'admin', tab: 'limits' })
   })

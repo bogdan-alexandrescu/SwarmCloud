@@ -84,7 +84,7 @@ describe('Settings: the Code intelligence override', () => {
     // CONFIG-COPY (part of #2157): never the old Settings › Workspace, and the
     // link is Workspace Settings' own path, not the old address's redirect.
     expect(visible(document.body)).not.toMatch(/\bWork › (Setup|Access|Repositories)|(?<!Workspace )Settings › (Workspace|MCP servers)/)
-    expect(within(card as HTMLElement).getByRole('link', { name: 'Config › Workspace Settings' }).getAttribute('href')).toBe('/config/workspace')
+    expect(within(card as HTMLElement).getByRole('link', { name: 'Config › Workspace Settings' }).getAttribute('href')).toBe('/admin/workspaces?tab=settings')
   })
 
   for (const [name, value] of [

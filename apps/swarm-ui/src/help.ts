@@ -1772,14 +1772,14 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // platform cannot list a Google group's members (workspace-roles.md §4.3).
   'people-and-roles-scope': {
     group: 'administering-the-platform',
-    title: 'People and roles shows the workspaces you administer',
+    title: 'Platform people shows the workspaces you administer',
     short:
       'A platform admin sees every person against every group workspace. A workspace admin sees only the workspaces they administer and the people in them: whoever was last seen there or holds a role there. A personal workspace request and a Claude account loan are a platform admin’s to decide.',
     long: [
       'Each cell is the person’s own role in that workspace when they hold one, else the workspace’s default when they were last seen in it, else none. A dash means that workspace’s roles could not be read, and is never a guessed role.',
       'The platform cannot list a Google group’s members, so being in a workspace is read from the person’s last sign-in. Someone who has not signed in since joining is shown once they hold a role of their own.',
-      'Roles are changed on Config › People and roles, in the workspace itself.',
-      'Two platform roles come from the deployment’s configuration, not from People and roles. The platform owner is the PLATFORM_OWNER setting: no switch on People and roles changes it, and only the owner can. A member of a group named in ADMIN_GROUPS is an admin without a role record, so the Admins card does not list them and their Admin switch reads off.',
+      'Roles are changed on the workspace’s own page, Admin › Workspaces › its Roles tab.',
+      'Two platform roles come from the deployment’s configuration, not from Platform people. The platform owner is the PLATFORM_OWNER setting: no switch on Platform people changes it, and only the owner can. A member of a group named in ADMIN_GROUPS is an admin without a role record, so the Admins card does not list them and their Admin switch reads off.',
     ],
   },
 
@@ -1964,7 +1964,7 @@ export const HELP_PLACES = {
   'admin/limits': 'Pool limits',
   'admin/tenants': 'Tenants',
   'admin/counts': 'Platform counts',
-  'admin/people': 'People and roles',
+  'admin/people': 'Platform people',
   'admin/runner-sizes': 'Runner sizes',
   'admin/platform-secrets': 'Platform secrets',
   'admin/workspaces': 'Workspaces',
@@ -2201,8 +2201,8 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
     act: { say: 'To free capacity now, cancel work; lowering a ceiling only stops new work being admitted.', at: 'admin/limits' },
   },
   'people-and-roles-scope': {
-    subject: 'Who People and roles shows',
-    act: { say: 'To change a role, open Config › People and roles in that workspace.', at: 'admin/people' },
+    subject: 'Who Platform people shows',
+    act: { say: 'To change a role, open that workspace’s page under Admin › Workspaces.', at: 'admin/workspaces' },
   },
   'lease-and-pool-are-two-records': {
     subject: 'Leases and pool counters',
