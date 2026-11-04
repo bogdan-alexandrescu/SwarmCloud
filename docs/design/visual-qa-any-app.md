@@ -70,7 +70,7 @@ not one):
 | `tenant_id` | the registering workspace | invariant 9: the target, its runs, its artifacts and its credential are that tenant's |
 | `base_url` | `https://host[:port]/[path]` | `https` only, no userinfo, no query; the host must resolve to a public unicast address and must not be an IP literal or an internal name (the rule of `swarm_egress.policy`, reused, not restated) |
 | `repository` | one of the tenant's **registered** repositories | where its findings go (§5). A URL alone is refused: filing reaches a repository only through a registration whose forge slot the tenant already holds |
-| `sign_in` | `{kind: "none"}` or `{kind: "own_login", login_path, username_selector, password_selector, submit_selector, signed_in_selector, extra_origin?}` | §2. Selectors are optional where the login page has exactly one `input[type=password]` and one `autocomplete=username` or `type=email` field; `signed_in_selector` is required, because "the page changed" is not "signed in" |
+| `sign_in` | `{kind: "none"}` or `{kind: "own_login", login_path, username_selector, password_selector, submit_selector, signed_in_selector, extra_origin?}` | §2. Selectors are optional where the login page has exactly one `input[type=password]` and one `autocomplete=username` or `type=email` field; `signed_in_selector` is required, because "the page changed" is not "signed in": after the submit the gate reads the page's own state (§2.2 step 3), and the target is signed in when `signed_in_selector` shows **or** when the tab has settled on the target's own origin as the app (no login form, no OAuth callback in its address, not back on the start page); a page still on the form, or showing an error, reads as failed |
 | `credential` | `{set: bool, set_at, set_by, version}`, never a value | a **reference**: the value is in Secret Manager (§2.1) |
 | `challenge_bypass` | `{kind: "header" \| "cookie", name}`, optional; its value served only as `challenge_bypass_value: {set, set_at, set_by, version}` | §2.5: the app owner's own way past their CAPTCHA, added by the gate on the approved origins only |
 | `screens` | a list `{id, path, ready?, segments?}`, or `discover: {max_pages ≤ 60, max_depth ≤ 3}` | the capture's route list; discovery is bounded and same-origin (§4.1) |
@@ -214,8 +214,39 @@ The QA-IDENTITY path, generalised from one header to one sign-in:
    are held and its results withheld while someone else drives). On its own
    CDP session, on Chromium's pipe, which the agent never sees, it opens
    `login_url`, focuses each field by its selector, types with
-   `Input.insertText`, presses the submit control, and waits up to 30 s for
-   `signed_in_selector`.
+   `Input.insertText`, presses the submit control, and reads **the page's
+   own state** (`SignIn._after_submit`, part of #2688):
+   * **Signed in** as soon as `signed_in_selector` shows (looked for through
+     open shadow roots too), or once the tab has read as the app for
+     `PAGE_SETTLED_SECONDS` (3 s: a page between two redirects reads as the
+     app, or as an error, for a moment) on the target's own origin, loaded,
+     with text on it, no password field, no OAuth callback (`code`, `state`,
+     `session_state`) in its address and not back on the start page (the
+     last start click's control shown).
+   * **Failed** when `SIGNED_IN_SECONDS` (30 s, as before) pass with the tab
+     still on the form, back on the start page or on another page, or as
+     soon as the form has shown an error (an alert, an `aria-invalid` field)
+     for 3 s. A page still loading at 30 s is waited for up to
+     `SIGNED_IN_MAX_SECONDS` (60 s: the gate's own rate limit, §3, spaces the
+     redirect chain's navigations, 2 s each by default, and the app's
+     requests, 10 a second, so a signed-in app that loads 150 requests draws
+     itself only after 30 s). The worker awaits the first sign-in for
+     `FIRST_WAIT_SECONDS` (95 s: the form's 30 s and the verdict's 60 s,
+     plus the return).
+   * **Every failure says why** in the gate's `status().sentence`: the form
+     still shown so many seconds later, the error, the start page and its
+     control's text, or the page (origin and path, never the query) that
+     neither drew the selector nor settled as the app. A selector the page's
+     `querySelector` does not take is named instead of throwing the whole
+     probe, which had read as "no form" forever.
+
+   **Why the page's state, not the selector alone** (4 November 2026). The
+   verdict used to be `signed_in_selector` within 30 s and nothing else. A
+   moderator leg read failed on every sign-in while every screen it captured
+   showed it signed in: the app drew itself without the selector, or later
+   than 30 s once the gate's own rate limit had spaced its requests. The
+   selector is still required at registration, and still wins the moment it
+   shows; the settled app is the verdict when it does not.
 4. **It cleans up before it lets go**, in the existing return order: clear
    every password input its sessions can reach, navigate the agent's tab to
    `base_url`, deliver the held responses, then release the held commands.
@@ -257,17 +288,43 @@ makes in step 3 between opening `login_url` and looking for the form:
   target's exclusion words (the defaults, `logout`, and the target's own
   `exclusions.controls`) is refused at registration: the gate clicks before
   it has signed in, and nothing that names delete, pay or send is a way in.
-* **Exactly one control, or no click.** For each click the gate waits up to
-  `START_CLICK_SECONDS` (10 s: a chooser is drawn by the page's own load,
-  which the form's 30 s already bounds, and an absent control should not
-  hold the agent for a minute per click) for exactly one visible element
-  matching `css` (any element without it) whose trimmed text equals `text`;
-  of a nested pair (a button and the span inside it) only the inner one
-  counts. It clicks that one and waits for the page to settle. None, or
-  more than one, ends the sign-in with `qa_sign_in_start_click_missing` and
-  a sentence naming the text (the gate's `status().sentence`). A challenge
-  seen first is a challenge (§2.4); the signed-in state seen first is a
-  sign-in (the IdP's session already held).
+* **Exactly one control, or no click.** For each click the gate waits for
+  exactly one visible element matching `css` (any element without it) whose
+  trimmed text equals `text`; of a nested pair (a button and the span inside
+  it) only the inner one counts. None, or more than one, ends the sign-in
+  with `qa_sign_in_start_click_missing` and a sentence naming the text and
+  how many it found (the gate's `status().sentence`); a `css` the page's
+  `querySelectorAll` does not take is said as such. A challenge seen first is
+  a challenge (§2.4); the signed-in state seen first is a sign-in (the IdP's
+  session already held).
+* **The first click is waited for as the form is.** The first control is
+  drawn by the login page's own first load, as a form would be, so the gate
+  waits for it up to `FORM_SECONDS` (30 s, the form's own bound). Each later
+  one follows a click, and is waited for up to `START_CLICK_SECONDS` (10 s:
+  long enough for a script-drawn button, short enough that a control that is
+  not there does not hold the agent, held throughout, for a minute per
+  click).
+* **A page that is already the form skips them.** When the login form is
+  there before a click is made (an entry query, or the IdP's session
+  redirect, skipped the chooser), the gate makes no more clicks and goes on
+  to the form.
+* **Clicks wait for the page to load.** The gate clicks only once the
+  document has finished loading (`readyState` `complete`), or at the last
+  probe of the click's bound, so a server-drawn chooser whose script is not
+  running yet is not clicked into nothing. After each click it waits up to
+  `START_CLICK_SECONDS` (10 s) for where the click led to finish loading.
+* **Clicks the page did not act on are made again.** If, waiting for the
+  form, the tab is still the document the last click was made on, at the
+  same address, `RECLICK_SECONDS` (5 s) after the click, the page did not
+  act on it (a server-drawn chooser whose script was not running yet), and
+  the gate makes the clicks again, in order, at most `MAX_RECLICKS` times
+  (2: a script that started late has started by then, and a control that
+  does nothing is not clicked forever), and only while each still names
+  exactly one control. All of it stays inside the form's `FORM_SECONDS`
+  (30 s), counted from the moment the last click's page settled. A form
+  that never appears ends `qa_sign_in_no_form` with a sentence saying where
+  the tab is, and, when the clicks were made again, how many times and that
+  the page did not change after the last one.
 * **The origin lock holds.** Where a click leads is judged like every
   navigation of the gate's tab (`QaTarget.judge`, §3): the target's host
   and its approved `extra_origin` only. Anywhere else gets the left page,
