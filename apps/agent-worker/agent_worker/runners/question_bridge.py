@@ -37,9 +37,17 @@ host on stdin, fails with "Stream closed" and lets the model carry on as if
 asked and unanswered). `classify` then reports `bridge_failed`, never a normal
 end, so missing evidence of the question is not read as a run that finished.
 
-Nothing here parks a step: the worker lifecycle is not wired to it (the spike's
-brief). `claude_code` registers the hook and the flags only while
-`ENABLE_ENV` is "1".
+PARK AND RESUME (lane plugins-question-bridge, owner decision of 3 November
+2026). `claude_code` registers the hook and the flags only while `ENABLE_ENV`
+is "1", which the worker sets for a plugin step alone, and only when its own
+environment carries the switch. A run that `classify` reads as `parked` ends
+cleanly; `cliagent` takes no turn after it (`stopped_on_question`). The worker
+then reads the record ONCE, checks it against the stream, and parks the step
+on `wait_record`: the question in the shape every owner-question reader
+already serves, with this bridge's own block (`BRIDGE_KEY`) beside it. From
+then on the step's state is the record, never the file. On the answer, the
+next attempt checks the restored transcript is the parked session
+(`restored_session`) and resumes it with `answer_from_rows` on stdin.
 """
 
 from __future__ import annotations
@@ -426,10 +434,9 @@ def read_stream(path: Path) -> list[dict[str, Any]]:
 def unanswered(events: Iterable[Mapping[str, Any]], pending_path: Path) -> str | None:
     """Why an attempt that asked a question must not end as a success, or None.
 
-    Until the worker parks (not wired: the spike's brief), a run that asked
-    has no answer, and whatever the CLI did after the stop -- the runner's
-    repair or finish turns resume the session without one -- is not the
-    task done. A recorded question is `question_unanswered`; a question the
+    The runner raises it only for a run `classify` reads as `bridge_failed`
+    (a parked run ends cleanly and the worker parks the step). A recorded
+    question is `question_unanswered`; a question the
     stream shows and nothing recorded, or a record that is not the hook's, is
     `question_bridge_failed`.
     """
@@ -468,6 +475,152 @@ def session_files(home: Path, session_id: str) -> list[Path]:
             if path.exists() and not path.is_symlink():
                 found.append(path)
     return found
+
+
+def stopped_on_question(parsed: Any) -> bool:
+    """Whether a run's parsed stream-json ended on a hook-stopped question:
+    its last result says a hook stopped the turn and its last tool call is
+    the question tool. Read off the stream alone, by `cliagent`, which then
+    takes no further turn: a repair, finish or gate turn would resume the
+    session without the answer."""
+    events = [e for e in parsed if isinstance(e, Mapping)] if isinstance(parsed, list) else []
+    result = next((e for e in reversed(events) if e.get("type") == "result"), None)
+    if result is None or result.get("terminal_reason") != HOOK_STOPPED:
+        return False
+    last = _last_tool_use(events)
+    return last is not None and last.get("name") == QUESTION_TOOL
+
+
+#: The block of a park's `question_wait` record that makes it this bridge's:
+#: the session to resume and what the person was asked about.
+BRIDGE_KEY = "bridge"
+
+#: The owner-question reader's bound on `context` (`questions.MAX_CONTEXT_CHARS`).
+MAX_CONTEXT_CHARS = 8_000
+
+
+def _context(question: Question) -> str | None:
+    """The question's header and every option's preview, as the one text the
+    owner-question readers serve beside it; None when there is neither."""
+    parts = [question.header.strip()] if question.header.strip() else []
+    for option in question.options:
+        if option.preview:
+            parts.append(f"Preview of {option.label}:\n{option.preview}")
+    text = "\n\n".join(parts)
+    if len(text) > MAX_CONTEXT_CHARS:
+        text = text[: MAX_CONTEXT_CHARS - 1] + "\u2026"
+    return text or None
+
+
+def wait_record(
+    pending: PendingQuestion,
+    *,
+    attempt_id: str,
+    generation: int,
+    source_revision: str | None,
+    asked_at: str,
+) -> dict[str, Any]:
+    """The park's `question_wait` for a bridged question.
+
+    `questions` and `blocking` are the owner questions' shape
+    (`agent_worker.questions`), so swarm-api serves, answers and expires it
+    as it does every question wait, and every question blocks: the session
+    resumes only with all of them answered. `BRIDGE_KEY` holds the rest of
+    the record -- the session and tool use to resume, each question's own
+    options with their previews, whether it is a multiple choice, the
+    attempt and its fencing generation, and the checkout's revision.
+    """
+    questions = [
+        {
+            "question": q.question,
+            "options": [{"label": o.label, "description": o.description} for o in q.options],
+            "recommended": q.recommended,
+            "context": _context(q),
+            "blocking": True,
+        }
+        for q in pending.questions
+    ]
+    return {
+        "questions": questions,
+        "blocking": list(range(len(questions))),
+        "attempt_id": attempt_id,
+        "asked_at": asked_at,
+        BRIDGE_KEY: {
+            "session_id": _session_id(pending.session_id),
+            "tool_use_id": pending.tool_use_id,
+            "generation": generation,
+            "source_revision": source_revision,
+            "questions": pending.to_json()["questions"],
+        },
+    }
+
+
+def pending_of(bridge: Mapping[str, Any]) -> PendingQuestion:
+    """The question a wait's `BRIDGE_KEY` block records, checked as the hook's
+    record is; ValueError for one that is not."""
+    return PendingQuestion.from_json({
+        "session_id": _session_id(bridge.get("session_id")),
+        "tool_use_id": bridge.get("tool_use_id"),
+        "transcript_path": "",
+        "cwd": "",
+        "asked_at": "",
+        "questions": bridge.get("questions"),
+    })
+
+
+def answer_from_rows(pending: PendingQuestion, rows: Sequence[Mapping[str, Any]]) -> str:
+    """`answer_message` from the owner answers' rows (`questions.answers_for`).
+
+    A row's `choice` is one of the options' labels and its `text` the
+    person's own words; a single choice with both is said as the label with
+    the words after it, in their own words. ValueError when a question has
+    no answer: a partial answer never resumes the step.
+    """
+    by_question = {row.get("question"): row.get("answer") for row in rows if isinstance(row, Mapping)}
+    answers: dict[str, Any] = {}
+    for q in pending.questions:
+        given = by_question.get(q.question)
+        choice = given.get("choice") if isinstance(given, Mapping) else None
+        text = given.get("text") if isinstance(given, Mapping) else None
+        picks = [p for p in (choice, text) if isinstance(p, str) and p.strip()]
+        if not picks:
+            raise ValueError(f"no answer for: {q.question}")
+        if len(picks) == 1:
+            answers[q.question] = picks[0]
+        elif q.multi_select:
+            answers[q.question] = picks
+        else:
+            answers[q.question] = f"{choice} ({text})"
+    return answer_message(pending, answers)
+
+
+def restored_session(home: Path, session_id: str) -> bool:
+    """Whether HOME holds the transcript of `session_id`, and it is that session's:
+    `<session>.jsonl` in a project slug, every line that names a session
+    naming this one, and at least one that does."""
+    sid = _session_id(session_id)
+    for path in session_files(home, sid):
+        if path.suffix != ".jsonl" or not path.is_file():
+            continue
+        named = False
+        try:
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    found = event.get("sessionId") if isinstance(event, dict) else None
+                    if found is None:
+                        continue
+                    if found != sid:
+                        return False
+                    named = True
+        except OSError:
+            return False
+        if named:
+            return True
+    return False
 
 
 def resume_args(session_id: str) -> list[str]:
