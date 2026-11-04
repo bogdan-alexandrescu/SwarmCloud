@@ -7296,6 +7296,21 @@ let fixtureAccounts: ServedAccount[] = [
       seven_day: { utilization: 0.35, resets_at: ISO(5 * 86_400_000), reset: false },
     },
   }),
+  // VOICE IT'S OPENAI API KEY (the owner, 4 November 2026): in the Voice it
+  // pool alone, so it serves no workspace and draws only in that section,
+  // where its windows read "not measured" (`measured: false`), never 0.
+  fixtureAccount('u-bogdan', 'openai-key', {
+    provider: 'openai-api',
+    max_agents: 1,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
+    observed_at: null,
+    measured: false,
+    pools: ['voice-it'],
+    voice_it_people: ['alice@example.com'],
+    voice_it_holder: null,
+  } as Partial<ServedAccount>),
   fixtureAccount('u-bogdan', 'team-copy', {
     max_agents: 6,
     can_take_new_agent: false,
@@ -14170,7 +14185,8 @@ export interface SetupLink {
   expires_at: string | null
 }
 
-export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret'
+/** `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes. */
+export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key'
 
 /**
  * One check's last result in `health/latest`, read from the row
@@ -14385,7 +14401,7 @@ export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner:
       const d = objOf(raw) ?? {}
       return { kind: strOf(d.kind) ?? body.kind, label: strOf(d.label) ?? body.label, owner: strOf(d.owner) ?? body.owner, url: strOf(d.url), path: strOf(d.path) ?? '', expires_at: strOf(d.expires_at) }
     },
-    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + 24 * 3_600_000).toISOString() }),
+    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
   )
 }
 

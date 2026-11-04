@@ -142,7 +142,7 @@ describe('/admin/setup/link/<token>', () => {
     await mount(`/admin/setup/link/${rand(43)}`)
     fireEvent.click(await button('Open the link'))
     expect(await alertText()).toBe(
-      'This link has already been used, has expired (a link lasts 24 hours) or was never issued: ask the admin who sent it for a new link from Admin › Setup.',
+      'This link has already been used, has expired (a link lasts 24 hours; a Voice it key link ten minutes) or was never issued: ask the admin who sent it for a new link from Admin › Setup, or make a new Voice it key link on Admin › Accounts.',
     )
     // No sign-in is offered on a dead link.
     expect(screen.queryByText('Open the link')).toBeNull()
@@ -173,6 +173,35 @@ describe('/admin/setup/link/<token>', () => {
     const redeems = calls.filter((c) => c.url === '/v1/setup/links/redeem')
     expect(redeems.map((c) => c.body)).toEqual([{ token }, { token, value }])
     expect(visible(document.body)).not.toContain(value)
+  })
+
+  it("a Voice it key link asks for the OpenAI API key, sends it once in the body, and never shows it", async () => {
+    const token = rand(43)
+    const key = `sk-proj-${rand(40)}`
+    const calls = stub((m, url, body) => {
+      if (m !== 'POST' || url !== '/v1/setup/links/redeem') return null
+      if (body?.value === undefined) {
+        return refused(422, 'validation_failed', 'a voice-api-key link is opened with its value; the link is still unused, open it again with the value')
+      }
+      return {
+        status: 200,
+        body: { kind: 'voice-api-key', label: 'openai-key', tenant: 'eng', account_id: 'eng:openai-key', provider: 'openai-api', pool: 'voice-it', written: true },
+      }
+    })
+    await mount(`/admin/setup/link/${token}`)
+    fireEvent.click(await button('Open the link'))
+    expect((await screen.findAllByText("Add Voice it's OpenAI API key", {}, WAIT)).length).toBeGreaterThan(0)
+    const input = (await screen.findByLabelText('OpenAI API key (it begins sk-)', {}, WAIT)) as HTMLInputElement
+    expect(input.type).toBe('password')
+    fireEvent.change(input, { target: { value: key } })
+    fireEvent.click(await button('Add the key'))
+    await waitFor(() => expect(visible(document.body)).toMatch(/The key is in the Voice it pool as eng:openai-key\./), WAIT)
+    expect(visible(document.body)).toMatch(/not measured/)
+    const redeems = calls.filter((c) => c.url === '/v1/setup/links/redeem')
+    expect(redeems.map((c) => c.body)).toEqual([{ token }, { token, value: key }])
+    // The key went to swarm-api's redeem alone, and is drawn nowhere.
+    expect(calls.filter((c) => JSON.stringify(c.body ?? {}).includes(key)).map((c) => c.url)).toEqual(['/v1/setup/links/redeem'])
+    expect(document.body.innerHTML).not.toContain(key)
   })
 
   it('reads the token only off its own path', () => {

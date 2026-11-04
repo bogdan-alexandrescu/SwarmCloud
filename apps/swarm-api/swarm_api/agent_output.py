@@ -132,9 +132,10 @@ RAW_PATCH_MEDIA_TYPE = "text/x-diff; charset=utf-8"
 def download_filename(name: str) -> str:
     """The `filename=` a download is saved as: the basename, every unusual byte `_`.
 
-    Every segment of a served name has already passed `safe_segment`, so this
-    changes nothing today. It is here so the quoted header value cannot be
-    closed or extended by whatever a future layout lets through.
+    A served name's segments pass `objects.safe_artifact_name`, which lets
+    through any printable name the listing serves -- a space, a quote, a
+    non-ASCII letter -- so this is what keeps the quoted header value from
+    being closed or extended, and keeps it ASCII.
     """
     base = PurePosixPath(name).name or "artifact"
     return _FILENAME_UNSAFE.sub("_", base)
