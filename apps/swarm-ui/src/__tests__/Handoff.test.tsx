@@ -299,7 +299,7 @@ describe('the Live browsers filter (the All | Browsers N switch)', () => {
     )
     const first = container.querySelector('.rows .row.clickable')!
     expect(first.classList.contains('is-needs-you')).toBe(true)
-    expect(first.textContent).toMatch(/needs you/i)
+    expect(first.textContent).toMatch(/your turn/i)
   })
 })
 
