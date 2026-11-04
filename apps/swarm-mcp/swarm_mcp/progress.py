@@ -674,6 +674,114 @@ def waiting_key(task: dict[str, Any]) -> str | None:
     return f"{zlib.crc32(waiting_words(brief).encode('utf-8')):08x}"
 
 
+# --------------------------------------------------------------------------
+# A fix loop's rounds (FL-PLUGIN, docs/design/fix-loop.md §6.3, part of #2509)
+# --------------------------------------------------------------------------
+
+#: The catalogue's control-plane profile a fix-loop step runs on (FL-CONTRACT,
+#: BGD Q10 (a)); read from the frozen catalogue so a rename fails at import.
+FIX_LOOP_PROFILE = RUNNER_PROFILES["fix-loop"].name
+#: swarm-api's bounds, spelled again because swarm-api is not installed with
+#: the bridge: `max_rounds` 1-5, default 3 (BGD Q5 (a)), and at most 10 rounds
+#: with every round a person added (Q4 (a), `fixloop.FIX_LOOP_ROUNDS_CEILING`).
+FIX_LOOP_DEFAULT_ROUNDS = 3
+FIX_LOOP_MIN_ROUNDS = 1
+FIX_LOOP_MAX_ROUNDS = 5
+FIX_LOOP_ROUNDS_CEILING = 10
+#: The phases a loop parks HUMAN_REQUIRED on for a person (§4.4,
+#: `fixloop.PERSON_PHASES`), spelled again for the same reason.
+FIX_LOOP_PERSON_PHASES = ("fix_loop_exhausted", "fix_changed_nothing", "round_failed",
+                          "review_unreadable", "round_refused")
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _count_of(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def fix_loop_phase(task: dict[str, Any]) -> str | None:
+    """The §4.4 phase a fix loop is PARKED HUMAN_REQUIRED on, else None."""
+    if task.get("state") != "PARKED" or task.get("park_reason") != "HUMAN_REQUIRED":
+        return None
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and block.get("park_phase") in FIX_LOOP_PERSON_PHASES:
+            return str(block["park_phase"])
+    return None
+
+
+def fix_loop_view(task: dict[str, Any]) -> dict[str, Any] | None:
+    """A `fix-loop` step's counter, as the API serves it, else None.
+
+    `{round, rounds, running, phase, verdict, findings_count, final_review}`:
+    `round` is the newest round number the loop recorded (0 before its first),
+    `rounds` how many it may run -- the signed `max_rounds`, re-capped to 1-5
+    as swarm-api reads it, plus the rounds people added, never past the
+    ceiling -- and `running` the half in flight (`fix` or `re-review`) while
+    it is PARKED FIX_ROUNDS_RUNNING. The rounds come from
+    `metadata.fix_loop_state` (the full view), else `result_summary.fix_loop`.
+    """
+    dispatch = _dict(task.get("dispatch"))
+    block = _dict(dispatch.get("fix_loop"))
+    if task.get("runner_profile") != FIX_LOOP_PROFILE and not block:
+        return None
+    state = _dict(_dict(task.get("metadata")).get("fix_loop_state"))
+    summary = _dict(_dict(task.get("result_summary")).get("fix_loop"))
+    raw = state.get("rounds") if isinstance(state.get("rounds"), list) else summary.get("rounds")
+    rounds = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    numbers = [n for n in (_count_of(r.get("round")) for r in rounds) if n is not None and n > 0]
+    signed = _count_of(block.get("max_rounds"))
+    limit = min(max(signed if signed is not None else FIX_LOOP_DEFAULT_ROUNDS, FIX_LOOP_MIN_ROUNDS),
+                FIX_LOOP_MAX_ROUNDS)
+    for entry in state.get("added") if isinstance(state.get("added"), list) else []:
+        given = _count_of(_dict(entry).get("rounds"))
+        if given is not None and given > 0:
+            limit += given
+    running = None
+    if task.get("state") == "PARKED" and task.get("park_reason") == "FIX_ROUNDS_RUNNING" and rounds:
+        running = "fix" if rounds[-1].get("kind") == "fix" else "re-review"
+    findings = _count_of(summary.get("findings_count"))
+    return {
+        "round": max(numbers) if numbers else 0,
+        "rounds": min(limit, FIX_LOOP_ROUNDS_CEILING),
+        "running": running,
+        "phase": fix_loop_phase(task),
+        "verdict": summary.get("verdict") if isinstance(summary.get("verdict"), str) else None,
+        "findings_count": findings,
+        "final_review": summary.get("final_review") if isinstance(summary.get("final_review"), str) else None,
+    }
+
+
+def fix_loop_words(task: dict[str, Any]) -> str | None:
+    """`round 2 of 3 · re-review running`, `round 3 of 3 · waiting for you:
+    fix_loop_exhausted`, `round 2 of 3 · MERGE after 2 rounds`; None for a
+    task that is not a fix loop. What the console's loop row says (§6.2)."""
+    view = fix_loop_view(task)
+    if view is None:
+        return None
+    head = f"round {view['round']} of {view['rounds']}"
+    state = task.get("state")
+    if view["phase"]:
+        return f"{head} · waiting for you: {view['phase']}"
+    if view["running"]:
+        return f"{head} · {view['running']} running"
+    if state == "SUCCEEDED":
+        k = view["round"]
+        return f"{head} · MERGE after {k} round{'' if k == 1 else 's'}"
+    if state in TERMINAL_STATE_VALUES:
+        return f"{head} · ended {str(state).lower()} without a MERGE"
+    if view["round"] == 0:
+        return f"{head} · no round started yet"
+    return head
+
+
+def fix_loop_command(workflow_id: Any, action: str = "add_round") -> str:
+    """The exact `swarm_fix_loop` call a person makes on a parked loop (§4.5)."""
+    return f"swarm_fix_loop {{workflow_id: {str(workflow_id)!r}, action: {action!r}}}"
+
+
 def state_line(task: dict[str, Any]) -> str:
     """Where one task is, in words -- above all, WHY a waiting task waits.
 
@@ -698,9 +806,16 @@ def state_line(task: dict[str, Any]) -> str:
             # queued check, a failing one and a finished one. The summary
             # already names a READY task's binding pool, so no blockers.
             why = clip(waiting_words(brief), 240) + (f" ({reason})" if reason else "")
+            rounds = fix_loop_words(task)
+            if rounds:
+                why = f"{rounds}; {why}"
             return f"[{label}] waiting · {state} · {why}; holds no capacity"
         if reason:
             why = f"{_PARKED_BECAUSE.get(str(reason), str(reason).lower())} ({reason})"
+            # A FIX LOOP'S COUNTER (FL-PLUGIN): which round, and which half runs.
+            rounds = fix_loop_words(task)
+            if rounds:
+                why = f"{rounds}; {why}"
         else:
             why = _WAITING.get(str(state), str(state).lower())
         blockers = task.get("blocked_by") or []

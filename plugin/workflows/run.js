@@ -562,6 +562,22 @@ function personWait(given) {
     const [asked] = ownerQuestions([entry])
     questions.push(Object.assign({ task_id: entry.task_id, step_id: text(entry.step_id, LABEL_TEXT_CHARS), question_index: index }, asked, { index: index }))
   }
+  // A FIX LOOP PARKED FOR A PERSON (FL-PLUGIN, docs/design/fix-loop.md §4.5,
+  // §6.3): nobody signs in and no question is open; the row carries its
+  // phase, its `round k of N` and the swarm_fix_loop calls that answer it.
+  if (given.kind === 'fix_loop') {
+    return {
+      kind: 'fix_loop',
+      since: text(given.since, 40),
+      since_clock: text(given.since_clock, 20),
+      questions: [],
+      console: consoleLink(given.console) || null,
+      park_phase: text(given.park_phase, 40),
+      fix_loop: text(given.fix_loop, 120),
+      add_round: text(given.add_round, 200),
+      stop: text(given.stop, 200),
+    }
+  }
   return {
     kind: given.kind === 'owner_questions' ? 'owner_questions' : 'hand_off',
     since: text(given.since, 40),
@@ -1267,7 +1283,9 @@ function narrate(stepId, result, submittedLink) {
     // WAITING ON A PERSON since <HH:MMZ> · <n> owner questions (#2441).
     const waiting = result.waiting_on_person
     const head = stepId + ' ' + (result.state || 'PARKED') + ' · WAITING ON A PERSON' + (waiting.since_clock ? ' since ' + waiting.since_clock : '')
-    const what = waiting.kind === 'owner_questions'
+    const what = waiting.kind === 'fix_loop'
+      ? 'fix loop ' + (waiting.fix_loop || 'waits for you') + (waiting.add_round ? ' · add a round: ' + waiting.add_round : '')
+      : waiting.kind === 'owner_questions'
       ? waiting.questions.length + ' owner question' + (waiting.questions.length === 1 ? '' : 's')
       : 'hand-off: sign in on its console page, then say it is ready' + (waiting.human_ready_route ? ' (' + waiting.human_ready_route + ')' : '')
     return head + ' · ' + what + consoleSuffix(waiting.console || (result && result.console) || submittedLink)

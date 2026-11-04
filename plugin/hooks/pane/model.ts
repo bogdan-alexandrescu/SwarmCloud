@@ -851,6 +851,9 @@ export function initialBand(): BandState {
 /** The park reasons that wait for a person: a human step's answer, or a hold only a person releases. */
 const PERSON = ['AWAITING_INPUT', 'HUMAN_REQUIRED']
 
+/** The phases a fix loop parks HUMAN_REQUIRED on for a person (docs/design/fix-loop.md §4.4). */
+const FIX_LOOP_PHASES = ['fix_loop_exhausted', 'fix_changed_nothing', 'round_failed', 'review_unreadable', 'round_refused']
+
 function waitsOnYou(step: Step): boolean {
   return step.state === 'PARKED' && typeof step.park_reason === 'string' && PERSON.indexOf(step.park_reason) >= 0
 }
@@ -920,7 +923,9 @@ export function noticesOf(row: WorkflowRow): string[] {
     if (!waitsOnYou(step)) continue
     out.push(step.park_reason === 'HUMAN_REQUIRED' && step.park_phase === 'owner_questions'
       ? 'merge parked on owner questions (' + step.step_id + ')'
-      : step.step_id + ' waits for a person')
+      : step.park_reason === 'HUMAN_REQUIRED' && typeof step.park_phase === 'string' && FIX_LOOP_PHASES.indexOf(step.park_phase) >= 0
+        ? step.step_id + ': fix loop waits for you (' + step.park_phase + ')'
+        : step.step_id + ' waits for a person')
   }
   if (typeof row.owner_questions === 'number' && row.owner_questions > 0) out.push('owner questions: ' + Math.trunc(row.owner_questions))
   return out
