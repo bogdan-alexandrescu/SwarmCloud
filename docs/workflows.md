@@ -2421,8 +2421,16 @@ then cancelled like any other step that has not started.
 The console's **Needs you** row offers this as **Retry** on a failed step (the
 owner's pick on PR #3123). A lone agent's Retry opens Submit prefilled instead.
 A step's prompt submitted alone as a lone agent is not the step it was: it
-would have no parents' artifacts, no gate, no place in the merge. The rules
-that are not obvious (`swarm_api/steprerun.py`):
+would have no parents' artifacts, no gate, no place in the merge. The step's
+Retry asks first, in the row, naming the step ("Re-run step build inside its
+workflow, with the steps its failure stopped?"), because one press spends what
+every re-run step spends. Accepted, the row names the steps re-run. Refused,
+the row shows the API's message and offers Retry again. The rules that are not
+obvious (`swarm_api/steprerun.py`):
+
+* **A member or above, as cancel is.** A `viewer` is refused 403
+  `role_member_required` before anything is read or written, as on every
+  write.
 
 * **A failed agent stays failed.** FAILED and DEAD_LETTERED are terminal in
   the frozen state machine, and the old agent's attempts, fencing generation
@@ -2442,7 +2450,11 @@ that are not obvious (`swarm_api/steprerun.py`):
   re-run racing that sweep could be swept by it. It is also refused for a
   cancelled workflow and for a step that did not fail. The store checks all
   of this again inside the one transaction that writes, so two people pressing
-  Retry re-run the step once.
+  Retry re-run the step once. A second Retry after the first landed is refused
+  409 `workflow_still_running`, because the re-run step is waiting again. Every
+  refusal uses the established `conflict` and `not_found` codes, and
+  `detail.reason` tells them apart, so no new code ships here (a new code
+  would ship switched off, `swarm_api.refusals`).
 * **The spec is the one submitted, signed again.** Every old id in the copy is
   remapped to its new one (`depends_on`, `metadata.input_from`, the dispatch
   routing). The copy is then re-signed, because the id is inside the signed
