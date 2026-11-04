@@ -682,3 +682,121 @@ def test_apply_and_terraform_name_the_same_two_secrets():
     tf = TAILSCALE_TF.read_text()
     assert 'secret_id = "swarm-tailscale-oauth"' in tf
     assert 'tailscale_k8s_object      = "operator-oauth"' in tf
+
+
+# --- the post-apply comparison (kubernetes/network_parity.py --jev-egress-ingress) ---
+#
+# The owner chose (4 November 2026) that apply.sh --swarm-system --confirm
+# compares decision-api-egress-ingress with the range swarm-api egresses from,
+# read from its service, as it does swarm-live-ingress: terraform renders the
+# rule's ipBlock from local.decision_api_swarm_api_cidr, its own copy of the
+# subnet, and a stale copy closes swarm-api's route to the Jev backend.
+
+DRIFTED_API_CIDR = "10.124.32.0/20"
+
+
+def _parity() -> Any:
+    spec = importlib.util.spec_from_file_location("swarm_k8s_parity_jev", KUBERNETES / "network_parity.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _drifted(policy: dict[str, Any]) -> dict[str, Any]:
+    import copy
+
+    drifted = copy.deepcopy(policy)
+    drifted["spec"]["ingress"][1]["from"][0]["ipBlock"]["cidr"] = DRIFTED_API_CIDR
+    return drifted
+
+
+def test_the_parity_check_passes_the_rendered_policy():
+    assert _parity().check_jev_egress_ingress(_ingress_policy(_rendered()), API_CIDR) == []
+
+
+def test_the_parity_check_names_both_ranges_when_the_rule_has_drifted():
+    problems = _parity().check_jev_egress_ingress(_drifted(_ingress_policy(_rendered())), API_CIDR)
+    assert problems
+    assert any(DRIFTED_API_CIDR in p and API_CIDR in p for p in problems), problems
+
+
+def test_the_parity_check_names_the_port_when_the_rule_is_on_another():
+    policy = _ingress_policy(_rendered())
+    policy["spec"]["ingress"][1]["ports"] = [{"protocol": "TCP", "port": 9443}]
+    problems = _parity().check_jev_egress_ingress(policy, API_CIDR)
+    assert any("9443" in p and str(FORWARD_PORT) in p for p in problems), problems
+
+
+def test_the_parity_check_refuses_every_widening():
+    check = _parity().check_jev_egress_ingress
+    for name, mutant in _ingress_mutants(_ingress_policy(_rendered())).items():
+        assert check(mutant, API_CIDR), f"the parity check passed a widened policy: {name}"
+
+
+def test_the_parity_check_and_the_manifest_name_the_same_policy_selector_and_port():
+    parity = _parity()
+    policy = _ingress_policy(_rendered())
+    assert parity.JEV_EGRESS_INGRESS_POLICY == policy["metadata"]["name"] == "decision-api-egress-ingress"
+    assert parity.JEV_EGRESS_POD_SELECTOR == {"matchLabels": APP}
+    assert parity.JEV_EGRESS_PORT == FORWARD_PORT
+
+
+def test_the_parity_check_runs_against_swarm_systems_policies(tmp_path, capsys):
+    parity = _parity()
+    live = tmp_path / "live.json"
+    live.write_text(json.dumps({"swarm_api_egress_cidr": API_CIDR, "source": "the fake subnet"}))
+    policies = tmp_path / "policies.json"
+    argv = ["--jev-egress-ingress", "--live", str(live), "--policies", str(policies)]
+    policy = _ingress_policy(_rendered())
+
+    policies.write_text(json.dumps({"items": [policy]}))
+    assert parity.main(argv) == 0
+    assert "ok swarm-system/decision-api-egress-ingress" in capsys.readouterr().out
+
+    policies.write_text(json.dumps({"items": [_drifted(policy)]}))
+    assert parity.main(argv) == 1
+    out = capsys.readouterr().out
+    assert "FAIL swarm-system/decision-api-egress-ingress" in out and DRIFTED_API_CIDR in out and API_CIDR in out
+
+    # A missing policy is nothing compared, never a pass.
+    policies.write_text(json.dumps({"items": []}))
+    assert parity.main(argv) == 1
+    assert "swarm-system/decision-api-egress-ingress does not exist" in capsys.readouterr().out
+
+    live.write_text(json.dumps({"source": "the fake subnet"}))
+    policies.write_text(json.dumps({"items": [policy]}))
+    assert parity.main(argv) == 1
+    assert "no swarm_api_egress_cidr" in capsys.readouterr().out
+
+
+def test_confirm_compares_the_jev_egress_rule_with_swarm_apis_range(cluster):
+    result = _apply(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "ok swarm-system/decision-api-egress-ingress" in out, out
+
+
+def test_confirm_fails_when_the_jev_egress_rule_admits_another_range(cluster):
+    path = cluster["dir"] / "tailscale.yaml"
+    path.write_text(path.read_text().replace(f"cidr: {FAKE_API_CIDR}", f"cidr: {DRIFTED_API_CIDR}"))
+    assert DRIFTED_API_CIDR in path.read_text()
+    result = _apply(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "FAIL swarm-system/decision-api-egress-ingress" in out, out
+    assert DRIFTED_API_CIDR in result.stderr and FAKE_API_CIDR in result.stderr, result.stderr
+
+
+def test_a_dry_run_says_confirm_compares_the_jev_egress_rule(cluster):
+    result = _apply(cluster)
+    assert result.returncode == 0, result.stderr
+    assert "network_parity.py --jev-egress-ingress" in result.stdout + result.stderr
+
+
+def test_without_a_tailscale_manifest_the_jev_egress_rule_is_not_compared(cluster):
+    (cluster["dir"] / "tailscale.yaml").unlink()
+    result = _apply(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "decision-api-egress-ingress" not in out
