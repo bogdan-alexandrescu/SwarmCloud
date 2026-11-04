@@ -119,6 +119,7 @@ import random
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -269,6 +270,8 @@ from .gitops import (
     own_branch_tip,
     own_moved_head,
     prepare_publish_repo,
+    keep_work_bundle,
+    WORK_BUNDLE_NAME,
     push_branch,
     read_agent_excludes,
     read_head_as_data,
@@ -307,11 +310,14 @@ from .metrics import (
 from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
+from .runners import question_bridge
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
     ACCOUNT_ERROR_KINDS,
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
+    QUESTION_ANSWER_FILE_ENV,
+    RESUME_ANSWERED,
     RESUME_MOVED,
     RESUME_REASON_ENV,
     RESUME_RELOADED,
@@ -573,6 +579,10 @@ _MAX_WORKFLOW_STEPS: int = next(
     f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
 )
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+#: The answer a session parked on a question resumes with, in `private/`
+#: (`Lifecycle._resume_parked_question`): never in `work/`, which the agent
+#: can write and a checkpoint archives.
+QUESTION_ANSWER_NAME = "question-answer.txt"
 
 #: How `forge.open_pull_request` words the forge's own refusal of a pull
 #: request (its 422 with no open one to reuse), as opposed to a forge that
@@ -1299,6 +1309,9 @@ class Worker:
         #: Why the session is resumed (RESUME_MOVED / RESUME_RELOADED), which
         #: decides what the resumed CLI is told.
         self._resume_reason: str | None = None
+        #: The answer a session parked on a question resumes with, in
+        #: `private/` (`_resume_parked_question`); None otherwise.
+        self._question_answer_path: Path | None = None
         self._readings: ReadingForwarder | None = None
         self._turns_checked = 0
         self._channel_seen: int | None = None
@@ -2990,6 +3003,10 @@ class Worker:
         assert ws is not None
         if result.exit_code != 0 or result.timed_out or result.killed:
             return None
+        if self._question_bridge_on():
+            bridged = self._park_for_bridged_question()
+            if bridged is not None:
+                return bridged
         try:
             asked = questions_mod.await_answers(ws.artifacts)
         except questions_mod.Rejected as exc:
@@ -3006,7 +3023,145 @@ class Worker:
             return self._park_for_release(sha)
         return None
 
-    def _park_for_answers(self, asked: dict[str, Any]) -> Outcome:
+    def _question_bridge_on(self) -> bool:
+        """The question bridge, for this attempt: the worker's own switch
+        (`question_bridge.ENABLE_ENV`, exactly "1"), a step that started
+        agent plugins (`plugins_mod.start`), and a Claude Code runner. Off,
+        nothing here reads or parks on a question, and the runner registers
+        no hook."""
+        spec = cli_agent_spec(self.cfg.runner_profile)
+        return (question_bridge.enabled(os.environ) and self._plugins is not None
+                and getattr(spec, "name", None) == "claude-code")
+
+    def _question_bridge_env(self) -> dict[str, str]:
+        """The runner's switch, and the answer a parked session resumes with
+        (whatever the switch says now: a session parked is resumed with its
+        answer even on a worker the switch was since turned off on)."""
+        env: dict[str, str] = {}
+        if self._question_answer_path is not None and self._resume_reason == RESUME_ANSWERED:
+            env[QUESTION_ANSWER_FILE_ENV] = str(self._question_answer_path)
+        if self._question_bridge_on():
+            env[question_bridge.ENABLE_ENV] = "1"
+        return env
+
+    def _resume_parked_question(self, task: dict[str, Any]) -> None:
+        """Resume the session a bridged question parked, once it is answered.
+
+        After the restore, before the runner: the restored transcript must be
+        the parked session's (`question_bridge.restored_session`), or the
+        attempt fails with nothing run -- a fresh session would not know what
+        it asked. The answer message goes to `private/`, outside `work/`, and
+        the runner is told to `--resume` the session with it. Nothing is
+        written to the task here: a stale attempt is fenced before it reaches
+        this (invariant 5) and the answer stays as recorded.
+        """
+        ws = self.ws
+        assert ws is not None
+        try:
+            resume = questions_mod.bridge_resume(task)
+        except ValueError as exc:
+            raise WorkerError(
+                f"question_resume_failed: the parked question's record is not one the worker wrote ({exc})"
+            ) from None
+        if resume is None:
+            return
+        session = resume["session_id"]
+        if not question_bridge.restored_session(ws.work, session):
+            raise WorkerError(
+                "question_resume_failed: the restored workspace does not hold the session that "
+                "parked on the question; it is not started without it"
+            )
+        path = ws.private / QUESTION_ANSWER_NAME
+        path.unlink(missing_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(resume["message"])
+        self._question_answer_path = path
+        self._note_session(session)
+        self._resume_session = session
+        self._resume_reason = RESUME_ANSWERED
+        self.log.info("resuming the session that parked on a question, with its answer")
+
+    def _checkout_revision(self) -> str | None:
+        """The checkout's HEAD, the revision a parked question was asked about; None without one."""
+        ws = self.ws
+        if ws is None or not self._repo_url:
+            return None
+        try:
+            done = subprocess.run(
+                ["git", "-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null",
+                 "-C", str(ws.checkout()), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        head = done.stdout.strip()
+        return head if done.returncode == 0 and _FULL_SHA_RE.fullmatch(head) else None
+
+    def _park_for_bridged_question(self) -> Outcome | None:
+        """Park the step on the question its agent asked through the bridge, or None.
+
+        The hook's record is read ONCE and checked against the agent's
+        stream (`question_bridge.classify`), then removed: from here on the
+        park's `question_wait` is the record (`question_bridge.wait_record`),
+        with the session and tool use, the attempt, its fencing generation
+        and the checkout's revision. A run and a record that disagree fail
+        the attempt (`question_bridge_failed`). The park is refused, and the
+        attempt fails, when the checkpoint before it would not hold the
+        session's transcript and gstack's state or did not upload: a park
+        nobody can resume is a lost step.
+        """
+        ws = self.ws
+        assert ws is not None
+        from .runners.claude_code import SETTINGS_DIR_NAME  # lazy: the claude-code runner's
+
+        files = agent_stream_files(self.cfg.runner_profile)
+        events = question_bridge.read_stream(ws.artifacts / files.stdout) if files else []
+        pending_path = ws.work / SETTINGS_DIR_NAME / question_bridge.PENDING_NAME
+        outcome, pending = question_bridge.classify(events, pending_path)
+        try:
+            question_bridge.clear_pending(pending_path)
+        except OSError:
+            pass
+        if outcome == question_bridge.NOT_ASKED:
+            return None
+        if outcome != question_bridge.PARKED or pending is None:
+            return self._fail_bridged_question(
+                "question_bridge_failed: the agent's question and its record disagree")
+        gaps = self._bridge_checkpoint_gaps(pending.session_id)
+        if gaps:
+            return self._fail_bridged_question(
+                "question_park_refused: the checkpoint would not hold " + "; ".join(gaps))
+        record = question_bridge.wait_record(
+            pending, attempt_id=self.cfg.attempt_id, generation=self.cfg.generation,
+            source_revision=self._checkout_revision(), asked_at=utcnow().isoformat())
+        return self._park_for_answers(self._scrub(record), require_checkpoint=True)
+
+    def _bridge_checkpoint_gaps(self, session: str) -> list[str]:
+        """What a checkpoint of `work/` would miss to resume `session`: its
+        transcript, and gstack's state root when it is not under `work/`."""
+        ws = self.ws
+        assert ws is not None
+        gaps = []
+        if not question_bridge.restored_session(ws.work, session):
+            gaps.append("the session's transcript under work/.claude/projects")
+        env = self._plugins.env if self._plugins is not None else {}
+        home = env.get("GSTACK_HOME")
+        if home:
+            try:
+                Path(home).resolve().relative_to(ws.work.resolve())
+            except ValueError:
+                gaps.append("GSTACK_HOME, which is outside the attempt's work/")
+        return gaps
+
+    def _fail_bridged_question(self, error: str) -> Outcome:
+        """Fail the attempt retryably: a question the step cannot park on."""
+        self.log.error("not parked on the agent's question", reason=error)
+        state = self._fail_retryably_terminal(
+            exit_code=0, error=error, cause=error.split(":", 1)[0])
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _park_for_answers(self, asked: dict[str, Any], *, require_checkpoint: bool = False) -> Outcome:
         """Checkpoint, upload, PARKED(HUMAN_REQUIRED) with `question_wait`, release, exit.
 
         §3.9 step 1. The hand-off's park exactly (`handoff_mod.park_human_required`):
@@ -3014,9 +3169,15 @@ class Worker:
         and only a person -- here, the last blocking answer -- returns it to
         READY. The record carries the validated questions, which is how
         swarm-api serves them while the task has no result summary.
+
+        `require_checkpoint` (a bridged question): a checkpoint that did not
+        upload refuses the park and fails the attempt, since the session the
+        answer resumes is in it.
         """
         cfg = self.cfg
-        self._checkpoint("question-wait")
+        if self._checkpoint("question-wait") is None and require_checkpoint:
+            return self._fail_bridged_question(
+                "question_park_refused: the checkpoint before the park failed")
         uploaded = self._upload_outputs().get("artifacts")
         wait = {**asked, "attempt_id": cfg.attempt_id, "asked_at": utcnow().isoformat()}
         self.log.info(
@@ -3648,6 +3809,9 @@ class Worker:
         # block between nonce lines, as data. Nothing for a task that never
         # waited on one.
         questions_mod.resume_with_answers(ws.work, payload, task)
+        # A plugin step parked on its agent's question (the question bridge):
+        # the same session resumes, with the answer as its next message.
+        self._resume_parked_question(task)
         # A review's owner questions (#2070, option (c)): every earlier step
         # of its workflow's validated questions, with the answers so far, in
         # `work/owner-questions.json`, and the verdict instructions closing
@@ -9231,6 +9395,23 @@ class Worker:
                 + (f" ({git['patch_note']})" if git.get("patch_note") else "")
                 + "; the work is in the attempt's final checkpoint."
             )
+        bundle = next(
+            (
+                entry.get("uri")
+                for entry in summary.get("artifacts") or []
+                if isinstance(entry, dict) and entry.get("name") == WORK_BUNDLE_NAME
+                and entry.get("uri")
+            ),
+            None,
+        )
+        if bundle and git.get("bundle") == WORK_BUNDLE_NAME:
+            # The branch itself, merges included (#3174): what a re-dispatch
+            # or a hand push takes, where the patch is the final tree flat.
+            where += (
+                f" The agent's branch, merge commits included, is kept as a git bundle in "
+                f"{bundle} (ref {git.get('bundle_ref') or 'swarm-work'}, on "
+                f"{git.get('bundle_base')})."
+            )
         located = credential_locator(cause)
         if located:
             # A REFUSAL A BRIEF CAN BE CORRECTED FROM (part of #2524): which
@@ -10187,6 +10368,7 @@ class Worker:
                 # for the credential reload (#626).
                 base.update(self._session_channel_env())
         base.update(self._continuation_env())
+        base.update(self._question_bridge_env())
         # The child-task spool, when this attempt has a child path: the one
         # variable an agent needs to submit and await helpers (child tasks,
         # §3.1). And the git tools' spool, when it is offered them
@@ -14313,6 +14495,20 @@ class Worker:
             # agent's TREE against the base, so it is taken from a repository
             # holding the base alone, whatever the clone's history lacks.
             out.update(self._harvest_tree_patch(repo, fetched_base))
+            # AND THE BRANCH ITSELF, MERGES INCLUDED (#3174): the patch is the
+            # final tree flat, so a re-dispatch or a hand push from it redid
+            # the merge the agent had made. Named in the failure text, so a
+            # reader of the failure finds it.
+            out.update(self._keep_work_bundle(
+                repo, EMPTY_CLONE_BASE if floor == EMPTY_CLONE_BASE else fetched_base
+            ))
+            if out.get("bundle"):
+                kept = (f"; the agent's branch, merge commits included, is kept in "
+                        f"{WORK_BUNDLE_NAME} ({out['bundle_commits']} commits on "
+                        f"{out['bundle_base']})")
+                out["error"] += kept
+                if "publish_reason" in out:
+                    out["publish_reason"] += kept
             return out
 
         out.update(
@@ -14576,6 +14772,75 @@ class Worker:
             "took the patch from the agent's tree after the publish repository failed",
             patch=work.patch_name, patch_bytes=work.patch_bytes,
         )
+        return out
+
+    def _keep_work_bundle(self, repo: Path, base: str | None) -> dict[str, Any]:
+        """`swarm-work.bundle`, the agent's branch with its merge commits, for
+        a harvest whose clean repository could not be built (#3174). Never
+        raises. Built in a repository of the worker's own and scanned commit
+        by commit with the publish's leak test (`gitops.keep_work_bundle`);
+        under the patch's cap. Returns the `result_summary["git"]` fields:
+        `bundle` (its artifact name, or None) and, when none was kept,
+        `bundle_note` saying why."""
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        git = ["git", *_NO_HOOKS]
+        overlap = self._scan_overlap()
+
+        def leaks(bundle_repo: Path, commits: list[str]) -> str | None:
+            code, empty_tree = _git_text(
+                [*git, "hash-object", "-t", "tree", "/dev/null"], repo=bundle_repo,
+                private_dir=ws.private, logs_dir=ws.logs, slug="bundle-scan-empty",
+                timeout_seconds=cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            empty_tree = empty_tree.strip()
+            if code != 0 or not _FULL_SHA_RE.fullmatch(empty_tree):
+                raise GitError("could not name the empty tree")
+            for sha in commits:
+                code, parents = _git_text(
+                    [*git, "rev-list", "--parents", "-n", "1", sha], repo=bundle_repo,
+                    private_dir=ws.private, logs_dir=ws.logs, slug="bundle-scan-parents",
+                    timeout_seconds=cfg.git_harvest_timeout_seconds, logger=self.log,
+                )
+                listed = parents.split()
+                if code != 0 or not listed or listed[0] != sha:
+                    raise GitError("could not read a bundled commit's parents")
+                # The first parent, or the empty tree for a root (or a commit
+                # the clone was cut off at): its whole tree is what it adds.
+                before = listed[1] if len(listed) > 1 else empty_tree
+                code, hit = _scan_diff_stream(
+                    [
+                        *git, "-c", "core.quotePath=false", "diff", "--no-color",
+                        "--no-ext-diff", "--no-textconv", "--text", "--no-renames",
+                        "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
+                        before, sha, "--",
+                    ],
+                    leaks=self._leaks_in_added_text, overlap=overlap, new_rev=sha, git=git,
+                    repo=bundle_repo, private_dir=ws.private, logs_dir=ws.logs,
+                    slug="bundle-scan-diff", timeout_seconds=cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
+                if code != 0:
+                    raise GitError(f"could not diff commit {sha[:12]} against its parent")
+                if hit is not None:
+                    return sha
+            return None
+
+        kept = keep_work_bundle(
+            source_repo=repo, base=base, private_dir=ws.private, logs_dir=ws.logs,
+            bundle_path=ws.artifacts / WORK_BUNDLE_NAME, max_bytes=cfg.max_patch_bytes,
+            timeout_seconds=cfg.git_harvest_timeout_seconds, logger=self.log, leaks=leaks,
+        )
+        out: dict[str, Any] = {"bundle": kept.name, "bundle_bytes": kept.bytes,
+                               "bundle_omitted": kept.omitted}
+        if kept.name is not None:
+            out["bundle_commits"] = kept.commits
+            out["bundle_base"] = kept.base
+            out["bundle_ref"] = "swarm-work"
+        else:
+            out["bundle_note"] = self._scrub(str(kept.note or "no bundle was kept")[:500])
+            self.log.warning("kept no bundle of the agent's branch", reason=out["bundle_note"])
         return out
 
     def _build_clean_repo(
@@ -17223,6 +17488,8 @@ class Worker:
         if files is not None:
             first += files.names()
         first.append(PATCH_NAME)
+        # Beside the patch, the branch a failed publish kept (#3174).
+        first.append(WORK_BUNDLE_NAME)
         return first
 
     def _upload_outputs(

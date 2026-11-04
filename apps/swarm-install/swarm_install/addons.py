@@ -19,7 +19,7 @@ runs, in order:
 | Add-on | Secret | Switch |
 |---|---|---|
 | `bright-data-egress` | `swarm-egress-key` (generated), `swarm-egress-credential` (link) | `enable_browser_egress`, `browser_egress.enabled` and `.tenants` (the tenants it routes: an optional choice); the `statefulset/swarm-egress` workload |
-| `tailscale` | `swarm-tailscale-oauth` (link) | `enable_tailscale_egress`, `internal_decision_api_enabled` (swarm-api's INTERNAL_DECISION_API_URL), `tailscale_egress_target` (asked; no default); the `deployment/decision-api-egress` workload |
+| `tailscale` | `swarm-tailscale-oauth` (link) | `enable_tailscale_egress`, `internal_decision_api_enabled` (swarm-api's INTERNAL_DECISION_API_URL), `tailscale_egress_target` (asked; no default); the `deployment/decision-api-egress` workload, whose `decision-api-egress-ingress` is judged against swarm-api's live egress range (`network_parity.check_jev_egress_ingress`) |
 | `typesafe` | `swarm-typesafe-fwd-key` (generated) | `enable_typesafe_forwarder_read` (bootstrap), `enable_typesafe_forwarder`, `typesafe_forwarder.serve`, `.enabled` and `.tenants` (an optional choice); the `deployment/swarm-typesafe-fwd` workload |
 | `brave-search` | `swarm-search-api-key` (link; the one container the engine creates, as create-secrets.sh did) | `search_tool_enabled`; on only once swarm-api's probe (`POST /v1/admin/setup/addons/brave-search/probe`) runs one real search with the key |
 | `ci` | none: Workload Identity and the merge App | `enable_github_wif`, `github_repository` (bootstrap), `enable_acceptance_fixture`; Cloud Build with its OWN service account (lesson 6); the `dev` and `prod` environments (created through the API after a typed approval); the runner label and the sandbox as repository variables |
@@ -59,6 +59,8 @@ older than that route answers 404, and the check falls back to reading
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
 import re
 import secrets as _secrets
@@ -462,6 +464,13 @@ class World(Protocol):
 
     def sync_tailscale_secret(self) -> None: ...
 
+    # swarm-api's Direct VPC egress range and where it was read
+    # (`run/<project>/<region>/swarm-api/<subnetwork>`).
+    def swarm_api_egress(self) -> tuple[str, str]: ...
+
+    # kubernetes/network_parity.py, as the release ships it.
+    def network_parity(self) -> Any: ...
+
     def github(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]: ...
 
 
@@ -688,6 +697,7 @@ class Flow:
         if code != 0:
             raise AddonError(f"kubectl apply of {output} failed: {err.strip()[:300]}")
         if addon.name == "tailscale":
+            self._jev_egress()
             self.world.sync_tailscale_secret()
 
         def check() -> str:
@@ -697,6 +707,46 @@ class Flow:
             return MET if code == 0 and wanted and ready == wanted and int(wanted) > 0 else WAITING
 
         wait_until(f"addon.{addon.name}.workload", WORKLOAD_WAIT, check, clock=self.clock, events=self.events)
+
+    def _jev_egress(self) -> None:
+        """The owner's choice (4 November 2026; part of #2688): the tailnet
+        egress's decision-api-egress-ingress, as the API server now holds it,
+        judged against the range swarm-api egresses from with
+        network_parity.check_jev_egress_ingress -- the comparison
+        kubernetes/apply.sh --swarm-system runs, imported, never restated. A
+        drifted range closes swarm-api's one route to the Jev backend while the
+        workload reports ready, so it fails the add-on here, both ranges named."""
+        step = "addon.tailscale.jev-egress"
+        parity = self.world.network_parity()
+        policy_name, namespace = parity.JEV_EGRESS_INGRESS_POLICY, parity.SYSTEM_NAMESPACE
+        self.events.emit("step_check", step=step, detail=f"{namespace}/{policy_name} against swarm-api's range")
+        try:
+            api_cidr, source = self.world.swarm_api_egress()
+        except (AddonError, LookupError) as exc:
+            raise AddonError(f"swarm-api's egress range could not be read, so {namespace}/{policy_name} was "
+                             f"not compared: {exc}") from exc
+        code, out, err = self.world.kube("get", "networkpolicy", policy_name, f"--namespace={namespace}",
+                                         "-o", "json")
+        try:
+            policy = json.loads(out) if code == 0 else None
+        except ValueError:
+            policy = None
+        if not isinstance(policy, dict):
+            raise AddonError(f"{namespace}/{policy_name} could not be read back after the apply, so it was not "
+                             f"compared with swarm-api's {api_cidr}: {(err or out).strip()[:300]}")
+        problems = parity.check_jev_egress_ingress(policy, api_cidr)
+        if problems:
+            admitted = [str((peer.get("ipBlock") or {}).get("cidr"))
+                        for rule in (policy.get("spec") or {}).get("ingress") or []
+                        for peer in rule.get("from") or [] if "ipBlock" in peer]
+            message = (f"{namespace}/{policy_name} admits swarm-api's range as {', '.join(admitted) or 'nothing'}, "
+                       f"but swarm-api egresses from {api_cidr} ({source}); the rule must admit exactly that "
+                       f"range, on TCP 8443 alone: {'; '.join(problems)}. terraform's "
+                       "local.decision_api_swarm_api_cidr is stale, or the rule was widened")
+            self.events.emit("step_failed", step=step, detail=message)
+            raise AddonError(message)
+        self.events.emit("step_done", step=step, state=MET,
+                         detail=f"{namespace}/{policy_name} admits swarm-api's {api_cidr} ({source})")
 
     def check(self, addon: Addon) -> tuple[str, str]:
         """The add-on's evidence: (met|unmet, why)."""
@@ -1025,6 +1075,43 @@ class RealWorld:
 
     #: gh's exit code when it has no GitHub sign-in (cli/cli: "authentication required").
     GH_AUTH_REQUIRED = 4
+
+    def swarm_api_egress(self) -> tuple[str, str]:
+        """swarm-api's Direct VPC egress range, read as kubernetes/apply.sh
+        --swarm-system and the cluster stage read it: the service's
+        subnetwork, then that subnetwork's range."""
+        from .steps.cluster import RUN_API
+        from .steps.preflight import COMPUTE
+
+        region = str(self.ctx.state.region)
+        service = self.gcp._call("GET", f"{RUN_API}/projects/{self.project}/locations/{region}/services/swarm-api",
+                                 missing_ok=True) or {}
+        interfaces = (service.get("template", {}).get("vpcAccess", {}) or {}).get("networkInterfaces") or []
+        subnet = str((interfaces[0] if interfaces else {}).get("subnetwork") or "")
+        if not subnet:
+            raise AddonError("swarm-api has no Direct VPC egress subnetwork (infra pass 1 sets it)")
+        name = subnet.rsplit("/", 1)[-1]
+        if "/regions/" in subnet:
+            region = subnet.split("/regions/", 1)[1].split("/", 1)[0]
+        found = self.gcp._call("GET", f"{COMPUTE}/projects/{self.project}/regions/{region}/subnetworks/{name}",
+                               missing_ok=True)
+        cidr = str((found or {}).get("ipCidrRange") or "")
+        if not cidr:
+            raise AddonError(f"subnetwork {name} has no ipCidrRange")
+        return cidr, f"run/{self.project}/{region}/swarm-api/{name}"
+
+    def network_parity(self) -> Any:
+        """kubernetes/network_parity.py from the release's cosign-checked
+        kubernetes.tgz (the bundle render.py runs from), never a checkout."""
+        from .steps.cluster import Bundle
+
+        path = Bundle(lambda: self.gcp).fetch(self.ctx) / "network_parity.py"
+        spec = importlib.util.spec_from_file_location("swarm_release_network_parity", path)
+        if spec is None or spec.loader is None:
+            raise AddonError(f"the release bundle's {path.name} could not be loaded")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def github(self, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
         """`gh <args>` with the pinned gh (tools.ensure), signed in through

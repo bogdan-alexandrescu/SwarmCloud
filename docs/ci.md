@@ -39,7 +39,7 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
+| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the one to eight `swarm-ui component tests (k/N)` shards, sized by measured weight — [below](#the-component-test-shards-are-sized-by-measured-weight)) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | **every** push to `main` (no path filter since 2026-10-26: only the newest commit is released, and a release whose commit `main` has moved past ends green, superseded — [below](#only-the-newest-commit-on-main-is-built-and-released)); or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
@@ -3659,13 +3659,15 @@ the frozen-contract check, the format pass, the bridge install, the
 destroy-guard self-test — is `lock / contract / format / bridge install`,
 beside the shards rather than in front of them.
 
-**2. The vitest suite runs in four shards** — `swarm-ui component tests
-(k/4)`, vitest's own `--shard=k/4`, through the new `test:components` script
-(`vitest run` alone, so the flag reaches vitest and not the last of the three
-runners `npm test` chains). The typecheck, the two node:test runners
-(`test:node`) and the production build are one job beside them, `swarm-ui
-typecheck / build`. Measured 2026-10-07: shard 4/4 ran 60 of 246 files in
-108 s on 5 cores.
+**2. The vitest suite runs in shards** — `swarm-ui component tests (k/N)`,
+through the `test:components` script (`vitest run` alone, so the arguments
+reach vitest and not the last of the three runners `npm test` chains). The
+typecheck, the two node:test runners (`test:node`) and the production build
+are one job beside them, `swarm-ui typecheck / build`. As built on 2026-10-07
+they were four shards of vitest's own `--shard=k/4` (measured then: shard 4/4
+ran 60 of 246 files in 108 s on 5 cores). Since 2026-11-03 the `changes` job
+sizes the matrix by measured weight and each shard is handed its files by
+name ([below](#the-component-test-shards-are-sized-by-measured-weight)).
 
 **3. The check names are kept.** `format / unit tests` and `swarm-ui typecheck
 / component tests` are now jobs that `needs:` their shards, run `if: always()`
@@ -3981,6 +3983,84 @@ the run will test: about 600 s a shard, at most eight. A full run gets eight,
 ~875 s each (at most ~1.5x the target); a selection worth one target gets one
 runner instead of four. `pick` splits with the same code, so the matrix and
 the split never disagree on what runs.
+
+### The component-test shards are sized by measured weight
+
+**Why (owner request 2026-11-03, part of #2688).** The `ui-tests` job ran
+vitest's own `--shard=k/4`, which splits by file **count**. The suite is
+hundreds of ~3 s files and eight `spacing.*.test.tsx` slices of 259-485 s
+each, so whichever shard drew two or three slices set the pace: on eight pull
+request runs the slowest shard took 15-25 minutes while the others took
+10-14. With `main` required up to date, every merge waits for its run's
+slowest shard, so one fixed shard set was setting the merge queue's pace. The
+fix is the one the unit shards already had
+([above](#the-unit-shards-are-sized-by-measured-weight)): count and split by
+measured seconds, not by files.
+
+**The weights** are `tests/unit/scripts/ui_test_durations.json`: vitest's
+per-file seconds, the same file `related-tests.sh` cuts its vitest runs by
+([below](#while-it-works-a-swarmcloud-agent-runs-only-the-related-tests)),
+so there is one store and one default. Only files over
+`ui_weights.THRESHOLD_SECONDS` (20 s) are recorded — today the eight spacing
+slices. Every other file weighs `related_tests.VITEST_DEFAULT_SECONDS`, 2.9 s.
+
+**The count.** The `changes` job's `how many swarm-ui component-test shards
+this run needs` step runs `scripts/lib/ui_shards.py count`. It lists exactly
+the files vitest runs (the `include` globs of `apps/swarm-ui/vitest.config.ts`,
+read from that file, under vitest's default directory excludes), sums their
+weights, and writes `ui_shards=[1, ..., N]`: about `SHARD_TARGET_SECONDS` =
+600 s of vitest's reported time a shard, at most `MAX_SHARDS` = 8, and never
+more shards than units to hand out. 600 s is ~200 s of wall time on the
+4-vCPU runner, where vitest runs three workers. Eight is the ceiling because
+each shard is a runner and an `npm ci` (~60 s), and when a dozen pull requests
+arrive together every extra shard is one more runner in the queue. On
+2026-11-04 the suite was 869 files, ~5,041 s: nine at the target, so eight,
+~630 s each. The suite is not narrowed by what a pull request changes, so
+every run that runs the UI gets the same count from the same checkout.
+
+**The split.** Each shard's `pick this shard's test files` step in `ui-tests`
+runs `ui_shards.py pick` with its own `SHARD` and `SHARDS`
+(`strategy.job-total`): every unit, longest first, onto the currently lightest
+shard (LPT), ties broken by shard number and path. It is deterministic, so
+every shard computes the same split and keeps its own part — every file runs
+in exactly one shard — and `count` and `pick` share the code, so the matrix and
+the split never disagree. The shard's files are written one a line, relative
+to `apps/swarm-ui`, and the `component tests` step runs `npm run
+test:components -- $(cat "${SHARD_FILES}")`. Three guards follow from that:
+
+* vitest reads a file argument as a case-insensitive **substring** filter, so
+  `src/a.test.ts` would also run `src/a.test.tsx`. Files where one path
+  contains another are one unit and always land in the same shard, so no
+  shard's filter reaches a file another shard runs;
+* the unquoted `$(cat ...)` splits on whitespace and expands globs, so a test
+  path holding whitespace, a glob or a quote character fails both steps by
+  name instead of running the wrong files;
+* `pick` never writes an empty list and refuses a shard count above the
+  number of units: `vitest run` with no file argument runs the whole suite.
+
+The floor any split has is the heaviest unit: a shard holding the 485 s
+`spacing.accounts` slice takes about that slice's time whatever else it holds.
+
+**A new test file** needs nothing: `count` and `pick` find it through
+`vitest.config.ts`'s globs, it weighs 2.9 s, and LPT places it, after every
+heavier unit, on whichever shard is lightest at that point (light files can
+move between shards when one is added; that is harmless, since all shards
+compute the same split from the same commit). A file that is really heavy —
+another spacing slice, say — is under-weighted at 2.9 s until it is recorded,
+and would make its shard the slow one: add its figure to
+`ui_test_durations.json` in the same pull request, or refresh the weights once
+`main` has run it.
+
+**Refreshing the weights.** Run `scripts/refresh-ui-weights.sh` and commit
+the diff ([below](#while-it-works-a-swarmcloud-agent-runs-only-the-related-tests)
+says what it reads). It reads the vitest per-file lines from the
+`swarm-ui component tests` jobs of `main`'s newest successful
+`application.yml` run, whatever the run's shard count, keeps files over 20 s,
+and by default never lowers a recorded figure; `--replace` writes the measured
+figures alone. A shard's balance only moves when a heavy file's weight moves,
+so a refresh is due when a slice is added, split or made faster, or when the
+`pick` lines in a run's log (`shard k runs n, ~s s of measured test time
+(shards: ...)`) stop matching the shards' real test times.
 
 ## Flaky tests and the quarantine
 
@@ -5237,8 +5317,10 @@ measured (the highest of each one's readings); the other six slices are an
 estimate of 300 s, the low end of the 300-485 s one lane measured for them, which
 also keeps any two slices over 540 s together.
 
-To refresh the weights, run `scripts/refresh-ui-weights.sh` and commit the
-diff. It finds main's newest successful `application.yml` run whose
+The same file sizes and splits CI's component-test shards
+([above](#the-component-test-shards-are-sized-by-measured-weight)), so a
+refresh moves both. To refresh the weights, run `scripts/refresh-ui-weights.sh`
+and commit the diff. It finds main's newest successful `application.yml` run whose
 `swarm-ui component tests` jobs all ran, reads their logs with `gh run view
 --job <id> --log`, and has `scripts/lib/ui_weights.py` parse vitest's
 per-file lines (`✓ src/__tests__/x.test.tsx (1 test) 259018ms`). It keeps only

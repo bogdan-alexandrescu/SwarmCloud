@@ -41,8 +41,11 @@ DOCUMENTS (collection `jev_usage`, the worker's):
 * `<tenant>_<task>_g<generation>_c<call_id>`, `kind: call`: one call;
 * `<tenant>_reservations`, `kind: reservations`: `held`, each live
   reservation by `<task>_g<generation>`.
-`jevusage` reads only `kind: attempt` rows and month documents, so the two
-new kinds change no total it serves.
+`jevusage` reads only `kind: attempt` rows, swarm-api's own `kind:
+contract_review` rows (the submission review, `jevusage.record_contract_review`)
+and month documents, so the two new kinds change no total it serves. The
+submission review adds its tokens to the same month document's
+`input_tokens`, so a reserve here admits against them too.
 """
 
 from __future__ import annotations

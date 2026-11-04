@@ -382,7 +382,12 @@ describe("a skipped step's Artifacts tab", () => {
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     vi.doUnmock('../api')
-    vi.doMock('../Agents', () => ({ AgentsScreen: () => null }))
+    // The page is stubbed; it still draws the open agent App hosts in its inspector (#3146).
+    vi.doMock('../Agents', async () => {
+      const { useContext } = await import('react')
+      const { HostedAgent } = await import('../work/hostedAgent')
+      return { AgentsScreen: () => useContext(HostedAgent)?.view ?? null }
+    })
     const t = mergeSkipped()
     const entry = (name: string, bytes: number) => ({ name, bytes, uri: gs(FIX, name), attempt_id: 'att_1', kind: 'text', content_type: 'text/plain', role: null })
     const routes: Record<string, unknown> = {

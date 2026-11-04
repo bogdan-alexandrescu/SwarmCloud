@@ -8,15 +8,16 @@ import { describe, expect, it } from 'vitest'
 import { addressToPath, pathToAddress } from '../paths'
 import { canonical, fromAddress } from '../App'
 
-describe('Config › Workspace Settings', () => {
-  it('is /config/workspace, both ways, and /settings/workspace lands there', () => {
+describe('Config › Workspace Settings, now the workspace page\'s Settings tab', () => {
+  // Since the admin routes lane (part of #2688): both paths open the selected workspace's page, Settings tab.
+  it('opens /config/workspace and /settings/workspace on the workspace page\'s Settings tab', () => {
     for (const path of ['/config/workspace', '/settings/workspace']) {
       const p = pathToAddress(path)
       expect(p).not.toBeNull()
       const r = fromAddress(p!.address)
-      expect(r.sectionId).toBe('config')
-      expect(r.tab).toBe('workspace')
-      expect(addressToPath(canonical(r))).toBe('/config/workspace')
+      expect(r.sectionId).toBe('admin')
+      expect(r.tab).toBe('workspaces')
+      expect(addressToPath(canonical(r))).toBe('/admin/workspaces?tab=settings')
     }
   })
 

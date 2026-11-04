@@ -118,6 +118,13 @@ class LoginChromium(qi.FakeChromium):
         self.controls: dict[str, int] = {}
         self.clicked: list[str] = []
         self.on_click: dict[str, Any] = {}
+        #: What the page reads as, when set: called with whether the gate
+        #: submitted, in place of `probes` and `after_submit`.
+        self.probe_fn: Any = None
+        #: What `_AFTER_CLICK` reads (`moved`, `loading`, `same`), and the
+        #: tab's origin and path (`_WHERE`).
+        self.after_click: Any = "moved"
+        self.where = f"{ORIGIN}/login"
 
     async def send(self, message: dict[str, Any]) -> None:
         method = message["method"]
@@ -160,6 +167,8 @@ class LoginChromium(qi.FakeChromium):
             if self.on_first_probe is not None:
                 hook, self.on_first_probe = self.on_first_probe, None
                 hook()
+            if self.probe_fn is not None:
+                return self.probe_fn(self.submitted)
             if self.submitted:
                 return self.after_submit
             return self.probes.pop(0) if len(self.probes) > 1 else self.probes[0]
@@ -168,6 +177,10 @@ class LoginChromium(qi.FakeChromium):
             return True
         if op == "clear":
             return 1
+        if op == "after-click":
+            return self.after_click() if callable(self.after_click) else self.after_click
+        if op == "where":
+            return self.where
         return True  # focus
 
     def index(self, predicate: Any) -> list[int]:
@@ -886,6 +899,8 @@ def test_a_missing_or_ambiguous_start_click_ends_the_sign_in_with_a_sentence_nam
         rig = Rig(tmp)
         rig.fake.start(rig.sink)
         rig.fake.controls = {"Staging": 1, "Sign in": count}
+        # The chooser has no form (a page that is already the form skips its clicks).
+        rig.fake.probes = ["loading"]
         await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password()))
         await rig.finished()
         status = rig.target.status()

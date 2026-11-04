@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -160,6 +161,121 @@ def test_select_can_board_a_bisection_s_pull_request_github_has_not_rechecked(tm
     assert proc.returncode == 0, proc.stderr
     numbers = [line.split("\t")[0] for line in proc.stdout.splitlines() if line]
     assert numbers == ["101", "106", "114", "120"]
+
+
+# TRAIN-BOARDS-UNKNOWN (part of #2688; epic #3179, third comment): right
+# after a landing every open pull request reads `mergeable: UNKNOWN` in the
+# list, so a tick that boards only MERGEABLE boards nothing. With
+# --recheck-unknown, select reads each otherwise eligible UNKNOWN pull request
+# once more with the single-pull-request read (which makes GitHub compute it),
+# waits briefly while it is still computing, and boards it only on MERGEABLE.
+
+FAKE_PR_VIEW = """#!/usr/bin/env bash
+set -euo pipefail
+# gh pr view <N> --repo <R> --json mergeable --jq .mergeable, answered from
+# $FAKE_MERGEABLE_DIR/<N>: one answer per line, one line per read, the last
+# one repeated once they run out.
+printf '%s\\n' "$*" >>"${FAKE_GH_LOG}"
+[[ "$1 $2" == "pr view" ]] || { echo "fake gh: unexpected: $*" >&2; exit 64; }
+n="$3"
+answers="${FAKE_MERGEABLE_DIR}/${n}"
+count="${FAKE_MERGEABLE_DIR}/${n}.count"
+reads=0
+[[ -f "${count}" ]] && reads="$(cat "${count}")"
+reads=$((reads + 1))
+printf '%s' "${reads}" >"${count}"
+total="$(wc -l <"${answers}" | tr -d ' ')"
+[[ "${reads}" -le "${total}" ]] || reads="${total}"
+sed -n "${reads}p" "${answers}"
+"""
+
+
+def _recheck(tmp_path: Path, answers: dict[int, list[str]], prs: Path = FIXTURES / "prs.json"):
+    _need("bash", "jq")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    fake = bin_dir / "gh"
+    fake.write_text(FAKE_PR_VIEW)
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    mergeable_dir = tmp_path / "mergeable"
+    mergeable_dir.mkdir(exist_ok=True)
+    for number, lines in answers.items():
+        (mergeable_dir / str(number)).write_text("".join(f"{line}\n" for line in lines))
+    log = tmp_path / "gh.log"
+    log.write_text("")
+    proc = _run("select", "--prs", str(prs), "--required", str(_required_file(tmp_path)),
+                "--recheck-unknown", env={
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+                    "FAKE_GH_LOG": str(log),
+                    "FAKE_MERGEABLE_DIR": str(mergeable_dir),
+                    "MERGE_TRAIN_MERGEABLE_WAIT_SECONDS": "0",
+                })
+    assert proc.returncode == 0, proc.stderr
+    numbers = [line.split("\t")[0] for line in proc.stdout.splitlines() if line]
+    return numbers, log.read_text().splitlines(), proc
+
+
+def test_select_boards_an_unknown_pull_request_that_reads_mergeable_on_a_second_read(tmp_path):
+    numbers, reads, proc = _recheck(tmp_path, {106: ["MERGEABLE"]})
+    # MUTATION: board only the list's MERGEABLE -> 106 is left out, and a tick
+    # right after a landing boards nothing.
+    assert numbers == ["101", "106", "114", "120"], proc.stderr
+    assert reads == ["pr view 106 --repo bogdan-alexandrescu/SwarmCloud --json mergeable --jq .mergeable"]
+
+
+def test_select_carries_the_head_and_title_of_a_rechecked_pull_request(tmp_path):
+    _, _, proc = _recheck(tmp_path, {106: ["MERGEABLE"]})
+    rows = {line.split("\t")[0]: line.split("\t") for line in proc.stdout.splitlines() if line}
+    assert len(rows["106"]) == 3
+    assert re.fullmatch(r"[0-9a-f]{40}", rows["106"][1])
+
+
+def test_select_leaves_out_an_unknown_pull_request_that_reads_conflicting_on_a_second_read(tmp_path):
+    numbers, reads, _ = _recheck(tmp_path, {106: ["CONFLICTING"]})
+    # MUTATION: board an UNKNOWN on any second answer -> 106 boards conflicting.
+    assert numbers == ["101", "114", "120"]
+    assert len(reads) == 1
+
+
+def test_select_waits_briefly_while_github_is_still_computing(tmp_path):
+    numbers, reads, _ = _recheck(tmp_path, {106: ["UNKNOWN", "UNKNOWN", "MERGEABLE"]})
+    assert numbers == ["101", "106", "114", "120"]
+    assert len(reads) == 3
+
+
+def test_select_leaves_a_still_unknown_pull_request_for_the_next_tick(tmp_path):
+    numbers, reads, _ = _recheck(tmp_path, {106: ["UNKNOWN"]})
+    assert numbers == ["101", "114", "120"]
+    # The wait is bounded: a handful of reads, never a poll until it answers.
+    assert 1 <= len(reads) <= 5
+
+
+def test_select_rereads_only_an_otherwise_eligible_unknown_pull_request(tmp_path):
+    """A draft, a fork, one without `ready` or one not green is never re-read:
+    the second read is for a candidate the train would board."""
+    rows = json.loads((FIXTURES / "prs.json").read_text())
+    for row in rows:
+        if row["number"] in (102, 103, 104, 107):
+            row["mergeable"] = "UNKNOWN"
+    prs = tmp_path / "unknown.json"
+    prs.write_text(json.dumps(rows))
+    answers = {n: ["MERGEABLE"] for n in (102, 103, 104, 106, 107)}
+    numbers, reads, _ = _recheck(tmp_path, answers, prs=prs)
+    assert numbers == ["101", "106", "114", "120"]
+    assert [r.split()[2] for r in reads] == ["106"]
+
+
+def test_select_without_the_flag_never_reads_github(tmp_path):
+    """Plain select stays pure: files in, lines out (106 stays out, above)."""
+    assert "106" not in [r[0] for r in _select(tmp_path)]
+
+
+def test_the_tick_rechecks_unknown_mergeability_when_it_boards_from_the_pool():
+    code = SCRIPT.read_text()
+    start = code[code.index("start_train() {"):]
+    start = start[:start.index("\n}\n")]
+    assert "--recheck-unknown" in start
 
 
 # CHECK-STUCK-2 (BGD, 2026-10-23, task_9e9080121b104370b079 Q0; part of
@@ -647,7 +763,8 @@ def test_the_train_runs_every_five_minutes_and_on_demand(train_workflow):
 
 
 def test_a_finished_train_ci_run_wakes_the_train_without_waiting_for_the_schedule(train_workflow):
-    assert set(train_workflow["on"]["workflow_run"]["workflows"]) == {"application", "security"}
+    assert set(train_workflow["on"]["workflow_run"]["workflows"]) == {"application", "security", "auto-merge"}
+    assert train_workflow["on"]["workflow_run"]["types"] == ["completed"]
     job = train_workflow["jobs"]["tick"]
     assert "startsWith(github.event.workflow_run.head_branch, 'train/')" in job["if"]
     assert "github.event.workflow_run.head_repository.full_name == github.repository" in job["if"]
@@ -656,6 +773,196 @@ def test_a_finished_train_ci_run_wakes_the_train_without_waiting_for_the_schedul
 def test_the_schedule_does_nothing_unless_the_train_is_on(train_workflow):
     cond = train_workflow["jobs"]["tick"]["if"]
     assert "github.event_name == 'schedule' && vars.MERGE_TRAIN == 'on'" in cond
+
+
+def test_the_train_never_starts_on_a_pull_request_event(train_workflow):
+    """A `pull_request` trigger runs the pull request's copy of this file, on a
+    ref the `repo-secrets` environment refuses; `pull_request_target` would run
+    a write token on an event its author shapes. The `ready` label reaches the
+    train through auto-merge.yml's completion instead."""
+    assert not {"pull_request", "pull_request_target"} & set(train_workflow["on"])
+    assert "auto-merge" in train_workflow["on"]["workflow_run"]["workflows"]
+
+
+#: The context paths the tick's `if:` may read. Anything else is refused by
+#: _tick_runs() rather than guessed at.
+_IF_PATH = re.compile(r"\b(?:vars|github)(?:\.[A-Za-z_][\w-]*|\[\d+\])+")
+THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
+
+
+def _tick_runs(
+    cond: str,
+    event: str,
+    *,
+    train: str = "",
+    name: str = "application",
+    run_event: str = "pull_request",
+    conclusion: str = "success",
+    branch: str = "swarm/task_lane",
+    head_repo: str = THIS_REPO,
+    repository: str = THIS_REPO,
+    listed: bool | None = None,
+) -> bool:
+    """Whether GitHub starts the tick job: evaluates the `if:` with `&&`,
+    `||`, `==`, `!=` and startsWith(), as GitHub does. `train` is
+    vars.MERGE_TRAIN (unset reads as ''); the workflow_run fields are those of
+    the run that completed, and absent (null) on any other event. `listed` is
+    whether the run's `pull_requests` names one: GitHub leaves it empty for a
+    fork's pull request, so by default it follows `head_repo`."""
+    is_run = event == "workflow_run"
+    if listed is None:
+        listed = head_repo == repository
+    values = {
+        "github.repository": repository,
+        "github.event_name": event,
+        "vars.MERGE_TRAIN": train,
+        "github.event.workflow_run.name": name if is_run else None,
+        "github.event.workflow_run.event": run_event if is_run else None,
+        "github.event.workflow_run.conclusion": conclusion if is_run else None,
+        "github.event.workflow_run.head_branch": branch if is_run else None,
+        "github.event.workflow_run.head_repository.full_name": head_repo if is_run else None,
+        "github.event.workflow_run.pull_requests[0]": {"number": 4242} if is_run and listed else None,
+    }
+    names: dict[str, object] = {}
+
+    def bind(match: re.Match) -> str:
+        path = match.group(0)
+        assert path in values, f"_tick_runs() does not model {path!r}"
+        names[f"_v{len(names)}"] = values[path]
+        return f"_v{len(names) - 1}"
+
+    py = _IF_PATH.sub(bind, cond.strip())
+    py = py.replace("&&", " and ").replace("||", " or ").replace("startsWith(", "_starts(")
+    py = re.sub(r"\bnull\b", "None", py)
+    helpers = {"_starts": lambda value, prefix: str(value or "").lower().startswith(prefix.lower())}
+    return bool(eval(py, {"__builtins__": {}}, {**names, **helpers}))  # noqa: S307
+
+
+@pytest.mark.parametrize(
+    ("why", "event", "kwargs", "runs"),
+    [
+        # The fallback and the hand-started run, as before.
+        ("schedule, train on", "schedule", {"train": "on"}, True),
+        ("schedule, train off", "schedule", {"train": "off"}, False),
+        ("schedule, train unset", "schedule", {}, False),
+        ("dispatch, train off: a dry run", "workflow_dispatch", {}, True),
+        ("dispatch, train on", "workflow_dispatch", {"train": "on"}, True),
+        # A train's CI: judged whatever MERGE_TRAIN says, and on any conclusion.
+        ("train CI red, train off", "workflow_run", {"branch": "train/7", "conclusion": "failure"}, True),
+        ("train CI green, train on", "workflow_run", {"branch": "train/7", "train": "on"}, True),
+        ("security on a train", "workflow_run", {"branch": "train/7", "name": "security"}, True),
+        (
+            "a fork's train/ branch",
+            "workflow_run",
+            {"branch": "train/7", "head_repo": "someone/SwarmCloud"},
+            False,
+        ),
+        # Any branch's pull request run finishing green, with the train on.
+        ("lane CI green, train on", "workflow_run", {"train": "on"}, True),
+        ("lane security green, train on", "workflow_run", {"train": "on", "name": "security"}, True),
+        ("lane CI green, train off", "workflow_run", {"train": "off"}, False),
+        ("lane CI green, train unset", "workflow_run", {}, False),
+        ("lane CI red, train on", "workflow_run", {"train": "on", "conclusion": "failure"}, False),
+        ("lane CI cancelled, train on", "workflow_run", {"train": "on", "conclusion": "cancelled"}, False),
+        (
+            "main's push run, train on",
+            "workflow_run",
+            {"train": "on", "run_event": "push", "branch": "main"},
+            False,
+        ),
+        (
+            "a fork's pull request run, train on",
+            "workflow_run",
+            {"train": "on", "head_repo": "someone/SwarmCloud"},
+            False,
+        ),
+        # `ready` added: auto-merge.yml's pull_request_target run completes.
+        (
+            "ready added, train on",
+            "workflow_run",
+            {"train": "on", "name": "auto-merge", "run_event": "pull_request_target", "branch": "main"},
+            True,
+        ),
+        # A fork's pull request raises auto-merge runs too (an edited title is
+        # one): none of them may start a self-hosted tick that mints the App's
+        # token, nor take the pending slot from an owner's dispatch.
+        (
+            "a fork's pull request's auto-merge run, train on",
+            "workflow_run",
+            {
+                "train": "on",
+                "name": "auto-merge",
+                "run_event": "pull_request_target",
+                "branch": "main",
+                "head_repo": "someone/SwarmCloud",
+            },
+            False,
+        ),
+        (
+            "auto-merge run naming no pull request, train on",
+            "workflow_run",
+            {"train": "on", "name": "auto-merge", "run_event": "pull_request_target", "listed": False},
+            False,
+        ),
+        (
+            "a fork's head named in pull_requests, train on",
+            "workflow_run",
+            {
+                "train": "on",
+                "name": "auto-merge",
+                "run_event": "pull_request_target",
+                "head_repo": "someone/SwarmCloud",
+                "listed": True,
+            },
+            False,
+        ),
+        (
+            "ready added, train off",
+            "workflow_run",
+            {"train": "off", "name": "auto-merge", "run_event": "pull_request_target", "branch": "main"},
+            False,
+        ),
+        (
+            "auto-merge's requeue dispatch, train on",
+            "workflow_run",
+            {"train": "on", "name": "auto-merge", "run_event": "workflow_dispatch", "branch": "main"},
+            False,
+        ),
+        (
+            "auto-merge's schedule, train on",
+            "workflow_run",
+            {"train": "on", "name": "auto-merge", "run_event": "schedule", "branch": "main"},
+            False,
+        ),
+        (
+            "auto-merge's own workflow_run, train on",
+            "workflow_run",
+            {"train": "on", "name": "auto-merge", "run_event": "workflow_run", "branch": "main"},
+            False,
+        ),
+        (
+            "auto-merge on a train branch, train off: not a train's CI",
+            "workflow_run",
+            {"name": "auto-merge", "run_event": "pull_request_target", "branch": "train/7"},
+            False,
+        ),
+        # Anywhere but this repository, nothing.
+        ("a fork of the repository", "schedule", {"train": "on", "repository": "someone/SwarmCloud"}, False),
+        (
+            "a fork of the repository, its own train",
+            "workflow_run",
+            {"branch": "train/7", "repository": "someone/SwarmCloud", "head_repo": "someone/SwarmCloud"},
+            False,
+        ),
+    ],
+)
+def test_when_a_tick_runs(train_workflow, why: str, event: str, kwargs: dict, runs: bool):
+    """The WHEN block of merge-train.yml, row by row (part of #2688): the train
+    ticks on the events that can change what it does, because GitHub ran the
+    five-minute schedule only every four to seven hours. MUTATION: drop a
+    clause, or its MERGE_TRAIN or conclusion guard, and a row goes red."""
+    assert event in train_workflow["on"], why
+    assert _tick_runs(train_workflow["jobs"]["tick"]["if"], event, **kwargs) is runs, why
 
 
 def test_one_train_at_a_time_and_a_running_one_is_never_cancelled(train_workflow):
@@ -701,6 +1008,16 @@ def test_the_github_token_asks_only_for_what_the_train_does_with_it(train_workfl
     }
 
 
+def test_the_tick_learns_the_finished_run_s_branch_through_env(train_workflow):
+    """The script tells a train's own CI (judge only) from any other
+    `workflow_run` (start a train when none is open) by the finished run's head
+    branch -- a value a pull request's author picks, so it reaches the script
+    through env:, never interpolated into the shell line."""
+    (step,) = [s for s in train_workflow["jobs"]["tick"]["steps"] if s.get("name") == "one tick of the train"]
+    assert step["env"]["WORKFLOW_RUN_HEAD_BRANCH"] == "${{ github.event.workflow_run.head_branch }}"
+    assert "head_branch" not in step["run"]
+
+
 def test_the_workflow_never_expands_an_expression_inside_run(train_workflow):
     for step in train_workflow["jobs"]["tick"]["steps"]:
         assert "${{" not in str(step.get("run", "")), step.get("name")
@@ -718,6 +1035,114 @@ def test_application_yml_is_not_touched_by_the_train():
     assert on["push"]["branches"] == ["main"]
     assert not any(b.startswith("train/") for b in on["push"]["branches"])
     assert "pull_request" in on
+
+
+# --------------------------------------------------------------------------
+# tick: which `workflow_run` starts a train
+# --------------------------------------------------------------------------
+
+#: gh for a tick that finds no train open: main's required checks, and the
+#: open pull requests from FAKE_TICK_PRS. Any other call fails the tick.
+FAKE_TICK_GH = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+case "$*" in
+  "api repos/${GH_REPO}/rules/branches/main --paginate") echo '[]' ;;
+  "api repos/${GH_REPO}/branches/main") cat "${FAKE_GH_BRANCH}" ;;
+  "pr list "*) cat "${FAKE_TICK_PRS}" ;;
+  *) echo "fake gh: unexpected call: $*" >&2; exit 3 ;;
+esac
+"""
+
+
+@pytest.fixture
+def tick(tmp_path: Path):
+    """Runs `merge-train.sh tick` with no train open and no pull request green
+    and `ready`: a tick that starts a train says "no ready pull request is
+    green at its head: no train"; one that only judges, "no train in flight"."""
+    _need("bash", "jq", "git")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "gh"
+    fake.write_text(FAKE_TICK_GH)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    (tmp_path / "branch.json").write_text(json.dumps(PROTECTED))
+    (tmp_path / "prs.json").write_text("[]")
+
+    def run(event: str, *, train: str = "on", branch: str | None = None, dry: str = "false"):
+        for name in ("gh.log", "summary.md"):
+            (tmp_path / name).write_text("")
+        env = {
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "GH_REPO": THIS_REPO,
+            "GH_TOKEN": "fake-" + secrets.token_hex(4),
+            "APP_TOKEN": "fake-" + secrets.token_hex(4),
+            "REPO_DIR": str(tmp_path),
+            "RUN_ID": "1",
+            "RUN_ATTEMPT": "1",
+            "RUN_URL": "https://example.invalid/run/1",
+            "EVENT_NAME": event,
+            "MERGE_TRAIN": train,
+            "DRY_RUN_INPUT": dry,
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+            "FAKE_GH_LOG": str(tmp_path / "gh.log"),
+            "FAKE_GH_BRANCH": str(tmp_path / "branch.json"),
+            "FAKE_TICK_PRS": str(tmp_path / "prs.json"),
+        }
+        if branch is not None:
+            env["WORKFLOW_RUN_HEAD_BRANCH"] = branch
+        proc = subprocess.run([str(SCRIPT), "tick"], env=env, capture_output=True, text=True,
+                              timeout=60, check=False)
+        assert proc.returncode == 0, proc.stderr
+        return (tmp_path / "summary.md").read_text()
+
+    return run
+
+
+STARTS = "no ready pull request is green at its head: no train"
+JUDGES_ONLY = "no train in flight"
+
+
+@pytest.mark.parametrize(
+    ("why", "branch"),
+    [
+        ("a lane's CI finished green", "swarm/task_lane"),
+        ("ready added: auto-merge's run on a lane", "swarm/task_lane"),
+        ("a run whose branch is not given", None),
+    ],
+)
+def test_a_pull_request_s_workflow_run_with_no_train_open_starts_one(tick, why: str, branch):
+    """The event triggers exist for exactly this moment: no train open, and a
+    pull request just became boardable. A tick that only looked for a train in
+    flight would board nothing until the schedule, which GitHub ran every four
+    to seven hours (security review of #3183, finding 1)."""
+    out = tick("workflow_run", branch=branch)
+    assert STARTS in out, why
+    assert JUDGES_ONLY not in out, why
+
+
+def test_a_train_branch_s_own_run_with_no_train_open_only_judges(tick):
+    out = tick("workflow_run", branch="train/41-1")
+    assert JUDGES_ONLY in out
+    assert STARTS not in out
+
+
+def test_a_pull_request_s_workflow_run_with_the_train_off_starts_nothing(tick):
+    """The `if:` admits a non-train `workflow_run` only while the train is on;
+    should one run anyway, it starts no train, dry or not, as a schedule tick."""
+    out = tick("workflow_run", train="off", branch="swarm/task_lane")
+    assert "MERGE_TRAIN is not on: no train started" in out
+    assert STARTS not in out
+
+
+@pytest.mark.parametrize(("event", "train", "starts"), [
+    ("schedule", "on", True),
+    ("schedule", "off", False),
+    ("workflow_dispatch", "off", True),
+])
+def test_schedule_and_dispatch_ticks_start_a_train_as_before(tick, event: str, train: str, starts: bool):
+    assert (STARTS in tick(event, train=train)) is starts
 
 
 # --------------------------------------------------------------------------

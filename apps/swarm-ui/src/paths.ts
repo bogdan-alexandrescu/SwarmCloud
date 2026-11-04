@@ -396,6 +396,78 @@ export function movedToConfig(address: string): string | null {
 }
 
 /**
+ * ONE WORKSPACE'S PAGE (admin routes lane; part of #2688, the owner's pick of a
+ * page per workspace for administration): `admin/workspaces/<tenant>`, its tab
+ * on the query, `/admin/workspaces/<tenant>?tab=roles`. People is the page's
+ * first tab and is written bare. The tenant is one encoded segment.
+ * WorkspacePage.tsx's `WORKSPACE_TABS` is the same list (held together by
+ * `workspacePage.routes.test.tsx`); it is not imported, as that page imports
+ * this file.
+ */
+export const WORKSPACE_PAGE_TABS: readonly string[] = ['people', 'roles', 'settings', 'setup']
+
+export const WORKSPACES_ADDRESS = 'admin/workspaces'
+const WORKSPACES_PATH = '/admin/workspaces'
+
+/** The tab a query names, when it is one of the page's; null for none or any other. */
+function workspaceTabIn(query: string): string | null {
+  const t = new URLSearchParams(query).get('tab')
+  return t !== null && WORKSPACE_PAGE_TABS.includes(t) ? t : null
+}
+
+/**
+ * The address of a workspace's page on a tab. `tenantId` null is the
+ * workspace in hand, not yet named (an old Config address, below): the route
+ * names it as soon as it is known.
+ */
+export function workspacePageAddress(tenantId: string | null, tab: string = 'people'): string {
+  const t = WORKSPACE_PAGE_TABS.includes(tab) ? tab : 'people'
+  if (tenantId === null) return `${WORKSPACES_ADDRESS}?tab=${t}`
+  const base = `${WORKSPACES_ADDRESS}/${encodeURIComponent(tenantId)}`
+  return t === 'people' ? base : `${base}?tab=${t}`
+}
+
+/**
+ * The workspace a path's page is (`workspacePageAddress`'s path): its tenant,
+ * null for the workspace in hand (an old Config address, not yet named), and
+ * undefined when the path is no workspace's page -- the list included.
+ */
+export function workspacePagePathTenant(path: string): string | null | undefined {
+  const q = path.indexOf('?')
+  const bare = q === -1 ? path : path.slice(0, q)
+  if (bare === WORKSPACES_PATH) return q !== -1 && workspaceTabIn(path.slice(q + 1)) !== null ? null : undefined
+  if (!bare.startsWith(`${WORKSPACES_PATH}/`)) return undefined
+  const seg = bare.slice(WORKSPACES_PATH.length + 1)
+  if (seg === '' || seg.includes('/')) return undefined
+  try {
+    return decodeURIComponent(seg)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * CONFIG › PEOPLE AND ROLES AND CONFIG › WORKSPACE SETTINGS LEFT THE CONFIG
+ * PANEL for the workspace's own page (admin routes lane; part of #2688): their
+ * addresses -- and every older one that already landed on them (`#settings/people`,
+ * `/settings/workspace`, `/setup`, `/config/workspace/setup`) -- open the
+ * selected workspace's People, Settings and Setup tabs. Members' GitHub
+ * (`?view=members`) is a fold of People, so it opens People. Add a new
+ * workspace (`part=new`) is a platform admin's form, not a tab of any
+ * workspace, and keeps its own address. Null for every other address.
+ */
+export function movedToWorkspacePage(address: string): string | null {
+  const q = address.indexOf('?')
+  const bare = q === -1 ? address : address.slice(0, q)
+  const query = q === -1 ? '' : address.slice(q + 1)
+  if (bare === 'config/people') return workspacePageAddress(null, 'people')
+  if (bare !== 'config/workspace') return null
+  const part = new URLSearchParams(query).get('part')
+  if (part === 'new') return null
+  return workspacePageAddress(null, part === 'setup' ? 'setup' : 'settings')
+}
+
+/**
  * THE PATHS THE CONFIG PAGES HAD, each landing on its new address, the bar
  * rewritten once by App's normalise (CONFIG-NAV). Bookmarks, issue links,
  * the plugin's console links and the API's notification links
@@ -536,6 +608,9 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
   // An old Config page's address is written as its new path, never its old one.
   const moved = movedToConfig(address)
   if (moved !== null) return addressToPath(moved, agentTab)
+  // And People and roles' and Workspace Settings', the workspace page's tab.
+  const toPage = movedToWorkspacePage(address)
+  if (toPage !== null) return addressToPath(toPage, agentTab)
   const q = address.indexOf('?')
   const bare = q === -1 ? address : address.slice(0, q)
   const query = q === -1 ? '' : address.slice(q + 1)
@@ -648,6 +723,18 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
   if (bare === CONFIG_SECRETS_ADDRESS) {
     const view = secretsLinkView(query)
     return view === '' ? CONFIG_SECRETS_PATH : `${CONFIG_SECRETS_PATH}?${view}`
+  }
+  // One workspace's page: `/admin/workspaces/<tenant>`, its tab on the query
+  // (People bare); the tenant is already one encoded segment of the address.
+  if (seg[0] === 'admin' && seg[1] === 'workspaces' && seg.length === 3 && seg[2] !== '') {
+    const tab = workspaceTabIn(query)
+    const base = `${WORKSPACES_PATH}/${seg[2]}`
+    return tab === null || tab === 'people' ? base : `${base}?tab=${tab}`
+  }
+  // The workspace in hand's page, not yet named: only its tab rides along.
+  if (bare === WORKSPACES_ADDRESS && query !== '') {
+    const tab = workspaceTabIn(query)
+    return tab === null ? WORKSPACES_PATH : `${WORKSPACES_PATH}?tab=${tab}`
   }
   // Workspace Settings' Workspace setup part is a path of its own.
   if (bare === 'config/workspace' && new URLSearchParams(query).get('part') === 'setup') return WORKSPACE_SETUP_PATH
@@ -800,11 +887,21 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     const view = secretsLinkView(query)
     return plain(view === '' ? CONFIG_SECRETS_ADDRESS : `${CONFIG_SECRETS_ADDRESS}?${view}`)
   }
-  if (path === WORKSPACE_SETUP_PATH) return plain(WORKSPACE_SETUP_ADDRESS)
+  // One workspace's page: the tenant segment kept as written, its tab kept.
+  if (seg[0] === 'admin' && seg[1] === 'workspaces' && seg.length === 3 && seg[2] !== '') {
+    const tab = workspaceTabIn(query)
+    return plain(tab === null || tab === 'people' ? `${WORKSPACES_ADDRESS}/${seg[2]}` : `${WORKSPACES_ADDRESS}/${seg[2]}?tab=${tab}`)
+  }
+  // People and roles' and Workspace Settings' paths, old and new, open the
+  // selected workspace's page (`movedToWorkspacePage`).
+  if (path === WORKSPACE_SETUP_PATH) return plain(movedToWorkspacePage(WORKSPACE_SETUP_ADDRESS) ?? WORKSPACE_SETUP_ADDRESS)
   // The Config pages' old paths (CONFIG-NAV). Setup read no query; the others
   // keep theirs, as the new path would.
   const oldConfig = OLD_CONFIG_PATHS[path]
-  if (oldConfig !== undefined) return plain(query === '' || oldConfig.includes('?') ? oldConfig : `${oldConfig}?${query}`)
+  if (oldConfig !== undefined) {
+    const to = query === '' || oldConfig.includes('?') ? oldConfig : `${oldConfig}?${query}`
+    return plain(movedToWorkspacePage(to) ?? to)
+  }
 
   // THE QA CREDENTIAL LINK'S TOKEN (`t`) AND TARGET ARE DROPPED HERE: the route
   // is the QA targets page alone, so no address the router writes carries them.
@@ -822,7 +919,8 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
 
   const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path] ?? WORK_TAB_PATHS[path]
   if (fixed === undefined) return null
-  return plain(query === '' ? fixed : `${fixed}?${query}`)
+  const to = query === '' ? fixed : `${fixed}?${query}`
+  return plain(movedToWorkspacePage(to) ?? to)
 }
 
 /**

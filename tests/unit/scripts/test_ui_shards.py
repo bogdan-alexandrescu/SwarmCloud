@@ -29,6 +29,7 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 from pathlib import Path
 
@@ -145,6 +146,31 @@ def test_the_count_follows_the_weight_up_to_the_cap(tmp_path):
     shards = json.loads(outputs["shards"])
     assert len(shards) == min(mod.MAX_SHARDS, math.ceil(total / mod.SHARD_TARGET_SECONDS)), (shards, total)
     assert mod.SHARD_TARGET_SECONDS == 600 and mod.MAX_SHARDS == 8
+
+
+CI_DOC = REPO / "docs" / "ci.md"
+CI_DOC_SECTION = "### The component-test shards are sized by measured weight"
+
+
+def _ci_doc_shard_figure(name: str, unit: str = "") -> int:
+    """The figure docs/ci.md's component-shard section gives `name`, found by
+    the section's own wording ("`NAME` = <n>"), not by line number."""
+    text = CI_DOC.read_text()
+    assert CI_DOC_SECTION in text, f"{CI_DOC_SECTION!r} is gone from docs/ci.md"
+    section = text.split(CI_DOC_SECTION, 1)[1]
+    section = re.split(r"^#{1,3} ", section, maxsplit=1, flags=re.M)[0]
+    found = re.findall(rf"`{name}`\s*=\s*(\d[\d,]*){unit}", " ".join(section.split()))
+    assert len(found) == 1, f"docs/ci.md's component-shard section should state `{name}` = <n> once: {found}"
+    return int(found[0].replace(",", ""))
+
+
+def test_the_ci_doc_states_the_shard_target_and_cap_the_script_uses():
+    """docs/ci.md says ~600 s a shard and at most eight shards; those are the
+    script's figures. MUTATION: change SHARD_TARGET_SECONDS or MAX_SHARDS in
+    ui_shards.py, or either figure in the doc."""
+    mod = _module()
+    assert _ci_doc_shard_figure("SHARD_TARGET_SECONDS", r"\s*s\b") == mod.SHARD_TARGET_SECONDS
+    assert _ci_doc_shard_figure("MAX_SHARDS") == mod.MAX_SHARDS
 
 
 def test_the_shards_are_balanced_by_the_stored_weights(tmp_path):

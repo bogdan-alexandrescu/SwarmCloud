@@ -275,7 +275,7 @@ describe('the Setup card on Overview (Entry A)', () => {
     render(<SetupCard />)
     expect(await screen.findByText('Set up SwarmCloud')).toBeTruthy()
     expect(screen.getByText('4 of 7 done')).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Open setup' }).getAttribute('href')).toBe('/config/workspace/setup')
+    expect(screen.getByRole('link', { name: 'Open setup' }).getAttribute('href')).toBe('/admin/workspaces?tab=setup')
   })
 
   it('draws nothing once setup is complete', async () => {

@@ -28,7 +28,7 @@
 // it when the copy is not served.
 
 import STYLES from '../styles.css?raw'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
 
 import { Markdown } from '../ArtifactViewer'
@@ -36,7 +36,24 @@ import type { Task } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 import { task as baseTask } from './runfixture'
 
-vi.mock('../Agents', () => ({ AgentsScreen: () => null }))
+// The page is stubbed for speed; it still draws the open agent App hosts in its
+// inspector (#3146). Mocked again after each `resetModules`, so the stub reads
+// the same context module as the App imported after it.
+const agentsStub = vi.hoisted(() => async () => {
+  const { useContext } = await import('react')
+  const { HostedAgent } = await import('../work/hostedAgent')
+  return { AgentsScreen: () => useContext(HostedAgent)?.view ?? null }
+})
+vi.mock('../Agents', agentsStub)
+
+// THE CONSOLE'S MODULES ARE BUILT ONCE, HERE, not inside the first test: each
+// test re-imports App after `resetModules`, and the first import also
+// transforms App's whole graph -- the agent hosted in the Agents page's
+// inspector included -- which under a loaded runner took the first test past
+// its 30s. Later imports re-run built modules.
+beforeAll(async () => {
+  await import('../App')
+}, 120_000)
 
 const REF = 'task_73b5f4d9ca3641fbb914'
 const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
@@ -273,6 +290,7 @@ interface Api {
 async function openPane(routes: Record<string, Route>, hash = `#work/task/${REF}/artifacts`): Promise<Api> {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
+  vi.doMock('../Agents', agentsStub)
   const calls: string[] = []
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const raw = String(input)

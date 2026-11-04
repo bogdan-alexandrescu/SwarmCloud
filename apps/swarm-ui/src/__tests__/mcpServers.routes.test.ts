@@ -20,8 +20,8 @@ describe('Config › MCP servers', () => {
     }
   })
 
-  it('leaves the old hashes where they were, and sends Workspace and API keys to Config', () => {
-    expect(fromAddress('settings/workspace')).toMatchObject({ sectionId: 'config', tab: 'workspace' })
+  it('leaves the old hashes where they were, and sends Workspace to Admin › Workspaces and API keys to Config', () => {
+    expect(fromAddress('settings/workspace')).toMatchObject({ sectionId: 'admin', tab: 'workspaces', view: 'tab=settings' })
     expect(fromAddress('settings/keys')).toMatchObject({ sectionId: 'config', tab: 'secrets' })
     expect(fromAddress('settings/anything-else')).toMatchObject({ sectionId: 'admin', tab: 'limits' })
   })

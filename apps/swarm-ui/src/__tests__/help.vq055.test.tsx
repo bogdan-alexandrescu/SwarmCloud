@@ -115,8 +115,14 @@ describe('VQ-055: each Config and Admin page’s `?` opens its own topic', () =>
     ['/config/repositories', 'config-repositories'],
     ['/config/secrets', 'secret-scopes'],
     ['/config/mcp-servers', 'mcp-servers'],
-    ['/config/people', 'workspace-roles'],
-    ['/config/workspace', 'workspace-settings'],
+    // People and roles and Workspace Settings are the workspace page's tabs since
+    // the admin routes lane (part of #2688). The page draws its own head, which
+    // reads the shell's `?`, and each tab says its own topic (App.tsx `PAGE_TOPIC`).
+    // MUTATION: drop `useContext(SectionHelp)` from WorkspacePage.tsx and no glyph is found.
+    ['/admin/workspaces?tab=people', 'workspace-roles'],
+    ['/admin/workspaces?tab=roles', 'workspace-roles'],
+    ['/admin/workspaces?tab=settings', 'workspace-settings'],
+    ['/admin/workspaces?tab=setup', 'workspace-settings'],
     ['/admin/runner-sizes', 'runner-sizes'],
     ['/admin/platform-secrets', 'platform-secrets'],
   ] as const) {

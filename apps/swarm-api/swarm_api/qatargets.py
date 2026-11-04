@@ -399,13 +399,14 @@ LINK_FIELDS = (LINK_CREDENTIAL, LINK_BYPASS)
 SPEC_FIELDS = (
     "name", "base_url", "repository", "sign_in", "screens", "discover", "flows",
     "widths", "themes", "exclusions", "environment", "read_posts", "design_docs",
-    "file", "rate", "clock", "challenge_bypass", "flows_browser_tool", "environments",
+    "file", "rate", "clock", "challenge_bypass", "flows_browser_tool", "environments", "entry_query",
 )
 REQUIRED_FIELDS = ("name", "base_url", "repository", "authorized_by")
 #: The registration fields of one leg (qa-environments.md §1.1): in a body,
 #: either beside the app's fields (a target of one environment, stored as
 #: before) or in each entry of `environments`, never both.
-LEG_SPEC_FIELDS = ("base_url", "sign_in", "environment", "read_posts", "rate", "challenge_bypass")
+LEG_SPEC_FIELDS = ("base_url", "sign_in", "environment", "read_posts", "rate", "challenge_bypass",
+                   "entry_query")
 #: The app's: stored on the target once, shared by every entry.
 APP_SPEC_FIELDS = tuple(k for k in SPEC_FIELDS if k not in LEG_SPEC_FIELDS and k != "environments")
 _ENTRY_KEYS = frozenset({"name", *LEG_SPEC_FIELDS})
@@ -535,7 +536,7 @@ LEG_BESIDE_ENVIRONMENTS_MESSAGE = (
 )
 ENVIRONMENTS_MESSAGE = (
     f"environments must list 1 to {qaspec.MAX_ENVIRONMENTS} entries, each {{name, base_url, "
-    "environment?, sign_in?, read_posts?, rate?, challenge_bypass?}"
+    "environment?, sign_in?, read_posts?, rate?, challenge_bypass?, entry_query?}"
 )
 ENVIRONMENT_NAME_MESSAGE = (
     "an environment's name is 1 to 20 lower-case letters, digits or hyphens, unique in its target"
@@ -943,7 +944,7 @@ def _entry_api(entry: Mapping[str, Any], *, screens: Any = None, dismissed: Any 
         "credential": credential_status(entry),
         BYPASS_FIELD: bypass_status(entry),
     }
-    for key in ("read_posts", "rate", "challenge_bypass"):
+    for key in ("read_posts", "rate", "challenge_bypass", "entry_query"):
         if key in entry:
             body[key] = entry[key]
     body.update(discovery_status(entry, screens=screens, dismissed=dismissed))
@@ -1234,6 +1235,14 @@ class QaTargets:
         origin, host = _origin_of(leg["base_url"])
         leg["host"] = check_public_host(host, self._resolve)
         leg["origin"] = origin
+        try:
+            # QA-ENTRY-QUERY: not part of the host, so a change of it alone
+            # keeps the leg's approval (`patch` compares host and extra origin).
+            query = qaspec.entry_query(values)
+        except qaspec.QaSpecError as exc:
+            raise _invalid(exc.message, field="entry_query") from None
+        if query is not None:
+            leg["entry_query"] = query
         leg["sign_in"] = _sign_in(values.get("sign_in"), self._resolve, exclusions=exclusions)
         rate = _rate(values.get("rate"))
         if rate is not None:
@@ -2734,8 +2743,12 @@ class QaTargetIssuer:
         sign_in = dict(target.get("sign_in") or {"kind": "none"})
         origin = target.get("origin") or f"https://{target.get('host')}"
         served_sign_in: dict[str, Any] = {"kind": sign_in.get("kind", "none")}
+        # QA-ENTRY-QUERY: the gate's sign-in entry and the page it leaves
+        # the agent on carry the leg's pairs, as every route the capture opens does.
+        query = target.get("entry_query")
+        query = query if isinstance(query, str) and query else None
         if served_sign_in["kind"] == "own_login":
-            served_sign_in["login_url"] = origin + sign_in["login_path"]
+            served_sign_in["login_url"] = qaspec.with_query(origin + sign_in["login_path"], query)
             for key in ("signed_in_selector", *_SELECTOR_KEYS):
                 if sign_in.get(key) is not None:
                     served_sign_in[key] = sign_in[key]
@@ -2757,7 +2770,8 @@ class QaTargetIssuer:
             **served,
             "target_id": target.get("id"),
             "revision": target.get("revision"),
-            "base_url": target.get("base_url"),
+            "base_url": qaspec.with_query(target["base_url"], query) if query and target.get("base_url")
+            else target.get("base_url"),
             # Only what a platform admin approved: the base origin, and the
             # login's other origin when it was named in the approval.
             "origins": approved_origins,

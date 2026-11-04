@@ -21,7 +21,14 @@ import { render, waitFor } from '@testing-library/react'
 
 import { loadAgentDetail, loadMe, loadTasks } from '../api'
 
-vi.mock('../Agents', () => ({ AgentsScreen: () => null }))
+// The page is stubbed for speed; it still draws the open agent App hosts in its
+// inspector (#3146).
+const agentsStub = vi.hoisted(() => async () => {
+  const { useContext } = await import('react')
+  const { HostedAgent } = await import('../work/hostedAgent')
+  return { AgentsScreen: () => useContext(HostedAgent)?.view ?? null }
+})
+vi.mock('../Agents', agentsStub)
 
 const OTHER = 'task_patch_other_submitter'
 const OWN = 'task_99284d38'
