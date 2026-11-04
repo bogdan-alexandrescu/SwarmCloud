@@ -53,6 +53,7 @@ from typing import Any, Literal, Mapping
 from pydantic import Field
 
 from swarm_common.admission import _snapshot
+from swarm_jev.client import MEASURED_TOKENS_PER_CALL
 
 from .attemptstate import AttemptState, Call, _Tuple
 from .judgment import settings_mac, trusted_block
@@ -60,12 +61,12 @@ from .jevusage import COLLECTION, cap_of
 from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
 
 #: The worker's per-task limits (`agent_worker.judge.budget.MAX_CALLS_PER_TASK`,
-#: `MAX_INPUT_TOKENS_PER_TASK`, `MEASURED_TOKENS_PER_CALL`): restated, the
-#: worker's image is not this package; tests/unit/control_plane/
-#: test_jev_account.py holds them equal.
+#: `MAX_INPUT_TOKENS_PER_TASK`): restated, the worker's image is not this
+#: package; tests/unit/control_plane/test_jev_account.py holds them equal.
+#: MEASURED_TOKENS_PER_CALL is imported from `swarm_jev.client`, where alone
+#: it is stated (owner, 4 November 2026).
 MAX_CALLS_PER_TASK = 8
 MAX_INPUT_TOKENS_PER_TASK = 120_000
-MEASURED_TOKENS_PER_CALL = 2_850
 #: How long a reservation is held without a call renewing it. 6 hours BECAUSE
 #: a step's time limit is at most a few hours and every recorded call renews
 #: it; past it the worker is gone, and a held remainder would starve the

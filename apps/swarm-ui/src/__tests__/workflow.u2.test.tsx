@@ -162,7 +162,7 @@ function Routed({ initial, onView }: { initial: string; onView?: (v: string) => 
 }
 
 function rowIds(): string[] {
-  return [...document.querySelectorAll<HTMLElement>('.wfl-table tbody tr')].map((r) => r.dataset.workflow ?? '')
+  return [...document.querySelectorAll<HTMLElement>('.wfg-table tbody tr')].map((r) => r.dataset.workflow ?? '')
 }
 
 /**
@@ -218,49 +218,35 @@ describe('the list groups running first and failed after succeeded (#503, workfl
 })
 
 describe('the list table fits 1440 with no sideways scroll (#503)', () => {
-  it('lays the table out fixed at the wrapper width, and the wrapper does not scroll at 1440', async () => {
+  // THE ONE-LINE ROW (the redesign, frame graph-workflows-rest): seven
+  // columns sized to what they hold, the name taking the rest, and no
+  // sideways scroll. The fixed layout's per-column widths, and Shape,
+  // Runners, Submitted and Duration, went with the old table: those four are
+  // in the inspector's summary.
+  it('lays the table out at the wrapper width, the name taking the rest, and the wrapper does not scroll at 1440', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_broker']))
-    const table = document.querySelector('.wfl-table')!
+    const table = document.querySelector('.wfg-table')!
     const wrap = table.parentElement!
-    expect(at(table, 'table-layout')).toBe('fixed')
+    expect(wrap.classList.contains('wfg-scroll')).toBe(true)
     expect(at(table, 'width')).toBe('100%')
-    expect(at(wrap, 'overflow-x')).toBe('visible')
-    // Every head has a width the fixed layout honours; together they are the table.
-    const heads = [...document.querySelectorAll('.wfl-table thead th')]
-    // #111's Started and Duration stay (workflow.readability.test.tsx holds them against "Age"); all nine fit.
-    expect(heads.map((h) => h.textContent)).toEqual([
-      'State',
-      'Workflow',
-      'Shape',
-      'Steps done',
-      'Runners',
-      'Cost',
-      'Owner',
-      'Submitted',
-      'Duration',
-    ])
-    // Browser QA D8 (2026-10-04): State, Steps done and Duration are px wide,
-    // sized to what they hold; the name takes what the rest leave at 1056px.
-    const widths = heads.map((h) => at(h, 'width') ?? '')
-    const named = heads.map((h, i) => [h.getAttribute('data-col'), widths[i]!] as const).filter(([c]) => c !== 'workflow')
-    for (const [c, w] of named) expect(w, `${c} has no width: ${widths.join(', ')}`).toMatch(/(%|px)$/)
-    // A head the cascade hides (Shape and Runners below 1680, G3-09) draws no
-    // column, so it takes nothing from the name (from 1280 Cost is 136px, c28 and QAFIX5 work-a-010).
-    const hidden = heads.filter((h) => at(h, 'display') === 'none').map((h) => h.getAttribute('data-col'))
-    expect(hidden).toEqual(['shape', 'runners'])
-    const used = named.filter(([c]) => !hidden.includes(c)).reduce((t, [, w]) => t + (w.endsWith('%') ? (Number.parseFloat(w) / 100) * 1056 : Number.parseFloat(w)), 0)
-    // 200px until U12 R10 (owner QA, 2026-10-04): Cost and Owner were cut
-    // ('$0.6024 1/3' by 3px, 'swarm-…' in 74px), and each now holds what it
-    // shows. The name still keeps the most room of any column (D8), cut with
-    // its whole text in its title.
-    expect(1056 - used, 'the name column at 1056px').toBeGreaterThanOrEqual(160)
+    expect(at(wrap, 'overflow')).toBe('hidden')
+    const heads = [...document.querySelectorAll('.wfg-table thead th')]
+    expect(heads.map((h) => h.textContent)).toEqual(['State', 'Workflow', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
+    expect(heads.filter((h) => at(h, 'display') === 'none')).toEqual([])
+    // The name's cell takes every pixel the others leave, and is cut there
+    // with its whole text in its link's title; no cell wraps.
+    const name = document.querySelector('tr[data-workflow="wf_broker"] td[data-col="workflow"]')!
+    expect(at(name, 'width')).toBe('100%')
+    expect(at(name, 'max-width')).toBe('1px')
+    expect(at(name, 'text-overflow')).toBe('ellipsis')
+    for (const td of document.querySelectorAll('tr[data-workflow="wf_broker"] td')) expect(at(td, 'white-space')).toBe('nowrap')
   })
 
   it('prints the owner as the name before the @, with the address whole in its title', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_broker']))
-    const owner = document.querySelector<HTMLElement>('tr[data-workflow="wf_broker"] .wfl-owner')!
+    const owner = document.querySelector<HTMLElement>('tr[data-workflow="wf_broker"] td[data-col="owner"]')!
     expect(owner.textContent).toBe('priya')
     expect(owner.getAttribute('title')).toBe('priya@example.com')
   })
@@ -280,14 +266,19 @@ describe('the list row draws the stage-shape glyph (wide-workflows.html §6)', (
     ])
   })
 
+  // The shape is in the inspector's summary the row opens since the redesign
+  // (frame graph-workflows-rest), not a column of the row.
   it('draws it beside the text shape, and the text survives', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_broker']))
-    const cell = document.querySelector<HTMLElement>('tr[data-workflow="wf_broker"] .wf-sgl')!
+    expect(document.querySelector('tr[data-workflow="wf_broker"] .wf-sgl')).toBeNull()
+    fireEvent.click(document.querySelector<HTMLElement>('tr[data-workflow="wf_broker"] [data-col="state"]')!)
+    const sum = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum')!
+    const cell = sum.querySelector<HTMLElement>('.wfg-sum-dl .wf-sgl')!
     expect(cell).toBeTruthy()
     expect(cell.getAttribute('aria-hidden')).toBe('true')
     expect(cell.querySelectorAll(':scope > i')).toHaveLength(3)
-    expect(document.querySelector('tr[data-workflow="wf_broker"] .wf-shape')!.textContent).toContain('1 → 2 → 1')
+    expect(cell.parentElement!.querySelector('.wf-shape')!.textContent).toContain('1 → 2 → 1')
   })
 })
 
@@ -299,12 +290,16 @@ describe('the list row marks partial dependencies (wide-workflows.html §6)', ()
     expect(partialDeps([...roots, step('x', ['a']), step('y', ['b']), step('z', ['c'])])).toBe(false)
   })
 
-  it('draws the chip in the Shape cell', async () => {
+  // The Shape cell is the summary's Shape since the redesign (frame graph-workflows-rest).
+  it('draws the chip in the summary’s Shape', async () => {
     serve([workflow('wf_p', 'RUNNING', 'sam', [step('a', []), step('b', []), step('c', []), step('x', ['a', 'b'])])])
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_p']))
+    fireEvent.click(document.querySelector<HTMLElement>('tr[data-workflow="wf_p"] [data-col="state"]')!)
+    const dl = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum-dl')!
+    const shape = [...dl.querySelectorAll('dt')].find((d) => d.textContent === 'Shape')!.nextElementSibling!
     // The canonical chip (components.html A).
-    const chip = document.querySelector<HTMLElement>('tr[data-workflow="wf_p"] .wfl-shape .c-chip')!
+    const chip = shape.querySelector<HTMLElement>('.c-chip')!
     expect(chip.textContent).toBe('partial')
     expect(chip.getAttribute('title')).toBe('Some steps depend on part of the level above, not all of it')
   })

@@ -19,6 +19,9 @@ dependencies = [
     "swarm-common",
     "swarm-redaction",
     "swarm-agent-worker",
+    # swarm-agent-worker's Jev client, listed with its source as
+    # swarm-redaction is.
+    "swarm-jev",
     "google-auth>=2.29",
     "requests>=2.32",
 ]
@@ -37,3 +40,4 @@ packages = ["swarm_graph"]
 swarm-common = { path = "../common", editable = true }
 swarm-redaction = { path = "../redaction", editable = true }
 swarm-agent-worker = { path = "../agent-worker", editable = true }
+swarm-jev = { path = "../jev-client", editable = true }

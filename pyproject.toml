@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "swarm-common",
     "swarm-redaction",
+    "swarm-jev",
     "swarm-workflow-rollup",
     "swarm-api",
     "swarm-scheduler",
@@ -21,6 +22,7 @@ package = false
 [tool.uv.sources]
 swarm-common = { path = "apps/common", editable = true }
 swarm-redaction = { path = "apps/redaction", editable = true }
+swarm-jev = { path = "apps/jev-client", editable = true }
 swarm-workflow-rollup = { path = "apps/workflow-rollup", editable = true }
 swarm-api = { path = "apps/swarm-api", editable = true }
 swarm-scheduler = { path = "apps/scheduler", editable = true }

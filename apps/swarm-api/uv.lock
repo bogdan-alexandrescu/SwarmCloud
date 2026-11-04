@@ -1088,6 +1088,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pynacl" },
     { name = "swarm-common" },
+    { name = "swarm-jev" },
     { name = "swarm-redaction" },
     { name = "swarm-workflow-rollup" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1108,6 +1109,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pynacl", specifier = ">=1.5" },
     { name = "swarm-common", editable = "../common" },
+    { name = "swarm-jev", editable = "../jev-client" },
     { name = "swarm-redaction", editable = "../redaction" },
     { name = "swarm-workflow-rollup", editable = "../workflow-rollup" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
@@ -1117,6 +1119,17 @@ requires-dist = [
 name = "swarm-common"
 version = "0.1.0"
 source = { editable = "../common" }
+
+[[package]]
+name = "swarm-jev"
+version = "0.1.0"
+source = { editable = "../jev-client" }
+dependencies = [
+    { name = "swarm-redaction" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "swarm-redaction", editable = "../redaction" }]
 
 [[package]]
 name = "swarm-redaction"

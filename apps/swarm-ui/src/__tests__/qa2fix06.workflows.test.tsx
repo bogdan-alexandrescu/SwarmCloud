@@ -18,14 +18,8 @@
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { CascadeEnv } from './cssgate'
-import { painted } from './marks'
-import { cellStyle, lengthPx, textPx } from './tablefit'
-
 const { WorkflowsScreen } = await import('../Workflows')
 
-const WIDE: CascadeEnv = { width: 1440 }
-const PHONE: CascadeEnv = { width: 390 }
 const AUDIT = 'wf_audit_01'
 const SYNTH = 'wf_5e5ad3b6f7da4299a839'
 const STORED = 'wf_bcdc9180e4fb4a209f31'
@@ -47,10 +41,24 @@ const flat = (el: Element | null | undefined) => (el?.textContent ?? '').replace
 
 async function list(): Promise<void> {
   render(<WorkflowsScreen view="" onView={() => {}} />)
-  await waitFor(() => expect(document.querySelector(`.wfl-table tr[data-workflow="${AUDIT}"]`)).toBeTruthy(), { timeout: 4000 })
+  await waitFor(() => expect(document.querySelector(`.wfg-table tr[data-workflow="${AUDIT}"]`)).toBeTruthy(), { timeout: 4000 })
 }
 
-const row = (id: string) => document.querySelector<HTMLElement>(`.wfl-table tr[data-workflow="${id}"]`)!
+const row = (id: string) => document.querySelector<HTMLElement>(`.wfg-table tr[data-workflow="${id}"]`)!
+
+/**
+ * The row's summary in the docked inspector (the picked Work redesign, frame
+ * graph-workflows-rest), opened by a click on the row's state cell: the
+ * duration moved there from the row.
+ */
+async function summary(id: string): Promise<HTMLElement> {
+  fireEvent.click(row(id).querySelector<HTMLElement>('[data-col="state"]')!)
+  return waitFor(() => {
+    const s = document.querySelector<HTMLElement>(`aside[aria-label="Workflow inspector"] .wfg-sum[data-workflow="${id}"]`)
+    expect(s).toBeTruthy()
+    return s!
+  })
+}
 
 async function page(id: string): Promise<void> {
   render(<WorkflowsScreen view={`wf=${id}`} onView={() => {}} />)
@@ -96,7 +104,8 @@ describe('ovag2-15: the list’s cost note is short, in the body face', () => {
   it('reads `$… N of M reported`, the long form in its title', async () => {
     await list()
     const cov = await waitFor(() => {
-      const c = row(AUDIT).querySelector<HTMLElement>('td[data-col="cost"] .wf-spend-cov')
+      // The Cost column is the redesign's Spent (frame graph-workflows-rest).
+      const c = row(AUDIT).querySelector<HTMLElement>('td[data-col="spent"] .wf-spend-cov')
       expect(c).toBeTruthy()
       return c!
     })
@@ -104,7 +113,7 @@ describe('ovag2-15: the list’s cost note is short, in the body face', () => {
     expect(flat(cov)).toMatch(/^\d+ of \d+ reported$/)
     expect(cov.getAttribute('title')).toMatch(/^\d+ of \d+ steps? that ran reported a cost/)
     // The figure and the note keep their space (overview-agents-82).
-    expect(flat(row(AUDIT).querySelector('td[data-col="cost"] .wf-spend'))).toMatch(/^\$[\d.,]+ \d+ of \d+ reported$/)
+    expect(flat(row(AUDIT).querySelector('td[data-col="spent"] .wf-spend'))).toMatch(/^\$[\d.,]+ \d+ of \d+ reported$/)
   })
 
   it('keeps the long form on the page head, where there is room', async () => {
@@ -141,29 +150,20 @@ describe('62: a `state unknown` row makes no duration claim', () => {
   it('says when it was submitted, not how long it has run', async () => {
     await list()
     await waitFor(() => expect(row(STORED).querySelector('td[data-col="state"] [data-mark="unknown"]')).toBeTruthy())
-    const cell = row(STORED).querySelector<HTMLElement>('td[data-col="duration"]')!
-    // MUTATION: drop the unknown-state arm in `WorkflowListRow` -- `9d 22h so far`.
+    // Duration moved from the row into the summary (frame graph-workflows-rest).
+    const sum = await summary(STORED)
+    const cell = ([...sum.querySelectorAll('dt')].find((d) => d.textContent === 'Duration')?.nextElementSibling ?? null) as HTMLElement | null
+    expect(cell, 'no Duration in the summary').toBeTruthy()
+    // MUTATION: drop the unknown-state arm in `WorkflowSummary` -- `9d 22h so far`.
     expect(flat(cell)).not.toMatch(/so far/)
     expect(flat(cell)).toMatch(/^began \d+[dhms] ago$/)
-    expect(cell.className).toMatch(/is-absent/)
-    expect(cell.getAttribute('title')).toMatch(/state is unknown/)
+    expect(cell!.className).toMatch(/wfg-absent/)
+    expect(cell!.getAttribute('title')).toMatch(/state is unknown/)
   })
 
-  it('fits the Duration column at 1440, and the phone card puts no duration label over it', async () => {
-    await list()
-    await waitFor(() => expect(row(STORED).querySelector('td[data-col="state"] [data-mark="unknown"]')).toBeTruthy())
-    const cell = row(STORED).querySelector<HTMLElement>('td[data-col="duration"]')!
-    const th = document.querySelector<HTMLElement>('.wfl-table th[data-col="duration"]')!
-    const st = cellStyle(cell, WIDE)
-    const room = (lengthPx(painted(th, 'width', WIDE), 0) ?? 0) - st.pl - st.pr
-    // MUTATION: say `submitted ${formatDuration(ms)} ago` again -- `submitted
-    // 10d 0h ago` is wider than the 124px column and was clipped to `…ag`.
-    expect(textPx(flat(cell), cell, WIDE)).toBeLessThanOrEqual(room)
-    // MUTATION: drop the `.is-unknown::before { content: none }` rule -- the
-    // phone card reads `duration began 10d ago`, a label over a non-duration.
-    expect(cell.className).toMatch(/is-unknown/)
-    expect(painted(cell, 'content', PHONE, 'before')).toBe('none')
-  })
+  // The Duration column's fit at 1440 and its phone-card label went with the
+  // column: the redesign (frame graph-workflows-rest) puts Duration in the
+  // summary's wrapping `dl`, held above.
 })
 
 describe('66: the longest chain on a workflow that has ended', () => {

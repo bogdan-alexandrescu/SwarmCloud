@@ -811,6 +811,15 @@ SUBSCRIPTION_PROVIDER = "anthropic"
 PLAN_PROVIDER = "openai"
 ACCOUNT_PROVIDERS = (SUBSCRIPTION_PROVIDER, PLAN_PROVIDER)
 AccountProvider = Literal["anthropic", "openai"]
+#: Account kinds only the Voice it pool holds, kept apart from
+#: `ACCOUNT_PROVIDERS` exactly as the broker keeps its `VOICE_ONLY_PROVIDERS`
+#: (checked against it by test): `openai-api`, an OpenAI developer API key
+#: (the owner, 4 November 2026; docs/design/voice-it.md). It is not a pair and
+#: is never refreshed, no workspace's sign-in or task names it, and only a
+#: PLATFORM admin may register one (`routes/accounts.register_account`), with
+#: no `lend_to`. The broker files it into the Voice it pool alone.
+VOICE_API_KEY_PROVIDER = "openai-api"
+VOICE_ONLY_PROVIDERS = (VOICE_API_KEY_PROVIDER,)
 
 
 class AccountSignInStart(StrictModel):
@@ -867,7 +876,8 @@ class AccountCreate(StrictModel):
     #: Optional, and only ever equal to the caller's own tenant. See above.
     owner_tenant: str | None = Field(default=None, max_length=64)
     label: str = Field(min_length=1, max_length=64)
-    #: One of `ACCOUNT_PROVIDERS`, defaulting to a Claude subscription. A plain
+    #: One of `ACCOUNT_PROVIDERS` (or, for a platform admin, one of
+    #: `VOICE_ONLY_PROVIDERS`), defaulting to a Claude subscription. A plain
     #: string rather than a Literal so it is compared case-insensitively and a
     #: caller naming anything else gets a 422 that names it and lists the known
     #: providers. `routes/accounts.py` does the comparison.

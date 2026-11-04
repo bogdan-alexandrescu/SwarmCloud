@@ -150,6 +150,12 @@ NOT_FOR_THE_RUNNER: dict[str, str] = {
         "well; the claude-code and codex runners build their CLI's environment "
         "without it, as for NPM_CONFIG_UPDATE_NOTIFIER"
     ),
+    "SWARM_GIT_SHA": (
+        "the commit the image was built from, read by the WORKER's own build "
+        "line (agent_worker.buildinfo, part of #2688) and the live gate's. The "
+        "runner is the agent; the build it runs under is the worker's to report, "
+        "not something an agent acts on"
+    ),
     "WORKSPACE_ROOT": (
         "the LIFECYCLE's setting: the directory it creates every attempt's "
         "workspace under. The runner is told its own workspace as "
@@ -251,8 +257,15 @@ def _instructions(text: str) -> list[str]:
 
 
 def _stage_env(dockerfile: Path, stage: str) -> dict[str, str]:
-    """Every ENV the named build stage sets, in order, later wins."""
+    """Every ENV the named build stage sets, in order, later wins.
+
+    A value that is exactly `${NAME}` of an ARG the stage declared is that
+    ARG's default, as an image built with no build arg gets it (`ENV
+    SWARM_GIT_SHA=${GIT_SHA}`: "" here, the commit in a real build). Any other
+    reference still fails: this parser does not guess.
+    """
     env: dict[str, str] = {}
+    args: dict[str, str] = {}
     current: str | None = None
     for line in _instructions(dockerfile.read_text()):
         keyword, _, rest = line.partition(" ")
@@ -260,6 +273,11 @@ def _stage_env(dockerfile: Path, stage: str) -> dict[str, str]:
         if keyword == "FROM":
             named = re.search(r"\s[Aa][Ss]\s+(\S+)\s*$", " " + rest)
             current = named.group(1) if named else None
+            args = {}
+            continue
+        if keyword == "ARG" and current == stage:
+            name, _, default = rest.strip().partition("=")
+            args[name] = shlex.split(default)[0] if default.strip() else ""
             continue
         if keyword != "ENV" or current != stage:
             continue
@@ -269,6 +287,9 @@ def _stage_env(dockerfile: Path, stage: str) -> dict[str, str]:
         else:
             pairs = [tuple(token.split("=", 1)) for token in tokens]
         for key, value in pairs:
+            whole = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", value)
+            if whole and whole.group(1) in args:
+                value = args[whole.group(1)]
             if "$" in value:
                 pytest.fail(
                     f"{dockerfile.relative_to(REPO)} sets {key}={value!r}, which "

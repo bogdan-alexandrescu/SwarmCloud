@@ -76,7 +76,8 @@ def test_a_profile_ceiling_is_a_positive_integer(bad):
 
 
 def test_a_cap_is_signed_at_format_7_and_only_a_cap_is():
-    assert specsign.SPEC_FORMAT == 7 and specsign.SPEC_FORMATS[-1] == 7
+    # Format 8 (contract request 137, `metadata.work_contract`) came after it.
+    assert specsign.SPEC_FORMATS[6] == 7 and specsign.SPEC_FORMAT > 7
     # MUTATION: leave `signing_format` without format 7 and this is 1.
     assert signing_format({**DOC, "max_turns": 30}) == 7
     assert signing_format({**DOC, "max_turns": 30, "budget": {"usd": 1.0}}) == 7

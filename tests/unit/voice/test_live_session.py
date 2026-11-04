@@ -7,8 +7,9 @@ sideband on a real local `websockets` server -- and a fake quota broker on the
 same transport, this holds that:
 
 * each session leases a Voice it pool account for its person before anything is
-  created, and every Live call presents that lease's token (and the plan's
-  `ChatGPT-Account-Id`);
+  created, asking for a Live-capable account, and every Live call presents that
+  lease's OpenAI API key as `Authorization` alone, with no `ChatGPT-Account-Id`
+  (OpenAI refused the ChatGPT plan for GPT-Live on 4 November 2026);
 * a person the broker refuses, or a pool whose account is busy or missing, gets a
   clear refusal and nothing starts;
 * the lease is released when the session ends, when its start fails and when
@@ -81,6 +82,8 @@ class FakeBroker:
         self.people = {PERSON}
         self.registered = True
         self.account_id = "acct_" + secrets.token_hex(4)
+        #: A plan account id the broker must NOT send for a key; kept so a
+        #: header carrying it would be caught.
         self.plan_account = "chatgpt-" + secrets.token_hex(4)
         self.holder: dict | None = None
         self.leases: list[dict] = []
@@ -90,9 +93,9 @@ class FakeBroker:
         self.audiences: list[str] = []
 
     def _token(self) -> dict:
-        access = "at_" + secrets.token_hex(16)
+        access = "sk-" + secrets.token_hex(16)
         self.openai.valid.add(access)
-        return {"access_token": access, "account_id": self.plan_account}
+        return {"access_token": access, "kind": "api_key"}
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.id_tokens.append(request.headers.get("authorization", ""))
@@ -145,6 +148,10 @@ class FakeOpenAI:
         self.drop_after_attach = False
         self.close_after_attach = False
         self.create_status = 201
+        #: The refused create's body, when set; else an error whose message echoes the bearer.
+        self.create_body: bytes | None = None
+        #: An event the sideband sends in place of `session.updated`, when set.
+        self.attach_event: dict | None = None
         self.port = 0
 
     # -- REST
@@ -154,6 +161,8 @@ class FakeOpenAI:
             if not auth.startswith("Bearer ") or auth[len("Bearer "):] not in self.valid:
                 return httpx.Response(401, json={"error": {"message": f"bad token {auth}"}})
             if self.create_status != 201:
+                if self.create_body is not None:
+                    return httpx.Response(self.create_status, content=self.create_body)
                 return httpx.Response(self.create_status, json={"error": {"message": f"echo {auth}"}})
             body = json.loads(request.content)
             self.creates.append(body)
@@ -182,6 +191,10 @@ class FakeOpenAI:
             await conn.close(4401)
             return
         self.attaches.append(live_id)
+        if self.attach_event is not None:
+            await conn.send(json.dumps(self.attach_event))
+            await conn.close()
+            return
         await conn.send(json.dumps({"type": "session.updated",
                                     "session": {"id": live_id, "status": "active", "model": "gpt-live-1"}}))
         if self.drop_after_attach:
@@ -292,17 +305,18 @@ def test_the_offer_is_answered_on_a_leased_voice_pool_account():
         r = await h.post("/internal/sessions", body)
         assert r.status_code == 201, r.text
         live_id = h.openai.live_ids[0]
-        assert r.json() == {"voice_session_id": body["voice_session_id"], "live_session_id": live_id,
-                            "answer": h.openai.answers[live_id]}
+        # `mode: live`: the Voice it pool holds an API key, so this is today's GPT-Live path.
+        assert r.json() == {"voice_session_id": body["voice_session_id"], "mode": "live",
+                            "live_session_id": live_id, "answer": h.openai.answers[live_id]}
         # The lease came first, for this person and this session, from the openai pool,
         # with an ID token minted for the broker's audience.
         assert h.broker.leases == [{"person": PERSON, "voice_session_id": body["voice_session_id"],
-                                    "provider": "openai"}]
+                                    "provider": "openai", "capability": "live"}]
         assert h.broker.audiences and set(h.broker.audiences) == {BROKER_AUDIENCE}
         assert all(t.startswith("Bearer idt_") for t in h.broker.id_tokens)
-        # The Live create presented the leased token and the plan's account id.
+        # The Live create presented the leased API key, and no plan account id.
         assert h.openai.create_headers[0]["authorization"].removeprefix("Bearer ") in h.openai.valid
-        assert h.openai.create_headers[0]["chatgpt-account-id"] == h.broker.plan_account
+        assert h.openai.create_headers[0]["chatgpt-account-id"] is None
         create = h.openai.creates[0]
         assert create["transport"] == {"type": "webrtc", "sdp": body["offer"]}
         assert create["session"]["model"] == "gpt-live-1"
@@ -315,7 +329,7 @@ def test_the_offer_is_answered_on_a_leased_voice_pool_account():
         assert h.broker.holder["voice_session_id"] == body["voice_session_id"]
         assert h.broker.releases == []
         health = await h.client.get("/healthz")
-        assert health.json() == {"sessions": 1, "attached": 1}
+        assert health.json() == {"sessions": 1, "attached": 1, "text_sessions": 0}
 
     run(scenario)
 
@@ -340,7 +354,7 @@ def test_a_busy_or_empty_pool_is_a_spoken_409_and_nothing_starts():
         busy = await h.post("/internal/sessions", _start_body(voice_id="vs_second0002"))
         assert busy.status_code == 409
         assert busy.json() == {"code": "voice_pool_busy", "message":
-                               "Voice it's ChatGPT plan is in use by another session; try again when it ends."}
+                               "Voice it's OpenAI API key is in use by another session; try again when it ends."}
         assert len(h.openai.creates) == 1 and h.sessions.get("vs_second0002") is None
         # Once the first ends, its account is free again.
         assert (await h.post(f"/internal/sessions/{first['voice_session_id']}/end")).status_code == 200
@@ -349,9 +363,21 @@ def test_a_busy_or_empty_pool_is_a_spoken_409_and_nothing_starts():
         h.broker.registered = False
         empty = await h.post("/internal/sessions", _start_body(voice_id="vs_third00003"))
         assert empty.status_code == 409 and empty.json()["code"] == "voice_pool_refused"
+        assert "OpenAI API key" in empty.json()["message"]
         assert len(h.openai.creates) == 1
 
     run(scenario)
+
+
+def test_every_pool_refusal_names_voice_its_openai_api_key_never_a_chatgpt_plan():
+    """A Live session runs on an OpenAI developer API key alone (OpenAI
+    refused the ChatGPT plan on 4 November 2026), so no sentence swarm-voice
+    speaks may send the person to look for a plan."""
+    from swarm_voice.main import POOL_REFUSALS, POOL_REFUSED_DEFAULT
+
+    for _, _, message in (*POOL_REFUSALS.values(), POOL_REFUSED_DEFAULT):
+        assert "ChatGPT" not in message
+        assert "OpenAI API key" in message and message.endswith(".")
 
 
 def test_an_end_closes_the_session_and_releases_the_lease():
@@ -398,10 +424,130 @@ def test_a_failed_create_releases_the_lease():
         h.openai.create_status = 500
         r = await h.post("/internal/sessions", _start_body())
         assert r.status_code == 502
-        assert r.json() == {"detail": "OpenAI refused the Live session (HTTP 500)"}
+        assert r.json() == {"code": "openai_refused",
+                            "message": "OpenAI refused the Live session (HTTP 500, code unreadable, "
+                                       "type unreadable)",
+                            "openai_status": 500, "openai_code": "unreadable", "openai_type": "unreadable"}
         assert len(h.broker.leases) == 1
         assert h.broker.holder is None and len(h.broker.releases) == 1
         assert h.sessions.get("vs_a1b2c3d4e5") is None
+
+    run(scenario)
+
+
+def _log_text(caplog) -> str:
+    records = [r for r in caplog.records if not r.name.startswith(FAKE_LOG)]
+    return "\n".join(r.getMessage() + " " + str(r.args) + " " + (r.exc_text or "") for r in records)
+
+
+def test_a_refused_create_says_openais_code_and_type_and_never_its_message(caplog):
+    """Measured 2026-11-04: OpenAI answered a Voice it pool account's create 403 and
+    nobody could see why. The code and type are kept; the message, which may quote
+    the request, is not."""
+    caplog.set_level(logging.DEBUG)
+    quoted = "sk-" + secrets.token_hex(24)
+
+    async def scenario(h: Harness):
+        h.openai.create_status = 403
+        h.openai.create_body = json.dumps({"error": {
+            "message": f"The plan behind {quoted} may not open a Live session.",
+            "code": "unsupported_plan", "type": "invalid_request_error",
+            "param": quoted}}).encode()
+        r = await h.post("/internal/sessions", _start_body())
+        assert r.status_code == 502
+        assert r.json() == {"code": "openai_refused",
+                            "message": "OpenAI refused the Live session (HTTP 403, code unsupported_plan, "
+                                       "type invalid_request_error)",
+                            "openai_status": 403, "openai_code": "unsupported_plan",
+                            "openai_type": "invalid_request_error"}
+        await h.settle()
+        assert h.broker.holder is None and len(h.broker.releases) == 1
+        return list(h.responses)
+
+    responses = run(scenario)
+    text = _log_text(caplog)
+    assert "403" in text and "unsupported_plan" in text and "invalid_request_error" in text
+    assert quoted not in text
+    assert all(quoted not in response for response in responses)
+
+
+@pytest.mark.parametrize("body", [
+    b"<html>403 Forbidden</html>",
+    b"",
+    b"\xff\xfe",
+    json.dumps({"error": "a string"}).encode(),
+    json.dumps({"error": {"code": None, "type": 7}}).encode(),
+    json.dumps({"error": {"code": "Bearer SK-SECRET", "type": "x" * 65}}).encode(),
+    json.dumps({"error": {"code": "a" + " " * 3, "type": "line\nbreak"}}).encode(),
+], ids=["html", "empty", "not-utf8", "not-an-object", "not-strings", "off-pattern", "whitespace"])
+def test_an_unreadable_refusal_reads_unreadable(body):
+    async def scenario(h: Harness):
+        h.openai.create_status = 403
+        h.openai.create_body = body
+        r = await h.post("/internal/sessions", _start_body())
+        assert r.status_code == 502
+        assert r.json()["openai_status"] == 403
+        assert r.json()["openai_code"] == "unreadable" and r.json()["openai_type"] == "unreadable"
+
+    run(scenario)
+
+
+def test_the_error_reader_keeps_only_the_pattern():
+    assert live.openai_error(json.dumps({"error": {"code": "rate_limit.v2-x", "type": "requests"}})) == (
+        "rate_limit.v2-x", "requests")
+    assert live.openai_error(b"{" + b" " * live.MAX_ERROR_BYTES + b"}") == ("unreadable", "unreadable")
+    assert live.openai_error(None) == ("unreadable", "unreadable")
+
+
+class _OneBearer:
+    """A credential with one bearer, built at runtime."""
+
+    async def bearer(self) -> cred.Bearer:
+        return cred.Bearer("at_" + secrets.token_hex(8))
+
+    async def refused(self) -> None:
+        return None
+
+
+def test_a_sideband_handshake_refusal_says_openais_code_and_type(caplog):
+    caplog.set_level(logging.DEBUG)
+    quoted = "sk-" + secrets.token_hex(24)
+    body = json.dumps({"error": {"message": f"echo {quoted}", "code": "session_not_found",
+                                 "type": "invalid_request_error"}})
+
+    def refuse(connection, request):
+        return connection.respond(403, body)
+
+    async def main():
+        async with serve(lambda conn: conn.close(), "127.0.0.1", 0, process_request=refuse,
+                         logger=logging.getLogger(FAKE_LOG)) as server:
+            port = server.sockets[0].getsockname()[1]
+            async with httpx.AsyncClient() as http:
+                api = live.LiveApi(http, ws_base=f"ws://127.0.0.1:{port}")
+                credential = _OneBearer()
+                with pytest.raises(live.LiveRefused) as raised:
+                    await api.attach(credential, "live_" + secrets.token_hex(6))
+        return raised.value
+
+    refused = asyncio.run(main())
+    assert (refused.status, refused.code, refused.type) == (403, "session_not_found", "invalid_request_error")
+    assert quoted not in str(refused) and quoted not in _log_text(caplog)
+    assert "session_not_found" in _log_text(caplog)
+
+
+def test_a_sideband_that_answers_with_an_error_event_is_a_refusal_with_its_code():
+    async def scenario(h: Harness):
+        quoted = "sk-" + secrets.token_hex(24)
+        h.openai.attach_event = {"type": "error", "error": {
+            "message": f"echo {quoted}", "code": "plan_not_allowed", "type": "invalid_request_error"}}
+        r = await h.post("/internal/sessions", _start_body())
+        assert r.status_code == 502
+        assert r.json()["code"] == "openai_refused"
+        assert (r.json()["openai_status"], r.json()["openai_code"], r.json()["openai_type"]) == (
+            None, "plan_not_allowed", "invalid_request_error")
+        assert quoted not in r.text
+        await h.settle()
+        assert h.broker.holder is None and len(h.broker.releases) == 1
 
     run(scenario)
 
@@ -505,7 +651,7 @@ def test_the_lease_is_renewed_with_a_fresh_token_before_it_goes_stale():
         h.clock.now += al.RENEW_SECONDS
         fresh = await lease.bearer()
         assert fresh.reveal() != first.reveal() and len(h.broker.renewals) == 1
-        assert fresh.account_id == h.broker.plan_account
+        assert fresh.account_id is None and fresh.headers().keys() == {"Authorization"}
         # OpenAI refused a bearer: the next one is renewed, never reused.
         await lease.refused()
         assert (await lease.bearer()).reveal() != fresh.reveal() and len(h.broker.renewals) == 2
@@ -600,3 +746,17 @@ def test_nothing_is_built_at_import_and_a_start_without_the_broker_refuses(monke
     monkeypatch.delenv("QUOTA_BROKER_URL", raising=False)
     with pytest.raises(RuntimeError, match="QUOTA_BROKER_URL"):
         build_sessions(http=None)
+
+
+def test_an_api_key_bearer_sends_authorization_only_even_when_given_an_account_id():
+    """A key is the whole credential: `ChatGPT-Account-Id` names a ChatGPT
+    plan's account, and a broker that sent one beside a key is not obeyed."""
+    from swarm_voice.credential import Bearer
+
+    key = "sk-" + secrets.token_hex(16)
+    bearer = al._credential({"credential": {"access_token": key, "kind": "api_key",
+                                            "account_id": "chatgpt-" + secrets.token_hex(4)}})
+    assert bearer.headers() == {"Authorization": f"Bearer {key}"}
+    assert bearer.account_id is None and bearer.kind == "api_key"
+    assert key not in repr(bearer)
+    assert Bearer(key, kind="api_key", account_id="x").headers() == {"Authorization": f"Bearer {key}"}
