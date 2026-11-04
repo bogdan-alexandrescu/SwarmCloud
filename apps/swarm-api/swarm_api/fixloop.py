@@ -67,7 +67,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import EndCause
 from swarm_common.states import TERMINAL_STATES, ParkReason, TaskState
 
-from . import mergewake
+from . import mergewake, refusals
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Conflict, NotFound, UpstreamUnavailable, ValidationFailed
 from .issuecomments import neutralise_mentions
@@ -1294,6 +1294,15 @@ class FixLoopAtCeiling(Conflict):
     code = "fix_loop_rounds_ceiling"
 
 
+def _refused(error: Conflict) -> Conflict:
+    """A NEW refusal ships off (observer proposal I; `swarm_api.refusals`), as
+    `routes.workflows._refused` does: the refusal is ALWAYS made -- a loop not
+    parked for a person is never given a round -- and with its switch off the
+    caller gets the same 409 and message under the established `conflict`."""
+    refusals.refuse(error)
+    return Conflict(error.message, detail=error.detail)
+
+
 def loop_of_workflow(ctx: Any, tenant_id: str, workflow_id: str) -> dict[str, Any]:
     """The workflow's `fix-loop` task, in the caller's tenant; 404 otherwise."""
     workflow = ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=None)
@@ -1334,7 +1343,7 @@ def add_rounds(ctx: Any, *, tenant_id: str, workflow_id: str, by: str, rounds: i
     loop = loop_of_workflow(ctx, tenant_id, workflow_id)
     block = _signed_block(ctx, loop)
     if block is None:
-        raise NotParkedForAPerson("the fix loop's signed block does not verify")
+        raise _refused(NotParkedForAPerson("the fix loop's signed block does not verify"))
     db = ctx.store.db
     now = ctx.now()
     ref = db.collection(TASKS).document(loop["id"])
@@ -1347,16 +1356,16 @@ def add_rounds(ctx: Any, *, tenant_id: str, workflow_id: str, by: str, rounds: i
         if data is None or data.get("tenant_id") != tenant_id:
             raise NotFound(f"workflow {workflow_id!r} has no fix-loop step")
         if _person_entry(data) is None:
-            raise NotParkedForAPerson(
-                "the fix loop is not parked for a person: a round is running or it ended")
+            raise _refused(NotParkedForAPerson(
+                "the fix loop is not parked for a person: a round is running or it ended"))
         metadata = dict(_mapping(data.get("metadata")))
         state = dict(_mapping(metadata.get(STATE_KEY)))
         current = max_rounds(block, state)
         granted = min(rounds, FIX_LOOP_ROUNDS_CEILING - current)
         if granted <= 0:
-            raise FixLoopAtCeiling(
+            raise _refused(FixLoopAtCeiling(
                 f"the fix loop has {current} rounds, the most any loop may run "
-                f"({FIX_LOOP_ROUNDS_CEILING})")
+                f"({FIX_LOOP_ROUNDS_CEILING})"))
         added = [dict(a) for a in state.get("added") or () if isinstance(a, Mapping)] \
             if isinstance(state.get("added"), list) else []
         added.append({"by": by, "at": now, "rounds": granted,
@@ -1392,11 +1401,11 @@ def stop(ctx: Any, *, tenant_id: str, workflow_id: str, by: str) -> dict[str, An
     """A person accepts the last verdict: FAILED `fix_loop_exhausted` (§4.5)."""
     loop = loop_of_workflow(ctx, tenant_id, workflow_id)
     if _person_entry(loop) is None:
-        raise NotParkedForAPerson(
-            "the fix loop is not parked for a person: a round is running or it ended")
+        raise _refused(NotParkedForAPerson(
+            "the fix loop is not parked for a person: a round is running or it ended"))
     now = ctx.now()
     if not end_failed(ctx.store.db, tenant_id, loop["id"], now=now, by=by):
-        raise NotParkedForAPerson("the fix loop moved while it was being stopped")
+        raise _refused(NotParkedForAPerson("the fix loop moved while it was being stopped"))
     ring(ctx.waker, ctx.metrics, TASK_FINISHED, task_id=loop["id"], tenant_id=tenant_id,
          state="failed")
     return {"task_id": loop["id"], "state": TaskState.FAILED.value,
