@@ -511,6 +511,19 @@ def test_a_key_never_moves_into_the_workspace_pool_nor_serves_a_task(client, acc
             assert body.get("account_id") is None, body
 
 
+def test_the_lending_route_never_binds_a_worker_to_a_key(client, accounts):
+    # Even an empty `lend_to` from the owner would bind the owner's worker as
+    # a reader of `{base}`: every agent of that tenant could read the key.
+    account_id = _key(client, accounts, OWNER, "key-1")
+    client.identity.as_tenant(OWNER)
+    for lend_to in ([], [ENG]):
+        refused = client.put(f"/v1/accounts/{account_id}/lending", json={"lend_to": lend_to})
+        assert refused.status_code == 422, refused.text
+        assert "OpenAI API key" in refused.json()["message"]
+    assert not any(client.secrets.readers.values()), client.secrets.readers
+    assert accounts.get(account_id).lend_to == ()
+
+
 def test_a_live_session_leases_the_key_and_never_the_plan(client, accounts):
     _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
     key_id = _key(client, accounts, OWNER, "key-1")
