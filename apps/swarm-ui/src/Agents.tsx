@@ -1422,6 +1422,12 @@ function AgentsBody({
             the checkboxes and `Started` are one unbreakable tail inside the
             group, so a narrow list never strands the last control either. */}
         <div className="ag-tools">
+          {/* THE TWO PICKERS ARE ONE PAIR (#139 at 390, #3146). Everywhere but
+              the phone the pair is no box (`display: contents`) and its
+              filters are the tools group's own items; on a phone they share
+              one line, so the owner filter the redesign added takes no line
+              of its own and the first row stays above the midpoint. */}
+          <div className="ag-pickers">
           <label className="ag-filter ag-filter-profile">
             <span className="ag-filter-k">profile:</span>
             {/* CAPPED, NOT SIZED TO ITS LONGEST OPTION (V061): the whole value is
@@ -1446,6 +1452,7 @@ function AgentsBody({
               ))}
             </select>
           </label>
+          </div>
 
           {/* RECENT, BY STATE (OV-10): pressed buttons rather than tabs -- it
               filters the tab it sits beside, it is not a fourth tab. Counts are

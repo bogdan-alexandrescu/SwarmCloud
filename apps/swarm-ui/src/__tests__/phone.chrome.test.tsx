@@ -507,9 +507,11 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
 
   it('stacks less than half of an 844px screen above the first row, every block resolved to px and counted', async () => {
     // MUTATION: set `.sk-pbar`'s phone height back to the old header's 100px.
-    // The budget is 368.2px today (measured 2026-10-08); the 56px that adds
-    // takes it to 424.2, past the midpoint. The list toolbar, taken fully
-    // wrapped, is the largest block at 161.4px.
+    // The budget is 409.4px today (measured 2026-11-04, with the Needs-you
+    // row's 34px at rest); the 56px that adds takes it to 465.4, past the
+    // midpoint. The list toolbar, taken fully wrapped, is the largest block
+    // at 160px. MUTATION: drop agents.css's phone `.ny` rules (595.8px), or
+    // let its `.ag-pickers` line wrap (461.4px).
     expect(BUDGET_SHEETS.includes(AGENTS_CSS), 'the Agents sheet is not in the cascade').toBe(true)
     expect(BUDGET_SHEETS.includes(NEEDS_YOU_CSS), 'the Needs-you sheet is not in the cascade').toBe(true)
     const live = task({ id: 'task_phone139000000000000a', state: 'RUNNING', started_at: new Date().toISOString(), attempt_count: 1, max_attempts: 3 })
