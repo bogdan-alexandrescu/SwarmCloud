@@ -633,6 +633,12 @@ function RuntimeCard({
   // when they agree there is only one question to answer.
   const platformChose = runtime.backend !== runtime.resolved_backend
   const spec = runtime.resources
+  // THE AGENT'S SHARE, when the pod runs a display beside it (#3118): the
+  // class's figure is both containers, and a step sized by it was killed at
+  // the agent's.
+  const display = typeof runtime.display_memory_gib === 'number' ? runtime.display_memory_gib : null
+  const agent = typeof runtime.agent_memory_gib === 'number' ? runtime.agent_memory_gib : null
+  const pod = typeof runtime.pod_memory_gib === 'number' ? runtime.pod_memory_gib : spec.memory_gib
   const left = spec.memory_gib - spec.disk_gib
   const coherent = Number.isFinite(left) && left >= 0
   const off = runtime.available === false
@@ -732,7 +738,14 @@ function RuntimeCard({
                 an estimate, not a measurement: no test reads the key's
                 rendered width. */}
             <b>memory</b>
-            {spec.memory_gib} GiB
+            {display !== null && agent !== null ? (
+              <span>
+                {agent} GiB for the agent
+                <span className="muted"> · display {display} GiB · pod {pod} GiB</span>
+              </span>
+            ) : (
+              <>{spec.memory_gib} GiB</>
+            )}
           </li>
           <li className={`ctl-fact${coherent ? '' : ' is-absent'}`}>
             {/* THE WORKSPACE IS A SLICE OF THE MEMORY BESIDE IT, not storage
