@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -522,6 +523,27 @@ def test_the_lending_route_never_binds_a_worker_to_a_key(client, accounts):
         assert "OpenAI API key" in refused.json()["message"]
     assert not any(client.secrets.readers.values()), client.secrets.readers
     assert accounts.get(account_id).lend_to == ()
+
+
+def test_a_plan_registration_never_reuses_a_key_label(client, accounts):
+    # Registering a plan over a key's label would rewrite its provider and
+    # bind the owner's worker to `{base}`, whose older version holds the key.
+    account_id = _key(client, accounts, OWNER, "key-1")
+    before = dict(client.secrets.latest)
+    expires = datetime.now(timezone.utc) + timedelta(hours=8)
+    credential = json.dumps({"claudeAiOauth": {
+        "accessToken": "at-" + secrets.token_hex(12),
+        "refreshToken": "rt-" + secrets.token_hex(12),
+        "expiresAt": int(expires.timestamp() * 1000)}})
+    client.identity.as_platform()
+    refused = client.post("/v1/accounts", json={
+        "owner_tenant": OWNER, "label": "key-1", "provider": "anthropic",
+        "credential": credential})
+    assert refused.status_code == 422, refused.text
+    assert "OpenAI API key" in refused.json()["message"]
+    assert accounts.get(account_id).provider == "openai-api"
+    assert not any(client.secrets.readers.values()), client.secrets.readers
+    assert client.secrets.latest == before
 
 
 def test_a_live_session_leases_the_key_and_never_the_plan(client, accounts):
