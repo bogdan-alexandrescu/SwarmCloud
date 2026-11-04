@@ -82,18 +82,8 @@ jobs:
         # on both runner kinds.
         run: |
           set -euo pipefail
-          # The release tarball straight from GitHub, checked against the release's
-          # own checksums file. Not contrib/install.sh: at 0.74.0 it fetches from
-          # get.trivy.dev, which did not resolve on PR 3155's run (curl exit 6,
-          # 2026-11-04) while the same release on github.com answered.
-          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
-          dl="$(mktemp -d)"
-          curl -sSfL --retry 5 --retry-all-errors -o "${dl}/${tarball}" "${base}/${tarball}"
-          curl -sSfL --retry 5 --retry-all-errors -o "${dl}/checksums.txt" "${base}/trivy_${TRIVY_VERSION}_checksums.txt"
-          (cd "${dl}" && grep -E "  ${tarball}\$" checksums.txt | sha256sum -c -)
-          mkdir -p "${RUNNER_TEMP}/bin"
-          tar -xzf "${dl}/${tarball}" -C "${RUNNER_TEMP}/bin" trivy
+          # scripts/install-trivy.sh says why not trivy's own install.sh.
+          scripts/install-trivy.sh "${RUNNER_TEMP}/bin"
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
       - name: download the trivy vulnerability DB
@@ -358,18 +348,8 @@ jobs:
         # on both runner kinds.
         run: |
           set -euo pipefail
-          # The release tarball straight from GitHub, checked against the release's
-          # own checksums file. Not contrib/install.sh: at 0.74.0 it fetches from
-          # get.trivy.dev, which did not resolve on PR 3155's run (curl exit 6,
-          # 2026-11-04) while the same release on github.com answered.
-          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
-          dl="$(mktemp -d)"
-          curl -sSfL --retry 5 --retry-all-errors -o "${dl}/${tarball}" "${base}/${tarball}"
-          curl -sSfL --retry 5 --retry-all-errors -o "${dl}/checksums.txt" "${base}/trivy_${TRIVY_VERSION}_checksums.txt"
-          (cd "${dl}" && grep -E "  ${tarball}\$" checksums.txt | sha256sum -c -)
-          mkdir -p "${RUNNER_TEMP}/bin"
-          tar -xzf "${dl}/${tarball}" -C "${RUNNER_TEMP}/bin" trivy
+          # scripts/install-trivy.sh says why not trivy's own install.sh.
+          scripts/install-trivy.sh "${RUNNER_TEMP}/bin"
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
 
       # --- secret scan ---------------------------------------------------------
@@ -571,18 +551,8 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
         run: |
           set -euo pipefail
-          # The release tarball straight from GitHub, checked against the release's
-          # own checksums file. Not contrib/install.sh: at 0.74.0 it fetches from
-          # get.trivy.dev, which did not resolve on PR 3155's run (curl exit 6,
-          # 2026-11-04) while the same release on github.com answered.
-          tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
-          dl="$(mktemp -d)"
-          curl -sSfL --retry 5 --retry-all-errors -o "${dl}/${tarball}" "${base}/${tarball}"
-          curl -sSfL --retry 5 --retry-all-errors -o "${dl}/checksums.txt" "${base}/trivy_${TRIVY_VERSION}_checksums.txt"
-          (cd "${dl}" && grep -E "  ${tarball}\$" checksums.txt | sha256sum -c -)
-          mkdir -p "/usr/local/bin"
-          tar -xzf "${dl}/${tarball}" -C "/usr/local/bin" trivy
+          # scripts/install-trivy.sh says why not trivy's own install.sh.
+          scripts/install-trivy.sh /usr/local/bin
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
           repo="${REGION}-docker.pkg.dev/${PROJECT_ID}/swarm-images"
           status=0
