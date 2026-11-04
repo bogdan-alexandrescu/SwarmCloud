@@ -161,6 +161,7 @@ both there, with nothing for the page to override.
 | **Talk pane** | BGD's browser | The WebRTC peer, the mic and the agent's track, captions, the oscilloscope, the card list | Media must be peer to peer with OpenAI to keep audio off our servers and to get the browser's echo cancellation, which covers WebRTC remote audio [14] |
 | **GPT-Live session** | OpenAI | The live conversation, its turn-taking and barge-in, the voice | BGD's choice |
 | **swarm-voice** (new) | One-replica StatefulSet in `swarm-system` on the GKE cluster | Each live session's sideband WebSocket, the planner loop, the session grant (in memory) | It holds long-lived outbound sockets for the length of a conversation, which no request-shaped service can (§3.4) |
+| **Text conversation** (no API key in the pool) | Inside swarm-voice (`swarm_voice/textchat.py`), calling the ChatGPT plan's Codex Responses route | Each text session's turns and its plan lease, in memory | OpenAI serves the plan text but refuses it Live (§3.6, "Both paths"), so the browser sends each spoken turn as text and swarm-voice answers it |
 | **Planner** | Inside swarm-voice, calling the Anthropic Messages API | Nothing between turns: every turn reads the project from Firestore through swarm-api | Opus always thinks [10], so it stays off the spoken path; the voice speaks while it works |
 | **swarm-api** (extended) | Cloud Run, as today | The Voice it routes, the session grant check, the card stream, the ledger, storage | The one authenticator: every action Voice it takes passes the same role floor, holds, refusals and tenant scope as a click |
 | **Firestore and GCS** | As today | Projects, sessions, cards, turns, starts, preferences; transcripts and large card bodies | Invariant 9: the tenant's documents and its own prefix |
@@ -305,9 +306,10 @@ Voice it, because it is the same route.
 **Keys.**
 
 * **OpenAI:** an **OpenAI developer API key** in the quota broker's **Voice
-  it pool** (below, "Why a key and not the ChatGPT plan"). No person's own
-  OpenAI secret is read any more, and a ChatGPT plan is never leased for a
-  session.
+  it pool** for a Live session (below, "Why a key and not the ChatGPT
+  plan"); with no key in the pool, the pool's **ChatGPT plan** for a text
+  conversation (below, "Both paths"). No person's own OpenAI secret is read
+  any more, and a ChatGPT plan is never leased for a Live session.
 * **Anthropic: the planner runs on a pool lease** (below, "The planner's
   Claude account"). No person's Anthropic secret is read and swarm-voice
   holds no accessor grant for one.
@@ -400,11 +402,15 @@ is recorded as **refused by OpenAI**, and the owner said "fix it":
   "kind": "api_key"}` with no account id. swarm-voice's `Bearer` for a key
   sends the key in the `Authorization` header only, with no `ChatGPT-Account-Id`,
   even when a broker sends an id.
-* **No key, no lease.** With no `openai-api` account in the Voice it pool,
-  the broker answers `no_voice_account_registered` before it takes any hold.
-  swarm-voice turns that into 409 `voice_pool_refused`, and swarm-api tells
-  the person "Voice it needs an OpenAI API key in the Voice it pool: add one
-  on Admin › Accounts". It is never a 502.
+* **No key, no Live lease.** With no `openai-api` account in the Voice it
+  pool, the broker answers a `capability: "live"` lease
+  `no_voice_account_registered` before it takes any hold. Since 4 November
+  swarm-api asks first (`GET /v1/voice/pool`) and starts that session as a
+  **text** conversation on the plan instead (below, "Both paths"). A Live
+  start that still meets the refusal (a key removed between the two calls)
+  is 409 `voice_pool_refused`, and swarm-api tells the person "Voice it needs
+  an OpenAI API key in the Voice it pool: add one on Admin › Accounts". It is
+  never a 502.
 * **Adding the key.** The owner pastes it himself through the console's
   one-time link, so it never passes through a model, a log, a tool argument
   or the repository. The broker's `POST /v1/accounts` with `provider:
@@ -413,6 +419,67 @@ is recorded as **refused by OpenAI**, and the owner said "fix it":
   provider, are a separate change (the PR that added this kind says which).
   A Day One install needs nothing new. The key is added after install,
   through the same link.
+
+**Both paths: the ChatGPT plan's text conversation (owner, 4 November
+2026).** Asked whether OpenAI plans could work here "in the same exact way as
+AI Studio", the owner chose both paths. OpenAI refuses the plan's token for
+GPT-Live (above), but AI Studio runs text inference on the plan, so the plan
+serves Voice it as **text only**:
+
+* **The mode.** `POST /v1/voice/sessions` answers `mode`. swarm-api asks the
+  broker which account the person's next Live session would lease
+  (`voice/sessions.py`, `pick_mode`): `no_voice_account_registered`, the
+  answer for a pool with no OpenAI API key, makes it `"text"`. Anything else,
+  and a broker that cannot be asked, keeps it `"live"`, today's GPT-Live path
+  with its SDP answer, unchanged. A text session has no SDP and no WebRTC: an
+  `offer_sdp` sent anyway is dropped unread, and no `answer_sdp` comes back.
+  The session document records `mode`.
+* **The turns.** The browser turns each spoken turn into text and sends it:
+  `POST /v1/voice/sessions/{session_id}/turns {"text": <1..4000 chars>}`,
+  answered `200 {"turn_id", "reply", "cards"}`. The route passes the same
+  guards as every Voice it action (the Voice it list, the console's
+  workspace through `tenant_scope`, the session the caller's own), is 409
+  `conflict` (`voice_session_not_live`) on a session that is not a live text
+  one, and 429 `rate_limited` with `detail.resets_at` when the plan's usage
+  limit refuses the turn. Ending is the existing end route. The captions are
+  the turns themselves. The person's text is never logged or stored by
+  swarm-api.
+* **The lease.** swarm-voice leases the Voice it pool's plan with
+  `capability: "text"` (`accountlease.CAPABILITY_TEXT`) and holds it, renewed
+  every four minutes like a Live hold, until the session ends or sits idle
+  for fifteen minutes (`textchat.IDLE_SECONDS`, so a closed tab never keeps
+  the plan). The broker is the plan token's one writer and refreshes it; a
+  401 only asks the lease for a fresh token.
+* **The wire, as AI Studio measured it (2026-08-10, live ChatGPT Plus
+  token).** `POST https://chatgpt.com/backend-api/codex/responses` with
+  the plan's access token as the `Authorization` header's bearer, `OpenAI-Beta:
+  responses=experimental`, `originator: codex_cli_rs`, `chatgpt-account-id`
+  and `session_id` (the Voice it session id, echoed back as the prompt cache
+  key). The body is `{model, instructions, input, stream: true, store:
+  false, include: ["reasoning.encrypted_content"]}`: `stream: false` and
+  `max_output_tokens` are each a 400, and there is no temperature, top_p,
+  system role or response_format. `textchat.build_body` refuses to build any
+  of them. The answer is SSE whose terminal `response.completed` carries an
+  empty `output`; the reply is read from the `response.output_item.done`
+  items. The model is the first of `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.4-mini`
+  that `GET /models?client_version=0.147.0` lists.
+* **Quota.** Each answer's `x-codex-primary-*` and `x-codex-secondary-*`
+  headers (used percent, window minutes, reset) are named as the broker
+  names a plan's windows (`five_hour`, `seven_day`, a 0 to 1 utilization) and
+  reported against the session's hold. A refusal of type
+  `usage_limit_reached` carries `resets_at`, which the person reads on the
+  429.
+* **Delegation works as on the Live path.** The text model is offered one
+  `delegate` tool. A turn that asks for a plan comes back as that call and
+  becomes a planner turn over the conversation so far, with the session's
+  person and grant. The planner's at most two sentences are the reply, and
+  its cards stream to the console as they do today.
+* **What the broker still needs.** Its `VoiceLease.capability` accepts only
+  `"live"` today, and it has no route that records a voice hold's reading.
+  Until it accepts `"text"` (choosing the Voice it pool's `openai` plan) and
+  serves `POST /v1/voice/lease/{account_id}/readings`, a text start is a 502
+  from the broker and the windows are logged as not taken. Both are outside
+  this change's files and are asked for in its PR.
 
 **The planner's Claude account: a pool lease through Claude Code (owner,
 2 November 2026).** The owner picked "Pool account via Claude Code": "we have
@@ -934,6 +1001,10 @@ is 128.
 | Mermaid's `sandbox` security level in the pinned version | Render inside the mock-up card's sandboxed frame |
 | Whether the research's per-hour figures hold for BGD's real talk | The meter measures them from the first session |
 | GKE and Cloud Run hourly rates | Shown as estimates |
+| That the plan's Codex Responses route accepts the `delegate` function tool, `tool_choice` and `parallel_tool_calls` beside the measured body (the Codex CLI sends its own tools the same way; AI Studio's measurement did not include one) | Drop the tool from the body and send a turn to the planner when the person's words ask for a plan; a 400 on the first text turn shows the refusal at once |
+| That the plan's usage-limit refusal arrives as HTTP 429 with `error.type: usage_limit_reached` and a unix `resets_at` (the Codex CLI's reading; AI Studio measured the headers, not a refusal) | `response.failed` with the same error is read too, and a refusal with no `resets_at` takes the binding window's reset header |
+| That the `x-codex-*-reset-at` headers are unix seconds | An ISO 8601 value is read as well; a window whose reset is unreadable is not reported |
+| That the broker's `capability: "text"` lease and its voice readings route exist: neither does on 4 November 2026 | A text start is a 502 until the broker accepts the capability; the windows are logged as not taken |
 | **Answered 4 November 2026:** whether a ChatGPT plan's sign-in can open a GPT-Live session. **No.** `POST /v1/live/sessions` answered 403 Forbidden on the Codex sign-in's token (scope `openid profile email offline_access`), and OpenAI documents that Sign in with ChatGPT does not grant API resources (https://developers.openai.com/siwc/quickstart) | Live sessions lease an OpenAI developer API key from the Voice it pool (§3.6, "Why a key and not the ChatGPT plan"); the plan stays in the pools for codex steps |
 
 ---

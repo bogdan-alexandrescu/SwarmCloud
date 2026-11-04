@@ -305,8 +305,9 @@ def test_the_offer_is_answered_on_a_leased_voice_pool_account():
         r = await h.post("/internal/sessions", body)
         assert r.status_code == 201, r.text
         live_id = h.openai.live_ids[0]
-        assert r.json() == {"voice_session_id": body["voice_session_id"], "live_session_id": live_id,
-                            "answer": h.openai.answers[live_id]}
+        # `mode: live`: the Voice it pool holds an API key, so this is today's GPT-Live path.
+        assert r.json() == {"voice_session_id": body["voice_session_id"], "mode": "live",
+                            "live_session_id": live_id, "answer": h.openai.answers[live_id]}
         # The lease came first, for this person and this session, from the openai pool,
         # with an ID token minted for the broker's audience.
         assert h.broker.leases == [{"person": PERSON, "voice_session_id": body["voice_session_id"],
@@ -328,7 +329,7 @@ def test_the_offer_is_answered_on_a_leased_voice_pool_account():
         assert h.broker.holder["voice_session_id"] == body["voice_session_id"]
         assert h.broker.releases == []
         health = await h.client.get("/healthz")
-        assert health.json() == {"sessions": 1, "attached": 1}
+        assert health.json() == {"sessions": 1, "attached": 1, "text_sessions": 0}
 
     run(scenario)
 
