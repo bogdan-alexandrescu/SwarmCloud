@@ -6469,9 +6469,9 @@ function WorkflowPage({
     )
   }
   return (
-    <WorkflowSplit
-      key={workflow.workflow_id}
+    <Board
       board={board}
+      key={workflow.workflow_id}
       workflow={workflow}
       label={label}
       query={query}
@@ -6493,7 +6493,7 @@ function WorkflowPage({
  * the inspector changes, which is the defect this replaces: the open step's
  * card was drawn over the graph's stage bands beside it.
  */
-function WorkflowSplit({
+function Board({
   board,
   workflow,
   label,

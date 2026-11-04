@@ -333,7 +333,7 @@ async function openPage(id: string, tab: 'graph' | 'timeline' | 'table' = 'graph
  * The page's own frame, asserting the page is `id`'s: its address and its
  * heading. Not `.wf-card` any more -- the Graph Work redesign draws the
  * Graph, Table and Timeline straight into the left pane (`.wfp.wfp-main`,
- * `WorkflowSplit`), with no card wrapping them.
+ * `Board`), with no card wrapping them.
  */
 function cardOf(id: string): HTMLElement {
   expect(parseWorkflowQuery(address).wf, `the page open is not ${id}'s`).toBe(id)

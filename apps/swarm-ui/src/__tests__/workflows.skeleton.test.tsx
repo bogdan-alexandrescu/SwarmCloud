@@ -178,7 +178,7 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
 
     land({ status: 'ok', data: fixture(), fetchedAt: T0 })
     await waitFor(() => expect(document.querySelector('.wfp.is-loading')).toBeNull())
-    // The loaded page is `WorkflowSplit`'s own frame, `.wfp.wfp-main`, drawn in
+    // The loaded page is `Board`'s own frame, `.wfp.wfp-main`, drawn in
     // the inspector shell's left pane -- the head and the Needs-you row ahead
     // of the view bar that now holds the tabs.
     const loaded = document.querySelector<HTMLElement>('.wfp')!

@@ -342,7 +342,7 @@ describe('VQ-015: one back path, by name, and Stop step', () => {
 
 describe('VQ-016: the Table and the Timeline arrive whole', () => {
   // NO ARRIVAL PICK, AND NO CARD UNDER THE ROW EITHER, ANY MORE (brief, "What
-  // moved where"): the redesign's `WorkflowSplit` never hands `WorkflowSteps`
+  // moved where"): the redesign's `Board` never hands `WorkflowSteps`
   // a `detail` to draw under a row -- every pick opens in the docked
   // inspector (`workflow.page.split.test.tsx` already covers "never under
   // the row" as the new, permanent form of this). This checks the view
