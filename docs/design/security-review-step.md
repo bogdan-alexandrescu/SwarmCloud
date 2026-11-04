@@ -137,7 +137,7 @@ did before. The security verdict is held to the same rules as the review's:
 
 - a file that cannot be read refuses `security_verdict_unreadable`;
 - `NOT_YET` with no question refuses `security_verdict_not_merge`;
-- an answer on a task of another workflow does not count.
+- an answer on another workflow's agent does not count.
 
 **The full report goes on the pull request (owner decision 3).** The step
 posts `REPORT.md` as a pull request comment with the tenant's own `-git`
