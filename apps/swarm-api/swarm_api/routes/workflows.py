@@ -218,7 +218,7 @@ def workflow_about(workflow: Any, step_tasks: dict[str, Task] | None) -> dict[st
             feature["url"] = text(raw_feature.get("url"))
     description = text(stored.get("description"))
     return {
-        "repository_url": first.repository_url,
+        "repository_url": masking.repository_url(first.repository_url)[0],
         "title": text(stored.get("title")),
         "description": description,
         "description_source": text(stored.get(DESCRIPTION_SOURCE_KEY)) if description else None,
