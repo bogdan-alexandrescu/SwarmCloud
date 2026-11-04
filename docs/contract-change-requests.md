@@ -16552,13 +16552,13 @@ Read on the plugins catalogue's branch (c9c4c43) on 2026-11-04.
   `input_from`, `expected_outputs`), so every signature stored before the
   change still verifies. A document at one of them that sets
   `metadata.work_contract` (non-None) has no canonical form, as a set
-  `max_turns` below format 7: a contract added to a task signed without one
+  `max_turns` below format 7: a contract added to an agent signed without one
   fails its worker's check.
-* `signing_format` returns 8 only for a task whose metadata carries a
-  contract, so every other task keeps the format and bytes it had. Rollout
+* `signing_format` returns 8 only for an agent whose metadata carries a
+  contract, so every other agent keeps the format and bytes it had. Rollout
   order: workers first, then swarm-api, as for formats 2-7; a worker built
-  before format 8 refuses a task signed at 8 (`SPEC_SIGNATURE_INVALID`), and
-  only a task with a contract is signed at 8, which needs
+  before format 8 refuses an agent signed at 8 (`SPEC_SIGNATURE_INVALID`), and
+  only an agent with a contract is signed at 8, which needs
   `SWARM_WORK_CONTRACTS` on.
 * The worker's digest check stays as a second guard: a document whose digest
   is not the signed reference's still loads no plugin.
@@ -16577,11 +16577,11 @@ the worker's plugins selection, which acts on the verified document.
 
 ### What it would break if accepted
 
-A task signed at format 1-7 that carries a caller's free-form
+An agent signed at format 1-7 that carries a caller's free-form
 `metadata.work_contract` (written while `SWARM_WORK_CONTRACTS` was off,
 before this change) is refused by a worker built after it, on its next
 attempt: the key is now refused below format 8. swarm-api signs a new
-submission of the same task at format 8.
+submission of the same agent at format 8.
 
 The brief also asked to add the key to swarm-api's
 `validation.RESERVED_METADATA_KEYS`. Not applied, and asked of the owner in
