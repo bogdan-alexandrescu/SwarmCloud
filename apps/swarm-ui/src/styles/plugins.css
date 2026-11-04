@@ -47,7 +47,7 @@
 .plg-caret svg { width: 14px; height: 14px; }
 .plg-cat-name { font-weight: 600; font-size: var(--t-body); overflow-wrap: anywhere; }
 .plg-cat-ver { min-width: 0; }
-.plg-ver { font: 500 var(--t-meta)/1.3 var(--mono); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plg-ver { font: 500 var(--t-meta)/var(--lh-meta) var(--mono); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plg-sub { display: block; font-size: var(--t-micro); }
 .plg-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .plg-modecounts { display: flex; flex-wrap: wrap; gap: 4px 14px; }
