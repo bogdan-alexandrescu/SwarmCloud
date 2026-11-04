@@ -297,3 +297,26 @@ def test_the_resumed_message_is_the_answer_and_never_nothing(tmp_path):
             cliagent.resumed_message(broken)
     assert cliagent.resumed_message({cliagent.RESUME_REASON_ENV: cliagent.RESUME_TIME_LIMIT}) == \
         cliagent.resume_prompt(cliagent.RESUME_TIME_LIMIT)
+
+
+def test_after_a_hook_stopped_question_the_runner_takes_no_finish_turn(tmp_path, monkeypatch):
+    """`cliagent`: a run that stopped on the question tool is not resumed to
+    finish, however its answer reads: the turn would go on without the answer."""
+    from test_claude_resume_to_finish import FAKE_CLI as FINISH_CLI, PENDING, _ctx, _install, _runs
+    from agent_worker.runners import claude_code
+
+    cli = FINISH_CLI.replace('"num_turns": step.get("turns", 3)}',
+                             '"num_turns": step.get("turns", 3), **step.get("extra", {})}')
+    assert cli != FINISH_CLI
+    ctx = _ctx(tmp_path, {"prompt": "plan it"})
+    asked = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "toolu_q", "name": qb.QUESTION_TOOL, "input": {"questions": [QUESTION]}}]}}
+    _install(tmp_path, monkeypatch, ctx, [
+        {"answer": PENDING, "events": [asked], "extra": {"terminal_reason": qb.HOOK_STOPPED}}])
+    (tmp_path / "fake-claude").write_text(cli)
+    monkeypatch.delenv(qb.ENABLE_ENV, raising=False)
+
+    out = claude_code.body(ctx)
+    # MUTATION: drop `not parked_on_question()` from the finish pass -> two runs.
+    assert len(_runs(ctx)) == 1
+    assert out["resumed_to_finish"] is False
