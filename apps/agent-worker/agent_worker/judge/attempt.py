@@ -26,10 +26,14 @@ shim's URL (`settings.typesafe_url`) and the bearer the shim's local token.
 A judge on Cloud Run has no shim and keeps the key file below.
 
 THE KEY. The Internal backends (the default) carry none. TypeSafe needs the
-workspace's key, and without a workflow switch this module reads only what
-the worker already resolved into `private/` (`jevkey.KEY_FILE_NAME`, written
-for a live-browser attempt); with no key there, TypeSafe is `no_key` and no
-call is made (§5.5's first row).
+workspace's key: first what the worker already resolved into `private/`
+(`jevkey.KEY_FILE_NAME`, written for a live-browser attempt), else, on any
+profile whose workspace is opted in (the signed setting, or the workflow
+switch below), the WORKSPACE's key through `resolve_key` (lane
+jev-on-coding-profiles, the owner's choice of 4 November 2026: until then a
+coding step had no key and read `no_key`, so only live-browser steps ever
+called Jev). With no key at all, TypeSafe is `no_key` and no call is made
+(§5.5's first row).
 
 THE WORKFLOW SWITCH (the owner's experiment, 2026-11-01). The signed
 dispatch block's `jev_judgments` (`SWITCH`, `swarm_api.validation
@@ -37,8 +41,9 @@ dispatch block's `jev_judgments` (`SWITCH`, `swarm_api.validation
 workspace allows; `on` runs the judgments on the step's own profile,
 claude-code included, wherever the workspace lets Jev see code
 (`code_intelligence.jev`, and no repository `off`) and its stored backend
-can answer. For that, on the `typesafe` backend with no shim and no key in
-`private/`, `setup` asks `resolve_key` for the WORKSPACE's TypeSafe key
+can answer. For that -- and, since lane jev-on-coding-profiles, for every
+opted-in step with no switch at all -- on the `typesafe` backend with no shim
+and no key in `private/`, `setup` asks `resolve_key` for the WORKSPACE's TypeSafe key
 (`jevkey.resolve_workspace`, exactly as the quality gates resolve theirs: no
 submitter, registered for redaction), which `register.prepare` writes as the
 one 0600 file `private/jev-key`; `finish` removes it after the agent. With
@@ -253,7 +258,8 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
 
     `switch` is the signed dispatch block's `jev_judgments` (`SWITCH`), None
     when unset; `resolve_key` the worker's resolver of the workspace's
-    TypeSafe key, asked only under `on` (see the module docstring). `record`,
+    TypeSafe key, asked whenever the step is opted in on the TypeSafe backend
+    with neither a shim nor a key file (see the module docstring). `record`,
     when given, is filled with `{switch, value, source, on, reason}`.
 
     `environ` (the worker's own environment when None) carries the
@@ -292,11 +298,15 @@ def setup(*, work: Path, db: Any, tenant_id: str, repository_url: str | None,
             shim_url, key = shim
         else:
             shim_url, key = None, _read_key(private)
-        if switch == ON and shim is None and not key and resolve_key is not None \
+        if shim is None and not key and resolve_key is not None \
                 and given.backend == settings_mod.TYPESAFE \
                 and settings_mod.opted_in(given) is None:
             # The WORKSPACE's key, as the quality gates resolve it; written by
-            # `register.prepare` as the one 0600 file `private/jev-key`.
+            # `register.prepare` as the one 0600 file `private/jev-key`. Under
+            # the signed opt-in alone too, not only `jev_judgments: on`: before
+            # lane jev-on-coding-profiles only a live-browser attempt had a key
+            # here, so every claude-code and claude-code-large step read
+            # `no_key` and asked Jev nothing (jev_usage, 3-4 November 2026).
             key = resolve_key()
         month_used = task_calls = task_tokens = 0
         grant: budget.Grant | None = None

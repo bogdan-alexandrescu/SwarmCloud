@@ -1260,7 +1260,8 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
     `dispatch` is the task's SIGNED `metadata.dispatch` block (the worker
     verified the spec before this runs); only its workflow switches are read
     (`switch_of`): `code_intelligence` here, `jev_judgments` by the judge's
-    setup, which asks `jev_key` for the workspace's TypeSafe key under `on`
+    setup, which asks `jev_key` for the workspace's TypeSafe key whenever the
+    step is opted in on that backend with no key file or shim
     (`judge.attempt.setup`). `stage.json` records both (`SWITCHES_FIELD`). A
     step whose `code_intelligence` switch is `off` gets no graph tool at all:
     nothing staged or pinned, no ticket, no additional repository's graph.
