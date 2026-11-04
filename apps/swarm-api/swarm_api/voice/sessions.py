@@ -123,6 +123,15 @@ END_VOICE_POOL_REFUSED = "voice_pool_refused"
 POOL_BUSY = "voice_pool_busy"
 POOL_REFUSED = "voice_pool_refused"
 POOL_REASONS = frozenset({POOL_BUSY, POOL_REFUSED})
+#: What a start is told when the Voice it pool holds no OpenAI API key. Every
+#: Voice it session is a GPT-Live session, which only a developer API key can
+#: open (OpenAI refused the ChatGPT plan's token, 403 on /v1/live/sessions, 4
+#: November 2026), so the broker refuses the lease BEFORE taking any hold and
+#: swarm-voice answers 409 `voice_pool_refused`. That code means exactly this,
+#: so the person reads where to add one, whatever older sentence swarm-voice
+#: sent, and never a 502.
+NO_API_KEY_SENTENCE = (
+    "Voice it needs an OpenAI API key in the Voice it pool: add one on Admin \u203a Accounts")
 #: A refusal sentence longer than this is cut: it is shown, not parsed.
 MAX_REFUSAL_MESSAGE = 500
 
@@ -221,6 +230,8 @@ def pool_refusal(status: int, raw: bytes) -> VoicePoolRefused | VoicePoolBusy | 
     if status != 409 or code not in POOL_REASONS:
         return None
     reason = code
+    if code == POOL_REFUSED:
+        return VoicePoolBusy(NO_API_KEY_SENTENCE, detail={"reason": reason})
     return VoicePoolBusy(
         message or "The Voice it pool's ChatGPT account is busy; try again shortly. "
         "Nothing was started.", detail={"reason": reason})

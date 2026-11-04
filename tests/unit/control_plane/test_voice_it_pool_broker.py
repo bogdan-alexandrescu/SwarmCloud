@@ -283,6 +283,8 @@ def test_a_workspace_only_account_is_never_leased_to_voice_it(client, accounts):
 
 def test_the_listed_person_leases_renews_and_releases(client, accounts):
     account_id = _key(client, accounts, OWNER, "key-1")
+    # One session at a time on this key, so the second below finds none free.
+    accounts.set_max_agents(account_id, 1)
     leased = _lease(client)
     assert leased.status_code == 200, leased.text
     body = leased.json()
@@ -440,7 +442,7 @@ def test_a_plan_in_both_pools_serves_tasks_and_never_a_live_session(client, acco
 
 
 def _register_key(client, *, label: str = "voice-key", lend_to=(), credential: str | None = None):
-    client.identity.as_tenant(OWNER)
+    client.identity.as_platform()
     return client.post(
         "/v1/accounts",
         json={
@@ -476,7 +478,12 @@ def test_a_registered_key_is_in_the_voice_it_pool_only_and_read_by_the_broker_al
     assert served["measured"] is False and served["windows"] == {}
 
 
-def test_a_key_is_refused_when_lent_or_not_a_key(client, accounts):
+def test_a_key_is_refused_when_lent_or_not_a_key_or_from_a_workspace(client, accounts):
+    client.identity.as_tenant(OWNER)
+    from_tenant = client.post("/v1/accounts", json={
+        "owner_tenant": OWNER, "label": "voice-key", "provider": "openai-api",
+        "credential": "sk-proj-" + secrets.token_hex(24)})
+    assert from_tenant.status_code == 403, from_tenant.text
     lent = _register_key(client, lend_to=(ENG,))
     assert lent.status_code == 422, lent.text
     assert "never lent" in lent.json()["message"]
