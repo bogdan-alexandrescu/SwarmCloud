@@ -1569,9 +1569,9 @@ if [[ "${MODE}" == "swarm-system" ]]; then
     info "comparing swarm-system/decision-api-egress-ingress with swarm-api's ${SWARM_API_EGRESS_CIDR}"
     if ! "${PYTHON}" "${HERE}/network_parity.py" --jev-egress-ingress \
         --live "${LIVE_WORK}/live.json" --policies "${LIVE_WORK}/policies.json"; then
-      JEV_ADMITTED="$(jq -r '[.items[]? | select(.metadata.namespace == "swarm-system"
-          and .metadata.name == "decision-api-egress-ingress") | .spec.ingress[]?.from[]?.ipBlock.cidr // empty]
-          | join(", ")' "${LIVE_WORK}/policies.json" 2>/dev/null || true)"
+      # policies.json is swarm-system's alone (`get networkpolicies -n`, above).
+      JEV_ADMITTED="$(jq -r '[.items[]? | select(.metadata.name == "decision-api-egress-ingress")
+          | .spec.ingress[]?.from[]?.ipBlock.cidr // empty] | join(", ")' "${LIVE_WORK}/policies.json" 2>/dev/null || true)"
       rm -rf "${LIVE_WORK}"
       die "applied, but swarm-system/decision-api-egress-ingress admits swarm-api's range as '${JEV_ADMITTED:-nothing}',
        but swarm-api egresses from ${SWARM_API_EGRESS_CIDR} (${SWARM_API_EGRESS_SOURCE}); the rule must admit exactly
