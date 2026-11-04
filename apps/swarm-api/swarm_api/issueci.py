@@ -165,6 +165,13 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.states import TaskState
 
 from . import approvals, refusals
+from .cirerun import (
+    RERUN_REFUSALS_MAX,
+    RERUN_SETTLE_SECONDS,
+    rerun_running,
+    rerun_targets,
+    rerunnable,
+)
 from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable
 from .forgechecks import (
     FAILED,
@@ -182,6 +189,7 @@ from .forge import NoForgeCredential
 from .forge_installation import read_token
 from .forgewrite import (
     MAX_LOG_TAIL_BYTES as LOG_READ_BYTES,
+    ForgeWriteError,
     ForgeWriteNotFound,
     GitHubWriter,
     PullSnapshot,
@@ -1340,15 +1348,17 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
 
     writer: GitHubWriter = ctx.forge_writer
     token = ""
+    reader = ""
     try:
         try:
             token = ctx.forge_tokens.token_for(_tenant(ctx, run.tenant_id))
             # The CI read goes out as the App when the owner has an
             # installation (#1483), so the read every CI_READ_SECONDS spends
             # no person's quota; the merge and its gate below keep `token`.
-            pull, reading = _read_ci(writer, run, number, read_token(
+            reader = read_token(
                 getattr(ctx, "forge_installations", None), run.tenant_id,
-                run.issue.owner, run.issue.repo) or token)
+                run.issue.owner, run.issue.repo) or token
+            pull, reading = _read_ci(writer, run, number, reader)
         except Exception as exc:
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             message = exc.message if isinstance(exc, ApiError) else f"the CI read failed ({code})"
@@ -1463,6 +1473,13 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
                         f"#{pull.number}: its head is still {head[:12]}, where CI was red"
                     )},
                 )
+            # A FLAKE COSTS NO ROUND (#3200): the red head's failed Actions
+            # jobs are re-run once, and the run reads their answer, before a
+            # round is spent or the cap refuses one.
+            rerun = _rerun_red_head(ctx, tenant_id, run, record, head, reading,
+                                    token=token, reader=reader, now=now)
+            if rerun is not None:
+                return rerun
             excerpt = build_excerpt(writer, run, head, reading, token)
             spent = run.ci_fix_round
             if spent >= run.fix_rounds:
@@ -1498,6 +1515,136 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
             }})
     finally:
         token = ""
+        reader = ""
+
+
+#: The re-runs of a red head's failed Actions jobs in the run's
+#: `pull_request` (#3200), one accepted per head at most: each
+#: `{head, jobs, claimed_at}` as it is claimed, then `{head, jobs, runs,
+#: requested_at}`, or `{head, jobs, runs, error}` when GitHub refused.
+RERUNS_KEY = "reruns"
+
+
+def _reruns(record: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    entries = (record or {}).get(RERUNS_KEY)
+    if not isinstance(entries, list):
+        return []
+    return [dict(e) for e in entries if isinstance(e, Mapping)]
+
+
+def _rerun_red_head(
+    ctx: Any, tenant_id: str, run: IssueRun, record: dict[str, Any], head: str,
+    reading: CiReading, *, token: str, reader: str, now: datetime,
+) -> IssueRun | None:
+    """Re-run a red head's failed Actions jobs once before a round is spent
+    or refused (#3200), as the merge wake tick does for a merge step
+    (`mergewake._rerun_first`; the rule is `cirerun`'s).
+
+    The run, still CHECKING with the reading stored, when this read asked
+    GitHub for the re-run or is waiting for its answer: inside
+    RERUN_SETTLE_SECONDS of the request while the same failed check runs
+    are the latest, or past it while a workflow run it asked of has not
+    completed. None to go on to the cap or the round exactly as before: no
+    failing check a re-run reaches (a commit status, another App's check
+    run), a re-run at this head that already answered red, or one GitHub
+    refused -- recorded with its `error` and costing nothing, and not asked
+    again at this head past RERUN_REFUSALS_MAX. On None `record` carries
+    the head's re-runs as stored, so the move that follows keeps them.
+
+    The claim is made in the run's own transaction before GitHub is asked,
+    so two reads of one head never both ask. The re-run goes out with
+    `token`, the owner's write credential, to the run's own repository
+    (`run.issue`), never one named by the pull request or a check.
+    """
+    runs = _runs(ctx)
+    ref = run.issue
+    reruns = _reruns(record)
+    record[RERUNS_KEY] = reruns
+    jobs = rerunnable(reading)
+    mine = [r for r in reruns if r.get("head") == head]
+    refused = [r for r in mine if r.get("error")]
+
+    def _store(current: IssueRun, entries: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        # The reading, with the re-runs as the transaction reads them and
+        # anything another write recorded meanwhile (the keyword block).
+        if current.state != RunState.CHECKING:
+            return {}
+        stored = dict(current.pull_request or {})
+        return {"pull_request": {
+            **record,
+            **{k: v for k, v in stored.items() if k not in record},
+            RERUNS_KEY: _reruns(stored) if entries is None else entries,
+        }}
+
+    if mine and len(refused) < len(mine):
+        entry = [r for r in mine if not r.get("error")][-1]
+        asked = {j for j in entry.get("jobs") or [] if isinstance(j, int)}
+        since = _aware(entry.get("requested_at"))
+        claimed_at = _aware(entry.get("claimed_at"))
+        settle = timedelta(seconds=RERUN_SETTLE_SECONDS)
+        if since is None and claimed_at is not None and now - claimed_at < settle:
+            # Claimed by a read still asking GitHub: its outcome is not stored yet.
+            return runs.patch(tenant_id, run.id, _store)
+        if (
+            asked & set(jobs) and since is not None and since <= now
+            and (now - since < settle or rerun_running(ctx.forge_writer, ref, entry, reader))
+        ):
+            return runs.patch(tenant_id, run.id, _store)
+        return None
+    if len(refused) >= RERUN_REFUSALS_MAX or not jobs:
+        return None
+
+    seen = len(reruns)
+    claim = {"head": head, "jobs": jobs, "claimed_at": now}
+    claimed: list[list[dict[str, Any]]] = []
+
+    def _claim(current: IssueRun) -> dict[str, Any]:
+        claimed.clear()
+        entries = _reruns(current.pull_request)
+        if current.state != RunState.CHECKING or len(entries) != seen:
+            # Another read claimed (or recorded) a re-run first: it asks.
+            return _store(current)
+        claimed.append([*entries, claim])
+        return _store(current, claimed[0])
+
+    after = runs.patch(tenant_id, run.id, _claim)
+    if not claimed:
+        return after
+    record[RERUNS_KEY] = claimed[0]
+
+    targets, alone = rerun_targets(reading, jobs)
+    outcome: dict[str, Any] = {"head": head, "jobs": jobs, "runs": targets}
+    try:
+        for run_id in targets:
+            ctx.forge_writer.rerun_failed_jobs(ref, run_id, token)
+        for job in alone:
+            ctx.forge_writer.rerun_job(ref, job, token)
+    except Exception as exc:
+        reason = exc.message if isinstance(exc, ApiError) else (
+            str(exc) if isinstance(exc, ForgeWriteError) else type(exc).__name__
+        )
+        outcome["error"] = failure_text(f"the re-run was refused: {reason}")
+    else:
+        outcome["requested_at"] = now
+
+    def _record(current: IssueRun) -> dict[str, Any]:
+        entries = _reruns(current.pull_request)
+        if seen < len(entries) and entries[seen].get("head") == head:
+            entries[seen] = outcome
+        else:
+            entries.append(outcome)
+        record[RERUNS_KEY] = entries
+        return _store(current, entries)
+
+    after = runs.patch(tenant_id, run.id, _record)
+    if "error" in outcome:
+        log.info("issue run %s tenant=%s: re-run refused (%s)",
+                 run.id, run.tenant_id, outcome["error"])
+        return None
+    log.info("issue run %s tenant=%s: re-ran the failed jobs of %d workflow run(s) and %d "
+             "job(s) alone for %d failing check(s) at %s before any round",
+             run.id, run.tenant_id, len(targets), len(alone), len(jobs), head[:12])
+    return after
 
 
 def _start_round(
