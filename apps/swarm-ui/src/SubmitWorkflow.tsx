@@ -32,7 +32,7 @@ import {
 import { workflowHref } from './agentlist'
 import { AWAIT_INPUT_PROFILE, DEFAULT_ARTIFACT, FIRST_AWAIT_DRAFT, MAX_FILES, awaitBlockOf, type AwaitDraft, type AwaitForm } from './awaitInput'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
-import { StepPluginRow, stepPluginPlan, useStepPlugins, type StepPlugin, type StepPluginsContext } from './PluginSheet'
+import { StepPluginRow, UNREAD_STEP_PLUGINS, stepPluginPlan, useStepPlugins, type StepPlugin, type StepPluginsContext } from './PluginSheet'
 import { ModelClassSelect, RunnerSelect, StepRunnerFacts, sentModelClass, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
 import {
@@ -442,7 +442,7 @@ function planOf(
     // `check_step`'s words before the API refuses it.
     let pluginMetadata: Record<string, unknown> | null = null
     if (s.plugin != null) {
-      const planned = stepPluginPlan(s.plugin, { stepId: id, profile: s.profile }, plugins ?? { view: null, owner: null })
+      const planned = stepPluginPlan(s.plugin, { stepId: id, profile: s.profile }, plugins ?? UNREAD_STEP_PLUGINS)
       if (!planned.ok) {
         problems.push({ key: s.key, stepId: id, kind: 'plugin', message: planned.message })
         continue

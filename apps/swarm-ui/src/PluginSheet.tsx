@@ -187,6 +187,9 @@ export interface StepPluginsContext {
   owner: string | null
 }
 
+/** Nothing read yet: what the plan checks a pick against before any sheet opened. */
+export const UNREAD_STEP_PLUGINS: StepPluginsContext = { view: null, owner: null }
+
 export async function loadStepPlugins(): Promise<Result<PluginsView>> {
   if (USE_FIXTURES) return { status: 'ok', data: fixturePluginsView(), fetchedAt: Date.now() }
   return read<PluginsView>(route('/v1/plugins'), () => false)
