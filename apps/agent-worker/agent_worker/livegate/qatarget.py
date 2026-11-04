@@ -15,10 +15,20 @@ browser's), on a CDP session the agent never sees, the gate opens
 `login_url`, makes the target's start clicks in order (a chooser, or a
 "Sign in" button before an identity provider: each the one visible control
 whose trimmed text equals the click's `text`, waited for up to
-`START_CLICK_SECONDS`, or the sign-in ends `qa_sign_in_start_click_missing`),
-focuses each field by its selector, types with
-`Input.insertText`, presses the submit control and waits up to
-`SIGNED_IN_SECONDS` for `signed_in_selector`. Then, in the return order:
+`FORM_SECONDS` for the first and `START_CLICK_SECONDS` for each later one,
+clicked once the page finished loading, or the sign-in ends
+`qa_sign_in_start_click_missing`; a page that is already the form, as an
+entry query can make it, skips them; clicks the page did not act on are made
+again, `MAX_RECLICKS` times at most), focuses each field by its selector,
+types with `Input.insertText`, presses the submit control and reads THE
+PAGE'S OWN STATE (part of #2688): `signed_in_selector`, or the target's own
+origin settled with no login form, no OAuth callback and not back on the
+start page, is signed in; the form, an error or the start page after
+`SIGNED_IN_SECONDS` is failed; a page still loading is waited for up to
+`SIGNED_IN_MAX_SECONDS`. A sign-in that ends without the form, or failed,
+says why in `sentence`: which start click matched nothing, that the form
+never appeared after them and where the tab is, or what the page showed
+after the submit. Then, in the return order:
 every password input on the gate's sessions is cleared, the gate's tab is
 closed, the agent's tab is sent to `base_url`, the held responses are
 delivered and the held commands released. The agent never had a tab on
@@ -70,7 +80,8 @@ by `QaTarget.judge`:
   from the moment the gate's own sign-in begins (`sign_in_begun`) until the
   wipe, WHATEVER THAT SIGN-IN'S VERDICT: never before it begins, never after
   the wipe, never on a target that does not sign in. The verdict is the
-  gate's reading of `signed_in_selector` on its own tab, not the provider's:
+  gate's reading of its own tab (until 4 November 2026 of
+  `signed_in_selector` alone), not the provider's:
   on 2026-11-03 (capture steps from 17:43) five production legs' sign-ins
   ended `failed` while the provider's session was real, and every screen's
   exchange, 69 to 79 a group, was refused as a write, so the approval was
@@ -206,8 +217,9 @@ SCRUB_REFUSED = ("refused by the live gate: this message could not be scrubbed o
 
 #: §2.3: at most three sign-ins an attempt, then `qa_sign_in_exhausted`.
 MAX_SIGN_INS = 3
-#: §2.2 step 3: how long the gate waits for `signed_in_selector` after submit,
-#: and (separately) for the login form to appear.
+#: §2.2 step 3: how long the gate waits for the page's signed-in state after
+#: submit (`SIGNED_IN_MAX_SECONDS` while it still loads), and (separately) for
+#: the login form to appear.
 SIGNED_IN_SECONDS = 30.0
 FORM_SECONDS = 30.0
 #: §2.2 step 3, a start click: how long the gate waits for the one control
@@ -217,6 +229,24 @@ FORM_SECONDS = 30.0
 #: for a script-drawn button and short enough that a control that is not there
 #: does not hold the agent (held throughout) for a minute per click.
 START_CLICK_SECONDS = 10.0
+#: A start click whose page did not act on it: the clicked document still
+#: there, at its address, this long after the click (a server-drawn chooser
+#: whose script was not running yet). The clicks are then made again, in
+#: order, at most MAX_RECLICKS times within FORM_SECONDS.
+RECLICK_SECONDS = 5.0
+MAX_RECLICKS = 2
+#: After the submit (part of #2688): a page still loading when
+#: SIGNED_IN_SECONDS pass is waited for up to this long in all. The gate's own
+#: rate limit spaces the redirect chain's navigations (2 s each by default)
+#: and the app's requests (10 a second), so a signed-in app that loads 150
+#: requests draws itself after 30 s; a page that settled is judged at 30 s.
+SIGNED_IN_MAX_SECONDS = 60.0
+#: How long the page must read as the signed-in app (or as an error on the
+#: form) without change before the gate takes it as the verdict: a page
+#: between two redirects reads as either for a moment.
+PAGE_SETTLED_SECONDS = 3.0
+#: At most this many characters of the tab's origin and path in a sentence.
+MAX_WHERE = 160
 #: At most three start clicks (swarm-api's `qaspec.MAX_START_CLICKS`).
 MAX_START_CLICKS = 3
 MAX_START_CLICK_TEXT = 60
@@ -1283,13 +1313,53 @@ _CHALLENGE_HOSTS = json.dumps([[host, path] for host, path in CHALLENGE_FRAMES])
 
 #: Every expression the sign-in evaluates starts `/*swarm-qa:<op>*/` and calls
 #: one function with one JSON argument, so what it does is read off its name.
-_PROBE = """/*swarm-qa:probe*/((a) => {
-  const one = (sel, fallback) => {
-    if (sel) return document.querySelector(sel);
+#: How a control is shown and named, for a start click and for the probe's
+#: start page: visible, its text trimmed with runs of white space as one space
+#: (a label laid out over two lines, or with a no-break space, is still its
+#: words), exactly equal to the click's `text`; the outermost of a nested pair
+#: dropped (a button and the span inside it are one control).
+_CONTROLS = """
+  const shown = (el) => { const s = getComputedStyle(el);
+    return s.visibility !== 'hidden' && s.display !== 'none' && el.getClientRects().length > 0; };
+  const label = (el) => ((el instanceof HTMLInputElement ? el.value : el.innerText) || '')
+    .replace(/\\s+/g, ' ').trim();
+  const controls = (c) => {
+    let all;
+    try { all = [...document.querySelectorAll(c.css || '*')]; } catch (e) { return null; }
+    const hits = all.filter((el) => label(el) === c.text && shown(el));
+    return hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
+  };"""
+
+#: What the gate's tab shows. Before the submit: `form` once both fields are
+#: there. After it (`a.after`), the page's own state: `form` while a password
+#: field is still shown, `error` when one is shown with an alert, `chooser`
+#: when the app is back on its start page (the last start click's control
+#: shown), `pending` while a document loads or carries an OAuth callback's
+#: `code`/`state`, `app` once it settled on the target's own origin with
+#: neither, and `loading` otherwise (the identity provider's page, a blank
+#: one). `signed_in` and `challenge` first, either way. A selector the page's
+#: `querySelector` does not take matches nothing and is named (`bad:<key>`)
+#: instead of throwing the whole probe, which read as "no form" forever.
+#: `signed_in_selector` is looked for through open shadow roots too.
+_PROBE = """/*swarm-qa:probe*/((a) => {%s
+  const bad = [];
+  const query = (root, sel, key) => {
+    try { return root.querySelector(sel); } catch (e) { if (!bad.includes(key)) bad.push(key); return null; }
+  };
+  const deep = (root, sel, key) => {
+    const hit = query(root, sel, key);
+    if (hit || bad.includes(key)) return hit;
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) { const inner = deep(el.shadowRoot, sel, key); if (inner) return inner; }
+    }
+    return null;
+  };
+  const one = (sel, fallback, key) => {
+    if (sel) return query(document, sel, key);
     const all = document.querySelectorAll(fallback);
     return all.length === 1 ? all[0] : null;
   };
-  if (a.signed && document.querySelector(a.signed)) return 'signed_in';
+  if (a.signed && deep(document, a.signed, 'signed_in_selector')) return 'signed_in';
   if (window.__swarmQaWebAuthn) return 'challenge';
   if (document.querySelector('input[autocomplete~="one-time-code"]')) return 'challenge';
   const hosts = %s;
@@ -1300,10 +1370,24 @@ _PROBE = """/*swarm-qa:probe*/((a) => {
         if (hit && u.pathname.startsWith(p)) return 'challenge';
       } } catch (e) {}
   }
-  if (one(a.user, 'input[autocomplete~="username"], input[type=email]')
-      && one(a.pass, 'input[type=password]')) return 'form';
-  return 'loading';
-})(%%s)""" % _CHALLENGE_HOSTS
+  const user = one(a.user, 'input[autocomplete~="username"], input[type=email]', 'username_selector');
+  const pass = one(a.pass, 'input[type=password]', 'password_selector');
+  if (!a.after) {
+    if (user && pass) return 'form';
+  } else if ((pass && shown(pass)) || [...document.querySelectorAll('input[type=password]')].some(shown)) {
+    const alerted = [...document.querySelectorAll('[role=alert], [aria-live=assertive], input[aria-invalid=true]')]
+      .some((el) => shown(el) && (el instanceof HTMLInputElement || label(el) !== ''));
+    return alerted ? 'error' : 'form';
+  }
+  if (bad.length) return 'bad:' + bad.join(',');
+  if (!a.after) return 'loading';
+  if (document.readyState !== 'complete'
+      || /[?&#](code|state|session_state)=/.test(location.search + location.hash)) return 'pending';
+  if (location.origin !== a.home) return 'loading';
+  if (a.chooser) { const hits = controls(a.chooser); if (hits && hits.length) return 'chooser'; }
+  if (!label(document.body || document.documentElement)) return 'loading';
+  return 'app';
+})(%%s)""" % (_CONTROLS, _CHALLENGE_HOSTS)
 
 _FOCUS = """/*swarm-qa:focus*/((a) => {
   const all = a.sel ? [document.querySelector(a.sel)] : [...document.querySelectorAll(a.fallback)];
@@ -1331,24 +1415,38 @@ _CLEAR = """/*swarm-qa:clear*/((a) => {
   walk(document); return n;
 })(%s)"""
 
-#: A start click (§2.2 step 3): every visible element matching `css` (any
-#: element without one) whose trimmed text is exactly `text`, the outermost of
-#: a nested pair dropped (a button and the span inside it are one control).
-#: Clicks only when there is exactly one; returns how many there were, -1
-#: when `css` is not a selector the page's `querySelectorAll` takes.
-_START_CLICK = """/*swarm-qa:start-click*/((a) => {
-  let all;
-  try { all = [...document.querySelectorAll(a.css || '*')]; } catch (e) { return -1; }
-  const shown = (el) => { const s = getComputedStyle(el);
-    return s.visibility !== 'hidden' && s.display !== 'none' && el.getClientRects().length > 0; };
-  const label = (el) => ((el instanceof HTMLInputElement ? el.value : el.innerText) || '').trim();
-  let hits = all.filter((el) => label(el) === a.text && shown(el));
-  hits = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
-  if (hits.length === 1) hits[0].click();
-  return hits.length;
+#: A start click (§2.2 step 3): the controls `_CONTROLS` names for the click
+#: (`css` narrowing the candidates, any element without one). Clicks only when
+#: there is exactly one AND the page has finished loading (a server-drawn
+#: chooser is shown before its script runs, and a click then does nothing),
+#: unless `a.now` (the wait for the load ran out); returns how many there
+#: were, -1 when `css` is not a selector the page's `querySelectorAll` takes,
+#: -2 for one control on a page still loading. A click marks the document
+#: with its address and whether it began to unload, for `_AFTER_CLICK`.
+_START_CLICK = """/*swarm-qa:start-click*/((a) => {%s
+  const hits = controls(a);
+  if (hits === null) return -1;
+  if (hits.length !== 1) return hits.length;
+  if (document.readyState !== 'complete' && !a.now) return -2;
+  window.__swarmQaClicked = location.href;
+  if (!window.__swarmQaLeaveHook) { window.__swarmQaLeaveHook = true;
+    addEventListener('beforeunload', () => { window.__swarmQaLeaving = true; }); }
+  hits[0].click();
+  return 1;
+})(%%s)""" % _CONTROLS
+
+#: After a start click: `moved` once another document (or another address)
+#: finished loading, `loading` while one loads or the clicked one unloads,
+#: `same` while the clicked document is still there, at the same address.
+_AFTER_CLICK = """/*swarm-qa:after-click*/((a) => {
+  if (window.__swarmQaClicked === undefined || window.__swarmQaClicked !== location.href)
+    return document.readyState === 'complete' ? 'moved' : 'loading';
+  return window.__swarmQaLeaving ? 'loading' : 'same';
 })(%s)"""
 
-_SETTLED = """/*swarm-qa:settled*/((a) => document.readyState === 'complete')(%s)"""
+#: Where the gate's tab is, for a cause's sentence: origin and path, never the
+#: query or fragment (an IdP's carries its state and code).
+_WHERE = """/*swarm-qa:where*/((a) => location.origin + location.pathname)(%s)"""
 
 _USER_FALLBACK = 'input[autocomplete~="username"], input[type=email]'
 _PASS_FALLBACK = "input[type=password]"
@@ -1356,6 +1454,20 @@ _PASS_FALLBACK = "input[type=password]"
 
 def _js(template: str, argument: Mapping[str, Any]) -> str:
     return template % json.dumps(dict(argument))
+
+
+#: What a sentence never carries from the page's address: white space,
+#: control characters, quotes and backticks.
+_UNSAID = re.compile(r"[\x00-\x20\x7f`'\"]")
+_SELECTOR_NAMES = frozenset({"signed_in_selector", "username_selector", "password_selector"})
+
+
+def _bad_selectors(state: Any) -> str | None:
+    """`bad:<key>,<key>` from the probe as "a, b", only names the gate set."""
+    if not isinstance(state, str) or not state.startswith("bad:"):
+        return None
+    keys = [k for k in state[4:].split(",") if k in _SELECTOR_NAMES]
+    return " and ".join(keys) or None
 
 
 class SignIn:
@@ -1374,6 +1486,8 @@ class SignIn:
         #: The gate's own tab, while it is open.
         self.tab: str | None = None
         self.session: str | None = None
+        #: How many times `_wait_form` made the start clicks again.
+        self._reclicks = 0
 
     async def run(self) -> tuple[str, str | None]:
         settings = self._target.sign_in
@@ -1388,41 +1502,59 @@ class SignIn:
         except Exception as exc:  # noqa: BLE001 -- the browser went, or refused the tab
             log.warning("qa target: the sign-in tab did not open (%s)", type(exc).__name__)
             return STATE_FAILED, BROWSER_GONE
-        for click in settings.get("start_clicks") or ():
-            ended = await self._start_click(click)
+        clicks: list[Mapping[str, str]] = list(settings.get("start_clicks") or ())
+        made: list[Mapping[str, str]] = []
+        for index, click in enumerate(clicks):
+            # The login page's own first load draws the first control, as it
+            # draws a form: FORM_SECONDS bounds it. Each later one follows a click.
+            ended = await self._start_click(click, FORM_SECONDS if index == 0 else START_CLICK_SECONDS)
+            if ended == "form":
+                # The page is already the form (an entry query, or the IdP's
+                # session redirect, skipped the chooser): no click is left to make.
+                break
             if ended is not None:
                 return ended
-        found = await self._wait({"form", "signed_in", "challenge"}, FORM_SECONDS)
+            made.append(click)
+        found = await self._wait_form(made)
         if found == "challenge":
             return STATE_CHALLENGE, CHALLENGE
         if found == "signed_in":
             return STATE_SIGNED_IN, None
         if found != "form":
+            self._target.sentence = await self._no_form_sentence(made, found)
             return STATE_FAILED, NO_FORM
         username, password = self._target.credential()
         typed = (await self._type(settings.get("username_selector"), _USER_FALLBACK, username)
                  and await self._type(settings.get("password_selector"), _PASS_FALLBACK, password))
         del username, password
         if not typed or not await self._evaluate(_js(_SUBMIT, {"sel": settings.get("submit_selector")})):
+            self._target.sentence = ("the gate found the login form but could not focus exactly one username "
+                                     "and one password field, or press the submit control")
             return STATE_FAILED, NO_FORM
-        found = await self._wait({"signed_in", "challenge"}, SIGNED_IN_SECONDS)
-        if found == "challenge":
-            return STATE_CHALLENGE, CHALLENGE
-        if found == "signed_in":
-            return STATE_SIGNED_IN, None
-        return STATE_FAILED, SIGN_IN_FAILED
+        return await self._after_submit(clicks[-1] if clicks else None)
 
-    async def _start_click(self, click: Mapping[str, str]) -> tuple[str, str | None] | None:
-        """One start click: None once it was made and the page settled, or how
-        the sign-in ends. A challenge seen first ends it as a challenge; the
-        signed-in state seen first ends it signed in (the IdP's session held).
-        Where the click leads is judged by the guard like any navigation of
-        the gate's tab: an origin the target was not approved for gets the
-        left page, and the form then never appears."""
-        argument = {"signed": self._target.sign_in.get("signed_in_selector"),
-                    "user": self._target.sign_in.get("username_selector"),
-                    "pass": self._target.sign_in.get("password_selector")}
-        deadline = self._clock() + START_CLICK_SECONDS
+    def _argument(self, *, after: bool = False, chooser: Mapping[str, str] | None = None) -> dict[str, Any]:
+        settings = self._target.sign_in
+        argument: dict[str, Any] = {"signed": settings.get("signed_in_selector"),
+                                    "user": settings.get("username_selector"),
+                                    "pass": settings.get("password_selector")}
+        if after:
+            argument.update(after=True, home=self._target.base_origin,
+                            chooser=dict(chooser) if chooser is not None else None)
+        return argument
+
+    async def _start_click(self, click: Mapping[str, str], seconds: float) -> tuple[str, str | None] | str | None:
+        """One start click: None once it was made and the page settled,
+        "form" when the login form is already there (no click is made), or
+        how the sign-in ends. A challenge seen first ends it as a challenge;
+        the signed-in state seen first ends it signed in (the IdP's session
+        held). The click waits for the page to finish loading (`_START_CLICK`)
+        until the last probe interval of `seconds`. Where the click leads is
+        judged by the guard like any navigation of the gate's tab: an origin
+        the target was not approved for gets the left page, and the form then
+        never appears."""
+        argument = self._argument()
+        deadline = self._clock() + seconds
         count: Any = None
         while True:
             state = await self._evaluate(_js(_PROBE, argument))
@@ -1430,22 +1562,156 @@ class SignIn:
                 return STATE_CHALLENGE, CHALLENGE
             if state == "signed_in":
                 return STATE_SIGNED_IN, None
-            count = await self._evaluate(_js(_START_CLICK, {"text": click["text"], "css": click.get("css")}))
+            if state == "form":
+                return "form"
+            last = self._clock() + self._probe_seconds >= deadline
+            count = await self._evaluate(_js(_START_CLICK, {"text": click["text"], "css": click.get("css"),
+                                                            "now": last}))
             if type(count) is int and count == 1:
                 break
             if self._clock() >= deadline:
-                found = "none" if type(count) is not int or count < 1 else str(count)
+                if type(count) is int and count == -1:
+                    found = "none (its css is not a selector the page takes)"
+                elif type(count) is not int or count < 1:
+                    found = "none"
+                else:
+                    found = str(count)
                 self._target.sentence = (
                     f"the sign-in's start click '{click['text']}' found {found} visible control"
-                    f"{'' if found == '1' else 's'} with exactly that text in {START_CLICK_SECONDS:.0f} s, "
+                    f"{'' if found == '1' else 's'} with exactly that text in {seconds:.0f} s, "
                     "and the gate clicks only when there is exactly one")
                 return STATE_FAILED, START_CLICK_MISSING
             await self._sleep(self._probe_seconds)
+        await self._settle_after_click()
+        return None
+
+    async def _settle_after_click(self) -> str | None:
+        """Wait for where a click led to finish loading: `moved`, or `same`
+        when the clicked document stayed (a toggle; or a control whose page
+        has not acted yet, which `_wait_form` clicks again)."""
         await self._sleep(self._probe_seconds)
         settle_by = self._clock() + START_CLICK_SECONDS
-        while await self._evaluate(_js(_SETTLED, {})) is not True and self._clock() < settle_by:
+        while True:
+            after = await self._evaluate(_js(_AFTER_CLICK, {}))
+            if after in ("moved", "same") or self._clock() >= settle_by:
+                return after if isinstance(after, str) else None
             await self._sleep(self._probe_seconds)
-        return None
+
+    async def _wait_form(self, made: list[Mapping[str, str]]) -> str | None:
+        """Wait up to FORM_SECONDS for the form (or a challenge, or the
+        signed-in state). After start clicks, a page that is still the
+        document the last one was made on, at the same address, after
+        RECLICK_SECONDS has not acted on it (its script was not running yet):
+        the clicks are made again, in order, at most MAX_RECLICKS times, and
+        only while each still names exactly one control."""
+        argument = self._argument()
+        start = self._clock()
+        deadline = start + FORM_SECONDS
+        clicked_at = start
+        self._reclicks = 0
+        state: Any = None
+        while True:
+            state = await self._evaluate(_js(_PROBE, argument))
+            if state in ("form", "signed_in", "challenge"):
+                return str(state)
+            now = self._clock()
+            if now >= deadline:
+                return state if isinstance(state, str) else None
+            if made and self._reclicks < MAX_RECLICKS and now - clicked_at >= RECLICK_SECONDS \
+                    and await self._evaluate(_js(_AFTER_CLICK, {})) == "same":
+                if not await self._reclick(made):
+                    made = []
+                clicked_at = self._clock()
+                continue
+            await self._sleep(self._probe_seconds)
+
+    async def _reclick(self, made: list[Mapping[str, str]]) -> bool:
+        """Make the clicks again, in order; False (and no further click) as
+        soon as one names other than exactly one control."""
+        self._reclicks += 1
+        for click in made:
+            count = await self._evaluate(_js(_START_CLICK, {"text": click["text"], "css": click.get("css"),
+                                                            "now": True}))
+            if not (type(count) is int and count == 1):
+                return False
+            await self._settle_after_click()
+        return True
+
+    async def _where(self) -> str:
+        """The gate's tab's origin and path for a sentence, plain characters only."""
+        where = await self._evaluate(_js(_WHERE, {}))
+        if not isinstance(where, str) or not where:
+            return "a page the gate could not read"
+        return _UNSAID.sub("", where)[:MAX_WHERE] or "a page the gate could not read"
+
+    async def _no_form_sentence(self, made: list[Mapping[str, str]], state: Any) -> str:
+        where = await self._where()
+        bad = _bad_selectors(state)
+        if bad:
+            return (f"the target's {bad} is not a CSS selector the page's querySelector takes, so the gate "
+                    f"could not find the login form at {where}")
+        fields = f"no username and password field the target's selectors name in {FORM_SECONDS:.0f} s"
+        if not made:
+            return f"the login form never appeared: the gate's tab is at {where} with {fields}"
+        names = ", ".join(f"'{c['text']}'" for c in made)
+        if self._reclicks and await self._evaluate(_js(_AFTER_CLICK, {})) == "same":
+            return (f"the gate made the start clicks {names} ({self._reclicks + 1} times) and the page at {where} "
+                    f"did not change after '{made[-1]['text']}', so the login form never appeared")
+        return f"after the start clicks {names} the login form never appeared: the gate's tab is at {where} with {fields}"
+
+    async def _after_submit(self, last_click: Mapping[str, str] | None) -> tuple[str, str | None]:
+        """THE VERDICT IS THE PAGE'S OWN STATE (part of #2688). Signed in as
+        soon as `signed_in_selector` shows, or once the page has settled for
+        PAGE_SETTLED_SECONDS on the target's own origin with no login form,
+        no OAuth callback in its address and not back on the start page (the
+        last start click's control): the app drew itself for a signed-in
+        user. Failed when SIGNED_IN_SECONDS pass on the form, an error, the
+        start page or another page; a page still loading at that point is
+        waited for up to SIGNED_IN_MAX_SECONDS (the gate's own rate limit
+        spaces every navigation and request of the redirect chain)."""
+        argument = self._argument(after=True, chooser=last_click)
+        start = self._clock()
+        deadline, hard = start + SIGNED_IN_SECONDS, start + SIGNED_IN_MAX_SECONDS
+        since: float | None = None
+        last: Any = None
+        while True:
+            state = await self._evaluate(_js(_PROBE, argument))
+            now = self._clock()
+            if state == "challenge":
+                return STATE_CHALLENGE, CHALLENGE
+            if state == "signed_in":
+                return STATE_SIGNED_IN, None
+            since = since if state == last and since is not None else now
+            last = state
+            if state == "app" and now - since >= PAGE_SETTLED_SECONDS:
+                return STATE_SIGNED_IN, None
+            if state == "error" and now - since >= PAGE_SETTLED_SECONDS:
+                break
+            waiting = state in ("pending", "app")
+            if now >= hard or (now >= deadline and not waiting):
+                break
+            await self._sleep(self._probe_seconds)
+        self._target.sentence = await self._failed_sentence(state, last_click, now - start)
+        return STATE_FAILED, SIGN_IN_FAILED
+
+    async def _failed_sentence(self, state: Any, last_click: Mapping[str, str] | None, waited: float) -> str:
+        if state == "form":
+            return (f"after the submit the page still shows the login form {waited:.0f} s later: the test "
+                    "account was not accepted, or the submit control did not submit")
+        if state == "error":
+            return "after the submit the login page shows an error: the test account was not accepted"
+        if state == "chooser" and last_click is not None:
+            return (f"after the submit the app is back on its start page, showing '{last_click['text']}', "
+                    "so it did not sign in")
+        where = await self._where()
+        bad = _bad_selectors(state)
+        if bad:
+            return (f"after the submit the page at {where} could not be read: the target's {bad} is not a CSS "
+                    "selector the page's querySelector takes")
+        if state == "pending":
+            return f"after the submit the page at {where} was still loading {waited:.0f} s later"
+        return (f"after the submit the page at {where} neither drew signed_in_selector nor settled as the app "
+                f"in {waited:.0f} s")
 
     async def close(self) -> None:
         """Clear the tab's password inputs, then close it. Never raises."""
@@ -1466,19 +1732,6 @@ class SignIn:
         except Exception:  # noqa: BLE001 -- never the exception's text: it could carry what was typed
             return False
         return True
-
-    async def _wait(self, wanted: set[str], seconds: float) -> str | None:
-        settings = self._target.sign_in
-        argument = {"signed": settings.get("signed_in_selector"), "user": settings.get("username_selector"),
-                    "pass": settings.get("password_selector")}
-        deadline = self._clock() + seconds
-        while True:
-            state = await self._evaluate(_js(_PROBE, argument))
-            if state in wanted:
-                return str(state)
-            if self._clock() >= deadline:
-                return None
-            await self._sleep(self._probe_seconds)
 
     async def _evaluate(self, expression: str) -> Any:
         try:
