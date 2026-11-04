@@ -352,12 +352,14 @@ describe('Home opens on what waits on the signed-in person', () => {
 
   it("names a group workspace by the name the profile serves, never its group email", async () => {
     serve({ tasks: [running], approvals: [], people: refused(403), role: null })
-    const named = profile(null)
-    named.workspaces = [
-      { ...named.workspaces[0], is_acting: false },
-      // `GET /v1/profile` serves the workspace record's name, the group email beside it as `principal`.
-      { tenant_id: 'eng', kind: 'group', display_name: 'Engineering', principal: 'eng@acme.test', is_acting: true, selectable: true, state: null, role: { name: 'member' } } as never,
-    ]
+    const named = {
+      ...profile(null),
+      workspaces: [
+        { tenant_id: 'u-ada', kind: 'user', display_name: 'Ada', is_acting: false, selectable: true, state: 'ready', role: { name: 'member' } },
+        // `GET /v1/profile` serves the workspace record's name, the group email beside it as `principal`.
+        { tenant_id: 'eng', kind: 'group', display_name: 'Engineering', principal: 'eng@acme.test', is_acting: true, selectable: true, state: null, role: { name: 'member' } },
+      ],
+    }
     api.loadProfile.mockResolvedValue(ok(named))
     render(<HomeScreen now={NOW} />)
     await waitFor(() => expect(screen.getByText('Ada · member of Engineering')).toBeTruthy())
