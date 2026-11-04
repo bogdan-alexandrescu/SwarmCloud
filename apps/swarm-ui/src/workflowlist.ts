@@ -17,7 +17,7 @@
  * `workflowQueryString` writes one canonical order -- wf, tab, then the filters
  * -- because paths.ts round-trips an address only when the order is its own.
  */
-import { failureCause, stepNeedsOf, WORKFLOW_TABS, type WorkflowView } from './stepviews'
+import { failureCause, WORKFLOW_TABS, type WorkflowView } from './stepviews'
 import {
   formatDuration,
   reasonCopy,
@@ -28,7 +28,8 @@ import {
   type TaskState,
   type Workflow,
 } from './types'
-import { stepNeedItems } from './work/listNeeds'
+import { workflowNeedItems } from './work/listNeeds'
+import { type NeedKind } from './work/NeedsYou'
 
 /** The three buckets every workflow is in exactly one of: what polls, and what runs to now. */
 export type WorkflowBucket = 'running' | 'finished' | 'failed'
@@ -259,41 +260,53 @@ export function bucketCounts(rows: readonly Workflow[]): Record<BucketFilter, nu
 
 /**
  * WHAT WAITS ON THE PERSON IN ONE WORKFLOW, from the list read alone (the
- * Needs-you column), counted off the very rows the Needs-you bar draws
- * (`stepNeedItems`, one classifier for both): `failed`, the steps that failed
- * or were dead-lettered; `questions`, every open question -- a question
- * wait's, a finished step's unanswered artifact questions, an await-input
- * step's input; `held`, the merges held by the owner's questions and the
- * turns in a browser. Null -- "not known", never 0 -- when the steps were not
- * read or the state could not be derived.
+ * Needs-you column), counted off the very rows and unknown kinds the
+ * Needs-you bar takes for it (`workflowNeedItems`, one classifier for both):
+ * `failed`, the steps that failed or were dead-lettered; `questions`, every
+ * open question -- a question wait's, a finished step's unanswered artifact
+ * questions, an await-input step's input; `held`, the merges held by the
+ * owner's questions and the turns in a browser. A count is null -- "not
+ * known", never 0 -- for a kind the bar cannot count either: questions and
+ * held when a step was served no needs block, every kind when a step's task
+ * is not in the read. Null as a whole when nothing is known: the steps were
+ * not read. A workflow whose state could not be derived still counts what its
+ * steps' read says, as the bar does.
  */
 export interface WorkflowNeeds {
-  readonly failed: number
-  readonly questions: number
-  readonly held: number
+  readonly failed: number | null
+  readonly questions: number | null
+  readonly held: number | null
 }
 
 export function needsOf(w: Workflow, taskById: ReadonlyMap<string, Task> | null): WorkflowNeeds | null {
-  if (!stepsRead(w, taskById) || derivedStateOf(w) === null) return null
-  let failed = 0
-  let questions = 0
-  let held = 0
-  for (const s of w.steps) {
-    const st = stepState(s, taskById)
-    if (st.kind !== 'state') continue
-    for (const item of stepNeedItems(st.task, stepNeedsOf(s), s.step_id)) {
-      if (item.kind === 'failed') failed += 1
-      else if (item.kind === 'question') questions += 1
-      else held += 1
-    }
-  }
-  return { failed, questions, held }
+  if (!stepsRead(w, taskById)) return null
+  const items = workflowNeedItems(w, taskById, (stepId) => stepId)
+  const unknown = items.unknownKinds ?? []
+  const count = (...kinds: NeedKind[]): number | null =>
+    kinds.some((k) => unknown.includes(k)) ? null : items.filter((i) => kinds.includes(i.kind)).length
+  const needs = { failed: count('failed'), questions: count('question'), held: count('merge', 'handoff') }
+  return needs.failed === null && needs.questions === null && needs.held === null ? null : needs
 }
 
-/** How many things wait on the person in `w`; 0 when not known, so "needs you first" never ranks a guess. */
-export function needsTotal(w: Workflow, taskById: ReadonlyMap<string, Task> | null): number {
+/**
+ * How many things wait on the person in `w`, for "needs you first": what is
+ * counted, and null when a kind is not known and nothing is counted -- an
+ * unknown is never ranked as 0 (`sortWorkflows`).
+ */
+export function needsTotal(w: Workflow, taskById: ReadonlyMap<string, Task> | null): number | null {
   const n = needsOf(w, taskById)
-  return n === null ? 0 : n.failed + n.questions + n.held
+  if (n === null) return null
+  const known = (n.failed ?? 0) + (n.questions ?? 0) + (n.held ?? 0)
+  return known === 0 && (n.failed === null || n.questions === null || n.held === null) ? null : known
+}
+
+/**
+ * "Needs you first"'s rank: a workflow with something counted first, by how
+ * many, then one whose needs are not known (it may have some), then one known
+ * to need nothing.
+ */
+function needsRank(n: number | null): number {
+  return n === null ? 0.5 : n === 0 ? 0 : n + 1
 }
 
 /** The owners and profiles the filters offer, from the rows read, sorted. */
@@ -379,7 +392,7 @@ export function sortWorkflows(
   const out = rows.slice()
   switch (sort) {
     case 'state': {
-      const needs = new Map(out.map((w) => [w.workflow_id, needsTotal(w, taskById)] as const))
+      const needs = new Map(out.map((w) => [w.workflow_id, needsRank(needsTotal(w, taskById))] as const))
       return out.sort(
         (a, b) =>
           (needs.get(b.workflow_id) ?? 0) - (needs.get(a.workflow_id) ?? 0) || stateGroupOf(a) - stateGroupOf(b) || newest(a, b),

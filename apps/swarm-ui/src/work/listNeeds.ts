@@ -46,7 +46,8 @@ function prOf(task: Task): NeedPullRequest | null {
  * row's Needs mark (`workflowlist.needsOf`) both read, so the two never
  * count the same step differently. `needs` is the step's block (null when the
  * list served none: the kinds only it can tell are then not known, see
- * `NEEDS_BLOCK_KINDS`); `title` is the row's.
+ * `NEEDS_BLOCK_KINDS`, and a HUMAN_REQUIRED park is no hand-off, since it
+ * may be a question wait); `title` is the row's.
  */
 export function stepNeedItems(task: Task, needs: StepNeeds | null, title: string): NeedItem[] {
   const out: NeedItem[] = []
@@ -73,7 +74,7 @@ export function stepNeedItems(task: Task, needs: StepNeeds | null, title: string
     out.push({ kind: 'question', taskId: task.id, index: 0, title, question: null, onItsPage: true })
   }
   if (ownerQuestionsHold(task) !== null) out.push({ kind: 'merge', task, title, pr })
-  else if (needs?.question_wait !== true && handoffOf(task) !== null) out.push({ kind: 'handoff', task, title })
+  else if (needs !== null && needs.question_wait !== true && handoffOf(task) !== null) out.push({ kind: 'handoff', task, title })
   return out
 }
 
@@ -87,11 +88,50 @@ export function stepNeedItems(task: Task, needs: StepNeeds | null, title: string
 export const NEEDS_BLOCK_KINDS: readonly NeedKind[] = ['question', 'merge', 'handoff']
 
 /**
+ * Every kind the list read can count. A step whose task is not in the read
+ * at all leaves each of them not known, its failure too: nothing says what
+ * state it is in. Approvals are never in the list read (`approvals={null}`).
+ */
+export const LIST_KINDS: readonly NeedKind[] = ['failed', ...NEEDS_BLOCK_KINDS]
+
+/**
+ * ONE WORKFLOW'S NEEDS, the rows the bar draws for it and the kinds it cannot
+ * count: the one reading both the bar (`listNeedItems`, over every workflow)
+ * and the row's Needs mark (`workflowlist.needsOf`) take, so the two never
+ * disagree on a step (the third review of PR #3147: a step served without a
+ * block made the bar read "not known" and the row "—"). A step with a task
+ * and no block leaves `NEEDS_BLOCK_KINDS` not known and is never a hand-off
+ * here (its park may be a question wait); a step whose task is not in the
+ * read leaves every kind not known. `title` is a step's row title.
+ */
+export function workflowNeedItems(
+  w: Workflow,
+  taskById: ReadonlyMap<string, Task> | null,
+  title: (stepId: string) => string,
+): NeedItems {
+  const out: NeedItem[] = []
+  let blind = false
+  let unread = false
+  for (const step of w.steps) {
+    if (!step.task_id) continue
+    const needs = stepNeedsOf(step)
+    if (needs === null) blind = true
+    const task = taskById?.get(step.task_id) ?? summaryTask(w, step)
+    if (task === null || task === undefined) {
+      unread = true
+      continue
+    }
+    out.push(...stepNeedItems(task, needs, title(step.step_id)))
+  }
+  return Object.assign(out, { unknownKinds: unread ? LIST_KINDS : blind ? NEEDS_BLOCK_KINDS : [] })
+}
+
+/**
  * Every row the list's Needs-you bar draws for `workflows`, in their order and
  * each workflow's step order. `nameOf` is the list row's name for a workflow;
  * a row's title is that name and the step's id. `unknownKinds` names the
- * kinds whose count is not known: `NEEDS_BLOCK_KINDS` when any step with a
- * task was served no needs block.
+ * kinds whose count is not known: every kind any workflow cannot count
+ * (`workflowNeedItems`), so the bar never totals what a row says it cannot.
  */
 export function listNeedItems(
   workflows: readonly Workflow[],
@@ -99,16 +139,12 @@ export function listNeedItems(
   nameOf: (w: Workflow) => string,
 ): NeedItems {
   const out: NeedItem[] = []
-  let blind = false
+  const unknown = new Set<NeedKind>()
   for (const w of workflows) {
-    for (const step of w.steps) {
-      if (!step.task_id) continue
-      const needs = stepNeedsOf(step)
-      if (needs === null) blind = true
-      const task = taskById?.get(step.task_id) ?? summaryTask(w, step)
-      if (task === null || task === undefined) continue
-      out.push(...stepNeedItems(task, needs, `${nameOf(w)} › ${step.step_id}`))
-    }
+    const name = nameOf(w)
+    const items = workflowNeedItems(w, taskById, (stepId) => `${name} › ${stepId}`)
+    out.push(...items)
+    for (const k of items.unknownKinds ?? []) unknown.add(k)
   }
-  return Object.assign(out, { unknownKinds: blind ? NEEDS_BLOCK_KINDS : [] })
+  return Object.assign(out, { unknownKinds: LIST_KINDS.filter((k) => unknown.has(k)) })
 }

@@ -6055,9 +6055,13 @@ function withChosen(options: string[], chosen: string): string[] {
 
 /**
  * THE NEEDS-YOU CELL (the picked Work redesign): what in this workflow waits
- * on the person, by kind, from the list read (`needsOf`). A dash when nothing
- * does; "not known" -- never 0 -- when the steps were not read or the state
- * could not be derived. `long` is the inspector's form, with the words.
+ * on the person, by kind, from the list read (`needsOf`, the bar's own
+ * classifier). A dash when nothing does; "not known" -- never 0 -- when the
+ * steps were not read. A kind the read cannot count (a step served without
+ * its needs block) is never drawn as nothing: the counted marks are followed
+ * by a "+", the bar's sign for "the total may be more", whose words name the
+ * kinds not known; with nothing counted the cell says "not known".
+ * `long` is the inspector's form, with the words.
  */
 function NeedsMarks({ needs, long = false }: { needs: WorkflowNeeds | null; long?: boolean }) {
   if (needs === null) {
@@ -6067,8 +6071,16 @@ function NeedsMarks({ needs, long = false }: { needs: WorkflowNeeds | null; long
       </span>
     )
   }
-  const marks: { key: keyof WorkflowNeeds; glyph: string; n: number; word: string; title: string; tone: string }[] = [
-    { key: 'failed', glyph: '✗', n: needs.failed, word: 'failed', title: `${needs.failed} failed ${needs.failed === 1 ? 'step' : 'steps'}`, tone: 'is-bad' },
+  const marks: { key: keyof WorkflowNeeds; glyph: string; n: number | null; word: string; title: string; tone: string; unknown: string }[] = [
+    {
+      key: 'failed',
+      glyph: '✗',
+      n: needs.failed,
+      word: 'failed',
+      title: `${needs.failed} failed ${needs.failed === 1 ? 'step' : 'steps'}`,
+      tone: 'is-bad',
+      unknown: 'failed steps',
+    },
     {
       key: 'questions',
       glyph: '?',
@@ -6076,6 +6088,7 @@ function NeedsMarks({ needs, long = false }: { needs: WorkflowNeeds | null; long
       word: needs.questions === 1 ? 'asks you' : 'ask you',
       title: `${needs.questions} ${needs.questions === 1 ? 'step waits' : 'steps wait'} on an answer from you`,
       tone: 'is-park',
+      unknown: 'questions',
     },
     {
       key: 'held',
@@ -6084,10 +6097,21 @@ function NeedsMarks({ needs, long = false }: { needs: WorkflowNeeds | null; long
       word: 'held for you',
       title: `${needs.held} ${needs.held === 1 ? 'step is' : 'steps are'} held for a person: a merge held by questions, or a turn in a browser; the workflow's page says which`,
       tone: 'is-park',
+      unknown: 'holds',
     },
   ]
-  const shown = marks.filter((m) => m.n > 0)
-  if (shown.length === 0) return <span className="wfg-dim">—</span>
+  const shown = marks.filter((m) => m.n !== null && m.n > 0)
+  const unknown = marks.filter((m) => m.n === null).map((m) => m.unknown)
+  const kinds = unknown.length > 1 ? `${unknown.slice(0, -1).join(', ')} and ${unknown[unknown.length - 1]}` : (unknown[0] ?? '')
+  const unknownTitle = `The list read did not serve what some steps wait on, so their ${kinds} are not known; the workflow's page reads them`
+  if (shown.length === 0) {
+    if (unknown.length === 0) return <span className="wfg-dim">—</span>
+    return (
+      <span className="wfg-absent" data-need="unknown" title={unknownTitle}>
+        not known{long ? `: ${kinds}` : <span className="vh">: {kinds}</span>}
+      </span>
+    )
+  }
   return (
     <>
       {shown.map((m) => (
@@ -6096,6 +6120,12 @@ function NeedsMarks({ needs, long = false }: { needs: WorkflowNeeds | null; long
           {long ? ` ${m.word}` : <span className="vh"> {m.word}</span>}
         </span>
       ))}
+      {unknown.length > 0 && (
+        <span className="wfg-need wfg-absent" data-need="unknown" title={unknownTitle}>
+          <span aria-hidden>+</span>
+          {long ? ` ${kinds} not known` : <span className="vh"> {kinds} not known</span>}
+        </span>
+      )}
     </>
   )
 }

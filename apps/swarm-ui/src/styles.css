@@ -11640,9 +11640,11 @@ span.sk-ttile { cursor: default; }
 .wfg-need.is-bad { color: var(--bad-ink, var(--s-bad)); }
 .wfg-need.is-park { color: var(--paused-ink, var(--s-park)); }
 .wfg-table td[data-col="owner"] { max-width: 10em; overflow: hidden; text-overflow: ellipsis; }
-/* WHILE THE INSPECTOR IS OPEN, Owner is hidden and Changed is in the summary's facts line. */
-.wfg.has-inspector .wfg-table [data-col="owner"],
-.wfg.has-inspector .wfg-table [data-col="changed"] { display: none; }
+/* COLUMNS GIVE WAY BY THE PANE'S WIDTH ALONE (the third review of PR #3147):
+   no rule here keys on a pick being open (`.wfg.has-inspector`). With the
+   inspector folded to its rail the pane is 1005px at 1440, so Owner, Changed
+   and Spent's coverage note stay drawn; open, the pane's own container rules
+   below drop them, and a partial figure never shows without its caveat. */
 /* THE TABLE NEVER EXCEEDS ITS PANE (review finding on PR #3147: beside the
    open inspector at 1440 the table was 627px in a 578px box, and Spent's
    "$0.518 3 of 4 reported" set its column to 179px, so the clipping pane cut
@@ -11688,8 +11690,6 @@ span.sk-ttile { cursor: default; }
   .wfg-table [data-col="spent"] { width: 72px; position: relative; }
   .wfg-table td[data-col="spent"] .wf-spend-cov { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 }
-.wfg.has-inspector .wfg-table [data-col="spent"] { position: relative; }
-.wfg.has-inspector .wfg-table td[data-col="spent"] .wf-spend-cov { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 /* A pane too narrow for the four phone columns plus Spent draws the phone
    row (below): the state is its glyph, steps and needs hold their widths. */
 @container work-main (max-width: 570px) {
