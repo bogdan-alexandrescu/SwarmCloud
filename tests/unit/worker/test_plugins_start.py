@@ -14,7 +14,11 @@ here, offline, against a fake install folder:
   * an image without the install, or without one of the step's skills,
     fails before anything is linked, naming the image;
   * planner and designer modes are refused until the question bridge lands;
-  * the record names plugin, version, mode, skills and per-skill run counts.
+  * the record names plugin, version, mode, skills and per-skill run counts;
+  * Cloudflare's security audit skill (the second plugin, 4 November 2026):
+    its whole read-only skill folder is linked, since its SKILL.md reads its
+    method files by relative path, with none of gstack's environment, and a
+    step naming both plugins keeps both plugins' links.
 """
 
 from __future__ import annotations
@@ -61,7 +65,7 @@ def _task(document: dict[str, Any] | None = None, *, digest: str | None = None) 
 
 @pytest.fixture
 def install(tmp_path) -> Path:
-    """A fake read-only gstack install: one SKILL.md per catalogue skill."""
+    """A fake read-only gstack install: one SKILL.md per gstack skill."""
     root = tmp_path / "opt" / "gstack"
     for mode_skills in plugins.GSTACK.skills.values():
         for skill in mode_skills:
@@ -386,3 +390,13 @@ def test_the_security_audit_guidance_puts_its_output_in_the_artifacts(work, chec
     # MUTATION: drop the note and a full audit's REPORT.md lands where nothing uploads it.
     assert "$SWARM_ARTIFACTS_DIR/security-audit" in text
 
+
+
+def test_a_security_audit_step_on_the_browser_profile_needs_no_chromium(
+        work, checkout, install, audit_install, tmp_path):
+    # MUTATION: require gstack's Chromium for every plugin on the browser
+    # profile, and a step that runs no browser fails CANNOT_START.
+    started = _start(_task(_document(chosen=AUDIT)), work, checkout, install,
+                     profile="claude-code-browser", audit=audit_install,
+                     environ={"PLAYWRIGHT_BROWSERS_PATH": str(tmp_path / "none")})
+    assert started is not None and dict(started.env) == {}
