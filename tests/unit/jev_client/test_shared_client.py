@@ -80,10 +80,16 @@ def test_the_package_names_its_wire_shape_and_client() -> None:
     assert swarm_jev.sanitize_state is shared_sanitize.sanitize_state
 
 
-def test_the_token_floor_is_the_worker_budgets() -> None:
-    """Restated in the shared package (it cannot import the worker's budget);
-    held equal here, as swarm_api.jevaccount's copy is."""
-    assert shared_client.MEASURED_TOKENS_PER_CALL == budget.MEASURED_TOKENS_PER_CALL
+def test_the_token_floor_is_stated_once() -> None:
+    """The owner's choice (4 November 2026): MEASURED_TOKENS_PER_CALL is
+    stated only in `swarm_jev.client`; the worker's ledger and swarm-api's
+    account import it. Held by identity, not equality: a restated `2_850` is
+    a different int object, so a copy that happens to agree still fails."""
+    from swarm_api import jevaccount
+
+    for module in (budget, jevaccount):
+        assert module.MEASURED_TOKENS_PER_CALL is shared_client.MEASURED_TOKENS_PER_CALL, \
+            module.__name__
 
 
 def test_the_worker_backend_and_ledger_meet_the_shared_shapes(tmp_path: Path) -> None:
