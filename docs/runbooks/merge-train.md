@@ -185,8 +185,16 @@ choice is the owner's.
 
 ## 3. Watch the first live trains
 
-* Actions → `merge-train`: each scheduled tick either says what it is waiting
-  for, lands a train, or bisects one.
+* Actions → `merge-train`: each tick either says what it is waiting for,
+  lands a train, or bisects one. With the train on, a tick runs when an
+  application or security run finishes on a train, when one finishes green on
+  any other pull request of this repository, and when `ready` is added to a
+  pull request of this repository (through `auto-merge`'s run on that label;
+  a fork's pull request starts no tick). With no train open, such a tick
+  starts one, as a schedule tick does; a train's own run only judges it. The
+  five-minute schedule is only the fallback, because GitHub ran it only every
+  four to seven hours (2026-11-03). Many events close together make at most two
+  ticks: the one running and one pending behind it.
 * Every landed pull request is marked **merged** by GitHub, with the subject
   `<title> (#N)`. `auto-merge.yml`'s `close-issues` job closes the issues it
   names, as before.
