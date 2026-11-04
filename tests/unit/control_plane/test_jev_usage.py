@@ -297,3 +297,23 @@ def test_a_kind_without_outcomes_counts_its_calls_unrecorded():
     assert kind_of(day, "J1")["outcomes"] is None
     assert kind_of(day, "J2")["outcomes"]["unrecorded"] == 0
     assert (day["outcomes"]["ok"], day["outcomes"]["unrecorded"]) == (1, 3)
+
+
+def test_the_re_ask_and_the_submission_review_are_each_their_own_kind():
+    """Both swarm-api Jev calls are summed, side by side, each under its own
+    group: the control plane's re-ask (`contract_judgment`, an attempt row of
+    its own) and the review at submission (`contract_review`, its own row
+    kind). Red when a merge keeps one of the two and drops the other."""
+    rows = [UsageRow({"kind": "attempt", "tenant_id": "eng", "settled_at": NOW, "by_kind": {
+                "contract_judgment": {"calls": 1, "input_tokens": 40, "outcomes": {"ok": 1}}}}),
+            UsageRow({"kind": "contract_review", "tenant_id": "eng", "settled_at": NOW,
+                      "by_kind": {"contract_review": {"calls": 2, "input_tokens": 70,
+                                                      "outcomes": {"ok": 2}}}})]
+    body = summarise("eng", rows, now=NOW, rates={"input": None, "output": None},
+                     month_used_tokens=0, cap_tokens=None)
+    day = body["days"][0]
+    assert kind_of(day, "contract_judgment")["group"] == "control_plane_reask"
+    assert kind_of(day, "contract_judgment")["calls"] == 1
+    assert kind_of(day, "contract_review")["group"] == "contract_review"
+    assert kind_of(day, "contract_review")["calls"] == 2
+    assert body["total"]["calls"] == 3
