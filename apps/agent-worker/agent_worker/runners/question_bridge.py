@@ -526,7 +526,8 @@ def wait_record(
     (`agent_worker.questions`), so swarm-api serves, answers and expires it
     as it does every question wait, and every question blocks: the session
     resumes only with all of them answered. `BRIDGE_KEY` holds the rest of
-    the record -- the session and tool use to resume, each question's own
+    the record -- the session and tool use to resume (and when the hook
+    recorded the call, which `pending_of` checks as the hook's record), each question's own
     options with their previews, whether it is a multiple choice, the
     attempt and its fencing generation, and the checkout's revision.
     """
@@ -548,6 +549,7 @@ def wait_record(
         BRIDGE_KEY: {
             "session_id": _session_id(pending.session_id),
             "tool_use_id": pending.tool_use_id,
+            "hook_asked_at": pending.asked_at,
             "generation": generation,
             "source_revision": source_revision,
             "questions": pending.to_json()["questions"],
@@ -563,7 +565,7 @@ def pending_of(bridge: Mapping[str, Any]) -> PendingQuestion:
         "tool_use_id": bridge.get("tool_use_id"),
         "transcript_path": "",
         "cwd": "",
-        "asked_at": "",
+        "asked_at": bridge.get("hook_asked_at"),
         "questions": bridge.get("questions"),
     })
 
