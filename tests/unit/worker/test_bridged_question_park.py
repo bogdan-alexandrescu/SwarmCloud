@@ -30,6 +30,7 @@ pinned CLI was measured to in the spike (test_question_bridge.py).
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -320,3 +321,243 @@ def test_after_a_hook_stopped_question_the_runner_takes_no_finish_turn(tmp_path,
     # MUTATION: drop `not parked_on_question()` from the finish pass -> two runs.
     assert len(_runs(ctx)) == 1
     assert out["resumed_to_finish"] is False
+
+
+def _hook_stopped(**extra: Any) -> list[dict[str, Any]]:
+    """The stream of a run the bridge's hook stopped on the question tool."""
+    asked = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "toolu_q", "name": qb.QUESTION_TOOL, "input": {"questions": [QUESTION]}}]}}
+    return [asked, {"type": "result", "subtype": "success", "is_error": False,
+                    "terminal_reason": qb.HOOK_STOPPED, **extra}]
+
+
+def _say_events(cli: str, marker: str) -> str:
+    """A fake CLI of another test file that also prints its step's `events`
+    before the result, and stamps `extra` on the result."""
+    said = cli.replace(marker, 'for event in step.get("events", []):\n    say(event)\n' + marker)
+    said = said.replace('"num_turns": step.get("turns", 3)}',
+                        '"num_turns": step.get("turns", 3), **step.get("extra", {})}')
+    assert said.count("step.get(\"events\"") == 1 and "**step.get(\"extra\"" in said
+    return said
+
+
+def test_after_a_hook_stopped_question_the_runner_takes_no_repair_turn(tmp_path, monkeypatch):
+    """`cliagent`: a run that stopped on the question tool is not resumed to
+    repair a missing output: the repair turn would go on without the answer."""
+    from test_claude_repair_turns import FAKE_CLI as REPAIR_CLI, _ctx, _install, _runs
+    from agent_worker.runners import claude_code
+
+    ctx = _ctx(tmp_path, {"prompt": "scan it", "expected_outputs": ["scan-01.md"]}, repo=False)
+    asked, _ = _hook_stopped()
+    _install(tmp_path, monkeypatch, ctx, [
+        {"answer": "Which scope?", "events": [asked], "extra": {"terminal_reason": qb.HOOK_STOPPED}},
+        {"answer": "Done.", "write": {"$ARTIFACTS/scan-01.md": "# findings\n"}},
+    ])
+    (tmp_path / "fake-claude").write_text(_say_events(REPAIR_CLI, 'say({"type": "result"'))
+    monkeypatch.delenv(qb.ENABLE_ENV, raising=False)
+
+    out = claude_code.body(ctx)
+    # MUTATION: drop `not parked_on_question()` from the repair branch -> two runs.
+    assert len(_runs(ctx)) == 1
+    assert out["repair_turns"] == 0
+    assert ctx.report["question_parked"] is True
+
+
+def test_after_a_hook_stopped_question_the_runner_takes_no_pre_publish_turn(tmp_path, monkeypatch):
+    """`cliagent`: a run that stopped on the question tool runs no pre-publish
+    check and takes no fix turn, though the tree it left fails a check."""
+    import json as _json
+    import secrets as pysecrets
+
+    from test_prepublish_gate import FAKE_CLI as GATE_CLI, SESSION, _repo, _tool_calls, _tools
+    from agent_worker import prepublish
+    from agent_worker.gitmcp import server as shim
+    from agent_worker.runners import claude_code
+    from agent_worker.runners.base import RunnerContext
+
+    work, artifacts = tmp_path / "work", tmp_path / "artifacts"
+    work.mkdir()
+    artifacts.mkdir()
+    repo, base = _repo(work)
+    asked, _ = _hook_stopped()
+    cli = GATE_CLI.replace(
+        'print(json.dumps({"type": "result"',
+        'for event in step.get("events", []):\n    print(json.dumps(event))\n'
+        'print(json.dumps({**step.get("extra", {}), "type": "result"')
+    assert cli != GATE_CLI
+    (tmp_path / "fake-claude").write_text(cli)
+    (tmp_path / "fake-claude").chmod(0o755)
+    (work / "plan.json").write_text(_json.dumps({"session": SESSION, "runs": [
+        {"write": {"scripts/deploy.sh": "#!/usr/bin/env bash\necho BAD\n"}, "events": [asked],
+         "extra": {"terminal_reason": qb.HOOK_STOPPED}},
+        {"write": {"scripts/deploy.sh": "#!/usr/bin/env bash\necho fixed\n"}},
+    ]}))
+    bin_dir = _tools(tmp_path)
+    monkeypatch.setattr(cliagent, "BASE_PATH", f"{bin_dir}:{cliagent.BASE_PATH}")
+    monkeypatch.setenv("TOOL_LOG", str(tmp_path / "tools.jsonl"))
+    monkeypatch.setenv("CLAUDE_CODE_BIN", str(tmp_path / "fake-claude"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-" + "api03-" + pysecrets.token_hex(16))
+    monkeypatch.setenv(prepublish.CLONE_BASE_ENV, base)
+    for name in ("CLAUDE_CODE_ARGS", "CLAUDE_CODE_OAUTH_TOKEN", "MODEL", qb.ENABLE_ENV,
+                 prepublish.PREPUBLISH_BASE_ENV, shim.SPOOL_ENV,
+                 cliagent.ACCOUNT_STREAM_ENV, cliagent.RESUME_SESSION_ENV):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(cliagent, "_PLAIN_PASSTHROUGH",
+                        (*cliagent._PLAIN_PASSTHROUGH, "TOOL_LOG"))
+    ctx = RunnerContext(work_dir=work, artifacts_dir=artifacts, input_path=work / "input.json",
+                        result_path=work / "result.json", quota_path=work / "quota.json",
+                        payload={"prompt": "do it"}, repo_dir=repo)
+
+    out = claude_code.body(ctx)
+    runs = (work / "runs.jsonl").read_text().splitlines()
+    # MUTATION: drop `not parked_on_question()` from the pre-publish branch ->
+    # the stand-in shellcheck runs, fails, and a fix turn resumes the session.
+    assert len(runs) == 1
+    assert _tool_calls(tmp_path) == []
+    assert out.get("prepublish") is None
+    assert ctx.report["question_parked"] is True
+
+
+#: A fake CLI whose first start asks the question tool on a turn past the
+#: context ceiling and is stopped by the bridge's hook; any later start ends
+#: plainly. Each start appends its argv and stdin to `$HOME/starts.jsonl`.
+STOPPED_CLI = r'''#!PYTHON
+import json, os, sys
+home = os.environ["HOME"]
+starts = os.path.join(home, "starts.jsonl")
+n = sum(1 for _ in open(starts)) if os.path.exists(starts) else 0
+with open(starts, "a") as f:
+    f.write(json.dumps({"argv": sys.argv[1:], "stdin": sys.stdin.read()}) + "\n")
+sid = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else "sess-asked-0a1b2c"
+def say(event):
+    print(json.dumps(event), flush=True)
+say({"type": "system", "subtype": "init", "session_id": sid})
+if n == 0:
+    say({"type": "assistant", "session_id": sid, "message": {"id": "m1", "content": [
+        {"type": "tool_use", "id": "toolu_q", "name": TOOL, "input": {"questions": []}}],
+        "usage": {"input_tokens": 210000, "cache_read_input_tokens": 0, "output_tokens": 10}}})
+    say({"type": "user", "session_id": sid, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_q", "content": "stopped by hook"}]}})
+    say({"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
+         "result": "", "terminal_reason": STOPPED, "num_turns": 1})
+else:
+    say({"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
+         "result": "done", "num_turns": 1})
+'''
+
+
+def _stopped_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop: Any) -> tuple[Any, Any]:
+    """The runner around STOPPED_CLI, on a pool account and under the context
+    ceiling, with `stop(kwargs)` applied after the first watched start: the
+    stop a watcher made at the boundary the hook's turn ended on."""
+    from test_context_ceiling import _spec, _starts
+    from agent_worker.runners.base import RunnerContext
+
+    cli = tmp_path / "fake-claude"
+    cli.write_text(STOPPED_CLI.replace("#!PYTHON", "#!" + sys.executable)
+                   .replace("TOOL", json.dumps(qb.QUESTION_TOOL))
+                   .replace("STOPPED", json.dumps(qb.HOOK_STOPPED)))
+    cli.chmod(0o755)
+    monkeypatch.setenv("FAKE_BIN", str(cli))
+    monkeypatch.setenv("FAKE_KEY", "k-" + uuid.uuid4().hex[:16])
+    for name in (cliagent.RESUME_SESSION_ENV, cliagent.RESUME_REASON_ENV, cliagent.SESSION_FILE_ENV,
+                 cliagent.ACCOUNT_MOVE_ENV, "SWARM_CLONE_BASE", qb.ENABLE_ENV):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(cliagent.ACCOUNT_STREAM_ENV, str(tmp_path / "stream.json"))
+    watched = cliagent._run_watched
+    calls: list[int] = []
+
+    def stopping(*args: Any, **kwargs: Any) -> Any:
+        done = watched(*args, **kwargs)
+        calls.append(1)
+        if len(calls) == 1:
+            stop(kwargs)
+        return done
+
+    monkeypatch.setattr(cliagent, "_run_watched", stopping)
+    work, artifacts = tmp_path / "work", tmp_path / "artifacts"
+    work.mkdir()
+    artifacts.mkdir()
+    ctx = RunnerContext(work_dir=work, artifacts_dir=artifacts, input_path=work / "input.json",
+                        result_path=work / "result.json", quota_path=work / "quota.json",
+                        payload={"prompt": "do the work"})
+    cliagent.run_cli_agent(ctx, _spec())
+    return ctx, _starts(ctx)
+
+
+def test_after_a_hook_stopped_question_the_runner_takes_no_wrap_up_turn(tmp_path, monkeypatch):
+    """`cliagent`: a run stopped to wrap up at the boundary its question's
+    turn ended on is not resumed to wrap up: the pass would go on without
+    the answer."""
+    def wrap_up(kwargs: dict[str, Any]) -> None:
+        kwargs["watcher"].stopped_to_wrap_up = True
+
+    ctx, starts = _stopped_run(tmp_path, monkeypatch, wrap_up)
+    # MUTATION: drop `not parked_on_question()` from the wrap-up branch -> a
+    # second start, `--resume`d with WRAP_UP_PROMPT.
+    assert len(starts) == 1, starts
+    assert ctx.report.get("resumed_to_wrap_up") is not True
+    assert ctx.report["question_parked"] is True
+
+
+def test_after_a_hook_stopped_question_the_ceiling_hands_off_to_no_fresh_session(
+    tmp_path, monkeypatch
+):
+    """`cliagent`: a run stopped at the context ceiling on the boundary its
+    question's turn ended on starts no fresh session from a handoff."""
+    from agent_worker.runners import ceiling
+
+    def over(kwargs: dict[str, Any]) -> None:
+        kwargs["ceiling"].stopped_for = ceiling.WHY_CONTEXT
+
+    ctx, starts = _stopped_run(tmp_path, monkeypatch, over)
+    # MUTATION: drop `not parked_on_question()` before `carry_on` -> a second
+    # start whose stdin is the CONTEXT CEILING HANDOFF.
+    assert len(starts) == 1, starts
+    assert ctx.report["question_parked"] is True
+
+
+def test_an_answered_resume_over_the_ceiling_still_resumes_the_parked_session(
+    tmp_path, monkeypatch
+):
+    """`cliagent`: the context ceiling's fresh-session handoff never replaces a
+    parked session's resume. The worker resumes the session that asked, over
+    the ceiling or not, with the answer as its one message."""
+    from test_context_ceiling import FAKE_CLI as CEILING_CLI, SMALL, _plan, _spec, _starts
+    from agent_worker.runners import ceiling
+    from agent_worker.runners.base import RunnerContext
+
+    cli = tmp_path / "fake-claude"
+    cli.write_text(CEILING_CLI.format(python=sys.executable))
+    cli.chmod(0o755)
+    monkeypatch.setenv("FAKE_BIN", str(cli))
+    monkeypatch.setenv("FAKE_KEY", "k-" + uuid.uuid4().hex[:16])
+    for name in ("SWARM_ACCOUNT_STREAM", "SWARM_ACCOUNT_MOVE", "SWARM_CLONE_BASE", qb.ENABLE_ENV):
+        monkeypatch.delenv(name, raising=False)
+    work, artifacts, private = tmp_path / "work", tmp_path / "artifacts", tmp_path / "private"
+    for path in (work, artifacts, private):
+        path.mkdir()
+    ctx = RunnerContext(work_dir=work, artifacts_dir=artifacts, input_path=work / "input.json",
+                        result_path=work / "result.json", quota_path=work / "quota.json",
+                        payload={"prompt": "do the work"})
+    session = "sess-parked-" + uuid.uuid4().hex[:8]
+    answer = "Use the staging scope."
+    (private / "answer.txt").write_text(answer)
+    monkeypatch.setenv(cliagent.SESSION_FILE_ENV, str(private / "session.json"))
+    monkeypatch.setenv(cliagent.RESUME_SESSION_ENV, session)
+    monkeypatch.setenv(cliagent.RESUME_REASON_ENV, cliagent.RESUME_ANSWERED)
+    monkeypatch.setenv(cliagent.QUESTION_ANSWER_FILE_ENV, str(private / "answer.txt"))
+    # The parked session ended past the ceiling.
+    (private / ceiling.STATE_NAME).write_text(json.dumps(
+        {"session_id": session, "context_tokens": 452_706, "tool_calls": 40,
+         "turns": 40, "fresh_sessions": 0}))
+    _plan(ctx, SMALL)
+
+    out = cliagent.run_cli_agent(ctx, _spec())
+    (only,) = _starts(ctx)
+    # MUTATION: drop `and not answered` from the resume's ceiling check -> a
+    # fresh session from CONTEXT CEILING HANDOFF, the answer never said.
+    assert only["argv"][only["argv"].index("--resume") + 1] == session
+    assert only["stdin"].startswith(answer + "\n")
+    assert "CONTEXT CEILING HANDOFF" not in only["stdin"]
+    assert out["context_ceiling"]["stops"] == []
