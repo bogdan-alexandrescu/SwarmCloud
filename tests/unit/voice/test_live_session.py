@@ -145,6 +145,10 @@ class FakeOpenAI:
         self.drop_after_attach = False
         self.close_after_attach = False
         self.create_status = 201
+        #: The refused create's body, when set; else an error whose message echoes the bearer.
+        self.create_body: bytes | None = None
+        #: An event the sideband sends in place of `session.updated`, when set.
+        self.attach_event: dict | None = None
         self.port = 0
 
     # -- REST
@@ -154,6 +158,8 @@ class FakeOpenAI:
             if not auth.startswith("Bearer ") or auth[len("Bearer "):] not in self.valid:
                 return httpx.Response(401, json={"error": {"message": f"bad token {auth}"}})
             if self.create_status != 201:
+                if self.create_body is not None:
+                    return httpx.Response(self.create_status, content=self.create_body)
                 return httpx.Response(self.create_status, json={"error": {"message": f"echo {auth}"}})
             body = json.loads(request.content)
             self.creates.append(body)
@@ -182,6 +188,10 @@ class FakeOpenAI:
             await conn.close(4401)
             return
         self.attaches.append(live_id)
+        if self.attach_event is not None:
+            await conn.send(json.dumps(self.attach_event))
+            await conn.close()
+            return
         await conn.send(json.dumps({"type": "session.updated",
                                     "session": {"id": live_id, "status": "active", "model": "gpt-live-1"}}))
         if self.drop_after_attach:
@@ -398,10 +408,130 @@ def test_a_failed_create_releases_the_lease():
         h.openai.create_status = 500
         r = await h.post("/internal/sessions", _start_body())
         assert r.status_code == 502
-        assert r.json() == {"detail": "OpenAI refused the Live session (HTTP 500)"}
+        assert r.json() == {"code": "openai_refused",
+                            "message": "OpenAI refused the Live session (HTTP 500, code unreadable, "
+                                       "type unreadable)",
+                            "openai_status": 500, "openai_code": "unreadable", "openai_type": "unreadable"}
         assert len(h.broker.leases) == 1
         assert h.broker.holder is None and len(h.broker.releases) == 1
         assert h.sessions.get("vs_a1b2c3d4e5") is None
+
+    run(scenario)
+
+
+def _log_text(caplog) -> str:
+    records = [r for r in caplog.records if not r.name.startswith(FAKE_LOG)]
+    return "\n".join(r.getMessage() + " " + str(r.args) + " " + (r.exc_text or "") for r in records)
+
+
+def test_a_refused_create_says_openais_code_and_type_and_never_its_message(caplog):
+    """Measured 2026-11-04: OpenAI answered a Voice it pool account's create 403 and
+    nobody could see why. The code and type are kept; the message, which may quote
+    the request, is not."""
+    caplog.set_level(logging.DEBUG)
+    quoted = "sk-" + secrets.token_hex(24)
+
+    async def scenario(h: Harness):
+        h.openai.create_status = 403
+        h.openai.create_body = json.dumps({"error": {
+            "message": f"The plan behind {quoted} may not open a Live session.",
+            "code": "unsupported_plan", "type": "invalid_request_error",
+            "param": quoted}}).encode()
+        r = await h.post("/internal/sessions", _start_body())
+        assert r.status_code == 502
+        assert r.json() == {"code": "openai_refused",
+                            "message": "OpenAI refused the Live session (HTTP 403, code unsupported_plan, "
+                                       "type invalid_request_error)",
+                            "openai_status": 403, "openai_code": "unsupported_plan",
+                            "openai_type": "invalid_request_error"}
+        await h.settle()
+        assert h.broker.holder is None and len(h.broker.releases) == 1
+        return list(h.responses)
+
+    responses = run(scenario)
+    text = _log_text(caplog)
+    assert "403" in text and "unsupported_plan" in text and "invalid_request_error" in text
+    assert quoted not in text
+    assert all(quoted not in response for response in responses)
+
+
+@pytest.mark.parametrize("body", [
+    b"<html>403 Forbidden</html>",
+    b"",
+    b"\xff\xfe",
+    json.dumps({"error": "a string"}).encode(),
+    json.dumps({"error": {"code": None, "type": 7}}).encode(),
+    json.dumps({"error": {"code": "Bearer SK-SECRET", "type": "x" * 65}}).encode(),
+    json.dumps({"error": {"code": "a" + " " * 3, "type": "line\nbreak"}}).encode(),
+], ids=["html", "empty", "not-utf8", "not-an-object", "not-strings", "off-pattern", "whitespace"])
+def test_an_unreadable_refusal_reads_unreadable(body):
+    async def scenario(h: Harness):
+        h.openai.create_status = 403
+        h.openai.create_body = body
+        r = await h.post("/internal/sessions", _start_body())
+        assert r.status_code == 502
+        assert r.json()["openai_status"] == 403
+        assert r.json()["openai_code"] == "unreadable" and r.json()["openai_type"] == "unreadable"
+
+    run(scenario)
+
+
+def test_the_error_reader_keeps_only_the_pattern():
+    assert live.openai_error(json.dumps({"error": {"code": "rate_limit.v2-x", "type": "requests"}})) == (
+        "rate_limit.v2-x", "requests")
+    assert live.openai_error(b"{" + b" " * live.MAX_ERROR_BYTES + b"}") == ("unreadable", "unreadable")
+    assert live.openai_error(None) == ("unreadable", "unreadable")
+
+
+class _OneBearer:
+    """A credential with one bearer, built at runtime."""
+
+    async def bearer(self) -> cred.Bearer:
+        return cred.Bearer("at_" + secrets.token_hex(8))
+
+    async def refused(self) -> None:
+        return None
+
+
+def test_a_sideband_handshake_refusal_says_openais_code_and_type(caplog):
+    caplog.set_level(logging.DEBUG)
+    quoted = "sk-" + secrets.token_hex(24)
+    body = json.dumps({"error": {"message": f"echo {quoted}", "code": "session_not_found",
+                                 "type": "invalid_request_error"}})
+
+    def refuse(connection, request):
+        return connection.respond(403, body)
+
+    async def main():
+        async with serve(lambda conn: conn.close(), "127.0.0.1", 0, process_request=refuse,
+                         logger=logging.getLogger(FAKE_LOG)) as server:
+            port = server.sockets[0].getsockname()[1]
+            async with httpx.AsyncClient() as http:
+                api = live.LiveApi(http, ws_base=f"ws://127.0.0.1:{port}")
+                credential = _OneBearer()
+                with pytest.raises(live.LiveRefused) as raised:
+                    await api.attach(credential, "live_" + secrets.token_hex(6))
+        return raised.value
+
+    refused = asyncio.run(main())
+    assert (refused.status, refused.code, refused.type) == (403, "session_not_found", "invalid_request_error")
+    assert quoted not in str(refused) and quoted not in _log_text(caplog)
+    assert "session_not_found" in _log_text(caplog)
+
+
+def test_a_sideband_that_answers_with_an_error_event_is_a_refusal_with_its_code():
+    async def scenario(h: Harness):
+        quoted = "sk-" + secrets.token_hex(24)
+        h.openai.attach_event = {"type": "error", "error": {
+            "message": f"echo {quoted}", "code": "plan_not_allowed", "type": "invalid_request_error"}}
+        r = await h.post("/internal/sessions", _start_body())
+        assert r.status_code == 502
+        assert r.json()["code"] == "openai_refused"
+        assert (r.json()["openai_status"], r.json()["openai_code"], r.json()["openai_type"]) == (
+            None, "plan_not_allowed", "invalid_request_error")
+        assert quoted not in r.text
+        await h.settle()
+        assert h.broker.holder is None and len(h.broker.releases) == 1
 
     run(scenario)
 
