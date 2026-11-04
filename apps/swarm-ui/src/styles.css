@@ -11489,8 +11489,49 @@ span.sk-ttile { cursor: default; }
 .wfp-still.is-picked { border-color: var(--info); box-shadow: 0 0 0 1px var(--info); }
 .wfp-still-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: var(--t-meta); }
 .wfp-still-time { font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.wfp-walk { display: inline-flex; gap: 2px; }
-.wfp-walk-to { margin-left: 2px; font-size: var(--t-meta); }
+.wfp-walk { display: inline-flex; gap: 2px; min-width: 0; }
+/* A walk button carries its stage's name, so it is as wide as its words (the
+   inspector's 28px square cut "Stage 2" to "Stag" over the fold button), up
+   to a cap past which the name ellipses; on a phone the arrow alone. */
+.wfp-walk .wi-btn { display: inline-flex; align-items: center; width: auto; min-width: 28px; max-width: 10em; padding: 0 6px; white-space: nowrap; overflow: hidden; }
+.wfp-walk-to { margin-left: 2px; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-meta); }
+@media (max-width: 759px) {
+  .wfp-walk-to { display: none; }
+}
+/* THE PICKED STEP'S AGENT IN THE INSPECTOR (Workflows.tsx `StepAgent`): the
+   Agents split's own view, in the inspector's flow under the step's card.
+   `.drawer` is a fixed overlay and the split a grid column beside the
+   Agents list; here it is neither. Sticky with no offset, so it sits in flow
+   and `isOverlay` (focus.ts) reads it as a column, not a modal: it takes no
+   focus on open and holds no Tab. No list to resize or go back to, so no
+   divider and no back link; the inspector's own close and walk stay. */
+.wfp-agent { min-width: 0; }
+.wfp-agent > .ag-split.ctl-drawer {
+  position: sticky;
+  top: auto; right: auto; bottom: auto;
+  width: auto;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  border-left: none;
+  box-shadow: none;
+  z-index: auto;
+}
+.wfp-agent > .ag-split > .ag-divider,
+.wfp-agent > .ag-split > .ctl-agent-back { display: none; }
+/* ONE STOP AND ONE CLOSE FOR THE STEP: the step's card above carries Stop
+   (it knows the workflow and what stopping the step does to its dependants)
+   and the inspector's head carries ✕, so the agent header's own two step
+   aside; Copy link and Take control stay. */
+.wfp-agent .ag-head-stop,
+.wfp-agent .ag-head-close { display: none; }
+.wfp-agent > .ag-split > .ag-split-pane { flex: none; overflow: visible; }
+/* A log, a patch and a browser fill the height they are given: in the
+   inspector's scroll that is most of the viewport. */
+.wfp-agent > .ag-split > .ag-split-pane.is-logs,
+.wfp-agent > .ag-split > .ag-split-pane.is-changes,
+.wfp-agent > .ag-split > .ag-split-pane.is-browser { height: 70vh; }
 .wfp-step-state { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-meta); color: var(--text-dim); }
 .wfp-ov { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; font-size: var(--t-meta); }
 .wfp-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; }

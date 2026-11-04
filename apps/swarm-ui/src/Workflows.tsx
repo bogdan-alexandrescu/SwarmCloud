@@ -190,6 +190,8 @@ import './styles/workflows.css'
 import './styles/names.css'
 import { ownerQuestionsHold } from './Handoff'
 import { Inspector, startsFolded, useIsPhone } from './work/Inspector'
+import { AgentSplit } from './AgentSplit'
+import type { TaskPane } from './App'
 import { listNeedItems, workflowNeedItems } from './work/listNeeds'
 import { NeedsYou, mergeHeldBecause, type MergeNeed, type NeedKind, type NeedSelection } from './work/NeedsYou'
 import { StageGrid, chipKindOf, chipTimeOf, pullRequestOf, stageGridOf, tallyOf, walkStage } from './work/StageGrid'
@@ -2332,6 +2334,80 @@ function useSeen<T extends Element>(): [(node: T | null) => void, boolean] {
     return () => io.disconnect()
   }, [node])
   return [setNode, seen]
+}
+
+/** Where the step's agent stands in the inspector: the agent's own pane, as its address would name it. */
+type StepAgentAt = { pane: TaskPane; file: string | null; artifact: string | null; theater: boolean }
+
+const STEP_AGENT_PANES: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser']
+
+/**
+ * An address under the agent's own (`work/task/<id>/<pane>[/<name>][?theater=1]`)
+ * as the pane it names; null for an address elsewhere.
+ */
+export function stepAgentAt(base: string, to: string): StepAgentAt | null {
+  const bare = to.replace(/^[#/]+/, '')
+  if (bare !== base && !bare.startsWith(`${base}/`) && !bare.startsWith(`${base}?`)) return null
+  const [path = '', search = ''] = bare.slice(base.length).split('?')
+  const [seg = '', ...rest] = path.split('/').filter((s) => s !== '')
+  const pane = (STEP_AGENT_PANES as readonly string[]).includes(seg) ? (seg as TaskPane) : 'detail'
+  const name = rest.length === 0 ? null : decodeURIComponent(rest.join('/'))
+  return {
+    pane,
+    file: pane === 'changes' ? name : null,
+    artifact: pane === 'artifacts' ? name : null,
+    theater: pane === 'browser' && new URLSearchParams(search).get('theater') === '1',
+  }
+}
+
+/**
+ * THE PICKED STEP'S AGENT, IN THE INSPECTOR (graph-notes.md: "the inspector
+ * of one agent is the console's own agent view"; map row W6, frame
+ * graph-workflow-open). The Agents split's own view -- its header with Take
+ * control, Stop and Copy link, its tabs (Details, Browser, Logs, Changes,
+ * Children, Attempts, Artifacts, Checkpoints) and the open tab -- with its
+ * reads and polling unchanged, so watching the step's browser or reading its
+ * log no longer leaves the workflow page and the grid stays in view.
+ *
+ * The split is address-driven: its tabs `go` to `work/task/<id>/<pane>`.
+ * Here those addresses are held as the inspector's own state rather than
+ * written to the bar, because the page's address is the workflow's; any
+ * other address the split asks for (its close) closes the step.
+ */
+function StepAgent({ taskId, workflowId, onClose }: { taskId: string; workflowId: string; onClose: () => void }) {
+  // The agent's own address, as App writes it for the Agents split (`WORK`).
+  const base = `work/task/${encodeURIComponent(taskId)}`
+  const [at, setAt] = useState<StepAgentAt>({ pane: 'detail', file: null, artifact: null, theater: false })
+  // Until a tab is chosen the agent opens where the Agents split opens it (a
+  // running live browser on Browser); once chosen, Details is a choice too.
+  const [named, setNamed] = useState(false)
+  const go = useCallback(
+    (to: string) => {
+      const next = stepAgentAt(base, to)
+      if (next === null) {
+        onClose()
+        return
+      }
+      setAt(next)
+      setNamed(true)
+    },
+    [base, onClose],
+  )
+  return (
+    <div className="wfp-agent">
+      <AgentSplit
+        taskId={taskId}
+        pane={at.pane}
+        artifact={at.artifact}
+        file={at.file}
+        theater={at.theater}
+        detailNamed={named && at.pane === 'detail'}
+        closeTo={`workflows/${encodeURIComponent(workflowId)}`}
+        go={go}
+        base={base}
+      />
+    </div>
+  )
 }
 
 /**
@@ -6715,7 +6791,10 @@ function Board({
       startFolded={folded}
       openFor={step === null ? null : step.step_id}
       phoneOpen={step !== null || overviewSheet}
-      backLabel={step === null ? 'Workflow' : 'Overview'}
+      // A STEP'S SHEET GOES BACK TO WHERE IT CAME FROM: to the Overview sheet
+      // when it was opened from there (which stays open under it), else to the
+      // page, and says which.
+      backLabel={step === null || !overviewSheet ? 'Workflow' : 'Overview'}
     >
       {step === null ? (
         <WorkflowOverview
@@ -6745,6 +6824,13 @@ function Board({
           page
           reload={reload}
         />
+      )}
+      {step !== null && step.task_id && (
+        // THE STEP'S AGENT, under the step's own card (its verdict, merge
+        // checklist, await-input form and the same-step scrubber): keyed by
+        // the task, so walking to another stage opens that step's agent on
+        // its own first tab.
+        <StepAgent key={step.task_id} taskId={step.task_id} workflowId={id} onClose={closeStep} />
       )}
     </Inspector>
   )

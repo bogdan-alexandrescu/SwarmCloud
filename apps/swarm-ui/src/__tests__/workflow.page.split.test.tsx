@@ -20,13 +20,14 @@ const api = vi.hoisted(() => ({
   loadWorkflowUsage: vi.fn(),
   loadWorkflow: vi.fn(),
   cancelWorkflow: vi.fn(),
+  loadTask: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen, STAGE_ANY_STATE } = await import('../Workflows')
+const { WorkflowsScreen, STAGE_ANY_STATE, stepAgentAt } = await import('../Workflows')
 
 const T0 = Date.parse('2026-11-03T12:00:00.000Z')
 const iso = (offsetSeconds: number) => new Date(T0 + offsetSeconds * 1000).toISOString()
@@ -144,6 +145,12 @@ beforeEach(() => {
   api.loadWorkflowBoard.mockResolvedValue({ status: 'ok', data: fixture(), fetchedAt: T0 } satisfies Result<WorkflowBoard>)
   api.loadWorkflowUsage.mockResolvedValue({ status: 'empty', fetchedAt: T0 } satisfies Result<WorkflowUsage>)
   serveOwn(fixture())
+  api.loadTask.mockImplementation(async (id: string) => {
+    const t = fixture().taskById?.get(id)
+    return t === undefined
+      ? { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such task' } }
+      : { status: 'ok', data: t, fetchedAt: T0 }
+  })
   try {
     window.localStorage.clear()
   } catch {
@@ -216,6 +223,65 @@ describe('one workflow as two panes', () => {
     await waitFor(() => expect(dock()!.getAttribute('aria-label')).toBe('Workflow overview'))
   })
 
+  it("shows a picked step's agent in the inspector -- its header and its tabs -- under the step's card, and its tabs stay on the page", async () => {
+    const grid = await page()
+    fireEvent.click(chip('review-login')!)
+    await waitFor(() => expect(dock()!.getAttribute('aria-label')).toBe('Step review-login'))
+    const agent = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.wi .wi-dock .wfp-agent .ag-split')
+      expect(el, "no agent view in the inspector").toBeTruthy()
+      return el!
+    })
+    expect(agent.getAttribute('aria-label')).toBe('Agent t_rl')
+    const tabs = await waitFor(() => {
+      const t = within(agent).getAllByRole('tab')
+      expect(t.length).toBeGreaterThan(2)
+      return t
+    })
+    const names = tabs.map((t) => t.textContent ?? '')
+    expect(names.some((n) => n.startsWith('Details'))).toBe(true)
+    expect(names.some((n) => n.startsWith('Logs'))).toBe(true)
+    expect(names.some((n) => n.startsWith('Attempts'))).toBe(true)
+    // One Stop for the step, the card's: the agent header's own steps aside in the stylesheet.
+    expect(dock()!.querySelector('[aria-label="Stop step"]')).toBeTruthy()
+    expect(STYLES).toMatch(/\.wfp-agent \.ag-head-stop,\s*\.wfp-agent \.ag-head-close \{ display: none; \}/)
+    // A tab opens in the inspector; the address stays the workflow's and the grid stays.
+    const before = window.location.pathname
+    fireEvent.click(tabs.find((t) => (t.textContent ?? '').startsWith('Logs'))!)
+    await waitFor(() => expect(agent.querySelector('.ag-split-pane.is-logs')).toBeTruthy())
+    expect(window.location.pathname).toBe(before)
+    expect(document.querySelector('.wi-main .sg')).toBe(grid)
+    expect(dock()!.getAttribute('aria-label')).toBe('Step review-login')
+  })
+
+  it('reads an address under the agent as the pane it names, and any other as none', () => {
+    const base = 'work/task/t_rl'
+    expect(stepAgentAt(base, base)).toEqual({ pane: 'detail', file: null, artifact: null, theater: false })
+    expect(stepAgentAt(base, `${base}/logs`)?.pane).toBe('logs')
+    expect(stepAgentAt(base, `${base}/changes/src%2Fa.ts`)).toEqual({ pane: 'changes', file: 'src/a.ts', artifact: null, theater: false })
+    expect(stepAgentAt(base, `${base}/artifacts/report.md`)?.artifact).toBe('report.md')
+    expect(stepAgentAt(base, `${base}/browser?theater=1`)?.theater).toBe(true)
+    expect(stepAgentAt(base, 'workflows/wf_build')).toBeNull()
+    expect(stepAgentAt(base, 'work/task/t_rl2')).toBeNull()
+  })
+
+  it("names the phone sheet's way back as where it goes: the page, from a chip", async () => {
+    atWidth(390)
+    vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: q.includes('720px'),
+      media: q,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+    }))
+    await page()
+    fireEvent.click(chip('build-login')!)
+    await waitFor(() => expect(dock()?.getAttribute('aria-label')).toBe('Step build-login'))
+    const back = dock()!.querySelector<HTMLButtonElement>('.wi-back')!
+    expect(back.textContent).toBe('← Workflow')
+  })
+
   it('puts the merge held by questions under the grid, and Answer opens the questions in the Needs-you row', async () => {
     await page()
     const strip = screen.getByRole('region', { name: 'Merge' })
@@ -277,6 +343,10 @@ describe('one workflow as two panes', () => {
     const rules = STYLES.slice(STYLES.indexOf('/* One workflow\'s page as two panes'))
     expect(rules).toContain('.wfp-merge-row')
     expect(rules).toContain('.wfp-live-row')
+    // A walk button is as wide as its stage's name, never the 28px square that cut it.
+    expect(rules).toMatch(/\.wfp-walk \.wi-btn \{[^}]*width: auto/)
+    // The step's agent sits in the inspector's flow, never as the fixed overlay `.drawer` is.
+    expect(rules).toMatch(/\.wfp-agent > \.ag-split\.ctl-drawer \{[^}]*position: sticky/)
     for (const m of rules.slice(0, rules.indexOf('/* The Recent (5)')).matchAll(/(?:^|[^-])width:\s*(\d+)px/g)) {
       expect(Number(m[1])).toBeLessThanOrEqual(390)
     }
