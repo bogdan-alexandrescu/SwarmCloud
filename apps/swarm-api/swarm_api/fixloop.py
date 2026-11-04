@@ -798,7 +798,7 @@ def _drive(loop: _Loop) -> None:
     try:
         verdict = read_verdict(loop.ctx, loop.tenant_id, task)
     except (Decline, ValueError) as exc:
-        reason = exc.reason if isinstance(exc, Decline) else str(exc)
+        reason = exc.why if isinstance(exc, Decline) else str(exc)
         _park(loop, REVIEW_UNREADABLE, {"task_id": task, "round": k, "step": step,
                                         "head": head, "error": failure_text(reason)})
         return
@@ -853,7 +853,7 @@ def _round_zero(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, A
     try:
         verdict = read_verdict(loop.ctx, loop.tenant_id, review_id)
     except (Decline, ValueError) as exc:
-        reason = exc.reason if isinstance(exc, Decline) else str(exc)
+        reason = exc.why if isinstance(exc, Decline) else str(exc)
         _park(loop, REVIEW_UNREADABLE, {"task_id": review_id, "round": 0,
                                         "error": failure_text(reason)})
         return
@@ -917,8 +917,10 @@ def _next(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, Any], *
             _finish(loop, TaskState.CANCELLED, phase=CLOSED_OUTSIDE)
             return
         moved = _sha(getattr(pull, "head_sha", None))
-        if moved and moved != head:
-            # A person pushed: the next round starts from it, and judges it.
+        if kind == FIX_KIND and loop.rounds and moved and moved != head:
+            # A person pushed after a re-review judged its head: the next fix
+            # starts from theirs. A re-review always judges the head its fix
+            # pushed (§4.3), and round 1 the head the first review judged.
             head = moved
     seen = len(loop.rounds)
     refused = ""
@@ -1013,11 +1015,15 @@ def _drive_doc(ctx: Any, tenant: Any, doc: dict[str, Any], now: datetime,
 
 def _loops_of(db: Any, tenant_id: str, ended: Mapping[str, Any]) -> list[str]:
     """The loops an ended task concerns: the loop its signed round record
-    names, or its dependants on `fix-loop`."""
+    names, or its dependants on `fix-loop`. Both copies of a round's record
+    only nominate a loop: `_drive` reads the round as the loop's only from
+    its verified, signed record, and parks the loop when that does not name
+    it, so a round whose record was rewritten is caught on its own push."""
     loops: list[str] = []
-    record = _mapping(_dispatch(ended).get(FIX_LOOP_ROUND_FIELD))
-    if _task_id(record.get("loop_task")):
-        loops.append(record["loop_task"])
+    for record in (_mapping(_dispatch(ended).get(FIX_LOOP_ROUND_FIELD)),
+                   _mapping(_mapping(ended.get("metadata")).get(ROUND_METADATA_KEY))):
+        if _task_id(record.get("loop_task")):
+            loops.append(record["loop_task"])
     query = (db.collection(TASKS)
              .where(filter=FieldFilter("depends_on", "array_contains", ended["id"]))
              .limit(MAX_DEPENDANTS))

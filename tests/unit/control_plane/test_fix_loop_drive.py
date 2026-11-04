@@ -496,12 +496,15 @@ def test_an_unreadable_re_review_parks_review_unreadable(loop_client, db, object
     assert list(loop.round_steps()) == ["re-review:1"]
 
 
-def test_a_submitter_who_left_parks_round_refused(loop_client, db, objects):
+def test_a_submitter_who_left_parks_round_refused(loop_client, db, objects, monkeypatch):
     loop = Loop(loop_client, db, integrate_spec())
     finish(db, objects, loop.tasks["review"], verdict=NOT_YET)
     finish(db, objects, loop.tasks["fix"], git=pushed(loop.tasks["fix"], FIX_HEAD))
     park_running(loop)
-    loop.doc()["submitted_by"] = "carol@example.com"
+    # alice leaves eng after submitting (`submitted_by` is under the signature,
+    # so the directory is what changes, as it does in production).
+    groups = loop_client.app.state.ctx.authenticator._groups
+    monkeypatch.setitem(groups._mapping, "alice@example.com", ())
 
     push(loop_client, loop.tasks["fix"])
 
@@ -679,8 +682,10 @@ def _tick(client: TestClient, tenant_id: str = "eng"):
 
 def test_the_sweep_drives_a_loop_whose_last_round_ended_over_5_minutes_ago(
         loop_client, db, objects):
+    # Every parent ended over 5 minutes ago: the newest end is what the sweep reads.
     loop = Loop(loop_client, db, integrate_spec())
-    finish(db, objects, loop.tasks["review"], verdict=NOT_YET)
+    finish(db, objects, loop.tasks["review"], verdict=NOT_YET,
+           completed_at=NOW - timedelta(seconds=fixloop.SWEEP_AFTER_SECONDS + 2))
     finish(db, objects, loop.tasks["fix"], git=pushed(loop.tasks["fix"], FIX_HEAD),
            completed_at=NOW - timedelta(seconds=fixloop.SWEEP_AFTER_SECONDS + 1))
     park_running(loop)

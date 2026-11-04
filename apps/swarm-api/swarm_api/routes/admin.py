@@ -49,6 +49,7 @@ from ..heartbeats import heartbeat_grace_seconds
 from ..judgment import settings_keys
 from ..people import add_names, name_lookup
 from ..platform_secrets import SecretManagerMetadata, platform_secret_status
+from .. import fixloop
 from ..mergewake import wake_tenant
 from ..prgate import wake_tenant as wake_after_prs
 from ..mergetrain import tick_tenant as tick_merge_trains
@@ -1375,6 +1376,12 @@ def wake_merges(
     # empty queries and nothing else.
     trains = tick_merge_trains(ctx, tenant_id, limit=paged_limit(ctx, limit))
     ctx.metrics.admin_actions.labels(action="merge_train").inc()
+    # The fix loop's sweep (docs/design/fix-loop.md §4.3) rides it as well:
+    # a PARKED loop whose last round ended over five minutes ago and whose
+    # `task_finished` push was lost is driven as the push would have. It
+    # submits rounds as ordinary admitted tasks; it never leases (invariant 1).
+    loops = fixloop.sweep_tenant(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="fix_loop_sweep").inc()
     return {
         "tenant_id": tenant_id,
         "report": report.to_api(),
@@ -1387,6 +1394,8 @@ def wake_merges(
         "after_prs_failures": gates.failures,
         "merge_train": trains.to_api(),
         "merge_train_failures": trains.failures,
+        "fix_loop": loops.to_api(),
+        "fix_loop_failures": loops.failures,
     }
 
 
@@ -1586,6 +1595,10 @@ def task_finished_push(
     if fields.get("reason") != TASK_FINISHED or not task_id:
         return {"handled": False, "reason": fields.get("reason")}
     report = on_task_finished(ctx, task_id, tenant_id=fields.get("tenant_id"))
+    # A fix loop's round or parent ended: claim and submit its next round,
+    # park it for a person, or end it (docs/design/fix-loop.md §4.3, §4.4).
+    # Never raises for a loop: the per-tenant tick's sweep drives it again.
+    loops = fixloop.on_task_finished(ctx, task_id, tenant_id=fields.get("tenant_id"))
     # A QA target's discovery step ended: store the screens it found, or why
     # none (lane QA-DISCOVER). Never raises: every read of the target settles
     # it too, so a wake this could not use costs one read's delay.
@@ -1608,7 +1621,7 @@ def task_finished_push(
         task_id, store=ctx.store, rollups=ctx.rollups
     )
     ctx.metrics.admin_actions.labels(action="task_finished_push").inc()
-    return {"handled": True, "report": report.to_api()}
+    return {"handled": True, "report": report.to_api(), "fix_loop": loops.to_api()}
 
 
 @router.post("/outcomes/rollup")
