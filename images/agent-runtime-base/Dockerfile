@@ -1234,6 +1234,14 @@ RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shel
  && if [ -n "$missing" ]; then echo "toolbox smoke: missing or broken:$missing" >&2; exit 1; fi \
  && echo "toolbox smoke: $n tools ok"
 
+# The commit this image was built from, for the worker's build line
+# (agent_worker.buildinfo reads SWARM_GIT_SHA; part of #2688, the owner's pick
+# "add both"). scripts/build-images.sh and the checked-in recipes pass GIT_SHA
+# to every build. Declared last, so a new commit rebuilds no layer above it;
+# empty when a build passes none, and the worker then reports no commit.
+ARG GIT_SHA=""
+ENV SWARM_GIT_SHA=${GIT_SHA}
+
 # tini reaps orphaned grandchildren; the worker still terminates its own process
 # group itself, so signals reach exactly one direct child.
 ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "agent_worker"]
