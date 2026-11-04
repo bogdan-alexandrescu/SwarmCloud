@@ -115,8 +115,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-          | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+        # scripts/install-trivy.sh says why not trivy's own install.sh.
+        "${GITHUB_WORKSPACE}/scripts/install-trivy.sh" /usr/local/bin
         trivy --version
 
     - name: scan the recorded digests (nothing is promoted yet)
