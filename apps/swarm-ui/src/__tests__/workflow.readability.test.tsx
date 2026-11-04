@@ -384,10 +384,9 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
     const row = document.querySelector<HTMLElement>('.wf-table tr[data-step="fix"]')!
     expect(row.nextElementSibling?.querySelector('.wf-inspect'), 'a card was drawn under the row').toBeFalsy()
     expect(document.querySelector('.wf-panel'), 'a docked panel as well').toBeNull()
-    expect(document.querySelector('.wi.is-folded'), 'still folded, not drawn under the row').toBeTruthy()
-    // The rail opens it instead.
-    fireEvent.click(screen.getByRole('button', { name: 'Open the inspector' }))
+    // The pick opens the rail the page started folded, beside the rows.
     await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step fix"]')).toBeTruthy())
+    expect(document.querySelector('.wi.is-folded')).toBeNull()
     expect(document.querySelectorAll('.wf-inspect')).toHaveLength(1)
   })
 

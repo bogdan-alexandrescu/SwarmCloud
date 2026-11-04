@@ -500,20 +500,18 @@ describe('Cancel workflow asks for the id to be typed while a step runs (states.
 })
 
 describe('the picked step opens in the docked inspector, folded below 1366 and docked from it (#503, QAFIX5 QA-120)', () => {
-  it('folds the inspector to a rail below 1366, docks it open from there, with Open agent → and Stop step', async () => {
+  it('starts the inspector as a rail below 1366 and opens it on a pick, with Open agent → and Stop step', async () => {
     // Below the fold threshold the inspector starts as a rail, not a card
-    // stacked under the grid (the Graph Work redesign): the reader opens it.
+    // stacked under the grid (the Graph Work redesign); a pick opens it.
     const realWidth = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1100 })
     await page()
+    expect(document.querySelector('.wi.is-folded')).toBeTruthy()
     fireEvent.click(await waitFor(() => {
       const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="core"]')
       expect(chip).toBeTruthy()
       return chip!
     }))
-    expect(document.querySelector('.wi.is-folded')).toBeTruthy()
-    expect(document.querySelector('.wi-dock')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Open the inspector' }))
     const dock = await waitFor(() => {
       const d = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step core"]')
       expect(d).toBeTruthy()
