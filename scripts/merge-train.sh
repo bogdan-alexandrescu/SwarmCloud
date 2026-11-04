@@ -10,8 +10,9 @@
 # 2026-10-14). GitHub's merge queue would fix that, and is refused on a
 # user-owned repository (docs/ci.md, "Merging through the merge queue"). The
 # train is the same idea, run by a workflow: .github/workflows/merge-train.yml
-# runs `tick` every five minutes, and docs/runbooks/merge-train.md is how the
-# owner turns it on.
+# runs `tick` when a train's or a pull request's CI finishes, when `ready` is
+# added, and every five minutes as the fallback; docs/runbooks/merge-train.md
+# is how the owner turns it on.
 #
 # ONE TICK.
 #   * A train in flight (an open pull request from `train/<id>`) is judged at
@@ -90,7 +91,9 @@
 #       merge App's: the push, the train pull request, the merges, so each
 #       starts workflows as GITHUB_TOKEN events do not), REPO_DIR (a clone of
 #       the repository, main checked out), RUN_ID, RUN_ATTEMPT, RUN_URL,
-#       EVENT_NAME, MERGE_TRAIN, DRY_RUN_INPUT. Neither token is ever printed.
+#       EVENT_NAME, MERGE_TRAIN, DRY_RUN_INPUT, and on `workflow_run`
+#       WORKFLOW_RUN_HEAD_BRANCH (the finished run's head branch: a `train/`
+#       one only judges). Neither token is ever printed.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
@@ -907,10 +910,18 @@ cmd_tick() {
     handle_train "${newest}" "${train_on}"
     return
   fi
-  case "${EVENT_NAME:-schedule}" in
-    workflow_run)
-      summary "no train in flight"
-      ;;
+  # A train branch's own CI finishing only ever judges its train. Any other
+  # `workflow_run` (a pull request's CI finishing green, `ready` added through
+  # auto-merge's run) is one of the events that can make a pull request
+  # boardable, so with no train open it starts one, as a schedule tick does:
+  # that is exactly when it matters. The branch comes from the workflow's
+  # env:, never interpolated into a shell line.
+  local event="${EVENT_NAME:-schedule}"
+  if [[ "${event}" == "workflow_run" && "${WORKFLOW_RUN_HEAD_BRANCH:-}" == "${TRAIN_PREFIX}"* ]]; then
+    summary "no train in flight"
+    return 0
+  fi
+  case "${event}" in
     workflow_dispatch)
       start_train "${dry}" "" ""
       ;;
