@@ -98,6 +98,9 @@ def test_the_covered_fields_are_the_requests():
         # Contract request 136 (AQ-WORK-CONTRACT, part of #2688): the catalogue
         # plugins a workspace's steps may name.
         "plugins": ("allowed",),
+        # Contract request 138 (JEV-SUBMISSION-REVIEW, part of #2688): the
+        # workspace's opt-in to Jev's review of its work contracts.
+        "contract_review": ("enabled",),
     }
     with pytest.raises(TypeError):
         SETTINGS_MAC_FIELDS["top"] = ()  # type: ignore[index]
@@ -153,6 +156,22 @@ def test_the_plugins_block_signs_the_allowed_list_and_nothing_else():
     assert canonical_settings_block(
         tenant_id="team-b", block="plugins", fields={"allowed": ["gstack"]}
     ) != out
+
+
+def test_the_contract_review_block_signs_enabled_and_nothing_else():
+    """Contract request 138: the bytes swarm-api signed for the block before the
+    frozen list named it (`judgment._canonical_block`), so no MAC changes."""
+    out = canonical_settings_block(
+        tenant_id="eng", block="contract_review",
+        fields={"enabled": True, "set_at": "2026-11-04T00:00:00Z",
+                "set_by": "alice@example.com", "mac": {"v": 1}},
+    )
+    assert out == (
+        b'{"block":"contract_review","fields":{"enabled":true},'
+        b'"purpose":"swarm.settings/v1","tenant_id":"eng"}'
+    )
+    unset = canonical_settings_block(tenant_id="eng", block="contract_review", fields={})
+    assert json.loads(unset)["fields"] == {"enabled": None}
 
 
 @pytest.mark.parametrize("block", ["", "Merge", "tenant", "metadata"])

@@ -100,10 +100,7 @@ from swarm_jev.client import Transport, urllib_transport
 from swarm_common.admission import _snapshot
 from swarm_common.specsign import (
     SETTINGS_MAC_FIELDS,
-    SETTINGS_PURPOSE,
-    SpecNotCanonical,
     canonical_settings_block,
-    jcs,
 )
 
 from .admins import AUDIT_COLLECTION
@@ -410,37 +407,8 @@ def key_id(key: str) -> str:
     return hashlib.sha256(_KEY_ID_DOMAIN + key.encode("utf-8")).hexdigest()[:16]
 
 
-#: Blocks swarm-api signs that the FROZEN `SETTINGS_MAC_FIELDS` does not list
-#: yet, with their covered keys. Only swarm-api reads them, so no other
-#: service needs the projection; each is a contract request to move it into
-#: `swarm_common.specsign`. Their bytes are `canonical_settings_block`'s shape
-#: exactly (`_canonical_block`), and a block name here never equals a frozen
-#: one, so a MAC made for one block never verifies as another's.
-#:
-#: `contract_review` (jev-contract.md section 4.1, the owner's answer 9 of 3
-#: November 2026): the workspace's opt-in to swarm-api's Jev review of its
-#: work contracts at submission, written by `contractreview.ContractReviewStore`;
-#: contract request 138 moves it into the frozen list (the owner, 4 November 2026).
-API_SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = {
-    "contract_review": ("enabled",),
-}
-
-
-def _canonical_block(tenant_id: str, block: str, fields: Mapping[str, Any]) -> bytes:
-    """The bytes a block's MAC covers: the frozen `canonical_settings_block`
-    for a block it lists, and the same JCS shape for one of
-    `API_SETTINGS_MAC_FIELDS`."""
-    covered = API_SETTINGS_MAC_FIELDS.get(block)
-    if covered is None or block in SETTINGS_MAC_FIELDS:
-        return canonical_settings_block(tenant_id=tenant_id, block=block, fields=fields)
-    if not isinstance(tenant_id, str) or not tenant_id or not isinstance(fields, Mapping):
-        raise SpecNotCanonical(f"settings block {block!r} names no tenant or is not a map")
-    return jcs({"purpose": SETTINGS_PURPOSE, "tenant_id": tenant_id, "block": block,
-                "fields": {key: fields.get(key) for key in covered}})
-
-
 def _sig(key: str, tenant_id: str, block: str, fields: Mapping[str, Any]) -> bytes:
-    return hmac.new(key.encode("utf-8"), _canonical_block(tenant_id, block, fields),
+    return hmac.new(key.encode("utf-8"), canonical_settings_block(tenant_id=tenant_id, block=block, fields=fields),
                     hashlib.sha256).digest()
 
 
@@ -515,6 +483,9 @@ WRITER_FIELDS: Mapping[str, tuple[str, ...]] = {
     # (`plugins.PluginsStore.put`) writes and signs it, so a key rotation's
     # re-sign pass signs the stored list again rather than holding it.
     "plugins": ("allowed",),
+    # Contract request 138: PUT /v1/workspaces/{tenant_id}/contract-review
+    # (`contractreview.ContractReviewStore.put`) writes and signs it.
+    "contract_review": ("enabled",),
 }
 
 
@@ -534,28 +505,10 @@ RESIGN_UNSIGNED = "unsigned"    # no MAC, or one that verifies under no key: sig
 RESIGN_HELD = "held"            # carries a covered key no writer writes: never signed
 
 
-def _covered_by_block() -> dict[str, tuple[str, ...]]:
-    """Every block the pass signs, with its covered keys: the frozen
-    `SETTINGS_MAC_FIELDS`, then swarm-api's own `API_SETTINGS_MAC_FIELDS`
-    (a name in both is the frozen one's). Without the second, a key rotation
-    left `contract_review` signed under the dropped key, and a cut-over
-    tenant's opt-in read as off with nobody having turned it off."""
-    out = {block: tuple(covered) for block, covered in API_SETTINGS_MAC_FIELDS.items()}
-    out.update({block: tuple(covered) for block, covered in SETTINGS_MAC_FIELDS.items()})
-    return out
-
-
-def _unowned(block: str) -> tuple[str, ...]:
-    """`unowned_covered_keys` for a frozen block; none for one of
-    `API_SETTINGS_MAC_FIELDS`, whose swarm-api writer writes every key it
-    covers (`contractreview.ContractReviewStore.put` writes `enabled`)."""
-    return unowned_covered_keys(block) if block in SETTINGS_MAC_FIELDS else ()
-
-
 def _blocks(doc: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """(block, stored fields) for every block of `doc` that holds a covered key."""
     out: list[tuple[str, dict[str, Any]]] = []
-    for block, covered in _covered_by_block().items():
+    for block, covered in SETTINGS_MAC_FIELDS.items():
         fields = doc if block == TOP_BLOCK else doc.get(block)
         if isinstance(fields, Mapping) and any(k in fields for k in covered):
             out.append((block, dict(fields)))
@@ -563,7 +516,7 @@ def _blocks(doc: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 
 
 def _resign_status(tenant_id: str, block: str, fields: Mapping[str, Any], key: str) -> str:
-    if any(k in fields for k in _unowned(block)):
+    if any(k in fields for k in unowned_covered_keys(block)):
         return RESIGN_HELD
     if block_verifies(tenant_id, block, fields, (key,)):
         mac = fields.get(MAC_FIELD)
@@ -579,8 +532,8 @@ def resign_workspace_settings(db: Any, key: str, *, apply: bool,
     block it wrote `signed` and writes nothing.
 
     It writes ONLY each block's `mac`, computed over the covered values
-    (SETTINGS_MAC_FIELDS, and API_SETTINGS_MAC_FIELDS) as they are stored: no setting is changed, and a
-    key outside the lists is neither covered nor touched. The tenant is the
+    (SETTINGS_MAC_FIELDS) as they are stored: no setting is changed, and a
+    key outside the list is neither covered nor touched. The tenant is the
     DOCUMENT ID, never its `tenant_id` field, which a worker can rewrite. A
     block carrying a covered key no writer writes is `held`, never signed:
     signing it would sign a value only a forger can have put there. Each
@@ -602,7 +555,7 @@ def resign_workspace_settings(db: Any, key: str, *, apply: bool,
                 for block, fields in _blocks(snap.to_dict() or {})]
         for block, fields, status in plan:
             rows.append({"tenant_id": tid, "block": block, "status": status,
-                         "covered": {k: fields.get(k) for k in _covered_by_block()[block]}})
+                         "covered": {k: fields.get(k) for k in SETTINGS_MAC_FIELDS[block]}})
         if not apply or not any(st in (RESIGN_STALE, RESIGN_UNSIGNED) for _, _, st in plan):
             continue
         written += _resign_one(db, collection.document(tid), tid, key)
