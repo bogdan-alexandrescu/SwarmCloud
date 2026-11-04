@@ -35,7 +35,9 @@ const { TENANT_HEADER, TENANT_PREF, chosenTenant, forgetReads, tenantSwitchSnaps
 const { forgetToasts, Toaster } = await import('../components')
 
 const WF = 'wf_6d1f0c2a9b8e4f37a5c1'
-const WAIT = { timeout: 4000 }
+// The first test pays the page's cold render; under a loaded runner that alone
+// passed 4 s (the pre-publish guard run), so the waits allow for it.
+const WAIT = { timeout: 15_000 }
 const JSON_HEADERS = { 'content-type': 'application/json' }
 const T0 = Date.now()
 const iso = (ms: number) => new Date(T0 + ms).toISOString()
@@ -134,7 +136,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('a workflow 404 asks the person’s other workspaces', () => {
+describe('a workflow 404 asks the person’s other workspaces', { timeout: 30_000 }, () => {
   it('says which workspace holds it and offers the switch, without switching', async () => {
     serve(['eng'])
     render(<WorkflowsScreen view={`wf=${WF}`} />)
