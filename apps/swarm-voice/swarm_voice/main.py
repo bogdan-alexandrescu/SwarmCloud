@@ -21,7 +21,11 @@ Routes:
   "voice_pool_refused", "message"}` when its account is in use or none is
   registered, `message` being one sentence the voice can say. 409 also when
   the voice session already has a live one; 502 when OpenAI or the broker
-  failed (the status only). The lease is released when the session ends, when
+  failed. When OpenAI itself refused, the 502 says why: `{"code":
+  "openai_refused", "message", "openai_status", "openai_code", "openai_type"}`,
+  OpenAI's error code and type held to a closed pattern (live.openai_error;
+  never its message, which may quote the request), `openai_status` null for a
+  refusal sent on the sideband. The lease is released when the session ends, when
   its start fails and when OpenAI closes it; if swarm-voice dies, the broker's
   hold expires on its own (ten-minute TTL, renewed every four minutes).
   No person's own ChatGPT sign-in is read: there is no Secret Manager path for
@@ -77,7 +81,7 @@ from pydantic import BaseModel, Field, SecretStr
 from .accountlease import NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused, build_broker
 from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
-from .live import MAX_OFFER_BYTES, LiveApi, LiveError, SessionExists, Sessions
+from .live import MAX_OFFER_BYTES, LiveApi, LiveError, LiveRefused, SessionExists, Sessions
 from .planner import build_planner
 
 log = logging.getLogger("swarm_voice")
@@ -123,6 +127,13 @@ POOL_REFUSALS: dict[str, tuple[int, str, str]] = {
 }
 POOL_REFUSED_DEFAULT = (409, "voice_pool_refused",
                         "Voice it has no ChatGPT plan account set up yet, so this conversation can't start.")
+
+
+def openai_refusal(exc: LiveRefused) -> JSONResponse:
+    """swarm-voice's 502 for a Live call OpenAI refused: its status, code and type."""
+    return JSONResponse(status_code=502, content={
+        "code": "openai_refused", "message": str(exc), "openai_status": exc.status,
+        "openai_code": exc.code, "openai_type": exc.type})
 
 
 def pool_refusal(reason: str) -> JSONResponse:
@@ -223,6 +234,9 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             log.info("voice session %s: the Voice it pool leased no account (%s)",
                      body.voice_session_id, exc.reason)
             return pool_refusal(exc.reason)
+        except LiveRefused as exc:
+            log.warning("voice session %s: start failed: %s", body.voice_session_id, exc)
+            return openai_refusal(exc)
         except (CredentialError, LiveError) as exc:
             log.warning("voice session %s: start failed: %s", body.voice_session_id, exc)
             raise HTTPException(502, str(exc)) from None

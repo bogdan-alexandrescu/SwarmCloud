@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -82,6 +83,14 @@ class _Secrets:
     def access(self, name):  # noqa: ANN001
         return self.latest[name]
 
+    def ensure_secret(self, name, *, labels, accessors, region=None):  # noqa: ANN001
+        self.readers.setdefault(name, set())
+        self.accessors = getattr(self, "accessors", {})
+        self.accessors[name] = list(accessors)
+
+    def add_version(self, name, value):  # noqa: ANN001
+        self.latest[name] = value
+
     def set_worker_readers(self, name, *, readers, manages, revoke=True):  # noqa: ANN001
         before = self.readers.get(name, set())
         after = set(readers) if revoke else before | set(readers)
@@ -130,6 +139,24 @@ def _plan(client, accounts, owner: str, label: str, *, lend_to=(), pools=None) -
     return account.account_id
 
 
+def _key(client, accounts, owner: str, label: str) -> str:
+    """An OpenAI developer API key account in the Voice it pool, its `{base}`
+    written as the registration route writes it."""
+    from quota_broker import openai_api_key
+
+    account = accounts.register(owner, label, provider=openai_api_key.PROVIDER)
+    client.secrets.latest[accounts.secret_for(account)] = openai_api_key.serialise(
+        "sk-" + secrets.token_hex(24)
+    )
+    client.identity.as_platform()
+    moved = client.put(
+        f"/v1/accounts/{account.account_id}/pools",
+        json={"pools": [POOL_VOICE_IT], "confirm_label": label},
+    )
+    assert moved.status_code == 200, moved.text
+    return account.account_id
+
+
 def _reserve_lent(broker, client, accounts, owner: str, label: str) -> str:
     """A LENT account whose document says Voice it only. The move route
     refuses to make one (`pool_lent`), so the document is written directly:
@@ -149,7 +176,8 @@ def _lease(client, person: str = PERSON, session: str = "vs-1"):
     client.identity.as_voice()
     return client.post(
         "/v1/voice/lease",
-        json={"person": person, "voice_session_id": session, "provider": "openai"},
+        json={"person": person, "voice_session_id": session, "provider": "openai",
+              "capability": "live"},
     )
 
 
@@ -241,7 +269,7 @@ def test_a_reserved_account_is_listed_to_its_owner_only_when_asked(client, accou
 
 
 def test_a_person_not_in_the_pool_is_refused(client, accounts):
-    _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    _key(client, accounts, OWNER, "key-1")
     body = _lease(client, person=STRANGER).json()
     assert body["account_id"] is None and body["credential"] is None
     assert body["reason"] == "not_in_voice_pool"
@@ -255,7 +283,9 @@ def test_a_workspace_only_account_is_never_leased_to_voice_it(client, accounts):
 
 
 def test_the_listed_person_leases_renews_and_releases(client, accounts):
-    account_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    account_id = _key(client, accounts, OWNER, "key-1")
+    # One session at a time on this key, so the second below finds none free.
+    accounts.set_max_agents(account_id, 1)
     leased = _lease(client)
     assert leased.status_code == 200, leased.text
     body = leased.json()
@@ -300,8 +330,8 @@ def test_a_lost_race_for_one_account_leases_the_next_free_one(client, accounts, 
     refusal."""
     import quota_broker.main as broker_main
 
-    first = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
-    second = _plan(client, accounts, OWNER, "chatgpt-2", pools=[POOL_VOICE_IT])
+    first = _key(client, accounts, OWNER, "key-1")
+    second = _key(client, accounts, OWNER, "key-2")
     real = broker_main.acquire_hold
     lost: list[str] = []
 
@@ -318,7 +348,7 @@ def test_a_lost_race_for_one_account_leases_the_next_free_one(client, accounts, 
 
 
 def test_a_failed_credential_read_leaves_no_hold(client, accounts):
-    account_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    account_id = _key(client, accounts, OWNER, "key-1")
     client.secrets.latest.clear()
     failed = _lease(client)
     assert failed.status_code == 422
@@ -326,7 +356,7 @@ def test_a_failed_credential_read_leaves_no_hold(client, accounts):
 
 
 def test_only_swarm_voice_may_lease(client, accounts):
-    _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    _key(client, accounts, OWNER, "key-1")
     client.identity.as_tenant(ENG)
     refused = client.post(
         "/v1/voice/lease", json={"person": PERSON, "voice_session_id": "vs-1"}
@@ -335,17 +365,17 @@ def test_only_swarm_voice_may_lease(client, accounts):
 
 
 def test_the_lease_never_logs_the_token(client, accounts, caplog):
-    _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    _key(client, accounts, OWNER, "key-1")
     with caplog.at_level("DEBUG"):
         token = _lease(client).json()["credential"]["access_token"]
     assert token not in caplog.text
 
 
 def test_the_preferences_question_leases_nothing(client, accounts):
-    account_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    account_id = _key(client, accounts, OWNER, "key-1")
     client.identity.as_platform()
     body = client.get("/v1/voice/pool", params={"person": PERSON}).json()
-    assert body["account"]["label"] == "chatgpt-1" and body["reason"] == ""
+    assert body["account"]["label"] == "key-1" and body["reason"] == ""
     assert accounts.get(account_id).holds == ()
     assert client.get("/v1/voice/pool", params={"person": STRANGER}).json() == {
         "account": None,
@@ -373,47 +403,222 @@ def test_a_move_needs_the_platform_the_label_and_one_pool(client, accounts):
 
 
 def test_a_move_refuses_to_remove_a_pool_while_leased_from_it(client, accounts):
+    """A plan in both pools holding a task's lease cannot leave the workspace
+    pool until that lease ends; the Voice it pool, which it holds nothing of,
+    may go."""
     account_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_WORKSPACE, POOL_VOICE_IT])
-    assert _lease(client).json()["account_id"] == account_id
+    assert _assign(client, OWNER)["account_id"] == account_id
     client.identity.as_platform()
     refused = client.put(
         f"/v1/accounts/{account_id}/pools",
-        json={"pools": [POOL_WORKSPACE], "confirm_label": "chatgpt-1"},
+        json={"pools": [POOL_VOICE_IT], "confirm_label": "chatgpt-1"},
     )
     assert refused.status_code == 409
     assert refused.json()["code"] == "pool_in_use"
     assert accounts.get(account_id).pools == (POOL_WORKSPACE, POOL_VOICE_IT)
-    # The pool with no lease of it may go.
     kept = client.put(
         f"/v1/accounts/{account_id}/pools",
-        json={"pools": [POOL_VOICE_IT], "confirm_label": "chatgpt-1"},
+        json={"pools": [POOL_WORKSPACE], "confirm_label": "chatgpt-1"},
     )
     assert kept.status_code == 200, kept.text
 
 
-def test_an_account_in_both_pools_serves_both_within_its_agent_limit(client, accounts, broker):
+def test_a_plan_in_both_pools_serves_tasks_and_never_a_live_session(client, accounts, broker):
+    """OpenAI refused the ChatGPT plan for GPT-Live on 4 November 2026 (403
+    on /v1/live/sessions): a plan stays in the pools for codex steps, and a
+    Voice it session is never handed one, even when it is the only free
+    account in the Voice it pool."""
     account_id = _plan(client, accounts, OWNER, "chatgpt-1", lend_to=(ENG,),
                        pools=[POOL_WORKSPACE, POOL_VOICE_IT])
-    accounts.set_max_agents(account_id, 2)
-    # Out of the "one agent before its first reading" rule, so the cap decides.
-    from datetime import datetime, timedelta, timezone
-
-    from quota_broker.accounts import WindowReading
-
-    now = datetime.now(timezone.utc)
-    accounts.record_reading(
-        account_id,
-        {"five_hour": WindowReading(utilization=0.1, resets_at=now + timedelta(hours=3))},
-        observed_at=now,
-    )
     task = _assign(client, ENG)
     assert task["account_id"] == account_id
     session = _lease(client).json()
-    assert session["account_id"] == account_id
-    # Two holds, one of each pool, on one count: the cap is reached.
+    assert session["account_id"] is None and session["credential"] is None
+    assert session["reason"] == "no_voice_account_registered"
     holds = holds_from_firestore(broker.db.docs[f"accounts/{account_id}"]["holds"])
-    assert sorted(h.pool for h in holds) == [POOL_VOICE_IT, POOL_WORKSPACE]
-    assert _assign(client, ENG)["account_id"] is None
-    assert _lease(client, session="vs-2").json()["account_id"] is None
-    listing = accounts.get(account_id)
-    assert len(listing.live_holds(now)) == 2 <= listing.max_agents
+    assert [h.pool for h in holds] == [POOL_WORKSPACE]
+
+
+# -- an OpenAI developer API key: the Live-capable kind ------------------------
+
+
+def _register_key(client, *, label: str = "voice-key", lend_to=(), credential: str | None = None):
+    client.identity.as_platform()
+    return client.post(
+        "/v1/accounts",
+        json={
+            "owner_tenant": OWNER,
+            "label": label,
+            "provider": "openai-api",
+            "lend_to": list(lend_to),
+            "credential": credential if credential is not None else "sk-proj-" + secrets.token_hex(24),
+        },
+    )
+
+
+def test_a_registered_key_is_in_the_voice_it_pool_only_and_read_by_the_broker_alone(
+    client, accounts, caplog
+):
+    client.app.state.broker_service_account = "swarm-quota-broker@test-project.iam.gserviceaccount.com"
+    key = "sk-proj-" + secrets.token_hex(24)
+    with caplog.at_level("DEBUG"):
+        registered = _register_key(client, credential=key)
+    assert registered.status_code == 201, registered.text
+    assert key not in registered.text and key not in caplog.text
+    account = accounts.get(f"{OWNER}:voice-key")
+    assert account.provider == "openai-api"
+    assert account.pools == (POOL_VOICE_IT,)
+    assert account.voice_it_people == (PERSON,)
+    base = accounts.secret_for(account)
+    # One secret, the broker its only reader: no worker, no `-refresh`.
+    assert client.secrets.accessors == {
+        base: ["serviceAccount:swarm-quota-broker@test-project.iam.gserviceaccount.com"]
+    }
+    assert key in client.secrets.latest[base]
+    served = registered.json()["account"]
+    assert served["measured"] is False and served["windows"] == {}
+
+
+def test_a_key_is_refused_when_lent_or_not_a_key_or_from_a_workspace(client, accounts):
+    client.identity.as_tenant(OWNER)
+    from_tenant = client.post("/v1/accounts", json={
+        "owner_tenant": OWNER, "label": "voice-key", "provider": "openai-api",
+        "credential": "sk-proj-" + secrets.token_hex(24)})
+    assert from_tenant.status_code == 403, from_tenant.text
+    lent = _register_key(client, lend_to=(ENG,))
+    assert lent.status_code == 422, lent.text
+    assert "never lent" in lent.json()["message"]
+    pasted = "eyJ" + secrets.token_hex(24)
+    wrong = _register_key(client, credential=pasted)
+    assert wrong.status_code == 422, wrong.text
+    assert pasted not in wrong.text
+    assert accounts.list() == []
+    assert client.secrets.latest == {}
+
+
+def test_a_key_never_moves_into_the_workspace_pool_nor_serves_a_task(client, accounts):
+    account_id = _key(client, accounts, OWNER, "key-1")
+    client.identity.as_platform()
+    for pools in ([POOL_WORKSPACE], [POOL_WORKSPACE, POOL_VOICE_IT]):
+        refused = client.put(
+            f"/v1/accounts/{account_id}/pools", json={"pools": pools, "confirm_label": "key-1"}
+        )
+        assert refused.status_code == 422, refused.text
+    assert accounts.get(account_id).pools == (POOL_VOICE_IT,)
+    for tenant in (OWNER, ENG):
+        client.identity.as_tenant(tenant)
+        for provider in ("openai", "openai-api"):
+            body = client.post("/v1/accounts/assign", json={"provider": provider}).json()
+            assert body.get("account_id") is None, body
+
+
+def test_the_lending_route_never_binds_a_worker_to_a_key(client, accounts):
+    # Even an empty `lend_to` from the owner would bind the owner's worker as
+    # a reader of `{base}`: every agent of that tenant could read the key.
+    account_id = _key(client, accounts, OWNER, "key-1")
+    client.identity.as_tenant(OWNER)
+    for lend_to in ([], [ENG]):
+        refused = client.put(f"/v1/accounts/{account_id}/lending", json={"lend_to": lend_to})
+        assert refused.status_code == 422, refused.text
+        assert "OpenAI API key" in refused.json()["message"]
+    assert not any(client.secrets.readers.values()), client.secrets.readers
+    assert accounts.get(account_id).lend_to == ()
+
+
+def test_a_plan_registration_never_reuses_a_key_label(client, accounts):
+    # Registering a plan over a key's label would rewrite its provider and
+    # bind the owner's worker to `{base}`, whose older version holds the key.
+    account_id = _key(client, accounts, OWNER, "key-1")
+    before = dict(client.secrets.latest)
+    expires = datetime.now(timezone.utc) + timedelta(hours=8)
+    credential = json.dumps({"claudeAiOauth": {
+        "accessToken": "at-" + secrets.token_hex(12),
+        "refreshToken": "rt-" + secrets.token_hex(12),
+        "expiresAt": int(expires.timestamp() * 1000)}})
+    client.identity.as_platform()
+    refused = client.post("/v1/accounts", json={
+        "owner_tenant": OWNER, "label": "key-1", "provider": "anthropic",
+        "credential": credential})
+    assert refused.status_code == 422, refused.text
+    assert "OpenAI API key" in refused.json()["message"]
+    assert accounts.get(account_id).provider == "openai-api"
+    assert not any(client.secrets.readers.values()), client.secrets.readers
+    assert client.secrets.latest == before
+
+
+def test_a_live_session_leases_the_key_and_never_the_plan(client, accounts):
+    _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    key_id = _key(client, accounts, OWNER, "key-1")
+    accounts.set_max_agents(key_id, 1)
+    leased = _lease(client).json()
+    assert leased["account_id"] == key_id
+    credential = leased["credential"]
+    # The key alone: no plan account id, so swarm-voice sends no ChatGPT-Account-Id.
+    assert credential["kind"] == "api_key" and "account_id" not in credential
+    assert credential["access_token"].startswith("sk-")
+    # The key is held; the plan is still never offered.
+    second = _lease(client, session="vs-2").json()
+    assert second["account_id"] is None
+    assert second["reason"] == "no_voice_account_available"
+    renewed = client.post(
+        f"/v1/voice/lease/{key_id}/renew",
+        json={"assignment_id": leased["assignment_id"], "voice_session_id": "vs-1"},
+    )
+    assert renewed.json()["credential"] == credential
+
+
+def test_a_key_takes_sessions_up_to_its_limit_with_no_reading(client, accounts):
+    """A key has no usage window to read, so the 'one agent before its first
+    reading' rule would hold it to one session forever: its `max_agents`
+    decides instead."""
+    key_id = _key(client, accounts, OWNER, "key-1")
+    accounts.set_max_agents(key_id, 2)
+    assert _lease(client, session="vs-1").json()["account_id"] == key_id
+    assert _lease(client, session="vs-2").json()["account_id"] == key_id
+    assert _lease(client, session="vs-3").json()["account_id"] is None
+
+
+def test_a_lease_with_only_a_plan_in_the_pool_is_refused_before_any_hold(client, accounts):
+    account_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    body = _lease(client).json()
+    assert body["account_id"] is None and body["assignment_id"] is None
+    assert body["reason"] == "no_voice_account_registered"
+    assert accounts.get(account_id).holds == ()
+    client.identity.as_platform()
+    asked = client.get("/v1/voice/pool", params={"person": PERSON}).json()
+    assert asked == {"account": None, "reason": "no_voice_account_registered"}
+
+
+def test_an_unknown_capability_is_refused(client, accounts):
+    _key(client, accounts, OWNER, "key-1")
+    client.identity.as_voice()
+    refused = client.post(
+        "/v1/voice/lease",
+        json={"person": PERSON, "voice_session_id": "vs-1", "capability": "text"},
+    )
+    assert refused.status_code == 422, refused.text
+
+
+def test_a_key_is_neither_refreshed_nor_polled(client, accounts):
+    from datetime import datetime, timezone
+
+    from quota_broker.accounts import due_for_refresh
+    from quota_broker.usagepoll import UsagePoller
+
+    _key(client, accounts, OWNER, "key-1")
+    plan_id = _plan(client, accounts, OWNER, "chatgpt-1")
+    listed = accounts.list()
+    assert [a.account_id for a in due_for_refresh(listed, datetime.now(timezone.utc))] == [plan_id]
+    asked: list[str] = []
+
+    def fetch(token):  # noqa: ANN001
+        asked.append(token)
+        return {}
+
+    import logging
+
+    poller = UsagePoller(client.secrets, accounts, logger=logging.getLogger("t"),
+                         fetch=fetch, fetch_plan=fetch)
+    outcomes = poller.poll_round(listed)
+    assert [o.account_id for o in outcomes] == [plan_id]
+    assert len(asked) == 1
