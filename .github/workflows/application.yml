@@ -2096,13 +2096,9 @@ jobs:
           set -euo pipefail
           bin="${RUNNER_TEMP}/trivy-bin"
           mkdir -p "${bin}"
-          curl -sSfL --retry 5 --retry-all-errors -o "${RUNNER_TEMP}/trivy-install.sh" \
-            "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh"
-          for attempt in 1 2 3; do
-            if sh "${RUNNER_TEMP}/trivy-install.sh" -b "${bin}" "v${TRIVY_VERSION}"; then break; fi
-            [ "${attempt}" -lt 3 ] || exit 1
-            sleep $((10 * attempt))
-          done
+          # scripts/install-trivy.sh says why not trivy's own install.sh; its
+          # download retries itself, and a checksum mismatch is not retried.
+          scripts/install-trivy.sh "${bin}"
           echo "${bin}" >> "$GITHUB_PATH"
           "${bin}/trivy" --version
 

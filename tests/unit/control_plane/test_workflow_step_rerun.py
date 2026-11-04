@@ -217,3 +217,62 @@ def test_the_workflow_read_serves_each_rerun_step_once(client, db) -> None:
     assert wf["steps"]["test"] not in served and wf["steps"]["ship"] not in served
     assert wf["steps"]["build"] in served
     assert body["workflow"]["state"] not in {"FAILED", "CANCELLED"}
+
+
+def test_a_dead_lettered_step_is_rerun(client, db) -> None:
+    wf = submit_chain(client)
+    end(db, wf["steps"]["build"], "SUCCEEDED")
+    end(db, wf["steps"]["docs"], "SUCCEEDED")
+    end(db, wf["steps"]["test"], "DEAD_LETTERED", "runner_error")
+    end(db, wf["steps"]["ship"], "CANCELLED", "failed_parent")
+
+    response = rerun(client, wf, "test")
+
+    # MUTATION: offer a re-run on FAILED alone and a dead-lettered step stays dead.
+    assert response.status_code == 200, response.text
+    new_test = response.json()["replaced"]["test"]["to"]
+    assert db.docs[f"tasks/{new_test}"]["metadata"]["rerun_of"] == wf["steps"]["test"]
+    assert db.docs[f"tasks/{wf['steps']['test']}"]["state"] == "DEAD_LETTERED"
+
+
+def test_a_viewer_is_refused_and_nothing_is_written(db, tokens, group_map, objects, monkeypatch) -> None:
+    import secrets
+
+    from fastapi.testclient import TestClient
+
+    from swarm_api import refusals, roles
+    from swarm_api.auth import StaticTokenVerifier
+    from swarm_api.credentials import InMemoryCredentials
+    from swarm_api.deps import build_context
+    from swarm_api.groups import StaticGroups
+    from swarm_api.main import create_app
+    from swarm_api.metrics import ApiMetrics
+    from swarm_api.waker import NullWaker
+
+    from .conftest import NoForgeTokens, api_settings
+    from .test_roles_store import grant
+
+    monkeypatch.setenv(refusals.env_name("role_member_required"), "on")
+    ctx = build_context(
+        settings=api_settings(settings_key=secrets.token_hex(32)),
+        db=db, verifier=StaticTokenVerifier(tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
+        objects=objects, forge_tokens=NoForgeTokens(),
+    )
+    client = TestClient(create_app(ctx), raise_server_exceptions=False)
+    wf = submit_chain(client)
+    failed_at_test(db, wf)
+    assert ctx.roles is not None
+    grant(ctx.roles, "alice@example.com", roles.VIEWER)
+    tasks_before = sorted(k for k in db.docs if k.startswith("tasks/") and k.count("/") == 1)
+
+    response = rerun(client, wf, "test")
+
+    # MUTATION: drop `require_member` and a viewer spends what the steps spend.
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "role_member_required"
+    tasks_after = sorted(k for k in db.docs if k.startswith("tasks/") and k.count("/") == 1)
+    assert tasks_after == tasks_before
+    pointers = {s["step_id"]: s["task_id"]
+                for s in db.docs[f"workflows/{wf['workflow_id']}"]["steps"]}
+    assert pointers["test"] == wf["steps"]["test"]
