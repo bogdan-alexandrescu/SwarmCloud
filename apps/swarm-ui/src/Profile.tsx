@@ -5,7 +5,7 @@ import { chooseTenant, chosenTenant, subscribeTenant, type ApiError } from './fe
 import { atLeast, roleOf, type RoleName } from './roles'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
-import { displayNameOf, nameTenants, noteOwnName, type NamedTenantChoice } from './Spine'
+import { displayNameOf, nameTenants, noteOwnName, OWN_WORKSPACE_LABEL, type NamedTenantChoice } from './Spine'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { humaniseUntil, timeAgo } from './types'
 import { accountName } from './accountName'
@@ -39,7 +39,7 @@ import type {
  *   5. your Claude accounts.
  *
  * THE PAGES THAT OWN A THING STAY ITS SOURCE. Each summary links to its owning
- * page: Config › Workspace Settings › Workspace setup, Config › GitHub access,
+ * page: Admin › Workspaces › <workspace> › Setup, Config › GitHub access,
  * Settings › API keys, Capacity › Accounts. Each link is the page's own Config
  * path (CONFIG-COPY; part of #2157), never the old address its redirect reads.
  * A GitHub row for a workspace other than the acting one switches workspace
@@ -72,9 +72,18 @@ import type {
 
 const PROFILE_ROUTE = 'GET /v1/profile'
 
-/** Config › Workspace Settings › Workspace setup (Work › Setup until CONFIG-NAV), at its own path. */
+/** The selected workspace's Setup tab (Config › Workspace Settings › Workspace setup until the admin routes lane), at its own path. */
 const SETUP_PATH = addressToPath(WORKSPACE_SETUP_ADDRESS)
-const SETUP_LABEL = 'Config › Workspace Settings › Workspace setup'
+
+/**
+ * The words for SETUP_PATH: Admin › Workspaces › <the acting workspace's
+ * name> › Setup, the name as its page's breadcrumb draws it.
+ */
+function setupLabel(p: Profile): string {
+  const ws = p.workspaces.find((w) => w.is_acting)
+  const name = ws === undefined ? null : ws.kind === 'user' ? OWN_WORKSPACE_LABEL : (displayNameOf(ws.display_name) ?? ws.tenant_id)
+  return workspacePageWords(name, 'Setup')
+}
 /** Config › GitHub access (Work › Access until CONFIG-NAV), at its own path. */
 const ACCESS_PATH = addressToPath('config/github')
 const ACCESS_LABEL = 'Config › GitHub access'
@@ -171,23 +180,75 @@ export function useWorkspaceRole(): { tenant: string; role: string } | null {
  */
 const ROLE_READ_REUSE_MS = 30_000
 
-let roleRead: { tenant: string | null; at: number; answer: Promise<{ tenant: string; role: string } | null> } | null = null
+let meRead: { tenant: string | null; at: number; answer: Promise<MeWithRole | null> } | null = null
 
-function sharedRoleRead(chosen: string | null): Promise<{ tenant: string; role: string } | null> {
+/**
+ * One `GET /v1/tenants/me` for the selected workspace, reused for
+ * ROLE_READ_REUSE_MS by every gate and every workspace name on the page.
+ */
+function sharedMeRead(chosen: string | null): Promise<MeWithRole | null> {
   const now = Date.now()
-  if (roleRead !== null && roleRead.tenant === chosen && now - roleRead.at < ROLE_READ_REUSE_MS) return roleRead.answer
+  if (meRead !== null && meRead.tenant === chosen && now - meRead.at < ROLE_READ_REUSE_MS) return meRead.answer
   // Called inside a promise, so a read that throws before it returns (not only
   // one that rejects) leaves the role unknown -- no gate, the server decides --
   // instead of an error thrown out of every screen that draws a gate.
-  const answer = Promise.resolve().then(() => loadMe({ frame: true })).then((r) => {
-    if (r.status !== 'ok' && r.status !== 'stale') return null
-    const me = r.data as MeWithRole
-    const name = me.role?.name
-    if (typeof name !== 'string' || name === '') return null
-    return { tenant: me.tenant?.tenant_id ?? chosen ?? 'this workspace', role: name }
-  }, () => null)
-  roleRead = { tenant: chosen, at: now, answer }
+  const answer = Promise.resolve().then(() => loadMe({ frame: true })).then(
+    (r) => (r.status === 'ok' || r.status === 'stale' ? (r.data as MeWithRole) : null),
+    () => null,
+  )
+  meRead = { tenant: chosen, at: now, answer }
   return answer
+}
+
+function sharedRoleRead(chosen: string | null): Promise<{ tenant: string; role: string } | null> {
+  return sharedMeRead(chosen).then((me) => {
+    const name = me?.role?.name
+    if (me === null || typeof name !== 'string' || name === '') return null
+    return { tenant: me.tenant?.tenant_id ?? chosen ?? 'this workspace', role: name }
+  })
+}
+
+/**
+ * THE SELECTED WORKSPACE'S NAME, as its own page's breadcrumb draws it
+ * (WorkspacePage): "Your workspace" for the person's own, else its display
+ * name, else its id. Null while `GET /v1/tenants/me` is read and when it
+ * failed, read again on every workspace switch.
+ */
+export function useWorkspaceName(): string | null {
+  const chosen = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
+  const [known, setKnown] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    setKnown(null)
+    void sharedMeRead(chosen).then((me) => {
+      if (!live) return
+      const t = me?.tenant
+      if (t === undefined || t === null || typeof t.tenant_id !== 'string') return setKnown(null)
+      setKnown(t.kind === 'user' ? OWN_WORKSPACE_LABEL : (displayNameOf(t.display_name) ?? t.tenant_id))
+    })
+    return () => {
+      live = false
+    }
+  }, [chosen])
+  return known
+}
+
+/**
+ * WHERE A WORKSPACE'S SETUP AND SETTINGS ARE, IN WORDS (admin routes lane;
+ * part of #2688): the selected workspace's own page, Admin › Workspaces ›
+ * <its name> › Setup or Settings. Config › Workspace Settings left the Config
+ * panel for that page; "this workspace" while its name is not known.
+ */
+export function workspacePageWords(name: string | null, tab: 'Setup' | 'Settings'): string {
+  return `Admin › Workspaces › ${name ?? 'this workspace'} › ${tab}`
+}
+
+/**
+ * workspacePageWords for the selected workspace, its name read where the
+ * words are drawn, so a page that does not draw them makes no read.
+ */
+export function WorkspaceTabWords({ tab }: { tab: 'Setup' | 'Settings' }) {
+  return <>{workspacePageWords(useWorkspaceName(), tab)}</>
 }
 
 /**
@@ -435,7 +496,7 @@ function YouCard({ p, choices, disabled, save }: { p: Profile; choices: readonly
 
   const needsSetup = p.workspaces.every((w) => !(w.kind === 'user' && w.selectable))
   return (
-    <Card title="You" action={<CardLink href={SETUP_PATH}>{SETUP_LABEL}</CardLink>}>
+    <Card title="You" action={<CardLink href={SETUP_PATH}>{setupLabel(p)}</CardLink>}>
       <dl className="pf-facts">
         <dt>Email</dt>
         <dd>{p.identity.email}</dd>
@@ -502,7 +563,7 @@ function YouCard({ p, choices, disabled, save }: { p: Profile; choices: readonly
           </li>
         ))}
       </ul>
-      {needsSetup && <p className="ur-small">You have no ready personal workspace. Request one on {SETUP_LABEL}.</p>}
+      {needsSetup && <p className="ur-small">You have no ready personal workspace. Request one on {setupLabel(p)}.</p>}
       {p.workspaces.length === 0 && <p className="ur-small">You are not in any workspace yet.</p>}
       <DefaultEditor p={p} disabled={disabled} save={save} />
     </Card>
@@ -922,7 +983,7 @@ function ClaudeAccountsCard({ p }: { p: Profile }) {
       <p className="ur-small">
         {/* The period sits inside the link: .c-link is inline-flex, so once this long label wraps
             it becomes a block and a period after </a> lands on a line of its own at 390px. */}
-        You have no personal workspace yet, which is where your own accounts live. <a className="c-link" href={SETUP_PATH}>Request one on {SETUP_LABEL}.</a>
+        You have no personal workspace yet, which is where your own accounts live. <a className="c-link" href={SETUP_PATH}>Request one on {setupLabel(p)}.</a>
       </p>
     )
   } else {
