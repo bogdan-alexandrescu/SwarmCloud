@@ -68,9 +68,11 @@
 # Subcommands. The first five are pure -- files in, lines out, no network --
 # and tests/unit/scripts/test_merge_train.py runs them:
 #
-#   select --prs <gh pr list json> --required <names file> [--allow-unknown-mergeable]
+#   select --prs <gh pr list json> --required <names file>
+#          [--allow-unknown-mergeable | --recheck-unknown]
 #       Who may board. Prints `<N>\t<head sha>\t<title>` per pull request,
-#       oldest first.
+#       oldest first. --recheck-unknown (needs GH_REPO) re-reads an otherwise
+#       eligible UNKNOWN pull request with `gh pr view`: the one network read.
 #   judge --check-runs <json> --statuses <json> --required <names file> [--workflow-runs <json>]
 #       A head's checks, each by the latest run of each event (the Actions
 #       runs give each check suite's event): `verdict\t<green|red|pending>`, then
@@ -103,12 +105,18 @@ STATE_OPEN="<!-- merge-train-state"
 STATE_CLOSE="-->"
 # Four, the owner's brief: a red train of four is found in two more trains.
 MAX_PRS="${MERGE_TRAIN_MAX_PRS:-4}"
+# A pull request GitHub is still computing the mergeability of is read this
+# many times in all, this many seconds apart: GitHub computes it in a few
+# seconds once asked, and a longer wait holds the whole tick. One still
+# UNKNOWN after that is left for the next tick, five minutes on.
+MERGEABLE_READS="${MERGE_TRAIN_MERGEABLE_READS:-3}"
+MERGEABLE_WAIT_SECONDS="${MERGE_TRAIN_MERGEABLE_WAIT_SECONDS:-3}"
 # Ninety minutes: ci-gate gives up on terraform.yml at 90 (CI_GATE_WAIT in
 # application.yml), so a train still pending after that is not going to go
 # green by waiting, and every `ready` pull request behind it is held.
 MAX_AGE_MINUTES="${MERGE_TRAIN_MAX_AGE_MINUTES:-90}"
 
-usage() { sed -n '2,95p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,93p' "$0" | sed 's/^# \{0,1\}//'; }
 
 is_number() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
@@ -130,17 +138,35 @@ required_json() {
   printf '%s' "${json}"
 }
 
+reread_mergeable() {
+  # The single-pull-request read, which makes GitHub compute a mergeability
+  # the list reports as UNKNOWN. Prints MERGEABLE, CONFLICTING or UNKNOWN; a
+  # read that fails counts as UNKNOWN, so the pull request waits a tick.
+  local number="$1" reads=0 state=""
+  while [[ "${reads}" -lt "${MERGEABLE_READS}" ]]; do
+    [[ "${reads}" -eq 0 ]] || sleep "${MERGEABLE_WAIT_SECONDS}"
+    reads=$((reads + 1))
+    state="$(gh pr view "${number}" --repo "${GH_REPO}" --json mergeable --jq .mergeable </dev/null 2>/dev/null)" || state=""
+    [[ "${state}" == "UNKNOWN" || -z "${state}" ]] || break
+  done
+  printf '%s\n' "${state:-UNKNOWN}"
+}
+
 cmd_select() {
-  local prs="" required="" unknown=false
+  local prs="" required="" unknown=false recheck=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --prs) [[ $# -ge 2 ]] || die "--prs needs a value"; prs="$2"; shift 2 ;;
       --required) [[ $# -ge 2 ]] || die "--required needs a value"; required="$2"; shift 2 ;;
       --allow-unknown-mergeable) unknown=true; shift ;;
+      --recheck-unknown) recheck=true; shift ;;
       *) die "select: unknown argument: $1" ;;
     esac
   done
   [[ -f "${prs}" ]] || die "select: no --prs file"
+  [[ "${unknown}" == false || "${recheck}" == false ]] \
+    || die "select: --allow-unknown-mergeable and --recheck-unknown are exclusive"
+  [[ "${recheck}" == false || -n "${GH_REPO:-}" ]] || die "select: --recheck-unknown needs GH_REPO"
   local req
   req="$(required_json "${required}")"
   # The status rollup holds check runs (status + conclusion) and commit
@@ -157,7 +183,15 @@ cmd_select() {
   # GitHub has not recomputed yet (UNKNOWN, as every open one is for a while
   # after a train lands): only for a bisection's named half, which compose
   # checks for conflicts itself. CONFLICTING never boards.
-  jq -r --argjson required "${req}" --arg prefix "${TRAIN_PREFIX}" --argjson unknown "${unknown}" '
+  # --recheck-unknown (TRAIN-BOARDS-UNKNOWN, part of #2688; epic #3179): right
+  # after a landing the list reads every open pull request UNKNOWN, and a tick
+  # boarding only MERGEABLE boarded nothing. Each otherwise eligible UNKNOWN
+  # one is read once more on its own (reread_mergeable) and boards only on
+  # MERGEABLE; one still UNKNOWN is left for the next tick.
+  local keep_unknown="${unknown}"
+  [[ "${recheck}" == false ]] || keep_unknown=true
+  local n sha mergeable title
+  jq -r --argjson required "${req}" --arg prefix "${TRAIN_PREFIX}" --argjson unknown "${keep_unknown}" '
     def good: . as $c | ["SUCCESS", "SKIPPED", "NEUTRAL"] | index($c) != null;
     def bad: . as $c | ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED",
                         "STARTUP_FAILURE", "STALE", "ERROR"] | index($c) != null;
@@ -187,8 +221,17 @@ cmd_select() {
     ]
     | sort_by(.number)
     | .[]
-    | "\(.number)\t\(.headRefOid)\t\(.title | gsub("[\\t\\r\\n]"; " "))"
-  ' "${prs}"
+    | "\(.number)\t\(.headRefOid)\t\(.mergeable)\t\(.title | gsub("[\\t\\r\\n]"; " "))"
+  ' "${prs}" | while IFS=$'\t' read -r n sha mergeable title; do
+    if [[ "${recheck}" == true && "${mergeable}" == "UNKNOWN" ]]; then
+      mergeable="$(reread_mergeable "${n}")"
+      if [[ "${mergeable}" != "MERGEABLE" ]]; then
+        info "#${n} does not board: its mergeability reads ${mergeable} on a second read"
+        continue
+      fi
+    fi
+    printf '%s\t%s\t%s\n' "${n}" "${sha}" "${title}"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -553,7 +596,6 @@ start_train() {
   # bisection), or empty for the pool; $3 the suspects to carry.
   local dry="$1" explicit="$2" suspects="$3"
   local eligible="${WORK}/eligible.tsv" chosen="${WORK}/chosen.tsv"
-  cmd_select --prs "${WORK}/prs.json" --required "${WORK}/required.txt" >"${eligible}"
   : >"${chosen}"
   local n sha title count=0
   if [[ -n "${explicit}" ]]; then
@@ -562,6 +604,7 @@ start_train() {
       awk -F'\t' -v n="${n}" '$1 == n' "${eligible}" >>"${chosen}"
     done
   else
+    cmd_select --prs "${WORK}/prs.json" --required "${WORK}/required.txt" --recheck-unknown >"${eligible}"
     while IFS=$'\t' read -r n sha title; do
       [[ "${count}" -lt "${MAX_PRS}" ]] || break
       guards_pass "${n}" || continue
