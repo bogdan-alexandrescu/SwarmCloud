@@ -200,8 +200,8 @@ describe('FixLoopStepCard', () => {
     const list = screen.getByRole('list', { name: 'Fix loop rounds' })
     const links = within(list).getAllByRole('link')
     expect(links.map((a) => a.textContent)).toEqual(['re-review:1', 'review-fix:2'])
-    expect(links[0].getAttribute('href')).toContain('t_rr1')
-    expect(links[1].getAttribute('href')).toContain('t_rf2')
+    expect(links[0]!.getAttribute('href')).toContain('t_rr1')
+    expect(links[1]!.getAttribute('href')).toContain('t_rf2')
     expect(within(list).getByText(/NOT_YET/)).toBeTruthy()
   })
 
@@ -295,9 +295,9 @@ describe('the two API calls', () => {
       ['/v1/workflows/wf_loop/fix-loop/rounds', 'POST'],
       ['/v1/workflows/wf_loop/fix-loop/end', 'POST'],
     ])
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ note: 'a note' })
-    expect(JSON.parse(String(calls[1].init?.body))).toEqual({})
-    expect(JSON.parse(String(calls[2].init?.body))).toEqual({ outcome: 'stop' })
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ note: 'a note' })
+    expect(JSON.parse(String(calls[1]!.init?.body))).toEqual({})
+    expect(JSON.parse(String(calls[2]!.init?.body))).toEqual({ outcome: 'stop' })
   })
 })
 

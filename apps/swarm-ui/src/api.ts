@@ -2254,6 +2254,43 @@ export async function rerunWorkflowStep(workflowId: string, stepId: string): Pro
   return (await write(target, 'POST')) as Result<StepRerunResult>
 }
 
+/**
+ * A FIX LOOP PARKED FOR A PERSON: ADD A ROUND, OR STOP IT.
+ * `POST /v1/workflows/{id}/fix-loop/rounds` `{note?}` and
+ * `POST /v1/workflows/{id}/fix-loop/end` `{outcome: "stop"}`
+ * (apps/swarm-api/swarm_api/routes/fix_loop.py, docs/design/fix-loop.md §4.5).
+ * Any full member of the workflow's tenant may answer (BGD Q4 (a)); one round
+ * is added, never past `FIX_LOOP_ROUNDS_CEILING`. The note is optional, at most
+ * `FIX_LOOP_NOTE_MAX_BYTES`, and the server redacts it before storing it. Stop
+ * ends the loop FAILED `fix_loop_exhausted`; the caller confirms first (the
+ * workflow page's `FixLoopStepCard`). A 409 says the loop is not parked for a
+ * person, or is at the ceiling. The fixture build sends nothing.
+ */
+export async function addFixLoopRound(workflowId: string, note: string | null): Promise<Result<FixLoopAnswer>> {
+  const target = route('/v1/workflows/{id}/fix-loop/rounds', { id: workflowId })
+  if (USE_FIXTURES) return fixtureRefusedFixLoop(target)
+  return (await write(target, 'POST', note === null ? {} : { note })) as Result<FixLoopAnswer>
+}
+
+export async function endFixLoop(workflowId: string): Promise<Result<FixLoopAnswer>> {
+  const target = route('/v1/workflows/{id}/fix-loop/end', { id: workflowId })
+  if (USE_FIXTURES) return fixtureRefusedFixLoop(target)
+  return (await write(target, 'POST', { outcome: 'stop' })) as Result<FixLoopAnswer>
+}
+
+function fixtureRefusedFixLoop(target: ApiRoute): Result<FixLoopAnswer> {
+  noteFixtureProbe(target, 0, false)
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build drives no fix loops.' },
+  }
+}
+
+/** Only what this client reads of either answer (`fixloop.add_rounds` / `fixloop.stop`). */
+export interface FixLoopAnswer {
+  fix_loop: { task_id?: string; max_rounds?: number; park_phase?: string | null; state?: string | null }
+}
+
 /** What `rerun_workflow_step` answers: each re-run step's old and new task id. */
 export interface StepRerunResult {
   workflow_id: string

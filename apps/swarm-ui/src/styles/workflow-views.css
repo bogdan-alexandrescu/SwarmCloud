@@ -46,3 +46,12 @@
   background-image: linear-gradient(var(--s-live), var(--s-live)); background-size: 100% 50%; background-position: center; background-repeat: no-repeat;
   border-right: 2px dashed var(--text);
 }
+
+/* THE FIX LOOP (docs/design/fix-loop.md §6.2, FL-UI): the step row's `round k
+   of N` line beside the step id, and the card's rounds and person actions. */
+.wf-loop-line { margin-left: var(--ctl-s2); font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+.wf-loop-line[data-person] { color: var(--text); }
+.wf-loop-rounds { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font: var(--t-micro)/var(--lh-micro) var(--mono); }
+.wf-loop-acts { display: flex; flex-direction: column; gap: var(--ctl-s2); }
+.wf-loop-note { display: flex; flex-direction: column; gap: 4px; }
+.wf-loop-note textarea { width: 100%; font: var(--t-meta)/var(--lh-meta) var(--font); }

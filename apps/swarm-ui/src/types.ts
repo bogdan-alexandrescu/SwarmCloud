@@ -1147,6 +1147,8 @@ export interface TaskDispatch {
   role: DispatchRole | null
   /** Upstream TASK ids the integrator must apply, in topological order. */
   integrates: string[]
+  /** A `fix-loop` step's signed block (FL-SUBMIT), only on that step; `fixLoopOf` reads it. */
+  fix_loop?: FixLoopBlock | null
 }
 
 function isStrategy(v: unknown): v is DispatchStrategy {
@@ -4146,6 +4148,177 @@ export function stepState(
   return { kind: 'state', state: task.state, task }
 }
 
+// ---------------------------------------------------------------------------
+// The fix loop  (docs/design/fix-loop.md §6.2, lane FL-UI, part of #2509)
+// ---------------------------------------------------------------------------
+// A `fix-loop` workflow step is a control-plane agent: no pod, no lease. Its
+// rounds are ordinary agents appended to the workflow as `review-fix:<k>` /
+// `re-review:<k>` steps (swarm_api/fixloop.py). What this file reads of it:
+// the signed block in `dispatch.fix_loop` (`codec.dispatch_of`), the loop's
+// own record in `metadata.fix_loop_state`, and `result_summary.fix_loop`.
+
+/** The catalogue profile (BGD Q10 (a)); `validation.FIX_LOOP_PROFILE`. */
+export const FIX_LOOP_PROFILE = 'fix-loop'
+/** `max_rounds` when absent, and its range (BGD Q5 (a)), as the server re-reads it. */
+export const FIX_LOOP_DEFAULT_ROUNDS = 3
+export const FIX_LOOP_MIN_ROUNDS = 1
+export const FIX_LOOP_MAX_ROUNDS = 5
+/** The most rounds any loop runs, with every round a person added (BGD Q4 (a)); `fixloop.FIX_LOOP_ROUNDS_CEILING`. */
+export const FIX_LOOP_ROUNDS_CEILING = 10
+/** A person's note, at most this many UTF-8 bytes; `fixloop.NOTE_MAX_BYTES`. */
+export const FIX_LOOP_NOTE_MAX_BYTES = 4 * 1024
+
+/** The signed `dispatch.fix_loop` block, as `codec.dispatch_of` serves it (masked). */
+export interface FixLoopBlock {
+  review: string
+  fix?: string | null
+  max_rounds?: number | null
+}
+
+/** One round of the loop: `fixloop._summary`'s keys. `kind` is `fix` or `review`. */
+export interface FixLoopRound {
+  round: number
+  kind: 'fix' | 'review' | string
+  task_id?: string | null
+  workflow_id?: string | null
+  head?: string | null
+  start_head?: string | null
+  pushed_head?: string | null
+  verdict?: string | null
+  findings_count?: number | null
+  /** The round's task state once it ended; absent while it runs. */
+  state?: string | null
+  error?: string | null
+  cost_usd?: number | null
+}
+
+/** A person's added rounds (`fixloop.add_rounds`). */
+export interface FixLoopAdded {
+  by?: string | null
+  at?: string | null
+  rounds?: number | null
+  note?: string | null
+}
+
+/** `metadata.fix_loop_state`: the loop's own (tenant-writable) record. */
+export interface FixLoopState {
+  rounds?: FixLoopRound[] | null
+  added?: FixLoopAdded[] | null
+}
+
+/** `result_summary.fix_loop` (§4.4). */
+export interface FixLoopSummary {
+  rounds?: FixLoopRound[] | null
+  final_review?: string | null
+  final_head?: string | null
+  verdict?: string | null
+  findings_count?: number | null
+  phase?: string | null
+}
+
+/**
+ * Why a loop is parked for a person, in words (`fixloop.PERSON_PHASES`). A
+ * phase this client does not know is printed verbatim (`reasonCopy`'s rule).
+ */
+export const FIX_LOOP_PHASE_WORDS: Readonly<Record<string, string>> = {
+  fix_loop_exhausted: 'the rounds ran out without MERGE',
+  fix_changed_nothing: 'a fix changed nothing',
+  round_failed: 'a round failed',
+  review_unreadable: "the review's verdict could not be read",
+  round_refused: 'a round could not be submitted',
+}
+
+export interface FixLoopView {
+  /** The latest round's number; 0 before the first. */
+  readonly round: number
+  /** The rounds the loop may run: signed max_rounds plus those people added, capped at the ceiling. */
+  readonly maxRounds: number
+  readonly rounds: readonly FixLoopRound[]
+  /** The half that is running, or null between halves and once ended. */
+  readonly running: 'fix' | 're-review' | null
+  /** The phase a person is asked about, or null when not parked for one. */
+  readonly person: string | null
+  readonly canAddRound: boolean
+  readonly verdict: string | null
+  readonly findingsCount: number | null
+  /** `round k of N · <half or outcome>`: the row's line. */
+  readonly line: string
+}
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function isCount(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v)
+}
+
+function roundsOf(v: unknown): FixLoopRound[] {
+  return Array.isArray(v) ? (v.filter((r) => asRecord(r) !== null && isCount((r as FixLoopRound).round)) as FixLoopRound[]) : []
+}
+
+/** The park phase of a loop parked HUMAN_REQUIRED for a person, else null (`fixloop.park_phase_of`). */
+export function fixLoopPersonPhase(task: Pick<Task, 'state' | 'park_reason' | 'blocked_by'>): string | null {
+  if (task.state !== 'PARKED' || task.park_reason !== 'HUMAN_REQUIRED') return null
+  for (const entry of task.blocked_by ?? []) {
+    const e = asRecord(entry)
+    if (e !== null && typeof e.park_phase === 'string' && asRecord(e.fix_loop) !== null) return e.park_phase
+  }
+  return null
+}
+
+const roundsWord = (n: number) => `${n} round${n === 1 ? '' : 's'}`
+
+/**
+ * A fix-loop step's round k of N, the half running and its outcome, or null
+ * for any other step. N is counted as `fixloop.max_rounds` counts it: the
+ * signed block's `max_rounds` re-capped to 1-5, plus the rounds people added,
+ * never past the ceiling. The rounds are the loop's live record when it has
+ * one, else its result summary's.
+ */
+export function fixLoopOf(task: Task): FixLoopView | null {
+  if (task.runner_profile !== FIX_LOOP_PROFILE) return null
+  const metadata = asRecord(task.metadata)
+  const block = asRecord(asRecord(task.dispatch)?.fix_loop) ?? asRecord(asRecord(metadata?.dispatch)?.fix_loop) ?? {}
+  const state = asRecord(metadata?.fix_loop_state) ?? {}
+  const summary = asRecord(asRecord(task.result_summary)?.fix_loop) ?? {}
+  const signedRaw = block.max_rounds
+  const signed = Math.min(Math.max(isCount(signedRaw) ? signedRaw : FIX_LOOP_DEFAULT_ROUNDS, FIX_LOOP_MIN_ROUNDS), FIX_LOOP_MAX_ROUNDS)
+  const added = (Array.isArray(state.added) ? state.added : []).reduce<number>((n, a) => {
+    const c = asRecord(a)?.rounds
+    return isCount(c) && c > 0 ? n + c : n
+  }, 0)
+  const maxRounds = Math.min(signed + added, FIX_LOOP_ROUNDS_CEILING)
+  const live = roundsOf(state.rounds)
+  const rounds = live.length > 0 ? live : roundsOf(summary.rounds)
+  const last = rounds[rounds.length - 1] ?? null
+  const round = rounds.reduce((n, r) => Math.max(n, r.round), 0)
+  const person = fixLoopPersonPhase(task)
+  const running =
+    task.state === 'PARKED' && task.park_reason === 'FIX_ROUNDS_RUNNING' && last !== null && (last.state === undefined || last.state === null) && !last.error
+      ? last.kind === 'fix'
+        ? 'fix'
+        : 're-review'
+      : null
+  const verdict = typeof summary.verdict === 'string' ? summary.verdict : null
+  let tail: string | null = null
+  if (person !== null) tail = `waiting for you: ${FIX_LOOP_PHASE_WORDS[person] ?? person}`
+  else if (running !== null) tail = `${running} running`
+  else if (task.state === 'SUCCEEDED') tail = verdict === 'MERGE' ? (round === 0 ? 'MERGE at the first review' : `MERGE after ${roundsWord(round)}`) : 'succeeded'
+  else if (task.state === 'FAILED' && task.end_cause === 'fix_loop_exhausted') tail = `ended without MERGE after ${roundsWord(round)}`
+  else if (TERMINAL_STATES.has(task.state)) tail = task.state.toLowerCase().replace(/_/g, ' ')
+  return {
+    round,
+    maxRounds,
+    rounds,
+    running,
+    person,
+    canAddRound: person !== null && maxRounds < FIX_LOOP_ROUNDS_CEILING,
+    verdict,
+    findingsCount: isCount(summary.findings_count) ? summary.findings_count : null,
+    line: `round ${round} of ${maxRounds}${tail === null ? '' : ` · ${tail}`}`,
+  }
+}
 // ---------------------------------------------------------------------------
 // The account pool  (Settings -> Accounts)
 // ---------------------------------------------------------------------------

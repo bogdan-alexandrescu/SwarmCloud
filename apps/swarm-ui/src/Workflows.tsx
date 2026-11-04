@@ -160,8 +160,11 @@ import {
   reasonCopy,
   TERMINAL_STATES,
   CONCURRENCY_STATES,
+  FIX_LOOP_PROFILE,
+  fixLoopOf,
 } from './types'
 import {
+  FixLoopStepCard,
   MergeStepCard,
   MoreRight,
   SourceNote,
@@ -2322,6 +2325,8 @@ function stepRows(
         // The table's `why` (#106): the same reader the graph's node line uses,
         // plus the cascade's named parent on a cancelled step.
         why: stepWhy(step, state, workflow.steps, taskById, classUnits(classes, step.resource_class)),
+        // A fix loop's round k of N and its half or outcome (FL-UI, fix-loop.md §6.2).
+        loop: state.kind === 'state' ? (fixLoopOf(state.task)?.line ?? null) : null,
         sort: {
           order: order.get(step.step_id)?.order ?? Number.MAX_SAFE_INTEGER,
           stateRank: stateRankOf(state),
@@ -2662,6 +2667,11 @@ function StepCardExtras({
         </p>
       )}
       {mergeCard !== null && <MergeStepCard card={mergeCard} now={now} />}
+      {/* A FIX LOOP'S CARD (fix-loop.md §6.2): round k of N, its rounds
+          linked, and Add a round / Stop on a loop parked for a person. */}
+      {task !== null && step.runner_profile === FIX_LOOP_PROFILE && (
+        <FixLoopStepCard workflowId={workflow.workflow_id} task={task} steps={workflow.steps} onChanged={reload} />
+      )}
       {merge !== null && <MergeCard merge={merge} />}
       {/* AN `await-input` STEP'S CARD (human-steps.md §4.5): what it shows,
           its form, and once it has ended who answered, when and how. */}

@@ -1,11 +1,11 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 
-import { loadAttempts } from './api'
+import { addFixLoopRound, endFixLoop, loadAttempts } from './api'
 import { DECLARED_WORDS, MONO_ADVANCE_EM, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
-import type { Result } from './fetch'
+import { errorHeading, type Result } from './fetch'
 import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
 import type { MarkHue, MarkName } from './marks'
-import { NamedMark, Segmented } from './components'
+import { Button, NamedMark, Segmented } from './components'
 import { Id } from './Shell'
 import { agentPath } from './OverviewRegions'
 import { addressToPath } from './paths'
@@ -33,7 +33,20 @@ import {
   type MergeCard,
 } from './stepviews'
 import './styles/workflow-views.css'
-import { TERMINAL_STATES, bytesLabel, timeAgo, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
+import {
+  FIX_LOOP_NOTE_MAX_BYTES,
+  FIX_LOOP_ROUNDS_CEILING,
+  TERMINAL_STATES,
+  bytesLabel,
+  fixLoopOf,
+  timeAgo,
+  type AttemptRow,
+  type FixLoopRound,
+  type Task,
+  type TaskState,
+  type Tone,
+  type WorkflowStep,
+} from './types'
 
 /**
  * A WORKFLOW'S TIMELINE AND TABLE, AND THE INSPECTOR THAT SCRUBS ACROSS THEM.
@@ -134,6 +147,8 @@ export interface StepRowModel {
    *  there is nothing to explain. `stepWhy`. */
   readonly why: StepWhy | null
   readonly sort: SortFacts
+  /** A `fix-loop` step's `round k of N` line (`fixLoopOf`, FL-UI); absent or null on any other step. */
+  readonly loop?: string | null
 }
 
 /**
@@ -305,6 +320,11 @@ function PickButton({
       <span className="wf-pick-id" title={row.step.step_id}>
         {row.step.step_id}
       </span>
+      {row.loop ? (
+        <span className="wf-loop-line" data-fact="fix-loop">
+          {row.loop}
+        </span>
+      ) : null}
     </button>
   )
 }
@@ -2095,4 +2115,168 @@ export function MergeStepCard({ card, now }: { card: MergeCard; now: number }) {
       )}
     </section>
   )
+}
+
+/**
+ * A FIX-LOOP STEP'S LINE ON ITS ROW (docs/design/fix-loop.md §6.2): `round k
+ * of N`, then the half that is running or the outcome. Nothing for any other
+ * step. Every word is `fixLoopOf`'s.
+ */
+export function FixLoopRowLine({ task }: { task: Task }) {
+  const loop = fixLoopOf(task)
+  if (loop === null) return null
+  return (
+    <span className="wf-loop-line" data-fact="fix-loop" data-person={loop.person ?? undefined}>
+      {loop.line}
+    </span>
+  )
+}
+
+/** The step ids of a loop's rounds, as FL-ROLLUP's pattern names them. */
+const FIX_ROUND_STEP = /^(review-fix|re-review):(\d+)$/
+
+function roundStepId(r: FixLoopRound): string {
+  return `${r.kind === 'fix' ? 'review-fix' : 're-review'}:${r.round}`
+}
+
+/**
+ * THE FIX LOOP'S CARD (docs/design/fix-loop.md §6.2, lane FL-UI), in the
+ * workflow page's step inspector: round k of N and what is running, each
+ * appended `review-fix:<k>` / `re-review:<k>` round linked to its own agent
+ * with its verdict, and -- only on a loop parked HUMAN_REQUIRED for a person
+ * -- why, in words, with Add a round and Stop.
+ *
+ * A loop whose rounds run (PARKED FIX_ROUNDS_RUNNING) holds no lease and no
+ * pod (invariant 1) and waits for nobody: it offers no action. Stop ends the
+ * loop FAILED `fix_loop_exhausted` and is confirmed in place first. A note
+ * for the next fix is optional and at most 4 KiB, counted in UTF-8 bytes as
+ * the server counts it.
+ */
+export function FixLoopStepCard({
+  workflowId,
+  task,
+  steps,
+  onChanged,
+}: {
+  workflowId: string
+  task: Task
+  steps: readonly WorkflowStep[]
+  onChanged: () => void
+}) {
+  const [note, setNote] = useState('')
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState<'add' | 'stop' | null>(null)
+  const [failure, setFailure] = useState<string | null>(null)
+  const loop = fixLoopOf(task)
+  if (loop === null) return null
+  // The rounds: the loop's record, joined to the workflow's appended steps so
+  // a round the record has not named a task for yet still links once it has one.
+  const taskOfStep = new Map(steps.filter((s) => FIX_ROUND_STEP.test(s.step_id) && s.task_id).map((s) => [s.step_id, s.task_id as string]))
+  const rows: { id: string; taskId: string | null; r: FixLoopRound | null }[] = loop.rounds.map((r) => ({
+    id: roundStepId(r),
+    taskId: r.task_id ?? taskOfStep.get(roundStepId(r)) ?? null,
+    r,
+  }))
+  const known = new Set(rows.map((x) => x.id))
+  for (const [id, taskId] of taskOfStep) if (!known.has(id)) rows.push({ id, taskId, r: null })
+  const noteBytes = new TextEncoder().encode(note).length
+  const noteProblem = noteBytes > FIX_LOOP_NOTE_MAX_BYTES ? `The note is ${noteBytes} bytes; at most ${FIX_LOOP_NOTE_MAX_BYTES}.` : null
+  const ceilingProblem = loop.canAddRound
+    ? null
+    : `The loop has ${loop.maxRounds} rounds, the most any loop may run (${FIX_LOOP_ROUNDS_CEILING}).`
+
+  async function act(which: 'add' | 'stop') {
+    setBusy(which)
+    setFailure(null)
+    const res = which === 'add' ? await addFixLoopRound(workflowId, note.trim() === '' ? null : note) : await endFixLoop(workflowId)
+    setBusy(null)
+    if (res.status === 'error' || res.status === 'stale') {
+      setFailure(`${errorHeading(res.error)}: ${res.error.message}`)
+    } else {
+      setConfirming(false)
+      setNote('')
+      onChanged()
+    }
+  }
+
+  return (
+    <section className="wf-merge wf-loop" aria-label="Fix loop" data-person={loop.person ?? undefined}>
+      <div className="wf-card-h">
+        <b>Fix loop</b>
+        <span className="wf-merge-out">{loop.line}</span>
+      </div>
+      {loop.verdict !== null && (
+        <p className="wf-merge-head" data-fact="last-verdict">
+          last verdict <span className="mono">{loop.verdict}</span>
+          {loop.findingsCount !== null && <> · {loop.findingsCount === 1 ? '1 finding' : `${loop.findingsCount} findings`}</>}
+        </p>
+      )}
+      {rows.length > 0 && (
+        <ul className="wf-loop-rounds" aria-label="Fix loop rounds">
+          {rows.map(({ id, taskId, r }) => (
+            <li key={id} data-step={id}>
+              {taskId === null ? (
+                <span className="mono">{id}</span>
+              ) : (
+                <a className="ctl-link mono" href={agentPath({ id: taskId, state: (r?.state as TaskState | undefined) ?? 'RUNNING' })}>
+                  {id}
+                </a>
+              )}
+              {r !== null && (
+                <>
+                  {' · '}
+                  {r.state ? r.state.toLowerCase().replace(/_/g, ' ') : 'running'}
+                  {r.verdict ? <> · <span className="mono">{r.verdict}</span></> : null}
+                  {isFiniteCount(r.findings_count) && r.findings_count > 0 ? <> · {r.findings_count === 1 ? '1 finding' : `${r.findings_count} findings`}</> : null}
+                  {r.error ? <> · {r.error}</> : null}
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {loop.person !== null && (
+        <div className="wf-loop-acts">
+          <label className="wf-loop-note">
+            Note for the next fix (optional, at most 4 KiB)
+            <textarea value={note} rows={3} onChange={(e) => setNote(e.target.value)} disabled={busy !== null} />
+          </label>
+          <div role="group" aria-label="Fix loop actions" className="wf-inspect-acts">
+            <Button
+              kind="primary"
+              busy={busy === 'add' ? 'Adding…' : false}
+              disabledReason={ceilingProblem ?? noteProblem ?? (busy !== null ? 'Sending…' : undefined)}
+              onClick={() => void act('add')}
+            >
+              Add a round
+            </Button>
+            {confirming ? (
+              <>
+                <Button kind="danger-filled" busy={busy === 'stop' ? 'Stopping…' : false} onClick={() => void act('stop')}>
+                  Stop the loop
+                </Button>
+                <Button kind="ghost" disabled={busy !== null} onClick={() => setConfirming(false)}>
+                  Keep it parked
+                </Button>
+              </>
+            ) : (
+              <Button kind="danger" disabled={busy !== null} onClick={() => setConfirming(true)}>
+                Stop
+              </Button>
+            )}
+          </div>
+          {confirming && <p className="wf-card-foot">Stop accepts the last verdict: the loop ends failed, fix_loop_exhausted, and runs no more rounds.</p>}
+          {failure !== null && (
+            <p className="wf-card-foot is-bad" role="alert">
+              {failure}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function isFiniteCount(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v)
 }
