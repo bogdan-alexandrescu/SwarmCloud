@@ -5,23 +5,29 @@ In order, over every string in the state, wherever it sits:
 1. **Path deny.** An object whose `path` (or `file`) is a secret-shaped path
    or one of the repository's `hard_stop_paths` keeps its identity only --
    `path`, `symbol`, `i` and the like. Its content is never read into a call.
-2. **Credential scan, then DROP.** `swarm_redaction.redact`'s rules, and every
-   predicate the host process added with `add_credential_check`: the worker
-   adds its publish predicate (`lifecycle._credential_in`, the one
-   `agent_worker.publish_scan` runs) when `agent_worker.judge.sanitize` is
-   imported. A hit removes the whole string from its object or list. It is
-   not masked: a masked key's neighbourhood can still identify it, and a
-   half-sent excerpt is worth less than none.
+2. **Credential scan, then DROP.** The publish gate's credential check
+   (`swarm_redaction.credentials.is_credential`, the check
+   `agent_worker.publish_scan` runs, headerless keys and ciphertext included)
+   and `swarm_redaction.redact`'s rules. A hit removes the whole string from
+   its object or list. It is not masked: a masked key's neighbourhood can
+   still identify it, and a half-sent excerpt is worth less than none.
 3. **The task's registered secrets** (the worker's `redact.scrub_text`
    values, the backend's own key): a string holding one is dropped the same
    way.
+
+`is_flagged` asks them in the order the worker always applied before
+sending: the registered secrets, the credential check, the redaction rules.
 4. **Never sent:** author identities and emails, environment variables, the
    agent's transcript. Their keys are removed wherever they appear.
 
-The worker's publish predicate is asked at its STRICTEST tier (the path it is
-given is not a test path). The publish gate tiers by path because a test fixture must
-be committable; nothing here needs to be sent, so a placeholder that only a
-test path would excuse is dropped too.
+The credential check is the shared package's own, so every process that
+makes a Jev call -- the worker and swarm-api alike -- scans with it by default
+(the owner, 4 November 2026). Before, it was the worker's, added here when the
+worker imported its sanitize module, and a call from swarm-api sent the
+headerless key or ciphertext blob no redaction rule names. It is asked at its
+STRICTEST tier (the path it is given is not a test path). The publish gate
+tiers by path because a test fixture must be committable; nothing here needs
+to be sent, so a placeholder that only a test path would excuse is dropped too.
 """
 
 from __future__ import annotations
@@ -30,8 +36,9 @@ import fnmatch
 import json
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 
+from swarm_redaction.credentials import is_credential
 from swarm_redaction.rules import redact as _rules_redact
 
 #: §5.4 step 1: file names whose content is never read.
@@ -46,24 +53,6 @@ NEVER_SENT_KEYS = frozenset({
     "env", "environ", "environment", "transcript",
 })
 _PATH_KEYS = ("path", "file")
-#: Further credential predicates the host process adds (`add_credential_check`),
-#: each True for a string that must not be sent. Module state on purpose: the
-#: worker adds its publish predicate once, at import, and every client in the
-#: process then scans with it, whoever built that client.
-_CREDENTIAL_CHECKS: list[Callable[[str], bool]] = []
-
-
-def add_credential_check(check: Callable[[str], bool]) -> None:
-    """Scan every string with `check` too, from now on, in this process. Adding
-    the same predicate twice keeps one. There is no way to remove one: a scan
-    only ever gets stricter."""
-    if check not in _CREDENTIAL_CHECKS:
-        _CREDENTIAL_CHECKS.append(check)
-
-
-def credential_checks() -> tuple[Callable[[str], bool], ...]:
-    """The predicates `add_credential_check` added, in order."""
-    return tuple(_CREDENTIAL_CHECKS)
 
 
 @dataclass(frozen=True)
@@ -106,13 +95,14 @@ def is_denied_path(path: str, hard_stop_paths: Iterable[str] = ()) -> bool:
 
 def is_flagged(text: str, secrets: Iterable[str] = ()) -> bool:
     """Whether `text` must not be sent at all: it holds a registered secret or
-    something credential-shaped."""
+    something credential-shaped. Asked in order: the registered secrets, the
+    publish gate's credential check, the redaction rules."""
     if not text:
         return False
     for secret in secrets:
         if secret and secret in text:
             return True
-    if any(check(text) for check in _CREDENTIAL_CHECKS):
+    if is_credential(text):
         return True
     return _rules_redact(text).count > 0
 
