@@ -23,7 +23,7 @@ module builds to:
   recorded `not_run` with reason `not_opted_in`. The block carries
   swarm-api's MAC (`judgment.block_mac`, block `contract_review`, listed in
   `judgment.API_SETTINGS_MAC_FIELDS` until the frozen
-  `SETTINGS_MAC_FIELDS` lists it); for a tenant cut over in
+  `SETTINGS_MAC_FIELDS` lists it, contract request 138); for a tenant cut over in
   SETTINGS_MAC_TENANTS a block that does not verify reads as off.
 * **Open on failure (answer 2).** No route, no key, a timeout, a 429 or 5xx,
   a malformed answer, the month over its cap: the contract is accepted on the

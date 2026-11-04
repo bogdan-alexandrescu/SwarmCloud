@@ -571,3 +571,21 @@ def test_a_contract_whose_every_text_is_dropped_sends_nothing_and_is_not_judged(
     assert record["classes"] == [
         {"id": "REQ-1", "class": cj.NOT_JUDGED, "reason": None, "p": 0.0}]
     assert task["metadata"][wc.METADATA_KEY]["revision"] == 1
+
+
+def test_the_blocks_bytes_are_the_frozen_functions_so_applying_request_138_re_signs_nothing(
+        monkeypatch):
+    """Contract request 138 moves `contract_review` into the frozen
+    `SETTINGS_MAC_FIELDS`. swarm-api's own bytes for it must be exactly
+    `canonical_settings_block`'s once the frozen list names it, so every MAC
+    stored before the change still verifies after it."""
+    from types import MappingProxyType
+
+    from swarm_common import specsign
+
+    fields = {cr.ENABLED: True, cr.SET_BY: "alice@example.com", "mac": {"v": 1}}
+    ours = judgment._canonical_block("eng", cr.MAC_BLOCK, fields)
+    monkeypatch.setattr(specsign, "SETTINGS_MAC_FIELDS", MappingProxyType(
+        {**specsign.SETTINGS_MAC_FIELDS, cr.MAC_BLOCK: ("enabled",)}))
+    assert ours == specsign.canonical_settings_block(tenant_id="eng", block=cr.MAC_BLOCK,
+                                                     fields=fields)

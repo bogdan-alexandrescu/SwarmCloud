@@ -233,7 +233,14 @@ records are the authority on what was sent.
   code is sent: the state is `contractjudge.review_state`, the contract's own
   requirement texts by index, its strictness, acceptance, artifact kinds and
   write scope, never the tenant, the owner, the contract id, the repository
-  URL or a commit. The backend is the workspace's `judgment_backend`,
+  URL or a commit. A requirement whose text the sanitizer would drop
+  (credential-shaped, or holding the backend's own key) is not asked about
+  at all and is recorded `not_judged`
+  (`apps/swarm-api/swarm_api/contractreview.py::unreadable`): Jev never
+  answers for a text it did not read. What is kept is the step's signed
+  dispatch block's `contract_review`: the digest judged, Jev's closed
+  classes, reasons and probabilities by requirement id, the call id and the
+  backend's name, never a requirement's text. The backend is the workspace's `judgment_backend`,
   reached through swarm-api's Direct VPC egress and the internal load
   balancer in front of the tailnet egress (`judgment.resolve_call_backend`),
   never TypeSafe in its place. Its calls are admitted under

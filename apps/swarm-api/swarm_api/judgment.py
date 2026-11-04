@@ -419,7 +419,8 @@ def key_id(key: str) -> str:
 #:
 #: `contract_review` (jev-contract.md section 4.1, the owner's answer 9 of 3
 #: November 2026): the workspace's opt-in to swarm-api's Jev review of its
-#: work contracts at submission, written by `contractreview.ContractReviewStore`.
+#: work contracts at submission, written by `contractreview.ContractReviewStore`;
+#: contract request 138 moves it into the frozen list (the owner, 4 November 2026).
 API_SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = {
     "contract_review": ("enabled",),
 }
