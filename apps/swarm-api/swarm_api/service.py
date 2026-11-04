@@ -53,7 +53,14 @@ from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backe
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from . import budget as budget_mod
-from . import gitidentity, plugins as plugins_mod, publishtopr, runnersizes, workcontract
+from . import (
+    contractreview,
+    gitidentity,
+    plugins as plugins_mod,
+    publishtopr,
+    runnersizes,
+    workcontract,
+)
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import CI_FIX_METADATA_FIELD, stamp as stamp_ci_fix
@@ -101,7 +108,7 @@ from .mcp_servers import (
 )
 from .metrics import ApiMetrics
 from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
-from .provider_keys import task_key_scope
+from .provider_keys import submitter_personal_tenant, task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
@@ -294,6 +301,10 @@ class SubmissionService:
         #: registered-mcp-servers.md §4.4), built on first use so constructing
         #: the service opens no connection; a test substitutes one.
         self.mcp_credential_writer: Any = None
+        #: Jev's review of a work contract at submission (`contractreview`),
+        #: built on the first review so constructing the service reads no
+        #: setting; a test substitutes one.
+        self.contract_reviewer: contractreview.ContractReviewer | None = None
 
     @property
     def signer(self) -> SpecSigner | None:
@@ -722,6 +733,23 @@ class SubmissionService:
                         **({"step_id": step_id} if step_id else {})},
             ) from exc
 
+    def _review_contract(self, contract: workcontract.Prepared, *, tenant: Tenant,
+                         step_id: str | None, submitted_by: str) -> contractreview.Reviewed:
+        """Jev's review of a prepared contract, under SWARM_CONTRACT_REVIEW
+        and the workspace's signed `contract_review` setting. Off (the
+        default) it reads nothing and returns the contract as it came; in
+        `enforce` mode its refusal is the 422 of jev-contract.md section 4.5."""
+        if contractreview.mode(os.environ) == contractreview.MODE_OFF:
+            return contractreview.Reviewed(contract, None)
+        if self.contract_reviewer is None:
+            self.contract_reviewer = contractreview.ContractReviewer(
+                getattr(self._store, "db", None), mac=settings_mac(self._settings),
+                now=self._now, project_id=getattr(self._settings, "project_id", "") or "")
+        return self.contract_reviewer.review(
+            contract, tenant_id=tenant.tenant_id,
+            submitter_tenant_id=submitter_personal_tenant(self._store, submitted_by),
+            step_id=step_id)
+
     def _workspace_settings(self, tenant_id: str) -> dict[str, Any]:
         """`workspace_settings/{tenant_id}` as stored, or {} (and with no
         database, which allows no plugin)."""
@@ -766,6 +794,15 @@ class SubmissionService:
         contract = self._work_contract(spec, tenant=tenant, step_id=step_id,
                                        repository_url=repository_url or spec.repository_url,
                                        repository_ref=repository_ref or spec.repository_ref)
+        # Jev's review of the contract (contractreview; jev-contract.md
+        # section 4): after the mechanical compile, so a contract code has
+        # refused never reaches Jev; before the step fields, so a reviewer's
+        # revision 2 is what the step carries and signs.
+        contract_review: dict[str, Any] | None = None
+        if contract is not None:
+            reviewed = self._review_contract(contract, tenant=tenant, step_id=step_id,
+                                             submitted_by=submitted_by)
+            contract, contract_review = reviewed.prepared, reviewed.record
         if contract is not None:
             update: dict[str, Any] = {**contract.fields, "metadata": dict(contract.metadata)}
             if "budget" in update:
@@ -891,6 +928,10 @@ class SubmissionService:
         # (`reject_reserved_metadata`). Only when there is a budget: with
         # none, the task, its format and its block are byte for byte what
         # they were before #2459.
+        if contract_review is not None:
+            # Beside the contract's reference, inside the signed block no
+            # caller can write, and never inside the contract's own bytes.
+            metadata[DISPATCH_METADATA_KEY][contractreview.DISPATCH_FIELD] = contract_review
         if resolved_budget is not None:
             metadata[DISPATCH_METADATA_KEY][budget_mod.PROVENANCE_KEY] = budget_mod.provenance(
                 step=step_budget, workspace=workspace_budget, ceiling=budget_ceiling)

@@ -98,7 +98,13 @@ from google.cloud import firestore
 from swarm_jev.client import Transport, urllib_transport
 
 from swarm_common.admission import _snapshot
-from swarm_common.specsign import SETTINGS_MAC_FIELDS, canonical_settings_block
+from swarm_common.specsign import (
+    SETTINGS_MAC_FIELDS,
+    SETTINGS_PURPOSE,
+    SpecNotCanonical,
+    canonical_settings_block,
+    jcs,
+)
 
 from .admins import AUDIT_COLLECTION
 from .errors import ValidationFailed
@@ -404,9 +410,36 @@ def key_id(key: str) -> str:
     return hashlib.sha256(_KEY_ID_DOMAIN + key.encode("utf-8")).hexdigest()[:16]
 
 
+#: Blocks swarm-api signs that the FROZEN `SETTINGS_MAC_FIELDS` does not list
+#: yet, with their covered keys. Only swarm-api reads them, so no other
+#: service needs the projection; each is a contract request to move it into
+#: `swarm_common.specsign`. Their bytes are `canonical_settings_block`'s shape
+#: exactly (`_canonical_block`), and a block name here never equals a frozen
+#: one, so a MAC made for one block never verifies as another's.
+#:
+#: `contract_review` (jev-contract.md section 4.1, the owner's answer 9 of 3
+#: November 2026): the workspace's opt-in to swarm-api's Jev review of its
+#: work contracts at submission, written by `contractreview.ContractReviewStore`.
+API_SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "contract_review": ("enabled",),
+}
+
+
+def _canonical_block(tenant_id: str, block: str, fields: Mapping[str, Any]) -> bytes:
+    """The bytes a block's MAC covers: the frozen `canonical_settings_block`
+    for a block it lists, and the same JCS shape for one of
+    `API_SETTINGS_MAC_FIELDS`."""
+    covered = API_SETTINGS_MAC_FIELDS.get(block)
+    if covered is None or block in SETTINGS_MAC_FIELDS:
+        return canonical_settings_block(tenant_id=tenant_id, block=block, fields=fields)
+    if not isinstance(tenant_id, str) or not tenant_id or not isinstance(fields, Mapping):
+        raise SpecNotCanonical(f"settings block {block!r} names no tenant or is not a map")
+    return jcs({"purpose": SETTINGS_PURPOSE, "tenant_id": tenant_id, "block": block,
+                "fields": {key: fields.get(key) for key in covered}})
+
+
 def _sig(key: str, tenant_id: str, block: str, fields: Mapping[str, Any]) -> bytes:
-    return hmac.new(key.encode("utf-8"),
-                    canonical_settings_block(tenant_id=tenant_id, block=block, fields=fields),
+    return hmac.new(key.encode("utf-8"), _canonical_block(tenant_id, block, fields),
                     hashlib.sha256).digest()
 
 

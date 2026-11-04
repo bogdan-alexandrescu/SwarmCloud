@@ -50,6 +50,7 @@ from .routes import (
     budget_settings,
     checkpoints,
     children,
+    contract_review,
     credentials,
     codeintel,
     failurefindings,
@@ -426,6 +427,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's quality gates: whether its claude-code lanes run
     # jev-belay and jev-enforce (JEV-LANES): its owner or admin, audited.
     app.include_router(quality_gates.router)
+    # A workspace's opt-in to Jev's review of its work contracts at
+    # submission (contractreview): its owner or admin, audited.
+    app.include_router(contract_review.router)
     # A workspace's allowed agent plugins, from the platform's closed
     # catalogue (docs/design/agent-plugins.md): its owner or admin, audited.
     app.include_router(plugin_settings.router)
