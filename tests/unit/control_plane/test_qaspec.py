@@ -456,7 +456,7 @@ def test_a_base_url_that_is_not_a_plain_https_origin_is_refused(base_url: str) -
         {"id": "x", "path": "/a`b`"},
         {"id": "Bad Id", "path": "/"},
         {"id": "a--b", "path": "/"},
-        {"id": "x", "path": "/", "segments": 13},
+        {"id": "x", "path": "/", "segments": qaspec.MAX_SEGMENTS + 1},
         {"id": "x", "path": "/", "ready": "a\nb"},
     ],
 )

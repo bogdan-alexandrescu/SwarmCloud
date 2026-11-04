@@ -91,13 +91,16 @@ What `capture` does, and why each:
    entry's `overlaps`, split in `covers`; what was measured at each segment,
    the scroller's box, `innerHeight` and the Reads bar's box, in `geometry`),
    until the scroller's end or the budget: MAX_SEGMENTS at
-   phone-390 (TO_THE_END_PRESETS, owner decision c49), the route's `segments`
-   (default DEFAULT_SEGMENTS) at the desktop. Where the scroller is and how
+   phone-390 (TO_THE_END_PRESETS, owner decision c49), and at the desktop
+   the route's `segments` when it names them, else MAX_SEGMENTS (part of
+   #2688: AI Studio's /docs is about 49,600 px there). Where the scroller is and how
    tall it is are read back after every scroll (SCROLL_JS), never assumed
    from the offset asked for: one that did not move on is not shot again and
    its stop is the entry's `duplicate`. A capture that ends short of the end,
    at its budget or at such a stop, says so (`truncated`, `reached`, `total`)
-   and is listed in `failed`. Segments, because a model is handed a tall
+   and is listed in `failed`, and in the manifest's `truncated` (each
+   `{id, preset, theme, height, reached, segments}`) and the verdict line's
+   `truncated_pages`. Segments, because a model is handed a tall
    image downscaled until its text is unreadable, and whether a full-page
    capture through the gate needs a metrics override is unverified.
    `animations="disabled"`, `caret="hide"`. A shot whose size is not the
@@ -180,11 +183,21 @@ check your session" card on every screen, because the gate refused the app's
 POST to its sign-in provider's token endpoint, and the review, report and
 file steps read green and filed a finding about the card. So the manifest
 says `reviewable` and, when false, `sign_in_blocked: {idp_token_refused,
-same_screen, why}`, from two facts this tool can establish: the gate's own
-record holds a refused POST to another origin's token endpoint
-(`idp_token_refusals`: a path whose last segment is IDP_TOKEN_SEGMENT), or
-at least two different routes were captured and every one read the same body
-text (`same_screen`). The verdict line carries `reviewable` and, when false,
+gate_sign_in, same_screen, why}`, from three facts this tool can establish:
+the gate's own record holds a refused POST to another origin's token endpoint
+(`idp_token_refusals`: a path whose last segment is IDP_TOKEN_SEGMENT); the
+gate's own sign-in was refused (`gate_sign_in`: `gate_refusals.sign_in` ended
+with a cause in GATE_SIGN_IN_REFUSALS, such as `qa_sign_in_no_form`); or the
+pages show one screen (`same_screen`): at least two different routes were
+captured and every one read the same body text, or every page captured reads
+as a sign-in or choice screen (`sign_in_screen`) at a route that is not
+itself a sign-in page. On 2026-11-04 AI Studio's staging run captured only its
+sign-in chooser (a Staging or Production choice before the login form) on
+every screen of a leg whose gate sign-in ended `qa_sign_in_no_form`, and the
+manifest still said reviewable (part of #2688). A sign-in that ended
+`qa_sign_in_failed` is no refusal: that run's other leg recorded it while
+every screen showed the app signed in, and stays reviewable when its pages
+differ. The verdict line carries `reviewable` and, when false,
 `not_reviewable`; the review, report and file steps read it (swarm_api's
 qaspec) and mark the leg not reviewed instead of reviewing the card. It
 changes nothing the gate admits, and the exit code is unchanged: the
@@ -374,6 +387,32 @@ IDP_REFUSED_WHY = ("the live gate refused the sign-in provider's token request (
                    "could not keep its session and its screens behind sign-in were not captured")
 SAME_SCREEN_WHY = ("every one of the {routes} routes captured shows the same page, so the capture holds "
                    "one state of the app (a sign-in or error card), not its screens")
+SIGN_IN_SCREEN_WHY = ("every page captured ({pages} at {routes} routes) is a sign-in or choice screen, so the "
+                      "capture never got past sign-in and holds none of the app's screens")
+GATE_SIGN_IN_WHY = ("the live gate's own sign-in was refused ({state}, {cause}), so the browser was never "
+                    "signed in and the screens behind sign-in were not captured")
+#: The gate's sign-in causes (agent_worker.livegate.qatarget) that mean it
+#: never submitted the leg's credential, so nothing it captured is signed in:
+#: no username and password form on the page (AI Studio's staging run of
+#: 2026-11-04, part of #2688: its sign-in chooser comes before the form), a
+#: start click that named no one control, or an MFA or CAPTCHA challenge.
+#: `qa_sign_in_failed` is not one: the gate submitted the form and did not
+#: see the leg's signed-in marker, and the same run's moderator leg recorded
+#: it on every step while every screen showed the app signed in, so whether
+#: such a capture shows the app is the pages' to say (`same_screen`).
+GATE_SIGN_IN_REFUSALS = frozenset({"qa_sign_in_no_form", "qa_sign_in_start_click_missing",
+                                   "qa_sign_in_challenge"})
+#: A sign-in or choice screen (`same_screen`): a page of at most
+#: SIGN_IN_SCREEN_WORDS words with a line that opens by asking to sign in or
+#: to choose ("Sign in to AI Studio", "Log in", "Choose an environment",
+#: "Select an account"). An app's own page with a "Sign in" link in its
+#: header is longer than that, and a card that only names sign-in in passing
+#: ("the sign-in server could not be reached") opens no line with it.
+SIGN_IN_SCREEN = re.compile(r"^\s*(?:sign|log)[ -]?(?:in|on)\b|^\s*(?:choose|select)\b",
+                            re.IGNORECASE | re.MULTILINE)
+SIGN_IN_SCREEN_WORDS = 80
+#: A route that is itself a sign-in page: capturing it there is its review.
+SIGN_IN_PATH = re.compile(r"(?:^|/)(?:log-?in|sign-?in|sign-?on|auth|sso)(?:[/?#]|$)", re.IGNORECASE)
 #: Where the Dockerfile puts axe-core's browser bundle.
 AXE_SCRIPT = "/opt/swarm/axe-core/axe.min.js"
 
@@ -385,14 +424,27 @@ EXIT_USAGE = 64
 ROUTES_FORMAT = 1
 MANIFEST_FORMAT = 1
 DIFF_FORMAT = 1
-DEFAULT_SEGMENTS = 4
-#: More than this many viewports of one page is a page to split, not to scroll.
-MAX_SEGMENTS = 12
+#: The most segments one page takes at one preset and theme. 120, because
+#: AI Studio's staging run of 2026-11-04 (part of #2688) cut its /docs page,
+#: about 49,600 px tall at the desktop (56 of its 900 px viewports) and
+#: 65,300 px at 390 px wide (78 of phone-390's 844 px), at the old bound of
+#: 12. 120 viewports are 101,280 px at phone-390 and 108,000 px at the
+#: desktop: half as tall again as the tallest page measured, which leaves
+#: room for a sticky header's overlap on every step and for a page that grows,
+#: and 80,040 px at iphone-se's 667 px, still past 65,300. A page taller still
+#: is cut, never silently: its entry says `truncated`, the manifest lists it
+#: with its height and the segments taken, and so does the verdict line.
+#: swarm_api's qaspec states it again (to refuse a screen's `segments` at
+#: registration); test_qaspec_segment_bound holds the two equal.
+MAX_SEGMENTS = 120
 #: The presets captured until the scroller's end, up to MAX_SEGMENTS, whatever
 #: the route's `segments` (owner decision c49, 2026-10-22, QAFIX4-QATOOL): in
 #: visual QA run 4 six phone captures stopped at their budget before the page
-#: ended, and the rows below were in no image. A route's `segments` governs
-#: every other preset (the desktop), where a page is a few viewports tall.
+#: ended, and the rows below were in no image. Every other preset (the
+#: desktop) is captured to its end too, up to MAX_SEGMENTS, unless the route
+#: names its own `segments` (QA-CAPTURE-REVIEWABLE-TALL, part of #2688: a
+#: route that named none was cut at four desktop viewports, and AI Studio's
+#: /docs is 56 of them).
 #: phone-380 (PHONE-380, BGD 2026-10-26, part of #2136: AI Studio's phone
 #: mock-up frame) is narrower and shorter than phone-390, so a page takes at
 #: least as many of its viewports, and c49's reason holds for it.
@@ -1119,7 +1171,7 @@ def load_routes(path: str | os.PathLike, *, allow_empty: bool = False) -> dict:
                 raise UsageError(f"route {rid}: no ready selector")
             if "persona" in route and route["persona"] not in PERSONAS:
                 raise UsageError(f"route {rid}: persona must be one of {', '.join(PERSONAS)} (absent is {DEFAULT_PERSONA})")
-            segments = route.get("segments", DEFAULT_SEGMENTS)
+            segments = route.get("segments", MAX_SEGMENTS)
             if not isinstance(segments, int) or isinstance(segments, bool) or not 1 <= segments <= MAX_SEGMENTS:
                 raise UsageError(f"route {rid}: segments must be 1..{MAX_SEGMENTS}")
             if "reveal" in route:
@@ -1417,35 +1469,71 @@ def idp_token_refusals(records: Any, base: str) -> list[dict]:
     return [{"method": m, "origin": o, "path": p, "count": c} for (m, o, p), c in sorted(counts.items())]
 
 
-def same_screen(entries: list[dict], out: Path) -> bool:
-    """True when at least two different routes were captured and every one
-    of them read the same body text: one page, whatever the address."""
+def sign_in_screen(text: str) -> bool:
+    """Whether a page's body text reads as a sign-in or choice screen
+    (SIGN_IN_SCREEN, SIGN_IN_SCREEN_WORDS)."""
+    return 0 < len(text.split()) <= SIGN_IN_SCREEN_WORDS and SIGN_IN_SCREEN.search(text) is not None
+
+
+def _same_screen(entries: list[dict], out: Path) -> str | None:
+    """`same_screen`'s reason, or None: at least two different routes were
+    captured and every one of them read the same body text (one page,
+    whatever the address); or every page captured, at any number of routes,
+    reads as a sign-in or choice screen and some route is not itself a
+    sign-in page."""
     paths: set[str] = set()
     texts: set[str] = set()
+    sign_in = True
     for entry in entries:
         try:
             text = (out / entry["text"]).read_text(encoding="utf-8")
         except (KeyError, OSError):
-            return False
+            return None
         paths.add(str(entry.get("path")))
         texts.add(" ".join(text.split()))
-    return len(paths) >= 2 and len(texts) == 1 and texts != {""}
+        sign_in = sign_in and sign_in_screen(text)
+    if len(paths) >= 2 and len(texts) == 1 and texts != {""}:
+        return SAME_SCREEN_WHY.format(routes=len(paths))
+    if entries and sign_in and any(not SIGN_IN_PATH.search(p) for p in paths):
+        return SIGN_IN_SCREEN_WHY.format(pages=len(entries), routes=len(paths))
+    return None
 
 
-def sign_in_blocked(entries: list[dict], out: Path, base: str, records: Any) -> dict | None:
+def same_screen(entries: list[dict], out: Path) -> bool:
+    """True when the capture holds one screen, not the app's (`_same_screen`)."""
+    return _same_screen(entries, out) is not None
+
+
+def gate_sign_in_refused(sign_in: Any) -> dict | None:
+    """The gate's own sign-in refusal (`gate_refusals.sign_in`, GATE_SIGN_IN_REFUSALS),
+    as `{state, cause}`, or None when the gate did not refuse it."""
+    if not isinstance(sign_in, dict) or sign_in.get("state") not in ("failed", "challenge"):
+        return None
+    if sign_in.get("cause") not in GATE_SIGN_IN_REFUSALS:
+        return None
+    return {"state": sign_in["state"], "cause": sign_in["cause"]}
+
+
+def sign_in_blocked(entries: list[dict], out: Path, base: str, records: Any,
+                    sign_in: Any = None) -> dict | None:
     """The manifest's `sign_in_blocked`: None when the capture shows the app,
-    else what shows it does not and why, read from the gate's own record."""
+    else what shows it does not and why, read from the gate's own record,
+    its own sign-in (`sign_in`: `gate_refusals.sign_in`) and the pages."""
     refused = idp_token_refusals(records, base)
-    same = same_screen(entries, out)
-    if not refused and not same:
+    gate = gate_sign_in_refused(sign_in)
+    same = _same_screen(entries, out)
+    if not refused and gate is None and same is None:
         return None
     why = []
+    if gate is not None:
+        why.append(GATE_SIGN_IN_WHY.format(**gate))
     if refused:
         calls = ", ".join(f"{r['count']} {r['method']} to {r['origin']}{r['path']}" for r in refused)
         why.append(IDP_REFUSED_WHY.format(calls=calls))
-    if same:
-        why.append(SAME_SCREEN_WHY.format(routes=len({str(e.get('path')) for e in entries})))
-    return {"idp_token_refused": refused, "same_screen": same, "why": "; ".join(why)}
+    if same is not None:
+        why.append(same)
+    return {"idp_token_refused": refused, "gate_sign_in": gate, "same_screen": same is not None,
+            "why": "; ".join(why)}
 
 
 class _Errors:
@@ -1609,11 +1697,12 @@ def _scrolled(answer: Any, asked: int, view: int, total: int) -> tuple[int, int,
 
 def segment_budget(route: dict, preset: str) -> int:
     """How many segments a route may take at `preset`: MAX_SEGMENTS at a
-    preset captured to the scroller's end (TO_THE_END_PRESETS, owner
-    decision c49), else the route's `segments`."""
+    preset captured to the scroller's end whatever the route says
+    (TO_THE_END_PRESETS, owner decision c49), else the route's `segments`
+    when it names them, else MAX_SEGMENTS: to the scroller's end."""
     if preset in TO_THE_END_PRESETS:
         return MAX_SEGMENTS
-    return max(1, int(route.get("segments", DEFAULT_SEGMENTS)))
+    return max(1, int(route.get("segments", MAX_SEGMENTS)))
 
 
 def persona_of(route: dict) -> str:
@@ -2154,9 +2243,11 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
         playwright.stop()
         manifest["gate_refusals"] = gate.summary()
         manifest["worker"] = gate.build
-        blocked = sign_in_blocked(manifest["routes"], out, base, list(gate.seen.values()))
+        blocked = sign_in_blocked(manifest["routes"], out, base, list(gate.seen.values()),
+                                  manifest["gate_refusals"].get("sign_in"))
         manifest["sign_in_blocked"] = blocked
         manifest["reviewable"] = blocked is None
+        manifest["truncated"] = truncated_pages(manifest["routes"])
         if crawl is not None:
             if found is None:
                 # Aborted before the crawl was read: what it had, never
@@ -2173,6 +2264,15 @@ def capture(*, routes: dict, group: str, base: str, presets: list[str], themes: 
         _write(out / "manifest.json", json.dumps(manifest, indent=1))
         _bundle(out, bundle)
     return manifest
+
+
+def truncated_pages(entries: list[dict]) -> list[dict]:
+    """The manifest's `truncated`: every capture that ended short of its
+    page's end, with the page's height, how far the capture reached and the
+    segments it took, so a cut page is said where the run is read."""
+    return [{"id": e["id"], "preset": e["preset"], "theme": e["theme"], "height": e["total"],
+             "reached": e["reached"], "segments": len(e["images"])}
+            for e in entries if e.get("truncated")]
 
 
 def _differs(a: bytes, b: bytes) -> bool:
@@ -3130,7 +3230,10 @@ def _capture_command(args) -> int:
     images = sum(len(r["images"]) for r in manifest["routes"])
     sys.stdout.write(json.dumps({"group": args.group, "images": images, "captured": len(manifest["routes"]),
                                  "failed": len(manifest["failed"]),
-                                 "truncated": sum(1 for r in manifest["routes"] if r.get("truncated")),
+                                 "truncated": len(manifest["truncated"]),
+                                 "truncated_pages": [f"{t['id']} {t['preset']} {t['theme']}: {t['segments']} "
+                                                     f"segments of {t['height']} px"
+                                                     for t in manifest["truncated"]],
                                  "aborted": manifest.get("aborted"), "bundle": str(bundle),
                                  "reviewable": manifest["reviewable"],
                                  **({"not_reviewable": manifest["sign_in_blocked"]["why"]}
