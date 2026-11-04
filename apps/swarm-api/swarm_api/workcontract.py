@@ -56,6 +56,26 @@ STRICT = "strict"
 ADVISORY = "advisory"
 STRICTNESS = (STRICT, ADVISORY)
 
+#: How a step is accepted (docs/design/agent-quality/jev-contract.md section 6,
+#: the owner's answer 6 of 3 November 2026). `strict`, the default when the
+#: field is absent: only a person's approval of the result at this digest
+#: accepts a step, and a judgment is evidence on the approval screen, never
+#: the approval. `auto`: accepted once `unmet` is empty and the workflow's own
+#: gates hold. Weakening `strict` to `auto` is a widening (`widening`).
+ACCEPTANCE_STRICT = "strict"
+ACCEPTANCE_AUTO = "auto"
+ACCEPTANCE = (ACCEPTANCE_STRICT, ACCEPTANCE_AUTO)
+
+#: Who makes an amendment (`amend`). A person may change anything; an agent
+#: never widens, rewrites or drops (`ScopeWideningRefused`, `AmendmentRefused`);
+#: the `reviewer` is the platform acting on Jev's submission review, and may
+#: only add the `judgment` proof kind to an existing requirement (jev-contract.md
+#: section 4.4, the owner's answer 3).
+AUTHOR_PERSON = "person"
+AUTHOR_AGENT = "agent"
+AUTHOR_REVIEWER = "reviewer"
+AUTHORS = (AUTHOR_PERSON, AUTHOR_AGENT, AUTHOR_REVIEWER)
+
 #: The runtime capability names the routing package matches runners on.
 RUNTIME_CAPABILITIES = (
     "dom_automation",
@@ -79,8 +99,14 @@ PLUGIN_MODES = _PLUGIN_MODES
 #: name only, never a path, command, URL or version (invariant 10).
 PLUGIN_CATALOGUE: Mapping[str, Mapping[str, tuple[str, ...]]] = offered_skills()
 
-#: How a requirement is proven. Names only: a contract never carries a command.
-VERIFICATION_KINDS = ("unit_tests", "ci", "review", "browser_check", "artifact_present")
+#: How a requirement is proven. Names only: a contract never carries a command,
+#: and `judgment` never carries the judge or its question (invariant 10).
+#: `judgment`: a judge reading the diff and the mechanical results at the
+#: commit decides it (jev-contract.md section 3); met only by a passing
+#: `Evidence` of kind `judgment`, exactly as for every other kind.
+VERIFICATION_JUDGMENT = "judgment"
+VERIFICATION_KINDS = ("unit_tests", "ci", "review", "browser_check", "artifact_present",
+                      VERIFICATION_JUDGMENT)
 ARTIFACT_KINDS = ("pull_request", "file", "report")
 
 #: The contract's components, as `enforceable` and the dispatch reference name them.
@@ -93,6 +119,10 @@ COMPONENT_RUNTIME = "runtime_capabilities"
 COMPONENT_PLUGINS = "plugins"
 COMPONENT_VERIFICATION = "verification"
 COMPONENT_ARTIFACTS = "artifacts"
+#: Set when any requirement names the `judgment` kind. Enforced only where Jev
+#: can run (`enforced_with_judgment`); elsewhere a strict contract naming it is
+#: refused mechanically, with no Jev call, as `unenforced: ["judgment"]`.
+COMPONENT_JUDGMENT = "judgment"
 
 #: What today's worker enforces of a contract: the repository and commit
 #: (`repository_url`, `repository_ref`) and the limits (`runner_profile`,
@@ -108,6 +138,15 @@ COMPONENT_ARTIFACTS = "artifacts"
 #: component is refused by `compile`.
 WORKER_ENFORCED_TODAY = frozenset({COMPONENT_REPOSITORIES, COMPONENT_LIMITS, COMPONENT_PLUGINS})
 
+
+def enforced_with_judgment(enforced: frozenset[str] = WORKER_ENFORCED_TODAY) -> frozenset[str]:
+    """`enforced` plus `judgment`, for a workspace where Jev can run: its
+    signed `contract_review` setting is on and a backend is configured (the
+    owner's answer 9). Adds that one component and nothing else: a judgment
+    never counts as enforcing `protected` (its `interfaces` included, the
+    owner's answer 12), nor any other component."""
+    return frozenset(enforced) | {COMPONENT_JUDGMENT}
+
 _REQ_ID = re.compile(r"^[A-Z][A-Z0-9]{0,15}-[0-9]{1,6}$")
 _CONTRACT_ID = re.compile(r"^wc-[a-z0-9][a-z0-9-]{2,62}$")
 _NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -119,7 +158,7 @@ _MAX_TEXT = 4000
 
 _TOP_KEYS = frozenset({
     "schema", "contract_id", "tenant_id", "revision", "previous_digest", "strictness",
-    "requirements", "repositories", "scope", "protected", "capabilities",
+    "acceptance", "requirements", "repositories", "scope", "protected", "capabilities",
     "limits", "artifacts", "ownership",
 })
 
@@ -176,7 +215,22 @@ class WorkContract(_SignedForm):
     Its fields and canonical projection (`to_document`) are
     `swarm_common.workcontract.WorkContract`'s (contract request 136), the one
     definition the worker digests a stored body with; this adds what only
-    swarm-api reads."""
+    swarm-api reads, and `acceptance`, which the projection carries only when
+    it is not the default."""
+
+    acceptance: str = ACCEPTANCE_STRICT
+
+    def to_document(self) -> dict[str, Any]:
+        """The canonical document: what `digest` covers and what is stored.
+
+        `acceptance` is written only when it is not the default `strict`: an
+        absent field decodes as `strict`, so both spellings name one revision,
+        and every contract written before the field existed keeps its digest
+        (and the signed dispatch references that name it keep verifying)."""
+        document = super().to_document()
+        if self.acceptance != ACCEPTANCE_STRICT:
+            document["acceptance"] = self.acceptance
+        return document
 
     def requirement_ids(self) -> tuple[str, ...]:
         return tuple(r.id for r in self.requirements)
@@ -198,6 +252,8 @@ class WorkContract(_SignedForm):
             out.add(COMPONENT_PLUGINS)
         if any(r.verification for r in self.requirements):
             out.add(COMPONENT_VERIFICATION)
+        if any(VERIFICATION_JUDGMENT in r.verification for r in self.requirements):
+            out.add(COMPONENT_JUDGMENT)
         if self.artifacts:
             out.add(COMPONENT_ARTIFACTS)
         return frozenset(out)
@@ -414,6 +470,9 @@ def decode(document: Any) -> WorkContract:
     strictness = raw.get("strictness")
     if strictness not in STRICTNESS:
         raise _fail(f"strictness is one of {', '.join(STRICTNESS)}", field="strictness")
+    acceptance = raw.get("acceptance", ACCEPTANCE_STRICT)
+    if acceptance not in ACCEPTANCE:
+        raise _fail(f"acceptance is one of {', '.join(ACCEPTANCE)}", field="acceptance")
     scope = _map(raw.get("scope"), "scope")
     _closed(scope, ("read", "write"), "scope")
     protected = _map(raw.get("protected"), "protected")
@@ -446,6 +505,7 @@ def decode(document: Any) -> WorkContract:
         revision=revision,
         previous_digest=previous,
         strictness=strictness,
+        acceptance=acceptance,
         requirements=requirements,
         repositories=_repositories(raw.get("repositories")),
         read_scope=_globs(scope.get("read"), "scope.read"),
@@ -508,13 +568,25 @@ class CompiledContract:
     brief: str
 
 
+def judgment_only(contract: WorkContract) -> tuple[str, ...]:
+    """The requirement ids whose only proof kind is `judgment`."""
+    return tuple(r.id for r in contract.requirements
+                 if r.verification == (VERIFICATION_JUDGMENT,))
+
+
 def compile_contract(contract: WorkContract, *, step_id: str,
-                     enforced: frozenset[str] = WORKER_ENFORCED_TODAY) -> CompiledContract:
+                     enforced: frozenset[str] = WORKER_ENFORCED_TODAY,
+                     workflow_has_review: bool = False) -> CompiledContract:
     """The step fields and the signed reference for one contract revision.
 
     Refuses (ContractNotEnforceable) a strict contract that sets a component
     outside `enforced`: a strict contract never silently degrades to
-    advisory. An advisory one compiles, and names those components."""
+    advisory. An advisory one compiles, and names those components.
+
+    Refuses an `auto`-acceptance contract with a requirement proven by
+    `judgment` alone unless `workflow_has_review` says the workflow has a
+    review step: no step is ever accepted on a model judgment alone
+    (jev-contract.md section 6). The default is the refusing one."""
     gaps = unenforced(contract, enforced)
     if contract.strictness == STRICT and gaps:
         raise ContractNotEnforceable(
@@ -522,6 +594,15 @@ def compile_contract(contract: WorkContract, *, step_id: str,
             f"{', '.join(gaps)}: make it advisory or remove those components",
             detail={"contract_id": contract.contract_id, "revision": contract.revision,
                     "unenforced": list(gaps)},
+        )
+    alone = judgment_only(contract)
+    if contract.acceptance == ACCEPTANCE_AUTO and alone and not workflow_has_review:
+        raise ContractNotEnforceable(
+            f"contract {contract.contract_id} is accepted automatically, and "
+            f"{', '.join(alone)} would be proven by a judgment alone: add a mechanical "
+            "proof kind, a review step, or make acceptance strict",
+            detail={"contract_id": contract.contract_id, "revision": contract.revision,
+                    "unenforced": [], "judgment_only": list(alone)},
         )
     if len(contract.repositories) > 1:
         raise _fail("a compiled step binds one repository; name the others as their own "
@@ -820,6 +901,8 @@ def widening(old: WorkContract, new: WorkContract) -> tuple[str, ...]:
         out.append(COMPONENT_LIMITS)
     if new.strictness == ADVISORY and old.strictness == STRICT:
         out.append("strictness")
+    if new.acceptance == ACCEPTANCE_AUTO and old.acceptance == ACCEPTANCE_STRICT:
+        out.append("acceptance")
     return tuple(out)
 
 
@@ -836,10 +919,71 @@ def _limits_wider(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
     return False
 
 
-def amend(old: WorkContract, proposed: Any, *, author_is_agent: bool,
+def _author(author: str | None, author_is_agent: bool | None) -> str:
+    """The one author `amend` was told of. Naming none, or two that disagree,
+    is a caller's error: an amendment is never assumed to be a person's."""
+    if author is None:
+        if author_is_agent is None:
+            raise TypeError("amend names its author: author= or author_is_agent=")
+        return AUTHOR_AGENT if author_is_agent else AUTHOR_PERSON
+    if author not in AUTHORS:
+        raise TypeError(f"amend's author is one of {', '.join(AUTHORS)}")
+    if author_is_agent is not None and author_is_agent != (author == AUTHOR_AGENT):
+        raise TypeError("amend's author and author_is_agent disagree")
+    return author
+
+
+def _refuse_all_but_added_judgment(old: WorkContract, new: WorkContract,
+                                   withdraw: Mapping[str, str]) -> tuple[str, ...]:
+    """The requirement ids the reviewer added `judgment` to, or AmendmentRefused.
+
+    The reviewer's revision must equal `old` byte for byte (ids, text, order,
+    strictness, acceptance, scope, protected, capabilities, limits,
+    repositories, artifacts, ownership) except that some requirements gain
+    the `judgment` kind. Anything else is refused, whatever the review code
+    passed, so a fault there can never widen, rewrite or drop anything."""
+    refused = "the reviewer may only add the judgment proof kind to an existing requirement"
+    if withdraw:
+        raise AmendmentRefused(refused, detail={"author": AUTHOR_REVIEWER,
+                                                "field": "ownership.withdrawn"})
+    before, after = old.to_document(), new.to_document()
+    for document in (before, after):
+        document.pop("revision")
+        document.pop("previous_digest")
+    old_requirements, new_requirements = before.pop("requirements"), after.pop("requirements")
+    changed_fields = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    if changed_fields:
+        raise AmendmentRefused(refused, detail={"author": AUTHOR_REVIEWER,
+                                                "fields": changed_fields})
+    if [r["id"] for r in new_requirements] != [r["id"] for r in old_requirements]:
+        raise AmendmentRefused(refused, detail={"author": AUTHOR_REVIEWER,
+                                                "field": "requirements"})
+    added = []
+    for was, now in zip(old_requirements, new_requirements):
+        gained = set(now["verification"]) - set(was["verification"])
+        if now["text"] != was["text"] or not set(was["verification"]) <= set(now["verification"]) \
+                or not gained <= {VERIFICATION_JUDGMENT}:
+            raise AmendmentRefused(refused, detail={"author": AUTHOR_REVIEWER,
+                                                    "requirement": was["id"]})
+        if gained:
+            added.append(was["id"])
+    if not added:
+        raise AmendmentRefused("the reviewer's amendment adds judgment to no requirement",
+                               detail={"author": AUTHOR_REVIEWER})
+    return tuple(added)
+
+
+def amend(old: WorkContract, proposed: Any, *, author_is_agent: bool | None = None,
+          author: str | None = None,
           withdraw: Mapping[str, str] | None = None,
           evidence: Iterable[Evidence] = (), commit: str | None = None) -> Amendment:
     """A new immutable revision of `old` from `proposed` (a contract document).
+
+    The author is named by `author` (`person`, `agent` or `reviewer`), or by
+    `author_is_agent` for a person or an agent; naming neither is a TypeError.
+    The `reviewer` is the platform acting on Jev's submission review: its
+    amendment may only add `judgment` to existing requirements' verification
+    and is refused (AmendmentRefused) for any other difference.
 
     The new revision is `old.revision + 1` and names `old`'s digest; the
     caller's `revision` and `previous_digest` are ignored and set here, so a
@@ -851,6 +995,8 @@ def amend(old: WorkContract, proposed: Any, *, author_is_agent: bool,
     contract (`widening`), never changes its owner, and never drops a
     dependency or an expected artifact. The result still needs a person's
     approval of the new digest; `approved` holds no earlier approval for it."""
+    who = _author(author, author_is_agent)
+    author_is_agent = who == AUTHOR_AGENT
     raw = dict(_map(proposed, "contract"))
     raw["revision"] = old.revision + 1
     raw["previous_digest"] = digest(old)
@@ -863,6 +1009,10 @@ def amend(old: WorkContract, proposed: Any, *, author_is_agent: bool,
     if new.contract_id != old.contract_id or new.tenant_id != old.tenant_id:
         raise AmendmentRefused("an amendment keeps its contract's id and tenant",
                                detail={"contract_id": old.contract_id})
+    if who == AUTHOR_REVIEWER:
+        changed = _refuse_all_but_added_judgment(old, new, withdraw)
+        return Amendment(contract=new, reverify=new.requirement_ids(), added=(),
+                         changed=changed, withdrawn=())
     old_ids, new_ids = set(old.requirement_ids()), set(new.requirement_ids())
     for rid, reason in withdraw.items():
         if rid not in old_ids:
