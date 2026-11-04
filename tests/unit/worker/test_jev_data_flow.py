@@ -153,6 +153,103 @@ def test_the_record_states_when_a_call_may_be_made() -> None:
         assert _CITE.findall(cells[1]) and _CITE.findall(cells[2]), cells[0]
 
 
+#: The state-route steps, in order, each a row of "Jev spend on the state routes".
+STATE_ROUTE_STEPS = (
+    "the reservation, at admission (`state/jev-reserve`).",
+    "the grant binds the ledger.",
+    "one record per call (`state/jev-usage`).",
+    "the settlement, on every exit (`state/jev-settle`).",
+    "an abandoned attempt.",
+    "a superseded attempt's spend.",
+    "the quality hooks' and the browser's calls.",
+)
+
+
+def test_the_record_states_jev_spend_through_the_state_routes() -> None:
+    """AQ-JEV-ACCOUNTING (#3111): the reservation, the per-call record and the
+    settlement on every exit, each a row citing its code and a test. Red when
+    the section, a step's row or one of the cites that hold the gaps closed
+    (the usage route, the monthly cap's reservation, park, crash and cancel
+    settling) goes."""
+    text = DOC.read_text(encoding="utf-8")
+    assert "\n## Jev spend on the state routes\n" in text
+    section = text.split("\n## Jev spend on the state routes\n", 1)[1].split("\n## ", 1)[0]
+    # The three routes beside the others, and the authority is swarm-api's.
+    assert ("apps/swarm-api/swarm_api/routes/attemptstate.py", "_POSTS") in _CITE.findall(section)
+    rows = [line for line in section.splitlines() if line.startswith("| **")]
+    named = [re.match(r"\| \*\*([^*]+)\*\*", row).group(1).lower() for row in rows]
+    assert tuple(named) == STATE_ROUTE_STEPS, named
+    by_step: dict[str, tuple[list[tuple[str, str]], list[tuple[str, str]]]] = {}
+    for name, row in zip(named, rows):
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        assert len(cells) == 3, cells[0]
+        held, tests = _CITE.findall(cells[1]), _CITE.findall(cells[2])
+        assert held and all(p.startswith("apps/") for p, _ in held), cells[0]
+        assert tests and all(p.startswith("tests/unit/") and q.startswith("test_")
+                             for p, q in tests), cells[0]
+        by_step[name] = (held, tests)
+    # The usage carried through the routes: one record per call, charged once.
+    held, tests = by_step["one record per call (`state/jev-usage`)."]
+    assert ("apps/swarm-api/swarm_api/jevaccount.py", "JevAccount.record_call") in held
+    assert ("tests/unit/control_plane/test_jev_account.py",
+            "test_usage_through_the_state_routes_is_recorded_and_charged_once") in tests
+    # The monthly cap on that path: the reservation is bounded by the month.
+    held, tests = by_step["the reservation, at admission (`state/jev-reserve`)."]
+    assert ("apps/swarm-api/swarm_api/jevaccount.py", "JevAccount.reserve") in held
+    assert ("apps/swarm-api/swarm_api/attemptstate.py", "AttemptState._fenced") in held
+    assert ("tests/unit/control_plane/test_jev_account.py",
+            "test_reserve_grants_the_task_allowance_bounded_by_the_month") in tests
+    assert ("tests/unit/worker/test_jev_state_accounting.py",
+            "test_a_capped_tenant_on_the_state_routes_is_granted_its_month") in tests
+    # Settlement on park, crash and cancel, and of a worker that died.
+    held, tests = by_step["the settlement, on every exit (`state/jev-settle`)."]
+    assert ("apps/swarm-api/swarm_api/jevaccount.py", "JevAccount.settle") in held
+    assert ("apps/agent-worker/agent_worker/lifecycle.py", "Worker._settle_jev_at_exit") in held
+    assert ("tests/unit/worker/test_jev_state_accounting.py",
+            "test_the_park_cancel_and_crash_paths_settle") in tests
+    settle_row = rows[named.index("the settlement, on every exit (`state/jev-settle`).")]
+    for outcome in ("`parked`", "`cancelled`", "`crashed`"):
+        assert outcome in settle_row, outcome
+    _, tests = by_step["an abandoned attempt."]
+    assert ("tests/unit/control_plane/test_jev_account.py",
+            "test_a_crashed_attempt_is_reconciled_by_the_next_reserve") in tests
+    for path, name in _CITE.findall(section):
+        assert _resolves(path, name), f"{path}::{name}"
+
+
+def test_the_gaps_the_state_routes_closed_stay_out_of_the_open_list() -> None:
+    """Red when a gap AQ-JEV-ACCOUNTING closed (usage carried through the
+    state routes, the monthly cap on that path, settlement on park, crash and
+    cancel) is listed open again, or its "closed" record goes. What stays open
+    for the direct (Firestore) path is said so by name (the control)."""
+    text = DOC.read_text(encoding="utf-8")
+    gaps = text.split("\n## Known gaps", 1)[1].split("\n## ", 1)[0]
+    still_open = gaps.split("\n### ", 1)[0]
+    bullets = re.split(r"\n\* ", still_open)[1:]
+    assert len(bullets) >= 5, "the open-gaps list was not read"
+    # Usage carried through the state routes.
+    assert "state routes carry no jev usage" not in still_open.lower()
+    # The monthly cap on that path: a month nobody read no longer counts as spent.
+    assert "month counts as spent" not in still_open
+    assert not any("skipped:budget_monthly" in b and "state routes" in b for b in bullets)
+    # Settlement on park, crash and cancel: open only for the direct path.
+    for bullet in bullets:
+        if "harvest" in bullet and "settled" in bullet:
+            assert bullet.startswith("**On the direct (Firestore) path"), bullet[:120]
+            assert "The state routes close all three" in bullet, bullet[:120]
+    assert "* **Only an attempt that reaches the harvest is settled.**" not in still_open
+    # And each is recorded closed, under the lane that closed it.
+    assert "\n### Closed by lane AQ-JEV-ACCOUNTING (2026-11-03)\n" in gaps
+    closed = gaps.split("\n### Closed by lane AQ-JEV-ACCOUNTING (2026-11-03)\n", 1)[1]
+    closed = closed.split("\n### ", 1)[0]
+    assert "**The state routes carried no Jev usage.**" in closed
+    assert "`skipped:budget_monthly`" in closed
+    assert "**Only an attempt that reached the harvest was settled**" in closed
+    for end in ("a park", "a cancellation", "a crash", "`abandoned`"):
+        assert end in closed, end
+    assert '"Jev spend on the state routes"' in closed
+
+
 LAUNCHER = REPO / "images" / "agent-runtime-base" / "jev-gates" / "bin" / "swarm-jev-gate.mjs"
 
 

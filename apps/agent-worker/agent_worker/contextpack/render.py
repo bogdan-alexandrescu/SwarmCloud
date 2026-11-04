@@ -1,7 +1,8 @@
 """CONTEXT.md and pack.json (§4.4), and writing them where no link can redirect them.
 
 CONTEXT.md, in this order:
-  1. the header: task type, freshness, Jev's state, the seeds, the summary;
+  1. the header: task type, freshness, Jev (only when it is on), the seeds,
+     the summary;
   2. NEVER CUT: parallel work on this territory, and the paths this step cannot
      push -- before anything ranked, so the budget can never reach them;
   3. the checklist for the task type, and where to answer it;
@@ -103,8 +104,12 @@ def render_markdown(header: dict[str, Any], rows: list[Candidate], ranked: list[
         f"`{str(fresh.get('base_sha') or 'unknown')[:12]}` · behind_by "
         f"{fresh.get('behind_by') if fresh.get('behind_by') is not None else 'unknown'} · "
         f"changed since the index: {fresh.get('changed_since_index')}{stale_note}")
+    # Jev only when it is on for this step (owner's pick, 2026-11-03): an off
+    # line tells the agent nothing it can act on. pack.json keeps the state
+    # and why either way.
     jev = header["jev"]
-    lines.append(f"Jev: {jev['state']} ({_clip(jev['reason'], 160)})")
+    if jev.get("state") == "on":
+        lines.append(f"Jev: on ({_clip(jev['reason'], 160)})")
     seeds = header["seeds"]
     named = [*seeds.get("files", []), *seeds.get("tests", []), *seeds.get("symbols", [])]
     lines.append("Seeds: " + (", ".join(f"`{_clip(s, 120)}`" for s in named[:12])

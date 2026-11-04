@@ -247,20 +247,38 @@ describe('the other rows act as the console does today', () => {
     expect(screen.getByRole('link', { name: 'Open agent step' }).getAttribute('href')).toBe('/agents/live/step/logs')
   })
 
-  it("a workflow step's Retry re-runs the step inside its workflow, then the page reads again", async () => {
+  it("a workflow step's Retry asks first, naming the step, and sends nothing until confirmed", async () => {
+    render(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
+    // MUTATION: send on the first press and one stray click re-runs a workflow.
+    expect(api.rerunWorkflowStep).not.toHaveBeenCalled()
+    const ask = screen.getByRole('group', { name: 'Re-run step build?' })
+    expect(ask.textContent).toContain('Re-run step build inside its workflow')
+    fireEvent.click(within(ask).getByRole('button', { name: 'Keep it' }))
+    expect(screen.queryByRole('group', { name: 'Re-run step build?' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Retry agent step' })).toBeTruthy()
+    expect(api.rerunWorkflowStep).not.toHaveBeenCalled()
+  })
+
+  it("a workflow step's confirmed Retry re-runs the step inside its workflow, says which steps, then the page reads again", async () => {
     api.rerunWorkflowStep.mockResolvedValue({
       status: 'ok',
       fetchedAt: Date.now(),
-      data: { workflow_id: 'wf_one', step_id: 'build', replaced: { build: { from: 'step', to: 'task_new' } } },
+      data: {
+        workflow_id: 'wf_one',
+        step_id: 'build',
+        replaced: { build: { from: 'step', to: 'task_new' }, ship: { from: 'task_ship', to: 'task_ship2' } },
+      },
     })
     const onChanged = vi.fn()
     render(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} onChanged={onChanged} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Re-run build' }))
     })
     expect(api.rerunWorkflowStep).toHaveBeenCalledWith('wf_one', 'build')
     expect(api.loadTaskInputOnce).not.toHaveBeenCalledWith('step')
-    expect(screen.getByRole('status').textContent).toBe('Re-running')
+    expect(screen.getByRole('status').textContent).toBe('Re-running build, ship')
     expect(onChanged).toHaveBeenCalledTimes(1)
   })
 
@@ -271,8 +289,9 @@ describe('the other rows act as the console does today', () => {
     })
     const onChanged = vi.fn()
     render(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} onChanged={onChanged} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Re-run build' }))
     })
     expect(screen.getByRole('alert').textContent).toContain('every step of its workflow has finished')
     expect(screen.getByRole('button', { name: 'Retry agent step' })).toBeTruthy()

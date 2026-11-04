@@ -25,8 +25,10 @@ one pass of the release. What is held here:
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from quota_broker.accountstore import AccountStore
 from swarm_common.profiles import RUNNER_PROFILES
 
@@ -35,9 +37,27 @@ from .conftest import measure, scheduler_settings, seed_pool, seed_task, seed_te
 BROKER = "https://swarm-quota-broker.example.run.app"
 OWNER = "eng"
 STRANGER = "research"
+#: This test's instant, and the scheduler's clock (`_now_is_this_test`).
 NOW = datetime.now(timezone.utc)
 #: Outside the prewarm horizon, so only the wake can promote a park.
 LATER = NOW + timedelta(minutes=5)
+
+
+@pytest.fixture(autouse=True)
+def _now_is_this_test(monkeypatch):
+    """Take NOW when the test starts, never when the module is imported.
+
+    Imported at collection, NOW was as old as the wait between collecting the
+    file and running it. Under xdist in a long CI shard that wait passed 290
+    seconds (main's run 41647091250, 2026-11-03): the release seeded at
+    `NOW - 10s` then lay outside the drain's `RELEASE_LOOKBACK_SECONDS` (300)
+    while the parks were not yet inside the prewarm horizon, so the drain woke
+    nothing -- passes 0, scanned 0 -- although the wake was correct.
+    """
+    now = datetime.now(timezone.utc)
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "NOW", now)
+    monkeypatch.setattr(module, "LATER", now + timedelta(minutes=5))
 
 
 def _world(db) -> None:
@@ -61,8 +81,10 @@ def _released(db, assignment: str, *, account_id: str, tenant_id: str, task_id: 
 
 
 def _pool_park(db, task_id: str, tenant_id: str, *, reason: str = "accounts_full",
-               parked_at: datetime, next_eligible_at: datetime = LATER) -> None:
+               parked_at: datetime, next_eligible_at: datetime | None = None) -> None:
     profile = RUNNER_PROFILES["claude-code"]
+    if next_eligible_at is None:
+        next_eligible_at = LATER
     seed_task(
         db,
         task_id=task_id,
@@ -86,7 +108,8 @@ def _pool_park(db, task_id: str, tenant_id: str, *, reason: str = "accounts_full
 
 
 def _scheduler(make_scheduler):
-    return make_scheduler(settings=scheduler_settings(quota_broker_url=BROKER))
+    # Its clock is the test's instant, however long the test itself takes.
+    return make_scheduler(settings=scheduler_settings(quota_broker_url=BROKER), now=lambda: NOW)
 
 
 def _two_full_parks(db) -> None:
