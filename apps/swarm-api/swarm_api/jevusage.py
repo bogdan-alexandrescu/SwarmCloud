@@ -17,8 +17,10 @@ attempt row may also carry, and this read sums when it does:
 * `by_kind` -- `{kind: {calls, input_tokens, output_tokens, outcomes}}`, the
   attempt's calls split by who asked: J1-J3 and J5 are the worker's judgments
   (one kind per question), J4 the quality gate, `agent` the agent's decision
-  tool, `browser` the Jev browser. `outcomes` counts `ok`, `failed` and
-  `skipped:<reason>`, the outcome strings the worker's audit rows hold.
+  tool, `browser` the Jev browser, `contract_judgment` the control plane's
+  re-ask of a step's acceptance (a row of its own, `<attempt row>_reask`).
+  `outcomes` counts `ok`, `failed` and `skipped:<reason>`, the outcome
+  strings the worker's audit rows hold.
 
 A row without `by_kind` is counted under kind `unattributed` with its calls
 and input tokens and no outcomes: the worker's audit rows hold the split, but
@@ -78,6 +80,10 @@ KIND_GROUPS: dict[str, str] = {
     "J4": "quality_gate",
     "agent": "decision_tool",
     "browser": "jev_browser",
+    # The control plane's re-ask of a step's acceptance judgment, after the
+    # attempt ended (`contractreask`, `jevaccount.ReaskLedger`): its own row
+    # per attempt, so it is counted and held to the monthly cap as well.
+    "contract_judgment": "control_plane_reask",
     UNATTRIBUTED: UNATTRIBUTED,
 }
 OUTCOME_OK = "ok"

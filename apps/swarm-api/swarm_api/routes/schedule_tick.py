@@ -26,6 +26,15 @@ service, and because the tick is a service account -- which the answer route
 refuses -- expiry is its own function and never the answer route. While the
 `await-input` profile is unavailable it reads nothing and the report has no
 `await_input` key, so the tick is exactly what it was.
+
+THE CONTRACT RE-ASK RIDES IT TOO (the owner's answer, 4 November 2026;
+docs/design/agent-quality/jev-contract.md section 8.2). Each minute,
+`contractreask.run_pass` makes one bounded pass over the steps whose
+acceptance judgment is waiting on the control plane's re-ask: at most
+`PASS_LIMIT` records, each claimed in a transaction before Jev is asked once,
+so no request sleeps (invariant 4) and two ticks never ask twice on one try.
+Its report is `contract_reask`; a failed pass is logged and counted, and the
+next minute retries it.
 """
 
 from __future__ import annotations
@@ -34,7 +43,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from .. import awaitinput
+from .. import awaitinput, contractreask
 from ..auth import AuthContext, SCHEDULE_TICK_USERS_ENV
 from ..deps import AppContext, admin_auth, get_context
 from ..errors import Forbidden
@@ -77,4 +86,10 @@ def schedule_tick(
         expired = awaitinput.ExpiryReport(errors=1)
     if expired is not None:
         body["await_input"] = expired.to_api()
+    try:
+        body["contract_reask"] = contractreask.run_pass(ctx)
+    except Exception:
+        # As the expiry sweep: one minute's pass is retried by the next.
+        log.exception("contract re-ask pass failed; the next tick retries it")
+        body["contract_reask"] = {"errors": 1}
     return body

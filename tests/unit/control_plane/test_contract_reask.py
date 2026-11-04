@@ -21,6 +21,7 @@ from typing import Any
 from swarm_api import contractevidence as ce
 from swarm_api import contractjudge as cj
 from swarm_api import contractreask as cr
+from swarm_api import jevaccount, jevusage
 from swarm_api import workcontract as wc
 
 from .conftest import api_settings, seed_task
@@ -254,3 +255,106 @@ def test_the_forge_judge_asks_nothing_for_a_workspace_that_sends_no_code(db):
                           forge=None, forge_tokens=None)
     result = cr.ForgeJudge(ctx)(db.docs[f"tasks/{TASK}"], contract, acceptance(db))
     assert result.outcome == cr.OUTCOME_NOT_RUN and result.reason == "not_opted_in"
+
+
+# --- the re-ask's Jev calls are counted and capped (owner, 4 November 2026) ---
+
+
+def _cap(db, cap: int | None) -> None:
+    db.docs["workspace_settings/eng"] = {
+        "tenant_id": "eng", "code_intelligence": {"jev": True, "jev_monthly_cap_tokens": cap}}
+
+
+def _ledger(db) -> jevaccount.ReaskLedger:
+    return jevaccount.ReaskLedger(db, settings(), lambda: T0, tenant_id="eng", task_id=TASK,
+                                  generation=1, attempt_id="att_1")
+
+
+def _month(db) -> dict[str, Any]:
+    return db.docs.get(f"{jevusage.COLLECTION}/eng_{T0:%Y-%m}") or {}
+
+
+def _ask(db, transport) -> Any:
+    from swarm_jev import JudgeClient
+
+    contract = seed_pending(db)
+    state = cj.judgment_state(contract, commit=COMMIT, changed=[
+        {"path": "src/login/form.py", "status": "modified", "hunk": "+ok"}], mechanical=[])
+    backend = SimpleNamespace(name="internal-jev", url="http://jev.internal/decide",
+                              model="jev-small", stringify_state=True, key=None)
+    ledger = _ledger(db)
+    decision = JudgeClient(backend=backend, ledger=ledger, transport=transport,
+                           sleep=lambda _s: None).decide(
+        cr.JUDGMENT_KIND, state, cj.judgment_questions(state))
+    return decision, ledger
+
+
+def test_a_reask_call_is_counted_in_the_months_jev_usage(db):
+    _cap(db, None)
+    _month_before = 1_000
+    db.docs[f"{jevusage.COLLECTION}/eng_{T0:%Y-%m}"] = {"tenant_id": "eng",
+                                                        "input_tokens": _month_before}
+
+    def transport(url, body, headers, timeout):
+        return 200, json.dumps({"answers": {}, "usage": {"input_tokens": 4_000}}).encode()
+
+    decision, ledger = _ask(db, transport)
+    assert ledger.refused is None and len(ledger.rows) == 1
+    row = db.docs[f"{jevusage.COLLECTION}/{jevaccount.reask_row_id('eng', TASK, 1)}"]
+    assert row["kind"] == jevaccount.ATTEMPT_KIND and row["tenant_id"] == "eng"
+    assert row["calls"] == 1 and row["input_tokens"] == 4_000
+    assert row["by_kind"][cr.JUDGMENT_KIND]["calls"] == 1
+    assert _month(db)["input_tokens"] == _month_before + 4_000
+    # Its own row: the worker's attempt row, which the task's limits read, is untouched.
+    assert f"{jevusage.COLLECTION}/{jevaccount.row_id('eng', TASK, 1)}" not in db.docs
+    assert jevusage.KIND_GROUPS[cr.JUDGMENT_KIND] == "control_plane_reask"
+
+
+def test_a_recorded_call_is_charged_once(db):
+    _cap(db, None)
+    ledger = _ledger(db)
+    call = {"call_id": "abc123", "kind": cr.JUDGMENT_KIND, "input_tokens": 3_000,
+            "outcome": "ok"}
+    ledger.record(dict(call))
+    _ledger(db).record(dict(call))
+    row = db.docs[f"{jevusage.COLLECTION}/{jevaccount.reask_row_id('eng', TASK, 1)}"]
+    assert row["calls"] == 1 and _month(db)["input_tokens"] == 3_000
+
+
+def test_the_monthly_cap_refuses_a_reask_call_and_nothing_is_sent(db):
+    _cap(db, 10_000)
+    db.docs[f"{jevusage.COLLECTION}/eng_{T0:%Y-%m}"] = {"tenant_id": "eng",
+                                                        "input_tokens": 9_000}
+    sent: list[bytes] = []
+
+    def transport(url, body, headers, timeout):
+        sent.append(body)
+        return 200, b"{}"
+
+    decision, ledger = _ask(db, transport)
+    assert sent == [] and decision.outcome == "skipped"
+    assert decision.reason == ledger.refused == "budget_monthly"
+    row = db.docs[f"{jevusage.COLLECTION}/{jevaccount.reask_row_id('eng', TASK, 1)}"]
+    assert row["calls"] == 0 and row["input_tokens"] == 0
+    assert row["by_kind"][cr.JUDGMENT_KIND]["outcomes"] == {"skipped:budget_monthly": 1}
+    assert _month(db)["input_tokens"] == 9_000
+
+
+def test_the_cap_leaves_the_worker_attempts_reservations_alone(db):
+    _cap(db, 100_000)
+    db.docs[f"{jevusage.COLLECTION}/eng_reservations"] = {
+        "kind": jevaccount.RESERVATIONS_KIND, "tenant_id": "eng",
+        "held": {"task_other_g1": {"task_id": "task_other", "generation": 1,
+                                   "remaining_tokens": 99_000}}}
+    assert _ledger(db).admit(estimate=10) == "budget_monthly"
+    del db.docs[f"{jevusage.COLLECTION}/eng_reservations"]
+    assert _ledger(db).admit(estimate=10) is None
+
+
+def test_a_ledger_admits_one_call(db):
+    _cap(db, None)
+    ledger = _ledger(db)
+    assert ledger.admit(estimate=10) is None
+    ledger.record({"call_id": "c1", "kind": cr.JUDGMENT_KIND, "input_tokens": 3_000,
+                   "outcome": "ok"})
+    assert ledger.admit(estimate=10) == "budget_calls"

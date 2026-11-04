@@ -29,6 +29,16 @@ newer generation) supersedes the record with nothing written, and the re-ask
 runs at most `REASK_TRIES` times inside `REASK_WINDOW`. It stops on the first
 verdict.
 
+ITS JEV CALLS ARE COUNTED AND CAPPED (the owner's answer, 4 November 2026).
+Each re-ask's call is admitted against the workspace's signed
+`code_intelligence.jev_monthly_cap_tokens`, after every live reservation the
+worker's attempts hold, and recorded in its monthly `jev_usage`, through
+`jevaccount.ReaskLedger`: a row of its own per attempt, kind
+`contract_judgment`, which the usage page shows as the control plane's
+re-ask. A call the cap refuses is a try without a verdict (`budget_monthly`).
+
+WIRED INTO THE SCHEDULE TICK (`routes/schedule_tick.py`): one pass a minute.
+
 THE RE-ASK NEVER SENDS BACK. It runs after the attempt has ended, so there is
 no live attempt to put through the retry transition; an `unmet` it finds
 writes its failed evidence and goes to the owner with every verdict attached,
@@ -411,21 +421,6 @@ def state_digest(state: Mapping[str, Any]) -> str:
     return hashlib.sha256(json.dumps(state, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-class _OneCall:
-    """The re-ask's ledger: one call per try, its audit row kept on the result.
-    The pass itself is the bound (REASK_TRIES per step)."""
-
-    def __init__(self) -> None:
-        self.rows: list[dict[str, Any]] = []
-
-    def admit(self, *, estimate: int) -> str | None:
-        return "budget_calls" if self.rows else None
-
-    def record(self, row: dict[str, Any], *, succeeded: bool | None = None) -> bool:
-        self.rows.append(dict(row))
-        return False
-
-
 @dataclass
 class ForgeJudge:
     """Re-asks Jev from the published diff (`impact.read_diff`, with the
@@ -441,6 +436,7 @@ class ForgeJudge:
         from swarm_jev import JudgeClient
 
         from .codeintel import CodeIntelligenceStore
+        from .jevaccount import ReaskLedger
         from .impact import ImpactRequest, read_diff, resolve_read_token
         from .judgment import (
             INTERNAL_BACKENDS,
@@ -488,7 +484,12 @@ class ForgeJudge:
         changed = [{"path": f.path, "status": f.status, "hunk": f.patch} for f in diff.files]
         state = cj.judgment_state(contract, commit=str(head), changed=changed,
                                   mechanical=list(acc.get("mechanical") or []))
-        ledger = _OneCall()
+        # Counted in the workspace's monthly jev_usage and admitted against
+        # its jev_monthly_cap_tokens (the owner's answer, 4 November 2026).
+        ledger = ReaskLedger(ctx.db, ctx.settings, ctx.now, tenant_id=tenant_id,
+                             task_id=str(task.get("id")),
+                             generation=int(acc["generation"]),
+                             attempt_id=acc.get("attempt_id"))
         decision = JudgeClient(backend=backend, ledger=ledger,
                                transport=backend.transport()).decide(
             JUDGMENT_KIND, state, cj.judgment_questions(state))
