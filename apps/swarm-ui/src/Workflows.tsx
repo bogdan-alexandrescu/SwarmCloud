@@ -6596,7 +6596,7 @@ function WorkflowSplit({
   const view = focus.view
   const main = (
     <div className="wfp wfp-main">
-      <WorkflowPageHead workflow={workflow} taskById={taskById} usage={usage} now={now} />
+      <WorkflowHead workflow={workflow} taskById={taskById} usage={usage} now={now} />
       <NeedsYou items={needItems} approvals={null} selected={needKind} onSelect={onNeed} onChanged={reload} />
       <div className="wfp-viewbar">
         <WfTabs id={id} query={query} view={view} steps={workflow.steps.length} onView={focus.onView} />
@@ -6773,7 +6773,7 @@ const TALLY_PARTS: readonly { key: 'running' | 'waiting' | 'done' | 'failed'; gl
  * The name is the screen's title above, and the way back is the breadcrumb,
  * which keeps the list's filters.
  */
-function WorkflowPageHead({
+function WorkflowHead({
   workflow,
   taskById,
   usage,
@@ -6788,11 +6788,13 @@ function WorkflowPageHead({
   const tally = tallyOf(workflow.steps.map((s) => chipKindOf(stepState(s, taskById))))
   const browsers = liveSteps(workflow, taskById).length
   const age = workflowAge(workflow, now)
+  const pr = workflowPullRequest(workflow, taskById)
   const n = workflow.steps.length
   return (
-    <div className="wfp-top">
+    <div className="wfp-head wfp-top">
       <p className="wfp-line">
         <WorkflowStateMark workflow={workflow} />
+        {pr !== null && <PullRequestLink pr={pr} className="c-chip is-link" />}
         <span className="wfp-fig">
           {n} {n === 1 ? 'step' : 'steps'}
         </span>
