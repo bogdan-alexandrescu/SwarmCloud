@@ -41,6 +41,7 @@ const api = vi.hoisted(() => ({
 vi.mock('../api', () => api)
 
 const { VoiceKeyLink, VoiceItPool, VOICE_KEY_BUTTON, VOICE_KEY_LABEL } = await import('../Accounts')
+const { ageOf, whyOf } = await import('../AccountsTable')
 
 const WAIT = { timeout: 5000 } as const
 const ADMIN = 'owner@example.com'
@@ -146,6 +147,13 @@ describe('an OpenAI API key account in the Voice it pool', () => {
       expect(cell.textContent).not.toMatch(/\b0%|no reading yet/)
     }
     expect(section.textContent).toContain('OpenAI API key')
+  })
+
+  it('says not measured in its reading age and its verdict, never no reading yet', () => {
+    expect(ageOf(KEY_ACCOUNT, Date.now())).toBe('not measured')
+    const { container } = render(<>{whyOf(KEY_ACCOUNT, 'eng', Date.now())}</>)
+    expect(container.textContent).toContain('Not measured: OpenAI gives an API key no usage window')
+    expect(container.textContent).not.toContain('it takes one agent until it is')
   })
 
   for (const theme of ['light', 'dark'] as const) {

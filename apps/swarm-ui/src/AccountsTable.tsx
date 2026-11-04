@@ -160,7 +160,13 @@ export function whyOf(
     return (
       <>
         <b>Nothing.</b>
-        {said.length > 0 ? ` ${said.join('; ')}` : a.observed_at === null ? ' Not measured yet; it takes one agent until it is' : ''}
+        {said.length > 0
+          ? ` ${said.join('; ')}`
+          : notMeasured(a)
+            ? ' Not measured: OpenAI gives an API key no usage window'
+            : a.observed_at === null
+              ? ' Not measured yet; it takes one agent until it is'
+              : ''}
       </>
     )
   }
@@ -319,6 +325,7 @@ function FloorTrack({ pct: p, tone, tick, label }: { pct: number | null; tone?: 
 
 /** `read 4m ago`, `read 52m ago · counts at half`, or `no reading yet`. */
 export function ageOf(a: PoolAccount, now: number): string {
+  if (notMeasured(a)) return 'not measured'
   if (a.observed_at === null) return 'no reading yet'
   const at = Date.parse(a.observed_at)
   const age = Number.isFinite(at) ? `read ${ageSpan(now - at)} ago` : 'read at an unknown time'
