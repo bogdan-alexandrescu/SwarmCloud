@@ -282,17 +282,25 @@ describe('the workflow list', () => {
 // ---------------------------------------------------------------------------
 
 describe('one workflow', () => {
-  it('opens on its graph with the step that needs a look in the card under it, no step table below, and records itself in Recent', async () => {
+  it('opens on its graph with no step picked, the Overview in the inspector, no step table below, and records itself in Recent', async () => {
     render(<WorkflowsScreen view="wf=wf_broker&state=running&owner=priya" />)
-    await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
+    await waitFor(() => expect(document.querySelector('.sg')).toBeTruthy())
     // The way back with the filters is the breadcrumb's list segment
     // (App.tsx `crumbsOf`, VQ-015: vq.workflows.test.tsx); the page draws
     // no back link of its own under it.
     expect(screen.queryByText(/Workflows · Running · owner: priya/)).toBeNull()
     // No board controls on a page.
     expect(screen.queryByRole('checkbox', { name: /chains only/i })).toBeNull()
-    // The running step is picked into the card, stacked under the graph (#503).
-    await waitFor(() => expect(document.querySelector('.wf-split.has-panel.is-stack')).toBeTruthy())
+    // NO ARRIVAL PICK (the Graph Work redesign, 2026-11-03): the page opens
+    // with nothing picked, not even the step running now, and the Overview
+    // at rest in the inspector -- never a card drawn under the grid.
+    expect(document.querySelector('.wi-dock')).toBeNull()
+    expect(document.querySelector('.wf-split')).toBeNull()
+    expect(document.querySelector('.wf-panel')).toBeNull()
+    // Below 1366px the inspector starts folded; unfold it to see the Overview.
+    fireEvent.click(screen.getByRole('button', { name: 'Open the inspector' }))
+    const ov = document.querySelector<HTMLElement>('.wi-dock')!
+    expect(ov.getAttribute('aria-label')).toBe('Workflow overview')
     // No step table under the graph: the Table tab is the rows (visual QA pass 1 overview-agents-73, #2596).
     expect(document.querySelector('.wfp-steps')).toBeNull()
     expect(recentWorkflows()[0]).toEqual({ id: 'wf_broker', state: 'RUNNING', name: null })
@@ -300,19 +308,27 @@ describe('one workflow', () => {
 
   it('draws each node in its brand mark and tint', async () => {
     render(<WorkflowsScreen view="wf=wf_broker" />)
-    await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
-    const node = (id: string) => document.querySelector<HTMLElement>(`button.node[data-step="${id}"]`)!
-    expect(node('core').className).toContain('t-live')
-    expect(node('core').querySelector('[data-mark="running"][data-hue="live"]')).toBeTruthy()
-    expect(node('plan').querySelector('[data-mark="succeeded"][data-hue="neu"]')).toBeTruthy()
+    // The brand marks are drawn on the page's stage grid now, not the retired
+    // canvas: `WorkflowCard`'s `.node` is a CANVAS behaviour, covered on the
+    // component directly in the stage grid's own tests; this is what the page
+    // itself shows.
+    const chip = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.sg [data-step="core"]')
+      expect(el).not.toBeNull()
+      return el!
+    })
+    expect(chip.querySelector('[data-mark="running"][data-hue="live"]')).toBeTruthy()
+    const plan = document.querySelector<HTMLElement>('.sg [data-step="plan"]')!
+    expect(plan.querySelector('[data-mark="succeeded"][data-hue="neu"]')).toBeTruthy()
     // Not started is the grey ring: in line, nothing decided.
-    expect(node('verify').querySelector('[data-mark="queued"][data-hue="neu"]')).toBeTruthy()
+    const verify = document.querySelector<HTMLElement>('.sg [data-step="verify"]')!
+    expect(verify.querySelector('[data-mark="queued"][data-hue="neu"]')).toBeTruthy()
   })
 
   it('switches tabs through the address', async () => {
     const onView = vi.fn()
     render(<Routed initial="wf=wf_broker&owner=priya" onView={onView} />)
-    await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
+    await waitFor(() => expect(document.querySelector('.sg')).toBeTruthy())
     // A canonical tab: a role=tab link to the view's own address, switched in place.
     const tab = screen.getAllByRole('tab').find((b) => b.textContent === 'Steps over time')
     // `Steps over time`, not the nav's Timeline (overview-agents-89, #2596); the address keeps `timeline`.

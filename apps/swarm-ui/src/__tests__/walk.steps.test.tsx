@@ -179,8 +179,10 @@ describe('A: the sampling chip is in the table head row, inside the card', () =>
   it('draws no Steps table under the Graph: the rows are the Table tab’s', async () => {
     window.history.replaceState(null, '', `/workflows/${WF}`)
     render(<App />)
-    await waitFor(() => expect(document.querySelector('.wf-card .wf-canvas')).not.toBeNull())
+    // The Graph is the stage grid in the page's own pane since the Graph Work
+    // redesign (part of #2688), no longer a canvas in a card.
+    await waitFor(() => expect(document.querySelector('.wfp.wfp-main .sg')).not.toBeNull())
     expect(document.querySelector('.wfp-steps'), 'a step table under the graph').toBeNull()
-    expect(document.querySelector('.wf-card .wf-table'), 'the graph tab draws the table').toBeNull()
+    expect(document.querySelector('.wf-table'), 'the graph tab draws the table').toBeNull()
   })
 })
