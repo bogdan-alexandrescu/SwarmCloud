@@ -469,6 +469,11 @@ serves Voice it as **text only**:
   reported against the session's hold. A refusal of type
   `usage_limit_reached` carries `resets_at`, which the person reads on the
   429.
+* **The egress.** swarm-voice's FQDN egress policy
+  (`kubernetes/network-policies/swarm-system-voice.yaml`) admits
+  `chatgpt.com` on 443 beside `api.openai.com`, by exact name and no
+  wildcard (owner pick, 4 November 2026: "Add it in this PR"). Without it the
+  policy fails closed and every text turn is a connection refusal.
 * **Delegation works as on the Live path.** The text model is offered one
   `delegate` tool. A turn that asks for a plan comes back as that call and
   becomes a planner turn over the conversation so far, with the session's
