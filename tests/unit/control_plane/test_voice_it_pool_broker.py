@@ -22,6 +22,7 @@ Every token here is built at runtime: nothing credential-shaped is a literal.
 
 from __future__ import annotations
 
+import copy
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -590,13 +591,201 @@ def test_a_lease_with_only_a_plan_in_the_pool_is_refused_before_any_hold(client,
 
 
 def test_an_unknown_capability_is_refused(client, accounts):
-    _key(client, accounts, OWNER, "key-1")
+    key_id = _key(client, accounts, OWNER, "key-1")
+    plan_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
     client.identity.as_voice()
     refused = client.post(
         "/v1/voice/lease",
-        json={"person": PERSON, "voice_session_id": "vs-1", "capability": "text"},
+        json={"person": PERSON, "voice_session_id": "vs-1", "capability": "video"},
     )
     assert refused.status_code == 422, refused.text
+    assert accounts.get(key_id).holds == () and accounts.get(plan_id).holds == ()
+
+
+# -- a text conversation leases the plan (swarm_voice.textchat) --------------
+
+
+def _text_lease(client, person: str = PERSON, session: str = "vs-t1", provider: str = "openai"):
+    """The body swarm_voice.accountlease.VoiceBroker.lease sends for
+    `CAPABILITY_TEXT`, exactly."""
+    client.identity.as_voice()
+    return client.post(
+        "/v1/voice/lease",
+        json={"person": person, "voice_session_id": session, "provider": provider,
+              "capability": "text"},
+    )
+
+
+def test_a_text_conversation_leases_the_plan_and_never_the_key(client, accounts):
+    key_id = _key(client, accounts, OWNER, "key-1")
+    plan_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    leased = _text_lease(client)
+    assert leased.status_code == 200, leased.text
+    body = leased.json()
+    assert body["account_id"] == plan_id and body["reason"] == ""
+    # The plan's credential: its token and plan account id, never a key's kind.
+    credential = body["credential"]
+    assert credential["access_token"] and credential["account_id"]
+    assert credential.get("kind") != "api_key"
+    holds = accounts.get(plan_id).holds
+    assert len(holds) == 1 and holds[0].pool == POOL_VOICE_IT
+    assert holds[0].voice_session_id == "vs-t1" and holds[0].tenant_id == ""
+    assert accounts.get(key_id).holds == ()
+    # A Live session beside it still gets the key, never the plan.
+    assert _lease(client).json()["account_id"] == key_id
+
+
+def test_a_text_lease_naming_the_key_provider_is_never_handed_the_key(client, accounts):
+    """A key is meant for Live: a text lease that names its provider finds
+    no account rather than taking one a Live session needs."""
+    key_id = _key(client, accounts, OWNER, "key-1")
+    body = _text_lease(client, provider="openai-api").json()
+    assert body["account_id"] is None and body["credential"] is None
+    assert body["reason"] == "no_voice_account_registered"
+    assert accounts.get(key_id).holds == ()
+
+
+def test_a_text_lease_with_only_a_key_in_the_pool_is_refused_before_any_hold(client, accounts):
+    key_id = _key(client, accounts, OWNER, "key-1")
+    body = _text_lease(client).json()
+    assert body["account_id"] is None and body["assignment_id"] is None
+    assert body["reason"] == "no_voice_account_registered"
+    assert accounts.get(key_id).holds == ()
+
+
+# -- the plan's usage windows, reported after each text turn ------------------
+
+
+def _windows(**extra):
+    soon = datetime.now(timezone.utc) + timedelta(hours=2)
+    return {
+        "five_hour": {"utilization": 0.425, "resets_at": soon.isoformat()},
+        "seven_day": {"utilization": 0.1, "resets_at": (soon + timedelta(days=3)).isoformat()},
+        **extra,
+    }
+
+
+def _reading(client, account_id: str, assignment_id: str, session: str = "vs-t1", windows=None):
+    """The body swarm_voice.textchat.TextConversations._report sends, exactly."""
+    client.identity.as_voice()
+    return client.post(
+        f"/v1/voice/lease/{account_id}/readings",
+        json={"assignment_id": assignment_id, "voice_session_id": session,
+              "windows": windows if windows is not None else _windows()},
+    )
+
+
+def test_a_text_sessions_reading_is_recorded_on_the_plan(client, accounts):
+    plan_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    leased = _text_lease(client).json()
+    recorded = _reading(client, plan_id, leased["assignment_id"])
+    assert recorded.status_code == 200, recorded.text
+    assert recorded.json() == {
+        "account_id": plan_id, "recorded": True, "windows": ["five_hour", "seven_day"],
+    }
+    account = accounts.get(plan_id)
+    assert account.observed_at is not None
+    assert round(account.windows["five_hour"].utilization, 4) == 0.425
+    assert round(account.windows["seven_day"].utilization, 4) == 0.1
+    # Merged per window, as a worker's reading is: seven_day alone keeps five_hour.
+    later = _windows()
+    del later["five_hour"]
+    later["seven_day"]["utilization"] = 0.2
+    assert _reading(client, plan_id, leased["assignment_id"], windows=later).status_code == 200
+    account = accounts.get(plan_id)
+    assert round(account.windows["five_hour"].utilization, 4) == 0.425
+    assert round(account.windows["seven_day"].utilization, 4) == 0.2
+
+
+def test_a_reading_for_a_foreign_or_ended_hold_is_refused_without_writing(client, accounts):
+    plan_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    other_id = _plan(client, accounts, OWNER, "chatgpt-2", pools=[POOL_VOICE_IT])
+    leased = _text_lease(client).json()
+    assert leased["account_id"] == plan_id
+    before = copy.deepcopy(client.app.state.broker.db.docs[f"accounts/{plan_id}"])
+
+    # Another session's id, an id the broker never issued, and another account.
+    for account_id, assignment_id, session in (
+        (plan_id, leased["assignment_id"], "vs-other"),
+        (plan_id, "asg_" + secrets.token_hex(6), "vs-t1"),
+        (other_id, leased["assignment_id"], "vs-t1"),
+        ("no-such-account", leased["assignment_id"], "vs-t1"),
+    ):
+        refused = _reading(client, account_id, assignment_id, session)
+        assert refused.status_code == 409, (account_id, session, refused.text)
+        assert refused.json()["code"] == "not_held"
+    assert client.app.state.broker.db.docs[f"accounts/{plan_id}"] == before
+    assert accounts.get(other_id).windows == {}
+
+    # Ended: once released, the same hold may report nothing.
+    released = client.post(
+        f"/v1/voice/lease/{plan_id}/release",
+        json={"assignment_id": leased["assignment_id"], "voice_session_id": "vs-t1"},
+    )
+    assert released.json()["released"] is True
+    ended = _reading(client, plan_id, leased["assignment_id"])
+    assert ended.status_code == 409, ended.text
+    assert accounts.get(plan_id).windows == {}
+
+
+def test_a_workspace_worker_hold_cannot_report_through_the_voice_route(client, accounts):
+    """A task's hold on an account in both pools is not a Voice it session's:
+    its id proves nothing here, whatever session it names."""
+    plan_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT, POOL_WORKSPACE])
+    assigned = _assign(client, OWNER)
+    assert assigned["account_id"] == plan_id, assigned
+    refused = _reading(client, plan_id, assigned["assignment_id"], session="")
+    assert refused.status_code == 422, refused.text
+    refused = _reading(client, plan_id, assigned["assignment_id"], session="vs-t1")
+    assert refused.status_code == 409, refused.text
+    assert accounts.get(plan_id).observed_at is None
+
+
+def test_only_swarm_voice_may_report_a_voice_reading(client, accounts):
+    plan_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    leased = _text_lease(client).json()
+    for become in (lambda: client.identity.as_platform(), lambda: client.identity.as_tenant(OWNER)):
+        become()
+        refused = client.post(
+            f"/v1/voice/lease/{plan_id}/readings",
+            json={"assignment_id": leased["assignment_id"], "voice_session_id": "vs-t1",
+                  "windows": _windows()},
+        )
+        assert refused.status_code in (401, 403), refused.text
+    assert accounts.get(plan_id).observed_at is None
+
+
+def test_a_voice_reading_carries_figures_and_instants_only(client, accounts):
+    plan_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    leased = _text_lease(client).json()
+    assignment_id = leased["assignment_id"]
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    for windows in (
+        {"five_hour": {"utilization": 1.5, "resets_at": _windows()["five_hour"]["resets_at"]}},
+        {"Five Hour": _windows()["five_hour"]},
+        {"five_hour": {"utilization": 0.2, "resets_at": past}},
+        {"five_hour": {**_windows()["five_hour"], "token": secrets.token_hex(8)}},
+        {},
+    ):
+        refused = _reading(client, plan_id, assignment_id, windows=windows)
+        assert refused.status_code == 422, (windows, refused.text)
+    client.identity.as_voice()
+    extra = client.post(
+        f"/v1/voice/lease/{plan_id}/readings",
+        json={"assignment_id": assignment_id, "voice_session_id": "vs-t1",
+              "windows": _windows(), "access_token": secrets.token_hex(8)},
+    )
+    assert extra.status_code == 422, extra.text
+    assert accounts.get(plan_id).observed_at is None
+
+
+def test_a_voice_reading_never_logs_a_credential(client, accounts, caplog):
+    plan_id = _plan(client, accounts, OWNER, "chatgpt-1", pools=[POOL_VOICE_IT])
+    leased = _text_lease(client).json()
+    token = leased["credential"]["access_token"]
+    caplog.set_level("DEBUG")
+    assert _reading(client, plan_id, leased["assignment_id"]).status_code == 200
+    assert token not in caplog.text
 
 
 def test_a_key_is_neither_refreshed_nor_polled(client, accounts):
