@@ -510,7 +510,7 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     // The budget is 409.4px today (measured 2026-11-04, with the Needs-you
     // row's 34px at rest); the 56px that adds takes it to 465.4, past the
     // midpoint. The list toolbar, taken fully wrapped, is the largest block
-    // at 160px. MUTATION: drop agents.css's phone `.ny` rules (595.8px), or
+    // at 160px. MUTATION: drop needs-you.css's phone rest rule (595.8px), or
     // let its `.ag-pickers` line wrap (461.4px).
     expect(BUDGET_SHEETS.includes(AGENTS_CSS), 'the Agents sheet is not in the cascade').toBe(true)
     expect(BUDGET_SHEETS.includes(NEEDS_YOU_CSS), 'the Needs-you sheet is not in the cascade').toBe(true)
@@ -572,7 +572,8 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     // inbox's row of what needs you", one line of counted chips on top of
     // every Work screen, the phone included (needs-you.css has its phone
     // rules). So it is counted here, and the budget below still has to hold:
-    // at rest on a phone it is one line (agents.css), and the profile and
+    // at rest on a phone it is one line (needs-you.css, on every Work
+    // screen since the owner's pick of 4 November 2026), and the profile and
     // owner filters share one.
     expect(above).toEqual(['.sk-skip', '.sk-pbar', '.sk-side', '.c-phead', '.c-count-note', '.ny', '.ag-list-tabs', '.ctl-toolbar'])
     // The row's margin, 9 ancestors' top edges (.rows, the list's own body,
