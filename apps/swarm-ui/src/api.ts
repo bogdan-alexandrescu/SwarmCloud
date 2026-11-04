@@ -7296,6 +7296,21 @@ let fixtureAccounts: ServedAccount[] = [
       seven_day: { utilization: 0.35, resets_at: ISO(5 * 86_400_000), reset: false },
     },
   }),
+  // VOICE IT'S OPENAI API KEY (the owner, 4 November 2026): in the Voice it
+  // pool alone, so it serves no workspace and draws only in that section,
+  // where its windows read "not measured" (`measured: false`), never 0.
+  fixtureAccount('u-bogdan', 'openai-key', {
+    provider: 'openai-api',
+    max_agents: 1,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
+    observed_at: null,
+    measured: false,
+    pools: ['voice-it'],
+    voice_it_people: ['alice@example.com'],
+    voice_it_holder: null,
+  } as Partial<ServedAccount>),
   fixtureAccount('u-bogdan', 'team-copy', {
     max_agents: 6,
     can_take_new_agent: false,
