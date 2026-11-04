@@ -398,7 +398,7 @@ def test_session_files_include_the_sessions_tool_results(tmp_path):
     assert qb.session_files(tmp_path, sid) == [slug / f"{sid}.jsonl", slug / sid]
 
 
-# --- the safety net while nothing parks ---------------------------------------
+# --- what the runner makes of a question ---------------------------------------
 
 
 def test_a_recorded_question_is_unanswered_not_a_success(tmp_path):
@@ -457,12 +457,21 @@ def _body_with_stream(monkeypatch, tmp_path, env, stream_events, *, hook_payload
     return claude_code.body(ctx)
 
 
-def test_on_a_question_the_runner_fails_the_attempt_instead_of_reporting_success(tmp_path, monkeypatch):
+def test_on_a_recorded_question_the_runner_ends_cleanly_for_the_worker_to_park(tmp_path, monkeypatch):
     payload = _call()
     events = _events(payload["session_id"])
-    # MUTATION: drop the check after `run_cli_agent` in `body` -> this fails.
-    with pytest.raises(claude_code.RunnerFailure, match="question_unanswered"):
-        _body_with_stream(monkeypatch, tmp_path, {qb.ENABLE_ENV: "1"}, events, hook_payload=payload)
+    # MUTATION: drop the `question_parked` mark in `body` -> this fails.
+    result = _body_with_stream(monkeypatch, tmp_path, {qb.ENABLE_ENV: "1"}, events, hook_payload=payload)
+    assert result["question_parked"] is True
+    # The record stays for the worker, which reads it once at the park.
+    assert (tmp_path / "work" / claude_code.SETTINGS_DIR_NAME / qb.PENDING_NAME).is_file()
+
+
+def test_on_a_question_the_record_does_not_hold_the_runner_fails_the_attempt(tmp_path, monkeypatch):
+    events = _events(str(uuid.uuid4()))
+    # MUTATION: treat BRIDGE_FAILED as a normal end in `body` -> this fails.
+    with pytest.raises(claude_code.RunnerFailure, match="question_bridge_failed"):
+        _body_with_stream(monkeypatch, tmp_path, {qb.ENABLE_ENV: "1"}, events)
 
 
 def test_on_a_stale_pending_file_from_an_earlier_run_is_not_this_runs(tmp_path, monkeypatch):

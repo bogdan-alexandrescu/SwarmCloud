@@ -9495,6 +9495,8 @@ env:
     setter: terraform/infra/locals.tf:912
   GROUP_CACHE_TTL_SECONDS:
     setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:994; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+  GSTACK_HOME:
+    setter: apps/agent-worker/agent_worker/plugins.py:388
   HEARTBEAT_GRACE_SECONDS:
     setter: 'internal: read at apps/agent-worker/agent_worker/config.py:120; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   HEARTBEAT_INTERVAL_SECONDS:

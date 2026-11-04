@@ -70,6 +70,7 @@ from .base import (
     RunnerFailure,
 )
 from . import ceiling as ceiling_mod
+from . import question_bridge
 from .budgetwatch import BudgetStreamWatcher, budget_watcher
 from .limits import platform_ceilings, resolve_limits
 from .streams import AgentStreamFiles
@@ -483,6 +484,12 @@ RESUME_RELOADED = "credential_reloaded"
 #: A new attempt continuing a step that stopped at its time limit (BGD,
 #: 2026-11-02): set by the worker, with a session to resume or without one.
 RESUME_TIME_LIMIT = "time_limit"
+#: A new attempt resuming a session that parked on a question a person has
+#: now answered (`question_bridge`): its one new message is the answer, which
+#: the worker writes to the file `QUESTION_ANSWER_FILE_ENV` names, in its
+#: private directory, outside `work/`.
+RESUME_ANSWERED = "question_answered"
+QUESTION_ANSWER_FILE_ENV = "SWARM_QUESTION_ANSWER_FILE"
 
 #: What a resumed CLI is told. The conversation, the tool results and the
 #: workspace are all as they were; this is the one new user message.
@@ -512,6 +519,25 @@ TIME_LIMIT_RESUME_PROMPT = (
     "your notes in $SWARM_ARTIFACTS_DIR before relying on it, then carry on "
     "where you left off and finish the task."
 )
+
+
+def resumed_message(environ: Mapping[str, str]) -> str:
+    """The resumed session's one new message: the answer to its parked
+    question when the worker resumes it with one (`RESUME_ANSWERED`), else
+    `resume_prompt`. A resume with an answer the file does not hold is
+    refused: the session never continues as if the person said nothing."""
+    reason = environ.get(RESUME_REASON_ENV, "").strip()
+    if reason != RESUME_ANSWERED:
+        return resume_prompt(reason)
+    path = environ.get(QUESTION_ANSWER_FILE_ENV, "").strip()
+    try:
+        message = Path(path).read_text(encoding="utf-8").strip() if path else ""
+    except (OSError, UnicodeDecodeError):
+        message = ""
+    if not message:
+        raise RunnerFailure("question_resume_failed: the session was to resume with a "
+                            "person's answer, and the answer was not handed to the runner")
+    return message
 
 
 def resume_prompt(reason: str | None) -> str:
@@ -1956,7 +1982,10 @@ def run_cli_agent(
         # The attempt's sessions so far, an earlier runner process's included,
         # so the count and the cost's completeness cover every one of them.
         ceiling_watcher.carry(ceiling_seed)
-        if resume and ceiling_watcher.armed:
+        # NEVER FOR A PARKED QUESTION: the answered question is in that
+        # session alone, and a fresh session from a handoff would drop it.
+        answered = os.environ.get(RESUME_REASON_ENV, "").strip() == RESUME_ANSWERED
+        if resume and ceiling_watcher.armed and not answered:
             resumed_over = ceiling_mod.over_state(ceiling_seed, resume, ceiling_watcher.limits)
             if resumed_over is not None:
                 resume = ""
@@ -2022,8 +2051,9 @@ def run_cli_agent(
         # A resumed session is told the time it has left, as a fresh start is
         # (#2139, owner decision 2026-10-28): `limits` is what the worker
         # handed this restart (#2363), the time left now, never the start's.
+        # A session resumed with a person's answer is told that answer.
         stdin_prompt = (
-            f"{resume_prompt(os.environ.get(RESUME_REASON_ENV, '').strip())}\n\n"
+            f"{resumed_message(os.environ)}\n\n"
             f"{time_limit_line(limits.timeout_seconds)}"
         )
     else:
@@ -2446,6 +2476,16 @@ def run_cli_agent(
     if not ceiling_stop_pending():
         judge(result, watcher, spend, combined)
 
+    def parked_on_question() -> bool:
+        """The last start stopped on a question the bridge recorded: no turn
+        follows -- no wrap-up, ceiling handoff, finish, repair or gate turn --
+        because each would resume the session without the answer, and the
+        worker parks the step and publishes nothing (`question_bridge`)."""
+        stopped = question_bridge.stopped_on_question(parsed)
+        if stopped:
+            ctx.report["question_parked"] = True
+        return stopped
+
     # RESUMED ONCE TO FINISH (owner decision 2026-10-05; see `pending_work`).
     # The run succeeded, but its answer announces work still in flight -- or
     # it left a background shell open -- and in print mode nobody will hear
@@ -2575,7 +2615,8 @@ def run_cli_agent(
     # twice, and the passes after it count every start's duration. A session
     # over the context ceiling wraps up in a fresh session instead (#2524).
     resumed_to_wrap_up = False
-    if watcher is not None and watcher.stopped_to_wrap_up and not result.timed_out:
+    if (watcher is not None and watcher.stopped_to_wrap_up and not result.timed_out
+            and not parked_on_question()):
         remaining = step_remaining()
         session = _session_of(parsed) or watcher.session_id
         if session is None or remaining < FINISH_MIN_SECONDS:
@@ -2602,9 +2643,12 @@ def run_cli_agent(
 
     # THE CONTEXT CEILING (#2524): a session stopped at it goes on fresh, and
     # what follows -- the finish pass, the repairs, the gate -- reads the last.
-    carry_on(None, step_remaining)
+    if not parked_on_question():
+        carry_on(None, step_remaining)
 
-    pending = pending_work(parsed) if spec.finish_on_pending and spec.resume_flag else None
+    pending = (pending_work(parsed)
+               if spec.finish_on_pending and spec.resume_flag and not parked_on_question()
+               else None)
     if pending is not None:
         # The whole step's starts, not the last one's: after a wrap-up pass
         # the finish pass gets what both left, never more (#2139).
@@ -2659,7 +2703,7 @@ def run_cli_agent(
     repair_skipped: str | None = None
     repair_scan_error: str | None = None
     unresolved: dict[str, list[str]] | None = None
-    if spec.repair_checks and spec.resume_flag:
+    if spec.repair_checks and spec.resume_flag and not parked_on_question():
         # The scan reads the diff the publish reads, so only a task with a
         # checkout has one to scan.
         scan_repo = cwd if cwd != ctx.work_dir else None
@@ -2827,7 +2871,8 @@ def run_cli_agent(
     # repair turns, so the checks read the tree they left. A task with no
     # checkout has nothing to publish.
     prepublish_record: dict[str, Any] | None = None
-    if spec.prepublish and spec.resume_flag and cwd != ctx.work_dir:
+    if (spec.prepublish and spec.resume_flag and cwd != ctx.work_dir
+            and not parked_on_question()):
         # The checks' own time counts against the step's budget as the
         # agent's does: `duration_seconds` sums only the CLI's starts.
         gate_started, agent_before = time.monotonic(), duration_seconds

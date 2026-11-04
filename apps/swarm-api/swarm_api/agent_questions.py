@@ -105,6 +105,17 @@ which failure-review skips by rule. Only HUMAN_REQUIRED is read as a
 question wait: an AWAITING_INPUT park is a workflow's await-input step,
 answered and expired by `awaitinput` alone, and never promoted or ended here.
 
+A PLUGIN STEP'S QUESTION (the question bridge, docs/design/agent-plugins.md;
+owner decision of 3 November 2026). An unattended gstack step whose agent
+asked a question it could not answer itself is parked the same way, its
+`question_wait` carrying a `bridge` block (`BRIDGE_KEY`: the session the
+answer resumes). Two rules differ for it, and only for it: the FIRST answer
+to each question stands -- a second is refused 409 `already_answered`,
+because the resumed session has already been given the first -- and it is
+dead-lettered unanswered after `BRIDGE_WAIT_MAX_SECONDS` (24 hours, the
+human steps' default), the question left open, never with an answer nobody
+gave.
+
 AN ANSWER ALSO WAKES THE MERGE ITS QUESTION HELD (owner decision 2026-10-23
 ~19:23Z, "Resume on answer, no expiry"; lane QUESTION-WAKE, part of #2070).
 A merge step whose review named blocking owner questions (`needs_owner`)
@@ -216,6 +227,13 @@ MAX_EARLIER_WAITS = 5
 #: How long a blocking question waits before its agent is dead-lettered
 #: (§3.9 step 5): three days, a weekend and a day, at no cost (invariant 1).
 QUESTION_WAIT_MAX_SECONDS = 72 * 3600
+#: The block of a question wait that makes it a plugin step's bridged
+#: question (`agent_worker.runners.question_bridge.BRIDGE_KEY`; the worker
+#: is not installed here, so it is spelled again), and how long one waits.
+BRIDGE_KEY = "bridge"
+BRIDGE_WAIT_MAX_SECONDS = 24 * 3600
+#: `detail.reason` of the refusal of a second answer to a bridged question.
+ALREADY_ANSWERED = "already_answered"
 #: The dead-letter's `last_error`, which failure-review skips by rule
 #: (docs/design/failure-review.md §2).
 UNANSWERED = "owner question unanswered"
@@ -298,6 +316,16 @@ def _wait_shape(value: Any) -> dict[str, Any] | None:
     if not isinstance(value.get("attempt_id"), str):
         return None
     return value
+
+
+def is_bridged(wait: dict[str, Any] | None) -> bool:
+    """Whether a question wait is a plugin step's bridged question."""
+    return isinstance(wait, dict) and isinstance(wait.get(BRIDGE_KEY), dict)
+
+
+def wait_max_seconds(wait: dict[str, Any]) -> int:
+    """How long a question wait is held before it is dead-lettered unanswered."""
+    return BRIDGE_WAIT_MAX_SECONDS if is_bridged(wait) else QUESTION_WAIT_MAX_SECONDS
 
 
 def parked_wait(task: Any) -> dict[str, Any] | None:
@@ -904,7 +932,7 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
             "blocking": sorted(waited),
             "unanswered": [i for i in sorted(waited) if i not in answers],
             "asked_at": began.isoformat() if began else None,
-            "expires_at": (began + timedelta(seconds=QUESTION_WAIT_MAX_SECONDS)).isoformat()
+            "expires_at": (began + timedelta(seconds=wait_max_seconds(wait))).isoformat()
             if began else None,
             "issue_comment_url": comment.get("url") if isinstance(comment.get("url"), str) else None,
         },
@@ -1035,6 +1063,14 @@ def answer_question(
             adopt_wait(metadata, wait)
         current = owner_answers_by_index(metadata)
         previous = current.get(index)
+        if previous is not None and is_bridged(recorded_wait(metadata)):
+            # A bridged question's first answer is the one its session
+            # resumes with; a second is refused, never recorded.
+            raise Conflict(
+                f"question {index + 1} was answered already, and that answer is the one the "
+                "step resumes with; it is not changed",
+                detail={"reason": ALREADY_ANSWERED},
+            )
         history: list[dict[str, Any]] = []
         if previous is not None:
             history = [h for h in previous.get("history") or [] if isinstance(h, dict)]
@@ -1165,7 +1201,8 @@ def parked_human_snapshots(db: Any, *, page_size: int = EXPIRY_SCAN) -> Iterator
 
 
 def expire_question_waits(db: Any, now: datetime, *, limit: int = EXPIRY_SCAN) -> int:
-    """Dead-letter every agent parked on a blocking question past 72 hours (§3.9 step 5).
+    """Dead-letter every agent parked on a blocking question past 72 hours (§3.9 step 5),
+    or past 24 hours for a bridged one (`wait_max_seconds`).
 
     Every PARKED(HUMAN_REQUIRED) task across tenants, `limit` per page
     (`parked_human_snapshots`); a task
@@ -1182,7 +1219,7 @@ def expire_question_waits(db: Any, now: datetime, *, limit: int = EXPIRY_SCAN) -
         if wait is None:
             continue
         began = asked_at(doc, wait)
-        if began is None or began + timedelta(seconds=QUESTION_WAIT_MAX_SECONDS) > now:
+        if began is None or began + timedelta(seconds=wait_max_seconds(wait)) > now:
             continue
         if _dead_letter(db, str(doc.get("id") or snap.id), str(doc.get("tenant_id") or ""),
                         wait, now):
