@@ -380,7 +380,7 @@ is recorded as **refused by OpenAI**, and the owner said "fix it":
   an OpenAI developer API key. It is allowed **only in the Voice it pool**.
   Registration files it there alone, with the broker's `VOICE_IT_PEOPLE`.
   It is never lent, `PUT .../pools` refuses to move it into the workspace
-  pool, and a task asking for `openai` never matches its provider, so no
+  pool, and an agent leasing an `openai` account never matches its provider, so no
   agent or workspace is ever handed it. Adding one is for platform admins
   only, like a pool move.
 * **Stored as the broker stores every credential.** One Secret Manager
