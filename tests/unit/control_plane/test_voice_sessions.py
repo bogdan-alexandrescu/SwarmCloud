@@ -415,7 +415,8 @@ def test_a_pool_refusal_reaches_the_browser_with_its_sentence_and_frees_the_pers
 
     assert response.status_code == status, response.text
     body = response.json()
-    assert body["message"] == sentence
+    assert body["message"] == (vs.NO_API_KEY_SENTENCE if reason == "voice_pool_refused" and status == 409
+                               else sentence)
     assert body["detail"]["reason"] == reason
     assert body["code"] == ("forbidden" if status == 403 else "conflict")
     (session,) = _sessions(db).values()
@@ -423,6 +424,25 @@ def test_a_pool_refusal_reaches_the_browser_with_its_sentence_and_frees_the_pers
     assert _docs(db, vs.LIVE_MARKERS) == {}
     voice.pool_refusal = None
     assert _start(client, "alice").status_code == 200
+
+
+def test_a_start_with_no_api_key_in_the_pool_says_so_and_never_502s(client, db, voice):
+    """swarm-voice's 409 `voice_pool_refused` is the broker finding no
+    Live-capable account (an OpenAI API key) in the Voice it pool: the person
+    is told where to add one, whatever older sentence swarm-voice sent."""
+    voice.pool_refusal = vs.pool_refusal(
+        409, b'{"code": "voice_pool_refused", "message": "Voice it has no ChatGPT plan account set up yet."}')
+
+    response = _start(client, "alice")
+
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["message"] == vs.NO_API_KEY_SENTENCE
+    assert body["message"] == (
+        "Voice it needs an OpenAI API key in the Voice it pool: add one on Admin \u203a Accounts")
+    assert body["detail"]["reason"] == "voice_pool_refused"
+    (session,) = _sessions(db).values()
+    assert session["state"] == vs.ENDED and session["end_cause"] == vs.END_VOICE_POOL_REFUSED
 
 
 def test_a_malformed_offer_is_422(client, db, voice):
@@ -583,6 +603,8 @@ def test_the_http_client_reads_a_pool_refusal_with_its_sentence(swarm_voice, sta
         client.start(call)
     sentence = payload.get("message") or payload["detail"]
     sentence = sentence["message"] if isinstance(sentence, dict) else sentence
+    if status == 409 and reason == "voice_pool_refused":
+        sentence = vs.NO_API_KEY_SENTENCE
     assert raised.value.message == sentence
     assert raised.value.detail == {"reason": reason}
     assert "credential" not in seen[0]["body"]
@@ -602,3 +624,81 @@ def test_a_409_that_names_no_pool_code_is_the_generic_refusal(swarm_voice):
 def test_no_url_means_no_client():
     assert vs.client_for(api_settings()) is None
     assert isinstance(vs.client_for(api_settings(voice_url="http://v:8080")), vs.HttpVoiceClient)
+
+
+def _openai_refused(status, code, kind) -> dict:
+    """swarm-voice's own 502 body for a Live session OpenAI refused (swarm_voice/main.py)."""
+    import json
+
+    from swarm_voice.live import LiveRefused
+    from swarm_voice.main import openai_refusal
+    return json.loads(openai_refusal(LiveRefused("the Live session", status, code, kind)).body)
+
+
+def test_the_http_client_says_what_openai_answered_when_it_refused_the_live_session(swarm_voice):
+    """Measured 2026-11-04: OpenAI answered a Voice it pool account's create 403, and
+    the person read only 'swarm-voice refused the session (HTTP 502)'."""
+    url, _, state = swarm_voice
+    state["status"], state["refusal"] = 502, _openai_refused(403, "unsupported_plan", "invalid_request_error")
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="alice@example.com",
+                        offer=OFFER, grant="g")
+
+    with pytest.raises(vs.VoiceUnreachable) as raised:
+        client.start(call)
+    assert raised.value.message == (
+        "OpenAI refused the Live session for the Voice it account "
+        "(403, unsupported_plan, invalid_request_error); the session was ended.")
+    assert raised.value.detail == {"reason": "openai_refused", "openai_status": 403,
+                                   "openai_code": "unsupported_plan", "openai_type": "invalid_request_error"}
+
+
+@pytest.mark.parametrize(("refusal", "sentence"), [
+    ({"code": "openai_refused", "openai_status": 403, "openai_code": "unreadable",
+      "openai_type": "unreadable"}, "(403, unreadable)"),
+    ({"code": "openai_refused", "openai_status": None, "openai_code": "plan_not_allowed",
+      "openai_type": "plan_not_allowed"}, "(on the sideband, plan_not_allowed)"),
+    ({"code": "openai_refused", "openai_status": "403", "openai_code": "Bearer QUOTED",
+      "openai_type": "x" * 65}, "(on the sideband, unreadable)"),
+], ids=["unreadable", "sideband", "held-to-the-pattern"])
+def test_the_openai_refusal_sentence_holds_what_it_repeats_to_the_pattern(swarm_voice, refusal, sentence):
+    url, _, state = swarm_voice
+    state["status"], state["refusal"] = 502, refusal
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="alice@example.com",
+                        offer=OFFER, grant="g")
+
+    with pytest.raises(vs.VoiceUnreachable) as raised:
+        client.start(call)
+    assert raised.value.message == (
+        f"OpenAI refused the Live session for the Voice it account {sentence}; the session was ended.")
+    assert "QUOTED" not in raised.value.message and "QUOTED" not in str(raised.value.detail)
+
+
+def test_a_502_that_is_not_openais_refusal_is_the_generic_one(swarm_voice):
+    url, _, state = swarm_voice
+    state["status"], state["refusal"] = 502, {"detail": "the Live sideband could not attach (OSError)"}
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="alice@example.com",
+                        offer=OFFER, grant="g")
+
+    with pytest.raises(vs.VoiceUnreachable) as raised:
+        client.start(call)
+    assert raised.value.message == "swarm-voice refused the session (HTTP 502); it was ended."
+
+
+def test_the_browser_reads_openais_refusal_as_served(db, tokens, group_map, objects):
+    refusing = FakeVoice()
+    refusing.pool_refusal = vs.VoiceUnreachable(
+        "OpenAI refused the Live session for the Voice it account (403, unsupported_plan); "
+        "the session was ended.", detail={"reason": "openai_refused"})
+    client = _client(db, tokens, group_map, objects, refusing,
+                     voice_url="http://voice.internal:8080",
+                     voice_people=("alice@example.com",))
+
+    response = _start(client, "alice")
+
+    assert response.status_code == 502, response.text
+    assert response.json()["message"] == refusing.pool_refusal.message
+    (session,) = _sessions(db).values()
+    assert session["end_cause"] == vs.END_VOICE_UNREACHABLE
