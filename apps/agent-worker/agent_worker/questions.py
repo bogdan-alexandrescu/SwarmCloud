@@ -68,6 +68,15 @@ workflow's await-input step, which no worker runs; nothing here makes one. That 
 reaches an agent, and it is still not an instruction to the platform: no
 state, retry, dispatch or merge reads it.
 
+A PLUGIN STEP'S QUESTION PARKS THE SAME WAY (the question bridge,
+docs/design/agent-plugins.md; owner decision of 3 November 2026). An
+unattended gstack step whose agent asked through the question tool what it
+could not answer itself is parked on a `question_wait` the worker builds
+from the hook's record (`runners.question_bridge.wait_record`), every
+question blocking, with a `bridge` block naming the session to resume. Its
+resumed attempt continues THAT session with the answer as its next message
+(`bridge_resume`), not a new one with the answers in its prompt.
+
 WAITING FOR A RELEASE (§3.8). An agent that writes `await-release.json`,
 `{"sha": "<40 hex>"}`, and exits 0 is parked DEPENDENCY_INCOMPLETE with a
 `release_wait` record; swarm-api's merge-wake tick reads the release of that
@@ -83,6 +92,8 @@ import secrets
 import stat
 from pathlib import Path
 from typing import Any, Collection, Mapping
+
+from .runners import question_bridge
 
 #: The file's name, at the top of `$SWARM_ARTIFACTS_DIR`.
 NAME = "questions.json"
@@ -415,3 +426,24 @@ def resume_with_answers(work: Path | str, payload: dict[str, Any], task: Mapping
     if isinstance(prompt, str):
         payload["prompt"] = prompt + continuation(rows, secrets.token_hex(16))
     return sum(1 for row in rows if row["answer"] is not None)
+
+
+def bridge_resume(task: Mapping[str, Any]) -> dict[str, str] | None:
+    """The session a bridged question parked, and its answer message, once answered.
+
+    None for a task whose wait is no bridge's (`question_bridge.BRIDGE_KEY`),
+    or one with a question still unanswered: then nothing is resumed with an
+    answer nobody gave. ValueError for a bridge block that is not one the
+    worker wrote. As the answers are (`resume_with_answers`), every attempt
+    after the wait resumes the parked session with them.
+    """
+    wait = _wait_of(task)
+    bridge = wait.get(question_bridge.BRIDGE_KEY) if wait is not None else None
+    if not isinstance(bridge, Mapping):
+        return None
+    pending = question_bridge.pending_of(bridge)
+    rows = answers_for(task)
+    if any(row["answer"] is None for row in rows):
+        return None
+    return {"session_id": pending.session_id,
+            "message": question_bridge.answer_from_rows(pending, rows)}

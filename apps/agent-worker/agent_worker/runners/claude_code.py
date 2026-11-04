@@ -1332,11 +1332,12 @@ def write_headless_settings(directory: Path, *, graph_hint: bool = False) -> Pat
             "hooks": [_jev_gate_hook(gates, "enforce-edit", JEV_ENFORCE_TIMEOUT)],
         })
     if question_bridge.enabled(os.environ):
-        # The question bridge spike, behind its switch, which nothing sets
-        # (`question_bridge`; docs/design/agent-plugins-question-bridge.md):
-        # a question tool call is recorded beside these settings and stops
-        # the turn. Nothing parks on it yet. A new settings file is a new
-        # run: an earlier one's question is not this one's.
+        # The question bridge, behind its switch, which the worker sets for
+        # a plugin step alone (`question_bridge`;
+        # docs/design/agent-plugins-question-bridge.md): a question tool
+        # call is recorded beside these settings and stops the turn, and the
+        # worker parks the step on it. A new settings file is a new run: an
+        # earlier one's question is not this one's.
         question_bridge.clear_pending(directory / question_bridge.PENDING_NAME)
         settings["hooks"]["PreToolUse"].append(
             question_bridge.hook_entry(directory / question_bridge.PENDING_NAME))
@@ -2198,12 +2199,18 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         cli_started = time.time()
         result = run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
         if question_bridge.enabled(os.environ):
-            # Nothing parks yet, so an asked question has no answer and the
-            # run is not the task done, whatever turns followed the stop.
-            reason = question_bridge.unanswered(question_bridge.read_stream(agent_stream),
-                                                settings.parent / question_bridge.PENDING_NAME)
-            if reason:
-                raise RunnerFailure(reason)
+            # A run that stopped on a recorded question ends cleanly, and the
+            # worker parks the step on it (`question_bridge`); `cliagent`
+            # took no turn after the stop. A question the stream and the
+            # record disagree on is missing evidence, never a normal end.
+            events = question_bridge.read_stream(agent_stream)
+            pending_path = settings.parent / question_bridge.PENDING_NAME
+            outcome, _ = question_bridge.classify(events, pending_path)
+            if outcome == question_bridge.BRIDGE_FAILED:
+                raise RunnerFailure(question_bridge.unanswered(events, pending_path)
+                                    or "question_bridge_failed: the run and its record disagree")
+            if outcome == question_bridge.PARKED and isinstance(result, dict):
+                result["question_parked"] = True
         if isinstance(result, dict):
             # AGENTS-USE-TOOLS: the calls per tool family of every session of
             # the attempt, in the metrics the worker copies whole into the
