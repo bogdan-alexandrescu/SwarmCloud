@@ -308,4 +308,12 @@ RUN --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-brow
       python /tmp/swarm-browser-build/selftest.py /opt/swarm/live-browser-only \
  && rm -rf "${scratch}"
 
+# The commit this image was built from, for the worker's build line
+# (agent_worker.buildinfo reads SWARM_GIT_SHA; part of #2688, the owner's pick
+# "add both"). Set here, not inherited: the base image's value is the commit
+# the BASE was built from, which a reused base can predate. Declared last, so
+# a new commit rebuilds no layer above it.
+ARG GIT_SHA=""
+ENV SWARM_GIT_SHA=${GIT_SHA}
+
 ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "agent_worker"]

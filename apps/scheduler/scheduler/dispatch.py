@@ -232,6 +232,17 @@ WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 CACHE_MOUNT = "/cache"
 CACHE_ROOT_ENV = "SWARM_CACHE_ROOT"
 
+#: THE IMAGE THE WORKER RUNS, told to it (part of #2688; the owner's pick
+#: "add both", 2026-11-03): `image_uri`'s value, the same one the Cloud Run
+#: Job and the GKE pod are given, so the worker's start-up line, the live
+#: gate's refusal record and the capture manifest's `worker` can say which
+#: image ran (agent_worker.buildinfo, whose IMAGE_ENV is this name;
+#: tests/unit/control_plane/test_dispatch_names_the_worker_image.py holds the
+#: two equal). Set on both backends, and on the GKE live pod's display sidecar,
+#: where the gate runs. A platform value from the scheduler's own settings,
+#: never a caller's (invariant 10), and not a secret: it is the pod's `image`.
+WORKER_IMAGE_ENV = "SWARM_WORKER_IMAGE"
+
 #: THE GKE POD'S LOCAL SCRATCH VOLUMES, and the variable that tells the worker
 #: which they are (#2436): `scratch_volumes_value`. kubelet evicts the pod with
 #: no grace period when one passes its sizeLimit, so the worker reads their
@@ -949,9 +960,10 @@ def with_live_display(job: dict[str, Any], *, rc: Any,
         "command": list(DISPLAY_COMMAND),
         # Native sidecar: started before the worker, stopped after it.
         "restartPolicy": "Always",
-        # Paths only. No task, tenant, lease or attempt identifier and no
-        # secret: the tunnel ticket arrives over ctl.sock from the worker
-        # (§3.3, §5.4.2), and the gate needs to know nothing else.
+        # Paths, and the image this container runs. No task, tenant, lease or
+        # attempt identifier and no secret: the tunnel ticket arrives over
+        # ctl.sock from the worker (§3.3, §5.4.2), and the gate needs to know
+        # nothing else.
         "env": [
             # Chromium writes under HOME (crash reports, caches); the root is
             # read-only, so HOME is the sidecar's own memory /tmp.
@@ -962,6 +974,9 @@ def with_live_display(job: dict[str, Any], *, rc: Any,
             {"name": "SWARM_BROWSER_DOWNLOADS", "value": LIVE_DOWNLOADS_MOUNT},
             {"name": "SWARM_BROWSER_UPLOADS", "value": LIVE_UPLOADS_MOUNT},
             {"name": "SWARM_CDP_LISTEN", "value": LIVE_CDP_LISTEN},
+            # The gate's build names its image (WORKER_IMAGE_ENV): the
+            # worker's own, which this container runs too.
+            {"name": WORKER_IMAGE_ENV, "value": image},
         ],
         "resources": {
             "requests": {"cpu": cpu_quantity(display_share.cpu_request), **display_fixed},
@@ -2561,6 +2576,8 @@ class CloudRunJobDispatcher:
         step_model(self._settings, profile, task)
         name = self.ensure_job(profile, tenant, resource_class_for(task, profile))
         env = worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings)
+        # The image the Job runs (ensure_job just gave it this one).
+        env[WORKER_IMAGE_ENV] = image_uri(self._settings, profile)
         env.update(quality_gates_dispatch_env(self._quality_gates, tenant.tenant_id, profile))
         judgments = jev_judgments_reading(self._jev_judgments, tenant.tenant_id, profile)
         if judgments is not None:
@@ -3240,6 +3257,8 @@ class GkeJobDispatcher:
         env = [{"name": k, "value": v} for k, v in
                gke_worker_env(task=task, lease=lease, tenant=tenant,
                               settings=self._settings).items()]
+        # The image the pod's worker container runs, from the same call.
+        env.append({"name": WORKER_IMAGE_ENV, "value": image_uri(self._settings, profile)})
         gates_env = quality_gates_dispatch_env(self._quality_gates, tenant.tenant_id, profile)
         env.extend({"name": k, "value": v} for k, v in gates_env.items())
         judgments = jev_judgments_reading(self._jev_judgments, tenant.tenant_id, profile)

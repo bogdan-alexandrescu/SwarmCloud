@@ -357,7 +357,9 @@ def test_the_sidecar_carries_no_task_identity(tenant):
     env = {e["name"]: e.get("value") for e in display.get("env", [])}
     assert all("valueFrom" not in e for e in display.get("env", []))
     allowed = {"HOME", "DISPLAY", "SWARM_GATE_CTL", "SWARM_BROWSER_PROFILE_DIR",
-               "SWARM_BROWSER_DOWNLOADS", "SWARM_BROWSER_UPLOADS", "SWARM_CDP_LISTEN"}
+               "SWARM_BROWSER_DOWNLOADS", "SWARM_BROWSER_UPLOADS", "SWARM_CDP_LISTEN",
+               # The image this container runs, for the gate's build (#2688): no identity.
+               "SWARM_WORKER_IMAGE"}
     assert set(env) <= allowed, sorted(set(env) - allowed)
     assert env["SWARM_CDP_LISTEN"] == "127.0.0.1:9222", "the CDP proxy is localhost-only"
     assert env["HOME"] == "/tmp"

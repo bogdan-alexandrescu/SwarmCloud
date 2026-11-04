@@ -8,11 +8,14 @@ capture manifest's `commit` is the app's checkout, not the worker's. So the
 worker says at start-up, and the gate's refusal record (and through it the
 capture manifest's `worker`) carries:
 
-* `commit`: the build's commit, from `SWARM_GIT_SHA` or `GIT_SHA` when the
-  image sets one (build-images.sh passes `GIT_SHA` to every build; an image
-  that declares it as an ENV makes it readable here), else null;
-* `image`: the container image, from `SWARM_WORKER_IMAGE` when the dispatch
-  sets it, else null;
+* `commit`: the build's commit, from `SWARM_GIT_SHA` (or `GIT_SHA`): every
+  worker image (agent-runtime-base, -browser, -lightpanda, -indexer) turns
+  the `GIT_SHA` build arg that build-images.sh and the recipes pass into
+  `ENV SWARM_GIT_SHA` in its last layer; null for a build that passed none;
+* `image`: the container image, from `SWARM_WORKER_IMAGE`, which the
+  scheduler's dispatch sets on both backends and on the live pod's display
+  sidecar to the image it gave the container (scheduler.dispatch
+  WORKER_IMAGE_ENV); null when a worker is started some other way;
 * `code`: `sha256:<hex>` over the worker package's own Python source, ALWAYS
   present, because it needs nothing from the image or the dispatch. It is
   the same for the installed wheel and for a checkout of the commit it was
