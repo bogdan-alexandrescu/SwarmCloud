@@ -276,6 +276,60 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
  && rm -rf "${scratch}" /tmp/bun.zip /tmp/gstack.tar.gz
 
 # ---------------------------------------------------------------------------
+# security-audit-build: Cloudflare's security audit skill, at its pinned commit
+# ---------------------------------------------------------------------------
+# THE AGENT PLUGINS' SECOND PLUGIN (owner decision 4 November 2026, part of
+# #2688): github.com/cloudflare/security-audit-skill (MIT), baked into the
+# agent images beside gstack at commit c1c8a8c1 (14 September 2026), chosen
+# per step by name from the closed catalogue. No new runner profile, no new
+# image, nothing installed at runtime (docs/design/agent-plugins-packaging.md,
+# "The second plugin: Cloudflare's security audit skill"):
+#
+#   * the commit's source archive is read from the tool mirror at the sha256
+#     it was downloaded at (tool-mirror.sha256), and its commit is checked
+#     against SECURITY_AUDIT_COMMIT by the pax header GitHub writes into it,
+#     as gstack's is;
+#   * ONLY skills/security-audit/ (SKILL.md, the fourteen method files,
+#     report-schema.json and the two zero-dependency Node validators with
+#     their tests) and LICENSE are staged, at the archive's own relative
+#     paths, to /out/security-audit: directories 0755, files 0644, the
+#     validators run as `node <file>`, so nothing needs an execute bit.
+#     README.md and everything else stays in this stage. There is no setup
+#     step and no package to install: the skill is markdown, JSON and two
+#     self-contained .cjs files.
+#
+# Bumping the pin is one PR: SECURITY_AUDIT_COMMIT and SECURITY_AUDIT_SHA256
+# here, the row in tool-mirror.sha256 and the catalogue's version
+# (tests/unit/scripts/test_security_audit_image.py holds the four equal and
+# runs the skill's own validator tests on the pinned copy).
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS security-audit-build
+
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
+ && apt-get install --no-install-recommends -y ca-certificates curl git \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG SECURITY_AUDIT_COMMIT=c1c8a8c1471069fb0e188eeaff69b8e8db6564a8
+ARG SECURITY_AUDIT_SHA256=53e708ebf770dfe35b57df0586a5058707081a870cd149ce30a2d57c51ed29b6
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    scratch="$(mktemp -d)" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/security-audit.tar.gz \
+      "file:///tmp/tool-mirror/github.com/cloudflare/security-audit-skill/archive/${SECURITY_AUDIT_COMMIT}.tar.gz" \
+ && echo "${SECURITY_AUDIT_SHA256}  /tmp/security-audit.tar.gz" | sha256sum -c - \
+ && test "$(gzip -dc /tmp/security-audit.tar.gz | git get-tar-commit-id)" = "${SECURITY_AUDIT_COMMIT}" \
+ && tar -xzf /tmp/security-audit.tar.gz -C "${scratch}" --strip-components=1 \
+ && test -f "${scratch}/skills/security-audit/SKILL.md" \
+ && test -f "${scratch}/LICENSE" \
+ && mkdir -p /out/security-audit/skills \
+ && cp -R "${scratch}/skills/security-audit" /out/security-audit/skills/security-audit \
+ && cp "${scratch}/LICENSE" /out/security-audit/LICENSE \
+ && test -z "$(find /out/security-audit ! -type f ! -type d)" \
+ && find /out/security-audit -type d -exec chmod 0755 {} + \
+ && find /out/security-audit -type f -exec chmod 0644 {} + \
+ && rm -rf "${scratch}" /tmp/security-audit.tar.gz
+
+# ---------------------------------------------------------------------------
 # runtime
 # ---------------------------------------------------------------------------
 FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS runtime
@@ -1202,6 +1256,18 @@ RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev
 # (Bun 79.5 MB / 36.7 MB; the base list 6.7 MB / 2.1 MB as tar).
 COPY --from=gstack-build /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=gstack-build /out/gstack/ /opt/swarm/plugins/gstack/
+
+# Cloudflare's security audit skill, the second agent plugin (the
+# security-audit-build stage above says how it is fetched and checked): its
+# one skill folder and LICENSE, at the archive's relative paths, so the skill
+# is /opt/swarm/plugins/security-audit/skills/security-audit. COPY writes
+# uid 0 and the stage wrote no write bit for group or other, so the agent
+# cannot change it; the runner links the step's skill folder into the
+# attempt's HOME (agent_worker.plugins). The browser and Lightpanda images
+# are built FROM this one and inherit it.
+# SIZE (measured 4 November 2026): +0.32 MB uncompressed (315,748 bytes in
+# 21 files; 0.34 MB as tar), +0.09 MB gzip -6 (93,267 bytes).
+COPY --from=security-audit-build /out/security-audit/ /opt/swarm/plugins/security-audit/
 
 # A warmed npm cache for this repository's UI (docs/design/agent-autonomy.md
 # §3.10, lane AU-8). Built from apps/swarm-ui's lockfile with `npm ci --cache
