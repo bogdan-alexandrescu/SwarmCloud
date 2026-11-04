@@ -80,6 +80,10 @@ MUST_IGNORE: dict[str, str] = {
     "apps/swarm-api/swarm_api/codec.py":
         "a comment on a PARKED(HUMAN_REQUIRED) task's human_wait; the park "
         "reason itself is decoded through the enum, which carries the new member",
+    "apps/swarm-api/swarm_api/fixloop.py":
+        "reads and writes only a `fix-loop` task's own person park (FL-DRIVE, "
+        "docs/design/fix-loop.md §4.5); every read is gated on that profile, and "
+        "a `fix-loop` step is never an await-input step, so it never parks AWAITING_INPUT",
     "apps/swarm-api/swarm_api/handoff.py":
         "`human-ready` promotes only a hand-off park; an await-input step is "
         "ended by its answer, never promoted (held below: 409)",
