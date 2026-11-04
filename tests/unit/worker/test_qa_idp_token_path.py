@@ -2,16 +2,18 @@
 
 BGD decided on 2026-10-23: a QA target may carry an admin-set `idp_token_path`
 on its approved `extra_origin`, and the live gate lets exactly
-`POST <extra_origin><idp_token_path>` through, only once its own sign-in has
-completed. An app that refreshes its SSO token after sign-in (AI Studio,
+`POST <extra_origin><idp_token_path>` through, once its own sign-in has
+begun (since 2026-11-03, whatever that sign-in's verdict: part of #2688,
+test_qa_idp_token_production_legs). An app that refreshes its SSO token after sign-in (AI Studio,
 Keycloak's `/protocol/openid-connect/token`) otherwise renders signed out.
 Every other non-GET to the extra origin, and to any other non-target origin,
 is refused exactly as before. Held here, read with an attacker's lens:
 
 * the exact URL after sign-in continues, and is kept in the record as an
   allowed IdP token refresh, never as a refusal;
-* the same before the gate signed in, after a sign-in that failed or met a
-  challenge, and on a target that never signs in, is refused;
+* the same before the gate's sign-in began, after the wipe, and on a target
+  that never signs in, is refused; after a sign-in the gate counted failed
+  or a challenge it still continues;
 * a query, an empty query, a fragment, a trailing slash, a double slash, an
   encoded or upper-case variant, a dot segment, another port, userinfo and
   another path are refused, and a redirect is judged by its own URL;
@@ -101,24 +103,27 @@ def test_the_same_post_before_the_gates_sign_in_is_refused():
 
 
 @pytest.mark.parametrize("state", [gate_qt.STATE_FAILED, gate_qt.STATE_CHALLENGE])
-def test_a_sign_in_that_did_not_complete_lets_nothing_through(state):
+def test_a_sign_in_the_gate_did_not_count_complete_still_lets_the_token_path_through(state):
     target = _target()
     target.signing_in = True
     target.finished(state, "qa_sign_in_failed")
-    # MUTATION: test `sign_ins > 0` (a sign-in was tried) instead of its state and this continues.
-    assert _post(target, TOKEN_URL).action == "refuse"
+    # MUTATION: read the sign-in's verdict (`state == signed_in`) and this is
+    # refused: the 2026-11-03 production legs (part of #2688).
+    assert _post(target, TOKEN_URL).action == "continue"
 
 
-def test_a_failed_second_sign_in_takes_the_exception_back():
+def test_a_failed_second_sign_in_keeps_the_exception_and_nothing_else():
     target = _signed_in()
     assert _post(target, TOKEN_URL).action == "continue"
     # The session was lost; the hand-off asks again and that sign-in fails.
     target.handle(_args(target_id=target.target_id))
-    # MUTATION: remember "signed in once" rather than reading the state now and this continues.
-    assert _post(target, TOKEN_URL).action == "refuse"
+    assert _post(target, TOKEN_URL).action == "continue"
     target.signing_in = True
     target.finished(gate_qt.STATE_FAILED, "qa_sign_in_failed")
-    assert _post(target, TOKEN_URL).action == "refuse"
+    assert _post(target, TOKEN_URL).action == "continue"
+    # MUTATION: let any write to the extra origin through after a sign-in and this continues.
+    assert _post(target, f"{TOKEN_URL}/").action == "refuse"
+    assert _post(target, TOKEN_URL, "PUT").action == "refuse"
 
 
 def test_after_the_wipe_nothing_is_let_through():
