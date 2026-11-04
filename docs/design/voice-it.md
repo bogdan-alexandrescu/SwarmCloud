@@ -304,8 +304,10 @@ Voice it, because it is the same route.
 
 **Keys.**
 
-* **OpenAI:** a ChatGPT plan account in the quota broker's **Voice it
-  pool** (below). No person's own OpenAI secret is read any more.
+* **OpenAI:** an **OpenAI developer API key** in the quota broker's **Voice
+  it pool** (below, "Why a key and not the ChatGPT plan"). No person's own
+  OpenAI secret is read any more, and a ChatGPT plan is never leased for a
+  session.
 * **Anthropic: the planner runs on a pool lease** (below, "The planner's
   Claude account"). No person's Anthropic secret is read and swarm-voice
   holds no accessor grant for one.
@@ -337,13 +339,14 @@ allow accounts to be in more than one pool at a time".
   `POST /v1/voice/lease` for the session's person
   (`swarm_voice/accountlease.py`, shaped like the worker's
   `agent_worker/accountlease.py`). The broker picks an account with
-  `choose_voice`: it must be in the Voice it pool, list the person, be
-  AVAILABLE with a free slot and no window under its floor. The broker
-  records a hold with `pool: voice-it`, the person, the session id and no
-  tenant. It hands back the plan's current access token and account id,
-  read from the account's published `{base}` secret. swarm-voice renews the
-  hold every four minutes and gets the token again each time, because the
-  broker's refresh sweep keeps it fresh. It releases the hold when the
+  `choose_voice`: it must be an OpenAI API key (`capability: "live"`, above),
+  be in the Voice it pool, list the person, and be AVAILABLE with a free
+  slot. The broker records a hold with `pool: voice-it`, the person, the
+  session id and no tenant. It hands back the key, read from the account's
+  `{base}` secret. Until 4 November it handed back a ChatGPT plan's access
+  token and account id, which OpenAI refused. swarm-voice renews the hold
+  every four minutes and gets the credential again each time. It releases
+  the hold when the
   session ends or fails. If swarm-voice dies, the hold lapses on its own
   after `VOICE_HOLD_TTL` (ten minutes).
 * **Pool only.** With no account free, or for a person the pool does not
@@ -359,6 +362,57 @@ allow accounts to be in more than one pool at a time".
   Manager binding at all (`terraform/infra/voice.tf`). Its only new grant
   is run.invoker on the quota broker, and the broker admits only its
   service account to the voice routes.
+
+**Why a key and not the ChatGPT plan: OpenAI refused the plan (measured 4
+November 2026, 02:00 UTC).** swarm-voice leased the ChatGPT plan account
+`eng:chatgpt-1` from the Voice it pool and `POST
+https://api.openai.com/v1/live/sessions` answered **403 Forbidden**
+(`swarm_voice/live.py`). The pool's token is the Codex sign-in, scope `openid
+profile email offline_access` (`quota_broker/openai_plan.py`). OpenAI's own
+documentation says why it cannot work: Sign in with ChatGPT's identity scopes
+do not grant OpenAI API resources, and plan use is limited to text Responses
+for selected partners (https://developers.openai.com/siwc/quickstart).
+GPT-Live is a developer API model billed per minute
+(https://developers.openai.com/api/docs/models/gpt-live-1). So the plan path
+is recorded as **refused by OpenAI**, and the owner said "fix it":
+
+* **A new account kind, `openai-api`** (`quota_broker/openai_api_key.py`):
+  an OpenAI developer API key. It is allowed **only in the Voice it pool**.
+  Registration files it there alone, with the broker's `VOICE_IT_PEOPLE`.
+  It is never lent, `PUT .../pools` refuses to move it into the workspace
+  pool, and an agent leasing an `openai` account never matches its provider, so no
+  agent or workspace is ever handed it. Adding one is for platform admins
+  only, like a pool move.
+* **Stored as the broker stores every credential.** One Secret Manager
+  secret, `{base}`, holds the key. The broker is its only writer and its only
+  accessor: no worker service account is bound, because no agent runs on it.
+  There is no `{base}-refresh` and nothing to refresh, so the refresh sweep
+  skips it (`Account.refreshes`). OpenAI gives a key no usage window, so the
+  usage poller never asks. Its windows read **not measured**, never 0
+  (`measured: false` on the listing). The "one agent before its first
+  reading" rule waits for a reading that never comes, so it does not apply,
+  and `max_agents` is the cap.
+* **The lease asks for a Live-capable account.** swarm-voice sends
+  `capability: "live"` on `POST /v1/voice/lease`, which is also the default.
+  `choose_voice` then offers only `openai-api` accounts, so a key is chosen
+  for every Live session and a ChatGPT plan never is. The plan stays in the
+  pools for codex steps. The credential comes back as `{"access_token",
+  "kind": "api_key"}` with no account id. swarm-voice's `Bearer` for a key
+  sends the key in the `Authorization` header only, with no `ChatGPT-Account-Id`,
+  even when a broker sends an id.
+* **No key, no lease.** With no `openai-api` account in the Voice it pool,
+  the broker answers `no_voice_account_registered` before it takes any hold.
+  swarm-voice turns that into 409 `voice_pool_refused`, and swarm-api tells
+  the person "Voice it needs an OpenAI API key in the Voice it pool: add one
+  on Admin › Accounts". It is never a 502.
+* **Adding the key.** The owner pastes it himself through the console's
+  one-time link, so it never passes through a model, a log, a tool argument
+  or the repository. The broker's `POST /v1/accounts` with `provider:
+  "openai-api"` parses it and stores it before any document is written. The
+  console side of that link, and swarm-api's account route accepting the
+  provider, are a separate change (the PR that added this kind says which).
+  A Day One install needs nothing new. The key is added after install,
+  through the same link.
 
 **The planner's Claude account: a pool lease through Claude Code (owner,
 2 November 2026).** The owner picked "Pool account via Claude Code": "we have
@@ -880,6 +934,7 @@ is 128.
 | Mermaid's `sandbox` security level in the pinned version | Render inside the mock-up card's sandboxed frame |
 | Whether the research's per-hour figures hold for BGD's real talk | The meter measures them from the first session |
 | GKE and Cloud Run hourly rates | Shown as estimates |
+| **Answered 4 November 2026:** whether a ChatGPT plan's sign-in can open a GPT-Live session. **No.** `POST /v1/live/sessions` answered 403 Forbidden on the Codex sign-in's token (scope `openid profile email offline_access`), and OpenAI documents that Sign in with ChatGPT does not grant API resources (https://developers.openai.com/siwc/quickstart) | Live sessions lease an OpenAI developer API key from the Voice it pool (§3.6, "Why a key and not the ChatGPT plan"); the plan stays in the pools for codex steps |
 
 ---
 

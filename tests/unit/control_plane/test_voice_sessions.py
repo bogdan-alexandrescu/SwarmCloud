@@ -415,7 +415,8 @@ def test_a_pool_refusal_reaches_the_browser_with_its_sentence_and_frees_the_pers
 
     assert response.status_code == status, response.text
     body = response.json()
-    assert body["message"] == sentence
+    assert body["message"] == (vs.NO_API_KEY_SENTENCE if reason == "voice_pool_refused" and status == 409
+                               else sentence)
     assert body["detail"]["reason"] == reason
     assert body["code"] == ("forbidden" if status == 403 else "conflict")
     (session,) = _sessions(db).values()
@@ -423,6 +424,25 @@ def test_a_pool_refusal_reaches_the_browser_with_its_sentence_and_frees_the_pers
     assert _docs(db, vs.LIVE_MARKERS) == {}
     voice.pool_refusal = None
     assert _start(client, "alice").status_code == 200
+
+
+def test_a_start_with_no_api_key_in_the_pool_says_so_and_never_502s(client, db, voice):
+    """swarm-voice's 409 `voice_pool_refused` is the broker finding no
+    Live-capable account (an OpenAI API key) in the Voice it pool: the person
+    is told where to add one, whatever older sentence swarm-voice sent."""
+    voice.pool_refusal = vs.pool_refusal(
+        409, b'{"code": "voice_pool_refused", "message": "Voice it has no ChatGPT plan account set up yet."}')
+
+    response = _start(client, "alice")
+
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["message"] == vs.NO_API_KEY_SENTENCE
+    assert body["message"] == (
+        "Voice it needs an OpenAI API key in the Voice it pool: add one on Admin \u203a Accounts")
+    assert body["detail"]["reason"] == "voice_pool_refused"
+    (session,) = _sessions(db).values()
+    assert session["state"] == vs.ENDED and session["end_cause"] == vs.END_VOICE_POOL_REFUSED
 
 
 def test_a_malformed_offer_is_422(client, db, voice):
@@ -583,6 +603,8 @@ def test_the_http_client_reads_a_pool_refusal_with_its_sentence(swarm_voice, sta
         client.start(call)
     sentence = payload.get("message") or payload["detail"]
     sentence = sentence["message"] if isinstance(sentence, dict) else sentence
+    if status == 409 and reason == "voice_pool_refused":
+        sentence = vs.NO_API_KEY_SENTENCE
     assert raised.value.message == sentence
     assert raised.value.detail == {"reason": reason}
     assert "credential" not in seen[0]["body"]
