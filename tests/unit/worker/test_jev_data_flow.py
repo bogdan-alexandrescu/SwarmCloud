@@ -436,3 +436,19 @@ def test_the_audit_row_holds_counts_never_the_payload_the_answer_or_the_key(
     assert set(row) == AUDIT_KEYS
     assert row["outcome"] == ("ok" if status == 200 else "failed")
     assert row["bytes"] == len(sent[0])
+
+
+def test_where_jev_runs_names_swarm_apis_contract_review() -> None:
+    """Lane CONTRACT-REVIEW-SUBMIT (4 November 2026): swarm-api makes one Jev
+    call, the contract review at submission, and the record says so, gated
+    by its own mode and its own workspace setting, charged to the month."""
+    text = DOC.read_text(encoding="utf-8")
+    section = text.split("\n## Where Jev runs", 1)[1].split("\n## ", 1)[0]
+    assert "**Never swarm-api.**" not in section
+    assert "never holds a Jev client" not in section
+    cites = set(_CITE.findall(section))
+    assert ("apps/swarm-api/swarm_api/contractreview.py", "ContractReviewer.review") in cites
+    assert _resolves("apps/swarm-api/swarm_api/contractreview.py", "ContractReviewer.review")
+    for words in ("SWARM_CONTRACT_REVIEW", "contract_review.enabled", "not_run",
+                  "kind `contract_review`", "15 s deadline"):
+        assert words in section, words

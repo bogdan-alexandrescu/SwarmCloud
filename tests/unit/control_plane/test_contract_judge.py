@@ -80,8 +80,24 @@ def test_a_strict_contract_naming_judgment_is_refused_where_jev_cannot_run():
                             enforced=wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION})
     assert raised.value.detail["unenforced"] == ["judgment"]
     compiled = wc.compile_contract(c, step_id="s", enforced=wc.enforced_with_judgment(
-        wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION}))
+        wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION}, jc2_runs=True))
     assert compiled.advisory == ()
+
+
+def test_judgment_counts_as_enforced_only_where_jc2_runs():
+    """The owner's pick "Gate on JC2" (4 November 2026): Jev being able to
+    review a contract is not enough; `judgment` is enforced only where the
+    worker's post-step runs JC2, which no worker does yet."""
+    assert wc.JC2_AT_END_OF_STEP is False
+    base = wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION}
+    assert wc.enforced_with_judgment(base) == base
+    assert wc.enforced_with_judgment(base, jc2_runs=False) == base
+    assert wc.enforced_with_judgment(base, jc2_runs=True) == base | {wc.COMPONENT_JUDGMENT}
+    doc = _doc(strictness="strict", scope={}, protected={}, artifacts=[])
+    doc["requirements"] = [{"id": "REQ-1", "text": "Clear copy.", "verification": ["judgment"]}]
+    with pytest.raises(wc.ContractNotEnforceable) as raised:
+        wc.compile_contract(wc.decode(doc), step_id="s", enforced=wc.enforced_with_judgment(base))
+    assert raised.value.detail["unenforced"] == ["judgment"]
 
 
 def test_acceptance_is_strict_by_default_and_the_default_keeps_the_digest():
@@ -430,7 +446,8 @@ def test_protected_interfaces_are_never_enforced_by_a_judgment():
                             "verification": ["judgment"]}]
     c = wc.decode(doc)
     assert c.protected_interfaces == ("swarm_common.models.Task",)
-    enforced = wc.enforced_with_judgment(wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION})
+    enforced = wc.enforced_with_judgment(wc.WORKER_ENFORCED_TODAY | {wc.COMPONENT_VERIFICATION},
+                                         jc2_runs=True)
     assert enforced - wc.WORKER_ENFORCED_TODAY == {wc.COMPONENT_VERIFICATION,
                                                      wc.COMPONENT_JUDGMENT}
     assert wc.COMPONENT_PROTECTED not in enforced

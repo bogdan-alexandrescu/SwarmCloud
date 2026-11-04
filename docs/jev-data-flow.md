@@ -228,8 +228,36 @@ records are the authority on what was sent.
   MCP config, the prompt, a log or the summary. Its calls are counted in the
   attempt's `result_summary.runner.metrics.tool_calls` as `jev_decision`.
   Codex steps do not register it.
-* **Never swarm-api.** swarm-api reads `plan-advisory.json` (the J2/J5
-  result) and never holds a Jev client.
+* **swarm-api, for one call only: the work contract review at submission**
+  (JC1, docs/design/agent-quality/jev-contract.md section 4; lane
+  CONTRACT-REVIEW-SUBMIT, 4 November 2026).
+  `apps/swarm-api/swarm_api/contractreview.py::ContractReviewer.review` asks
+  Jev, inside the submission request, which of a work contract's requirements
+  no worker could enforce, through the shared client
+  (`apps/jev-client/swarm_jev/client.py::JudgeClient.decide`) and its
+  sanitizer, with a 15 s deadline and one retry. It runs only while the
+  platform's `SWARM_CONTRACT_REVIEW` is `report` or `enforce` (default
+  `off`: no call) and the workspace's own signed setting
+  `contract_review.enabled` is on -- not `code_intelligence.jev`, because no
+  code is sent: the state is `contractjudge.review_state`, the contract's own
+  requirement texts by index, its strictness, acceptance, artifact kinds and
+  write scope, never the tenant, the owner, the contract id, the repository
+  URL or a commit. A requirement whose text the sanitizer would drop
+  (credential-shaped, or holding the backend's own key) is not asked about
+  at all and is recorded `not_judged`
+  (`apps/swarm-api/swarm_api/contractreview.py::unreadable`): Jev never
+  answers for a text it did not read. What is kept is the step's signed
+  dispatch block's `contract_review`: the digest judged, Jev's closed
+  classes, reasons and probabilities by requirement id, the call id and the
+  backend's name, never a requirement's text. The backend is the workspace's `judgment_backend`,
+  reached through swarm-api's Direct VPC egress and the internal load
+  balancer in front of the tailnet egress (`judgment.resolve_call_backend`),
+  never TypeSafe in its place. Its calls are admitted under
+  `code_intelligence.jev_monthly_cap_tokens` and charged to the month as
+  kind `contract_review` (`jevusage.record_contract_review`). A call that
+  fails, times out or is over the cap is recorded `not_run` and the contract
+  is accepted on the mechanical compile alone. Every other swarm-api read of
+  Jev's work stays a file: `plan-advisory.json` (the J2/J5 result).
 
 **Which verdict files J3 reads** (owner, 2 November 2026). A review step's
 verdict is not always one `verdict.json` with a `findings` list: the first
