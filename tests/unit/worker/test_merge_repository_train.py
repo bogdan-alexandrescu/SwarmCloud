@@ -25,7 +25,7 @@ from agent_worker.errors import ExitCode, FencedError
 from swarm_common.models import EndCause, utcnow
 from swarm_common.states import TaskState
 
-from merge_world import API, MERGED, NUMBER, PINNED, TASK, MergeWorld
+from merge_world import API, CHECK, MERGED, NUMBER, PINNED, TASK, MergeWorld
 
 VARIABLE = f"{API}/actions/variables/MERGE_TRAIN"
 LABELS = f"{API}/issues/{NUMBER}/labels"
@@ -258,3 +258,88 @@ def test_a_workspace_train_target_never_reads_the_repository_switch(tmp_path):
     assert outcome.summary.get("merge_train") is not None
     assert "repository_train" not in outcome.summary
     assert world.github.calls("GET", VARIABLE) == [] and _labelled(world) == []
+
+
+# ---------------------------------------------------------------------------
+# The ruleset requires the train's own `merge-train` (#3179)
+#
+# The train posts `merge-train` only on a pull request it boarded, and it
+# boards only `ready` ones: the gate before `_board` must not wait for it.
+
+
+def _requires_merge_train(world: MergeWorld) -> None:
+    world.rules[0]["parameters"]["required_status_checks"].append({"context": "merge-train"})
+
+
+@pytest.mark.parametrize("value,status,on_by", [("on", 200, "variable"),
+                                                (None, 403, "required_check")])
+def test_a_green_head_is_labelled_though_merge_train_has_not_reported(tmp_path, value, status,
+                                                                      on_by):
+    """MUTATION (merge.py `_with_forge`): gate on `merge-train` with the train
+    on, and this parks `checks_pending` on ["merge-train"] and never labels."""
+    world = MergeWorld(tmp_path)
+    _switch(world, value, status=status)
+    _requires_merge_train(world)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING, outcome.ci_wait
+    assert outcome.ci_wait["pending"] == []
+    assert outcome.summary["repository_train"]["on_by"] == on_by
+    assert outcome.summary["required_checks"] == sorted([CHECK, "merge-train"])
+    (label,) = _labelled(world)
+    assert label.body == {"labels": ["ready"]}
+    assert world.merge_calls() == [] and world.update_calls() == []
+    # The switch is read once, before the gate.
+    assert len(world.github.calls("GET", VARIABLE)) == 1
+
+
+def test_a_red_other_check_still_goes_to_its_fix_round_with_merge_train_required(tmp_path):
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _requires_merge_train(world)
+    world.runs[0]["conclusion"] = "failure"
+    world.docs[TASK]["metadata"] = {"merge_fix_rounds": 1}
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == merge.CI_FIX_PENDING, outcome.ci_wait
+    assert outcome.ci_wait["failed"] == [CHECK]
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
+def test_a_pending_other_check_still_waits_with_merge_train_required(tmp_path):
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _requires_merge_train(world)
+    world.runs[0].update(status="in_progress", conclusion=None)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == "checks_pending", outcome.ci_wait
+    assert outcome.ci_wait["pending"] == [CHECK]
+    assert _labelled(world) == []
+
+
+def test_with_the_train_off_a_required_merge_train_still_gates(tmp_path):
+    """The variable reads off: `merge-train` is an ordinary required check."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "off")
+    _requires_merge_train(world)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == "checks_pending", outcome.ci_wait
+    assert outcome.ci_wait["pending"] == ["merge-train"]
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
+def test_a_stale_generation_with_merge_train_required_labels_nothing(tmp_path):
+    """Invariant 5."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _requires_merge_train(world)
+    world.stale_after = 1
+    with pytest.raises(FencedError):
+        merge.run_merge(world.context())
+    assert _labelled(world) == [] and world.merge_calls() == []
