@@ -64,6 +64,25 @@ swarm-voice's own sentence, under the established codes:
 Either way the session is ended at once (cause `voice_pool_refused`) and the
 person's marker freed, so the next try is not a 409 of ours.
 
+THE MODE (owner, 4 November 2026: "both paths"). OpenAI refuses the ChatGPT
+plan's token for GPT-Live, but the plan serves text. `pick_mode` asks the
+broker which account the person's next Live session would lease (`GET
+/v1/voice/pool`): `no_voice_account_registered`, the answer for a pool with
+no OpenAI API key, makes the session `text`; anything else, and a broker that
+cannot be asked, keeps it `live` (today's path, unchanged). A text start
+sends `{voice_session_id, project_id, person, grant, mode: "text"}` with no
+offer, and swarm-voice answers `201 {voice_session_id, mode: "text"}`; the
+browser then posts each spoken turn as text:
+
+  {SWARM_VOICE_URL}/internal/sessions/{session_id}/turns
+      {"text"} -> 200 {"turn_id", "reply", "cards"}
+
+swarm-voice's 404 (it holds no text conversation for the session: ended
+there, or lost to a restart) reads as 409 `conflict`, reason
+`voice_session_not_live`; its 429 `usage_limit_reached` as 429
+`rate_limited` with `detail.resets_at`. Neither the text nor the reply is
+logged or stored here.
+
 A start swarm-voice refuses or does not answer ends the session at once with
 the cause `voice_unreachable` and frees the person's marker, so the next try
 is not a 409. An end swarm-voice does not hear is logged and the session
@@ -91,7 +110,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
 
-from ..errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable
+from ..errors import ApiError, Conflict, Forbidden, NotFound, RateLimited, UpstreamUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +137,20 @@ STARTING_STALE_SECONDS = 120
 END_BY_PERSON = "ended_by_person"
 END_VOICE_UNREACHABLE = "voice_unreachable"
 END_VOICE_POOL_REFUSED = "voice_pool_refused"
+
+#: A session's modes: GPT-Live over WebRTC on an OpenAI API key, or the ChatGPT
+#: plan's text conversation (owner, 4 November 2026: "both paths").
+MODE_LIVE = "live"
+MODE_TEXT = "text"
+#: The broker's reason for a Voice it pool with no account that can open a Live
+#: session, i.e. no OpenAI API key: the one answer that makes a session text.
+NO_LIVE_ACCOUNT = "no_voice_account_registered"
+#: A text turn, as the console sends it (swarm_voice.textchat.MAX_TURN_CHARS).
+MAX_TURN_CHARS = 4000
+TURN_TIMEOUT_SECONDS = 300.0
+#: `detail.reason` of the 409 for a turn on a session that takes none.
+NOT_LIVE = "voice_session_not_live"
+USAGE_LIMIT = "usage_limit_reached"
 
 #: swarm-voice's 409 codes for the Voice it pool, carried to the browser as
 #: `detail.reason` (a 403 from swarm-voice is always `voice_pool_refused`).
@@ -192,6 +225,35 @@ class VoiceSessionLive(Conflict):
 class VoiceUnreachable(ApiError):
     status_code = 502
     code = "voice_unreachable"
+
+
+class VoiceSessionNotLive(Conflict):
+    """A turn on a session that is not a live text conversation. Keeps the
+    established `conflict` code; `detail.reason` is `voice_session_not_live`."""
+
+
+class VoiceUsageLimited(RateLimited):
+    """The ChatGPT plan's usage limit refused a turn. Keeps the established
+    `rate_limited` code; `detail` adds `reason` and `resets_at`."""
+
+    def __init__(self, resets_at: str | None, *, now: datetime) -> None:
+        when = _instant(resets_at)
+        wait = max(0.0, (when - now).total_seconds()) if when is not None and now.tzinfo else 0.0
+        super().__init__(
+            "Voice it's ChatGPT plan has reached its usage limit"
+            + (f"; it resets at {when.isoformat()}." if when is not None else "; try again later."),
+            retry_after_seconds=wait)
+        self.detail.update({"reason": USAGE_LIMIT, "resets_at": when.isoformat() if when else None})
+
+
+def _instant(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
 def not_allowed() -> VoiceNotAllowed:
@@ -310,9 +372,11 @@ class StartCall:
     #: Kept for the caller's own record; swarm-voice's body has no tenant.
     tenant_id: str
     person: str
+    #: The browser's SDP offer; empty for a text session, which has none.
     offer: str
     #: Excluded from the repr: it is the session's credential.
     grant: str
+    mode: str = MODE_LIVE
 
     def __repr__(self) -> str:
         return (f"StartCall(session_id={self.session_id!r}, project_id={self.project_id!r}, "
@@ -325,6 +389,29 @@ class StartAnswer:
 
     answer: str
     live_session_id: str
+    mode: str = MODE_LIVE
+
+
+@dataclass(frozen=True)
+class TurnAnswer:
+    """swarm-voice's answer to one text turn."""
+
+    turn_id: str
+    reply: str
+    cards: list[dict[str, Any]]
+
+
+def pick_mode(pool: Any, person: str) -> str:
+    """`text` when the broker says the Voice it pool holds no account that can
+    open a Live session (no OpenAI API key), else `live`. A broker that cannot
+    be asked keeps today's path: swarm-voice's own lease then says why."""
+    try:
+        answer = pool.voice_pool(person)
+    except Exception as exc:  # noqa: BLE001 -- the class name only; the Live path refuses properly
+        log.warning("the Voice it pool could not be read for the mode (%s); live", type(exc).__name__)
+        return MODE_LIVE
+    reason = answer.get("reason") if isinstance(answer, dict) else None
+    return MODE_TEXT if reason == NO_LIVE_ACCOUNT else MODE_LIVE
 
 
 class VoiceClient(Protocol):
@@ -335,6 +422,11 @@ class VoiceClient(Protocol):
 
     def end(self, session_id: str, *, cause: str) -> bool:
         """True when swarm-voice took the end. Never raises."""
+        ...
+
+    def turn(self, session_id: str, text: str) -> TurnAnswer:
+        """swarm-voice's answer to a text turn, or `VoiceSessionNotLive`,
+        `VoiceUsageLimited` or `VoiceUnreachable`."""
         ...
 
 
@@ -379,6 +471,11 @@ class HttpVoiceClient:
     def start(self, call: StartCall) -> StartAnswer:
         body = {"voice_session_id": call.session_id, "project_id": call.project_id,
                 "person": call.person, "offer": call.offer, "grant": call.grant}
+        if call.mode == MODE_TEXT:
+            # No offer: a text conversation has no WebRTC. A Live body is
+            # today's, field for field (swarm-voice's `mode` defaults to live).
+            body = {"voice_session_id": call.session_id, "project_id": call.project_id,
+                    "person": call.person, "grant": call.grant, "mode": MODE_TEXT}
         try:
             status, raw = self._post("/internal/sessions", body, START_TIMEOUT_SECONDS)
         except (OSError, ValueError) as exc:
@@ -406,10 +503,51 @@ class HttpVoiceClient:
         if not isinstance(started, dict) or started.get("voice_session_id") != call.session_id:
             log.warning("swarm-voice answered the start for session=%s for another session", call.session_id)
             raise VoiceUnreachable("swarm-voice answered for another session; the session was ended.")
+        if call.mode == MODE_TEXT:
+            if started.get("mode") != MODE_TEXT:
+                raise VoiceUnreachable("swarm-voice did not start a text conversation; the session was ended.")
+            return StartAnswer(answer="", live_session_id="", mode=MODE_TEXT)
         answer, live_id = started.get("answer"), started.get("live_session_id")
         if not isinstance(answer, str) or not isinstance(live_id, str) or not live_id:
             raise VoiceUnreachable("swarm-voice answered without an SDP answer; the session was ended.")
         return StartAnswer(answer=answer, live_session_id=live_id)
+
+    def turn(self, session_id: str, text: str) -> TurnAnswer:
+        path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/turns"
+        try:
+            status, raw = self._post(path, {"text": text}, TURN_TIMEOUT_SECONDS)
+        except (OSError, ValueError) as exc:
+            log.warning("voice turn for session=%s did not reach swarm-voice (%s)", session_id, type(exc).__name__)
+            raise VoiceUnreachable("swarm-voice could not be reached for this turn.") from None
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else None
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and isinstance(body.get("detail"), dict):
+            body = body["detail"]
+        if status == 404:
+            raise VoiceSessionNotLive("This Voice it conversation is no longer live; start a new one.",
+                                      detail={"reason": NOT_LIVE})
+        if status == 429 and isinstance(body, dict) and body.get("code") == USAGE_LIMIT:
+            log.info("the ChatGPT plan's usage limit refused a turn for session=%s", session_id)
+            resets = body.get("resets_at")
+            raise VoiceUsageLimited(resets if isinstance(resets, str) else None, now=datetime.now(timezone.utc))
+        refused = openai_refusal(raw) if status == 502 else None
+        if refused is not None:
+            log.warning("OpenAI refused a text turn for session=%s (OpenAI HTTP %s, %s)", session_id,
+                        refused.detail["openai_status"], refused.detail["openai_code"])
+            raise VoiceUnreachable(
+                "OpenAI refused this turn on Voice it's ChatGPT plan "
+                f"({refused.detail['openai_status'] or 'in the stream'}, {refused.detail['openai_code']}).",
+                detail=refused.detail)
+        if status != 200 or not isinstance(body, dict):
+            log.warning("swarm-voice refused a turn for session=%s (HTTP %s)", session_id, status)
+            raise VoiceUnreachable(f"swarm-voice could not answer this turn (HTTP {status}).")
+        turn_id, reply, cards = body.get("turn_id"), body.get("reply"), body.get("cards")
+        if not isinstance(turn_id, str) or not isinstance(reply, str):
+            raise VoiceUnreachable("swarm-voice answered the turn without a reply.")
+        return TurnAnswer(turn_id=turn_id, reply=reply,
+                          cards=[c for c in cards if isinstance(c, dict)] if isinstance(cards, list) else [])
 
     def end(self, session_id: str, *, cause: str) -> bool:
         path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/end"
@@ -495,8 +633,11 @@ class VoiceSessions:
         return False
 
     def start(self, *, tenant_id: str, person: str, offer: str,
-              project_id: str | None) -> dict[str, Any]:
-        """No credential: swarm-voice leases the Voice it pool account itself."""
+              project_id: str | None, mode: str = MODE_LIVE) -> dict[str, Any]:
+        """No credential: swarm-voice leases the Voice it pool account itself.
+        `mode` is `pick_mode`'s; a text session sends no offer."""
+        if mode not in (MODE_LIVE, MODE_TEXT):
+            raise ValueError(f"no Voice it session mode {mode!r}")
         person = person.strip().lower()
         session_id = "vs_" + secrets.token_hex(16)
         new_project = project_id is None
@@ -527,7 +668,8 @@ class VoiceSessions:
                 txn.update(project_ref, {"updated_at": now})
             txn.set(session_ref, {
                 "tenant_id": tenant_id, "person": person, "project_id": project_id,
-                "state": STARTING, "created_at": now, "grant_hash": grant_hash(grant)})
+                "state": STARTING, "created_at": now, "grant_hash": grant_hash(grant),
+                "mode": mode})
             txn.set(marker_ref, {
                 "tenant_id": tenant_id, "project_id": project_id,
                 "session_id": session_id, "at": now})
@@ -538,10 +680,14 @@ class VoiceSessions:
         _open(self._db.transaction())
 
         call = StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
-                         person=person, offer=offer, grant=grant)
+                         person=person, offer=offer if mode == MODE_LIVE else "", grant=grant, mode=mode)
         try:
             started = self._client.start(call)
-            if not isinstance(started, StartAnswer) or not _valid_answer(started.answer):
+            if not isinstance(started, StartAnswer):
+                raise VoiceUnreachable("swarm-voice did not answer the start; the session was ended.")
+            if mode == MODE_TEXT and started.mode != MODE_TEXT:
+                raise VoiceUnreachable("swarm-voice did not start a text conversation; the session was ended.")
+            if mode == MODE_LIVE and not _valid_answer(started.answer):
                 raise VoiceUnreachable("swarm-voice's answer is not an SDP answer; the session was ended.")
         except VoiceUnreachable:
             self._close(tenant_id=tenant_id, person=person, project_id=project_id,
@@ -551,12 +697,38 @@ class VoiceSessions:
             self._close(tenant_id=tenant_id, person=person, project_id=project_id,
                         session_id=session_id, cause=END_VOICE_POOL_REFUSED)
             raise
-        self._session_ref(project_id, session_id).update(
-            {"state": LIVE, "live_at": self._now(), "live_session_id": started.live_session_id})
-        log.info("voice session started tenant=%s project=%s session=%s new_project=%s",
-                 tenant_id, project_id, session_id, new_project)
-        return {"project_id": project_id, "session_id": session_id, "state": LIVE,
-                "new_project": new_project, "answer_sdp": started.answer}
+        live_fields: dict[str, Any] = {"state": LIVE, "live_at": self._now()}
+        if mode == MODE_LIVE:
+            live_fields["live_session_id"] = started.live_session_id
+        self._session_ref(project_id, session_id).update(live_fields)
+        log.info("voice session started tenant=%s project=%s session=%s new_project=%s mode=%s",
+                 tenant_id, project_id, session_id, new_project, mode)
+        answer = {"project_id": project_id, "session_id": session_id, "state": LIVE,
+                  "new_project": new_project, "mode": mode}
+        if mode == MODE_LIVE:
+            answer["answer_sdp"] = started.answer
+        return answer
+
+    def turn(self, *, tenant_id: str, person: str, session_id: str, text: str) -> dict[str, Any]:
+        """One spoken turn of a text session, as text: swarm-voice's reply and
+        the cards the planner drew. 404 for a session that is not this
+        person's in this tenant; 409 (`voice_session_not_live`) for one that is
+        ended, still starting, or a Live (WebRTC) one. The text and the reply
+        are neither logged nor stored here."""
+        person = person.strip().lower()
+        project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
+        snap = _snapshot(self._session_ref(project_id, session_id).get())
+        data = (snap.to_dict() or {}) if snap.exists else {}
+        if not self._mine(data, tenant_id, person):
+            raise NotFound(f"voice session {session_id!r} not found")
+        if data.get("state") != LIVE or data.get("mode") != MODE_TEXT:
+            raise VoiceSessionNotLive(
+                "This Voice it session takes no text turns: it is not a live text conversation.",
+                detail={"reason": NOT_LIVE, "state": data.get("state"), "mode": data.get("mode") or MODE_LIVE})
+        answered = self._client.turn(session_id, text)
+        log.info("voice turn answered tenant=%s project=%s session=%s turn=%s cards=%d",
+                 tenant_id, project_id, session_id, answered.turn_id, len(answered.cards))
+        return {"turn_id": answered.turn_id, "reply": answered.reply, "cards": answered.cards}
 
     def _close(self, *, tenant_id: str, person: str, project_id: str, session_id: str,
                cause: str) -> dict[str, Any] | None:

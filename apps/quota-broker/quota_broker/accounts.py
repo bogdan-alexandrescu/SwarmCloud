@@ -1679,6 +1679,11 @@ VOICE_NOT_IN_POOL = "not_in_voice_pool"
 VOICE_NONE_REGISTERED = "no_voice_account_registered"
 #: Some are, and none can take a session now: held, paused, or spent.
 VOICE_NONE_AVAILABLE = "no_voice_account_available"
+#: What a Voice it text conversation leases its account for
+#: (swarm_voice.textchat): the ChatGPT plan's Responses wire, which serves text
+#: on the plan. Beside `openai_api_key.CAPABILITY_LIVE`, the only other value
+#: `VoiceLease.capability` accepts.
+VOICE_CAPABILITY_TEXT = "text"
 
 
 def choose_voice(
@@ -1707,6 +1712,11 @@ def choose_voice(
     /v1/live/sessions, 4 November 2026), so a plan in the Voice it pool is
     never chosen for a session and, with no key beside it, the pool reads as
     `VOICE_NONE_REGISTERED` -- refused before any hold is taken.
+
+    Any other capability (a text conversation, `VOICE_CAPABILITY_TEXT`) is
+    offered the pool's accounts of `provider` that are NOT Live-capable: a key
+    is the only kind a Live session can use, so a text lease naming the key's
+    provider finds none registered rather than taking a slot Live needs.
     """
     if capability == openai_api_key.CAPABILITY_LIVE:
         listed = [
@@ -1715,7 +1725,13 @@ def choose_voice(
             if openai_api_key.is_live_capable(a.provider) and a.in_pool(POOL_VOICE_IT)
         ]
     else:
-        listed = [a for a in accounts if a.provider == provider and a.in_pool(POOL_VOICE_IT)]
+        listed = [
+            a
+            for a in accounts
+            if a.provider == provider
+            and not openai_api_key.is_live_capable(a.provider)
+            and a.in_pool(POOL_VOICE_IT)
+        ]
     if not listed:
         return None, VOICE_NONE_REGISTERED
     mine = [a for a in listed if a.may_serve_voice(person)]

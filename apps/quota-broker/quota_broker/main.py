@@ -345,8 +345,10 @@ class VoiceLease(StrictModel):
     #: every Voice it session today) is offered only an OpenAI developer API
     #: key: OpenAI refused the ChatGPT plan for Live on 4 November 2026. The
     #: default, so a swarm-voice that predates the field is never handed a
-    #: plan either; no other value is accepted.
-    capability: Literal["live"] = openai_api_key.CAPABILITY_LIVE
+    #: plan either. `text` (a text conversation, swarm_voice.textchat) is
+    #: offered the pool's ChatGPT plan and never a key (`choose_voice`); no
+    #: other value is accepted.
+    capability: Literal["live", "text"] = openai_api_key.CAPABILITY_LIVE
 
 
 class VoiceHold(StrictModel):
@@ -421,6 +423,17 @@ class AccountReadingIn(_AttemptHold):
     Figures and instants and nothing else: `extra="forbid"` refuses any other
     field, so a reading cannot carry a token, a header or a session id.
     """
+
+    windows: dict[str, WindowIn] = Field(min_length=1, max_length=8)
+
+
+class VoiceReadingIn(VoiceHold):
+    """A Voice it session's reading of the plan it holds: the `x-codex-*`
+    windows swarm_voice.textchat reads off each answer.
+
+    Figures and instants and nothing else, as `AccountReadingIn`: the
+    hold's proof and the windows, and `extra="forbid"` refuses any other
+    field, so a reading cannot carry a token or a header."""
 
     windows: dict[str, WindowIn] = Field(min_length=1, max_length=8)
 
@@ -1806,6 +1819,50 @@ def _attempt_hold(
         ):
             return hold
     return None
+
+
+def _voice_hold(
+    data: dict[str, Any],
+    now: datetime,
+    *,
+    assignment_id: str,
+    voice_session_id: str,
+) -> Hold | None:
+    """A Voice it session's LIVE hold on this account document, or None.
+
+    Matched as `renew_voice_hold` matches one: the assignment id the broker
+    issued, the Voice it pool, and the session the hold was taken for. A
+    task's hold carries no session, so its id never passes here."""
+    for hold in _live_holds(data, now):
+        if (
+            hold.assignment_id == assignment_id
+            and hold.pool == POOL_VOICE_IT
+            and hold.voice_session_id == voice_session_id
+        ):
+            return hold
+    return None
+
+
+def _reading_windows(windows: dict[str, WindowIn], now: datetime) -> dict[str, WindowReading]:
+    """A reading's windows as `record_reading` takes them, or a 422.
+
+    REFUSED: a window name that is not one, a reset without an offset, and a
+    reset in the past -- a reading that has already expired would be stored
+    as a fresh one. A utilization outside 0..1 the model refuses first."""
+    readings: dict[str, WindowReading] = {}
+    for name, window in windows.items():
+        if not _WINDOW_NAME.match(name):
+            raise BrokerValidationError(f"{name!r} is not a rate-limit window name")
+        if window.resets_at.tzinfo is None:
+            raise BrokerValidationError(f"window {name!r}: resets_at must carry an offset")
+        resets = window.resets_at.astimezone(timezone.utc)
+        if resets <= now:
+            raise BrokerValidationError(
+                f"window {name!r} reset at {resets.isoformat()}, which has passed; "
+                "a reading of an expired window is not a reading"
+            )
+        readings[name] = WindowReading(utilization=window.utilization, resets_at=resets)
+    return readings
 
 
 def _raw_assignable(data: dict[str, Any], tenant_id: str) -> bool:
@@ -4942,6 +4999,56 @@ def create_app(
         )
         return {"account_id": account_id, "released": bool(was_held)}
 
+    @app.post("/v1/voice/lease/{account_id}/readings")
+    def voice_reading(
+        request: Request,
+        account_id: str,
+        body: VoiceReadingIn,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        """A Voice it text session's reading of the plan it holds: the
+        `x-codex-*` windows swarm_voice.textchat reads off each answer.
+
+        Recorded exactly as a holding worker's reading is
+        (`AccountStore.record_reading`, merged per window, the windows checked
+        by `_reading_windows`), so `choose()` and `choose_voice` see a plan's
+        spend from Voice it as they see it from a task's run.
+
+        ONLY SWARM-VOICE, and only for a LIVE Voice it hold of THIS account,
+        with this assignment id, taken for this session: a reading moves
+        `choose()`, so anything less could steer tasks onto or off a plan.
+        Otherwise 409 `not_held`, as a renewal of a lost hold answers, and
+        nothing is written."""
+        from fastapi.responses import JSONResponse
+
+        _voice_caller(request, authorization)
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+        windows = _reading_windows(body.windows, now)
+        data = _raw_account(request.app.state.broker.db, account_id)
+        hold = (
+            _voice_hold(
+                data,
+                now,
+                assignment_id=body.assignment_id,
+                voice_session_id=body.voice_session_id,
+            )
+            if data is not None
+            else None
+        )
+        if hold is None:
+            request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            return JSONResponse(
+                status_code=409,
+                content={"code": "not_held", "message": "this session holds no live lease on that account"},
+            )
+        updated = store.record_reading(account_id, windows, now)
+        return {
+            "account_id": account_id,
+            "recorded": updated is not None,
+            "windows": sorted(windows),
+        }
+
     @app.get("/v1/voice/pool")
     def voice_pool(
         request: Request,
@@ -5290,19 +5397,7 @@ def create_app(
         """
         _holder(request, authorization, account_id, body)
         now = datetime.now(timezone.utc)
-        windows: dict[str, WindowReading] = {}
-        for name, window in body.windows.items():
-            if not _WINDOW_NAME.match(name):
-                raise BrokerValidationError(f"{name!r} is not a rate-limit window name")
-            if window.resets_at.tzinfo is None:
-                raise BrokerValidationError(f"window {name!r}: resets_at must carry an offset")
-            resets = window.resets_at.astimezone(timezone.utc)
-            if resets <= now:
-                raise BrokerValidationError(
-                    f"window {name!r} reset at {resets.isoformat()}, which has passed; "
-                    "a reading of an expired window is not a reading"
-                )
-            windows[name] = WindowReading(utilization=window.utilization, resets_at=resets)
+        windows = _reading_windows(body.windows, now)
         updated = _accounts(request).record_reading(account_id, windows, now)
         return {
             "account_id": account_id,

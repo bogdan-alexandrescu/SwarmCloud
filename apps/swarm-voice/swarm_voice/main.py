@@ -35,8 +35,23 @@ Routes:
   until it ends and presented only to swarm-api. A grant without a project, a
   grant for another session or one swarm-api did not mint is 422, and the
   refusal never carries it.
+  `mode` (default `live`) is what swarm-api picked from the pool: `text` when
+  the Voice it pool holds no OpenAI API key (owner, 4 November 2026: "both
+  paths"). A text start carries no offer: swarm-voice leases the pool's
+  ChatGPT plan (`capability: text`), holds the conversation (textchat.py) and
+  answers `201 {voice_session_id, mode: "text"}`, with no SDP; the pool
+  refusals are the same. A Live start answers with `mode: "live"` beside the
+  fields above.
+* `POST /internal/sessions/{voice_session_id}/turns` -- one turn of a text
+  conversation: `{"text": <1..4000 chars>}` -> `200 {"turn_id", "reply",
+  "cards"}`, `cards` being what the planner drew when the turn delegated. 404
+  for a session this process holds no text conversation for (a Live one, an
+  ended one, one lost to a restart); 429 `{"code": "usage_limit_reached",
+  "message", "resets_at"}` when the plan's usage limit refused it; 502 as a
+  start's. The text is never logged.
 * `POST /internal/sessions/{voice_session_id}/end` -- closes the GPT-Live
-  session and its sideband, which stops OpenAI's per-second billing.
+  session and its sideband, which stops OpenAI's per-second billing, or ends
+  the text conversation and gives its plan back.
   `200 {voice_session_id, ended, usage_seconds, reason}`, 404 for a session
   this process does not hold.
 * `GET /healthz` -- counts only.
@@ -72,7 +87,7 @@ import asyncio
 import contextlib
 import logging
 import os
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -83,6 +98,7 @@ from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
 from .live import MAX_OFFER_BYTES, LiveApi, LiveError, LiveRefused, SessionExists, Sessions
 from .planner import build_planner
+from .textchat import MAX_TURN_CHARS, CodexApi, TextSessionEnded, TextSessions, UsageLimited
 
 log = logging.getLogger("swarm_voice")
 
@@ -94,12 +110,19 @@ CallerCheck = Callable[[str], Awaitable[str]]
 class StartRequest(BaseModel):
     voice_session_id: str = Field(pattern=VOICE_ID)
     person: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
-    offer: str = Field(min_length=4, max_length=MAX_OFFER_BYTES, pattern=r"^v=0\r?\n")
+    #: `live` (a GPT-Live session from `offer`) or `text` (the plan's text
+    #: conversation, no offer). swarm-api picks it from the Voice it pool.
+    mode: Literal["live", "text"] = "live"
+    offer: str | None = Field(default=None, min_length=4, max_length=MAX_OFFER_BYTES, pattern=r"^v=0\r?\n")
     #: The session grant and its project (grant.py). A SecretStr with no
     #: constraint, so neither its repr nor a validation error carries it: its
     #: shape is checked by `SessionGrant`, whose refusal names no value.
     project_id: str | None = Field(default=None, max_length=64)
     grant: SecretStr | None = None
+
+
+class TurnRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_TURN_CHARS)
 
 
 def session_grant(body: StartRequest) -> SessionGrant | None:
@@ -183,12 +206,28 @@ def build_sessions(http: Any) -> Sessions:
     return Sessions(LiveApi(http), leases=leases, planner=build_planner(http, broker=leases))
 
 
+def build_texts(http: Any, sessions: Sessions) -> TextSessions:
+    """The text conversations (textchat.py), on the Live sessions' broker client
+    and planner: a text turn delegates exactly as a Live one does."""
+    return TextSessions(CodexApi(http), leases=sessions._leases,  # noqa: SLF001 -- one broker client
+                        planner=sessions._planner)  # noqa: SLF001 -- one planner
+
+
 def build_caller_check() -> CallerCheck:
     callers = frozenset(c.strip() for c in os.environ.get("SWARM_VOICE_CALLERS", "").split(",") if c.strip())
     return google_caller_check(os.environ.get("SWARM_VOICE_AUDIENCE", "").strip(), callers)
 
 
-def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck | None = None) -> FastAPI:
+def usage_limited(exc: UsageLimited) -> JSONResponse:
+    """swarm-voice's 429 for a turn the ChatGPT plan's usage limit refused."""
+    return JSONResponse(status_code=429, content={
+        "code": "usage_limit_reached", "resets_at": exc.resets_at,
+        "message": "Voice it's ChatGPT plan has reached its usage limit"
+                   + (f"; it resets at {exc.resets_at}." if exc.resets_at else "; try again later.")})
+
+
+def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck | None = None,
+               texts: TextSessions | None = None) -> FastAPI:
     """The app. With no arguments (uvicorn's `--factory`), everything is built from
     the environment when the app starts, never at import."""
 
@@ -200,6 +239,8 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
 
             http = httpx.AsyncClient()
             app.state.sessions = build_sessions(http)
+            if app.state.texts is None:
+                app.state.texts = build_texts(http, app.state.sessions)
         if app.state.verify_caller is None:
             app.state.verify_caller = build_caller_check()
         try:
@@ -207,12 +248,15 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
         finally:
             # A shutdown closes every session: one left open would bill with no sideband.
             await app.state.sessions.end_all()
+            if app.state.texts is not None:
+                await app.state.texts.end_all()
             if http is not None:
                 await http.aclose()
 
     app = FastAPI(title="swarm-voice", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.sessions = sessions
     app.state.verify_caller = verify_caller
+    app.state.texts = texts
 
     async def caller(request: Request) -> str:
         header = request.headers.get("authorization", "")
@@ -227,6 +271,12 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     @app.post("/internal/sessions", status_code=201)
     async def start(body: StartRequest, _caller: str = Depends(caller)) -> Any:
         grant = session_grant(body)
+        if body.mode == "text":
+            return await start_text(body, grant)
+        if body.offer is None:
+            raise HTTPException(422, "a live session needs the browser's SDP offer")
+        if app.state.texts is not None and app.state.texts.get(body.voice_session_id) is not None:
+            raise HTTPException(409, "this voice session already has a live session")
         try:
             session = await app.state.sessions.start(
                 body.voice_session_id, person=body.person, offer=body.offer, grant=grant)
@@ -242,10 +292,56 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
         except (CredentialError, LiveError) as exc:
             log.warning("voice session %s: start failed: %s", body.voice_session_id, exc)
             raise HTTPException(502, str(exc)) from None
-        return {"voice_session_id": session.voice_id, "live_session_id": session.live_id, "answer": session.answer}
+        return {"voice_session_id": session.voice_id, "mode": "live", "live_session_id": session.live_id,
+                "answer": session.answer}
+
+    async def start_text(body: StartRequest, grant: Any) -> Any:
+        texts = app.state.texts
+        if texts is None:
+            raise HTTPException(503, "this swarm-voice holds no text conversations")
+        try:
+            session = await texts.start(body.voice_session_id, person=body.person, grant=grant,
+                                        exists=lambda voice_id: app.state.sessions.get(voice_id) is not None)
+        except SessionExists:
+            raise HTTPException(409, "this voice session already has a live session") from None
+        except VoicePoolRefused as exc:
+            log.info("voice session %s: the Voice it pool leased no plan (%s)", body.voice_session_id, exc.reason)
+            return pool_refusal(exc.reason)
+        except CredentialError as exc:
+            log.warning("voice session %s: text start failed: %s", body.voice_session_id, exc)
+            raise HTTPException(502, str(exc)) from None
+        return JSONResponse(status_code=201, content={"voice_session_id": session.voice_id, "mode": "text"})
+
+    @app.post("/internal/sessions/{voice_session_id}/turns")
+    async def turn(voice_session_id: str, body: TurnRequest, _caller: str = Depends(caller)) -> Any:
+        texts = app.state.texts
+        if texts is None:
+            raise HTTPException(404, "no such text conversation")
+        try:
+            answered = await texts.turn(voice_session_id, body.text)
+        except TextSessionEnded:
+            raise HTTPException(404, "no such text conversation") from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except UsageLimited as exc:
+            log.info("voice session %s: the plan's usage limit refused a turn (resets %s)",
+                     voice_session_id, exc.resets_at)
+            return usage_limited(exc)
+        except LiveRefused as exc:
+            return openai_refusal(exc)
+        except (CredentialError, LiveError) as exc:
+            log.warning("voice session %s: text turn failed: %s", voice_session_id, exc)
+            raise HTTPException(502, str(exc)) from None
+        return {"turn_id": answered.turn_id, "reply": answered.reply, "cards": answered.cards}
 
     @app.post("/internal/sessions/{voice_session_id}/end")
     async def end(voice_session_id: str, _caller: str = Depends(caller)) -> dict:
+        texts = app.state.texts
+        if texts is not None and texts.get(voice_session_id) is not None:
+            ended = await texts.end(voice_session_id)
+            if ended is not None:
+                return {"voice_session_id": voice_session_id, "ended": True,
+                        "usage_seconds": ended.usage_seconds, "reason": ended.reason}
         try:
             session = await app.state.sessions.end(voice_session_id)
         except (CredentialError, LiveError) as exc:
@@ -259,7 +355,9 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
         sessions_ = app.state.sessions
-        return JSONResponse(sessions_.counts() if sessions_ is not None else {"sessions": 0, "attached": 0})
+        counts = sessions_.counts() if sessions_ is not None else {"sessions": 0, "attached": 0}
+        texts_ = app.state.texts
+        return JSONResponse({**counts, **(texts_.counts() if texts_ is not None else {"text_sessions": 0})})
 
     return app
 
