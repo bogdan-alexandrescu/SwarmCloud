@@ -482,8 +482,10 @@ def test_direct_pr_with_a_fix_is_refused(client, db, loop_enabled):
 def test_direct_pr_with_the_loop_not_depending_on_the_review_is_refused(
     client, db, loop_enabled,
 ):
-    spec = _direct(_loop({"review": "review"}, depends_on=["implement", "review"]))
-    spec["steps"][-1]["depends_on"] = ["implement"]
+    # The review is upstream of the loop, through `notes`, but not its parent.
+    spec = _direct(_loop({"review": "review"}, depends_on=["notes"]))
+    spec["steps"].insert(2, {"step_id": "notes", "runner_profile": "mock",
+                             "depends_on": ["review"], "input": {"prompt": "take notes"}})
     _refused(client, db, spec, "depends_on")
 
 

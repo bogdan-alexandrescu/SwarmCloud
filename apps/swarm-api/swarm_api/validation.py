@@ -2144,6 +2144,11 @@ class DispatchOptions:
     #: dispatch block, so the spec signature covers what the person is asked,
     #: how long the step waits and what happens at expiry. Not hashed: a map.
     await_input: Mapping[str, Any] | None = field(default=None, hash=False)
+    #: A `fix-loop` step's block (docs/design/fix-loop.md §4.1), as
+    #: `FixLoopPlan.block` wrote it, on that step only. Inside the dispatch
+    #: block, so the spec signature covers the review, the fix and the
+    #: rounds the loop may run. Not hashed: a map.
+    fix_loop: Mapping[str, Any] | None = field(default=None, hash=False)
     #: `(number, task id)` of the existing pull request this step's lane
     #: publishes onto instead of opening one (#2183), as
     #: `publishtopr.resolve` read it from GitHub at submission; empty on every
@@ -2203,6 +2208,10 @@ class DispatchOptions:
         """This `await-input` step's normalised declaration; None on every other step."""
         return replace(self, await_input=block)
 
+    def with_fix_loop(self, block: Mapping[str, Any] | None) -> "DispatchOptions":
+        """This `fix-loop` step's signed block; None on every other step."""
+        return replace(self, fix_loop=block)
+
     def with_work_contract(self, reference: Mapping[str, Any]) -> "DispatchOptions":
         """This step's signed work contract reference (`workcontract.attach`)."""
         return replace(self, work_contract=dict(reference))
@@ -2239,6 +2248,7 @@ class DispatchOptions:
         head_sha: str | None = None,
         pull_request_workflow: str | None = None,
         merge_mode: str | None = None,
+        review_loop: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
         it runs no agent, clones nothing and is integrated by nobody.
@@ -2260,7 +2270,12 @@ class DispatchOptions:
         repository (TRAIN-WS, `mergesettings.effective_mode`), read at
         submission. Only `train` is written: direct is the absence of the
         key, so a workspace that never chose trains stores exactly the block
-        it stored before, and the worker merges as it always has."""
+        it stored before, and the worker merges as it always has.
+
+        `review_loop` is the `fix-loop` task the merge reads its review from,
+        in place of `review` and `verdict_file` (docs/design/fix-loop.md
+        §4.6): the worker verifies the loop's final review and reads its
+        verdict at the head it judged."""
         if merge_mode not in (None, MERGE_MODE_DIRECT, MERGE_MODE_TRAIN):
             raise ValueError(f"unknown merge mode {merge_mode!r}")
         train = [("merge_mode", MERGE_MODE_TRAIN)] if merge_mode == MERGE_MODE_TRAIN else []
@@ -2278,6 +2293,10 @@ class DispatchOptions:
             if review is not None or verdict_file is not None:
                 raise ValueError("a continued pull request's merge target names no review")
             target.append(("pull_request_workflow", pull_request_workflow))
+        if review_loop is not None:
+            if review is not None or verdict_file is not None:
+                raise ValueError("a merge behind a fix loop names the loop, not a review")
+            target.append(("review_loop", review_loop))
         if review is not None and verdict_file is not None:
             target += [("review", review), ("verdict_file", verdict_file)]
         if base:
@@ -2348,6 +2367,10 @@ class DispatchOptions:
         # every other step stores exactly the block it stored before.
         if self.await_input is not None:
             block[AWAIT_INPUT_FIELD] = json.loads(json.dumps(self.await_input))
+        # Absent on every step but a `fix-loop` step (FL-SUBMIT), so every
+        # other step stores exactly the block it stored before.
+        if self.fix_loop is not None:
+            block[FIX_LOOP_FIELD] = json.loads(json.dumps(self.fix_loop))
         # Absent unless the spec named a pull request (#2183), so every other
         # dispatch stores exactly the block it stored before. The worker
         # spells the key `agent_worker.publishpr.FIELD`.
@@ -2772,9 +2795,12 @@ def resolve_integrator_step(steps: Sequence[StepSpec], rereview: str | None = No
     # A `merge` step (contract request 47) comes after the integrator and
     # integrates nothing: the integrator is the sink of the OTHER steps.
     # `plan_merge` holds the merge step to depending on it.
+    # Nor is a `fix-loop` step (docs/design/fix-loop.md §4.1): it comes after
+    # the integrator, whose fix is its round 1, and pushes no branch.
     steps = [
         step for step in steps
         if _worker_action(step) is not WorkerAction.MERGE and step.step_id != rereview
+        and step.runner_profile != FIX_LOOP_PROFILE
     ]
     if len(steps) < 2:
         raise DispatchOptionError(
@@ -3364,11 +3390,16 @@ class MergeSources:
     #: True for a `merge_pr` workflow (#352): no task opened the pull
     #: request, `pull_request` is "", and the step depends on nothing.
     named: bool = False
+    #: The workflow's `fix-loop` step (docs/design/fix-loop.md §4.6), in place
+    #: of `review`: the loop writes no verdict file to stage, so the merge
+    #: reads the loop's verified final review instead.
+    review_loop: str | None = None
 
     def depends_on(self) -> list[str]:
         if self.continued or self.named:
             return []
-        return [self.pull_request] + ([self.review] if self.review else [])
+        return ([self.pull_request] + ([self.review] if self.review else [])
+                + ([self.review_loop] if self.review_loop else []))
 
     def input_from(self) -> dict[str, str]:
         return {self.review: self.verdict_file} if self.review and self.verdict_file else {}
@@ -3383,6 +3414,7 @@ class MergePlan:
 def merge_sources(
     steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
     named_pull: bool = False, rereview: str | None = None,
+    loop: FixLoopPlan | None = None,
 ) -> MergeSources | None:
     """The pull request a merge step would merge, or None when there is not ONE.
 
@@ -3409,8 +3441,18 @@ def merge_sources(
     (`rereview_step_for`), by id. It is not the integrator -- it comes after
     it -- and it IS the review the merge reads: the latest verdict, written
     under the same file name the gate's review wrote.
+
+    `loop` is the workflow's `fix-loop` step, as `resolve_fix_loop` checked
+    it (docs/design/fix-loop.md §4.6, BGD Q8). The pull request is the one
+    the loop works on -- the fix's under `integrate`, the implementer's under
+    `direct-pr` -- and the merge reads the loop (`review_loop`), not a review:
+    the loop's last re-review is the verdict, whichever round wrote it.
     """
     agents = [step for step in steps if not is_merge_step(step.runner_profile)]
+    if loop is not None:
+        if strategy not in FIX_LOOP_STRATEGIES:
+            return None
+        return MergeSources(loop.pull_request, review_loop=loop.step_id)
     if rereview is not None:
         if strategy != "integrate":
             return None
@@ -3442,15 +3484,19 @@ def merge_sources(
 def merge_step_for(
     steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
     named_pull: bool = False, rereview: str | None = None,
+    loop: FixLoopPlan | None = None,
 ) -> dict[str, Any] | None:
     """The `merge` step swarm-api appends to a workflow, or None if it opens no one PR.
 
     `depends_on` names every step that must finish first -- the step that
     opens the pull request, and the review when there is one -- and the
     review's verdict file is staged, so the merge reads the verdict the
-    publishing step's gate read.
+    publishing step's gate read. Behind a `fix-loop` step (`loop`) it
+    depends on the pull request's step and the loop, and stages nothing: the
+    loop writes no file, and its signed `merge_target.review_loop` says
+    which review to read (docs/design/fix-loop.md §4.6).
     """
-    sources = merge_sources(steps, strategy, continued_task, named_pull, rereview)
+    sources = merge_sources(steps, strategy, continued_task, named_pull, rereview, loop)
     if sources is None:
         return None
     return {
@@ -3557,6 +3603,7 @@ def rereview_step_for(
 def plan_merge(
     steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
     named_pull: bool = False, rereview: str | None = None,
+    loop: FixLoopPlan | None = None,
 ) -> MergePlan | None:
     """Refuse a merge step that could not merge what the workflow opened, else plan it.
 
@@ -3603,7 +3650,7 @@ def plan_merge(
                 f"agent and clones nothing, so it takes no `{name}`. Remove it.",
                 detail={"step_id": merge.step_id, "field": name},
             )
-    sources = merge_sources(steps, strategy, continued_task, named_pull, rereview)
+    sources = merge_sources(steps, strategy, continued_task, named_pull, rereview, loop)
     if sources is None:
         raise DispatchOptionError(
             f"step {merge.step_id!r} merges the pull request this workflow opens, and "
@@ -3626,6 +3673,7 @@ def plan_merge(
             + ", ".join(repr(m) for m in missing)
             + ": the step that opens the pull request"
             + (" and the review whose verdict it requires" if sources.review else "")
+            + (" and the fix loop whose final review it reads" if sources.review_loop else "")
             + f". Add them to its depends_on, or omit the step and set metadata."
             f"{MERGE_METADATA_KEY} 'on' to have it derived.",
             detail={"merge_step_id": merge.step_id, "missing": missing,
@@ -4799,6 +4847,354 @@ def resolve_await_input(
         "remind_after_seconds": remind_after,
         "remind": remind,
     }
+
+
+# --------------------------------------------------------------------------
+# The `fix-loop` step (docs/design/fix-loop.md §4.1, FL-SUBMIT, part of #2509)
+# --------------------------------------------------------------------------
+
+#: The catalogue profile (contract request 124, BGD Q10 (a)). `control_plane`,
+#: so no container runs it and the scheduler never leases it: swarm-api drives
+#: its rounds as steps of their own (FL-DRIVE).
+FIX_LOOP_PROFILE = "fix-loop"
+#: The step's block, as `WorkflowStepCreate.fix_loop` takes it and as the loop
+#: task's signed `metadata.dispatch.fix_loop` stores it (BGD Q10 (a)).
+FIX_LOOP_FIELD = "fix_loop"
+#: `fix_loop.max_rounds`: the fix agents the loop's workflow may run in all,
+#: the declared `fix` counted as round 1. 1-5 and 3 when absent (BGD Q5 (a)):
+#: the same range and default as `MERGE_FIX_ROUNDS_MAX` and an issue run's
+#: `fix_rounds`. A person may add rounds past it up to the ceiling FL-DRIVE
+#: holds (Q4), never at submission.
+FIX_LOOP_MIN_ROUNDS = 1
+FIX_LOOP_MAX_ROUNDS = 5
+FIX_LOOP_DEFAULT_ROUNDS = 3
+#: The block's keys; any other is refused by name.
+FIX_LOOP_KEYS = ("review", "fix", "max_rounds", "fix_round", "re_review")
+#: The two optional overrides, and the only keys each takes: a runner profile
+#: BY NAME, a model class and a prompt (invariant 10: never an image, a
+#: command, a resource spec or a backend parameter).
+FIX_LOOP_OVERRIDES = ("fix_round", "re_review")
+FIX_LOOP_OVERRIDE_KEYS = ("runner_profile", "model_class", "prompt")
+#: An override's prompt, at most this many characters: it is signed into the
+#: loop's dispatch block, which the step's 16 KiB metadata bound also holds.
+FIX_LOOP_PROMPT_MAX_CHARS = 16 * 1024
+#: `collect` publishes nothing to loop on, and `single-pr` ends in its own
+#: merge chain.
+FIX_LOOP_STRATEGIES = ("integrate", "direct-pr")
+#: The verdicts the integrate fix's gate must name: exactly NOT_YET, so the fix
+#: of round 1 runs only on the review's NOT_YET, as every later round does.
+FIX_LOOP_GATE_VERDICTS = ("NOT_YET",)
+
+
+class FixLoopRefused(ValidationFailed):
+    """422 `validation_failed`: a `fix-loop` step, or its block, refused (§4.1).
+
+    `detail.field` names what was refused (`fix_loop.<key>` inside the block,
+    the step's own field otherwise) and `detail.step_id` the step. The
+    established code, as `AwaitInputRefused` is: a new 4xx code ships behind
+    a switch (`swarm_api.refusals`).
+    """
+
+
+def _loop_refused(step_id: str, field_name: str, message: str,
+                  **extra: Any) -> FixLoopRefused:
+    return FixLoopRefused(f"step {step_id!r}: {message}",
+                          detail={"field": field_name, "step_id": step_id, **extra})
+
+
+@dataclass(frozen=True)
+class FixLoopPlan:
+    """A workflow's one `fix-loop` step, checked (`resolve_fix_loop`). STEP ids."""
+
+    step_id: str
+    #: The review whose verdict starts the loop: its round 0.
+    review: str
+    #: Under `integrate`, the gated integrator (round 1's fix); None under
+    #: `direct-pr`.
+    fix: str | None
+    #: The step whose pull request the loop works on and a merge behind it
+    #: merges: the fix under `integrate`, the implementer the review builds on
+    #: under `direct-pr`.
+    pull_request: str
+    max_rounds: int
+    #: `{override name: {key: value}}`, only the overrides the caller sent,
+    #: each with only the keys it sent.
+    overrides: Mapping[str, Mapping[str, Any]] = field(default_factory=dict, hash=False)
+
+    def block(self, step_task_id: Mapping[str, str]) -> dict[str, Any]:
+        """`metadata.dispatch.fix_loop`, as the loop task stores it, signed.
+
+        The review's and the fix's TASK ids beside their step ids, so what
+        drives a round reads them from the signature, never from the
+        tenant-writable task list; both are ancestors of the loop, so
+        topological order has minted them.
+        """
+        block: dict[str, Any] = {"review": self.review,
+                                 "review_task_id": step_task_id[self.review]}
+        if self.fix is not None:
+            block["fix"] = self.fix
+            block["fix_task_id"] = step_task_id[self.fix]
+        block["max_rounds"] = self.max_rounds
+        for name in FIX_LOOP_OVERRIDES:
+            if name in self.overrides:
+                block[name] = dict(self.overrides[name])
+        return block
+
+
+def _upstream_of(step_id: str, by_id: Mapping[str, Any]) -> set[str]:
+    """Every transitive `depends_on` of `step_id`. Call after `validate_dag`."""
+    seen: set[str] = set()
+    stack = list(by_id[step_id].depends_on)
+    while stack:
+        current = stack.pop()
+        if current in seen or current not in by_id:
+            continue
+        seen.add(current)
+        stack.extend(by_id[current].depends_on)
+    return seen
+
+
+def _fix_loop_override(
+    step_id: str, name: str, raw: Any, base: Any,
+) -> dict[str, Any]:
+    """One `fix_round` / `re_review` override, checked; `base` is the step whose
+    own profile, model class and prompt the round takes when it names none."""
+    where = f"{FIX_LOOP_FIELD}.{name}"
+    if not isinstance(raw, dict):
+        raise _loop_refused(step_id, where, f"{where} must be a JSON object")
+    for key in raw:
+        if key not in FIX_LOOP_OVERRIDE_KEYS:
+            raise _loop_refused(
+                step_id, f"{where}.{key}",
+                f"{where} takes a runner_profile by name, a model_class and a prompt, "
+                f"and nothing else; {str(key)[:40]!r} is not one of them",
+            )
+    profile_name = raw.get("runner_profile", base.runner_profile)
+    if "runner_profile" in raw:
+        if not isinstance(profile_name, str):
+            raise _loop_refused(step_id, f"{where}.runner_profile",
+                                f"{where}.runner_profile is a catalogue profile's name")
+        try:
+            profile = validate_runner_profile(profile_name)
+        except ValidationFailed as exc:
+            raise _loop_refused(step_id, f"{where}.runner_profile",
+                                f"{where}.runner_profile: {exc.message}") from None
+        if profile.control_plane or profile.worker_action is not None:
+            raise _loop_refused(
+                step_id, f"{where}.runner_profile",
+                f"{where}.runner_profile {profile_name!r} runs no agent, and a round "
+                "is an agent",
+            )
+    else:
+        profile = validate_runner_profile(profile_name)
+    if "model_class" in raw:
+        model_class = raw["model_class"]
+        if not isinstance(model_class, str):
+            raise _loop_refused(step_id, f"{where}.model_class",
+                                f"{where}.model_class is a model class's name")
+        try:
+            validate_model_class(profile, model_class, step_id=step_id)
+        except ValidationFailed as exc:
+            raise _loop_refused(step_id, f"{where}.model_class",
+                                f"{where}.model_class: {exc.message}") from None
+    if "prompt" in raw:
+        prompt = raw["prompt"]
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise _loop_refused(step_id, f"{where}.prompt",
+                                f"{where}.prompt is a non-empty string")
+        if len(prompt) > FIX_LOOP_PROMPT_MAX_CHARS:
+            raise _loop_refused(
+                step_id, f"{where}.prompt",
+                f"{where}.prompt is {len(prompt)} characters; at most "
+                f"{FIX_LOOP_PROMPT_MAX_CHARS} are signed into the step",
+            )
+    return {key: raw[key] for key in FIX_LOOP_OVERRIDE_KEYS if key in raw}
+
+
+def resolve_fix_loop(steps: Sequence[Any], *, strategy: str) -> FixLoopPlan | None:
+    """A workflow's `fix-loop` step, checked against every §4.1 rule, or None.
+
+    `steps` are the steps AS SUBMITTED (`WorkflowStepCreate`), after
+    `validate_dag`, which has refused cycles and dangling dependencies. Every
+    refusal is a 422 naming the step and its field, raised before anything is
+    written:
+
+    * `fix_loop` only on a `fix-loop` step, and every `fix-loop` step has one;
+      the profile is checked first, so while it ships unavailable the step is
+      refused as disabled before anything here is read;
+    * at most one `fix-loop` step; none of the fields that mean something only
+      to a container (`AWAIT_STEP_REFUSED_FIELDS`); no step stages from it
+      (`input_from`), because it writes no artifact (§2.5);
+    * the strategy is `integrate` or `direct-pr`;
+    * `max_rounds` an integer 1-5, 3 when absent (Q5);
+    * `review` names a step that is a direct or transitive parent of the loop;
+    * under `integrate`, `fix` is the integrator -- nothing but the loop and a
+      merge depends on it -- gated on `review` with `verdict_in: ["NOT_YET"]`,
+      and the loop `depends_on` it;
+    * under `direct-pr`, `fix` is absent, the loop depends on the review, the
+      review `builds_on` the one implementer whose pull request the loop
+      works on, and the review declares `allow_empty_diff: true`, so it
+      SUCCEEDS `no_change` and opens nothing (measured in FL-SUBMIT: the
+      worker's harvest defers no publish for an empty tree);
+    * each override takes a runner profile by name that runs an agent, a
+      model class that profile accepts, and a prompt, and nothing else.
+    """
+    by_id = {step.step_id: step for step in steps}
+    for step in steps:
+        if step.runner_profile != FIX_LOOP_PROFILE and getattr(step, FIX_LOOP_FIELD, None) is not None:
+            raise _loop_refused(
+                step.step_id, FIX_LOOP_FIELD,
+                f"fix_loop is valid only on a step whose runner_profile is "
+                f"{FIX_LOOP_PROFILE!r}, not {step.runner_profile!r}",
+            )
+    loops = [step for step in steps if step.runner_profile == FIX_LOOP_PROFILE]
+    if not loops:
+        return None
+    validate_runner_profile(FIX_LOOP_PROFILE)
+    if len(loops) > 1:
+        raise _loop_refused(
+            loops[1].step_id, "runner_profile",
+            f"a workflow has at most one {FIX_LOOP_PROFILE!r} step, and "
+            f"{loops[0].step_id!r} is one",
+            fix_loop_steps=[step.step_id for step in loops],
+        )
+    loop = loops[0]
+    step_id = loop.step_id
+    for name in AWAIT_STEP_REFUSED_FIELDS:
+        value = getattr(loop, name, None)
+        if value is not None and value is not False:
+            raise _loop_refused(
+                step_id, name,
+                f"{name} means nothing on a {FIX_LOOP_PROFILE!r} step, which runs no "
+                "container; its rounds are steps of their own. Drop it.",
+            )
+    raw = getattr(loop, FIX_LOOP_FIELD, None)
+    if raw is None:
+        raise _loop_refused(
+            step_id, FIX_LOOP_FIELD,
+            f"a step whose runner_profile is {FIX_LOOP_PROFILE!r} needs a fix_loop "
+            "block naming its review at least",
+        )
+    if not isinstance(raw, dict):
+        raise _loop_refused(step_id, FIX_LOOP_FIELD, "fix_loop must be a JSON object")
+    for key in raw:
+        if key not in FIX_LOOP_KEYS:
+            raise _loop_refused(
+                step_id, f"{FIX_LOOP_FIELD}.{str(key)[:40]}",
+                f"fix_loop takes {', '.join(FIX_LOOP_KEYS)}; {str(key)[:40]!r} is not "
+                "one of them",
+            )
+    staged_by = [step.step_id for step in steps if step_id in (step.input_from or {})]
+    if staged_by:
+        raise _loop_refused(
+            step_id, "input_from",
+            "a fix-loop step writes no artifact, so no step may stage a file from it; "
+            + ", ".join(repr(s) for s in staged_by) + " do",
+            staged_by=staged_by,
+        )
+    if strategy not in FIX_LOOP_STRATEGIES:
+        raise _loop_refused(
+            step_id, "strategy",
+            f"a fix loop runs fix rounds on the pull request its workflow opens, and "
+            f"strategy {strategy!r} opens none to loop on; use "
+            + " or ".join(repr(s) for s in FIX_LOOP_STRATEGIES),
+            strategy=strategy,
+        )
+    max_rounds = raw.get("max_rounds", FIX_LOOP_DEFAULT_ROUNDS)
+    if not _is_int(max_rounds) or not FIX_LOOP_MIN_ROUNDS <= max_rounds <= FIX_LOOP_MAX_ROUNDS:
+        raise _loop_refused(
+            step_id, f"{FIX_LOOP_FIELD}.max_rounds",
+            f"fix_loop.max_rounds is an integer from {FIX_LOOP_MIN_ROUNDS} to "
+            f"{FIX_LOOP_MAX_ROUNDS} ({FIX_LOOP_DEFAULT_ROUNDS} when absent), not "
+            f"{str(max_rounds)[:40]!r}",
+        )
+    review = raw.get("review")
+    upstream = _upstream_of(step_id, by_id)
+    if not isinstance(review, str) or review not in upstream:
+        raise _loop_refused(
+            step_id, f"{FIX_LOOP_FIELD}.review",
+            f"fix_loop.review names the review whose verdict starts the loop, a step "
+            f"this one depends on directly or through others; {str(review)[:64]!r} is not",
+        )
+    review_step = by_id[review]
+    if not _is_agent_step(review_step):
+        raise _loop_refused(
+            step_id, f"{FIX_LOOP_FIELD}.review",
+            f"fix_loop.review {review!r} runs no agent, so it writes no verdict",
+        )
+    fix = raw.get("fix")
+    if strategy == "integrate":
+        if not isinstance(fix, str) or fix not in by_id or fix == step_id:
+            raise _loop_refused(
+                step_id, f"{FIX_LOOP_FIELD}.fix",
+                "under 'integrate', fix_loop.fix names the integrator, the fix of "
+                f"round 1; {str(fix)[:64]!r} is not a step of this workflow",
+            )
+        fix_step = by_id[fix]
+        dependants = [
+            step.step_id for step in steps
+            if fix in step.depends_on and step.step_id != step_id
+            and not is_merge_step(step.runner_profile)
+        ]
+        if dependants or not _is_agent_step(fix_step):
+            raise _loop_refused(
+                step_id, f"{FIX_LOOP_FIELD}.fix",
+                f"under 'integrate', fix_loop.fix must be the integrator, the step "
+                f"every other feeds; {fix!r} is not"
+                + (": " + ", ".join(repr(d) for d in dependants) + " depend on it"
+                   if dependants else ""),
+            )
+        gate = fix_step.when
+        if gate is None or gate.step != review or tuple(gate.verdict_in) != FIX_LOOP_GATE_VERDICTS:
+            raise _loop_refused(
+                step_id, f"{FIX_LOOP_FIELD}.fix",
+                f"under 'integrate', the fix {fix!r} is gated on the loop's review: "
+                f'`"when": {{"step": "{review}", "verdict_in": ["NOT_YET"]}}`',
+            )
+        if fix not in loop.depends_on:
+            raise _loop_refused(
+                step_id, "depends_on",
+                f"under 'integrate', the loop starts by judging the fix's pushed head, "
+                f"so it depends on {fix!r} directly",
+            )
+        pull_request = fix
+        fix_base = fix_step
+    else:
+        if fix is not None:
+            raise _loop_refused(
+                step_id, f"{FIX_LOOP_FIELD}.fix",
+                "under 'direct-pr', fix_loop.fix is absent: the loop's first fix is "
+                "its own round 1, on the implementer's pull request",
+            )
+        if review not in loop.depends_on:
+            raise _loop_refused(
+                step_id, "depends_on",
+                f"under 'direct-pr', the loop depends on its review {review!r} directly",
+            )
+        implementer = review_step.builds_on
+        if not implementer or implementer not in by_id or not _is_agent_step(by_id[implementer]):
+            raise _loop_refused(
+                step_id, f"{FIX_LOOP_FIELD}.review",
+                f"under 'direct-pr', the review {review!r} builds_on the one implementer "
+                "whose pull request the loop works on",
+            )
+        if review_step.allow_empty_diff is not True:
+            raise _loop_refused(
+                step_id, f"{FIX_LOOP_FIELD}.review",
+                f"under 'direct-pr', the review {review!r} declares "
+                "`allow_empty_diff: true`, so a review that changes nothing succeeds "
+                "and opens no pull request of its own",
+            )
+        pull_request = implementer
+        fix_base = by_id[implementer]
+    overrides: dict[str, dict[str, Any]] = {}
+    for name, base in (("fix_round", fix_base), ("re_review", review_step)):
+        if name in raw:
+            overrides[name] = _fix_loop_override(step_id, name, raw[name], base)
+    return FixLoopPlan(
+        step_id=step_id, review=review, fix=fix if strategy == "integrate" else None,
+        pull_request=pull_request, max_rounds=max_rounds, overrides=overrides,
+    )
 
 
 # --------------------------------------------------------------------------
