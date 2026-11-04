@@ -1,0 +1,90 @@
+[
+ {
+  "name": "pa-b-config-rest",
+  "screen": "config",
+  "state": "rest",
+  "caption": "PA B\u00b71 Config \u203a Plugins for an admin: the gstack card with its pinned version, the profiles it runs on, which modes run today, the twelve unattended skills and what each does, the allow switch on, and the signed setting with its change history beside it",
+  "code": "PA B\u00b71",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "pa-b-config-open",
+  "screen": "config",
+  "state": "open",
+  "caption": "PA B\u00b72 The admin has switched gstack off and not saved yet: the bar at the bottom says which three steps would be refused, in the words the submission would use, with Cancel or Save and sign",
+  "code": "PA B\u00b72",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "pa-b-builder-rest",
+  "screen": "builder",
+  "state": "rest",
+  "caption": "PA B\u00b73 The six-step workflow: the two gstack steps each carry a one-line chip (plugin, mode, skills) and what their last run used, with how often each skill ran (a dash where it was not counted); the codex step is refused because codex cannot load plugins",
+  "code": "PA B\u00b73",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "pa-b-builder-open",
+  "screen": "builder",
+  "state": "open",
+  "caption": "PA B\u00b74 The guided sheet open on the review step: plugin gstack (allowed here), Unattended mode chosen, two of its twelve skills ticked so far, each explained; the codex step's refusal shows beside it",
+  "code": "PA B\u00b74",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "pa-b-plan-rest",
+  "screen": "plan",
+  "state": "rest",
+  "caption": "PA B\u00b75 The designer interview at question 13, as the whole page: the four answers side by side with each design shown, the recommended one marked, the twelve earlier answers on the left with who answered and where, and the bar with 23 h 22 min left",
+  "code": "PA B\u00b75",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "pa-b-plan-answered",
+  "screen": "plan",
+  "state": "answered",
+  "caption": "PA B\u00b76 The same page just after question 13 was answered with the recommended answer: the chosen design shown large, question 13 added to the left rail, the step queued to resume",
+  "code": "PA B\u00b76",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "pa-b-plan-proposal",
+  "screen": "plan",
+  "state": "proposal",
+  "caption": "PA B\u00b77 The planner run's interview has ended: its proposal (plan, design doc, diagram) as its own page, with Approve, Edit or Reject fixed at the bottom against revision 1's digest",
+  "code": "PA B\u00b77",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "pa-b-needs-rest",
+  "screen": "needs",
+  "state": "rest",
+  "caption": "PA B\u00b78 Needs you with the two parked plugin questions beside a failed step, and a card for each parked plugin step: plugin, mode, the skill that asked, and the time left of its 24 hours",
+  "code": "PA B\u00b78",
+  "viewport": "1440x900"
+ },
+ {
+  "name": "pa-b-plan-rest-1280",
+  "screen": "plan",
+  "state": "rest",
+  "caption": "PA B\u00b79 The designer interview at question 13 on a 1280-wide screen: the rail narrows, the four designs stay two by two",
+  "code": "PA B\u00b79",
+  "viewport": "1280x800"
+ },
+ {
+  "name": "pa-b-plan-rest-390",
+  "screen": "plan",
+  "state": "rest",
+  "caption": "PA B\u00b710 The designer interview at question 13 on a phone: the question and its answers come first, one under another, and the answered questions follow",
+  "code": "PA B\u00b710",
+  "viewport": "390x844"
+ },
+ {
+  "name": "pa-b-config-rest-390",
+  "screen": "config",
+  "state": "rest",
+  "caption": "PA B\u00b711 Config \u203a Plugins on a phone: the gstack card with the allow switch, the profiles and the mode tabs, which scroll sideways",
+  "code": "PA B\u00b711",
+  "viewport": "390x844"
+ }
+]

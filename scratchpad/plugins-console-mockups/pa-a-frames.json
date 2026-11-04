@@ -1,0 +1,119 @@
+[
+ {
+  "name": "pa-a-config-rest",
+  "screen": "config",
+  "state": "rest",
+  "caption": "Config › Plugins at rest, as an admin: the facts strip (allowed, default none, signed, last change, you can change it), the catalogue table with gstack expanded to its skills per mode, each with what it does, and the never-offered skills with why",
+  "viewport": "1440x900",
+  "code": "PA A·1",
+  "dark_png": "frames/dark/pa-a-config-rest.png"
+ },
+ {
+  "name": "pa-a-config-open",
+  "screen": "config",
+  "state": "open",
+  "caption": "The admin mid-change: qa and document-release switched off, marked not saved, and the save bar saying saving signs the setting and records who and when",
+  "viewport": "1440x900",
+  "code": "PA A·2",
+  "dark_png": "frames/dark/pa-a-config-open.png"
+ },
+ {
+  "name": "pa-a-builder-rest",
+  "screen": "builder",
+  "state": "rest",
+  "caption": "The six-step workflow: plan-checkout carries gstack in planner mode, review carries gstack unattended with 4 skills and how many times each ran last time, second-look on codex refused inline, merge cannot load plugins",
+  "viewport": "1440x900",
+  "code": "PA A·3",
+  "dark_png": "frames/dark/pa-a-builder-rest.png"
+ },
+ {
+  "name": "pa-a-builder-open",
+  "screen": "builder",
+  "state": "open",
+  "caption": "The plugin picker open on the review step: unattended chosen, qa-only added and health and plan-eng-review taken off, marked not saved yet against the 4 skills the step shows at rest, and ship refused because the workspace switched it off",
+  "viewport": "1440x900",
+  "code": "PA A·4",
+  "dark_png": "frames/dark/pa-a-builder-open.png"
+ },
+ {
+  "name": "pa-a-plan-rest",
+  "screen": "plan",
+  "state": "rest",
+  "caption": "The designer interview at question 13, with the chosen option's design shown large on the left, scaled whole; the drawer on the right with the earlier answers (console and Voice it), question 13 pinned with its 4 options in full, the recommended one marked, and 23 h 22 min left",
+  "viewport": "1440x900",
+  "code": "PA A·5",
+  "dark_png": "frames/dark/pa-a-plan-rest.png"
+ },
+ {
+  "name": "pa-a-plan-answered",
+  "screen": "plan",
+  "state": "answered",
+  "caption": "The same page just after question 13 got the recommended answer: it joins the conversation at the bottom with who answered and where, the step is queued to resume and nothing waits",
+  "viewport": "1440x900",
+  "code": "PA A·6",
+  "dark_png": "frames/dark/pa-a-plan-answered.png"
+ },
+ {
+  "name": "pa-a-plan-proposal",
+  "screen": "plan",
+  "state": "proposal",
+  "caption": "The planner run's finished interview: the design doc itself large on the left (lead, diagram, sections), and the drawer's body become the proposal (plan, requirements) with Approve, Edit and Reject against revision 1",
+  "viewport": "1440x900",
+  "code": "PA A·7",
+  "dark_png": "frames/dark/pa-a-plan-proposal.png"
+ },
+ {
+  "name": "pa-a-needs-rest",
+  "screen": "needs",
+  "state": "rest",
+  "caption": "Needs you with the designer step's question and an unattended step's parked question beside a failed step and a plan approval, each named in full, with plugin, mode, skill and time left",
+  "viewport": "1440x900",
+  "code": "PA A·8",
+  "dark_png": "frames/dark/pa-a-needs-rest.png"
+ },
+ {
+  "name": "pa-a-plan-rest-1280",
+  "screen": "plan",
+  "state": "rest",
+  "caption": "The designer interview at question 13 on a 1280×800 screen: the pinned question and its 4 options still fit; the design drawn at half size, option descriptions cut to one line, about two answers in view",
+  "viewport": "1280x800",
+  "code": "PA A·9",
+  "dark_png": "frames/dark/pa-a-plan-rest-1280.png"
+ },
+ {
+  "name": "pa-a-plan-rest-390",
+  "screen": "plan",
+  "state": "rest",
+  "caption": "The designer interview on a phone, scrolled to question 13: the chosen option's design opens inside its card, scaled whole",
+  "viewport": "390x844",
+  "code": "PA A·10",
+  "dark_png": "frames/dark/pa-a-plan-rest-390.png"
+ },
+ {
+  "name": "pa-a-config-rest-390",
+  "screen": "config",
+  "state": "rest",
+  "caption": "Config › Plugins on a phone, located in the Config nav: the facts strip stacks, the catalogue row folds to name, version, profiles and modes",
+  "viewport": "390x844",
+  "code": "PA A·11",
+  "dark_png": "frames/dark/pa-a-config-rest-390.png"
+ },
+ {
+  "name": "pa-a-config-rest-viewer",
+  "screen": "config",
+  "state": "rest",
+  "caption": "Config › Plugins as a member who is not an admin: the same catalogue and setting, read only, with who can change it",
+  "viewport": "1440x900",
+  "code": "PA A·12",
+  "dark_png": "frames/dark/pa-a-config-rest-viewer.png"
+ },
+ {
+  "name": "pa-a-builder-open-today",
+  "screen": "builder",
+  "state": "open",
+  "caption": "The plugin picker as main is today: Planner chosen, and refused under the mode control because planner and designer modes do not run yet",
+  "viewport": "1440x900",
+  "code": "PA A·13",
+  "dark_png": "frames/dark/pa-a-builder-open-today.png"
+ }
+]

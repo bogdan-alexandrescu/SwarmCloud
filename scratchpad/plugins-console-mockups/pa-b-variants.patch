@@ -1,0 +1,2252 @@
+diff --git a/apps/swarm-ui/src/App.tsx b/apps/swarm-ui/src/App.tsx
+index 19b59d9..e20d4bf 100644
+--- a/apps/swarm-ui/src/App.tsx
++++ b/apps/swarm-ui/src/App.tsx
+@@ -85,6 +85,8 @@ import { useRecentName, WorkflowsScreen } from './Workflows'
+ import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceTalkScreen } from './voice/Section'
+ import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
+ import { HomeScreen } from './Home'
++import { PluginsConsole } from './pluginsconsole/PluginsConsole' // MOCK-HOOK
++import { MOCK_PA } from './pluginsconsole/switches' // MOCK-HOOK
+ 
+ /**
+  * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.
+@@ -1822,7 +1824,7 @@ export function App() {
+                 // own on its refresh control in any case.
+                 <RoutedPage.Provider value={true}>
+                   <FrameAge.Provider value={at.taskId === null}>
+-                  {at.missing ? <NotFound path={at.missing} go={go} /> : (() => {
++                  {MOCK_PA !== null ? <PluginsConsole /> /* MOCK-HOOK */ : at.missing ? <NotFound path={at.missing} go={go} /> : (() => {
+                     const body = (
+                       <SectionBody
+                         sectionId={section.id}
+diff --git a/apps/swarm-ui/src/pluginsconsole/B/BuilderB.tsx b/apps/swarm-ui/src/pluginsconsole/B/BuilderB.tsx
+new file mode 100644
+index 0000000..fdce80c
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/B/BuilderB.tsx
+@@ -0,0 +1,199 @@
++// MOCK-HOOK FILE: direction B, the workflow builder's steps with a one-line plugin chip, and the guided picker
++// sheet (plugin, then mode, then skills) (features.md §2, B1-B11).
++
++import { useState } from 'react'
++import { Button, Chip, Dash } from '../../components'
++import { PageHead } from '../../Shell'
++import {
++  MODES, builderSteps, gstackEntry, neverOffered, pluginsRead, refusalWords, skillNotes, workflowName,
++  type BuilderStep, type PluginMode, type UsedPlugins,
++} from '../fixtures'
++import { MODE_MEANS, MODE_WORDS } from '../parts'
++import type { MockState } from '../switches'
++
++/** rest: the six steps, the two gstack steps' chips, the review step's last run. open: the sheet open on
++ *  `review`, unattended chosen, two of its skills ticked so far. answered: the finished run, what each used. */
++export function BuilderB({ state, bridgeLanded }: { state: MockState; bridgeLanded: boolean }) {
++  const [open, setOpen] = useState<string | null>(state === 'open' ? 'review' : null)
++  const finished = state === 'answered'
++  return (
++    <div className={`pb-page pb-builder${open !== null ? ' has-sheet' : ''}`}>
++      <PageHead title="A workflow" />
++      <div className="pb-wf-head">
++        <span className="pb-dim">Workflow</span> <b>{workflowName}</b>
++        <span className="pb-dim">· {builderSteps.length} steps · repository</span> <code>example-org/roombook</code>
++      </div>
++      <div className="pb-build">
++        <ol className="pb-steps" role="list">
++          {builderSteps.map((s, i) => (
++            <StepRow key={s.step_id} n={i + 1} step={s} finished={finished}
++              picking={open === s.step_id} onPick={() => setOpen(open === s.step_id ? null : s.step_id)} />
++          ))}
++        </ol>
++        {open !== null && (
++          <PickerSheet step={builderSteps.find((s) => s.step_id === open)!} bridgeLanded={bridgeLanded}
++            half={state === 'open'} onClose={() => setOpen(null)} />
++        )}
++      </div>
++      <div className="pb-submitbar">
++        <span className="pb-dim">1 step is refused; the workflow cannot be submitted until it changes.</span>
++        <Button kind="primary" disabled>Submit workflow</Button>
++      </div>
++    </div>
++  )
++}
++
++function StepRow({ n, step, finished, picking, onPick }: { n: number; step: BuilderStep; finished: boolean; picking: boolean; onPick: () => void }) {
++  const loads = gstackEntry(true).runner_profiles.includes(step.runner_profile)
++  const gs = step.plugins?.gstack
++  return (
++    <li className={`pb-step${picking ? ' is-picking' : ''}${step.refusal !== null ? ' is-refused' : ''}`}>
++      <span className="pb-step-n">{n}</span>
++      <div className="pb-step-body">
++        <div className="pb-step-top">
++          <b className="pb-step-id">{step.step_id}</b>
++          <span className="pb-step-title">{step.title}</span>
++        </div>
++        <div className="pb-row pb-small">
++          <span className="pb-dim">Runner</span> <Chip>{step.runner_profile}</Chip>
++          {step.depends_on.length > 0 && <><span className="pb-dim">after</span> {step.depends_on.map((d) => <code key={d}>{d}</code>)}</>}
++        </div>
++        <div className="pb-row pb-step-plugin" data-f="B8">
++          {gs !== undefined ? (
++            <button type="button" className={`pb-sumchip${step.refusal !== null ? ' is-bad' : ''}`} onClick={onPick}
++              title={`gstack, ${MODE_WORDS[gs.mode]} mode: ${gs.skills.join(', ')}`} aria-expanded={picking}>
++              <span className="pb-sumchip-k">gstack</span>
++              <span>{MODE_WORDS[gs.mode]}</span>
++              <span className="pb-sumchip-s">{gs.skills.join(' · ')}</span>
++            </button>
++          ) : loads ? (
++            <Button size="sm" kind="ghost" onClick={onPick}>+ Add a plugin</Button>
++          ) : (
++            <span className="pb-dim pb-small">Plugins: this runner profile cannot load them</span>
++          )}
++        </div>
++        {step.refusal !== null && (
++          <p className="pb-refusal" data-f="B5 B11" role="alert">
++            <b>Refused at submission:</b> {step.refusal}. Pick a claude-code profile, or remove the plugin.
++          </p>
++        )}
++        {step.used !== null && (finished || step.step_id === 'review' || step.step_id === 'plan-checkout') && <UsedLine used={step.used} />}
++      </div>
++    </li>
++  )
++}
++
++/** What the last finished attempt used (B9) and how often each skill ran (B10); not read is a dash, not 0. */
++function UsedLine({ used }: { used: UsedPlugins }) {
++  return (
++    <>
++      {Object.entries(used).map(([name, u]) => (
++        <div key={name} className="pb-used" data-f="B9 B10">
++          <span className="pb-dim">Last run used</span>
++          <span className="pb-used-p">{name} {u.version} · {MODE_WORDS[u.mode]}</span>
++          {u.skills.map((s) => (
++            <span key={s} className="pb-used-s">
++              <code>{s}</code>
++              {u.skill_runs === null
++                ? <Dash why="Not known: the agent's stream was not read, so no run was counted" />
++                : <b className={(u.skill_runs[s] ?? 0) === 0 ? 'is-zero' : ''}>×{u.skill_runs[s] ?? 0}</b>}
++            </span>
++          ))}
++          {u.skill_runs === null && <span className="pb-dim pb-small">times each ran: not known (stream not read)</span>}
++        </div>
++      ))}
++    </>
++  )
++}
++
++/** The guided sheet: 1 plugin, 2 mode, 3 skills; each a choice by name from the catalogue. */
++function PickerSheet({ step, bridgeLanded, half, onClose }: { step: BuilderStep; bridgeLanded: boolean; half: boolean; onClose: () => void }) {
++  const read = pluginsRead({ canEdit: true, bridgeLanded })
++  const entry = read.catalogue[0]!
++  const loads = entry.runner_profiles.includes(step.runner_profile)
++  const chosen = step.plugins?.gstack
++  const [mode, setMode] = useState<PluginMode>(chosen?.mode ?? 'unattended')
++  const offered = entry.modes[mode].skills
++  const [ticked, setTicked] = useState<string[]>(half ? ['review', 'investigate'] : chosen?.skills ?? [])
++  const toggle = (s: string) => setTicked(ticked.includes(s) ? ticked.filter((x) => x !== s) : [...ticked, s])
++  return (
++    <aside className="pb-sheet" aria-label={`Plugin for step ${step.step_id}`}>
++      <header className="pb-sheet-h">
++        <div>
++          <span className="pb-dim pb-small">Plugin for step</span>
++          <h2>{step.step_id}</h2>
++        </div>
++        <Button size="sm" kind="ghost" onClick={onClose}>Close</Button>
++      </header>
++
++      <section className="pb-q" data-f="B1 B4 B5">
++        <h3><span className="pb-q-n">1</span>Plugin</h3>
++        {!loads ? (
++          <p className="pb-refusal">{refusalWords.profile(step.runner_profile)}.</p>
++        ) : (
++          <ul className="pb-choices" role="list">
++            {read.catalogue.map((p) => {
++              const allowed = read.plugins.allowed.includes(p.name)
++              return (
++                <li key={p.name}>
++                  <label className={`pb-choice${allowed ? ' is-on' : ' is-off'}`}>
++                    <input type="radio" name="pb-plugin" defaultChecked={allowed} disabled={!allowed} />
++                    <span><b>{p.name}</b> <Chip>{p.version}</Chip><br />
++                      <span className="pb-dim pb-small">{allowed ? `Allowed in this workspace · runs on ${step.runner_profile}` : refusalWords.notAllowed}</span>
++                    </span>
++                  </label>
++                </li>
++              )
++            })}
++          </ul>
++        )}
++        <p className="pb-dim pb-small">Only plugins this workspace allows can be picked (Config › Plugins).</p>
++      </section>
++
++      <section className="pb-q" data-f="B2 B7">
++        <h3><span className="pb-q-n">2</span>Mode</h3>
++        <ul className="pb-choices" role="list">
++          {MODES.map((m) => {
++            const av = entry.modes[m].available
++            return (
++              <li key={m}>
++                <label className={`pb-choice${m === mode ? ' is-on' : ''}${av ? '' : ' is-off'}`}>
++                  <input type="radio" name="pb-mode" checked={m === mode} disabled={!av} onChange={() => { setMode(m); setTicked([]) }} />
++                  <span><b>{MODE_WORDS[m]}</b><br />
++                    <span className="pb-dim pb-small">{av ? MODE_MEANS[m] : `Not yet: ${entry.modes[m].reason}`}</span>
++                  </span>
++                </label>
++              </li>
++            )
++          })}
++        </ul>
++      </section>
++
++      <section className="pb-q" data-f="B3">
++        <h3><span className="pb-q-n">3</span>Skills it may use <span className="pb-count">{ticked.length} of {offered.length}</span></h3>
++        <ul className="pb-ticks" role="list">
++          {offered.map((s) => (
++            <li key={s}>
++              <label className={`pb-tick${ticked.includes(s) ? ' is-on' : ''}`}>
++                <input type="checkbox" checked={ticked.includes(s)} onChange={() => toggle(s)} />
++                <code>{s}</code>
++                <span className="pb-dim">{skillNotes[s] ?? 'what it does: not known'}</span>
++              </label>
++            </li>
++          ))}
++        </ul>
++        <p className="pb-dim pb-small">
++          Never offered in any mode: {neverOffered.flatMap((g) => g.skills).slice(0, 4).join(', ')} and {neverOffered.flatMap((g) => g.skills).length - 4} more (Config › Plugins says why).
++        </p>
++      </section>
++
++      <footer className="pb-sheet-f">
++        <span className="pb-sumchip is-preview" aria-label="What the step will show">
++          <span className="pb-sumchip-k">gstack</span><span>{MODE_WORDS[mode]}</span>
++          <span className="pb-sumchip-s">{ticked.length === 0 ? 'no skill yet' : ticked.join(' · ')}</span>
++        </span>
++        <Button kind="primary" disabled={ticked.length === 0}>Use on this step</Button>
++      </footer>
++    </aside>
++  )
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/B/ConfigB.tsx b/apps/swarm-ui/src/pluginsconsole/B/ConfigB.tsx
+new file mode 100644
+index 0000000..ad90cc6
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/B/ConfigB.tsx
+@@ -0,0 +1,162 @@
++// MOCK-HOOK FILE: direction B, Config › Plugins as one capability card per plugin (features.md §1, C1-C14).
++
++import { useState } from 'react'
++import { Banner, Button, Chip, Tabs } from '../../components'
++import { PageHead } from '../../Shell'
++import { MODES, builderSteps, changes, neverOffered, pluginsRead, refusalWords, skillNotes, type PluginMode } from '../fixtures'
++import { MODE_MEANS, MODE_WORDS, at, person } from '../parts'
++import type { MockState } from '../switches'
++
++type CardTab = PluginMode | 'never'
++
++/** rest: the admin's page, gstack allowed. open: the allow switch turned off, not saved yet, with what it would
++ *  refuse. answered: saved, the new row on top. ?pv=viewer: the switch read only, and why. */
++export function ConfigB({ state, viewer, bridgeLanded }: { state: MockState; viewer: boolean; bridgeLanded: boolean }) {
++  const read = pluginsRead({ canEdit: !viewer, bridgeLanded })
++  const [tab, setTab] = useState<CardTab>('unattended')
++  const [on, setOn] = useState(state !== 'open')
++  const saved = state === 'answered'
++  const dirty = on !== read.plugins.allowed.includes('gstack')
++  const history = saved
++    ? [{ at: '2026-10-19T11:59:00Z', by: 'ana.moreau@example.com', before: ['gstack'], after: ['gstack'] }, ...changes]
++    : changes
++  const naming = builderSteps.filter((s) => s.plugins?.gstack !== undefined)
++  const neverCount = neverOffered.reduce((n, g) => n + g.skills.length, 0)
++  return (
++    <div className="pb-page pb-config">
++      <PageHead title="Plugins" />
++      <p className="pb-lead" data-f="C14">
++        Skills an agent step can load, from a closed catalogue. Each plugin is built into the agent images at one version.
++        Steps pick a plugin, a mode and skills by name; nothing here takes a path, a command, a web address or a version.
++      </p>
++
++      <div className="pb-cfg">
++        <div className="pb-cfg-main">
++          {read.catalogue.map((p) => {
++            const allowed = on
++            return (
++              <section key={p.name} className={`pb-cap${allowed ? ' is-on' : ''}`} aria-label={`${p.name} plugin`}>
++                <header className="pb-cap-h">
++                  <div className="pb-cap-id">
++                    <span className="pb-cap-mark" aria-hidden="true">{p.name.slice(0, 1)}</span>
++                    <div>
++                      <h2 data-f="C1">{p.name}</h2>
++                      <p className="pb-row" data-f="C2">
++                        <Chip title="Fixed in the agent image; nobody chooses a version">{p.version}</Chip>
++                        <span className="pb-dim pb-small">pinned in the image, never chosen here</span>
++                      </p>
++                    </div>
++                  </div>
++                  <div className="pb-allow" data-f="C8 C10 C13">
++                    <label className={`pb-switch${!read.can_edit ? ' is-ro' : ''}`}>
++                      <input type="checkbox" role="switch" checked={allowed} disabled={!read.can_edit}
++                        onChange={() => setOn(!on)} aria-describedby="pb-allow-why" />
++                      <span className="pb-switch-track" aria-hidden="true"><span /></span>
++                      <span className="pb-switch-word">{allowed ? 'Allowed in this workspace' : 'Not allowed in this workspace'}</span>
++                    </label>
++                    <span id="pb-allow-why" className="pb-dim pb-small">
++                      {read.can_edit ? 'You are an admin: you can change this' : 'Read only: only the workspace’s owner or an admin changes this'}
++                    </span>
++                  </div>
++                </header>
++
++                <div className="pb-cap-runs" data-f="C3">
++                  <span className="pb-dim">Runs on</span>
++                  {p.runner_profiles.map((r) => <Chip key={r}>{r}</Chip>)}
++                  <span className="pb-dim pb-small">other runner profiles cannot load plugins</span>
++                </div>
++
++                <p className="pb-cap-modes" data-f="C6" aria-label="Which modes run today">
++                  {MODES.map((m) => (
++                    <span key={m} className={`pb-mode-state${p.modes[m].available ? ' is-on' : ''}`} title={p.modes[m].reason}>
++                      {MODE_WORDS[m]}: {p.modes[m].available ? 'runs today' : 'not yet'}
++                    </span>
++                  ))}
++                </p>
++                <Tabs
++                  label={`${p.name} skills by mode`}
++                  current={tab}
++                  onSelect={(k) => setTab(k as CardTab)}
++                  className="pb-cap-tabs"
++                  tabs={[
++                    ...MODES.map((m) => ({ key: m, label: MODE_WORDS[m]!, count: p.modes[m].skills.length })),
++                    { key: 'never', label: 'Never offered', count: neverCount },
++                  ]}
++                />
++                {tab === 'never' ? (
++                  <div className="pb-cap-panel" data-f="C7">
++                    <p className="pb-mode-means">gstack ships these, but no step can use them, in any mode.</p>
++                    <ul className="pb-never" role="list">
++                      {neverOffered.map((g) => (
++                        <li key={g.skills.join()}>
++                          <span className="pb-row">{g.skills.map((s) => <code key={s} className="pb-skill-name is-off">{s}</code>)}</span>
++                          <span className="pb-dim">{g.why}</span>
++                        </li>
++                      ))}
++                    </ul>
++                  </div>
++                ) : (
++                  <div className="pb-cap-panel" data-f="C4 C5 C6">
++                    <p className="pb-mode-means">
++                      {p.modes[tab].available
++                        ? <span>{MODE_WORDS[tab]} {MODE_MEANS[tab]}.</span>
++                        : <><Chip tone="park">Not yet</Chip> <span>{MODE_WORDS[tab]} {p.modes[tab].reason}.</span></>}
++                    </p>
++                    <ul className="pb-skills" role="list">
++                      {p.modes[tab].skills.map((s) => (
++                        <li key={s}>
++                          <code className="pb-skill-name">{s}</code>
++                          <span>{skillNotes[s] ?? <span className="pb-dim">what it does: not known</span>}</span>
++                        </li>
++                      ))}
++                    </ul>
++                  </div>
++                )}
++              </section>
++            )
++          })}
++
++          {dirty && read.can_edit && (
++            <div className="pb-pending" data-f="C10 C11 B6">
++              <Banner tone="warn" title="Not saved: gstack would no longer be allowed"
++                actions={<><Button kind="ghost" onClick={() => setOn(!on)}>Cancel</Button><Button kind="primary">Save and sign</Button></>}>
++                {naming.length} steps in <b>roombook: checkout redesign</b> name gstack ({naming.map((s) => s.step_id).join(', ')});
++                from the next submission each is refused: &ldquo;{refusalWords.notAllowed}&rdquo;. Steps already running keep what they loaded.
++              </Banner>
++            </div>
++          )}
++          {saved && <Banner tone="info" title="Saved and signed">Ana Moreau saved the setting at {at('2026-10-19T11:59:00Z')}. It is in the history on the right.</Banner>}
++        </div>
++
++        <aside className="pb-cfg-side">
++          <section className="pb-side-card" data-f="C8 C9 C11">
++            <h2>This workspace may use</h2>
++            <p className="pb-row">
++              {on ? <Chip tone="live">gstack</Chip> : <span className="pb-dim">No plugin</span>}
++            </p>
++            <dl className="pb-facts">
++              <dt>When nobody chose</dt><dd>No plugin is allowed</dd>
++              <dt>Signed</dt><dd>Only a signed setting allows anything; an unsigned one allows nothing</dd>
++              <dt>Workspace</dt><dd><code>{read.tenant_id}</code></dd>
++            </dl>
++          </section>
++          <section className="pb-side-card" data-f="C12">
++            <h2>Changes <span className="pb-count">{history.length}</span></h2>
++            <ol className="pb-audit" role="list">
++              {history.map((h) => (
++                <li key={h.at}>
++                  <b>{person(h.by)}</b>
++                  <span className="pb-dim pb-small">{at(h.at)}</span>
++                  <span className="pb-small">
++                    {h.before.length === 0 ? 'none' : h.before.join(', ')} &rarr; {h.after.length === 0 ? 'none' : h.after.join(', ')}
++                  </span>
++                </li>
++              ))}
++            </ol>
++            <p className="pb-dim pb-small">Newest first, from the audit log; each change is signed.</p>
++          </section>
++        </aside>
++      </div>
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/B/NeedsB.tsx b/apps/swarm-ui/src/pluginsconsole/B/NeedsB.tsx
+new file mode 100644
+index 0000000..88744c2
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/B/NeedsB.tsx
+@@ -0,0 +1,66 @@
++// MOCK-HOOK FILE: direction B, Needs you: the real NeedsYou with the plugin steps' parked questions beside the other
++// kinds, and one card per parked plugin step saying which plugin, mode and skill asked (features.md §4, N1-N5).
++
++import { ButtonLink } from '../../components'
++import { PageHead } from '../../Shell'
++import type { Task } from '../../types'
++import { NeedsYou, type NeedItem } from '../../work/NeedsYou'
++import { Q13, Q13_OPTIONS, designerInterview, designerTask, unattendedTask } from '../fixtures'
++import { MODE_WORDS, at } from '../parts'
++import { leftWords } from '../PlanInterview'
++import type { MockState } from '../switches'
++
++/** A task as the Workflows list reads one, trimmed to what a Needs-you row draws. Invented. */
++function task(id: string, workflow: string, step: string, profile: string, repo: string): Task {
++  return {
++    id, tenant_id: 'u-bogdan', state: 'FAILED', runner_profile: profile, resource_class: 'standard', provider: null, priority: 0,
++    created_at: '2026-10-19T09:00:00Z', updated_at: '2026-10-19T11:10:00Z', started_at: null, completed_at: null,
++    submitted_by: 'kenji.sato@example.com', attempt_count: 1, max_attempts: 3, park_reason: null, blocked_by: null,
++    workflow_id: workflow, step_id: step, depends_on: null, repository_url: `https://github.com/example-org/${repo}`,
++  } as unknown as Task
++}
++
++export function NeedsB({ state }: { state: MockState }) {
++  const designer = designerInterview('open')
++  const showDesigner = state !== 'answered'
++  const items: NeedItem[] = [
++    { kind: 'failed', task: task('task_ncrm_build_88a1', 'wf_northwind_contacts', 'build', 'claude-code-large', 'northwind-crm'),
++      title: 'wf_northwind_contacts › build', why: 'Tests failed: 3 of 412 in contacts/import' },
++    ...(showDesigner ? [{
++      kind: 'question' as const, taskId: designerTask.task_id, index: 0, title: `${designerTask.step_id} (question 13)`,
++      question: Q13, options: Q13_OPTIONS, recommended: Q13_OPTIONS[0]!.label, mayAnswer: true,
++    }] : []),
++    { kind: 'question', taskId: unattendedTask.task_id, index: 0, title: `${unattendedTask.workflow_id} › ${unattendedTask.step_id}`,
++      question: unattendedTask.question, options: unattendedTask.options, recommended: unattendedTask.recommended, mayAnswer: true },
++  ]
++  const parked = [
++    ...(showDesigner ? [{ id: designerTask.task_id, step: designerTask.step_id, repo: designerTask.repository, mode: designerTask.plugins.gstack.mode,
++      skill: designer.skill ?? 'not known', asked: designer.waiting.asked_at, expires: designer.waiting.expires_at, page: true }] : []),
++    { id: unattendedTask.task_id, step: unattendedTask.step_id, repo: unattendedTask.repository, mode: unattendedTask.plugins.gstack.mode,
++      skill: unattendedTask.skill, asked: unattendedTask.asked_at, expires: unattendedTask.expires_at, page: false },
++  ]
++  return (
++    <div className="pb-page pb-needs">
++      <PageHead title="Workflows" />
++      <div className="pb-needs-grid">
++        <div className="pb-needs-main" data-f="N1 N2 N3">
++          <NeedsYou items={items} approvals={[]} />
++        </div>
++        <aside className="pb-needs-side" aria-label="Plugin steps parked on a question" data-f="N4 N5">
++          <h2>Plugin steps parked <span className="pb-count">{parked.length}</span></h2>
++          <p className="pb-dim pb-small">Each holds no machine while it waits. Unanswered in 24 hours, it ends with the question open: nobody&rsquo;s answer is guessed.</p>
++          {parked.map((p) => (
++            <section key={p.id} className="pb-park">
++              <b>{p.step}</b> <code className="pb-dim pb-small">{p.repo}</code>
++              <span className="pb-sumchip is-static"><span className="pb-sumchip-k">gstack</span><span>{MODE_WORDS[p.mode]}</span><span className="pb-sumchip-s">asked by {p.skill}</span></span>
++              <span className="pb-small"><b>{leftWords(p.expires) ?? 'expired'}</b> <span className="pb-dim">left · asked {at(p.asked)}</span></span>
++              {p.page
++                ? <ButtonLink size="sm" kind="secondary" href="/runs/run_4c1e09d2">Open the interview with its 4 designs</ButtonLink>
++                : <span className="pb-dim pb-small">It ran unattended and this question has no recommended answer, so it waits for you: answer it in its row (Question, wf_northwind_contacts › review).</span>}
++            </section>
++          ))}
++        </aside>
++      </div>
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/B/PlanB.tsx b/apps/swarm-ui/src/pluginsconsole/B/PlanB.tsx
+new file mode 100644
+index 0000000..de373af
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/B/PlanB.tsx
+@@ -0,0 +1,291 @@
++// MOCK-HOOK FILE: direction B, the interview as the whole planning page, one question at a time, and the
++// proposal as its own page with the decision bar fixed at the bottom (features.md §3, I1-I18).
++
++import { useLayoutEffect, useRef, useState } from 'react'
++import { Button, Chip } from '../../components'
++import { PageHead } from '../../Shell'
++import { designerInterview, designerTask, plannerRun, type AnswerVia, type Preview } from '../fixtures'
++import { MODE_WORDS, PreviewView, at, person } from '../parts'
++import { leftWords, plainLabel } from '../PlanInterview'
++import type { MockState } from '../switches'
++
++/** Where an answer came from, as a short mark beside the name. */
++const VIA_SHORT: Readonly<Record<AnswerVia, string>> = {
++  console: 'Console', 'voice-it': 'Voice it', 'claude-code': 'Claude Code', 'github-comment': 'GitHub',
++}
++
++export function PlanB({ state }: { state: MockState }) {
++  return state === 'proposal' ? <ProposalB /> : <InterviewB state={state} />
++}
++
++function initials(email: string | null): string {
++  return person(email).split(' ').map((w) => w[0]).join('').slice(0, 2)
++}
++
++function InterviewB({ state }: { state: MockState }) {
++  const answered = state === 'answered'
++  const read = designerInterview(answered ? 'answered' : 'open')
++  const q = read.questions[0]!
++  const [picked, setPicked] = useState<string>(q.recommended!)
++  const [ownWords, setOwnWords] = useState(state === 'open')
++  const [big, setBig] = useState<string | null>(null)
++  const left = leftWords(read.waiting.expires_at)
++  const gs = designerTask.plugins.gstack
++  const n = read.interview.length + 1
++  const railList = useRef<HTMLOListElement>(null)
++  // The current question sits at the rail's end: open the rail scrolled to it.
++  useLayoutEffect(() => { const el = railList.current; if (el !== null) el.scrollTop = el.scrollHeight }, [])
++  const viaCount = (v: AnswerVia) => read.interview.filter((r) => r.answer.via === v).length
++  return (
++    <div className="pb-page pb-iv">
++      <PageHead title="Design interview" />
++      <div className="pb-iv-facts" data-f="I14 I13">
++        <b>{designerTask.step_id}</b>
++        <span className="pb-dim">in</span> <code>{designerTask.repository}</code>
++        <span className="pb-sumchip is-static" title={`gstack ${MODE_WORDS[gs.mode]}: ${gs.skills.join(', ')}`}>
++          <span className="pb-sumchip-k">gstack 1.92.55.0</span><span>{MODE_WORDS[gs.mode]}</span>
++          <span className="pb-sumchip-s">{gs.skills.join(' · ')}</span>
++        </span>
++        {read.waiting.open
++          ? <Chip tone="park" title="While it waits the step holds no lease, no slot and no container">Parked: holds no machine</Chip>
++          : <Chip tone="live" title="Queued to start again in the same conversation">Answered: queued to resume</Chip>}
++      </div>
++
++      <div className="pb-iv-grid">
++        <nav className="pb-rail" aria-label="Questions answered so far" data-f="I6 I7 I8 I15">
++          <div className="pb-rail-h">
++            <b>{answered ? n : n - 1} answered</b>
++            <span className="pb-dim pb-small">how many more: not known</span>
++            <span className="pb-row pb-small" aria-label="Where they were answered">
++              <span className="pb-via is-console">Console <b>{viaCount('console') + (answered ? 1 : 0)}</b></span>
++              <span className="pb-via is-voice-it">Voice it <b>{viaCount('voice-it')}</b></span>
++              <span className="pb-via is-claude-code">Claude Code <b>{viaCount('claude-code')}</b></span>
++            </span>
++          </div>
++          <ol className="pb-rail-list" role="list" ref={railList}>
++            {read.interview.map((r) => (
++              <li key={r.n} className="pb-rail-item">
++                <span className="pb-rail-n">{r.n}</span>
++                <div className="pb-rail-body">
++                  <span className="pb-rail-q" title={r.question}>{r.question}</span>
++                  <span className="pb-rail-a">{plainLabel(r.answer.choice)}</span>
++                  <span className="pb-rail-who">
++                    <span className="pb-av" aria-hidden="true">{initials(r.answer.by)}</span>
++                    {person(r.answer.by)} <span className={`pb-via is-${r.answer.via}`}>{VIA_SHORT[r.answer.via ?? 'console']}</span>
++                  </span>
++                </div>
++              </li>
++            ))}
++            <li className={`pb-rail-item ${answered ? 'is-just' : 'is-now'}`} aria-current={answered ? undefined : 'step'}>
++              <span className="pb-rail-n">{n}</span>
++              <div className="pb-rail-body">
++                <span className="pb-rail-q">{q.question}</span>
++                {answered
++                  ? <>
++                      <span className="pb-rail-a">{plainLabel(q.answer!.choice)}</span>
++                      <span className="pb-rail-who"><span className="pb-av" aria-hidden="true">{initials(q.answer!.by)}</span>{person(q.answer!.by)} <span className="pb-via is-console">Console</span> <span className="pb-dim">just now</span></span>
++                    </>
++                  : <span className="pb-rail-a is-now">Waiting for an answer</span>}
++              </div>
++            </li>
++          </ol>
++          <p className="pb-rail-end pb-small" data-f="I16 I18">
++            <b>Then:</b> the design proposal (design doc, diagrams, the chosen design) for you to Approve, Edit or Reject.
++            This run asks a person; it is not set to approve automatically.
++          </p>
++        </nav>
++
++        <main className="pb-iv-main">
++          {!answered ? (
++            <>
++              <header className="pb-qhead">
++                <span className="pb-qnum">Question {n}</span>
++                <span className="pb-dim pb-small" data-f="I5">asked by <code className="pb-skill-name">{read.skill}</code> at {at(read.waiting.asked_at)}</span>
++              </header>
++              <h2 className="pb-qtext" data-f="I1">{q.question}</h2>
++              {q.context !== null && <p className="pb-dim pb-qctx">{q.context}</p>}
++              <ul className="pb-opts" role="radiogroup" aria-label={`Answers to question ${n}`} data-f="I2 I3 I4">
++                {q.options.map((o, i) => {
++                  const rec = o.label === q.recommended
++                  return (
++                    <li key={o.label} className={`pb-opt${o.label === picked ? ' is-picked' : ''}${rec ? ' is-rec' : ''}`}>
++                      <label className="pb-opt-h">
++                        <input type="radio" name="pb-q13" checked={o.label === picked} onChange={() => setPicked(o.label!)} />
++                        <span className="pb-opt-k">{String.fromCharCode(65 + i)}</span>
++                        <span className="pb-opt-l"><b>{plainLabel(o.label)}</b>{rec && <Chip tone="live">Recommended</Chip>}</span>
++                      </label>
++                      <p className="pb-opt-d">{o.description}</p>
++                      <Shot preview={read.previews[o.label!]} onBig={() => setBig(o.label!)} />
++                    </li>
++                  )
++                })}
++              </ul>
++              {!ownWords && (
++                <p className="pb-none-fit pb-small">
++                  None of these fits? <button type="button" className="c-link" onClick={() => setOwnWords(true)}>Answer in your own words</button>
++                </p>
++              )}
++              {big !== null && (
++                <div className="pb-big" role="dialog" aria-label={`Preview: ${plainLabel(big)}`}>
++                  <div className="pb-big-h"><b>{plainLabel(big)}</b><Button size="sm" kind="ghost" onClick={() => setBig(null)}>Close</Button></div>
++                  <PreviewView preview={read.previews[big]} tall />
++                </div>
++              )}
++            </>
++          ) : (
++            <div className="pb-done" data-f="I1 I2 I4">
++              <header className="pb-qhead">
++                <span className="pb-qnum">Question {n} answered</span>
++                <span className="pb-dim pb-small">by {person(q.answer!.by)} in the console at {at(q.answer!.at)} · the recommended answer</span>
++              </header>
++              <h2 className="pb-qtext">{q.question}</h2>
++              <div className="pb-done-pick">
++                <span className="pb-opt-k">A</span><b>{plainLabel(q.answer!.choice)}</b><Chip tone="live">Recommended</Chip>
++                <span className="pb-dim pb-small">B, C and D were not chosen</span>
++              </div>
++              <div className="pb-done-shot">{(() => { const pv = read.previews[q.answer!.choice!]; return pv?.kind === 'html' ? <HtmlShot preview={pv} /> : <PreviewView preview={pv} tall /> })()}</div>
++              <div className="pb-next">
++                <b>Next:</b> the step starts again with this answer, in the same conversation. It holds no machine until then.
++                Question {n + 1} or the proposal appears here when it comes; you can leave this page.
++              </div>
++            </div>
++          )}
++          <div className="pb-dbar" data-f="I9 I10 I11 I12">
++            {!answered ? (
++              <>
++                <div className="pb-dbar-left">
++                  <span className="pb-expiry" title={`Asked ${at(read.waiting.asked_at)}; unanswered by ${at(read.waiting.expires_at)}, the step ends with the question left open`}>
++                    <b>{left ?? 'expired'}</b> left of 24 h
++                  </span>
++                  <span className="pb-dim pb-small">Never answered for anyone. The first answer stands.</span>
++                </div>
++                {ownWords && (
++                  <label className="pb-own">
++                    <span className="pb-small">In your own words</span>
++                    <textarea rows={2} defaultValue="The summary, but show the timer only in the last 5 minutes." />
++                  </label>
++                )}
++                <div className="pb-dbar-acts">
++                  {ownWords && <Button kind="ghost" onClick={() => setOwnWords(false)}>Pick an option instead</Button>}
++                  {ownWords ? <Button kind="primary">Send my answer</Button> : (
++                    <>
++                      <Button>Use the recommended answer</Button>
++                      <Button kind="primary">Answer {String.fromCharCode(65 + q.options.findIndex((o) => o.label === picked))}</Button>
++                    </>
++                  )}
++                </div>
++              </>
++            ) : (
++              <>
++                <div className="pb-dbar-left"><b>Answer saved</b><span className="pb-dim pb-small">A second answer to question {n} is refused: the first one stands.</span></div>
++                <div className="pb-dbar-acts"><Button kind="ghost">Back to Needs you</Button></div>
++              </>
++            )}
++          </div>
++        </main>
++      </div>
++    </div>
++  )
++}
++
++/** A rendered design, drawn at desktop width and scaled into the option card; Enlarge shows it full width. */
++function Shot({ preview, onBig }: { preview: Preview | undefined; onBig: () => void }) {
++  if (preview === undefined) return <p className="pb-dim">No preview came with this option.</p>
++  return preview.kind !== 'html' ? <div className="pb-shot-other"><PreviewView preview={preview} /></div> : <HtmlShot preview={preview} onBig={onBig} />
++}
++
++function HtmlShot({ preview, onBig }: { preview: Extract<Preview, { kind: 'html' }>; onBig?: () => void }) {
++  const box = useRef<HTMLDivElement>(null)
++  const [scale, setScale] = useState(0.42)
++  useLayoutEffect(() => {
++    const el = box.current
++    if (el === null) return
++    const fit = () => setScale(el.clientWidth / 820)
++    fit()
++    const ro = new ResizeObserver(fit)
++    ro.observe(el)
++    return () => ro.disconnect()
++  }, [])
++  return (
++    <div className="pb-shot">
++      <div className="pb-shot-frame" ref={box}>
++        <iframe title={preview.title} sandbox="" srcDoc={preview.html} tabIndex={-1} scrolling="no" style={{ transform: `scale(${scale})` }} />
++      </div>
++      {onBig !== undefined && <button type="button" className="pb-shot-big" onClick={onBig}>Enlarge</button>}
++    </div>
++  )
++}
++
++function ProposalB() {
++  const r = plannerRun
++  const gs = r.plugins.gstack
++  const total = r.interview.answered_by.reduce((n, [, , c]) => n + c, 0)
++  return (
++    <div className="pb-page pb-prop">
++      <PageHead title={r.issue.title} />
++      <div className="pb-iv-facts" data-f="I14">
++        <code>{r.issue.ref}</code>
++        <span className="pb-dim">run</span> <code>{r.id}</code>
++        <span className="pb-sumchip is-static"><span className="pb-sumchip-k">gstack 1.92.55.0</span><span>{MODE_WORDS[gs.mode]}</span><span className="pb-sumchip-s">{gs.skills.join(' · ')}</span></span>
++        <Chip tone="park">Plan waiting for approval</Chip>
++      </div>
++
++      <div className="pb-prop-grid">
++        <aside className="pb-rail pb-rail-done" data-f="I6 I7 I8 I15">
++          <div className="pb-rail-h">
++            <b>Interview ended</b>
++            <span className="pb-dim pb-small">{at(r.interview.ended_at)} · {r.interview.asked} questions</span>
++          </div>
++          <ul className="pb-rail-tally" role="list">
++            {r.interview.answered_by.map(([by, v, c]) => (
++              <li key={v}><span className="pb-av" aria-hidden="true">{initials(by)}</span>{person(by)} <span className={`pb-via is-${v}`}>{VIA_SHORT[v]}</span><b>{c}</b></li>
++            ))}
++          </ul>
++          <p className="pb-dim pb-small">{total} of {r.interview.asked} answered. The questions themselves are on the step&rsquo;s page.</p>
++          <p className="pb-small">Started by {person(r.created_by)}</p>
++        </aside>
++
++        <main className="pb-prop-main" data-f="I16">
++          <section className="pb-prop-sec">
++            <h2>The plan</h2>
++            <p className="pb-prop-lead">{r.plan.summary}</p>
++            <ol className="pb-plan-steps" role="list">
++              {r.plan.steps.map((s, i) => (
++                <li key={s.step_id}><span className="pb-q-n">{i + 1}</span><div><b>{s.title}</b> <code className="pb-dim">{s.step_id}</code><p className="pb-dim">{s.prompt}</p></div></li>
++              ))}
++            </ol>
++            <dl className="pb-facts">
++              <dt>Requirements</dt><dd className="pb-row">{r.plan.requirements.map((q) => <Chip key={q}>{q}</Chip>)}</dd>
++              <dt>Estimate</dt><dd>{r.plan.estimate}</dd>
++            </dl>
++          </section>
++          <section className="pb-prop-sec">
++            <h2>Design doc <code className="pb-small">{r.proposal.design_doc}</code></h2>
++            <p>{r.proposal.design_doc_lead}</p>
++          </section>
++          <section className="pb-prop-sec">
++            <h2>Diagrams <span className="pb-count">{r.proposal.diagrams.length}</span></h2>
++            {r.proposal.diagrams.map((d) => (
++              <figure key={d.title} className="pb-fig"><PreviewView preview={{ kind: 'diagram', svg: d.svg, alt: d.alt }} /><figcaption>{d.title}</figcaption></figure>
++            ))}
++          </section>
++          <div className="pb-dbar is-decide" data-f="I17 I18">
++            <div className="pb-dbar-left">
++              <b>Revision {r.plan_revision}</b>
++              <span className="pb-dim pb-small">digest <code>{r.plan_digest.slice(7, 19)}</code> · if the plan changes first, the decision is refused and the new one shown</span>
++            </div>
++            {r.plan_approval === 'auto'
++              ? <div className="pb-dbar-acts"><Chip tone="live">Approved automatically</Chip></div>
++              : (
++                <div className="pb-dbar-acts">
++                  <span className="pb-dim pb-small">This run asks a person to approve</span>
++                  <Button kind="danger">Reject</Button><Button>Edit</Button><Button kind="primary">Approve</Button>
++                </div>
++              )}
++          </div>
++        </main>
++      </div>
++
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/B/b.css b/apps/swarm-ui/src/pluginsconsole/B/b.css
+new file mode 100644
+index 0000000..608bea7
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/B/b.css
+@@ -0,0 +1,238 @@
++/* MOCK-HOOK FILE: direction B (capability cards, guided picker, full-page interview). Console tokens only, every rule
++   scoped to .pc-b so the other directions draw unchanged. */
++
++.pc-b { min-width: 0; }
++.pc-b .pb-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
++.pc-b .pb-dim { color: var(--text-dim); }
++.pc-b .pb-small { font-size: var(--t-micro); line-height: var(--lh-micro); }
++.pc-b .pb-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0; }
++.pc-b .pb-lead { margin: 0; color: var(--text-dim); font-size: var(--t-body); max-width: var(--measure); }
++.pc-b .pb-count { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: var(--r-pill); background: var(--surface-2);
++  font: 600 var(--t-micro)/20px var(--font); color: var(--text-dim); text-align: center; vertical-align: 1px; }
++.pc-b .pb-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: var(--t-meta); }
++.pc-b .pb-facts dt { color: var(--text-dim); }
++.pc-b .pb-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
++.pc-b code { font-family: var(--mono); font-size: var(--t-micro); }
++.pc-b .pb-skill-name { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); }
++.pc-b .pb-skill-name.is-off { color: var(--text-dim); text-decoration: line-through; text-decoration-color: var(--text-faint); }
++.pc-b .pb-q-n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; flex: none;
++  background: var(--sk-acs); color: var(--sk-ac); font: 600 var(--t-micro)/1 var(--font); margin-right: 8px; }
++
++/* ---- Config › Plugins: the capability card ---- */
++.pc-b .pb-cfg { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--ctl-s3); align-items: start; }
++.pc-b .pb-cfg-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
++.pc-b .pb-cap { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); overflow: hidden; }
++.pc-b .pb-cap.is-on { border-color: var(--sk-acl); box-shadow: inset 4px 0 0 var(--sk-ac); }
++.pc-b .pb-cap-h { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 16px 18px 10px 20px; flex-wrap: wrap; }
++.pc-b .pb-cap-id { display: flex; gap: 12px; align-items: center; min-width: 0; }
++.pc-b .pb-cap-id h2 { margin: 0 0 4px; font-size: var(--t-title); line-height: var(--lh-title); }
++.pc-b .pb-cap-mark { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 10px; background: var(--sk-acs);
++  color: var(--sk-ac); font: 700 22px/1 var(--font); flex: none; }
++.pc-b .pb-allow { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; text-align: right; }
++.pc-b .pb-switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; font-size: var(--t-body); }
++.pc-b .pb-switch.is-ro { cursor: default; }
++.pc-b .pb-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
++.pc-b .pb-switch-track { width: 40px; height: 22px; border-radius: 11px; background: var(--ctl-bd); position: relative; flex: none; transition: background var(--ctl-dur, .15s); }
++.pc-b .pb-switch-track span { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface);
++  box-shadow: var(--ctl-shadow); transition: left var(--ctl-dur, .15s); }
++.pc-b .pb-switch input:checked + .pb-switch-track { background: var(--sk-ac); }
++.pc-b .pb-switch input:checked + .pb-switch-track span { left: 21px; }
++.pc-b .pb-switch input:disabled + .pb-switch-track { opacity: .55; }
++.pc-b .pb-switch input:focus-visible + .pb-switch-track { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
++.pc-b .pb-cap-runs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 20px 12px; font-size: var(--t-meta); }
++.pc-b .pb-cap-tabs { padding: 0 20px; border-bottom: 1px solid var(--line-soft); }
++.pc-b .pb-cap-panel { padding: 14px 20px 18px; }
++.pc-b .pb-mode-means { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 12px; font-size: var(--t-meta); }
++.pc-b .pb-skills { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
++.pc-b .pb-skills li { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: var(--r-ctl);
++  background: var(--surface-2); font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0; }
++.pc-b .pb-never { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; }
++.pc-b .pb-never li { display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr); gap: 16px; padding: 8px 0; border-top: 1px solid var(--line-soft); font-size: var(--t-meta); }
++.pc-b .pb-never li:first-child { border-top: 0; }
++.pc-b .pb-cfg-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
++.pc-b .pb-side-card { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
++.pc-b .pb-side-card h2 { margin: 0; font-size: var(--t-body); }
++.pc-b .pb-audit { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
++.pc-b .pb-audit li { display: flex; flex-direction: column; gap: 1px; padding-left: 10px; border-left: 2px solid var(--line); font-size: var(--t-meta); }
++.pc-b .pb-audit li:first-child { border-left-color: var(--sk-ac); }
++.pc-b .pb-pending { position: sticky; bottom: 12px; z-index: 2; box-shadow: var(--ctl-shadow-pop); border-radius: var(--r-ctl); }
++
++.pc-b .pb-cap-modes { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0 20px 10px; }
++.pc-b .pb-mode-state { padding: 2px 8px; border-radius: var(--r-pill); border: 1px solid var(--line); font-size: var(--t-micro); color: var(--text-dim); }
++.pc-b .pb-mode-state.is-on { border-color: var(--s-liveb, var(--ok)); color: var(--text); }
++.pc-b .pb-mode-state.is-on::before { content: '✓ '; color: var(--ok); }
++.pc-b .pb-cap-tabs { flex-wrap: nowrap; overflow-x: auto; }
++.pc-b .pb-cfg-main { padding-bottom: 8px; }
++
++/* ---- the builder and the guided sheet ---- */
++.pc-b .pb-wf-head { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: var(--t-meta); }
++.pc-b .pb-build { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-s3); align-items: start; }
++.pc-b .has-sheet .pb-build { grid-template-columns: minmax(0, 1fr) minmax(360px, 440px); }
++.pc-b .pb-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
++.pc-b .pb-step { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; }
++.pc-b .pb-step.is-picking { border-color: var(--sk-ac); box-shadow: 0 0 0 1px var(--sk-ac); }
++.pc-b .pb-step.is-refused { border-color: var(--s-badb, var(--bad)); }
++.pc-b .pb-step-n { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line); color: var(--text-dim);
++  font: 600 var(--t-micro)/1 var(--font); flex: none; }
++.pc-b .pb-step-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
++.pc-b .pb-step-top { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
++.pc-b .pb-step-id { font-family: var(--mono); font-size: var(--t-meta); }
++.pc-b .pb-step-title { font-size: var(--t-body); }
++.pc-b .pb-sumchip { display: inline-flex; align-items: center; gap: 0; max-width: 100%; min-width: 0; padding: 0; border: 1px solid var(--sk-acl);
++  border-radius: var(--r-pill); background: var(--surface); color: var(--text); font: 500 var(--t-micro)/var(--lh-flush) var(--font); cursor: pointer; overflow: hidden; }
++.pc-b .pb-sumchip > span { padding: 5px 9px; white-space: nowrap; }
++.pc-b .pb-sumchip > span + span { border-left: 1px solid var(--sk-acl); }
++.pc-b .pb-sumchip-k { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
++.pc-b .pb-sumchip-s { font-family: var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
++.pc-b .pb-sumchip.is-static { cursor: default; }
++.pc-b .pb-sumchip.is-bad { border-color: var(--s-badb, var(--bad)); text-decoration: line-through; text-decoration-color: var(--bad); }
++.pc-b button.pb-sumchip:hover { border-color: var(--sk-ac); }
++.pc-b .pb-refusal { margin: 0; padding: 8px 12px; border-radius: var(--r-ctl); border-left: 3px solid var(--bad); background: var(--surface-2); color: var(--text);
++  font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
++.pc-b .pb-used { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 10px; border-radius: var(--r-ctl); background: var(--surface-2); font-size: var(--t-meta); }
++.pc-b .pb-used-p { font-weight: 600; }
++.pc-b .pb-used-s { display: inline-flex; gap: 4px; align-items: center; }
++.pc-b .pb-used-s b { font: 600 var(--t-micro)/1 var(--mono); }
++.pc-b .pb-used-s b.is-zero { color: var(--text-dim); }
++.pc-b .pb-submitbar { display: flex; justify-content: flex-end; gap: 12px; align-items: center; padding-top: 4px; font-size: var(--t-meta); }
++
++.pc-b .pb-sheet { position: sticky; top: 8px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); box-shadow: var(--ctl-shadow-pop);
++  display: flex; flex-direction: column; min-width: 0; max-height: calc(100vh - 120px); overflow: auto; }
++.pc-b .pb-sheet-h { display: flex; justify-content: space-between; align-items: flex-start; padding: 14px 16px 8px; border-bottom: 1px solid var(--line-soft); }
++.pc-b .pb-sheet-h h2 { margin: 0; font: 600 var(--t-lead)/var(--lh-lead) var(--mono); }
++.pc-b .pb-q { padding: 12px 16px; border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 8px; }
++.pc-b .pb-q h3 { margin: 0; display: flex; align-items: center; font-size: var(--t-body); gap: 0; }
++.pc-b .pb-q h3 .pb-count { margin-left: 8px; }
++.pc-b .pb-choices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
++.pc-b .pb-choice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: var(--r-ctl); cursor: pointer; font-size: var(--t-meta); line-height: var(--lh-meta); }
++.pc-b .pb-choice.is-on { border-color: var(--sk-ac); background: var(--sk-acs); }
++.pc-b .pb-choice.is-off { cursor: not-allowed; opacity: .75; }
++.pc-b .pb-choice input { margin-top: 3px; accent-color: var(--sk-ac); }
++.pc-b .pb-ticks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
++.pc-b .pb-tick { display: grid; grid-template-columns: auto 132px minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 5px 6px; border-radius: var(--r-ctl); font-size: var(--t-meta); cursor: pointer; }
++.pc-b .pb-tick.is-on { background: var(--sk-acs); }
++.pc-b .pb-tick input { accent-color: var(--sk-ac); }
++.pc-b .pb-tick code { font-weight: 600; overflow-wrap: anywhere; }
++.pc-b .pb-sheet-f { position: sticky; bottom: 0; display: flex; gap: 10px; justify-content: space-between; align-items: center; padding: 12px 16px; background: var(--surface); border-top: 1px solid var(--line); flex-wrap: wrap; }
++.pc-b .pb-sheet-f .pb-sumchip { flex: 1 1 200px; }
++
++/* ---- the interview: the whole page ---- */
++.pc-b .pb-iv, .pc-b .pb-prop { padding-bottom: 24px; }
++.pc-b .pb-iv-facts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta); }
++.pc-b .pb-iv-grid, .pc-b .pb-prop-grid { display: grid; grid-template-columns: 272px minmax(0, 1fr); gap: var(--ctl-s3); align-items: start; }
++.pc-b .pb-rail { position: sticky; top: 8px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); display: flex; flex-direction: column;
++  max-height: calc(100vh - 215px); min-width: 0; }
++.pc-b .pb-rail-h { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); }
++.pc-b .pb-rail-list { list-style: none; margin: 0; padding: 6px 0; overflow: auto; flex: 1; min-height: 0; }
++.pc-b .pb-rail-item { display: flex; gap: 10px; padding: 7px 14px; position: relative; }
++.pc-b .pb-rail-item::before { content: ''; position: absolute; left: 25px; top: 0; bottom: 0; width: 1px; background: var(--line-soft); }
++.pc-b .pb-rail-item:first-child::before { top: 14px; }
++.pc-b .pb-rail-item:last-child::before { bottom: calc(100% - 14px); }
++.pc-b .pb-rail-n { position: relative; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; flex: none;
++  background: var(--surface-2); border: 1px solid var(--line); font: 600 var(--t-micro)/1 var(--font); color: var(--text-dim); }
++.pc-b .pb-rail-item.is-now { background: var(--sk-acs); }
++.pc-b .pb-rail-item.is-now .pb-rail-n { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--ctl-onac, #fff); }
++.pc-b .pb-rail-item.is-just .pb-rail-n { background: var(--ok); border-color: var(--ok); color: var(--ctl-onac, #fff); }
++.pc-b .pb-rail-item.is-just { background: var(--surface-2); }
++.pc-b .pb-rail-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
++.pc-b .pb-rail-q { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.pc-b .pb-rail-a { font-weight: 600; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
++.pc-b .pb-rail-a.is-now { color: var(--sk-ac); }
++.pc-b .pb-rail-who { display: flex; gap: 5px; align-items: center; color: var(--text-dim); flex-wrap: wrap; }
++.pc-b .pb-av { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--line);
++  font: 600 9px/1 var(--font); color: var(--text); letter-spacing: 0; }
++.pc-b .pb-via b { color: var(--text); margin-left: 2px; }
++.pc-b .pb-via { padding: 1px 6px; border-radius: var(--r-pill); border: 1px solid var(--line); font-size: var(--t-micro); color: var(--text-dim); }
++.pc-b .pb-via.is-voice-it { border-color: var(--sk-acl); color: var(--sk-ac); }
++.pc-b .pb-via.is-claude-code { border-color: var(--s-parkb, var(--line)); }
++.pc-b .pb-rail-end { margin: 0; padding: 10px 14px; border-top: 1px solid var(--line-soft); color: var(--text-dim); }
++.pc-b .pb-rail-end b { color: var(--text); }
++.pc-b .pb-iv-main, .pc-b .pb-prop-main { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
++.pc-b .pb-qhead { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
++.pc-b .pb-qnum { font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--sk-ac); }
++.pc-b .pb-qtext { margin: 0; font-size: 22px; line-height: 1.3; font-weight: 600; max-width: 900px; }
++.pc-b .pb-qctx { margin: 0; font-size: var(--t-body); }
++.pc-b .pb-opts { list-style: none; margin: 4px 0 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
++.pc-b .pb-opt { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; }
++.pc-b .pb-opt.is-picked { border-color: var(--sk-ac); box-shadow: 0 0 0 1px var(--sk-ac); }
++.pc-b .pb-opt-h { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
++.pc-b .pb-opt-h input { margin-top: 4px; accent-color: var(--sk-ac); }
++.pc-b .pb-opt-k { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line);
++  font: 600 var(--t-meta)/1 var(--font); flex: none; }
++.pc-b .pb-opt.is-picked .pb-opt-k { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--ctl-onac, #fff); }
++.pc-b .pb-opt-l { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: var(--t-body); min-width: 0; }
++.pc-b .pb-opt-d { margin: 0; font-size: var(--t-meta); color: var(--text-dim); line-height: var(--lh-meta); }
++/* The design is drawn at 820px wide and scaled to the card, so a person sees the whole page, not a corner of it. */
++.pc-b .pb-shot { margin-top: auto; position: relative; border: 1px solid var(--line); border-radius: var(--r-ctl); overflow: hidden; background: #fff; }
++.pc-b .pb-shot-frame { position: relative; width: 100%; aspect-ratio: 820 / 400; overflow: hidden; }
++.pc-b .pb-shot-frame iframe { position: absolute; top: 0; left: 0; width: 820px; height: 400px; border: 0; transform-origin: 0 0; pointer-events: none; }
++.pc-b .pb-shot-big { position: absolute; right: 8px; bottom: 8px; padding: 4px 10px; border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--surface);
++  color: var(--text); font: 500 var(--t-micro)/var(--lh-micro) var(--font); cursor: pointer; box-shadow: var(--ctl-shadow); }
++.pc-b .pb-big { position: fixed; inset: 40px 40px 40px 320px; z-index: 20; border: 1px solid var(--sk-ac); border-radius: var(--r-card); padding: 12px; background: var(--surface); box-shadow: var(--ctl-shadow-pop); overflow: auto; }
++.pc-b .pb-big .pc-html { height: calc(100vh - 150px); }
++.pc-b .pb-big-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
++.pc-b .pb-done { display: flex; flex-direction: column; gap: 10px; }
++.pc-b .pb-done-pick { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--sk-ac); border-radius: var(--r-card); background: var(--sk-acs); font-size: var(--t-body); }
++.pc-b .pb-done-pick .pb-opt-k { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--ctl-onac, #fff); }
++.pc-b .pb-done-shot .pb-shot { max-width: 760px; }
++.pc-b .pb-next { padding: 10px 12px; border-radius: var(--r-ctl); background: var(--surface-2); font-size: var(--t-meta); }
++
++/* The decision bar: fixed to the bottom of the page's own column, so the answer is always one click away. */
++.pc-b .pb-dbar { position: sticky; bottom: 40px; z-index: 3; display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: nowrap;
++  padding: 12px 16px; margin-top: auto; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); box-shadow: var(--ctl-shadow-pop); }
++.pc-b .pb-dbar-left { display: flex; flex-direction: column; gap: 2px; font-size: var(--t-meta); min-width: 0; flex: 1 1 auto; }
++.pc-b .pb-dbar-acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex: 0 1 auto; justify-content: flex-end; }
++.pc-b .pb-expiry b { font-size: var(--t-lead); }
++.pc-b .pb-own { display: flex; flex-direction: column; gap: 4px; flex: 1 1 280px; }
++.pc-b .pb-own textarea { font: inherit; font-size: var(--t-meta); color: var(--text); background: var(--bg); border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); padding: 6px 8px; resize: vertical; }
++
++.pc-b .pb-none-fit { margin: 0; color: var(--text-dim); }
++.pc-b .pb-none-fit .c-link { font: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
++
++/* ---- the proposal page ---- */
++.pc-b .pb-rail-done { padding-bottom: 6px; }
++.pc-b .pb-rail-tally { list-style: none; margin: 0; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; font-size: var(--t-meta); }
++.pc-b .pb-rail-tally li { display: flex; gap: 6px; align-items: center; }
++.pc-b .pb-rail-tally b { margin-left: auto; font-family: var(--mono); }
++.pc-b .pb-rail-done > p { margin: 0; padding: 0 14px 8px; }
++.pc-b .pb-prop-sec { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
++.pc-b .pb-prop-sec h2 { margin: 0; font-size: var(--t-lead); display: flex; gap: 8px; align-items: baseline; }
++.pc-b .pb-prop-sec p { margin: 0; }
++.pc-b .pb-prop-lead { font-size: var(--t-lead); line-height: var(--lh-lead); max-width: var(--measure); }
++.pc-b .pb-plan-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
++.pc-b .pb-plan-steps li { display: flex; gap: 4px; align-items: flex-start; font-size: var(--t-body); }
++.pc-b .pb-plan-steps p { font-size: var(--t-meta); }
++.pc-b .pb-fig { margin: 0; }
++.pc-b .pb-fig img { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: var(--r-ctl); background: #fff; }
++.pc-b .pb-fig figcaption { font-size: var(--t-micro); color: var(--text-dim); margin-top: 4px; }
++
++/* ---- Needs you ---- */
++.pc-b .pb-needs-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--ctl-s3); align-items: start; }
++.pc-b .pb-needs-main { min-width: 0; }
++.pc-b .pb-needs-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
++.pc-b .pb-needs-side h2 { margin: 0; font-size: var(--t-body); }
++.pc-b .pb-needs-side > p { margin: 0; }
++.pc-b .pb-park { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-card);
++  background: var(--surface); box-shadow: inset 3px 0 0 var(--s-parkb, var(--line)); min-width: 0; }
++.pc-b .pb-park .pb-sumchip { max-width: 100%; }
++
++/* ---- narrower screens ---- */
++@media (max-width: 1360px) {
++  .pc-b .pb-iv-grid { grid-template-columns: 232px minmax(0, 1fr); }
++  .pc-b .has-sheet .pb-build { grid-template-columns: minmax(0, 1fr) 380px; }
++  .pc-b .pb-cfg { grid-template-columns: minmax(0, 1fr) 260px; }
++}
++@media (max-width: 900px) {
++  .pc-b .pb-cfg, .pc-b .pb-iv-grid, .pc-b .pb-prop-grid, .pc-b .pb-needs-grid, .pc-b .has-sheet .pb-build { grid-template-columns: minmax(0, 1fr); }
++  .pc-b .pb-rail { position: static; max-height: none; order: 2; }
++  .pc-b .pb-iv-main, .pc-b .pb-prop-main { order: 1; }
++  .pc-b .pb-rail-list { max-height: 200px; }
++  .pc-b .pb-opts { grid-template-columns: minmax(0, 1fr); }
++  .pc-b .pb-cap-h { flex-direction: column; }
++  .pc-b .pb-allow { align-items: flex-start; text-align: left; }
++  .pc-b .pb-never li { grid-template-columns: minmax(0, 1fr); gap: 4px; }
++  .pc-b .pb-dbar { padding: 10px 12px; gap: 8px; flex-wrap: wrap; bottom: 8px; }
++  .pc-b .pb-dbar-acts { justify-content: flex-start; }
++  .pc-b .pb-qtext { font-size: var(--t-title); }
++  .pc-b .pb-sheet { position: static; max-height: none; }
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/BuilderPlugins.tsx b/apps/swarm-ui/src/pluginsconsole/BuilderPlugins.tsx
+new file mode 100644
+index 0000000..2237944
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/BuilderPlugins.tsx
+@@ -0,0 +1,106 @@
++// MOCK-HOOK FILE: the step's plugin picker in the workflow builder, plain layout (features.md §2, B1-B11).
++
++import { useState } from 'react'
++import { Banner, Button, Card, Segmented } from '../components'
++import { PageHead } from '../Shell'
++import { CLAUDE_CODE_PROFILES, MODES, builderSteps, gstackEntry, pluginsRead, refusalWords, workflowName,
++  type PluginMode, type StepPlugins } from './fixtures'
++import { Item, MODE_MEANS, MODE_WORDS, PluginSummary, Skill, UsedTable } from './parts'
++import type { MockState } from './switches'
++
++/** rest: six steps opened from the workflow's last run (what each used shown), the chosen sets compact, the picker closed. open: the picker open on the planner step.
++ *  answered: the workflow finished, each step showing what it used. */
++export function BuilderPlugins({ state, bridgeLanded }: { state: MockState; bridgeLanded: boolean }) {
++  const [openStep, setOpenStep] = useState<string | null>(state === 'rest' ? 'plan-checkout' : state === 'open' ? 'review' : null)
++  const finished = state === 'answered'
++  return (
++    <div className="pc-page">
++      <PageHead title="New workflow" />
++      <p className="pc-lead">{workflowName} · example-org/roombook · {builderSteps.length} steps</p>
++      <Item f="B11">
++        <Banner tone="bad" title="Submission refused at step second-look">
++          {builderSteps.find((s) => s.step_id === 'second-look')!.refusal}. Nothing was started; change the step and submit again.
++        </Banner>
++      </Item>
++      {builderSteps.map((s) => (
++        <Card key={s.step_id} level={3} title={<>{s.step_id} <span className="pc-dim">{s.title}</span></>}>
++          <dl className="pc-facts">
++            <dt>Runner</dt><dd>{s.runner_profile}</dd>
++            <dt>After</dt><dd>{s.depends_on.length === 0 ? 'starts first' : s.depends_on.join(', ')}</dd>
++            <dt>Plugins</dt>
++            <dd>
++              <Item f="B8"><PluginSummary plugins={s.plugins} /></Item>
++            </dd>
++          </dl>
++          {s.step_id === 'second-look' && (
++            <Item f="B5"><p className="pc-refusal">This step&rsquo;s runner, {s.runner_profile}, cannot load plugins: gstack runs only on {CLAUDE_CODE_PROFILES.join(', ')}. Pick one of those runners, or remove gstack from this step.</p></Item>
++          )}
++          {s.used !== null && (
++            <Item f="B9 B10">
++              <h4 className="pc-h3">{finished ? 'This run used' : 'Its last run used'}</h4>
++              <UsedTable used={s.used} />
++            </Item>
++          )}
++          {finished && s.used === null && s.plugins !== null && <p className="pc-dim">This step did not run, so nothing was used.</p>}
++          {!finished && CLAUDE_CODE_PROFILES.includes(s.runner_profile) && (
++            openStep === s.step_id
++              ? <Picker initial={s.plugins} bridgeLanded={bridgeLanded} onDone={() => setOpenStep(null)} />
++              : <p><Button size="sm" onClick={() => setOpenStep(s.step_id)}>{s.plugins === null ? 'Add a plugin' : 'Change plugins'}</Button></p>
++          )}
++        </Card>
++      ))}
++      <Card level={3} title="What the picker says when it refuses">
++        <Item f="B6"><p className="pc-refusal">When the workspace has not allowed gstack: {refusalWords.notAllowed}.</p></Item>
++        <Item f="B7"><p className="pc-refusal">When a mode does not run yet: {refusalWords.mode('designer')}.</p></Item>
++      </Card>
++    </div>
++  )
++}
++
++function Picker({ initial, bridgeLanded, onDone }: { initial: StepPlugins | null; bridgeLanded: boolean; onDone: () => void }) {
++  const read = pluginsRead({ canEdit: false, bridgeLanded })
++  const entry = gstackEntry(bridgeLanded)
++  const first = initial?.gstack
++  const [on, setOn] = useState(first !== undefined)
++  const [mode, setMode] = useState<PluginMode>(first?.mode ?? 'unattended')
++  const [skills, setSkills] = useState<string[]>(first?.skills ?? [])
++  const offered = entry.modes[mode]
++  const allowed = read.plugins.allowed.includes(entry.name)
++  return (
++    <form className="pc-form" onSubmit={(e) => { e.preventDefault(); onDone() }}>
++      <Item f="B1 B4">
++        <fieldset>
++          <legend>Plugin</legend>
++          <label className="pc-check">
++            <input type="checkbox" checked={on} disabled={!allowed} onChange={(e) => setOn(e.target.checked)} />
++            {entry.name} {entry.version}
++          </label>
++          <p className="pc-dim pc-small">Only plugins this workspace allows are offered. Allowed here: {read.plugins.allowed.join(', ') || 'none'}.</p>
++        </fieldset>
++      </Item>
++      {on && (
++        <>
++          <Item f="B2">
++            <Segmented label="Mode" value={mode} onChange={(m) => { setMode(m); setSkills([]) }}
++              options={MODES.map((m) => ({ key: m, label: MODE_WORDS[m] }))} />
++            <p className="pc-dim pc-small">{MODE_WORDS[mode]}: {MODE_MEANS[mode]}.</p>
++            {!offered.available && <p className="pc-refusal">{refusalWords.mode(mode)}.</p>}
++          </Item>
++          <Item f="B3">
++            <fieldset disabled={!offered.available}>
++              <legend>Skills it may use ({skills.length} of {offered.skills.length})</legend>
++              {offered.skills.map((s) => (
++                <label key={s} className="pc-check">
++                  <input type="checkbox" checked={skills.includes(s)}
++                    onChange={(e) => setSkills(e.target.checked ? [...skills, s] : skills.filter((x) => x !== s))} />
++                  <Skill name={s} notes />
++                </label>
++              ))}
++            </fieldset>
++          </Item>
++        </>
++      )}
++      <p className="pc-row"><Button kind="primary" type="submit">Done</Button><Button kind="ghost" onClick={onDone}>Cancel</Button></p>
++    </form>
++  )
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/ConfigPlugins.tsx b/apps/swarm-ui/src/pluginsconsole/ConfigPlugins.tsx
+new file mode 100644
+index 0000000..5f1053b
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/ConfigPlugins.tsx
+@@ -0,0 +1,120 @@
++// MOCK-HOOK FILE: Config › Plugins, the scaffold's plain layout (features.md §1, C1-C14).
++
++import { useState } from 'react'
++import { Banner, Button, Card, Chip } from '../components'
++import { PageHead } from '../Shell'
++import { MODES, changes, neverOffered, pluginsRead } from './fixtures'
++import { Item, MODE_MEANS, MODE_WORDS, Skill, at, person } from './parts'
++import type { MockState } from './switches'
++
++/** rest: the admin's page. open: the change form open, gstack unticked, not saved. answered: just saved,
++ *  the new audit row on top. ?pv=viewer: the same page read only. */
++export function ConfigPlugins({ state, viewer, bridgeLanded }: { state: MockState; viewer: boolean; bridgeLanded: boolean }) {
++  const read = pluginsRead({ canEdit: !viewer, bridgeLanded })
++  const [editing, setEditing] = useState(state === 'open')
++  const [ticked, setTicked] = useState<string[]>(state === 'open' ? [] : read.plugins.allowed)
++  const history = state === 'answered'
++    ? [{ at: '2026-10-19T11:59:00Z', by: 'ana.moreau@example.com', before: ['gstack'], after: ['gstack'] }, ...changes]
++    : changes
++  return (
++    <div className="pc-page">
++      <PageHead title="Plugins" />
++      <Item f="C14">
++        <p className="pc-lead">
++          Plugins add skills to an agent step. The platform keeps a closed catalogue, each plugin at one version built into
++          the agent images. A step names a plugin, a mode and skills from it by name; nobody types a path, a command, a
++          web address or a version here.
++        </p>
++      </Item>
++
++      <Card title="This workspace may use" foot={<>Read from the workspace setting · signed · {read.tenant_id}</>}>
++        <Item f="C8">
++          {read.plugins.allowed.length === 0
++            ? <p>No plugin. Steps in this workspace cannot name one.</p>
++            : <p className="pc-row">{read.plugins.allowed.map((n) => <Chip key={n}>{n}</Chip>)}</p>}
++        </Item>
++        <Item f="C9"><p className="pc-dim pc-small">When nobody has chosen, the answer is none: no plugin is allowed by default.</p></Item>
++        <Item f="C11"><p className="pc-dim pc-small">The choice is signed with the workspace settings key. A list that does not carry a valid signature allows nothing.</p></Item>
++        <Item f="C10 C13">
++          {read.can_edit ? (
++            editing ? (
++              <form className="pc-form" onSubmit={(e) => { e.preventDefault(); setEditing(false) }}>
++                <fieldset>
++                  <legend>Allow these catalogue plugins</legend>
++                  {read.catalogue.map((p) => (
++                    <label key={p.name} className="pc-check">
++                      <input type="checkbox" checked={ticked.includes(p.name)}
++                        onChange={(e) => setTicked(e.target.checked ? [...ticked, p.name] : ticked.filter((n) => n !== p.name))} />
++                      {p.name} {p.version}
++                    </label>
++                  ))}
++                </fieldset>
++                {!ticked.includes('gstack') && (
++                  <Banner tone="warn" title="Steps that name gstack will be refused">
++                    New submissions naming gstack are refused once you save. Steps already running keep what they were signed with.
++                  </Banner>
++                )}
++                <p className="pc-row">
++                  <Button kind="primary" type="submit">Save</Button>
++                  <Button kind="ghost" onClick={() => setEditing(false)}>Cancel</Button>
++                  <span className="pc-dim pc-small">Saving records your name and the time in the workspace&rsquo;s audit log.</span>
++                </p>
++              </form>
++            ) : (
++              <p className="pc-row"><Button onClick={() => setEditing(true)}>Change</Button>
++                <span className="pc-dim pc-small">You can change this as the workspace&rsquo;s admin.</span></p>
++            )
++          ) : (
++            <p className="pc-dim">Read only. Only this workspace&rsquo;s owner or an admin can change which plugins it may use.</p>
++          )}
++        </Item>
++        <Item f="C12">
++          <h3 className="pc-h3">Changes</h3>
++          {state === 'answered' && <Banner tone="info" title="Saved">Allowed: gstack. Recorded as Ana Moreau at {at('2026-10-19T11:59:00Z')}.</Banner>}
++          <ul className="pc-list">
++            {history.map((c) => (
++              <li key={c.at}>
++                {at(c.at)} · {person(c.by)} · {c.before.length === 0 ? 'none' : c.before.join(', ')} &rarr; {c.after.length === 0 ? 'none' : c.after.join(', ')}
++              </li>
++            ))}
++          </ul>
++          <p className="pc-dim pc-small">Last change, as the setting serves it: {person(read.set_by)}, {at(read.set_at)}.</p>
++        </Item>
++      </Card>
++
++      {read.catalogue.map((p) => (
++        <Card key={p.name} title={<>The catalogue: {p.name}</>} foot="The platform's closed catalogue; the install path is the image's and is not shown">
++          <Item f="C1 C2">
++            <dl className="pc-facts">
++              <dt>Plugin</dt><dd>{p.name}</dd>
++              <dt>Version</dt><dd><code>{p.version}</code>, pinned in the agent images; it changes only with a new image</dd>
++            </dl>
++          </Item>
++          <Item f="C3">
++            <dl className="pc-facts"><dt>Runs on</dt><dd className="pc-row">{p.runner_profiles.map((r) => <Chip key={r}>{r}</Chip>)}</dd></dl>
++          </Item>
++          <Item f="C4 C5 C6">
++            {MODES.map((m) => {
++              const mode = p.modes[m]
++              return (
++                <section key={m} className="pc-mode">
++                  <h3 className="pc-h3">{MODE_WORDS[m]} <span className="pc-dim">{MODE_MEANS[m]}</span></h3>
++                  {!mode.available && <p className="pc-refusal">Not available yet: {mode.reason}</p>}
++                  <ul className="pc-list">{mode.skills.map((s) => <li key={s}><Skill name={s} notes /></li>)}</ul>
++                </section>
++              )
++            })}
++          </Item>
++          <Item f="C7">
++            <h3 className="pc-h3">Never offered</h3>
++            <ul className="pc-list">
++              {neverOffered.map((n) => (
++                <li key={n.skills.join()}>{n.skills.map((s) => <code key={s} className="pc-gap">{s}</code>)} <span className="pc-dim">{n.why}</span></li>
++              ))}
++            </ul>
++          </Item>
++        </Card>
++      ))}
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/NeedsPlugins.tsx b/apps/swarm-ui/src/pluginsconsole/NeedsPlugins.tsx
+new file mode 100644
+index 0000000..4bcb4d9
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/NeedsPlugins.tsx
+@@ -0,0 +1,53 @@
++// MOCK-HOOK FILE: Needs you with plugin steps' parked questions, plain layout (features.md §4, N1-N5).
++
++import { Card } from '../components'
++import { PageHead } from '../Shell'
++import { NeedsYou, type NeedItem } from '../work/NeedsYou'
++import { Q13, Q13_OPTIONS, designerInterview, designerTask, unattendedTask } from './fixtures'
++import { Item, MODE_WORDS, Skill, at } from './parts'
++import { leftWords } from './PlanInterview'
++import type { MockState } from './switches'
++
++/** rest: two parked plugin questions in the row. open: the same, the reader told to press Answer (the row's own
++ *  box is the component's state). answered: the designer's question answered, one left. */
++export function NeedsPlugins({ state }: { state: MockState }) {
++  const designer = designerInterview('open')
++  const items: NeedItem[] = [
++    ...(state === 'answered' ? [] : [{
++      kind: 'question' as const, taskId: designerTask.task_id, index: 0, title: `${designerTask.step_id} (question 13)`,
++      question: Q13, options: Q13_OPTIONS, recommended: Q13_OPTIONS[0]!.label, mayAnswer: true,
++    }]),
++    {
++      kind: 'question' as const, taskId: unattendedTask.task_id, index: 0, title: `${unattendedTask.workflow_id} › ${unattendedTask.step_id}`,
++      question: unattendedTask.question, options: unattendedTask.options, recommended: unattendedTask.recommended, mayAnswer: true,
++    },
++  ]
++  const rows = [
++    ...(state === 'answered' ? [] : [{ id: designerTask.task_id, step: designerTask.step_id, mode: designerTask.plugins.gstack.mode,
++      skill: designer.skill ?? 'not known', expires: designer.waiting.expires_at, page: true }]),
++    { id: unattendedTask.task_id, step: unattendedTask.step_id, mode: unattendedTask.plugins.gstack.mode,
++      skill: unattendedTask.skill, expires: unattendedTask.expires_at, page: false },
++  ]
++  return (
++    <div className="pc-page">
++      <PageHead title="Workflows" />
++      <Item f="N1 N2 N3">
++        <NeedsYou items={items} approvals={[]} />
++      </Item>
++      <Card level={3} title="Plugin steps parked on a question">
++        <Item f="N5 N4">
++          <ul className="pc-list">
++            {rows.map((r) => (
++              <li key={r.id}>
++                <b>{r.step}</b> · gstack, {MODE_WORDS[r.mode]} mode · asked by <Skill name={r.skill} /> ·{' '}
++                {leftWords(r.expires) === null ? 'expired' : `waits ${leftWords(r.expires)} more, until ${at(r.expires)}`}; unanswered, the step ends and nobody&rsquo;s answer is guessed
++                {r.page && <> · <a className="c-link" href="/runs/run_4c1e09d2">Open the interview with its previews</a></>}
++                {!r.page && <span className="pc-dim"> · it ran unattended and this question had no recommended answer</span>}
++              </li>
++            ))}
++          </ul>
++        </Item>
++      </Card>
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/PlanInterview.tsx b/apps/swarm-ui/src/pluginsconsole/PlanInterview.tsx
+new file mode 100644
+index 0000000..1a26e77
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/PlanInterview.tsx
+@@ -0,0 +1,166 @@
++// MOCK-HOOK FILE: the interview on the planning page, and the proposal, plain layout (features.md §3, I1-I18).
++
++import { useState } from 'react'
++import { FIXTURE_CLOCK } from '../api'
++import { Banner, Button, Card, Chip } from '../components'
++import { PageHead } from '../Shell'
++import { designerInterview, designerTask, plannerRun } from './fixtures'
++import { Item, MODE_WORDS, PluginSummary, PreviewView, Skill, at, person, via } from './parts'
++import type { MockState } from './switches'
++
++/** Hours and minutes from the fixture clock to `iso`; null once past. */
++export function leftWords(iso: string | null): string | null {
++  if (iso === null) return null
++  const ms = Date.parse(iso) - Date.parse(FIXTURE_CLOCK)
++  if (ms <= 0) return null
++  const m = Math.floor(ms / 60_000)
++  return `${Math.floor(m / 60)} h ${m % 60} min`
++}
++
++/** The CLI marks the recommended option by ending its label in "(Recommended)"; the chip says it once. */
++export function plainLabel(label: string | null): string {
++  return (label ?? 'no label').replace(/\s*\(Recommended\)$/, '')
++}
++
++/** rest: the designer step mid-interview, question 13 open, the recommended option's preview shown.
++ *  open: the person's own-words box open, another option's preview shown. answered: question 13 answered,
++ *  the step waiting to resume. proposal: a planner-mode issue run whose interview ended, waiting for approval. */
++export function PlanInterview({ state }: { state: MockState }) {
++  return state === 'proposal' ? <Proposal /> : <Interview state={state} />
++}
++
++function Interview({ state }: { state: MockState }) {
++  const read = designerInterview(state === 'answered' ? 'answered' : 'open')
++  const q = read.questions[0]!
++  const [shown, setShown] = useState<string>(state === 'open' ? q.options[1]!.label! : q.recommended!)
++  const [ownWords, setOwnWords] = useState(state === 'open')
++  const left = leftWords(read.waiting.expires_at)
++  const gs = designerTask.plugins.gstack
++  return (
++    <div className="pc-page">
++      <PageHead title="roombook-checkout-redesign" />
++      <Item f="I14">
++        <dl className="pc-facts">
++          <dt>Step</dt><dd>{designerTask.step_id} in {designerTask.workflow_id} · {designerTask.repository} · {designerTask.runner_profile}</dd>
++          <dt>Plugin</dt><dd><PluginSummary plugins={designerTask.plugins} /> gstack 1.92.55.0, {MODE_WORDS[gs.mode]} mode: {gs.skills.join(', ')}</dd>
++        </dl>
++      </Item>
++      <Item f="I13">
++        <Banner tone="info" title={read.waiting.open ? 'Parked: waiting for your answer' : 'Answered: the step will resume'}>
++          {read.waiting.open
++            ? 'The step holds no machine and no slot while it waits. Your answer starts it again, in the same conversation.'
++            : 'The answer is recorded. The step is queued to start again with it; it holds nothing until then.'}
++        </Banner>
++      </Item>
++      <Item f="I15"><p className="pc-lead">Question {read.interview.length + 1}. {read.interview.length} answered so far; how many more the agent will ask is not known.</p></Item>
++
++      <Card title={<>Question {read.interview.length + 1}</>}>
++        <Item f="I1"><p className="pc-question">{q.question}</p>{q.context !== null && <p className="pc-dim">{q.context}</p>}</Item>
++        <Item f="I5"><p className="pc-dim pc-small">Asked by the skill <Skill name={read.skill ?? 'not known'} /> at {at(read.waiting.asked_at)}.</p></Item>
++        <Item f="I2 I3">
++          <ul className="pc-options" role="list">
++            {q.options.map((o) => (
++              <li key={o.label} className={o.label === shown ? 'is-shown' : ''}>
++                <label className="pc-check">
++                  <input type="radio" name="q13" disabled={!read.waiting.open} defaultChecked={state === 'answered' && o.label === q.answer?.choice} />
++                  <span><b>{plainLabel(o.label)}</b>{o.label === q.recommended && <Chip>Recommended</Chip>}<br /><span className="pc-dim">{o.description}</span></span>
++                </label>
++                <Button size="sm" kind="ghost" onClick={() => setShown(o.label!)}>{o.label === shown ? 'Preview shown' : 'Show preview'}</Button>
++              </li>
++            ))}
++          </ul>
++        </Item>
++        <Item f="I4">
++          <h3 className="pc-h3">Preview: {plainLabel(shown)}</h3>
++          <PreviewView preview={read.previews[shown]} tall />
++        </Item>
++        <Item f="I9 I10">
++          {read.waiting.open ? (
++            <div className="pc-row">
++              <Button kind="primary">Answer with the chosen option</Button>
++              <Button>Use the recommended answer</Button>
++              <Button kind="ghost" onClick={() => setOwnWords(!ownWords)}>Answer in my own words</Button>
++            </div>
++          ) : (
++            <p>Answered by {person(q.answer!.by)} {via(q.answer!.via)} at {at(q.answer!.at)}: {q.answer!.choice}</p>
++          )}
++          {ownWords && read.waiting.open && (
++            <label className="pc-field">Your answer, in your own words<textarea rows={3} defaultValue="The summary, but show the timer only in the last 5 minutes." /></label>
++          )}
++        </Item>
++        <Item f="I11 I12">
++          <p className="pc-dim pc-small">
++            {left === null ? 'Its 24 hours are up.' : <>Waits {left} more (24 hours from when it was asked, until {at(read.waiting.expires_at)}).</>}{' '}
++            Unanswered by then, the step ends with the question left open; nobody&rsquo;s answer is guessed. The first answer stands: a second one is refused.
++          </p>
++        </Item>
++      </Card>
++
++      <Card level={3} title="The proposal">
++        <Item f="I16 I17 I18">
++          <p className="pc-dim">Not yet: the interview is still running. When it ends, the design doc, its diagrams and the chosen HTML design
++            are shown here to Approve, Edit or Reject. This workflow asks a person to approve; it is not set to approve automatically.</p>
++        </Item>
++      </Card>
++
++      <Card title={<>Answered so far ({read.interview.length})</>}>
++        <Item f="I6 I7 I8">
++          <div className="c-tbl">
++            <table>
++              <thead><tr><th>#</th><th>Question</th><th>Answer</th><th>Who</th><th>Where</th><th>Skill</th></tr></thead>
++              <tbody>
++                {read.interview.map((r) => (
++                  <tr key={r.n}>
++                    <td>{r.n}</td><td className="pc-wrap">{r.question}</td><td className="pc-wrap">{r.answer.choice}</td>
++                    <td>{person(r.answer.by)}</td><td>{via(r.answer.via)}</td><td><code>{r.skill}</code></td>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div>
++        </Item>
++      </Card>
++    </div>
++  )
++}
++
++function Proposal() {
++  const r = plannerRun
++  const [auto] = useState(r.plan_approval === 'auto')
++  return (
++    <div className="pc-page">
++      <PageHead title={r.issue.title} />
++      <Item f="I14">
++        <dl className="pc-facts">
++          <dt>Run</dt><dd>{r.id} · {r.issue.ref} · started by {person(r.created_by)}</dd>
++          <dt>Planner</dt><dd><PluginSummary plugins={r.plugins} /> {r.plugins.gstack.skills.join(', ')}</dd>
++          <dt>Interview</dt><dd>Ended {at(r.interview.ended_at)} after {r.interview.asked} questions: {r.interview.answered_by.map(([b, v, n]) => `${n} by ${person(b)} ${via(v)}`).join(', ')}</dd>
++        </dl>
++      </Item>
++      <Card title="The proposal">
++        <Item f="I16">
++          <p>{r.plan.summary}</p>
++          <ol className="pc-list">{r.plan.steps.map((s) => <li key={s.step_id}><b>{s.title}</b> <span className="pc-dim">{s.prompt}</span></li>)}</ol>
++          <p className="pc-dim">Requirements: {r.plan.requirements.join('; ')}. Estimate: {r.plan.estimate}.</p>
++          <h3 className="pc-h3">Design doc: <code>{r.proposal.design_doc}</code></h3>
++          <p>{r.proposal.design_doc_lead}</p>
++          {r.proposal.diagrams.map((d) => (
++            <figure key={d.title} className="pc-fig"><PreviewView preview={{ kind: 'diagram', svg: d.svg, alt: d.alt }} /><figcaption>{d.title}</figcaption></figure>
++          ))}
++        </Item>
++        <Item f="I17 I18">
++          {auto ? (
++            <p>Approved automatically: this run was started with plan approval set to automatic.</p>
++          ) : (
++            <>
++              <p className="pc-row">
++                <Button kind="primary">Approve</Button><Button>Edit</Button><Button kind="danger">Reject</Button>
++              </p>
++              <p className="pc-dim pc-small">You decide on revision {r.plan_revision}, digest <code>{r.plan_digest.slice(0, 19)}</code>. If the plan changes before you decide, the decision is refused and the new plan shown. This run asks a person to approve; a run started with automatic approval would go ahead on its own.</p>
++            </>
++          )}
++        </Item>
++      </Card>
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/PluginsConsole.tsx b/apps/swarm-ui/src/pluginsconsole/PluginsConsole.tsx
+new file mode 100644
+index 0000000..d5b9689
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/PluginsConsole.tsx
+@@ -0,0 +1,36 @@
++// MOCK-HOOK FILE: the plugins console mock-ups' entry: ?pa picks the direction, ?ps the screen, ?pst the state.
++
++import { BuilderPlugins } from './BuilderPlugins'
++import { ConfigPlugins } from './ConfigPlugins'
++import { NeedsPlugins } from './NeedsPlugins'
++import { PlanInterview } from './PlanInterview'
++import { MOCK_BRIDGE_LANDED, MOCK_PA, MOCK_PS, MOCK_PST, MOCK_PV } from './switches'
++import './pluginsconsole.css'
++import { BuilderB } from './B/BuilderB' // MOCK-HOOK
++import { ConfigB } from './B/ConfigB' // MOCK-HOOK
++import { NeedsB } from './B/NeedsB' // MOCK-HOOK
++import { PlanB } from './B/PlanB' // MOCK-HOOK
++import './B/b.css' // MOCK-HOOK
++
++/** Directions a and b are built by later steps; until then each draws the base layout under its name. */
++export function PluginsConsole() {
++  const screen = MOCK_PA === 'b' ? screenB() /* MOCK-HOOK: direction B */ : (() => {
++    switch (MOCK_PS) {
++      case 'config': return <ConfigPlugins state={MOCK_PST} viewer={MOCK_PV === 'viewer'} bridgeLanded={MOCK_BRIDGE_LANDED} />
++      case 'builder': return <BuilderPlugins state={MOCK_PST} bridgeLanded={MOCK_BRIDGE_LANDED} />
++      case 'plan': return <PlanInterview state={MOCK_PST} />
++      case 'needs': return <NeedsPlugins state={MOCK_PST} />
++    }
++  })()
++  return <div className={`pc-root pc-${MOCK_PA ?? 'base'}`} data-pa={MOCK_PA} data-ps={MOCK_PS} data-pst={MOCK_PST}>{screen}</div>
++}
++
++/** MOCK-HOOK: direction B's layouts (capability cards, guided picker, full-page interview). */
++function screenB() {
++  switch (MOCK_PS) {
++    case 'config': return <ConfigB state={MOCK_PST} viewer={MOCK_PV === 'viewer'} bridgeLanded={MOCK_BRIDGE_LANDED} />
++    case 'builder': return <BuilderB state={MOCK_PST} bridgeLanded={MOCK_BRIDGE_LANDED} />
++    case 'plan': return <PlanB state={MOCK_PST} />
++    case 'needs': return <NeedsB state={MOCK_PST} />
++  }
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/base-notes.md b/apps/swarm-ui/src/pluginsconsole/base-notes.md
+new file mode 100644
+index 0000000..3b48272
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/base-notes.md
+@@ -0,0 +1,101 @@
++<!-- MOCK-HOOK FILE: how to use the plugins console scaffold (lane PLUGINS-CONSOLE-MOCKUPS, step foundation). -->
++# The plugins console scaffold: what a direction can use
++
++Mock-ups only: nothing here is committed. The scaffold is `plugins-console-base.patch` (apply it to main at f85da72
++with `git apply`). Read `features.md` for the inventory; every element that places an item carries
++`data-f="<ids>"`, so a direction can check it placed them all
++(`[...new Set([...document.querySelectorAll('.pc-root [data-f]')].flatMap(e => e.dataset.f.split(' ')))]`).
++
++## Run it
++
++```bash
++cd apps/swarm-ui && npm ci && npx vite --port 5173   # fixtures: the dev build with no VITE_LIVE (api.ts USE_FIXTURES)
++```
++
++Open the screen's path with the switches. The router drops any query it does not know on its first render, so the
++switches are read ONCE at module load (`switches.ts`) and kept for the page's life; a navigation inside the console
++keeps them, a reload needs them in the address again.
++
++| Screen | Open | What the real chrome around it is |
++|---|---|---|
++| config | `/config/mcp-servers?pa=base&ps=config` | Config section (the nav highlights MCP servers: there is no Plugins tab yet) |
++| builder | `/submit/workflow?pa=base&ps=builder` | Submit › A workflow |
++| plan | `/runs/run_4c1e09d2?pa=base&ps=plan` | Work › Runs › a run (the breadcrumb names the fixture run, not the step) |
++| needs | `/workflows?pa=base&ps=needs` | Work › Workflows |
++
++## URL switches (all `// MOCK-HOOK`)
++
++| Switch | Values | Meaning |
++|---|---|---|
++| `?pa=` | `base`, `a`, `b` | the direction. With no `pa` the console draws itself unchanged. `a` and `b` draw the base layout until their steps replace `PluginsConsole.tsx`'s switch |
++| `?ps=` | `config`, `builder`, `plan`, `needs` | the screen (default `config`) |
++| `?pst=` | `rest`, `open`, `answered`, `proposal` | the state (default `rest`; per screen below) |
++| `?pv=` | `admin`, `viewer` | who reads Config › Plugins (default `admin`) |
++| `?pb=today` | | main as it is today: planner and designer refused with the bridge reason (`available: false`). Without it the fixtures draw the console the plan builds for, with the bridge landed |
++| theme | the console's own switch | Profile › Light / Dark / System, stored as `swarm.theme` in local storage (`theme.ts`) |
++
++States per screen:
++
++| Screen | rest | open | answered | proposal |
++|---|---|---|---|---|
++| config | admin's page, gstack allowed | the change form open, gstack unticked (the refusal warning shown) | just saved: the new audit row and "Saved" | same as rest |
++| builder | 6 steps from the last run, what each used, the picker open on `plan-checkout` (planner) | the picker open on `review` (unattended, 4 skills) | the finished run: what each step used, no picker | same as answered's sibling: rest without the picker |
++| plan | the hard case: designer step mid-interview, 12 answered, question 13 pending with 4 options and HTML previews | the own-words box open, option 2's preview shown | question 13 answered, the step queued to resume | the planner-mode issue run, interview ended, proposal waiting for Approve / Edit / Reject |
++| needs | two parked plugin questions (designer, unattended) | same as rest (Answer opens the real row's box) | the designer's answered, one left | same as rest |
++
++## Files (`apps/swarm-ui/src/pluginsconsole/`, each starts with a `// MOCK-HOOK FILE` line)
++
++| File | What |
++|---|---|
++| `switches.ts` | `MOCK_PA`, `MOCK_PS`, `MOCK_PST`, `MOCK_PV`, `MOCK_BRIDGE_LANDED`, `SCREEN_PATH` |
++| `PluginsConsole.tsx` | the entry: picks the screen; wraps it in `.pc-root.pc-<pa>` with `data-pa/ps/pst` |
++| `fixtures.ts` | every fixture (below) |
++| `parts.tsx` | `Item` (a region carrying `data-f`), `Skill` (name, with `notes` what it does), `PluginSummary` (B8, the compact chip), `UsedTable` (B9/B10), `PreviewView` (text, diagram as an SVG image, HTML in `<iframe sandbox="">` with no scripts), `person`, `via`, `at`, `MODE_WORDS`, `MODE_MEANS` |
++| `ConfigPlugins.tsx` | Config › Plugins (C1-C14) |
++| `BuilderPlugins.tsx` | the six-step builder and `Picker` (B1-B11) |
++| `PlanInterview.tsx` | `Interview` (I1-I15, and I16-I18 as "not yet") and `Proposal` (I14, I16-I18); `leftWords`, `plainLabel` |
++| `NeedsPlugins.tsx` | the real `work/NeedsYou` with two `QuestionNeed`s, and the plugin facts per row (N1-N5) |
++| `pluginsconsole.css` | `.pc-*` plain layout, console tokens only |
++| `features.md`, `base-notes.md` | the inventory and this file |
++
++Edits to existing files: `App.tsx` only, two imports and one condition before `at.missing`, each marked `// MOCK-HOOK`:
++the page body is `<PluginsConsole />` when `?pa` is set, so the shell, nav, dock and theme are the real ones.
++
++Console components used: `PageHead` (Shell), `Card`, `Chip`, `Dash`, `Button`, `Banner`, `Segmented` (components/),
++`NeedsYou` (work/), and the `c-tbl` table, `c-link`. Tokens: `--text`, `--text-dim`, `--line`, `--line-soft`,
++`--surface-2`, `--ctl-bd`, `--r-ctl`, `--t-*`/`--lh-*`, `--mono`, `--ctl-s3`, `--s-warn`.
++
++## Fixtures (`fixtures.ts`)
++
++Times count from `FIXTURE_CLOCK` (api.ts, 2026-10-19T12:00:00Z). Tenant `u-bogdan`. People: Bogdan
++(bogdan@example.com), Ana Moreau (ana.moreau@example.com), Kenji Sato (kenji.sato@example.com).
++
++| Key | Shape is | What |
++|---|---|---|
++| `pluginsRead({canEdit, allowed?, bridgeLanded?})` | **served**: `GET /v1/workspaces/{t}/plugins` (`plugins.view`) | allowed `['gstack']`, set by Bogdan, catalogue `[gstackEntry]` |
++| `gstackEntry(bridgeLanded)` | **served**: `catalogue_view()` entry | gstack 1.92.55.0, the 5 claude-code profiles, unattended 12 skills, planner 6, designer 4 (no `cso`) |
++| `BRIDGE_REASON`, `refusalWords` | **served** words: `plugincatalogue.BRIDGE_REASON`, `plugins.check_step` messages | |
++| `skillNotes` | NOT SERVED | a few words per skill |
++| `neverOffered` | NOT SERVED | the never-offered skills, grouped, each with why |
++| `changes` | NOT SERVED by the route (audit rows `workspace_plugins_set` exist) | `{at, by, before, after}` newest first |
++| `StepPlugins` | **served**: `metadata.work_contract.capabilities.plugins` | `{gstack: {mode, skills}}` |
++| `UsedPlugins` | **served**: attempt `result_summary.plugins` (`agent_worker.plugins.record`) | `{version, mode, skills, skill_runs}`; `skill_runs: null` is the fixture's "not read" |
++| `builderSteps`, `workflowName` | step shape trimmed from `WorkflowStepCreate` | 6 steps: scope, plan-checkout (gstack planner, 3 skills, counts not read), build, review (gstack unattended, 4 skills: review 2, investigate 1, health 0, plan-eng-review 1), second-look (codex: refused, cannot load plugins), merge |
++| `designerInterview('open' \| 'answered')` | **served** core: `GET /v1/tasks/{id}/questions` on a bridged wait (`_serve_wait`); plus NOT SERVED `skill`, `previews`, `interview` | step `roombook-checkout-redesign`, question 13 with 4 options, recommended first, HTML preview each; 12 answered (6 in the console, 5 in Voice it, 1 in Claude Code) |
++| `Q13`, `Q13_OPTIONS`, `designerTask` | | the hard case's question and its step |
++| `unattendedTask` | served-like question, `recommended: null` | northwind-crm review step's consent question (no recommendation) |
++| `plannerRun` | `IssueRun` fields (`plan`, `plan_digest`, `plan_revision`, `plan_approval`) + NOT SERVED `plugins`, `interview`, `proposal` | northwind-crm#214, planner mode, interview ended after 6, proposal waiting for approval |
++| `ServedAnswer`, `VIA_WORDS` | **served**: `codec.owner_answer_to_api` | `via` adds `voice-it`, NOT BUILT |
++
++## Shapes not built yet on main (the smallest honest ones were invented)
++
++1. **Skill descriptions and the never-offered list** are not served by `GET .../plugins`; the catalogue serves names only.
++2. **The setting's history**: the route serves the last `set_by`/`set_at` only; the audit rows are not served to the console.
++3. **No "signed" flag**: `view()` serves only the signed names, so an unsigned block reads as "none allowed", indistinguishable from nobody choosing. A direction that wants to say "a list was found but not signed" needs a field.
++4. **Previews and the skill that asked**: the read serves `{question, options: [{label, description}], recommended, context}`; `options[].preview` (in the hook payload) and the asking skill (read off the session, Bridge finding 3) are dropped.
++5. **The interview so far**: one bridged question is one wait; `metadata.question_waits_earlier` keeps at most 5 (`MAX_EARLIER_WAITS`), so a 12-question interview's history is not servable as built.
++6. **`via: "voice-it"`**: `AnswerBody.via` accepts `console`, `claude-code`, `github-comment` only.
++7. **The proposal's design doc and diagrams**: `IssueRun.plan` is `RunPlan` (summary, steps, requirements, estimate); a planner/designer step's design doc, diagrams and chosen HTML have no field.
++8. **A step's plugins on the issue run**: `IssueRun` has no field naming the planner's plugin and mode.
++9. **Planner and designer modes are refused on main** (`SUPPORTED_MODES = ("unattended",)`): `?pb=today` draws that.
++10. **A plugins nav entry**: Config has no Plugins tab (`App.tsx` SECTIONS, `Spine.tsx` config, `paths.ts`); the scaffold sits under MCP servers' path.
+diff --git a/apps/swarm-ui/src/pluginsconsole/features.md b/apps/swarm-ui/src/pluginsconsole/features.md
+new file mode 100644
+index 0000000..e7fe252
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/features.md
+@@ -0,0 +1,75 @@
++<!-- MOCK-HOOK FILE: the plugins console mock-ups' inventory (lane PLUGINS-CONSOLE-MOCKUPS, step foundation). -->
++# The plugins console: every item each direction must place
++
++Read on main at f85da72, 4 November 2026. Each line: an id (the scaffold marks the element that carries it with
++`data-f="<id>"`), the item, and where it comes from. "Design" is `docs/design/agent-plugins.md`, "Bridge" is
++`docs/design/agent-plugins-question-bridge.md`. **Not served** means main has no field for it yet; the fixture invents
++the smallest honest shape (base-notes.md, "Shapes not built yet").
++
++## 1. Config › Plugins (admin)
++
++| id | Item | Comes from |
++|---|---|---|
++| C1 | The plugin's name (gstack) | `GET /v1/workspaces/{t}/plugins` → `catalogue[].name` (`swarm_api/plugins.py` `catalogue_view`); Design, "A closed plugin catalogue" |
++| C2 | Its pinned version (1.92.55.0), fixed in the image, never chosen by a person | `catalogue[].version` (`plugincatalogue.GSTACK`); Design, "Packaging: baked in, pinned" |
++| C3 | The runner profiles it supports (the five claude-code profiles) | `catalogue[].runner_profiles` (`CLAUDE_CODE_PROFILES`) |
++| C4 | Per mode (unattended, planner, designer), the skills it may offer | `catalogue[].modes[mode].skills`; Design, the table "Mode / Skills offered" |
++| C5 | What each skill does, in a few words | **Not served**: fixture `skillNotes`, worded from gstack's skill descriptions as the design doc summarises them |
++| C6 | Whether each mode runs today, and if not why (planner and designer wait for the question bridge) | `catalogue[].modes[mode].available` / `.reason` (`BRIDGE_REASON`) |
++| C7 | The never-offered skills, each shown as such with why (`careful`, `guard`, `cso`, `gstack-upgrade`, ...) | **Not served**: fixture `neverOffered`, from Design "Never offered" and `plugins.py` (cso left out, 3 Nov) |
++| C8 | The workspace setting: which catalogue plugins this workspace may use | `plugins.allowed` (`PluginsStore`, `workspace_settings/{t}.plugins`) |
++| C9 | The default when nobody chose: none allowed | `defaults.plugins.allowed` (`DEFAULT_ALLOWED = ()`) |
++| C10 | Changing it: admin only (workspace owner or admin, or a platform admin) | `can_edit`; `PUT /v1/workspaces/{t}/plugins` `{allowed}` (`authorize_write`) |
++| C11 | Signed: only a block whose MAC verifies allows anything; an unsigned list allows nothing | `plugins.py` module doc, `allowed_plugins` (the read serves signed names only; no "signed" flag is served) |
++| C12 | Audited: who changed it and when (last change, and the changes before it) | `set_by`, `set_at`; audit row `workspace_plugins_set` (**the history is not served** by this route: fixture `changes`) |
++| C13 | A viewer sees it all read only, told why they cannot change it | `can_edit: false` (`authorize_read` lets every member read) |
++| C14 | Chosen by name only: no path, command, URL or version is taken from a person | Invariant 10; `PluginsPut` takes `allowed` names only; `catalogue_view` does not serve the install path |
++
++## 2. The step's plugin picker in the workflow builder
++
++| id | Item | Comes from |
++|---|---|---|
++| B1 | On one step: choose a plugin from the catalogue | `SubmitWorkflow.tsx` step editor; sent as `metadata.work_contract.capabilities.plugins` (`plugins.FIELD_PATH`) |
++| B2 | Its mode: unattended, planner or designer | `capabilities.plugins.<name>.mode` (`plugincatalogue.MODES`) |
++| B3 | The skills it may use, from what the catalogue offers for that mode | `capabilities.plugins.<name>.skills`; `check_step` refuses a skill the mode does not offer |
++| B4 | Only plugins the workspace allowed are offered as choosable | `GET /v1/plugins` → `plugins.allowed` |
++| B5 | Refusal, said plainly: this step's runner profile cannot load plugins | `check_step`: "gstack runs only on the profiles ..., not <profile>" |
++| B6 | Refusal, said plainly: the workspace has not allowed it (and who can) | `check_step`: "this workspace has not allowed gstack: its owner or admin allows it ..." |
++| B7 | Refusal: a mode that does not run yet (planner, designer until the bridge lands) | `check_step` / `catalogue[].modes[m].available: false` with `reason` |
++| B8 | The chosen set shown compactly on the step afterwards | `SubmitWorkflow.tsx` step card; `RunnerPicker.tsx` `StepRunnerFacts` sits beside it |
++| B9 | On a finished step, what it actually used: plugin, version, mode, skills | attempt `result_summary.plugins.<name>` `{version, mode, skills}` (`agent_worker/plugins.record`) |
++| B10 | How many times each skill ran (0 is a measured zero; not read is shown as not known) | `result_summary.plugins.<name>.skill_runs` |
++| B11 | The submission's own refusal, on the step it names | 422 `validation_failed`, `detail.plugins = "plugin_refused"`, `detail.step_id` (`plugins._refuse`) |
++
++## 3. The interview on the planning page (planner and designer modes)
++
++| id | Item | Comes from |
++|---|---|---|
++| I1 | The pending question's text | `GET /v1/tasks/{id}/questions` → `questions[i].question` (a bridged `question_wait`) |
++| I2 | Its options (label and description) | `questions[i].options[]` |
++| I3 | The recommended option, marked | `questions[i].recommended` (the CLI's "(Recommended)" label convention; Bridge, finding 3) |
++| I4 | Each option's preview: text, a diagram, or a rendered HTML design | Hook payload `options[].preview` (Bridge, finding 3); **not served** by the read: fixture `previews` |
++| I5 | The skill that asked | **Not served** (not in the hook payload; Bridge, finding 3 and "Unknowns"): fixture `skill` |
++| I6 | The questions answered so far | **Not served whole**: `metadata.question_waits_earlier` keeps 5 (`MAX_EARLIER_WAITS`): fixture `interview` |
++| I7 | Who answered each | `answer.by` |
++| I8 | Where each was answered: the console, Voice it, Claude Code | `answer.via` (`console`, `claude-code`, `github-comment` on main; **`voice-it` not built**: fixture) |
++| I9 | "Use the recommended answer" | `POST /v1/tasks/{id}/answers` with `choice = recommended` |
++| I10 | An answer in the person's own words | `POST .../answers` `text`; `question_bridge.answer_message` marks it as the person's own words |
++| I11 | How long it waits: 24 hours from when it was asked, then the step ends with the question left open, never answered for anyone | `waiting.asked_at`, `waiting.expires_at` (`BRIDGE_WAIT_MAX_SECONDS`) |
++| I12 | The first answer stands; a second is refused | 409 `already_answered` (`agent_questions.ALREADY_ANSWERED`) |
++| I13 | While it waits the step is parked: no lease, no slot, no container | Design, "The question bridge" step 2; invariant 1 |
++| I14 | The step's plugin context: plugin, version, mode, skills it may use | step `capabilities.plugins`; catalogue version |
++| I15 | Interview progress: how many answered; how many are left is not known | count of `interview`; the total is the agent's, never served |
++| I16 | The proposal when the interview ends: plan, design doc, diagrams | `IssueRun.plan` (`RunPlan`) on main; design doc and diagrams **not served**: fixture `proposal` |
++| I17 | Approve, Edit or Reject against the plan's digest | `Runs.tsx` plan decision (`approveRun` / `editRunPlan` / `rejectRun`, `plan_digest`) |
++| I18 | Or approved automatically when the run asks for that | `IssueRun.plan_approval: 'auto'` |
++
++## 4. Needs you (owner questions)
++
++| id | Item | Comes from |
++|---|---|---|
++| N1 | The interview's pending question as a parked step in Needs you | `work/NeedsYou.tsx` `QuestionNeed`; the bridged wait parks the step |
++| N2 | An unattended step's unanswerable question parks there too | Design, "Unattended" decision; `agent_questions.py` "A PLUGIN STEP'S QUESTION" |
++| N3 | Answer in the row, or open the planning page for the previews | `NeedsYou` Answer opens the box in the row (`answerQuestion`) |
++| N4 | Its expiry (24 hours) and that nothing is answered for anyone | `waiting.expires_at` |
++| N5 | Which plugin, mode and skill asked | step `capabilities.plugins`; fixture `skill` |
+diff --git a/apps/swarm-ui/src/pluginsconsole/fixtures.ts b/apps/swarm-ui/src/pluginsconsole/fixtures.ts
+new file mode 100644
+index 0000000..1bc8f15
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/fixtures.ts
+@@ -0,0 +1,348 @@
++// MOCK-HOOK FILE: the plugins console mock-ups' fixtures (lane PLUGINS-CONSOLE-MOCKUPS). Invented data only.
++//
++// Every shape below is either what main serves (named beside it) or, where main
++// serves nothing yet, the smallest honest shape, marked NOT SERVED. base-notes.md
++// lists both. Times count from the console's FIXTURE_CLOCK, as every fixture does.
++
++import { FIXTURE_CLOCK } from '../api'
++
++const NOW = Date.parse(FIXTURE_CLOCK)
++const ago = (minutes: number): string => new Date(NOW - minutes * 60_000).toISOString()
++const ahead = (minutes: number): string => new Date(NOW + minutes * 60_000).toISOString()
++
++export const TENANT = 'u-bogdan'
++export const PEOPLE: Readonly<Record<string, string>> = {
++  'bogdan@example.com': 'Bogdan',
++  'ana.moreau@example.com': 'Ana Moreau',
++  'kenji.sato@example.com': 'Kenji Sato',
++}
++
++// --- Config › Plugins: GET /v1/workspaces/{t}/plugins (swarm_api/plugins.py `view`) -------------------
++
++export type PluginMode = 'unattended' | 'planner' | 'designer'
++export const MODES: readonly PluginMode[] = ['unattended', 'planner', 'designer']
++
++/** `catalogue_view()`: one entry. The install path is the image's and is not served. */
++export interface CatalogueEntry {
++  name: string
++  version: string
++  runner_profiles: string[]
++  modes: Record<PluginMode, { skills: string[]; available: boolean; reason?: string }>
++}
++
++/** `view()`: what GET and PUT answer. */
++export interface PluginsRead {
++  tenant_id: string
++  plugins: { allowed: string[] }
++  defaults: { plugins: { allowed: string[] } }
++  set_at: string | null
++  set_by: string | null
++  can_edit: boolean
++  catalogue: CatalogueEntry[]
++}
++
++export const CLAUDE_CODE_PROFILES = [
++  'claude-code', 'claude-code-large', 'claude-code-review', 'claude-code-browser', 'claude-code-lightpanda',
++]
++
++/** The bridge's reason, word for word (`plugincatalogue.BRIDGE_REASON`). */
++export const BRIDGE_REASON =
++  'runs an interview with a person, which needs the question bridge; until it lands only unattended mode runs'
++
++/** gstack as `plugincatalogue.GSTACK` lists it. `bridgeLanded` draws the console the plan builds for:
++ *  planner and designer available. False draws main today: both refused with BRIDGE_REASON. */
++export function gstackEntry(bridgeLanded: boolean): CatalogueEntry {
++  const mode = (skills: string[], always = false) =>
++    always || bridgeLanded ? { skills, available: true } : { skills, available: false, reason: BRIDGE_REASON }
++  return {
++    name: 'gstack',
++    version: '1.92.55.0',
++    runner_profiles: CLAUDE_CODE_PROFILES,
++    modes: {
++      unattended: mode(['review', 'investigate', 'health', 'qa-only', 'qa', 'design-review', 'document-generate',
++        'document-release', 'ship', 'plan-eng-review', 'plan-design-review', 'autoplan'], true),
++      planner: mode(['office-hours', 'plan-ceo-review', 'plan-eng-review', 'plan-devex-review', 'autoplan', 'spec']),
++      designer: mode(['design-consultation', 'plan-design-review', 'design-review', 'design-html']),
++    },
++  }
++}
++
++export function pluginsRead(opts: { canEdit: boolean; allowed?: string[]; bridgeLanded?: boolean }): PluginsRead {
++  return {
++    tenant_id: TENANT,
++    plugins: { allowed: opts.allowed ?? ['gstack'] },
++    defaults: { plugins: { allowed: [] } },
++    set_at: ago(26 * 60),
++    set_by: 'bogdan@example.com',
++    can_edit: opts.canEdit,
++    catalogue: [gstackEntry(opts.bridgeLanded ?? true)],
++  }
++}
++
++/** NOT SERVED: what each skill does, in a few words (from gstack's own skill descriptions). */
++export const skillNotes: Readonly<Record<string, string>> = {
++  review: 'Reviews the change for bugs before it lands',
++  investigate: 'Finds the root cause of a failure, step by step',
++  health: 'Scores the codebase: tests, types, lint, dead code',
++  'qa-only': 'Tests the running app and reports, fixes nothing',
++  qa: 'Tests the running app and fixes what it finds',
++  'design-review': 'Checks the built pages against the design',
++  'document-generate': 'Writes the missing docs for what changed',
++  'document-release': 'Brings the docs up to date for a release',
++  ship: 'Prepares the hand-off; never pushes',
++  'plan-eng-review': 'Reviews a plan as an engineering lead',
++  'plan-design-review': 'Reviews a plan as a designer',
++  autoplan: 'Runs the plan reviews one after another',
++  'office-hours': 'Interviews you about the problem before any plan',
++  'plan-ceo-review': 'Challenges the plan’s scope and ambition',
++  'plan-devex-review': 'Reviews a plan for developer experience',
++  spec: 'Writes the specification as a file, nothing else',
++  'design-consultation': 'Interviews you to build a design system',
++  'design-html': 'Turns the chosen design into working HTML',
++}
++
++/** NOT SERVED: the skills gstack ships that are never offered, and why (design doc, "Never offered"). */
++export const neverOffered: ReadonlyArray<{ skills: string[]; why: string }> = [
++  { skills: ['careful', 'guard'], why: 'They answer “ask” before risky commands, and nobody can answer inside an agent' },
++  { skills: ['cso'], why: 'Left out of the first catalogue: as packaged it cannot run (Bogdan, 3 November 2026)' },
++  { skills: ['gstack-upgrade'], why: 'The version is pinned in the image; nothing upgrades at run time' },
++  { skills: ['land-and-deploy', 'canary'], why: 'They merge and deploy; the platform’s merge step does that' },
++  { skills: ['captain', 'pair-agent', 'connect-chrome', 'setup-browser-cookies'], why: 'They drive another agent or a person’s own browser' },
++  { skills: ['gbrain skills', 'iOS skills', 'plan-tune'], why: 'They need tools or accounts the agent images do not carry' },
++  { skills: ['design-shotgun', 'second opinion'], why: 'They call an outside AI service; none is used at first' },
++]
++
++/** NOT SERVED by the plugins route: the audit rows (`workspace_plugins_set`) for this workspace, newest first. */
++export const changes: ReadonlyArray<{ at: string; by: string; before: string[]; after: string[] }> = [
++  { at: ago(26 * 60), by: 'bogdan@example.com', before: [], after: ['gstack'] },
++]
++
++// --- A step's plugins: metadata.work_contract.capabilities.plugins (workcontract.to_document) ---------
++
++export type StepPlugins = Record<string, { mode: PluginMode; skills: string[] }>
++
++/** An attempt's `result_summary.plugins` (agent_worker/plugins.record). `skill_runs: null` = NOT READ:
++ *  the fixture's way to draw a stream the worker could not read (record() itself writes counts). */
++export type UsedPlugins = Record<string, { version: string; mode: PluginMode; skills: string[]; skill_runs: Record<string, number> | null }>
++
++export interface BuilderStep {
++  step_id: string
++  title: string
++  runner_profile: string
++  depends_on: string[]
++  plugins: StepPlugins | null
++  /** What the step's last finished attempt used; null when it has not run. */
++  used: UsedPlugins | null
++  /** Submission's refusal for this step (422 `plugin_refused`), word for word as `check_step` says it. */
++  refusal: string | null
++}
++
++export const workflowName = 'roombook: checkout redesign'
++export const builderSteps: readonly BuilderStep[] = [
++  { step_id: 'scope', title: 'Read the checkout and list what it does', runner_profile: 'claude-code', depends_on: [],
++    plugins: null, used: null, refusal: null },
++  { step_id: 'plan-checkout', title: 'Plan the redesign with the team', runner_profile: 'claude-code', depends_on: ['scope'],
++    plugins: { gstack: { mode: 'planner', skills: ['office-hours', 'plan-eng-review', 'autoplan'] } },
++    used: { gstack: { version: '1.92.55.0', mode: 'planner', skills: ['office-hours', 'plan-eng-review', 'autoplan'], skill_runs: null } },
++    refusal: null },
++  { step_id: 'build', title: 'Build the new checkout', runner_profile: 'claude-code-large', depends_on: ['plan-checkout'],
++    plugins: null, used: null, refusal: null },
++  { step_id: 'review', title: 'Review the change', runner_profile: 'claude-code-review', depends_on: ['build'],
++    plugins: { gstack: { mode: 'unattended', skills: ['review', 'investigate', 'health', 'plan-eng-review'] } },
++    used: { gstack: { version: '1.92.55.0', mode: 'unattended', skills: ['review', 'investigate', 'health', 'plan-eng-review'],
++      skill_runs: { review: 2, investigate: 1, health: 0, 'plan-eng-review': 1 } } },
++    refusal: null },
++  { step_id: 'second-look', title: 'A second review on another model', runner_profile: 'codex', depends_on: ['build'],
++    plugins: { gstack: { mode: 'unattended', skills: ['review'] } }, used: null,
++    refusal: 'gstack runs only on the profiles claude-code, claude-code-large, claude-code-review, claude-code-browser, claude-code-lightpanda, not codex' },
++  { step_id: 'merge', title: 'Merge when checks pass', runner_profile: 'merge', depends_on: ['review', 'second-look'],
++    plugins: null, used: null, refusal: null },
++]
++
++/** The refusals `check_step` words, for the picker to say plainly. */
++export const refusalWords = {
++  profile: (profile: string) =>
++    `gstack runs only on the profiles ${CLAUDE_CODE_PROFILES.join(', ')}, not ${profile}`,
++  notAllowed: 'this workspace has not allowed gstack: its owner or admin allows it in the workspace’s plugins setting',
++  mode: (mode: PluginMode) => `gstack in ${mode} mode ${BRIDGE_REASON}`,
++}
++
++// --- The interview: GET /v1/tasks/{id}/questions on a bridged question wait (agent_questions._serve_wait) -
++
++export type AnswerVia = 'console' | 'claude-code' | 'github-comment' | 'voice-it'
++export const VIA_WORDS: Readonly<Record<AnswerVia, string>> = {
++  console: 'in the console', 'claude-code': 'in Claude Code', 'github-comment': 'on GitHub', 'voice-it': 'in Voice it',
++}
++
++/** `codec.owner_answer_to_api`. `via: 'voice-it'` is NOT BUILT on main (console, claude-code, github-comment). */
++export interface ServedAnswer {
++  question_index: number
++  question: string | null
++  choice: string | null
++  text: string | null
++  by: string | null
++  at: string | null
++  via: AnswerVia | null
++  session: string | null
++  history: unknown[]
++}
++
++/** NOT SERVED: an option's preview, as the hook payload carries it (`options[].preview`). */
++export type Preview = { kind: 'text'; body: string } | { kind: 'diagram'; svg: string; alt: string } | { kind: 'html'; html: string; title: string }
++
++export interface ServedQuestion {
++  question: string | null
++  options: { label: string | null; description: string | null }[]
++  recommended: string | null
++  context: string | null
++  blocking: boolean
++  answer: ServedAnswer | null
++}
++
++/** The read, as `_serve_wait` answers it; `skill`, `previews` and `interview` are NOT SERVED (marked). */
++export interface InterviewRead {
++  task_id: string
++  count: number
++  questions: ServedQuestion[]
++  redacted: boolean
++  redaction_count: number
++  may_answer: boolean
++  may_answer_because: string | null
++  status: 'ok'
++  attempt_id: string
++  waiting: { open: boolean; blocking: number[]; unanswered: number[]; asked_at: string | null; expires_at: string | null; issue_comment_url: string | null }
++  /** NOT SERVED: the skill that asked (not in the hook payload; read off the session). */
++  skill: string | null
++  /** NOT SERVED: per option label, its preview. */
++  previews: Record<string, Preview>
++  /** NOT SERVED: every earlier question of this interview (main keeps 5 earlier waits). */
++  interview: { n: number; question: string; skill: string; answer: ServedAnswer }[]
++}
++
++const checkoutPage = (variant: 'rail' | 'header' | 'inline' | 'none', dark = false): string => {
++  const bg = dark ? '#0f1a2a' : '#ffffff'
++  const ink = dark ? '#eef4fa' : '#0d1724'
++  const dim = dark ? '#9fb0c4' : '#4f5d6e'
++  const line = dark ? '#1e3350' : '#d6e0ea'
++  const timer = '<div style="font:600 13px system-ui;color:#805500;background:#fff4d6;border-radius:6px;padding:6px 10px">Room held for you: 9:41 left</div>'
++  const summary = `<aside style="border:1px solid ${line};border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px;${variant === 'rail' ? 'position:sticky;top:12px' : ''}">
++    <b style="font:600 15px system-ui">Harbour room, 2 nights</b>
++    <span style="color:${dim};font:13px system-ui">Fri 14 Nov to Sun 16 Nov &middot; 2 guests</span>
++    ${variant === 'rail' ? timer : ''}
++    <div style="display:flex;justify-content:space-between;font:14px system-ui"><span>Total</span><b>&euro;412.00</b></div></aside>`
++  const header = `<header style="display:flex;justify-content:space-between;align-items:center;padding:12px 20px;border-bottom:1px solid ${line}">
++    <b style="font:700 16px system-ui">roombook</b>${variant === 'header' ? timer : `<span style="color:${dim};font:13px system-ui">Secure checkout</span>`}</header>`
++  const field = (l: string) => `<label style="display:flex;flex-direction:column;gap:4px;font:13px system-ui;color:${dim}">${l}<span style="height:34px;border:1px solid ${line};border-radius:6px"></span></label>`
++  const body = `<main style="display:grid;grid-template-columns:1fr 300px;gap:24px;padding:20px">
++    <section style="display:flex;flex-direction:column;gap:12px">
++      <h1 style="font:600 22px system-ui;margin:0">Pay and confirm</h1>
++      ${variant === 'inline' ? timer : ''}
++      ${field('Name on card')}${field('Card number')}
++      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">${field('Expiry')}${field('Security code')}</div>
++      ${variant === 'none' ? `<p style="font:13px system-ui;color:${dim};margin:0">We email you if the hold is about to run out.</p>` : ''}
++      <span style="align-self:start;background:#0369a1;color:#fff;font:600 14px system-ui;padding:10px 18px;border-radius:8px">Pay &euro;412.00</span>
++    </section>${summary}</main>`
++  return `<!doctype html><html><body style="margin:0;background:${bg};color:${ink}">${header}${body}</body></html>`
++}
++
++export const Q13 = 'Where should the checkout show how long the room stays held?'
++export const Q13_OPTIONS = [
++  { label: 'In the booking summary beside the form (Recommended)', description: 'The timer sits in the sticky summary, next to the total, visible while paying.' },
++  { label: 'In the page header', description: 'Always at the top; it scrolls away on a phone.' },
++  { label: 'As a banner above the payment form', description: 'Loud and early; it pushes the form down.' },
++  { label: 'No timer; email a reminder instead', description: 'A calmer page; a guest can lose the room without seeing why.' },
++]
++
++const ANSWERS: ReadonlyArray<[string, string, string, AnswerVia, string]> = [
++  // [question, choice, by, via, skill]
++  ['Who books most rooms: guests on phones or travel managers on laptops?', 'Guests on phones', 'ana.moreau@example.com', 'console', 'design-consultation'],
++  ['What should the checkout feel like in one word?', 'Calm', 'ana.moreau@example.com', 'voice-it', 'design-consultation'],
++  ['Keep roombook’s current blue, or pick a new accent?', 'Keep the current blue (Recommended)', 'ana.moreau@example.com', 'console', 'design-consultation'],
++  ['Which type family should headings use?', 'The system sans (Recommended)', 'kenji.sato@example.com', 'console', 'design-consultation'],
++  ['How many steps should checkout take?', 'One page (Recommended)', 'ana.moreau@example.com', 'voice-it', 'plan-design-review'],
++  ['Ask for an account before paying?', 'No, offer one after paying (Recommended)', 'ana.moreau@example.com', 'voice-it', 'plan-design-review'],
++  ['Show the cancellation policy where?', 'Beside the total', 'kenji.sato@example.com', 'claude-code', 'plan-design-review'],
++  ['Which payment methods appear first?', 'Card, then wallets (Recommended)', 'kenji.sato@example.com', 'console', 'plan-design-review'],
++  ['How should a declined card be explained?', 'Inline under the card field (Recommended)', 'ana.moreau@example.com', 'console', 'design-review'],
++  ['Keep the promo-code field visible?', 'Behind a “Have a code?” link', 'ana.moreau@example.com', 'voice-it', 'design-review'],
++  ['Dark mode for the checkout?', 'Follow the device (Recommended)', 'kenji.sato@example.com', 'console', 'design-review'],
++  ['Which room photo leads the summary?', 'The bedroom photo', 'ana.moreau@example.com', 'voice-it', 'design-html'],
++]
++
++export const designerTask = { task_id: 'task_rb_checkout_7f3a', workflow_id: 'wf_roombook_checkout', step_id: 'roombook-checkout-redesign',
++  repository: 'example-org/roombook', runner_profile: 'claude-code-browser',
++  plugins: { gstack: { mode: 'designer' as PluginMode, skills: ['design-consultation', 'plan-design-review', 'design-review', 'design-html'] } } }
++
++export function designerInterview(state: 'open' | 'answered'): InterviewRead {
++  const asked = ago(38)
++  const answered: ServedAnswer | null = state === 'answered'
++    ? { question_index: 0, question: Q13, choice: Q13_OPTIONS[0]!.label, text: null, by: 'ana.moreau@example.com', at: ago(1), via: 'console', session: null, history: [] }
++    : null
++  return {
++    task_id: designerTask.task_id, count: 1, redacted: false, redaction_count: 0,
++    may_answer: true, may_answer_because: null, status: 'ok', attempt_id: 'att_rb_0013',
++    questions: [{ question: Q13, options: Q13_OPTIONS, recommended: Q13_OPTIONS[0]!.label,
++      context: 'The hold is 10 minutes. Guests on phones were the answer to question 1.', blocking: true, answer: answered }],
++    waiting: { open: state === 'open', blocking: [0], unanswered: state === 'open' ? [0] : [], asked_at: asked,
++      expires_at: new Date(Date.parse(asked) + 24 * 3600_000).toISOString(), issue_comment_url: null },
++    skill: 'design-html',
++    previews: {
++      [Q13_OPTIONS[0]!.label]: { kind: 'html', title: 'Checkout with the timer in the summary', html: checkoutPage('rail') },
++      [Q13_OPTIONS[1]!.label]: { kind: 'html', title: 'Checkout with the timer in the header', html: checkoutPage('header') },
++      [Q13_OPTIONS[2]!.label]: { kind: 'html', title: 'Checkout with a banner above the form', html: checkoutPage('inline') },
++      [Q13_OPTIONS[3]!.label]: { kind: 'html', title: 'Checkout with no timer', html: checkoutPage('none') },
++    },
++    interview: ANSWERS.map(([question, choice, by, via, skill], i) => ({
++      n: i + 1, question, skill,
++      answer: { question_index: 0, question, choice, text: null, by, at: ago(38 + (12 - i) * 17), via, session: via === 'claude-code' ? '0f6c2a9e-5d41-4c8b-9a77-2b1e4d3c8a10' : null, history: [] },
++    })),
++  }
++}
++
++/** An unattended step's question it could not answer itself (a consent: no recommendation). */
++export const unattendedTask = { task_id: 'task_ncrm_review_21c0', workflow_id: 'wf_northwind_contacts', step_id: 'review',
++  repository: 'example-org/northwind-crm', runner_profile: 'claude-code-review',
++  plugins: { gstack: { mode: 'unattended' as PluginMode, skills: ['review', 'investigate', 'health', 'plan-eng-review'] } },
++  skill: 'review', asked_at: ago(95), expires_at: ahead(24 * 60 - 95),
++  question: 'The migration drops the column contacts.fax. Drop it in this change, or keep it and open an issue?',
++  options: [{ label: 'Drop it in this change', description: 'Nothing reads it; the backup keeps the values.' },
++    { label: 'Keep it and open an issue', description: 'The change stays smaller; the column stays.' }],
++  recommended: null as string | null }
++
++// --- The proposal: a planner-mode issue run whose interview ended (IssueRun on main + NOT SERVED parts) ---
++
++const flowSvg = (): string => {
++  const box = (x: number, label: string) =>
++    `<rect x="${x}" y="30" width="150" height="48" rx="8" fill="#eef4fa" stroke="#5f7087"/><text x="${x + 75}" y="59" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#0d1724">${label}</text>`
++  const arrow = (x: number) => `<path d="M${x} 54 h30" stroke="#5f7087" stroke-width="1.5" marker-end="url(#a)"/>`
++  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 108" width="760" height="108"><defs><marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L8 4L0 8z" fill="#5f7087"/></marker></defs>${box(10, 'Upload CSV')}${arrow(160)}${box(200, 'Match columns')}${arrow(350)}${box(390, 'Preview 20 rows')}${arrow(540)}${box(580, 'Import, report')}</svg>`
++}
++
++export const plannerRun = {
++  id: 'run_7d20c4b1',
++  issue: { ref: 'example-org/northwind-crm#214', title: 'Import contacts from a CSV file' },
++  state: 'PLANNED' as const,
++  plan_approval: 'required' as 'required' | 'auto',
++  plugins: { gstack: { mode: 'planner' as PluginMode, skills: ['office-hours', 'plan-eng-review', 'spec'] } },
++  plan_digest: `sha256:${'4be1d7'.padEnd(64, '0')}`,
++  plan_revision: 1,
++  created_by: 'kenji.sato@example.com',
++  interview: { asked: 6, ended_at: ago(12),
++    answered_by: [['kenji.sato@example.com', 'console', 4], ['kenji.sato@example.com', 'voice-it', 2]] as [string, AnswerVia, number][] },
++  plan: {
++    summary: 'Add a CSV import to Contacts: upload, match columns, preview, then import in the background with a report of every row that was skipped and why.',
++    steps: [
++      { step_id: 'parser', title: 'Parse and validate the CSV', prompt: 'Stream-parse up to 50,000 rows; reject rows without an email.' },
++      { step_id: 'mapping', title: 'Column matching screen', prompt: 'Guess the match from headers; let the person change each.' },
++      { step_id: 'import', title: 'Background import with a report', prompt: 'Upsert by email; write a downloadable report of skipped rows.' },
++    ],
++    requirements: ['Import contacts from a CSV file', 'Say which rows were skipped and why'],
++    estimate: '3 steps, about 2 hours of agent time',
++  },
++  /** NOT SERVED: the design doc and diagrams gstack's `spec` and review skills wrote. */
++  proposal: {
++    design_doc: 'contacts-csv-import.md',
++    design_doc_lead: 'Why: sales teams move from spreadsheets, and today every contact is typed by hand. What: a four-screen import that never blocks the page and never imports a row silently.',
++    diagrams: [{ title: 'The import, screen by screen', svg: flowSvg(), alt: 'Upload CSV, then match columns, then preview 20 rows, then import and report' }],
++  },
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/parts.tsx b/apps/swarm-ui/src/pluginsconsole/parts.tsx
+new file mode 100644
+index 0000000..751ce14
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/parts.tsx
+@@ -0,0 +1,98 @@
++// MOCK-HOOK FILE: shared parts of the plugins console mock-ups. Plain on purpose: the directions restyle them.
++
++import type { ReactNode } from 'react'
++import { Chip, Dash } from '../components'
++import { PEOPLE, VIA_WORDS, skillNotes, type AnswerVia, type Preview, type StepPlugins, type UsedPlugins } from './fixtures'
++
++export const MODE_WORDS: Readonly<Record<string, string>> = {
++  unattended: 'Unattended', planner: 'Planner', designer: 'Designer',
++}
++export const MODE_MEANS: Readonly<Record<string, string>> = {
++  unattended: 'answers what has a recommended answer itself; anything else waits for a person',
++  planner: 'interviews a person, then proposes a plan for approval',
++  designer: 'interviews a person, then proposes a design for approval',
++}
++
++export function person(email: string | null): string {
++  if (email === null) return 'not known'
++  return PEOPLE[email] ?? email
++}
++
++export function via(v: AnswerVia | null): string {
++  return v === null ? 'where: not recorded' : VIA_WORDS[v]
++}
++
++/** A date at the fixture clock, in words the console uses: "19 Oct, 11:22 UTC". */
++export function at(iso: string | null): string {
++  if (iso === null) return 'not known'
++  const d = new Date(iso)
++  const month = d.toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' })
++  return `${d.getUTCDate()} ${month}, ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} UTC`
++}
++
++/** One region of the scaffold, carrying the features.md ids it places. */
++export function Item({ f, children, className }: { f: string; children: ReactNode; className?: string }) {
++  return <div className={`pc-item${className ? ` ${className}` : ''}`} data-f={f}>{children}</div>
++}
++
++/** A skill by name, with what it does when the fixture knows. */
++export function Skill({ name, notes = false }: { name: string; notes?: boolean }) {
++  const note = skillNotes[name]
++  return (
++    <span className="pc-skill">
++      <code>{name}</code>
++      {notes && (note !== undefined ? <span className="pc-dim"> {note}</span> : <span className="pc-dim"> (what it does: not known)</span>)}
++    </span>
++  )
++}
++
++/** The chosen set on a step, compactly (B8). */
++export function PluginSummary({ plugins }: { plugins: StepPlugins | null }) {
++  if (plugins === null) return <span className="pc-dim">No plugins</span>
++  return (
++    <span className="pc-row">
++      {Object.entries(plugins).map(([name, p]) => (
++        <Chip key={name} title={`${name}, ${MODE_WORDS[p.mode]} mode: ${p.skills.join(', ')}`}>
++          {name} · {MODE_WORDS[p.mode]} · {p.skills.length} skill{p.skills.length === 1 ? '' : 's'}
++        </Chip>
++      ))}
++    </span>
++  )
++}
++
++/** What a finished step used (B9) and how often each skill ran (B10). */
++export function UsedTable({ used }: { used: UsedPlugins }) {
++  return (
++    <>
++      {Object.entries(used).map(([name, u]) => (
++        <div key={name} className="c-tbl">
++          <table>
++            <caption className="pc-cap">{name} {u.version}, {MODE_WORDS[u.mode]} mode</caption>
++            <thead><tr><th>Skill</th><th className="is-num">Times it ran</th></tr></thead>
++            <tbody>
++              {u.skills.map((s) => (
++                <tr key={s}>
++                  <td><Skill name={s} /></td>
++                  <td className="is-num">
++                    {u.skill_runs === null ? <Dash why="Not known: the agent's stream was not read" /> : u.skill_runs[s] ?? 0}
++                  </td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++          {u.skill_runs === null && <p className="pc-dim pc-small">Not known: the agent&rsquo;s stream was not read, so no run was counted. A measured zero shows as 0.</p>}
++        </div>
++      ))}
++    </>
++  )
++}
++
++/** One option's preview (I4). HTML runs in a sandboxed frame with no scripts; a diagram is an image. */
++export function PreviewView({ preview, tall = false }: { preview: Preview | undefined; tall?: boolean }) {
++  if (preview === undefined) return <p className="pc-dim">No preview came with this option.</p>
++  if (preview.kind === 'text') return <pre className="pc-pre">{preview.body}</pre>
++  if (preview.kind === 'diagram') {
++    return <img className="pc-diagram" alt={preview.alt} src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(preview.svg)}`} />
++  }
++  return <iframe className={`pc-html${tall ? ' is-tall' : ''}`} title={preview.title} sandbox="" srcDoc={preview.html} />
++}
+diff --git a/apps/swarm-ui/src/pluginsconsole/pluginsconsole.css b/apps/swarm-ui/src/pluginsconsole/pluginsconsole.css
+new file mode 100644
+index 0000000..5818013
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/pluginsconsole.css
+@@ -0,0 +1,37 @@
++/* MOCK-HOOK FILE: the plugins console scaffold's plain layout. Console tokens only (styles.css, components.css). */
++.pc-page { display: flex; flex-direction: column; gap: var(--ctl-s3); max-width: 1100px; min-width: 0; }
++.pc-item { min-width: 0; }
++.pc-item + .pc-item { margin-top: 12px; }
++.pc-lead { margin: 0; font-size: var(--t-body); color: var(--text-dim); max-width: var(--measure); }
++.pc-dim { color: var(--text-dim); }
++.pc-small { font-size: var(--t-micro); line-height: var(--lh-micro); }
++.pc-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
++.pc-h3 { margin: 12px 0 6px; font-size: var(--t-meta); font-weight: 600; }
++.pc-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: var(--t-meta); }
++.pc-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; font-size: var(--t-meta); }
++.pc-facts dt { color: var(--text-dim); }
++.pc-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
++.pc-skill code, .pc-gap { font: var(--t-micro)/var(--lh-micro) var(--mono); margin-right: 4px; }
++.pc-mode { border-top: 1px solid var(--line-soft); padding-top: 4px; }
++.pc-refusal { margin: 4px 0; padding: 6px 10px; border-left: 3px solid var(--s-warn, var(--warn)); background: var(--surface-2); font-size: var(--t-meta); }
++.pc-form { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 12px; }
++.pc-form fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
++.pc-form legend { font-weight: 600; font-size: var(--t-meta); margin-bottom: 4px; }
++.pc-check { display: flex; gap: 8px; align-items: flex-start; font-size: var(--t-meta); }
++.pc-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--t-meta); margin-top: 8px; }
++.pc-field textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); padding: 8px; }
++.pc-question { margin: 0; font-size: var(--t-lead, 16px); font-weight: 600; }
++.pc-options { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
++.pc-options > li { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding: 8px; border: 1px solid var(--line-soft); border-radius: var(--r-ctl); }
++.pc-options > li.is-shown { border-color: var(--text); }
++.pc-options .c-chip { margin-left: 8px; }
++.pc-html { width: 100%; height: 360px; border: 1px solid var(--line); border-radius: var(--r-ctl); background: #fff; }
++.pc-html.is-tall { height: 520px; }
++.pc-diagram { max-width: 100%; height: auto; background: #fff; border-radius: var(--r-ctl); border: 1px solid var(--line); }
++.pc-pre { white-space: pre-wrap; font: var(--t-micro)/var(--lh-micro) var(--mono); margin: 0; }
++.pc-fig { margin: 8px 0; }
++.pc-fig figcaption { font-size: var(--t-micro); color: var(--text-dim); }
++.pc-cap { caption-side: top; text-align: left; padding: 8px 12px; font-size: var(--t-meta); font-weight: 600; }
++.c-tbl td.pc-wrap { white-space: normal; padding-top: 6px; padding-bottom: 6px; }
++.pc-item > p { margin: 0 0 4px; }
++.c-card > .pc-item + .pc-item { margin-top: 0; }
+diff --git a/apps/swarm-ui/src/pluginsconsole/switches.ts b/apps/swarm-ui/src/pluginsconsole/switches.ts
+new file mode 100644
+index 0000000..62e4ba1
+--- /dev/null
++++ b/apps/swarm-ui/src/pluginsconsole/switches.ts
+@@ -0,0 +1,38 @@
++// MOCK-HOOK FILE: the plugins console mock-ups' URL switches, read ONCE at module load.
++//
++// The console's router rewrites the address bar to its own path and drops any
++// query it does not know, so the switches are captured before App first
++// renders (App.tsx imports this module) and kept for the page's life.
++//   ?pa=base|a|b                  the direction (base: the scaffold's plain layout)
++//   ?ps=config|builder|plan|needs the screen
++//   ?pst=rest|open|answered|proposal the state (what each means per screen: base-notes.md)
++//   ?pv=admin|viewer              who reads Config › Plugins (default admin)
++//   ?pb=today                     draw main as it is today: planner and designer refused (bridge not landed)
++// The theme is the console's own switch (Profile; stored in local storage as `swarm.theme`).
++
++export type MockDirection = 'base' | 'a' | 'b'
++export type MockScreen = 'config' | 'builder' | 'plan' | 'needs'
++export type MockState = 'rest' | 'open' | 'answered' | 'proposal'
++
++function pick<T extends string>(q: URLSearchParams, key: string, allowed: readonly T[], fallback: T): T {
++  const v = q.get(key)
++  return v !== null && (allowed as readonly string[]).includes(v) ? (v as T) : fallback
++}
++
++const query = typeof location === 'undefined' ? new URLSearchParams() : new URLSearchParams(location.search)
++const pa = query.get('pa')
++
++/** Null when no `?pa`: the console draws itself unchanged. */
++export const MOCK_PA: MockDirection | null = pa === 'base' || pa === 'a' || pa === 'b' ? pa : null
++export const MOCK_PS: MockScreen = pick(query, 'ps', ['config', 'builder', 'plan', 'needs'] as const, 'config')
++export const MOCK_PST: MockState = pick(query, 'pst', ['rest', 'open', 'answered', 'proposal'] as const, 'rest')
++export const MOCK_PV: 'admin' | 'viewer' = pick(query, 'pv', ['admin', 'viewer'] as const, 'admin')
++export const MOCK_BRIDGE_LANDED: boolean = query.get('pb') !== 'today'
++
++/** The console path each screen sits under, so the section nav and page chrome are the real ones. */
++export const SCREEN_PATH: Readonly<Record<MockScreen, string>> = {
++  config: '/config/mcp-servers',
++  builder: '/submit/workflow',
++  plan: '/runs/run_4c1e09d2',
++  needs: '/workflows',
++}
