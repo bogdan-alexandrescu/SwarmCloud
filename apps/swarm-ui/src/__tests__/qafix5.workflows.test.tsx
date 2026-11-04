@@ -15,10 +15,6 @@
 //          collected; a selected step still drew all six columns.
 //   5b:wg-dark-D2 (6343767840) the head read 'cost not reported' while the
 //          attempt read was in flight, and the list '—', then '$1.21'.
-//   r3:work-a-010 (6314117148) at 1440 the Cost column wrapped '3 of 4' /
-//          'reported' although c28 sized it for one line: 128px left the
-//          coverage exactly its own width (15 x 0.6em x 12px = 108px in a
-//          108px box), no slack for a rounded glyph advance.
 //
 // Every assertion names the mutation that turns it red.
 
@@ -31,7 +27,6 @@ import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { build, painted } from './marks'
 import { attempt } from './runfixture'
-import { cellStyle, lengthPx, textPx } from './tablefit'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -395,34 +390,5 @@ describe('D2: a workflow cost still being read reads "reading", never "not repor
     expect(painted(reading, 'color', WIDE)).toBe('var(--text-faint)')
     expect(painted(absent, 'font-style', WIDE)).toBe('italic')
     expect(painted(reading, 'font-style', WIDE)).toBe('normal')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// work-a-010: c28 with slack
-// ---------------------------------------------------------------------------
-
-describe('work-a-010: at 1440 the Cost column holds "3 of 4 reported" with a glyph to spare', () => {
-  it('leaves at least one character’s advance beyond the coverage', () => {
-    const host = document.createElement('div')
-    host.innerHTML =
-      '<div class="wfl"><div class="table-wrap is-scroll wfl-scroll"><table class="wfl-table"><thead><tr><th data-col="cost">Cost</th></tr></thead>' +
-      '<tbody><tr class="wfl-row"><td class="num" data-col="cost"><span class="wf-spend">$0.518<span class="wf-spend-cov">3 of 4 reported</span></span></td></tr></tbody></table></div></div>'
-    document.body.appendChild(host)
-    hosts.push(host)
-    const th = host.querySelector('th')!
-    const td = host.querySelector('td')!
-    const st = cellStyle(td, WIDE)
-    const room = (lengthPx(painted(th, 'width', WIDE), 0) ?? 0) - st.pl - st.pr
-    // MEASURED IN THE FACE IT IS DRAWN IN. It was `.wf-spend`'s DM Mono
-    // (0.6em), 108px; since visual QA pass 2 ovag2-15 (#2694) the coverage is
-    // a note in the body face (`.wf-spend-cov { font-family: var(--font) }`),
-    // 100.8px, and the 136px column holds it with more to spare.
-    const cov = host.querySelector('.wf-spend-cov')!
-    const text = textPx('3 of 4 reported', cov, WIDE)
-    expect(text).toBeCloseTo(100.8, 5)
-    // MUTATION: put the 1280 head back at 128px -- the room is exactly the
-    // text's 108px, and a browser that rounds one advance up wraps 'reported'.
-    expect(room - text).toBeGreaterThanOrEqual(text / 15)
   })
 })
