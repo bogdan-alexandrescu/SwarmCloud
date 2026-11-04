@@ -78,7 +78,7 @@ checked by `schemas.check_workflow_about` when `WorkflowCreate` is read:
 | `feature` | `{title, url?}`: the feature the work belongs to. `title` is one line of at most 120 characters. `url`, when given, is an `https://github.com/<owner>/<repo>/issues/<n>` or `.../pull/<n>` page **of the workflow's own `repository_url`**, in any spelling of that repository (https, `ssh://`, `git@`); another repository's link, or a link on a workflow with no GitHub repository, is refused. |
 
 Neither may be set in a step's `metadata`: a step's metadata is merged over
-the workflow's onto its task, so a step's own would reach the store
+the workflow's onto its agent, so a step's own would reach the store
 unchecked. Beside a description swarm-api records `description_source:
 "submitter"`. A caller's own `description_source` is never kept: it is set
 beside a description and dropped without one. It is overwritten rather than
@@ -89,8 +89,8 @@ description writes its own source, so the console can mark it as generated.
 
 **What every read serves.** `GET /v1/workflows/{id}`, the create reply and
 every `GET /v1/workflows` row, in the `full` and the `summary` view alike,
-carry, off the step tasks (the frozen `Workflow` has no metadata, and every
-step task carries the workflow's):
+carry, off the step agents (the frozen `Workflow` has no metadata, and every
+step agent carries the workflow's):
 
 | Field | Value |
 |---|---|
@@ -100,12 +100,12 @@ step task carries the workflow's):
 | `feature` | `{title, url?}`, or null |
 | `started_from` | where the workflow came from, one of the values below |
 
-Each caller-written string is masked by its task's masker, as a step's input
-is. The keys are absent, not null, on a row none of whose step tasks was read,
+Each caller-written string is masked by its agent's masker, as a step's input
+is. The keys are absent, not null, on a row none of whose step agents was read,
 so a reader tells "none" from "not read", as `claude_session`.
 
 **`started_from`: the field that decides each.** Read off what the platform
-already writes on the step tasks, the first match winning. Nothing new is
+already writes on the step agents, the first match winning. Nothing new is
 accepted from a caller to decide it.
 
 | Value | Decided by |
