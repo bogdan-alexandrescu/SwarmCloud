@@ -91,13 +91,19 @@ frozen `swarm_common`. None is a frozen-contract change
   `judgment` requirement is met only when a passing `Evidence` record of kind
   `judgment` binds the current digest and the commit, exactly as for
   `unit_tests`.
-* **`judgment` joins the enforced set only where Jev can run.** A strict
-  contract naming `judgment` compiles only for a workspace where the signed
-  opt-in is on (Q9; the owner chose `contract_review`, [section 14](#14-open-choices))
-  and a backend is configured; elsewhere it is refused
+* **`judgment` joins the enforced set only where JC2 runs.** A strict
+  contract naming `judgment` compiles only where the worker's post-step runs
+  JC2 at the end of the step (`workcontract.JC2_AT_END_OF_STEP`, turned on by
+  lane 6) and the workspace's signed `code_intelligence.jev` is on, because
+  JC2 sends code (Q9). JC1 being able to review the contract at submission
+  (`contract_review` on, a backend configured) is **not** enough: without JC2
+  nothing ever writes the `judgment` evidence, so the requirement could never
+  be met, and a strict contract would carry a proof nobody runs. The owner
+  chose this ("Gate on JC2", 4 November 2026). Elsewhere it is refused
   mechanically, with no Jev call, as `work_contract_not_enforceable` with
-  `unenforced: ["judgment"]`. That is today's rule (a strict contract that
-  names what nothing enforces is refused), applied to one more component.
+  `unenforced: ["judgment"]`; JC1's revision 2 of a strict contract is
+  refused the same way. That is today's rule (a strict contract that names
+  what nothing enforces is refused), applied to one more component.
 * **A new top-level field, `acceptance`**: `strict` (the default when the field
   is absent) or `auto`. See [section 6](#6-the-strict-acceptance-default).
   Weakening it (`strict` to `auto`) is a widening under `widening()`, refused

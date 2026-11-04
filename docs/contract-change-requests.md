@@ -145,6 +145,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
 | 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
 | 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
+| 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | REQUESTED 4 November 2026, by the owner's answer (BGD) to the submission review's second question: "a contract change request"; swarm-api keeps its local signing until it is accepted |
 
 ---
 
@@ -16621,3 +16622,136 @@ contract before the agent runs.
 ### Who decided
 
 The owner (BGD), 4 November 2026: "Sign the key".
+
+## 138. `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688)
+
+**Status:** REQUESTED 4 November 2026 by the pull request that adds this
+section (swarm-api's Jev review of a work contract at submission, part of
+#2688). The owner (BGD) answered that lane's second question the same day:
+the block goes into the frozen contract's signed settings fields by a
+contract change request, and swarm-api keeps signing it locally until the
+request is accepted. Not applied: nothing under `apps/common/swarm_common/`
+is edited by the requesting pull request.
+
+### What is true today
+
+Read on that pull request's branch on 2026-11-04.
+
+* `workspace_settings/{tenant_id}.contract_review: {enabled, set_at, set_by,
+  mac}` is written by `apps/swarm-api/swarm_api/contractreview.py::
+  ContractReviewStore.put` (`PUT /v1/workspaces/{tenant_id}/contract-review`:
+  the workspace's owner, its admin or a platform admin, audited as
+  `workspace_contract_review_set`). With `enabled` true, and the platform's
+  `SWARM_CONTRACT_REVIEW` at `report` or `enforce`, swarm-api sends the
+  workspace's work contracts' requirement texts to the workspace's Jev
+  backend at submission (docs/design/agent-quality/jev-contract.md section
+  4, the owner's answer 9 of 3 November 2026).
+* `swarm_common.specsign.SETTINGS_MAC_FIELDS` does not list the block, so
+  `canonical_settings_block` refuses it (`SpecNotCanonical`). swarm-api signs
+  it anyway through a list of its own, `judgment.API_SETTINGS_MAC_FIELDS =
+  {"contract_review": ("enabled",)}`, and `judgment._canonical_block`, which
+  builds the SAME bytes `canonical_settings_block` would: JCS of
+  `{"purpose": SETTINGS_PURPOSE, "tenant_id", "block": "contract_review",
+  "fields": {"enabled": ...}}`.
+* The re-sign pass (`judgment.resign_workspace_settings`,
+  `scripts/resign-workspace-settings.sh`) covers the block through
+  `judgment._covered_by_block`, which adds `API_SETTINGS_MAC_FIELDS` to the
+  frozen list, and treats `enabled` as written by its writer
+  (`judgment._unowned` answers `()` for a block outside the frozen list).
+* Only swarm-api reads the block. No scheduler, worker or other service
+  verifies it.
+
+### Why
+
+Two lists now say which settings blocks are signed and which keys each
+covers. Every other signed block is named once, in the frozen module, so
+the settings-integrity design's one statement of "what a MAC covers"
+(design/tenant-settings-integrity.md) has an exception only swarm-api knows
+about. A service that later needs to verify the opt-in (the scheduler
+vouching for it, as it does for `quality_gates`) would have to copy
+swarm-api's list, or could not verify it at all, because
+`canonical_settings_block` refuses the name.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "plugins": ("allowed",),
+    "contract_review": ("enabled",),
+})
+```
+
+Only `enabled` is covered: `set_at` and `set_by` record who changed it and
+no reader acts on them. A comment beside the entry names this request, as
+the other entries name theirs. Nothing else in `specsign.py` changes;
+`tests/unit/common/test_settings_block.py` gains the entry.
+
+### What empties in swarm-api once it is applied
+
+In the same pull request that applies it:
+
+* `judgment.API_SETTINGS_MAC_FIELDS` loses `contract_review` and, empty, is
+  removed with `judgment._canonical_block` (whose only job was building the
+  frozen bytes for a name the frozen list refused): `_sig` calls
+  `canonical_settings_block` directly again.
+* `judgment._covered_by_block` and `judgment._unowned` collapse to
+  `SETTINGS_MAC_FIELDS` and `unowned_covered_keys`.
+* `judgment.WRITER_FIELDS` gains `"contract_review": ("enabled",)`
+  (`ContractReviewStore.put` writes it), so
+  `tests/unit/control_plane/test_settings_mac.py::
+  test_each_writers_fields_are_the_ones_the_module_writes` (which holds
+  `WRITER_FIELDS` and `SETTINGS_MAC_FIELDS` to the same block names) stays
+  green.
+* `contractreview.py`'s docstring drops "until the frozen
+  `SETTINGS_MAC_FIELDS` lists it", and
+  `tests/unit/control_plane/test_contract_review_submission.py::
+  test_the_signing_list_names_the_new_block_only` asserts the frozen list
+  names the block instead of swarm-api's.
+
+### How the re-sign pass then covers the block
+
+Through the frozen list, as every other block: `_blocks` walks
+`SETTINGS_MAC_FIELDS`, and `unowned_covered_keys("contract_review")` is `()`
+because `WRITER_FIELDS` lists `enabled`, so a stored block is never `held`.
+The bytes do not change -- `_canonical_block` already built exactly
+`canonical_settings_block`'s bytes for the name -- so every MAC swarm-api
+stored before the change still verifies after it: the first pass after
+applying finds those blocks `signed` and writes nothing. A block stored
+without a MAC (written before this deployment had a key) is signed as it is
+stored, never turned on.
+
+### What it would break if accepted
+
+Nothing: a new block changes no other block's bytes, and the block's own
+bytes are the ones already signed. A service built before the change that
+calls `canonical_settings_block(block="contract_review")` would have raised
+`SpecNotCanonical`; none does.
+
+### If it is declined
+
+swarm-api keeps `API_SETTINGS_MAC_FIELDS` and the re-sign pass keeps
+covering it through `_covered_by_block`. The block stays signed and
+verified by swarm-api; the cost is the second list, and that no other
+service can verify the opt-in without copying it.
+
+### Invariants
+
+None of CONTRACT.md's ten changes. Invariant 9 (per-tenant isolation): the
+tenant and the block are inside the signed bytes, so a block copied onto
+another workspace's document, or into another block, does not verify; a
+tenant worker's direct write of `enabled: true` reads as off for a tenant
+cut over in SETTINGS_MAC_TENANTS, and nothing is sent to Jev.
+
+### How it is tested
+
+`tests/unit/common/test_settings_block.py` pins the entry;
+`tests/unit/control_plane/test_contract_review_submission.py` signs a block
+with `ContractReviewStore.put`, reads a forged and a copied block as off,
+and re-signs a block after a key rotation through the pass; its MAC made
+before the change verifies after it.
+
+### Who decided
+
+Requested by the pull request that adds this section, on the owner's
+(BGD) answer of 4 November 2026 to its second question.
