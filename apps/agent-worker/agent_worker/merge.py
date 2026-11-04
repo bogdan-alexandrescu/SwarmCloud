@@ -173,9 +173,11 @@ from typing import Any, Iterable, Mapping, NamedTuple, Protocol
 from urllib.parse import quote
 
 from swarm_common.models import EndCause, utcnow
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import TERMINAL_STATES, TaskState
 
 from . import forge as forge_mod
+from . import inputs as inputs_mod
 from . import mergeslot
 from . import mergetrain
 from . import owner_questions as owner_questions_mod
@@ -1835,6 +1837,10 @@ class MergeTarget:
     #: (`mergetrain`). Signed by swarm-api from the workspace's settings at
     #: submission; absent is direct.
     merge_mode: str = mergetrain.DIRECT
+    #: A merge behind a fix loop (FL-WORKER, docs/design/fix-loop.md §4.6):
+    #: the `fix-loop` step whose verified final review this step merges on,
+    #: signed in place of `review` and `verdict_file`. None for any other.
+    review_loop: str | None = None
 
 
 class TargetInvalid(ValueError):
@@ -1860,7 +1866,7 @@ def _parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
     unknown = sorted(
         str(k) for k in raw
         if k not in ("pull_request", "review", "verdict_file", "base", "number", "head_sha",
-                     "pull_request_workflow", "merge_mode")
+                     "pull_request_workflow", "merge_mode", "review_loop")
     )
     if unknown:
         raise TargetInvalid(f"{MERGE_TARGET_FIELD} names {', '.join(unknown)}")
@@ -1881,11 +1887,19 @@ def _parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
         workflow = _task_id(raw.get("pull_request_workflow"))
         if workflow is None:
             raise TargetInvalid(f"{MERGE_TARGET_FIELD}.pull_request_workflow is not a workflow id")
-        if review is not None or verdict_file is not None:
+        if review is not None or verdict_file is not None or "review_loop" in raw:
             raise TargetInvalid(
                 f"{MERGE_TARGET_FIELD} names another workflow's pull request and also a review"
             )
         return MergeTarget(pull_request, base=base, pull_request_workflow=workflow)
+    if "review_loop" in raw:
+        # FL-WORKER: the loop names the review, never the target beside it.
+        loop = _task_id(raw.get("review_loop"))
+        if loop is None:
+            raise TargetInvalid(f"{MERGE_TARGET_FIELD}.review_loop is not a task id")
+        if review is not None or verdict_file is not None:
+            raise TargetInvalid(f"{MERGE_TARGET_FIELD} names a fix loop and also a review")
+        return MergeTarget(pull_request, base=base, review_loop=loop)
     if review is None and verdict_file is None:
         return MergeTarget(pull_request, base=base)
     if _task_id(review) is None or not isinstance(verdict_file, str) or not verdict_file:
@@ -1897,7 +1911,8 @@ def _parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
 
 def _named_target(raw: Mapping[str, Any], base: Any) -> MergeTarget:
     """A `merge_pr` target: a number and a head sha, and nothing a task names."""
-    beside = sorted(k for k in ("pull_request", "review", "verdict_file") if k in raw)
+    beside = sorted(k for k in ("pull_request", "review", "verdict_file", "review_loop")
+                    if k in raw)
     if beside:
         raise TargetInvalid(
             f"{MERGE_TARGET_FIELD} names a pull request by number and also {', '.join(beside)}"
@@ -1925,6 +1940,138 @@ def _branch_task(doc: Mapping[str, Any], task_id: str) -> str:
     """
     block = _mapping(_mapping(doc.get("metadata")).get("dispatch"))
     return _task_id(block.get("continues")) or task_id
+
+
+# ---------------------------------------------------------------------------
+# A merge behind a fix loop (FL-WORKER, docs/design/fix-loop.md §4.6)
+# ---------------------------------------------------------------------------
+
+#: The catalogue profile of a fix-loop step (FL-CONTRACT, BGD Q10).
+FIX_LOOP_PROFILE = "fix-loop"
+#: The loop's signed dispatch block, as FL-SUBMIT signs it: `review` (and,
+#: under `integrate`, `fix`) are TASK ids, as `verdict_gate.task_id` is.
+FIX_LOOP_DISPATCH_KEY = "fix_loop"
+#: A round's signed dispatch record: `{loop_task, round, kind, head, ...}`,
+#: `kind` "review" for a `re-review:<k>`, "fix" for a `review-fix:<k>`.
+FIX_LOOP_ROUND_KEY = "fix_loop_round"
+#: The loop's `result_summary` record (`final_review`, `rounds`, ...):
+#: TENANT-WRITABLE, so every task it names is verified before it is read.
+FIX_LOOP_SUMMARY_KEY = "fix_loop"
+#: The refusals of a loop or a final review that does not hold.
+LOOP_NOT_SUCCEEDED = "fix_loop_not_succeeded"
+LOOP_NOT_A_FIX_LOOP = "fix_loop_not_a_fix_loop"
+REVIEW_NOT_THE_LOOPS = "fix_loop_review_not_its_own"
+LOOP_REVIEW_NOT_SUCCEEDED = "fix_loop_review_not_succeeded"
+LOOP_REVIEW_HEAD_UNKNOWN = "fix_loop_review_head_unknown"
+
+
+class _LoopRefused(Exception):
+    """A loop's final review that this merge will not rest on; never retried."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class _LoopReview:
+    #: The review the merge rests on: the final `re-review:<k>`, or for
+    #: `rounds: 0` the loop's own declared review.
+    task_id: str
+    verdict: verdict_mod.Verdict
+    #: The head that review judged, from its signed `repository_ref`; None
+    #: for round 0, whose head is the opener's, the one its gate judged.
+    head: str | None
+
+
+def _loop_review(ctx: ActionContext, loop_id: str) -> _LoopReview:
+    """The loop's verified final review and its verdict, or `_LoopRefused`.
+
+    1. The loop: of this workflow, signed (`verify_upstream`), on the
+       `fix-loop` profile, SUCCEEDED.
+    2. Its `result_summary.fix_loop.final_review`, or for `rounds: 0` its
+       signed `fix_loop.review`.
+    3. That review: signed (a re-review is its own one-step workflow, so it
+       is verified against the workflow its signature names), this tenant,
+       SUCCEEDED, and either the loop's declared review or a round whose
+       SIGNED `fix_loop_round` names this loop with `kind: "review"`. A
+       forged `final_review` can name only a review this loop ran.
+    4. A re-review's head is its signed `repository_ref`, a full sha, and
+       the head its round record names, when it names one.
+
+    The verdict is read through the tenant-checked artifact read
+    (`inputs.artifact_reference`), bounded as a staged one is. Raises
+    `UpstreamSpecUnverified` and `InputUnavailable` as the other reads here do.
+    """
+    loop = _mapping(ctx.fetch_upstream(loop_id))
+    ctx.verify_upstream(loop_id, loop)
+    profile = RUNNER_PROFILES.get(loop.get("runner_profile")) \
+        if isinstance(loop.get("runner_profile"), str) else None
+    if profile is None or profile.name != FIX_LOOP_PROFILE or not profile.control_plane:
+        raise _LoopRefused(LOOP_NOT_A_FIX_LOOP,
+                           f"task {loop_id}, which this step's target names as its fix loop, "
+                           f"runs on {str(loop.get('runner_profile'))[:80]!r}, not "
+                           f"{FIX_LOOP_PROFILE}")
+    if loop.get("state") != TaskState.SUCCEEDED.value:
+        raise _LoopRefused(LOOP_NOT_SUCCEEDED,
+                           f"the fix loop {loop_id} is {str(loop.get('state'))[:40]!r}, not "
+                           "SUCCEEDED: its rounds ended without a review saying MERGE")
+    block = _mapping(_mapping(_mapping(loop.get("metadata")).get("dispatch"))
+                     .get(FIX_LOOP_DISPATCH_KEY))
+    declared = _task_id(block.get("review"))
+    record = _mapping(_mapping(loop.get("result_summary")).get(FIX_LOOP_SUMMARY_KEY))
+    final = record.get("final_review")
+    rounds = record.get("rounds")
+    if final is None and (rounds is None or rounds == []):
+        final = declared
+    task_id = _task_id(final)
+    if task_id is None:
+        raise _LoopRefused(REVIEW_NOT_THE_LOOPS,
+                           f"the fix loop {loop_id} records no final review a merge can rest on")
+    review = _mapping(ctx.fetch_upstream(task_id))
+    head: str | None = None
+    if task_id == declared:
+        ctx.verify_upstream(task_id, review)
+    else:
+        workflow = review.get("workflow_id")
+        ctx.verify_upstream(task_id, review,
+                            of_workflow=workflow if isinstance(workflow, str) else "")
+        own = _mapping(_mapping(_mapping(review.get("metadata")).get("dispatch"))
+                       .get(FIX_LOOP_ROUND_KEY))
+        if own.get("loop_task") != loop_id or own.get("kind") != "review":
+            raise _LoopRefused(REVIEW_NOT_THE_LOOPS,
+                               f"task {task_id}, the fix loop {loop_id}'s recorded final "
+                               "review, is neither its declared review nor a re-review its "
+                               "signed round record says this loop ran")
+        ref = review.get("repository_ref")
+        named = own.get("head")
+        if not isinstance(ref, str) or not _SHA.fullmatch(ref) or (
+                named is not None and named != ref):
+            raise _LoopRefused(LOOP_REVIEW_HEAD_UNKNOWN,
+                               f"the re-review {task_id} is not pinned to the full commit sha "
+                               "its round record names, so the head it judged is unknown")
+        head = ref
+    if review.get("tenant_id") != ctx.tenant_id:
+        raise _LoopRefused(REVIEW_NOT_THE_LOOPS,
+                           f"task {task_id}, the fix loop's final review, is not this tenant's")
+    if review.get("state") != TaskState.SUCCEEDED.value:
+        raise _LoopRefused(LOOP_REVIEW_NOT_SUCCEEDED,
+                           f"the fix loop's final review {task_id} is "
+                           f"{str(review.get('state'))[:40]!r}, not SUCCEEDED")
+    filename = owner_questions_mod.REVIEW_OUTPUT
+    try:
+        located = inputs_mod.artifact_reference(
+            dict(review), tenant_id=ctx.tenant_id, upstream_task_id=task_id, filename=filename)
+        if located.size_bytes > verdict_mod.MAX_VERDICT_BYTES:
+            raise InputUnavailable(
+                f"the verdict file {filename!r} of task {task_id} is {located.size_bytes} "
+                f"bytes, over the {verdict_mod.MAX_VERDICT_BYTES}-byte bound")
+        data = located.inline if located.inline is not None \
+            else ctx.store.download_bytes(located.key)
+        verdict = verdict_mod.read_verdict_bytes(data, task_id=task_id, filename=filename)
+    except InputUnavailable as exc:
+        raise _LoopRefused("verdict_unreadable", str(exc)) from None
+    return _LoopReview(task_id, verdict, head)
 
 
 # ---------------------------------------------------------------------------
@@ -2025,11 +2172,22 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     if target.review is not None:
         summary["review_task"] = target.review
 
+    looped: _LoopReview | None = None
     try:
         opener = ctx.fetch_upstream(target.pull_request)
         _verify_opener(ctx, target, opener)
-        if target.review is not None:
+        if target.review_loop is not None:
+            summary["review_loop"] = target.review_loop
+            looped = _loop_review(ctx, target.review_loop)
+            target = replace(target, review=looped.task_id,
+                             verdict_file=owner_questions_mod.REVIEW_OUTPUT)
+            summary["review_task"] = looped.task_id
+            if looped.head is not None:
+                summary["reviewed_head"] = looped.head
+        elif target.review is not None:
             ctx.verify_upstream(target.review, ctx.fetch_upstream(target.review))
+    except _LoopRefused as exc:
+        return run.refuse(exc.code, str(exc))
     except UpstreamSpecUnverified as exc:
         return refusal(summary, EndCause.MERGE_REFUSED, "spec_unverified", str(exc),
                        spec_check=exc.spec_check())
@@ -2038,16 +2196,19 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
 
     if target.review is not None:
-        staged = ctx.staged.get(target.verdict_file or "")
-        if staged is None:
-            return run.refuse("verdict_unreadable",
-                              f"the review's {target.verdict_file} was not staged")
-        try:
-            verdict = verdict_mod.read_verdict(
-                staged, task_id=target.review, filename=target.verdict_file or ""
-            )
-        except InputUnavailable as exc:
-            return run.refuse("verdict_unreadable", str(exc))
+        if looped is not None:
+            verdict = looped.verdict
+        else:
+            staged = ctx.staged.get(target.verdict_file or "")
+            if staged is None:
+                return run.refuse("verdict_unreadable",
+                                  f"the review's {target.verdict_file} was not staged")
+            try:
+                verdict = verdict_mod.read_verdict(
+                    staged, task_id=target.review, filename=target.verdict_file or ""
+                )
+            except InputUnavailable as exc:
+                return run.refuse("verdict_unreadable", str(exc))
         summary["verdict"] = verdict.verdict
         found = f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""
         # #2764: a NOT_YET that names no owner question refuses here, as it
@@ -2124,6 +2285,12 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     if pinned is None:
         return run.refuse("head_unknown",
                           f"task {target.pull_request} recorded no pushed head to pin")
+    if looped is not None and looped.head is not None:
+        # FL-WORKER §4.6 4: the head the loop's final re-review judged, from
+        # its signed `repository_ref`, is the one merged -- the live head is
+        # accepted against it exactly as against the opener's below. Round 0
+        # (no re-review) keeps the opener's, the head its gate judged.
+        pinned = looped.head
     summary["pull_request"] = number
     summary["pinned"] = pinned
     refused = _workflow_refusal(opener)

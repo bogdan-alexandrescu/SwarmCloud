@@ -7487,13 +7487,27 @@ class Worker:
         (`result_summary.git.own_files`) when it recorded them; a step
         recorded without them, or one whose document cannot be read, is
         judged by the whole patch, as before.
+
+        A FIX LOOP'S RE-REVIEW (docs/design/fix-loop.md §4.3) is a lone
+        `collect` step that no dependant stages from: its signed dispatch
+        list `rendered_review_paths` is read as the patch headers are
+        (`verdict.ui_paths_in_dispatch`), on any step that carries one.
         """
+        signed = verdict_mod.ui_paths_in_dispatch(self._dispatch_block())
+        found: dict[str, None] = dict.fromkeys(signed[0] if signed else ())
+        unknown = bool(signed and signed[1])
         if not owner_questions_mod.is_review(task.get("metadata")):
-            return None
+            if not found and not unknown:
+                return None
+            self.log.info(
+                "this re-review's signed paths touch a UI path: a MERGE counts only "
+                "from a rendered review",
+                ui_paths=list(found)[: verdict_mod.MAX_UI_PATHS_SHOWN],
+                runner_profile=self.cfg.runner_profile,
+            )
+            return list(found)
         ws = self.ws
         assert ws is not None
-        found: dict[str, None] = {}
-        unknown = False
         for item in staged:
             if not item.filename.endswith(verdict_mod.PATCH_SUFFIX):
                 continue
