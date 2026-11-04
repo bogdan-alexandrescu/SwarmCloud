@@ -532,10 +532,28 @@ RESIGN_UNSIGNED = "unsigned"    # no MAC, or one that verifies under no key: sig
 RESIGN_HELD = "held"            # carries a covered key no writer writes: never signed
 
 
+def _covered_by_block() -> dict[str, tuple[str, ...]]:
+    """Every block the pass signs, with its covered keys: the frozen
+    `SETTINGS_MAC_FIELDS`, then swarm-api's own `API_SETTINGS_MAC_FIELDS`
+    (a name in both is the frozen one's). Without the second, a key rotation
+    left `contract_review` signed under the dropped key, and a cut-over
+    tenant's opt-in read as off with nobody having turned it off."""
+    out = {block: tuple(covered) for block, covered in API_SETTINGS_MAC_FIELDS.items()}
+    out.update({block: tuple(covered) for block, covered in SETTINGS_MAC_FIELDS.items()})
+    return out
+
+
+def _unowned(block: str) -> tuple[str, ...]:
+    """`unowned_covered_keys` for a frozen block; none for one of
+    `API_SETTINGS_MAC_FIELDS`, whose swarm-api writer writes every key it
+    covers (`contractreview.ContractReviewStore.put` writes `enabled`)."""
+    return unowned_covered_keys(block) if block in SETTINGS_MAC_FIELDS else ()
+
+
 def _blocks(doc: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """(block, stored fields) for every block of `doc` that holds a covered key."""
     out: list[tuple[str, dict[str, Any]]] = []
-    for block, covered in SETTINGS_MAC_FIELDS.items():
+    for block, covered in _covered_by_block().items():
         fields = doc if block == TOP_BLOCK else doc.get(block)
         if isinstance(fields, Mapping) and any(k in fields for k in covered):
             out.append((block, dict(fields)))
@@ -543,7 +561,7 @@ def _blocks(doc: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 
 
 def _resign_status(tenant_id: str, block: str, fields: Mapping[str, Any], key: str) -> str:
-    if any(k in fields for k in unowned_covered_keys(block)):
+    if any(k in fields for k in _unowned(block)):
         return RESIGN_HELD
     if block_verifies(tenant_id, block, fields, (key,)):
         mac = fields.get(MAC_FIELD)
@@ -559,7 +577,7 @@ def resign_workspace_settings(db: Any, key: str, *, apply: bool,
     block it wrote `signed` and writes nothing.
 
     It writes ONLY each block's `mac`, computed over the covered values
-    (SETTINGS_MAC_FIELDS) as they are stored: no setting is changed, and a
+    (SETTINGS_MAC_FIELDS, and API_SETTINGS_MAC_FIELDS) as they are stored: no setting is changed, and a
     key outside the lists is neither covered nor touched. The tenant is the
     DOCUMENT ID, never its `tenant_id` field, which a worker can rewrite. A
     block carrying a covered key no writer writes is `held`, never signed:
@@ -582,7 +600,7 @@ def resign_workspace_settings(db: Any, key: str, *, apply: bool,
                 for block, fields in _blocks(snap.to_dict() or {})]
         for block, fields, status in plan:
             rows.append({"tenant_id": tid, "block": block, "status": status,
-                         "covered": {k: fields.get(k) for k in SETTINGS_MAC_FIELDS[block]}})
+                         "covered": {k: fields.get(k) for k in _covered_by_block()[block]}})
         if not apply or not any(st in (RESIGN_STALE, RESIGN_UNSIGNED) for _, _, st in plan):
             continue
         written += _resign_one(db, collection.document(tid), tid, key)

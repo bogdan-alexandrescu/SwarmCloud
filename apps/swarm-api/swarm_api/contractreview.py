@@ -391,7 +391,7 @@ class ContractReviewer:
     def _charge(self, tenant_id: str, contract: wc.WorkContract,
                 rows: list[dict[str, Any]]) -> None:
         sent = [r for r in rows if not str(r.get("outcome", "")).startswith("skipped:")]
-        tokens = ********"input_tokens") or 0) for r in rows)
+        tokens = sum(int(r.get("input_tokens") or 0) for r in rows)
         outcomes: dict[str, int] = {}
         for r in rows:
             outcome = str(r.get("outcome") or "")

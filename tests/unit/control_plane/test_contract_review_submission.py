@@ -46,7 +46,8 @@ from .spec_signer import LocalSpecSigner
 
 CODE = "claude-code"
 NOW = datetime(2026, 11, 4, 10, 0, tzinfo=timezone.utc)
-TOKENS = ********
+#: The input tokens the fake decision API states it used, per call.
+TOKENS = 240
 
 
 class Jev:
@@ -74,7 +75,7 @@ class Jev:
             choice = cls if name[0] == "c" else reason
             answers[name] = {"choice": choice, "probabilities": {choice: p}, "confidence": p}
         return 200, json.dumps({"answers": answers,
-                                "usage": {"input_tokens": ********
+                                "usage": {"input_tokens": TOKENS}}).encode()
 
 
 @pytest.fixture
@@ -82,7 +83,7 @@ def context(db, tokens, group_map):
     seed_tenant(db, "eng")
     return build_context(
         settings=api_settings(), db=db, verifier=StaticTokenVerifier(tokens),
-        groups=StaticGroups(group_map), credentials=********, waker=NullWaker(),
+        groups=StaticGroups(group_map), credentials=InMemoryCredentials(), waker=NullWaker(),
         metrics=ApiMetrics(), objects=InMemoryObjectReader(bucket=f"swarm-artifacts-{PROJECT}"),
         signer=LocalSpecSigner(),
     )
@@ -371,6 +372,43 @@ def test_the_setting_is_signed_and_a_forged_block_reads_off(db):
     assert [a["action"] for a in audits] == [cr.AUDIT_ACTION]
 
 
+def test_the_re_sign_pass_re_signs_the_block_after_a_key_rotation(db):
+    """A rotation re-signs every stored block under the new key before the
+    previous one is dropped (`scripts/resign-workspace-settings.sh`). The
+    pass walked only the frozen `SETTINGS_MAC_FIELDS`, so a workspace's
+    `contract_review` opt-in stayed signed under the old key and, once that
+    key was dropped, read as off for a tenant cut over: the review stopped
+    with nobody having turned it off."""
+    old, new = secrets.token_hex(16), secrets.token_hex(16)
+    cr.ContractReviewStore(db, now=lambda: NOW,
+                           mac=judgment.SettingsMac(keys=(old,), tenants=("eng",))
+                           ).put("eng", True, by="alice@example.com")
+    plan = judgment.resign_workspace_settings(db, new, apply=False)
+    assert {(b["block"], b["status"]) for b in plan["blocks"]} == {(cr.FIELD, "unsigned")}
+    assert plan["blocks"][0]["covered"] == {cr.ENABLED: True}
+    assert judgment.resign_workspace_settings(db, new, apply=True)["written"] == 1
+    doc = cr.ContractReviewStore(db, now=lambda: NOW).document("eng")
+    rotated = judgment.SettingsMac(keys=(new,), tenants=("eng",))
+    assert cr.stored_enabled(doc, tenant_id="eng", mac=rotated) is True
+    # Only the MAC was written, and a second run writes nothing.
+    assert doc[cr.FIELD][cr.ENABLED] is True and doc[cr.FIELD]["set_by"] == "alice@example.com"
+    again = judgment.resign_workspace_settings(db, new, apply=True)
+    assert again["written"] == 0
+    assert {b["status"] for b in again["blocks"]} == {"signed"}
+
+
+def test_the_re_sign_pass_signs_an_unsigned_opt_in_only_as_stored(db):
+    """A block stored before this deployment had a key is signed as it is
+    stored, like every frozen block: the pass never turns a setting on."""
+    _opt_in(db, enabled=False)
+    key = secrets.token_hex(16)
+    assert judgment.resign_workspace_settings(db, key, apply=True)["written"] == 1
+    doc = cr.ContractReviewStore(db, now=lambda: NOW).document("eng")
+    mac = judgment.SettingsMac(keys=(key,), tenants=("eng",))
+    assert judgment.block_verifies("eng", cr.MAC_BLOCK, doc[cr.FIELD], mac.keys)
+    assert cr.stored_enabled(doc, tenant_id="eng", mac=mac) is False
+
+
 def test_the_signing_list_names_the_new_block_only():
     from swarm_common.specsign import SETTINGS_MAC_FIELDS
 
@@ -456,10 +494,27 @@ def test_a_strict_revision_2_no_worker_enforces_is_refused_not_degraded(
     monkeypatch.setenv(cr.MODE_ENV, "enforce")
     _opt_in(db)
     _reviewer(context, db, Jev({0: ("judgeable", "proof_kind_mismatch", 0.9)}))
-    response = _task(client, _contract())
+    sent = _contract()
+    response = _task(client, sent)
     assert response.status_code == 422, response.text
-    detail = response.json()["detail"]
+    body = response.json()
+    assert body["code"] == "validation_failed"
+    detail = body["detail"]
+    assert set(detail) == {"reason", "contract_id", "revision", "digest", "unenforced", "jev"}
     assert detail["reason"] == "work_contract_not_enforceable"
+    assert detail["contract_id"] == "wc-sort-widgets"
     assert detail["revision"] == 2 and detail["unenforced"] == ["verification"]
-    assert [r["id"] for r in detail["jev"]["requirements"]] == ["REQ-1"]
+    # The owner's answer 1 (4 November 2026): the digest is revision two's,
+    # the one the reviewer made, never revision one's.
+    revision_1 = wc.decode(sent)
+    revision_2 = wc.decode({**sent, "revision": 2, "previous_digest": wc.digest(revision_1),
+                            "requirements": [
+                                {**sent["requirements"][0], "verification": ["judgment"]},
+                                sent["requirements"][1]]})
+    assert detail["digest"] == wc.digest(revision_2) != wc.digest(revision_1)
+    assert set(detail["jev"]) == {"call_id", "backend", "requirements"}
+    assert detail["jev"]["call_id"] and detail["jev"]["backend"] == judgment.INTERNAL_JEV
+    assert detail["jev"]["requirements"] == [
+        {"id": "REQ-1", "class": "judgeable", "reason": "proof_kind_mismatch", "p": 0.9}]
+    assert "Widgets sort" not in response.text
     assert _tasks(db) == []
