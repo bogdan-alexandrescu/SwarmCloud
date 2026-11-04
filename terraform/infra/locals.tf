@@ -1000,6 +1000,14 @@ locals {
       # swarm-api refuses every such submission while this is off.
       SWARM_MCP_SERVERS = var.mcp_servers_enabled ? "on" : "off"
 
+      # The Jev review of a contract at submission (swarm_api.contractreview
+      # MODE_ENV; var.contract_review_mode says what each value does). Until
+      # this line nothing in Terraform set it, so turning it on was a hand
+      # edit the next apply put back. "off" unless the environment's tfvars
+      # sets another value, and the variable's validation admits only the
+      # three values swarm-api reads.
+      SWARM_CONTRACT_REVIEW = var.contract_review_mode
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build

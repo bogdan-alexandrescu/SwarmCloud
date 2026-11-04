@@ -101,10 +101,12 @@ MODE_ENFORCE = "enforce"
 MODES = (MODE_OFF, MODE_REPORT, MODE_ENFORCE)
 
 
-def mode(environ: Mapping[str, str]) -> str:
+def mode(environ: Mapping[str, str] | None = None) -> str:
     """The review's mode: exactly `report` or `enforce`, else `off`. A typo
-    reads as off, the shipped state, never as enforce."""
-    value = (environ.get(MODE_ENV) or "").strip().lower()
+    reads as off, the shipped state, never as enforce. The read is written
+    `(os.environ if environ is None else environ).get(...)` so that
+    scripts/lib/check-env-parity.sh sees swarm-api read the key terraform sets."""
+    value = ((os.environ if environ is None else environ).get(MODE_ENV) or "").strip().lower()
     return value if value in MODES else MODE_OFF
 
 
