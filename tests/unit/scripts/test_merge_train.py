@@ -162,6 +162,121 @@ def test_select_can_board_a_bisection_s_pull_request_github_has_not_rechecked(tm
     assert numbers == ["101", "106", "114", "120"]
 
 
+# TRAIN-BOARDS-UNKNOWN (part of #2688; epic #3179, third comment): right
+# after a landing every open pull request reads `mergeable: UNKNOWN` in the
+# list, so a tick that boards only MERGEABLE boards nothing. With
+# --recheck-unknown, select reads each otherwise eligible UNKNOWN pull request
+# once more with the single-pull-request read (which makes GitHub compute it),
+# waits briefly while it is still computing, and boards it only on MERGEABLE.
+
+FAKE_PR_VIEW = """#!/usr/bin/env bash
+set -euo pipefail
+# gh pr view <N> --repo <R> --json mergeable --jq .mergeable, answered from
+# $FAKE_MERGEABLE_DIR/<N>: one answer per line, one line per read, the last
+# one repeated once they run out.
+printf '%s\\n' "$*" >>"${FAKE_GH_LOG}"
+[[ "$1 $2" == "pr view" ]] || { echo "fake gh: unexpected: $*" >&2; exit 64; }
+n="$3"
+answers="${FAKE_MERGEABLE_DIR}/${n}"
+count="${FAKE_MERGEABLE_DIR}/${n}.count"
+reads=0
+[[ -f "${count}" ]] && reads="$(cat "${count}")"
+reads=$((reads + 1))
+printf '%s' "${reads}" >"${count}"
+total="$(wc -l <"${answers}" | tr -d ' ')"
+[[ "${reads}" -le "${total}" ]] || reads="${total}"
+sed -n "${reads}p" "${answers}"
+"""
+
+
+def _recheck(tmp_path: Path, answers: dict[int, list[str]], prs: Path = FIXTURES / "prs.json"):
+    _need("bash", "jq")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    fake = bin_dir / "gh"
+    fake.write_text(FAKE_PR_VIEW)
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    mergeable_dir = tmp_path / "mergeable"
+    mergeable_dir.mkdir(exist_ok=True)
+    for number, lines in answers.items():
+        (mergeable_dir / str(number)).write_text("".join(f"{line}\n" for line in lines))
+    log = tmp_path / "gh.log"
+    log.write_text("")
+    proc = _run("select", "--prs", str(prs), "--required", str(_required_file(tmp_path)),
+                "--recheck-unknown", env={
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+                    "FAKE_GH_LOG": str(log),
+                    "FAKE_MERGEABLE_DIR": str(mergeable_dir),
+                    "MERGE_TRAIN_MERGEABLE_WAIT_SECONDS": "0",
+                })
+    assert proc.returncode == 0, proc.stderr
+    numbers = [line.split("\t")[0] for line in proc.stdout.splitlines() if line]
+    return numbers, log.read_text().splitlines(), proc
+
+
+def test_select_boards_an_unknown_pull_request_that_reads_mergeable_on_a_second_read(tmp_path):
+    numbers, reads, proc = _recheck(tmp_path, {106: ["MERGEABLE"]})
+    # MUTATION: board only the list's MERGEABLE -> 106 is left out, and a tick
+    # right after a landing boards nothing.
+    assert numbers == ["101", "106", "114", "120"], proc.stderr
+    assert reads == ["pr view 106 --repo bogdan-alexandrescu/SwarmCloud --json mergeable --jq .mergeable"]
+
+
+def test_select_carries_the_head_and_title_of_a_rechecked_pull_request(tmp_path):
+    _, _, proc = _recheck(tmp_path, {106: ["MERGEABLE"]})
+    rows = {line.split("\t")[0]: line.split("\t") for line in proc.stdout.splitlines() if line}
+    assert len(rows["106"]) == 3
+    assert re.fullmatch(r"[0-9a-f]{40}", rows["106"][1])
+
+
+def test_select_leaves_out_an_unknown_pull_request_that_reads_conflicting_on_a_second_read(tmp_path):
+    numbers, reads, _ = _recheck(tmp_path, {106: ["CONFLICTING"]})
+    # MUTATION: board an UNKNOWN on any second answer -> 106 boards conflicting.
+    assert numbers == ["101", "114", "120"]
+    assert len(reads) == 1
+
+
+def test_select_waits_briefly_while_github_is_still_computing(tmp_path):
+    numbers, reads, _ = _recheck(tmp_path, {106: ["UNKNOWN", "UNKNOWN", "MERGEABLE"]})
+    assert numbers == ["101", "106", "114", "120"]
+    assert len(reads) == 3
+
+
+def test_select_leaves_a_still_unknown_pull_request_for_the_next_tick(tmp_path):
+    numbers, reads, _ = _recheck(tmp_path, {106: ["UNKNOWN"]})
+    assert numbers == ["101", "114", "120"]
+    # The wait is bounded: a handful of reads, never a poll until it answers.
+    assert 1 <= len(reads) <= 5
+
+
+def test_select_rereads_only_an_otherwise_eligible_unknown_pull_request(tmp_path):
+    """A draft, a fork, one without `ready` or one not green is never re-read:
+    the second read is for a candidate the train would board."""
+    rows = json.loads((FIXTURES / "prs.json").read_text())
+    for row in rows:
+        if row["number"] in (102, 103, 104, 107):
+            row["mergeable"] = "UNKNOWN"
+    prs = tmp_path / "unknown.json"
+    prs.write_text(json.dumps(rows))
+    answers = {n: ["MERGEABLE"] for n in (102, 103, 104, 106, 107)}
+    numbers, reads, _ = _recheck(tmp_path, answers, prs=prs)
+    assert numbers == ["101", "106", "114", "120"]
+    assert [r.split()[2] for r in reads] == ["106"]
+
+
+def test_select_without_the_flag_never_reads_github(tmp_path):
+    """Plain select stays pure: files in, lines out (106 stays out, above)."""
+    assert "106" not in [r[0] for r in _select(tmp_path)]
+
+
+def test_the_tick_rechecks_unknown_mergeability_when_it_boards_from_the_pool():
+    code = SCRIPT.read_text()
+    start = code[code.index("start_train() {"):]
+    start = start[:start.index("\n}\n")]
+    assert "--recheck-unknown" in start
+
+
 # CHECK-STUCK-2 (BGD, 2026-10-23, task_9e9080121b104370b079 Q0; part of
 # #2031): select reads a rollup check run as done the way `judge` does --
 # status COMPLETED, OR a conclusion together with a completedAt. GitHub left
