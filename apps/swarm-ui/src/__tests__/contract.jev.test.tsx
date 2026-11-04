@@ -9,13 +9,7 @@
 //     probability, labelled as Jev's review -- never the detail as a JSON dump
 //     or as `key value` facts;
 //   * a 422 without `detail.jev` is not drawn as Jev's;
-//   * the approval screen draws `contract_acceptance` (the record
-//     `attemptstate.contract_verdict` and `contractreask` store) as a card
-//     labelled as Jev's judgment: each verdict with the item it cites -- a
-//     changed file at the judged commit, or a mechanical result -- and its
-//     reason and probability; a `not_run` or a `cannot_judge` the control
-//     plane re-asked three times says so, and says it is now the person's;
-//   * Jev's met never reads as an approval: the card says it is evidence;
+//   * (the approval screen's cases are in contract.jev.approval.test.tsx);
 //   * the verdict chips take the ok, bad and warn hues in both themes, and the
 //     rows stack at 390px and sit in two columns at 1280 and 1440.
 //
@@ -33,7 +27,7 @@ import { SubmitScreen } from '../Submit'
 import { SubmitWorkflowScreen, refusalOf } from '../SubmitWorkflow'
 import type { CascadeEnv } from './cssgate'
 import { painted, stateHueIn, THEMES } from './marks'
-import { serve, visible } from './repofixture'
+import { visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
 const JSON_HEADERS = { 'content-type': 'application/json' }
@@ -158,145 +152,19 @@ describe('the submission refusal', () => {
   })
 })
 
-// --- the approval screen -------------------------------------------------------
-
-const hoursFromNow = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString()
-
-function acceptance(over: Json = {}): Json {
-  return {
-    status: 'judgment_pending', waiting_on: 'owner', owner_reason: 'send_back_cap',
-    attempt_id: 'att_1', generation: 3, contract_id: 'wc-example', revision: 2, digest: DIGEST,
-    commit: COMMIT, outcome: 'judged', reason: null, call_id: CALL,
-    verdicts: [
-      { requirement_id: 'REQ-1', verdict: 'met', reason: 'satisfied', evidence_item: 'i1', p: 0.91 },
-      { requirement_id: 'REQ-2', verdict: 'unmet', reason: 'partially_done', evidence_item: 'i0', p: 0.78 },
-      { requirement_id: 'REQ-3', verdict: 'met', reason: 'satisfied', evidence_item: 'm0', p: 0.88 },
-    ],
-    changed: ['apps/swarm-api/swarm_api/leases.py', 'tests/unit/control_plane/test_leases.py'],
-    mechanical: [{ kind: 'unit_tests', passed: true, named: ['tests/unit/control_plane/test_leases.py'] }, { kind: 'ci', passed: null }],
-    reask: null, at: hoursFromNow(-1),
-    ...over,
-  }
-}
-
-const REASKED = {
-  tries: 3, first_at: hoursFromNow(-1), next_at: hoursFromNow(-0.2), deadline: hoursFromNow(-0.5),
-  last: { try: 3, at: hoursFromNow(-0.6), outcome: 'not_run', reason: 'skipped:budget_monthly', call_id: null },
-}
-
-function detail(acc: Json | null): Json {
-  return {
-    approval: {
-      approval_id: 'apr_contract', tenant_id: 'eng', kind: 'merge',
-      subject: { run_id: 'run_8f2a', issue: 'example-org/example-api#2364' },
-      digest: { head_sha: COMMIT, verdict: 'MERGE' },
-      summary: 'example-org/example-api#2364: pull request #2392 is green',
-      approvers: 'owner_only', state: 'pending', requested_at: hoursFromNow(-2), expires_at: hoursFromNow(60),
-      may_decide: { approve: true, reject: true, why: null, deciders: ['owner_only'] },
-    },
-    merge: { green_sha: COMMIT, pull_request: { number: 2392, url: 'https://github.com/example-org/example-api/pull/2392' }, requirements_met: true, requirements_unmet: [], checks: { passed: 4, failed: 0, pending: 0 } },
-    ...(acc === null ? {} : { contract_acceptance: acc }),
-  }
-}
-
-async function openApproval(body: Json) {
-  serve((m, url) => {
-    const path = url.split('?')[0]!
-    if (m === 'GET' && path === '/v1/approvals') return { status: 200, body: { approvals: [body.approval], tenant_id: 'eng' } }
-    if (m === 'GET' && path.startsWith('/v1/approvals/')) return { status: 200, body }
-    return null
-  })
-  vi.stubEnv('VITE_LIVE', '1')
-  vi.resetModules()
-  const { ApprovalsScreen } = await import('../Approvals')
-  render(<ApprovalsScreen view="approval=apr_contract" go={vi.fn()} />)
-  return waitFor(() => {
-    const d = screen.getByTestId('ap-detail')
-    expect(d.tagName).toBe('SECTION')
-    return d
-  }, WAIT)
-}
-
-describe('the approval screen', () => {
-  it('draws each verdict with the hunk it cites, labelled as Jev’s judgment', async () => {
-    const d = await openApproval(detail(acceptance()))
-    const card = await within(d).findByRole('region', { name: 'Jev’s judgment of the work contract' }, WAIT)
-    const rows = [...card.querySelectorAll<HTMLElement>('[data-requirement]')]
-    expect(rows.map((r) => [r.getAttribute('data-requirement'), r.getAttribute('data-verdict')])).toEqual([
-      ['REQ-1', 'met'], ['REQ-2', 'unmet'], ['REQ-3', 'met'],
-    ])
-    // MUTATION: drop the cited item, and the person cannot check what the verdict rests on.
-    expect(visible(rows[0]!)).toContain('tests/unit/control_plane/test_leases.py')
-    expect(visible(rows[1]!)).toContain('apps/swarm-api/swarm_api/leases.py')
-    expect(visible(rows[1]!)).toContain(COMMIT.slice(0, 7))
-    expect(visible(rows[1]!)).toContain('it is partly done')
-    expect(visible(rows[1]!)).toContain('78%')
-    expect(visible(rows[2]!)).toContain('unit tests passed')
-    for (const r of rows) expect(visible(r)).toContain('Jev')
-    // The owner reason, in words: the send-back cap handed it to the person.
-    expect(visible(card)).toContain('sent back twice')
-    // Rule 1: a model judgment is not an authorization.
-    expect(visible(card)).toContain('Jev’s verdicts are evidence for your decision; they approve nothing')
-    expect(visible(card)).toContain(CALL)
-  })
-
-  it('says a not_run after the control plane’s three re-asks as such', async () => {
-    const d = await openApproval(detail(acceptance({ outcome: 'not_run', reason: 'skipped:budget_calls', verdicts: [], owner_reason: 'reask_exhausted', reask: REASKED, call_id: null })))
-    const card = await within(d).findByRole('region', { name: 'Jev’s judgment of the work contract' }, WAIT)
-    const status = within(card).getByTestId('cj-status')
-    expect(status.getAttribute('data-status')).toBe('not_run')
-    expect(visible(status)).toContain('Jev did not judge this step')
-    expect(visible(status)).toContain('three re-asks')
-    expect(visible(card)).toContain('skipped:budget_monthly')
-    expect(visible(card)).toContain('skipped:budget_calls')
-    // A not_run is never drawn as a verdict, met or unmet.
-    expect(card.querySelectorAll('[data-verdict]')).toHaveLength(0)
-  })
-
-  it('says a cannot_judge after the three re-asks as such, per requirement', async () => {
-    const acc = acceptance({
-      owner_reason: 'reask_exhausted', reask: { ...REASKED, last: { ...REASKED.last, outcome: 'judged', reason: null } },
-      verdicts: [
-        { requirement_id: 'REQ-1', verdict: 'met', reason: 'satisfied', evidence_item: 'i1', p: 0.91 },
-        { requirement_id: 'REQ-2', verdict: 'cannot_judge', reason: 'evidence_missing', evidence_item: null, p: 0.4 },
-      ],
-    })
-    const d = await openApproval(detail(acc))
-    const card = await within(d).findByRole('region', { name: 'Jev’s judgment of the work contract' }, WAIT)
-    const row = card.querySelector<HTMLElement>('[data-requirement="REQ-2"]')!
-    expect(row.getAttribute('data-verdict')).toBe('cannot_judge')
-    expect(visible(row)).toContain('Jev could not judge it')
-    expect(visible(row)).toContain('after the control plane’s three re-asks')
-    expect(visible(row)).toContain('cites nothing')
-  })
-
-  it('says a step still waiting on a re-ask, with the try it is on', async () => {
-    const d = await openApproval(detail(acceptance({
-      waiting_on: 'reask', owner_reason: null, outcome: 'not_run', reason: 'timeout', verdicts: [],
-      reask: { tries: 1, first_at: hoursFromNow(-0.2), next_at: hoursFromNow(0.1), deadline: hoursFromNow(0.3), last: null },
-    })))
-    const card = await within(d).findByRole('region', { name: 'Jev’s judgment of the work contract' }, WAIT)
-    expect(visible(within(card).getByTestId('cj-status'))).toContain('re-asked 1 of 3 times')
-  })
-
-  it('draws no card where the detail carries no acceptance record', async () => {
-    const d = await openApproval(detail(null))
-    await within(d).findByRole('region', { name: 'What asked for it' }, WAIT)
-    expect(within(d).queryByRole('region', { name: 'Jev’s judgment of the work contract' })).toBeNull()
-    expect(contractAcceptance({ status: 'met' })).toBeNull()
-    expect(contractAcceptance('met')).toBeNull()
-  })
-})
-
 describe('the look', () => {
   function verdicts() {
-    const acc = contractAcceptance(acceptance({
+    const acc = contractAcceptance({
+      status: 'judgment_pending', waiting_on: 'owner', owner_reason: 'send_back_cap', outcome: 'judged',
+      commit: COMMIT, revision: 2, call_id: CALL, reask: null,
+      changed: ['apps/swarm-api/swarm_api/leases.py', 'tests/unit/control_plane/test_leases.py'],
+      mechanical: [{ kind: 'unit_tests', passed: true }],
       verdicts: [
         { requirement_id: 'REQ-1', verdict: 'met', reason: 'satisfied', evidence_item: 'i1', p: 0.91 },
         { requirement_id: 'REQ-2', verdict: 'unmet', reason: 'partially_done', evidence_item: 'i0', p: 0.78 },
         { requirement_id: 'REQ-3', verdict: 'cannot_judge', reason: null, evidence_item: null, p: 0 },
       ],
-    }))!
+    })!
     return render(<AcceptanceVerdicts acceptance={acc} />).container
   }
 
@@ -304,9 +172,9 @@ describe('the look', () => {
     const root = verdicts()
     const chip = (id: string) => root.querySelector<HTMLElement>(`[data-requirement="${id}"] .cj-chip`)!
     for (const theme of THEMES) {
-      expect(stateHueIn(painted(chip('REQ-1'), 'color', WIDE), theme)).toBe('--ok')
-      expect(stateHueIn(painted(chip('REQ-2'), 'color', WIDE), theme)).toBe('--bad')
-      expect(stateHueIn(painted(chip('REQ-3'), 'color', WIDE), theme)).toBe('--warn')
+      expect(stateHueIn(painted(chip('REQ-1'), 'background-color', WIDE), theme)).toBe('--ok')
+      expect(stateHueIn(painted(chip('REQ-2'), 'background-color', WIDE), theme)).toBe('--bad')
+      expect(stateHueIn(painted(chip('REQ-3'), 'background-color', WIDE), theme)).toBe('--warn')
     }
   })
 
