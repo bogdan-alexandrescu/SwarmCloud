@@ -343,3 +343,22 @@ def test_a_stale_generation_with_merge_train_required_labels_nothing(tmp_path):
     with pytest.raises(FencedError):
         merge.run_merge(world.context())
     assert _labelled(world) == [] and world.merge_calls() == []
+
+
+@pytest.mark.parametrize("conclusion,code", [("success", mergetrain.TRAIN_WAITING),
+                                             ("failure", merge.CI_FIX_PENDING)])
+def test_a_base_requiring_only_merge_train_gates_on_every_other_check(tmp_path, conclusion,
+                                                                       code):
+    """Nothing else required: every other check at the head must be green, as
+    on a base that requires none."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    world.rules[0]["parameters"]["required_status_checks"] = [{"context": "merge-train"}]
+    world.runs[0]["conclusion"] = conclusion
+    world.docs[TASK]["metadata"] = {"merge_fix_rounds": 1}
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == code, outcome.ci_wait
+    assert len(_labelled(world)) == (1 if conclusion == "success" else 0)
+    assert world.merge_calls() == []

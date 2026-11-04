@@ -3039,20 +3039,37 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     checks = merger.checks_at(head, head_ref=pr.head_ref)
     summary["required_checks"] = sorted({c.context for c in required.checks})
     summary["required_checks_source"] = required.source
+    # A base that requires the train's own `merge-train` (the runbook's
+    # ruleset change, #3179): the train posts it only on a pull request it
+    # boarded, and it boards only `ready` ones, which `_board` labels below.
+    # With the train on, the gate leaves it out, so a green head reaches
+    # `_board` instead of parking CI_PENDING on it forever. Every other
+    # required check still gates; with the train off it is an ordinary one.
+    # Read here only where it matters, so every other step reads the switch
+    # where it always did, and a workspace train (TRAIN-WS) never does.
+    switch: dict[str, Any] | None = None
+    switch_read = False
+    gated = list(required.checks)
+    if (parse_merge_target(ctx.dispatch).merge_mode != mergetrain.TRAIN
+            and any(c.context == REPOSITORY_TRAIN_CONTEXT for c in required.checks)):
+        switch, switch_read = repository_train(merger, required), True
+        if switch is not None:
+            gated = [c for c in required.checks if c.context != REPOSITORY_TRAIN_CONTEXT]
+            checks = [c for c in checks if c.name != REPOSITORY_TRAIN_CONTEXT]
     pending: list[str] = []
     failed: list[str] = []
     #: None once a failing check is one no re-run replaces (`failing_run_ids`).
     failing_ids: set[int] | None = set()
     #: The runs of each check the decision judges, for `cancelled_since`.
     judged: list[list[dict[str, Any]]] = []
-    if required.checks:
+    if gated:
         read_pending, read_failed = latest_reading(
             {check.context: [c for c in checks if c.name == check.context
                              and (check.app_id is None or c.app_id == check.app_id)]
-             for check in required.checks},
+             for check in gated},
             REQUIRED_GREEN,
         )
-        for check in required.checks:
+        for check in gated:
             mine = [c.as_run() for c in checks if c.name == check.context
                     and (check.app_id is None or c.app_id == check.app_id)]
             judged.append(mine)
@@ -3077,7 +3094,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         # No protection, or protection that requires no check, or a plan that
         # has neither rulesets nor protection to read (`required.source`
         # `none_plan_limited_all_checks`): every check reported at the head
-        # must be green, and there must be one.
+        # must be green, and there must be one. So too a base whose only
+        # required check is `merge-train` with the train on (`gated` above).
         by_name: dict[str, list[CheckFacts]] = {}
         for check in checks:
             by_name.setdefault(check.name, []).append(check)
@@ -3121,7 +3139,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     # one merger. The step labels the pull request `ready` and parks; it
     # takes no slot and updates no branch (docs/merge-step.md "The
     # repository's merge train").
-    switch = repository_train(merger, required)
+    if not switch_read:
+        switch = repository_train(merger, required)
     if switch is not None:
         return _board(run, merger, own, pr=pr, head=head, base=default, switch=switch)
 
