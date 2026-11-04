@@ -8,7 +8,7 @@ DAYONE-SETUP-API-1, part of #2688).
     GET  /v1/admin/setup/github-app/installation  is the App on the org yet
     POST /v1/admin/setup/github-app/self-check    the `/admin/forge/app` check, recorded
     POST /v1/admin/setup/github-app/hook          turn the webhook on (engine or admin)
-    POST /v1/admin/setup/links                    a one-time link, three kinds
+    POST /v1/admin/setup/links                    a one-time link, four kinds
     POST /v1/admin/setup/teams                    a team: its workspace record and `teams/<id>`
     POST /v1/admin/setup/teams/{id}/invites       an invite and its Google Admin members page
     POST /v1/admin/setup/smoke                    the first team's smoke, again after a failure
@@ -88,13 +88,14 @@ from .. import setup_links as sl
 from .. import workspaces as ws
 from ..access import record_workspace_installation, write_workspace_grants
 from ..auth import TENANT_HEADER, AuthContext, bearer_tokens, require_admin
+from ..brokerclient import AccountPool
 from ..codec import console_origin
 from ..deps import AppContext, admin_auth, current_auth, get_context
 from ..errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from ..groups import GroupLookupError, MembershipResolver, check_group_readable
 from ..people import People
 from ..publish_workspace import WorkspacePublisher
-from ..schemas import StrictModel
+from ..schemas import VOICE_API_KEY_PROVIDER, StrictModel
 from ..setup_github import (
     GitHubSetupApi,
     ManifestFlow,
@@ -1554,8 +1555,9 @@ def start_verify_runs(
 
 
 class LinkCreate(StrictModel):
-    kind: Literal["pool-account", "team-git", "addon-secret"]
-    #: The pool account's label, the add-on's name; for `team-git`, the team.
+    kind: Literal["pool-account", "team-git", "addon-secret", "voice-api-key"]
+    #: The pool account's label, the add-on's name; for `team-git`, the team;
+    #: for `voice-api-key`, the label the key's account gets in the Voice it pool.
     label: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
     #: The person the link is for: their verified email opens it.
     owner: str = Field(min_length=3, max_length=320)
@@ -1583,8 +1585,13 @@ def mint_link(
     github: GitHubSetupApi = Depends(setup_github_api),
     publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
-    """One route, three kinds (review finding 21). The token is in this answer
+    """One route, four kinds (review finding 21). The token is in this answer
     and nowhere else; Firestore keeps its digest.
+
+    `voice-api-key` (Admin › Accounts, the owner, 4 November 2026) is the
+    minting admin's own: `owner` must be the caller, and the account is filed
+    under the caller's own resolved workspace, recorded now so the redeem
+    cannot be pointed at another. It lasts ten minutes (`sl.VOICE_KEY_TTL`).
 
     For one person (decision 7) a pool account is owned by the installer's
     personal workspace and its link is the installer's alone, and the
@@ -1593,6 +1600,8 @@ def mint_link(
     tenant_id: str | None = None
     team_id: str | None = None
     progress_path: str | None = None
+    if body.kind == sl.VOICE_API_KEY:
+        return _mint_voice_key_link(body, owner, caller=caller, ctx=ctx, links=links)
     engine = record.read_engine()
     personal = None
     if install_mode(engine) == ir.INDIVIDUAL and body.kind in (sl.POOL_ACCOUNT, sl.TEAM_GIT):
@@ -1648,9 +1657,31 @@ def mint_link(
             "expires_at": link["expires_at"].isoformat()}
 
 
+def _mint_voice_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx: AppContext,
+                         links: sl.SetupLinks) -> dict:
+    """A `voice-api-key` link, for the minting platform admin alone.
+
+    `admin_auth` has already refused anyone but a platform admin. The owner
+    named in the body must BE that admin: a link another person could open
+    would let the key be pasted by someone the console never asked."""
+    if caller.auth is None or owner != caller.email.strip().lower():
+        raise Forbidden("a Voice it API key link is for the platform admin who makes it; "
+                        "name yourself as its owner")
+    tenant_id = ctx.submissions.tenant_for(caller.auth).tenant_id
+    token, link = links.mint(kind=body.kind, label=body.label, owner=owner, by=caller.email,
+                             tenant_id=tenant_id)
+    path = sl.FORMS[body.kind].format(token=token)
+    base = console_origin(ctx.settings.console_url)
+    log.info("minted a setup link kind=%s label=%s", body.kind, body.label)
+    return {"kind": body.kind, "label": body.label, "owner": owner, "tenant": tenant_id,
+            "url": f"{base}{path}" if base else None, "path": path,
+            "expires_at": link["expires_at"].isoformat()}
+
+
 class LinkRedeem(StrictModel):
     token: str = Field(min_length=16, max_length=128)
-    #: The team git slot's or the add-on's value, for those kinds only.
+    #: The team git slot's, the add-on's or the Voice it API key's value, for
+    #: those kinds only. Write-only: no answer, log line or document carries it.
     value: str | None = Field(default=None, min_length=1, max_length=16384)
 
 
@@ -1661,6 +1692,7 @@ def redeem_link(
     links: sl.SetupLinks = Depends(links_service),
     secrets_: SetupSecrets = Depends(setup_secrets),
     ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
 ) -> dict:
     """Open a link as the person it was minted for, once.
 
@@ -1673,9 +1705,17 @@ def redeem_link(
     request and write it straight into their one container; it is never
     returned or logged. Their link is consumed only AFTER the write, so a
     missing value or a failed write leaves it usable. A team's git container
-    is created on first use (an install has no Terraform tenant to make it)."""
+    is created on first use (an install has no Terraform tenant to make it).
+
+    `voice-api-key` is opened only by the platform admin who minted it, still a
+    platform admin, with its value. Its link is consumed BEFORE the value is
+    forwarded, so the value reaches the broker's `POST /v1/accounts` (provider
+    `openai-api`) at most once per link, even for two submits racing; a key
+    the broker refuses spends the link, and Admin › Accounts makes another."""
     peeked = links.peek(body.token, email=auth.email)
     kind = peeked.get("kind")
+    if kind == sl.VOICE_API_KEY:
+        return _redeem_voice_key(body, auth, links=links, pool=pool)
     if kind == sl.POOL_ACCOUNT:
         tenant_id = str(peeked.get("tenant_id") or "")
         state = (ctx.submissions.workspaces.get(tenant_id) or {}).get("state")
@@ -1708,6 +1748,36 @@ def redeem_link(
     link = links.redeem(body.token, email=auth.email)
     log.info("a setup link wrote its secret kind=%s label=%s", kind, link.get("label"))
     return {"kind": kind, "label": link.get("label"), "secret": secret_id, "written": True}
+
+
+def _redeem_voice_key(body: LinkRedeem, auth: AuthContext, *, links: sl.SetupLinks,
+                      pool: AccountPool) -> dict:
+    """Forward Voice it's OpenAI API key to the broker, once, and keep nothing.
+
+    The value is in this frame alone: not logged, not in the link's record, not
+    in the answer, and not in a refusal (the broker's sentences never quote a
+    key, and `type(exc)` is all a failure is logged as)."""
+    require_admin(auth, None)
+    if body.value is None:
+        raise ValidationFailed(f"a {sl.VOICE_API_KEY} link is opened with its value; the link is "
+                               "still unused, open it again with the value")
+    link = links.redeem(body.token, email=auth.email)
+    label = str(link.get("label") or "")
+    tenant_id = str(link.get("tenant_id") or "")
+    try:
+        result = pool.register(owner_tenant=tenant_id, label=label,
+                               provider=VOICE_API_KEY_PROVIDER, lend_to=[],
+                               credential=body.value.strip())
+    except ApiError as exc:
+        log.info("a setup link's key was refused by the account pool kind=%s label=%s code=%s",
+                 sl.VOICE_API_KEY, label, exc.code)
+        raise
+    account = result.get("account") if isinstance(result, dict) else None
+    account_id = (account or {}).get("account_id") if isinstance(account, dict) else None
+    log.info("a setup link registered its account kind=%s label=%s", sl.VOICE_API_KEY, label)
+    return {"kind": sl.VOICE_API_KEY, "label": label, "tenant": tenant_id,
+            "account_id": account_id or f"{tenant_id}:{label}",
+            "provider": VOICE_API_KEY_PROVIDER, "pool": "voice-it", "written": True}
 
 
 # --------------------------------------------------------------------------

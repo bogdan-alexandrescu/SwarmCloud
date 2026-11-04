@@ -506,6 +506,23 @@ BRANCH_UPDATE_PENDING = "branch_update_pending"
 #: tests/unit/control_plane/test_merge_wake.py).
 MERGE_QUEUED = "merge_queued"
 
+#: The repository's own merge train (owner decisions 2026-10-14 "A1 Merge
+#: train" and 2026-11-03, turning it on): .github/workflows/merge-train.yml
+#: and scripts/merge-train.sh board green `ready` pull requests, test them
+#: together on the base and squash-merge each. ONE SWITCH, the same one both
+#: workflows read: the repository variable `MERGE_TRAIN`, exactly `on`
+#: (`merge-train.sh tick`, auto-merge.yml's gate step 5b). Anything else, or
+#: no variable, is the train off and this step exactly as before.
+REPOSITORY_TRAIN_VARIABLE = "MERGE_TRAIN"
+REPOSITORY_TRAIN_ON = "on"
+#: The label the train boards by (`merge-train.sh select`).
+REPOSITORY_TRAIN_LABEL = "ready"
+#: The commit status the train posts on each head it lands, which the
+#: runbook's ruleset change requires (`merge-train.sh` TRAIN_CONTEXT).
+REPOSITORY_TRAIN_CONTEXT = "merge-train"
+#: How the train's ejection comment begins (`merge-train.sh eject_pr`).
+REPOSITORY_TRAIN_EJECTED = "**Ejected from the merge train"
+
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
 #: anyone else made can carry any tree, so the walk takes one of those only
@@ -1016,6 +1033,9 @@ class PullRequestFacts:
     #: The people on the pull request: its author and its assignees, each a
     #: login GitHub says is a `User` account (`_person_pusher`, #2505).
     people: tuple[str, ...] = ()
+    #: The pull request's label names: `ready` boards the repository's merge
+    #: train (`_board`).
+    labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1277,6 +1297,12 @@ class ForgeMerger(Protocol):
 
     def delete_branch(self, name: str) -> bool: ...
 
+    def repository_variable(self, name: str) -> str | None: ...
+
+    def add_label(self, number: int, name: str) -> None: ...
+
+    def train_ejection(self, number: int) -> str | None: ...
+
 
 class UnsupportedForge(ValueError):
     """The repository is on a host no `ForgeMerger` serves."""
@@ -1376,6 +1402,9 @@ class GitHubMerger:
             people=tuple(login for login in (
                 _user_login(account) for account in
                 [data.get("user"), *(data.get("assignees") or [])]) if login),
+            labels=tuple(name for name in (
+                _str(_mapping(label).get("name")) for label in (data.get("labels") or []))
+                if name),
         )
 
     def required_checks(self, branch: str) -> RequiredChecks:
@@ -1692,6 +1721,45 @@ class GitHubMerger:
         if answer.status == 404 or (answer.status == 422 and _REF_GONE.search(message)):
             return False
         raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/git/refs/heads", message)
+
+    def repository_variable(self, name: str) -> str | None:
+        """An Actions repository variable's value (`vars.<name>`), None when it
+        is not set (404). Any other answer raises: a 403 is a token without
+        the *Variables: Read* permission, which `repository_train` reads."""
+        path = f"{self._base}/actions/variables/{quote(name, safe='')}"
+        answer = self._client.get(path)
+        if answer.status == 404:
+            return None
+        if answer.status != 200:
+            raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/actions/variables",
+                                          forge_mod._message_of(answer.data))
+        value = _mapping(answer.data).get("value")
+        return value if isinstance(value, str) else None
+
+    def add_label(self, number: int, name: str) -> None:
+        """Add one label to the pull request (its issue); raises unless GitHub took it."""
+        path = f"{self._base}/issues/{number}/labels"
+        answer = self._client.request("POST", path, payload={"labels": [name]})
+        if answer.status != 200:
+            raise forge_mod.ForgeAnswered(answer.status, path, forge_mod._message_of(answer.data))
+
+    def train_ejection(self, number: int) -> str | None:
+        """Why the pull request lost `ready`, as its comments say: the latest
+        comment of the merge train's ejection (`REPOSITORY_TRAIN_EJECTED`,
+        scripts/merge-train.sh `eject_pr`), else the latest an App wrote
+        (auto-merge.yml's gate says why it removed `ready`), else None."""
+        comments = self._client.paginate(f"{self._base}/issues/{number}/comments")
+        ejected = app = None
+        for comment in comments:
+            comment = _mapping(comment)
+            body = _str(comment.get("body"))
+            if body is None:
+                continue
+            if body.startswith(REPOSITORY_TRAIN_EJECTED):
+                ejected = body
+            if _mapping(comment.get("user")).get("type") == "Bot":
+                app = body
+        return ejected or app
 
 
 def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
@@ -2845,6 +2913,24 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
                                     default=default)
                 return _outcome(TaskState.SUCCEEDED, None, summary, "")
+            if _on_repository_train(ctx, own):
+                # Merged while this step waited on the repository's train:
+                # the train's merge when it posted `merge-train` green at
+                # this head, recorded as the direct merge's is; anyone
+                # else's is `already_merged` below. Either way SUCCEEDED.
+                checks = merger.checks_at(pr.head_sha, head_ref=pr.head_ref)
+                if any(c.name == REPOSITORY_TRAIN_CONTEXT and c.conclusion == "success"
+                       for c in checks):
+                    summary["merged_by_this_task"] = True
+                    summary["merged_through_repository_train"] = True
+                    summary["merge_commit"] = pr.merge_commit_sha
+                    _record(summary, merger, number,
+                            repository_train_provenance(ctx, merger, number=number,
+                                                        head=pr.head_sha, base=default))
+                    _close_issues(run, merger, number)
+                    _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                        default=default)
+                    return _outcome(TaskState.SUCCEEDED, None, summary, "")
             if _queued_by_this_step(own):
                 # The merge queue merged what this step enqueued (C3H): this
                 # step's merge, recorded as the direct merge's is.
@@ -3031,6 +3117,14 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if parse_merge_target(ctx.dispatch).merge_mode == mergetrain.TRAIN:
         return _train(run, merger, title=pr.title, number=number, head=head, base=default)
 
+    # Green, in a repository whose own merge train is on: the train is its
+    # one merger. The step labels the pull request `ready` and parks; it
+    # takes no slot and updates no branch (docs/merge-step.md "The
+    # repository's merge train").
+    switch = repository_train(merger, required)
+    if switch is not None:
+        return _board(run, merger, own, pr=pr, head=head, base=default, switch=switch)
+
     # Green: from here on this step updates and merges, which only the
     # holder of the repository's merge slot may do. Waiting is a park.
     if slot is not None and slot.held is None:
@@ -3161,6 +3255,97 @@ def _train(run: _Run, merger: ForgeMerger, *, title: str, number: int, head: str
     return run.wait(mergetrain.TRAIN_WAITING,
                     f"pull request #{number} is {state} in {base}'s merge train at {head}",
                     head=head, pull_request=number, pending=[])
+
+
+def repository_train(merger: ForgeMerger, required: RequiredChecks) -> dict[str, Any] | None:
+    """The repository's merge train switch, read as merge-train.sh reads it;
+    None when the train is off.
+
+    `vars.MERGE_TRAIN` exactly `on` is on; unset or anything else is off.
+    A token without *Variables: Read* (401/403) cannot see the variable: the
+    train is then on only when the base requires the train's own
+    `merge-train` status -- the runbook's ruleset change -- because a direct
+    merge into such a base is refused whatever the variable says.
+    """
+    try:
+        value = merger.repository_variable(REPOSITORY_TRAIN_VARIABLE)
+    except forge_mod.ForgeAnswered as exc:
+        if getattr(exc, "status", None) not in (401, 403):
+            raise
+        if any(c.context == REPOSITORY_TRAIN_CONTEXT for c in required.checks):
+            return {"switch": "unreadable", "on_by": "required_check"}
+        return None
+    if value != REPOSITORY_TRAIN_ON:
+        return None
+    return {"switch": value, "on_by": "variable"}
+
+
+def _on_repository_train(ctx: ActionContext, own: Mapping[str, Any], *,
+                         head: str | None = None) -> bool:
+    """Whether this step's last park was on the repository's merge train
+    (at `head`, when named): `TRAIN_WAITING` -- the train park lifecycle and
+    swarm-api already keep off the CI clock -- in a step whose signed target
+    is not a workspace train (TRAIN-WS, `_train`). The record is
+    tenant-writable: a forged one can at worst refuse `train_ejected`, or
+    credit this step with a merge GitHub already shows."""
+    if parse_merge_target(ctx.dispatch).merge_mode == mergetrain.TRAIN:
+        return False
+    wait = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    if wait.get("code") != mergetrain.TRAIN_WAITING:
+        return False
+    return head is None or wait.get("head") == head
+
+
+def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRequestFacts,
+           head: str, base: str, switch: Mapping[str, Any]) -> ActionOutcome:
+    """Board the repository's merge train: label `ready`, then park.
+
+    Green at `head` with the review's MERGE, so the pull request is what the
+    train boards (`merge-train.sh select`). Already `ready`: park again. Not
+    `ready` though this step parked on the train at this same head: the
+    train ejected it, or auto-merge.yml's gate took `ready` off -- a refusal,
+    `train_ejected`, with the comment that says why; never labelled again,
+    as a dequeued pull request is never enqueued again. A conflict or a red
+    check at the head never reaches here: the gate above sends it to its fix
+    round first, and a round's new head is labelled afresh.
+
+    The label is behind the fencing and cancel recheck, as every forge write
+    is: a superseded attempt labels nothing (invariant 5). The park is
+    `TRAIN_WAITING`, off the CI clock, waking on the fallback instant, and
+    holds no lease, capacity or merge slot (invariant 1).
+    """
+    ctx, summary = run.ctx, run.summary
+    number = pr.number
+    record: dict[str, Any] = {**switch, "head": head, "label": REPOSITORY_TRAIN_LABEL}
+    summary["repository_train"] = record
+    if REPOSITORY_TRAIN_LABEL in pr.labels:
+        record["labelled"] = False
+    elif _on_repository_train(ctx, own, head=head):
+        why = merger.train_ejection(number)
+        return run.refuse("train_ejected",
+                          f"pull request #{number} lost `{REPOSITORY_TRAIN_LABEL}` while it "
+                          f"waited in {base}'s merge train at {head}: "
+                          + (why.strip()[:1000] if why else "no comment on it says why"))
+    else:
+        if ctx.recheck():
+            return cancelled(summary)
+        merger.add_label(number, REPOSITORY_TRAIN_LABEL)
+        record["labelled"] = True
+    return run.wait(mergetrain.TRAIN_WAITING,
+                    f"pull request #{number} is `{REPOSITORY_TRAIN_LABEL}` for {base}'s merge "
+                    f"train at {head}", head=head, pull_request=number, pending=[])
+
+
+def repository_train_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int,
+                                head: str, base: str) -> str:
+    """The pull request comment for a merge the repository's train made. No attribution."""
+    return "\n".join([
+        f"Merged by SwarmCloud task {ctx.task_id} (workflow {ctx.workflow_id}, "
+        f"attempt {ctx.attempt_id}) into {merger.full_name}#{number},",
+        f"through {base}'s merge train, which this task boarded by labelling it "
+        f"`{REPOSITORY_TRAIN_LABEL}` at {head}, the head the train squashed after its checks "
+        f"were green on {base} with this change on it.",
+    ])
 
 
 def _landed_by_train(ctx: ActionContext, own: Mapping[str, Any], *,
@@ -3689,10 +3874,12 @@ def _head_record(merger: ForgeMerger, *, head: str, pinned: str,
 # ---------------------------------------------------------------------------
 
 #: The park codes on which a holder gives the slot back: a CI-fix or conflict
-#: fix round runs an agent for as long as it takes, and a merge queue
-#: serialises the merges itself. The next green reading takes the slot again.
+#: fix round runs an agent for as long as it takes, and a merge queue or a
+#: merge train serialises the merges itself (a step that held the slot when
+#: the repository's train was turned on hands it on as it boards). The next
+#: green reading takes the slot again.
 _RELEASE_ON_PARK = frozenset({CI_FIX_PENDING, CI_FIX_RUNNING, CONFLICT_FIX_PENDING,
-                              CONFLICT_FIX_RUNNING, MERGE_QUEUED})
+                              CONFLICT_FIX_RUNNING, MERGE_QUEUED, mergetrain.TRAIN_WAITING})
 
 
 def _slot_use(ctx: ActionContext, repository: str,

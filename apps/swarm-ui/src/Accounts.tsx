@@ -11,6 +11,7 @@ import {
   setAccountName,
   setAccountState,
   loadMe,
+  mintSetupLink,
   type AccountsBoard,
   type ServedAccount,
 } from './api'
@@ -21,7 +22,7 @@ import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
-import { Button, CIcon, Chip, Dialog, Table, ToneMark, WarnMark } from './components'
+import { Button, ButtonLink, CIcon, Chip, Dialog, Table, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
@@ -1023,6 +1024,7 @@ function Pool({
         {/* THE VOICE IT POOL (the owner, 2026-11-02): drawn only when an
             account is in it, so a pool without one reads as it always did. */}
         <VoiceItPool accounts={accounts} now={now} phone={phone} />
+        <VoiceKeyLink />
       </section>
       {sheet}
     </div>
@@ -2876,7 +2878,17 @@ export const VOICE_IT_PEOPLE_NOTE = 'Version one: the platform owner only'
  * mocks `api` without it draws no control rather than throwing.
  */
 function usePlatformAdmin(): boolean {
-  const [admin, setAdmin] = useState(false)
+  return usePlatformPrincipal().admin
+}
+
+/** The platform admin's own verified email, or null for anyone else (and while unknown). */
+function usePlatformAdminEmail(): string | null {
+  const p = usePlatformPrincipal()
+  return p.admin ? p.email : null
+}
+
+function usePlatformPrincipal(): { admin: boolean; email: string | null } {
+  const [admin, setAdmin] = useState<{ admin: boolean; email: string | null }>({ admin: false, email: null })
   useEffect(() => {
     let live = true
     let answer: unknown
@@ -2887,7 +2899,10 @@ function usePlatformAdmin(): boolean {
     }
     Promise.resolve(answer as ReturnType<typeof loadMe> | undefined).then(
       (r) => {
-        if (live && r !== undefined && (r.status === 'ok' || r.status === 'stale')) setAdmin(r.data.principal?.is_admin === true)
+        if (live && r !== undefined && (r.status === 'ok' || r.status === 'stale')) {
+          const p = r.data.principal
+          setAdmin({ admin: p?.is_admin === true, email: typeof p?.email === 'string' && p.email !== '' ? p.email : null })
+        }
       },
       () => {},
     )
@@ -3134,6 +3149,78 @@ export function VoiceItPool({ accounts, now, phone }: { accounts: readonly Accou
             { key: 'holder', head: 'Held by', cell: holder },
           ]}
         />
+      )}
+    </section>
+  )
+}
+
+/** The label Voice it's key account gets unless the admin types another. */
+export const VOICE_KEY_LABEL = 'openai-key'
+export const VOICE_KEY_BUTTON = 'Add an OpenAI API key for Voice it'
+
+/**
+ * ADD AN OPENAI API KEY FOR VOICE IT (the owner, 4 November 2026). A Live
+ * session runs on an OpenAI developer API key alone, so the Voice it pool
+ * needs one. The key is never typed here: this mints a one-time link
+ * (`POST /v1/admin/setup/links`, kind `voice-api-key`) for the platform admin
+ * themself, which opens in this console within ten minutes, once, and its
+ * page (SetupLink.tsx) takes the key and hands it to swarm-api, which
+ * forwards it once to the quota broker and keeps nothing. Drawn for a
+ * platform admin only; the server is the real gate.
+ */
+export function VoiceKeyLink() {
+  const email = usePlatformAdminEmail()
+  const id = useId()
+  const [asking, setAsking] = useState(false)
+  const [label, setLabel] = useState(VOICE_KEY_LABEL)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<ApiError | null>(null)
+  const [minted, setMinted] = useState<{ path: string; expiresAt: string | null } | null>(null)
+  if (email === null) return null
+  const valid = /^[a-z0-9][a-z0-9-]{0,63}$/.test(label)
+
+  async function mint(e: FormEvent) {
+    e.preventDefault()
+    if (busy || !valid || email === null) return
+    setBusy(true)
+    setError(null)
+    const r = await mintSetupLink({ kind: 'voice-api-key', label, owner: email })
+    setBusy(false)
+    if (r.status === 'error') setError(r.error)
+    else if (r.status === 'ok' || r.status === 'stale') setMinted({ path: r.data.path, expiresAt: r.data.expires_at })
+  }
+
+  return (
+    <section className="acct-voice-key" aria-label={VOICE_KEY_BUTTON}>
+      {minted !== null ? (
+        <p className="acct-clause" role="status">
+          Your link is ready. It opens once, in this console, signed in as {email}
+          {minted.expiresAt !== null ? `, until ${utcAt(Date.parse(minted.expiresAt), Date.now())}` : ', for ten minutes'}.{' '}
+          {/* Same tab: the link is for this session, so it never opens a new window. */}
+          <ButtonLink kind="primary" size="sm" href={minted.path}>
+            Open the link
+          </ButtonLink>
+        </p>
+      ) : asking ? (
+        <form className="pk-form" autoComplete="off" onSubmit={(e) => void mint(e)}>
+          <p className="acct-clause">
+            Voice it&rsquo;s Live sessions run on an OpenAI developer API key, not a ChatGPT plan. You paste the key on
+            the link&rsquo;s own page; it goes from there to the account pool once, and is never shown again.
+          </p>
+          <label htmlFor={`${id}-label`}>Account name in the Voice it pool</label>
+          <input id={`${id}-label`} className="c-inp mono" autoComplete="off" spellCheck={false} value={label}
+            onChange={(e) => setLabel(e.target.value.trim().toLowerCase())} />
+          {!valid && <p className="ur-small">Lowercase letters, digits and dashes, starting with a letter or digit.</p>}
+          {error !== null && <p className="ur-small" role="alert">The link was not made: {error.message}</p>}
+          <div className="pk-form-row">
+            <Button kind="primary" type="submit" busy={busy ? 'Making the link…' : false} disabled={!valid}>
+              Make the link
+            </Button>
+            <Button onClick={() => setAsking(false)}>Cancel</Button>
+          </div>
+        </form>
+      ) : (
+        <Button onClick={() => setAsking(true)}>{VOICE_KEY_BUTTON}</Button>
       )}
     </section>
   )

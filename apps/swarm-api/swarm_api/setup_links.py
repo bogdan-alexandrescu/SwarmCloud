@@ -1,7 +1,7 @@
 """One-time links minted by Admin › Setup (docs/design/day-one-plan.md §5.2,
 §5.3; review finding 21, review-fix finding 1; lane DAYONE-SETUP-API-1).
 
-ONE ROUTE, THREE KINDS. `POST /v1/admin/setup/links` mints:
+ONE ROUTE, FOUR KINDS. `POST /v1/admin/setup/links` mints:
 
 * `pool-account`: a sign-in link for a named Claude pool-account owner. The
   owner must be a member of the FIRST team's group, and the link is refused
@@ -15,12 +15,19 @@ ONE ROUTE, THREE KINDS. `POST /v1/admin/setup/links` mints:
   through a terminal, a log or this repository (CLAUDE.md, forge-token rule).
 * `addon-secret`: the form for one add-on's secret, the add-on named by the
   label (`ADDON_SECRETS`), written the same way.
+* `voice-api-key`: the form for Voice it's OpenAI developer API key (the
+  owner, 4 November 2026; docs/design/voice-it.md). Minted from Admin ›
+  Accounts by a platform admin FOR THAT ADMIN ALONE, opened in their own
+  console session within `VOICE_KEY_TTL` (ten minutes), and its value is
+  forwarded once to the quota broker's `POST /v1/accounts` with provider
+  `openai-api`, which stores it in its one broker-only secret. swarm-api
+  keeps no copy: not in the link's record, a log line or an answer.
 
 A LINK IS A HASH. The token is returned once, in the mint's answer; Firestore
 keeps only its SHA-256 (`setup_links/<digest>`), so a reader of the database
 cannot open a link. Each link is for one person (their verified email, checked
 on redemption), single use (consumed in a transaction) and expires 24 hours
-after it is minted.
+after it is minted (`voice-api-key`: ten minutes, `LINK_TTLS`).
 """
 
 from __future__ import annotations
@@ -39,10 +46,17 @@ LINK_TTL = timedelta(hours=24)
 POOL_ACCOUNT = "pool-account"
 TEAM_GIT = "team-git"
 ADDON_SECRET = "addon-secret"
-KINDS: tuple[str, ...] = (POOL_ACCOUNT, TEAM_GIT, ADDON_SECRET)
+VOICE_API_KEY = "voice-api-key"
+KINDS: tuple[str, ...] = (POOL_ACCOUNT, TEAM_GIT, ADDON_SECRET, VOICE_API_KEY)
+
+#: A Voice it API key link lasts ten minutes, not a day: it is for the admin
+#: who minted it, opened in the session that minted it, so a link still unused
+#: after ten minutes is one that leaked or was forgotten.
+VOICE_KEY_TTL = timedelta(minutes=10)
+LINK_TTLS: dict[str, timedelta] = {**dict.fromkeys(KINDS, LINK_TTL), VOICE_API_KEY: VOICE_KEY_TTL}
 
 #: The console page each kind opens; `{token}` is the one-time token. One
-#: page serves the three kinds (review finding 21).
+#: page serves every kind (review finding 21).
 LINK_FORM = "/admin/setup/link/{token}"
 FORMS: dict[str, str] = dict.fromkeys(KINDS, LINK_FORM)
 
@@ -104,7 +118,7 @@ class SetupLinks:
             "team_id": team_id,
             "created_by": by,
             "created_at": now,
-            "expires_at": now + LINK_TTL,
+            "expires_at": now + LINK_TTLS[kind],
             "used_at": None,
         }
         self._ref(digest(token)).set(record)
@@ -160,11 +174,14 @@ __all__ = [
     "COLLECTION",
     "KINDS",
     "LINK_TTL",
+    "LINK_TTLS",
     "LinkInvalid",
     "LinkNotYours",
     "POOL_ACCOUNT",
     "SetupLinks",
     "TEAM_GIT",
+    "VOICE_API_KEY",
+    "VOICE_KEY_TTL",
     "digest",
     "team_git_secret",
 ]
