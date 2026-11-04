@@ -119,9 +119,10 @@ COMPONENT_RUNTIME = "runtime_capabilities"
 COMPONENT_PLUGINS = "plugins"
 COMPONENT_VERIFICATION = "verification"
 COMPONENT_ARTIFACTS = "artifacts"
-#: Set when any requirement names the `judgment` kind. Enforced only where Jev
-#: can run (`enforced_with_judgment`); elsewhere a strict contract naming it is
-#: refused mechanically, with no Jev call, as `unenforced: ["judgment"]`.
+#: Set when any requirement names the `judgment` kind. Enforced only where JC2
+#: runs at the end of the step (`enforced_with_judgment`); elsewhere a strict
+#: contract naming it is refused mechanically, with no Jev call, as
+#: `unenforced: ["judgment"]`.
 COMPONENT_JUDGMENT = "judgment"
 
 #: What today's worker enforces of a contract: the repository and commit
@@ -139,12 +140,28 @@ COMPONENT_JUDGMENT = "judgment"
 WORKER_ENFORCED_TODAY = frozenset({COMPONENT_REPOSITORIES, COMPONENT_LIMITS, COMPONENT_PLUGINS})
 
 
-def enforced_with_judgment(enforced: frozenset[str] = WORKER_ENFORCED_TODAY) -> frozenset[str]:
-    """`enforced` plus `judgment`, for a workspace where Jev can run: its
-    signed `contract_review` setting is on and a backend is configured (the
-    owner's answer 9). Adds that one component and nothing else: a judgment
-    never counts as enforcing `protected` (its `interfaces` included, the
-    owner's answer 12), nor any other component."""
+#: Whether the worker's post-step runs JC2, the acceptance judgment at the end
+#: of a step (jev-contract.md section 5, lane 6 WORKER-CONTRACT-JUDGE). False:
+#: no worker runs it yet, so no `judgment` evidence is ever written and a
+#: requirement proven only by a judgment could never be met. The owner's pick
+#: of 4 November 2026 ("Gate on JC2"): `judgment` counts as enforced only where
+#: JC2 runs, not merely where Jev can review a contract at submission. Lane 6
+#: turns this on in the same change that wires the post-step.
+JC2_AT_END_OF_STEP = False
+
+
+def enforced_with_judgment(enforced: frozenset[str] = WORKER_ENFORCED_TODAY, *,
+                           jc2_runs: bool = JC2_AT_END_OF_STEP) -> frozenset[str]:
+    """`enforced` plus `judgment` where JC2 runs at the end of the step:
+    the worker's post-step judges it (`JC2_AT_END_OF_STEP`) and the
+    workspace's signed `code_intelligence.jev` is on (JC2 sends code, the
+    owner's answer 9); the caller decides `jc2_runs`. Where it does not,
+    `enforced` unchanged: being able to run JC1 at submission is not enough,
+    because nothing would ever judge the requirement. Adds that one component
+    and nothing else: a judgment never counts as enforcing `protected` (its
+    `interfaces` included, the owner's answer 12), nor any other component."""
+    if not jc2_runs:
+        return frozenset(enforced)
     return frozenset(enforced) | {COMPONENT_JUDGMENT}
 
 _REQ_ID = re.compile(r"^[A-Z][A-Z0-9]{0,15}-[0-9]{1,6}$")
