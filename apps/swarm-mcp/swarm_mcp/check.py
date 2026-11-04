@@ -42,7 +42,11 @@ THE RULES, each with the control that is NOT flagged:
     -- a provider quota window, a retry backoff -- is the platform waiting by
     design, and is not flagged. A HUMAN_REQUIRED park whose `park_phase` is
     `question_wait` (its agent's blocking questions) says so, and points at
-    `owner_questions`, never at the hand-off's sign-in (#2860).
+    `owner_questions`, never at the hand-off's sign-in (#2860). A fix loop
+    parked HUMAN_REQUIRED (any docs/design/fix-loop.md §4.4 phase) says its
+    phase, round counter and last verdict, and its `next` is the exact
+    `swarm_fix_loop` add-round call; a loop PARKED FIX_ROUNDS_RUNNING has a
+    round in flight and is never flagged, whatever its age (FL-PLUGIN).
     Both (b) and (c) carry `waiting_summary` in their evidence: the API's one
     line on why the task waits (#1782) -- the pull request and the checks
     still pending, the pool that binds -- left out when the API serves none.
