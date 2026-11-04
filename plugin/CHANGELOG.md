@@ -6,6 +6,20 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.79 (2026-11-04)
+
+* The bridge survives a plugin update that removes the folder it was started
+  from (part of #2688). When `SWARM_SC_PLUGIN_ROOT`'s `workflows/run.js` is
+  gone and the root sits in the plugin cache (`<cache>/swarmcloud/sc/<version>`),
+  `swarm_workflow_launch` and `swarm_dispatch`'s rows use the newest version
+  beside it that has run.js (versions compared as numbers: 0.5.10 is newer
+  than 0.5.9), and the reply's `plugin_root_note` names both versions and asks
+  for `/reload-plugins`. Only a sibling of the configured root is ever used. On
+  4 November an update from 0.5.74 to 0.5.76 had removed a long-running
+  session's root, and every titled launch failed while dispatch kept working.
+* With no usable sibling the error stays, and now says a plugin update may
+  have removed the folder and that `/reload-plugins` is the fix.
+
 ## 0.5.78 (2026-11-03)
 
 * Every agent the plugin ships -- `sc:workflow`, `sc:step`, `sc:task`,
