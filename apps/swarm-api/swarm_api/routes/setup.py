@@ -1711,11 +1711,18 @@ def redeem_link(
     platform admin, with its value. Its link is consumed BEFORE the value is
     forwarded, so the value reaches the broker's `POST /v1/accounts` (provider
     `openai-api`) at most once per link, even for two submits racing; a key
-    the broker refuses spends the link, and Admin › Accounts makes another."""
+    the broker refuses spends the link, and Admin › Accounts makes another.
+
+    The two refusals that keep the link unused, the 409 and the missing
+    value's 422, carry its `expires_at` (ISO 8601, universal time) so the
+    page shows the time left. Only the named person reaches them (`peek`
+    checks the owner first); the 404 for a used, expired or unknown link
+    stays one answer with no expiry, so a probe learns nothing."""
     peeked = links.peek(body.token, email=auth.email)
     kind = peeked.get("kind")
     if kind == sl.VOICE_API_KEY:
         return _redeem_voice_key(body, auth, links=links, pool=pool)
+    expires_at = peeked["expires_at"].astimezone(timezone.utc).isoformat()
     if kind == sl.POOL_ACCOUNT:
         tenant_id = str(peeked.get("tenant_id") or "")
         state = (ctx.submissions.workspaces.get(tenant_id) or {}).get("state")
@@ -1728,7 +1735,7 @@ def redeem_link(
                 "this link's workspace is not ready yet, so its sign-in would be refused; "
                 "the link is still unused, open it again in a moment",
                 detail={"workspace": tenant_id, "workspace_state": state,
-                        "retry": True})
+                        "retry": True, "expires_at": expires_at})
         link = links.redeem(body.token, email=auth.email)
         return {"kind": kind, "label": link.get("label"), "tenant": link.get("tenant_id"),
                 "sign_in": {"authorize": "/v1/accounts/authorize",
@@ -1736,7 +1743,8 @@ def redeem_link(
                             "header": TENANT_HEADER}}
     if body.value is None:
         raise ValidationFailed(f"a {kind} link is opened with its value; the link is still "
-                               "unused, open it again with the value")
+                               "unused, open it again with the value",
+                               detail={"expires_at": expires_at})
     labels: dict[str, str] | None = None
     if kind == sl.TEAM_GIT:
         tenant_id = str(peeked.get("tenant_id"))
