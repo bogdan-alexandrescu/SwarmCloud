@@ -472,10 +472,15 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
     [612, [O, C], [O, C]],
     [580, [O, C], [O, C]],
     [571, [O, C], [O, C]],
-    [570, [O, C, S], [O, C, S]],
+    [570, [O, C], [O, C]],
+    [546, [O, C], [O, C]],
+    [545, [O, C], [O, C]],
+    [420, [O, C], [O, C]],
+    [394, [O, C], [O, C]],
+    [393, [O, C, S], [O, C, S]],
     [348, [O, C, S], [O, C, S]],
   ]
-  it('leaves the name its floor from 1024 down to 348, open and folded, giving way Owner, Changed, Spent', { timeout: 180_000 }, () => {
+  it('leaves the name its floor from 1024 down to 348, open and folded, giving way Owner, Changed, Spent', { timeout: 240_000 }, () => {
     for (const open of [false, true]) {
       const root = row(open)
       let before: string[] = []
@@ -484,8 +489,7 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
         const { name, hidden } = fit(root, env, pane)
         const what = `${open ? 'open' : 'folded'} at ${pane}`
         expect([...hidden].sort(), what).toEqual([...(open ? opened : folded)].sort())
-        const floor = hidden.includes('spent') ? 100 : 112
-        expect(name, `${what}: the name has ${name}px`).toBeGreaterThanOrEqual(floor)
+        expect(name, `${what}: the name has ${name}px`).toBeGreaterThanOrEqual(112)
         // Columns give way in the documented order, and none comes back narrower.
         const dropped = ORDER.filter((c) => hidden.includes(c))
         expect(dropped, what).toEqual(ORDER.slice(0, dropped.length))
@@ -557,13 +561,99 @@ describe('the list never exceeds its pane, with the inspector open or folded (re
     expect(px(painted(th, 'width', below), 'spent below')).toBe(72)
   })
 
+  // THE FIFTH REVIEW OF PR #3147, which the owner chose to follow up (4
+  // November 2026): at 1280 with the inspector docked the pane's box is 420px,
+  // and the phone row's rule (≤570) hid Spent on every row before the note's
+  // rule (≤545) could draw the figure alone; yet a 72px figure-only Spent
+  // leaves the name 420 - 2 - (28 + 92 + 88 + 72) = 138px, above its 112px
+  // floor. A real partial row from the list: its figure is drawn in 72px, its
+  // "3 of 4 reported" is read, not drawn, and the figure's title and
+  // accessible label carry the caveat. MUTATION: hide Spent at 570 again, or
+  // put the figure back at its full 112px in the phone row.
+  it("draws a partial row's figure-only Spent with its caveat labelled beside the docked inspector at 1280, in a 420px box", async () => {
+    const spentTask = (id: string, state: TaskState, cost: number | null) =>
+      task(id, state, { workflow_id: 'wf_partial', ...(cost === null ? {} : { cost_usd_total: cost, attempts: 1, attempts_read: 'ok' }) } as Partial<Task>)
+    const partial = workflow('wf_partial', 'RUNNING', [step('a', 't_pa'), step('b', 't_pb'), step('c', 't_pc'), step('d', 't_pd')])
+    const byId = new Map<string, Task>([
+      ['t_pa', spentTask('t_pa', 'SUCCEEDED', 0.2)],
+      ['t_pb', spentTask('t_pb', 'SUCCEEDED', 0.2)],
+      ['t_pc', spentTask('t_pc', 'SUCCEEDED', 0.118)],
+      ['t_pd', spentTask('t_pd', 'RUNNING', null)],
+    ])
+    api.loadWorkflowBoard.mockResolvedValue({
+      status: 'ok',
+      data: { workflows: [partial], taskById: byId, statesDetail: null },
+      fetchedAt: T0,
+    } satisfies Result<WorkflowBoard>)
+    render(<WorkflowsScreen view="" />)
+    await waitFor(() => expect(document.querySelector('tr[data-workflow="wf_partial"]')).not.toBeNull())
+    // The rendered list's own `.wfg`, not a fixture an earlier test left in the body.
+    const root = document.querySelector('tr[data-workflow="wf_partial"]')!.closest<HTMLElement>('.wfg')!
+    const td = root.querySelector<HTMLElement>('tr[data-workflow="wf_partial"] td[data-col="spent"]')!
+    const figure = td.querySelector<HTMLElement>('.wf-spend')!
+    const caveat = td.querySelector<HTMLElement>('.wf-spend-cov')!
+    expect(caveat.textContent).toBe('3 of 4 reported')
+    for (const attr of ['title', 'aria-label']) {
+      expect(figure.getAttribute(attr), attr).toMatch(/^3 of 4 steps that ran reported a cost\b.*not reported one/)
+    }
+    const env: CascadeEnv = { width: 1280, container: 420 }
+    const th = root.querySelector<HTMLElement>('th[data-col="spent"]')!
+    expect(painted(th, 'display', env)).not.toBe('none')
+    expect(painted(td, 'display', env)).not.toBe('none')
+    const width = columnPx(th, env, 'spent at 420')
+    expect(width).toBe(72)
+    const { name, hidden } = fit(root, env, 420)
+    expect(hidden).not.toContain('spent')
+    expect(name, `the name has ${name}px`).toBeGreaterThanOrEqual(112)
+    const [pl, pr] = paddingX(td, env)
+    const money = figure.firstChild!.textContent!.trim()
+    expect(money).toBe('$0.518')
+    for (const text of [money, '$12.92']) expect(textPx(text, figure, env), `"${text}" in the figure-only column`).toBeLessThanOrEqual(width - pl - pr)
+    // Read, not drawn: still in the accessible text, never display: none.
+    expect(painted(caveat, 'display', env)).not.toBe('none')
+    expect(painted(caveat, 'visibility', env)).not.toBe('hidden')
+    expect(painted(caveat, 'position', env)).toBe('absolute')
+    expect(painted(caveat, 'width', env)).toBe('1px')
+    expect(painted(td, 'position', env)).toBe('relative')
+  })
+
+  // Spent gives way only where even its figure-only width would cost the name
+  // its floor: the threshold is the phone row's own sum (the name's 112px
+  // floor, the box's two 1px borders, the state's glyph, Steps, Needs and the
+  // figure-only Spent), read from the cascade, not a fixed number.
+  // MUTATION: move Spent's threshold off the derived sum.
+  it('hides Spent only where its figure-only width breaks the name\'s floor, from the ladder', () => {
+    const root = row(true)
+    const phone: CascadeEnv = { width: 1280, container: 500 }
+    expect(painted(root.querySelector('thead')!, 'clip-path', phone), 'the phone row at 500').toBe('inset(50%)')
+    let shown = 0
+    for (const col of ['state', 'steps', 'needs', 'spent']) {
+      shown += columnPx(root.querySelector<HTMLElement>(`th[data-col="${col}"]`)!, phone, col)
+    }
+    const threshold = 112 + 2 + shown
+    expect(threshold, "the figure fits the fifth review's 420px box").toBeLessThanOrEqual(420)
+    const th = root.querySelector<HTMLElement>('th[data-col="spent"]')!
+    for (const pane of [threshold, threshold + 1, 420, 500, 545, 546, 570]) {
+      const env: CascadeEnv = { width: 1280, container: pane }
+      expect(painted(th, 'display', env), `spent at ${pane}`).not.toBe('none')
+      expect(fit(root, env, pane).name, `the name with Spent drawn at ${pane}`).toBeGreaterThanOrEqual(112)
+    }
+    const below: CascadeEnv = { width: 1280, container: threshold - 1 }
+    expect(painted(th, 'display', below)).toBe('none')
+    expect(painted(root.querySelector('td[data-col="spent"]')!, 'display', below)).toBe('none')
+  })
+
   // THE THIRD REVIEW OF PR #3147: with a workflow picked and the inspector
-  // folded to its rail, the pane is 1005px at 1440, yet `.wfg.has-inspector`
-  // hid every row's coverage note and dropped Owner and Changed, so a partial
-  // figure showed without its caveat. MUTATION: key a rule on `.has-inspector`.
+  // folded to its rail, `.wi-main` is 1005px at 1440 and its content box,
+  // which the container queries measure, 993px (padding-right 12), yet
+  // `.wfg.has-inspector` hid every row's coverage note and dropped Owner and
+  // Changed, so a partial figure showed without its caveat. At 993px the
+  // table is laid out fixed (≤1024) with every column drawn.
+  // MUTATION: key a rule on `.has-inspector`.
   it('draws Owner, Changed and the note under the figure with a workflow picked and the inspector folded', () => {
     const root = row(true)
-    const env: CascadeEnv = { width: 1440, container: 1005 }
+    const env: CascadeEnv = { width: 1440, container: 993 }
+    expect(painted(root.querySelector('table')!, 'table-layout', env)).toBe('fixed')
     for (const col of ['owner', 'changed', 'spent']) {
       expect(painted(root.querySelector(`td[data-col="${col}"]`)!, 'display', env), col).not.toBe('none')
     }

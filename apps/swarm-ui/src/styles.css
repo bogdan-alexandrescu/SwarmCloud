@@ -11699,10 +11699,12 @@ span.sk-ttile { cursor: default; }
 .wfg-table td[data-col="owner"] { max-width: 10em; overflow: hidden; text-overflow: ellipsis; }
 /* COLUMNS GIVE WAY BY THE PANE'S WIDTH ALONE (the third review of PR #3147):
    no rule here keys on a pick being open (`.wfg.has-inspector`). With the
-   inspector folded to its rail the pane is 1005px at 1440, so Owner, Changed
-   and Spent's coverage note stay drawn; open, the pane's own container rules
-   below drop Owner and Changed, and a partial figure never shows without its
-   caveat. */
+   inspector folded to its rail `.wi-main` is 1005px at 1440, and its content
+   box, which the container queries measure, is 993px (its 12px
+   padding-right), so the table is laid out fixed (≤1024, below) with Owner,
+   Changed and Spent's coverage note all drawn; open, the pane's own container
+   rules below drop Owner and Changed, and a partial figure never shows
+   without its caveat. */
 /* THE TABLE NEVER EXCEEDS ITS PANE (review finding on PR #3147: beside the
    open inspector at 1440 the table was 627px in a 578px box, and Spent's
    "$0.518 3 of 4 reported" set its column to 179px, so the clipping pane cut
@@ -11713,11 +11715,11 @@ span.sk-ttile { cursor: default; }
    are where the shown columns' widths stop leaving the name 112px inside the
    pane's 1px borders (every cell is `box-sizing: border-box`, so its 8px
    paddings sit inside its width). Columns give way in one order: Owner
-   (≤860), Changed (≤720), Spent (≤570), then the state's word (the phone
-   row); Spent's coverage note goes only where the name would lose its floor
-   (≤545, below).
-   A wider pane (1440 with the inspector folded) keeps the auto table, where
-   everything fits. The widths hold the longest of each: "awaiting input"
+   (≤860), Changed (≤720), the state's word (the phone row, ≤570), Spent's
+   coverage note (≤545), then Spent itself (≤393); the note and Spent go only
+   where the name would lose its floor (below).
+   A content box wider than 1024px keeps the auto table, where everything
+   fits; the folded pane at 1440 (993px) is not one. The widths hold the longest of each: "awaiting input"
    after its 12px glyph, the 72px bar and "12/12", three need marks, "$12.92"
    and "3 of 4 reported", a 14-character owner, "not recorded". */
 @container work-main (max-width: 1024px) {
@@ -11749,18 +11751,18 @@ span.sk-ttile { cursor: default; }
    figure showed with its caveat drawn nowhere). The threshold is the ladder's
    own sum: the name's 112px floor + the box's 2px of borders + State 116 +
    Steps 116 + Needs 88 + Spent at its full 112 = 546px, so the note is drawn
-   at 546px and wider. Today the phone row (≤570) drops Spent before this, so
-   no width shows the figure without its note; should Spent's threshold move
-   lower, the figure keeps 72px here, the note stays read (not drawn), and the
-   figure's title and accessible label carry the caveat. */
+   at 546px and wider. Narrower, the figure keeps 72px, the note stays read
+   (not drawn), and the figure's title and accessible label carry the caveat
+   ("3 of 4 steps that ran reported a cost", Workflows.tsx's spend cell), so a
+   partial figure never shows without it. */
 @container work-main (max-width: 545px) {
   .wfg-table [data-col="spent"] { width: 72px; position: relative; }
   .wfg-table td[data-col="spent"] .wf-spend-cov { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 }
-/* A pane too narrow for the four phone columns plus Spent draws the phone
-   row (below): the state is its glyph, steps and needs hold their widths. */
+/* A pane too narrow for the four columns at their full widths draws the
+   phone row (below): the state is its glyph, steps and needs hold their
+   widths, and Spent stays as its figure (≤545, above). */
 @container work-main (max-width: 570px) {
-  .wfg-table [data-col="spent"] { display: none; }
   .wfg-table thead { position: relative; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .wfg-table thead th { padding: 0; border: 0; }
   .wfg-table td { height: 40px; padding: 4px 6px; }
@@ -11769,6 +11771,17 @@ span.sk-ttile { cursor: default; }
   .wfg-table [data-col="needs"] { width: 88px; }
   .wfg-table [data-col="state"] .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
   .wfg-bar > .c-bar { width: 40px; }
+}
+/* SPENT GIVES WAY ONLY WHERE EVEN ITS FIGURE BREAKS THE NAME'S FLOOR (the
+   fifth review of PR #3147, which the owner chose to follow up on 4 November
+   2026: at 1280 beside the docked inspector, a 420px box, the phone row's
+   rule hid Spent on every row before the note's rule above could draw the
+   figure alone). The threshold is the phone row's own sum: the name's 112px
+   floor + the box's 2px of borders + the state's glyph 28 + Steps 92 + Needs
+   88 + the figure-only Spent 72 = 394px, so Spent is drawn at 394px and wider
+   (the name keeps 138px at 420). */
+@container work-main (max-width: 393px) {
+  .wfg-table [data-col="spent"] { display: none; }
 }
 /* VISUALLY HIDDEN, STILL READ: the filters' labels and the Needs-you words.
    The console's `.vh` is drawn only on the People pages, so the list scopes
