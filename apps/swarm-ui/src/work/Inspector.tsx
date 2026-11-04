@@ -164,6 +164,11 @@ export interface InspectorProps {
   onWidthClass?: (cls: WidthClass) => void
   /** Called when the inspector folds (true) or unfolds (false). */
   onFold?: (folded: boolean) => void
+  /**
+   * What the inspector shows (a picked step's id); each new non-null value
+   * unfolds a folded rail, so a pick on a page that started folded opens.
+   */
+  openFor?: string | null
 }
 
 /** The page: the left pane, a drag handle, the docked inspector -- or its rail, or on a phone its sheet. */
@@ -183,6 +188,7 @@ export function Inspector({
   backLabel,
   onWidthClass,
   onFold,
+  openFor = null,
 }: InspectorProps) {
   const root = useRef<HTMLDivElement>(null)
   const spec = inspectorSpec(screen, initialWidth)
@@ -224,6 +230,17 @@ export function Inspector({
     setFolded(to)
     onFold?.(to)
   }
+
+  // A NEW PICK OPENS THE RAIL: a page folded at rest (1280) would otherwise
+  // take a click on a step and show nothing for it.
+  const opened = useRef(openFor)
+  useEffect(() => {
+    if (openFor !== null && openFor !== opened.current && folded) {
+      setFolded(false)
+      onFold?.(false)
+    }
+    opened.current = openFor
+  }, [openFor, folded, onFold])
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault()

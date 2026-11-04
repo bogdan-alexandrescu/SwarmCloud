@@ -6713,6 +6713,7 @@ function WorkflowSplit({
       }
       onClose={step === null ? (phone ? () => setOverviewSheet(false) : undefined) : closeStep}
       startFolded={folded}
+      openFor={step === null ? null : step.step_id}
       phoneOpen={step !== null || overviewSheet}
       backLabel={step === null ? 'Workflow' : 'Overview'}
     >
