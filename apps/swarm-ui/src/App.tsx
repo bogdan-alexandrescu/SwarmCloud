@@ -18,6 +18,7 @@ import { AdminSetupHealthScreen, AdminSetupScreen } from './AdminSetup'
 import { AgentsScreen } from './Agents'
 import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
+import { HostedAgent, hostsAgent, type HostedAgentView } from './work/hostedAgent'
 import { AccountHealthScreen } from './AccountHealthPage'
 import { JevUsageScreen } from './JevUsagePage'
 import { CapacityScreen } from './Capacity'
@@ -1591,7 +1592,11 @@ export function App() {
   // chooser and its three forms (V062): their forms are Work tabs, but Work's
   // question is about what has run, so they ask Submit's own.
   const helpSection = isSubmitPage(at) ? SUBMIT_HELP : section
-  const inspector = at.taskId !== null
+  // THE OPEN AGENT IS THE AGENTS PAGE'S INSPECTOR (the owner's pick on #3146,
+  // "Host it in the inspector"): on that page App hands the view to the page
+  // (`HostedAgent`, work/hostedAgent.ts) and draws no column beside it.
+  const hosted = at.taskId !== null && !at.missing && hostsAgent(at.sectionId, at.tab)
+  const inspector = at.taskId !== null && !hosted
   const listAddress = canonical({
     sectionId: WORK,
     tab: 'running',
@@ -1599,6 +1604,24 @@ export function App() {
     taskPane: 'detail',
     list: lastList.current,
   })
+  const split =
+    at.taskId !== null ? (
+      <AgentSplit
+        taskId={at.taskId}
+        pane={at.taskPane}
+        artifact={at.artifact ?? null}
+        file={at.file ?? null}
+        theater={at.theater === true}
+        detailNamed={at.detailNamed === true}
+        closeTo={listAddress}
+        go={go}
+        onGroup={onGroup}
+        base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
+        hosted={hosted}
+      />
+    ) : null
+  const hostedView: HostedAgentView | null =
+    hosted && at.taskId !== null ? { taskId: at.taskId, view: split } : null
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
   // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
   // a page that is not Overview, because the spine lights the nearest section.
@@ -1718,6 +1741,7 @@ export function App() {
               <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
             </div>
           )}
+          <HostedAgent.Provider value={hostedView}>
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
 
@@ -1775,21 +1799,9 @@ export function App() {
               )}
             </main>
 
-            {at.taskId !== null && (
-              <AgentSplit
-                taskId={at.taskId}
-                pane={at.taskPane}
-                artifact={at.artifact ?? null}
-                file={at.file ?? null}
-                theater={at.theater === true}
-                detailNamed={at.detailNamed === true}
-                closeTo={listAddress}
-                go={go}
-                onGroup={onGroup}
-                base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
-              />
-            )}
+            {inspector && split}
           </div>
+          </HostedAgent.Provider>
           </HeadAgeProvider>
           </SectionHelp.Provider>
           </FrameAge.Provider>

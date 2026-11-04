@@ -35,12 +35,17 @@ import { PANEL_PAGES, SkyShell, hrefOf } from '../Spine'
  * it is replaced by a recorder, and every other screen renders for real.
  */
 const agentsProps = vi.hoisted(() => [] as Record<string, unknown>[])
-vi.mock('../Agents', () => ({
-  AgentsScreen: (props: Record<string, unknown>) => {
-    agentsProps.push(props)
-    return null
-  },
-}))
+// It still draws the open agent App hosts in the page's inspector (#3146).
+vi.mock('../Agents', async () => {
+  const { useContext } = await import('react')
+  const { HostedAgent } = await import('../work/hostedAgent')
+  return {
+    AgentsScreen: (props: Record<string, unknown>) => {
+      agentsProps.push(props)
+      return useContext(HostedAgent)?.view ?? null
+    },
+  }
+})
 
 const SRC = join(__dirname, '..')
 
@@ -255,6 +260,9 @@ describe('the links the frame draws itself', () => {
     // The ✕ is in the agent header's action row (walkthrough B, 2026-10-03).
     const close = document.querySelector<HTMLButtonElement>('.ctl-drawer .ag-head-actions > button.drawer-close')
     expect(close, 'the drawer did not open').not.toBeNull()
+    // App hands the agent to the Agents page's inspector (#3146): no column of its own beside the page.
+    expect(document.querySelector('.ctl-drawer.ag-split')?.classList.contains('is-hosted')).toBe(true)
+    expect(document.querySelector('.app.has-inspector')).toBeNull()
     await act(async () => {
       close!.click()
     })
