@@ -43,6 +43,8 @@ from swarm_common.workcontract import (  # noqa: F401 - re-exported
     canonical_bytes as _canonical_bytes,
 )
 
+from .plugincatalogue import MODES as _PLUGIN_MODES, offered_skills
+
 #: The switch. Off unless the environment says exactly `on`: a contract that
 #: is compiled but not attached changes nothing a task stores.
 SWITCH_ENV = "SWARM_WORK_CONTRACTS"
@@ -87,28 +89,15 @@ RUNTIME_CAPABILITIES = (
     "write_isolation",
 )
 
-PLUGIN_MODES = ("unattended", "planner", "designer")
+PLUGIN_MODES = _PLUGIN_MODES
 
 #: The platform's closed plugin catalogue (docs/design/agent-plugins.md, "A
-#: closed plugin catalogue"): per plugin, per mode, the skills it may offer.
-#: A contract names plugins and skills from here by name only, never a path,
-#: command, URL or version (invariant 10).
-PLUGIN_CATALOGUE: Mapping[str, Mapping[str, tuple[str, ...]]] = {
-    "gstack": {
-        "unattended": (
-            "review", "investigate", "health", "cso", "qa-only", "qa",
-            "design-review", "document-generate", "document-release", "ship",
-            "plan-eng-review", "plan-design-review", "autoplan",
-        ),
-        "planner": (
-            "office-hours", "plan-ceo-review", "plan-eng-review",
-            "plan-devex-review", "autoplan", "spec",
-        ),
-        "designer": (
-            "design-consultation", "plan-design-review", "design-review", "design-html",
-        ),
-    },
-}
+#: closed plugin catalogue"): per plugin, per mode, the skills it may offer,
+#: from the catalogue's runtime capability manifest entries
+#: (`plugincatalogue`), so a contract can never name a skill the catalogue
+#: left out (gstack's `cso`). A contract names plugins and skills from here by
+#: name only, never a path, command, URL or version (invariant 10).
+PLUGIN_CATALOGUE: Mapping[str, Mapping[str, tuple[str, ...]]] = offered_skills()
 
 #: How a requirement is proven. Names only: a contract never carries a command,
 #: and `judgment` never carries the judge or its question (invariant 10).
@@ -135,14 +124,19 @@ COMPONENT_ARTIFACTS = "artifacts"
 #: refused mechanically, with no Jev call, as `unenforced: ["judgment"]`.
 COMPONENT_JUDGMENT = "judgment"
 
-#: What today's worker enforces of a contract, because each compiles into a
-#: signed step field it already acts on: the repository and commit
-#: (`repository_url`, `repository_ref`), and the limits (`runner_profile`,
-#: `model_class`, `budget`, `max_turns`, `timeout_seconds`). Nothing else: no
-#: worker reads a write scope, protected paths, runtime capabilities or
-#: plugins today, and verification is judged after the attempt, not by it. A
-#: strict contract that sets any other component is refused by `compile`.
-WORKER_ENFORCED_TODAY = frozenset({COMPONENT_REPOSITORIES, COMPONENT_LIMITS})
+#: What today's worker enforces of a contract: the repository and commit
+#: (`repository_url`, `repository_ref`) and the limits (`runner_profile`,
+#: `model_class`, `budget`, `max_turns`, `timeout_seconds`), because each
+#: compiles into a signed step field it already acts on; and the plugins
+#: (`agent_worker.plugins`), which it reads from the stored contract only
+#: after digesting it against the signed reference, links and nothing else,
+#: and refuses to start without. Submission checks a step's plugins against
+#: the catalogue, its runner profile and the workspace's signed allowed list
+#: (`plugins.check_step`). Nothing else: no worker reads a write scope,
+#: protected paths or runtime capabilities today, and verification is judged
+#: after the attempt, not by it. A strict contract that sets any other
+#: component is refused by `compile`.
+WORKER_ENFORCED_TODAY = frozenset({COMPONENT_REPOSITORIES, COMPONENT_LIMITS, COMPONENT_PLUGINS})
 
 
 def enforced_with_judgment(enforced: frozenset[str] = WORKER_ENFORCED_TODAY) -> frozenset[str]:

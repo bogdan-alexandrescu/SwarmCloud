@@ -91,6 +91,10 @@ class UsagePoller:
         before each poll, because two concurrent rounds spend one budget twice.
         """
         outcomes: list[PollOutcome] = []
+        # An OpenAI developer API key has no usage window to read
+        # (`Account.measured`): asking would spend the round's budget on an
+        # answer that does not exist, and its windows stay "not measured".
+        accounts = [a for a in accounts if getattr(a, "measured", True)]
         if self._max_polls <= 0 or not accounts:
             return outcomes
 

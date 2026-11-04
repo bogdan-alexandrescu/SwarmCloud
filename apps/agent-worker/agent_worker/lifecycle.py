@@ -163,6 +163,7 @@ from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import jevkey as jevkey_mod
+from . import plugins as plugins_mod
 from . import qualitygates as qualitygates_mod
 from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
@@ -994,6 +995,9 @@ class Worker:
         self._graph_env: dict[str, str] | None = None
         #: The lane quality gates' runner variable (`qualitygates`), once per attempt.
         self._gates_env: dict[str, str] | None = None
+        #: The step's agent plugins (`plugins.start`), set up once per attempt
+        #: before the agent; None for a step that names none.
+        self._plugins: plugins_mod.Started | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
             tenant_id=config.tenant_id,
@@ -3678,6 +3682,17 @@ class Worker:
             payload["prompt"] += verdict_mod.rendered_review_guidance(
                 self._ui_review_paths, cfg.runner_profile
             )
+        # The step's agent plugins (docs/design/agent-plugins.md, "The start
+        # of a step"): only those signed with the step, linked from the
+        # image's read-only install, ONLY the step's skills, before the agent.
+        # An image without the install fails here (`PluginUnavailable`,
+        # CANNOT_START), naming the image, before anything is linked.
+        self._plugins = plugins_mod.start(
+            task, work=ws.work, checkout=ws.checkout() if self._repo_url else None,
+            profile=cfg.runner_profile, image=str(getattr(cfg.profile, "image", "") or "?"),
+        )
+        if self._plugins is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += self._plugins.guidance
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
         # ---- STEP 6: tenant credentials ---------------------------------
@@ -4692,6 +4707,11 @@ class Worker:
 
             runner_result = self._add_runner_block(summary)
             self._record_quality_gates(summary)
+            # The plugins this step had and how often each skill ran.
+            plugins_record = plugins_mod.record(
+                self._plugins, ws.artifacts / "claude-code.stdout.log")
+            if plugins_record is not None:
+                summary[plugins_mod.SUMMARY_KEY] = plugins_record
             self._settle_jev()
 
         if self.budget is not None:
@@ -10218,6 +10238,11 @@ class Worker:
         # 0600 config naming the workspace key's 0600 file in private/, never
         # the key. Off, or no key: nothing, and no hook is registered.
         base.update(self._quality_gates_env(ws, profile))
+        # The step's agent plugins' variables (`plugins.start`): gstack's
+        # session kind, its state root under work/ and its switches. Names
+        # and paths, never a credential.
+        if self._plugins is not None:
+            base.update(self._plugins.env)
         # The released workspace secrets (SEC-RELEASE): the manifest's PATH,
         # `SWARM_SECRETS_MANIFEST`, and nothing else -- never a value. The
         # release ran once, in STEP 6a; a rebuild on a credential reload

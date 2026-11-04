@@ -423,13 +423,15 @@ def test_register_returns_no_key_material_and_says_so(client, pool):
 def test_the_pool_takes_rotating_pairs_only_so_provider_is_not_free(
     client, pool, provider
 ):
-    """One kind of credential, two providers: anything else is refused.
+    """One kind of credential, two providers, and Voice it's key: anything
+    else is refused.
 
-    An account here is an OAuth pair the broker rotates on a timer -- a Claude
-    subscription or, since 2026-11-01 (#2688), a ChatGPT plan. There is no
-    API-key account in the pool: a provider with no subscription to refresh
-    would be a pool entry nothing in the platform could ever renew, which is
-    the shape that looks healthy and dies at its first expiry.
+    A workspace pool account is an OAuth pair the broker rotates on a timer --
+    a Claude subscription or, since 2026-11-01 (#2688), a ChatGPT plan. The one
+    API-key kind is the broker's Voice-it-only `openai-api` (4 November 2026),
+    a platform admin's alone: a provider with no subscription to refresh would
+    otherwise be a pool entry nothing in the platform could ever renew, which
+    is the shape that looks healthy and dies at its first expiry.
     """
     response = client.post(
         "/v1/accounts",
@@ -440,7 +442,7 @@ def test_the_pool_takes_rotating_pairs_only_so_provider_is_not_free(
     assert response.status_code == 422
     body = response.json()
     assert body["code"] == "validation_failed"
-    assert body["detail"]["known_providers"] == ["anthropic", "openai"]
+    assert body["detail"]["known_providers"] == ["anthropic", "openai", "openai-api"]
     assert pool.registered == []
 
 

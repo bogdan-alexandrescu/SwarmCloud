@@ -47,6 +47,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from swarm_rollup.agentimage import VENV_BIN
+
 from ..cachedirs import AGENT_CACHE_ENV
 from ..logs import StructuredLogger
 from ..procman import run_child
@@ -60,11 +62,11 @@ from .streams import AgentStreamFiles
 #: exactly as it does for a CLI agent's.
 STREAM_FILES = AgentStreamFiles(stdout="command.stdout.log", stderr="command.stderr.log")
 
-#: Where a program is looked up. `/opt/venv/bin` is first because that is the
+#: Where a program is looked up. `VENV_BIN` (/opt/venv/bin) is first because that is the
 #: image's own virtualenv -- the one that has the worker and pytest installed --
 #: and a bare `python` that resolved to the system interpreter would be a
 #: Python with no packages, which fails in a way nobody can read.
-BASE_PATH = "/opt/venv/bin:/usr/local/bin:/usr/local/share/npm-global/bin:/usr/bin:/bin"
+BASE_PATH = f"{VENV_BIN}:/usr/local/bin:/usr/local/share/npm-global/bin:/usr/bin:/bin"
 
 #: A value a caller may supply as an argument. No leading dash (that is how a
 #: value becomes a flag), no NUL, no newline, no shell metacharacters -- there is

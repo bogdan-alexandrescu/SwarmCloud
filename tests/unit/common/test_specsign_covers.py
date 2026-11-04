@@ -198,6 +198,18 @@ UNSIGNED_PLATFORM_KEYS = {
     "time_limit_continuations",
 }
 
+#: The signed metadata keys that are NOT in swarm-api's reserved tuple,
+#: because a caller sends them: `work_contract` (contract request 137, signed
+#: from spec format 8) is where a task or workflow step carries its work
+#: contract document. With SWARM_WORK_CONTRACTS on, swarm-api decodes it and
+#: stores the canonical document it binds by digest in the signed dispatch
+#: block (`swarm_api.workcontract.prepare`); with it off the key is the
+#: caller's metadata and the worker loads nothing from it, because only
+#: swarm-api writes `metadata.dispatch.work_contract`. Reserving it would
+#: refuse every contract at submission and serve the caller's text unmasked
+#: (`task_input.PLATFORM_METADATA_KEYS` is the reserved tuple).
+CALLER_SENT_SIGNED_KEYS = {"work_contract"}
+
 
 def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
     from swarm_api.validation import (
@@ -226,7 +238,10 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
 
     # MUTATION: drop QA_TARGET_METADATA_KEY from RESERVED_METADATA_KEYS and this is red.
     assert QA_TARGET_METADATA_KEY in RESERVED_METADATA_KEYS
-    assert set(SIGNED_METADATA_KEYS) == set(RESERVED_METADATA_KEYS) - UNSIGNED_PLATFORM_KEYS
+    assert (set(SIGNED_METADATA_KEYS) - CALLER_SENT_SIGNED_KEYS
+            == set(RESERVED_METADATA_KEYS) - UNSIGNED_PLATFORM_KEYS)
+    assert CALLER_SENT_SIGNED_KEYS <= set(SIGNED_METADATA_KEYS)
+    assert not CALLER_SENT_SIGNED_KEYS & set(RESERVED_METADATA_KEYS)
     assert {
         HUMAN_HANDOFFS_METADATA_KEY,
         HUMAN_READY_METADATA_KEY,
@@ -290,6 +305,9 @@ _DOCS_BY_FORMAT: dict[int, dict[str, Any]] = {
     6: {**_DOC, "budget": {"usd": 1.0}},
     # Contract request 133: the resolved turn cap.
     7: {**_DOC, "max_turns": 30},
+    # Contract request 137: the stored work contract.
+    8: {**_DOC, "metadata": {"work_contract": {"schema": 1, "contract_id": "wc-x",
+                                               "tenant_id": "eng", "revision": 1}}},
 }
 
 

@@ -10,8 +10,8 @@ Held here, from the phase-one row and CONTRACT.md:
     request equals the limit and whose CPU limit is at most
     CPU_BURST_MAX_RATIO times the request (invariant 7);
   * kubernetes/network-policies/swarm-system-voice.yaml admits only swarm-api's
-    egress range in, and out only DNS, the metadata server and, by name, OpenAI,
-    Anthropic, swarm-api, the quota broker (the Voice it pool lease) and the two
+    egress range in, and out only DNS, the metadata server and, by name, OpenAI
+    (the API and chatgpt.com, the plan's text conversation), Anthropic, swarm-api, the quota broker (the Voice it pool lease) and the two
     Google endpoints the planner's key and the caller check need. Nothing else, and no open CIDR;
   * the image ships: `swarm-voice` is in ALL_TARGETS of build-images.sh and
     push-images.sh, and apps/swarm-voice/Dockerfile runs the service as the
@@ -40,6 +40,7 @@ SELECTOR = {"app.kubernetes.io/name": "swarm-voice"}
 # The hosts swarm-voice may open TCP 443 to, and the code that needs each.
 HOSTS = {
     "api.openai.com",  # swarm_voice/live.py OPENAI_API, OPENAI_WS
+    "chatgpt.com",  # swarm_voice/textchat.py CODEX_BASE, the plan's text conversation
     "api.anthropic.com",  # the planner, phase two
     "__SWARM_API_HOST__",  # swarm-api, rendered by voice.tf
     "__QUOTA_BROKER_HOST__",  # the quota broker's Voice it pool, accountlease.py
@@ -194,6 +195,10 @@ def test_the_egress_policy_isolates_the_pod_and_admits_only_dns_and_the_metadata
 
 
 def test_the_egress_hosts_are_openai_anthropic_swarm_api_and_googles_two():
+    # chatgpt.com is textchat.py's host, held here so the two never drift.
+    textchat = (REPO / "apps" / "swarm-voice" / "swarm_voice" / "textchat.py").read_text()
+    (codex_host,) = re.findall(r'^CODEX_BASE = "https://([^/"]+)/', textchat, re.M)
+    assert codex_host in HOSTS
     hosts = _one(POLICY, "FQDNNetworkPolicy", "swarm-voice-egress-hosts")
     assert hosts["apiVersion"] == "networking.gke.io/v1alpha1"
     assert hosts["metadata"]["namespace"] == "swarm-system"  # namespace-prefix-exempt: the platform namespace, not a tenant

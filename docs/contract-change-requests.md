@@ -144,6 +144,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (BGD, answering question 0 of PR 3095: merge as built on the current class, and file this request) |
 | 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
 | 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
+| 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
 
 ---
 
@@ -16513,3 +16514,110 @@ moving A into `swarm_common` must leave that test green unchanged.
 
 Nobody yet: this is a request. The program's rule that a strict contract never
 silently degrades to advisory is the owner's (BGD, 3 November 2026).
+
+## 137. `specsign.py`: the stored work contract is signed with the step, spec format 8 (WORK-CONTRACT-SIGNED, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key") and
+APPLIED 2026-11-04 by the pull request that adds this section (lane
+work-contract-signed-metadata-key, part of #2688), on the plugins catalogue's
+pull request (PR 3156). Requested the same day by that pull request's red
+cover test, `tests/unit/common/test_specsign_covers.py::
+test_every_metadata_key_the_worker_reads_is_signed`.
+
+### What is true today
+
+Read on the plugins catalogue's branch (c9c4c43) on 2026-11-04.
+
+* With `SWARM_WORK_CONTRACTS` on, swarm-api decodes the contract a caller
+  sends at `metadata.work_contract`, stores its canonical document under the
+  same key, and writes its reference (`id`, `revision`, `digest`,
+  `strictness`, `requirements`) into the signed dispatch block at
+  `metadata.dispatch.work_contract` (`swarm_api.workcontract.prepare` and
+  `attach`).
+* The worker reads the step's plugins from `metadata.work_contract.
+  capabilities.plugins` (`agent_worker.plugins.selected`), and only when
+  `swarm_common.workcontract.contract_digest` of the stored document is the
+  digest in the signed reference.
+* `SIGNED_METADATA_KEYS` is `("dispatch", "input_from", "expected_outputs")`,
+  so the stored document itself is outside the step-spec signature and the
+  cover test is red: the worker reads a metadata key the signature does not
+  cover.
+
+### The change
+
+* `SIGNED_METADATA_KEYS` gains `"work_contract"`, and `SPEC_FORMAT` becomes 8
+  (`SPEC_FORMATS` gains 8), in the shape of formats 2-7: format 8's
+  projection is format 7's with `work_contract` in its `metadata` map.
+* Formats 1-7 keep exactly the `metadata` map they had (`dispatch`,
+  `input_from`, `expected_outputs`), so every signature stored before the
+  change still verifies. A document at one of them that sets
+  `metadata.work_contract` (non-None) has no canonical form, as a set
+  `max_turns` below format 7: a contract added to an agent signed without one
+  fails its worker's check.
+* `signing_format` returns 8 only for an agent whose metadata carries a
+  contract, so every other agent keeps the format and bytes it had. Rollout
+  order: workers first, then swarm-api, as for formats 2-7; a worker built
+  before format 8 refuses an agent signed at 8 (`SPEC_SIGNATURE_INVALID`), and
+  only an agent with a contract is signed at 8, which needs
+  `SWARM_WORK_CONTRACTS` on.
+* The worker's digest check stays as a second guard: a document whose digest
+  is not the signed reference's still loads no plugin.
+
+The alternative the owner rejected: leave the key unsigned and list it in
+the cover test as a digest-verified allowance list. Rejected because it gives
+"signed" a second, weaker meaning: the cover test would then pass for a key
+the signature does not cover.
+
+### What reads it
+
+swarm-api's spec signer (`signing_format`, `canonical_step_spec`), every
+verifier through `SPEC_FORMATS` (the worker's `specverify`, the upstream
+check, the forge broker's and the verdict publisher's format checks), and
+the worker's plugins selection, which acts on the verified document.
+
+### What it would break if accepted
+
+An agent signed at format 1-7 that carries a caller's free-form
+`metadata.work_contract` (written while `SWARM_WORK_CONTRACTS` was off,
+before this change) is refused by a worker built after it, on its next
+attempt: the key is now refused below format 8. swarm-api signs a new
+submission of the same agent at format 8.
+
+The brief also asked to add the key to swarm-api's
+`validation.RESERVED_METADATA_KEYS`. Not applied, and asked of the owner in
+the pull request: a caller SENDS its contract at `metadata.work_contract`
+(`swarm_api.workcontract.METADATA_KEY`), and `reject_reserved_metadata` runs
+on that metadata, so reserving the key would refuse every contract at
+submission; and the reserved tuple is `task_input.PLATFORM_METADATA_KEYS`,
+served unmasked, which would serve the caller's contract text unmasked. The
+cover test's parity check names the key as signed and caller-sent
+(`CALLER_SENT_SIGNED_KEYS`) instead.
+
+### If it is declined
+
+The cover test stays red and the plugins catalogue's pull request cannot
+merge; the worker trusts the stored contract by its digest alone.
+
+### Invariants
+
+Invariant 5 (fencing): unchanged. The spec check runs before the agent and
+refuses a stale or rewritten spec without touching the lease; the fencing
+generation is checked as before. Invariant 10 (callers name, never supply):
+a contract names plugins, skills, a runner profile and limits by name only,
+and the worker checks every plugin name against its own catalogue; signing
+the document adds no field a caller can use to supply an image, a command or
+a resource spec.
+
+### How it is tested
+
+`tests/unit/common/test_work_contract_signed_contract.py` pins each of
+formats 1-7's digests from before the change, signs a contract at 8 only,
+and refuses a contract below 8; `tests/unit/common/test_specsign_covers.py`
+is green; `tests/unit/common/test_specsign.py` and
+`tests/unit/common/test_max_turns_contract.py` pin the new format;
+`tests/unit/worker/test_work_contract_signed_worker.py` refuses a rewritten
+contract before the agent runs.
+
+### Who decided
+
+The owner (BGD), 4 November 2026: "Sign the key".
