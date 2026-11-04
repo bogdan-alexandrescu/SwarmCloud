@@ -25,7 +25,7 @@
  * MUTATION: delete `position: relative` from `.ctl-scroll` in styles.css --
  * every case goes red, naming the `.sk-vh` / `.sk-st-w` spans.
  */
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { App } from '../App'
@@ -82,6 +82,10 @@ describe('item 3: no box escapes the app frame, so the window never scrolls', ()
     window.history.replaceState(null, '', '/workflows/wf_5e5ad3b6f7da4299a839/table')
     render(<App />)
     await waitFor(() => expect(document.querySelectorAll('.wf-card .wf-table tbody tr[data-step]').length).toBeGreaterThan(1))
+    // NO ARRIVAL PICK since the Graph Work redesign (part of #2688): the page
+    // lands on its Overview, so a row is picked here to open the step
+    // inspector in the dock, as a reader would.
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-card .wf-table tbody tr[data-step] .wf-pick')!)
     // The Table tab's Steps table writes its state words out, so the hidden
     // words on this page are the step inspector's (its head and its scrub
     // strip), and the inspector can draw after the rows: on a loaded CI runner
