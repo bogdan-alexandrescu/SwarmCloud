@@ -27,8 +27,11 @@
  * workspace's name, linking to its own page (`admin/workspaces/<tenant>`); its
  * setup progress (the Config strip's own `SetupProgress`); its roster facts
  * (`rosterFacts`); what waits in it (a failed step, a step to re-check, the
- * next step, or nothing); the caller's role there; and, for a workspace they
- * administer, today's four Config links.
+ * next step, or nothing); and the caller's role there. The four Config links
+ * a row carried until the workspace page was routed (Workspace Settings, MCP
+ * servers, People and roles, Secrets) are gone with the admin routes lane:
+ * the row's name opens the page, whose People, Roles and Settings tabs are
+ * two of them and whose Setup tab links the other two.
  *
  * THE ROSTER FACTS ARE READ ON THE LIST (the owner picked "Read each
  * workspace's roster on the list", 2026-11-03): per workspace, its roles
@@ -38,10 +41,10 @@
  * caller administers it, who joined by request (`GET /v1/workspace/members`,
  * admin only, so a member's row never asks for it). A platform admin of N
  * workspaces so makes up to 2N more reads here. A fact whose read failed
- * says "not known", never 0. EACH CONFIG LINK SELECTS ITS
- * WORKSPACE FIRST, then navigates (`chooseTenant`, the tenant block's switch),
- * so the page it lands on reads that workspace. A member's row has no Config
- * links: what they may change is not here.
+ * says "not known", never 0. THE LEAD'S AND A SETUP STEP'S CONFIG LINK SELECTS
+ * ITS WORKSPACE FIRST, then navigates (`chooseTenant`, the tenant block's
+ * switch), so the page it lands on reads that workspace; the workspace page
+ * selects its own (App.tsx `WorkspacePageRoute`).
  *
  * THE LEAD names the administered workspace furthest behind, its next step,
  * and one button, "Open <X>'s Config", which selects it and opens that step's
@@ -63,34 +66,18 @@ import { ButtonLink, Chip, EmptyState, Segmented, routedClick } from './componen
 import { chooseTenant } from './fetch'
 import { AdminLead } from './AdminSettings'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
-import { CONFIG_SECRETS_ADDRESS, addressToPath } from './paths'
+import { addressToPath, workspacePageAddress } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
-import { WORKSPACE_PEOPLE_ADDRESS, roleOf } from './roles'
+import { roleOf } from './roles'
 import { PageHead } from './Shell'
 import { adminWorkspaces, isReach, joinsToDecide, nameTenants } from './Spine'
 import { WORKSPACE_NEW_ADDRESS } from './WorkspaceSettings'
 
-/** The four Config pages a workspace admin changes, by their tab names (S10a). */
-export const WORKSPACE_ADMIN_LINKS: readonly { label: string; to: string }[] = [
-  { label: 'Workspace Settings', to: 'config/workspace' },
-  { label: 'MCP servers', to: 'config/mcp-servers' },
-  { label: 'People and roles', to: WORKSPACE_PEOPLE_ADDRESS },
-  // Workspace secrets and the workspace key (Keys for agents and MCP).
-  { label: 'Secrets', to: CONFIG_SECRETS_ADDRESS },
-]
-
 /** Where "Open <X>'s Config" lands when no step is next: Config's first page, as `/config` does. */
 const CONFIG_LANDING = 'config/github'
 
-/** One workspace's own page (the admin routes lane draws it). */
-export const workspacePageAddress = (tenantId: string): string => `admin/workspaces/${tenantId}`
-
-/**
- * Its path, written out: until the router knows the address, `addressToPath`
- * maps it to Overview, so the link carries the path itself and is followed as
- * a plain link; once the router knows it, a click routes in place.
- */
-export const workspacePagePath = (tenantId: string): string => `/admin/workspaces/${encodeURIComponent(tenantId)}`
+/** One workspace's own page, `/admin/workspaces/<tenant>` (paths.ts), opened on People. */
+export const workspacePagePath = (tenantId: string): string => addressToPath(workspacePageAddress(tenantId))
 
 /** Whose list this is: a platform admin's, a workspace admin's, or a member's (read only). */
 export type WorkspacesView = 'platform' | 'admin' | 'member'
@@ -166,8 +153,8 @@ export function rosterFacts(roster: WorkspaceRoster | null, joined: JoinedMember
 }
 
 const SUB: Readonly<Record<WorkspacesView, string>> = {
-  platform: 'Every group workspace; you are admin in each as a platform admin. A Config link selects that workspace, then opens the page.',
-  admin: 'The group workspaces you administer, and your own. A Config link selects that workspace, then opens the page.',
+  platform: 'Every group workspace; you are admin in each as a platform admin. A workspace’s name opens its page and selects it.',
+  admin: 'The group workspaces you administer, and your own. A workspace’s name opens its page and selects it.',
   member: 'The group workspaces you are in, and your own, read only: their admins change them.',
 }
 
@@ -217,7 +204,7 @@ const docOf = (r: Result<OnboardingDoc> | undefined): OnboardingDoc | null => da
 
 type Open = (e: ReactMouseEvent, tenantId: string, to: string) => void
 type Go = (e: ReactMouseEvent, to: string) => void
-/** Opens one workspace's page: routed once the router knows its address, followed as a plain link until then. */
+/** Opens one workspace's page, routed in place. */
 type OpenPage = (e: ReactMouseEvent, tenantId: string) => void
 
 /** The counts over the list, and the requests the feed serves: a count the page cannot know says so. */
@@ -233,7 +220,7 @@ function Counts({ view, total, setUp, behind }: { view: WorkspacesView; total: n
       {requests !== undefined && (
         <span role="listitem">
           <Chip href={addressToPath('admin/people')} tone={requests !== null && requests > 0 ? 'park' : undefined}>
-            <b>{n(requests)}</b> {requests === 1 ? 'request waits' : 'requests wait'} in {view === 'platform' ? 'Platform people' : 'People and roles'}
+            <b>{n(requests)}</b> {requests === 1 ? 'request waits' : 'requests wait'} in Platform people
           </Chip>
         </span>
       )}
@@ -349,15 +336,6 @@ function WorkspaceList({ choices, platformAdmin, open, openPage }: { choices: re
               ) : (
                 <small className="wya-role" data-role={role ?? 'unknown'}>{role === null ? 'your role: not known' : `your role: ${role}`}</small>
               )}
-              {admin && (
-                <nav className="wya-links" aria-label={`${w.display_name} settings`}>
-                  {WORKSPACE_ADMIN_LINKS.map((l) => (
-                    <a key={l.to} href={addressToPath(l.to)} onClick={(e) => open(e, w.tenant_id, l.to)}>
-                      {l.label}
-                    </a>
-                  ))}
-                </nav>
-              )}
             </li>
           )
         })}
@@ -382,10 +360,7 @@ export function WorkspacesYouAdminScreen({ go }: { go: (to: string) => void }) {
     e.preventDefault()
     go(to)
   }
-  const openPage: OpenPage = (e, tenantId) => {
-    if (addressToPath(workspacePageAddress(tenantId)) !== workspacePagePath(tenantId)) return
-    goTo(e, workspacePageAddress(tenantId))
-  }
+  const openPage: OpenPage = (e, tenantId) => goTo(e, workspacePageAddress(tenantId))
   const choices = mine.state.status === 'ok' || mine.state.status === 'stale' ? mine.state.data : []
   const view = mine.state.status === 'ok' || mine.state.status === 'stale' ? listedWorkspaces(choices, platformAdmin).view : platformAdmin ? 'platform' : null
   return (

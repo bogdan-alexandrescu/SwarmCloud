@@ -115,8 +115,9 @@ describe('VQ-055: each Config and Admin page’s `?` opens its own topic', () =>
     ['/config/repositories', 'config-repositories'],
     ['/config/secrets', 'secret-scopes'],
     ['/config/mcp-servers', 'mcp-servers'],
-    ['/config/people', 'workspace-roles'],
-    ['/config/workspace', 'workspace-settings'],
+    // People and roles and Workspace Settings are the workspace page's tabs since
+    // the admin routes lane (part of #2688); that page draws its own head, with
+    // no `?` yet (asked of the owner in that lane's PR).
     ['/admin/runner-sizes', 'runner-sizes'],
     ['/admin/platform-secrets', 'platform-secrets'],
   ] as const) {

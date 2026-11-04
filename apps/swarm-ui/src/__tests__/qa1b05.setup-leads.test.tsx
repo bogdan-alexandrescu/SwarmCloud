@@ -127,7 +127,7 @@ describe('config-08: GitHub access’s lead names the step the strip holds, neve
     expect(words).toContain("GitHub is connected as @octo-dev, but Workspace setup's checklist says Enable orgs failed")
     const buttons = [...lead.querySelectorAll<HTMLElement>('.c-btn')]
     expect(buttons.map((b) => b.textContent?.trim())).toEqual(['Open Workspace setup'])
-    expect(buttons[0]!.getAttribute('href')).toBe('/config/workspace/setup')
+    expect(buttons[0]!.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
   })
 })
 

@@ -108,7 +108,7 @@ describe('config2-01: the permission line names the permission and where it is g
     expect(visible(line)).toBe('Not granted on GitHub: Actions (read) Grant it in Workspace setup')
     const link = line.querySelector<HTMLAnchorElement>('a')!
     // MUTATION: drop the link and this is null.
-    expect(link.getAttribute('href')).toBe('/config/workspace/setup')
+    expect(link.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
     link.click()
     expect(go).toHaveBeenLastCalledWith('config/workspace?part=setup')
   })
