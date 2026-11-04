@@ -264,6 +264,15 @@ describe('one workflow as two panes', () => {
     expect(dock()).toBeNull()
   })
 
+  it('opens the folded inspector at 1280 when a chip is picked, keeping the grid', async () => {
+    atWidth(1280)
+    const grid = await page()
+    fireEvent.click(chip('build-login')!)
+    await waitFor(() => expect(dock()?.getAttribute('aria-label')).toBe('Step build-login'))
+    expect(document.querySelector('.wi.is-folded')).toBeNull()
+    expect(document.querySelector('.wi-main .sg')).toBe(grid)
+  })
+
   it('styles the page in the console stylesheet with no fixed width wider than a phone', () => {
     const rules = STYLES.slice(STYLES.indexOf('/* One workflow\'s page as two panes'))
     expect(rules).toContain('.wfp-merge-row')
