@@ -109,8 +109,9 @@ SHORT_FORM_WORKFLOWS: dict[str, str] = {
         "(workflow_dispatch): never from any pull request"
     ),
     "merge-train.yml": (
-        "starts only on schedule, workflow_run of a train/ branch, or dispatch: "
-        "never from a pull request"
+        "starts only on schedule, workflow_run (main's file on main's ref, for "
+        "application, security and auto-merge runs), or dispatch: never from a "
+        "pull request"
     ),
     "auto-merge.yml": (
         "runs on pull_request_target (the base branch's workflow file, with no "

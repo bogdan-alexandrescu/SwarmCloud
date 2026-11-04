@@ -647,7 +647,8 @@ def test_the_train_runs_every_five_minutes_and_on_demand(train_workflow):
 
 
 def test_a_finished_train_ci_run_wakes_the_train_without_waiting_for_the_schedule(train_workflow):
-    assert set(train_workflow["on"]["workflow_run"]["workflows"]) == {"application", "security"}
+    assert set(train_workflow["on"]["workflow_run"]["workflows"]) == {"application", "security", "auto-merge"}
+    assert train_workflow["on"]["workflow_run"]["types"] == ["completed"]
     job = train_workflow["jobs"]["tick"]
     assert "startsWith(github.event.workflow_run.head_branch, 'train/')" in job["if"]
     assert "github.event.workflow_run.head_repository.full_name == github.repository" in job["if"]
@@ -656,6 +657,156 @@ def test_a_finished_train_ci_run_wakes_the_train_without_waiting_for_the_schedul
 def test_the_schedule_does_nothing_unless_the_train_is_on(train_workflow):
     cond = train_workflow["jobs"]["tick"]["if"]
     assert "github.event_name == 'schedule' && vars.MERGE_TRAIN == 'on'" in cond
+
+
+def test_the_train_never_starts_on_a_pull_request_event(train_workflow):
+    """A `pull_request` trigger runs the pull request's copy of this file, on a
+    ref the `repo-secrets` environment refuses; `pull_request_target` would run
+    a write token on an event its author shapes. The `ready` label reaches the
+    train through auto-merge.yml's completion instead."""
+    assert not {"pull_request", "pull_request_target"} & set(train_workflow["on"])
+    assert "auto-merge" in train_workflow["on"]["workflow_run"]["workflows"]
+
+
+#: The context paths the tick's `if:` may read. Anything else is refused by
+#: _tick_runs() rather than guessed at.
+_IF_PATH = re.compile(r"\b(?:vars|github)(?:\.[A-Za-z_][\w-]*)+")
+THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
+
+
+def _tick_runs(
+    cond: str,
+    event: str,
+    *,
+    train: str = "",
+    name: str = "application",
+    run_event: str = "pull_request",
+    conclusion: str = "success",
+    branch: str = "swarm/task_lane",
+    head_repo: str = THIS_REPO,
+    repository: str = THIS_REPO,
+) -> bool:
+    """Whether GitHub starts the tick job: evaluates the `if:` with `&&`,
+    `||`, `==`, `!=` and startsWith(), as GitHub does. `train` is
+    vars.MERGE_TRAIN (unset reads as ''); the workflow_run fields are those of
+    the run that completed, and absent (null) on any other event."""
+    is_run = event == "workflow_run"
+    values = {
+        "github.repository": repository,
+        "github.event_name": event,
+        "vars.MERGE_TRAIN": train,
+        "github.event.workflow_run.name": name if is_run else None,
+        "github.event.workflow_run.event": run_event if is_run else None,
+        "github.event.workflow_run.conclusion": conclusion if is_run else None,
+        "github.event.workflow_run.head_branch": branch if is_run else None,
+        "github.event.workflow_run.head_repository.full_name": head_repo if is_run else None,
+    }
+    names: dict[str, object] = {}
+
+    def bind(match: re.Match) -> str:
+        path = match.group(0)
+        assert path in values, f"_tick_runs() does not model {path!r}"
+        names[f"_v{len(names)}"] = values[path]
+        return f"_v{len(names) - 1}"
+
+    py = _IF_PATH.sub(bind, cond.strip())
+    py = py.replace("&&", " and ").replace("||", " or ").replace("startsWith(", "_starts(")
+    helpers = {"_starts": lambda value, prefix: str(value or "").lower().startswith(prefix.lower())}
+    return bool(eval(py, {"__builtins__": {}}, {**names, **helpers}))  # noqa: S307
+
+
+@pytest.mark.parametrize(
+    ("why", "event", "kwargs", "runs"),
+    [
+        # The fallback and the hand-started run, as before.
+        ("schedule, train on", "schedule", {"train": "on"}, True),
+        ("schedule, train off", "schedule", {"train": "off"}, False),
+        ("schedule, train unset", "schedule", {}, False),
+        ("dispatch, train off: a dry run", "workflow_dispatch", {}, True),
+        ("dispatch, train on", "workflow_dispatch", {"train": "on"}, True),
+        # A train's CI: judged whatever MERGE_TRAIN says, and on any conclusion.
+        ("train CI red, train off", "workflow_run", {"branch": "train/7", "conclusion": "failure"}, True),
+        ("train CI green, train on", "workflow_run", {"branch": "train/7", "train": "on"}, True),
+        ("security on a train", "workflow_run", {"branch": "train/7", "name": "security"}, True),
+        (
+            "a fork's train/ branch",
+            "workflow_run",
+            {"branch": "train/7", "head_repo": "someone/SwarmCloud"},
+            False,
+        ),
+        # Any branch's pull request run finishing green, with the train on.
+        ("lane CI green, train on", "workflow_run", {"train": "on"}, True),
+        ("lane security green, train on", "workflow_run", {"train": "on", "name": "security"}, True),
+        ("lane CI green, train off", "workflow_run", {"train": "off"}, False),
+        ("lane CI green, train unset", "workflow_run", {}, False),
+        ("lane CI red, train on", "workflow_run", {"train": "on", "conclusion": "failure"}, False),
+        ("lane CI cancelled, train on", "workflow_run", {"train": "on", "conclusion": "cancelled"}, False),
+        (
+            "main's push run, train on",
+            "workflow_run",
+            {"train": "on", "run_event": "push", "branch": "main"},
+            False,
+        ),
+        (
+            "a fork's pull request run, train on",
+            "workflow_run",
+            {"train": "on", "head_repo": "someone/SwarmCloud"},
+            False,
+        ),
+        # `ready` added: auto-merge.yml's pull_request_target run completes.
+        (
+            "ready added, train on",
+            "workflow_run",
+            {"train": "on", "name": "auto-merge", "run_event": "pull_request_target", "branch": "main"},
+            True,
+        ),
+        (
+            "ready added, train off",
+            "workflow_run",
+            {"train": "off", "name": "auto-merge", "run_event": "pull_request_target", "branch": "main"},
+            False,
+        ),
+        (
+            "auto-merge's requeue dispatch, train on",
+            "workflow_run",
+            {"train": "on", "name": "auto-merge", "run_event": "workflow_dispatch", "branch": "main"},
+            False,
+        ),
+        (
+            "auto-merge's schedule, train on",
+            "workflow_run",
+            {"train": "on", "name": "auto-merge", "run_event": "schedule", "branch": "main"},
+            False,
+        ),
+        (
+            "auto-merge's own workflow_run, train on",
+            "workflow_run",
+            {"train": "on", "name": "auto-merge", "run_event": "workflow_run", "branch": "main"},
+            False,
+        ),
+        (
+            "auto-merge on a train branch, train off: not a train's CI",
+            "workflow_run",
+            {"name": "auto-merge", "run_event": "pull_request_target", "branch": "train/7"},
+            False,
+        ),
+        # Anywhere but this repository, nothing.
+        ("a fork of the repository", "schedule", {"train": "on", "repository": "someone/SwarmCloud"}, False),
+        (
+            "a fork of the repository, its own train",
+            "workflow_run",
+            {"branch": "train/7", "repository": "someone/SwarmCloud", "head_repo": "someone/SwarmCloud"},
+            False,
+        ),
+    ],
+)
+def test_when_a_tick_runs(train_workflow, why: str, event: str, kwargs: dict, runs: bool):
+    """The WHEN block of merge-train.yml, row by row (part of #2688): the train
+    ticks on the events that can change what it does, because GitHub ran the
+    five-minute schedule only every four to seven hours. MUTATION: drop a
+    clause, or its MERGE_TRAIN or conclusion guard, and a row goes red."""
+    assert event in train_workflow["on"], why
+    assert _tick_runs(train_workflow["jobs"]["tick"]["if"], event, **kwargs) is runs, why
 
 
 def test_one_train_at_a_time_and_a_running_one_is_never_cancelled(train_workflow):
