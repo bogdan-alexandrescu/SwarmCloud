@@ -1301,7 +1301,11 @@ class SubmissionService:
         except NotFound:
             return None
 
-    def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate) -> WorkflowSubmission:
+    def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate, *,
+                        fix_loop_round: Mapping[str, Any] | None = None) -> WorkflowSubmission:
+        # `fix_loop_round` is a fix loop's round record (FL-DRIVE,
+        # docs/design/fix-loop.md §4.3), signed into every step's dispatch
+        # block. Only `fixloop` passes it; no route does, so no caller can.
         # A continuation-scoped caller (a listed service account, contract
         # request 30) reaches this route because it is in CONTINUATION_ROUTES,
         # but being on the allow-list opens the ROUTE, not every request to it:
@@ -1428,6 +1432,8 @@ class SubmissionService:
                         "pull_request": ci_fix["pull_request"],
                         "head_sha": ci_fix["head_sha"],
                     })
+            if fix_loop_round is not None:
+                dispatch = replace(dispatch, fix_loop_round=dict(fix_loop_round))
             # A `fix-loop` step (docs/design/fix-loop.md §4.1, FL-SUBMIT):
             # checked once the strategy is known and before the merge step is
             # derived, because a merge behind a loop reads the loop (§4.6).

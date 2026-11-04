@@ -2149,6 +2149,14 @@ class DispatchOptions:
     #: block, so the spec signature covers the review, the fix and the
     #: rounds the loop may run. Not hashed: a map.
     fix_loop: Mapping[str, Any] | None = field(default=None, hash=False)
+    #: A fix loop's round (FL-DRIVE, docs/design/fix-loop.md §4.3): `{loop_task,
+    #: round, kind, start_head | head, pull_request}` and, on a re-review, the
+    #: lane's `rendered_review_paths`. Set only by `fixloop` through
+    #: `SubmissionService.submit_workflow(fix_loop_round=...)`, a parameter no
+    #: route passes, so a caller can never write it; inside the block, so the
+    #: loop and the merge read a round's loop and head from its signature,
+    #: never from the tenant-writable `metadata.fix_loop_round`. Not hashed.
+    fix_loop_round: Mapping[str, Any] | None = field(default=None, hash=False)
     #: `(number, task id)` of the existing pull request this step's lane
     #: publishes onto instead of opening one (#2183), as
     #: `publishtopr.resolve` read it from GitHub at submission; empty on every
@@ -2371,6 +2379,9 @@ class DispatchOptions:
         # other step stores exactly the block it stored before.
         if self.fix_loop is not None:
             block[FIX_LOOP_FIELD] = json.loads(json.dumps(self.fix_loop))
+        # Absent on every task but a fix loop's round (FL-DRIVE).
+        if self.fix_loop_round is not None:
+            block[FIX_LOOP_ROUND_FIELD] = json.loads(json.dumps(self.fix_loop_round))
         # Absent unless the spec named a pull request (#2183), so every other
         # dispatch stores exactly the block it stored before. The worker
         # spells the key `agent_worker.publishpr.FIELD`.
@@ -4860,6 +4871,9 @@ FIX_LOOP_PROFILE = "fix-loop"
 #: The step's block, as `WorkflowStepCreate.fix_loop` takes it and as the loop
 #: task's signed `metadata.dispatch.fix_loop` stores it (BGD Q10 (a)).
 FIX_LOOP_FIELD = "fix_loop"
+#: A fix loop round's signed record in its `metadata.dispatch` (FL-DRIVE, §4.3),
+#: and the unsigned copy beside it in `metadata` that `cifix.ROUND_KINDS` reads.
+FIX_LOOP_ROUND_FIELD = "fix_loop_round"
 #: `fix_loop.max_rounds`: the fix agents the loop's workflow may run in all,
 #: the declared `fix` counted as round 1. 1-5 and 3 when absent (BGD Q5 (a)):
 #: the same range and default as `MERGE_FIX_ROUNDS_MAX` and an issue run's

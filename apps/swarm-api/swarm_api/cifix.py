@@ -193,6 +193,7 @@ from .schemas import WorkflowCreate
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
+    FIX_LOOP_ROUND_FIELD,
     PROMPT_INPUT_KEY,
     DispatchOptionError,
     IssueRef,
@@ -279,8 +280,12 @@ FIX_HEADS_KEPT = 20
 #: The metadata keys that make a `continues_task` workflow a fix round: the
 #: PR-side fixer's, and the merge step's CI-fix and conflict rounds
 #: (`mergewake._on_red` / `_on_conflict`; `merge_fix_round` is written there
-#: as a literal).
-ROUND_KINDS = (CI_FIX_METADATA_FIELD, "merge_fix_round", CONFLICT_ROUND_METADATA_KEY)
+#: as a literal), and a fix loop's review-fix round (`fixloop`, FL-DRIVE,
+#: docs/design/fix-loop.md §4.3; `validation.FIX_LOOP_ROUND_FIELD`), so the
+#: PR-side fixer stands down while it runs. A loop's re-review carries the
+#: same key but continues nothing, so `live_pr_writer` never counts it.
+ROUND_KINDS = (CI_FIX_METADATA_FIELD, "merge_fix_round", CONFLICT_ROUND_METADATA_KEY,
+               FIX_LOOP_ROUND_FIELD)
 #: pr-shepherd's conflict fix's mark, `metadata.pr_shepherd` (`{run_id,
 #: repository, pull_request, head_sha, base_ref}`). Restated here because
 #: `schedtypes.pr_shepherd` imports this module; held equal to
