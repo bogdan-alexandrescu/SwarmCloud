@@ -152,7 +152,7 @@ function Routed({ initial, onView }: { initial: string; onView: (v: string) => v
 }
 
 function rowIds(): string[] {
-  return [...document.querySelectorAll<HTMLElement>('.wfl-table tbody tr')].map((r) => r.dataset.workflow ?? '')
+  return [...document.querySelectorAll<HTMLElement>('.wfg-table tbody tr')].map((r) => r.dataset.workflow ?? '')
 }
 
 // ---------------------------------------------------------------------------
@@ -218,8 +218,9 @@ describe('the workflow list', () => {
     await waitFor(() => expect(rowIds()).toEqual(['wf_broker']))
     const seg = screen.getByRole('group', { name: 'Which workflows' })
     const pressed = within(seg).getByRole('button', { pressed: true })
-    // QA-036 (run 2): the Running bucket's tab is named by what it counts.
-    expect(pressed.textContent).toBe('Not ended1')
+    // The redesign's buckets (frame graph-workflows-rest): All, Running,
+    // Parked, Failed, Done; QA-036's "Not ended" is Running again.
+    expect(pressed.textContent).toBe('Running1')
     // The counts follow the other filters: priya has no failed workflow.
     const failedSeg = within(seg).getAllByRole('button').find((b) => b.textContent?.startsWith('Failed'))!
     expect(failedSeg.textContent).toBe('Failed0')
@@ -259,10 +260,13 @@ describe('the workflow list', () => {
     await waitFor(() => expect(rowIds()).toEqual(['wf_bumps']))
     const row = document.querySelector<HTMLElement>('tr[data-workflow="wf_bumps"]')!
     expect(row.className).toContain('is-failed')
-    const why = row.querySelector('.wfl-why.is-bad')!
-    expect(why.textContent).toBe('failed at rewrite-b: exit 1')
     expect(row.querySelector('[data-mark="failed"][data-hue="bad"]')).toBeTruthy()
-    expect(row.querySelector('.wfl-line > a')!.getAttribute('href')).toBe('/workflows/wf_bumps?state=failed')
+    expect(row.querySelector('td[data-col="workflow"] > a')!.getAttribute('href')).toBe('/workflows/wf_bumps?state=failed')
+    // The why line moved from the row to the summary the row opens in the
+    // inspector (the redesign, frame graph-workflows-rest).
+    fireEvent.click(row.querySelector('[data-col="state"]')!)
+    const why = summaryOf('wf_bumps').querySelector('.wfl-why.is-bad')!
+    expect(why.textContent).toBe('failed at rewrite-b: exit 1')
   })
 
   it('re-reads every 10s while a workflow runs, and not once none does', () => {
@@ -460,10 +464,29 @@ function serveOwn(board: WorkflowBoard): void {
 async function listRow(id: string): Promise<HTMLElement> {
   render(<WorkflowsScreen />)
   return waitFor(() => {
-    const row = document.querySelector<HTMLElement>(`.wfl-table tr[data-workflow="${id}"]`)
+    const row = document.querySelector<HTMLElement>(`.wfg-table tr[data-workflow="${id}"]`)
     expect(row, `no list row for ${id}`).toBeTruthy()
     return row!
   })
+}
+
+/**
+ * The inspector's summary of `id`, once its row was picked (the redesign,
+ * frame graph-workflows-rest): what the old row carried on its second line
+ * and in the columns the one-line row gave up.
+ */
+function summaryOf(id: string): HTMLElement {
+  const aside = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"]')
+  expect(aside, 'no workflow inspector').toBeTruthy()
+  const sum = aside!.querySelector<HTMLElement>(`.wfg-sum[data-workflow="${id}"]`)
+  expect(sum, `no summary of ${id} in the inspector`).toBeTruthy()
+  return sum!
+}
+
+/** Pick the list row of `id` (a click on its state cell) and return its summary. */
+function pick(id: string): HTMLElement {
+  fireEvent.click(document.querySelector(`tr[data-workflow="${id}"] [data-col="state"]`)!)
+  return summaryOf(id)
 }
 
 /** One workflow's page head, once the page has drawn it. */
@@ -505,13 +528,16 @@ const dispatchAs = (strategy: TaskDispatch['strategy'], role: TaskDispatch['role
 
 describe('#330: the list row leads with the label', () => {
   // Was 'leads with the spec label and puts the wf_ id on a second line' on the board row.
+  // The redesign (frame graph-workflows-rest) keeps the row to one line: the
+  // id joins the name in the link's title, and is printed in the summary.
   it('leads with the spec label and puts the wf_ id on a second line', async () => {
     const { w, tasks } = labelled('workflows-board')
     serve([w], tasks)
-    const name = (await listRow(w.workflow_id)).querySelector<HTMLElement>('.wfl-name')!
+    const name = (await listRow(w.workflow_id)).querySelector<HTMLElement>('.wfg-name')!
     expect(name.querySelector('a')!.textContent).toBe('workflows-board')
-    // The id is still the `.id`, whole in its title.
-    const id = name.querySelector<HTMLElement>('.id')
+    expect(name.querySelector('a')!.getAttribute('title')).toBe('workflows-board · wf_5e5ad3b6f7da4299a839')
+    // The id is still the `.id`, whole in its title, in the summary.
+    const id = pick(w.workflow_id).querySelector<HTMLElement>('.id')
     expect(id, 'the label hid the id').toBeTruthy()
     expect(id!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
     expect(id!.getAttribute('title')).toBe('wf_5e5ad3b6f7da4299a839')
@@ -526,9 +552,10 @@ describe('#330: the list row leads with the label', () => {
   ] as const) {
     it(`a read row with no name is "Untitled workflow", the id under it: ${what}`, async () => {
       serve([labelled(null).w], tasks)
-      const name = (await listRow('wf_5e5ad3b6f7da4299a839')).querySelector<HTMLElement>('.wfl-name')!
+      const name = (await listRow('wf_5e5ad3b6f7da4299a839')).querySelector<HTMLElement>('.wfg-name')!
       expect(name.querySelector('a')!.textContent).toBe('Untitled workflow')
-      const id = name.querySelector<HTMLElement>('.id')
+      expect(name.querySelector('a')!.getAttribute('title'), 'the untitled row dropped its id').toBe('Untitled workflow · wf_5e5ad3b6f7da4299a839')
+      const id = pick('wf_5e5ad3b6f7da4299a839').querySelector<HTMLElement>('.id')
       expect(id, 'the untitled row dropped its id').toBeTruthy()
       expect(id!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
     })
@@ -538,16 +565,17 @@ describe('#330: the list row leads with the label', () => {
     const { w, tasks } = labelled(null)
     for (const t of tasks.values()) t.metadata = { origin: 'swarm-mcp', title: 'Merge PR 1127' }
     serve([w], tasks)
-    const name = (await listRow(w.workflow_id)).querySelector<HTMLElement>('.wfl-name')!
+    const name = (await listRow(w.workflow_id)).querySelector<HTMLElement>('.wfg-name')!
     expect(name.querySelector('a')!.textContent).toBe('Merge PR 1127')
-    expect(name.querySelector('.id')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+    expect(pick(w.workflow_id).querySelector('.id')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
   })
 
   // An unread row does not know its name: "Untitled" would be a guess.
   it('falls back to the id alone while no task is read', async () => {
     serve([labelled(null).w], null)
-    const name = (await listRow('wf_5e5ad3b6f7da4299a839')).querySelector<HTMLElement>('.wfl-name')!
+    const name = (await listRow('wf_5e5ad3b6f7da4299a839')).querySelector<HTMLElement>('.wfg-name')!
     expect(name.querySelector('a')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+    expect(name.querySelector('a')!.getAttribute('title'), 'the id is printed twice').toBe('wf_5e5ad3b6f7da4299a839')
     expect(name.querySelector('.id'), 'the id is printed twice').toBeNull()
   })
 })
@@ -643,12 +671,19 @@ describe('the list row: shape, runners and spend', () => {
       step('join', ['p1', 'p2', 'p3', 'p4', 'p5']),
     ])
     serve([chain, fan])
-    const chainShape = (await listRow('wf_chain')).querySelector<HTMLElement>('.wf-shape')!
-    const fanShape = document.querySelector<HTMLElement>('tr[data-workflow="wf_fan"] .wf-shape')!
-    expect(chainShape.textContent).toContain('1 → 1 → 1')
-    expect(fanShape.textContent).toContain('1 → 5 → 1')
-    expect(chainShape.getAttribute('title')).toMatch(/chain/i)
-    const fanTitle = fanShape.getAttribute('title') ?? ''
+    // The shape moved from the row to the summary (frame graph-workflows-rest).
+    await listRow('wf_chain')
+    // Read each summary while it is open: the inspector holds one at a time.
+    const shapeOf = (id: string) => {
+      const el = pick(id).querySelector<HTMLElement>('.wf-shape')!
+      return { text: el.textContent ?? '', title: el.getAttribute('title') ?? '' }
+    }
+    const chainShape = shapeOf('wf_chain')
+    const fanShape = shapeOf('wf_fan')
+    expect(chainShape.text).toContain('1 → 1 → 1')
+    expect(fanShape.text).toContain('1 → 5 → 1')
+    expect(chainShape.title).toMatch(/chain/i)
+    const fanTitle = fanShape.title
     expect(fanTitle).toContain('parallel')
     expect(fanTitle).toContain('converge')
   })
@@ -667,8 +702,11 @@ describe('the list row: shape, runners and spend', () => {
         return this.classList.contains('wf-mix') ? room : 0
       })
       const { unmount } = render(<WorkflowsScreen />)
+      // Runners moved from the row to the summary (frame graph-workflows-rest).
+      await waitFor(() => expect(document.querySelector('tr[data-workflow="wf_mix"]')).toBeTruthy())
+      pick('wf_mix')
       const mix = await waitFor(() => {
-        const m = document.querySelector('tr[data-workflow="wf_mix"] .wf-mix')
+        const m = summaryOf('wf_mix').querySelector('.wf-mix')
         expect(m).toBeTruthy()
         return m!
       })
@@ -716,9 +754,10 @@ describe('the list row: shape, runners and spend', () => {
     expect(cell.getAttribute('aria-label')).toContain('not $0.00')
   })
 
+  // Cost is Spent in the redesign (frame graph-workflows-rest).
   it('never cuts the cost column with an ellipsis (Q9)', () => {
     const host = document.createElement('div')
-    host.innerHTML = '<div class="wfl"><table class="wfl-table"><tbody><tr><td class="num" data-col="cost"><span class="wf-spend">x</span></td></tr></tbody></table></div>'
+    host.innerHTML = '<div class="wfg"><table class="wfg-table"><tbody><tr class="wfg-row"><td class="num" data-col="spent"><span class="wf-spend">x</span></td></tr></tbody></table></div>'
     document.body.appendChild(host)
     try {
       const td = host.querySelector('td')!

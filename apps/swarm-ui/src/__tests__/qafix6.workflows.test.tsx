@@ -392,15 +392,20 @@ describe('c. F3: the list row', () => {
   it('reads "claude-code · 6 steps" and "4/6 · 1 failed · 1 cancelled"', async () => {
     render(<WorkflowsScreen view="" onView={() => {}} />)
     const row = await waitFor(() => {
-      const r = document.querySelector<HTMLElement>('.wfl-table tr[data-workflow="wf_fan"]')
+      const r = document.querySelector<HTMLElement>('.wfg-table tr[data-workflow="wf_fan"]')
       expect(r).toBeTruthy()
       return r!
     })
+    // Runners and Steps done moved from the row into the inspector's summary
+    // the row opens (the redesign, frame graph-workflows-rest).
+    fireEvent.click(row.querySelector<HTMLElement>('[data-col="state"]')!)
+    const sum = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum')!
+    expect(sum).toBeTruthy()
     // MUTATION: print `×{m.count}` again in `Mix`.
-    const chip = row.querySelector<HTMLElement>('td[data-col="runners"] .c-chip')!
+    const chip = sum.querySelector<HTMLElement>('.wfg-sum-dl .c-chip')!
     expect(flat(chip)).toBe('claude-code · 6 steps')
-    // MUTATION: drop the outcomes from `StepsDone` -- the cell is '4/6'.
-    expect(flat(row.querySelector('td[data-col="done"]')).trim()).toBe('4/6 · 1 failed · 1 cancelled')
+    // MUTATION: drop the outcomes from `StepsDone` -- the summary reads '4/6'.
+    expect(flat(sum.querySelector('.wfg-sum-row')).trim()).toBe('4/6 · 1 failed · 1 cancelled')
   })
 })
 

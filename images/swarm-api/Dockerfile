@@ -85,6 +85,9 @@ COPY apps/common/ /src/apps/common/
 COPY apps/redaction/ /src/apps/redaction/
 # The workflow state derivation the API and the reconciler share (#616).
 COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
+# The Jev client the worker's judge.client and judge.sanitize re-export, shared
+# with swarm-api (docs/design/agent-quality/jev-contract.md, answer 10).
+COPY apps/jev-client/ /src/apps/jev-client/
 COPY apps/swarm-api/ /src/apps/swarm-api/
 
 # Build our own packages into a local wheelhouse. No index has ever heard of
@@ -93,6 +96,7 @@ COPY apps/swarm-api/ /src/apps/swarm-api/
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
+ && uv build --wheel --out-dir /wheels /src/apps/jev-client \
  && uv build --wheel --out-dir /wheels /src/apps/swarm-api
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,
@@ -132,7 +136,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # is ever asked for them; `--no-deps` because their third-party dependencies
 # are already installed above, by hash.
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-redaction swarm-workflow-rollup swarm-api
+      swarm-common swarm-redaction swarm-workflow-rollup swarm-jev swarm-api
 
 # With `--no-deps` on both installs nothing above notices a dependency the
 # export left out. `uv pip check` does, here, instead of an ImportError at the
