@@ -211,6 +211,21 @@ SWITCHES: dict[str, Switch] = {
         "and the broker's reason, instead of the broker's bare refusal. On once People shows "
         "the loan pane's error and the log shows the named members really are missing service accounts",
     ),
+    # Lane FL-DRIVE (docs/design/fix-loop.md §4.5): a person's add-round or
+    # stop on a fix loop. The refusals are ALWAYS made; off, each is answered
+    # 409 `conflict` with the same message, as `workflow_finished` is.
+    "fix_loop_not_parked": Switch(
+        code="fix_loop_not_parked",
+        why="an add-round or stop on a fix loop that is not parked for a person is answered "
+        "409 fix_loop_not_parked instead of 409 conflict with the same message. On once the "
+        "console and the sc plugin read the code",
+    ),
+    "fix_loop_rounds_ceiling": Switch(
+        code="fix_loop_rounds_ceiling",
+        why="an add-round on a fix loop already at FIX_LOOP_ROUNDS_CEILING (10) is answered "
+        "409 fix_loop_rounds_ceiling instead of 409 conflict with the same message. On once "
+        "the console and the sc plugin read the code",
+    ),
     # Lane G9 (docs/runner-git-tools.md §6.3). Off, a workflow read under another
     # tenant answers the bare 404 `workflow '<id>' not found`, as before.
     "workflow_not_in_tenant": Switch(
