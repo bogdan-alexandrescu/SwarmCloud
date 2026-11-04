@@ -141,6 +141,12 @@ PLUGIN_MIN_VERSION = "0.5.74"
 #: On from infra pass 2: BGD turned it on (DAYONE-TFVARS-2, review finding 12).
 SCHEDULED_DOCTOR_SHIPPED = True
 
+#: swarm-api's SWARM_CONTRACT_REVIEW (infra's `contract_review_mode`): off, as
+#: on the live deployment, until the deployment's owner turns it on (owner's
+#: choice, 2026-11-04). Rendered on every infra pass, so a fresh deployment
+#: carries the same environment as the live one.
+CONTRACT_REVIEW_MODE = "off"
+
 #: `sizing.mode` (decision 7): one person, or a team of `members` people.
 INDIVIDUAL = "individual"
 TEAM = "team"
@@ -441,6 +447,7 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "repository_grants_enforced": True,
         "workspace_gate": True,
         "groups_auth": groups_auth(outputs),
+        "contract_review_mode": CONTRACT_REVIEW_MODE,
         "artifact_registry_repository": REPOSITORY,
         "image_refs": image_refs(project, region, outputs.get("image_digests") or {}),
     }
