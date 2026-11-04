@@ -1081,7 +1081,7 @@ def test_tailscale_passes_when_the_jev_egress_rule_admits_swarm_apis_range() -> 
     assert gets == [("get", "networkpolicy", "decision-api-egress-ingress", "--namespace=swarm-system",
                      "-o", "json")]
     done = [e for e in _events(the_flow) if e.get("step") == "addon.tailscale.jev-egress"]
-    assert [e["event"] for e in done] == ["step_done"] and API_EGRESS in done[0]["detail"]
+    assert [e["event"] for e in done] == ["step_check", "step_done"] and API_EGRESS in done[1]["detail"]
 
 
 def test_the_jev_egress_rule_is_judged_by_network_paritys_own_check() -> None:
