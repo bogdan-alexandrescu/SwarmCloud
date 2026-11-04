@@ -264,17 +264,16 @@ class MergeWakeRefused(ApiError):
     code = "merge_wake_refused"
 
 
-class ContractVerdictStale(ApiError):
-    """Section 9: a verdict about another revision, another commit, or one
-    this attempt already recorded. Nothing is written."""
-
-    status_code = 409
-    code = "contract_verdict_stale"
-
-
 class StateConflict(ApiError):
     status_code = 409
     code = "state_conflict"
+
+
+class ContractVerdictStale(StateConflict):
+    """Section 9: a verdict about another revision, another commit, or one
+    this attempt already recorded. Nothing is written. It answers with the
+    state routes' own `state_conflict` (a write over a document that changed
+    under it), so it adds no new refusal code to switch (refusals.SWITCHES)."""
 
 
 # --------------------------------------------------------------------------
@@ -1834,7 +1833,7 @@ class AttemptState:
         2. the fence: this attempt is the task's current one at this
            generation (`_fenced`, 409 `attempt_fenced`);
         3. the digest is the one the task's SIGNED dispatch reference names,
-           whose body is stored beside it (409 `contract_verdict_stale`);
+           whose body is stored beside it (409 `state_conflict`, `ContractVerdictStale`);
         4. the commit is the head this attempt reported publishing (409);
         5. every verdict names a requirement of this revision that names
            `judgment`, in the closed lists, citing only items the state sent
