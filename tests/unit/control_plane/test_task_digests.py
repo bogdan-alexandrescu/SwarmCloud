@@ -162,7 +162,7 @@ def test_another_tenants_and_missing_ids_are_absent_alike(client, db):
     _event(db, "t_mine", "e1", EventType.PARKED, T0)
     seed_task(db, task_id="t_theirs", tenant_id="other", state="PARKED")
     _event(db, "t_theirs", "e1", EventType.PARKED, T0, tenant="other")
-    _attempt(db, "a_theirs", "t_theirs", tenant="other", cost_usd=9.0)
+    _attempt(db, "a_theirs", "t_theirs", tenant="other", cost_usd=987654.321)
 
     response = _digests(client, ["t_mine", "t_theirs", "t_nowhere"])
 
@@ -170,7 +170,9 @@ def test_another_tenants_and_missing_ids_are_absent_alike(client, db):
     body = response.json()
     assert [row["task_id"] for row in body["digests"]] == ["t_mine"]
     assert "t_theirs" not in response.text, "another tenant's id must not be echoed or described"
-    assert "9.0" not in response.text
+    # A figure no timestamp can contain: `read_at` carries the clock's seconds and
+    # microseconds, so "9.0" matched it whenever the clock read :09.0 to :59.0.
+    assert "987654.321" not in response.text
 
 
 def test_a_continuation_scoped_caller_gets_only_its_own_tasks(client, db, monkeypatch):
