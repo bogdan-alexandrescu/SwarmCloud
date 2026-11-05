@@ -151,13 +151,14 @@ def test_contention_on_every_read_answers_503_with_a_sentence(client, db, object
     # MUTATION: let the last `Aborted` escape and this is a bare 500.
     assert response.status_code == 503, response.text
     body = response.json()
-    assert body["error"]["code"] == "answer_contended", body
-    assert "question 2" in body["error"]["message"] and "retry" in body["error"]["message"], body
-    assert response.headers.get("Retry-After"), response.headers
+    assert body["code"] == "answer_contended", body
+    assert "question 2" in body["message"] and "retry" in body["message"], body
+    assert int(response.headers["Retry-After"]) >= 1
     db.heal(PATH)
     assert _stored(db) == []
     # MUTATION: retry without bound and this is far more than four.
     assert db.reads[PATH] == agent_questions.ANSWER_TRANSACTION_ATTEMPTS
+    assert len(pauses) == agent_questions.ANSWER_TRANSACTION_ATTEMPTS - 1
 
 
 def test_commit_retries_running_out_answers_503(client, db, objects, pauses) -> None:
@@ -169,7 +170,7 @@ def test_commit_retries_running_out_answers_503(client, db, objects, pauses) -> 
     # MUTATION: treat the decorator's `ValueError` as anything but contention
     # and this is a 500.
     assert response.status_code == 503, response.text
-    assert response.json()["error"]["code"] == "answer_contended"
+    assert response.json()["code"] == "answer_contended"
     db.commit_aborts = 0
     assert _stored(db) == []
 
