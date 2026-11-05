@@ -6215,10 +6215,14 @@ export function fixtureStepNeeds(t: Task): StepNeeds {
   // THE WAIT THE TASK IS PARKED ON NOW (`agent_questions.parked_wait`); its
   // stored answers are its own only once adopted (`current_wait`).
   let parked: ReturnType<typeof fixtureWaitShape> = null
+  let parkedRaw: Record<string, unknown> | null = null
   if (humanPark) {
     for (const b of blockers) {
       parked = fixtureWaitShape(b.question_wait)
-      if (parked !== null) break
+      if (parked !== null) {
+        parkedRaw = b.question_wait as Record<string, unknown>
+        break
+      }
     }
   }
   const metadata = isRecord(t.metadata) ? t.metadata : null
@@ -6259,6 +6263,38 @@ export function fixtureStepNeeds(t: Task): StepNeeds {
     questions,
     questions_unread,
     pull_request,
+    plugin_ask: parkedRaw === null ? null : fixturePluginAsk(t, metadata, parkedRaw),
+  }
+}
+
+/** `agent_questions.BRIDGE_WAIT_MAX_SECONDS` and `QUESTION_WAIT_MAX_SECONDS`, in ms. */
+const FIXTURE_BRIDGE_WAIT_MS = 24 * 3600_000
+const FIXTURE_QUESTION_WAIT_MS = 72 * 3600_000
+
+/**
+ * A fixture plugin step's `plugin_ask`, as `codec.step_needs` builds it for a
+ * task parked on `wait`: its work contract's plugins with a mode, and the
+ * wait's clock from the earliest instant the park names
+ * (`agent_questions.asked_at`); null for a step that runs no plugin.
+ */
+function fixturePluginAsk(t: Task, metadata: Record<string, unknown> | null, wait: Record<string, unknown>): StepNeeds['plugin_ask'] {
+  const contract = metadata?.work_contract
+  const caps = isRecord(contract) ? contract.capabilities : null
+  const stored = isRecord(caps) ? caps.plugins : null
+  const plugins = isRecord(stored)
+    ? Object.entries(stored).flatMap(([name, p]) => (isRecord(p) && typeof p.mode === 'string' && p.mode !== '' ? [{ name, mode: p.mode }] : []))
+    : []
+  if (plugins.length === 0) return null
+  const moments = [t.next_eligible_at, wait.asked_at, t.updated_at]
+    .map((v) => (typeof v === 'string' ? Date.parse(v) : NaN))
+    .filter((ms) => Number.isFinite(ms))
+  const began = moments.length > 0 ? Math.min(...moments) : null
+  const span = isRecord(wait.bridge) ? FIXTURE_BRIDGE_WAIT_MS : FIXTURE_QUESTION_WAIT_MS
+  return {
+    plugins,
+    repository_url: t.repository_url ?? null,
+    asked_at: began === null ? null : new Date(began).toISOString(),
+    expires_at: began === null ? null : new Date(began + span).toISOString(),
   }
 }
 
