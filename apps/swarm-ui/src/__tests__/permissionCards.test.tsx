@@ -48,7 +48,13 @@ const CONTENTS = { permission: 'contents', access: 'write', needed_for: "runs ca
 const PULLS = { permission: 'pull_requests', access: 'write', needed_for: "runs can't open or update pull requests, or merge them", capabilities: ['pull_request', 'merge'] }
 const CHECKS = { permission: 'checks', access: 'read', needed_for: "merges and CI fixes can't see check runs", capabilities: ['merge', 'ci'] }
 const ISSUES = { permission: 'issues', access: 'write', needed_for: "issue runs and the observer can't read or comment on issues", capabilities: ['issues'] }
-const ACTIONS = { permission: 'actions', access: 'read', needed_for: "ci-flake-hunter and release-health can't read workflow runs", capabilities: ['actions'] }
+// forgeperms.py's Actions row since BGD's 2026-11-05 decision: write, for the merge step's re-run of a flaky run's failed jobs.
+const ACTIONS = {
+  permission: 'actions',
+  access: 'write',
+  needed_for: "ci-flake-hunter and release-health can't read workflow runs, and merges can't re-run a flaky run's failed jobs",
+  capabilities: ['actions'],
+}
 const REQUIRED = [CONTENTS, PULLS, STATUSES, CHECKS, ISSUES, ACTIONS]
 // forgeperms.py's WORKFLOW_FILES_REQUIREMENT, served beside `required` as `workflow_files_required` (#2029).
 const WORKFLOWS = {
@@ -58,7 +64,7 @@ const WORKFLOWS = {
   capabilities: ['workflow_files'],
 }
 // What GitHub answered for a fully granted installation: the six and Workflows, plus Metadata, which SwarmCloud does not use.
-const GRANTED = { contents: 'write', pull_requests: 'write', statuses: 'read', checks: 'read', issues: 'write', actions: 'read', metadata: 'read', workflows: 'write' }
+const GRANTED = { contents: 'write', pull_requests: 'write', statuses: 'read', checks: 'read', issues: 'write', actions: 'write', metadata: 'read', workflows: 'write' }
 const ALL_TRUE = { push: true, pull_request: true, merge: true, ci: true, issues: true, actions: true }
 
 function org(over: Record<string, unknown> = {}) {
@@ -207,6 +213,41 @@ describe('Workspace setup › GitHub: one card for the App and one per org', () 
     expect(cells[4]).toContain("merges can't see CI, so they fail")
     expect(cells[4]).toContain('Merge, CI')
     expect(rows.every((r) => r.getAttribute('data-ok') === 'true')).toBe(true)
+  })
+
+  it('asks Actions for Read and write and names the re-run in tooltips, adding no visible words (BGD 2026-11-05)', async () => {
+    routes(() => answer())
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    fireEvent.click(card.querySelector('button[aria-expanded]')!)
+    const row = card.querySelector<HTMLElement>('.fp-grants tbody tr[data-permission="actions"]')!
+    const cells = Array.from(row.querySelectorAll('td'))
+    expect(cells.map(visible).slice(0, 3)).toEqual(['Actions actions', 'write', 'write'])
+    expect(cells[1]!.getAttribute('title')).toBe('Read and write')
+    const tip = row.querySelector('.fp-perm')!.getAttribute('title') ?? ''
+    expect(tip).toMatch(/^Read and write \(/)
+    expect(tip).toContain('ci-flake-hunter and release-health read workflow runs')
+    expect(tip).toContain("the merge step re-runs a flaky run's failed jobs")
+    // A row without uses of its own keeps a bare name; its level still has GitHub's word.
+    const statuses = card.querySelector<HTMLElement>('.fp-grants tbody tr[data-permission="statuses"]')!
+    expect(statuses.querySelector('.fp-perm')!.hasAttribute('title')).toBe(false)
+    expect(statuses.querySelectorAll('td')[1]!.getAttribute('title')).toBe('Read-only')
+  })
+
+  it('shows an installation still on Actions: Read as a gap naming the re-run, and blocks nothing else', async () => {
+    const gap = { ...ACTIONS, granted: 'read' }
+    routes(() => answer({ orgs: [org({ granted: { ...GRANTED, actions: 'read' }, missing: [gap] })] }))
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    expect(card.querySelector('.fp-body')).not.toBeNull()
+    expect(visible(card)).toContain("merges can't re-run a flaky run's failed jobs")
+    const rows = Array.from(card.querySelectorAll<HTMLElement>('.fp-grants tbody tr'))
+    const short = rows.filter((r) => r.getAttribute('data-ok') === 'false').map((r) => r.getAttribute('data-permission'))
+    expect(short).toEqual(['actions'])
+    const actions = rows.find((r) => r.getAttribute('data-permission') === 'actions')!
+    expect(actions.querySelectorAll('td')[2]!.getAttribute('title')).toBe('Read-only')
   })
 
   it("draws each row's capability words at the table's own size, never in a <small> (CONFIG-COPY render review)", async () => {

@@ -389,7 +389,8 @@ def test_the_permission_table_asks_no_more_than_the_writes_need():
     # and the rule read needs nothing beyond what REQUIRED already asks.
     assert {(r.permission, r.access) for r in ACTIONS_SECRETS_REQUIREMENTS} == \
         {("secrets", "write"), ("environments", "write")}
-    assert ("actions", "read") in {(r.permission, r.access) for r in REQUIRED}
+    # REQUIRED asks Actions: write (the merge step's re-run), which covers read.
+    assert ("actions", "write") in {(r.permission, r.access) for r in REQUIRED}
 
 
 def test_an_installation_without_secrets_granted_is_refused_with_its_review_link(world, db):

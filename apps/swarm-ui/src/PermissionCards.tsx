@@ -96,6 +96,35 @@ const PERMISSION_WORD: Readonly<Record<string, string>> = {
   administration: 'Administration',
 }
 
+/**
+ * GitHub's settings-page words for an access level, the Needs and Granted
+ * cells' tooltip: the cell keeps the API's one word ("write"), and the tip
+ * says what a person ticks at GitHub ("Read and write").
+ */
+const LEVEL_WORD: Readonly<Record<string, string>> = { read: 'Read-only', write: 'Read and write', admin: 'Admin' }
+
+/**
+ * What each use of a permission is, where its level serves more than the
+ * `For` words name: the tooltip on the permission's name, never a visible
+ * sentence (the console's no-prose rule, BGD 2026-11-05). Actions is Read and
+ * write: the schedules read workflow runs, and the merge step re-runs a flaky
+ * run's failed jobs, which GitHub refuses a read-only token (forgeperms.py).
+ */
+const PERMISSION_USES: Readonly<Record<string, string>> = {
+  actions: "read: ci-flake-hunter and release-health read workflow runs; write: the merge step re-runs a flaky run's failed jobs",
+}
+
+function levelWord(level: string | null | undefined): string | undefined {
+  return level == null ? undefined : LEVEL_WORD[level]
+}
+
+function permissionTip(name: string, needs: string | null): string | undefined {
+  const uses = PERMISSION_USES[name]
+  if (uses === undefined) return undefined
+  const level = levelWord(needs)
+  return level === undefined ? uses : `${level} (${uses})`
+}
+
 function permissionWord(name: string): string {
   const plain = name.replace(/_/g, ' ')
   return PERMISSION_WORD[name] ?? plain.charAt(0).toUpperCase() + plain.slice(1)
@@ -487,10 +516,10 @@ function GrantsTable({ rows }: { rows: readonly GrantRow[] }) {
               role="row"
             >
               <td role="cell" data-label="GitHub permission">
-                <span className="fp-perm">{permissionWord(r.permission)}</span> <code className="fp-jargon">{r.permission}</code>
+                <span className="fp-perm" title={permissionTip(r.permission, r.needs)}>{permissionWord(r.permission)}</span> <code className="fp-jargon">{r.permission}</code>
               </td>
-              <td role="cell" data-label="Needs">{r.needs ?? '?'}</td>
-              <td role="cell" data-label="Granted">{r.has ?? 'none'}</td>
+              <td role="cell" data-label="Needs" title={levelWord(r.needs)}>{r.needs ?? '?'}</td>
+              <td role="cell" data-label="Granted" title={levelWord(r.has)}>{r.has ?? 'none'}</td>
               <td role="cell" data-label="Enough" className="fp-mark">
                 {r.ok ? <OkDot /> : <ToneMark tone={r.optional ? 'info' : 'bad'} hidden />}
                 <span className="fp-sr">{r.ok ? 'enough' : r.optional ? 'not needed yet' : 'not enough'}</span>
