@@ -565,8 +565,8 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
   return (
     <>
       <p className="ur-hint">
-        A QA run&rsquo;s read-only flows run in batches, one live-browser step to a batch. This is the batch size a run
-        uses when it names none of its own; a run may pick another beside Run on the QA targets page.
+        A QA run&rsquo;s read-only flows run in batches, one live-browser step each. This is the batch size a run
+        uses unless it names its own; a run may pick another beside Run on the QA targets page.
       </p>
       {/* ONE LABELLED FIGURE (visual QA pass 1, config-30; part of #2596): for someone who may edit it, the field
           below is the figure and its hint notes the default, so the read-out above it said both twice. It is
