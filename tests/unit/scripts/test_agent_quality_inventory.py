@@ -14,16 +14,20 @@ cloud credential) and says what no longer holds, so these tests hold:
     with never citing one that does not exist);
   * every model id in terraform/infra/locals.tf `runner_models` is the one
     baseline.md states for its class;
-  * the skip, expected-failure and quarantine counts known-failures.md states
-    are the ones the tree has;
+  * the unconditional skip, expected-failure and quarantine counts
+    known-failures.md states are the ones the tree has, because the page
+    explains each of those one by one; the conditional kinds (skipif,
+    skip_call, importorskip) are read by the inventory and never pinned there,
+    so two PRs that each add a machine-dependent skip do not collide (#3314);
   * every capability matrix row has its four columns, and its live-verified
     cell names a record, says "not read from here" or says why it does not
     apply ("n/a: ..."); a bare "none", "no" or "yes" is refused, because an
     unknown is recorded as unknown, never as zero.
 
-BREAK IT: rename a cited test function, re-pin a model class in locals.tf or
-add a `pytest.mark.xfail` under tests/, or write `none` in a live-verified
-cell: the matching test below names it.
+BREAK IT: rename a cited test function, re-pin a model class in locals.tf,
+add a `pytest.mark.xfail` under tests/, write a number in known-failures.md's
+`skip_call` row, or write `none` in a live-verified cell: the matching test
+below names it.
 """
 
 from __future__ import annotations
@@ -201,6 +205,112 @@ def test_the_report_counts_matrix_rows_and_fails_on_an_unnamed_live_cell(tmp_pat
     assert report["missing"] == []
 
 
+def _known_failures_tree(root, *, skip=0, xfail=0, flaky=()):
+    """A tree whose known-failures.md is correct for the markers planted here."""
+    tests = root / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    body = ["import pytest\n"]
+    for i in range(skip):
+        body.append(f"@pytest.mark.skip(reason='s')\ndef test_s{i}():\n    pass\n")
+    for i in range(xfail):
+        body.append(f"@pytest.mark.xfail(strict=True)\ndef test_x{i}():\n    pass\n")
+    body.append("@pytest.mark.skipif(True, reason='m')\ndef test_m():\n    pytest.skip('m')\n")
+    (tests / "test_planted.py").write_text("".join(body))
+    (tests / "flaky.txt").write_text("# header\n" + "".join(f"{e}\n" for e in flaky))
+    docs = root / "docs" / "design" / "agent-quality"
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "known-failures.md").write_text(
+        "| Kind | Count | What it means here |\n"
+        "|---|---|---|\n"
+        "| `skipif` | reported by the inventory (`markers`) | conditional |\n"
+        f"| `skip` | {skip} | unconditional |\n"
+        "| `skip_call` | reported by the inventory (`markers`) | conditional |\n"
+        f"| `xfail` | {xfail} | listed below |\n"
+        "| `importorskip` | reported by the inventory (`markers`) | optional module |\n"
+        f"| `tests/flaky.txt` entries | {len(flaky)} | the quarantine |\n"
+    )
+    return docs / "known-failures.md"
+
+
+def test_adding_one_pytest_skip_to_a_correct_tree_is_not_drift(tmp_path):
+    _known_failures_tree(tmp_path, skip=1, xfail=1)
+    assert inv.known_failures_drift(tmp_path) == []
+    (tmp_path / "tests" / "test_new.py").write_text(
+        "import pytest\n\ndef test_new():\n    pytest.skip('x')\n"
+    )
+    assert inv.known_failures_drift(tmp_path) == []
+
+
+def test_a_new_xfail_the_page_does_not_state_is_drift(tmp_path):
+    _known_failures_tree(tmp_path, xfail=1)
+    (tmp_path / "tests" / "test_new.py").write_text(
+        "import pytest\n\n@pytest.mark.xfail(strict=True)\ndef test_new():\n    pass\n"
+    )
+    drift = inv.known_failures_drift(tmp_path)
+    assert len(drift) == 1 and "`xfail`" in drift[0] and "2" in drift[0], drift
+
+
+def test_a_new_unconditional_skip_the_page_does_not_state_is_drift(tmp_path):
+    _known_failures_tree(tmp_path)
+    (tmp_path / "tests" / "test_new.py").write_text(
+        "import pytest\n\n@pytest.mark.skip(reason='x')\ndef test_new():\n    pass\n"
+    )
+    drift = inv.known_failures_drift(tmp_path)
+    assert len(drift) == 1 and "`skip`" in drift[0], drift
+
+
+def test_a_new_flaky_entry_is_drift(tmp_path):
+    _known_failures_tree(tmp_path, flaky=["tests/test_a.py::test_a #1 2026-11-05"])
+    assert inv.known_failures_drift(tmp_path) == []
+    with (tmp_path / "tests" / "flaky.txt").open("a") as fh:
+        fh.write("tests/test_b.py::test_b #2 2026-11-05\n")
+    drift = inv.known_failures_drift(tmp_path)
+    assert len(drift) == 1 and "tests/flaky.txt" in drift[0] and "2" in drift[0], drift
+
+
+def test_a_literal_count_in_a_conditional_row_is_drift(tmp_path):
+    doc = _known_failures_tree(tmp_path)
+    text = doc.read_text().replace(
+        "| `skip_call` | reported by the inventory (`markers`) |", "| `skip_call` | 59 |"
+    )
+    doc.write_text(text)
+    drift = inv.known_failures_drift(tmp_path)
+    assert len(drift) == 1 and "`skip_call`" in drift[0], drift
+
+
+def test_a_conditional_kind_the_page_does_not_name_is_drift(tmp_path):
+    doc = _known_failures_tree(tmp_path)
+    doc.write_text(
+        "".join(line for line in doc.read_text().splitlines(True) if "`importorskip`" not in line)
+    )
+    drift = inv.known_failures_drift(tmp_path)
+    assert len(drift) == 1 and "`importorskip`" in drift[0], drift
+
+
+def test_a_missing_known_failures_page_is_drift(tmp_path):
+    (tmp_path / "tests").mkdir()
+    drift = inv.known_failures_drift(tmp_path)
+    assert len(drift) == 1 and "known-failures.md" in drift[0], drift
+
+
+def test_exact_and_conditional_kinds_cover_every_marker():
+    assert set(inv.EXACT_KINDS) | set(inv.CONDITIONAL_KINDS) == set(inv.MARKERS)
+    assert not set(inv.EXACT_KINDS) & set(inv.CONDITIONAL_KINDS)
+
+
+def test_the_report_carries_known_failures_drift_and_exits_non_zero_on_it(tmp_path, capsys):
+    _known_failures_tree(tmp_path)
+    assert inv.report(tmp_path)["known_failures_drift"] == []
+    assert inv.main(["--root", str(tmp_path)]) == 0
+    (tmp_path / "tests" / "test_new.py").write_text(
+        "import pytest\n\n@pytest.mark.xfail(strict=True)\ndef test_new():\n    pass\n"
+    )
+    assert inv.main(["--root", str(tmp_path)]) == 1
+    report = json.loads(capsys.readouterr().out.split("\n}\n", 1)[1])
+    assert report["markers"]["xfail"] == 1 and report["markers"]["skip_call"] == 1
+    assert len(report["known_failures_drift"]) == 1
+
+
 # --- the documents, against this tree -----------------------------------------
 
 
@@ -227,11 +337,7 @@ def test_the_baseline_states_each_class_s_model_as_locals_tf_pins_it():
 
 
 def test_known_failures_states_the_tree_s_marker_counts_and_quarantine():
-    known = (DOCS / "known-failures.md").read_text()
-    for kind, count in inv.marker_counts(REPO).items():
-        assert f"| `{kind}` | {count} |" in known, f"known-failures.md does not say {kind}: {count}"
-    entries = inv.quarantined(REPO)
-    assert f"| `tests/flaky.txt` entries | {len(entries)} |" in known
+    assert inv.known_failures_drift(REPO) == []
 
 
 def test_every_matrix_row_has_four_columns_and_a_named_or_unknown_live_cell():
