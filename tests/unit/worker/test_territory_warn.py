@@ -55,7 +55,7 @@ def _publish(worker_factory, monkeypatch, origin, forge, *, files, task_input):
     if task_input is not None:
         task["input"] = task_input
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None, "the clone did not land"
     repo = worker.ws.work / lifecycle.REPO_DIR_NAME
     for name in files:
@@ -136,7 +136,7 @@ def test_an_agent_written_territory_file_is_never_read(
     task = {"task_id": task_id, "metadata": {"dispatch": {"strategy": "direct-pr"}},
             "input": {"prompt": "fix it", "territory": ["a.py"]}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None
     repo = worker.ws.work / lifecycle.REPO_DIR_NAME
     (repo / "b.py").write_text("outside\n")
@@ -421,7 +421,7 @@ def _continue(worker_factory, monkeypatch, origin, forge, *, files, territory,
     task = {"task_id": task_id, "metadata": {"dispatch": {"strategy": "direct-pr"}},
             "input": {"prompt": "fix CI", "territory": territory}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None, "the clone did not land"
     repo = worker.ws.work / lifecycle.REPO_DIR_NAME
     for name in files:
