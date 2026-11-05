@@ -112,14 +112,26 @@ accepted from a caller to decide it.
 |---|---|
 | `schedule` | `metadata.schedule`, written only by `schedulefire`; reserved, so a caller's is refused at submission |
 | `quality_check` | `metadata.qa_target` on a browser step, written only by `qatargets.render_run`; reserved likewise |
-| `issue_run` | `metadata.issue_run`, written by `issueruns` and `issueci` |
+| `issue_run` | `metadata.issue_run`, written only by `issueruns` and `issueci`; reserved likewise |
 | `claude_code` | the `claude_session` tag (`sessiontag`), or `metadata.origin == "swarm-mcp"`; both written by the sc plugin's bridge |
 | `console` | none of these: the console's own submissions, and any other API caller's |
 
-`schedule` and `quality_check` cannot be claimed by a caller. `issue_run` and
-`claude_code` read keys an API caller can write today; they say where the
-submission says it came from, and are words for the console, never an
-authority anything is granted on.
+`schedule`, `quality_check` and `issue_run` cannot be claimed by a caller:
+each key is in `validation.RESERVED_METADATA_KEYS`, so a task or workflow that
+sets one is refused at submission with the same 422 (`invalid_dispatch`,
+naming the key in `reserved_metadata_keys`). The platform's own writer gets
+past the check only inside a scoped exemption of the exact value it is about
+to store: `schedule_mark_allowed` for a schedule's firing,
+`qa_target_mark_allowed` for a target's run, and `issue_run_mark_allowed`
+(`issueruns.submitting`) for an issue run's planner, its compiled workflow,
+its CI-fix rounds and its merge (BGD, 2026-11-04).
+
+`claude_code` stays caller-written on purpose. The `claude_session` tag and
+`metadata.origin` are the sc plugin bridge's own metadata, sent by an API
+caller like any other free-form key and served through the task's masker
+(`sessiontag`); reserving them would refuse the bridge itself. So
+`claude_code` says where the submission says it came from: a word for the
+console, never an authority anything is granted on.
 
 **Who sets them.** The sc plugin passes a spec's top-level `description` and
 `feature` as metadata, checked by the same rules before anything is sent
