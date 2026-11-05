@@ -21,7 +21,10 @@ const { PlatformOverTime, forgetOverTime } = await import('../PlatformOverTime')
 const { readEstimate, spanDays } = await import('../platformTimeApi')
 const { viewerZone } = await import('../outcomes')
 
-const note = () => document.querySelector<HTMLElement>('.pot-note')?.textContent ?? ''
+// The price is the title's tooltip since 2026-11-05 (BGD's standing no-prose
+// rule); the one line left drawn is that nothing refreshes on its own.
+const note = () => document.querySelector<HTMLElement>('#pot-title .pot-title-k')?.getAttribute('title') ?? ''
+const drawn = () => document.querySelector<HTMLElement>('.pot-note')?.textContent ?? ''
 
 beforeEach(() => {
   forgetOverTime()
@@ -34,18 +37,20 @@ describe('admin-shell-15: under the page’s Run, Over time’s figure is its pa
     render(<PlatformOverTime workspaces={3} run={0} />)
     const over = readEstimate(spanDays('week', Date.now(), viewerZone()), 3).total!
     // MUTATION: keep `The price is ~N reads` -- ~538 under a button that says ~562.
-    expect(note()).toMatch(new RegExp(`^The page’s Run reads this too, with the snapshot below\\. This view’s part is ~${over} reads for `))
+    expect(note()).toMatch(new RegExp(`The page’s Run reads this too, with the snapshot below\\. This view’s part is ~${over} reads for `))
     expect(note()).not.toMatch(/The price is/)
+    // MUTATION: draw the price sentence under the bar again.
+    expect(drawn()).toBe('Nothing here refreshes on its own.')
   })
 
   it('says it per workspace when the roster is not known', () => {
     render(<PlatformOverTime run={0} />)
-    expect(note()).toMatch(/^The page’s Run reads this too, with the snapshot below\. This view’s part is ~\d+ reads for each workspace/)
+    expect(note()).toMatch(/The page’s Run reads this too, with the snapshot below\. This view’s part is ~\d+ reads for each workspace/)
   })
 
   it('still calls it the price when the view has its own Run', () => {
     render(<PlatformOverTime workspaces={3} />)
-    expect(note()).toMatch(/^The price is ~\d+ reads for /)
+    expect(note()).toMatch(/\. The price is ~\d+ reads for /)
     expect(note()).not.toMatch(/page’s Run|view’s part/)
   })
 })
