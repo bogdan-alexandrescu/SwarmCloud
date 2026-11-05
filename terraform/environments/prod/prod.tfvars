@@ -176,3 +176,11 @@ repository_grants_enforced = false
 # public bucket. This deployment runs the acceptance suite, so it stays on and
 # the live plan shows no change.
 enable_acceptance_fixture = true
+
+# Voice it's own speech engine (terraform/infra/voice_speech.tf): OFF. Its one
+# stopped L4 machine, firewall pair and grants are made only once the owner
+# turns this on, with voice_it "on" and a pinned Deep Learning VM image
+# (docs/design/voice-it-own-speech.md section 5). Off, it makes nothing.
+voice_speech = {
+  enabled = false
+}
