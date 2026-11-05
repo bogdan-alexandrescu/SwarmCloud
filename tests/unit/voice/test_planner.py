@@ -53,7 +53,7 @@ from swarm_api.voice import cards as vcards  # noqa: E402
 
 from swarm_voice import accountlease, claudeturn, mcp_server, plannerlease  # noqa: E402
 from swarm_voice import planner as pl  # noqa: E402
-from swarm_voice import prompts, tools_read  # noqa: E402
+from swarm_voice import prompts, tools_read, tools_visual  # noqa: E402
 from swarm_voice.grant import GRANT_HEADER, SESSION_HEADER, SessionGrant  # noqa: E402
 
 PERSON = "person@example.com"
@@ -332,7 +332,8 @@ def test_the_child_holds_the_token_and_no_api_key_and_only_the_planners_tools(wo
     names = {t["name"] for t in child["tools"]}
     draws = {t["name"] for t in vcards.catalogue()["tools"] if t["name"].startswith("draw_")}
     reads = {t["name"] for t in tools_read.tool_schemas()}
-    assert names == draws | reads | {prompts.SPEAK_TOOL}
+    visuals = {t["name"] for t in tools_visual.tool_schemas()}
+    assert names == draws | reads | visuals | {prompts.SPEAK_TOOL}
     assert all("inputSchema" in t for t in child["tools"])
     assert child["init"]["result"]["serverInfo"]["name"] == "planner"
 
