@@ -1,0 +1,74 @@
+/* THE WORKFLOW'S FACTS CARD (WorkflowFacts.tsx) and the list's Repository
+   column. One box (design-system §13.3): the description in body type, the
+   facts as label/value pairs in the label rank (mono, faint). */
+.wff-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content);
+  gap: var(--ctl-s3, 16px) 24px;
+  margin-top: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  min-width: 0;
+}
+.wff-desc { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.wff-label {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  font: 600 var(--t-meta)/var(--lh-meta, 1.45) var(--mono); color: var(--text-faint);
+}
+.wff-gen { padding: 2px 8px; }
+.wff-text { margin: 0; max-width: 68ch; font-size: var(--t-body); line-height: 1.55; color: var(--text); overflow-wrap: anywhere; }
+/* A GENERATED DESCRIPTION IS IN THE DIM INK, beside its chip and its line: three marks, readable in greyscale. */
+.wff-text.is-generated { color: var(--text-dim); }
+/* HELD TO FIVE LINES: a two-or-three-sentence description is never cut. */
+.wff-text.is-clamped { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; line-clamp: 5; overflow: hidden; }
+.wff-more { padding: 0; border: 0; background: none; font: inherit; font-size: var(--t-meta); cursor: pointer; }
+.wff-gen-note { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta, 1.45); color: var(--text-faint); }
+.wff-facts {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px;
+  max-width: 250px; margin: 0; padding-left: 20px; border-left: 1px solid var(--line);
+  align-content: start; align-self: start; min-width: 0;
+}
+.wff-facts > div { display: contents; }
+.wff-facts dt { font: 600 var(--t-meta)/22px var(--mono); color: var(--text-faint); white-space: nowrap; }
+.wff-facts dd { margin: 0; min-width: 0; font-size: var(--t-body); line-height: 22px; overflow-wrap: anywhere; }
+.wff-from { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.wff-from .c-chip { padding: 2px 8px; }
+.wff-mono { font-family: var(--mono); font-size: var(--t-meta); }
+.wff-nowrap { white-space: nowrap; }
+.wff-facts dd .wff-mono { overflow-wrap: normal; }
+/* THE OWNER'S NAME, THEN THE WHOLE EMAIL UNDER IT (user-profile.md §4.4 keeps the email; the column keeps its width). */
+.wff-facts .person-name { display: flex !important; flex-direction: column; max-width: 100%; }
+.wff-facts .person-name-dot { display: none !important; }
+.wff-facts .person-name-email { font-size: var(--t-micro); line-height: 18px; color: var(--text-dim); white-space: normal !important; overflow-wrap: anywhere; }
+
+/* A NARROW PANE (the docked inspector beside the page, or a phone): the facts
+   go under the description and the rule moves above them. */
+@container work-main (max-width: 520px) {
+  .wff-card { grid-template-columns: minmax(0, 1fr); }
+  .wff-facts { max-width: none; padding-left: 0; border-left: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+}
+@media (max-width: 560px) {
+  .wff-card { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .wff-facts { max-width: none; padding-left: 0; border-left: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+}
+
+/* THE LIST'S REPOSITORY COLUMN: narrow and mono, the repository's name with
+   its owner under it in the faint ink, so a touch screen reads both without
+   the hover. */
+.wfg-table [data-col="repo"] { width: 1%; max-width: 12em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
+.wff-repo-name, .wff-repo-by { display: block; overflow: hidden; text-overflow: ellipsis; line-height: 16px; }
+.wff-repo-by { font-size: var(--t-micro); color: var(--text-faint); }
+.wff-dash { color: var(--text-faint); }
+@container work-main (max-width: 1024px) { .wfg-table [data-col="repo"] { width: 132px; max-width: none; } }
+/* WHERE THE COLUMN GIVES WAY (with Owner, at 860), the whole owner/repo goes under the name. */
+.wff-repo-under { display: none; }
+@container work-main (max-width: 860px) {
+  .wfg-table [data-col="repo"] { display: none; }
+  .wfg-table td[data-col="workflow"] .wff-repo-under { display: block; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-micro); line-height: 16px; color: var(--text-dim); font-weight: 400; }
+}
+@media (max-width: 560px) {
+  .wfg-table [data-col="repo"] { display: none; }
+  .wfg-table td[data-col="workflow"] .wff-repo-under { display: block; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-micro); line-height: 16px; color: var(--text-dim); font-weight: 400; }
+}
