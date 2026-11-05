@@ -303,13 +303,13 @@ person chose to write to the pull request, and the merge step's work there
 is over. A refusal could not say this, since `refusal.commit` recorded only
 the committer's address.
 
-So a worker-line commit counts as a person's push when the task its line
+So a worker-line commit counts as a person's push when the agent its line
 names (`CommitFacts.worker_task`) is a **plain lane on this pull request's
 branch** (`merge._person_lane`). Every one of these must hold:
 
-* the tenant-gated upstream read returns it as this tenant's task;
+* the tenant-gated upstream read returns it as this tenant's agent;
 * its spec verifies against its own signed workflow, which is not this merge's;
-* its signed `continues`, or `publish_to_pr.task_id`, is the branch task (the
+* its signed `continues`, or `publish_to_pr.task_id`, is the branch's agent (the
   two kinds `cifix.live_plain_continuation` reads);
 * it carries no writer's mark (`LANE_WRITER_MARKS`: `ci_fix`,
   `merge_fix_round`, `merge_conflict_round`, `pr_shepherd`, `issue_run`).
@@ -318,8 +318,8 @@ It is then held to the same last test as any push: GitHub must link the
 committer to a person on the pull request. A round of this merge, a CI fix,
 pr-shepherd's fix and an issue run's step all carry a mark. They are the
 platform's, so their unaccepted head stays `head_moved`, and so does a lane
-task the read or the signature check refuses. A named pull request has no
-branch task, so it has no lane. `_accept` did not change. The lane's content
+agent the read or the signature check refuses. A named pull request has no
+branch agent, so it has no lane. `_accept` did not change. The lane's content
 is not merged, because this workflow never reviewed it. Whether a lane
 counts as the person's is the owner's to confirm (questions.json of the
 pull request that made this change).
