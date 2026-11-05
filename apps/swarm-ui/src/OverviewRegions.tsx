@@ -26,13 +26,12 @@
  *
  * An unread count is an em dash with its reason as the title -- never a 0.
  */
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useId, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { agentName, shortTaskId, type AgentTab } from './agentlist'
 import { loadTask } from './api'
 import type { Result } from './fetch'
 import { Dash } from './components/Chip'
-import { Tooltip } from './components/Overlay'
 import { Absent, Mark } from './primitives'
 import { blindness } from './checks'
 import { StateMark } from './marks'
@@ -136,6 +135,28 @@ function rows(tasks: Result<TaskPage>): Task[] | null {
 
 
 
+/**
+ * A label whose explanation is its tooltip (BGD's standing rule, 2026-11-05:
+ * no explanatory prose on the surface). The `title` is the hover; the same
+ * words are the label's accessible description, through a hidden node beside
+ * it (HelpNote's way: `hidden` keeps them out of the label's name and out of
+ * the page's text), and the label takes focus so a keyboard reaches both.
+ * Never `role="tooltip"`: the page's honesty tests read one as an open card.
+ */
+export function Explained({ tip, className, children }: { tip: string; className: string; children: ReactNode }) {
+  const id = useId()
+  return (
+    <>
+      <span className={className} tabIndex={0} title={tip} aria-describedby={id}>
+        {children}
+      </span>
+      <span id={id} hidden>
+        {tip}
+      </span>
+    </>
+  )
+}
+
 const TERMINAL_BAND: readonly TaskState[] = ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED']
 
 /** The three cells, each with the states under it in lifecycle order. A null `small` is the day's start, in the person's zone. */
@@ -233,11 +254,9 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                   <small>{c.small ?? sinceMidnight}</small>
                 </>
               ) : (
-                <Tooltip tip={c.tip}>
-                  <span className="ov-lc-k" tabIndex={0}>
-                    {c.k}
-                  </span>
-                </Tooltip>
+                <Explained className="ov-lc-k" tip={c.tip}>
+                  {c.k}
+                </Explained>
               )}
             </div>
             <div
@@ -484,11 +503,9 @@ export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
     <div className="ov-wlist">
       {groups.slice(0, 6).map((g) => (
         <div className="ov-wr" key={g.key}>
-          <Tooltip tip={g.why}>
-            <span className="ov-wst" tabIndex={0}>
-              <StateMark state={g.state} />
-            </span>
-          </Tooltip>
+          <Explained className="ov-wst" tip={g.why}>
+            <StateMark state={g.state} />
+          </Explained>
           <span className="ov-wt">
             <b title={g.pool}>{g.title}</b>
             {g.detail !== '' && <small title={g.ids.length > 0 ? g.ids.join(', ') : undefined}>{g.detail}</small>}

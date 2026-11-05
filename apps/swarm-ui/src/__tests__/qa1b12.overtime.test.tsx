@@ -23,7 +23,7 @@ const { viewerZone } = await import('../outcomes')
 
 // The price is the title's tooltip since 2026-11-05 (BGD's standing no-prose
 // rule); the one line left drawn is that nothing refreshes on its own.
-const note = () => document.querySelector<HTMLElement>('#pot-title [role="tooltip"]')?.textContent ?? ''
+const note = () => document.querySelector<HTMLElement>('#pot-title .pot-title-k')?.getAttribute('title') ?? ''
 const drawn = () => document.querySelector<HTMLElement>('.pot-note')?.textContent ?? ''
 
 beforeEach(() => {
