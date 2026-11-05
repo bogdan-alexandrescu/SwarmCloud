@@ -132,7 +132,8 @@ from .agent_questions import (
     current_wait,
     owner_questions_hold,
     parked_wait,
-    unanswered,
+    question_digests,
+    unanswered_indices,
 )
 from . import workspaces as ws
 from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
@@ -823,20 +824,21 @@ def _asked_item(reading: Reading, task: Any) -> tuple[dict[str, Any], set[int]] 
     count = _question_count(task)
     if count <= 0 or task.state not in _ENDED:
         return None
-    # By index (the questions file is not read here): question-aware counting
-    # is a follow-up lane, owner pick on #3355, 2026-11-05 (docs/notifications.md).
-    if unanswered(count, task.metadata) == 0:
+    # The questions file is not read here: the worker's digests say which
+    # question each index asks now, so an answer to an earlier attempt's
+    # question there does not silence this one (docs/notifications.md).
+    open_ = unanswered_indices(count, task.metadata, digests=question_digests(task.result_summary))
+    if not open_:
         return None
     ended = task.completed_at or task.updated_at
     if not _recent(reading, ended):
         return None
-    answered = owner_answers_by_index(task.metadata)
     return _item(
         f"task:questions:{task.id}", TASK, True,
         f"Your agent asked {count} question{'s' if count != 1 else ''}",
         f"{task.step_id or task.runner_profile} · Task {task.id}",
         f"/agents/recent/{task.id}#questions", ended,
-        topic=T_QUESTION), {i for i in range(count) if i not in answered}
+        topic=T_QUESTION), set(open_)
 
 
 # --------------------------------------------------------------------------

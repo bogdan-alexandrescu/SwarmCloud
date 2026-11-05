@@ -85,6 +85,7 @@ commit and returns the task to READY once it is terminal (`await_release`).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -101,6 +102,16 @@ NAME = "questions.json"
 #: `result_summary` keys: how many questions were taken, and why a file was not.
 SUMMARY_KEY = "questions"
 REJECTED_KEY = "questions_rejected"
+#: `result_summary` key: a short digest of each counted question (`digest`),
+#: in index order. swarm-api stamps each answer with the digest at its index
+#: (`asked_digest`), so a reader of the task document alone -- the sc
+#: plugin's check, a workflow step's `questions_unread`, the bell -- counts
+#: an answer only while the same question is asked at that index, without
+#: reading this file per task (the answer-counts lane, 5 November 2026).
+DIGESTS_KEY = "question_digests"
+#: Hex characters kept of each digest: 64 bits tells one question from the
+#: next at an index, and twenty of them stay small in the summary.
+DIGEST_CHARS = 16
 
 #: The largest file taken. 64 KiB is many pages of questions, and one window of
 #: the artifacts route (which serves up to 4 MiB) reads it whole.
@@ -201,6 +212,30 @@ def validate(data: bytes) -> list[dict[str, Any]]:
     return value
 
 
+def digest(question: Mapping[str, Any]) -> str:
+    """A short digest of one question: its text and its options, nothing else.
+
+    The same question as swarm-api's (`agent_questions.question_digest`):
+    `recommended`, `context`, `blocking` and `built` are not read, so an
+    attempt that asks the same thing with other context is the same question.
+    Taken of the text as the agent wrote it, not as a read redacts it; it is
+    only ever compared with itself (an answer is stamped with the digest
+    this summary holds), never with a digest swarm-api computes.
+    """
+    def text(value: Any) -> str | None:
+        return value if isinstance(value, str) else None
+
+    shape = {
+        "question": text(question.get("question")),
+        "options": [
+            [text(option.get("label")), text(option.get("description"))]
+            for option in question.get("options") or [] if isinstance(option, dict)
+        ],
+    }
+    canonical = json.dumps(shape, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:DIGEST_CHARS]
+
+
 def _read_regular(path: str, limit: int) -> bytes | None:
     """At most `limit` bytes of the regular file at `path`, None when there is none.
 
@@ -252,7 +287,8 @@ def summarise(
     `uploaded` is the manifest's names: a file the upload did not take is not
     counted, because a reader would then be told of questions it cannot read.
     `cause` is why it was not taken, as a sentence
-    (`expected_outputs.cause_text`), when the upload said.
+    (`expected_outputs.cause_text`), when the upload said. A counted file
+    also gives `DIGESTS_KEY`, one `digest` per question in order.
     """
     try:
         data = read(directory)
@@ -260,7 +296,8 @@ def summarise(
             return {SUMMARY_KEY: 0}
         if NAME not in uploaded:
             return {SUMMARY_KEY: 0, REJECTED_KEY: cause or "written but not uploaded"}
-        return {SUMMARY_KEY: len(validate(data))}
+        taken = validate(data)
+        return {SUMMARY_KEY: len(taken), DIGESTS_KEY: [digest(q) for q in taken]}
     except Rejected as exc:
         return {SUMMARY_KEY: 0, REJECTED_KEY: str(exc)}
 

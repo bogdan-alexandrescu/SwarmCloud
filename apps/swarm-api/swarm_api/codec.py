@@ -1749,10 +1749,11 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
       the worker validated, `result_summary.questions`, at most
       `MAX_ARTIFACT_QUESTIONS`) with no stored answer, whose words are in
       that artifact and not served here; the task's page reads them
-      (`GET /v1/tasks/{id}/questions`). Counted by index, as the artifact is
-      not read here: an answer is not checked against the question it
-      answered (`agent_questions.answers_to`) -- a follow-up lane, owner
-      pick on #3355, 2026-11-05.
+      (`GET /v1/tasks/{id}/questions`). The artifact is not read here: an
+      answer counts only while the worker's digest of the question at its
+      index (`result_summary.question_digests`) is the one it was given for
+      (`agent_questions.unanswered_indices`); a task summarised before the
+      digests counts by index.
     * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
     * `plugin_ask`: for a plugin step PARKED on a question wait only (its work
       contract's `capabilities.plugins` names at least one plugin with a
@@ -1773,6 +1774,7 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
         current_wait,
         parked_wait,
         question_count,
+        question_digests,
         unanswered_indices,
         wait_max_seconds,
     )
@@ -1866,7 +1868,8 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
         "question_wait": question_wait is not None,
         "questions": open_questions,
         "questions_unread": (
-            unanswered_indices(min(question_count(task.result_summary), MAX_ARTIFACT_QUESTIONS), task.metadata)
+            unanswered_indices(min(question_count(task.result_summary), MAX_ARTIFACT_QUESTIONS), task.metadata,
+                               digests=question_digests(task.result_summary))
             if task.state in TERMINAL_STATES else []
         ),
         "pull_request": pull_request,

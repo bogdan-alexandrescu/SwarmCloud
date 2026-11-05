@@ -97,16 +97,21 @@ Some notes on what each group deliberately leaves out:
   the answer is stored on the agent as `metadata.owner_answers`. The item derives
   only while at least one counted question has no answer. Until then it stays
   for 7 days after its agent ended, and marking it read clears it from the bell's
-  count. **This count is still by index** (owner pick on #3355, 2026-11-05: a
-  follow-up lane, part of #3349). The answer card, the question wait and the
-  merge serve an answer only under the question it answered
-  (`agent_questions.answers_to`, by `question_digest`), but the bell's item
-  (`notifications._asked_item`), `open_question_tasks` (`/sc check`)
-  and `codec.step_needs`'s `questions_unread` read only the task document, not
-  its `questions.json`, so a stored answer counts for its index whatever the
-  question there now. Making them question-aware needs the questions without
-  the artifact read on every listing (for instance the worker writing each
-  question's digest to `result_summary`), so it is its own lane.
+  count. **An answer counts only under the question it answered** (part of
+  #3349; the follow-up lane the owner picked on #3355, 2026-11-05). The answer
+  card, the question wait and the merge compare a stored answer with the
+  question they read (`agent_questions.answers_to`, by `question_digest`). The
+  bell's item (`notifications._asked_item`), `open_question_tasks` (`/sc check`)
+  and `codec.step_needs`'s `questions_unread` read only the task document, and
+  reading every listed task's `questions.json` on each poll would cost an
+  artifact read per task. So the worker writes a short digest of each question
+  it counted, in index order, to `result_summary.question_digests`. An answer is
+  stamped with the digest at its index when it is given (`asked_digest`). These
+  three readers then leave an index open while its answer's stamp is not the
+  digest there now: an earlier attempt's answer at index 0 does not silence the
+  different question a later attempt asks at index 0. A task summarised before
+  the digests, and an answer stored before the stamp, cannot be checked, so they
+  count by index as they always did.
 * **A declined loan request does not count as needing you either.** Nothing
   the person does resolves it. It carries the admin's optional reason and
   never who declined. Asking again re-opens the request, and the item no
