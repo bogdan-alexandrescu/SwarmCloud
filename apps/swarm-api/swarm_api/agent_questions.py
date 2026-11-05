@@ -362,6 +362,20 @@ def is_bridged(wait: dict[str, Any] | None) -> bool:
     return isinstance(wait, dict) and isinstance(wait.get(BRIDGE_KEY), dict)
 
 
+def asked_by_skill(wait: dict[str, Any], masking: Any) -> str | None:
+    """The skill that asked a bridged question, masked: the worker records the
+    last `Skill` call before the question in the wait's bridge block
+    (`question_bridge.asked_by_skill`, the owner's pick of 4 November 2026).
+    None for a wait that is not bridged, a park recorded before the worker
+    wrote it, or a value that is not a non-empty text: the page then says
+    the skill is not known."""
+    bridge = wait.get(BRIDGE_KEY) if isinstance(wait, dict) else None
+    skill = bridge.get("skill") if isinstance(bridge, dict) else None
+    if not isinstance(skill, str) or not skill.strip():
+        return None
+    return masking.text(skill.strip())[0]
+
+
 def wait_max_seconds(wait: dict[str, Any]) -> int:
     """How long a question wait is held before it is dead-lettered unanswered."""
     return BRIDGE_WAIT_MAX_SECONDS if is_bridged(wait) else QUESTION_WAIT_MAX_SECONDS
@@ -941,7 +955,8 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
     """A question wait's questions, as the worker validated them, redacted here.
 
     `waiting` says whether the agent is parked on them now, which block,
-    since when and until when, and where on GitHub they were posted.
+    since when and until when, where on GitHub they were posted, and, for a
+    plugin step's bridged question, the skill that asked (`skill`, or null).
     """
     answers = owner_answers_by_index(task.metadata) if adopted else {}
     masking = masking_for(task)
@@ -974,6 +989,7 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
             "expires_at": (began + timedelta(seconds=wait_max_seconds(wait))).isoformat()
             if began else None,
             "issue_comment_url": comment.get("url") if isinstance(comment.get("url"), str) else None,
+            "skill": asked_by_skill(wait, masking),
         },
     }
 

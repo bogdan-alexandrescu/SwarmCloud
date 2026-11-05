@@ -6275,7 +6275,8 @@ const FIXTURE_QUESTION_WAIT_MS = 72 * 3600_000
  * A fixture plugin step's `plugin_ask`, as `codec.step_needs` builds it for a
  * task parked on `wait`: its work contract's plugins with a mode, and the
  * wait's clock from the earliest instant the park names
- * (`agent_questions.asked_at`); null for a step that runs no plugin.
+ * (`agent_questions.asked_at`) and the skill that asked off the wait's bridge
+ * block (`agent_questions.asked_by_skill`); null for a step that runs no plugin.
  */
 function fixturePluginAsk(t: Task, metadata: Record<string, unknown> | null, wait: Record<string, unknown>): StepNeeds['plugin_ask'] {
   const contract = metadata?.work_contract
@@ -6290,11 +6291,13 @@ function fixturePluginAsk(t: Task, metadata: Record<string, unknown> | null, wai
     .filter((ms) => Number.isFinite(ms))
   const began = moments.length > 0 ? Math.min(...moments) : null
   const span = isRecord(wait.bridge) ? FIXTURE_BRIDGE_WAIT_MS : FIXTURE_QUESTION_WAIT_MS
+  const skill = isRecord(wait.bridge) && typeof wait.bridge.skill === 'string' && wait.bridge.skill.trim() !== '' ? wait.bridge.skill.trim() : null
   return {
     plugins,
     repository_url: t.repository_url ?? null,
     asked_at: began === null ? null : new Date(began).toISOString(),
     expires_at: began === null ? null : new Date(began + span).toISOString(),
+    skill,
   }
 }
 
