@@ -269,3 +269,31 @@ def test_a_production_leg_of_several_still_renders_no_mutating_flow(writing_flow
         assert qaspec.leg(target, name, writing_flows=writing_flows)["flows"] == []
     stage = qaspec.leg(target, "stage", writing_flows=writing_flows)
     assert stage["flows"][0]["mutating"] is True and stage["flows"][0]["writes"] == WRITES
+
+
+# --------------------------------------------------------------------------
+# A change
+# --------------------------------------------------------------------------
+
+
+def _patch(client, target_id: str, body: dict[str, Any]):
+    return client.patch(f"{TARGETS}/{target_id}", json=body, headers=auth_header("carol"))
+
+
+def test_a_change_that_carries_a_writes_less_mutating_flow_is_refused(client, db, seeded):
+    created = register(client, environment="non_production",
+                       flows=[{"id": "look", "goal": "find pricing", "start_path": "/"}]).json()["qa_target"]
+    response = _patch(client, created["id"], {"flows": [_flow(writes=None)]})
+    # MUTATION: drop the `_check_writing_flows` call from `QaTargets.patch` and this is 200.
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["reason"] == "qa_flow_writes_required"
+    assert _patch(client, created["id"], {"flows": [_flow()]}).status_code == 200
+
+
+def test_a_change_that_leaves_a_stored_writes_less_flow_as_it_is_is_saved(client, db, seeded):
+    created = register(client, environment="non_production", flows=[_flow()]).json()["qa_target"]
+    # The flow as it was stored before `writes` was required.
+    del db.docs[f"qa_targets/{created['id']}"]["flows"][0]["writes"]
+    response = _patch(client, created["id"], {"name": "Shop renamed"})
+    # A rename is not a save of the flow, which reads only either way.
+    assert response.status_code == 200, response.text
