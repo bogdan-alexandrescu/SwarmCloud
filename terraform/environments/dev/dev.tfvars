@@ -80,6 +80,14 @@ gke_enable_fqdn_network_policy = true
 # the IAM gate for the owner.
 voice_it = "on"
 
+# Voice it's own speech engine (terraform/infra/voice_speech.tf): OFF. Its one
+# stopped L4 machine, firewall pair and grants are made only once the owner
+# turns this on, with voice_it "on" and a pinned Deep Learning VM image
+# (docs/design/voice-it-own-speech.md section 5). Off, it makes nothing.
+voice_speech = {
+  enabled = false
+}
+
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
 # apply time as the operator's own /32. That is no longer what this does.
 #

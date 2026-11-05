@@ -313,6 +313,10 @@ def _ci(task: Task, facts: dict[str, Any], park: TaskEvent | None, as_of: dateti
         "attempts_counted": (not refunded) if isinstance(refunded, bool) else None,
         "last_checked_at": last_checked,
         "wake_requested_at": _as_dt(wait.get("wake_requested_at")),
+        # A merge-train wait's start (part of #2688): the first train park of
+        # its unbroken run, which every park writes and any other park
+        # clears. `since` cannot age it: the train pauses the CI clock.
+        "train_since": _as_dt(wait.get("train_entered_at")),
         "fix_round": (
             {"kind": _str(fix_round.get("kind")), "round": _int(fix_round.get("round")),
              "task_id": _str(fix_round.get("task_id")), "state": _str(fix_round.get("state"))}
