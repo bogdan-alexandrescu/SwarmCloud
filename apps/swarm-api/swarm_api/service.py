@@ -736,11 +736,14 @@ class SubmissionService:
             ) from exc
 
     def _review_contract(self, contract: workcontract.Prepared, *, tenant: Tenant,
-                         step_id: str | None, submitted_by: str) -> contractreview.Reviewed:
+                         step_id: str | None, submitted_by: str,
+                         switches: Any = ()) -> contractreview.Reviewed:
         """Jev's review of a prepared contract, under SWARM_CONTRACT_REVIEW
         and the workspace's signed `contract_review` setting. Off (the
         default) it reads nothing and returns the contract as it came; in
-        `enforce` mode its refusal is the 422 of jev-contract.md section 4.5."""
+        `enforce` mode its refusal is the 422 of jev-contract.md section 4.5.
+        `switches` are the step's workflow switches: `contract_jev: off`
+        skips the review, recorded `skipped:arm` (`contractreview.arm_of`)."""
         if contractreview.mode(os.environ) == contractreview.MODE_OFF:
             return contractreview.Reviewed(contract, None)
         if self.contract_reviewer is None:
@@ -750,7 +753,7 @@ class SubmissionService:
         return self.contract_reviewer.review(
             contract, tenant_id=tenant.tenant_id,
             submitter_tenant_id=submitter_personal_tenant(self._store, submitted_by),
-            step_id=step_id)
+            step_id=step_id, switches=switches)
 
     def _workspace_settings(self, tenant_id: str) -> dict[str, Any]:
         """`workspace_settings/{tenant_id}` as stored, or {} (and with no
@@ -803,7 +806,8 @@ class SubmissionService:
         contract_review: dict[str, Any] | None = None
         if contract is not None:
             reviewed = self._review_contract(contract, tenant=tenant, step_id=step_id,
-                                             submitted_by=submitted_by)
+                                             submitted_by=submitted_by,
+                                             switches=dispatch.switches)
             contract, contract_review = reviewed.prepared, reviewed.record
         if contract is not None:
             update: dict[str, Any] = {**contract.fields, "metadata": dict(contract.metadata)}
