@@ -195,13 +195,13 @@ made into a procedure.
     `contract_jev` (a missing record is not a pass, rule 2);
   * `arm_unassigned`: the item's arm is neither `on` nor `off`.
 
-**Status, 5 November 2026.** Kept apart, as rule 9 requires:
+**Status, 5 November 2026** (the arm's row built the same day). Kept apart, as rule 9 requires:
 
 | | State |
 |---|---|
 | The switch is accepted, stored and signed | implemented and behaviourally tested (`tests/unit/control_plane/test_dispatch_switches.py`) |
 | The measures below | implemented and behaviourally tested (`tests/unit/scripts/test_benchstat_contract_jev.py`, and `benchstat.py self-test`) |
-| JC1 and JC2 obey the switch; the attempt records it in `result_summary.switches` | **not implemented**: `swarm_api.contractreview`, the worker's post-step and `agent_worker.graphstage.switches_summary` do not read `contract_jev` yet. Until they do, both arms run alike and every item is excluded as `arm_unrecorded`, so no result can be read |
+| JC1 and JC2 obey the switch; the attempt records it in `result_summary.switches` | implemented and behaviourally tested. Under `off`, `swarm_api.contractreview` reads no setting, sends nothing and records the review `skipped:arm` (`tests/unit/control_plane/test_contract_review_submission.py`); the worker hands the signed arm to the runner as `SWARM_CONTRACT_JEV` and the post-step asks Jev nothing and posts `not_run` with reason `skipped:arm` (`tests/unit/worker/test_contract_post_step.py`, `test_contract_verdict_hooks.py`), and the control plane's re-ask of that verdict asks Jev nothing either (`swarm_api.contractreask`, `tests/unit/control_plane/test_contract_reask.py`), so the step reaches the owner as a workspace that sends no code does; `agent_worker.graphstage.switches_summary` records `contract_jev` for `on` and `off` (`tests/unit/worker/test_dispatch_switches_worker.py`), which `benchstat.py contract-jev` counts in its arm (`tests/unit/scripts/test_benchstat_contract_jev.py`). `on`, or no switch, runs both exactly as before |
 | Enabled in configuration; live-verified | **no**; not read from here |
 
 ### 8.2 The record per item
