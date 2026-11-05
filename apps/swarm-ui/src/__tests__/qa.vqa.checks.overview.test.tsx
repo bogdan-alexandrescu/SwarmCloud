@@ -149,7 +149,7 @@ describe('QA-061, VQ-002: a check card’s link words never squeeze its title on
     const go = card.querySelector('.ov-att-go')!
     expect(text(go)).toBe('quota, all workspaces · admin')
     expect(go.classList.contains('c-btn')).toBe(true)
-    // MUTATION: drop `.ov-att:not(.is-split) > .ov-att-go` from the 560px block.
+    // MUTATION: drop `.ov-att:not(.is-split) .ov-att-go` from the 560px block.
     expect(painted(go, 'display', PHONE)).toBe('none')
     // MUTATION: move the phone rule out of the 560px block, onto every width.
     expect(painted(go, 'display', WIDE)).not.toBe('none')

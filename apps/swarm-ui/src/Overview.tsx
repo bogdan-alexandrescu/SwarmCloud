@@ -1397,8 +1397,10 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
           its tap target; the card's accessible name keeps the words. On a
           desktop they are drawn as the card's button (BGD's standing rule,
           2026-11-05: no arrow links); the card is the one link. */}
-      <span className={buttonClass({ size: 'sm' }, false, 'ov-att-go')}>
-        <span className="ov-att-go-w">{p.linkLabel ?? 'Open'}</span>
+      <span className="ov-att-acts">
+        <span className={buttonClass({ size: 'sm' }, false, 'ov-att-go')}>
+          <span className="ov-att-go-w">{p.linkLabel ?? 'Open'}</span>
+        </span>
       </span>
     </a>
   )

@@ -293,7 +293,7 @@ describe('VQ-002: a phone draws a check as one line and an agent as one line', (
       // left to draw since 2026-11-05); the card's accessible name keeps its words.
       const go = c.classList.contains('is-split') ? null : c.querySelector('.ov-att-go')
       if (go !== null) {
-        // MUTATION: drop `.ov-att:not(.is-split) > .ov-att-go` from the 560px block.
+        // MUTATION: drop `.ov-att:not(.is-split) .ov-att-go` from the 560px block.
         expect(painted(go, 'display', PHONE)).toBe('none')
         expect(painted(go, 'display', WIDE)).not.toBe('none')
         expect(c.getAttribute('aria-label') ?? '').not.toBe('')
