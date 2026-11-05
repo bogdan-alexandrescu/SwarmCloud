@@ -301,7 +301,7 @@ describe('Settings › Profile names the Config pages by their Config addresses 
     expect(visible(document.body)).not.toContain('Workspace Settings')
     const you = within(region('You and your workspaces'))
     // The acting workspace is the person's own, named as its page's breadcrumb names it.
-    expect(you.getByRole('link', { name: 'Admin › Workspaces › Your workspace › Setup →' }).getAttribute('href')).toBe('/admin/workspaces?tab=setup')
+    expect(you.getByRole('link', { name: 'Admin › Workspaces › Your workspace › Setup' }).getAttribute('href')).toBe('/admin/workspaces?tab=setup')
     const github = within(region('Your connections'))
     expect(github.getByRole('link', { name: /^Config › GitHub access/ }).getAttribute('href')).toBe('/config/github')
     const rows = github.getAllByRole('link', { name: /^Open Config › GitHub access/ })
@@ -481,5 +481,73 @@ describe('Settings › Profile › Time zone (VQ-023, part of #2391)', () => {
     await waitFor(() => expect(zoneRadio('other')?.checked ?? zoneRadio('browser')?.checked).toBe(true))
     const { currentZone } = await import('../timezone')
     expect(currentZone()).toBe(LA)
+  })
+})
+
+// THE NO-PROSE RULE (owner's standing rule, 5 November 2026). A sentence that
+// explains a label is that label's (i): the button's description, not a
+// paragraph on the page. A way out of a card is a button, never an arrow link.
+describe('Settings › Profile carries no explanatory prose on its surface', () => {
+  /** The page's words with every (i)'s card left shut, as a reader sees it. */
+  function shown(el: Element): string {
+    const clone = el.cloneNode(true) as Element
+    for (const n of clone.querySelectorAll('[data-help-description]')) n.remove()
+    return visible(clone)
+  }
+  /** What the (i) named `About <label>` says, read through its aria-describedby. */
+  function tip(label: string): string {
+    const button = screen.getByRole('button', { name: `About ${label}` })
+    return document.getElementById(button.getAttribute('aria-describedby') ?? '')?.textContent ?? ''
+  }
+
+  it('moves each explanation into the (i) beside the label it explains', async () => {
+    await drawn()
+    // MUTATION: put any paragraph back under its label -> it is on the surface: red.
+    for (const gone of [/Shown to other people/, /Suggested from your sign-in/, /Where the console and \/sc open/, /Anything may be muted/, /Every time in the console/]) {
+      expect(shown(document.body)).not.toMatch(gone)
+    }
+    expect(tip('Display name')).toBe(
+      'Shown to other people beside your email, and used to name your agents’ commits. Letters, spaces and . ’ - only; up to 64 characters. Suggested from your sign-in. Others see your email alone until you save a name.',
+    )
+    expect(tip('Default workspace')).toMatch(/^Where the console and \/sc open when you have not picked a workspace/)
+    expect(tip('What reaches your bell')).toMatch(/^Anything may be muted\. A muted item that needs you/)
+    expect(tip('Time zone')).toMatch(/^Every time in the console is shown in this zone/)
+  })
+
+  it('says the suggestion only while the name is a suggestion', async () => {
+    const f = fixture()
+    await drawn({ ...f, identity: { ...(f.identity as Json), display_name: 'Ada' } })
+    // MUTATION: always append the suggestion sentence -> red.
+    expect(tip('Display name')).not.toMatch(/Suggested/)
+  })
+
+  it('opens an (i) on focus and shuts it on Escape', async () => {
+    await drawn()
+    const button = screen.getByRole('button', { name: 'About Time zone' })
+    const card = document.getElementById(button.getAttribute('aria-describedby')!)!
+    expect(card.hidden).toBe(true)
+    fireEvent.focus(button)
+    expect(card.hidden).toBe(false)
+    fireEvent.keyDown(button, { key: 'Escape' })
+    expect(card.hidden).toBe(true)
+  })
+
+  it('draws every way out of a card as a button, with no arrow', async () => {
+    await drawn()
+    // MUTATION: put CardLink back on any card -> its `→` is on the page: red.
+    expect(shown(document.body)).not.toContain('→')
+    const outs: [string, string][] = [
+      ['Admin › Workspaces › Your workspace › Setup', '/admin/workspaces?tab=setup'],
+      ['Config › GitHub access', '/config/github'],
+      ['Config › Secrets', '/config/secrets'],
+      ['Capacity › Accounts', '/capacity/accounts'],
+    ]
+    for (const [name, href] of outs) {
+      const link = screen.getByRole('link', { name })
+      expect(link.getAttribute('href')).toBe(href)
+      expect(link.className).toMatch(/\bc-btn\b/)
+    }
+    // MUTATION: put `c-link` back on a GitHub row -> a text link: red.
+    for (const row of screen.getAllByRole('link', { name: /^Open Config › GitHub access/ })) expect(row.className).toMatch(/\bc-btn\b/)
   })
 })

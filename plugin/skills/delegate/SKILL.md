@@ -214,6 +214,15 @@ parents needs each parent to write a **distinct** filename (`scan-A-notes.md`,
 `scan-B-notes.md`, not `notes.md` twice). The API refuses a shared name, or an
 absolute or `..` path, at submission.
 
+**A review step's gate is the step's `review_gate`**, in a `swarm_workflow`
+step and in a `/sc:swarmcloud` spec alike. `false` switches the gate off, so
+the review runs however small the change (a mock-up review, say); a block
+`{"min_lines": 40, "risk_paths": ["apps/redaction/**"]}` (and
+`requirements_check`) sets it. It is sent as the step's
+`metadata.review_gate`, and a malformed one is refused before anything is
+sent. It is the one step metadata a spec sets: a step carrying `metadata`
+is refused, like any key outside the accepted list.
+
 **A repository's whole Playwright suite is `swarm_suite_gate`, not a
 hand-written workflow.** Name the registered `repository`, the `ref`, `suite:
 "playwright"`, `working_dir` and `shards` (1 to 20, default 8). The bridge
