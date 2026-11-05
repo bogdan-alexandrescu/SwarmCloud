@@ -32,6 +32,13 @@ const WIDE: CascadeEnv = { width: 1440 }
 const WF = 'wf_5e5ad3b6f7da4299a839'
 /** The table's box at 1440 with the side panel open (walk.steps.test.tsx). */
 const AT_1440 = 1440 - 84 - 236 - 64 - 34
+/**
+ * The window the table and the step card are waited for: a cold first render
+ * of the whole App under the console CI's parallel shards outlasts setup.ts's
+ * 2000 ms (5 November 2026). 4000 ms is the agent page's workspace-switch wait
+ * (agentDetailTenantSwitch.test.tsx) for the same cause.
+ */
+const WAIT = { timeout: 4000 }
 
 /** Ten long step names, the shape a planned issue run gives its steps. */
 const LONG = [
@@ -161,7 +168,7 @@ async function tableWithCard(): Promise<{ shell: HTMLElement; wrap: HTMLElement;
     const w = document.querySelector<HTMLElement>('.wf-card .wf-table')
     expect(w?.querySelectorAll('tbody tr[data-step]').length ?? 0).toBeGreaterThan(1)
     return w!
-  })
+  }, WAIT)
   fireEvent.click(wrap.querySelector<HTMLButtonElement>('tbody tr[data-step] .wf-pick')!)
   const shell = await waitFor(() => {
     const s = document.querySelector<HTMLElement>('.wi.is-docked')
@@ -170,7 +177,7 @@ async function tableWithCard(): Promise<{ shell: HTMLElement; wrap: HTMLElement;
     // `StepCard` (`section.sc-card`).
     expect(s?.querySelector(':scope > .wi-dock .sc-card'), 'the step card did not open beside the table').toBeTruthy()
     return s!
-  })
+  }, WAIT)
   return { shell, wrap, t: wrap.querySelector('table')! }
 }
 
