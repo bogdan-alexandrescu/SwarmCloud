@@ -2137,19 +2137,26 @@ else
   REDACT_CASES="$(jq '.cases | length' "${REDACT_FIXTURE}")"
 
   # The shell half: redact() as this file sourced it from common.sh.
+  #
+  # ONE jq CALL READS EVERY CASE. Four jq runs per case cost about 20 s over
+  # 114 cases and pushed this script past changed-guards.sh's PARITY_SECONDS.
+  # Each case is four NUL-terminated fields -- name, text, expected, and the
+  # `never` list one per line -- because texts span lines (the PEM cases) and
+  # NUL is the one byte a bash string cannot hold anyway. The trailing-newline
+  # trim is what `$(jq -r ...)` did to each field before. The records come in
+  # on fd 3 so that nothing in the loop can read them off stdin.
   REDACT_SEEN=0
   REDACT_DRIFT=0
-  REDACT_AT=0
-  while [[ "${REDACT_AT}" -lt "${REDACT_CASES}" ]]; do
-    R_NAME="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].name' "${REDACT_FIXTURE}")"
-    R_TEXT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].text' "${REDACT_FIXTURE}")"
-    R_WANT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].expected' "${REDACT_FIXTURE}")"
+  while IFS= read -r -d '' -u 3 R_NAME \
+    && IFS= read -r -d '' -u 3 R_TEXT \
+    && IFS= read -r -d '' -u 3 R_WANT \
+    && IFS= read -r -d '' -u 3 R_NEVERS; do
     R_GOT="$(printf '%s\n' "${R_TEXT}" | redact)"
     R_LEFT=""
     while IFS= read -r R_NEVER; do
       [[ -n "${R_NEVER}" ]] || continue
       [[ "${R_GOT}" != *"${R_NEVER}"* ]] || R_LEFT="${R_NEVER}"
-    done < <(jq -r --argjson i "${REDACT_AT}" '.cases[$i].never[]' "${REDACT_FIXTURE}")
+    done <<<"${R_NEVERS}"
     if [[ -n "${R_LEFT}" ]]; then
       err "redact() in common.sh printed what case '${R_NAME}' must never show: ${R_LEFT}"
       REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
@@ -2160,10 +2167,16 @@ else
       REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
     fi
     REDACT_SEEN=$(( REDACT_SEEN + 1 ))
-    REDACT_AT=$(( REDACT_AT + 1 ))
-  done
+  done 3< <(jq -j '.cases[]
+    | (.name | tostring), (.text | tostring | sub("\n+$"; "")),
+      (.expected | tostring | sub("\n+$"; "")),
+      ((.never // []) | map(tostring) | join("\n"))
+    | . + "\u0000"' "${REDACT_FIXTURE}")
   if [[ "${REDACT_SEEN}" -eq 0 ]]; then
     err "the redaction fixture holds no cases; nothing was compared"
+    FAILED=1
+  elif [[ "${REDACT_SEEN}" -ne "${REDACT_CASES}" ]]; then
+    err "the shell half read ${REDACT_SEEN} of ${REDACT_CASES} cases; the rest were not compared"
     FAILED=1
   elif [[ "${REDACT_DRIFT}" -gt 0 ]]; then
     err "${REDACT_DRIFT} of ${REDACT_SEEN} redaction cases differ in the shell filter"
