@@ -13,8 +13,9 @@ import { mergeCardOf, type MergeCard } from './stepviews'
 import { TERMINAL_STATES } from './types'
 import { gateVerdictOf, skippedByVerdict } from './wfreview'
 import { MergeStepCard } from './WorkflowViews'
-import { agentPath } from './OverviewRegions'
 import { addressToPath } from './paths'
+import { ButtonLink } from './components'
+import { ChangesButton, STEP_ICON, plainClick, stepAgentHref } from './StepCard'
 import type { IssueRun, IssueRunState, Task, TaskState } from './types'
 
 /**
@@ -203,7 +204,7 @@ function stateWord(state: TaskState): string {
 }
 
 /**
- * "Open agent →", for every state a step's task can be in, under the agent
+ * The step's Agent button, for every state a step's task can be in, under the agent
  * list that holds it (QA G2-17, 2026-10-07): a finished task opens over
  * Recent and a waiting one over Waiting -- `/agents/live/` for every state
  * opened a finished step's inspector over a Live list without it. A task
@@ -211,13 +212,15 @@ function stateWord(state: TaskState): string {
  * is no state to route by.
  */
 export function OpenAgent({ taskId, state, go }: { taskId: string; state: TaskState | null; go: (to: string) => void }) {
-  const href = state === null ? addressToPath(`work/task/${encodeURIComponent(taskId)}`) : agentPath({ id: taskId, state })
+  // THE CARD'S OWN BUTTON (owner's pick, 2026-11-05): a step's actions are
+  // the same icon-and-label buttons here as on the workflow page's step card.
+  const href = stepAgentHref(taskId, state)
   return (
-    <a className="rn-open" href={href} title={taskId} onClick={(e) => {
-      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    <ButtonLink className="rn-agent" href={href} size="sm" icon={STEP_ICON.agent} title={taskId} onClick={(e) => {
+      if (!plainClick(e)) return
       e.preventDefault()
       go(href)
-    }}>Open agent →</a>
+    }}>Agent</ButtonLink>
   )
 }
 
@@ -295,11 +298,11 @@ export function StepChanges({ runId, row, go }: { runId: string; row: StepRow; g
   const to = `work/runs?${new URLSearchParams({ run: runId, tab: 'changes', step }).toString()}`
   const href = addressToPath(to)
   return (
-    <a className="rn-open rn-changes" href={href} title={`What ${row.stepId} changed, in the run's Changes tab`} onClick={(e) => {
-      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    <ChangesButton className="rn-changes" href={href} count={null} title={`What ${row.stepId} changed, in the run's Changes tab`} onClick={(e) => {
+      if (!plainClick(e)) return
       e.preventDefault()
       go(to)
-    }}>Changes ›</a>
+    }} />
   )
 }
 
@@ -392,7 +395,7 @@ function StepLine({ row, runId, go, now }: { row: StepRow; runId: string; go: (t
 /**
  * THE STEPS CARD (item 1): one row per workflow step, under the status line,
  * while the run has a workflow. A row carries the step's name, its state mark,
- * elapsed, attempt n of N and "Open agent →" in every state; a review or fix
+ * elapsed, attempt n of N and its Agent button in every state; a review or fix
  * the run gates on a verdict, with no task yet, reads "waiting on <step>".
  */
 export function StepsCard({ run, read, go, now }: {
