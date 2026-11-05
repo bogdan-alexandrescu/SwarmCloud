@@ -248,7 +248,7 @@ export function StepCard({
   // whose attempt documents outnumber its counted attempts (a merge's CI park
   // is refunded) says `run` and counts the documents instead.
   const allowed = task?.max_attempts ?? null
-  const counted = task === null || n <= task.max_attempts
+  const counted = row.sort.attempts === null || row.sort.attempts === n
   const pr = task === null ? null : pullRequestOf(task)
   const attempted = taskId !== null && (n > 0 || (task?.attempt_count ?? 0) > 0)
   const cause = row.why !== null && row.why.kind === 'cause' && !leadInView ? row.why.full : null

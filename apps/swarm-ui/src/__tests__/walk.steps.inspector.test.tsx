@@ -165,7 +165,10 @@ async function tableWithCard(): Promise<{ shell: HTMLElement; wrap: HTMLElement;
   fireEvent.click(wrap.querySelector<HTMLButtonElement>('tbody tr[data-step] .wf-pick')!)
   const shell = await waitFor(() => {
     const s = document.querySelector<HTMLElement>('.wi.is-docked')
-    expect(s?.querySelector(':scope > .wi-dock .wf-inspect'), 'the step card did not open beside the table').toBeTruthy()
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): `StepInspector` (`.wf-inspect`) is replaced on the page by
+    // `StepCard` (`section.sc-card`).
+    expect(s?.querySelector(':scope > .wi-dock .sc-card'), 'the step card did not open beside the table').toBeTruthy()
     return s!
   })
   return { shell, wrap, t: wrap.querySelector('table')! }
