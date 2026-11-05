@@ -290,9 +290,14 @@ def test_a_lane_that_merges_a_train_branch_into_its_pull_request_pushes_the_merg
     assert out["published"] is True, out
     tip = refs(origin)[PR_BRANCH]
     assert out["pushed_head"] == tip
-    # MUTATION: fold to one parent (the code before #3359) -> train/an's head
-    # is no ancestor of the pull request's branch on the remote.
-    assert _parents(origin, tip) == [start, train]
+    # The agent's commits are kept one by one here (the replay), so the merge
+    # is the commit under the lane's fix; a fold makes it the tip itself.
+    merges = [line.split()[1:] for line in
+              _git(origin, "rev-list", "--merges", "--parents", f"{start}..{tip}").splitlines()]
+    # MUTATION: drop every merge parent but the default branch's (the code
+    # before #3359) -> no merge at all, and train/an's head is no ancestor of
+    # the pull request's branch on the remote.
+    assert merges == [[start, train]], merges
     assert _is_ancestor(origin, train, tip)
     assert _is_ancestor(origin, start, tip)  # still a fast-forward
     assert {"train-1.txt", "train-2.txt", "the-lanes-fix.txt"} <= tree_at(origin, tip)

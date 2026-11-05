@@ -250,6 +250,7 @@ from .gitops import (
     CloneResult,
     GitError,
     GitTransient,
+    MergedHeadUnreadable,
     MergeOutcome,
     PeerPin,
     PushRejected,
@@ -265,6 +266,7 @@ from .gitops import (
     is_branch_ref_name,
     is_full_refname,
     merge_branches,
+    merged_head_kept,
     mirror_worktree,
     moved_branch_tip,
     origin_tips_as_data,
@@ -15814,59 +15816,75 @@ class Worker:
                     ),
                 )
             else:
-                replayed = replay_agent_commits(
-                    repo=publish_repo,
-                    base=self._publish_base,
-                    keep=new_sha,
-                    task_id=cfg.task_id,
-                    scrub=lambda text: str(self._scrub(text)),
-                    author_name=author_name,
-                    author_email=author_email,
-                    private_dir=ws.private,
-                    logs_dir=ws.logs,
-                    timeout_seconds=cfg.git_harvest_timeout_seconds,
-                    logger=self.log,
-                    # A registered secret OR a credential-shaped run in any kept
-                    # commit's diff folds the history instead (#259 review; owner
-                    # decision 4, 2026-09-28, for the patterns): the scrub
-                    # replaces exactly the registered values, so "the scrub
-                    # changed it" is "a registered value is in it", and a key the
-                    # agent minted or an `.env` it committed is registered nowhere
-                    # and caught only by the patterns. Asked about the text each
-                    # file ADDS, `+` removed, in overlapping windows.
-                    leaks=self._leaks_in_added_text,
-                    overlap=self._scan_overlap(),
-                    upstream=scan_floor or "",
-                )
-                if replayed is not None:
-                    kept = replayed
-                    out["agent_commits_kept"] = kept
-                else:
-                    replaced = fold_agent_commits(
+                try:
+                    replayed = replay_agent_commits(
                         repo=publish_repo,
                         base=self._publish_base,
                         keep=new_sha,
-                        message=self._worker_commit_message(
-                            FOLDED_COMMIT_SUBJECT,
-                            "Everything the agent changed in this attempt, committed or "
-                            "not, as one commit made by the worker. The worker writes "
-                            "every commit it pushes, so no author, trailer or footer "
-                            "added inside the agent's container reaches this branch.",
-                        ),
+                        task_id=cfg.task_id,
+                        scrub=lambda text: str(self._scrub(text)),
                         author_name=author_name,
                         author_email=author_email,
                         private_dir=ws.private,
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_harvest_timeout_seconds,
                         logger=self.log,
-                        # The default branch's commit the lane merged, proven
-                        # on the forge: the fold's second parent (#1321).
-                        merged=scan_floor or "",
+                        # A registered secret OR a credential-shaped run in any kept
+                        # commit's diff folds the history instead (#259 review; owner
+                        # decision 4, 2026-09-28, for the patterns): the scrub
+                        # replaces exactly the registered values, so "the scrub
+                        # changed it" is "a registered value is in it", and a key the
+                        # agent minted or an `.env` it committed is registered nowhere
+                        # and caught only by the patterns. Asked about the text each
+                        # file ADDS, `+` removed, in overlapping windows.
+                        leaks=self._leaks_in_added_text,
+                        overlap=self._scan_overlap(),
+                        upstream=scan_floor or "",
                     )
-                    # The worker's own auto-commit is among what was replaced when
-                    # there was one; the rest were the agent's.
-                    folded = max(replaced - (1 if new_sha else 0), 0)
-                    out["agent_commits_folded"] = folded
+                    if replayed is not None:
+                        kept = replayed
+                        out["agent_commits_kept"] = kept
+                    else:
+                        replaced = fold_agent_commits(
+                            repo=publish_repo,
+                            base=self._publish_base,
+                            keep=new_sha,
+                            message=self._worker_commit_message(
+                                FOLDED_COMMIT_SUBJECT,
+                                "Everything the agent changed in this attempt, committed or "
+                                "not, as one commit made by the worker. The worker writes "
+                                "every commit it pushes, so no author, trailer or footer "
+                                "added inside the agent's container reaches this branch.",
+                            ),
+                            author_name=author_name,
+                            author_email=author_email,
+                            private_dir=ws.private,
+                            logs_dir=ws.logs,
+                            timeout_seconds=cfg.git_harvest_timeout_seconds,
+                            logger=self.log,
+                            # The default branch's commit the lane merged, proven
+                            # on the forge, one of the fold's merged heads (#1321);
+                            # the fold reads every other merge itself (#3359).
+                            merged=scan_floor or "",
+                        )
+                        # The worker's own auto-commit is among what was replaced
+                        # when there was one; the rest were the agent's.
+                        folded = max(replaced - (1 if new_sha else 0), 0)
+                        out["agent_commits_folded"] = folded
+                except MergedHeadUnreadable as exc:
+                    # A merged branch the clean repository cannot read: a
+                    # replay or a fold without it would drop its history, so
+                    # nothing is pushed and the branch is kept, merges
+                    # included, as the harvest keeps it when the fetch fails
+                    # (#3174, #3359).
+                    out.update(self._keep_work_bundle(repo, self._publish_base))
+                    if out.get("bundle"):
+                        raise MergedHeadUnreadable(
+                            f"{exc}; the agent's branch, merge commits included, "
+                            f"is kept in {WORK_BUNDLE_NAME} ({out['bundle_commits']} "
+                            f"commits on {out['bundle_base']})"
+                        ) from exc
+                    raise
 
             # A CONFLICT FIX ROUND MUST LEAVE THE BRANCH ON MAIN (#1321). Its
             # whole job is to move the pull request's merge base to the
@@ -19793,15 +19811,18 @@ def replay_agent_commits(
     made with `git commit-tree` under `_worker_identity`, and #219's rule that
     the worker writes every commit it pushes holds, checked again at the push
     by `verify_worker_authorship`. A merge the agent made keeps its merged
-    tree, and keeps a second parent ONLY when that parent is `upstream` or
-    one of its ancestors -- a commit of the default branch proven on the
-    forge (`Worker._scan_floor`), already published, so nothing on that side
-    is pushed as the agent wrote it (#1321). Every other merge parent -- a
-    side branch the agent made -- is dropped: every commit on that side would
-    otherwise be pushed as it was written. Dropping main's parent too was
-    #1321: a conflict fix round's `git merge origin/main` reached the forge
-    with one parent, GitHub kept the old merge base and the pull request
-    still conflicted.
+    tree, and keeps each parent after the first that
+    `_published_merge_parents` keeps: `upstream` or one of its ancestors --
+    a commit of the default branch proven on the forge
+    (`Worker._scan_floor`), already published (#1321) -- or any other branch
+    the base does not contain whose own commits carry no Claude attribution,
+    such as a merge train's branch (#3359). A side branch the agent committed
+    on as Claude is dropped: every commit on that side would otherwise be
+    pushed as it was written. Dropping main's parent was #1321: a conflict
+    fix round's `git merge origin/main` reached the forge with one parent,
+    GitHub kept the old merge base and the pull request still conflicted;
+    dropping train/an's was #3359, every conflict the lane resolved raised
+    again when its pull request merged back.
 
     The index and working tree are not touched; `reset --soft` moves the
     branch onto the rewritten line, which ends in the same tree HEAD had.
@@ -19902,7 +19923,7 @@ def replay_agent_commits(
         if not _SHA_RE.match(tree):
             raise GitError(f"could not read the tree of commit {sha[:12]}")
         merged = _published_merge_parents(
-            run, g, header, upstream=upstream, base=floor
+            run, g, header, upstream=upstream, base=floor, logger=logger
         )
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
@@ -19949,32 +19970,29 @@ def _published_merge_parents(
     *,
     upstream: str,
     base: str,
+    logger: Any,
 ) -> list[str]:
-    """The merge parents of a commit (its `header`) the replay keeps (#1321).
+    """The merge parents of a commit (its `header`) the replay keeps (#1321, #3359).
 
-    Every parent after the first that is `upstream` or one of its ancestors
-    -- the default branch's commit the lane merged, proven on the forge
-    (`Worker._scan_floor`) -- and that `base` does not already contain,
-    which would make it a redundant parent. Nothing when `upstream` is "".
-    A side branch the agent made is no ancestor of the forge's default
-    branch, so it is never here.
+    Every parent after the first that `gitops.merged_head_kept` keeps, the
+    fold's rule too: one `base` does not already contain, and either `upstream`
+    or one of its ancestors -- the default branch's commit the lane merged,
+    proven on the forge (`Worker._scan_floor`) -- or a branch whose own
+    commits carry no Claude attribution, such as the `origin/train/an` a lane
+    merged into its pull request. Dropping that parent pushed train/an's tree
+    without its history, and merging the pull request back raised every
+    conflict the lane had resolved again (#3359). A side branch the agent
+    committed on as Claude is still dropped: its commits would be pushed as
+    they were written.
     """
-    if not upstream:
-        return []
     parents = [line[len("parent "):].strip() for line in header.split("\n")
                if line.startswith("parent ")]
     kept: list[str] = []
     for other in parents[1:]:
         if not _SHA_RE.match(other):
             continue
-        code, _ = run([*g, "merge-base", "--is-ancestor", other, upstream], "publish-keep-merged")
-        if code != 0:
-            continue
-        if base:
-            code, _ = run([*g, "merge-base", "--is-ancestor", other, base], "publish-keep-redundant")
-            if code == 0:
-                continue
-        kept.append(other)
+        if merged_head_kept(run, g, other, base=base, upstream=upstream, logger=logger):
+            kept.append(other)
     return kept
 
 
