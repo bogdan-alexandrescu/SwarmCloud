@@ -85,17 +85,26 @@ SWARM_VERIFY_ORIGIN="${SWARM_VERIFY_ORIGIN:-operator}"
 [[ "${SWARM_VERIFY_ORIGIN}" =~ ^(operator|accept-[0-9]+)$ ]] \
   || die "SWARM_VERIFY_ORIGIN must be 'operator' or 'accept-<GitHub run id>', not '${SWARM_VERIFY_ORIGIN}'"
 
-# THE ROLES PROBE'S SETTINGS (ROLES-ACCEPT, scripts/acceptance/groups/roles.sh)
-# reach the execution the same way, each only when set: the job's own
-# environment is its Terraform template's, and these four are the repository's
-# variables, which accept.yml's smoke job passes in. None is a secret (a
-# tenant id, two service-account emails, a workspace id), and each is checked
+# THE ROLES AND JOIN PROBES' SETTINGS (ROLES-ACCEPT, scripts/acceptance/groups/
+# roles.sh; JOIN-DOCS-ACCEPT, scripts/acceptance/groups/join.sh) reach the
+# execution the same way, each only when set: the job's own environment is its
+# Terraform template's, and these are the repository's variables, which
+# accept.yml's smoke job passes in. None is a secret (tenant ids,
+# service-account and person addresses, a workspace id, a secret's name), and
+# each is checked
 # for the characters those use before it goes near the comma-separated flag.
 FORWARDED_SETTINGS=(
   SWARM_ACCEPTANCE_ROLES_TENANT
   SWARM_ACCEPTANCE_ROLES_VIEWER_SA
   SWARM_ACCEPTANCE_ROLES_ADMIN_SA
   SWARM_ACCEPTANCE_ROLES_OTHER_WORKSPACE
+  # The join probe's (JOIN-DOCS-ACCEPT, scripts/acceptance/groups/join.sh): a
+  # tenant id, a service-account email, a person's address and the NAME of
+  # the Secret Manager secret holding that person's sign-in, never its value.
+  SWARM_ACCEPTANCE_JOIN_TENANT
+  SWARM_ACCEPTANCE_JOIN_ADMIN_SA
+  SWARM_ACCEPTANCE_JOIN_PERSON
+  SWARM_ACCEPTANCE_JOIN_PERSON_SECRET
 )
 EXECUTION_ENV="SWARM_VERIFY_ORIGIN=${SWARM_VERIFY_ORIGIN}"
 for setting in "${FORWARDED_SETTINGS[@]}"; do
