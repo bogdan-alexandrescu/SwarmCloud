@@ -31,6 +31,7 @@ import urllib.error
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from agent_worker import merge as worker_merge
 
 from swarm_api import cifix, forge, forgechecks, forgewrite, issueci, issueruns
 from swarm_api.auth import StaticTokenVerifier
@@ -591,10 +592,9 @@ def test_a_base_without_merge_train_reads_no_train_variable(client, db, objects,
 
 def test_the_train_context_matches_the_workers():
     # swarm-api cannot import agent_worker; the test environment has both.
-    merge = pytest.importorskip("agent_worker.merge")
-    assert issueci.TRAIN_CONTEXT == merge.REPOSITORY_TRAIN_CONTEXT == "merge-train"
-    assert issueci.TRAIN_VARIABLE == merge.REPOSITORY_TRAIN_VARIABLE == "MERGE_TRAIN"
-    assert issueci.TRAIN_ON == merge.REPOSITORY_TRAIN_ON == "on"
+    assert issueci.TRAIN_CONTEXT == worker_merge.REPOSITORY_TRAIN_CONTEXT == "merge-train"
+    assert issueci.TRAIN_VARIABLE == worker_merge.REPOSITORY_TRAIN_VARIABLE == "MERGE_TRAIN"
+    assert issueci.TRAIN_ON == worker_merge.REPOSITORY_TRAIN_ON == "on"
 
 
 def test_a_check_by_another_app_does_not_satisfy_a_pinned_required_check(
