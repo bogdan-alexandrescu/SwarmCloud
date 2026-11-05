@@ -80,20 +80,27 @@ function board(accounts: PoolAccount[]): Result<AccountsBoard> {
   }
 }
 
-/** What a reader sees: the text with every (closed) tooltip taken out. */
+/** What a reader sees: the text without the hidden descriptions or an open tooltip. */
 function surface(el: Element): string {
   const copy = el.cloneNode(true) as Element
-  copy.querySelectorAll('[role="tooltip"]').forEach((t) => t.remove())
+  copy.querySelectorAll('[role="tooltip"], [hidden]').forEach((t) => t.remove())
   return copy.textContent ?? ''
 }
 
-/** The tooltip an (i) opens on focus, read the way a keyboard reaches it. */
+/**
+ * The tooltip an (i) opens on focus, read the way a keyboard reaches it. It is
+ * the button's description too, and none is drawn until it opens.
+ */
 function tipOf(button: HTMLElement): string {
-  act(() => button.focus())
   const host = button.closest('.c-tip-host') as HTMLElement
-  const tip = document.getElementById(host.getAttribute('aria-describedby')!)!
-  expect(tip.hidden, 'the tooltip opens on focus').toBe(false)
-  return tip.textContent ?? ''
+  expect(host.querySelector('[role="tooltip"]'), 'a tooltip is drawn while closed').toBeNull()
+  const described = document.getElementById(button.getAttribute('aria-describedby')!)!.textContent
+  act(() => button.focus())
+  const tip = host.querySelector('[role="tooltip"]')
+  expect(tip, 'the tooltip opens on focus').not.toBeNull()
+  expect(tip!.textContent).toBe(described)
+  act(() => button.blur())
+  return described ?? ''
 }
 
 const waiting = (agents: number) => ({ kind: 'ok' as const, waiting: { agents, later: 0, atLeast: false } })

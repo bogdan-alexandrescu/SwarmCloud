@@ -68,7 +68,8 @@ describe('capacity-20: an account with no 7-day reading is left out and named, n
     expect(left, 'nothing says which account was left out').not.toBeNull()
     // The reason is the (i)'s tooltip beside "Left out" (no prose on the surface, 2026-11-05).
     expect(left!.textContent).toContain('Left out:')
-    expect(left!.querySelector('[role="tooltip"]')?.textContent).toContain('no 7-day reading to take a pace from')
+    const why = left!.querySelector('button.acct-i')!.getAttribute('aria-describedby')!
+    expect(document.getElementById(why)?.textContent).toContain('no 7-day reading to take a pace from')
     expect([...left!.querySelectorAll('.acct-nm')].map((n) => n.textContent)).toEqual(['never-polled'])
     // The pace line counts only the measured one.
     expect(container.querySelector('.acct-fc-sub')?.textContent).toContain('together 1 subscription')

@@ -17,10 +17,10 @@
  * Nothing here re-derives the rule: `can_take_new_agent`, `blocked_by` and
  * `next_eligible_at` are the broker's own answers (`accountsPool.ts`).
  */
-import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 
 import { loadTasksInState } from './api'
-import { ButtonLink, ToneMark, Tooltip } from './components'
+import { ButtonLink, TOOLTIP_DELAY_MS, ToneMark } from './components'
 import { accountName } from './accountName'
 import {
   AGED_AFTER_MIN,
@@ -65,16 +65,56 @@ function andNames(accounts: readonly PoolAccount[]): ReactNode {
 
 /**
  * THE (i): the sentence that explained `about`, as its tooltip, on hover and
- * on focus (`Tooltip`). The button's name says what it is about, so a reader
- * tabbing through hears which label it belongs to.
+ * on focus, after `TOOLTIP_DELAY_MS` on hover, gone on Escape -- the
+ * `Tooltip` primitive's behaviour. Unlike it, the drawn tooltip exists only
+ * while open: a closed screen carries no `role="tooltip"` (honesty.prose's
+ * "every help card closed"). The fact is always in the document as the
+ * button's description, a `hidden` element `aria-describedby` still reads, so
+ * a screen reader hears it without opening anything and `innerText` (the page's
+ * visible words) does not count it.
  */
 export function Info({ about, tip }: { about: string; tip: string }) {
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const show = (now: boolean) => {
+    if (timer.current !== undefined) clearTimeout(timer.current)
+    if (now) setOpen(true)
+    else timer.current = setTimeout(() => setOpen(true), TOOLTIP_DELAY_MS)
+  }
+  const hide = () => {
+    if (timer.current !== undefined) clearTimeout(timer.current)
+    setOpen(false)
+  }
+  useEffect(() => () => hide(), [])
   return (
-    <Tooltip tip={tip}>
-      <button type="button" className="acct-i" aria-label={`About ${about}`}>
+    <span
+      className="c-tip-host"
+      onMouseEnter={() => show(false)}
+      onMouseLeave={hide}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') hide()
+      }}
+    >
+      <button
+        type="button"
+        className="acct-i"
+        aria-label={`About ${about}`}
+        aria-describedby={id}
+        onFocus={() => show(true)}
+        onBlur={hide}
+      >
         i
       </button>
-    </Tooltip>
+      <span id={id} hidden>
+        {tip}
+      </span>
+      {open && (
+        <span role="tooltip" className="c-tip" aria-hidden="true">
+          {tip}
+        </span>
+      )}
+    </span>
   )
 }
 

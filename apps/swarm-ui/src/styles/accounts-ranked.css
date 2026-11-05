@@ -55,8 +55,14 @@
   position: relative;
   display: inline-grid;
   place-items: center;
+  box-sizing: border-box;
+  flex: none;
+  align-self: center;
   width: 16px;
+  min-width: 16px;
   height: 16px;
+  min-height: 16px;
+  max-height: 16px;
   margin-left: 6px;
   padding: 0;
   border: 1px solid var(--ctl-bd);
@@ -70,7 +76,7 @@
 .acct-i::before { content: ''; position: absolute; inset: -4px; }
 .acct-i:hover { color: var(--text); }
 .acct-i:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.acct-i + .c-tip { font-weight: 400; font-style: normal; white-space: normal; }
+.acct-i ~ .c-tip { font-weight: 400; font-style: normal; white-space: normal; }
 /* The sign-in callout: one ticked name and its button per row. */
 .acct-callout-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
@@ -258,6 +264,9 @@
 .acct-split.is-ranked > .acct-pane { border-top: 1px solid var(--line); }
 
 @media (max-width: 560px) {
+  /* An (i) near the right edge would open its tooltip off the screen: on a
+     phone it spans the viewport under the line it explains. */
+  .acct-i ~ .c-tip { position: fixed; top: auto; left: 16px; right: 16px; width: auto; max-width: none; margin-top: 22px; }
   .acct-verdict { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 14px; }
   .acct-verdict-big { font-size: calc(var(--t-figure) * 1.6); }
   .acct-verdict-head { font-size: var(--t-body); line-height: var(--lh-body); }
