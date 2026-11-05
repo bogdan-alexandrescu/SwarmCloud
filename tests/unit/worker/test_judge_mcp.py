@@ -83,7 +83,8 @@ def test_the_worker_and_the_tool_share_one_ledger(tmp_path: Path) -> None:
     worker_side = register.worker_client(done, transport=lambda *a: (500, b""))
     assert worker_side.ledger.path == done.ledger_path
     state = budget.Ledger(done.ledger_path).read()
-    assert state["max_calls"] == 8 and state["max_input_tokens"] == 120_000
+    # The owner's answer 8: today's 8 and 120,000 plus JC2's reserve on top.
+    assert state["max_calls"] == 9 and state["max_input_tokens"] == 150_000
     assert state["monthly_cap_tokens"] == 50_000 and state["month_used_tokens"] == 1_000
 
 
