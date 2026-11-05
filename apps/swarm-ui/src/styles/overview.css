@@ -114,7 +114,12 @@
    shrink: drawn by `.ov-att-go`, the list link's own rule. The first of them
    carries the card's cover (above). The id gives way with an ellipsis, the
    arrow never; its title is whole. */
-.ov-att-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; max-width: 45%; min-width: 0; }
+/* THE BUTTONS SIT ON THE CARD'S OWN SURFACE, PAINTED (2026-11-05): a
+   button's border is measured against what is behind it, and the card's
+   tone rule is a gradient, which no contrast can be read off; the box
+   that holds the buttons paints the card's colour, so the border's
+   backdrop is a colour. A one-link card holds its one button here too. */
+.ov-att-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; max-width: 45%; min-width: 0; background-color: var(--surface); }
 .ov-att.is-split .ov-att-wf { flex: 0 1 auto; max-width: 100%; min-width: 0; }
 .ov-att-wf-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-att-ids a { position: relative; z-index: 1; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
@@ -446,7 +451,7 @@
   /* No arrow is left to draw (BGD's standing rule, 2026-11-05): a one-link
      card's button steps aside whole, and the cover link keeps its box but
      not its chrome, so the card itself is the tap target. */
-  .ov-att:not(.is-split) > .ov-att-go { display: none; }
+  .ov-att:not(.is-split) .ov-att-go, .ov-att:not(.is-split) > .ov-att-acts { display: none; }
   .ov-att.is-split .ov-att-wf.is-cover { height: auto; padding: 0; border: 0; background: none; }
   .ov-att.is-split .ov-att-wf.is-cover .ov-att-wf-t { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   /* A split card keeps one way out: the first workflow's link, which carries
