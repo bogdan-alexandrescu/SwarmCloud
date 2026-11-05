@@ -124,8 +124,14 @@ describe('config-08: GitHub access’s lead names the step the strip holds, neve
     expect(words).not.toContain('GitHub access is set up')
     expect(words).toContain('Step 1 of 3 · needs you.')
     expect(within(lead).getByRole('heading', { level: 2 }).textContent).toBe('Enable orgs failed')
-    expect(words).toContain("GitHub is connected as @octo-dev, but Workspace setup's checklist says Enable orgs failed")
-    const buttons = [...lead.querySelectorAll<HTMLElement>('.c-btn')]
+    // BGD's no-prose rule (2026-11-05): the line is the fact; why it reads failed is the (i) beside the title.
+    // MUTATION: put "but Workspace setup's checklist says …" back in the line.
+    expect(visible(lead.querySelector('p.ur-small'))).toBe('GitHub is connected as @octo-dev.')
+    const info = within(lead).getByRole('button', { name: 'About Enable orgs failed' })
+    expect(visible(document.getElementById(info.getAttribute('aria-describedby')!))).toBe(
+      "Workspace setup's checklist says Enable orgs failed; its fix is on this page. Workspace setup names what to do.",
+    )
+    const buttons = [...lead.querySelectorAll<HTMLElement>('.ac-lead-a .c-btn')]
     expect(buttons.map((b) => b.textContent?.trim())).toEqual(['Open Workspace setup'])
     expect(buttons[0]!.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
   })
