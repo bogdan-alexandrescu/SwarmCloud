@@ -336,7 +336,9 @@ export function Inspector({
       {trWide && (
         <div className="trc-strip">
           <button type="button" onClick={() => setTraceWide(false)} aria-label="Show the list" title="Show the list ([)">
-            ☰
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+              <path d="M3 4.5h10M3 8h10M3 11.5h10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
           </button>
         </div>
       )}

@@ -11,7 +11,7 @@
 .trc-btn:disabled { color: var(--text-faint); border-color: var(--line); cursor: default; }
 .trc-btn.is-on { border-color: var(--info); color: var(--info-ink); background: color-mix(in srgb, var(--info) 12%, var(--surface)); }
 .trc-err:not(:disabled) { border-color: color-mix(in srgb, var(--bad) 60%, var(--ctl-bd)); color: var(--bad-ink); }
-.trc-fold { margin-left: auto; }
+.trc-fold { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
 .trc-bar2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: space-between; }
 .trc-chips { display: flex; gap: 4px; flex-wrap: wrap; }
 .trc-chip { height: 26px; padding: 0 9px; border-radius: var(--r-pill); border: 1px solid var(--line); background: transparent; color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; }
@@ -24,7 +24,7 @@
 .trc-summary { margin: 0; display: flex; gap: 0; flex-wrap: wrap; color: var(--text-dim); font-size: 12px; }
 .trc-summary > span + span::before { content: '·'; margin: 0 6px; color: var(--text-faint); }
 .trc-cwd { cursor: help; }
-.trc-cwd-t { text-decoration: underline dotted; text-underline-offset: 3px; }
+.trc-cwd-t { display: inline-flex; align-items: center; gap: 3px; text-decoration: underline dotted; text-underline-offset: 3px; }
 .trc-taskerr { margin: 0; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: var(--r-ctl); background: color-mix(in srgb, var(--bad) 10%, var(--surface)); color: var(--bad-ink); font-size: 13px; }
 .trc-taskerr .mono { color: var(--text); }
 
@@ -61,7 +61,7 @@
 .trc-prog { font-family: var(--mono); font-size: 12px; color: var(--text-faint); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 0 5px; line-height: 16px; }
 .trc-row.is-sel .trc-prog { border-color: color-mix(in srgb, var(--info) 55%, var(--line)); }
 .trc-dur { font-family: var(--mono); font-size: 12px; color: var(--text-dim); text-align: right; min-width: 0; }
-.trc-st { font-size: 12px; text-align: center; }
+.trc-st { display: inline-flex; align-items: center; justify-content: center; }
 .trc-st.is-ok { color: var(--ok-ink); }
 .trc-st.is-err { color: var(--bad-ink); font-weight: 600; }
 .trc-st.is-run { color: var(--info); animation: trc-pulse 1.4s ease-in-out infinite; }
@@ -141,7 +141,6 @@
 .wi.is-docked.is-trwide { grid-template-columns: 40px minmax(0, 1fr); }
 .wi.is-docked.is-trwide > .wi-main, .wi.is-docked.is-trwide > .wi-handle { display: none; }
 .trc-strip { display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 6px; border-right: 1px solid var(--line); }
-.trc-strip button { width: 30px; height: 30px; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); cursor: pointer; font-size: 14px; }
-.trc-strip span { writing-mode: vertical-rl; transform: rotate(180deg); color: var(--text-dim); font-size: 12px; }
+.trc-strip button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); cursor: pointer; font-size: 14px; }
 .trc.is-phone .trc-bar2 { gap: 6px; }
 .trc.is-phone .trc-chip { padding: 0 7px; }

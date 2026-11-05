@@ -92,7 +92,7 @@ describe('the finished coding lane at rest (tr-b-coding-rest)', () => {
     expect(test.querySelector('.trc-prog')!.textContent).toBe('2')
     expect(test.querySelector('.trc-dur')!.textContent).toBe('≥12s')
     expect(test.querySelector('.trc-sub')!.textContent).toBe('1 failed · 11 passed')
-    expect(test.querySelector('.trc-st')!.textContent).toBe('✕')
+    expect(test.querySelector('.trc-st')!.getAttribute('aria-label')).toBe('error')
     // A call with no progress record shows no duration.
     expect(rows()[2]!.querySelector('.trc-dur')!.textContent).toBe('')
     // The old stream view is not drawn.
@@ -117,7 +117,7 @@ describe('the finished coding lane at rest (tr-b-coding-rest)', () => {
     inPane(agent())
     await waitFor(() => expect(rows()).toHaveLength(11))
     const home = document.querySelector<HTMLElement>('.trc-cwd')!
-    expect(home.textContent).toBe('⌂ repo')
+    expect(home.textContent!.trim()).toBe('repo')
     expect(home.getAttribute('title')).toContain(CWD)
     fireEvent.click(rows()[4]!)
     const cmd = detail().querySelector('.trc-cmd')!
@@ -299,7 +299,7 @@ describe('a live run (tr-b-live)', () => {
     inPane(agent({ state: 'RUNNING', completed_at: null }))
     await waitFor(() => expect(rows()).toHaveLength(3))
     expect(picked()!.querySelector('.trc-n')!.textContent).toBe('3')
-    expect(rows()[2]!.querySelector('.trc-st')!.textContent).toBe('●')
+    expect(rows()[2]!.querySelector('.trc-st')!.getAttribute('aria-label')).toBe('no result yet')
     expect(rows()[2]!.querySelector('.trc-dur')!.textContent).toBe('≥6s')
     expect(detail().textContent).toContain('no result in this read yet')
     expect(screen.getByRole('button', { name: 'Following' }).getAttribute('aria-pressed')).toBe('true')

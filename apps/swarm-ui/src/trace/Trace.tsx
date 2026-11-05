@@ -45,10 +45,37 @@ const KIND_WORD: Record<EvKind, string> = {
   message: 'message', tool: 'tool', edit: 'edit', test: 'test', browser: 'browser', thinking: 'thinking', start: 'start', end: 'result', system: 'system', other: 'not recognised',
 }
 
+/** Drawn, not typed: a tick, a cross or a dot that every font shows. */
+function StatusMark({ d, dot }: { d?: string; dot?: boolean }) {
+  return (
+    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden>
+      {dot ? <circle cx="6" cy="6" r="3" fill="currentColor" /> : <path d={d} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />}
+    </svg>
+  )
+}
+
 function Status({ ev }: { ev: Ev }) {
-  if (ev.status === 'ok') return <span className="trc-st is-ok" title="Its result is not marked as an error">✓</span>
-  if (ev.status === 'error') return <span className="trc-st is-err" title="Marked is_error by the CLI">✕</span>
-  if (ev.status === 'running') return <span className="trc-st is-run" title="No result in this read yet">●</span>
+  if (ev.status === 'ok') {
+    return (
+      <span className="trc-st is-ok" role="img" aria-label="ok" title="Its result is not marked as an error">
+        <StatusMark d="M2.5 6.4l2.3 2.3L9.5 3.6" />
+      </span>
+    )
+  }
+  if (ev.status === 'error') {
+    return (
+      <span className="trc-st is-err" role="img" aria-label="error" title="Marked is_error by the CLI">
+        <StatusMark d="M3 3l6 6M9 3l-6 6" />
+      </span>
+    )
+  }
+  if (ev.status === 'running') {
+    return (
+      <span className="trc-st is-run" role="img" aria-label="no result yet" title="No result in this read yet">
+        <StatusMark dot />
+      </span>
+    )
+  }
   return <span className="trc-st" />
 }
 
@@ -683,7 +710,10 @@ export function Trace({
         )}
         {!phoneViewport && !wide && (
           <button type="button" className="trc-btn trc-fold" onClick={fullWidth} aria-label="Full width" title="Fold the agent list away and read the transcript full width ([)">
-            {layout === 'phone' ? '⇤' : '⇤ Full width'}
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+              <path d="M3 3v10M13 8H6M9 5L6 8l3 3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {layout === 'phone' ? null : ' Full width'}
           </button>
         )}
       </div>
@@ -702,7 +732,12 @@ export function Trace({
           {end !== null && typeof end.main.meta?.total_cost_usd === 'number' && <span title="total_cost_usd, from the result record">${(end.main.meta.total_cost_usd as number).toFixed(2)}</span>}
           {trace.cwd && layout !== 'phone' && (
             <span className="trc-cwd" title={`Commands ran in ${trace.cwd}; that prefix is dropped from every command and path here.`}>
-              <span className="trc-cwd-t">⌂ repo</span>
+              <span className="trc-cwd-t">
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden>
+                  <path d="M2.5 7.5L8 3l5.5 4.5M4 6.5V13h8V6.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>{' '}
+                repo
+              </span>
             </span>
           )}
           {selIdx >= 0 && <span className="trc-pos" title="j / k step through the events">{selIdx + 1} of {shown.length}</span>}
