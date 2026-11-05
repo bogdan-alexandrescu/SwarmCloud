@@ -528,6 +528,9 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
     if full.get("console"):
         # The API's link, so the row's answer can say where the whole of it is.
         out["console"] = full["console"]
+    if full.get("browser_unused"):
+        # A live-browser run that never used its browser (`progress.browser_unused_line`).
+        out["browser_unused"] = full["browser_unused"]
     return out
 
 
@@ -1150,6 +1153,11 @@ def watch_progress(
             if task["read"] == "ok" and task.get("terminal"):
                 try:
                     row["outcome"] = _slim_outcome(outcome(client, client.task(task_id)))
+                    unused = row["outcome"].get("browser_unused")
+                    if unused and news:
+                        # Under the finish line, on the call that writes it:
+                        # once, as the line itself is.
+                        progress.append(f"[{label}] {unused}")
                 except SwarmError as exc:
                     row["outcome"] = None
                     row["outcome_unavailable_because"] = clip(f"the finished task could not be re-read: {exc}", 200)
@@ -1382,7 +1390,7 @@ def watch_summary(
     payload["sm"] = {"p": {t: prs[t] for t in task_ids if t in prs}, "ln": line}
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-    return {
+    out = {
         "line": line,
         "line_changed": line != before,
         "transitions": reply["transitions"],
@@ -1390,6 +1398,14 @@ def watch_summary(
         "since": f"{body}.{_checksum(body)}",
         "tasks": reply["tasks"],
     }
+    # A task that ran on a live browser and never used it, on the call it
+    # finished -- the only call that returns its row, so once each
+    # (`progress.browser_unused_line`, 2026-11-05). No key when none did.
+    unused = [str((row.get("outcome") or {}).get("browser_unused")) for row in reply["tasks"]
+              if row.get("terminal") and (row.get("outcome") or {}).get("browser_unused")]
+    if unused:
+        out["browser_unused"] = unused
+    return out
 
 
 # --------------------------------------------------------------------------
