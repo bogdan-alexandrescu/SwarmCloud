@@ -65,6 +65,7 @@ import json
 import secrets
 import threading
 import time
+import urllib.parse
 import zlib
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -1121,9 +1122,10 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     out.update(totals)
     out["pr_url"] = described.get("pull_request")
     out["artifacts"] = _artifacts(task)
-    # The agent's questions for the owner, read back from its questions.json
-    # (`owner_questions`); `[]` and no extra read when it asked none.
-    out.update(owner_questions(client, task))
+    # The agent's questions for the owner that have no stored answer, read
+    # back from its questions.json and the questions route
+    # (`open_owner_questions`); `[]` and no extra read when it asked none.
+    out.update(open_owner_questions(client, task))
     # The owner's answers to them, as the API lifted them onto the task
     # (TASK-ANSWERS); `[]` when none is answered. No extra read.
     out["owner_answers"] = owner_answers(task)
@@ -1257,6 +1259,93 @@ def _question(entry: dict[str, Any]) -> dict[str, Any]:
         "recommended": _question_text(entry.get("recommended")),
         "context": _question_text(entry.get("context")),
     }
+
+
+#: Where the owner's stored answers are read, per task (`swarm_api.routes.tasks.read_questions`):
+#: each question as `questions.json` holds it, with its `answer` or null.
+QUESTIONS_ROUTE = "/v1/tasks/{task_id}/questions"
+
+#: How long `answer_unknown_because` may be: a reason, not the error's whole text.
+ANSWER_UNKNOWN_CHARS = 200
+
+
+def stored_answers(client: SwarmClient, task: dict[str, Any]) -> tuple[set[int], str | None]:
+    """`(indexes, why)`: which of the task's questions hold a stored answer.
+
+    Read the way `swarm_check` reads a parked task's (`check._parked_questions`):
+    one `GET /v1/tasks/{id}/questions` per call, never cached, since an answer
+    can be given at any time -- `swarm_task_answer` and the console store it,
+    and a task document read before that does not carry it. The task's own
+    `owner_answers` count too. `why` is set when the route could not be read
+    or did not serve the questions: the indexes are then only what the task
+    document carried, and the rest cannot be told answered or open.
+    """
+    known = {a.get("question_index") for a in owner_answers(task)}
+    indexes = {i for i in known if isinstance(i, int) and not isinstance(i, bool)}
+    tid = urllib.parse.quote(str(task_id_of(task) or ""), safe="")
+    try:
+        served = client.request("GET", QUESTIONS_ROUTE.format(task_id=tid))
+    except SwarmError as exc:
+        return indexes, clip(f"its stored answers could not be read: {exc}", ANSWER_UNKNOWN_CHARS)
+    if (not isinstance(served, dict) or served.get("status") != "ok"
+            or not isinstance(served.get("questions"), list)):
+        status = served.get("status") if isinstance(served, dict) else None
+        return indexes, clip(f"its stored answers could not be read: the questions route says {status}",
+                             ANSWER_UNKNOWN_CHARS)
+    for index, question in enumerate(served["questions"]):
+        if isinstance(question, dict) and question.get("answer") is not None:
+            indexes.add(index)
+    return indexes, None
+
+
+def open_owner_questions(client: SwarmClient, task: dict[str, Any], *,
+                         asked: dict[str, Any] | None = None) -> dict[str, Any]:
+    """`owner_questions`, less every question the owner has already answered.
+
+    WHY (5 November 2026, seen twice). A workflow row's result and
+    `swarm_result` handed the session every question in `questions.json`,
+    including ones answered hours earlier with `swarm_task_answer`, and the
+    session put them to the person again. Whatever hands a finished task's
+    questions to a session hands these: each open question with its `index`
+    -- its 0-based place in `questions.json`, the `question_index`
+    `swarm_task_answer` records a pick under, kept because answered ones are
+    left out before it -- and `questions_answered`, how many were left out.
+
+    ANSWERED AND "COULD NOT TELL" ARE NEVER THE SAME. When the stored answers
+    could not be read (`stored_answers`), a question no answer is known for
+    stays listed with `answer_unknown_because`, a short reason. The full
+    list, answered ones included, is `swarm_result`'s `owner_questions_asked`
+    and the console's task page. `asked` is `owner_questions`' read, when the
+    caller already made it. Two reads at most: the artifact and the answers,
+    and only the first when the agent asked none.
+    """
+    asked = asked if asked is not None else owner_questions(client, task)
+    questions = asked.get("questions") or []
+    if not questions:
+        return asked
+    answered, why = stored_answers(client, task)
+    open_ = [{"index": i, **q, **({"answer_unknown_because": why} if why else {})}
+             for i, q in enumerate(questions) if i not in answered]
+    out = {**asked, "questions": open_, "questions_answered": len(questions) - len(open_)}
+    return out
+
+
+def asked_with_answers(client: SwarmClient, task: dict[str, Any],
+                       asked: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every question `asked` holds, for a person browsing the task: each with
+    its `index` and `answered` -- true, false, or null with
+    `answer_unknown_because` when the stored answers could not be read."""
+    questions = asked.get("questions") or []
+    if not questions:
+        return []
+    answered, why = stored_answers(client, task)
+    out = []
+    for i, q in enumerate(questions):
+        entry = {"index": i, **q, "answered": True if i in answered else (None if why else False)}
+        if why and i not in answered:
+            entry["answer_unknown_because"] = why
+        out.append(entry)
+    return out
 
 
 def owner_answers(task: dict[str, Any]) -> list[dict[str, Any]]:

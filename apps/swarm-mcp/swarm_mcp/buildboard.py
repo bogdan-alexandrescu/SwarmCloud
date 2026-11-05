@@ -47,7 +47,9 @@ workflow is titled `<owner>/<repo>#<n>: <issue title>`
 
 WHAT IS CACHED, AND WHY. A finished task's questions and pull request never
 change, nor does a finished lane: `.claude/build-board/cache.json` keeps them,
-so a refresh re-reads only what is still moving. Nothing else is kept there.
+so a refresh re-reads only what is still moving. Nothing else is kept there:
+the owner's answers to those questions are read again on every refresh
+(`progress.stored_answers`), so an answered question leaves the page.
 
 A FAILED READ leaves the previous page in place (the page is replaced by a
 rename, never rewritten in place) and is recorded beside it; the next page
@@ -214,20 +216,31 @@ class _Reader:
         one, so they are not fetched, and that answer is not cached."""
         tid = str(task_id_of(task) or "")
         kept = self.cache["tasks"].get(tid)
-        if kept is not None:
-            return kept
-        if not questions:
-            return {"pull_request": pull_request_of(task), "questions": [],
+        if kept is None:
+            if not questions:
+                return {"pull_request": pull_request_of(task), "questions": [],
+                        "ended": _iso(task.get("completed_at"))}
+            asked = progress.owner_questions(self.client, task)
+            kept = {"pull_request": pull_request_of(task),
+                    "questions": asked.get("questions") or [],
                     "ended": _iso(task.get("completed_at"))}
-        asked = progress.owner_questions(self.client, task)
-        entry: dict[str, Any] = {"pull_request": pull_request_of(task),
-                                 "questions": asked.get("questions") or [],
-                                 "ended": _iso(task.get("completed_at"))}
-        if "questions_unavailable_because" in asked:
-            # NOT CACHED: a read that failed is tried again on the next refresh.
-            return {**entry, "unavailable": asked["questions_unavailable_because"]}
-        self.cache["tasks"][tid] = entry
-        return entry
+            if "questions_unavailable_because" in asked:
+                # NOT CACHED: a read that failed is tried again on the next refresh.
+                return {**kept, "unavailable": asked["questions_unavailable_because"]}
+            self.cache["tasks"][tid] = kept
+        if not questions or not kept["questions"]:
+            return kept
+        # THE ANSWERS ARE NEVER CACHED (5 November 2026): an answer given with
+        # swarm_task_answer or in the console after the questions were cached
+        # must take its question off the next page, and the lane's task
+        # documents need not carry it. Read on every refresh, once per task
+        # (`progress.stored_answers`); a read that failed keeps the questions
+        # no answer is known for, each saying why.
+        answered, why = progress.stored_answers(self.client, task)
+        live = {**kept, "answered": sorted(answered)}
+        if why:
+            live["answer_unknown_because"] = why
+        return live
 
     def parked_since(self, task: dict[str, Any]) -> str | None:
         """When a PARKED task entered PARKED, from its newest events (`check._entered`)."""
@@ -297,7 +310,11 @@ def _questions(lane: dict[str, Any], read: list[tuple[Any, dict[str, Any], dict[
     steps' `(step_id, task, reader.finished(task))`."""
     answered: set[str] = set()
     for _, task, done in read:
-        answered |= _answered(task, done.get("questions") or [])
+        asked = done.get("questions") or []
+        answered |= _answered(task, asked)
+        # And what the questions route says is answered (`_Reader.finished`).
+        answered |= {str(asked[i].get("question") or "") for i in done.get("answered") or []
+                     if isinstance(i, int) and 0 <= i < len(asked)}
     shown: dict[str, tuple[dict[str, Any], list[str]]] = {}
     unread: list[str] = []
     since: list[str] = []
@@ -315,10 +332,15 @@ def _questions(lane: dict[str, Any], read: list[tuple[Any, dict[str, Any], dict[
                     shown[text][1].append(name)
                 continue
             recommended = asked.get("recommended")
+            unknown = done.get("answer_unknown_because")
+            context = asked.get("context") or ""
+            if unknown:
+                # Listed because whether it is answered could not be told, never as open.
+                context = (context + " " if context else "") + f"(whether it is answered is unknown: {unknown})"
             shown[text] = ({
                 "kind": "question", "who": "Owner", "item": text,
                 "since": done.get("ended"), "unlocks": "a decision this lane left to the owner",
-                "context": asked.get("context") or "",
+                "context": context,
                 "options": [{"label": str(o.get("label") or ""), "recommended": bool(recommended)
                              and o.get("label") == recommended} for o in asked.get("options") or []],
                 "next": None,
