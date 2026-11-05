@@ -672,6 +672,19 @@ def validate_ref(ref: str | None) -> str | None:
     return ref
 
 
+def is_full_refname(ref: str | None) -> bool:
+    """True when `ref` names a ref in full, `refs/...`, rather than a branch or tag.
+
+    GitHub serves a pull request's head and merge commit only as
+    `refs/pull/<n>/head` and `refs/pull/<n>/merge`, which `git clone --branch`
+    cannot reach: it takes a branch or tag NAME (#3347). A full refname is
+    therefore fetched as itself, as a sha is. Safe to hand `git fetch` as its
+    refspec once `validate_ref` has passed it: `_SAFE_REF` admits no `:`, `+`
+    or `*`, so the fetch writes FETCH_HEAD and no local ref.
+    """
+    return bool(ref) and str(ref).startswith("refs/")
+
+
 def _credential_host(url: str) -> str | None:
     """The host to store the forge token for, or None when `url` gets none.
 
@@ -1043,6 +1056,11 @@ def shallow_clone(
 ) -> CloneResult:
     """Clone `url` at `ref` into `destination`, shallow and single-branch.
 
+    `ref`: a branch or tag name is cloned with `--branch`; a sha or a full
+    refname (`refs/pull/<n>/head`, `is_full_refname`, #3347) is fetched alone
+    at depth 1 and checked out detached. Everything after -- the history, the
+    pull base, the trace -- is the same for both.
+
     `pull_base` (a `publish_to_pr` step, #2901): the pull request's base
     branch. After the one-commit clone, it is fetched as `origin/<base>` and
     both sides deepened until they share a merge base (`fetch_pull_base`),
@@ -1079,8 +1097,11 @@ def shallow_clone(
         config_args += peers.config_args()
 
     is_sha = bool(ref and _SHA_RE.match(ref))
-    if is_sha:
-        # A shallow clone cannot target a bare commit, so fetch it explicitly.
+    if is_sha or is_full_refname(ref):
+        # A shallow clone cannot target a bare commit, nor a full refname such
+        # as `refs/pull/<n>/head` (`--branch` takes a name, #3347), so fetch
+        # it explicitly. `remote add` maps every branch, as TRACK_EVERY_BRANCH
+        # does after a clone; the fetch of an explicit ref writes FETCH_HEAD.
         steps = [
             [git_binary, *config_args, "init", "--quiet", str(destination)],
             [git_binary, *config_args, "-C", str(destination), "remote", "add", "origin", url],
@@ -1100,8 +1121,8 @@ def shallow_clone(
             [git_binary, *config_args, "-C", str(destination), *TRACK_EVERY_BRANCH],
         ]
 
-    # Every step is traced into the same two files, so a by-sha clone's
-    # fetch and checkout land on one timeline (`clone_phase_timings`).
+    # Every step is traced into the same two files, so a by-sha (or by full
+    # refname) clone's fetch and checkout land on one timeline (`clone_phase_timings`).
     trace = _CloneTrace.create(private_dir)
     phases: dict[str, Any] = {}
     failed: GitError | None = None
@@ -1659,10 +1680,15 @@ def clone_at_commit(
                 branch=branch, commit=commit, error=str(exc)[:300],
             )
             # Not shallow: the pinned commit is somewhere in the branch's past,
-            # and a depth would have to guess how far.
+            # and a depth would have to guess how far. A full refname (a pull
+            # request's `refs/pull/<n>/head`, #3347) is fetched as itself.
+            history_ref = (
+                branch if is_full_refname(branch)
+                else f"refs/heads/{branch}" if branch else "HEAD"
+            )
             by_branch = [
                 [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination),
-                 "fetch", "--no-tags", "origin", f"refs/heads/{branch}" if branch else "HEAD"],
+                 "fetch", "--no-tags", "origin", history_ref],
                 [*g, "checkout", "--quiet", commit],
             ]
             total += _run_git_steps(
