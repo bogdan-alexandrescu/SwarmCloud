@@ -522,8 +522,9 @@ def _approve(
         review = read_review_context(ctx, tenant_id, approved)
         # The deployment's pinned classes: the requirements check runs the
         # cheap one only where it is pinned (#2524, `issueruns._check_class`).
-        submission = ctx.submissions.submit_workflow(auth, compile_plan(
-            approved, review, class_models=ctx.settings.worker_class_models))
+        compiled = compile_plan(approved, review, class_models=ctx.settings.worker_class_models)
+        with issueruns_module.submitting(compiled):
+            submission = ctx.submissions.submit_workflow(auth, compiled)
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         runs.transition(
@@ -1158,10 +1159,10 @@ def start_run(
     # The planner next, carrying the run's id: a planner without its run is
     # one finished task nobody reads, while a run without its planner would
     # sit PLANNING for ever.
-    submission = ctx.submissions.submit_tasks(
-        auth, [planner_task(ref, run_id, open_work, context=context.section,
-                            claude_session=claude_session, model_class=model_class)]
-    )
+    planner_spec = planner_task(ref, run_id, open_work, context=context.section,
+                                claude_session=claude_session, model_class=model_class)
+    with issueruns_module.submitting(planner_spec):
+        submission = ctx.submissions.submit_tasks(auth, [planner_spec])
     planner = submission.tasks[0]
     now = ctx.now()
     run = _runs(ctx).create(
