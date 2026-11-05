@@ -1,0 +1,1650 @@
+diff --git a/apps/swarm-ui/src/styles/vt-stage-a.css b/apps/swarm-ui/src/styles/vt-stage-a.css
+new file mode 100644
+index 0000000..d9ce4b6
+--- /dev/null
++++ b/apps/swarm-ui/src/styles/vt-stage-a.css
+@@ -0,0 +1,329 @@
++/* MOCK-HOOK FILE
++   VOICE IT'S OWN SPEECH, TALK, DIRECTION A: THE STAGE (?vt=a). Console tokens
++   only; glass and glow are tokens mixed with transparency. */
++
++.vta {
++  --vta-pin: var(--paused);
++  position: relative; isolation: isolate; overflow: clip;
++  display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto auto;
++  gap: 10px; min-width: 0;
++  height: max(600px, calc(100dvh - 96px));
++  padding: 12px 16px 12px;
++  border: 1px solid var(--line-soft); border-radius: var(--r-dlg); background: var(--bg);
++}
++.vta-sky {
++  position: absolute; inset: 0; z-index: -1; pointer-events: none;
++  background:
++    radial-gradient(ellipse 60% 40% at 50% 100%, color-mix(in srgb, var(--info) 14%, transparent), transparent 70%),
++    radial-gradient(ellipse 40% 50% at 50% 30%, color-mix(in srgb, var(--info) 6%, transparent), transparent 70%);
++}
++.vta-ic { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
++.vta-ic.is-fill { width: 16px; height: 16px; fill: currentColor; stroke: none; }
++.vta-ic.is-tick { width: 14px; height: 14px; }
++.vta-tab .vta-ic { width: 15px; height: 15px; }
++
++/* ---- head: the visuals and the budget line -------------------------------- */
++.vta-head { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 30px; }
++.vta-tabs { display: flex; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
++.vta-tab {
++  display: inline-flex; align-items: center; gap: 6px; flex: none; height: 30px; padding: 0 10px;
++  font: 500 var(--t-meta)/1 var(--font); color: var(--text-dim);
++  border: 1px solid transparent; border-radius: var(--r-pill); background: transparent; cursor: pointer;
++}
++.vta-tab:hover { color: var(--text); background: var(--vt-glass-dim); }
++.vta-tab[aria-pressed="true"] { color: var(--text); border-color: var(--vt-glass-line); background: var(--vt-glass); }
++.vta-tab-pins {
++  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
++  font: 600 var(--t-micro)/1 var(--font); font-variant-numeric: tabular-nums;
++  color: var(--paused-ink); background: color-mix(in srgb, var(--paused) 16%, transparent);
++}
++.vta-budget { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; flex: none; padding: 4px 2px; cursor: default; }
++.vta-head > .c-tip-host { margin-left: auto; }
++.vta-head > .c-tip-host .c-tip { left: auto; right: 0; }
++.vta-budget-n { font: 500 var(--t-meta)/1 var(--font); font-variant-numeric: tabular-nums; color: var(--text); }
++.vta-budget-of { color: var(--text-faint); }
++.vta-budget-track { width: 64px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; }
++.vta-budget-fill { display: block; height: 100%; background: var(--text-dim); border-radius: 2px; }
++.vta-budget.is-warn .vta-budget-n { color: var(--warn-ink); font-weight: 600; }
++.vta-budget.is-warn .vta-budget-fill { background: var(--warn); }
++.vta-budget.is-warn .vta-budget-track { width: 96px; }
++.vta-budget.is-cap .vta-budget-n { color: var(--bad-ink); font-weight: 600; }
++.vta-budget.is-cap .vta-budget-fill { background: var(--bad); }
++.vta-budget.is-cap .vta-budget-track { width: 96px; }
++
++/* ---- the stage ------------------------------------------------------------- */
++.vta-stage { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; min-width: 0; }
++.vta-stage.has-cards { grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; }
++.vta-frame { container-type: size; min-width: 0; min-height: 0; display: grid; place-items: center; }
++/* The sheet would fall under the 12 px text floor at the fitted scale: it keeps that floor and the stage pans. */
++.vta-frame.is-pan { place-items: safe center; overflow: auto; scrollbar-width: thin; border-radius: var(--r-card); }
++.vta-sheet {
++  position: relative; flex: none;
++  border-radius: var(--r-card); overflow: visible;
++  box-shadow: 0 0 0 1px var(--vt-glass-line), 0 24px 60px -30px color-mix(in srgb, var(--info) 45%, transparent);
++  animation: vta-in 260ms ease-out;
++}
++.vta-sheet-body { font-size: var(--t-body); position: absolute; left: 0; top: 0; width: 960px; height: 600px; transform-origin: 0 0; border-radius: inherit; overflow: hidden; }
++@keyframes vta-in { from { opacity: 0; transform: scale(0.985); } }
++
++/* ---- notes and the pointer ------------------------------------------------- */
++.vta-notes-layer { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
++.vta-region {
++  position: absolute; pointer-events: none; border-radius: 6px;
++  border: 1.5px dashed var(--vta-pin); background: color-mix(in srgb, var(--paused) 10%, transparent);
++}
++.vta-region.is-dragging { border-style: solid; background: color-mix(in srgb, var(--paused) 14%, transparent); }
++.vta-point {
++  position: absolute; pointer-events: none; border-radius: 14px;
++  border: 2px solid var(--info); box-shadow: 0 0 0 6px color-mix(in srgb, var(--info) 18%, transparent), 0 0 28px color-mix(in srgb, var(--info) 45%, transparent);
++  opacity: 0.35; transition: opacity 300ms ease;
++}
++.vta-point.is-on { opacity: 1; animation: vta-breathe 1.8s ease-in-out infinite; }
++@keyframes vta-breathe { 50% { box-shadow: 0 0 0 10px color-mix(in srgb, var(--info) 10%, transparent), 0 0 36px color-mix(in srgb, var(--info) 55%, transparent); } }
++.vta-pin-at { position: absolute; width: 0; height: 0; z-index: 2; }
++.vta-pin {
++  position: absolute; left: -14px; top: -14px; width: 28px; height: 28px; padding: 0;
++  display: grid; place-items: center; border-radius: 50% 50% 50% 4px;
++  font: 700 var(--t-micro)/1 var(--font); color: var(--bg); background: var(--vta-pin);
++  border: 2px solid var(--bg); box-shadow: 0 4px 12px -2px color-mix(in srgb, #000 45%, transparent); cursor: pointer;
++  transition: transform 140ms ease;
++}
++.vta-pin:hover, .vta-pin.is-open { transform: scale(1.12); }
++.vta-pin:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
++.vta-pin-note {
++  position: absolute; left: 22px; top: -14px; width: 260px;
++  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 6px;
++  border: 1px solid color-mix(in srgb, var(--paused) 40%, var(--line)); border-radius: var(--r-card);
++  background: var(--surface); box-shadow: var(--sk-sh, 0 12px 32px -12px rgba(0,0,0,.5));
++  animation: vta-pop 200ms ease-out;
++}
++.vta-pin-at.is-flip .vta-pin-note { left: auto; right: 22px; }
++.vta-pin-note.is-waiting { width: auto; padding: 10px 14px; }
++.vta-pin-note.is-landed { animation: vta-land 420ms cubic-bezier(.2,.9,.3,1.2); }
++@keyframes vta-pop { from { opacity: 0; transform: translateY(4px); } }
++@keyframes vta-land { from { opacity: 0; transform: translateY(-10px) scale(0.96); } }
++.vta-pin-text { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
++.vta-pin-foot { display: flex; align-items: center; gap: 4px; color: var(--text-faint); }
++.vta-pin-acts { margin-left: auto; display: inline-flex; gap: 2px; }
++.vta-via { display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--text-faint); }
++.vta-pin-wait { display: inline-flex; gap: 4px; }
++.vta-pin-wait > span { width: 6px; height: 6px; border-radius: 50%; background: var(--paused); animation: vta-wait 1s ease-in-out infinite; }
++.vta-pin-wait > span:nth-child(2) { animation-delay: .15s; }
++.vta-pin-wait > span:nth-child(3) { animation-delay: .3s; }
++@keyframes vta-wait { 50% { opacity: .25; transform: translateY(-2px); } }
++
++/* ---- cards at the right edge ----------------------------------------------- */
++.vta-cards { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; align-self: center; }
++.vta-card {
++  display: flex; flex-direction: column; gap: 10px; padding: 14px 14px 12px;
++  border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); background: var(--surface);
++  box-shadow: 0 18px 40px -24px color-mix(in srgb, #000 60%, transparent);
++  animation: vta-slide 320ms cubic-bezier(.2,.8,.2,1);
++}
++.vta-card.is-leaving { animation: vta-leave 400ms ease-in forwards; }
++@keyframes vta-slide { from { opacity: 0; transform: translateX(48px); } }
++@keyframes vta-leave { to { opacity: 0; transform: translateX(64px); } }
++.vta-card.is-readback { border-left: 3px solid var(--paused); }
++.vta-card.is-readback.is-confirmed { border-left-color: var(--ok); }
++.vta-card.is-readback.is-refused { border-left-color: var(--text-faint); }
++.vta-card.is-readback.is-expired { border-left-color: var(--line); background: var(--bg); box-shadow: none; }
++.vta-card.is-expired .vta-rb-heard, .vta-card.is-expired .vta-rb-target, .vta-card.is-expired dt { color: var(--text-faint); }
++.vta-card-kind { margin: 0; font-size: var(--t-meta); color: var(--text-dim); }
++.vta-card-title { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; color: var(--text); }
++.vta-card-lines { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
++.vta-card-lines code { font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); overflow-wrap: anywhere; }
++.vta-card-acts { display: flex; align-items: center; gap: 8px; }
++.vta-rb { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
++.vta-rb dt { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
++.vta-rb dd { margin: 0 0 8px; }
++.vta-rb-heard { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); font-style: italic; }
++.vta-rb-target { font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; color: var(--text); }
++.vta-rb dd:last-child { margin-bottom: 0; }
++.vta-card-acts > .c-tip-host { margin-left: auto; }
++.vta-rb-clock {
++  position: relative; display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
++  font: 600 var(--t-micro)/1 var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim); cursor: default;
++  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--text) 10%, transparent);
++}
++.vta-rb-clock::before {
++  content: ""; position: absolute; inset: 0; border-radius: 50%;
++  background: conic-gradient(var(--paused) var(--left), transparent 0);
++  -webkit-mask: radial-gradient(circle, transparent 0 13.5px, #000 14px); mask: radial-gradient(circle, transparent 0 13.5px, #000 14px);
++}
++.vta-card-acts > .c-tip-host .c-tip { left: auto; right: 0; }
++.vta-rb-done { margin: 0; display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ok-ink); }
++.vta-rb-via { font-weight: 400; font-style: italic; color: var(--text-dim); }
++.vta-rb-done.is-refused { color: var(--text); }
++.vta-rb-done.is-expired { color: var(--text-dim); font-weight: 500; }
++.vta-rb-clock.is-out { color: var(--text-faint); }
++
++/* ---- captions: the thin strip --------------------------------------------- */
++.vta-caps {
++  justify-self: center; width: min(100%, 980px); max-height: calc(3 * 1.5em + 12px); overflow-y: auto;
++  display: flex; flex-direction: column; gap: 2px; padding: 2px 4px;
++  font-size: var(--t-lead); line-height: 1.5;
++  -webkit-mask: linear-gradient(to bottom, transparent, #000 14px); mask: linear-gradient(to bottom, transparent, #000 14px);
++  scrollbar-width: thin;
++}
++.vta-cap { margin: 0; display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; align-items: baseline; }
++.vta-cap-who { font-size: var(--t-meta); font-weight: 600; color: var(--text-faint); text-align: right; }
++.vta-cap.is-agent .vta-cap-who { color: var(--info-ink); }
++.vta-cap-text { color: var(--text-dim); min-width: 0; overflow-wrap: anywhere; }
++.vta-cap:last-child .vta-cap-text { color: var(--text); }
++.vta-cap.is-you.is-partial .vta-cap-text { color: var(--text-dim); }
++.vta-caret { display: inline-block; width: 2px; height: 1em; margin-left: 3px; vertical-align: -0.12em; background: currentColor; animation: vta-blink 1s steps(2) infinite; }
++.vta-cap.is-agent .vta-caret { background: var(--info); }
++@keyframes vta-blink { 50% { opacity: 0; } }
++
++/* ---- the one fallback line ------------------------------------------------- */
++.vta-fallback {
++  justify-self: center; margin: 0; display: inline-flex; align-items: center; gap: 12px; padding: 4px 4px 4px 14px;
++  font-size: var(--t-body); color: var(--text);
++  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); border-radius: var(--r-pill);
++  background: color-mix(in srgb, var(--warn) 9%, var(--surface));
++}
++
++/* ---- the bar: ring, Start/Stop, status words ------------------------------- */
++.vta-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 18px; min-height: 108px; }
++.vta-bar-l { justify-self: end; display: inline-flex; gap: 6px; }
++/* Held while reconnecting: drawn faint so they never read as live. */
++.vta-bar-l button:disabled { opacity: .38; cursor: default; }
++.vta-bar-r { justify-self: start; display: inline-flex; align-items: flex-end; gap: 12px; min-width: 0; }
++/* The engine is named beside the status words, set off by a rule so it never reads as one more phase. */
++.vta-bar-r > .c-tip-host:last-child { padding-left: 12px; border-left: 1px solid var(--line); line-height: 1.5; }
++.vta-ring { position: relative; width: 112px; height: 112px; display: grid; place-items: center; color: var(--text-faint); }
++.vta-ring > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
++.vta-ring-base { fill: none; stroke: currentColor; stroke-opacity: .35; stroke-width: 1.2; }
++.vta-ring-wave { fill: color-mix(in srgb, currentColor 7%, transparent); stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
++.vta-ring-glow { fill: none; stroke: currentColor; stroke-width: 6; opacity: .28; filter: blur(3px); }
++.vta-ring-think { fill: none; stroke: var(--info); stroke-width: 2; transform-origin: 60px 60px; animation: vta-think 1.4s ease-in-out infinite; }
++@keyframes vta-think { 50% { opacity: .3; transform: scale(.94); } }
++.vta-ring-spin { fill: none; stroke: var(--paused); stroke-width: 2.4; stroke-linecap: round; stroke-dasharray: 60 229; transform-origin: 60px 60px; animation: vta-spin 1.6s linear infinite; }
++@keyframes vta-spin { to { transform: rotate(360deg); } }
++.vta-ring.is-mic { color: var(--text-dim); }
++.vta-ring.is-voice { color: var(--info); }
++.vta-ring.is-text { color: var(--text-faint); }
++.vta-ring.is-starting { color: var(--paused); }
++.vta-ring.is-thinking { color: var(--info); }
++.vta-ring.is-reconnecting { color: var(--warn); }
++.vta-ring.is-reconnecting .vta-ring-spin { stroke: var(--warn); }
++.vta-go {
++  position: relative; z-index: 1; width: 72px; height: 72px; border-radius: 50%;
++  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
++  font: 600 var(--t-meta)/1 var(--font); cursor: pointer;
++  color: var(--bg); background: var(--info); border: 0;
++  box-shadow: 0 10px 28px -10px color-mix(in srgb, var(--info) 70%, transparent);
++}
++.vta-go.is-live { color: var(--text); background: var(--surface); border: 1px solid var(--vt-glass-line); box-shadow: none; }
++.vta-go:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; }
++.vta-status { font-size: var(--t-lead); line-height: 1.2; font-weight: 600; color: var(--text); }
++.vta-status.is-warn { color: var(--warn-ink); }
++.vta-status.is-ended { color: var(--bad-ink); cursor: default; border-bottom: 1px dotted currentColor; }
++/* Text mode: no voice trace; the session goes on through one field, and Stop ends it. */
++.vta-say { display: flex; align-items: center; gap: 8px; width: min(560px, 100%); }
++.vta-say-inp { flex: 1; min-width: 0; }
++.vta-engine { font-size: var(--t-meta); color: var(--text-faint); border-bottom: 1px dotted color-mix(in srgb, var(--text-faint) 60%, transparent); cursor: default; }
++.vta-bar-r .c-tip { top: auto; bottom: calc(100% + 8px); }
++.vta-phases { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
++.vta-phases li { display: flex; align-items: center; gap: 7px; font-size: var(--t-body); color: var(--text-dim); }
++.vta-phases li.is-now { color: var(--text); font-weight: 600; font-size: var(--t-lead); }
++.vta-phases li.is-done .vta-ic { color: var(--ok-ink); }
++.vta-phase-what { font: var(--t-meta)/1 var(--mono); color: var(--text-dim); font-weight: 400; }
++.vta-secs { font-weight: 400; font-size: var(--t-meta); font-variant-numeric: tabular-nums; color: var(--text-faint); }
++.vta-dot { width: 8px; height: 8px; margin: 0 3px; border-radius: 50%; background: var(--paused); animation: vta-wait 1.2s ease-in-out infinite; }
++@media (prefers-reduced-motion: reduce) {
++  .vta-ring-spin, .vta-ring-think, .vta-dot, .vta-caret, .vta-point.is-on, .vta-pin-wait > span { animation: none; }
++}
++
++/* ---- the visuals' own drawing (fixtures) ----------------------------------- */
++/* The mock-up frame: a page drawn small, in the console's own tokens. */
++.vtm { width: 100%; height: 100%; display: flex; flex-direction: column; background: var(--surface); font-family: var(--font); color: var(--text); }
++.vtm-chrome { display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 16px; border-bottom: 1px solid var(--line-soft); background: var(--bg); }
++.vtm-chrome > span { width: 11px; height: 11px; border-radius: 50%; background: var(--line); }
++.vtm-chrome em { margin-left: 14px; font-style: normal; font-size: var(--t-body); color: var(--text-faint); }
++.vtm-page { flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 22px 32px; }
++.vtm-head { display: flex; align-items: center; gap: 12px; }
++.vtm-head b { font-size: var(--t-figure); font-weight: 600; }
++.vtm i { font-style: normal; }
++.vtm-chip { padding: 3px 10px; border-radius: 999px; font-size: var(--t-body); }
++.vtm-chip.is-bad { color: var(--bad-ink); background: color-mix(in srgb, var(--bad) 14%, transparent); }
++.vtm-sp { flex: 1; }
++.vtm-btn { padding: 7px 14px; border-radius: 8px; font-size: var(--t-body); border: 1px solid var(--line); }
++.vtm-btn.is-q { color: var(--text-dim); }
++.vtm-filters { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 10px; background: var(--bg); }
++.vtm-seg { padding: 6px 12px; border-radius: 8px; font-size: var(--t-body); color: var(--text-dim); }
++.vtm-seg.is-on { color: var(--text); background: var(--surface); box-shadow: 0 0 0 1px var(--line); }
++.vtm-search { width: 220px; padding: 6px 12px; border-radius: 8px; font-size: var(--t-body); color: var(--text-faint); border: 1px solid var(--line); }
++.vtm-rows { display: flex; flex-direction: column; }
++.vtm-row { display: flex; align-items: center; gap: 14px; height: 46px; padding: 0 10px; border-bottom: 1px solid var(--line-soft); font-size: var(--t-body); }
++.vtm-row b { font-weight: 500; width: 150px; }
++.vtm-row > span { color: var(--text-dim); }
++.vtm-dot { width: 10px; height: 10px; border-radius: 50%; }
++.vtm-row.is-ok .vtm-dot { background: var(--ok); }
++.vtm-row.is-bad .vtm-dot { background: var(--bad); }
++.vtm-row.is-bad { background: color-mix(in srgb, var(--bad) 6%, transparent); }
++.vtm-row.is-wait .vtm-dot { background: transparent; box-shadow: inset 0 0 0 2px var(--text-faint); }
++.vtm-dur { font-variant-numeric: tabular-nums; }
++.vtm-summary { display: flex; gap: 28px; margin-top: auto; font-size: var(--t-body); color: var(--text-dim); }
++.vtm-summary b { color: var(--text); font-size: var(--t-title); margin-right: 4px; }
++
++/* The diagram. */
++.vtd { width: 100%; height: 100%; display: block; background: var(--surface); font-family: var(--font); }
++.vtd-zone { fill: color-mix(in srgb, var(--info) 5%, transparent); stroke: var(--line); stroke-dasharray: 6 6; }
++.vtd-zone-t { fill: var(--text-faint); font-size: var(--t-title); font-weight: 600; }
++.vtd-node rect { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
++.vtd-node.is-hot rect { stroke: var(--info); }
++.vtd-t { fill: var(--text); font-size: var(--t-title); font-weight: 600; }
++.vtd-s { fill: var(--text-dim); font-size: var(--t-title); }
++.vtd-edge { fill: none; stroke: var(--text-faint); stroke-width: 1.8; }
++.vtd-head { fill: var(--text-faint); }
++
++/* The code slice. */
++.vtc { width: 100%; height: 100%; display: flex; flex-direction: column; background: var(--surface); }
++.vtc-head { display: flex; align-items: center; justify-content: space-between; height: 42px; padding: 0 20px; border-bottom: 1px solid var(--line-soft); background: var(--bg); font-size: var(--t-body); color: var(--text-faint); }
++.vtc-head code { font: 500 1em/1 var(--mono); color: var(--text); }
++.vtc-lines { margin: 0; padding: 10px 0; list-style: none; font: 1.107em/1.516 var(--mono); }
++.vtc-lines li { display: grid; grid-template-columns: 58px 1fr; padding-right: 20px; color: var(--text); }
++.vtc-lines code { font: inherit; white-space: pre; }
++.vtc-n { padding-right: 16px; text-align: right; color: var(--text-faint); font-variant-numeric: tabular-nums; }
++.vtc-lines li.is-pointed { background: color-mix(in srgb, var(--info) 16%, transparent); box-shadow: inset 4px 0 0 var(--info); }
++.vtc-lines li.is-pointed .vtc-n { color: var(--info-ink); font-weight: 600; }
++
++/* The failed step's log. */
++.vtl { width: 100%; height: 100%; display: flex; flex-direction: column; background: var(--surface); }
++.vtl-head { display: flex; align-items: center; gap: 10px; height: 50px; padding: 0 20px; border-bottom: 1px solid var(--line-soft); background: var(--bg); font-size: var(--t-title); color: var(--text-dim); }
++.vtl-head b { color: var(--text); font-size: var(--t-figure); }
++.vtl-x { color: var(--bad-ink); font-weight: 700; }
++.vtl-body { margin: 0; padding: 14px 20px; font: 1.3em/1.55 var(--mono); color: var(--text-dim); white-space: pre; overflow: hidden; }
++.vtl-body .is-ok { color: var(--ok-ink); }
++.vtl-body .is-bad { color: var(--bad-ink); }
++.vtl-body .is-hot { color: var(--text); background: color-mix(in srgb, var(--bad) 12%, transparent); }
++.vtl-body .is-dim { color: var(--text-faint); }
++
++/* ---- phone ----------------------------------------------------------------- */
++@media (max-width: 760px) {
++  .vta { height: max(560px, calc(100dvh - 150px)); padding: 8px 8px 6px; gap: 8px; border-radius: var(--r-card);
++    grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
++  /* The visual takes the width it needs and no more; the captions get the rest. */
++  .vta-frame { aspect-ratio: 16 / 10; }
++  /* Panned at the text floor, the visual gets a square window so more of it shows at once. */
++  .vta-frame.is-pan { aspect-ratio: 1 / 1; }
++  .vta-bar-r { flex-direction: column; align-items: flex-start; gap: 4px; }
++  .vta-bar-r > .c-tip-host:last-child { padding-left: 0; border-left: 0; }
++  .vta-bar.is-text { grid-template-columns: minmax(0, 1fr); }
++  .vta-bar.is-text .vta-bar-l { display: none; }
++  .vta-head { flex-wrap: wrap; gap: 6px; }
++  .vta-head > .c-tip-host { order: -1; margin-left: auto; }
++  .vta-tabs { flex-basis: 100%; }
++  .vta-tab-title { max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++  .vta-stage.has-cards { grid-template-columns: minmax(0, 1fr); }
++  .vta-cards { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; }
++  .vta-caps { align-self: end; max-height: 100%; font-size: var(--t-body); }
++  .vta-cap { grid-template-columns: minmax(0, 1fr); gap: 0; }
++  .vta-cap-who { text-align: left; }
++  .vta-bar { min-height: 92px; gap: 10px; }
++  .vta-ring { width: 96px; height: 96px; }
++  .vta-go { width: 62px; height: 62px; }
++  .vta-pin { width: 24px; height: 24px; left: -12px; top: -12px; font-size: var(--t-micro); }
++  .vta-pin-note { width: 200px; }
++}
+diff --git a/apps/swarm-ui/src/voice/Section.tsx b/apps/swarm-ui/src/voice/Section.tsx
+index ca1e018..fc47b85 100644
+--- a/apps/swarm-ui/src/voice/Section.tsx
++++ b/apps/swarm-ui/src/voice/Section.tsx
+@@ -25,6 +25,7 @@ import type { Me } from '../types'
+ import { VoicePreferences, VoiceStandingPreferences } from './Preferences'
+ import { VoiceProjects } from './Projects'
+ import { TalkPane } from './Talk'
++import { StageA } from './mock/StageA' // MOCK-HOOK
+ 
+ /**
+  * WHO VOICE IT IS OPEN TO. Version one is one person's (§1: one budget, one
+@@ -84,6 +85,7 @@ function Gate({ children }: { children: ReactNode }) {
+  * swarm-api and the pane says so in the server's words.
+  */
+ export function VoiceTalkScreen() {
++  if (new URLSearchParams(window.location.search).get('vt') === 'a') return <StageA /> // MOCK-HOOK
+   return (
+     <>
+       <PageHead title="Talk" />
+diff --git a/apps/swarm-ui/src/voice/mock/StageA.tsx b/apps/swarm-ui/src/voice/mock/StageA.tsx
+new file mode 100644
+index 0000000..8baec49
+--- /dev/null
++++ b/apps/swarm-ui/src/voice/mock/StageA.tsx
+@@ -0,0 +1,1289 @@
++// MOCK-HOOK FILE
++/**
++ * VOICE IT'S OWN SPEECH, TALK, DIRECTION A: THE STAGE (mock-up only, ?vt=a).
++ *
++ * The visual in focus fills the page; the captions run in a thin strip under
++ * it, newest last; proposal and read-back cards slide in at the right edge
++ * and leave when answered; the voice trace is a ring around Start/Stop at the
++ * bottom centre with one or two status words beside it; note pins sit on the
++ * visual and a note opens from its pin. No prose on the page: every
++ * explanation is behind a tooltip. Every fixture here is invented (MOCK-HOOK):
++ * a session about the workflow page's redesign. `&s=<scene>` picks the state.
++ */
++import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
++
++import { Button, Tooltip } from '../../components'
++import '../../styles/vt-stage-a.css'
++
++type Engine = 'own' | 'gptlive'
++type Trace = 'idle' | 'starting' | 'mic' | 'thinking' | 'voice' | 'reconnecting' | 'text' | 'ended'
++type VisualKey = 'mockup' | 'diagram' | 'code' | 'log'
++type Side = 'you' | 'agent'
++interface Line {
++  side: Side
++  text: string
++  partial?: boolean
++}
++interface Pin {
++  id: string
++  n: number
++  x: number
++  y: number
++  w?: number
++  h?: number
++  text: string
++  via: 'voice' | 'typed' | 'tap'
++}
++interface Phase {
++  word: string
++  done: boolean
++  secs: number
++  /** What the phase works on, e.g. the model being fetched. */
++  what?: string
++}
++interface ReadBack {
++  kind: 'readback'
++  heard: string
++  action: string
++  target: string
++  state: 'pending' | 'confirmed' | 'refused' | 'expired'
++  secsLeft: number
++  /** The spoken words that answered it (confirmed, refused). */
++  via?: string
++}
++interface Proposal {
++  kind: 'proposal'
++  title: string
++  lines: string[]
++  refs: string[]
++}
++type CardData = ReadBack | Proposal
++interface Scene {
++  engine: Engine
++  trace: Trace
++  status: string | null
++  phases?: Phase[]
++  visual: VisualKey | null
++  lines: Line[]
++  cards: CardData[]
++  openPin?: string
++  pointAt?: { kind: 'lines'; from: number; to: number } | { kind: 'box'; x: number; y: number; w: number; h: number }
++  budget: { spent: number; cap: number; day: number; dayCap: number } | null
++  /** The one fallback line, with its [Text] control (no L4 at start). */
++  fallback?: string
++  landing?: boolean
++  muted?: boolean
++}
++
++// ---- fixtures (MOCK-HOOK) ----------------------------------------------------
++
++const PINS: Record<VisualKey, Pin[]> = {
++  mockup: [
++    {
++      id: 'm1',
++      n: 1,
++      x: 0.06,
++      y: 0.205,
++      w: 0.56,
++      h: 0.085,
++      text: 'Filter row stays put while the steps list scrolls.',
++      via: 'voice',
++    },
++    {
++      id: 'm2',
++      n: 2,
++      x: 0.8,
++      y: 0.335,
++      text: 'Durations right-aligned, tabular figures, so the column reads down.',
++      via: 'typed',
++    },
++  ],
++  diagram: [
++    {
++      id: 'd1',
++      n: 1,
++      x: 0.62,
++      y: 0.385,
++      text: 'One SSE stream for steps and logs, not two polls.',
++      via: 'voice',
++    },
++  ],
++  code: [
++    {
++      id: 'c1',
++      n: 1,
++      x: 0.93,
++      y: 0.535,
++      text: 'Memoise the sort; it reruns on every SSE tick.',
++      via: 'voice',
++    },
++  ],
++  log: [
++    {
++      id: 'l1',
++      n: 1,
++      x: 0.62,
++      y: 0.545,
++      text: 'Fixture clock drift, not the selector: pin the clock.',
++      via: 'tap',
++    },
++  ],
++}
++
++const VISUALS: { key: VisualKey; kind: string; title: string }[] = [
++  { key: 'mockup', kind: 'Mock-up', title: 'Workflow page' },
++  { key: 'diagram', kind: 'Diagram', title: 'Steps data path' },
++  { key: 'code', kind: 'Code', title: 'WorkflowSteps.tsx 34–55' },
++  { key: 'log', kind: 'Log', title: 'e2e · step 4' },
++]
++
++const SAID: Line[] = [
++  {
++    side: 'you',
++    text: "Let's open the workflow page again, the steps list is too dense.",
++  },
++  {
++    side: 'agent',
++    text: 'Here is the current mock-up. Two notes from yesterday are pinned on it.',
++  },
++]
++
++const BUDGET = { spent: 14.2, cap: 100, day: 41.8, dayCap: 300 }
++
++const READBACK: ReadBack = {
++  kind: 'readback',
++  heard: 'cancel the nightly e2e run, it is stuck on the same step',
++  action: 'cancel',
++  target: 'run nightly-e2e #482',
++  state: 'pending',
++  secsLeft: 38,
++}
++
++const SCENES: Record<string, Scene> = {
++  rest: {
++    engine: 'own',
++    trace: 'idle',
++    status: null,
++    visual: null,
++    lines: [],
++    cards: [],
++    budget: null,
++  },
++  starting: {
++    engine: 'own',
++    trace: 'starting',
++    status: null,
++    visual: null,
++    lines: [],
++    cards: [],
++    budget: { ...BUDGET, spent: 0.06 },
++    phases: [
++      { word: 'starting machine', done: true, secs: 41 },
++      { word: 'loading models', done: false, secs: 12 },
++    ],
++  },
++  hearing: {
++    engine: 'own',
++    trace: 'mic',
++    status: 'hearing',
++    visual: 'mockup',
++    cards: [],
++    budget: BUDGET,
++    lines: [
++      ...SAID,
++      {
++        side: 'you',
++        text: 'Make the filter row stay where it is when the',
++        partial: true,
++      },
++    ],
++  },
++  speaking: {
++    engine: 'own',
++    trace: 'voice',
++    status: 'speaking',
++    visual: 'diagram',
++    budget: BUDGET,
++    lines: [
++      { side: 'you', text: 'Where do the step rows come from now?' },
++      {
++        side: 'agent',
++        text: 'Two polls today: steps every five seconds and the log tail every two. One stream would carry both.',
++        partial: true,
++      },
++    ],
++    cards: [
++      {
++        kind: 'proposal',
++        title: 'One stream for steps and logs',
++        lines: ['swarm-api: /v1/workflows/{id}/events', 'swarm-ui: WorkflowSteps, StepLog'],
++        refs: ['Plan · 2 lanes'],
++      },
++    ],
++    pointAt: { kind: 'box', x: 0.36, y: 0.355, w: 0.28, h: 0.2 },
++  },
++  'visual-mockup': {
++    engine: 'own',
++    trace: 'mic',
++    status: 'listening',
++    visual: 'mockup',
++    cards: [],
++    budget: BUDGET,
++    openPin: 'm2',
++    lines: SAID,
++  },
++  'visual-code': {
++    engine: 'own',
++    trace: 'voice',
++    status: 'speaking',
++    visual: 'code',
++    cards: [],
++    budget: BUDGET,
++    lines: [
++      { side: 'you', text: 'Why does the list jump when a step finishes?' },
++      {
++        side: 'agent',
++        text: 'Line 42: the rows are sorted again on every event, so a finished step moves under your pointer.',
++        partial: true,
++      },
++    ],
++    pointAt: { kind: 'lines', from: 42, to: 42 },
++  },
++  'note-adding': {
++    engine: 'own',
++    trace: 'mic',
++    status: 'hearing',
++    visual: 'mockup',
++    cards: [],
++    budget: BUDGET,
++    landing: true,
++    lines: [
++      ...SAID,
++      {
++        side: 'you',
++        text: 'Note here: the run summary should sit above the steps, not beside them.',
++      },
++    ],
++  },
++  'readback-pending': {
++    engine: 'own',
++    trace: 'mic',
++    status: 'listening',
++    visual: 'log',
++    budget: BUDGET,
++    lines: [
++      {
++        side: 'you',
++        text: 'Cancel the nightly e2e run, it is stuck on the same step.',
++      },
++      { side: 'agent', text: 'Will cancel run nightly-e2e #482. Go?' },
++    ],
++    cards: [READBACK],
++  },
++  'readback-confirmed': {
++    engine: 'own',
++    trace: 'voice',
++    status: 'speaking',
++    visual: 'log',
++    budget: BUDGET,
++    lines: [
++      { side: 'agent', text: 'Will cancel run nightly-e2e #482. Go?' },
++      { side: 'you', text: 'Go ahead.' },
++      { side: 'agent', text: 'Cancelled.', partial: true },
++    ],
++    cards: [{ ...READBACK, state: 'confirmed', via: 'go ahead' }],
++  },
++  // The stock-out happens at Start (§4.7): nothing has been said, shown or spent yet.
++  'no-l4': {
++    engine: 'own',
++    trace: 'text',
++    status: 'text mode',
++    visual: null,
++    cards: [],
++    budget: { ...BUDGET, spent: 0 },
++    fallback: 'No L4 free in us-central1-a.',
++    lines: [],
++  },
++  'starting-fetch': {
++    engine: 'own',
++    trace: 'starting',
++    status: null,
++    visual: null,
++    lines: [],
++    cards: [],
++    budget: { ...BUDGET, spent: 0.21 },
++    phases: [
++      { word: 'starting machine', done: true, secs: 38 },
++      { word: 'updating speech server', done: true, secs: 72 },
++      { word: 'fetching model', what: 'qwen3-asr-0.6b', done: false, secs: 24 },
++    ],
++  },
++  thinking: {
++    engine: 'own',
++    trace: 'thinking',
++    status: 'thinking',
++    visual: 'mockup',
++    cards: [],
++    budget: BUDGET,
++    lines: [
++      ...SAID,
++      {
++        side: 'you',
++        text: 'Make the filter row stay where it is when the steps list scrolls.',
++      },
++    ],
++  },
++  reconnecting: {
++    engine: 'own',
++    trace: 'reconnecting',
++    status: 'reconnecting',
++    visual: 'diagram',
++    cards: [],
++    budget: BUDGET,
++    lines: [
++      { side: 'you', text: 'Where do the step rows come from now?' },
++      { side: 'agent', text: 'Two polls today: steps every five seconds and the log tail every two.' },
++    ],
++  },
++  // The speech server did not come back in 3 minutes: text mode, the machine stopped (§4.5).
++  'engine-down': {
++    engine: 'own',
++    trace: 'text',
++    status: 'engine down',
++    visual: 'diagram',
++    cards: [],
++    budget: BUDGET,
++    lines: [
++      { side: 'you', text: 'Where do the step rows come from now?' },
++      { side: 'agent', text: 'Two polls today: steps every five seconds and the log tail every two.' },
++    ],
++  },
++  'readback-refused': {
++    engine: 'own',
++    trace: 'voice',
++    status: 'speaking',
++    visual: 'log',
++    budget: BUDGET,
++    lines: [
++      { side: 'agent', text: 'Will cancel run nightly-e2e #482. Go?' },
++      { side: 'you', text: 'No.' },
++      { side: 'agent', text: 'Left it running.', partial: true },
++    ],
++    cards: [{ ...READBACK, state: 'refused', via: 'no' }],
++  },
++  'readback-expired': {
++    engine: 'own',
++    trace: 'mic',
++    status: 'listening',
++    visual: 'log',
++    budget: BUDGET,
++    lines: [
++      {
++        side: 'you',
++        text: 'Cancel the nightly e2e run, it is stuck on the same step.',
++      },
++      { side: 'agent', text: 'Will cancel run nightly-e2e #482. Go?' },
++    ],
++    cards: [{ ...READBACK, state: 'expired', secsLeft: 0 }],
++  },
++  'budget-80': {
++    engine: 'own',
++    trace: 'mic',
++    status: 'listening',
++    visual: 'diagram',
++    cards: [],
++    budget: { spent: 80.4, cap: 100, day: 108.1, dayCap: 300 },
++    lines: [
++      { side: 'you', text: 'And the log pane, does it need its own route?' },
++      {
++        side: 'agent',
++        text: 'No: the same stream carries log lines, tagged by step.',
++      },
++    ],
++  },
++  // At the cap the session ends and the machine stops (§13); the page keeps what was said and shown.
++  'budget-cap': {
++    engine: 'own',
++    trace: 'ended',
++    status: 'budget cap',
++    visual: 'diagram',
++    cards: [],
++    budget: { spent: 100, cap: 100, day: 127.7, dayCap: 300 },
++    lines: [
++      { side: 'you', text: 'And the log pane, does it need its own route?' },
++      {
++        side: 'agent',
++        text: 'No: the same stream carries log lines, tagged by step.',
++      },
++    ],
++  },
++  gptlive: {
++    engine: 'gptlive',
++    trace: 'voice',
++    status: 'speaking',
++    visual: 'diagram',
++    cards: [],
++    budget: { ...BUDGET, spent: 22.6 },
++    lines: [
++      { side: 'you', text: 'Where do the step rows come from now?' },
++      {
++        side: 'agent',
++        text: 'Two polls today: steps every five seconds and the log tail every two.',
++        partial: true,
++      },
++    ],
++    pointAt: { kind: 'box', x: 0.36, y: 0.355, w: 0.28, h: 0.2 },
++  },
++}
++
++// ---- the page ------------------------------------------------------------------
++
++function money(n: number): string {
++  return `$${n.toFixed(2)}`
++}
++
++export function StageA() {
++  // Read once: the console's router may rewrite the address while the stage is open.
++  const [sceneKey] = useState(() => new URLSearchParams(window.location.search).get('s') ?? 'rest')
++  const scene: Scene = SCENES[sceneKey] ?? SCENES.rest!
++  const [focus, setFocus] = useState<VisualKey | null>(scene.visual)
++  const [openPin, setOpenPin] = useState<string | null>(scene.openPin ?? null)
++  const [cards, setCards] = useState<(CardData & { leaving?: boolean })[]>(scene.cards)
++  const [fallback, setFallback] = useState(scene.fallback ?? null)
++  const [extra, setExtra] = useState<Pin[]>([])
++  const [muted, setMuted] = useState(scene.muted === true)
++  const [said, setSaid] = useState<Line[]>([])
++  const [draft, setDraft] = useState('')
++  // A voice session is live while the engine hears; text mode and an ended session draw no voice controls.
++  const live = scene.trace === 'mic' || scene.trace === 'thinking' || scene.trace === 'voice' || scene.trace === 'reconnecting'
++  const textMode = scene.trace === 'text'
++
++  // A card leaves once answered (MOCK-HOOK: answered here, not by swarm-api).
++  const answer = (i: number) => {
++    setCards((cs) => cs.map((c, j) => (j === i ? { ...c, leaving: true } : c)))
++    window.setTimeout(() => setCards((cs) => cs.filter((_, j) => j !== i)), 420)
++  }
++
++  // A note dragged onto the mock-up gets the spoken words that follow (MOCK-HOOK).
++  const onRegion = (r: { x: number; y: number; w: number; h: number }) => {
++    const id = `new-${extra.length}`
++    const pins = PINS[focus ?? 'mockup']
++    const pin: Pin = {
++      id,
++      n: pins.length + extra.length + 1,
++      ...r,
++      text: '',
++      via: 'voice',
++    }
++    setExtra((e) => [...e, pin])
++    setOpenPin(id)
++    if (scene.landing) {
++      window.setTimeout(() => {
++        setExtra((e) => e.map((p) => (p.id === id ? { ...p, text: 'Run summary above the steps, not beside them.' } : p)))
++      }, 700)
++    }
++  }
++
++  const pins = focus === null ? [] : [...PINS[focus], ...(focus === 'mockup' ? extra : [])]
++  const lines = [...scene.lines, ...said]
++
++  return (
++    <div className="vta" data-engine={scene.engine} data-trace={scene.trace}>
++      <div className="vta-sky" aria-hidden="true" />
++
++      <header className="vta-head">
++        {focus !== null && (
++          <nav className="vta-tabs" aria-label="Visuals">
++            {VISUALS.map((v) => (
++              <button
++                key={v.key}
++                type="button"
++                className="vta-tab"
++                aria-pressed={focus === v.key}
++                onClick={() => {
++                  setFocus(v.key)
++                  setOpenPin(null)
++                }}
++              >
++                <KindGlyph kind={v.key} />
++                <span className="vta-tab-title">{v.title}</span>
++                {PINS[v.key].length > 0 && (
++                  <span className="vta-tab-pins" aria-label={`${PINS[v.key].length} notes`}>
++                    {PINS[v.key].length}
++                  </span>
++                )}
++              </button>
++            ))}
++          </nav>
++        )}
++        {scene.budget !== null && <BudgetLine {...scene.budget} engine={scene.engine} />}
++      </header>
++
++      <main className={`vta-stage${cards.length > 0 ? ' has-cards' : ''}`}>
++        <div className="vta-frame">
++          {focus !== null && (
++            <Sheet
++              key={focus}
++              visual={focus}
++              pins={pins}
++              openPin={openPin}
++              setOpenPin={setOpenPin}
++              pointAt={scene.pointAt}
++              onRegion={onRegion}
++              speaking={scene.trace === 'voice'}
++            />
++          )}
++        </div>
++        {cards.length > 0 && (
++          <aside className="vta-cards" aria-label="Cards">
++            {cards.map((c, i) =>
++              c.kind === 'readback' ? (
++                <ReadBackCard key={i} rb={c} leaving={c.leaving === true} onAnswer={() => answer(i)} />
++              ) : (
++                <ProposalCard key={i} p={c} leaving={c.leaving === true} onAnswer={() => answer(i)} />
++              ),
++            )}
++          </aside>
++        )}
++      </main>
++
++      {lines.length > 0 && <Captions lines={lines} />}
++
++      {fallback !== null && (
++        <p className="vta-fallback" role="status">
++          <span>{fallback}</span>
++          {/* Already in text mode (§4.7): the control only dismisses the line. */}
++          <Button kind="secondary" size="sm" onClick={() => setFallback(null)}>
++            Text
++          </Button>
++        </p>
++      )}
++
++      <footer className={`vta-bar${textMode ? ' is-text' : ''}`}>
++        <div className="vta-bar-l">
++          {live && (
++            <>
++              <Button kind="ghost" size="sm" iconOnly icon={<MicGlyph off={muted} />} aria-pressed={muted} disabled={scene.trace === 'reconnecting'} onClick={() => setMuted(!muted)}>
++                {muted ? 'Unmute' : 'Mute'}
++              </Button>
++              <Button kind="ghost" size="sm" iconOnly icon={<HoldGlyph />} disabled={scene.trace === 'reconnecting'}>
++                Push to talk
++              </Button>
++            </>
++          )}
++        </div>
++        {textMode ? (
++          // Text mode has no voice trace: the session goes on through this field, and Stop still ends it.
++          <form
++            className="vta-say"
++            onSubmit={(e) => {
++              e.preventDefault()
++              const words = draft.trim()
++              if (words === '') return
++              setSaid((l) => [...l, { side: 'you', text: words }])
++              setDraft('')
++            }}
++          >
++            <input className="c-inp vta-say-inp" aria-label="Say to Voice it" placeholder="Say to Voice it" value={draft} onChange={(e) => setDraft(e.target.value)} />
++            <Button kind="primary" size="sm" type="submit" disabled={draft.trim() === ''}>
++              Send
++            </Button>
++            <Button kind="secondary" size="sm" icon={<StopGlyph />}>
++              Stop
++            </Button>
++          </form>
++        ) : (
++          <TraceRing trace={muted ? 'idle' : scene.trace} live={live || scene.trace === 'starting'} />
++        )}
++        <div className="vta-bar-r">
++          {scene.phases !== undefined ? (
++            <ol className="vta-phases" aria-label="Starting">
++              {scene.phases.map((p) => (
++                <li key={p.word} className={p.done ? 'is-done' : 'is-now'}>
++                  {p.done ? <TickGlyph /> : <span className="vta-dot" aria-hidden="true" />}
++                  <span>{p.word}</span>
++                  {p.what !== undefined && <code className="vta-phase-what">{p.what}</code>}
++                  <span className="vta-secs">{clock(p.secs)}</span>
++                </li>
++              ))}
++            </ol>
++          ) : (
++            scene.status !== null && <StatusWords status={muted ? 'muted' : scene.status} trace={scene.trace} spent={scene.budget?.spent ?? 0} />
++          )}
++          {scene.trace !== 'idle' && <EngineTick engine={scene.engine} text={textMode} cause={scene.status} />}
++        </div>
++      </footer>
++    </div>
++  )
++}
++
++// ---- pieces --------------------------------------------------------------------
++
++function clock(secs: number): string {
++  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
++}
++
++/** The one or two status words; an ended session's words carry their reason in a tooltip. */
++function StatusWords({ status, trace, spent }: { status: string; trace: Trace; spent: number }) {
++  if (trace === 'ended') {
++    return (
++      <Tooltip tip={`The session ended at its ${money(spent)} cap and the speech machine stopped. Start opens a new session.`}>
++        <span className="vta-status is-ended" role="status" tabIndex={0}>
++          {status}
++        </span>
++      </Tooltip>
++    )
++  }
++  return (
++    <span className={`vta-status${trace === 'reconnecting' || status === 'engine down' ? ' is-warn' : ''}`} role="status">
++      {status}
++    </span>
++  )
++}
++
++function EngineTick({ engine, text, cause }: { engine: Engine; text: boolean; cause: string | null }) {
++  if (text) {
++    const why = cause === 'engine down' ? 'the speech server did not come back within 3 minutes and the machine stopped' : 'own speech could not start'
++    return (
++      <Tooltip tip={`Text mode: this browser hears you and reads the replies aloud, and you can type, because ${why}. Stop and Start again to retry own speech.`}>
++        <span className="vta-engine" tabIndex={0}>
++          this browser
++        </span>
++      </Tooltip>
++    )
++  }
++  const tip =
++    engine === 'own'
++      ? 'Own speech: speech-to-text and the voice run on the L4 in us-central1-a; a fast Claude model answers, the planner acts as you.'
++      : 'GPT-Live: OpenAI realtime voice, chosen in Settings; the planner acts as you.'
++  return (
++    <Tooltip tip={tip}>
++      <span className="vta-engine" tabIndex={0}>
++        {engine === 'own' ? 'own speech' : 'GPT-Live'}
++      </span>
++    </Tooltip>
++  )
++}
++
++function BudgetLine({ spent, cap, day, dayCap, engine }: { spent: number; cap: number; day: number; dayCap: number; engine: Engine }) {
++  const share = spent / cap
++  const warn = share >= 0.8
++  const atCap = share >= 1
++  const tip = `This session: ${money(spent)} spent and reserved of ${money(cap)}. Today: ${money(day)} of ${money(dayCap)}. ${
++    engine === 'own' ? 'Includes the speech machine from its start call; its disk is platform cost, not counted.' : 'Includes GPT-Live talk time.'
++  } At the cap the session ends${engine === 'own' ? ' and the machine stops' : ''}.`
++  return (
++    <Tooltip tip={tip}>
++      <span className={`vta-budget${atCap ? ' is-cap' : warn ? ' is-warn' : ''}`} tabIndex={0}>
++        <span className="vta-budget-n">
++          {money(spent)} <span className="vta-budget-of">/ {money(cap)}</span>
++        </span>
++        <span className="vta-budget-track" aria-hidden="true">
++          <span className="vta-budget-fill" style={{ width: `${Math.min(100, share * 100)}%` }} />
++        </span>
++      </span>
++    </Tooltip>
++  )
++}
++
++function Captions({ lines }: { lines: Line[] }) {
++  const box = useRef<HTMLDivElement>(null)
++  useLayoutEffect(() => {
++    if (box.current) box.current.scrollTop = box.current.scrollHeight
++  }, [lines])
++  return (
++    <div className="vta-caps" ref={box} role="log" aria-live="polite" aria-label="Captions">
++      {lines.map((l, i) => (
++        <p key={i} className={`vta-cap is-${l.side}${l.partial ? ' is-partial' : ''}`}>
++          <span className="vta-cap-who">{l.side === 'you' ? 'You' : 'Voice it'}</span>
++          <span className="vta-cap-text">
++            {l.text}
++            {l.partial && <span className="vta-caret" aria-hidden="true" />}
++          </span>
++        </p>
++      ))}
++    </div>
++  )
++}
++
++/** The voice trace: a ring of the live level around Start/Stop. */
++function TraceRing({ trace, live }: { trace: Trace; live: boolean }) {
++  const [t, setT] = useState(0)
++  useEffect(() => {
++    if (trace !== 'mic' && trace !== 'voice') return
++    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
++    let raf = 0
++    const tick = (now: number) => {
++      setT(now / 1000)
++      raf = window.requestAnimationFrame(tick)
++    }
++    raf = window.requestAnimationFrame(tick)
++    return () => window.cancelAnimationFrame(raf)
++  }, [trace])
++  const amp = trace === 'voice' ? 7 : trace === 'mic' ? 4 : 0
++  const R = 46
++  const pts: string[] = []
++  const N = 96
++  for (let i = 0; i <= N; i++) {
++    const a = (i / N) * Math.PI * 2
++    const v =
++      amp * (0.55 * Math.sin(a * 5 + t * 3.1) + 0.3 * Math.sin(a * 9 - t * 4.7) + 0.25 * Math.sin(a * 3 + t * 1.7)) * (0.6 + 0.4 * Math.sin(t * 2.3 + a * 2))
++    const r = R + Math.max(-amp * 0.35, v)
++    pts.push(`${(60 + r * Math.cos(a)).toFixed(2)},${(60 + r * Math.sin(a)).toFixed(2)}`)
++  }
++  return (
++    <div className={`vta-ring is-${trace}`}>
++      <svg viewBox="0 0 120 120" aria-hidden="true">
++        <circle className="vta-ring-base" cx="60" cy="60" r={R} />
++        {amp > 0 && <polygon className="vta-ring-glow" points={pts.join(' ')} />}
++        {amp > 0 && <polygon className="vta-ring-wave" points={pts.join(' ')} />}
++        {(trace === 'starting' || trace === 'reconnecting') && <circle className="vta-ring-spin" cx="60" cy="60" r={R} />}
++        {trace === 'thinking' && <circle className="vta-ring-think" cx="60" cy="60" r={R} />}
++      </svg>
++      <button type="button" className={`vta-go${live ? ' is-live' : ''}`}>
++        {live ? <StopGlyph /> : <MicGlyph />}
++        <span>{live ? 'Stop' : 'Start'}</span>
++      </button>
++    </div>
++  )
++}
++
++function ReadBackCard({ rb, leaving, onAnswer }: { rb: ReadBack; leaving: boolean; onAnswer: () => void }) {
++  return (
++    <section className={`vta-card is-readback is-${rb.state}${leaving ? ' is-leaving' : ''}`} aria-label="Read-back">
++      <dl className="vta-rb">
++        <dt>Heard</dt>
++        <dd className="vta-rb-heard">“{rb.heard}”</dd>
++        <dt>Will {rb.action}</dt>
++        <dd className="vta-rb-target">{rb.target}</dd>
++      </dl>
++      {rb.state === 'confirmed' && (
++        <p className="vta-rb-done" role="status">
++          <TickGlyph />
++          <span>Go</span>
++          <span className="vta-rb-via">“{rb.via}”</span>
++        </p>
++      )}
++      {rb.state === 'refused' && (
++        <p className="vta-rb-done is-refused" role="status">
++          <CrossGlyph />
++          <span>Not that</span>
++          <span className="vta-rb-via">“{rb.via}”</span>
++        </p>
++      )}
++      {rb.state === 'expired' && (
++        // Expired: nothing ran; the card greys and stays for the record (§7.4).
++        <p className="vta-rb-done is-expired" role="status">
++          <Tooltip tip="No answer within 45 s of the question, so nothing ran.">
++            <span className="vta-rb-clock is-out" tabIndex={0} style={{ ['--left' as string]: '0%' }}>
++              0s
++            </span>
++          </Tooltip>
++          <span>expired</span>
++        </p>
++      )}
++      {rb.state === 'pending' && (
++        <div className="vta-card-acts">
++          <Button kind="primary" size="sm" onClick={onAnswer}>
++            Go
++          </Button>
++          <Button kind="secondary" size="sm" onClick={onAnswer}>
++            Not that
++          </Button>
++          <Tooltip tip={`Expires in ${rb.secsLeft} s and nothing runs. Say “go” or “not that”; a bare “yes” is not a go.`}>
++            <span className="vta-rb-clock" tabIndex={0} style={{ ['--left' as string]: `${(rb.secsLeft / 45) * 100}%` }}>
++              {rb.secsLeft}s
++            </span>
++          </Tooltip>
++        </div>
++      )}
++    </section>
++  )
++}
++
++function ProposalCard({ p, leaving, onAnswer }: { p: Proposal; leaving: boolean; onAnswer: () => void }) {
++  return (
++    <section className={`vta-card is-proposal${leaving ? ' is-leaving' : ''}`} aria-label="Proposal">
++      <p className="vta-card-kind">{p.refs.join(' · ')}</p>
++      <h3 className="vta-card-title">{p.title}</h3>
++      <ul className="vta-card-lines">
++        {p.lines.map((l) => (
++          <li key={l}>
++            <code>{l}</code>
++          </li>
++        ))}
++      </ul>
++      <div className="vta-card-acts">
++        <Button kind="primary" size="sm" onClick={onAnswer}>
++          Approve
++        </Button>
++        <Button kind="secondary" size="sm" onClick={onAnswer}>
++          Not now
++        </Button>
++      </div>
++    </section>
++  )
++}
++
++const TEXT_FLOOR = 12
++
++/** The smallest font size, in the sheet's own pixels, of any text drawn in it. */
++function smallestText(root: HTMLElement): number {
++  let min = Infinity
++  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
++  for (let n = walk.nextNode(); n !== null; n = walk.nextNode()) {
++    if (n.textContent?.trim() && n.parentElement) min = Math.min(min, parseFloat(getComputedStyle(n.parentElement).fontSize))
++  }
++  return Number.isFinite(min) ? min : TEXT_FLOOR
++}
++
++/** The visual, drawn at 960×600 and scaled to the stage; pins and the pointer ride above it. */
++function Sheet({
++  visual,
++  pins,
++  openPin,
++  setOpenPin,
++  pointAt,
++  onRegion,
++  speaking,
++}: {
++  visual: VisualKey
++  pins: Pin[]
++  openPin: string | null
++  setOpenPin: (id: string | null) => void
++  pointAt: Scene['pointAt']
++  onRegion: (r: { x: number; y: number; w: number; h: number }) => void
++  speaking: boolean
++}) {
++  const box = useRef<HTMLDivElement>(null)
++  const body = useRef<HTMLDivElement>(null)
++  const [fit, setFit] = useState({ k: 1, pan: false })
++  const k = fit.k
++  const [drag, setDrag] = useState<{
++    x0: number
++    y0: number
++    x: number
++    y: number
++  } | null>(null)
++  // Fit the 960×600 sheet to the stage, but never below the scale at which its smallest text is
++  // 12 px (the console's floor): on a narrow stage the sheet stays readable and the stage pans.
++  useLayoutEffect(() => {
++    const frame = box.current?.parentElement
++    if (!frame || !body.current) return
++    const floor = TEXT_FLOOR / smallestText(body.current)
++    const measure = () => {
++      const k = Math.min(frame.clientWidth / 960, frame.clientHeight / 600)
++      setFit(k >= floor ? { k, pan: false } : { k: floor, pan: true })
++    }
++    const ro = new ResizeObserver(measure)
++    ro.observe(frame)
++    measure()
++    return () => ro.disconnect()
++  }, [visual])
++  useLayoutEffect(() => {
++    const frame = box.current?.parentElement
++    if (!frame) return
++    frame.classList.toggle('is-pan', fit.pan)
++    if (!fit.pan) return
++    // Panned: bring what is being talked about into the window, the pointed-at part or else the first pin.
++    // A region is read from its start (its pin, at the region's right end, is a pan away); a point is centred.
++    const first = pins[0]
++    const at = pointAt?.kind === 'box' ? { x: pointAt.x + pointAt.w / 2, y: pointAt.y + pointAt.h / 2, edge: 0.5 } : first && (first.w !== undefined ? { x: first.x, y: first.y, edge: 0.14 } : { x: first.x, y: first.y, edge: 0.5 })
++    if (at) {
++      frame.scrollLeft = Math.max(0, at.x * 960 * fit.k - frame.clientWidth * at.edge)
++      frame.scrollTop = Math.max(0, at.y * 600 * fit.k - frame.clientHeight * 0.4)
++    }
++    // Only on a change of scale: a pin added later must not move the window under the person.
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [fit.pan, fit.k])
++  const at = (e: ReactPointerEvent) => {
++    const r = box.current!.getBoundingClientRect()
++    return {
++      x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
++      y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
++    }
++  }
++  const region = drag && {
++    x: Math.min(drag.x0, drag.x),
++    y: Math.min(drag.y0, drag.y),
++    w: Math.abs(drag.x - drag.x0),
++    h: Math.abs(drag.y - drag.y0),
++  }
++  const pct = (v: number) => `${(v * 100).toFixed(2)}%`
++  return (
++    <div className={`vta-sheet is-${visual}`} ref={box} style={{ width: 960 * k, height: 600 * k }}>
++      <div className="vta-sheet-body" ref={body} style={{ transform: `scale(${k})` }}>
++        {visual === 'mockup' && <MockupVisual />}
++        {visual === 'diagram' && <DiagramVisual />}
++        {visual === 'code' && <CodeVisual pointAt={pointAt?.kind === 'lines' ? pointAt : undefined} />}
++        {visual === 'log' && <LogVisual />}
++      </div>
++      <div
++        className="vta-notes-layer"
++        onPointerDown={(e) => {
++          if (e.target !== e.currentTarget) return
++          const p = at(e)
++          setOpenPin(null)
++          setDrag({ x0: p.x, y0: p.y, x: p.x, y: p.y })
++        }}
++        onPointerMove={(e) => drag && setDrag({ ...drag, ...at(e) })}
++        onPointerUp={() => {
++          if (region && region.w > 0.02 && region.h > 0.02) onRegion(region)
++          setDrag(null)
++        }}
++      >
++        {pointAt?.kind === 'box' && (
++          <span
++            className={`vta-point${speaking ? ' is-on' : ''}`}
++            style={{
++              left: pct(pointAt.x),
++              top: pct(pointAt.y),
++              width: pct(pointAt.w),
++              height: pct(pointAt.h),
++            }}
++            aria-hidden="true"
++          />
++        )}
++        {region && (
++          <span
++            className="vta-region is-dragging"
++            style={{
++              left: pct(region.x),
++              top: pct(region.y),
++              width: pct(region.w),
++              height: pct(region.h),
++            }}
++          />
++        )}
++        {pins.map((p) => (
++          <PinMark key={p.id} pin={p} open={openPin === p.id} onToggle={() => setOpenPin(openPin === p.id ? null : p.id)} pct={pct} />
++        ))}
++      </div>
++    </div>
++  )
++}
++
++function PinMark({ pin, open, onToggle, pct }: { pin: Pin; open: boolean; onToggle: () => void; pct: (v: number) => string }) {
++  const isRegion = pin.w !== undefined && pin.h !== undefined
++  const px = isRegion ? pin.x + (pin.w ?? 0) : pin.x
++  const py = pin.y
++  const flip = px > 0.62
++  return (
++    <>
++      {isRegion && (open || pin.text === '') && (
++        <span
++          className="vta-region"
++          style={{
++            left: pct(pin.x),
++            top: pct(pin.y),
++            width: pct(pin.w ?? 0),
++            height: pct(pin.h ?? 0),
++          }}
++          aria-hidden="true"
++        />
++      )}
++      <span className={`vta-pin-at${flip ? ' is-flip' : ''}`} style={{ left: pct(px), top: pct(py) }}>
++        <button type="button" className={`vta-pin${open ? ' is-open' : ''}`} aria-expanded={open} aria-label={`Note ${pin.n}`} onClick={onToggle}>
++          {pin.n}
++        </button>
++        {open && (
++          <span className={`vta-pin-note${pin.text === '' ? ' is-waiting' : ' is-landed'}`} role="note">
++            {pin.text === '' ? (
++              <span className="vta-pin-wait" aria-label="Listening for the note">
++                <span />
++                <span />
++                <span />
++              </span>
++            ) : (
++              <>
++                <span className="vta-pin-text">{pin.text}</span>
++                <span className="vta-pin-foot">
++                  <ViaGlyph via={pin.via} />
++                  <span className="vta-pin-acts">
++                    <Button kind="ghost" size="sm">
++                      Resolve
++                    </Button>
++                    <Button kind="ghost" size="sm">
++                      To work
++                    </Button>
++                  </span>
++                </span>
++              </>
++            )}
++          </span>
++        )}
++      </span>
++    </>
++  )
++}
++
++// ---- the four visuals (MOCK-HOOK fixtures) --------------------------------------
++
++const STEPS: [string, string, string, string][] = [
++  ['ok', 'checkout', 'swarm-ui', '0:14'],
++  ['ok', 'install', 'npm ci', '1:52'],
++  ['ok', 'unit', 'vitest · 412 files', '6:08'],
++  ['bad', 'e2e', 'playwright · workflow.spec', '11:40'],
++  ['wait', 'publish', 'waiting on e2e', '—'],
++  ['wait', 'deploy-staging', 'waiting on publish', '—'],
++  ['wait', 'notify', 'waiting on deploy-staging', '—'],
++]
++
++function MockupVisual() {
++  return (
++    <div className="vtm">
++      <div className="vtm-chrome">
++        <span />
++        <span />
++        <span />
++        <em>Workflow · nightly-e2e #482</em>
++      </div>
++      <div className="vtm-page">
++        <div className="vtm-head">
++          <b>nightly-e2e</b>
++          <i className="vtm-chip is-bad">failed</i>
++          <span className="vtm-sp" />
++          <i className="vtm-btn">Re-run</i>
++          <i className="vtm-btn is-q">Cancel</i>
++        </div>
++        <div className="vtm-filters">
++          <i className="vtm-seg is-on">All 7</i>
++          <i className="vtm-seg">Failed 1</i>
++          <i className="vtm-seg">Waiting 3</i>
++          <span className="vtm-sp" />
++          <i className="vtm-search">Filter steps</i>
++        </div>
++        <div className="vtm-rows">
++          {STEPS.map(([tone, name, sub, dur]) => (
++            <div key={name} className={`vtm-row is-${tone}`}>
++              <i className="vtm-dot" />
++              <b>{name}</b>
++              <span>{sub}</span>
++              <span className="vtm-sp" />
++              <span className="vtm-dur">{dur}</span>
++            </div>
++          ))}
++        </div>
++        <div className="vtm-summary">
++          <span>
++            <b>3</b> passed
++          </span>
++          <span>
++            <b>1</b> failed
++          </span>
++          <span>
++            <b>19:54</b> total
++          </span>
++        </div>
++      </div>
++    </div>
++  )
++}
++
++function DiagramVisual() {
++  const box = (x: number, y: number, w: number, h: number, title: string, sub: string, cls = '') => (
++    <g className={`vtd-node ${cls}`}>
++      <rect x={x} y={y} width={w} height={h} rx="12" />
++      <text x={x + w / 2} y={y + h / 2 - 2} textAnchor="middle" className="vtd-t">
++        {title}
++      </text>
++      <text x={x + w / 2} y={y + h / 2 + 24} textAnchor="middle" className="vtd-s">
++        {sub}
++      </text>
++    </g>
++  )
++  return (
++    <svg className="vtd" viewBox="0 0 960 600" role="img" aria-label="Steps data path">
++      <defs>
++        <marker id="vtd-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
++          <path d="M0,0 L10,5 L0,10 z" className="vtd-head" />
++        </marker>
++      </defs>
++      <rect className="vtd-zone" x="340" y="40" width="280" height="520" rx="18" />
++      <text className="vtd-zone-t" x="360" y="74">
++        swarm-api
++      </text>
++      {box(40, 150, 240, 92, 'WorkflowSteps', 'swarm-ui')}
++      {box(40, 370, 240, 92, 'StepLog', 'swarm-ui')}
++      {box(360, 226, 240, 92, '/v1/workflows/{id}', 'steps · poll 5 s', 'is-hot')}
++      {box(360, 416, 240, 92, '/v1/agents/{id}/events', 'log tail · poll 2 s')}
++      {box(680, 150, 240, 92, 'Firestore', 'workflows/{id}/runs')}
++      {box(680, 400, 240, 92, 'GCS', 'tenants/<t>/logs')}
++      <path className="vtd-edge" d="M280,196 C320,196 320,272 360,272" markerEnd="url(#vtd-arrow)" />
++      <path className="vtd-edge" d="M280,416 C320,416 320,462 360,462" markerEnd="url(#vtd-arrow)" />
++      <path className="vtd-edge" d="M600,272 C640,272 640,196 680,196" markerEnd="url(#vtd-arrow)" />
++      <path className="vtd-edge" d="M600,462 C640,462 640,446 680,446" markerEnd="url(#vtd-arrow)" />
++    </svg>
++  )
++}
++
++const CODE: string[] = [
++  'export function WorkflowSteps({ run }: { run: Run }) {',
++  '  const [steps, setSteps] = useState<Step[]>(run.steps)',
++  "  const [filter, setFilter] = useState<StepFilter>('all')",
++  '',
++  '  useEffect(() => {',
++  '    const stop = poll(`/v1/workflows/${run.id}`, 5000, (r) => {',
++  '      setSteps(r.steps)',
++  '    })',
++  '    return stop',
++  '  }, [run.id])',
++  '',
++  '  const rows = steps.filter(byFilter(filter)).sort(byStateThenStart)',
++  '',
++  '  return (',
++  '    <section className="wf-steps">',
++  '      <StepFilters value={filter} onChange={setFilter} />',
++  '      {rows.map((s) => (',
++  '        <StepRow key={s.id} step={s} />',
++  '      ))}',
++  '    </section>',
++  '  )',
++  '}',
++]
++const CODE_FROM = 31
++
++function CodeVisual({ pointAt }: { pointAt?: { from: number; to: number } }) {
++  return (
++    <div className="vtc">
++      <div className="vtc-head">
++        <code>apps/swarm-ui/src/WorkflowSteps.tsx</code>
++        <span>main · 4f2c1e9</span>
++      </div>
++      <ol className="vtc-lines" start={CODE_FROM}>
++        {CODE.map((l, i) => {
++          const n = CODE_FROM + i
++          const hot = pointAt !== undefined && n >= pointAt.from && n <= pointAt.to
++          return (
++            <li key={n} className={hot ? 'is-pointed' : undefined}>
++              <span className="vtc-n">{n}</span>
++              <code>{l === '' ? ' ' : l}</code>
++            </li>
++          )
++        })}
++      </ol>
++    </div>
++  )
++}
++
++const LOG: [string, string][] = [
++  ['', 'Running 14 tests using 2 workers'],
++  ['ok', '  ✓  workflow.spec.ts:18 › lists steps in order (2.1s)'],
++  ['ok', '  ✓  workflow.spec.ts:31 › filters to failed steps (1.4s)'],
++  ['ok', '  ✓  workflow.spec.ts:47 › opens a step log (3.0s)'],
++  ['bad', '  ✘  workflow.spec.ts:62 › keeps the filter row in view (30.0s)'],
++  ['', ''],
++  ['bad', '  Error: Timed out 30000ms waiting for expect(locator).toBeInViewport()'],
++  ['', "    Locator: getByRole('toolbar', { name: 'Filter steps' })"],
++  ['', '    Expected: in viewport'],
++  ['bad', '    Received: outside viewport (y = -48)'],
++  ['', ''],
++  ['', '      61 |   await page.mouse.wheel(0, 1200)'],
++  ['hot', '    > 62 |   await expect(filters).toBeInViewport()'],
++  ['', '      63 | })'],
++  ['', ''],
++  ['dim', '  retry #1 … same failure · retry #2 … same failure'],
++]
++
++function LogVisual() {
++  return (
++    <div className="vtl">
++      <div className="vtl-head">
++        <span className="vtl-x" aria-hidden="true">
++          ✘
++        </span>
++        <b>e2e</b>
++        <span>step 4 of 6 · exit 1 · 11:40</span>
++      </div>
++      <pre className="vtl-body">
++        {LOG.map(([tone, l], i) => (
++          <span key={i} className={tone ? `is-${tone}` : undefined}>
++            {l}
++            {'\n'}
++          </span>
++        ))}
++      </pre>
++    </div>
++  )
++}
++
++// ---- glyphs --------------------------------------------------------------------
++
++function KindGlyph({ kind }: { kind: VisualKey }): ReactNode {
++  const d: Record<VisualKey, ReactNode> = {
++    mockup: (
++      <>
++        <rect x="3" y="4" width="18" height="16" rx="2" />
++        <path d="M3 8h18" />
++      </>
++    ),
++    diagram: (
++      <>
++        <rect x="3" y="4" width="7" height="6" rx="1.5" />
++        <rect x="14" y="14" width="7" height="6" rx="1.5" />
++        <path d="M10 7h3a2 2 0 0 1 2 2v5" />
++      </>
++    ),
++    code: <path d="M9 7l-5 5 5 5M15 7l5 5-5 5" />,
++    log: <path d="M5 6h14M5 10h14M5 14h9M5 18h6" />,
++  }
++  return (
++    <svg className="vta-ic" viewBox="0 0 24 24" aria-hidden="true" width="15" height="15">
++      {d[kind]}
++    </svg>
++  )
++}
++
++function MicGlyph({ off = false }: { off?: boolean }) {
++  return (
++    <svg className="vta-ic" viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
++      <rect x="9" y="3" width="6" height="11" rx="3" />
++      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
++      {off && <path d="M4 4l16 16" />}
++    </svg>
++  )
++}
++
++function StopGlyph() {
++  return (
++    <svg className="vta-ic is-fill" viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
++      <rect x="6" y="6" width="12" height="12" rx="2.5" />
++    </svg>
++  )
++}
++
++function HoldGlyph() {
++  return (
++    <svg className="vta-ic" viewBox="0 0 24 24" aria-hidden="true" width="18" height="18">
++      <rect x="4" y="9" width="16" height="9" rx="2.5" />
++      <path d="M8 13.5h8M12 3v3" />
++    </svg>
++  )
++}
++
++function CrossGlyph() {
++  return (
++    <svg className="vta-ic is-tick" viewBox="0 0 24 24" aria-hidden="true" width="14" height="14">
++      <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
++    </svg>
++  )
++}
++
++function TickGlyph() {
++  return (
++    <svg className="vta-ic is-tick" viewBox="0 0 24 24" aria-hidden="true" width="14" height="14">
++      <path d="M5 12.5l4.5 4.5L19 7.5" />
++    </svg>
++  )
++}
++
++function ViaGlyph({ via }: { via: Pin['via'] }) {
++  const word = via === 'voice' ? 'spoken' : via === 'typed' ? 'typed' : 'tapped'
++  return (
++    <Tooltip tip={`Note ${word}`}>
++      <span className="vta-via" tabIndex={0} aria-label={`Note ${word}`}>
++        {via === 'voice' ? <MicGlyph /> : via === 'typed' ? <KindGlyph kind="log" /> : <TickGlyph />}
++      </span>
++    </Tooltip>
++  )
++}

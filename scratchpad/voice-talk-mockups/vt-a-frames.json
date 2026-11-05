@@ -1,0 +1,142 @@
+[
+  {
+    "name": "vt-a-rest",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "rest",
+    "caption": "At rest: nothing on the stage, the Start button inside its quiet ring at the bottom centre.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-starting",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "starting",
+    "caption": "Starting own speech: the machine phases listed beside the spinning ring as they progress, each finished one ticked with its time; the engine named to their right, set off by a rule.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-starting-fetch",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "starting (updating speech server, fetching model)",
+    "caption": "A start after a change: 'starting machine' and 'updating speech server' ticked with their times, 'fetching model qwen3-asr-0.6b' in progress.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-hearing",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "hearing",
+    "caption": "Hearing: the mock-up is on the stage and the person's words arrive in the caption strip as they are heard, the ring tracing the mic.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-thinking",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "thinking",
+    "caption": "Thinking: the person's sentence is final, a turn is in flight, the ring pulses quietly and the status says thinking.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-speaking",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "speaking",
+    "caption": "Speaking: the agent replies over the architecture diagram, the ring tracing its voice, the node it talks about lit, and a proposal card slid in at the right edge.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-visual-mockup",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "visual-mockup",
+    "caption": "A UI mock-up frame fills the stage with two note pins; one note is open from its pin.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-visual-code",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "visual-code",
+    "caption": "A code slice in focus; the agent points at line 42 while it speaks, the line banded in the accent.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-note-adding",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "note-adding",
+    "caption": "Adding a note: a region dragged on the mock-up, and the note the person just spoke lands on its new pin.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-readback-pending",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "readback-pending",
+    "caption": "A read-back waiting: Heard, Will cancel: run nightly-e2e #482, Go and Not that, with the 45-second clock as a small ring.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-readback-confirmed",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "readback-confirmed",
+    "caption": "Confirmed by voice: the person said 'go ahead', the card ticks Go in green and quotes the words, no click.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-readback-refused",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "readback-refused",
+    "caption": "Refused: the person said 'no', the card marks Not that and quotes the word before it slides out; the agent says it left the run alone.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-readback-expired",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "readback-expired",
+    "caption": "Expired: no answer within 45 seconds, nothing ran; the card greys, shows 0s and 'expired', and stays for the record.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-reconnecting",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "reconnecting",
+    "caption": "Reconnecting: the speech server's socket dropped; the ring spins in the warning colour, Mute and Push to talk are held, Stop stays live.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-engine-down",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "engine-down",
+    "caption": "Engine down: the speech server did not come back, the machine stopped and the session goes on in text mode: a field, Send and Stop where the ring was, the engine now 'this browser'.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-no-l4",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "no-l4",
+    "caption": "No L4 free at Start: the one line with its Text control, and the session in text mode from the first second: a field, Send and Stop, nothing spent.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-budget-80",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "budget-80",
+    "caption": "Budget at 80%: the budget line at the top right turns to the warning colour and grows.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-budget-cap",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "budget-cap",
+    "caption": "Budget at the cap: the session has ended and the machine stopped; the budget line is red at $100.00, the ring is back to Start and the status says 'budget cap' (the reason in its tooltip).",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-gptlive",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "gptlive",
+    "caption": "The same page on GPT-Live: the engine tick says GPT-Live and there are no machine states.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vt-a-hearing-390",
+    "screen": "Voice it \u203a Talk (direction A, stage)",
+    "state": "hearing (phone)",
+    "caption": "Phone, hearing: the mock-up keeps its text at 12 px and pans in a square window opened on the part being talked about, the captions below, the ring at the bottom.",
+    "viewport": "390x844"
+  }
+]
