@@ -543,6 +543,14 @@ TRAIN_REBOARDED = "re-boarded once after the merge train's ejection"
 #: writes it, or `* name: url`.
 _EJECTION_FAILED = re.compile(
     r"^\s*[-*]\s+(?:\[(?P<link>[^\]]+)\]\(\S+\)|(?P<named>.+?):\s+\S+://\S+)\s*$")
+#: The train's "does not board" comment (`merge-train.sh tell_skip`,
+#: SKIP_MARKER and SKIP_HEADLINE, held equal by
+#: tests/unit/worker/test_merge_train_skip_reason.py): its first line is
+#: `<!-- merge-train-skip head=<sha> reason=<key> -->`, its second
+#: `**The merge train skips it: <why>.**`. The train decides why it passes
+#: over a `ready` pull request; the step only reads what it said, at its head.
+REPOSITORY_TRAIN_SKIP = "<!-- merge-train-skip"
+REPOSITORY_TRAIN_SKIP_HEADLINE = "**The merge train skips it: "
 
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
@@ -1324,6 +1332,8 @@ class ForgeMerger(Protocol):
 
     def train_ejection(self, number: int) -> str | None: ...
 
+    def train_skip(self, number: int, head: str) -> str | None: ...
+
 
 class UnsupportedForge(ValueError):
     """The repository is on a host no `ForgeMerger` serves."""
@@ -1771,18 +1781,44 @@ class GitHubMerger:
         an App wrote (auto-merge.yml's gate says why it removed `ready`), else
         None. The latest of the two, never an ejection ahead of a newer App
         comment: an earlier ejection must not turn the gate's later removal
-        into the train's, which `_board` re-boards instead of refusing."""
+        into the train's, which `_board` re-boards instead of refusing. The
+        train's own "does not board" comment (`REPOSITORY_TRAIN_SKIP`), which
+        the workflow's bot writes on a pull request still `ready`, is neither:
+        it never says why `ready` was lost."""
         comments = self._client.paginate(f"{self._base}/issues/{number}/comments")
         latest = None
         for comment in comments:
             comment = _mapping(comment)
             body = _str(comment.get("body"))
-            if body is None:
+            if body is None or body.startswith(REPOSITORY_TRAIN_SKIP):
                 continue
             if (body.startswith(REPOSITORY_TRAIN_EJECTED)
                     or _mapping(comment.get("user")).get("type") == "Bot"):
                 latest = body
         return latest
+
+    def train_skip(self, number: int, head: str) -> str | None:
+        """Why the merge train passes over the pull request at `head`, as the
+        train's latest "does not board" comment at that head says
+        (`REPOSITORY_TRAIN_SKIP`); None when it said nothing there."""
+        return train_skip_reason(self._client.paginate(f"{self._base}/issues/{number}/comments"),
+                                 head)
+
+
+def train_skip_reason(comments: Iterable[Any], head: str) -> str | None:
+    """The reason in the latest of `comments` that is the merge train's
+    "does not board" comment at `head`, e.g. "`queue for auto-merge` failed";
+    None when there is none. A comment at another head is not this head's."""
+    marker = f"{REPOSITORY_TRAIN_SKIP} head={head} "
+    why = None
+    for comment in comments:
+        lines = (_str(_mapping(comment).get("body")) or "").splitlines()
+        if len(lines) < 2 or not lines[0].startswith(marker):
+            continue
+        said = lines[1].strip()
+        if said.startswith(REPOSITORY_TRAIN_SKIP_HEADLINE) and said.endswith(".**"):
+            why = said[len(REPOSITORY_TRAIN_SKIP_HEADLINE):-len(".**")].strip() or why
+    return why
 
 
 def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
@@ -3408,8 +3444,20 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
     record: dict[str, Any] = {**switch, "head": head, "label": REPOSITORY_TRAIN_LABEL}
     summary["repository_train"] = record
     reboarded = _reboarded(ctx, own, head=head)
+    skips = None
     if REPOSITORY_TRAIN_LABEL in pr.labels:
         record["labelled"] = False
+        # Already `ready` and still here: the train may be passing over it
+        # for a reason that will not clear by itself (a red check the gate
+        # above does not hold it for, a conflict GitHub has not reported to
+        # the step yet). The train said so on the pull request; the waiting
+        # line carries it. A read that fails leaves the plain line.
+        try:
+            skips = merger.train_skip(number, head)
+        except forge_mod.ForgeError as exc:
+            record["skip_unread"] = type(exc).__name__
+        if skips:
+            record["skips"] = skips
     elif reboarded or _on_repository_train(ctx, own, head=head):
         why = merger.train_ejection(number)
         said = why.strip()[:1000] if why else "no comment on it says why"
@@ -3437,7 +3485,8 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         record["labelled"] = True
     return run.wait(mergetrain.TRAIN_WAITING,
                     f"pull request #{number} is `{REPOSITORY_TRAIN_LABEL}` for {base}'s merge "
-                    f"train at {head}", head=head, pull_request=number,
+                    f"train at {head}" + (f"; the train skips it: {skips}" if skips else ""),
+                    head=head, pull_request=number,
                     pending=[TRAIN_REBOARDED] if reboarded else [])
 
 

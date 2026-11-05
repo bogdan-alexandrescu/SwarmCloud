@@ -2,9 +2,22 @@
 
 Each entry is a version of `plugin/.claude-plugin/plugin.json`. The release
 tags the swarm-mcp bridge `sc-v<version>` only when that version moves
-([docs/ci.md](../docs/ci.md#the-plugins-bridge-tag-is-made-by-the-release)),
+([docs/ci.md](../docs/ci.md#the-plugins-bridge-tag-is-made-once-the-unit-tests-pass)),
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
+
+## 0.5.80 (2026-11-05)
+
+* A `/sc:swarmcloud` or `swarm_workflow` spec can set a review step's gate
+  (part of #2688): a step's `review_gate` is `false`, which switches the gate
+  off for that review, or a block of `min_lines`, `risk_paths` and
+  `requirements_check`, and is sent as the step's `metadata.review_gate`.
+  swarm-api has taken it since the gate shipped, but the bridge refused the
+  key, so a spec could not run a mock-up review the gate skipped. A malformed
+  block is refused before anything is submitted, by swarm-api's rules
+  (`validation.resolve_review_gate`). `metadata` itself is still refused with
+  the same sentence: a spec names a runner profile and never sends an image,
+  a command or a resource spec (invariant 10).
 
 ## 0.5.79 (2026-11-04)
 

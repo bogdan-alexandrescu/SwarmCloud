@@ -59,6 +59,19 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/** What the (i) named `About <label>` says, read through its aria-describedby (no-prose rule, 5 November 2026). */
+function tip(scope: HTMLElement, label: string): string {
+  const button = within(scope).getByRole('button', { name: `About ${label}` })
+  return document.getElementById(button.getAttribute('aria-describedby') ?? '')?.textContent ?? ''
+}
+
+/** The words a reader sees with every (i)'s card shut. */
+function shown(el: Element): string {
+  const clone = el.cloneNode(true) as Element
+  for (const n of clone.querySelectorAll('[data-help-description]')) n.remove()
+  return visible(clone)
+}
+
 async function keysCard(rows: Json[], me: string | null = null): Promise<HTMLElement> {
   api(rows, me)
   const { SecretsScreen } = await load()
@@ -72,7 +85,9 @@ describe('config2-05: the TypeSafe key and the TypeSafe secret are told apart', 
     const card = await keysCard([SHADOWED, TYPESAFE_KEY, RUNNER_KEY])
     const row = within(card).getByRole('rowheader', { name: /TypeSafe key/ })
     // MUTATION: drop the `twin` note -> the two set dates read as one key's.
-    expect(visible(row)).toMatch(/not the typesafe-key secret in For agents/)
+    expect(tip(row, 'TypeSafe key')).toBe('Not the typesafe-key secret in For agents.')
+    // MUTATION: draw the note as a line under the name again -> prose on the surface: red.
+    expect(shown(row)).not.toMatch(/For agents/)
   })
 
   it('says nothing of a twin when For agents holds no TypeSafe secret', async () => {
@@ -86,9 +101,11 @@ describe('config2-05: the TypeSafe key and the TypeSafe secret are told apart', 
 describe('config2-14: the hint names the buttons the table draws', () => {
   it('no "Was Settings" history, and no Set the table does not draw', async () => {
     const card = await keysCard([TYPESAFE_KEY, RUNNER_KEY, KB])
-    const hint = card.querySelector('.sec-hint')
     // MUTATION: restore "Was Settings › API keys. Set and Replace open…" -> fails.
-    expect(visible(hint)).toBe('Replace and Set kb’s credential open the one-time form; no value is shown again.')
+    expect(tip(card, 'Keys for agents and MCP')).toBe('Replace and Set kb’s credential open the one-time form; no value is shown again.')
+    // MUTATION: put the hint back under the table -> prose on the surface: red.
+    expect(card.querySelector('.sec-hint')).toBeNull()
+    expect(shown(card)).not.toMatch(/one-time form/)
     expect(within(card).queryByRole('button', { name: /^Set$/ })).toBeNull()
   })
 })
@@ -111,8 +128,11 @@ describe('config2-16: a shadow note in the reader’s words', () => {
     render(<SecretsScreen view={null} />)
     const table = await screen.findByRole('table', { name: /workspace secrets/i })
     // MUTATION: drop the `me` comparison in `winnerWords` -> "ana@example.com’s wins on their agents".
-    expect(await within(table).findByText('shadowed: your own wins on your agents')).not.toBeNull()
+    await within(table).findByRole('button', { name: 'About typesafe-key shadowed' })
+    expect(tip(table, 'typesafe-key shadowed')).toBe('your own wins on your agents')
     expect(visible(table)).not.toMatch(/ana@example\.com’s wins/)
+    // MUTATION: draw the reason beside the word again -> prose on the surface: red.
+    expect(shown(table)).not.toMatch(/wins on/)
   })
 
   it('someone else’s secret keeps their name', async () => {
@@ -121,6 +141,37 @@ describe('config2-16: a shadow note in the reader’s words', () => {
     render(<SecretsScreen view={null} />)
     const table = await screen.findByRole('table', { name: /workspace secrets/i })
     // MUTATION: say "your own" for every personal winner -> fails.
-    expect(await within(table).findByText('shadowed: ana@example.com’s wins on their agents')).not.toBeNull()
+    await within(table).findByRole('button', { name: 'About typesafe-key shadowed' })
+    expect(tip(table, 'typesafe-key shadowed')).toBe('ana@example.com’s wins on their agents')
+  })
+})
+
+// THE NO-PROSE RULE (owner's standing rule, 5 November 2026): the page's other
+// explanations are the (i)s of the labels they explained, and a way out is a button.
+describe('Config › Secrets carries no explanatory prose on its surface', () => {
+  it('moves the scope order, the write-only note and the token note behind their (i)s', async () => {
+    api([SHADOWED, TYPESAFE_KEY, { section: 'github', store: 'git_tokens', name: 'swarm-tenant-eng-git', kind: 'app_user', status: 'active', set_at: daysAgo(1), set_by: null, consumers: [], can_manage: true, forge_login: 'ana', verified_at: daysAgo(1), expires_at: null, token_scope: 'user' }])
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
+    await screen.findByRole('table', { name: /workspace secrets/i })
+    // MUTATION: put any of the three paragraphs back -> it is on the surface: red.
+    await waitFor(() => expect(shown(document.body)).not.toMatch(/Same name in several scopes|stored write-only|no part of a token/))
+    expect(tip(document.body, 'Scope')).toBe('Same name in several scopes: yours wins, then the repository’s, then the workspace’s.')
+    expect(tip(document.body, 'Granted to')).toMatch(/A value is stored write-only: no page and no API route shows it/)
+    expect(tip(document.body, 'GitHub token')).toBe('Status only: no part of a token is ever shown.')
+    // MUTATION: put the "Connect or disconnect on GitHub access" text link back -> no button: red.
+    const out = screen.getByRole('link', { name: 'Connect or disconnect on GitHub access' })
+    expect(out.getAttribute('href')).toBe('/config/github')
+    expect(out.className).toMatch(/\bc-btn\b/)
+  })
+
+  it('gives one missing credential its reason behind an (i) on the lead', async () => {
+    api([TYPESAFE_KEY, KB])
+    const { SecretsScreen } = await load()
+    render(<SecretsScreen view={null} />)
+    const lead = await screen.findByRole('region', { name: 'Needed and not set' })
+    // MUTATION: draw `why` as the lead's line again -> prose on the surface: red.
+    expect(shown(lead)).not.toMatch(/fails until/)
+    expect(tip(lead, 'MCP server kb’s credential is not set')).toBe('Every call to kb fails until a secret is granted to mcp:kb.')
   })
 })

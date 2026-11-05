@@ -393,6 +393,42 @@ def test_the_gates_removal_after_an_earlier_train_ejection_is_refused_at_once(tm
     assert _labelled(world) == [] and world.merge_calls() == []
 
 
+def test_the_trains_skip_comment_after_its_ejection_does_not_hide_the_ejection(tmp_path):
+    """The train's "does not board" comment comes from the workflow's bot but
+    never says why `ready` was lost: the ejection before it still decides.
+
+    MUTATION: count the skip comment as the gate's, and this refuses."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    skip = (f"<!-- merge-train-skip head={PINNED} reason=conflict -->\n"
+            "**The merge train skips it: it conflicts with main.**")
+    _comments(world, ("github-actions[bot]", EJECTION), ("github-actions[bot]", skip))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING, outcome.message
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    assert len(_labelled(world)) == 1
+
+
+def test_a_re_boarded_pull_request_the_train_skips_names_why_and_keeps_its_re_board(tmp_path):
+    """Both hold at once: the waiting line carries the train's skip reason at
+    this head, and the park keeps the head's one re-board."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    world.pr["labels"] = [{"name": "ready"}]
+    _reboarded(world)
+    _comments(world, ("github-actions[bot]", EJECTION), ("github-actions[bot]", (
+        f"<!-- merge-train-skip head={PINNED} reason=check:ci-gate -->\n"
+        "**The merge train skips it: `ci-gate` failed.**")))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING, outcome.message
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    assert outcome.summary["wait"]["message"].endswith("; the train skips it: `ci-gate` failed")
+    assert _labelled(world) == []
+
+
 def test_an_ejected_pull_request_that_now_conflicts_goes_to_its_conflict_fix_round(tmp_path):
     """The gate runs before the train: a conflict with the new main parks for
     the conflict fix round, as a refused merge's conflict does."""
