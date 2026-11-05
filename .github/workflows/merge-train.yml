@@ -44,6 +44,17 @@
 #     `pull_request_target` either: auto-merge.yml already carries that risk,
 #     once, and is reviewed for it. auto-merge's own dispatches, schedule and
 #     `workflow_run` runs are filtered out by their event;
+#   * while vars.MERGE_TRAIN is `on`, when main's own `push` run of
+#     application.yml finishes, whatever its conclusion (issue 3336,
+#     2026-11-05). The train holds a landing while main's build of the
+#     previous landing is running (scripts/merge-train.sh, the merge-train
+#     hold), because a merge cancels that build (application.yml's one main
+#     group). Without this a held train waited for the next schedule tick --
+#     hours, on 2026-11-03 -- after the build it was holding for had ended;
+#     now it ticks within a minute of it. A tick like a schedule tick: it
+#     judges the train in flight, or with none boards the green `ready` pull
+#     requests. Only main's push run of this repository: a dispatch or a
+#     fork cannot raise it, and a pull request's runs are the second bullet;
 #   * every five minutes, only while vars.MERGE_TRAIN is `on`: the fallback,
 #     for whatever no event above says. Off, a schedule run would take a
 #     runner every five minutes to find nothing to do;
@@ -105,8 +116,9 @@ jobs:
     # key rides the VM as for auto-merge.yml). No fork clause: this workflow
     # starts only on schedule, dispatch, or workflow_run (main's file on
     # main's ref) of a train/ branch's application or security run, of a
-    # green one on a pull request from this repository, or of auto-merge's
-    # run on a pull request from this repository; never `pull_request`, and
+    # green one on a pull request from this repository, of auto-merge's
+    # run on a pull request from this repository, or of main's own push run
+    # of application (issue 3336: main's code, already merged); never `pull_request`, and
     # never from a fork's pull request (test_fork_prs_off_self_hosted.py
     # checks the triggers). SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
@@ -130,7 +142,8 @@ jobs:
     concurrency:
       group: merge-train
       cancel-in-progress: false
-    # The three `workflow_run` clauses are WHEN's first three bullets, in order.
+    # The four `workflow_run` clauses are WHEN's first four bullets, in order
+    # (the fourth, main's push run of application, since issue 3336).
     if: >-
       github.repository == 'bogdan-alexandrescu/SwarmCloud' && (
         github.event_name == 'workflow_dispatch' ||
@@ -148,6 +161,11 @@ jobs:
          github.event.workflow_run.name == 'auto-merge' &&
          github.event.workflow_run.event == 'pull_request_target' &&
          github.event.workflow_run.pull_requests[0] != null &&
+         github.event.workflow_run.head_repository.full_name == github.repository) ||
+        (github.event_name == 'workflow_run' && vars.MERGE_TRAIN == 'on' &&
+         github.event.workflow_run.name == 'application' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main' &&
          github.event.workflow_run.head_repository.full_name == github.repository)
       )
     # The workflow's own token:

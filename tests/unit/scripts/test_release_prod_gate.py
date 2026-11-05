@@ -224,6 +224,9 @@ STEP_OUTPUTS = {
     # `images and scan`: whether main moved past this commit before anything
     # was promoted (the `newest` and `after` steps; test_release_newest_only.py).
     ("build", "superseded"): ("true", "false"),
+    # `CI passed on this commit`: whether a newer push cancelled application's
+    # tests of this commit on a moved main (issue 3336).
+    ("tested", "superseded"): ("true", "false"),
 }
 
 

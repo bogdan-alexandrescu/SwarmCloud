@@ -126,6 +126,9 @@ def _push_context(superseded: str) -> dict[str, str]:
         "needs.verify.result": "skipped",
         "needs.build.result": "success",
         "needs.build.outputs.superseded": superseded,
+        # application.yml's ci-gate passed on the commit (release.yml `tested`, issue 3336).
+        "needs.tested.result": "success",
+        "needs.tested.outputs.superseded": "false",
     }
 
 

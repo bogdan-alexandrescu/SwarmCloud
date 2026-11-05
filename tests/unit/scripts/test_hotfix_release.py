@@ -113,7 +113,12 @@ def test_the_concurrency_group_is_on_the_work_jobs_and_never_on_the_gate_or_the_
     assert "concurrency" not in _hotfix(), _hotfix().get("concurrency")
     jobs = _jobs()
     assert "concurrency" not in jobs["gate"]
-    work = [name for name in jobs if name != "gate"]
+    # `tested` (issue 3336) waits up to two hours for application.yml's
+    # ci-gate and moves nothing: in the group it would hold the lock from
+    # `images` and the next hotfix, so it stays out, like the gate.
+    assert "concurrency" not in jobs["tested"]
+    assert "tested" in jobs["promote"]["needs"], jobs["promote"]["needs"]
+    work = [name for name in jobs if name not in ("gate", "tested")]
     assert work, "no work jobs"
     for name in work:
         assert jobs[name].get("concurrency") == {"group": "hotfix-dev", "cancel-in-progress": False}, name
@@ -152,6 +157,8 @@ def gated(monkeypatch):
     # `images`' `after` step: a build a newer push cancelled
     # (test_hotfix_superseded.py).
     monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("images", "superseded"), ("true", "false"))
+    # `tested`: a newer push cancelled this commit's tests (issue 3336).
+    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("tested", "superseded"), ("true", "false"))
     return _jobs()
 
 
@@ -180,6 +187,7 @@ def test_a_labelled_commit_reaches_every_stage(gated, ctx):
     clean = [
         r for r, o in _attempts(jobs, ctx, endings=("success",))
         if o["gate"].get("proceed") == "true" and o["images"].get("superseded") != "true"
+        and o["tested"].get("superseded") != "true"
     ]
     assert clean
     for results in clean:

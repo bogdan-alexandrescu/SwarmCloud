@@ -223,10 +223,15 @@ def test_main_and_a_same_repository_pull_request_look_up_and_everyone_records():
     assert "tested-tree" in jobs["ci-gate"]["needs"]
 
 
-def test_the_build_still_waits_for_what_was_not_reused():
-    """A reused job is skipped by its own if, which reads as passed; the build
-    still needs the checks it always needed."""
-    assert {"python", "shell", "manifests"} <= set(_jobs()["build"]["needs"])
+def test_the_build_starts_at_the_push_and_the_gate_still_needs_it():
+    """Issue 3336: main's build needs only `changes`, and the tests gate the
+    deploy through ci-gate (release.yml `tested`), which needs the build and
+    every reusable job, so a reused job still counts only through ci-gate.
+    MUTATION: put a test job back in the build's needs, or drop the build
+    from ci-gate's."""
+    jobs = _jobs()
+    assert jobs["build"]["needs"] == ["changes"], jobs["build"]["needs"]
+    assert {"build", "python-unit", "shell", "manifests"} <= set(jobs["ci-gate"]["needs"])
 
 
 def test_the_record_json_round_trips_through_find_s_reader(tmp_path):

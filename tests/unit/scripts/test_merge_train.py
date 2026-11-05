@@ -864,10 +864,38 @@ def _tick_runs(
         ("lane CI green, train unset", "workflow_run", {}, False),
         ("lane CI red, train on", "workflow_run", {"train": "on", "conclusion": "failure"}, False),
         ("lane CI cancelled, train on", "workflow_run", {"train": "on", "conclusion": "cancelled"}, False),
+        # Main's own push run of application ending wakes a train held for
+        # main's build (issue 3336), whatever it concluded; only with the
+        # train on, only application's, only this repository's.
         (
             "main's push run, train on",
             "workflow_run",
             {"train": "on", "run_event": "push", "branch": "main"},
+            True,
+        ),
+        (
+            "main's cancelled push run, train on",
+            "workflow_run",
+            {"train": "on", "run_event": "push", "branch": "main", "conclusion": "cancelled"},
+            True,
+        ),
+        ("main's push run, train off", "workflow_run", {"run_event": "push", "branch": "main"}, False),
+        (
+            "main's push run of security, train on",
+            "workflow_run",
+            {"train": "on", "name": "security", "run_event": "push", "branch": "main"},
+            False,
+        ),
+        (
+            "main's dispatch run, train on",
+            "workflow_run",
+            {"train": "on", "run_event": "workflow_dispatch", "branch": "main"},
+            False,
+        ),
+        (
+            "a fork's push run on its main, train on",
+            "workflow_run",
+            {"train": "on", "run_event": "push", "branch": "main", "head_repo": "someone/SwarmCloud"},
             False,
         ),
         (

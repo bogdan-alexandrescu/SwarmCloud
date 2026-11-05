@@ -117,10 +117,16 @@ def test_the_kept_names_stand_for_their_shards(job_id, needs):
     assert job.get("if") == "always()", job.get("if")
 
 
-def test_the_build_still_waits_for_the_unit_tests():
-    """main's image build runs only after the free checks pass; `python` is
-    their result now."""
-    assert {"python", "shell", "manifests"} <= set(_needs(_jobs()["build"]))
+def test_the_build_starts_at_the_push_and_the_release_waits_for_the_unit_tests():
+    """Issue 3336: main's image build starts at the push, needing only
+    `changes`; the unit tests gate the deploy instead, through ci-gate, which
+    release.yml's `tested` job waits for before `approval`. MUTATION: put a
+    test job back in the build's needs, or point `tested` at another job."""
+    assert _needs(_jobs()["build"]) == ["changes"], _needs(_jobs()["build"])
+    assert set(_needs(_jobs()["python"])) <= set(_needs(_jobs()["ci-gate"]))
+    release = yaml.safe_load((REPO / ".github" / "workflows" / "release.yml").read_text())["jobs"]
+    assert "--job ci-gate" in str(release["tested"]["steps"]), "release.yml's tested job no longer waits for ci-gate"
+    assert "tested" in release["approval"]["needs"], release["approval"]["needs"]
 
 
 def test_the_old_python_jobs_other_checks_still_run():

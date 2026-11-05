@@ -123,6 +123,8 @@ def test_a_hotfix_has_no_newest_check():
 def gated(monkeypatch):
     monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("gate", "proceed"), ("true", "false", ""))
     monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("images", "superseded"), ("true", "false"))
+    # `tested`: a newer push cancelled this commit's tests (issue 3336).
+    monkeypatch.setitem(gate_model.STEP_OUTPUTS, ("tested", "superseded"), ("true", "false"))
     return _workflow("hotfix.yml")["jobs"]
 
 
@@ -144,6 +146,7 @@ def test_a_hotfix_that_is_not_superseded_still_reaches_every_stage(gated):
     clean = [
         r for r, o in _attempts(gated, PUSH, endings=("success",))
         if o["gate"].get("proceed") == "true" and o["images"].get("superseded") == "false"
+        and o["tested"].get("superseded") == "false"
     ]
     assert clean
     for results in clean:

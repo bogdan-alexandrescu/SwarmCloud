@@ -588,6 +588,21 @@ cancelling it there would leave the release lock to go stale and dev between
 two releases. Before `approval` it does not need cancelling: it ends itself,
 superseded, within one poll (30 s) of the newer push cancelling its build.
 
+**Since 5 November 2026 (owner pick): the build starts beside the tests, and the
+release waits for `ci-gate`.** Merges kept landing faster than main's runs
+finished: `build images` needed `python`, `shell` and `manifests`, so it started
+18 to 44 minutes after a push, and each newer push cancelled it before it ran, so
+nothing deployed from 21:04Z on 4 November until the next morning. Now
+`build images` needs only `what this change reaches` and starts seconds after the
+push. Because the image no longer proves the tests passed, `release.yml` gained a
+job, `CI passed on this commit`, that waits for this commit's `ci-gate` on `main`
+(the same lookup as the build wait, pointed at `ci-gate`) and lets the release go
+on only when it concluded success; a newer push that cancelled this commit's run
+still reads as superseded, and anything else stays red. `hotfix.yml` gets the same
+gate, so a hotfix never ships a commit whose tests did not pass, and
+`merge-train.yml` wakes the release when main's run completes. A dispatched release
+keeps its own rule: the gate is skipped and `verify` runs the checks as before.
+
 **Why the release lost its path filter.** It filtered on `apps/`, `images/`,
 `terraform/`, `kubernetes/`, `scripts/`, `.trivyignore.yaml` and its own
 files. With `main`'s runs cancelling each other, a docs- or tests-only push
