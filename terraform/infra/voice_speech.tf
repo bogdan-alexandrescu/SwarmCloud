@@ -63,6 +63,13 @@ locals {
   # "us-central1-a" -> "a": the machine is `<prefix>-speech-a`, one per zone.
   speech_zone_suffix = element(split("-", var.voice_speech.zone), 2)
 
+  # The machine's name up to its zone letter, and so its boot disk's, which
+  # takes the instance's name. terraform/bootstrap/deployer_conditions.tf
+  # grants the release deployer the instance and disk verbs on names that start
+  # with exactly this (deployer_speech_machine_prefix): rename one, rename both
+  # (tests/unit/terraform/test_voice_speech.py holds them equal).
+  speech_machine_prefix = "${var.name_prefix}-speech-"
+
   speech_labels = merge(local.labels, { "component" = "voice-speech" })
 
   # The custom role terraform/bootstrap defines (platform_service_accounts.tf,
@@ -165,7 +172,7 @@ resource "google_compute_instance" "speech" {
 
   project      = var.project_id
   zone         = var.voice_speech.zone
-  name         = "${var.name_prefix}-speech-${local.speech_zone_suffix}"
+  name         = "${local.speech_machine_prefix}${local.speech_zone_suffix}"
   machine_type = var.voice_speech.machine_type
   description  = "Voice it's speech machine: speech-to-text and text-to-speech on one L4. Kept stopped; swarm-api starts it for a session."
 

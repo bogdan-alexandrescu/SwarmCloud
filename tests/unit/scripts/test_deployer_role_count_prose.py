@@ -330,3 +330,40 @@ def test_the_matcher_tells_a_stale_count_from_a_current_or_historical_one(
     monkeypatch.setitem(globals(), "CHECKED", [doc])
     monkeypatch.setitem(globals(), "REPO", tmp_path)
     assert (not stale(14, 2)) is ok, stale(14, 2)
+
+
+def test_the_header_counts_the_grants_conditioned_from_the_start():
+    """deployer_conditions.tf's header counts the deployer's unconditioned
+    roles ("Fifteen predefined roles and one custom role"). A grant written
+    there conditioned from the start -- not behind deployer_scoped_roles, so not
+    one of those -- is the deployer's too, and the header names each one, so
+    the prose the owner reads before a bootstrap apply says what that apply
+    adds. Today one: swarmSpeechDeployer, the speech machine's instance and disk
+    verbs (owner's decided follow-up, 2026-11-05). None of them is a role CI may
+    grant: hasOnly() limits which roles CI grants, never under what condition.
+    MUTATION: drop the header's paragraph, or add a second such grant without
+    naming it there, and this is red."""
+    text = CONDITIONS.read_text()
+    m = re.search(
+        r"ONE MORE GRANT HERE IS CONDITIONED FROM THE START(.*?)(?:\n#\n)", text, re.S
+    )
+    assert m, "the header has no paragraph for the grants conditioned from the start"
+    paragraph = m.group(1)
+
+    # Every project binding here that is not switched by deployer_scoped and
+    # names a custom role this file defines.
+    always = re.findall(
+        r'^resource\s+"google_project_iam_member"\s+"(\w+)"\s*\{\n\s*count\s*=\s*local\.deployer_enabled\n',
+        text,
+        re.M,
+    )
+    assert always == ["deployer_speech_machine"], always
+    ids = re.findall(
+        r'^resource\s+"google_project_iam_custom_role"\s+"\w+"\s*\{.*?role_id\s*=\s*"(\w+)"',
+        text,
+        re.M | re.S,
+    )
+    assert ids == ["swarmSpeechDeployer"], ids
+    for role_id in ids:
+        assert role_id in paragraph, f"the header does not name {role_id}"
+        assert not any(role_id in r for r in grantable_roles())
