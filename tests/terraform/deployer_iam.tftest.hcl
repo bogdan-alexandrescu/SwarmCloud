@@ -916,6 +916,167 @@ run "a_role_the_deployer_does_not_hold_cannot_be_switched" {
 }
 
 # ---------------------------------------------------------------------------
+# THE SPEECH MACHINE (owner's decided follow-up, 2026-11-05). The release
+# deployer makes, stops and deletes Voice it's one speech instance and its boot
+# disk through swarmSpeechDeployer, conditioned from the start to that
+# machine's names (deployer_conditions.tf, its last section).
+# ---------------------------------------------------------------------------
+
+run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+  }
+
+  assert {
+    condition = (
+      length(google_project_iam_custom_role.deployer_speech_machine) == 1 &&
+      length(google_project_iam_member.deployer_speech_machine) == 1 &&
+      google_project_iam_member.deployer_speech_machine[0].role == "projects/saga-agents-staging/roles/swarmSpeechDeployer"
+    )
+    # The member is the deployer's email, unknown at plan under the mock;
+    # tests/unit/terraform/test_voice_speech.py reads it from the text.
+    error_message = "the release deployer holds swarmSpeechDeployer through exactly one project binding"
+  }
+
+  # The verbs voice_speech.tf's instance and its instance-level iam_member
+  # use, on an instance and a disk, and nothing else.
+  assert {
+    condition = toset(google_project_iam_custom_role.deployer_speech_machine[0].permissions) == toset([
+      "compute.disks.create",
+      "compute.disks.delete",
+      "compute.disks.get",
+      "compute.disks.setLabels",
+      "compute.instances.create",
+      "compute.instances.delete",
+      "compute.instances.get",
+      "compute.instances.getIamPolicy",
+      "compute.instances.setDeletionProtection",
+      "compute.instances.setIamPolicy",
+      "compute.instances.setLabels",
+      "compute.instances.setMachineType",
+      "compute.instances.setMetadata",
+      "compute.instances.setScheduling",
+      "compute.instances.setServiceAccount",
+      "compute.instances.setTags",
+      "compute.instances.start",
+      "compute.instances.stop",
+      "compute.instances.update",
+      "compute.instances.updateShieldedVmConfig",
+    ])
+    error_message = "swarmSpeechDeployer carries a permission the speech machine's Terraform does not use, or lacks one it does"
+  }
+
+  assert {
+    condition     = length(google_project_iam_custom_role.deployer_speech_machine[0].description) <= 300
+    error_message = "IAM refuses a custom role description over 300 characters, at apply (lesson 10)"
+  }
+
+  # An unconditioned binding of the role is refused: it would let CI create,
+  # delete and stop every VM and disk in the project, their GKE nodes included.
+  assert {
+    condition = (
+      length(google_project_iam_member.deployer_speech_machine[0].condition) == 1 &&
+      google_project_iam_member.deployer_speech_machine[0].condition[0].expression == local.deployer_speech_machine_condition &&
+      local.deployer_speech_machine_condition != ""
+    )
+    error_message = "the release deployer's swarmSpeechDeployer binding carries no condition"
+  }
+
+  # The expression, rendered, exactly: one extract() per kind, nothing else.
+  assert {
+    condition     = local.deployer_speech_machine_condition == "resource.name.extract(\"projects/saga-agents-staging/zones/us-central1-{zone}/instances/swarm-speech-\") != \"\" || resource.name.extract(\"projects/saga-agents-staging/zones/us-central1-{zone}/disks/swarm-speech-\") != \"\""
+    error_message = "the speech machine's condition is not the two extract() tests on its instance and disk names"
+  }
+
+  assert {
+    condition = alltrue([
+      for e in [local.deployer_speech_machine_condition] :
+      length(regexall("&&", e)) + length(regexall("\\|\\|", e)) + length(regexall("![^=]", e)) <= 12 &&
+      length(regexall("matches\\(", e)) == 0 && length(regexall("hasOnly\\(", e)) == 0
+    ])
+    error_message = "the speech machine's condition is over IAM's 12 logical operators or uses a function GCP's linter refuses"
+  }
+
+  # Replayed the way extract("A{zone}B") != "" reads: the name starts with A
+  # (every Compute name starts with projects/, so the first A is at 0), B
+  # follows, and the zone letter between them is not empty.
+  assert {
+    condition = alltrue([
+      for n in [
+        "projects/saga-agents-staging/zones/us-central1-a/instances/swarm-speech-a",
+        "projects/saga-agents-staging/zones/us-central1-a/disks/swarm-speech-a",
+        "projects/saga-agents-staging/zones/us-central1-c/instances/swarm-speech-c",
+        "projects/saga-agents-staging/zones/us-central1-c/disks/swarm-speech-c",
+        ] : anytrue([
+          for p in local.deployer_speech_machine_paths :
+          startswith(n, p.zone_prefix) && strcontains(trimprefix(n, p.zone_prefix), p.name_prefix) && split(p.name_prefix, trimprefix(n, p.zone_prefix))[0] != ""
+      ])
+    ])
+    error_message = "the speech machine's instance or boot disk is refused"
+  }
+
+  assert {
+    condition = !anytrue([
+      for n in [
+        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-bnof",
+        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-h2ug",
+        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-xstq",
+        "projects/saga-agents-staging/zones/us-central1-a/disks/gke-agents-staging-nap-e2-standard-2--b59db5d4-bnof",
+        "projects/saga-agents-staging/regions/us-central1/addresses/swarm-speech",
+        "projects/saga-agents-staging/zones/us-central1-a/instances/swarm-speechx",
+        "projects/saga-agents-staging/zones/us-central1-a/instances/swarm-ui-a",
+        "projects/saga-agents-staging/zones/us-central1-a/instanceGroups/swarm-speech-a",
+        "projects/saga-agents-staging/global/images/swarm-speech-a",
+        "projects/saga-agents-staging/zones/europe-west1-b/instances/swarm-speech-b",
+        "projects/another-project/zones/us-central1-a/instances/swarm-speech-a",
+        ] : anytrue([
+          for p in local.deployer_speech_machine_paths :
+          startswith(n, p.zone_prefix) && strcontains(trimprefix(n, p.zone_prefix), p.name_prefix) && split(p.name_prefix, trimprefix(n, p.zone_prefix))[0] != ""
+      ])
+    ])
+    error_message = "the speech machine's condition admits a VM, disk or resource that is not the speech machine"
+  }
+
+  # No project-wide compute role that holds the same verbs rides beside it.
+  assert {
+    condition = length(setintersection(keys(google_project_iam_member.deployer_roles), [
+      "roles/compute.admin",
+      "roles/compute.instanceAdmin",
+      "roles/compute.instanceAdmin.v1",
+    ])) == 0
+    error_message = "a project-wide compute instance role on the deployer makes the speech machine's condition meaningless"
+  }
+}
+
+run "an_unconditioned_instance_admin_role_cannot_be_given_to_ci" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+    deployer_roles = [
+      "roles/artifactregistry.admin",
+      "roles/compute.instanceAdmin.v1",
+    ]
+  }
+
+  # Project-wide it reaches their GKE nodes; the speech machine's verbs come
+  # only through swarmSpeechDeployer's condition.
+  expect_failures = [var.deployer_roles]
+}
+
+# ---------------------------------------------------------------------------
 # PARITY: every project-level role terraform/infra grants must be grantable.
 #
 # The allowlist lives in bootstrap and the grants live in three places in
