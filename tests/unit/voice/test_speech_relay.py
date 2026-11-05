@@ -248,6 +248,36 @@ def test_a_server_never_ready_in_four_minutes_is_engine_down_and_the_machine_sto
     run(go())
 
 
+class LeaseAtDial(Dialer):
+    """Reads the lease each time the relay dials: what the sweep would see."""
+
+    def __init__(self, *vms: FakeVm | None) -> None:
+        super().__init__(*vms)
+        self.harness: Harness | None = None
+        self.seen: list[tuple[bool, str | None]] = []
+
+    async def __call__(self) -> FakeVm:
+        h = self.harness
+        assert h is not None
+        lease = _lease(h.db)
+        self.seen.append((sm.holds(lease, h.clock.now()), sm.due_cause(lease, h.clock.now())))
+        return await super().__call__()
+
+
+def test_a_boot_longer_than_the_stale_heartbeat_keeps_the_lease_held():
+    async def go():
+        closed = int(150 / sr.RETRY_SECONDS)
+        dialer = LeaseAtDial(*([None] * closed), FakeVm())
+        h = Harness(dialer=dialer)
+        dialer.harness = h
+        task = await h.ready()
+        assert len(dialer.seen) == closed + 1
+        assert dialer.seen[-1] == (True, None)
+        assert all(seen == (True, None) for seen in dialer.seen)
+        await h.close(task)
+    run(go())
+
+
 def test_a_failed_boot_is_engine_down():
     async def go():
         h = Harness(dialer=Dialer(FakeVm(("loading models", "failed"), ready=False)))
