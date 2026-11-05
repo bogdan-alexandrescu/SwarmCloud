@@ -1288,8 +1288,25 @@ logged as `refusal report-only code=repository_ref_not_found` and the
 submission is admitted, as before. Set the switch to `on` (terraform's
 `api_refusals` map) once that log shows only refs that really were gone.
 
-A full 40-character sha is never asked about, because the worker fetches it
-by sha. A `continues_task`, `merge_pr` or `publish_to_pr` supplies its own
+**A full sha is asked about too (#3315).** Agent `task_36c8a894` was
+submitted with a full 40-character sha, `feb6013fd58d0e25ac6bcb2ad2aec2d0d3fc0fd2`.
+GitHub's upload-pack does not serve that sha. Admission did not ask about a full
+sha, because the worker fetches one by sha. So the agent took a browser lease
+and a GKE pod, then failed for good in the clone with `not our ref`. A full sha
+is now one read, `commits/<sha>` (`GitHubWriter.commit_head`), in place of the
+branch and tag reads. A workflow still asks once, and a batch asks once for
+each distinct pair. GitHub answers 404 or 422 `No commit found for SHA` when it
+has no such commit. The submission is refused only when the commit is missing
+and the repository itself answers. The refusal goes through the same switch,
+with its own message, and it never names an agent or a pull request. Every
+fail-open case below applies to a full sha unchanged.
+
+**The gap that remains.** The commits API can still answer 200 for a dangling
+object that upload-pack refuses: for example, a commit no branch or tag reaches
+any more. Such a sha is admitted and still fails in the clone. This check
+narrows the gap but does not close it.
+
+A `continues_task`, `merge_pr` or `publish_to_pr` supplies its own
 ref and refuses a `repository_ref` beside it, so none of those is asked
 about either. Neither is a repository that is not on GitHub.
 
