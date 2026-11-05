@@ -48,12 +48,14 @@
  * "Serve them in step_needs"): a step's `task_summary.needs.plugin_ask`
  * (`codec.step_needs`), served for a plugin step PARKED on a question wait
  * only -- the plugins and modes of its work contract's `capabilities.plugins`,
- * its repository, and the wait's `asked_at` and `expires_at` as
- * `GET /v1/tasks/{id}/questions` serves them. `stepNeedItems` puts it on the
+ * its repository, the wait's `asked_at` and `expires_at` as
+ * `GET /v1/tasks/{id}/questions` serves them, and the skill that asked. `stepNeedItems` puts it on the
  * step's question rows (`plugin`); no task or questions are read for it, so
  * every parked plugin step in the read is told, however many there are.
- * The skill that asked is not served (the bridge's finding 3), so it reads
- * "not known"; a clock the wait did not serve reads "not known", never 0. A
+ * The skill that asked is the worker's record of the last `Skill` call before
+ * the question (the owner's pick of 4 November 2026); a park with none
+ * recorded reads "not known", and so does a clock the wait did not serve,
+ * never 0. A
  * planner or designer step's interview has no console route yet: its card
  * says the interview opens from its run's page, and links that page.
  */
@@ -217,6 +219,8 @@ export interface PluginAsk {
   /** When the wait began and when it ends, ms; null when the wait served neither. */
   askedAt: number | null
   expiresAt: number | null
+  /** The skill that asked, as the worker recorded it; null when not known. */
+  skill: string | null
 }
 
 /** The modes' words, as the catalogue's picker says them. */
@@ -254,6 +258,7 @@ export function pluginAskOf(task: Task, needs: StepNeeds | null): PluginAsk | nu
     plugins,
     askedAt: msOf(served.asked_at),
     expiresAt: msOf(served.expires_at),
+    skill: typeof served.skill === 'string' && served.skill.trim() !== '' ? served.skill.trim() : null,
   }
 }
 
@@ -311,7 +316,7 @@ function PluginLine({ ask }: { ask: PluginAsk }) {
   const now = useNow(30_000)
   return (
     <span className="ny-plugin" title={ask.expiresAt === null ? undefined : `It ends, the question open, at ${atUtc(ask.expiresAt)}`}>
-      <b>{pluginWords(ask)}</b> · skill that asked: not known · <span className="ny-plugin-left">{leftWords(ask, now)}</span> · never answered for anyone
+      <b>{pluginWords(ask)}</b> · {ask.skill === null ? 'skill that asked: not known' : `asked by ${ask.skill}`} · <span className="ny-plugin-left">{leftWords(ask, now)}</span> · never answered for anyone
     </span>
   )
 }
@@ -348,7 +353,7 @@ function ParkedPluginSteps({ asks, rows }: { asks: readonly PluginAsk[]; rows: R
                   <span>{modeWord(p.mode)}</span>
                 </span>
               ))}
-              <span className="ny-park-seg is-skill">asked by: not known</span>
+              <span className="ny-park-seg is-skill">{a.skill === null ? 'asked by: not known' : `asked by ${a.skill}`}</span>
             </span>
             <span className="ny-park-time">
               {a.expiresAt === null ? (

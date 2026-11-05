@@ -208,7 +208,11 @@ describe('item 1: the Steps table with the step card open', () => {
       }
     }
     expect(visited).toBe(LONG.length * 2)
-  })
+    // ~13s on an idle container (two cascades over ten rows): over a third of
+    // the 30s suite default, so a busy CI shard timed it out at 30s on PR
+    // #3342 with nothing wrong. Own budget, as qa.u11b.workflows and keyboard
+    // already carry; a hang still fails.
+  }, 120_000)
 
   // Browser QA D12 (2026-10-04) reversed item 1's wrap: ten names wrapped to
   // two and three lines at their hyphens. A name is one line now, cut, with
