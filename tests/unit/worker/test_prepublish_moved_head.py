@@ -210,7 +210,8 @@ def test_a_fetched_branch_that_descends_from_the_start_is_still_a_move(tmp_path)
     assert record["moved_head"]["returned"] is True
 
 
-def test_without_a_start_branch_the_prompt_names_the_start_commit(tmp_path):
+def test_without_a_start_branch_the_prompt_names_the_start_commit(tmp_path, monkeypatch):
+    monkeypatch.delenv(prepublish.START_BRANCH_ENV, raising=False)
     repo, base = _world(tmp_path)
     _wanders(repo)
 
@@ -219,6 +220,46 @@ def test_without_a_start_branch_the_prompt_names_the_start_commit(tmp_path):
 
     assert len(turns.prompts) == 1 and f"`{base[:12]}`" in turns.prompts[0], turns.prompts
     assert record["moved_head"]["branch"] is None
+
+
+def test_the_gate_names_the_branch_through_the_runners_own_env_path(tmp_path, monkeypatch):
+    """Review finding: the worker sets `START_BRANCH_ENV` on the runner
+    process, but `cliagent.run_prepublish_gate` builds the gate's env from the
+    agent's whitelisted env, which does not carry it. The gate reads it from
+    the runner's own environment, as the runner does `PREPUBLISH_BASE_ENV`."""
+    from agent_worker.gitmcp import server as gitmcp_server
+    from agent_worker.runners import cliagent
+    from agent_worker.runners.base import RunnerContext
+
+    repo, base = _world(tmp_path)
+    _git(repo, "checkout", "-q", "-b", TRAIN, f"origin/{TRAIN}")
+    # What the worker hands the runner process (`Worker._build_child_env`).
+    monkeypatch.setenv(prepublish.START_BRANCH_ENV, OWN)
+    monkeypatch.setenv(prepublish.CLONE_BASE_ENV, base)
+    monkeypatch.delenv(prepublish.PREPUBLISH_BASE_ENV, raising=False)
+    monkeypatch.delenv(gitmcp_server.SPOOL_ENV, raising=False)
+    git_dir = str(Path(shutil.which("git") or "/usr/bin/git").parent)
+    # The agent's env: what the runner's whitelist passes, no START_BRANCH_ENV.
+    agent_env = {"PATH": f"{git_dir}:/usr/bin:/bin", "HOME": str(tmp_path), **_IDENT}
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    ctx = RunnerContext(work_dir=tmp_path, artifacts_dir=artifacts,
+                        input_path=tmp_path / "input.json", result_path=tmp_path / "result.json",
+                        quota_path=tmp_path / "quota.json")
+    log = build_logger(task_id="t", attempt_id="a", tenant_id="acme", generation=1,
+                       runner_profile="claude-code", stream=io.StringIO())
+
+    turns = Turns(lambda: _git(repo, "checkout", "-q", OWN))
+    record = cliagent.run_prepublish_gate(
+        ctx, cwd=repo, env=agent_env, credential_env="ANTHROPIC_API_KEY", secrets=(),
+        log=log, resume=turns, remaining=lambda: 3600.0)
+
+    # MUTATION: read the branch only from the agent's env and a fetched branch
+    # that descends from the start gets no turn, and every other move is told
+    # to check out the start commit instead of the step's branch.
+    assert len(turns.prompts) == 1, record
+    assert f"git checkout {OWN}" in turns.prompts[0], turns.prompts
+    assert record["moved_head"]["branch"] == OWN
 
 
 def test_the_runner_and_the_worker_agree_on_the_start_branch_name():
