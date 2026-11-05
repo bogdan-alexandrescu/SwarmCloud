@@ -209,7 +209,13 @@ from swarm_common.models import utcnow
 
 from .errors import Conflict, Forbidden, NotFound, ValidationFailed
 from .redaction import redact_detail
-from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
+from .schemas import (
+    DESCRIPTION_MAX_CHARS,
+    FEATURE_TITLE_MAX_CHARS,
+    TaskCreate,
+    WorkflowCreate,
+    WorkflowStepCreate,
+)
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
 from . import sessiontag, workcontract
@@ -217,6 +223,7 @@ from .specsigning import SpecSigningUnavailable
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
+    ISSUE_RUN_METADATA_KEY,
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_ID,
@@ -228,6 +235,7 @@ from .validation import (
     RUNTIME_POLICY_PROFILES,
     IssueRef,
     StepSpec,
+    issue_run_mark_allowed,
     rereview_step_for,
 )
 
@@ -2072,7 +2080,7 @@ def planner_task(
             "issue": ref.number,
         },
         repository_url=ref.repository_url,
-        metadata={"issue_run": run_id, **sessiontag.tag(claude_session)},
+        metadata={ISSUE_RUN_METADATA_KEY: run_id, **sessiontag.tag(claude_session)},
         **classed,
     )
 
@@ -2782,6 +2790,69 @@ def workflow_unit(run: "IssueRun") -> str:
     return f"issue-{run.issue.number}"
 
 
+def submitting(spec: TaskCreate | WorkflowCreate) -> Any:
+    """The block an issue run's submission is made in: inside it, the spec's
+    own `metadata.issue_run` gets past the reserved-key check, and nothing
+    else does (BGD, 2026-11-04). The caller calls
+    `ctx.submissions.submit_tasks`/`submit_workflow` itself inside it, so the
+    signing paths stay the only writers of a task: the planner and the
+    compiled workflow (routes/runs.py), a CI fix round and the merge
+    (issueci.py). A batch of tasks is submitted in its first spec's block,
+    so a spec in it carrying another run's link is refused."""
+    return issue_run_mark_allowed(spec.metadata.get(ISSUE_RUN_METADATA_KEY))
+
+
+def workflow_feature(run: "IssueRun") -> dict[str, str]:
+    """The compiled workflow's `metadata.feature`: the issue, by its title --
+    its reference when the title was not read -- and its URL, the title on one
+    line and at most FEATURE_TITLE_MAX_CHARS (BGD, 2026-11-04)."""
+    issue_read = getattr(run, "issue_read", None)
+    read = issue_read if isinstance(issue_read, Mapping) else {}
+    title = " ".join(str(read.get("title") or "").split()) or run.issue.short
+    if len(title) > FEATURE_TITLE_MAX_CHARS:
+        title = title[: FEATURE_TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return {"title": title, "url": run.issue.url}
+
+
+#: How many of the summary's sentences the description keeps: "two or three
+#: sentences" is what the workflow page heads with (BGD, 2026-11-04).
+DESCRIPTION_SENTENCES = 3
+
+_FENCED = re.compile(r"^\s*(```|~~~).*?^\s*\1[^\n]*$", re.MULTILINE | re.DOTALL)
+_HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s.*$", re.MULTILINE)
+_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_TAG = re.compile(r"<\s*/?\s*[A-Za-z!][^>]*>")
+_LEFTOVER_MARKUP = re.compile(r"```|~~~|\*\*|__|\]\(|[\x00-\x1f\x7f]")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def workflow_description(run: "IssueRun") -> str | None:
+    """The compiled workflow's `metadata.description`: the first
+    DESCRIPTION_SENTENCES sentences of the approved plan's summary, as plain
+    text of at most DESCRIPTION_MAX_CHARS, or None when nothing is left.
+
+    The summary is a paragraph the planner wrote, often in Markdown, and
+    `schemas.check_workflow_about` refuses markup rather than cut it. So
+    fenced code and heading lines are dropped, a link keeps its text, tags
+    and doubled emphasis markers go, and whitespace collapses to one line. A
+    first sentence over the cap is cut at a word, with an ellipsis."""
+    text = str((run.plan or {}).get("summary") or "")
+    text = _HEADING_LINE.sub(" ", _FENCED.sub(" ", text))
+    text = _TAG.sub(" ", _LINK.sub(r"\1", text))
+    text = " ".join(_LEFTOVER_MARKUP.sub(" ", text).split())
+    if not text:
+        return None
+    kept = ""
+    for sentence in _SENTENCE_END.split(text)[:DESCRIPTION_SENTENCES]:
+        joined = f"{kept} {sentence}".strip()
+        if len(joined) > DESCRIPTION_MAX_CHARS:
+            break
+        kept = joined
+    if not kept:
+        kept = text[: DESCRIPTION_MAX_CHARS - 1].rsplit(" ", 1)[0].rstrip() + "…"
+    return kept
+
+
 def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
     """The signed workflow around compiled steps: the same for a chain and for stages."""
     ref = run.issue
@@ -2792,13 +2863,17 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
         "metadata": {
             "title": workflow_title(run),
             "unit": workflow_unit(run),
+            # What the workflow page heads with (BGD, 2026-11-04): the issue
+            # it works on, and what its approved plan delivers.
+            "feature": workflow_feature(run),
+            **({"description": description} if (description := workflow_description(run)) else {}),
             # Always "off", stated, so the platform default cannot append a
             # merge here: an `auto_merge` run merges from the CI loop, once CI
             # is green and its keyword block is written (`issueci._merge`).
             MERGE_METADATA_KEY: "off",
             # The session that asked for the run (SC-SESSION-SCOPE).
             **sessiontag.tag(getattr(run, "claude_session", None)),
-            "issue_run": {
+            ISSUE_RUN_METADATA_KEY: {
                 "run_id": run.id,
                 "issue": ref.short,
                 "plan_digest": run.plan_digest,
