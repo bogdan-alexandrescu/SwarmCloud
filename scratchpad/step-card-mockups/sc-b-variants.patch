@@ -1,0 +1,619 @@
+diff --git a/apps/swarm-ui/src/StepCardB.tsx b/apps/swarm-ui/src/StepCardB.tsx
+new file mode 100644
+index 0000000..cb18569
+--- /dev/null
++++ b/apps/swarm-ui/src/StepCardB.tsx
+@@ -0,0 +1,345 @@
++// MOCK-HOOK FILE
++// Step-card mock-up, direction B (?sc=b): the inspector head is the card's title (step + state), then a sticky
++// action bar of icon-and-label buttons, three or four stat tiles, a short attempt timeline, and one Details fold.
++// Every fact here is an invented fixture (MOCK-HOOK); nothing is read from the API.
++import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
++import { Button, ButtonLink } from './components'
++import './styles/step-card-b.css'
++
++export type ScbKind = 'running' | 'finished' | 'failed' | 'parked' | 'attempts'
++
++type Outcome = 'running' | 'succeeded' | 'failed'
++
++interface Attempt {
++  outcome: Outcome
++  /** Start, as the clock prints it (UTC). */
++  start: string
++  /** End, or null while it runs. */
++  end: string | null
++  ms: number
++  /** A running attempt's start as an instant, so its elapsed time keeps pace with the graph's node. */
++  since?: number
++  exit: number | null
++  costUsd: number | null
++  tokens: number | null
++  checkpoints: number
++}
++
++interface Fixture {
++  attempts: readonly Attempt[]
++  allowed: number
++  pr: number | null
++  /** Files changed, or null when the step's changes were not counted. */
++  files: number | null
++  error: string | null
++  waitsOn: string | null
++  /** Other workflows of this shape on the board that hold this step. */
++  others: number
++}
++
++const FIXTURES: Readonly<Record<ScbKind, Fixture>> = {
++  running: {
++    attempts: [{ outcome: 'running', start: 'Oct 19 11:41', end: null, ms: 0, since: Date.UTC(2026, 9, 19, 11, 41), exit: null, costUsd: null, tokens: 182_400, checkpoints: 2 }],
++    allowed: 3,
++    pr: null,
++    files: null,
++    error: null,
++    waitsOn: null,
++    others: 0,
++  },
++  finished: {
++    attempts: [{ outcome: 'succeeded', start: '11:36', end: '11:41', ms: 5 * 60_000 + 3_000, exit: 0, costUsd: 0.42, tokens: 1_204_000, checkpoints: 3 }],
++    allowed: 3,
++    pr: 3251,
++    files: 7,
++    error: null,
++    waitsOn: null,
++    others: 2,
++  },
++  failed: {
++    // THREE ATTEMPTS, AS THE GRAPH'S FIXTURE RECORDS ("attempt 3 of 3"); the newest is the node's 59s.
++    attempts: [
++      { outcome: 'failed', start: '11:20', end: '11:22', ms: 1 * 60_000 + 41_000, exit: 2, costUsd: 0.09, tokens: 81_000, checkpoints: 1 },
++      { outcome: 'failed', start: '11:22', end: '11:24', ms: 1 * 60_000 + 12_000, exit: 2, costUsd: 0.07, tokens: 64_500, checkpoints: 1 },
++      { outcome: 'failed', start: '11:25', end: '11:26', ms: 59_000, exit: 2, costUsd: 0.11, tokens: 96_300, checkpoints: 1 },
++    ],
++    allowed: 3,
++    pr: null,
++    files: 2,
++    error:
++      'exit status 2: pytest was interrupted: 1 error during collection\n' +
++      'ERROR tests/unit/test_checkpoints.py - ImportError: cannot import name ‘Checkpoint’\n' +
++      'from swarm_common.checkpoints (apps/common/swarm_common/checkpoints.py)\n' +
++      '!!!!!!!! Interrupted: 1 error during collection !!!!!!!!',
++    waitsOn: null,
++    others: 1,
++  },
++  parked: { attempts: [], allowed: 3, pr: null, files: null, error: null, waitsOn: 'scan-terraform', others: 0 },
++  attempts: {
++    attempts: [
++      // THE NEWEST IS THE NODE'S 2m; the three differ in length so the bar shows it.
++      { outcome: 'failed', start: '11:32', end: '11:33', ms: 1 * 60_000 + 5_000, exit: 137, costUsd: 0.08, tokens: 41_200, checkpoints: 0 },
++      { outcome: 'failed', start: '11:33', end: '11:38', ms: 5 * 60_000 + 2_000, exit: 1, costUsd: null, tokens: null, checkpoints: 1 },
++      { outcome: 'succeeded', start: '11:38', end: '11:40', ms: 2 * 60_000 + 10_000, exit: 0, costUsd: 0.31, tokens: 140_900, checkpoints: 4 },
++    ],
++    allowed: 3,
++    pr: null,
++    files: 3,
++    error: null,
++    waitsOn: null,
++    others: 0,
++  },
++}
++
++// THE STEP THE CARD SHOWS, for the Needs-you row of the same step: the card holds its error, so the row does not
++// print it again (review sc-b, finding 6).
++let shown: string | null = null
++const heard = new Set<() => void>()
++const setShown = (id: string | null) => {
++  shown = id
++  heard.forEach((f) => f())
++}
++export function useScbShown(): string | null {
++  return useSyncExternalStore(
++    (f) => {
++      heard.add(f)
++      return () => heard.delete(f)
++    },
++    () => shown,
++    () => null,
++  )
++}
++
++/** `?sc=b` turns the mock on; `&scx=<kind>` pins a fixture, else the step's own state picks one. */
++export function scbOn(): boolean {
++  return typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('sc') === 'b'
++}
++
++export function scbKind(hue: string, word: string): ScbKind {
++  const pinned = new URLSearchParams(window.location.search).get('scx')
++  if (pinned !== null && pinned in FIXTURES) return pinned as ScbKind
++  if (word.includes('fail')) return 'failed'
++  if (word.includes('run')) return 'running'
++  if (hue === 'park' || word.includes('park') || word.includes('not started')) return 'parked'
++  return 'finished'
++}
++
++const dur = (ms: number) => {
++  const h = Math.floor(ms / 3_600_000)
++  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`
++  const m = Math.floor(ms / 60_000)
++  const s = Math.floor((ms % 60_000) / 1000)
++  if (m === 0) return `${s}s`
++  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m ${String(s).padStart(2, '0')}s`
++}
++const tok = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`)
++const WORD: Record<Outcome, string> = { running: 'running', succeeded: 'succeeded', failed: 'failed' }
++
++function Ic({ d }: { d: ReactNode }) {
++  return (
++    <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
++      {d}
++    </svg>
++  )
++}
++const IC = {
++  agent: <Ic d={<><rect x="5" y="7" width="14" height="11" rx="3" /><path d="M12 7V4M9 12h.01M15 12h.01M9.5 15h5" /></>} />,
++  logs: <Ic d={<path d="M5 6h14M5 10h14M5 14h9M5 18h6" />} />,
++  changes: <Ic d={<><path d="M12 5v6M9 8h6M9 17h6" /><rect x="4.5" y="3.5" width="15" height="17" rx="2" /></>} />,
++  pr: <Ic d={<><circle cx="7" cy="6" r="2" /><circle cx="7" cy="18" r="2" /><circle cx="17" cy="18" r="2" /><path d="M7 8v8M17 16V9a2 2 0 0 0-2-2h-4M13 5l-2 2 2 2" /></>} />,
++  stop: <Ic d={<rect x="7" y="7" width="10" height="10" rx="1.5" />} />,
++  retry: <Ic d={<><path d="M19 12a7 7 0 1 1-2.05-4.95" /><path d="M19 4v4h-4" /></>} />,
++  prev: <Ic d={<path d="m15 6-6 6 6 6" />} />,
++  next: <Ic d={<path d="m9 6 6 6-6 6" />} />,
++}
++
++/** One stat: label over figure; an unreported figure is a dash whose tooltip says so. */
++function Tile({ label, value, missing, hint }: { label: string; value: string | null; missing: string; hint?: string }) {
++  return (
++    <div className={`scb-tile${value === null ? ' is-absent' : ''}`}>
++      <span className="scb-tile-k">{label}</span>
++      {value === null ? (
++        <span className="scb-tile-v" title={missing} aria-label={`${label}: ${missing}`} tabIndex={0}>
++          —
++        </span>
++      ) : (
++        <span className="scb-tile-v" title={hint}>
++          {value}
++        </span>
++      )}
++    </div>
++  )
++}
++
++export function StepCardB({ kind, stepId, agentHref }: { kind: ScbKind; stepId: string; agentHref: string }) {
++  const fx = FIXTURES[kind]
++  const n = fx.attempts.length
++  // THE PAGER STARTS ON THE NEWEST ATTEMPT; `&sca=<n>` pins one for a frame.
++  const pinned = Number(new URLSearchParams(window.location.search).get('sca'))
++  const [at, setAt] = useState(pinned >= 1 && pinned <= n ? pinned - 1 : n - 1)
++  const [whole, setWhole] = useState(false)
++  useEffect(() => {
++    document.documentElement.classList.add('scb')
++    setShown(stepId)
++    return () => {
++      document.documentElement.classList.remove('scb')
++      setShown(null)
++    }
++  }, [stepId])
++  const tries = fx.attempts.map((a) => (a.since === undefined ? a : { ...a, ms: Math.max(0, Date.now() - a.since) }))
++  const cur = tries[at] ?? null
++  const running = cur !== null && cur.outcome === 'running'
++  const total = tries.reduce((s, a) => s + a.ms, 0)
++  // A FAILED STEP'S ONE ACTION IS RETRY, ON THE CARD (finding 7): only once its newest attempt has failed.
++  const retry = n > 0 && fx.attempts[n - 1]!.outcome === 'failed'
++  const others = fx.others > 0
++  const details = cur !== null || others
++
++  return (
++    <section className="scb" aria-label={`Step ${stepId}`}>
++      <div className="scb-bar" role="toolbar" aria-label="Step actions">
++        <ButtonLink href={agentHref} size="sm" icon={IC.agent}>
++          Agent
++        </ButtonLink>
++        {n > 0 && (
++          <ButtonLink href={`${agentHref}/logs`} size="sm" icon={IC.logs}>
++            Logs
++          </ButtonLink>
++        )}
++        {n > 0 && (
++          <ButtonLink
++            href="#changes"
++            size="sm"
++            icon={IC.changes}
++            title={fx.files === null ? 'Not counted yet' : `This step’s changes in this workflow`}
++          >
++            Changes
++            {fx.files !== null && <span className="scb-count">{fx.files}</span>}
++          </ButtonLink>
++        )}
++        {fx.pr !== null && (
++          <ButtonLink href="#pr" size="sm" icon={IC.pr} title="Opens on GitHub">
++            PR #{fx.pr}
++          </ButtonLink>
++        )}
++        {running && (
++          <Button size="sm" kind="danger" icon={IC.stop} className="scb-stop">
++            Stop
++          </Button>
++        )}
++        {retry && (
++          <Button size="sm" kind="primary" icon={IC.retry} className="scb-stop">
++            Retry
++          </Button>
++        )}
++      </div>
++
++      {/* ONE LINE; the head's ↑ is its action (finding 9), so the card draws no second one. */}
++      {fx.waitsOn !== null && (
++        <div className="scb-wait">
++          Waits on <b className="mono">{fx.waitsOn}</b>
++        </div>
++      )}
++
++      {fx.error !== null && (
++        <div className="scb-err" role="group" aria-label="Error">
++          <pre className={`scb-err-text${whole ? ' is-whole' : ''}`}>{fx.error}</pre>
++          {fx.error.split('\n').length > 2 && (
++            <Button size="sm" onClick={() => setWhole(!whole)} aria-expanded={whole}>
++              {whole ? 'Less' : 'Show all'}
++            </Button>
++          )}
++        </div>
++      )}
++
++      {cur !== null && (
++        <div className="scb-tiles">
++          <Tile label="Elapsed" value={dur(cur.ms)} missing="" />
++          <Tile label="Attempt" value={`${at + 1} / ${fx.allowed}`} missing="" hint={`Attempt ${at + 1} of the ${fx.allowed} allowed`} />
++          <Tile label="Cost" value={cur.costUsd === null ? null : `$${cur.costUsd.toFixed(2)}`} missing={running ? 'Cost is reported when the attempt ends' : 'This attempt’s cost was not reported'} />
++          <Tile label="Tokens" value={cur.tokens === null ? null : tok(cur.tokens)} missing="This attempt’s tokens were not reported" />
++        </div>
++      )}
++
++      {cur !== null && (
++        <div className="scb-tl">
++          <div className="scb-tl-row">
++            {n > 1 && (
++              <Button size="sm" kind="ghost" iconOnly icon={IC.prev} disabled={at === 0} onClick={() => setAt(at - 1)}>
++                Previous attempt
++              </Button>
++            )}
++            <ol className={`scb-tl-bar${n === 1 ? ' is-one' : ''}`} aria-label="Attempts">
++              {tries.map((a, i) => (
++                <li key={i} style={{ flexGrow: n === 1 ? 1 : Math.max(a.ms / total, 0.12) * 100 }}>
++                  {n === 1 ? (
++                    <span className={`scb-seg is-${a.outcome}`} title={`${WORD[a.outcome]} · ${dur(a.ms)}`} />
++                  ) : (
++                    <button
++                      type="button"
++                      className={`scb-seg is-${a.outcome}${i === at ? ' is-here' : ''}`}
++                      aria-pressed={i === at}
++                      title={`Attempt ${i + 1} · ${WORD[a.outcome]} · ${dur(a.ms)}${a.exit !== null ? ` · exit ${a.exit}` : ''}`}
++                      onClick={() => setAt(i)}
++                    >
++                      {i + 1}
++                    </button>
++                  )}
++                </li>
++              ))}
++            </ol>
++            {n > 1 && (
++              <Button size="sm" kind="ghost" iconOnly icon={IC.next} disabled={at === n - 1} onClick={() => setAt(at + 1)}>
++                Next attempt
++              </Button>
++            )}
++          </div>
++          {/* THE SELECTED ATTEMPT'S OWN TIMES (finding 11): with one attempt the bar is that attempt, so its ends
++              are the bar's; with several, one span under the bar names the ringed segment's start and end. */}
++          {n === 1 ? (
++            <div className="scb-tl-ends">
++              <span title="Started (UTC)">{cur.start}</span>
++              <span title={running ? 'Still running' : 'Ended (UTC)'}>{cur.end ?? 'now'}</span>
++            </div>
++          ) : (
++            <div className="scb-tl-ends is-one-span" title={`Attempt ${at + 1}, UTC`}>
++              <span>
++                {cur.start} – {cur.end ?? 'now'}
++              </span>
++            </div>
++          )}
++        </div>
++      )}
++
++      {details && (
++        <details className="scb-more" open={new URLSearchParams(window.location.search).get('scd') === '1'}>
++          <summary>Details</summary>
++          <dl className="scb-facts">
++            {cur !== null && (
++              <>
++                <dt>Exit code</dt>
++                <dd title={cur.exit === null ? 'Still running' : undefined}>{cur.exit ?? '—'}</dd>
++                <dt>Checkpoints</dt>
++                <dd>{cur.checkpoints}</dd>
++              </>
++            )}
++            {others && (
++              <>
++                <dt>Other workflows</dt>
++                <dd className="scb-others">
++                  <Button size="sm" kind="ghost" iconOnly icon={IC.prev} disabled>
++                    Newer workflow
++                  </Button>
++                  <span>1 / {fx.others + 1}</span>
++                  <Button size="sm" kind="ghost" iconOnly icon={IC.next}>
++                    Older workflow
++                  </Button>
++                </dd>
++              </>
++            )}
++          </dl>
++        </details>
++      )}
++    </section>
++  )
++}
+diff --git a/apps/swarm-ui/src/Workflows.tsx b/apps/swarm-ui/src/Workflows.tsx
+index 5ce79f3..53966e2 100644
+--- a/apps/swarm-ui/src/Workflows.tsx
++++ b/apps/swarm-ui/src/Workflows.tsx
+@@ -188,6 +188,7 @@ import { Mark } from './primitives'
+ import { stateWord } from './words'
+ import './styles/workflows.css'
+ import './styles/names.css'
++import { StepCardB, scbKind, scbOn } from './StepCardB' // MOCK-HOOK
+ import { ownerQuestionsHold } from './Handoff'
+ import { Inspector, startsFolded, useIsPhone } from './work/Inspector'
+ import { AgentSplit } from './AgentSplit'
+@@ -2481,6 +2482,14 @@ function InspectorSlot({
+           href: `/workflows/${encodeURIComponent(workflow.workflow_id)}/changes?${withChangesAt('', { step: row.step.step_id, file: null })}`,
+           ...changesCount(stepTask),
+         }
++  if (page && scbOn()) // MOCK-HOOK
++    return ( // MOCK-HOOK
++      <StepCardB // MOCK-HOOK
++        kind={scbKind(row.look.hue, row.look.word)} // MOCK-HOOK
++        stepId={row.step.step_id} // MOCK-HOOK
++        agentHref={row.taskId === null ? '#agent' : `/agents/${encodeURIComponent(row.taskId)}`} // MOCK-HOOK
++      /> // MOCK-HOOK
++    ) // MOCK-HOOK
+   return (
+     <StepInspector
+       workflowId={workflow.workflow_id}
+@@ -6825,7 +6834,9 @@ function Board({
+           reload={reload}
+         />
+       )}
+-      {step !== null && step.task_id && (
++      {/* MOCK-HOOK: with ?sc=b the card is the step's whole summary and Agent opens the rest, so the agent block
++          is not drawn under it again (review sc-b: it repeated the state, title and attempt, and kept prose). */}
++      {step !== null && step.task_id && !scbOn() && (
+         // THE STEP'S AGENT, under the step's own card (its verdict, merge
+         // checklist, await-input form and the same-step scrubber): keyed by
+         // the task, so walking to another stage opens that step's agent on
+diff --git a/apps/swarm-ui/src/styles/step-card-b.css b/apps/swarm-ui/src/styles/step-card-b.css
+new file mode 100644
+index 0000000..f61be8d
+--- /dev/null
++++ b/apps/swarm-ui/src/styles/step-card-b.css
+@@ -0,0 +1,175 @@
++/* MOCK-HOOK FILE
++   Step-card mock-up, direction B (?sc=b). Tokens only, so both themes draw it. */
++
++/* The inspector's head is the card's title: the step and its state, one step up in size. */
++.scb .wi-title-text { font-size: var(--t-lead); }
++
++.scb { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
++
++/* The action bar sticks under the inspector's own sticky head while the body scrolls. */
++.scb-bar {
++  position: sticky;
++  top: 39px;
++  z-index: 1;
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: var(--ctl-s2);
++  padding: var(--ctl-s2) 0;
++  background: var(--bg);
++  border-bottom: 1px solid var(--line-soft);
++}
++.scb-bar .scb-stop { margin-left: auto; }
++.scb-bar .scb-stop ~ .scb-stop { margin-left: 0; }
++.scb-count {
++  min-width: 18px;
++  padding: 0 5px;
++  border-radius: 9px;
++  background: var(--surface-2);
++  color: var(--text-dim);
++  font: 550 var(--t-micro) / var(--lh-micro) var(--mono);
++  text-align: center;
++}
++
++/* Parked, never attempted: one line; the head's ↑ is its action. */
++.scb-wait {
++  padding: var(--ctl-s2) var(--ctl-s3);
++  border: 1px dashed color-mix(in srgb, var(--s-park) 60%, transparent);
++  border-radius: var(--r-ctl);
++  color: var(--text);
++  font-size: var(--t-body);
++}
++
++/* The error, in the agent's own words: four lines, the rest one press away. */
++.scb-err {
++  display: flex;
++  flex-direction: column;
++  align-items: flex-start;
++  gap: var(--ctl-s1);
++  padding: var(--ctl-s2) var(--ctl-s3);
++  border: 1px solid color-mix(in srgb, var(--s-bad) 55%, transparent);
++  border-left-width: 3px;
++  border-radius: var(--r-ctl);
++  background: color-mix(in srgb, var(--s-bad) 7%, var(--surface));
++}
++.scb-err-text {
++  margin: 0;
++  max-width: 100%;
++  color: var(--text);
++  font: var(--t-micro) / var(--lh-micro) var(--mono);
++  white-space: pre-wrap;
++  overflow-wrap: anywhere;
++  display: -webkit-box;
++  -webkit-line-clamp: 3;
++  -webkit-box-orient: vertical;
++  overflow: hidden;
++}
++.scb-err-text.is-whole { display: block; }
++
++/* Stat tiles: label over figure, no box (design-system §6.2); an absent figure is a dashed dash. */
++.scb-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: var(--ctl-s2); }
++.scb-tile {
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++  min-width: 0;
++  padding: var(--ctl-s2) 10px;
++  border: 1px solid transparent;
++  border-radius: var(--r-ctl);
++  background: var(--surface);
++}
++.scb-tile.is-absent { border-style: dashed; border-color: var(--line-soft); background: none; }
++.scb-tile-k { color: var(--text-faint); font: 550 var(--t-micro) / var(--lh-micro) var(--font); }
++.scb-tile-v {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  color: var(--text);
++  font: 600 var(--t-lead) / var(--lh-flush) var(--font);
++  font-variant-numeric: tabular-nums;
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
++}
++.scb-tile.is-absent .scb-tile-v { color: var(--text-faint); cursor: help; width: fit-content; }
++.scb-tile-v:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
++
++/* The attempt timeline: one segment per attempt, as long as it ran; the pager's arrows at its ends. */
++.scb-tl { display: flex; flex-direction: column; gap: 4px; }
++.scb-tl-row { display: flex; align-items: center; gap: var(--ctl-s1); }
++.scb-tl-bar { display: flex; flex: 1 1 auto; gap: 3px; margin: 0; padding: 0; list-style: none; min-width: 0; }
++.scb-tl-bar > li { flex-basis: 0; min-width: 28px; }
++.scb-seg {
++  width: 100%;
++  height: 24px;
++  border: 1px solid transparent;
++  border-radius: 6px;
++  font: 600 var(--t-micro) / var(--lh-flush) var(--mono);
++  color: var(--text);
++  cursor: pointer;
++}
++.scb-seg.is-succeeded { background: color-mix(in srgb, var(--ok) 22%, var(--surface)); }
++.scb-seg.is-failed { background: color-mix(in srgb, var(--s-bad) 22%, var(--surface)); }
++.scb-seg.is-running {
++  background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--s-live) 30%, var(--surface)) 0 6px, color-mix(in srgb, var(--s-live) 16%, var(--surface)) 6px 12px);
++}
++.scb-tl-bar.is-one .scb-seg { display: block; height: 10px; }
++.scb-seg.is-here { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
++.scb-seg:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
++.scb-tl-ends { display: flex; justify-content: space-between; color: var(--text-faint); font: var(--t-micro) / var(--lh-micro) var(--mono); }
++.scb-tl-ends.is-one-span { justify-content: center; }
++
++/* Everything else, behind one fold. */
++.scb-more { border-top: 1px solid var(--line-soft); padding-top: var(--ctl-s2); }
++.scb-more > summary {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  height: var(--h-sm);
++  padding: 0 10px;
++  border: 1px solid var(--ctl-bd, var(--line));
++  border-radius: var(--r-ctl);
++  background: var(--surface);
++  color: var(--text);
++  font: 550 var(--t-micro) / var(--lh-flush) var(--font);
++  cursor: pointer;
++  list-style: none;
++}
++.scb-more > summary::-webkit-details-marker { display: none; }
++.scb-more > summary::before { content: '▸'; color: var(--text-dim); }
++.scb-more[open] > summary::before { content: '▾'; }
++.scb-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
++.scb-facts {
++  display: grid;
++  grid-template-columns: max-content minmax(0, 1fr);
++  gap: 6px var(--ctl-s3);
++  align-items: center;
++  margin: var(--ctl-s2) 0 0;
++  font-size: var(--t-meta);
++}
++.scb-facts dt { color: var(--text-dim); }
++.scb-facts dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
++.scb-others { display: inline-flex; align-items: center; gap: var(--ctl-s1); }
++
++/* THE SHEET'S BACK IS A BUTTON, not an arrow-styled link (finding 12). */
++.scb .wi-back {
++  display: inline-flex;
++  align-items: center;
++  height: var(--h-sm);
++  min-height: 0;
++  padding: 0 10px;
++  border: 1px solid var(--ctl-bd, var(--line));
++  border-radius: var(--r-ctl);
++  background: var(--surface);
++  color: var(--text);
++  font: 550 var(--t-micro) / var(--lh-flush) var(--font);
++}
++.scb .wi-back:hover { background: var(--surface-2); }
++
++@media (max-width: 720px) {
++  .scb-bar { position: static; }
++  /* ONE ROW ON A PHONE (finding 12): the buttons share the width rather than leave one on a row by itself. */
++  .scb-bar { flex-wrap: nowrap; gap: 6px; }
++  .scb-bar > .c-btn { flex: 1 1 auto; min-width: 0; justify-content: center; padding: 0 8px; }
++  .scb-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++}
+diff --git a/apps/swarm-ui/src/work/NeedsYou.tsx b/apps/swarm-ui/src/work/NeedsYou.tsx
+index f14141d..57bf40b 100644
+--- a/apps/swarm-ui/src/work/NeedsYou.tsx
++++ b/apps/swarm-ui/src/work/NeedsYou.tsx
+@@ -48,6 +48,7 @@ import { prefillTask } from '../submitPrefill'
+ import { type Task } from '../types'
+ import { useNow } from '../useNow'
+ import './needs-you.css'
++import { scbOn, useScbShown } from '../StepCardB' // MOCK-HOOK
+ 
+ export type NeedKind = 'failed' | 'question' | 'merge' | 'handoff' | 'approval'
+ 
+@@ -288,9 +289,13 @@ function NeedsList({
+     const unknown = (items.unknownKinds ?? []).filter((k) => k !== 'approval')
+     return (
+       <p className="ny-quiet" id={id}>
+-        {unknown.length === 0
+-          ? 'Nothing waits on you here'
+-          : `Nothing this screen read waits on you; ${unknown.map((k) => NEED_WORD[k]).join(', ')} not known here`}
++        {unknown.length === 0 ? (
++          'Nothing waits on you here'
++        ) : scbOn() ? ( // MOCK-HOOK: the chips already say which are not known; the sentence goes to the tooltip
++          <span title={`Nothing this screen read waits on you; ${unknown.map((k) => NEED_WORD[k]).join(', ')} not known here`}>Nothing found</span>
++        ) : (
++          `Nothing this screen read waits on you; ${unknown.map((k) => NEED_WORD[k]).join(', ')} not known here`
++        )}
+       </p>
+     )
+   }
+@@ -378,13 +383,16 @@ function FailedRow({ item, onChanged }: { item: FailedNeed; onChanged?: () => vo
+   const workflowId = item.task.workflow_id ?? null
+   const stepId = item.task.step_id ?? null
+   const [failed, setFailed] = useState<ApiError | null>(null)
++  const onCard = useScbShown() === stepId && stepId !== null // MOCK-HOOK: the open step card holds this error
+   return (
+     <li className="ny-row is-failed">
+       <Kind k="failed" />
+       <b className="ny-title">{item.title}</b>
+-      <span className="ny-text" title={item.why ?? undefined}>
+-        {item.why ?? 'No error was read'}
+-      </span>
++      {!onCard && ( // MOCK-HOOK
++        <span className="ny-text" title={item.why ?? undefined}>
++          {item.why ?? 'No error was read'}
++        </span>
++      )}
+       <Pr pr={item.pr} />
+       <span className="ny-acts">
+         {workflowId === null ? (
