@@ -403,3 +403,13 @@ def test_no_token_in_a_repr_or_a_log(caplog):
         assert token not in caplog.text and grant.headers()[GRANT_HEADER] not in caplog.text
         assert "plan it" not in caplog.text
     run(body)
+
+
+def test_the_holder_is_voice_front_or_voice_planner_and_nothing_else():
+    world = World()
+    broker = world.accounts._broker  # noqa: SLF001
+    assert plannerlease.PlannerAccounts(broker).holder == "voice-planner"
+    assert plannerlease.PlannerAccounts(broker, holder="voice-front").holder == "voice-front"
+    with pytest.raises(ValueError):
+        plannerlease.PlannerAccounts(broker, holder="worker")
+    asyncio.run(world.http.aclose())
