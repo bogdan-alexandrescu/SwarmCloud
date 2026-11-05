@@ -900,6 +900,50 @@ function geometryCandidates(root: ParentNode): Element[] {
 }
 
 export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
+  const steps = probeSteps(root, restrict)
+  for (;;) {
+    const step = steps.next()
+    if (step.done === true) return step.value
+  }
+}
+
+/**
+ * HOW LONG THE SWEEP MAY HOLD THE WORKER'S EVENT LOOP. Vitest's worker gives
+ * every RPC to the main process 60 s, timed on a real timer, and reads the
+ * reply only when the event loop turns. One dark probe of an admin-setup
+ * route took 79 s on the SwarmCloud container (2026-11-05), so the reply to
+ * the `onTaskUpdate` sent when the test started sat unread past its 60 s, and
+ * PR #3304's CI shard 4/8 failed on "Timeout calling onTaskUpdate" after the
+ * slice had passed in 670 s. 5 s leaves a loaded shard twelvefold room.
+ * `performance` is not in the sweep's faked list, so this is wall time.
+ */
+const YIELD_EVERY_MS = 5000
+
+/** One real turn of the event loop: `setImmediate` is not faked either. */
+export function yieldToWorker(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+/**
+ * `probe`, giving the event loop a turn every YIELD_EVERY_MS. The same steps
+ * and the same Report: only where the loop may turn differs. For the
+ * long sweeps; one screen's probe in a single test needs none of it.
+ */
+export async function probeYielding(root: ParentNode, restrict?: readonly Element[]): Promise<Report> {
+  const steps = probeSteps(root, restrict)
+  let since = performance.now()
+  for (;;) {
+    const step = steps.next()
+    if (step.done === true) return step.value
+    if (performance.now() - since > YIELD_EVERY_MS) {
+      await yieldToWorker()
+      since = performance.now()
+    }
+  }
+}
+
+/** The probe itself, pausing after every element it computes a style for. */
+function* probeSteps(root: ParentNode, restrict?: readonly Element[]): Generator<void, Report, void> {
   STYLE_CACHE = new WeakMap()
   const unresolved: Unresolved[] = []
   const centred: string[] = []
@@ -929,9 +973,12 @@ export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
   //   one is added its striping will be a new shape under a key that does not
   //   know about it -- which is worth saying out loud here.)
   const shapes = new Set<string>()
-  const all = restrict ?? geometryCandidates(root)
-    .filter(rendered)
-    .filter((el) => {
+  let all: readonly Element[] | undefined = restrict
+  if (all === undefined) {
+    const kept: Element[] = []
+    for (const el of geometryCandidates(root)) {
+      yield
+      if (!rendered(el)) continue
       const me = signature(el)
       const prev = el.previousElementSibling
       const pos =
@@ -941,10 +988,12 @@ export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
       const chain: string[] = []
       for (let a = el.parentElement; a !== null && a !== root; a = a.parentElement) chain.push(signature(a))
       const key = `${chain.join('>')}>${me}|${pos}`
-      if (shapes.has(key)) return false
+      if (shapes.has(key)) continue
       shapes.add(key)
-      return true
-    })
+      kept.push(el)
+    }
+    all = kept
+  }
 
   const add = (f: Finding) => {
     const key = `${f.kind}|${f.where}|${f.side}`
@@ -953,6 +1002,7 @@ export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
   }
 
   for (const el of all) {
+    yield
     const s = styleOf(el)
     const where = signature(el)
 

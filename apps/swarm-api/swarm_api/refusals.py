@@ -556,7 +556,8 @@ SWITCHES: dict[str, Switch] = {
     "repository_ref_not_found": Switch(
         code="repository_ref_not_found",
         why="a submission whose repository_ref is neither a branch nor a tag of a repository "
-        "the submitter's forge slot can read is answered 422 repository_ref_not_found before "
+        "the submitter's forge slot can read, or a full sha GitHub has no commit for (#3315), "
+        "is answered 422 repository_ref_not_found before "
         "any task is stored. On once the report-only log shows only refs that really were gone",
     ),
     # Admin › Setup's first workspace before infra pass 3 (DAYONE-MANIFEST-

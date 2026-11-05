@@ -2912,6 +2912,18 @@ def run_cli_agent(
             staged_patches=[p for p in staged if p.endswith(STAGED_PATCH_SUFFIXES)],
         )
 
+    # JC2, THE END-OF-STEP CONTRACT JUDGMENT (jev-contract.md section 5; the
+    # owner's answers 4 and 8). After the agent and the gate's turns, so the
+    # agent can neither see nor answer it, and over the commit the gate left.
+    # One bounded round on the budget's reserve; with Jev unavailable it is
+    # `not_run`, never a pass. Recorded in the report; the worker posts it to
+    # `state/contract-verdict` once the step is published
+    # (`lifecycle.Worker._deliver_contract_verdict`).
+    if result.exit_code == 0 and cwd != ctx.work_dir and not parked_on_question():
+        verdict = _contract_post_step(jev, cwd, log)
+        if verdict is not None:
+            ctx.report["contract_judgment"] = verdict
+
     # WHOLE OR NOT AT ALL -- see TRANSCRIPT_MAX_CHARS. The stdout capture above
     # is the canonical transcript and is uploaded either way.
     transcript_skipped: str | None = None
@@ -3136,6 +3148,29 @@ def _jev_post_steps(ctx: RunnerContext, jev: Any, cwd: Path, log: StructuredLogg
                     error=type(exc).__name__)
         out["error"] = type(exc).__name__
     return out
+
+
+def _contract_post_step(jev: Any, cwd: Path, log: StructuredLogger) -> dict[str, Any] | None:
+    """JC2 over the contract the worker named (`poststeps.read_contract`):
+    the verdict to post, or None with no contract to judge. Never raises."""
+    from .. import prepublish
+    from ..judge import poststeps
+
+    try:
+        document, digest = poststeps.read_contract(os.environ)
+        if digest is None and document is None:
+            return None
+        verdict = poststeps.contract_post_step(
+            jev, document, digest, cwd,
+            base=os.environ.get(prepublish.CLONE_BASE_ENV, "").strip() or None,
+            deadline_left=prepublish.deadline_left(os.environ))
+    except Exception as exc:  # noqa: BLE001 -- a judgment that failed did not run
+        log.warning("the contract judgment failed", error=type(exc).__name__)
+        return None
+    if verdict is not None:
+        log.info("contract judgment", outcome=verdict.get("outcome"),
+                 reason=verdict.get("reason"), verdicts=len(verdict.get("verdicts") or ()))
+    return verdict
 
 
 def _parse_cli_output(raw_stdout: str) -> Any:

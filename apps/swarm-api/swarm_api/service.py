@@ -148,6 +148,7 @@ from .validation import (
     StepSpec,
     IssueRef,
     check_repository_ref,
+    is_full_sha,
     ref_needs_lookup,
     repository_ref_not_found,
     swarm_task_of_ref,
@@ -172,6 +173,7 @@ from .validation import (
     resolve_await_input,
     resolve_dispatch_options,
     resolve_input_layout,
+    is_security_review,
     resolve_integrator_step,
     resolve_merge_choice,
     resolve_fix_rounds,
@@ -1299,7 +1301,11 @@ class SubmissionService:
                     continue
                 asked.add(pair)
                 check_repository_ref(spec.repository_ref)
-                self._check_ref_exists(tenant, *pair, person=ctx.email)
+                # The platform's own submission (`repoindex`) names the head
+                # sha it has just read from GitHub with the same credential:
+                # asking again is one more read for nothing (#3315).
+                if not service_submission:
+                    self._check_ref_exists(tenant, *pair, person=ctx.email)
             # Inside the try so a refused dispatch is counted like every other
             # rejected submission rather than being invisible to the metric.
             tasks = [
@@ -1952,6 +1958,9 @@ class SubmissionService:
                 runner_profile=s.runner_profile,
                 pr_role=s.pr_role,
                 merges=dict(s.merges) if s.merges is not None else None,
+                # The security review, by its work contract's plugin: a
+                # verdict source after the integrator, staged by the merge.
+                security_review=is_security_review(s.metadata, os.environ),
             )
             for s in spec.steps
         ]
@@ -2265,7 +2274,8 @@ class SubmissionService:
     def _check_ref_exists(self, tenant: Tenant, repository_url: str | None,
                           ref: str | None, *, person: str | None) -> None:
         """Refuse a `repository_ref` the forge has neither as a branch nor as
-        a tag (#2726), once per submission, before any task exists.
+        a tag (#2726) -- or, for a full sha, as a commit (#3315) -- once per
+        submission, before any task exists.
 
         wf_81c4f2da named `swarm/task_77d63ca8...`, a branch deleted after its
         pull request merged; its step took a lease, waited for a pod and
@@ -2276,11 +2286,16 @@ class SubmissionService:
         the `repository_ref_not_found` switch is on (refusals.py); off, the
         refusal is logged and the submission admitted.
 
+        A full sha is one read, `commit_head` (`GET commits/<sha>`), instead
+        of the branch and tag reads: task_36c8a894 named a sha GitHub does not
+        serve and failed in the clone with "not our ref". The commits API can
+        still answer for a dangling object upload-pack refuses, so this
+        narrows that gap without closing it.
+
         FAILS OPEN. No forge reader or credential, 401/403, a timeout, a 5xx,
         a rate limit or an unreadable repository admit as before: the clone
         still finds a missing ref, and a GitHub outage must not stop
-        admission. A full sha is fetched by sha and never asked about; a
-        repository off GitHub is not asked either.
+        admission. A repository off GitHub is not asked.
         """
         if self._forge_tokens is None or self._forge_writer is None:
             return
@@ -2293,7 +2308,8 @@ class SubmissionService:
         owner, repo = named
         target = IssueRef(owner=owner, repo=repo, number=0)
         writer = self._forge_writer
-        task_id = swarm_task_of_ref(ref)
+        full_sha = is_full_sha(ref)
+        task_id = None if full_sha else swarm_task_of_ref(ref)
         task: Task | None = None
         if task_id is not None:
             try:
@@ -2307,9 +2323,12 @@ class SubmissionService:
         try:
             token = self._forge_tokens.token_for(tenant, person=person)
             try:
-                if writer.branch_head(target, ref, token) is not None:
+                if full_sha:
+                    if writer.commit_head(target, ref, token) is not None:
+                        return
+                elif writer.branch_head(target, ref, token) is not None:
                     return
-                if writer.tag_head(target, ref, token) is not None:
+                elif writer.tag_head(target, ref, token) is not None:
                     return
                 # Neither: a 404 is also what a token that cannot see the
                 # repository reads, so the repository itself must answer.

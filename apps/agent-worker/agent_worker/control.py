@@ -2781,6 +2781,13 @@ class ControlPlane:
         swarm-api's park (`attemptstate`, the state routes) keeps the same
         clock.
 
+        THE TRAIN'S START (part of #2688). `train_entered_at` is set by the
+        first train park (`counter` "train_waits") of an unbroken run of
+        them and carried by every train park after it; any other park
+        clears it. The CI clock cannot age a train wait (the train pauses
+        it), so swarm-api serves this as `waiting.detail.train_since` and
+        `/sc check` ages the wait from it exactly.
+
         There is no checkpoint and no upload: a worker action keeps no
         workspace (invariant 8's exception, CR 36), and its durable state is
         this record plus GitHub, which the next attempt reads again.
@@ -2830,6 +2837,12 @@ class ControlPlane:
                 first = now
             elif paused is not None:
                 first, paused = first + max(now - paused, timedelta(0)), None
+            # The train's start (the docstring): carried while the parks stay
+            # train parks, cleared by any other.
+            train = None
+            if counter == "train_waits":
+                train = last.get("train_entered_at") if last.get("code") == code else None
+                train = train if isinstance(train, datetime) else now
             metadata[MERGE_WAIT_METADATA_KEY] = {
                 "code": code,
                 "head": head,
@@ -2839,6 +2852,7 @@ class ControlPlane:
                 "updates": _count(last.get("updates")),
                 "first_parked_at": first,
                 "ci_paused_at": paused,
+                "train_entered_at": train,
                 "parked_at": now,
                 **recorded,
             }

@@ -223,10 +223,16 @@ def test_main_and_a_same_repository_pull_request_look_up_and_everyone_records():
     assert "tested-tree" in jobs["ci-gate"]["needs"]
 
 
-def test_the_build_still_waits_for_what_was_not_reused():
-    """A reused job is skipped by its own if, which reads as passed; the build
-    still needs the checks it always needed."""
-    assert {"python", "shell", "manifests"} <= set(_jobs()["build"]["needs"])
+def test_the_release_still_waits_for_what_was_not_reused():
+    """A reused job is skipped by its own if, which reads as passed. Since the
+    owner's pick on PR 3344 the build needs none of them and the release's
+    gate (CI_RELEASE_TEST_JOBS, scripts/lib/common.sh) waits instead, for the
+    checks the build always needed; test_ci_built_images.py holds the list."""
+    jobs = _jobs()
+    assert not jobs["build"].get("needs"), jobs["build"].get("needs")
+    common = (REPO / "scripts" / "lib" / "common.sh").read_text()
+    for job_id in ("python", "shell", "manifests"):
+        assert f'"{jobs[job_id]["name"]}"' in common, job_id
 
 
 def test_the_record_json_round_trips_through_find_s_reader(tmp_path):
