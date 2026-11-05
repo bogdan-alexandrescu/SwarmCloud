@@ -223,6 +223,12 @@ class AccountRegister(StrictModel):
     #: Write-only. No response model in this service contains it and no route
     #: returns it -- the same rule tenants.py states for provider keys.
     credential: str = Field(min_length=8, max_length=16384)
+    #: For an OpenAI API key (`openai-api`) alone, and required there: the
+    #: verified email of the platform admin who pasted it, which swarm-api
+    #: takes from the caller's token. The broker writes it, with the time it
+    #: stored the key, on the key account's document
+    #: (`openai_api_key.added_fields`; the owner, 5 November 2026).
+    added_by: str | None = Field(default=None, max_length=254)
 
 
 class AccountAuthorize(StrictModel):
@@ -3953,6 +3959,16 @@ def create_app(
             key = openai_api_key.parse_api_key(body.credential)
         except CredentialError as exc:
             raise BrokerValidationError(str(exc)) from None
+        # WHO ADDED IT, checked before anything is written, like the key.
+        if body.added_by is None:
+            raise BrokerValidationError(
+                "an OpenAI API key is recorded with the platform admin who added it; "
+                "send added_by"
+            )
+        try:
+            added = openai_api_key.added_fields(body.added_by, datetime.now(timezone.utc))
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
         existing = store.get(f"{body.owner_tenant}:{body.label}")
         if existing is not None and existing.provider != openai_api_key.PROVIDER:
             raise BrokerValidationError(
@@ -4000,6 +4016,10 @@ def create_app(
         )
         if account.state is AccountState.REAUTH_REQUIRED:
             store.clear_reauth_required(account.account_id)
+        # A replacement overwrites both fields; `registered_at` keeps the first.
+        request.app.state.broker.db.collection(ACCOUNTS_COLLECTION).document(
+            account.account_id
+        ).update(added)
         log.info(
             "audit: an OpenAI API key was added to the Voice it pool",
             extra={"audit": True, "account_id": account.account_id, "pool": POOL_VOICE_IT},
@@ -4333,6 +4353,10 @@ def create_app(
         provider = _account_provider(body.provider)
         if provider == openai_api_key.PROVIDER:
             return _register_api_key(request, body, authorization, store=store, secrets=secrets)
+        if body.added_by is not None:
+            raise BrokerValidationError(
+                "added_by is recorded for an OpenAI API key alone; send none for this provider"
+            )
         if provider == openai_plan.PROVIDER:
             # A ChatGPT plan's pair, or codex's own auth.json (#2688). Its
             # organisation is what the pasted id_token says, when it carries one.
@@ -5066,17 +5090,22 @@ def create_app(
             datetime.now(timezone.utc),
             capability=openai_api_key.CAPABILITY_LIVE,
         )
-        return {
-            "account": None
-            if chosen is None
-            else {
-                "account_id": chosen.account_id,
-                "label": chosen.label,
-                "display_name": chosen.display_name,
-                "provider": chosen.provider,
-            },
-            "reason": reason,
+        if chosen is None:
+            return {"account": None, "reason": reason}
+        answer: dict[str, Any] = {
+            "account_id": chosen.account_id,
+            "label": chosen.label,
+            "display_name": chosen.display_name,
+            "provider": chosen.provider,
         }
+        if chosen.provider == openai_api_key.PROVIDER:
+            # Who added the key and when, never the key (Voice it › Settings).
+            added = openai_api_key.added_from(
+                _raw_account(request.app.state.broker.db, chosen.account_id) or {}
+            )
+            answer["key_added_by"] = added["by"]
+            answer["key_added_at"] = added["at"].isoformat() if added["at"] else None
+        return {"account": answer, "reason": reason}
 
     @app.post("/v1/accounts/assign")
     def assign_account(
