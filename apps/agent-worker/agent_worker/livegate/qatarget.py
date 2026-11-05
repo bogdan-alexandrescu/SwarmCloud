@@ -14,7 +14,8 @@ the default browser context (so the session's cookies are the agent's
 browser's), on a CDP session the agent never sees, the gate opens
 `login_url`, makes the target's start clicks in order (a chooser, or a
 "Sign in" button before an identity provider: each the one visible control
-whose trimmed text equals the click's `text`, waited for up to
+a person can click whose trimmed text equals the click's `text`, plain text
+reading the same not counted, waited for up to
 `FORM_SECONDS` for the first and `START_CLICK_SECONDS` for each later one,
 clicked once the page finished loading, or the sign-in ends
 `qa_sign_in_start_click_missing`; a page that is already the form, as an
@@ -1317,7 +1318,14 @@ _CHALLENGE_HOSTS = json.dumps([[host, path] for host, path in CHALLENGE_FRAMES])
 #: start page: visible, its text trimmed with runs of white space as one space
 #: (a label laid out over two lines, or with a no-break space, is still its
 #: words), exactly equal to the click's `text`; the outermost of a nested pair
-#: dropped (a button and the span inside it are one control).
+#: dropped (a button and the span inside it are one control). For a click,
+#: `clickable` keeps of those only what a person can click (part of #2688):
+#: the match, or an ancestor reading the same text, that is a button, an `a`
+#: with an href, an input of type submit or button, role button or link, a
+#: summary or an element with a non-negative tabindex; failing those, one
+#: whose computed cursor is a pointer. A heading's span that reads "Sign in"
+#: beside the "Sign in" button is text, not a second control. `named` says
+#: what matched, by tag and role, for a refusal's sentence.
 _CONTROLS = """
   const shown = (el) => { const s = getComputedStyle(el);
     return s.visibility !== 'hidden' && s.display !== 'none' && el.getClientRects().length > 0; };
@@ -1328,7 +1336,25 @@ _CONTROLS = """
     try { all = [...document.querySelectorAll(c.css || '*')]; } catch (e) { return null; }
     const hits = all.filter((el) => label(el) === c.text && shown(el));
     return hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
-  };"""
+  };
+  const role = (el) => (el.getAttribute('role') || '').trim().toLowerCase().split(/\\s+/)[0];
+  const operable = (el) => {
+    const tag = el.tagName.toLowerCase(), r = role(el), t = el.getAttribute('tabindex');
+    return tag === 'button' || tag === 'summary' || (tag === 'a' && el.hasAttribute('href'))
+      || (tag === 'input' && ['submit', 'button'].includes((el.getAttribute('type') || '').toLowerCase()))
+      || r === 'button' || r === 'link' || (t !== null && parseInt(t, 10) >= 0);
+  };
+  const clickable = (c, hits) => {
+    const found = [];
+    for (const el of hits) {
+      const chain = [];
+      for (let n = el; n && label(n) === c.text; n = n.parentElement) chain.push(n);
+      const hit = chain.find(operable) || chain.find((n) => getComputedStyle(n).cursor === 'pointer');
+      if (hit && !found.includes(hit)) found.push(hit);
+    }
+    return found;
+  };
+  const named = (els) => els.slice(0, 3).map((el) => ({tag: el.tagName.toLowerCase(), role: role(el)}));"""
 
 #: What the gate's tab shows. Before the submit: `form` once both fields are
 #: there. After it (`a.after`), the page's own state: `form` while a password
@@ -1417,21 +1443,28 @@ _CLEAR = """/*swarm-qa:clear*/((a) => {
 
 #: A start click (§2.2 step 3): the controls `_CONTROLS` names for the click
 #: (`css` narrowing the candidates, any element without one). Clicks only when
-#: there is exactly one AND the page has finished loading (a server-drawn
-#: chooser is shown before its script runs, and a click then does nothing),
-#: unless `a.now` (the wait for the load ran out); returns how many there
-#: were, -1 when `css` is not a selector the page's `querySelectorAll` takes,
-#: -2 for one control on a page still loading. A click marks the document
-#: with its address and whether it began to unload, for `_AFTER_CLICK`.
+#: exactly one of them is `clickable` (whatever plain text also reads the
+#: same), or none is and there is exactly one match, AND the page has finished
+#: loading (a server-drawn chooser is shown before its script runs, and a
+#: click then does nothing), unless `a.now` (the wait for the load ran out).
+#: Returns 1 for a click, 0 for no match, -1 when `css` is not a selector the
+#: page's `querySelectorAll` takes, -2 for one control on a page still
+#: loading, and for several `{count, clickable, matched}`: how many matched,
+#: how many of them a person can click, and the first three of the clickable
+#: ones (of every match when none is) by tag and role. A click marks the
+#: document with its address and whether it began to unload, for `_AFTER_CLICK`.
 _START_CLICK = """/*swarm-qa:start-click*/((a) => {%s
   const hits = controls(a);
   if (hits === null) return -1;
-  if (hits.length !== 1) return hits.length;
+  if (!hits.length) return 0;
+  const live = clickable(a, hits);
+  const pick = live.length ? live : hits;
+  if (pick.length !== 1) return {count: pick.length, clickable: live.length, matched: named(pick)};
   if (document.readyState !== 'complete' && !a.now) return -2;
   window.__swarmQaClicked = location.href;
   if (!window.__swarmQaLeaveHook) { window.__swarmQaLeaveHook = true;
     addEventListener('beforeunload', () => { window.__swarmQaLeaving = true; }); }
-  hits[0].click();
+  pick[0].click();
   return 1;
 })(%%s)""" % _CONTROLS
 
@@ -1468,6 +1501,49 @@ def _bad_selectors(state: Any) -> str | None:
         return None
     keys = [k for k in state[4:].split(",") if k in _SELECTOR_NAMES]
     return " and ".join(keys) or None
+
+
+#: What a refusal's sentence keeps of a match's tag or role: lower-case
+#: letters, digits and hyphens, at most this many.
+_NAME_CHARS = re.compile(r"[^a-z0-9-]")
+MAX_MATCH_NAME = 24
+
+
+def _match_name(match: Any) -> str | None:
+    """One match `_START_CLICK` named, as "button" or "span (role link)"."""
+    if not isinstance(match, Mapping):
+        return None
+    tag = _NAME_CHARS.sub("", str(match.get("tag") or "").lower())[:MAX_MATCH_NAME]
+    role = _NAME_CHARS.sub("", str(match.get("role") or "").lower())[:MAX_MATCH_NAME]
+    if not tag:
+        return None
+    return f"{tag} (role {role})" if role else tag
+
+
+def _start_click_sentence(text: str, found: Any, seconds: float) -> str:
+    """Why the start click `text` was not made: what `_START_CLICK` last
+    returned, saying for several matches how many a person can click and
+    which elements they were (tag and role, at most three)."""
+    rule = "and the gate clicks only when exactly one is a control a person can click"
+    if isinstance(found, Mapping):
+        count, live = found.get("count"), found.get("clickable")
+        names = [n for n in (_match_name(m) for m in list(found.get("matched") or ())[:3]) if n]
+        count = count if type(count) is int and count > 1 else max(len(names), 2)
+        named = f" ({', '.join(names)})" if names else ""
+        if type(live) is int and live > 1:
+            what = f"{live} visible controls a person can click with exactly that text{named}"
+        else:
+            what = (f"{count} visible elements with exactly that text{named}, none of them a control "
+                    "a person can click")
+        return f"the sign-in's start click '{text}' found {what} in {seconds:.0f} s, {rule}"
+    if type(found) is int and found == -1:
+        what = "none (its css is not a selector the page takes)"
+    elif type(found) is not int or found < 2:
+        what = "none"
+    else:
+        what = str(found)
+    return (f"the sign-in's start click '{text}' found {what} visible controls with exactly that text "
+            f"in {seconds:.0f} s, {rule}")
 
 
 class SignIn:
@@ -1570,16 +1646,7 @@ class SignIn:
             if type(count) is int and count == 1:
                 break
             if self._clock() >= deadline:
-                if type(count) is int and count == -1:
-                    found = "none (its css is not a selector the page takes)"
-                elif type(count) is not int or count < 1:
-                    found = "none"
-                else:
-                    found = str(count)
-                self._target.sentence = (
-                    f"the sign-in's start click '{click['text']}' found {found} visible control"
-                    f"{'' if found == '1' else 's'} with exactly that text in {seconds:.0f} s, "
-                    "and the gate clicks only when there is exactly one")
+                self._target.sentence = _start_click_sentence(click["text"], count, seconds)
                 return STATE_FAILED, START_CLICK_MISSING
             await self._sleep(self._probe_seconds)
         await self._settle_after_click()
