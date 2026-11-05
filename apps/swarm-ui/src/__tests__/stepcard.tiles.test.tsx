@@ -11,7 +11,7 @@
  * attempts of different durations, the Details fold, and no task at all.
  */
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import { absentCell, measuredCell } from '../measure'

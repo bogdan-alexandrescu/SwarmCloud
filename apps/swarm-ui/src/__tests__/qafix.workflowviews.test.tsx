@@ -196,6 +196,7 @@ describe('WG-4, WG-6: the step card says each figure in words', () => {
 
   it('says submitted, not sub, in the head -- and on the workflow’s own page leaves the times to the page head', async () => {
     const card = await openCard()
+    expect(card.querySelector('.wf-inspect-times')).toBeNull()
     // QAFIX5 (QA-120, run 5b): on the workflow's page the card is headed by
     // the step, and the workflow's start and submit are the page head's
     // count note (#138), not repeated in the card.

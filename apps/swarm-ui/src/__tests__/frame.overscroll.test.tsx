@@ -86,17 +86,16 @@ describe('item 3: no box escapes the app frame, so the window never scrolls', ()
     // lands on its Overview, so a row is picked here to open the step
     // inspector in the dock, as a reader would.
     fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-card .wf-table tbody tr[data-step] .wf-pick')!)
-    // The Table tab's Steps table writes its state words out, so the hidden
-    // words on this page are the step inspector's (its head and its scrub
-    // strip), and the inspector can draw after the rows: on a loaded CI runner
-    // the rows were there and no absolute box yet (PR 2633's merge run). Wait
-    // for the boxes this case measures, not only for the table.
+    // The Table tab's Steps table writes its state words out, and
+    // the step card can draw after the rows (PR 2633's merge run), so the
+    // case waits for the card before it measures.
     await waitFor(() => expect(document.querySelector('.ctl-scroll .sc-card .sc-tiles')).not.toBeNull())
-    expect(document.querySelectorAll('.ctl-scroll .sk-vh').length).toBeGreaterThan(0)
     frameHolds()
     const { checked, out } = escapes()
-    // The page's hidden state words are the boxes that escaped once; the step card is drawn beside them.
-    expect(checked, 'no absolutely positioned element was visited').toBeGreaterThan(0)
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): it draws no hidden state words and no absolutely
+    // positioned box at all, so on this page none can escape the frame.
+    expect(checked, 'an absolutely positioned box is drawn on the table page').toBe(0)
     expect(out).toEqual([])
   }, 60_000)
 
