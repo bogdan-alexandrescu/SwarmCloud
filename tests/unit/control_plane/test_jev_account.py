@@ -69,7 +69,8 @@ def test_reserve_grants_the_task_allowance_bounded_by_the_month(client, db):
     answer = worker.post(client, "jev-reserve", {})
     assert answer.status_code == 200, answer.text
     body = answer.json()
-    assert (body["granted_calls"], body["granted_tokens"]) == (8, 50_000)
+    assert (body["granted_calls"], body["granted_tokens"]) == (jevaccount.MAX_CALLS_PER_TASK,
+                                                               50_000)
     assert body["reason"] is None
     held = db.docs[f"jev_usage/{TENANT}_reservations"]["held"]
     assert held[f"{TASK}_g1"]["remaining_tokens"] == 50_000
@@ -170,7 +171,7 @@ def test_a_crashed_attempt_is_reconciled_by_the_next_reserve(client, db):
     assert f"{TASK}_g1" in answer["released"]
     assert (answer["task_calls"], answer["task_input_tokens"]) == (1, 10_000)
     assert (answer["granted_calls"], answer["granted_tokens"]) == \
-        (7, jevaccount.MAX_INPUT_TOKENS_PER_TASK - 10_000)
+        (jevaccount.MAX_CALLS_PER_TASK - 1, jevaccount.MAX_INPUT_TOKENS_PER_TASK - 10_000)
     settlement = _row(db, 1)["settlement"]
     assert settlement["outcome"] == "abandoned"
     assert settlement["unreported_calls"] is None and settlement["unreported_tokens"] is None

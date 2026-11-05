@@ -248,10 +248,16 @@ describe('Access (VQA2-R5)', () => {
 
   // Members and Browser logins left the page with GA-MOVE-VIEWS (part of #2157);
   // their ledes went with them to People and roles and Secrets.
-  it('V232: the lede says what Connection and Choose repositories each show', async () => {
+  it('V232: the lede says what Connection and Choose repositories each show, as the (i) beside the title', async () => {
     api([ORG('example-org')])
     await mount()
-    const lede = () => visible(document.querySelector('.ac-page > .ur-sub'))
+    // BGD's no-prose rule (2026-11-05): no line under the title; the (i) carries it.
+    // MUTATION: draw `<p className="ur-sub">` under the tabs again.
+    expect(document.querySelector('.ac-page > .ur-sub')).toBeNull()
+    const lede = () => {
+      const info = document.querySelector('.ac-page .c-phead > .head button[aria-label="About GitHub access"]')
+      return visible(info === null ? null : document.getElementById(info.getAttribute('aria-describedby')!))
+    }
     await waitFor(() => expect(lede()).toContain('in workspace eng'))
     // The reach-as-you list left the page (GITHUB-ACCESS-PAGE), so no tab's lede promises it.
     // MUTATION: put "The orgs and repositories SwarmCloud may reach as you" back as Mine's lede.

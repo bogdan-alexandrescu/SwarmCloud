@@ -38,6 +38,20 @@ digest or file enters the mirror, not on every build.
   into `build/tool-mirror` and checks each one's sha256. The Dockerfile
   bind-mounts that directory and checks the **same sha256 again** before it
   unpacks anything.
+* **The step reads the manifest from the build's source**, which
+  `gcloud builds submit` uploads from the repository root. It does not carry
+  a line per object. Cloud Build refuses any step argument of 10,000
+  characters or more. The per-object lines passed that limit when the
+  security audit plugin's archive was added to the manifest (commit
+  `aece23abe`, 2026-11-04). From then on, every release that rebuilt
+  agent-runtime-base failed at `images and scan` with `build step 0 arg 1 too
+  long (max: 10000)`. The step is now the same short loop however many rows
+  the manifest has. The generated config pins the manifest by its own sha256,
+  so the build reads exactly the rows `scripts/build-images.sh` checked. A
+  source whose manifest differs, or that has none, fails the step before
+  anything is copied. `tests/unit/scripts/test_build_mirror_switch.py`
+  renders the base images' configs and fails if any step argument reaches
+  half of the limit. Adding a row needs nothing here.
 * **A missing object fails the build and names it.** The build does not fall
   back to upstream:
 
