@@ -122,8 +122,10 @@ def test_each_job_runs_only_on_the_gates_output():
     # Every job but the gate's own reads, the aggregators, ci-gate and main's
     # build is listed above: a new job must decide what reaches it.
     # tested-tree reads `changes`' result, not its outputs: it records whatever ran.
+    # plugin-tag runs on a push to main once `python` passed, so `python`'s
+    # result is its gate (test_plugin_tag.py holds its `if:`).
     rest = set(jobs) - set(expected_if) - {"changes", "python", "ui", "ci-gate", "build", "tested-tree",
-                                           "quick-checks"}
+                                           "quick-checks", "plugin-tag"}
     assert not rest, f"jobs that do not read the changes gate: {sorted(rest)}"
 
 

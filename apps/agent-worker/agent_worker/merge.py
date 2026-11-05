@@ -180,6 +180,7 @@ from . import mergeslot
 from . import mergetrain
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
+from . import security_review as security_review_mod
 from . import verdict as verdict_mod
 from .errors import ExitCode, FencedError, InputUnavailable
 from .expected_outputs import NO_CHANGE_SUMMARY_KEY, left_nothing
@@ -522,6 +523,14 @@ REPOSITORY_TRAIN_LABEL = "ready"
 REPOSITORY_TRAIN_CONTEXT = "merge-train"
 #: How the train's ejection comment begins (`merge-train.sh eject_pr`).
 REPOSITORY_TRAIN_EJECTED = "**Ejected from the merge train"
+#: The train's "does not board" comment (`merge-train.sh tell_skip`,
+#: SKIP_MARKER and SKIP_HEADLINE, held equal by
+#: tests/unit/worker/test_merge_train_skip_reason.py): its first line is
+#: `<!-- merge-train-skip head=<sha> reason=<key> -->`, its second
+#: `**The merge train skips it: <why>.**`. The train decides why it passes
+#: over a `ready` pull request; the step only reads what it said, at its head.
+REPOSITORY_TRAIN_SKIP = "<!-- merge-train-skip"
+REPOSITORY_TRAIN_SKIP_HEADLINE = "**The merge train skips it: "
 
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
@@ -1303,6 +1312,8 @@ class ForgeMerger(Protocol):
 
     def train_ejection(self, number: int) -> str | None: ...
 
+    def train_skip(self, number: int, head: str) -> str | None: ...
+
 
 class UnsupportedForge(ValueError):
     """The repository is on a host no `ForgeMerger` serves."""
@@ -1761,6 +1772,29 @@ class GitHubMerger:
                 app = body
         return ejected or app
 
+    def train_skip(self, number: int, head: str) -> str | None:
+        """Why the merge train passes over the pull request at `head`, as the
+        train's latest "does not board" comment at that head says
+        (`REPOSITORY_TRAIN_SKIP`); None when it said nothing there."""
+        return train_skip_reason(self._client.paginate(f"{self._base}/issues/{number}/comments"),
+                                 head)
+
+
+def train_skip_reason(comments: Iterable[Any], head: str) -> str | None:
+    """The reason in the latest of `comments` that is the merge train's
+    "does not board" comment at `head`, e.g. "`queue for auto-merge` failed";
+    None when there is none. A comment at another head is not this head's."""
+    marker = f"{REPOSITORY_TRAIN_SKIP} head={head} "
+    why = None
+    for comment in comments:
+        lines = (_str(_mapping(comment).get("body")) or "").splitlines()
+        if len(lines) < 2 or not lines[0].startswith(marker):
+            continue
+        said = lines[1].strip()
+        if said.startswith(REPOSITORY_TRAIN_SKIP_HEADLINE) and said.endswith(".**"):
+            why = said[len(REPOSITORY_TRAIN_SKIP_HEADLINE):-len(".**")].strip() or why
+    return why
+
 
 def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
     return QueueFacts(True, _str(entry.get("id")), _int(entry.get("position")),
@@ -2116,6 +2150,12 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         if still_open:
             summary["open_questions"] = still_open
 
+    # The optional security review (docs/design/security-review-step.md): a
+    # merge that staged its verdict requires it beside the review's.
+    held_by_security = _security_hold(ctx, run, target, opener, summary)
+    if held_by_security is not None:
+        return held_by_security
+
     number = pull_request_number(opener)
     if number is None:
         return run.refuse("pull_request_unknown",
@@ -2144,6 +2184,98 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
         own=own, fix_heads=fix_heads,
     )
+
+
+#: The merge refusals the security review's verdict adds.
+SECURITY_VERDICT_UNREADABLE = "security_verdict_unreadable"
+SECURITY_VERDICT_NOT_MERGE = "security_verdict_not_merge"
+SECURITY_FIX_REQUESTED = "security_fix_requested"
+
+
+def _security_hold(ctx: ActionContext, run: _Run, target: MergeTarget,
+                   opener: Mapping[str, Any], summary: dict[str, Any]) -> ActionOutcome | None:
+    """The security review's say in the merge, or None to go on (owner, 4 November 2026).
+
+    Only when this step staged `security_review.VERDICT_FILE`: its signed
+    `input_from` named the security review, so the workflow has one. A merge
+    that staged none reads exactly as it did before.
+
+    MERGE goes on: no confirmed critical or high finding (confirmed medium,
+    low and informational ones are reported, `needs_validation` never
+    blocks). NOT_YET names an owner question per blocking finding in
+    `needs_owner`: held for a person on the same park as the review's
+    (`wait_for_owner`) until each is answered, re-read from the security
+    review's own task. Then every answer must accept the risk or mark a false
+    positive; any other answer -- "Fix it now", or free text naming no option
+    -- refuses `security_fix_requested`, so the finding is fixed and reviewed
+    before anything merges. A NOT_YET naming no question, or a verdict that
+    does not read, refuses: an unreadable security review is not a pass.
+    """
+    staged = ctx.staged.get(security_review_mod.VERDICT_FILE)
+    if staged is None:
+        return None
+    try:
+        verdict = verdict_mod.read_verdict(
+            staged, task_id="the security review", filename=security_review_mod.VERDICT_FILE)
+    except InputUnavailable as exc:
+        return run.refuse(SECURITY_VERDICT_UNREADABLE, str(exc))
+    record: dict[str, Any] = {"verdict": verdict.verdict}
+    summary[security_review_mod.SUMMARY_KEY] = record
+    if verdict.verdict == "MERGE":
+        return None
+    found = f" ({len(verdict.findings)} blocking finding(s))" if verdict.findings else ""
+    if not (verdict.needs_owner or verdict.needs_owner_unreadable):
+        return run.refuse(
+            SECURITY_VERDICT_NOT_MERGE,
+            f"the security review's verdict is {verdict.verdict}{found} and names no owner "
+            "question to answer",
+        )
+    if target.review is None:
+        # The review's own path already asked; this merge has no review.
+        ended = _ended_outside(run, target, opener)
+        if ended is not None:
+            return ended
+    held = _unanswered(ctx, verdict.needs_owner)
+    if held or verdict.needs_owner_unreadable:
+        return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+    answers = _security_answers(ctx, verdict.needs_owner)
+    record["answers"] = answers
+    fix = [row for row in answers
+           if security_review_mod.disposition(row.get("answer")) != "merge"]
+    if fix:
+        named = "; ".join(f"question {row['question_index']}: {row['question']}" for row in fix)
+        return run.refuse(
+            SECURITY_FIX_REQUESTED,
+            f"the security review's verdict is NOT_YET{found}, and the owner did not accept "
+            f"the risk or mark a false positive for {named}",
+        )
+    return None
+
+
+def _security_answers(ctx: ActionContext, refs: tuple[verdict_mod.OwnerQuestionRef, ...]
+                      ) -> list[dict[str, Any]]:
+    """Each `needs_owner` question with the owner's answer, read again from its task.
+
+    Fail closed, as `_unanswered` does: a task that cannot be read, or is not
+    a step of this workflow, gives the question no answer, which is not one
+    that lets the merge go on.
+    """
+    rows: list[dict[str, Any]] = []
+    for ref in refs:
+        try:
+            doc = _mapping(ctx.fetch_upstream(ref.task_id))
+        except InputUnavailable:
+            doc = {}
+        answer: dict[str, Any] | None = None
+        if ctx.workflow_id is not None and doc.get("workflow_id") == ctx.workflow_id:
+            for entry in _mapping(doc.get("metadata")).get(OWNER_ANSWERS_KEY) or ():
+                if (isinstance(entry, Mapping) and type(entry.get("question_index")) is int
+                        and entry.get("question_index") == ref.question_index):
+                    answer = {"choice": entry.get("choice"), "text": entry.get("text")}
+        rows.append({"task_id": ref.task_id, "step_id": ref.step_id,
+                     "question_index": ref.question_index, "question": ref.question,
+                     "answer": answer})
+    return rows
 
 
 def _ended_outside(run: _Run, target: MergeTarget,
@@ -3337,8 +3469,20 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
     number = pr.number
     record: dict[str, Any] = {**switch, "head": head, "label": REPOSITORY_TRAIN_LABEL}
     summary["repository_train"] = record
+    skips = None
     if REPOSITORY_TRAIN_LABEL in pr.labels:
         record["labelled"] = False
+        # Already `ready` and still here: the train may be passing over it
+        # for a reason that will not clear by itself (a red check the gate
+        # above does not hold it for, a conflict GitHub has not reported to
+        # the step yet). The train said so on the pull request; the waiting
+        # line carries it. A read that fails leaves the plain line.
+        try:
+            skips = merger.train_skip(number, head)
+        except forge_mod.ForgeError as exc:
+            record["skip_unread"] = type(exc).__name__
+        if skips:
+            record["skips"] = skips
     elif _on_repository_train(ctx, own, head=head):
         why = merger.train_ejection(number)
         return run.refuse("train_ejected",
@@ -3352,7 +3496,8 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         record["labelled"] = True
     return run.wait(mergetrain.TRAIN_WAITING,
                     f"pull request #{number} is `{REPOSITORY_TRAIN_LABEL}` for {base}'s merge "
-                    f"train at {head}", head=head, pull_request=number, pending=[])
+                    f"train at {head}" + (f"; the train skips it: {skips}" if skips else ""),
+                    head=head, pull_request=number, pending=[])
 
 
 def repository_train_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int,

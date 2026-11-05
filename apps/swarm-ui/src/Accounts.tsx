@@ -41,7 +41,7 @@ import {
   type AccountPoolName,
 } from './AccountsTable'
 import { AcctState } from './AccountState'
-import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
+import { DuplicateBanner, Forecast, Info, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
 import { agoPastDay, utcAt, type PoolAccount } from './accountsPool'
 import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetHealth, SheetVerdict, SheetWindows } from './AccountSheet'
 import { AccountsTimeline, ViewToggle } from './AccountsTimeline'
@@ -442,7 +442,6 @@ function Body({
             <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
             <ViewToggle view={pageView} hrefOf={viewHref} onChange={chooseView} />
           </div>
-          {accounts.length > 0 && <RuleLine accounts={pool} />}
           <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
           <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
         </>
@@ -585,6 +584,9 @@ function shownAccount(accounts: Account[], chosen: string | null, scope: string 
   return first === null ? null : { account: first, explicit: false }
 }
 
+/** The reason an account that needs a sign-in carries on its tick. */
+const REAUTH_WHY = 'needs someone to sign in again; it gives out nothing until then'
+
 /**
  * The accounts a timer will never fix, at the top, before anything else.
  *
@@ -619,29 +621,24 @@ function Broken({
   const names = (xs: Account[]) => xs.map((a) => accountName(a)).join(', ')
   return (
     <div className="acct-callout" role="status">
-      <WarnMark />
+      {/* Each own account carries its own tick; a lent-only callout keeps the one. */}
+      {mine.length === 0 && <WarnMark />}
       <div className="acct-callout-body">
-        {mine.length > 0 && (
-          <p>
-            <b>{names(mine)}</b> need{mine.length === 1 ? 's' : ''} someone to sign in again.{' '}
-            {mine.length === 1 ? 'It gives' : 'They give'} out nothing until then.{' '}
-            {/* ONE LINK PER ACCOUNT, SEPARATED (visual QA V016): two or more ran
-                together as "Sign in again to aSign in again to b". */}
-            {mine.map((a, i) => (
-              <span key={a.account_id}>
-                {i > 0 && <span aria-hidden="true"> &middot; </span>}
-                <button
-                  type="button"
-                  className="acct-link"
-                  aria-label={`Sign in again to ${accountName(a)}`}
-                  onClick={() => onOpen(a.account_id)}
-                >
-                  {mine.length === 1 ? 'Sign in again' : `Sign in again to ${accountName(a)}`}
-                </button>
-              </span>
-            ))}
+        {/* ONE TICK AND ONE BUTTON PER ACCOUNT (no prose on the surface, 5
+            November 2026): the tick's reason is "needs someone to sign in
+            again; it gives out nothing until then", and the action is a real
+            button, each apart (visual QA V016: two links once ran together as
+            "Sign in again to aSign in again to b"). */}
+        {mine.map((a) => (
+          <p key={a.account_id} className="acct-callout-row">
+            <ToneMark tone="warn" title={REAUTH_WHY} label={`${accountName(a)}: ${REAUTH_WHY}`}>
+              {accountName(a)}
+            </ToneMark>
+            <Button size="sm" aria-label={`Sign in again to ${accountName(a)}`} onClick={() => onOpen(a.account_id)}>
+              Sign in again
+            </Button>
           </p>
-        )}
+        ))}
         {lent.length > 0 && (
           <p>
             <b>{names(lent)}</b> need{lent.length === 1 ? 's' : ''} a sign-in by{' '}
@@ -960,6 +957,9 @@ function Pool({
         <div className="acct-list-head">
           <h2>
             Subscription accounts
+            {/* HOW TO READ THE TABLE IS THE HEADING'S (i), not a line over it
+                (no prose on the surface, 5 November 2026). */}
+            <Info about="Subscription accounts" tip="Ranked by when each can take a new agent. Times are UTC." />
             {/* THE QUALIFIER SLOT, NOT A CHIP (CP-22). */}
             <span className="ctl-card-note is-end">{pluralise(accounts.length, 'account')}</span>
           </h2>
@@ -969,7 +969,6 @@ function Pool({
             desktop, a card each on a phone. The name is the `acct-open`
             button the list was, so choosing one opens the same detail under
             it, with every control the page had. */}
-        <p className="acct-rank-note">Ranked by when each can take a new agent. Times are UTC.</p>
         <AccountsTable
           accounts={accounts as PoolAccount[]}
           scope={board.page.tenant_id}

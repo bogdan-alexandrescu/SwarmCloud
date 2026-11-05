@@ -105,6 +105,7 @@ from .routes import setup
 from .routes import addon_probe
 from .routes import voice
 from .routes import voice_readback
+from .routes import voice_settings
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -605,6 +606,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Its read-backs (docs/design/voice-it-own-speech.md §7): a spoken
     # cancel, merge, deploy, delete or approve waits for a "go".
     app.include_router(voice_readback.router)
+    # Voice it's Settings (docs/design/voice-it-own-speech.md §11): read by a
+    # Voice it person or an admin, written by a platform admin alone.
+    app.include_router(voice_settings.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and
