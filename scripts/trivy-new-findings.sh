@@ -87,25 +87,77 @@ compare() {
   return "${status}"
 }
 
-# scan DIR OUT [EXTRA...] -- the gate's scan of DIR as JSON. .trivyignore.yaml
-# is the accepted-with-an-expiry list the image scans already read
-# (lib/image-scan.sh): trivy 0.76 never loads it by itself, so without
-# --ignorefile an accepted finding failed this gate all the same. Both sides
-# read this checkout's list, so an acceptance is judged once, by its expiry.
+# The accept list the gate reads (SWARM_TRIVY_IGNOREFILE overrides it for the
+# tests): the image scans' .trivyignore.yaml (lib/image-scan.sh), but only its
+# entries scoped to GATE_ACCEPTED_PATH.
+GATE_ACCEPTED_PATH="apps/swarm-speech/uv.lock"
+
+# gate_ignores IN OUT -- write to OUT the entries of IN whose paths name
+# GATE_ACCEPTED_PATH and nothing else and whose expired_at is after today,
+# each as written; print how many. BGD, 2026-11-05 (#2688): the repository
+# gate accepts swarm-speech's pinned lockfile findings, and every other
+# acceptance in the list -- the agent CLIs', the vendor Go binaries' -- stays
+# the image scans' alone, as it was before the gate read the list at all. An
+# entry with no paths would match every target, so it is never copied, nor
+# one that also names another path. An expired entry is dropped here too, not
+# left to trivy alone. A filtered copy, never a second hand-kept list. awk,
+# because the runner's python3 has no YAML module and there is no yq: the
+# list is one level of `- id:` entries, at any indent, with `paths:` as a
+# block or a flow list, which is all this reads.
+gate_ignores() {
+  local in="$1" out="$2"
+  awk -v want="${GATE_ACCEPTED_PATH}" -v today="$(date -u +%Y-%m-%d)" -v out="${out}" '
+    function unquote(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); gsub(/^["'\'']|["'\'']$/, "", s); return s }
+    function path(s) { s = unquote(s); if (s == "") return; if (s == want) named++; else other++ }
+    function flush(   i) {
+      if (n > 0 && section != "" && named > 0 && other == 0 && expiry > today) {
+        if (printed != section) { print section ":" >out; printed = section }
+        for (i = 1; i <= n; i++) print entry[i] >out
+        kept++
+      }
+      n = 0; named = 0; other = 0; expiry = ""; inpaths = 0
+    }
+    BEGIN { kept = 0; dash = -1; printf "" >out }
+    /^[[:space:]]*(#.*)?$/ { next }
+    /^[A-Za-z_]/ { flush(); section = $0; sub(/:.*/, "", section); dash = -1; next }
+    {
+      body = $0; sub(/[[:space:]]+#.*$/, "", body)
+      indent = match(body, /[^ ]/) - 1; body = substr(body, indent + 1)
+      item = (body ~ /^- /)
+      # The section'"'"'s first list item sets the column every entry starts at.
+      if (item && dash < 0) dash = indent
+      if (item && indent == dash) { flush(); body = substr(body, 3); item = 0 }
+      else if (n == 0) next
+      entry[++n] = $0
+      if (item) { if (inpaths) path(substr(body, 3)); next }
+      if (body !~ /^[A-Za-z_]+:/) next
+      inpaths = 0
+      if (body ~ /^paths:/) {
+        sub(/^paths:[[:space:]]*/, "", body)
+        if (body ~ /^\[/) {
+          gsub(/^\[|\]$/, "", body)
+          k = split(body, items, ",")
+          for (i = 1; i <= k; i++) path(items[i])
+        } else { inpaths = 1 }
+      }
+      if (body ~ /^expired_at:/) { sub(/^expired_at:/, "", body); expiry = unquote(body) }
+    }
+    END { flush(); print kept }
+  ' "${in}"
+}
+
+# scan DIR OUT [EXTRA...] -- the gate's scan of DIR as JSON. trivy 0.76 never
+# loads an accept list by itself; the gate passes its own with --ignorefile.
 scan() {
-  local dir="$1" out="$2" bin ignore=()
+  local dir="$1" out="$2" bin
   shift 2
   bin="$(trivy_bin)" || { err "trivy not found; install it or set SWARM_TRIVY"; return 2; }
-  if [[ -f "${REPO_ROOT}/.trivyignore.yaml" ]]; then
-    ignore=(--ignorefile "${REPO_ROOT}/.trivyignore.yaml")
-  fi
   "${bin}" fs --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed \
-    --format json --output "${out}" --exit-code 0 --no-progress \
-    ${ignore[@]+"${ignore[@]}"} "$@" "${dir}"
+    --format json --output "${out}" --exit-code 0 --no-progress "$@" "${dir}"
 }
 
 gate() {
-  local base_rev="" work status
+  local base_rev="" work status accept accepted ignore=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --base) base_rev="${2-}"; shift 2 ;;
@@ -117,7 +169,16 @@ gate() {
   # shellcheck disable=SC2064  # expand now: ${work} is local
   trap "git worktree remove --force '${work}/base' >/dev/null 2>&1 || true; rm -rf '${work}'" EXIT
 
-  scan . "${work}/head.json" || { err "the scan of this checkout failed"; return 2; }
+  # Both sides read this checkout's list, so an acceptance is judged once.
+  accept="${SWARM_TRIVY_IGNOREFILE:-${REPO_ROOT}/.trivyignore.yaml}"
+  if [[ -f "${accept}" ]]; then
+    accepted="$(gate_ignores "${accept}" "${work}/gate.trivyignore.yaml")" \
+      || { err "could not read the accept list ${accept}"; return 2; }
+    info "accepting ${accepted} unexpired entries of ${accept} scoped to ${GATE_ACCEPTED_PATH}; no other"
+    [[ "${accepted}" == "0" ]] || ignore=(--ignorefile "${work}/gate.trivyignore.yaml")
+  fi
+
+  scan . "${work}/head.json" ${ignore[@]+"${ignore[@]}"} || { err "the scan of this checkout failed"; return 2; }
 
   if [[ -z "${base_rev}" ]]; then
     info "no base commit: every finding is new"
@@ -133,7 +194,7 @@ gate() {
     info "base ${base_rev}: scanning the same tree there"
     # The vulnerability DB was fetched by the first scan; the base is judged
     # against the same one.
-    scan "${work}/base" "${work}/base.json" --skip-db-update \
+    scan "${work}/base" "${work}/base.json" --skip-db-update ${ignore[@]+"${ignore[@]}"} \
       || { err "the scan of base commit ${base_rev} failed"; return 2; }
   fi
 
