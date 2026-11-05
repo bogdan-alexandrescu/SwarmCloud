@@ -57,6 +57,7 @@ import {
 } from './types'
 import './styles/submit.css'
 import { Button, buttonClass } from './components'
+import { ContractRefusalPanel, REFUSAL_KEYS, contractRefusal } from './ContractJev'
 import { QA_LINK_ADDRESS, addressToPath } from './paths'
 
 /**
@@ -1454,7 +1455,11 @@ export function refusalOf(error: ApiError, sentIds: readonly string[]): {
   const detail = typeof error.detail === 'object' && error.detail !== null && !Array.isArray(error.detail)
     ? (error.detail as Record<string, unknown>) : null
   if (detail === null) return { byStep, facts }
+  // Jev's refusal of a work contract (jev-contract.md section 4.5) is drawn
+  // per requirement by its own panel; its keys are not said again as facts.
+  const jev = contractRefusal(detail) !== null
   for (const [key, value] of Object.entries(detail)) {
+    if (jev && REFUSAL_KEYS.has(key)) continue
     if (key === 'errors' && Array.isArray(value)) {
       for (const e of value) {
         if (typeof e !== 'object' || e === null) continue
@@ -1589,6 +1594,7 @@ function Outcome({ sub, refusal, onStep }: {
       {/* VERBATIM: the cycle the server named is the only part that says where to
           look, and "invalid DAG" would throw it away. */}
       <p>{unserved ? 'This deployment has no route that takes a workflow.' : error.message}</p>
+      {!uncertain && contractRefusal(error.detail) !== null && <ContractRefusalPanel refusal={contractRefusal(error.detail)!} />}
       {/* THE SERVER'S DETAIL, READ (VQA V051): the steps it names, each a way
           to that step's card, which is marked with the same sentence; then
           whatever it said about no step, as facts. It was printed as JSON. */}
