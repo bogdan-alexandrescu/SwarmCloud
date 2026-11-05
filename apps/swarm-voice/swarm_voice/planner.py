@@ -147,9 +147,11 @@ class Planner:
         self._locks.pop(session_id, None)
 
     async def delegate(self, *, person: str, grant: SessionGrant | None,
-                       transcript: list[tuple[str, str]], delegation_id: str | None = None) -> TurnResult:
+                       transcript: list[tuple[str, str]], delegation_id: str | None = None,
+                       model: str | None = None) -> TurnResult:
         """Run one turn for a delegation; never raises for a refusal or a failure:
-        the result's `spoken` always says what happened."""
+        the result's `spoken` always says what happened. `model` is the
+        session's planner model, read at its start; None keeps the pin."""
         try:
             api = tools_read.SwarmApi.for_session(self._http, base_url=self._api_base,
                                                   id_tokens=self._id_tokens, grant=grant)
@@ -161,14 +163,15 @@ class Planner:
             result = TurnResult(delegation_id, "")
             try:
                 return await asyncio.wait_for(
-                    self._turn(api, result, person=person, transcript=transcript), self._turn_seconds)
+                    self._turn(api, result, person=person, transcript=transcript, model=model),
+                    self._turn_seconds)
             except asyncio.TimeoutError:
                 log.warning("voice session %s: planner turn ran out of time", api.session_id)
                 result.spoken, result.error = SAY_FAILED, "the turn ran out of time"
                 return result
 
     async def _turn(self, api: tools_read.SwarmApi, result: TurnResult, *, person: str,
-                    transcript: list[tuple[str, str]]) -> TurnResult:
+                    transcript: list[tuple[str, str]], model: str | None) -> TurnResult:
         try:
             catalogue = await api.catalogue()
         except tools_read.ApiRefused as exc:
@@ -181,7 +184,8 @@ class Planner:
         tools = [*draw_tools, *tools_read.tool_schemas(), prompts.speak_tool()]
         try:
             async with self._accounts.lease(person=person, voice_session_id=api.session_id) as held:
-                return await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript)
+                return await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript,
+                                       claude=self._claude.with_model(model) if model else self._claude)
         except PoolFull as exc:
             log.warning("voice session %s: no planner account: %s", api.session_id, exc.reason)
             result.spoken = SAY_NO_POOL if exc.reason == NO_ACCOUNTS_REGISTERED else SAY_POOL_FULL
@@ -193,7 +197,7 @@ class Planner:
             return result
 
     async def _run(self, api: tools_read.SwarmApi, result: TurnResult, token: str, tools: list[dict],
-                   kinds: set[str], transcript: list[tuple[str, str]]) -> TurnResult:
+                   kinds: set[str], transcript: list[tuple[str, str]], *, claude: ClaudeCode) -> TurnResult:
         known = (token, *api.known_secrets())
         said: list[str] = []
         done = asyncio.Event()
@@ -207,7 +211,7 @@ class Planner:
             return text, is_error
 
         try:
-            outcome = await self._claude.run(
+            outcome = await claude.run(
                 prompt=prompts.turn_message(transcript, secrets_=known), system=prompts.SYSTEM, token=token,
                 tools=tools, handler=handler, known=known, done=done)
         except OSError as exc:
@@ -215,7 +219,7 @@ class Planner:
                         type(exc).__name__)
             result.spoken, result.error = SAY_FAILED, f"Claude Code could not start ({type(exc).__name__})"
             return result
-        result.usage = {**outcome.usage, "model": self._claude.model, "billing": BILLING}
+        result.usage = {**outcome.usage, "model": claude.model, "billing": BILLING}
         result.transcript = outcome.events
         if not said and (outcome.is_error or (outcome.exit_code not in (0, None) and not outcome.stopped)):
             log.warning("voice session %s: Claude Code ended without speaking (exit %s)", api.session_id,
