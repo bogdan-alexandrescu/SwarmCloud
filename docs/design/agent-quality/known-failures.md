@@ -10,16 +10,22 @@ experiment's finding, and a skipped test is not a passing one.
 
 Counted by `scripts/agent_quality_inventory.py` over every `.py` file under
 `tests/`, in code only (a marker named in a comment or a string is not one).
-`tests/unit/scripts/test_agent_quality_inventory.py` fails when the tree's
-counts differ from this table, so the table is the tree's.
+The counts of `skip`, `xfail` and `tests/flaky.txt` entries are exact, because
+this page describes each instance: a new one is a new known failure, and
+`tests/unit/scripts/test_agent_quality_inventory.py` fails until it is written
+here. The conditional kinds (`skipif`, `skip_call`, `importorskip`) are not
+pinned: run `python scripts/agent_quality_inventory.py` and read its `markers`
+field. A tree-wide counter that every PR adding a machine-dependent skip had to
+edit made concurrent PRs collide in the merge train (#3314), so the check
+refuses a number in those rows.
 
 | Kind | Count | What it means here |
 |---|---|---|
-| `skipif` | 221 | `pytest.mark.skipif`: every one is conditional on the machine (a tool on `PATH`: git, jq, bash, shellcheck, uv, node, ffmpeg; procfs or Linux; a checked-out `apps/swarm-ui`; a built binary) |
+| `skipif` | reported by the inventory (`markers`) | `pytest.mark.skipif`: every one is conditional on the machine (a tool on `PATH`: git, jq, bash, shellcheck, uv, node, ffmpeg; procfs or Linux; a checked-out `apps/swarm-ui`; a built binary) |
 | `skip` | 0 | `pytest.mark.skip` with no condition: none |
-| `skip_call` | 59 | `pytest.skip(...)` inside a test, again on a missing tool or platform, or on a fixture the test looks for ("the budget route moved; pick another route") |
+| `skip_call` | reported by the inventory (`markers`) | `pytest.skip(...)` inside a test, again on a missing tool or platform, or on a fixture the test looks for ("the budget route moved; pick another route") |
 | `xfail` | 1 | the one expected failure, below |
-| `importorskip` | 11 | an optional module (`cryptography`, `rfc8785`, `tree_sitter`, `uvicorn`, `websockets`, another app's package) |
+| `importorskip` | reported by the inventory (`markers`) | an optional module (`cryptography`, `rfc8785`, `tree_sitter`, `uvicorn`, `websockets`, another app's package) |
 | `tests/flaky.txt` entries | 0 | the quarantine is empty; it was emptied on 2026-10-14 ([ci.md](../../ci.md)) |
 | Console tests (`apps/swarm-ui`) | 0 | no `it.skip`, `test.skip`, `describe.skip`, `it.todo` or `.fails` |
 

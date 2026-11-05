@@ -20,11 +20,14 @@ report:
   unnamed_live_verified  every row without its four columns, or whose
                     live-verified cell is a bare "none", "no", "yes" (and the
                     like) instead of a named record, "not read from here" or
-                    "n/a: <why>".
+                    "n/a: <why>";
+  known_failures_drift  where known-failures.md disagrees with the tree: an
+                    EXACT_KINDS count or the quarantine count it states wrong,
+                    or a CONDITIONAL_KINDS row missing or pinning a number.
 
-It exits 1 when anything cited is missing or a row is unnamed, so a renamed test can never keep
-reading as "behaviourally tested". What it cannot check is named in the
-documents themselves: a vitest case's title, a configuration value read from a
+It exits 1 when anything cited is missing, a row is unnamed or known-failures.md
+drifts, so a renamed test can never keep reading as "behaviourally tested".
+What it cannot check is named in the documents themselves: a vitest case's title, a configuration value read from a
 live deployment, and anything live-verified.
 
 Usage: scripts/agent_quality_inventory.py [--root REPO]
@@ -52,6 +55,7 @@ _PYTEST_ID = re.compile(
 #: A glob (`jev.*.test.tsx`, an owned-path pattern) is not a cited file.
 _VITEST_FILE = re.compile(r"`(apps/swarm-ui/[^`\s*]+\.test\.tsx?)`")
 MATRIX = DOCS / "capability-matrix.md"
+KNOWN_FAILURES = DOCS / "known-failures.md"
 #: A live-verified cell that names nothing: an unknown must read as unknown.
 _UNNAMED = {"", "-", "none", "no", "yes", "0", "false", "true", "unknown", "n/a"}
 
@@ -63,6 +67,10 @@ MARKERS = {
     "xfail": re.compile(r"\bpytest \. (?:mark \. )?xfail\b"),
     "importorskip": re.compile(r"\bpytest \. importorskip \("),
 }
+#: known-failures.md explains each of these one by one, so it states their exact count.
+EXACT_KINDS = ("skip", "xfail")
+#: Conditional on the machine: the report counts them; the page never pins it (#3314).
+CONDITIONAL_KINDS = ("skipif", "skip_call", "importorskip")
 
 
 def _unique(items: list) -> list:
@@ -194,6 +202,33 @@ def unnamed_live_verified(text: str) -> list[str]:
     return out
 
 
+def known_failures_drift(root: Path) -> list[str]:
+    """Each way known-failures.md's section 1 disagrees with the tree at root."""
+    path = root / KNOWN_FAILURES
+    if not path.is_file():
+        return [f"{KNOWN_FAILURES} does not exist"]
+    text = path.read_text()
+    counts = marker_counts(root)
+    drift = [
+        f"known-failures.md does not state `{kind}`: {counts[kind]}"
+        for kind in EXACT_KINDS
+        if f"| `{kind}` | {counts[kind]} |" not in text
+    ]
+    entries = len(quarantined(root))
+    if f"| `tests/flaky.txt` entries | {entries} |" not in text:
+        drift.append(f"known-failures.md does not state `tests/flaky.txt` entries: {entries}")
+    for kind in CONDITIONAL_KINDS:
+        rows = [line for line in text.splitlines() if line.startswith(f"| `{kind}` |")]
+        if not rows:
+            drift.append(f"known-failures.md has no `{kind}` row")
+        elif any(re.match(r"\|[^|]*\|\s*\d+\s*\|", row) for row in rows):
+            drift.append(
+                f"known-failures.md pins a count in its `{kind}` row: "
+                "the inventory reports it (`markers`)"
+            )
+    return drift
+
+
 def report(root: Path) -> dict:
     docs = sorted((root / DOCS).glob("*.md"))
     text = "\n".join(p.read_text() for p in docs)
@@ -213,6 +248,7 @@ def report(root: Path) -> dict:
         "missing": missing,
         "matrix_rows": matrix_rows(matrix),
         "unnamed_live_verified": unnamed_live_verified(matrix),
+        "known_failures_drift": known_failures_drift(root),
     }
 
 
@@ -227,7 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     result = report(args.root)
     print(json.dumps(result, indent=2))
-    return 1 if result["missing"] or result["unnamed_live_verified"] else 0
+    failed = result["missing"] or result["unnamed_live_verified"] or result["known_failures_drift"]
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
