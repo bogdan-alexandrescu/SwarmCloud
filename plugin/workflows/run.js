@@ -3,7 +3,7 @@ export const meta = {
   description: 'SwarmCloud: run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as one [SwarmCloud] row per step, by the console\'s stage, plus at most two setup rows',
   whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely: pass the args swarm_workflow_launch returned, as given ({spec_handle, details, rows}: the file the spec was written to, which is what is read and submitted -- never the spec itself), the spec object, the spec object with its file as {spec, spec_path}, its JSON text, or the path of the spec file as args. Or a workflow already running in SwarmCloud lost its rows when this session restarted: pass {attach: "<workflow_id>"} to submit nothing, report its finished steps once and start a row for every unfinished one. Or list every workflow of your tenant still running in SwarmCloud: pass {attach: "all"} for the {attach: "<workflow_id>"} call that attaches each, one run per workflow. Or show SwarmCloud SINGLE tasks -- dispatched with swarm_dispatch, in no workflow -- as live rows: pass {attach_tasks: [{task_id, title, console}]} for one [SwarmCloud] row per task, titled from its label. The sc plugin launches each run from a copy of this script titled after its workflow or its tasks (swarm_workflow_launch, swarm_dispatch\'s rows). When the result carries owner_questions -- the questions a step\'s or task\'s agent asked the owner, still unanswered -- put EACH one to the person in that turn, before any other report, with AskUserQuestion: the question, its options as given, the recommended one marked; then record each pick with swarm_task_answer {task_id, question_index: its index, choice}. Never pick an answer yourself, and never leave them only in the result or a log line.',
   phases: [
-    { title: 'Submit', detail: 'given a path or a launch\'s spec_handle, one sc:workflow agent reads its outline with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow by reference when it can, checked against the digest, and probes the follow every row makes' },
+    { title: 'Submit', detail: 'given a path or a launch\'s spec_handle, one sc:spec agent, which has no submit tool, reads its outline with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow by reference when it can, checked against the digest, and probes the follow every row makes' },
     { title: 'Attach', detail: 'given {attach: workflow_id}, one sc:workflow agent reads the workflow with swarm_workflow_status and probes the follow every row makes; given {attach: "all"}, one sc:workflow agent lists the running workflows and your running single tasks with swarm_workflows and the run returns the attach call for each workflow and one for the tasks; nothing is submitted' },
     { title: 'Tasks', detail: 'given {attach_tasks: [...]}, one sc:task row per single task -- a task in no workflow -- titled from its label, follows it until it finishes; nothing is submitted' },
     { title: 'Summary', detail: 'given rows: "summary" (the sc plugin\'s default), ONE sc:summary row follows the whole workflow or task batch instead of a row each, writing a count line only when the counts change and naming each step that fails or waits for a person' },
@@ -176,8 +176,8 @@ export const meta = {
 // NOT_SUBMITTED.
 //
 // A SPEC FILE IS READ BY THE BRIDGE. A script has no filesystem, so given a
-// path (anything that is not a spec object or JSON text) one sc:workflow row
-// calls swarm_workflow_spec, which reads and checks the file in the session's
+// path (anything that is not a spec object or JSON text) one sc:spec row --
+// an agent whose only SwarmCloud tool is swarm_workflow_spec -- calls it, which reads and checks the file in the session's
 // checkout and returns its digest, a `spec_ref` and the spec's OUTLINE -- its
 // label, strategy and merge choice and each step's id, depends_on and stage,
 // with the runner profile, verdict gate and input_from `appendable` reads. The row relays those, never
@@ -1661,6 +1661,51 @@ function followRefused(workflowId, version, error, workflowConsole) {
   return withConsole({ workflow_id: workflowId, state: 'FOLLOW_REFUSED', error: message, steps: [] }, workflowConsole)
 }
 
+// A ROW BEFORE THE SUBMIT ROW THAT SUBMITTED IS THE SUBMISSION. AI Studio's
+// session, 2026-11-05 (plugin 0.5.79): the `setup · read spec` row ran
+// sc:workflow, which also holds swarm_workflow, and SUBMITTED the spec instead
+// of reading its outline -- its answer carried a workflow id, the workflow's
+// steps and no outline. The run judged that NOT_SUBMITTED, the workflow ran
+// regardless, and a relaunch made a duplicate. The read row now runs sc:spec,
+// which has no submit tool; and whatever a row before the submit row hands
+// back, a workflow id in it is THE submission: reported with that id,
+// followed, and never submitted again.
+function earlyWorkflowId(answer) {
+  if (!answer || typeof answer !== 'object') return null
+  const id = unquotedId(answer.workflow_id)
+  return typeof id === 'string' && id ? id : null
+}
+
+async function followEarlySubmission(answer, row, nameHint) {
+  const id = earlyWorkflowId(answer)
+  const workflowConsole = consoleLink(answer.console)
+  const workspace = flatText(answer.workspace)
+  log(id + ' submitted by the ' + row + ' row, before the submit row: it is the submission, so it is followed and nothing is submitted again' + workspaceNote(workspace) + consoleSuffix(workflowConsole))
+  if (given.rows === 'band') {
+    log(id + ' · ' + BANDED)
+    const steps = Array.isArray(answer.steps) ? relayedSteps(answer.steps).filter((step) => step && typeof step === 'object') : []
+    return banded(withConsole({
+      workflow_id: id,
+      workspace: workspace,
+      title: titleName([nameHint, id]),
+      state: 'SUBMITTED',
+      submitted_by: row,
+      steps: steps.map((step) => ({ step_id: step.step_id, task_id: step.task_id || null })),
+    }, workflowConsole))
+  }
+  const result = await attachOne(id, titleName([nameHint, id]), workspace, given.details, given.rows, null)
+  result.submitted_by = row
+  if (result.state === 'NOT_ATTACHED') {
+    // Submitted, and not read back: no row follows it, and the session's
+    // watch is what notices it. Never NOT_SUBMITTED: that invites a relaunch.
+    result.state = 'SUBMITTED_UNVERIFIED'
+    result.error = 'SwarmCloud has workflow ' + id + ' -- the ' + row + ' row submitted it -- but reading it back failed (' + result.error + '), so no row follows it. It runs regardless: read it with swarm_workflow_status, or re-join it with /sc attach ' + id + '. Do not run /sc:swarmcloud again, which would submit a second copy.'
+    result.arm_watch = ARM_ANYWAY
+    if (workflowConsole && !result.console) result.console = workflowConsole
+  }
+  return result
+}
+
 function notSubmitted(error) {
   log('not submitted · ' + clip(error, 200))
   return { workflow_id: null, state: 'NOT_SUBMITTED', error: error, steps: [] }
@@ -2823,11 +2868,14 @@ if (given.path || (given.handle && !given.spec)) {
     read = await agent(prompt, {
       label: setupLabel(where, [], 'read spec'),
       phase: 'Submit',
-      agentType: 'sc:workflow',
+      agentType: 'sc:spec',
       schema: READ,
     })
   } catch (error) {
     readFailure = failureText(error)
+  }
+  if (earlyWorkflowId(read)) {
+    return await followEarlySubmission(read, 'read spec', read.outline && typeof read.outline === 'object' ? titleName([read.outline.title, read.outline.label]) : null)
   }
   if (!read || read.error) {
     if (read && read.error) return notSubmitted(read.error)
