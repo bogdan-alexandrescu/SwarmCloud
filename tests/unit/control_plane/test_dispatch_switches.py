@@ -45,8 +45,8 @@ def _blocks(db: Any, response: Any) -> list[dict[str, Any]]:
     return [db.docs[f"tasks/{task_id}"]["metadata"]["dispatch"] for task_id in ids]
 
 
-def test_the_switches_are_the_three_the_owner_named_and_the_graph_shape():
-    assert DISPATCH_SWITCHES == (*SWITCHES, "graph_shape")
+def test_the_switches_are_the_three_the_owner_named_the_graph_shape_and_contract_jev():
+    assert DISPATCH_SWITCHES == (*SWITCHES, "graph_shape", "contract_jev")
     assert DISPATCH_SWITCH_VALUES == ("on", "off")
     assert DISPATCH_METADATA_KEY in SIGNED_METADATA_KEYS
 
@@ -100,8 +100,8 @@ def test_an_unknown_switch_is_refused_with_the_accepted_switches_named(client, d
     assert response.status_code == 422, response.text
     body = response.json()
     assert body["code"] == "invalid_dispatch"
-    assert body["detail"]["accepted_switches"] == [*SWITCHES, "graph_shape"]
-    for name in (*SWITCHES, "graph_shape"):
+    assert body["detail"]["accepted_switches"] == [*SWITCHES, "graph_shape", "contract_jev"]
+    for name in (*SWITCHES, "graph_shape", "contract_jev"):
         assert name in body["message"]
 
 
@@ -140,3 +140,38 @@ def test_the_resolver_keeps_the_switches_through_every_step_derivation():
     block = routed.to_metadata()
     assert block["quality_gates"] == "off" and block["jev_judgments"] == "on"
     assert "code_intelligence" not in block
+
+
+# --- contract_jev (CONTRACT-JEV-EXPERIMENT, jev-contract.md section 11) -------
+#
+# The arm of the Jev work-contract experiment: `on` runs Jev's review at
+# submission (JC1) and its judgment at the end of a step (JC2) where the
+# workspace's settings allow them; `off` is today's behaviour. On/off like the
+# owner's three, written into every step's signed block, and read back from
+# each attempt's `result_summary.switches` by `scripts/benchstat.py contract-jev`.
+
+@pytest.mark.parametrize("value", ["on", "off"])
+def test_contract_jev_is_stored_exactly_on_every_step(client, db, value):
+    baseline = _blocks(db, _workflow(client))
+    blocks = _blocks(db, _workflow(client, dispatch={"contract_jev": value}))
+    for before, after in zip(baseline, blocks):
+        assert after == {**before, "contract_jev": value}
+
+
+@pytest.mark.parametrize("bad", ["ON", "true", "enforce", "report", "", True, 1, None])
+def test_contract_jev_outside_on_off_is_refused_naming_them(client, db, bad):
+    response = _workflow(client, dispatch={"contract_jev": bad})
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "invalid_dispatch"
+    assert body["detail"]["accepted_switch_values"] == ["on", "off"]
+    assert not [key for key in db.docs if key.startswith("tasks/")]
+
+
+def test_contract_jev_rides_with_the_other_switches_through_every_step_derivation():
+    options = resolve_dispatch_options(strategy="collect", carrier="checkpoints",
+                                       scale="workflow", repository_url=None,
+                                       switches={"contract_jev": "on", "jev_judgments": "off"})
+    block = options.with_role("contributor").with_routing(
+        builds_on=None, gate_task_id=None).to_metadata()
+    assert block["contract_jev"] == "on" and block["jev_judgments"] == "off"
