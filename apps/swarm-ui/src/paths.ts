@@ -317,6 +317,8 @@ export const FIXED: Readonly<Record<string, string>> = {
   // A literal, as every row here is: the issue-form test reads this table as text. It is CONFIG_SECRETS_PATH.
   'config/secrets': '/config/secrets',
   'config/mcp-servers': '/config/mcp-servers',
+  // Config › Plugins, the workspace's allowed agent plugins (part of #2688).
+  'config/plugins': '/config/plugins',
   'config/people': '/config/people',
   'config/workspace': '/config/workspace',
   // Settings › API keys was here (KEYS-UI) until SSC-UI (part of #2158) moved

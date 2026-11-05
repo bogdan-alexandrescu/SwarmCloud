@@ -644,7 +644,7 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // edge for that ink to crowd; the card's inset is measured off the heading
   // beside it, as the submit slice's `?` is.
   {
-    name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/workspace'], floor: 60,
+    name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/plugins', 'config/workspace'], floor: 60,
     centred: ['button.ctl-q-glyph [left] width 20px, centred', 'button.ctl-q-glyph [right] width 20px, centred'],
   },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
