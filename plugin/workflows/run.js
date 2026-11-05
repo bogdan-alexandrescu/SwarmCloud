@@ -634,13 +634,21 @@ function ownerQuestions(given) {
     const entry = given[index]
     if (!isObject(entry)) continue
     const options = Array.isArray(entry.options) ? entry.options.filter(isObject).slice(0, OPTIONS_MAX) : []
-    out.push({
-      index: index,
+    // The bridge's own `index` when it served one: it hands on only the open
+    // questions (swarm_mcp.progress.open_owner_questions, 2026-11-05), so a
+    // question's place in this list is no longer its place in questions.json.
+    const served = Number.isInteger(entry.index) && entry.index >= 0 ? entry.index : index
+    const question = {
+      index: served,
       question: text(entry.question, QUESTION_CHARS),
       options: options.map((option) => ({ label: text(option.label, LABEL_TEXT_CHARS), description: text(option.description, OPTION_CHARS) })),
       recommended: text(entry.recommended, LABEL_TEXT_CHARS),
       context: text(entry.context, QUESTION_CHARS),
-    })
+    }
+    // Listed because its stored answer could not be read, never as known open.
+    const unknown = text(entry.answer_unknown_because, LABEL_TEXT_CHARS)
+    if (unknown) question.answer_unknown_because = unknown
+    out.push(question)
   }
   return out
 }

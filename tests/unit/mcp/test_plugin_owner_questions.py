@@ -196,6 +196,24 @@ def test_questions_are_validated_and_capped_and_keep_their_served_index(tmp_path
     assert len(kept) <= 20, len(kept)
 
 
+def test_the_bridges_own_index_is_kept_when_answered_questions_were_left_out(tmp_path):
+    """5 November 2026: the bridge hands on only the OPEN questions
+    (`progress.open_owner_questions`), each under its `index` in
+    questions.json; question 0 answered, the list starts at index 1."""
+    served = [{"index": 1, **_question(2)},
+              {"index": 3, **_question(4), "answer_unknown_because": "its stored answers could not be read"}]
+    got = _per_step(tmp_path, {"step:scan-01": {"state": "SUCCEEDED", "result": _fields("SUCCEEDED", served)}})
+    kept = {row["step_id"]: row for row in got["result"]["steps"]}["scan-01"]["questions"]
+
+    # MUTATION: numbering by place in the served list records swarm_task_answer's
+    # pick for question 1 under question 0, which the owner already answered.
+    assert [q["index"] for q in kept] == [1, 3], kept
+    # MUTATION: dropping the reason makes "could not tell" read as "open".
+    assert "answer_unknown_because" not in kept[0]
+    assert kept[1]["answer_unknown_because"] == "its stored answers could not be read"
+    assert [q["index"] for q in got["result"]["owner_questions"][0]["questions"]] == [1, 3]
+
+
 # --------------------------------------------------------------------------
 # 2. single-task rows
 # --------------------------------------------------------------------------
