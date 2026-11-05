@@ -1532,6 +1532,11 @@ def answer_question(
     `history`. Stored as `metadata.owner_answers`; answers with the questions
     as `GET /questions` now serves them. See `swarm_api.agent_questions`.
 
+    Answers to different questions of one task, sent at once, are all
+    stored: each is merged in its own transaction that re-reads the others,
+    and contention is run again; contention that outlasts it answers 503
+    `answer_contended` with a `Retry-After`, nothing stored (part of #2688).
+
     `via` (`console` | `claude-code`) and `session` (a Claude Code session id:
     a UUID or 8-64 of `[A-Za-z0-9_-]`, else 422) say where it was answered;
     the sc plugin's `swarm_task_answer` sends `claude-code` and its session.

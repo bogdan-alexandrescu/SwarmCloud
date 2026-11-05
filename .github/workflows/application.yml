@@ -115,7 +115,8 @@ jobs:
     if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'shell')
     # Job-level permissions REPLACE the workflow's, so contents: read is
     # restated. actions: read is for the plugin-tag check's `gh run list` of
-    # release.yml; nothing here mints a cloud token, so no id-token.
+    # this workflow's push runs; nothing here mints a cloud token, so no
+    # id-token.
     permissions:
       contents: read
       actions: read
@@ -290,25 +291,30 @@ jobs:
         # softening, so it is checked rather than proof-read.
         run: ./scripts/lib/check-doc-links.sh
 
-      - name: the plugin's pinned bridge tag exists, or its release has not run yet
-        # #272; docs/ci.md, "The plugin's bridge tag is made by the release".
-        # plugin.json pins its bridge to `sc-v<version>`, and release.yml's
-        # plugin-tag job creates that tag after verify. sc-v0.5.6 was missing
-        # while main pinned it, and nothing said so; this says so.
+      - name: the plugin's pinned bridge tag exists, or no tested push has tried to make it yet
+        # #272; docs/ci.md, "The plugin's bridge tag is made once the unit
+        # tests pass". plugin.json pins its bridge to `sc-v<version>`, and this
+        # workflow's plugin-tag job creates that tag on a push to main once
+        # `format / unit tests` passed. sc-v0.5.6 was missing while main pinned
+        # it, and nothing said so; this says so.
         #
-        # RED only when a completed release on main whose `verify` job passed
-        # already descends from the commit that bumped the version: plugin-tag
-        # runs exactly when verify passed, so that release should have tagged
-        # it and did not. The RUN's conclusion is deliberately not read: a
-        # plugin-tag that failed (a rejected push, a ruleset on sc-v*), or any
-        # later build or deploy job that failed, makes the whole run `failure`,
-        # and filtering on `success` would hide precisely the release #272 is
-        # about. A WARNING when no such release has run since the bump -- a
-        # bump touching only plugin/ starts no release (release.yml's path
-        # filter), and the next release tags it. A gh call that fails is a
-        # check that could not be made, never "no releases".
+        # RED only when a completed push run of this workflow on main whose
+        # `format / unit tests` passed already descends from the commit that
+        # bumped the version, and its plugin-tag job FAILED or never ran:
+        # plugin-tag runs exactly when that check passed, so that run should
+        # have tagged it and did not. A plugin-tag that SUCCEEDED or was
+        # CANCELLED without the tag is a commit a newer one superseded (the
+        # job's own `newest` step, or this workflow's `concurrency:`): the
+        # newer run tags it, and this only says so. The RUN's conclusion is
+        # deliberately not read: a plugin-tag that failed (a rejected push, a
+        # ruleset on sc-v*), or any other job that failed, makes the whole run
+        # `failure`, and filtering on `success` would hide precisely the run
+        # #272 is about. A WARNING when no such run has finished since the
+        # bump (this very run is still in progress, so it is never one of
+        # them), and the next one tags it. A gh call that fails is a check
+        # that could not be made, never "no runs".
         #
-        # On main only: the tag is made by main's release, so a pull request
+        # On main only: the tag is made by main's push runs, so a pull request
         # bumping the version is expected to have none.
         if: github.ref == 'refs/heads/main'
         env:
@@ -318,7 +324,7 @@ jobs:
           manifest=plugin/.claude-plugin/plugin.json
           version="$(jq -r '.version' "$manifest")"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error file=${manifest}::version is '${version}', not X.Y.Z, so it pins no tag a release can make"
+            echo "::error file=${manifest}::version is '${version}', not X.Y.Z, so it pins no tag CI can make"
             exit 1
           fi
           tag="sc-v${version}"
@@ -336,7 +342,7 @@ jobs:
             exit 1
           fi
 
-          # The checkout is shallow; the bump commit and the release heads need
+          # The checkout is shallow; the bump commit and the run heads need
           # history. Fetched only here, on the rare path, not on every run.
           if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
             git fetch --quiet --unshallow origin
@@ -349,9 +355,9 @@ jobs:
 
           runs="$(mktemp)"
           gh_status=0
-          gh run list --workflow release.yml --branch main --status completed --limit 50 --json databaseId,headSha > "$runs" || gh_status=$?
+          gh run list --workflow application.yml --branch main --event push --status completed --limit 50 --json databaseId,headSha > "$runs" || gh_status=$?
           if [ "$gh_status" -ne 0 ]; then
-            echo "::error::gh run list failed (exit ${gh_status}); cannot tell whether a release since ${bump} should have made ${tag}"
+            echo "::error::gh run list failed (exit ${gh_status}); cannot tell whether a run since ${bump} should have made ${tag}"
             exit 1
           fi
           pairs="$(mktemp)"
@@ -365,7 +371,7 @@ jobs:
             [ -n "$sha" ] || continue
             examined=$((examined + 1))
             if ! git cat-file -e "${sha}^{commit}" 2> /dev/null; then
-              echo "release head ${sha} (run ${run_id}) is not in this clone; counted as not descended from ${bump}"
+              echo "run head ${sha} (run ${run_id}) is not in this clone; counted as not descended from ${bump}"
               continue
             fi
             git merge-base --is-ancestor "$bump" "$sha" || continue
@@ -374,25 +380,28 @@ jobs:
             view_status=0
             gh run view "$run_id" --json jobs > "$jobs" || view_status=$?
             if [ "$view_status" -ne 0 ]; then
-              echo "::error::gh run view ${run_id} failed (exit ${view_status}); cannot tell whether that release should have made ${tag}"
+              echo "::error::gh run view ${run_id} failed (exit ${view_status}); cannot tell whether that run should have made ${tag}"
               exit 1
             fi
-            verify="$(jq -r '[.jobs[] | select(.name == "verify") | .conclusion][0] // "absent"' "$jobs")"
-            if [ "$verify" = "success" ]; then
+            unit="$(jq -r '[.jobs[] | select(.name == "format / unit tests") | .conclusion][0] // "absent"' "$jobs")"
+            tagjob="$(jq -r '[.jobs[] | select(.name | startswith("tag the plugin")) | .conclusion][0] // "absent"' "$jobs")"
+            if [ "$unit" != "success" ]; then
+              echo "run ${run_id} (${sha}) descends from ${bump}, but its format / unit tests is ${unit}, so plugin-tag did not run"
+            elif [ "$tagjob" = "success" ] || [ "$tagjob" = "cancelled" ]; then
+              echo "run ${run_id} (${sha}) descends from ${bump}; its plugin-tag concluded ${tagjob} without ${tag}: a newer commit superseded it, and that commit's run tags it"
+            else
               offender="$run_id"
               offender_sha="$sha"
-              offender_tagjob="$(jq -r '[.jobs[] | select(.name | startswith("tag the plugin")) | .conclusion][0] // "absent"' "$jobs")"
-            else
-              echo "release run ${run_id} (${sha}) descends from ${bump}, but its verify is ${verify}, so plugin-tag did not run"
+              offender_tagjob="$tagjob"
             fi
           done < "$pairs"
-          echo "examined ${examined} completed release runs on main"
+          echo "examined ${examined} completed push runs on main"
 
           if [ -n "$offender" ]; then
-            echo "::error title=${tag} is missing::release run ${offender} of ${offender_sha} passed verify and descends from ${bump}, the commit that set version ${version}, but origin has no ${tag}; its plugin-tag job concluded '${offender_tagjob}'. Installs of plugin ${version} cannot fetch their bridge. Read that run's plugin-tag job."
+            echo "::error title=${tag} is missing::run ${offender} of ${offender_sha} passed format / unit tests and descends from ${bump}, the commit that set version ${version}, but origin has no ${tag}; its plugin-tag job concluded '${offender_tagjob}'. Installs of plugin ${version} cannot fetch their bridge. Read that run's plugin-tag job."
             exit 1
           fi
-          echo "::warning title=${tag} not tagged yet::${bump} set version ${version}; no release on main has passed verify since it, and the next one tags ${tag}."
+          echo "::warning title=${tag} not tagged yet::${bump} set version ${version}; no push run on main has tagged it since, and the next one whose unit tests pass tags ${tag}."
 
   workflows:
     # NAME-KEEPER (CI-FOLD, #1799): the `release workflow wiring (actionlint) · ...` steps of
@@ -1479,6 +1488,148 @@ jobs:
           fi
           echo "every job passed or was skipped by its own if"
 
+  # -------------------------------------------------------------------------
+  # THE PLUGIN'S BRIDGE TAG (#272; docs/ci.md, "The plugin's bridge tag is
+  # made once the unit tests pass"). plugin/.claude-plugin/plugin.json
+  # installs the swarm-mcp bridge from `@sc-v<version>`, and its `version` is
+  # the same string (tests/unit/mcp/test_plugin_bridge_install.py). That tag
+  # was made by hand, so it could be missing: sc-v0.5.6 did not exist while
+  # main already pinned it, and every fresh install of that version failed to
+  # fetch its bridge. This job creates it, on the commit main was pushed to.
+  #
+  # AFTER `format / unit tests` (`python` above), THE EARLIEST POINT THAT
+  # PROVES THE COMMIT (owner decision, BGD, 2026-11-04: "Tag once tests
+  # pass"; part of #2688). A tag is what users' installs resolve, so a commit
+  # whose unit tests fail is not one to hand them. Until then the job was
+  # release.yml's and, on a push, waited for its `images and scan`: on
+  # 2026-11-04 plugin.json reached 0.5.79 at 21:04Z, that job ran about an
+  # hour, and for that hour every session that reloaded the plugin installed
+  # its bridge from a tag that did not exist and lost every swarm tool,
+  # until sc-v0.5.79 was pushed by hand at about 22:00Z. `python` passes only
+  # when the unit shards and the lock / contract / bridge-install checks
+  # passed on this commit, or were skipped by their own `if:` -- a tree main
+  # reuses was proven job by job on its pull request (docs/ci.md "Main reuses
+  # the tested tree"). It is the proof `build images` below needs too.
+  #
+  # ON A PUSH TO MAIN ONLY. A pull request, a merge-queue entry or a dispatch
+  # on another branch would pin users to a commit main never had; a dispatch
+  # on main re-tests a commit a push already tagged.
+  #
+  # IT NEVER MOVES A TAG THAT EXISTS. Users' installs already resolved it, and
+  # uv caches what it fetched; moving it would give two users of the same
+  # version two different bridges. So nothing here forces: an existing tag is
+  # reported (with the commit it points at, when that is not this one) and
+  # left exactly where it is.
+  #
+  # `contents: write` is granted on THIS job, not the workflow, whose default
+  # stays `contents: read`: every other job here runs the repository's own
+  # code and none of it needs to write to it. This job is the only one here
+  # holding it, and runs nothing but checkout, gh, jq and git.
+  #
+  # A COMMIT A NEWER ONE SUPERSEDED TAGS NOTHING. A newer push to main cancels
+  # this run (the `concurrency:` above); and if main has moved past this
+  # commit by the time this job starts, it ends green without tagging. The
+  # newer commit's run tags the same version on the commit main now holds.
+  # Until then this workflow's shell job warns.
+  # -------------------------------------------------------------------------
+  plugin-tag:
+    name: tag the plugin's bridge (sc-v<version>)
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    needs: [python]
+    # No status function: it runs only when `python` succeeded.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.python.result == 'success'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: is this commit still main's newest?
+        id: newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # `ahead`: main holds this commit and more. `identical`, anything
+          # else, or an unreadable API: tag this commit, which passed its
+          # unit tests either way.
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...main" --jq '.status' 2>/dev/null)" || status=""
+          if [ "${status}" = ahead ]; then
+            echo "::notice title=Superseded::main has moved past ${GITHUB_SHA}; the newer commit's run tags the plugin's bridge, so this one tags nothing."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          else
+            [ -n "${status}" ] || echo "::warning::could not compare ${GITHUB_SHA} with main; tagging this commit"
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: create sc-v<version> on this commit unless it already exists
+        if: steps.newest.outputs.superseded == 'false'
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          manifest=plugin/.claude-plugin/plugin.json
+          version="$(jq -r '.version' "$manifest")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=${manifest}::version is '${version}', not X.Y.Z; no tag created"
+            exit 1
+          fi
+          tag="sc-v${version}"
+          listing="$(mktemp)"
+
+          # 0: it exists. 2 (--exit-code): it does not. Anything else is a
+          # remote that could not be read, which is not "absent".
+          remote_tag() {
+            local status=0
+            git ls-remote --exit-code --tags origin "refs/tags/${tag}" > "$listing" || status=$?
+            return "$status"
+          }
+          # The commit an existing tag points at: the peeled line of an
+          # annotated tag, else the tag's own line.
+          tagged_commit() {
+            local peeled
+            peeled="$(awk -v ref="refs/tags/${tag}^{}" '$2 == ref {print $1}' "$listing")"
+            if [ -n "$peeled" ]; then echo "$peeled"; else awk -v ref="refs/tags/${tag}" '$2 == ref {print $1}' "$listing"; fi
+          }
+          report_existing() {
+            local at
+            at="$(tagged_commit)"
+            if [ "$at" = "$RELEASE_SHA" ]; then
+              echo "::notice title=${tag} already exists::${tag} already points at this commit (${RELEASE_SHA}); nothing to do."
+            else
+              echo "::notice title=${tag} already exists::${tag} points at ${at}, not this commit (${RELEASE_SHA}). It is left where it is: installs of ${version} already resolved it."
+            fi
+          }
+
+          status=0
+          remote_tag || status=$?
+          if [ "$status" -eq 0 ]; then
+            report_existing
+            exit 0
+          fi
+          if [ "$status" -ne 2 ]; then
+            echo "::error::git ls-remote could not read origin's tags (exit ${status}); not creating ${tag} blind"
+            exit 1
+          fi
+
+          git -c "user.name=github-actions[bot]" \
+              -c "user.email=41898282+github-actions[bot]@users.noreply.github.com" \
+              tag -a "$tag" "$RELEASE_SHA" -m "swarm-mcp bridge for plugin sc ${version}"
+          if git push origin "refs/tags/${tag}"; then
+            echo "::notice title=${tag} created::${tag} now points at ${RELEASE_SHA}."
+            exit 0
+          fi
+          # Rejected. Someone (or a run of the same version on another commit)
+          # may have pushed it first; that is the tag existing, not a
+          # failure. Anything else is.
+          status=0
+          remote_tag || status=$?
+          if [ "$status" -eq 0 ]; then
+            report_existing
+            exit 0
+          fi
+          echo "::error::pushing ${tag} was rejected and origin does not have it"
+          exit 1
+
   ui-build:
     # The half of `swarm-ui typecheck / component tests` that is one process
     # each: the typecheck, the node:test runners and the production build. It
@@ -2430,7 +2581,7 @@ jobs:
     # the gate's.
     name: ci-gate
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
-    needs: [shell, workflows, ruff, changes, quick-checks, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build, tested-tree]
+    needs: [shell, workflows, ruff, changes, quick-checks, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build, tested-tree, plugin-tag]
     if: ${{ !cancelled() }}
     # The script gives up at 90 minutes (CI_GATE_WAIT) and says what was still
     # pending; this is only the backstop behind it.

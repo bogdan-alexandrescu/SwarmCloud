@@ -53,6 +53,8 @@ import {
 import { useNow } from '../useNow'
 import { skippedByVerdict } from '../wfreview'
 import './stage-grid.css'
+import { useIsPhone } from './Inspector'
+import { ChipLineView, Connectors, LineageStrip, WireKey, chipLineOf, gapLanesOf, gapPx, lineageOf } from './Lineage'
 
 // ---------------------------------------------------------------------------
 // Placement
@@ -63,11 +65,18 @@ export interface GridColumn {
   readonly key: string
   /** The feature's name, or the step id that opened the column. */
   readonly label: string
+  /**
+   * What the column's header says: its label, or nothing when the label is a
+   * step id and every step under it is named by its own stage -- a lane of bare
+   * names (implement, review, fix) is one column, and heading it `implement`
+   * named one of its five steps as the feature of all of them.
+   */
+  readonly heading: string
 }
 
 export interface GridStage {
   readonly index: number
-  /** The stage's name when every step in it is `<name>-…`, else `Stage n`. */
+  /** The stage's name when every step in it is `<name>-…`; a stage of one step otherwise takes its id; else `Stage n`. */
   readonly label: string
   /** One entry per column: the step id there, or null. */
   readonly cells: readonly (string | null)[]
@@ -87,8 +96,11 @@ export interface StageGridShape {
  * every step of the stage shares. A name may hold a `-` itself (`re-review`),
  * so the candidates are tried in this order: the longest that leaves every step
  * a feature the grid already has a column for; else, for a stage of two or
- * more steps, the longest they share; else the first word. Null when the steps
- * share none.
+ * more steps, the longest they share; else, for the first stage, the first word
+ * (it opens the feature columns). Null when the steps share none, and for a
+ * later stage of one step none of whose prefixes leaves a known feature: the
+ * prefix of `re-review` is not a stage called `re`, and the stage is then
+ * named by its step's own id.
  */
 function stageNameOf(steps: readonly WorkflowStep[], known: ReadonlySet<string>): string | null {
   const firstId = steps[0]?.step_id
@@ -101,7 +113,8 @@ function stageNameOf(steps: readonly WorkflowStep[], known: ReadonlySet<string>)
   if (candidates.length === 0) return null
   const fits = candidates.filter((p) => steps.every((s) => known.has(s.step_id.slice(p.length + 1))))
   if (fits.length > 0) return fits[fits.length - 1]!
-  return steps.length > 1 ? candidates[candidates.length - 1]! : candidates[0]!
+  if (steps.length > 1) return candidates[candidates.length - 1]!
+  return known.size === 0 ? candidates[0]! : null
 }
 
 /**
@@ -118,15 +131,15 @@ function stageNameOf(steps: readonly WorkflowStep[], known: ReadonlySet<string>)
  */
 export function stageGridOf(steps: readonly WorkflowStep[]): StageGridShape {
   const levels = levelsOf(steps)
-  const columns: { key: string; label: string }[] = []
+  const columns: { key: string; label: string; byId: boolean }[] = []
   const byKey = new Map<string, number>()
   const at = new Map<string, { stage: number; column: number }>()
   const stages: GridStage[] = []
 
-  const open = (label: string): number => {
+  const open = (label: string, byId: boolean): number => {
     let key = label
     for (let n = 2; byKey.has(key); n += 1) key = `${label}#${n}`
-    columns.push({ key, label })
+    columns.push({ key, label, byId })
     byKey.set(key, columns.length - 1)
     return columns.length - 1
   }
@@ -166,12 +179,12 @@ export function stageGridOf(steps: readonly WorkflowStep[]): StageGridShape {
       if (at.has(s.step_id)) continue
       const f = featureOf(s)
       const free = f === null ? undefined : byKey.get(f)
-      place(s, free !== undefined && !taken.has(free) && s.depends_on.length === 0 ? free : open(f ?? s.step_id))
+      place(s, free !== undefined && !taken.has(free) && s.depends_on.length === 0 ? free : open(f ?? s.step_id, f === null))
     }
 
     stages.push({
       index: k,
-      label: name ?? `Stage ${k + 1}`,
+      label: name ?? (level.length === 1 ? level[0]!.step_id : `Stage ${k + 1}`),
       cells: [],
       stepIds: level.map((s) => s.step_id),
     })
@@ -186,7 +199,17 @@ export function stageGridOf(steps: readonly WorkflowStep[]): StageGridShape {
     }
     return { ...st, cells }
   })
-  return { columns, stages: full, at }
+  // A column a step's id opened, holding further steps that each name their own stage (a lane of bare
+  // names), has no heading: its stages name every step in it.
+  const stageNamed = columns.map((col, c) => {
+    const ids = full.flatMap((st) => (st.cells[c] ? [{ id: st.cells[c]!, stage: st.label }] : []))
+    return col.byId && ids.length > 1 && ids.every((x) => x.id === x.stage)
+  })
+  return {
+    columns: columns.map((col, c) => ({ key: col.key, label: col.label, heading: stageNamed[c] ? '' : col.label })),
+    stages: full,
+    at,
+  }
 }
 
 /**
@@ -240,7 +263,11 @@ export function chipKindOf(state: StepState): ChipKind {
   if (s === 'FAILED' || s === 'DEAD_LETTERED') return 'failed'
   if (s === 'CANCELLED') return 'stopped'
   if (CONCURRENCY_STATES.has(s)) return 'running'
-  if (s === 'PARKED' && state.task.park_reason !== 'DEPENDENCY_INCOMPLETE') return 'parked'
+  // A STEP PARKED BEHIND ITS DEPENDENCIES IS DRAWN AND COUNTED WAITING (the
+  // owner's pick, PR #3298, 2026-11-05): it waits on an earlier step as a step
+  // not started does, so the chip draws the waiting mark and the stage tally
+  // and the page head count it waiting. Any other park is parked.
+  if (s === 'PARKED') return isDependencyPark(state.task) ? 'waiting' : 'parked'
   return 'waiting'
 }
 
@@ -290,13 +317,18 @@ export function chipTimeOf(state: StepState, now: number): string | null {
   return spanLabel(ms < 60_000 ? ms : Math.round(ms / 60_000) * 60_000)
 }
 
+/** A step parked only because a step it depends on has not finished. */
+function isDependencyPark(t: Task): boolean {
+  return t.state === 'PARKED' && t.park_reason === 'DEPENDENCY_INCOMPLETE'
+}
+
 /** Why a waiting step waits, in the console's words; null for a step that does not wait. */
-function waitWordOf(step: WorkflowStep, state: StepState): string | null {
-  if (state.kind === 'unstarted') {
-    return step.depends_on.length > 0 ? `starts after ${step.depends_on.join(', ')}` : null
-  }
+function waitWordOf(state: StepState): string | null {
+  // A step not started yet: its chip line's sentence already says what it starts after, with the files.
   if (state.kind !== 'state') return null
   const t = state.task
+  // Drawn waiting, so said waiting: `waiting on a step`, not `parked: …`.
+  if (isDependencyPark(t)) return PARK_WORD.DEPENDENCY_INCOMPLETE
   if (t.state === 'PARKED') {
     const r = t.park_reason
     if (!r) return 'parked, no reason recorded'
@@ -311,6 +343,7 @@ function waitWordOf(step: WorkflowStep, state: StepState): string | null {
 function stateWordOf(state: StepState, kind: ChipKind): string {
   if (state.kind === 'unknown') return 'state not known: its agent was not in the read'
   if (state.kind === 'unstarted') return 'not started'
+  if (state.kind === 'state' && isDependencyPark(state.task)) return 'waiting'
   if (kind === 'waiting' || kind === 'parked') return state.state.toLowerCase()
   return state.state.toLowerCase().replace('_', '-')
 }
@@ -336,7 +369,7 @@ function chipOf(step: WorkflowStep, stage: string, taskById: ReadonlyMap<string,
   const time = skipped ? null : chipTimeOf(state, now)
   const pr = pullRequestOf(task)
   const asks = step.task_id ? asking.get(step.task_id) ?? 0 : 0
-  const why = waitWordOf(step, state)
+  const why = waitWordOf(state)
   const parts = [
     `${step.step_id} (${stage}): ${skipped ? SKIPPED_WORD : stateWordOf(state, kind)}`,
     skipped ? 'agent not run' : null,
@@ -359,8 +392,10 @@ export interface StageTally {
   readonly done: number
   readonly failed: number
   readonly running: number
-  /** Not started, queued, ready, or parked for any reason. */
+  /** Not started, queued, ready, or parked behind its dependencies. */
   readonly waiting: number
+  /** Parked for any reason but its dependencies: drawn with the parked mark, so counted parked. */
+  readonly parked: number
   readonly stopped: number
   /** Steps whose task was not in the read: the tally is short by exactly this many. */
   readonly unknown: number
@@ -372,7 +407,8 @@ export function tallyOf(kinds: readonly ChipKind[]): StageTally {
     done: n('done'),
     failed: n('failed'),
     running: n('running'),
-    waiting: n('waiting') + n('parked'),
+    waiting: n('waiting'),
+    parked: n('parked'),
     stopped: n('stopped'),
     unknown: n('unknown'),
   }
@@ -384,6 +420,7 @@ function tallySentence(t: StageTally): string {
     `${t.failed} failed`,
     `${t.running} running`,
     `${t.waiting} waiting`,
+    t.parked > 0 ? `${t.parked} parked` : null,
     t.stopped > 0 ? `${t.stopped} cancelled` : null,
     t.unknown > 0 ? `${t.unknown} not known` : null,
   ]
@@ -471,6 +508,16 @@ const MARK_OF: Readonly<Record<ChipKind, Parameters<typeof NamedMark>[0]['mark']
   unknown: 'warn',
 }
 
+/**
+ * Whether the grid already names a step where its chip sits: its id is
+ * `<stage>-<column>`, or its column or its stage is the step's own id. A step
+ * it does not name (a report alone in its stage under a `home` column) carries
+ * its own name on the chip, or it reads as that column's next step.
+ */
+export function namedBy(stepId: string, stage: string, column: string | undefined): boolean {
+  return stepId === `${stage}-${column}` || stepId === column || stepId === stage
+}
+
 function ChipMark({ chip }: { chip: Chip }) {
   if (chip.skipped) return <NamedMark mark="skipped" hue="neu" word={SKIPPED_WORD} bare />
   if (chip.state.kind === 'state') return <StateMark state={chip.state.task.state} bare />
@@ -487,6 +534,11 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
   const [measure, width] = useWidth()
   const density = densityAt(width, shape.columns.length)
   const chipRefs = useRef(new Map<string, HTMLButtonElement>())
+  const lin = useMemo(() => lineageOf(workflow, taskById), [workflow, taskById])
+  const lanes = useMemo(() => gapLanesOf(shape, lin), [shape, lin])
+  const [gridEl, setGridEl] = useState<HTMLDivElement | null>(null)
+  // On a phone the strip stacks at the top of the step's sheet instead (the page mounts it there).
+  const phone = useIsPhone()
 
   // The chip that takes the tab stop: the selected one, else the first.
   const first = shape.stages[0]?.cells.find((c): c is string => c !== null) ?? null
@@ -515,6 +567,7 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
 
   return (
     <div className={`sg is-${density}${bright !== null ? ' is-focused' : ''}`} ref={measure} data-density={density}>
+      {!phone && <LineageStrip workflow={workflow} shape={shape} lin={lin} selected={selected} onPick={onSelect} now={now} />}
       <div className="sg-legend" aria-label="Legend">
         <span><StateMark state="SUCCEEDED" bare /> done</span>
         <span><StateMark state="RUNNING" bare /> running</span>
@@ -522,35 +575,46 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
         <span><StateMark state="PARKED" bare /> parked</span>
         <span><StateMark state="FAILED" bare /> failed</span>
         <span><span className="sg-ask is-inline" aria-hidden="true">?</span> asks you</span>
+        <WireKey />
       </div>
       <div
         className="sg-grid"
+        ref={setGridEl}
         role="group"
         aria-label={`${workflow.steps.length} steps: a row per stage, a column per feature`}
         style={{ ['--sg-cols' as string]: Math.max(1, shape.columns.length) }}
       >
-        <div className="sg-row is-head" aria-hidden="true">
-          <span className="sg-stage" />
-          {shape.columns.map((c) => (
-            <span key={c.key} className="sg-col" title={c.label}>{c.label}</span>
-          ))}
-        </div>
+        <Connectors grid={gridEl} shape={shape} lin={lin} lanes={lanes} selected={selected} version={`${density}:${width ?? 0}`} />
+        {/* No header row when no column has a heading: a lane of bare names is one column its stages name. */}
+        {shape.columns.some((c) => c.heading !== '') && (
+          <div className="sg-row is-head" aria-hidden="true">
+            <span className="sg-stage" />
+            {shape.columns.map((c) => (
+              <span key={c.key} className="sg-col" title={c.heading}>{c.heading}</span>
+            ))}
+          </div>
+        )}
         {shape.stages.map((st) => {
           const chips = st.cells.map((id) => (id === null ? null : chipOf(stepById.get(id)!, st.label, taskById, asking, now)))
+          // Each chip's line, once: its sentence goes into the tooltip, its parts onto the chip.
+          const lines = st.cells.map((id) => (id === null ? null : chipLineOf(shape, lin, id)))
           const tally = tallyOf(chips.filter((c): c is Chip => c !== null).map((c) => c.kind))
           const sentence = tallySentence(tally)
+          // The gap above this row holds the connectors' lanes from the stage above (gapPx).
+          const gapAbove = st.index > 0 ? { marginTop: gapPx(lanes.count[st.index - 1] ?? 0) - GAP_PX } : undefined
           const counts = (
             <>
               {tally.done > 0 && <span className="sg-n is-done"><StateMark state="SUCCEEDED" bare />{tally.done}</span>}
               {tally.failed > 0 && <span className="sg-n is-failed"><StateMark state="FAILED" bare />{tally.failed}</span>}
               {tally.running > 0 && <span className="sg-n is-running"><StateMark state="RUNNING" bare />{tally.running}</span>}
               {tally.waiting > 0 && <span className="sg-n is-waiting"><NamedMark mark={MARK_OF.waiting} hue="neu" word="waiting" bare />{tally.waiting}</span>}
+              {tally.parked > 0 && <span className="sg-n is-parked"><StateMark state="PARKED" bare />{tally.parked}</span>}
               {tally.stopped > 0 && <span className="sg-n is-stopped"><StateMark state="CANCELLED" bare />{tally.stopped}</span>}
               {tally.unknown > 0 && <span className="sg-n is-unknown">{tally.unknown} not known</span>}
             </>
           )
           return (
-            <div key={st.index} className="sg-row" role="group" aria-label={`${st.label}: ${sentence}`} data-stage={st.label}>
+            <div key={st.index} className="sg-row" role="group" aria-label={`${st.label}: ${sentence}`} data-stage={st.label} style={gapAbove}>
               <span className="sg-stage">
                 <b className="sg-stage-name" title={st.label}>{st.label}</b>
                 {onOpenStage ? (
@@ -580,21 +644,23 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
                     type="button"
                     className={`sg-chip is-${chip.kind}${chip.skipped ? ' is-skipped' : ''}${selected === chip.step.step_id ? ' is-selected' : ''}${bright !== null && !bright.has(chip.step.step_id) ? ' is-dimmed' : ''}`}
                     data-step={chip.step.step_id}
-                    title={chip.tip}
-                    aria-label={chip.tip}
+                    title={`${chip.tip} · ${lines[c]!.tip}`}
+                    aria-label={`${chip.tip} · ${lines[c]!.tip}`}
                     aria-pressed={selected === chip.step.step_id}
                     tabIndex={chip.step.step_id === tabStop ? 0 : -1}
                     onClick={() => onSelect(chip.step.step_id)}
                     onKeyDown={onKey(chip.step.step_id)}
                   >
-                    <span className="sg-chip-mark" aria-hidden="true"><ChipMark chip={chip} /></span>
-                    {density !== 'marks' && density !== 'no-time' && chip.time !== null && (
-                      <span className="sg-chip-time" aria-hidden="true">{chip.time}</span>
-                    )}
-                    {density !== 'marks' && density !== 'no-time' && chip.state.kind === 'unknown' && (
-                      <span className="sg-chip-time" aria-hidden="true">not known</span>
-                    )}
-                    {density === 'full' && chip.pr !== null && <span className="sg-chip-pr" aria-hidden="true">#{chip.pr}</span>}
+                    <span className="sg-chip-top">
+                      <span className="sg-chip-mark" aria-hidden="true"><ChipMark chip={chip} /></span>
+                      {!namedBy(chip.step.step_id, st.label, shape.columns[c]?.label) && <span className="lg-name" aria-hidden="true">{chip.step.step_id}</span>}
+                      {density !== 'marks' && density !== 'no-time' && chip.time !== null && <span className="sg-chip-time" aria-hidden="true">{chip.time}</span>}
+                      {density !== 'marks' && density !== 'no-time' && chip.state.kind === 'unknown' && (
+                        <span className="sg-chip-time" aria-hidden="true">not known</span>
+                      )}
+                      {density === 'full' && chip.pr !== null && <span className="sg-chip-pr" aria-hidden="true">#{chip.pr}</span>}
+                    </span>
+                    {density !== 'marks' && density !== 'no-time' && <ChipLineView line={lines[c]!} />}
                     {chip.asks > 0 && <span className="sg-ask" aria-hidden="true">?</span>}
                   </button>
                 ),
