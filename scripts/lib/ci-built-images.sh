@@ -25,7 +25,8 @@
 #           release dispatched by hand for a commit application.yml never
 #           built, and build-images.sh then builds it exactly as CI would have.
 #   exit 1  anything else, with the reason on the last line: CI's build
-#           FAILED; it is still running after CI_BUILD_WAIT; CI never built
+#           FAILED; it has not started by CI_BUILD_WAIT, or is still in
+#           progress at CI_BUILD_WAIT_RUNNING; CI never built
 #           the commit and `--if-absent fail`; the GitHub API could not be
 #           read; or the record describes another commit or environment.
 #
@@ -87,7 +88,9 @@
 #        scripts/lib/ci-built-images.sh --previous --sha <40 hex> --environment dev --out FILE
 #
 # Needs `gh` authenticated for the repository -- GH_TOKEN, with actions: read.
-# CI_BUILD_WAIT (default 2700s) bounds the wait for a running build,
+# CI_BUILD_WAIT (default 2700s) bounds the wait for a build that is queued or
+# not started, CI_BUILD_WAIT_RUNNING (default 5400s) the wait for one whose job
+# is in progress,
 # CI_BUILD_APPEAR (default 300s) the wait for its run to appear at all, and
 # CI_BUILD_POLL (default 30s) is the interval between looks. --previous uses
 # CI_PREVIOUS_TRIES and CI_PREVIOUS_POLL instead (see above).
@@ -108,20 +111,28 @@ REPO="${GITHUB_REPOSITORY:-}"
 WORKFLOW="${CI_BUILD_WORKFLOW:-application.yml}"
 JOB="${CI_BUILD_JOB:-build images}"
 BRANCH="${CI_BUILD_BRANCH:-main}"
-# 45 minutes. A build is ~9 minutes behind ~2 of checks. Main's application
-# runs share one group with cancel-in-progress (#2438), so a push cancels the
-# previous commit's run instead of queueing behind it, and the newest run starts
-# at its push; what can still hold it is a wait for a runner, or Cloud Build
-# slots a cancelled run's builds still hold (cancelling does not stop them).
-# A newer push that cancels the run waited for ends the wait early, "never
-# built", not at 45. Past 45 something is wrong, and the message says what was
-# pending.
+# 45 minutes, for a build that has NOT STARTED (its run queued, or its job
+# waiting on the test jobs it needs). Measured 5 November 2026 (issue 3336):
+# `build images` starts 18 to 44 minutes after its push, because it needs
+# main's test jobs and they queue behind the merge train's and the pull
+# requests' CI, then runs about 19 minutes. Main's application runs share one
+# group with cancel-in-progress (#2438), so a newer push cancels the run waited
+# for and ends the wait at once, "never built", not at 45; a build not started
+# by 45 is stuck behind something, and the message says what was pending.
 WAIT="${CI_BUILD_WAIT:-2700}"
+# 90 minutes, for a build whose job is IN PROGRESS: it has a runner and is
+# building, so the wait goes on until it ends rather than giving up at
+# CI_BUILD_WAIT. Release 41992304818 (5 November, 08:09Z) failed "timed out
+# after 2700s" on a build that started at 08:53Z and succeeded at 09:12Z. 90
+# is a start at the 45-minute edge plus a 19-minute build, twice over: a build
+# still running then is hung, and this is the hard ceiling.
+WAIT_RUNNING="${CI_BUILD_WAIT_RUNNING:-5400}"
 # The run is created within seconds of the push that also started the release;
 # five minutes is for GitHub having a slow day, not for anything expected.
 APPEAR="${CI_BUILD_APPEAR:-300}"
 # 30s: each look is two API calls, and the token's budget is 1,000 an hour for
-# the repository. A 45-minute wait at this interval spends under 200.
+# the repository. A 45-minute wait at this interval spends under 200, and the
+# 90-minute ceiling for a build in progress under 400.
 POLL="${CI_BUILD_POLL:-30}"
 # Consecutive failed reads before giving up. A transient 502 is retried; an API
 # that stays unreadable is reported as unreadable, never as a missing build.
@@ -170,7 +181,7 @@ esac
   || die "no repository to ask: set GITHUB_REPOSITORY or pass --repo owner/name"
 [[ "${PREVIOUS}" -eq 0 || "${IF_ABSENT_SET}" -eq 0 ]] \
   || die "--previous never builds and never waits; it takes no --if-absent"
-for knob in WAIT APPEAR API_TRIES PREVIOUS_LOOK PREVIOUS_TRIES; do
+for knob in WAIT WAIT_RUNNING APPEAR API_TRIES PREVIOUS_LOOK PREVIOUS_TRIES; do
   name="CI_BUILD_${knob}"
   [[ "${knob}" != PREVIOUS_* ]] || name="CI_${knob}"
   [[ "${!knob}" =~ ^[0-9]+$ ]] || die "${name} must be a whole number of seconds (or tries, or runs), not '${!knob}'"
@@ -223,7 +234,8 @@ api() {
 # could not be read (the caller retries, and never reads that as "absent").
 #
 #   reuse    the record is at OUT
-#   wait     a build of this commit is queued or running
+#   wait     a build of this commit is queued or running (V_RUNNING=1 when
+#            its job is in progress: started and not finished)
 #   none     no run of WORKFLOW for this commit on BRANCH exists yet
 #   failed   the newest decided run's build failed
 #   unbuilt  the newest decided run never built this commit for ENV_NAME
@@ -233,10 +245,10 @@ api() {
 # run of it is still going. Otherwise a pending run is waited for, and only
 # when every run has decided does the newest decide the answer.
 # ---------------------------------------------------------------------------
-VERDICT=""; V_URL=""; V_WHY=""
+VERDICT=""; V_URL=""; V_WHY=""; V_RUNNING=0
 
 survey() {
-  VERDICT=""; V_URL=""; V_WHY=""
+  VERDICT=""; V_URL=""; V_WHY=""; V_RUNNING=0
   api "repos/${REPO}/actions/workflows/${WORKFLOW}/runs?head_sha=${SHA}&per_page=100" "${WORK}/runs.json" || return 1
   # "-" for an empty field: tab is IFS whitespace, so `read` would collapse two
   # adjacent tabs and shift every later field left by one.
@@ -252,7 +264,7 @@ survey() {
   fi
 
   local run_id run_status run_conclusion run_url state detail url
-  local pending=0 pending_url="" pending_why="" first="" first_url="" first_why=""
+  local pending=0 pending_url="" pending_why="" running=0 first="" first_url="" first_why=""
   while IFS=$'\t' read -r run_id run_status run_conclusion run_url; do
     api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" "${WORK}/jobs.json" || return 1
     # Matched by name, or by name + " / " -- how GitHub names a job that calls a
@@ -290,6 +302,9 @@ survey() {
         ;;
       running)
         pending=1; pending_url="${url}"; pending_why="${detail}"
+        # `detail` is the job's statuses: in_progress is a build that has a
+        # runner; queued, waiting or pending is one that has not started.
+        [[ ",${detail}," != *",in_progress,"* ]] || running=1
         continue ;;
       missing)
         if [[ "${run_status}" != completed ]]; then
@@ -320,7 +335,7 @@ survey() {
   done <"${WORK}/runs.tsv"
 
   if [[ "${pending}" -eq 1 ]]; then
-    VERDICT="wait"; V_URL="${pending_url}"; V_WHY="${pending_why}"
+    VERDICT="wait"; V_URL="${pending_url}"; V_WHY="${pending_why}"; V_RUNNING="${running}"
   else
     VERDICT="${first}"; V_URL="${first_url}"; V_WHY="${first_why}"
   fi
@@ -493,7 +508,14 @@ while :; do
     wait)
       note="waiting for ${V_URL} (${V_WHY})"
       if [[ "${note}" != "${LAST_NOTE}" ]]; then info "${note}"; LAST_NOTE="${note}"; fi
-      if [[ "${WAITED}" -ge "${WAIT}" ]]; then
+      # A build in progress is waited for to its end, up to WAIT_RUNNING; one
+      # queued or not started gives up at WAIT. A newer push cancelling it
+      # still ends the wait at once: the run then reads cancelled, "unbuilt".
+      if [[ "${V_RUNNING}" -eq 1 ]]; then
+        if [[ "${WAITED}" -ge "${WAIT_RUNNING}" ]]; then
+          fail_with "timed out after ${WAIT_RUNNING}s waiting for ${WORKFLOW}'s '${JOB}' job for ${SHA}, which is still in progress (${V_WHY}): ${V_URL}"
+        fi
+      elif [[ "${WAITED}" -ge "${WAIT}" ]]; then
         fail_with "timed out after ${WAIT}s waiting for ${WORKFLOW}'s '${JOB}' job for ${SHA}, which is still pending (${V_WHY}): ${V_URL}"
       fi ;;
     none)

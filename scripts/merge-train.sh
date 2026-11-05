@@ -20,8 +20,8 @@
 #     conflict, its closing keywords) is told why, once per head and reason.
 #   * A train in flight (an open pull request from `train/<id>`) is judged at
 #     its head: pending waits, unless it is older than
-#     MERGE_TRAIN_MAX_AGE_MINUTES, when it is abandoned; green lands; red is
-#     bisected.
+#     MERGE_TRAIN_MAX_AGE_MINUTES, when it is abandoned; green lands (unless
+#     the deploy-starvation hold below holds it); red is bisected.
 #   * No train in flight: up to MERGE_TRAIN_MAX_PRS (default 4) open pull
 #     requests that are green at head, labelled `ready`, mergeable, not drafts,
 #     not forks and aimed at main board a new one, oldest first, each still
@@ -63,6 +63,13 @@
 # which board the train after it. So a culprit is found in log2(N) trains and
 # the innocent land on the way.
 #
+# THE DEPLOY-STARVATION HOLD (issue 3336). A green train does not land while
+# nothing has deployed for MERGE_TRAIN_DEPLOY_RECENT_MINUTES (60) and main's
+# newest `build images` job is in progress: landing would cancel that build
+# (#2438), as it cancelled every one from 21:04Z on 4 November. It lands once
+# that job ends or after MERGE_TRAIN_DEPLOY_HOLD_MINUTES (25), holds once per
+# train, and says so once on the train (deploy_hold).
+#
 # DRY RUN. With vars.MERGE_TRAIN anything but `on`, or a dispatch with
 # dry_run, a train is built, pushed and judged, and nothing else: no landing,
 # no ejection, no comment or label on any pull request but the train's own,
@@ -95,6 +102,9 @@
 #       The state block a train pull request's body carries.
 #   tell --prs <gh pr list json>
 #       That telling step alone (GH_REPO, GH_TOKEN, RUN_URL).
+#   hold --train <N> --body <file> [--dry-run]
+#       The deploy-starvation hold alone, for green train <N> whose body is
+#       <file>: `hold\t<why>` or `merge\t<why>` (GH_REPO, GH_TOKEN, RUN_URL).
 #   tick
 #       One step of the train, as above. Needs GH_REPO, GH_TOKEN (the
 #       workflow's token: reads, comments, labels, statuses), APP_TOKEN (the
@@ -128,8 +138,25 @@ MERGEABLE_WAIT_SECONDS="${MERGE_TRAIN_MERGEABLE_WAIT_SECONDS:-3}"
 # application.yml), so a train still pending after that is not going to go
 # green by waiting, and every `ready` pull request behind it is held.
 MAX_AGE_MINUTES="${MERGE_TRAIN_MAX_AGE_MINUTES:-90}"
+# THE DEPLOY-STARVATION HOLD (issue 3336; deploy_hold). Twenty-five minutes:
+# `build images` runs about 19 (measured 5 November 2026), so a build already
+# in progress when the train goes green finishes inside it, and a hung one
+# holds the train for no longer than one of its own CI runs takes.
+HOLD_MINUTES="${MERGE_TRAIN_DEPLOY_HOLD_MINUTES:-25}"
+# Sixty minutes: a push normally deploys within one (its build starts 18 to 44
+# minutes after the push and runs about 19), so a main with no deploy in the
+# last hour is one whose builds are being cancelled, not one that is slow.
+DEPLOY_RECENT_MINUTES="${MERGE_TRAIN_DEPLOY_RECENT_MINUTES:-60}"
+# How many of main's newest release.yml runs are read for the last deploy, one
+# jobs read each: ten cover the last few hours of merges. Only a train that is
+# green while main's build is in progress reads them, once, so the hold costs
+# at most 12 reads per train and 2 per held tick, against the workflow token's
+# 1,000 an hour for the repository.
+RELEASE_LOOK="${MERGE_TRAIN_RELEASE_LOOK:-10}"
 
-usage() { sed -n '2,103p' "$0" | sed 's/^# \{0,1\}//'; }
+# The header, up to the first line that is not a comment: a hand-kept line
+# range drifts every time the header grows.
+usage() { awk 'NR > 1 { if (!/^#/) exit; print }' "$0" | sed 's/^# \{0,1\}//'; }
 
 is_number() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
@@ -489,7 +516,10 @@ cmd_compose() {
 # state
 # ---------------------------------------------------------------------------
 
-STATE_KEYS="id base head started dry_run prs suspects"
+# `hold` (`<epoch>:<sha>`: when the train began holding, and for which build of
+# main) is written only by deploy_hold, so a body without it reads as a train
+# that never held; every other key is required.
+STATE_KEYS="id base head started dry_run prs suspects hold"
 
 state_valid() {
   local key="$1" value="$2"
@@ -500,6 +530,7 @@ state_valid() {
     dry_run) [[ "${value}" == "true" || "${value}" == "false" ]] ;;
     prs) [[ "${value}" =~ ^[1-9][0-9]*:[0-9a-f]{40}( [1-9][0-9]*:[0-9a-f]{40})*$ ]] ;;
     suspects) is_number_list "${value}" ;;
+    hold) [[ "${value}" =~ ^[0-9]+:[0-9a-f]{40}$ ]] ;;
     *) return 1 ;;
   esac
 }
@@ -902,6 +933,145 @@ land_train() {
   return 0
 }
 
+last_deploy() {
+  # When a release on main last ran its deploy job successfully: sets
+  # LAST_DEPLOY (epoch, empty when none of RELEASE_LOOK runs did) and
+  # LAST_DEPLOY_AT (what to call it). Returns 1 when the API could not be read.
+  LAST_DEPLOY=""
+  LAST_DEPLOY_AT=""
+  local runs="${WORK}/hold-releases.json" jobs="${WORK}/hold-release-jobs.json" run status found
+  gh api "repos/${GH_REPO}/actions/workflows/release.yml/runs?branch=main&per_page=${RELEASE_LOOK}" \
+    >"${runs}" 2>/dev/null </dev/null || return 1
+  while IFS=$'\t' read -r run status; do
+    # A run that has not started has run no job.
+    case "${status}" in queued | pending | waiting | requested) continue ;; esac
+    gh api "repos/${GH_REPO}/actions/runs/${run}/jobs?per_page=100" >"${jobs}" 2>/dev/null </dev/null || return 1
+    # `deploy (<environment>)` on a push, as release.yml names it.
+    found="$(jq -r '[(.jobs // [])[]
+        | select((.name == "deploy" or (.name | startswith("deploy ("))) and .conclusion == "success" and .completed_at != null)
+        | .completed_at] | sort | last // empty' "${jobs}")" || return 1
+    if [[ -n "${found}" ]]; then
+      LAST_DEPLOY="$(jq -rn --arg t "${found}" '$t | fromdateiso8601')" || return 1
+      LAST_DEPLOY_AT="${found}"
+      return 0
+    fi
+  done < <(jq -r '(.workflow_runs // [])[] | [(.id | tostring), (.status // "-")] | @tsv' "${runs}")
+  LAST_DEPLOY_AT="before $(jq -r '[(.workflow_runs // [])[].created_at] | min // "any release on main"' "${runs}") (none of main's last ${RELEASE_LOOK} releases deployed)"
+  return 0
+}
+
+deploy_hold() {
+  # THE DEPLOY-STARVATION HOLD (issue 3336, 5 November 2026). Main's
+  # application runs share one group with cancel-in-progress (#2438), so each
+  # merge cancels the previous commit's running `build images` job and its
+  # release ends green, superseded. With the build starting 18 to 44 minutes
+  # after its push and running about 19, and a train landing every 20 to 40
+  # minutes, every build was cancelled: nothing deployed from 21:04Z on 4
+  # November. So a green train does not merge while BOTH hold:
+  #   * no release on main ran its deploy job successfully in the last
+  #     DEPLOY_RECENT_MINUTES;
+  #   * main's newest application.yml push run has a `build images` job IN
+  #     PROGRESS (a build not started is cancelled for free: never held for).
+  # It merges on a later tick once that job has finished (either way), or
+  # HOLD_MINUTES after the hold began, and it holds once per train: a hold is
+  # recorded in the train's state as `hold=<epoch>:<sha of the build>`, and a
+  # build of another commit is never held for again. A hold is said once, in
+  # the train's own comments. Anything it cannot read, or a hold it cannot
+  # record (the bound would not survive the tick), merges, as before the hold.
+  #
+  # $1 the train's pull request, $2 its body, $3 its `hold` ("" when it never
+  # held), $4 dry (true: say what it would hold; write and comment nothing).
+  # Sets HOLD (true|false) and HOLD_WHY.
+  local number="$1" body="$2" held="$3" dry="$4" now since="" held_sha=""
+  HOLD=false
+  HOLD_WHY=""
+  now="$(date +%s)"
+  if [[ -n "${held}" ]]; then
+    since="${held%%:*}"
+    held_sha="${held#*:}"
+    if [[ $((now - since)) -ge $((HOLD_MINUTES * 60)) ]]; then
+      HOLD_WHY="held $(((now - since) / 60)) minutes for main's build of ${held_sha:0:12}, past the ${HOLD_MINUTES}-minute bound: merging"
+      return 0
+    fi
+  fi
+  local runs="${WORK}/hold-build-runs.json" jobs="${WORK}/hold-build-jobs.json" run sha build
+  if ! gh api "repos/${GH_REPO}/actions/workflows/application.yml/runs?branch=main&event=push&per_page=1" \
+    >"${runs}" 2>/dev/null </dev/null; then
+    HOLD_WHY="could not read main's application.yml runs: not holding"
+    warn "${HOLD_WHY}"
+    return 0
+  fi
+  run="$(jq -r '(.workflow_runs // [])[0].id // empty' "${runs}")"
+  sha="$(jq -r '(.workflow_runs // [])[0].head_sha // empty' "${runs}")"
+  if [[ -z "${run}" ]] || ! is_sha "${sha}"; then
+    HOLD_WHY="main has no application.yml push run: nothing to hold for"
+    return 0
+  fi
+  if ! gh api "repos/${GH_REPO}/actions/runs/${run}/jobs?per_page=100" >"${jobs}" 2>/dev/null </dev/null; then
+    HOLD_WHY="could not read the jobs of main's application.yml run ${run}: not holding"
+    warn "${HOLD_WHY}"
+    return 0
+  fi
+  # Matched as ci-built-images.sh matches it: by name, or name + " / ".
+  build="$(jq -r '[(.jobs // [])[] | select(.name == "build images" or (.name | startswith("build images / ")))]
+                  | if length == 0 then "absent" else .[0].status // "absent" end' "${jobs}")"
+  if [[ "${build}" != "in_progress" ]]; then
+    if [[ -n "${held}" ]]; then
+      HOLD_WHY="main's build of ${held_sha:0:12} has finished: merging"
+    else
+      HOLD_WHY="main's newest build (${sha:0:12}) is not in progress (${build}): nothing to hold for"
+    fi
+    return 0
+  fi
+  if [[ -n "${held}" ]]; then
+    if [[ "${held_sha}" != "${sha}" ]]; then
+      HOLD_WHY="this train already held once, for main's build of ${held_sha:0:12}, and never holds twice: merging"
+      return 0
+    fi
+    HOLD=true
+    HOLD_WHY="still holding for main's build of ${sha:0:12}, $(((now - since) / 60)) of ${HOLD_MINUTES} minutes"
+    return 0
+  fi
+  if ! last_deploy; then
+    HOLD_WHY="could not read release.yml's runs on main: not holding"
+    warn "${HOLD_WHY}"
+    return 0
+  fi
+  if [[ -n "${LAST_DEPLOY}" && $((now - LAST_DEPLOY)) -lt $((DEPLOY_RECENT_MINUTES * 60)) ]]; then
+    HOLD_WHY="a release deployed at ${LAST_DEPLOY_AT}, within the last ${DEPLOY_RECENT_MINUTES} minutes: not holding"
+    return 0
+  fi
+  HOLD_WHY="holding the merge so main's build of ${sha:0:12} can finish and deploy; nothing has deployed since ${LAST_DEPLOY_AT}"
+  if [[ "${dry}" == "true" ]]; then
+    HOLD=true
+    return 0
+  fi
+  # Record it first: a hold the next tick cannot see has no bound.
+  local edited="${WORK}/hold-body.md"
+  awk -v open_mark="${STATE_OPEN}" -v close_mark="${STATE_CLOSE}" -v line="hold=${now}:${sha}" '
+    { sub(/\r$/, "") }
+    $0 == open_mark { inside = 1; print; next }
+    inside && /^hold=/ { next }
+    inside && $0 == close_mark { inside = 0; print line }
+    { print }' "${body}" >"${edited}"
+  if ! jq -n --rawfile b "${edited}" '{body: $b}' \
+    | gh api -X PATCH "repos/${GH_REPO}/pulls/${number}" --input - >/dev/null 2>&1; then
+    HOLD_WHY="could not record a hold in train #${number}'s state, so its ${HOLD_MINUTES}-minute bound would not survive the tick: not holding"
+    warn "${HOLD_WHY}"
+    return 0
+  fi
+  local note="${WORK}/hold-${number}.md"
+  {
+    echo "**Green, and ${HOLD_WHY}.** Each merge cancels main's running \`build images\` job (#2438), so merging now would cancel this one too, as every one has been cancelled since then (issue 3336)."
+    echo
+    echo "This train merges on a later tick once that job has finished, or ${HOLD_MINUTES} minutes from now, whichever comes first; it holds only once."
+    echo "(scripts/merge-train.sh, run ${RUN_URL})"
+  } >"${note}"
+  comment_on "${number}" "${note}" || warn "could not say on #${number} why it holds"
+  HOLD=true
+  return 0
+}
+
 handle_train() {
   local number="$1" train_on="$2"
   local body="${WORK}/train-${number}.md" branch head_now
@@ -961,10 +1131,21 @@ handle_train() {
       fi
       ;;
     green)
+      # The deploy-starvation hold (deploy_hold), before anything lands.
+      local held=""
+      held="$(cmd_state_get --body "${body}" --key hold 2>/dev/null)" || held=""
+      deploy_hold "${number}" "${body}" "${held}" "${dry}"
       if [[ "${dry}" == "true" ]]; then
-        finish_train "${number}" "${branch}" "Green. **Dry run:** nothing landed. A live train would have landed $(hash_list "${train_prs}"), each squashed under its own title."
+        local would=""
+        [[ "${HOLD}" != "true" ]] || would=" A live train would first have held its merge: ${HOLD_WHY}."
+        finish_train "${number}" "${branch}" "Green. **Dry run:** nothing landed. A live train would have landed $(hash_list "${train_prs}"), each squashed under its own title.${would}"
         return 0
       fi
+      if [[ "${HOLD}" == "true" ]]; then
+        summary "train ${id} ($(hash_list "${train_prs}")) is green; ${HOLD_WHY}"
+        return 0
+      fi
+      [[ -z "${HOLD_WHY}" ]] || info "${HOLD_WHY}"
       local rc=0
       land_train "${base}" "${head}" "${pairs}" "${id}" || rc=$?
       case "${rc}" in
@@ -1029,6 +1210,42 @@ cmd_tell() {
   tell_skipped "${prs}"
 }
 
+cmd_hold() {
+  # The deploy-starvation hold alone, for one green train (deploy_hold):
+  # prints `hold\t<why>` or `merge\t<why>`. Needs GH_REPO, GH_TOKEN (reads,
+  # the train's body and its comment) and RUN_URL. --dry-run writes nothing.
+  local number="" body="" dry=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --train) [[ $# -ge 2 ]] || die "--train needs a value"; number="$2"; shift 2 ;;
+      --body) [[ $# -ge 2 ]] || die "--body needs a value"; body="$2"; shift 2 ;;
+      --dry-run) dry=true; shift ;;
+      *) die "hold: unknown argument: $1" ;;
+    esac
+  done
+  is_number "${number}" || die "hold: --train is not a pull request number: ${number}"
+  [[ -f "${body}" ]] || die "hold: no --body file"
+  : "${GH_REPO:?GH_REPO is required}"
+  : "${RUN_URL:?RUN_URL is required}"
+  hold_knobs_valid
+  WORK="$(mktemp -d)"
+  trap 'rm -rf "${WORK}"' EXIT
+  local held=""
+  held="$(cmd_state_get --body "${body}" --key hold 2>/dev/null)" || held=""
+  deploy_hold "${number}" "${body}" "${held}" "${dry}"
+  if [[ "${HOLD}" == "true" ]]; then
+    printf 'hold\t%s\n' "${HOLD_WHY}"
+  else
+    printf 'merge\t%s\n' "${HOLD_WHY}"
+  fi
+}
+
+hold_knobs_valid() {
+  is_number "${HOLD_MINUTES}" || die "MERGE_TRAIN_DEPLOY_HOLD_MINUTES is not a positive number: ${HOLD_MINUTES}"
+  is_number "${DEPLOY_RECENT_MINUTES}" || die "MERGE_TRAIN_DEPLOY_RECENT_MINUTES is not a positive number: ${DEPLOY_RECENT_MINUTES}"
+  is_number "${RELEASE_LOOK}" || die "MERGE_TRAIN_RELEASE_LOOK is not a positive number: ${RELEASE_LOOK}"
+}
+
 cmd_tick() {
   : "${GH_REPO:?GH_REPO is required}"
   : "${GH_TOKEN:?GH_TOKEN is required}"
@@ -1038,6 +1255,7 @@ cmd_tick() {
   : "${RUN_URL:?RUN_URL is required}"
   is_number "${MAX_PRS}" || die "MERGE_TRAIN_MAX_PRS is not a positive number: ${MAX_PRS}"
   is_number "${MAX_AGE_MINUTES}" || die "MERGE_TRAIN_MAX_AGE_MINUTES is not a positive number: ${MAX_AGE_MINUTES}"
+  hold_knobs_valid
   WORK="$(mktemp -d)"
   trap 'rm -rf "${WORK}"' EXIT
 
@@ -1108,6 +1326,7 @@ main() {
     select) cmd_select "$@" ;;
     skips) cmd_skips "$@" ;;
     tell) cmd_tell "$@" ;;
+    hold) cmd_hold "$@" ;;
     judge) cmd_judge "$@" ;;
     plan) cmd_plan "$@" ;;
     compose) cmd_compose "$@" ;;
