@@ -130,15 +130,15 @@ resource "google_service_account" "voice" {
 # platform's repository, logging.logWriter, monitoring.metricWriter) when the
 # machine is on. No import block: no root ever made it.
 #
-# Its id is spelled here and in voice_speech.tf's local.speech_email rather
-# than in modules/service_account_ids, which this lane's territory does not
-# include; the pull request asks for the move. Being off that module's list,
-# it gets no serviceAccountAdmin for the deployer (deployer_service_accounts.tf)
-# and is not on deployer.tf's actAs list; the one grant the deployer needs on
-# it, actAs to attach it to the machine, is made below instead.
+# Its id is modules/service_account_ids' speech_id, which voice_speech.tf
+# reads too (owner's pick, 2026-11-05: the ids move to the id modules). It is
+# not on that module's bootstrap_platform list, so it gets no
+# serviceAccountAdmin for the deployer (deployer_service_accounts.tf) and is
+# not on deployer.tf's actAs list; the one grant the deployer needs on it,
+# actAs to attach it to the machine, is made below instead.
 resource "google_service_account" "speech" {
   project      = var.project_id
-  account_id   = "swarm-speech"
+  account_id   = module.service_account_ids.speech_id
   display_name = "Swarm Speech"
   description  = "managed-by=swarm-terraform; Voice it's speech machine (one stopped L4 VM). No project roles here; terraform/infra/voice_speech.tf grants its image read, log write and metric write."
 }
@@ -150,10 +150,11 @@ resource "google_service_account" "speech" {
 # server digest while it is stopped (§4.2 step 1, §11.4); getSerialPortOutput
 # to read a failed boot. No create, no delete, no setIamPolicy, no disk or
 # network permission. Defined here because terraform/infra may not define or
-# read a role (#79).
+# read a role (#79); its id is modules/custom_role_ids' speech_operator, the
+# string voice_speech.tf binds.
 resource "google_project_iam_custom_role" "speech_operator" {
   project = var.project_id
-  role_id = "swarmSpeechOperator"
+  role_id = module.custom_role_ids.ids["speech_operator"]
   title   = "Swarm Speech Operator"
 
   description = "managed-by=swarm-terraform; swarm-api starts, stops, reads and applies settings to Voice it's speech machine. Granted on that instance only."

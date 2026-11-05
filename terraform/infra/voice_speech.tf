@@ -39,7 +39,9 @@
 # THE ACCOUNT. `swarm-speech` is made by terraform/bootstrap
 # (platform_service_accounts.tf) with its operator role and the two actAs
 # grants on it (the release deployer's, to attach it here; swarm-api's, row
-# I2). This root reads it and never makes it.
+# I2). This root reads it and never makes it. Both roots take the account id
+# from modules/service_account_ids (speech_id) and the role id from
+# modules/custom_role_ids (speech_operator).
 #
 # OFF until both `voice_speech.enabled` and `voice_it = "on"`. Every
 # environment's tfvars leaves it off, so merging this makes nothing. Turning it
@@ -49,9 +51,10 @@
 locals {
   voice_speech_on = var.voice_speech.enabled && var.voice_it == "on"
 
-  # The machine's identity, spelled, not read, so the plan knows it. The id is
-  # the one terraform/bootstrap gives the account.
-  speech_email  = "swarm-speech@${var.project_id}.iam.gserviceaccount.com"
+  # The machine's identity, derived, not read, so the plan knows it: the id is
+  # modules/service_account_ids' speech_id, the one terraform/bootstrap gives
+  # the account.
+  speech_email  = "${module.service_account_ids.speech_id}@${var.project_id}.iam.gserviceaccount.com"
   speech_member = "serviceAccount:${local.speech_email}"
 
   # The firewall pair's target, and the machine's only network tag.
@@ -63,9 +66,18 @@ locals {
   speech_labels = merge(local.labels, { "component" = "voice-speech" })
 
   # The custom role terraform/bootstrap defines (platform_service_accounts.tf,
-  # google_project_iam_custom_role.speech_operator). A plain string: this root
-  # may not read a role (#79, modules/custom_role_ids).
-  speech_operator_role = "projects/${var.project_id}/roles/swarmSpeechOperator"
+  # google_project_iam_custom_role.speech_operator), by the name both roots
+  # read from modules/custom_role_ids. A plain string: this root may not read a
+  # role (#79).
+  speech_operator_role = module.speech_role_ids.names["speech_operator"]
+}
+
+# The custom role ids both roots spell from one place. No resource and no data
+# source: plain strings, known at plan.
+module "speech_role_ids" {
+  source = "../modules/custom_role_ids"
+
+  project_id = var.project_id
 }
 
 # The account terraform/bootstrap made. A plan against a project whose

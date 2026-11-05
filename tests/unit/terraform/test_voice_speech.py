@@ -236,9 +236,9 @@ def test_swarm_api_operates_each_instance_only(speech: str) -> None:
     assert re.search(r"instance_name\s*=\s*google_compute_instance\.speech\[0\]\.name", body)
     assert re.search(r"role\s*=\s*local\.speech_operator_role", body)
     assert re.search(r'member\s*=\s*module\.iam\.service_account_members\["swarm-api"\]', body)
-    assert re.search(
-        r'speech_operator_role\s*=\s*"projects/\$\{var\.project_id\}/roles/swarmSpeechOperator"', speech
-    )
+    assert re.search(r'speech_operator_role\s*=\s*module\.speech_role_ids\.names\["speech_operator"\]', speech)
+    ids = _block(speech, r'^module\s+"speech_role_ids"')
+    assert re.search(r'source\s*=\s*"\.\./modules/custom_role_ids"', ids)
 
 
 def test_no_project_wide_compute_grant(speech: str) -> None:
@@ -270,14 +270,14 @@ def test_the_machine_account_holds_exactly_its_three_rows(speech: str) -> None:
 def test_bootstrap_makes_the_account_and_the_operator_role() -> None:
     text = _code(BOOTSTRAP_TF.read_text())
     sa = _resource(text, "google_service_account", "speech")
-    assert re.search(r'account_id\s*=\s*"swarm-speech"', sa)
+    assert re.search(r"account_id\s*=\s*module\.service_account_ids\.speech_id", sa)
     assert re.search(r'description\s*=\s*"managed-by=swarm-terraform;', sa)
     desc = re.search(r'description\s*=\s*"([^"]*)"', sa).group(1)
     assert len(desc) <= 256
     assert "create_ignore_already_exists" not in sa
 
     role = _resource(text, "google_project_iam_custom_role", "speech_operator")
-    assert re.search(r'role_id\s*=\s*"swarmSpeechOperator"', role)
+    assert re.search(r'role_id\s*=\s*module\.custom_role_ids\.ids\["speech_operator"\]', role)
     perms = set(re.findall(r'"([a-z]+\.[a-zA-Z.]+)"', role.split("permissions", 1)[1]))
     assert perms == OPERATOR_PERMISSIONS, perms
 
@@ -298,7 +298,39 @@ def test_bootstrap_makes_the_account_and_the_operator_role() -> None:
 def test_infra_reads_the_account_and_never_makes_it(speech: str) -> None:
     assert '"google_service_account"' not in "".join(f'"{t}"' for t, _ in _resource_types(speech))
     assert re.search(r'^data\s+"google_service_account"\s+"speech"', speech, re.M)
-    assert re.search(r'speech_email\s*=\s*"swarm-speech@\$\{var\.project_id\}\.iam\.gserviceaccount\.com"', speech)
+    assert re.search(
+        r'speech_email\s*=\s*"\$\{module\.service_account_ids\.speech_id\}@\$\{var\.project_id\}'
+        r'\.iam\.gserviceaccount\.com"',
+        speech,
+    )
+
+
+# --- the ids, spelled once (owner's pick, 2026-11-05) -------------------------
+
+
+def test_the_ids_are_spelled_in_the_id_modules() -> None:
+    accounts = _code((TF / "modules" / "service_account_ids" / "main.tf").read_text())
+    assert re.search(r'^\s*speech_id\s*=\s*"swarm-speech"', accounts, re.M)
+    outputs = _code((TF / "modules" / "service_account_ids" / "outputs.tf").read_text())
+    assert re.search(r'^output\s+"speech_id"', outputs, re.M)
+    # Off bootstrap_platform, so the deployer holds no serviceAccountAdmin on it.
+    platform = re.search(r"bootstrap_platform\s*=\s*sort\(concat\((.*?)\)\)", accounts, re.S)
+    assert platform and "voice_id" in platform.group(1)
+    assert "speech_id" not in platform.group(1)
+
+    roles = _code((TF / "modules" / "custom_role_ids" / "main.tf").read_text())
+    assert re.search(r'^\s*speech_operator\s*=\s*"swarmSpeechOperator\$\{local\.role_suffix\}"', roles, re.M)
+
+
+@pytest.mark.parametrize("path", [SPEECH_TF, BOOTSTRAP_TF], ids=lambda p: p.name)
+def test_no_lane_file_spells_the_ids(path: Path) -> None:
+    code = _code(path.read_text())
+    assert "swarmSpeechOperator" not in code
+    # The audience string "swarm-speech" and the metadata keys
+    # "swarm-speech-*" are not the account id; an account id is followed by @
+    # or stands as a whole quoted string after account_id.
+    assert "swarm-speech@" not in code
+    assert not re.search(r'account_id\s*=\s*"swarm-speech"', code)
 
 
 # --- the samples' TTL (§12.3) ---------------------------------------------------
