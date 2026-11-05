@@ -1749,7 +1749,10 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
       the worker validated, `result_summary.questions`, at most
       `MAX_ARTIFACT_QUESTIONS`) with no stored answer, whose words are in
       that artifact and not served here; the task's page reads them
-      (`GET /v1/tasks/{id}/questions`).
+      (`GET /v1/tasks/{id}/questions`). Counted by index, as the artifact is
+      not read here: an answer is not checked against the question it
+      answered (`agent_questions.answers_to`) -- a follow-up lane, owner
+      pick on #3355, 2026-11-05.
     * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
     """
     from swarm_common.states import TERMINAL_STATES

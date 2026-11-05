@@ -818,7 +818,10 @@ def unanswered_indices(count: int, metadata: dict[str, Any] | None,
     Given the `questions` as served, an answer to a different question at an
     index leaves it unanswered (`answers_to`). Without them -- a caller that
     reads only the task document, not its questions file -- a stored answer
-    is counted by its index alone, as it always was.
+    is counted by its index alone, as it always was: `open_question_tasks`,
+    `codec.step_needs`'s `questions_unread` and the bell's question item.
+    Making those question-aware is a follow-up lane (owner pick on #3355,
+    2026-11-05; docs/notifications.md), not this change.
     """
     if questions is not None:
         answered = answers_to(questions, metadata)
@@ -875,6 +878,9 @@ def open_question_tasks(
             continue
         if claude_session_of(task, masking_for(task, warm=False)) != session:
             continue
+        # By index: the questions file is not read here, so an answer to an
+        # earlier attempt's question at an index counts for it; question-aware
+        # is a follow-up lane (owner pick on #3355, 2026-11-05).
         if unanswered(question_count(task.result_summary), task.metadata) == 0:
             continue
         found.append(task)
