@@ -1,6 +1,8 @@
 # Service API enablement.
 #
-# All 18 APIs this platform needs are already enabled on saga-agents-staging.
+# All 18 APIs this platform needed before aiplatform.googleapis.com are already
+# enabled on saga-agents-staging; aiplatform (Claude Haiku on Vertex AI writing
+# generated workflow descriptions, swarm_api.wfdescription) is enabled here.
 # These resources exist so the dependency graph is explicit and so a fresh
 # project can be stood up from zero -- not to flip anything off. Both disable
 # flags are pinned false by variable validation because this project is shared.

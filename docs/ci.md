@@ -2463,7 +2463,7 @@ whole expression is matched, and the list is parsed, for that reason. Before
   show that the route is shut: what shuts it is the binding's absence, since
   the owner's bootstrap apply of 2026-09-28 destroyed it.
 * **Who a listed role goes to.** `hasOnly` limits which roles change, not whose
-  grant changes. CI can still grant any of the 15, unconditioned, to
+  grant changes. CI can still grant any of the 16, unconditioned, to
   anyone.
 * **Routes through other identities.** Routes 1 and 3 in
   [the table above](#what-the-view-does-not-bound-the-deployer-can-reach-every-log)

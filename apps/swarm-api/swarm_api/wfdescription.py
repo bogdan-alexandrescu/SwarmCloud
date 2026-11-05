@@ -26,11 +26,13 @@ text):
 
 * the model, Claude Haiku on Vertex AI (`VertexSummariser`), the owner's
   pick on #3346 (2026-11-05), behind the switch
-  `SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex`. It ships OFF: Terraform sets the
-  switch to "off" on swarm-api (terraform/infra/locals.tf), and unset -- a
-  unit test, a local run -- is off too. It turns to "vertex" once the owner
-  grants Vertex AI: swarm-api's account `roles/aiplatform.user`, the Vertex
-  AI API enabled and Anthropic's Model Garden terms accepted;
+  `SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex`. Terraform sets it on swarm-api
+  (terraform/infra/locals.tf), grants swarm-api's account
+  `roles/aiplatform.user` (modules/iam/bindings.tf) and enables the Vertex AI
+  API (main.tf; the installer's `api.aiplatform`). Unset -- a unit test, a
+  local run -- it is off. Anthropic's Model Garden terms are the project
+  owner's to accept; until they are, the call is refused and the fallback
+  writes, the row saying `extractive:model_vertex_http_<status>`;
 * the extractive fallback: the first sentence of each brief, joined and cut at
   a word to 600 characters. It writes the description while the switch is
   off, and when the model's call fails, times out, is refused or answers with
@@ -210,7 +212,7 @@ class _Spent(SummaryRefused):
 
 
 def summariser_from_env(environ: Mapping[str, str], *, project_id: str) -> Summariser | None:
-    """The model behind the switch, or None while it is off (the default)."""
+    """The model behind the switch, or None while it is off (unset)."""
     if (environ.get(MODEL_SWITCH_ENV) or "").strip().lower() != MODEL_SWITCH_VERTEX or not project_id:
         return None
     return VertexSummariser(

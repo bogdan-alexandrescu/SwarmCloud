@@ -22,6 +22,9 @@ module "project_services" {
   project_id = var.project_id
 
   services = [
+    # Vertex AI: Claude Haiku writes generated workflow descriptions
+    # (swarm_api.wfdescription).
+    "aiplatform.googleapis.com",
     "artifactregistry.googleapis.com",
     "cloudidentity.googleapis.com",
     "cloudresourcemanager.googleapis.com",

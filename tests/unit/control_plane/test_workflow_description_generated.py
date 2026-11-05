@@ -2,7 +2,7 @@
 
 When a workflow arrives with no `metadata.description`, swarm-api writes one
 after the submission returns: Claude Haiku on Vertex AI behind
-SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex (Terraform ships it "off"), else the first
+SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex (Terraform sets it; unset is off), else the first
 sentence of each masked step brief, marked `description_source: "generated"`
 either way. One ledger row per workflow counts the call and caps it at one.
 
@@ -306,21 +306,19 @@ def test_the_switch_is_off_unless_it_says_vertex():
 TERRAFORM = Path(__file__).resolve().parents[3] / "terraform"
 
 
-def test_terraform_ships_the_switch_off_for_swarm_api():
-    """The owner has not yet granted Vertex AI: every deployment writes the extract.
+def test_terraform_turns_the_model_on_for_swarm_api():
+    """The owner picked Claude Haiku on Vertex AI (#3346): every deployment runs it.
 
-    Terraform sets the switch to "off" on swarm-api, and nothing grants the
-    account a role to call the model or enables the API it calls; the patch
-    that turns it to "vertex" brings all three."""
+    The switch on swarm-api, the account's role to call it and the API it calls;
+    one missing and every workflow falls back to the extract."""
     locals_tf = (TERRAFORM / "infra" / "locals.tf").read_text()
     api_env = locals_tf.split('"swarm-api" = merge(', 1)[1].split('\n    "swarm-', 1)[0]
-    assert re.search(rf'^\s*{MODEL_SWITCH_ENV}\s*=\s*"off"\s*$', api_env, re.MULTILINE)
-    assert summariser_from_env({MODEL_SWITCH_ENV: "off"}, project_id="proj-1") is None
+    assert re.search(rf'^\s*{MODEL_SWITCH_ENV}\s*=\s*"vertex"\s*$', api_env, re.MULTILINE)
     bindings = (TERRAFORM / "modules" / "iam" / "bindings.tf").read_text()
     api_roles = bindings.split('"swarm-api" = concat(', 1)[1].split("])", 1)[0]
-    assert '"roles/aiplatform.user"' not in api_roles
+    assert '"roles/aiplatform.user"' in api_roles
     services = (TERRAFORM / "infra" / "main.tf").read_text().split('module "project_services"', 1)[1]
-    assert '"aiplatform.googleapis.com"' not in services.split("]", 1)[0]
+    assert '"aiplatform.googleapis.com"' in services.split("]", 1)[0]
 
 
 # --------------------------------------------------------------------------
