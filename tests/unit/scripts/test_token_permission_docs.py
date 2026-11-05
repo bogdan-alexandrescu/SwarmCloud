@@ -28,12 +28,6 @@ from pathlib import Path
 
 import pytest
 
-from swarm_api.forgeperms import (
-    ACTIONS_SECRETS_REQUIREMENTS,
-    REQUIRED,
-    WORKFLOW_FILES_REQUIREMENT,
-)
-
 REPO = Path(__file__).resolve().parents[3]
 DOCS = {
     "multi-tenancy": REPO / "docs" / "multi-tenancy.md",
@@ -96,8 +90,18 @@ def _mentions(doc: str) -> list[tuple[str, str | None, str]]:
     return found
 
 
-def _known() -> dict[str, str]:
-    reqs = (*REQUIRED, WORKFLOW_FILES_REQUIREMENT, *ACTIONS_SECRETS_REQUIREMENTS)
+@pytest.fixture
+def forgeperms():
+    # Imported here, not at module top: swarm_api pulls in the service stack,
+    # and every collection of tests/unit/scripts would pay for it
+    # (test_collection_stays_cheap).
+    from swarm_api import forgeperms
+    return forgeperms
+
+
+def _known(forgeperms) -> dict[str, str]:
+    reqs = (*forgeperms.REQUIRED, forgeperms.WORKFLOW_FILES_REQUIREMENT,
+            *forgeperms.ACTIONS_SECRETS_REQUIREMENTS)
     return {r.permission: r.access for r in reqs}
 
 
@@ -116,18 +120,18 @@ def test_every_token_permission_statement_asks_actions_read_and_write(doc):
 
 
 @pytest.mark.parametrize("doc", sorted(DOCS))
-def test_every_level_a_doc_names_matches_forgeperms(doc):
-    known = _known()
+def test_every_level_a_doc_names_matches_forgeperms(doc, forgeperms):
+    known = _known(forgeperms)
     wrong = [f"{name}: doc {level}, forgeperms {known[name]} -- {s[:120]}"
              for name, level, s in _mentions(doc)
              if name in known and _RANK[level] != _RANK[known[name]]]
     assert not wrong, f"{doc} disagrees with forgeperms: {wrong}"
 
 
-def test_actions_requirement_is_read_and_write():
-    assert ("actions", "write") in {(r.permission, r.access) for r in REQUIRED}
+def test_actions_requirement_is_read_and_write(forgeperms):
+    assert ("actions", "write") in {(r.permission, r.access) for r in forgeperms.REQUIRED}
 
 
-def test_the_multi_tenancy_table_names_every_required_permission():
+def test_the_multi_tenancy_table_names_every_required_permission(forgeperms):
     named = {name for name, _, _ in _mentions("multi-tenancy")}
-    assert {r.permission for r in REQUIRED} <= named
+    assert {r.permission for r in forgeperms.REQUIRED} <= named
