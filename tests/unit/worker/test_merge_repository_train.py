@@ -341,15 +341,23 @@ def test_the_re_board_waits_behind_the_fencing_recheck(tmp_path):
     assert _labelled(world) == [] and world.merge_calls() == []
 
 
-def test_a_cancelled_step_does_not_re_board(tmp_path):
+def test_a_step_cancelled_before_the_re_board_labels_nothing(tmp_path):
+    """Cancelled after the step's first recheck, at the re-board's own."""
     world = MergeWorld(tmp_path)
     _switch(world, "on")
     _parked_on_train(world)
     _comments(world, ("github-actions[bot]", EJECTION))
-    world.cancel = True
+    recheck = world.recheck
+
+    def cancelled_after_the_first() -> bool:
+        world.cancel = world.rechecks >= 1
+        return recheck()
+
+    world.recheck = cancelled_after_the_first  # type: ignore[method-assign]
     outcome = merge.run_merge(world.context())
 
-    assert outcome.state is not TaskState.PARKED
+    assert world.rechecks == 2
+    assert outcome.state is TaskState.CANCELLED, outcome.message
     assert _labelled(world) == [] and world.merge_calls() == []
 
 
