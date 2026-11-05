@@ -194,6 +194,16 @@ def _csv(raw: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(p.strip().lower() for p in raw.split(",") if p.strip()))
 
 
+def _env(name: str, environ: Mapping[str, str] | None = None) -> str:
+    """One stripped variable, from `environ` (the tests') or the process's.
+
+    A module-level reader with the key as its first argument, so the
+    environment-parity check (scripts/lib/check-env-parity.sh) sees each read.
+    """
+    env = os.environ if environ is None else environ
+    return env.get(name, "").strip()
+
+
 @dataclass(frozen=True)
 class SpeechConfig:
     """Where the machine is and how it is reached. Empty `address` means the
@@ -226,14 +236,14 @@ class SpeechConfig:
         env = os.environ if environ is None else environ
         zones = cat.configured_zones(env) if env.get(cat.ZONES_ENV, "").strip() else ()
         return cls(
-            project=env.get("SWARM_SPEECH_PROJECT", "").strip(),
+            project=_env("SWARM_SPEECH_PROJECT", env),
             zone=zones[0] if zones else "",
-            instance=env.get("SWARM_SPEECH_INSTANCE", "").strip(),
-            address=env.get("SWARM_SPEECH_ADDR", "").strip(),
-            image=env.get("SWARM_SPEECH_IMAGE", "").strip(),
-            audience=env.get("SWARM_SPEECH_AUDIENCE", "").strip() or "swarm-speech",
-            sweep_audience=env.get("SWARM_SPEECH_SWEEP_AUDIENCE", "").strip(),
-            sweep_callers=_csv(env.get("SWARM_SPEECH_SWEEP_CALLERS", "")),
+            instance=_env("SWARM_SPEECH_INSTANCE", env),
+            address=_env("SWARM_SPEECH_ADDR", env),
+            image=_env("SWARM_SPEECH_IMAGE", env),
+            audience=_env("SWARM_SPEECH_AUDIENCE", env) or "swarm-speech",
+            sweep_audience=_env("SWARM_SPEECH_SWEEP_AUDIENCE", env),
+            sweep_callers=_csv(_env("SWARM_SPEECH_SWEEP_CALLERS", env)),
         )
 
 
