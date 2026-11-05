@@ -69,7 +69,7 @@
   border-radius: 50%;
   background: none;
   color: var(--text-dim);
-  font: italic 600 11px/1 var(--font);
+  font: italic 600 var(--t-micro)/var(--lh-flush) var(--font);
   vertical-align: middle;
   cursor: help;
 }
