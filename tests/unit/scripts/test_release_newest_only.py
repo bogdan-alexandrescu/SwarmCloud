@@ -129,10 +129,11 @@ def _push_context(superseded: str) -> dict[str, str]:
     }
 
 
-@pytest.mark.parametrize("job_id", ["approval", "plugin-tag"])
-def test_a_superseded_release_approves_promotes_and_tags_nothing(job_id):
+@pytest.mark.parametrize("job_id", ["approval"])
+def test_a_superseded_release_approves_and_promotes_nothing(job_id):
     """`approval` gates promote, the applies and the deploy (test_release_prod_gate.py).
-    MUTATION: drop the superseded clause from either condition."""
+    The plugin tag is application.yml's now; test_plugin_tag.py holds that a
+    superseded commit tags nothing. MUTATION: drop the superseded clause."""
     condition = _load_workflow("release.yml")["jobs"][job_id]["if"]
     assert _evaluate(condition, **_push_context("false")) is True, f"{job_id} no longer runs for the newest commit"
     assert _evaluate(condition, **_push_context("true")) is False, f"{job_id} runs for a release a newer commit superseded"
