@@ -18,6 +18,8 @@ No credentials, no network, no emulator.
 
 from __future__ import annotations
 
+import json
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -30,7 +32,7 @@ TASK = "task_bridged"
 OWNER = "alice@example.com"
 
 
-def _wait(*, bridged: bool, asked: datetime) -> dict:
+def _wait(*, bridged: bool, asked: datetime, skill: object = None) -> dict:
     wait = {
         "questions": [{
             "question": "Which database should the plan use?",
@@ -54,10 +56,12 @@ def _wait(*, bridged: bool, asked: datetime) -> dict:
             "source_revision": "a" * 40,
             "questions": [],
         }
+        if skill is not None:
+            wait["bridge"]["skill"] = skill
     return wait
 
 
-def _parked(db, *, bridged: bool = True, parked_at: datetime | None = None) -> dict:
+def _parked(db, *, bridged: bool = True, parked_at: datetime | None = None, skill: object = None) -> dict:
     seed_tenant(db, "eng")
     moment = parked_at or datetime.now(timezone.utc)
     doc = seed_task(db, task_id=TASK, tenant_id="eng", state="PARKED", park_reason="HUMAN_REQUIRED",
@@ -66,7 +70,7 @@ def _parked(db, *, bridged: bool = True, parked_at: datetime | None = None) -> d
     doc["attempt_count"] = 1
     doc["updated_at"] = moment
     doc["blocked_by"] = [{"reason": "HUMAN_REQUIRED", "park_phase": "question_wait",
-                          "question_wait": _wait(bridged=bridged, asked=moment)}]
+                          "question_wait": _wait(bridged=bridged, asked=moment, skill=skill)}]
     return doc
 
 
@@ -161,3 +165,29 @@ def test_a_bridged_wait_is_served_with_its_24_hour_deadline(client, db) -> None:
     assert body["status"] == "ok", body
     assert body["waiting"]["open"] is True
     assert datetime.fromisoformat(body["waiting"]["expires_at"]) == asked + timedelta(hours=24)
+
+
+# -- 3. the skill that asked ------------------------------------------------------
+
+def test_a_bridged_wait_is_served_with_the_skill_that_asked(client, db) -> None:
+    """The owner's pick of 4 November 2026: the worker records the last Skill
+    call before the question, and the interview page names it."""
+    secret = "gh" + "p_" + secrets.token_hex(18)
+    _parked(db, skill="gstack:office-hours")
+
+    body = client.get(f"/v1/tasks/{TASK}/questions", headers=auth_header("alice")).json()
+
+    assert body["waiting"]["skill"] == "gstack:office-hours"
+
+    _parked(db, skill=f"gstack:leak {secret}")
+    body = client.get(f"/v1/tasks/{TASK}/questions", headers=auth_header("alice")).json()
+    assert secret not in json.dumps(body["waiting"])
+
+
+def test_a_wait_with_no_recorded_skill_serves_none(client, db) -> None:
+    # A park recorded before the worker wrote the skill, a non-text one, and
+    # an ordinary question wait: the page then says the skill is not known.
+    for kwargs in ({}, {"skill": 7}, {"bridged": False}):
+        _parked(db, **kwargs)
+        body = client.get(f"/v1/tasks/{TASK}/questions", headers=auth_header("alice")).json()
+        assert body["waiting"]["skill"] is None, kwargs
