@@ -532,8 +532,10 @@ REPOSITORY_TRAIN_EJECTED = "**Ejected from the merge train"
 #: its `pending` (#3313). The fenced park (`ControlPlane.park_ci_pending`)
 #: keeps only the code, head, pull request, `pending` and `failed` of a
 #: wait, so the re-board is recorded where `metadata.merge_wait` keeps it;
-#: swarm-api's wake tick never reads a train park's `pending`, and a CI
-#: park's `pending` is replaced by its own reading. Tenant-writable: a
+#: swarm-api's wake tick reads it only to tell a CI_FIX_RUNNING park on a
+#: train round (green at its head, `mergewake.TRAIN_REBOARDED`, held equal
+#: by test_merge_wake_train_round.py) from a red head's, and never rewrites
+#: it; a CI park's `pending` is replaced by its own reading. Tenant-writable: a
 #: forged one can at worst skip the re-board, which refuses or asks for a
 #: round sooner.
 TRAIN_REBOARDED = "re-boarded once after the merge train's ejection"
