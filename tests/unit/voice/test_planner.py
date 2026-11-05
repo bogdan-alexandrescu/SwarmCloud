@@ -493,7 +493,7 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
             h.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=h.app), base_url="http://voice")
             try:
                 body = {**_start_body(voice_id=grant.session_id), "project_id": grant.project_id,
-                        "grant": grant.headers()[GRANT_HEADER]}
+                        "grant": grant.headers()[GRANT_HEADER], "planner_model": "claude-opus-5-5"}
                 r = await h.post("/internal/sessions", body)
                 assert r.status_code == 201, r.text
                 create = openai.creates[0]["session"]
@@ -510,6 +510,8 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
                 assert call["person"] == "bogdan@saga.xyz" and call["grant"] is not None
                 assert call["grant"].session_id == grant.session_id
                 assert call["transcript"] == [("person", "Ask me which repository.")]
+                # The live engine plans on the model the start read from Settings too.
+                assert call["model"] == "claude-opus-5-5"
             finally:
                 await h.sessions.end_all()
                 await h.close()
