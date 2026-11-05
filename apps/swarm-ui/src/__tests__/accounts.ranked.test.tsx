@@ -204,6 +204,8 @@ describe('the verdict', () => {
     expect(verdict.textContent).toContain('and 1 later step waits on them')
     expect(verdict.querySelector('a')?.getAttribute('href')).toBe('#work/running/waiting')
     expect(document.body.textContent).not.toMatch(/\bavailable\b/)
+    // The floors are the (i)'s tooltip beside the verdict (no prose on the surface, 2026-11-05).
+    expect(screen.getByText(/Floors:/).getAttribute('role')).toBe('tooltip')
     expect(screen.getByText(/Floors:/).textContent).toContain('7-day 5% left')
   })
 
@@ -361,7 +363,7 @@ describe('one subscription twice', () => {
       WAIT,
     )
     const box = banner.closest('.acct-dup') as HTMLElement
-    expect(box.textContent).toContain('To fix it:')
+    expect(box.querySelector('[role="tooltip"]')?.textContent).toContain('To fix it:')
     expect(screen.getByRole('button', { name: 'Open lone' })).toBeTruthy()
     // Mock-up A's second action: the fix the banner names, one click away.
     expect(within(box).getByRole('button', { name: 'Replace the credential' })).toBeTruthy()

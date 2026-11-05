@@ -4,9 +4,15 @@
  * The question an operator brings to this page is "can the pool take another
  * agent, and if not, when?". So it opens on that: one large number, one
  * sentence naming the account that frees first and when, and how many agents
- * wait on the pool, linked to them. Under it the rule the broker applies (the
- * floor line), any duplicate subscription in words, and, after the table, when
- * the pool goes dark at this pace.
+ * wait on the pool, a button to them. The rule the broker applies (the
+ * floors) is the (i) beside the answer, any duplicate subscription is a head
+ * with its why behind it, and, after the table, when the pool goes dark at
+ * this pace.
+ *
+ * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 5 November 2026):
+ * a sentence that explains a label is that label's tooltip (`Info`), a reason
+ * for a status is its tick's, and only a must-stay line (lent to you, so
+ * another workspace fixes it) is drawn.
  *
  * Nothing here re-derives the rule: `can_take_new_agent`, `blocked_by` and
  * `next_eligible_at` are the broker's own answers (`accountsPool.ts`).
@@ -14,6 +20,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 
 import { loadTasksInState } from './api'
+import { ButtonLink, ToneMark, Tooltip } from './components'
 import { accountName } from './accountName'
 import {
   AGED_AFTER_MIN,
@@ -54,6 +61,21 @@ function andNames(accounts: readonly PoolAccount[]): ReactNode {
       <Nm a={a} />
     </Fragment>
   ))
+}
+
+/**
+ * THE (i): the sentence that explained `about`, as its tooltip, on hover and
+ * on focus (`Tooltip`). The button's name says what it is about, so a reader
+ * tabbing through hears which label it belongs to.
+ */
+export function Info({ about, tip }: { about: string; tip: string }) {
+  return (
+    <Tooltip tip={tip}>
+      <button type="button" className="acct-i" aria-label={`About ${about}`}>
+        i
+      </button>
+    </Tooltip>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +143,9 @@ function WaitBox({ read, free }: { read: WaitRead; free: number | null }) {
         <span className="acct-verdict-wn" aria-hidden="true">
           &mdash;
         </span>
-        <a href={WAITING_HREF}>agents waiting on the pool &rarr;</a>
+        <ButtonLink href={WAITING_HREF} size="sm">
+          agents waiting on the pool
+        </ButtonLink>
         <small>{read.kind === 'loading' ? 'reading the waiting list' : 'could not read the waiting list'}</small>
       </div>
     )
@@ -134,9 +158,9 @@ function WaitBox({ read, free }: { read: WaitRead; free: number | null }) {
         {w.atLeast && <small>at least </small>}
         {w.agents}
       </span>
-      <a href={WAITING_HREF}>
-        {w.agents === 1 ? 'agent waits' : 'agents wait'} on the pool &rarr;
-      </a>
+      <ButtonLink href={WAITING_HREF} size="sm">
+        {w.agents === 1 ? 'agent waits' : 'agents wait'} on the pool
+      </ButtonLink>
       {w.later > 0 && (
         <small>
           and {pluralise(w.later, 'later step')} wait{w.later === 1 ? 's' : ''} on them
@@ -263,7 +287,10 @@ export function Verdict({
         <small>{v.m === 0 && !unread ? 'accounts' : of}</small>
       </div>
       <div className="acct-verdict-say">
-        <p className="acct-verdict-head">{head}</p>
+        <p className="acct-verdict-head">
+          {head}
+          {v.m > 0 && <Info about="which accounts can take a new agent" tip={ruleOf(accounts)} />}
+        </p>
         {sub !== null && <p className="acct-verdict-sub">{sub}</p>}
       </div>
       <WaitBox read={waiting} free={v.n === null ? null : v.free} />
@@ -274,19 +301,21 @@ export function Verdict({
 /**
  * THE RULE, IN ONE LINE: the floors, the halving of an aged reading, the cap,
  * and one agent until measured -- so the 15% / 5% rule can be read on the page
- * rather than known. The cap is the served one when every account agrees.
+ * rather than known. The cap is the served one when every account agrees. It
+ * is the (i) beside the verdict's "can take a new agent", not a line of its
+ * own (no prose on the surface, 5 November 2026).
  */
-export function RuleLine({ accounts }: { accounts: readonly PoolAccount[] }) {
+export function ruleOf(accounts: readonly PoolAccount[]): string {
   const caps = [...new Set(accounts.map(maxAgentsOf).filter((x): x is number => x !== null))].sort((x, y) => x - y)
   const cap =
     caps.length > 1 ? `${caps[0]} to ${caps[caps.length - 1]} agents per account, as each owner set` : `${caps[0] ?? DEFAULT_MAX_AGENTS} agents per account`
-  return (
-    <p className="acct-rule">
-      Floors: <b>5-hour {pct(FLOORS[FIVE_HOUR] ?? 0)} left</b> &middot; <b>7-day {pct(FLOORS[SEVEN_DAY] ?? 0)} left</b> &middot; a
-      reading older than {AGED_AFTER_MIN} min counts at half &middot; at most <b>{cap}</b> &middot; a new account takes one
-      agent until its first reading
-    </p>
-  )
+  return [
+    `Floors: 5-hour ${pct(FLOORS[FIVE_HOUR] ?? 0)} left`,
+    `7-day ${pct(FLOORS[SEVEN_DAY] ?? 0)} left`,
+    `a reading older than ${AGED_AFTER_MIN} min counts at half`,
+    `at most ${cap}`,
+    'a new account takes one agent until its first reading',
+  ].join(' · ')
 }
 
 // ---------------------------------------------------------------------------
@@ -351,10 +380,32 @@ export function DuplicateBanner({
   return (
     <>
       {pairs.map(({ extra, other, proven }) => {
+        const xn = accountName(extra)
+        const yn = other === null ? null : accountName(other)
         const x = <Nm a={extra} />
         const y = other === null ? null : <Nm a={other} />
         const org = organisationLine(extra)
         const owned = scope === null || extra.owner_tenant === scope
+        const about = proven
+          ? yn !== null
+            ? `${xn} and ${yn} are one subscription`
+            : `${xn} is a subscription another workspace already registered`
+          : yn !== null
+            ? `${xn} and ${yn} may be one subscription`
+            : `${xn} may be a subscription another workspace registered`
+        // THE WHY AND THE FIX ARE THE HEAD'S TOOLTIP (no prose on the surface,
+        // 5 November 2026): every sentence the banner said, in its order.
+        const why = proven
+          ? [
+              org !== null && yn !== null ? `Both were signed in to the organisation ${org}.` : null,
+              `The pool hands out only ${yn ?? 'the other registration'}, so ${xn} adds no capacity.`,
+              'One claude.ai login can hold two organisations; the sign-in took the one that was selected.',
+            ]
+          : [`They read identically on two polls. The pool still hands out both; if they are one, ${xn} adds no capacity.`]
+        const fix = owned
+          ? `To fix it: on ${xn}, replace the credential, signed in to the organisation you meant from that organisation’s browser profile. Or remove ${xn}.`
+          : null
+        const tip = [...why, fix].filter((t): t is string => t !== null).join(' ')
         return (
           <div key={extra.account_id} className="acct-dup" role="status">
             <b className="acct-dup-head">
@@ -374,37 +425,13 @@ export function DuplicateBanner({
                 <>{x} may be a subscription another workspace registered</>
               )}
             </b>
-            <p>
-              {proven ? (
-                <>
-                  {org !== null && y !== null && (
-                    <>
-                      Both were signed in to the organisation <b>{org}</b>.{' '}
-                    </>
-                  )}
-                  The pool hands out only {y ?? 'the other registration'}, so {x} adds no capacity.{' '}
-                  <span className="acct-dup-why">
-                    One claude.ai login can hold two organisations; the sign-in took the one that was selected.
-                  </span>
-                </>
-              ) : (
-                <>
-                  They read identically on two polls. The pool still hands out both; if they are one, {x} adds no capacity.
-                </>
-              )}
-            </p>
-            <p>
-              {owned ? (
-                <>
-                  <b>To fix it:</b> on {x}, replace the credential, signed in to the organisation you meant from that
-                  organisation&rsquo;s browser profile. Or remove {x}.
-                </>
-              ) : (
-                <>
-                  {x} is lent to you; {extra.owner_tenant} can fix it.
-                </>
-              )}
-            </p>
+            <Info about={about} tip={tip} />
+            {/* MUST STAY: who can fix it, when it is not this workspace. */}
+            {!owned && (
+              <p>
+                {x} is lent to you; {extra.owner_tenant} can fix it.
+              </p>
+            )}
             <div className="acct-dup-acts">
               <button type="button" className="c-btn is-sm" onClick={() => onOpen(extra.account_id)}>
                 Open {accountName(extra)}
@@ -428,12 +455,12 @@ export function DuplicateBanner({
 // The forecast
 // ---------------------------------------------------------------------------
 
-function Tile({ k, v, small }: { k: string; v: ReactNode; small: ReactNode }) {
+function Tile({ k, v, small }: { k: string; v: ReactNode; small?: ReactNode }) {
   return (
     <div className="acct-fc-tile">
       <div className="acct-fc-k">{k}</div>
       <div className="acct-fc-v">{v}</div>
-      <small>{small}</small>
+      {small !== undefined && <small>{small}</small>}
     </div>
   )
 }
@@ -477,7 +504,9 @@ export function Forecast({ accounts, scope, now }: { accounts: readonly PoolAcco
     tiles = (
       <>
         <Tile k="Goes dark" v="Not within 8 days" small="at this pace" />
-        <Tile k="Back" v="—" small="it does not go dark" />
+        {/* THE REASON IS THE TICK'S (no prose on the surface): Back has no
+            time because the pool never closes at this pace. */}
+        <Tile k="Back" v={<ToneMark tone="ok" title="it does not go dark" label="it does not go dark" />} />
       </>
     )
   } else {
@@ -523,15 +552,19 @@ export function Forecast({ accounts, scope, now }: { accounts: readonly PoolAcco
       <div className="acct-fc-tiles">{tiles}</div>
       {left.length > 0 && k > 0 && (
         <p className="acct-fc-note acct-fc-left">
-          <b>Left out:</b> {andNames(left)} {left.length === 1 ? 'has' : 'have'} no 7-day reading to take a pace from,
-          so the pool can stay open longer than this says.
+          <b>Left out:</b> {andNames(left)}
+          <Info about="Left out" tip="no 7-day reading to take a pace from, so the pool can stay open longer than this says" />
         </p>
       )}
       {/* PLAIN WORDS (capacity-21): the laptop tool's name is not the
-          reader's; the sessions it signs in are. */}
+          reader's; the sessions it signs in are. The label stays (who else
+          spends the windows); its reason is the tooltip. */}
       <p className="acct-fc-note">
-        <b>Laptop sessions spend the same windows:</b> they sign in to these subscriptions too, so the pool can go dark
-        sooner than this says.
+        <b>Laptop sessions spend the same windows</b>
+        <Info
+          about="Laptop sessions spend the same windows"
+          tip="they sign in to these subscriptions too, so the pool can go dark sooner than this says"
+        />
       </p>
     </section>
   )
