@@ -117,7 +117,7 @@ accepted from a caller to decide it.
 | `console` | none of these: the console's own submissions, and any other API caller's |
 
 `schedule`, `quality_check` and `issue_run` cannot be claimed by a caller:
-each key is in `validation.RESERVED_METADATA_KEYS`, so a task or workflow that
+each key is in `validation.RESERVED_METADATA_KEYS`, so an agent or workflow that
 sets one is refused at submission with the same 422 (`invalid_dispatch`,
 naming the key in `reserved_metadata_keys`). The platform's own writer gets
 past the check only inside a scoped exemption of the exact value it is about
@@ -128,7 +128,7 @@ its CI-fix rounds and its merge (BGD, 2026-11-04).
 
 `claude_code` stays caller-written on purpose. The `claude_session` tag and
 `metadata.origin` are the sc plugin bridge's own metadata, sent by an API
-caller like any other free-form key and served through the task's masker
+caller like any other free-form key and served through the agent's masker
 (`sessiontag`); reserving them would refuse the bridge itself. So
 `claude_code` says where the submission says it came from: a word for the
 console, never an authority anything is granted on.
