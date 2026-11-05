@@ -111,6 +111,49 @@ import './styles/people.css'
  * draw no live step rows, and are not polled for, since nothing moves them.
  */
 
+/**
+ * THE (i) (BGD's standing rule, 2026-11-05: no explanatory prose on the
+ * surface). A sentence that explains a label sits behind this button beside
+ * it: open on hover, on focus and on a tap (Safari never focuses a tapped
+ * button, so focus alone is not enough), closed on Escape, on the pointer
+ * leaving and on a tap elsewhere. The tip stays in the document, hidden, as
+ * the button's description, so a screen reader and a test read it without
+ * opening it.
+ * `.c-tip-host` and `.c-tip` are the components' tooltip; `end` anchors the
+ * tip's right edge to the button, for an (i) near the right of the screen.
+ * Exported for GitHub access and Runner sizes. It lives here, not in Access.tsx,
+ * because Access already imports People through the app's modules: an import
+ * the other way closes a cycle, and vitest's loader deadlocks on one.
+ */
+export function InfoTip({ about, tip, end = false }: { about: string; tip: string; end?: boolean }) {
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  return (
+    <span className="c-tip-host info-tip" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button
+        type="button"
+        className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })}
+        aria-label={`About ${about}`}
+        aria-describedby={id}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setOpen(false)
+        }}
+      >
+        <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 11v5.5M12 7.75v.01" />
+        </svg>
+      </button>
+      <span role="tooltip" id={id} className="c-tip" hidden={!open} style={end ? { left: 'auto', right: 0 } : undefined}>
+        {tip}
+      </span>
+    </span>
+  )
+}
+
 /** While a run is under way, how often the list is read (as the setup checklist reads a person's record). */
 export const PEOPLE_POLL_MS = 5_000
 
@@ -369,7 +412,7 @@ function Approve({ row, reload, confirm, onSaid }: { row: PersonRow; reload: () 
   }
   return (
     <>
-      <Button size="sm" kind="primary" disabled={busy} onClick={() => (confirm ? setOpen(true) : void go())}>
+      <Button size="sm" kind="primary" disabled={busy} title={approveTip(row)} onClick={() => (confirm ? setOpen(true) : void go())}>
         {busy && !confirm ? 'Approving…' : 'Approve'}
       </Button>
       {open && (
@@ -772,18 +815,31 @@ function PoolLine({ doc }: { doc: PeopleDoc }) {
   )
 }
 
-/** The limits a workspace request would get, as chips: §1.1's keys, only those the record carries. */
-function LimitChips({ limits }: { limits: Record<string, number> | undefined }) {
+/** The limits a workspace request asks for, in words: §1.1's keys, only those the record carries. */
+function limitParts(limits: Record<string, number> | undefined): string[] {
   const parts: string[] = []
   const l = limits ?? {}
   if (typeof l.max_active === 'number') parts.push(`${l.max_active} agents at once`)
   if (typeof l.quota_cpu === 'number') parts.push(`${l.quota_cpu} vCPU`)
   if (typeof l.quota_pods === 'number') parts.push(`${l.quota_pods} pods`)
   if (typeof l.capacity_units === 'number') parts.push(`${l.capacity_units} capacity units`)
-  // WHAT APPROVING DOES, NOT WHAT IS STORED (visual QA pass 1, admin-shell-20,
-  // 2026-10-28): "the record carries no limits" told the approver nothing.
-  // With none asked for, Approve creates the workspace at `DEFAULT_CEILING`.
-  if (parts.length === 0) return <span className="ur-hint">No ceiling was asked for: approving sets the default, {DEFAULT_CEILING} agents at once</span>
+  return parts
+}
+
+/**
+ * WHAT APPROVING DOES, NOT WHAT IS STORED (visual QA pass 1, admin-shell-20,
+ * 2026-10-28): "the record carries no limits" told the approver nothing. With
+ * none asked for, Approve creates the workspace at `DEFAULT_CEILING`, and
+ * Approve's tooltip says so (BGD's no-prose rule, 2026-11-05: not a line in the row).
+ */
+function approveTip(row: PersonRow): string | undefined {
+  return limitParts(row.workspace.limits).length === 0 ? `No ceiling was asked for: approving sets the default, ${DEFAULT_CEILING} agents at once.` : undefined
+}
+
+/** The limits a workspace request would get, as chips; none drawn when none was asked for. */
+function LimitChips({ limits }: { limits: Record<string, number> | undefined }) {
+  const parts = limitParts(limits)
+  if (parts.length === 0) return null
   return (
     <span className="pp-limits" aria-label="Limits it would get">
       {parts.map((p) => (
@@ -982,10 +1038,12 @@ function MembersUnread({ columns, reads }: { columns: readonly PeopleWorkspaceCo
   const lists = same
     ? `${one ? 'its members list' : 'their members lists'} ${membersUnreadWhy(first.why, !one)}`
     : listed(failed.map((f) => `${f.name}’s members list ${membersUnreadWhy(f.why, false)}`))
+  // BGD's no-prose rule (2026-11-05): one short line; which columns, why, and
+  // that their roles stand are its (i).
+  const tip = `No “joined by request” mark can be drawn in the ${listed(failed.map((f) => f.name))} ${one ? 'column' : 'columns'}: ${lists}. The roles shown ${one ? 'there' : 'in them'} are read separately and are not affected.`
   return (
     <p className="ur-hint pp-joined-unread">
-      No “joined by request” mark can be drawn in the {listed(failed.map((f) => f.name))} {one ? 'column' : 'columns'}: {lists}. The roles shown{' '}
-      {one ? 'there' : 'in them'} are read separately and are not affected.
+      Join-by-request mark unavailable: members unread <InfoTip about="the join-by-request mark" tip={tip} />
     </p>
   )
 }
@@ -1913,13 +1971,13 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
         <li key={a.email} data-email={a.email} data-role={a.role}>
           <span className="pp-admin-who">
             <b>{a.email}</b>
-            {a.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
+            {a.role === 'owner' && (
+              <Chip className="pp-owner" title="Set in the deployment’s configuration.">
+                platform owner
+              </Chip>
+            )}
           </span>
-          <span className="ur-hint">
-            {a.role === 'owner'
-              ? 'set in the deployment’s configuration'
-              : `granted by ${a.granted_by ?? 'unknown'}${a.granted_at !== null ? ` ${timeAgo(a.granted_at)}` : ''}`}
-          </span>
+          {a.role !== 'owner' && <span className="ur-hint">{`granted by ${a.granted_by ?? 'unknown'}${a.granted_at !== null ? ` ${timeAgo(a.granted_at)}` : ''}`}</span>}
           {/* The owner is not removable here: the API refuses it
               (OWNER_FROM_CONFIG), so no control offers it. */}
           {a.role !== 'owner' && (
@@ -2053,12 +2111,16 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
     reload()
   }
   return (
-    <Card className="pp-admins" title="Admins">
-      <p className="ur-hint">
-        Any admin may grant or remove admin. The platform owner can be changed only by the owner, and the last admin cannot
-        be removed; the API says so when it refuses. An admin through a group has no role recorded here and is not
-        listed.
-      </p>
+    <Card
+      className="pp-admins"
+      title="Admins"
+      action={
+        <InfoTip
+          about="Admins"
+          tip="Any admin may grant or remove admin. The platform owner can be changed only by the owner, and the last admin cannot be removed; the API says so when it refuses. An admin through a group has no role recorded here and is not listed."
+        />
+      }
+    >
       {admins !== null ? (
         <AdminList admins={admins} onRemove={setTarget} />
       ) : (
@@ -2892,12 +2954,17 @@ export function PeopleScreen() {
       {/* Platform people since the admin routes lane (part of #2688): the Admin tab's new name. */}
       <PageHead title="Platform people">
         <UrRefresh reads={[people]} />
+        {/* What the page holds is the head's (i), after the read control, not a line under it (BGD's no-prose rule, 2026-11-05). */}
+        <InfoTip
+          about="Platform people"
+          tip={
+            scoped
+              ? 'The people in the workspaces you administer, and their role in each.'
+              : 'Every person against every workspace, what they are waiting for, and who is an admin.'
+          }
+          end
+        />
       </PageHead>
-      <p className="ur-sub">
-        {scoped
-          ? 'The people in the workspaces you administer, and their role in each.'
-          : 'Every person against every workspace, what they are waiting for, and who is an admin.'}
-      </p>
       <UrRegion state={people.state} route="GET /v1/admin/people" what="People" plural onRetry={people.reload} lines={6}>
         {(d) =>
           isScoped(d) ? (
