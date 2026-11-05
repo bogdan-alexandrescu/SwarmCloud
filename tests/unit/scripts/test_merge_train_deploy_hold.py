@@ -89,9 +89,10 @@ sys.exit(64)
 
 
 def _need(*tools: str) -> None:
+    # Asserted, not skipped: the train runs on these, and a skip would hide
+    # that the hold went untested.
     for tool in tools:
-        if shutil.which(tool) is None:
-            pytest.skip(f"{tool} is required")
+        assert shutil.which(tool) is not None, f"{tool} is required"
 
 
 def _sha() -> str:
