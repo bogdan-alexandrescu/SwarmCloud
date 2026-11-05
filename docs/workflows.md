@@ -59,6 +59,77 @@ costs nothing while it waits.
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
+## What a workflow is about: `description`, `feature` and `started_from`
+
+**Why.** On 4 November 2026 the owner opened a workflow in the console and
+could not tell which feature or repository it worked on, or read what it was
+meant to deliver: a workflow recorded only `metadata.title` (often a bare
+`Visual QA: <target>`), `metadata.unit` (its label) and its repository. He
+picked a short description written by whoever submits, and a head that names
+the repository, the feature, the description, and who started the workflow,
+when and from where.
+
+**What a submission may carry.** Two keys of the workflow's `metadata`,
+checked by `schemas.check_workflow_about` when `WorkflowCreate` is read:
+
+| Key | Rule |
+|---|---|
+| `description` | Plain text, two or three sentences saying what the work delivers. Trimmed; at most 600 characters. Longer is **refused**, never cut, because a cut description says something its author did not. Markup (an HTML tag, a Markdown link, heading, code fence or doubled bold markers) and control characters other than a line break or a tab are refused: the console shows the text as written. |
+| `feature` | `{title, url?}`: the feature the work belongs to. `title` is one line of at most 120 characters. `url`, when given, is an `https://github.com/<owner>/<repo>/issues/<n>` or `.../pull/<n>` page **of the workflow's own `repository_url`**, in any spelling of that repository (https, `ssh://`, `git@`); another repository's link, or a link on a workflow with no GitHub repository, is refused. |
+
+Neither may be set in a step's `metadata`: a step's metadata is merged over
+the workflow's onto its agent, so a step's own would reach the store
+unchecked. Beside a description swarm-api records `description_source:
+"submitter"`. A caller's own `description_source` is never kept: it is set
+beside a description and dropped without one. It is overwritten rather than
+refused because a validated spec is stored as its dump and read again (a
+custom-prompt schedule's `params.spec`), and that dump holds the value
+swarm-api wrote. A later lane's small-model fallback for a workflow with no
+description writes its own source, so the console can mark it as generated.
+
+**What every read serves.** `GET /v1/workflows/{id}`, the create reply and
+every `GET /v1/workflows` row, in the `full` and the `summary` view alike,
+carry, off the step agents (the frozen `Workflow` has no metadata, and every
+step agent carries the workflow's):
+
+| Field | Value |
+|---|---|
+| `repository_url` | the repository the steps clone |
+| `title` | `metadata.title`, or null |
+| `description`, `description_source` | as above, or null |
+| `feature` | `{title, url?}`, or null |
+| `started_from` | where the workflow came from, one of the values below |
+
+Each caller-written string is masked by its agent's masker, as a step's input
+is. The keys are absent, not null, on a row none of whose step agents was read,
+so a reader tells "none" from "not read", as `claude_session`.
+
+**`started_from`: the field that decides each.** Read off what the platform
+already writes on the step agents, the first match winning. Nothing new is
+accepted from a caller to decide it.
+
+| Value | Decided by |
+|---|---|
+| `schedule` | `metadata.schedule`, written only by `schedulefire`; reserved, so a caller's is refused at submission |
+| `quality_check` | `metadata.qa_target` on a browser step, written only by `qatargets.render_run`; reserved likewise |
+| `issue_run` | `metadata.issue_run`, written by `issueruns` and `issueci` |
+| `claude_code` | the `claude_session` tag (`sessiontag`), or `metadata.origin == "swarm-mcp"`; both written by the sc plugin's bridge |
+| `console` | none of these: the console's own submissions, and any other API caller's |
+
+`schedule` and `quality_check` cannot be claimed by a caller. `issue_run` and
+`claude_code` read keys an API caller can write today; they say where the
+submission says it came from, and are words for the console, never an
+authority anything is granted on.
+
+**Who sets them.** The sc plugin passes a spec's top-level `description` and
+`feature` as metadata, checked by the same rules before anything is sent
+(`swarm_mcp.workflows.check_description`, `check_feature`). A quality-check
+leg is titled with its role and environment (`Visual QA: ai-studio,
+moderator, staging`, read off the leg's name, `qaspec.leg_words`), and
+carries a description (the target, the leg's role and environment, how many
+capture groups, what the report is) and the feature `Quality check of
+<target>`. Issue runs fill theirs in a later lane.
+
 ## Workflow switches: `dispatch`
 
 Beside `strategy` and `carrier`, a workflow (or an agent) may carry three

@@ -1475,9 +1475,60 @@ def _step(step_id: str, profile: str, model: str, prompt: str, *, timeout: int,
     return step
 
 
-def _workflow(target: Mapping[str, Any], title: str, steps: list[dict[str, Any]]) -> dict[str, Any]:
+#: A leg-name word that names an environment, and how a title spells it:
+#: legs are named `stg-moderator`, `prod-reviewer`, `staging` (§1.1), so the
+#: environment is the word that is one of these and the role what is left.
+_ENVIRONMENT_WORDS = {
+    "prod": "production", "production": "production", "stg": "staging", "stage": "staging",
+    "staging": "staging", "dev": "development", "development": "development", "preview": "preview",
+    "test": "test", "qa": "qa", "uat": "uat", "local": "local",
+}
+#: Markup the API refuses in `metadata.description` (`schemas._MARKUP`): a
+#: target's name is put in the description with these spaced out.
+_DESCRIPTION_MARKUP = re.compile(r"[<>\[\]]|\*\*|__|```|~~~")
+
+
+def leg_words(target: Mapping[str, Any]) -> tuple[str | None, str]:
+    """(the leg's role, its environment) for a run's titles, read off the
+    leg's name (`LEG_NAME`): `stg-moderator` is ("moderator", "staging"),
+    `staging` (None, "staging"). A name with no environment word takes the
+    leg's mark, `production` or `non-production`; a target that is its own
+    one leg has no name and is its legacy name's environment."""
+    production = (target.get("environment") or "production") == "production"
+    name = target.get(LEG_NAME)
+    if not isinstance(name, str) or not name:
+        return None, legacy_environment_name(target)
+    words = [w for w in name.split("-") if w]
+    named = [_ENVIRONMENT_WORDS[w] for w in words if w in _ENVIRONMENT_WORDS]
+    role = "-".join(w for w in words if w not in _ENVIRONMENT_WORDS) or None
+    return role, named[0] if named else ("production" if production else "non-production")
+
+
+def _leg_title(kind: str, name: str, target: Mapping[str, Any]) -> str:
+    """`Visual QA: ai-studio, moderator, staging`: every leg of one target
+    titled apart (BGD, 2026-11-04: the reviewer and moderator legs read alike)."""
+    role, environment = leg_words(target)
+    return f"{kind}: {', '.join(w for w in (name, role, environment) if w)}"
+
+
+def _about(name: str, target: Mapping[str, Any], work: str) -> tuple[str, dict[str, str]]:
+    """(`metadata.description`, `metadata.feature`) of a QA run: plain text
+    within the API's 600 characters, and the feature every run of the target
+    shares."""
+    role, environment = leg_words(target)
+    plain = _DESCRIPTION_MARKUP.sub(" ", name)
+    leg_note = f" signed in as {role}" if role else ""
+    return (f"Visual QA of {plain}{leg_note} on {environment}. {work}",
+            {"title": f"Quality check of {name}"})
+
+
+def _workflow(target: Mapping[str, Any], title: str, steps: list[dict[str, Any]],
+              about: tuple[str, dict[str, str]]) -> dict[str, Any]:
+    description, feature = about
     return {
         "title": title,
+        "description": description,
+        "feature": feature,
         "label": "visual-qa",
         "repository_url": _repository(target),
         "strategy": "collect",
@@ -1579,7 +1630,12 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
         steps.append(_step("file", REVIEW_PROFILE, FILE_MODEL, _file_prompt(target, settings, run_group),
                            timeout=2700, depends_on=["report"], input_from={"report": "findings.json"}))
     _hold_step_bound(steps, batches)
-    return _workflow(target, f"Visual QA: {name}", steps)
+    report = ("The report lists every finding by screen; the file step files the new ones as GitHub issues."
+              if file == "issues" else "The report lists every finding by screen; nothing is filed.")
+    work = (f"{len(groups)} capture group{'s' if len(groups) != 1 else ''} screenshot its screens at "
+            f"{len(widths)} width{'s' if len(widths) != 1 else ''} in {' and '.join(themes)}, each group reviewed "
+            f"against its design{f', and {len(flows)} flows are run' if flows else ''}. {report}")
+    return _workflow(target, _leg_title("Visual QA", name, target), steps, _about(name, target, work))
 
 
 def _hold_step_bound(steps: Sequence[Mapping[str, Any]],
@@ -1633,7 +1689,10 @@ def render_discovery(target: Mapping[str, Any]) -> dict[str, Any]:
         f"{_safety(target, _origin(base))} {NO_CHANGE}"
     )
     step = _step("discover", CAPTURE_PROFILE, CAPTURE_MODEL, prompt, timeout=1800, browser_tool="playwright")
-    return _workflow(target, f"Visual QA discovery: {name}", [step])
+    work = (f"One step lists the same-origin screens reachable from its base, at most {pages} pages "
+            f"{depth} links deep, for its runs to capture. Nothing is reviewed or filed.")
+    return _workflow(target, _leg_title("Visual QA discovery", name, target), [step],
+                     _about(name, target, work))
 
 
 def discovered_screens(target: Mapping[str, Any], document: Any) -> list[dict[str, str]]:

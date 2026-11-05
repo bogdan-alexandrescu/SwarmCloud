@@ -522,6 +522,14 @@ REPOSITORY_TRAIN_LABEL = "ready"
 REPOSITORY_TRAIN_CONTEXT = "merge-train"
 #: How the train's ejection comment begins (`merge-train.sh eject_pr`).
 REPOSITORY_TRAIN_EJECTED = "**Ejected from the merge train"
+#: The train's "does not board" comment (`merge-train.sh tell_skip`,
+#: SKIP_MARKER and SKIP_HEADLINE, held equal by
+#: tests/unit/worker/test_merge_train_skip_reason.py): its first line is
+#: `<!-- merge-train-skip head=<sha> reason=<key> -->`, its second
+#: `**The merge train skips it: <why>.**`. The train decides why it passes
+#: over a `ready` pull request; the step only reads what it said, at its head.
+REPOSITORY_TRAIN_SKIP = "<!-- merge-train-skip"
+REPOSITORY_TRAIN_SKIP_HEADLINE = "**The merge train skips it: "
 
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
@@ -1303,6 +1311,8 @@ class ForgeMerger(Protocol):
 
     def train_ejection(self, number: int) -> str | None: ...
 
+    def train_skip(self, number: int, head: str) -> str | None: ...
+
 
 class UnsupportedForge(ValueError):
     """The repository is on a host no `ForgeMerger` serves."""
@@ -1760,6 +1770,29 @@ class GitHubMerger:
             if _mapping(comment.get("user")).get("type") == "Bot":
                 app = body
         return ejected or app
+
+    def train_skip(self, number: int, head: str) -> str | None:
+        """Why the merge train passes over the pull request at `head`, as the
+        train's latest "does not board" comment at that head says
+        (`REPOSITORY_TRAIN_SKIP`); None when it said nothing there."""
+        return train_skip_reason(self._client.paginate(f"{self._base}/issues/{number}/comments"),
+                                 head)
+
+
+def train_skip_reason(comments: Iterable[Any], head: str) -> str | None:
+    """The reason in the latest of `comments` that is the merge train's
+    "does not board" comment at `head`, e.g. "`queue for auto-merge` failed";
+    None when there is none. A comment at another head is not this head's."""
+    marker = f"{REPOSITORY_TRAIN_SKIP} head={head} "
+    why = None
+    for comment in comments:
+        lines = (_str(_mapping(comment).get("body")) or "").splitlines()
+        if len(lines) < 2 or not lines[0].startswith(marker):
+            continue
+        said = lines[1].strip()
+        if said.startswith(REPOSITORY_TRAIN_SKIP_HEADLINE) and said.endswith(".**"):
+            why = said[len(REPOSITORY_TRAIN_SKIP_HEADLINE):-len(".**")].strip() or why
+    return why
 
 
 def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
@@ -3337,8 +3370,20 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
     number = pr.number
     record: dict[str, Any] = {**switch, "head": head, "label": REPOSITORY_TRAIN_LABEL}
     summary["repository_train"] = record
+    skips = None
     if REPOSITORY_TRAIN_LABEL in pr.labels:
         record["labelled"] = False
+        # Already `ready` and still here: the train may be passing over it
+        # for a reason that will not clear by itself (a red check the gate
+        # above does not hold it for, a conflict GitHub has not reported to
+        # the step yet). The train said so on the pull request; the waiting
+        # line carries it. A read that fails leaves the plain line.
+        try:
+            skips = merger.train_skip(number, head)
+        except forge_mod.ForgeError as exc:
+            record["skip_unread"] = type(exc).__name__
+        if skips:
+            record["skips"] = skips
     elif _on_repository_train(ctx, own, head=head):
         why = merger.train_ejection(number)
         return run.refuse("train_ejected",
@@ -3352,7 +3397,8 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         record["labelled"] = True
     return run.wait(mergetrain.TRAIN_WAITING,
                     f"pull request #{number} is `{REPOSITORY_TRAIN_LABEL}` for {base}'s merge "
-                    f"train at {head}", head=head, pull_request=number, pending=[])
+                    f"train at {head}" + (f"; the train skips it: {skips}" if skips else ""),
+                    head=head, pull_request=number, pending=[])
 
 
 def repository_train_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int,
