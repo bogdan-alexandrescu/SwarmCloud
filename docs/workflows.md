@@ -84,8 +84,19 @@ unchecked. Beside a description swarm-api records `description_source:
 beside a description and dropped without one. It is overwritten rather than
 refused because a validated spec is stored as its dump and read again (a
 custom-prompt schedule's `params.spec`), and that dump holds the value
-swarm-api wrote. A later lane's small-model fallback for a workflow with no
-description writes its own source, so the console can mark it as generated.
+swarm-api wrote.
+
+**A workflow submitted without one gets a generated description.** After the
+submission returns, swarm-api asks Claude Haiku on Vertex AI (the owner's pick,
+2026-11-05) for two or three sentences from the steps' masked briefs, held to
+the same rule, and records `description_source: "generated"` so the console
+marks it. Terraform turns the model on (`SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex`
+on swarm-api), grants swarm-api's account `roles/aiplatform.user` and enables
+`aiplatform.googleapis.com`. When the call fails, times out or is refused --
+Anthropic's Model Garden terms not yet accepted on the project, which is the
+project owner's to do -- the first sentence of each brief is written instead.
+Each workflow costs at most one call, recorded with its tokens and outcome in
+one `workflow_description_usage` row (`swarm_api.wfdescription` says why).
 
 **What every read serves.** `GET /v1/workflows/{id}`, the create reply and
 every `GET /v1/workflows` row, in the `full` and the `summary` view alike,

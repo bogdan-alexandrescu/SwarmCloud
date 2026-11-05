@@ -2,7 +2,7 @@
 
 When a workflow arrives with no `metadata.description`, swarm-api writes one
 after the submission returns: Claude Haiku on Vertex AI behind
-SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex (off by default), else the first
+SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex (Terraform sets it; unset is off), else the first
 sentence of each masked step brief, marked `description_source: "generated"`
 either way. One ledger row per workflow counts the call and caps it at one.
 
@@ -12,8 +12,10 @@ Vertex AI.
 
 from __future__ import annotations
 
+import re
 import secrets
 import threading
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -299,6 +301,24 @@ def test_the_switch_is_off_unless_it_says_vertex():
     assert summariser_from_env({}, project_id="proj-1") is None
     assert summariser_from_env({MODEL_SWITCH_ENV: "on"}, project_id="proj-1") is None
     assert isinstance(summariser_from_env({MODEL_SWITCH_ENV: "vertex"}, project_id="proj-1"), VertexSummariser)
+
+
+TERRAFORM = Path(__file__).resolve().parents[3] / "terraform"
+
+
+def test_terraform_turns_the_model_on_for_swarm_api():
+    """The owner picked Claude Haiku on Vertex AI (#3346): every deployment runs it.
+
+    The switch on swarm-api, the account's role to call it and the API it calls;
+    one missing and every workflow falls back to the extract."""
+    locals_tf = (TERRAFORM / "infra" / "locals.tf").read_text()
+    api_env = locals_tf.split('"swarm-api" = merge(', 1)[1].split('\n    "swarm-', 1)[0]
+    assert re.search(rf'^\s*{MODEL_SWITCH_ENV}\s*=\s*"vertex"\s*$', api_env, re.MULTILINE)
+    bindings = (TERRAFORM / "modules" / "iam" / "bindings.tf").read_text()
+    api_roles = bindings.split('"swarm-api" = concat(', 1)[1].split("])", 1)[0]
+    assert '"roles/aiplatform.user"' in api_roles
+    services = (TERRAFORM / "infra" / "main.tf").read_text().split('module "project_services"', 1)[1]
+    assert '"aiplatform.googleapis.com"' in services.split("]", 1)[0]
 
 
 # --------------------------------------------------------------------------

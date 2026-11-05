@@ -1,0 +1,32 @@
+# Lane workflow-description (part of #2688; owner's pick on #3346, 2026-11-05):
+# Claude Haiku on Vertex AI writes the generated description of a workflow
+# submitted without one (apps/swarm-api/swarm_api/wfdescription.py). swarm-api
+# calls Vertex AI's rawPredict as its own account, so the API is enabled on the
+# project: module.project_services lists it, and foundations.apis enables it
+# with every other core `api.*` entry. The account's roles/aiplatform.user is
+# in terraform/modules/iam/bindings.tf (google_project_iam_member.plain).
+version: 1
+entries:
+- id: api.aiplatform
+  kind: gcp-api
+  scope: core
+  stage: 1
+  provider: engine
+  check: gcloud services list --enabled --project=$P --filter=config.name=aiplatform.googleapis.com
+  apply: module.project_services (terraform/infra/main.tf)
+  verify: a workflow submitted without a description has a workflow_description_usage row whose outcome is `model`
+  explain: swarm-api asks Claude Haiku on Vertex AI for a workflow's generated description; with the API disabled every call is refused and the extractive fallback writes it instead, its usage row saying why.
+  guards: null
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - terraform/infra/main.tf
+  - apps/swarm-api/swarm_api/wfdescription.py
+  notes: Anthropic's Model Garden terms are accepted on the project by its owner, in the console; until then the call is refused and the extractive fallback writes.
+  probe:
+    type: service_enabled
+    name: aiplatform.googleapis.com
+  step: foundations.apis
+  refs:
+    api:
+    - aiplatform.googleapis.com

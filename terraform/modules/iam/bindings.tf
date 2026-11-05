@@ -81,6 +81,10 @@ locals {
         # shared client project, which reads like a permissions problem and is
         # not (CONTRACT.md, verified operational constraint).
         "roles/serviceusage.serviceUsageConsumer",
+        # Claude Haiku on Vertex AI writes a workflow's generated description
+        # (swarm_api.wfdescription, owner's pick on #3346). aiplatform.user is
+        # the narrowest predefined role holding aiplatform.endpoints.predict.
+        "roles/aiplatform.user",
       ])
       "swarm-scheduler" = concat(local.telemetry_roles, [
         local.custom_roles.job_dispatcher,

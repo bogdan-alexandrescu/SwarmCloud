@@ -853,6 +853,15 @@ locals {
       # `egress_addresses`; "" serves [], which the console says in words.
       MCP_EGRESS_ADDRESSES = join(",", module.network.nat_addresses)
 
+      # The model that writes a workflow's generated description when its
+      # submitter wrote none: Claude Haiku on Vertex AI (owner's pick on
+      # #3346, 2026-11-05; swarm_api.wfdescription). "vertex" because the
+      # account holds roles/aiplatform.user (modules/iam/bindings.tf) and the
+      # API is enabled (main.tf). Until Anthropic's Model Garden terms are
+      # accepted on the project the call is refused, and the extractive
+      # fallback writes the description, its usage row saying why.
+      SWARM_WORKFLOW_DESCRIPTION_MODEL = "vertex"
+
       # The job-made workspaces' Firestore cutover list (variables.tf
       # `worker_firestore_off_tenants`, #1457 design B). swarm_api.settings
       # reads it as worker_firestore_off_tenants and writes the record's
