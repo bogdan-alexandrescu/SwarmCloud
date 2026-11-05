@@ -4,7 +4,8 @@ How the agent quality program measures a change: the rules every experiment
 follows, the conditions experiment batch three set (adopted here as the owner's
 session wrote them), how arms are assigned, what each metric means, how a
 historical item is kept from seeing its own future, and the corpus to build
-after batch three. The baseline every experiment states its change against is
+after batch three, and the protocol of the Jev work-contract experiment
+(section 8). The baseline every experiment states its change against is
 [baseline.md](baseline.md); what was already failing is
 [known-failures.md](known-failures.md).
 
@@ -71,7 +72,8 @@ mixture of arms.
   `sha256(batch id, item id) mod (number of arms)`, in balanced blocks of one
   item per arm, so the split is reproducible and no person picks it.
 * **Realisation.** The arm is the workflow's signed `dispatch` switches
-  (`code_intelligence`, `quality_gates`, `jev_judgments`;
+  (`code_intelligence`, `quality_gates`, `jev_judgments`, and `contract_jev`
+  for the experiment of section 8;
   [workflows.md](../../workflows.md#workflow-switches-dispatch)). A switch set
   `on` or `off` takes the workflow out of the workspace's `context_ab` split,
   whose `sha256(task_id)` assignment is per step and is therefore never what
@@ -154,3 +156,89 @@ commit, its brief, its hidden tests and its reference change.
 Items enter the corpus by a deterministic order (`sha256` of the corpus version
 and the source PR number, as `ctxq_replay.order_key` does), and a short kind is
 reported short, never padded.
+
+## 8. The Jev work-contract experiment (`contract_jev`)
+
+The owner chose on 3 November 2026 (BGD) to use Jev to make the work contract
+better and more enforceable: a review at submission (JC1) and a judgment of
+the acceptance criteria at the end of a step (JC2)
+([jev-contract.md](jev-contract.md)). This section is how the experiment
+measures whether that choice pays, under sections 1 to 6; it is
+[jev-contract.md section 11](jev-contract.md#11-how-the-experiment-measures-it)
+made into a procedure.
+
+### 8.1 The arm
+
+* **The switch.** `contract_jev`, `on` or `off`, in the workflow's signed
+  `dispatch` block (`swarm_api.validation.DISPATCH_SWITCHES`). Any other word
+  is refused with `invalid_dispatch` and the accepted values named.
+* **Assignment.** Per whole workflow, by `sha256(batch id, item id)`, as
+  section 3 says. Every step of an item runs under its arm.
+* **What each arm is.** Both arms submit the same contracts. Arm `on` lets
+  JC1 and JC2 run where the workspace's settings already allow them: the
+  signed `contract_review` setting and `SWARM_CONTRACT_REVIEW` for JC1,
+  `code_intelligence.jev` and the worker's post-step for JC2. Arm `off`
+  compiles the contracts mechanically with JC1 and JC2 skipped and recorded as
+  `skipped:arm`, so arm off is today's behaviour. The switch only narrows: it
+  never turns a review or a judgment on that the stored settings leave off, so
+  the experiment workspace stores `contract_review` on, `code_intelligence.jev`
+  on and runs swarm-api with `SWARM_CONTRACT_REVIEW=enforce` for the batch.
+* **Read back.** `scripts/benchstat.py contract-jev` reads the arm from every
+  attempt's `result_summary.switches.contract_jev` (the worker's
+  `{value, ...}` record, or the bare word). An item is counted in its arm only
+  when every attempt records that arm. It is excluded from both arms and
+  listed, never relabelled, as:
+  * `arm_mismatch`: an attempt recorded the other arm, or Jev reviewed or
+    judged an item of arm off, or an item of arm on was skipped as
+    `skipped:arm`;
+  * `arm_unrecorded`: the item has no attempt, or an attempt records no
+    `contract_jev` (a missing record is not a pass, rule 2);
+  * `arm_unassigned`: the item's arm is neither `on` nor `off`.
+
+**Status, 5 November 2026.** Kept apart, as rule 9 requires:
+
+| | State |
+|---|---|
+| The switch is accepted, stored and signed | implemented and behaviourally tested (`tests/unit/control_plane/test_dispatch_switches.py`) |
+| The measures below | implemented and behaviourally tested (`tests/unit/scripts/test_benchstat_contract_jev.py`, and `benchstat.py self-test`) |
+| JC1 and JC2 obey the switch; the attempt records it in `result_summary.switches` | **not implemented**: `swarm_api.contractreview`, the worker's post-step and `agent_worker.graphstage.switches_summary` do not read `contract_jev` yet. Until they do, both arms run alike and every item is excluded as `arm_unrecorded`, so no result can be read |
+| Enabled in configuration; live-verified | **no**; not read from here |
+
+### 8.2 The record per item
+
+The collector writes one JSON line per item; `benchstat.py contract-jev
+--input ITEMS.jsonl` reads them. A field the collector could not read is
+`null` or absent, and is counted as unknown, never as zero.
+
+| Field | From |
+|---|---|
+| `item_id`, `arm`, `historical` | the batch's assignment (section 3); `historical` for an item replayed from a merged change (section 5) |
+| `attempts[].result_summary` | `GET /v1/tasks/{id}/attempts`, every attempt of every step |
+| `review` | the step's signed dispatch block `contract_review` (`jev_review`): `outcome` (`ok`, `refused`, `amended`, `not_run` with `reason`, or `skipped:arm`); and from the person's next submission, `resubmitted` (a narrower contract), `overridden` (the same requirement resubmitted as enforceable) and `override_judged_cleanly` (JC2 then decided that requirement as `met` or `unmet`, not `cannot_judge`) |
+| `judgments[]` | the `judgment` evidence of each judged requirement: `verdict` (`met`, `unmet`, `cannot_judge`) and `p`, the probability Jev gave its verdict |
+| `hidden_tests`, `review_verdict`, `accepted` | the score step and the review (section 4) |
+| `model_cost_usd`, `jev_tokens` `{input, output}` | every attempt's cost, and the item's `jev_usage` rows of kinds `contract_review` and `contract_judgment` with its other Jev calls |
+| `submitted_at`, `accepted_at`, `send_backs` | the workflow's submission, its acceptance and the count of JC2 send-backs |
+| `approvals`, `owner_overrides` | the owner's approvals of the item's steps, and those that accepted a step Jev judged `unmet` or that passed the send-back cap |
+
+### 8.3 The measures
+
+Per arm, with Jev-on historical items as their own group, `on:historical`
+(section 5):
+
+| Measure | Definition | Never |
+|---|---|---|
+| JC1 refusal and amendment rates | refused, and amended, over the reviews that ran (`ok`, `refused`, `amended`), each with its Wilson interval; `not_run` by reason and unrecorded reviews counted apart | A review that did not run counted as one that passed (answer 2 accepts the contract open; it is not a review) |
+| JC1 after a refusal | resubmitted, overridden, and **false refusals**: refusals overridden by the person whose requirement JC2 then decided cleanly | |
+| JC2 false send-back | `unmet` judgments on items whose hidden tests passed and whose review said MERGE, over `unmet` judgments with a hidden-test result and a review verdict | |
+| JC2 missed defect | `met` judgments on items whose hidden tests failed, over `met` judgments with a hidden-test result | A hidden test that did not run scored as passed or failed: it is counted as `no hidden result` |
+| JC2 `cannot_judge` rate | `cannot_judge` over every judgment | |
+| JC2 calibration | the Brier score of Jev's probability that the requirement is met (`p` for `met`, `1 - p` for `unmet`) against the item's hidden-test outcome, over `met` and `unmet` judgments with a result; it is what moves the 0.6 and 0.7 thresholds (`contractjudge`) | |
+| Accepted-item success | section 4, accepted over the arm's counted items, with its Wilson interval | Anything but `accepted: true` counted as accepted |
+| Cost per accepted item | section 4: every item's model cost, failed ones included, plus its Jev tokens at `jev_token_rates` (`--jev-token-rates`, the platform setting's JSON), over the accepted items | **An unpriced arm prints no cost, never $0**: an arm that spent Jev tokens while `jev_token_rates` has no rate for them is `unpriced`, with no figure, because Jev's tokens are what arm on adds and a total without them would make it look free. A missing model cost or unknown Jev usage makes the total a floor, printed "at least" with its coverage |
+| End-to-end latency | section 4, p50 and p95 nearest-rank from submission to acceptance over accepted items, send-back rounds included; items with no end counted | A mean |
+| Owner time | the owner's approvals per accepted item, and the owner's overrides of Jev | An unknown approval count read as zero: it is counted as `unknown` |
+
+`benchstat.py contract-jev` prints these per arm and lists every excluded item
+with its reason; `--json` writes the same table for the batch's record. It
+reports and never gates: its exit code says only whether the input was read.

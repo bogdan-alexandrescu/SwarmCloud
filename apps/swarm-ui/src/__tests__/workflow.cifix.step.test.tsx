@@ -121,6 +121,7 @@ describe('STATUS-TRUE: a running ci-fix round is a step of the page', () => {
     await waitFor(() => expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Step ci-fix:1'))
     const dock = document.querySelector('.wi-dock') as HTMLElement
     // The stop control is drawn only beside a step whose task was joined.
-    expect(within(dock).getByRole('group', { name: 'Stop step' })).not.toBeNull()
+    const bar = within(dock).getByRole('toolbar', { name: 'Step actions' })
+    expect(within(bar).getByRole('button', { name: 'Stop' })).not.toBeNull()
   })
 })

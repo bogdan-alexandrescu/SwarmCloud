@@ -468,7 +468,7 @@ describe('an issue run’s Changes tab', () => {
     const go = vi.fn()
     const row = { key: '0:ui', round: 0, stepId: 'ui', title: null, taskId: 't_ui', task: null, dependsOn: [], merge: null }
     render(<StepChanges runId="run_4c1e09d2" row={row} go={go} />)
-    const a = screen.getByRole('link', { name: 'Changes ›' })
+    const a = screen.getByRole('link', { name: 'Changes' })
     expect(a.getAttribute('href')).toBe('/runs/run_4c1e09d2/changes?step=ui')
     fireEvent.click(a)
     expect(go).toHaveBeenCalledWith('work/runs?run=run_4c1e09d2&tab=changes&step=ui')

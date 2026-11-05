@@ -293,9 +293,12 @@ function PageCard({
 
 async function openPanel(): Promise<HTMLElement> {
   render(<PageCard />)
-  await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('checkpoints'))
-  // The attempt facts land after the panel.
-  await waitFor(() => expect(panel()!.querySelector('.wf-inspect-facts')).toBeTruthy())
+  // The page's step card is the action bar and stat tiles (owner's pick,
+  // 2026-11-05): the card is `section.sc-card`, named by its own
+  // aria-label, not `.wf-inspect` with a separate `.wf-inspect-id`.
+  await waitFor(() => expect(panel()?.querySelector('.sc-card')?.getAttribute('aria-label')).toBe('Step checkpoints of wf_fan'))
+  // The attempt facts land after the panel, as the stat tiles.
+  await waitFor(() => expect(panel()!.querySelector('.sc-tiles')).toBeTruthy())
   return panel()!
 }
 
@@ -315,7 +318,9 @@ async function openOnPage(): Promise<HTMLElement> {
     expect(d, 'the inspector did not open on checkpoints').toBeTruthy()
     return d!
   })
-  await waitFor(() => expect(dock.querySelector('.wf-inspect-facts')).toBeTruthy())
+  // The attempt facts land after the dock, as the stat tiles (the page's
+  // step card is the action bar and stat tiles, owner's pick, 2026-11-05).
+  await waitFor(() => expect(dock.querySelector('.sc-tiles')).toBeTruthy())
   return dock
 }
 
@@ -400,34 +405,42 @@ describe('a. F1: the expanded stage', () => {
 // ---------------------------------------------------------------------------
 
 describe('b. F2: the inspector says each thing once, in words', () => {
-  it('labels the count "saved checkpoints" and leaves no bare ckpts or gen', async () => {
+  it('labels the count "Checkpoints" and leaves no bare ckpts or gen', async () => {
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the Details fold's facts are plain dt/dd pairs
+    // ("Checkpoints", "Generation"), not the inspector's curated
+    // `FACT_LABEL` prose ("saved checkpoints", "lease generation").
     const p = await openPanel()
-    const labels = [...p.querySelectorAll('.wf-inspect-facts .ctl-fact > b')].map((b) => b.textContent)
-    // MUTATION: label `ckpts` 'checkpoints' in `FACT_LABEL` -- beside the
-    // step called checkpoints, 'checkpoints 2' reads as the step.
-    expect(labels).toContain('saved checkpoints')
+    const labels = [...p.querySelectorAll('.sc-facts dt')].map((d) => d.textContent)
+    expect(labels).toContain('Checkpoints')
+    expect(labels).toContain('Generation')
     expect(flat(p)).not.toMatch(/\bckpts\b|\bgen\b/)
   })
 
-  it('states the exit once: no "error exit status 2" after "exit code 2"', async () => {
+  it('states the exit once: no separate "Error" fact duplicating the latest attempt’s own cause', async () => {
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the Details fold's "Error" fact (`olderError`) only ever
+    // holds an OLDER attempt's error, never the latest's -- the latest's own
+    // error is already "Why it failed" above, so it gets no second fact.
     const p = await openPanel()
-    const labels = [...p.querySelectorAll('.wf-inspect-facts .ctl-fact > b')].map((b) => b.textContent)
-    // MUTATION: keep the `error` fact when its line is the exit status the
-    // exit code already states.
-    expect(labels).not.toContain('error')
-    expect(count(flat(p.querySelector('.wf-inspect-facts')), 'exit status 2')).toBe(0)
-    expect(flat(p.querySelector('.wf-inspect-facts'))).toMatch(/exit code ?2/)
+    const facts = p.querySelector('.sc-facts')!
+    const labels = [...facts.querySelectorAll('dt')].map((d) => d.textContent)
+    expect(labels).not.toContain('Error')
+    const exitDt = [...facts.querySelectorAll('dt')].find((d) => d.textContent === 'Exit code')!
+    expect((exitDt.nextElementSibling as HTMLElement).textContent).toBe('2')
   })
 
-  it('prints the failure sentence once outside the banner while the banner is in view', async () => {
+  it('omits the whole "why it failed" group from the card while the banner is in view', async () => {
     observeBanner(true)
     const p = await openPanel()
     const banner = document.querySelector<HTMLElement>('.wfp-fail-lead')!
     expect(count(flat(banner), ERROR)).toBe(1)
-    // MUTATION: drop the `leadInView` branch in `InspectorSlot` -- the
-    // banner and the card both print the whole sentence.
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): `.sc-err` itself (not just its text) is left out while
+    // the banner is in view, rather than kept with a reference line pointing
+    // at the banner.
     await waitFor(() => expect(count(flat(p), ERROR)).toBe(0))
-    expect(within(p).getByRole('heading', { level: 4, name: 'Why it failed' })).toBeTruthy()
+    expect(p.querySelector('.sc-err')).toBeNull()
   })
 
   it('prints it in the inspector, once, when the banner is off screen', async () => {
@@ -437,14 +450,20 @@ describe('b. F2: the inspector says each thing once, in words', () => {
     await waitFor(() => expect(count(flat(p), ERROR)).toBe(1))
   })
 
-  it('never draws "exit 0" beside "why it failed"', async () => {
+  it('keeps the raw exit code away from "why it failed": Details-only, never beside the failure group', async () => {
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the old card's euphemism for a failed step's clean exit
+    // ("ended cleanly · the step failed on what it reported") is dropped --
+    // `StepCard` prints the raw exit code as a plain Details fact,
+    // structurally apart from the `.sc-err` group that carries the
+    // failure's own words, so the two are never read side by side.
     attemptsExiting(0, null)
     const p = await openPanel()
-    expect(within(p).getByRole('heading', { level: 4, name: 'Why it failed' })).toBeTruthy()
-    // MUTATION: print the exit fact as-is for a failed step -- 'exit code 0'
-    // reads as the step having succeeded.
-    expect(flat(p)).not.toMatch(/exit (code ?)?0\b/)
-    expect(flat(p.querySelector('.wf-inspect-facts'))).toMatch(/agent process ?ended cleanly · the step failed on what it reported/)
+    const cause = p.querySelector('.sc-err')!
+    expect(cause.getAttribute('aria-label')).toBe('Why it failed')
+    expect(cause.textContent).not.toMatch(/exit (code ?)?0\b/)
+    const exitDt = [...p.querySelectorAll('.sc-facts dt')].find((d) => d.textContent === 'Exit code')!
+    expect((exitDt.nextElementSibling as HTMLElement).textContent).toBe('0')
   })
 })
 
@@ -478,20 +497,21 @@ describe('c. F3: the list row', () => {
 // ---------------------------------------------------------------------------
 
 describe('d. F4: one name per scope', () => {
-  it('has exactly one control naming the step and its changes, and the banner’s button no longer says changes', async () => {
+  it('has exactly one control for this step’s own changes, scoped to it, and the banner’s button no longer says changes', async () => {
     // The page itself has no Changes tab inside a bare WorkflowCard -- that
     // chrome is `WfTabs`, drawn by the page around the card -- so "the tab
     // stays the workflow's" is read off `onView` instead: opening the step's
     // card from the banner must never ask the page to change its view.
     const onView = vi.fn()
     render(<PageCard onView={onView} />)
-    await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('checkpoints'))
-    const named = [...screen.getAllByRole('link'), ...screen.getAllByRole('button')]
-      .map((el) => el.getAttribute('aria-label') ?? el.textContent ?? '')
-      .filter((n) => n.includes('checkpoints') && /changes/i.test(n))
-    // MUTATION: put back 'This step’s changes in this workflow ›' -- no
-    // control names the step.
-    expect(named).toHaveLength(1)
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the bar's "Changes" link no longer spells the step's id
+    // in its own name or title -- the card it sits in is already headed by
+    // the step -- so a link scoped to this step's own column (by `href`) is
+    // what "names" it now, not its visible text or accessible name.
+    await waitFor(() => expect(panel()?.querySelector('.sc-card')?.getAttribute('aria-label')).toBe('Step checkpoints of wf_fan'))
+    const changesLinks = screen.getAllByRole('link').filter((a) => (a.getAttribute('href') ?? '').includes('/changes?step=checkpoints'))
+    expect(changesLinks).toHaveLength(1)
     const lead = screen.getByRole('region', { name: 'Why step checkpoints failed' })
     // MUTATION: keep ', changes' on the banner's button while the card is open.
     expect(within(lead).getByRole('button').textContent).not.toMatch(/changes/i)
@@ -571,16 +591,22 @@ describe('f. the head’s cost: reading, then not reported, then the figure', ()
     expect(headCost()).not.toMatch(/reading|\$0\.00/)
   })
 
-  it('prints the figure once a step has reported one, and labels the panel’s cost as the step’s own', async () => {
+  it('prints the figure once a step has reported one, as its own stat tile', async () => {
     serve(fan((id) => (id === 'cold-start' ? { result_summary: { runner: { usage: { total_cost_usd: 1.21 } } } } : {})))
     // NO ARRIVAL PICK ON THE PAGE any more: the reader opens checkpoints
     // themselves, from the stage grid, to see its own attempt's cost.
     const dock = await openOnPage()
     await waitFor(() => expect(headCost()).toMatch(/\$1\.21/))
-    const p = dock.querySelector<HTMLElement>('.wf-inspect-facts')!
-    // MUTATION: drop the `cost` hint in `FACT_HINT` -- '$0.253' beside the
-    // head's '$1.21' reads as a second figure for the workflow.
-    expect(flat(p)).toMatch(/this attempt’s cost ?\$0\.253 · this step’s own, not the workflow’s/)
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the step's own cost is the "Cost" stat tile, read apart
+    // from the head's workflow total by where it sits, not by a comparative
+    // sentence ("this step's own, not the workflow's") the new card drops.
+    const cost = await waitFor(() => {
+      const el = dock.querySelector<HTMLElement>('.sc-tile[data-tile="cost"] .sc-tile-v')
+      expect(el).toBeTruthy()
+      return el!
+    })
+    expect(cost.textContent).toBe('$0.253')
   })
 })
 

@@ -23,6 +23,7 @@ TF = ROOT / "terraform"
 SPEECH_TF = TF / "infra" / "voice_speech.tf"
 VARIABLES_TF = TF / "infra" / "variables.tf"
 BOOTSTRAP_TF = TF / "bootstrap" / "platform_service_accounts.tf"
+DEPLOYER_TF = TF / "bootstrap" / "deployer_conditions.tf"
 FRAGMENT = ROOT / "install" / "manifest.d" / "voice-speech-machine.yaml"
 COMMON_SH = ROOT / "scripts" / "lib" / "common.sh"
 
@@ -33,6 +34,32 @@ OPERATOR_PERMISSIONS = {
     "compute.instances.setMachineType",
     "compute.instances.setMetadata",
     "compute.instances.getSerialPortOutput",
+}
+
+# What the release deployer may do to the speech machine and its boot disk:
+# exactly the verbs voice_speech.tf's google_compute_instance and
+# google_compute_instance_iam_member use, and nothing on any other type.
+DEPLOYER_PERMISSIONS = {
+    "compute.instances.create",
+    "compute.instances.delete",
+    "compute.instances.get",
+    "compute.instances.getIamPolicy",
+    "compute.instances.setDeletionProtection",
+    "compute.instances.setIamPolicy",
+    "compute.instances.setLabels",
+    "compute.instances.setMachineType",
+    "compute.instances.setMetadata",
+    "compute.instances.setScheduling",
+    "compute.instances.setServiceAccount",
+    "compute.instances.setTags",
+    "compute.instances.start",
+    "compute.instances.stop",
+    "compute.instances.update",
+    "compute.instances.updateShieldedVmConfig",
+    "compute.disks.create",
+    "compute.disks.delete",
+    "compute.disks.get",
+    "compute.disks.setLabels",
 }
 
 
@@ -160,10 +187,11 @@ def test_machine_carries_its_tag_and_labels(speech: str, instance: str) -> None:
     assert re.search(r'speech_labels\s*=\s*merge\(local\.labels,\s*\{\s*"component"\s*=\s*"voice-speech"', speech)
 
 
-def test_machine_shape(instance: str) -> None:
+def test_machine_shape(speech: str, instance: str) -> None:
     assert re.search(r"machine_type\s*=\s*var\.voice_speech\.machine_type", instance)
     assert re.search(r"zone\s*=\s*var\.voice_speech\.zone", instance)
-    assert re.search(r'name\s*=\s*"\$\{var\.name_prefix\}-speech-\$\{local\.speech_zone_suffix\}"', instance)
+    assert re.search(r'name\s*=\s*"\$\{local\.speech_machine_prefix\}\$\{local\.speech_zone_suffix\}"', instance)
+    assert re.search(r'^\s*speech_machine_prefix\s*=\s*"\$\{var\.name_prefix\}-speech-"', speech, re.M)
     disk = _block(instance, r"^\s*initialize_params")
     assert re.search(r'type\s*=\s*"pd-balanced"', disk)
     assert re.search(r"size\s*=\s*var\.voice_speech\.disk_gb", disk)
@@ -322,7 +350,7 @@ def test_the_ids_are_spelled_in_the_id_modules() -> None:
     assert re.search(r'^\s*speech_operator\s*=\s*"swarmSpeechOperator\$\{local\.role_suffix\}"', roles, re.M)
 
 
-@pytest.mark.parametrize("path", [SPEECH_TF, BOOTSTRAP_TF], ids=lambda p: p.name)
+@pytest.mark.parametrize("path", [SPEECH_TF, BOOTSTRAP_TF, DEPLOYER_TF], ids=lambda p: p.name)
 def test_no_lane_file_spells_the_ids(path: Path) -> None:
     code = _code(path.read_text())
     assert "swarmSpeechOperator" not in code
@@ -331,6 +359,57 @@ def test_no_lane_file_spells_the_ids(path: Path) -> None:
     # or stands as a whole quoted string after account_id.
     assert "swarm-speech@" not in code
     assert not re.search(r'account_id\s*=\s*"swarm-speech"', code)
+
+
+# --- the release deployer's grant on the machine (owner, 2026-11-05) -------------
+
+
+@pytest.fixture(scope="module")
+def deployer() -> str:
+    return _code(DEPLOYER_TF.read_text())
+
+
+def test_the_deployer_condition_names_the_prefix_the_machine_is_named_with(speech: str, deployer: str) -> None:
+    """The prefix in the deployer's condition IS the one voice_speech.tf names
+    its instance with, and the boot disk takes the instance's name. A rename on
+    either side alone would leave CI unable to make the machine, or able to
+    make something else."""
+    machine = re.search(r'^\s*speech_machine_prefix\s*=\s*"([^"]+)"', speech, re.M)
+    assert machine, "voice_speech.tf names its instance from no local.speech_machine_prefix"
+    instance = _resource(speech, "google_compute_instance", "speech")
+    assert re.search(r'^\s*name\s*=\s*"\$\{local\.speech_machine_prefix\}\$\{local\.speech_zone_suffix\}"', instance, re.M)
+    # A boot disk made from initialize_params with no source of its own is
+    # named after the instance.
+    boot = _block(instance, r"^\s*boot_disk")
+    assert "initialize_params" in boot
+    assert not re.search(r"^\s*source\s*=", boot, re.M)
+
+    granted = re.search(r'^\s*deployer_speech_machine_prefix\s*=\s*"([^"]+)"', deployer, re.M)
+    assert granted, "deployer_conditions.tf has no deployer_speech_machine_prefix"
+    assert granted.group(1) == machine.group(1)
+    # Ends at the dash, so swarm-speechx is not admitted.
+    assert granted.group(1) == "${var.name_prefix}-speech-"
+
+    kinds = re.search(r"deployer_speech_machine_kinds\s*=\s*\[([^\]]*)\]", deployer)
+    assert kinds and set(re.findall(r'"(\w+)"', kinds.group(1))) == {"instances", "disks"}
+
+
+def test_the_deployer_holds_the_machine_verbs_and_only_conditioned(deployer: str) -> None:
+    role = _resource(deployer, "google_project_iam_custom_role", "deployer_speech_machine")
+    perms = set(re.findall(r'"([a-z]+\.[a-zA-Z.]+)"', role.split("permissions", 1)[1]))
+    assert perms == DEPLOYER_PERMISSIONS, sorted(perms ^ DEPLOYER_PERMISSIONS)
+    assert re.search(r'description\s*=\s*"managed-by=swarm-terraform;', role)
+    desc = re.search(r'description\s*=\s*"([^"]*)"', role).group(1)
+    assert len(desc) <= 300
+
+    binding = _resource(deployer, "google_project_iam_member", "deployer_speech_machine")
+    assert re.search(r"google_project_iam_custom_role\.deployer_speech_machine\[0\]\.role_id", binding)
+    assert re.search(r"google_service_account\.deployer\[0\]\.email", binding)
+    condition = _block(binding, r"^\s*condition")
+    assert re.search(r"expression\s*=\s*local\.deployer_speech_machine_condition", condition)
+    # The role is held through this one binding, never unconditioned.
+    held = re.findall(r"google_project_iam_custom_role\.deployer_speech_machine\b", deployer)
+    assert len(held) == 1
 
 
 # --- the samples' TTL (§12.3) ---------------------------------------------------
@@ -384,13 +463,15 @@ def test_manifest_fragment_lists_every_resource() -> None:
     want = {f"infra/{t}.{n}" for t, n in _resource_types(speech)}
     want |= {f"infra/data.google_service_account.{n}" for n in re.findall(
         r'^data\s+"google_service_account"\s+"([a-z_]+)"', speech, re.M)}
-    boot = _code(BOOTSTRAP_TF.read_text())
-    want |= {
-        f"bootstrap/{t}.{n}"
-        for t, n in _resource_types(boot)
-        if "speech" in n
-    }
+    for path in (BOOTSTRAP_TF, DEPLOYER_TF):
+        boot = _code(path.read_text())
+        want |= {
+            f"bootstrap/{t}.{n}"
+            for t, n in _resource_types(boot)
+            if "speech" in n
+        }
     assert want <= refs, sorted(want - refs)
     steps = {e.id: e.step for e in entries}
     assert steps["sa.swarm-speech"] == "bootstrap.pass-1"
     assert steps["compute.voice-speech-machine"] == "infra.pass-1"
+    assert steps["iam-binding.deployer-speech-machine"] == "bootstrap.pass-1"

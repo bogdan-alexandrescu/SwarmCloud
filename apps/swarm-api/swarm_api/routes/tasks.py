@@ -36,7 +36,7 @@ from starlette.concurrency import run_in_threadpool
 from swarm_common.models import Attempt, Task
 from swarm_common.states import TaskState
 
-from .. import agent_questions, mergewake, roles
+from .. import agent_questions, contractreask, mergewake, roles
 from ..agent_output import AgentOutputService
 from ..attempt_totals import IN_LIMIT as ATTEMPTS_IN_LIMIT
 from ..attempt_totals import PER_TASK_CAP as ATTEMPTS_PER_TASK_CAP
@@ -832,6 +832,14 @@ def get_task(
         ),
         totals,
     )
+    # JEV'S JUDGMENT OF THE STEP'S WORK CONTRACT (jev-contract.md section 5.4;
+    # the owner's pick on PR #3255): the stored `contract_acceptance`, served
+    # on the detail beside the approval inbox's, so the person deciding reads
+    # it wherever they open the step. The Task model does not carry the field,
+    # so it is one read of the task's own document; absent when never judged.
+    acceptance = contractreask.acceptance_of(ctx.db, tenant_id, task.id)
+    if acceptance is not None:
+        served["contract_acceptance"] = acceptance
     add_names(name_lookup(ctx), [served], ("submitted_by",))
     return {"task": served}
 
