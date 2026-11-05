@@ -93,8 +93,10 @@ frozen `swarm_common`. None is a frozen-contract change
   `unit_tests`.
 * **`judgment` joins the enforced set only where JC2 runs.** A strict
   contract naming `judgment` compiles only where the worker's post-step runs
-  JC2 at the end of the step (`workcontract.JC2_AT_END_OF_STEP`, turned on by
-  lane 6) and the workspace's signed `code_intelligence.jev` is on, because
+  JC2 at the end of the step (`workcontract.JC2_AT_END_OF_STEP`, on since
+  5 November 2026, turned on in the same change that made the worker deliver
+  JC2's verdict, section 5.1; before it the judgment ran and nothing posted
+  it, so no `judgment` evidence could ever be written) and the workspace's signed `code_intelligence.jev` is on, because
   JC2 sends code (Q9). JC1 being able to review the contract at submission
   (`contract_review` on, a backend configured) is **not** enough: without JC2
   nothing ever writes the `judgment` evidence, so the requirement could never
@@ -302,6 +304,20 @@ and J5 in `runners/cliagent._jev_post_steps`:
   attempt proof like every state route, and swarm-api runs every check and
   writes the evidence and the transition in one transaction
   ([section 9](#9-fencing-a-stale-or-superseded-attempts-judgment)).
+* the worker names the contract and delivers the verdict, never the agent.
+  Before the runner starts, `lifecycle.Worker._stage_work_contract` writes
+  the stored body (`metadata.work_contract`) to `work/work-contract.json` and
+  hands the runner `SWARM_WORK_CONTRACT_FILE` and `SWARM_WORK_CONTRACT_DIGEST`
+  (the signed `metadata.dispatch.work_contract.digest`, the authority: a body
+  that does not digest to it is not judged). After the publish and its
+  `published` mark, `lifecycle.Worker._deliver_contract_verdict` posts the
+  runner report's `contract_judgment` once, about the pushed head, with a new
+  request id (`poststeps.deliver_contract_verdict`). A 409 `attempt_fenced`
+  stands the attempt down with nothing further written (invariant 5); a
+  send-back ends the attempt where the route ended it, in `READY`; any other
+  refusal, or a worker on the direct Firestore path with no state route, is
+  recorded in the summary's `contract_verdict` and left to the control
+  plane's re-ask.
 
 The other placements, a control-plane judgment that reads the published diff
 from the forge, and a separate judge step in its own pod, are in Q4 with what
