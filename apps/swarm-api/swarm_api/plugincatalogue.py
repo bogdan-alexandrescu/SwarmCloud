@@ -31,6 +31,11 @@ class PluginEntry:
     runner_profiles: tuple[str, ...]
     #: Per mode, the skills a step may name.
     skills: Mapping[str, tuple[str, ...]] = field(hash=False)
+    #: Where the plugin's skill folders sit under `install_path`, for a
+    #: plugin whose SKILL.md reads its sibling files by relative path: the
+    #: worker links each step skill's folder whole. None is gstack's shape
+    #: (one `<skill>/SKILL.md` per skill, the plugin root linked by name).
+    skill_folders: str | None = None
 
 
 #: The modes a step may name, in `swarm_common.workcontract`'s vocabulary.
@@ -45,7 +50,7 @@ BRIDGE_REASON = (
 )
 
 #: The five claude-code profiles (`swarm_common.profiles`), the only runners
-#: that load gstack's skills. codex comes later.
+#: that load the catalogue's skills. codex comes later.
 CLAUDE_CODE_PROFILES = (
     "claude-code",
     "claude-code-large",
@@ -78,7 +83,25 @@ GSTACK = PluginEntry(
     },
 )
 
-CATALOGUE: Mapping[str, PluginEntry] = {GSTACK.name: GSTACK}
+#: Cloudflare's security audit skill (github.com/cloudflare/security-audit-skill,
+#: MIT), the second plugin (owner, 4 November 2026), at the commit the build
+#: mirror pins (14 September 2026). One skill folder, skills/security-audit/,
+#: whose SKILL.md reads its method files, report schema and two Node
+#: validators beside it. Guidance mode answers a focused question; full audit
+#: mode writes its reports to an output folder outside the checkout. No new
+#: runner profile and no new image: the base image carries it, so every
+#: claude-code profile's image does (docs/design/agent-plugins-packaging.md,
+#: "The second plugin").
+SECURITY_AUDIT = PluginEntry(
+    name="security-audit",
+    version="c1c8a8c1471069fb0e188eeaff69b8e8db6564a8",
+    install_path="/opt/swarm/plugins/security-audit",
+    runner_profiles=CLAUDE_CODE_PROFILES,
+    skills={"unattended": ("security-audit",)},
+    skill_folders="skills",
+)
+
+CATALOGUE: Mapping[str, PluginEntry] = {GSTACK.name: GSTACK, SECURITY_AUDIT.name: SECURITY_AUDIT}
 
 
 def offered_skills() -> dict[str, dict[str, tuple[str, ...]]]:

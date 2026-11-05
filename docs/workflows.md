@@ -1955,7 +1955,19 @@ changed paths (`own_files` when recorded, else `files`) and
 * **The review runs** when any changed path matches a risk path, when the
   lines total more than `min_lines`, or when the change cannot be told: a
   parent that cannot be read, has no line counts, or whose file list was cut.
-  A gate that could not see the diff never waves it through. swarm-api
+  A gate that could not see the diff never waves it through. The review
+  also runs, whatever the line count, when a parent it depends on hands it
+  work that is not code lines: a direct parent whose
+  `metadata.expected_outputs` (the files its dependants stage from it
+  through `input_from`) names anything but `swarm-work.patch` and
+  `verdict.json`, or a direct parent submitted with `allow_empty_diff`
+  whose diff is empty. The gate counts code lines only, and on
+  2026-11-05 it skipped both mock-up reviews of the workflow-graph
+  directions as "0 changed lines" while their parents handed them the whole
+  bundle; the reason now reads "review runs: its parent hands it <name>;
+  the gate counts code lines only". An issue-run implementer (always
+  `allow_empty_diff`, handing only its patch) is still counted on its own
+  diff's lines. swarm-api
   declines the claim (`control_publish.state: declined`, code
   `review_runs`, the decision as the reason) and rings the parent's wake
   again, and the scheduler promotes the review on it. A gate block that

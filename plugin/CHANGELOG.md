@@ -6,7 +6,7 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
-## 0.5.80 (2026-11-04)
+## 0.5.82 (2026-11-05)
 
 * A workflow spec's top-level `description` and `feature` reach SwarmCloud
   (part of #2688): `swarm_workflow` and `swarm workflow <spec.json>` send
@@ -17,6 +17,39 @@ here.
   and an optional https github.com issue or pull request of the workflow's
   own repository. A malformed one is refused before anything is sent, by the
   rules swarm-api applies.
+
+## 0.5.81 (2026-11-05)
+
+* `/sc check` flags a merge step that waits on the merge train for more than
+  60 minutes, rule `merge_train_stalled` (STUCK; part of #2688). A train park
+  (CI_PENDING, code `merge_train_waiting`) stops the CI clock by design, so
+  the CI_PENDING rule never aged it: on 4 November a pull request whose
+  `queue for auto-merge` check had failed on a network timeout waited eight
+  hours, passed over on every train tick, and nothing said so. The wait is
+  aged from the train's start swarm-api serves, `waiting.detail.train_since`
+  (exact; the park now records `merge_wait.train_entered_at`), read from the
+  task route when a listing served no detail. Where none is served (an older
+  deployment, a park recorded before it), from the first train park of its
+  unbroken run, reading older event pages by their token (exact, or "at
+  least" past five pages); the evidence
+  names the pull request's failed or cancelled checks at its head, read from
+  GitHub's public API without a token, or says they were not read and why;
+  `next` is the pull request. A train park under 60 minutes is not flagged.
+* A train park no longer counts toward a later CI wait's 90 minutes.
+* The build board lists the same wait, `merge_train_stalled`, past 60 minutes.
+
+## 0.5.80 (2026-11-05)
+
+* A `/sc:swarmcloud` or `swarm_workflow` spec can set a review step's gate
+  (part of #2688): a step's `review_gate` is `false`, which switches the gate
+  off for that review, or a block of `min_lines`, `risk_paths` and
+  `requirements_check`, and is sent as the step's `metadata.review_gate`.
+  swarm-api has taken it since the gate shipped, but the bridge refused the
+  key, so a spec could not run a mock-up review the gate skipped. A malformed
+  block is refused before anything is submitted, by swarm-api's rules
+  (`validation.resolve_review_gate`). `metadata` itself is still refused with
+  the same sentence: a spec names a runner profile and never sends an image,
+  a command or a resource spec (invariant 10).
 
 ## 0.5.79 (2026-11-04)
 

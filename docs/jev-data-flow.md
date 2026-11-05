@@ -338,12 +338,18 @@ Chosen by the workspace's judgment backend (`judge.settings.resolve_backend`):
   bearer is the worker's loopback shim's **local token**, read from
   `private/jev-typesafe.shim`. The workspace key never enters the pod; the
   forwarder adds it.
-* **TypeSafe** otherwise: the workspace's key, read only from the
+* **TypeSafe** otherwise: the workspace's key, from the
   `private/jev-typesafe.key` the worker already wrote for a live-browser
-  attempt (since JEV-JUDGMENTS-RUN, before the judge's setup reads it),
-  copied to `<attempt>/private/jev-key` (0600) for the config to name, or,
-  under the signed workflow switch `jev_judgments: on`, the workspace's key
-  resolved for the step. Any other attempt reads `no_key` and makes no call.
+  attempt (since JEV-JUDGMENTS-RUN, before the judge's setup reads it), or,
+  on any other step whose judgments run -- the signed opt-in, or the signed
+  workflow switch `jev_judgments: on` -- the WORKSPACE's key resolved for
+  the step with no submitter, as the quality gates resolve theirs
+  (`apps/agent-worker/agent_worker/jevkey.py::resolve_workspace`), copied to
+  `<attempt>/private/jev-key` (0600) for the config to name. Until lane
+  jev-on-coding-profiles (4 November 2026) the workspace's key was resolved
+  only under the switch, so every claude-code and claude-code-large step on
+  TypeSafe read `no_key` ("Closed by lane jev-on-coding-profiles"). An
+  attempt with no key at all reads `no_key` and makes no call.
 
 In every case the key is in no config, MCP entry, environment variable, log
 line or audit row (`Backend.__repr__` omits it; rule 6's test checks the
@@ -386,9 +392,10 @@ Two GKE FQDNNetworkPolicies name `api.typesafe.ai`, and nothing else in
   (`apps/scheduler/scheduler/dispatch.py::TYPESAFE_DIRECT_POD_LABEL`, set by
   `apps/scheduler/scheduler/dispatch.py::with_typesafe_direct` and
   `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._with_judgments_forwarder`):
-  a TypeSafe-backed live browser, quality gates on, or a `jev_judgments: on`
-  step on the TypeSafe backend, whenever the pod is not labelled
-  `swarm-typesafe: inject`.
+  a TypeSafe-backed live browser, quality gates on, or a step on the
+  TypeSafe backend whose judgments run (the signed opt-in, or
+  `jev_judgments: on`; `apps/scheduler/scheduler/dispatch.py::jev_judgments_run`),
+  whenever the pod is not labelled `swarm-typesafe: inject`.
 
 A pod labelled `swarm-typesafe: inject` has no TypeSafe allow: it reaches
 TypeSafe only through the forwarder, on TCP 8080 (`allow-typesafe-fwd.yaml`).
@@ -567,6 +574,55 @@ hooks, launcher redaction and URL pin, counts and event) and
   hostname sinkhole on unlabelled pods, or the general internet behind a
   proxy that refuses the host) is an owner question, in
   [the runbook](runbooks/typesafe-egress.md).
+
+### Closed by lane jev-on-coding-profiles (2026-11-04)
+
+* **Only live-browser steps called Jev.** SwarmCloud's own `jev_usage`
+  ledger for 3 November 15:26 to 4 November 19:51 UTC (Engineering) held
+  377 calls, every one from a claude-code-browser step, all through
+  TypeSafe; 902 of 1,165 attempts settled a reservation and made no call,
+  580 of them on claude-code and 116 on claude-code-large. The owner chose
+  that day to find why and fix it. Each candidate cause, checked:
+  * *The client in the image*: not the cause. `images/agent-runtime-base`
+    installs `swarm_jev` and `agent_worker`, and the browser image is built
+    `FROM` it; all three profiles run `agent_worker.runners.claude_code`.
+  * *The worker's key* (the cause on the worker): `judge.attempt.setup` read
+    only the key file `jevkey.prepare` writes for a live browser, and asked
+    for the workspace's key only under `jev_judgments: on`. A coding step
+    under the signed opt-in alone read `no_key`, so it had no
+    `judge/config.json`: no J0 or J1 in the context pack, no J3 on a review,
+    no `jev_decide` tool. Its reservation was still made and settled empty,
+    which is the 696. Now it resolves the workspace's key whenever its
+    judgments run and it has neither the browser's key file nor the
+    forwarder's shim (`apps/agent-worker/agent_worker/judge/attempt.py::setup`;
+    `tests/unit/worker/test_jev_on_coding_profiles.py`).
+  * *The pod's route* (the cause in the GKE render): the forwarder's
+    `swarm-typesafe: inject` label and SWARM_TYPESAFE_INJECT=on, or the
+    `swarm-jev: typesafe-direct` label, reached a non-browser pod only under
+    the switch, never under the signed opt-in, so on a forwarder tenant the
+    worker served no shim and the forwarder's ingress did not select the
+    pod. Now `apps/scheduler/scheduler/dispatch.py::jev_judgments_run` (the
+    signed reading or the switch, never `off`) decides it
+    (`tests/unit/control_plane/test_jev_on_coding_profiles.py`).
+  * *The opt-in read per profile*: not the cause. The scheduler's verdict
+    (`read_jev_judgments`) is read for every profile that carries the Jev
+    client, and the Internal backends' address already followed it
+    (`judges_internally`).
+  * *The decision API's egress and its ingress source ranges*: not the
+    cause, and unchanged. Every call in the window went through TypeSafe;
+    coding and browser pods share the cluster's pod range and policies, and
+    `allow-egress.yaml` rule 4 admits TCP 443 for every tenant pod.
+
+  The budget is unchanged: the coding step's calls go through the same
+  ledger, the same per-agent 8 calls and 120k tokens, the same swarm-api
+  reservation on the state routes and the same
+  `code_intelligence.jev_monthly_cap_tokens`. Which steps call Jev now: on
+  every claude-code, claude-code-large and claude-code-browser step of an
+  opted-in workspace, J0 for an `implement` step, J1 before the agent, J3 on
+  a review, J4 in the gate, J2/J5 after it and the agent's `jev_decide`
+  tool; codex steps the same, without the tool. The effect is read in the
+  ledger as `jev_usage` attempt rows' calls grouped by the agent's
+  `runner_profile` after the release that carries this.
 
 ### Closed by lane AQ-JEV-ACCOUNTING (2026-11-03)
 
