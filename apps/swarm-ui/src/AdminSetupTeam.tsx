@@ -75,7 +75,7 @@ function Field({ label, hint, value, placeholder, onChange }: { label: string; h
         <span className="c-lbl asm-explained">{label}</span>
         <input className="c-inp" aria-describedby={hintId} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
       </Tooltip>
-      <span id={hintId} hidden>
+      <span id={hintId} data-help-description="" hidden>
         {hint}
       </span>
     </label>
