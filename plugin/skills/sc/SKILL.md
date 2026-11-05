@@ -125,6 +125,18 @@ plugin's own read tools and work outside a checkout; they are not pre-granted
 here -- this skill grants only the `sc` and `swarm` commands -- so
 the session may ask once before the first read.
 
+### A spec says what it delivers: `description` and `feature`
+
+A workflow spec may carry, at its top level beside `title`, a `description`
+-- two or three sentences of plain text saying what the work delivers, at
+most 600 characters, no HTML or Markdown -- and a `feature`, `{title, url?}`:
+the feature it belongs to, a title of at most 120 characters, and optionally
+the https github.com issue or pull request of the workflow's OWN repository
+that tracks it. The console's workflow page heads with both, so write them
+for a person who opens the workflow cold. They are sent as
+`metadata.description` and `metadata.feature`; a malformed one is refused
+before anything is sent, and a longer description is refused, never cut.
+
 ### Every run is titled after its workflow
 
 A SwarmCloud workflow run here is titled `SC · <name> · N steps` (at most
@@ -347,6 +359,7 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    | `no_heartbeat` | RUNNING/STARTING with no heartbeat and no event for more than the window | a beat or an event inside it |
    | `waiting_for_capacity` | READY/QUEUED longer than the window, with the pool that binds it | a task that entered the state recently. It holds nothing while it waits (invariant 1): report it as waiting, not as broken |
    | `parked` | HUMAN_REQUIRED (only a person promotes it); CI_PENDING over 90 min; DEPENDENCY_INCOMPLETE whose dependency failed | any other park reason: a quota window or a retry backoff is the platform waiting by design |
+   | `merge_train_stalled` | a merge step waiting on the merge train (CI_PENDING, code `merge_train_waiting`) more than 60 min, aged from the train's start the API serves (`waiting.detail.train_since`), else from the first train park of its unbroken run (`evidence.in_state_since`, exact or "at least"; `evidence.age_source` says which); the train boards only pull requests whose checks are all green | a train park under 60 min; a train park never counts toward the CI_PENDING 90 min. Name `evidence.failed_checks` (the PR's failed or cancelled checks at its head, read from GitHub's public API); when it is null, say the checks were NOT read (`checks_unread_because` says why). `next` is the PR link |
    | `merge_refused` | a merge step FAILED with `head_moved`, `merge_conflict` or `checks_failed`, and its PR is still open | any other failure, and a PR that has since MERGED or CLOSED (the check reads the PR's state from GitHub's public API). When `pull_request_state` is null, say the PR's state was NOT read (its `pull_request_state_unread_because` says why), and give its link |
    | `state_disagrees` | a workflow whose stored state and derived state disagree on whether it is finished (the stale RUNNING cache) | a stored QUEUED under a derived RUNNING: the cache lags between reads |
    | `awaiting_input` | STUCK only when an AWAITING_INPUT step is still parked more than two ticks (2 min) past its `expires_at`: the expiry sweep is not running | a wait inside its window, or just past it: listed under `awaiting_input`, below |
