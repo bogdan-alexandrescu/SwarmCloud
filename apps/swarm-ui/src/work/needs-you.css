@@ -68,6 +68,35 @@
 .ny-more { margin: 0; display: flex; flex-wrap: wrap; gap: var(--ctl-s2); }
 .ny-morebtn { border: 0; background: none; padding: 0; font: inherit; font-size: var(--t-meta); color: inherit; text-decoration: underline; cursor: pointer; }
 
+/* A PLUGIN STEP'S PARKED QUESTION (direction B's Needs-you screen, the
+   plugins console's pick of 4 November 2026). The row's plugin line sits under
+   it, the whole width; beside the list, a column of one card per parked plugin
+   step, 320px wide (the picked frame's), which drops under the list at 900px
+   and under. A card is the console's card: --line border, --surface ground,
+   the parked colour on its left edge, as the box's own. */
+.ny-plugin { grid-column: 1 / -1; min-width: 0; color: var(--text-dim); font-size: var(--t-micro, 12px); line-height: 1.4; overflow-wrap: anywhere; }
+.ny-plugin b { color: var(--text); font-weight: 600; }
+.ny-plugin-left { color: var(--paused-ink, var(--s-park)); font-variant-numeric: tabular-nums; }
+.ny-body.has-parked { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; align-items: start; min-width: 0; }
+.ny-parked { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ny-parked-h { margin: 0; font-size: var(--t-meta); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+.ny-parked-lead { margin: 0; color: var(--text-dim); font-size: var(--t-micro, 12px); line-height: 1.4; }
+.ny-park { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--s-park); border-radius: 10px; background: var(--surface); min-width: 0; font-size: var(--t-meta); }
+.ny-park-h { max-width: 100%; overflow-wrap: anywhere; }
+.ny-park-repo { font-family: var(--mono); font-size: var(--t-micro, 12px); color: var(--text-dim); max-width: 100%; overflow-wrap: anywhere; }
+.ny-park-chip { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; font-size: var(--t-micro, 12px); }
+.ny-park-seg { display: inline-flex; gap: 6px; padding: 2px 8px; border-left: 1px solid var(--line); }
+.ny-park-seg:first-child { border-left: 0; background: var(--s-parkb, var(--surface)); }
+.ny-park-seg.is-skill { color: var(--text-dim); }
+.ny-park-time { font-variant-numeric: tabular-nums; }
+.ny-park-act { line-height: 1.4; }
+.ny-park-act .c-btn { margin-top: 4px; }
+.ny-dim { color: var(--text-dim); }
+
+@media (max-width: 900px) {
+  .ny-body.has-parked { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* At 1280 and under, the rows drop the pull request and keep the rest. */
 @media (max-width: 1280px) {
   .ny-row .ny-pr { display: none; }
