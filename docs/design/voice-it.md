@@ -5,6 +5,10 @@
 2026-10-31) was a session scratchpad file; the facts this design rests on are
 restated here with their sources (§13), so this file stands alone.
 
+**A second engine (BGD, 2026-11-05):** speech on our own L4 machine beside GPT-Live, with
+Settings, Telemetry, spoken read-backs and visuals on the Talk page, is designed in
+[voice-it-own-speech.md](voice-it-own-speech.md).
+
 **The owner's ask (BGD, 2026-10-31):** a console page used mainly to talk by
 voice, with live captions of both sides and a voice oscilloscope while the
 agent speaks, to an agent that is a product designer, software architect and

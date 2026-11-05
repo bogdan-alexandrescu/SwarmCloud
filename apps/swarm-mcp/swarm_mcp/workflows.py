@@ -105,6 +105,11 @@ _STEP_KEYS = frozenset(
         # "browser only if the change is UI" (#2322): `"browser_if_ui"`, sent
         # as the step's `metadata.runtime` naming both profiles it may run.
         "runtime",
+        # A review's gate (2026-11-05): `false` switches it off for this step,
+        # a block sets `min_lines`, `risk_paths` (and `requirements_check`).
+        # Sent as the step's `metadata.review_gate`, the one metadata key a
+        # spec may set: `metadata` itself stays refused (invariant 10).
+        "review_gate",
     }
 )
 
@@ -113,6 +118,64 @@ _STEP_KEYS = frozenset(
 #: refuses any other pair; this only spells the block, so a spec need not.
 RUNTIME_BROWSER_IF_UI = "browser_if_ui"
 RUNTIME_PROFILES = {"browser": "claude-code-browser", "code": "claude-code"}
+
+#: The keys a step's `review_gate` block may carry, and their bounds: a copy
+#: of swarm-api's `validation.REVIEW_GATE_KEYS` and `REVIEW_GATE_MAX_*`, which
+#: this package cannot import; tests/unit/mcp/test_spec_review_gate.py holds
+#: them equal and runs every shape through swarm-api's own check.
+REVIEW_GATE_KEYS = ("min_lines", "risk_paths", "requirements_check")
+REVIEW_GATE_MAX_MIN_LINES = 1_000_000
+REVIEW_GATE_MAX_RISK_PATHS = 100
+REVIEW_GATE_MAX_PATH_CHARS = 200
+
+
+def check_review_gate(value: Any, *, where: str) -> bool | dict[str, Any]:
+    """A step's `review_gate`, as its `metadata.review_gate`: `False` or the block.
+
+    The rules are swarm-api's (`validation.resolve_review_gate`), restated so
+    a malformed block is refused before the workflow is submitted rather than
+    as a 422 after: `false`, or an object with only `REVIEW_GATE_KEYS`; a
+    `min_lines` that is a whole number in 0..`REVIEW_GATE_MAX_MIN_LINES` (a
+    bool is not); a `requirements_check` that is true or false; a `risk_paths`
+    that is a list of 1..`REVIEW_GATE_MAX_RISK_PATHS` non-empty, printable,
+    repository-relative globs of at most `REVIEW_GATE_MAX_PATH_CHARS`. The
+    block is sent as given: swarm-api normalises it and applies the defaults.
+    """
+    if value is False:
+        return False
+    shape = (
+        f"{where}: review_gate must be false, which switches this review's gate off, "
+        f"or an object with only {list(REVIEW_GATE_KEYS)}, e.g. "
+        '{"min_lines": 300, "risk_paths": ["apps/redaction/**"]}'
+    )
+    if not isinstance(value, dict) or not set(value) <= set(REVIEW_GATE_KEYS):
+        raise SwarmError(shape)
+    if "min_lines" in value:
+        min_lines = value["min_lines"]
+        if (isinstance(min_lines, bool) or not isinstance(min_lines, int)
+                or not 0 <= min_lines <= REVIEW_GATE_MAX_MIN_LINES):
+            raise SwarmError(
+                f"{where}: review_gate.min_lines must be a whole number from 0 to "
+                f"{REVIEW_GATE_MAX_MIN_LINES} -- the changed lines below which the "
+                "review is skipped"
+            )
+    if "requirements_check" in value and not isinstance(value["requirements_check"], bool):
+        raise SwarmError(f"{where}: review_gate.requirements_check must be true or false")
+    if "risk_paths" in value:
+        paths = value["risk_paths"]
+        if (not isinstance(paths, list) or not paths
+                or len(paths) > REVIEW_GATE_MAX_RISK_PATHS
+                or not all(isinstance(p, str) and p.strip() and len(p) <= REVIEW_GATE_MAX_PATH_CHARS
+                           and not p.startswith("/") and p.isprintable() for p in paths)):
+            raise SwarmError(
+                f"{where}: review_gate.risk_paths must be a list of 1 to "
+                f"{REVIEW_GATE_MAX_RISK_PATHS} repository-relative globs of at most "
+                f"{REVIEW_GATE_MAX_PATH_CHARS} characters -- a change touching one "
+                "always runs the review"
+            )
+        return {**value, "risk_paths": list(paths)}
+    return dict(value)
+
 
 #: A step key that is READ HERE AND NEVER SENT. `stage` was the group a step was
 #: shown under in Claude Code's `/workflows` when the spec ran with
@@ -425,10 +488,14 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             # with none, which leaving the key out would not (§7 Q6).
             step["additional_repositories"] = check_additional_repositories(
                 raw["additional_repositories"], where=where)
+        metadata: dict[str, Any] = {}
         if runtime is not None:
-            step["metadata"] = {
-                "runtime": {"policy": RUNTIME_BROWSER_IF_UI, **RUNTIME_PROFILES},
-            }
+            metadata["runtime"] = {"policy": RUNTIME_BROWSER_IF_UI, **RUNTIME_PROFILES}
+        if "review_gate" in raw:
+            # `None` is refused with the rest: `false` is how a spec says "no gate".
+            metadata["review_gate"] = check_review_gate(raw["review_gate"], where=where)
+        if metadata:
+            step["metadata"] = metadata
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
             raise SwarmError(f"{where}: stage must be a string -- a note for the spec's reader, never sent")
         steps.append(step)

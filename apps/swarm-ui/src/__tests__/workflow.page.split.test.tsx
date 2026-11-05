@@ -201,8 +201,9 @@ describe('one workflow as two panes', () => {
     expect(tally.textContent).toContain('1 running')
     expect(tally.textContent).toContain('1 done')
     expect(tally.textContent).toContain('1 failed')
-    // review-search not started and the parked merge both wait.
-    expect(tally.textContent).toContain('2 waiting')
+    // review-search not started waits; the parked merge is counted parked, as its chip draws it.
+    expect(tally.textContent).toContain('1 waiting')
+    expect(tally.textContent).toContain('1 parked')
     expect(tally.textContent).toContain('0 browsers')
   })
 

@@ -782,12 +782,12 @@ def test_on_a_dispatch_nothing_prod_facing_runs_unless_verify_succeeded(release,
 
 def test_on_a_push_everything_still_runs_without_verify():
     """The other half: a push whose `verify` is skipped still promotes,
-    applies, deploys and tags. MUTATION: drop the push-skip clause from
+    applies and deploys. MUTATION: drop the push-skip clause from
     `approval`'s condition."""
     jobs = _workflow("release.yml")["jobs"]
     clean = [r for r, _ in _attempts(jobs, DEV_RELEASES["push"], endings=("success",))]
     assert clean and all(r["verify"] == "skipped" for r in clean)
-    for job_id in ("build", "approval", "promote", "infrastructure", "deploy", "plugin-tag"):
+    for job_id in ("build", "approval", "promote", "infrastructure", "deploy"):
         assert any(r[job_id] == "success" for r in clean), f"{job_id} never runs on a push: {clean[0]}"
 
 

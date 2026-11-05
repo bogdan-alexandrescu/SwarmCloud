@@ -15,9 +15,9 @@ counts differ from this table, so the table is the tree's.
 
 | Kind | Count | What it means here |
 |---|---|---|
-| `skipif` | 220 | `pytest.mark.skipif`: every one is conditional on the machine (a tool on `PATH`: git, jq, bash, shellcheck, uv, node, ffmpeg; procfs or Linux; a checked-out `apps/swarm-ui`; a built binary) |
+| `skipif` | 221 | `pytest.mark.skipif`: every one is conditional on the machine (a tool on `PATH`: git, jq, bash, shellcheck, uv, node, ffmpeg; procfs or Linux; a checked-out `apps/swarm-ui`; a built binary) |
 | `skip` | 0 | `pytest.mark.skip` with no condition: none |
-| `skip_call` | 59 | `pytest.skip(...)` inside a test, again on a missing tool or platform, or on a fixture the test looks for ("the budget route moved; pick another route") |
+| `skip_call` | 61 | `pytest.skip(...)` inside a test, again on a missing tool or platform, or on a fixture the test looks for ("the budget route moved; pick another route") |
 | `xfail` | 1 | the one expected failure, below |
 | `importorskip` | 11 | an optional module (`cryptography`, `rfc8785`, `tree_sitter`, `uvicorn`, `websockets`, another app's package) |
 | `tests/flaky.txt` entries | 0 | the quarantine is empty; it was emptied on 2026-10-14 ([ci.md](../../ci.md)) |
