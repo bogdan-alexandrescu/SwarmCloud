@@ -27,9 +27,9 @@ link that set it), and whether a link is open now. The key itself is never read 
 answers no route with it but the Voice it lease. It is set only through the
 existing `voice-api-key` link, minted by `POST /v1/admin/setup/links`.
 
-This router is mounted beside the session routes by the engine lane
-(voice-it-own-speech.md §14, L6); it imports nothing from routes/voice.py, so
-mounting it there makes no import cycle.
+This router is mounted beside the session routes in `main.create_app`; it
+imports nothing from routes/voice.py, so mounting it there makes no import
+cycle.
 """
 
 from __future__ import annotations
