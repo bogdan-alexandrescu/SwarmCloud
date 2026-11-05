@@ -98,6 +98,14 @@ function whoCell(item: InboxItem): ReactNode {
       </>
     )
   }
+  if (item.kind === 'contract') {
+    return (
+      <>
+        {approversShort(item.approvers) ?? 'the step’s owner'}
+        <small>not decided in this inbox</small>
+      </>
+    )
+  }
   const md = item.may_decide ?? null
   const who = decidersWords(md) ?? approversShort(item.approvers)
   const you = md === null ? null : md.approve ? 'you may decide' : md.reject ? 'you may reject, not approve' : 'not you'

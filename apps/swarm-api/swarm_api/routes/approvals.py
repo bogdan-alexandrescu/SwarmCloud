@@ -2,7 +2,8 @@
 
     GET  /v1/approvals[?kind=&state=]          the inbox: records plus projected PLANNED runs;
                                                `state=decided|expired|all`: the last 7 days' too
-    GET  /v1/approvals/{id}                    one item, with what its kind needs to decide it
+    GET  /v1/approvals/{id}                    one item, with what its kind needs to decide it;
+                                               `contract:<task_id>` adds the step's `contract_acceptance`
     POST /v1/approvals/{id}:approve            {digest, confirm?}
     POST /v1/approvals/{id}:reject             {reason}
     POST /v1/schedules/{id}:merge-mode         {mode: "approve" | "auto", revision, confirm?}
@@ -256,7 +257,7 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
     route and never decided here, and when the reader's role cannot be read.
     The decision routes still decide; this reads their rules out before the
     click and never widens them."""
-    if item.get("kind") == approvals.INPUT:
+    if item.get("kind") in (approvals.INPUT, approvals.CONTRACT):
         return None
     readable, why = _role_floor(ctx, auth)
     if not readable:
@@ -385,7 +386,7 @@ def list_approvals(
     if state in (STATE_PENDING, STATE_ALL):
         for item in approvals.inbox(ctx, tenant_id, kind=kind):
             run = None
-            if item.get("projected") and item.get("kind") != approvals.INPUT:
+            if item.get("projected") and item.get("kind") not in (approvals.INPUT, approvals.CONTRACT):
                 run = _projected_run(ctx, tenant_id, str(item["approval_id"]))
             elif item.get("kind") == approvals.MERGE:
                 run = _record_run(ctx, tenant_id, item)
@@ -409,6 +410,13 @@ def get_approval(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    if item_id.startswith(approvals.CONTRACT_PREFIX):
+        # A step whose contract acceptance waits on its owner: the item and
+        # the step's `contract_acceptance`, Jev's judgment the approval
+        # screen draws (the owner's pick on PR #3255). Never decided here, so
+        # it carries no `may_decide`.
+        item, acceptance = approvals.contract_item(ctx.db, tenant_id, item_id)
+        return {"approval": _named(ctx, approvals.to_api(item)), "contract_acceptance": acceptance}
     if item_id.startswith(approvals.PROJECTED_PREFIX):
         run = _projected_run(ctx, tenant_id, item_id)
         if run.state != RunState.PLANNED:

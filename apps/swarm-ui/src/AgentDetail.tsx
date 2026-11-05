@@ -23,6 +23,7 @@ import { UtilisationPanel } from './UtilisationPanel'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
+import { ContractAcceptanceCard } from './ContractJev'
 import { DecisionCard } from './DecisionCard'
 import { AdditionalRepositoryRows } from './Dispatch'
 import { PersonName } from './PersonName'
@@ -520,6 +521,10 @@ export function Run({
           2026-11-02): what jev-belay and jev-enforce did, or why they did not
           run. Nothing for an attempt whose summary has no `quality_gates`. */}
       <QualityGatesLine task={task} />
+      {/* JEV'S JUDGMENT OF THE WORK CONTRACT (jev-contract.md section 5.4; the
+          owner's pick on PR #3255): the record the approval screen draws,
+          served on the task detail too. Nothing for a step never judged. */}
+      <ContractAcceptanceCard raw={task.contract_acceptance} />
       {/* RESOURCES ARE ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): "too much
           prose on this page, we don't need so much text for showing resource
           consumption". The strip and the Resources card are unchanged, one
