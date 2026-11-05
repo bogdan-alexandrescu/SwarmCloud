@@ -73,14 +73,6 @@ export interface ApiError {
    * found. Absent everywhere else.
    */
   template?: string
-  /**
-   * THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS THIS ITEM (#1194 c15),
-   * set on a task read's `not_found` when the probe of the caller's own
-   * tenants (`api.ts` `taskElsewhere`) found exactly one answering 200. The
-   * 404 itself is unchanged -- the API's same answer for "missing" and
-   * "another tenant's" -- this only says where the caller can already see it.
-   */
-  elsewhere?: { tenant_id: string; display_name: string }
 }
 
 /** Whether a failure is a write's: see `ApiError.method`. */
@@ -919,8 +911,8 @@ export interface FetchOptions {
   frame?: boolean
   /**
    * Send THIS tenant's `X-Swarm-Tenant` instead of the chosen one, for this
-   * read only, without changing the choice: the task-404 probe (#1194 c15).
-   * Only ever a tenant `GET /v1/tenants/mine` listed -- the header selects,
+   * read only, without changing the choice: the 404 probe of the person's
+   * other workspaces (elsewhere.tsx). Only ever a workspace the profile listed -- the header selects,
    * the API still refuses any tenant it did not confirm. A refusal of it
    * never drops the stored choice, which it is not.
    */
@@ -1120,15 +1112,6 @@ export function forgetReads(): void {
   inFlight.clear()
   settled.clear()
   writes += 1
-}
-
-/**
- * The read generation: bumped by every write and by `forgetReads`. A cache kept
- * outside this file (`api.ts` `taskElsewhere`) keys on it, so sign-out or a
- * change sent drops what it kept exactly as it drops the answers kept here.
- */
-export function readGeneration(): number {
-  return writes
 }
 
 /** How many distinct GETs are in flight: for tests of the de-duplication. */

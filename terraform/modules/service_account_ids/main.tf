@@ -82,6 +82,15 @@ locals {
   # and a fresh install's first bootstrap pass never grants on an account that
   # does not exist yet. It holds no role until voice.tf gives it its own.
   voice_id = "swarm-voice"
+  # swarm-speech is the account Voice it's speech machine runs as
+  # (docs/design/voice-it-own-speech.md §5.1 and §6; terraform/infra/
+  # voice_speech.tf). Created by terraform/bootstrap
+  # (platform_service_accounts.tf) and read by terraform/infra, both from here.
+  # Deliberately NOT on bootstrap_platform, so the deployer holds no
+  # serviceAccountAdmin on it (deployer_service_accounts.tf): the one grant it
+  # needs there is actAs, to attach the account to the machine, which
+  # bootstrap makes on this account alone.
+  speech_id = "swarm-speech"
 
   # scripts/register-tenant.sh and kubernetes/render.py spell this too; they
   # are not Terraform and cannot read it.

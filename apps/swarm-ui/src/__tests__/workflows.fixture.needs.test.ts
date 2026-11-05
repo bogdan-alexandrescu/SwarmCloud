@@ -144,6 +144,21 @@ describe('the fixture board serves each step a needs block, as codec.step_needs 
     expect(fixtureStepNeeds(task({ result_summary: { git: { pull_request: { number: '7', url } } } })).pull_request).toBeNull()
   })
 
+  it("serves a parked plugin step's plugin_ask, its clock from the earliest instant the park names", () => {
+    const metadata = { work_contract: { capabilities: { plugins: { gstack: { mode: 'unattended', skills: ['review'] }, broken: { skills: [] } } } } }
+    const blocked_by = [{ reason: 'HUMAN_REQUIRED', question_wait: { ...wait('att_1'), bridge: { plugin: 'gstack' } } }] as unknown as Task['blocked_by']
+    const parked = { state: 'PARKED', park_reason: 'HUMAN_REQUIRED', blocked_by, metadata, next_eligible_at: '2026-10-19T11:00:00.000Z' } as const
+    expect(fixtureStepNeeds(task(parked)).plugin_ask).toEqual({
+      plugins: [{ name: 'gstack', mode: 'unattended' }],
+      repository_url: null,
+      asked_at: '2026-10-19T11:00:00.000Z',
+      expires_at: '2026-10-20T11:00:00.000Z',
+    })
+    // No plugin, or no question wait: none.
+    expect(fixtureStepNeeds(task({ ...parked, metadata: {} })).plugin_ask).toBeNull()
+    expect(fixtureStepNeeds(task({ state: 'RUNNING', metadata })).plugin_ask).toBeNull()
+  })
+
   it("carries the park reason and the hand-off clock's instants", () => {
     const n = fixtureStepNeeds(task({ state: 'PARKED', park_reason: 'DEPENDENCY_INCOMPLETE', next_eligible_at: '2026-10-19T12:06:00.000Z' }))
     expect(n.park_reason).toBe('DEPENDENCY_INCOMPLETE')

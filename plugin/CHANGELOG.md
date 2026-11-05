@@ -2,9 +2,41 @@
 
 Each entry is a version of `plugin/.claude-plugin/plugin.json`. The release
 tags the swarm-mcp bridge `sc-v<version>` only when that version moves
-([docs/ci.md](../docs/ci.md#the-plugins-bridge-tag-is-made-by-the-release)),
+([docs/ci.md](../docs/ci.md#the-plugins-bridge-tag-is-made-once-the-unit-tests-pass)),
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
+
+## 0.5.82 (2026-11-05)
+
+* A workflow spec's top-level `description` and `feature` reach SwarmCloud
+  (part of #2688): `swarm_workflow` and `swarm workflow <spec.json>` send
+  them as `metadata.description` and `metadata.feature`, the way `title`
+  goes as `metadata.title`, and the console's workflow page heads with them.
+  `description` is two or three sentences of plain text, at most 600
+  characters; `feature` is `{title, url?}`, a title of at most 120 characters
+  and an optional https github.com issue or pull request of the workflow's
+  own repository. A malformed one is refused before anything is sent, by the
+  rules swarm-api applies.
+
+## 0.5.81 (2026-11-05)
+
+* `/sc check` flags a merge step that waits on the merge train for more than
+  60 minutes, rule `merge_train_stalled` (STUCK; part of #2688). A train park
+  (CI_PENDING, code `merge_train_waiting`) stops the CI clock by design, so
+  the CI_PENDING rule never aged it: on 4 November a pull request whose
+  `queue for auto-merge` check had failed on a network timeout waited eight
+  hours, passed over on every train tick, and nothing said so. The wait is
+  aged from the train's start swarm-api serves, `waiting.detail.train_since`
+  (exact; the park now records `merge_wait.train_entered_at`), read from the
+  task route when a listing served no detail. Where none is served (an older
+  deployment, a park recorded before it), from the first train park of its
+  unbroken run, reading older event pages by their token (exact, or "at
+  least" past five pages); the evidence
+  names the pull request's failed or cancelled checks at its head, read from
+  GitHub's public API without a token, or says they were not read and why;
+  `next` is the pull request. A train park under 60 minutes is not flagged.
+* A train park no longer counts toward a later CI wait's 90 minutes.
+* The build board lists the same wait, `merge_train_stalled`, past 60 minutes.
 
 ## 0.5.80 (2026-11-05)
 

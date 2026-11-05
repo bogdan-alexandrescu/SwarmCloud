@@ -212,19 +212,34 @@ def _personal_record(db: Any, auth: AuthContext) -> dict[str, Any] | None:
 
 
 def workspaces(
-    db: Any, auth: AuthContext, default_tenant: str | None
+    app_ctx: Any, auth: AuthContext, default_tenant: str | None
 ) -> list[dict[str, Any]]:
     """Exactly `tenant_choices`, in its order, plus the caller's own personal
     workspace as a non-selectable row while it is not ready yet, so the page
-    can say "requested" instead of hiding it."""
+    can say "requested" instead of hiding it.
+
+    A GROUP ROW IS NAMED AS THE SWITCHER NAMES IT (BGD, 2026-11-04; part of
+    #2688): `display_name` is the workspace record's stored name, read by
+    `GET /v1/tenants/mine`'s own rule (`routes.tenants._stored_names`: ONE
+    batched `get_all` of the group rows' `tenants/{id}` documents, never a
+    read per row), else the group email; the group email always goes out
+    as `principal`. A failed name read serves every group row by its email
+    and never fails the page. The personal row is unchanged and not read."""
+    # Imported here: `swarm_api.routes` imports route modules that import
+    # this one, so a module-level import could meet a half-built module.
+    from .routes.tenants import _stored_names
+
     personal = own_personal(auth)
-    record = _personal_record(db, auth)
+    record = _personal_record(app_ctx.db, auth)
+    names = _stored_names(
+        app_ctx, [tenant_id for tenant_id, _ in auth.tenant_choices if tenant_id != personal])
     rows: list[dict[str, Any]] = []
     for tenant_id, principal in auth.tenant_choices:
         is_personal = tenant_id == personal
-        rows.append({
+        row: dict[str, Any] = {
             "tenant_id": tenant_id,
-            "display_name": f"Your workspace ({tenant_id})" if is_personal else principal,
+            "display_name": f"Your workspace ({tenant_id})" if is_personal
+            else names.get(tenant_id, principal),
             "kind": "user" if is_personal else "group",
             "role": role_in(auth, tenant_id),
             "state": (state_of(record) if record is not None else READY) if is_personal
@@ -232,7 +247,10 @@ def workspaces(
             "selectable": True,
             "is_acting": tenant_id == auth.tenant_id,
             "is_default": tenant_id == default_tenant,
-        })
+        }
+        if not is_personal:
+            row["principal"] = principal
+        rows.append(row)
     if personal is None and record is not None:
         own = personal_tenant_id(auth.email)
         if own not in {row["tenant_id"] for row in rows}:
@@ -420,7 +438,7 @@ def read_profile(
     default = default_of(app_ctx.settings, auth, stored)
     body: dict[str, Any] = {
         "identity": identity(app_ctx, auth, stored),
-        "workspaces": workspaces(app_ctx.db, auth, default["tenant_id"]),
+        "workspaces": workspaces(app_ctx, auth, default["tenant_id"]),
         "default_workspace": default,
     }
     connections: dict[str, Any] = {}

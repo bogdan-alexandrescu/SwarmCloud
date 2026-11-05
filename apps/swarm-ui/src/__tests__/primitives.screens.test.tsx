@@ -265,7 +265,7 @@ function tile(label: string): Element {
 
 /** The lifecycle band's cell headed `label`. */
 function cell(label: string): Element {
-  const found = [...document.querySelectorAll('#ov-band .ov-lc')].find((c) => (c.querySelector('.ov-lc-h span')?.textContent ?? '').trim() === label)
+  const found = [...document.querySelectorAll('#ov-band .ov-lc')].find((c) => (c.querySelector('.ov-lc-k')?.textContent ?? '').trim() === label)
   expect(found, `the band has no cell headed ${label}`).toBeTruthy()
   return found!
 }
