@@ -1,8 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { usePhoneTables, tableMode } from './capacityPoll'
 import { HatchDef, useHatchId, VALUE_LABEL_GAP_PX } from './charts/parts'
 import { linearScale, ValueAxis } from './charts/TimeSeries'
-import { Button, Tooltip } from './components'
+import { Button } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { bucketName, tickLabel, unreadWords, viewerZone, type LedgerBucketSize } from './outcomes'
 import {
@@ -199,17 +199,21 @@ export function PlatformOverTime({
   ]
     .filter((x) => x !== null)
     .join(' ')
+  const explainId = useId()
 
   return (
     <section className="pot" aria-labelledby="pot-title">
       <div className="pot-head">
+        {/* The title's `title` is the hover; the hidden node, its accessible
+            description, kept out of the heading's name (HelpNote's way). */}
         <h2 className="pot-title" id="pot-title">
-          <Tooltip tip={explain}>
-            <span className="pot-title-k" tabIndex={0}>
-              Over time
-            </span>
-          </Tooltip>
+          <span className="pot-title-k" tabIndex={0} title={explain} aria-describedby={explainId}>
+            Over time
+          </span>
         </h2>
+        <span id={explainId} hidden>
+          {explain}
+        </span>
       </div>
       <div className="pot-bar">
         <div className="c-seg" role="radiogroup" aria-label="Bucket">

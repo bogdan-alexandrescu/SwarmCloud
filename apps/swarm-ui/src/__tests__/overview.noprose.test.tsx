@@ -26,12 +26,19 @@ function ok<T>(data: T): Result<T> {
 
 const text = (n: Element | null | undefined): string => (n?.textContent ?? '').replace(/\s+/g, ' ').trim()
 
-/** What a label's tooltip says: the `role="tooltip"` its host points at. */
+/**
+ * What a label's tooltip says: its `title`, which must also be its accessible
+ * description (a hidden node it points at), and the label takes focus.
+ */
 function tipOf(label: Element): string {
-  const host = label.closest('.c-tip-host')
-  expect(host, `${text(label)} has no tooltip`).not.toBeNull()
-  const id = host!.getAttribute('aria-describedby')!
-  return text(document.getElementById(id))
+  const tip = label.getAttribute('title')
+  expect(tip, `${text(label)} has no tooltip`).not.toBeNull()
+  const said = document.getElementById(label.getAttribute('aria-describedby') ?? '')
+  // MUTATION: drop the hidden description, so a screen reader hears no reason.
+  expect(text(said), `${text(label)}'s description is not its tooltip`).toBe(tip)
+  expect(said!.hidden, 'the description is drawn on the surface').toBe(true)
+  expect(label.getAttribute('tabindex')).toBe('0')
+  return tip!
 }
 
 const WAITING: TaskPage = {
@@ -75,8 +82,6 @@ describe('Waiting, and why: what a state holds is its tick’s tooltip', () => {
       const tick = r.querySelector('.ov-wst')!
       // MUTATION: draw the tick without its Tooltip.
       said.push(tipOf(tick))
-      // The tick is reachable from the keyboard, so its tooltip is too.
-      expect(tick.getAttribute('tabindex')).toBe('0')
       // MUTATION: render `why` in the row's small line.
       expect(text(r.querySelector('.ov-wt'))).not.toMatch(/Holds nothing|Eligible now|In line for/)
     }
