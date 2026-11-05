@@ -577,6 +577,7 @@ function ScopeBar({
     <div className="sec-scope">
       <div className="sec-scope-row">
         <span className="sec-lbl">Scope</span>
+        <AboutTip label="Scope" tip="Same name in several scopes: yours wins, then the repository’s, then the workspace’s." />
         <Segmented<SecretsScope>
           label="Scope"
           value={at.scope}
@@ -596,7 +597,6 @@ function ScopeBar({
             </select>
           </span>
         )}
-        <AboutTip label="Scope" tip="Same name in several scopes: yours wins, then the repository’s, then the workspace’s." />
       </div>
     </div>
   )
