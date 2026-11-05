@@ -40,11 +40,20 @@ import './styles/admin-setup.css'
  * canonical `Tooltip`), so a keyboard and a phone's tap reach them, and the
  * text stays the host's description for a screen reader.
  */
+/** The (i): a drawn glyph, not a letter, so the button holds no text to inset. */
+const INFO_GLYPH = (
+  <svg className="c-ic" viewBox="0 0 24 24" aria-hidden>
+    <path d="M12 10.5v7.5M12 6v.01" />
+  </svg>
+)
+
 export function About({ label, tip }: { label: string; tip: string }) {
   return (
     <Tooltip tip={tip}>
-      <Button size="sm" kind="ghost" iconOnly className="asm-about" icon={<span aria-hidden>i</span>}>
-        {`About ${label}`}
+      {/* The name is `aria-label`, not a string child: a string child would
+          also become a native `title`, a second tooltip over this one. */}
+      <Button size="sm" kind="ghost" iconOnly className="asm-about" icon={INFO_GLYPH} aria-label={`About ${label}`}>
+        <>{label}</>
       </Button>
     </Tooltip>
   )

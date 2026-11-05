@@ -16,7 +16,8 @@
 /* NO EXPLANATORY PROSE ON THE SURFACE (BGD, 2026-11-05): the (i) beside a
    heading, a label whose explanation is its tooltip, and a status tick whose
    tooltip is its reason (AdminSetupHealth's About, Explained, ReasonTick). */
-.c-btn.is-icon.is-sm.asm-about { width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 50%; font-size: var(--t-micro); font-weight: 600; font-style: italic; line-height: 1; vertical-align: middle; }
+.c-btn.is-icon.is-sm.asm-about { width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 50%; vertical-align: middle; }
+.asm-about .c-ic { width: 18px; height: 18px; stroke-width: 2.6; }
 .asm-explained { text-decoration: underline dotted var(--text-faint); text-underline-offset: 3px; cursor: help; }
 .asm-tick { display: inline-flex; align-items: center; cursor: help; vertical-align: middle; }
 .asm-explained:focus-visible,
