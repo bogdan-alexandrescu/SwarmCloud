@@ -53,7 +53,7 @@ counts:
   kind:
     iam-binding: 52
     other: 46
-    switch: 39
+    switch: 40
     custom-role: 30
     gcp-api: 26
     secret-container: 24
@@ -89,14 +89,14 @@ counts:
     oauth-brand: 1
     oauth-client: 1
   scope:
-    core: 376
+    core: 377
     addon:ci: 43
     addon:typesafe: 12
     addon:bright-data-egress: 9
     addon:tailscale: 4
     addon:brave-search: 3
   provider:
-    engine: 392
+    engine: 393
     human-in-terminal: 21
     org-admin: 18
     human-in-console: 13
@@ -113,13 +113,13 @@ counts:
     '8': 10
     '9': 20
     '10': 17
-    '11': 18
+    '11': 19
     '12': 1
     '13': 6
     '14': 5
     '15': 10
   total:
-    entries: 447
+    entries: 448
 
 entries:
 - id: local-tool.checkov

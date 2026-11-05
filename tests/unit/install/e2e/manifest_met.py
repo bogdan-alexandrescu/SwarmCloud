@@ -27,7 +27,7 @@ _OBJECT_SWITCHES = {
 
 #: A switch the manifest records as deliberately OFF on a Day One install:
 #: its entry says the default is false and the install does not override it.
-_OFF_BY_DESIGN = {"switch.front_door_admit_role_bound"}
+_OFF_BY_DESIGN = {"switch.front_door_admit_role_bound", "switch.platform_memberships"}
 #: A switch whose variable is a map with no single "on" value (api_refusals,
 #: map(bool) default {}): met when its root declares it.
 _NO_ON_VALUE = {"switch.api_refusals"}
