@@ -267,6 +267,39 @@ def test_a_swarm_api_ci_park_at_a_new_head_starts_fresh(client, db):
     assert wait["first_parked_at"] == wait["parked_at"]
 
 
+TRAIN = "merge_train_waiting"
+
+
+def test_a_swarm_api_first_train_park_records_the_trains_start(client, db):
+    """Part of #2688: `/sc check` ages a train wait from this, exactly."""
+    wait = _ci_park(client, db, last=_last_ci(datetime.now(timezone.utc) - timedelta(hours=2)),
+                    code=TRAIN)
+    # MUTATION: the park records no train start -> None, fails.
+    assert wait["train_entered_at"] == wait["parked_at"]
+
+
+def test_a_swarm_api_train_re_park_keeps_the_trains_start(client, db):
+    entered = datetime.now(timezone.utc) - timedelta(hours=8)
+    wait = _ci_park(client, db, last=_last_ci(entered, code=TRAIN, train_entered_at=entered),
+                    code=TRAIN)
+    # MUTATION: every train park restarts it -> the re-park's instant, fails.
+    assert wait["train_entered_at"] == entered
+
+
+def test_a_swarm_api_ci_park_clears_the_trains_start(client, db):
+    entered = datetime.now(timezone.utc) - timedelta(hours=8)
+    wait = _ci_park(client, db, last=_last_ci(entered, code=TRAIN, train_entered_at=entered))
+    # MUTATION: a CI park carries it -> a later train wait reads 8 h, fails.
+    assert wait["train_entered_at"] is None
+
+
+def test_a_swarm_api_train_park_after_another_park_starts_the_train_afresh(client, db):
+    entered = datetime.now(timezone.utc) - timedelta(hours=8)
+    wait = _ci_park(client, db, last=_last_ci(entered, train_entered_at=entered), code=TRAIN)
+    # MUTATION: carry a start the last (CI) park did not belong to -> fails.
+    assert wait["train_entered_at"] == wait["parked_at"]
+
+
 def test_merge_slot_acquire_then_release_hands_on_and_wakes_the_waiter(client, db):
     worker = Worker()
     opened(client, db, worker)
