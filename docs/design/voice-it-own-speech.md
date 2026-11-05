@@ -659,7 +659,7 @@ A fresh deployment gets own speech through the installer, changed by L11:
 
 | # | Where this design meets it | How it holds |
 |---|---|---|
-| 1 | The machine | A platform service, not a task: no lane, pod or backlog; it runs only while a session holds its lease |
+| 1 | The machine | A platform service, not an agent: no lane, pod or backlog; it runs only while a session holds its lease |
 | 2 | Capacity | No pool slot is taken; the machine lease is its own document |
 | 3 | Concurrency | Untouched; the planner's pool account is leased as today |
 | 4 | Long waits | No worker waits on the machine; swarm-api polls a start for at most 4 minutes, then falls back |
