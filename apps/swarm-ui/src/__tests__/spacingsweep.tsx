@@ -244,13 +244,23 @@ function expectTwins(twins: readonly Twin[], resolved: HTMLStyleElement): void {
 
 
 async function sweep(routes: readonly string[], Shown: typeof App = App): Promise<Record<Theme, Report>> {
-  const sheets: Record<Theme, string> = {
-    // Every shipped sheet: SHEET holds src/styles/*.css (the canonical
-    // components' rules in components.css among them) as well as styles.css.
-    dark: resolveSheet(SHEET, 'dark'),
-    light: resolveSheet(SHEET, 'light'),
-  }
+  // A REAL TURN BETWEEN EVERY LONG STEP, not only inside the probe. Measured
+  // alone on the SwarmCloud container for the admin-setup slice (2026-11-05):
+  // these four calls held the loop for 19.7 s, and each snapshot's
+  // cut / unpainted / cut before its probe for up to 9.4 s, plus the up to 5 s
+  // the previous probe ran past its last turn. PR #3264's CI shard 2/8, with
+  // the slice passing in 70 s, still ended on "Timeout calling onTaskUpdate":
+  // a loaded runner stretches a 15-20 s hold past the RPC's 60 s (see
+  // YIELD_EVERY_MS in spaceprobe.ts).
+  // With a turn after each step the longest hold is one step (about 5 s).
+  // Every shipped sheet: SHEET holds src/styles/*.css (the canonical
+  // components' rules in components.css among them) as well as styles.css.
+  const darkSheet = resolveSheet(SHEET, 'dark')
+  await yieldToWorker()
+  const sheets: Record<Theme, string> = { dark: darkSheet, light: resolveSheet(SHEET, 'light') }
+  await yieldToWorker()
   const tables = { dark: tokenTables(SHEET).dark, light: tokenTables(SHEET).light }
+  await yieldToWorker()
 
   const snapshots: { el: HTMLElement; local: { el: Element; source: string }[] }[] = []
   for (const route of routes) {
@@ -305,10 +315,13 @@ async function sweep(routes: readonly string[], Shown: typeof App = App): Promis
       for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.dark)
       document.body.appendChild(s.el)
       cut('dark')
+      await yieldToWorker()
       unpainted(s.el)
+      await yieldToWorker()
       // Again: a box `unpainted` took out can change what a structural
       // selector (`:last-child`, `+`, `:has`) matches.
       cut('dark')
+      await yieldToWorker()
       const r = await probeYielding(s.el)
       dark.push(r)
       borders.push(r.bordered)
@@ -319,6 +332,7 @@ async function sweep(routes: readonly string[], Shown: typeof App = App): Promis
       for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.light)
       document.body.appendChild(s.el)
       cut('light')
+      await yieldToWorker()
       light.push(await probeYielding(s.el, borders[i]))
       s.el.remove()
     }
