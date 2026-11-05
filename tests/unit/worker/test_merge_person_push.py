@@ -150,6 +150,141 @@ def test_a_commit_the_worker_made_as_the_person_is_the_platforms(tmp_path):
     assert outcome.summary["refusal"]["code"] == "head_moved"
 
 
+#: The recurrence of 2026-11-05 (#2505, task_5b7d62f1's merge of PR 3323):
+#: the owner applied their pick through a one-step `publish_to_pr` lane they
+#: dispatched (task_568ad862, wf_31277a25), whose worker published its kept
+#: commit cdcbd71 AS the owner (#765) and ended it with the worker's line.
+LANE = "task_568ad8627f3641d98055"
+LANE_WORKFLOW = "wf_31277a251bb74b709c18"
+LANE_HEAD = "cdcbd7134a6f72431411d64e0f40a1ecf44d5bad"
+LANE_PARENT = "71e334299ce77db799c548de33587679c3cd32e3"
+
+
+def _lane(world: MergeWorld, task_id: str = LANE, *, root: str = merge_world.OPENER,
+          via: str = "publish_to_pr", workflow: str = LANE_WORKFLOW,
+          **metadata: Any) -> str:
+    """Seed the lane's task document as the task store holds it: a plain
+    continuation of the pull request's branch task, by `continues` or by
+    `publish_to_pr` (cifix.live_plain_continuation's two kinds)."""
+    dispatch = ({"publish_to_pr": {"task_id": root, "number": merge_world.NUMBER}}
+                if via == "publish_to_pr" else {"continues": root})
+    world.docs[task_id] = {"tenant_id": merge_world.TENANT, "workflow_id": workflow,
+                           "runner_profile": "claude-code", "state": "SUCCEEDED",
+                           "metadata": {"dispatch": dispatch, **metadata}}
+    return task_id
+
+
+def _lane_commit(world: MergeWorld, task_id: str = LANE, **kwargs: Any) -> str:
+    """cdcbd71's shape: one parent, the person's committer address, GitHub
+    linking it to the person, and the lane's worker lines at its end."""
+    message = ("The repo trivy gate accepts only the speech-lockfile entries\n\n"
+               "Made by the worker for lane speech-gate-narrow.\n\n"
+               f"{merge.WORKER_COMMIT_LINE}{task_id}.")
+    kwargs.setdefault("sha", LANE_HEAD)
+    kwargs.setdefault("parents", [LANE_PARENT])
+    return _person_commit(world, message=message, **kwargs)
+
+
+def test_the_owners_hand_commit_after_a_pick_fix_park_ends_superseded(tmp_path):
+    """#2505, 2026-11-05: the step parked `owner_pick_fix_pending`; the owner
+    applied the pick through a lane they dispatched onto the pull request,
+    and the next wake read cdcbd71 -- one parent, committed as the owner,
+    linked to the pull request's author, ending with the lane's worker line.
+    It ended head_moved because `_person_pusher` read every worker-line
+    commit as an unaccepted platform head. A plain lane on this pull
+    request's branch, published as a person on the pull request, is that
+    person's push: superseded, and still nothing merges."""
+    world = _world(tmp_path)
+    world.docs[merge_world.TASK]["metadata"] = {"merge_wait": {"code": "owner_pick_fix_pending"}}
+    _lane(world)
+    world.pr["head"]["sha"] = _lane_commit(world)
+    outcome = merge.run_merge(world.context())
+
+    refusal = outcome.summary["refusal"]
+    assert refusal["code"] == merge.SUPERSEDED_BY_PERSON_PUSH, refusal
+    assert refusal["person"] == PAT_LOGIN
+    assert refusal["commit"]["sha"] == LANE_HEAD
+    assert refusal["commit"]["worker_task"] == LANE
+    assert world.merge_calls() == []
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+
+
+def test_a_lane_by_continues_is_the_persons_push_too(tmp_path):
+    world = _world(tmp_path)
+    _lane(world, via="continues")
+    world.pr["head"]["sha"] = _lane_commit(world)
+    outcome = merge.run_merge(world.context())
+    assert outcome.summary["refusal"]["code"] == merge.SUPERSEDED_BY_PERSON_PUSH
+    assert world.merge_calls() == []
+
+
+def test_a_platform_head_that_is_not_a_persons_lane_still_ends_head_moved(tmp_path):
+    """The controls: a round of this merge (a writer's mark), a lane on
+    another branch, a task of this merge's own workflow, an issue run's
+    task, a lane task the store cannot read, and a lane published as a
+    branch-mate who is not on the pull request are platform heads the step
+    did not accept -- defects failure-review must see."""
+    cases = {
+        "round": dict(merge_fix_round={"round": 1}),
+        "issue_run": dict(issue_run={"run_id": "crun_1"}),
+        "other_root": dict(root="task_other"),
+        "own_workflow": dict(workflow=merge_world.WORKFLOW),
+    }
+    for name, kwargs in cases.items():
+        world = _world(tmp_path / name)
+        _lane(world, **kwargs)
+        world.pr["head"]["sha"] = _lane_commit(world)
+        outcome = merge.run_merge(world.context())
+        assert outcome.summary["refusal"]["code"] == "head_moved", name
+        assert world.merge_calls() == [], name
+
+    world = _world(tmp_path / "unread")
+    world.pr["head"]["sha"] = _lane_commit(world)
+    assert merge.run_merge(world.context()).summary["refusal"]["code"] == "head_moved"
+
+    world = _world(tmp_path / "unsigned")
+    _lane(world)
+    world.unverified[LANE] = "signature_mismatch"
+    world.pr["head"]["sha"] = _lane_commit(world)
+    assert merge.run_merge(world.context()).summary["refusal"]["code"] == "head_moved"
+
+    world = _world(tmp_path / "mallory")
+    _lane(world)
+    world.pr["head"]["sha"] = _lane_commit(world, committer=MALLORY,
+                                           committer_account=_account(MALLORY_LOGIN),
+                                           author_account=_account(MALLORY_LOGIN))
+    assert merge.run_merge(world.context()).summary["refusal"]["code"] == "head_moved"
+
+
+def test_a_head_moved_refusal_records_why_no_person_was_named(tmp_path):
+    """The 2026-11-05 refusal said who committed cdcbd71 by address only, so
+    nothing showed why the person test named nobody. `refusal.commit` now
+    carries that test's inputs: the logins GitHub linked, the task a worker
+    line names, and the pull request's people -- logins, never an address
+    beyond the committer's, never a token."""
+    world = _world(tmp_path, assignees=["robin"])
+    world.pr["head"]["sha"] = _person_commit(world, committer=MALLORY,
+                                             committer_account=_account(MALLORY_LOGIN),
+                                             author=PAT, author_account=_account(PAT_LOGIN))
+    outcome = merge.run_merge(world.context())
+    refusal = outcome.summary["refusal"]
+    assert refusal["code"] == "head_moved"
+    commit = refusal["commit"]
+    assert commit["committer_login"] == MALLORY_LOGIN
+    assert commit["author_login"] == PAT_LOGIN
+    assert commit["worker_task"] is None
+    assert sorted(commit["people"]) == sorted([PAT_LOGIN, "robin"])
+    assert "people" in refusal["message"] and MALLORY_LOGIN in refusal["message"]
+    text = repr(outcome.summary)
+    assert PAT["email"] not in text and world.token not in text
+
+    world = _world(tmp_path / "lane")
+    world.pr["head"]["sha"] = _lane_commit(world)
+    commit = merge.run_merge(world.context()).summary["refusal"]["commit"]
+    assert commit["worker_task"] == LANE
+    assert commit["committer_login"] == PAT_LOGIN and commit["people"] == [PAT_LOGIN]
+
+
 class _Quiet:
     """The structured logger `replay_agent_commits` writes to, dropping all."""
 
