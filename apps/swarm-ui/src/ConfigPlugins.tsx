@@ -15,10 +15,11 @@
  * which it reads only from a block whose signature verifies: a non-empty list
  * is therefore signed, and an empty one may be either.
  */
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { loadWorkspacePlugins, saveWorkspacePlugins } from './api'
 import { Banner, Button, Chip } from './components'
 import type { ApiError } from './fetch'
+import { InfoTip } from './People'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { formatDateTime } from './timezone'
@@ -32,6 +33,24 @@ const MODE_WORDS: Readonly<Record<PluginMode, string>> = {
   planner: 'Planner',
   designer: 'Designer',
 }
+
+/**
+ * NO EXPLANATORY PROSE ON THE SURFACE (Bogdan's console rule, 5 November
+ * 2026; proseapp.tsx counts this page as config/plugins). Each explanation,
+ * definition and "not known here, because" sits behind an (i), `InfoTip`,
+ * beside the label it explains, or behind a status tick ("Not yet"); the tip
+ * stays in the document as the button's description, so a screen reader and
+ * the tests still read it. What stays visible is the facts and, one short line
+ * each, what a person must not miss: a plugin not allowed is refused, an
+ * unsigned save allows nothing, a switch-off refuses steps from the next
+ * submission.
+ */
+const LEAD =
+  'Agent steps load plugins from the platform’s closed catalogue. Each plugin is built into the agent images at one ' +
+  'pinned version; a step names a plugin, a mode and skills by name. Nothing here takes a path, a command, a web ' +
+  'address or a version.'
+
+const UNSIGNED = 'A list without a valid signature allows nothing.'
 
 /** What each mode means for the person who allows the plugin (docs/design/agent-plugins.md, "Modes"). */
 const MODE_MEANS: Readonly<Record<PluginMode, string>> = {
@@ -67,15 +86,19 @@ function settingWords(d: WorkspacePlugins) {
           <svg viewBox="0 0 16 16" aria-hidden><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" /></svg>
           Signed
         </span>
-        <span className="plg-dim"> · unsigned allows nothing</span>
+        <InfoTip about="the signature" tip={UNSIGNED} />
       </>
     )
   }
   if (d.set_at === null) return <>Not set: the default applies</>
   return (
-    <span title="The route reads only a list whose signature verifies, and an empty list and an unsigned one both read as none.">
-      Signed: not known<span className="plg-dim"> · unsigned allows nothing</span>
-    </span>
+    <>
+      Signed: not known
+      <InfoTip
+        about="the signature"
+        tip={`The route reads only a list whose signature verifies, and an empty list and an unsigned one both read as none. ${UNSIGNED}`}
+      />
+    </>
   )
 }
 
@@ -84,13 +107,9 @@ export function ConfigPluginsScreen() {
   return (
     <div className="plg-page">
       <PageHead title="Plugins">
+        <InfoTip about="plugins" tip={LEAD} />
         <UrRefresh reads={[read]} />
       </PageHead>
-      <p className="plg-lead">
-        Agent steps load plugins from the platform&rsquo;s closed catalogue. Each plugin is built into the agent images at
-        one pinned version; a step names a plugin, a mode and skills by name. Nothing here takes a path, a command, a web
-        address or a version.
-      </p>
       <UrRegion state={read.state} route={ROUTE} what="The workspace's plugins" plural onRetry={read.reload}>
         {(d) => <PluginsSetting data={d} onSaved={read.reload} />}
       </UrRegion>
@@ -149,19 +168,18 @@ function PluginsSetting({ data: served, onSaved }: { data: WorkspacePlugins; onS
     <div className="plg-body">
       {saved?.kind === 'signed' && (
         <Banner tone="info" title="Saved and signed">
-          This workspace may use {andList(data.allowed)}. Steps naming a plugin it does not allow are refused from the next submission. Recorded as {data.set_by ?? 'you'}
+          Recorded as {data.set_by ?? 'you'}
           {data.set_at === null ? '' : `, ${when(data.set_at)}`}.
         </Banner>
       )}
       {saved?.kind === 'none' && (
         <Banner tone="info" title="Saved">
-          No plugin is allowed in this workspace now: steps that name one are refused from the next submission.
+          No plugin allowed: steps naming one are refused from the next submission.
         </Banner>
       )}
       {saved?.kind === 'unsigned' && (
         <Banner tone="warn" title="Saved, not signed">
-          The API stored {andList(saved.asked)} but could not sign the list, and a list without a valid signature allows
-          nothing: no step in this workspace can use a plugin until the deployment has its settings key.
+          {andList(saved.asked)} stored unsigned: it allows nothing until the deployment has its settings key.
         </Banner>
       )}
 
@@ -192,15 +210,19 @@ function PluginsSetting({ data: served, onSaved }: { data: WorkspacePlugins; onS
         </div>
         <div role="listitem">
           <dt>You</dt>
-          <dd>{data.can_edit ? 'Can change it' : <>Read only</>}</dd>
+          <dd>
+            {data.can_edit ? 'Can change it' : (
+              <>
+                Read only
+                <InfoTip
+                  about="who can change it"
+                  tip="Only this workspace’s owner or an admin chooses which plugins its steps may use. Each step picks its own skills from what the plugin offers."
+                />
+              </>
+            )}
+          </dd>
         </div>
       </dl>
-      {!data.can_edit && (
-        <p className="plg-readonly">
-          You can read this setting, not change it: only this workspace&rsquo;s owner or an admin chooses which plugins
-          its steps may use. Each step picks its own skills from what the plugin offers.
-        </p>
-      )}
 
       {data.catalogue.length === 0 ? (
         <p className="plg-dim">The catalogue this API serves has no plugin.</p>
@@ -210,7 +232,7 @@ function PluginsSetting({ data: served, onSaved }: { data: WorkspacePlugins; onS
             <span role="columnheader"><span className="plg-sr">Open</span></span>
             <span role="columnheader">Plugin</span>
             <span role="columnheader">Pinned version</span>
-            <span role="columnheader">Runs on these runner profiles</span>
+            <span role="columnheader">Runner profiles</span>
             <span role="columnheader">Skills per mode</span>
             <span role="columnheader" className="plg-end">Allowed here</span>
           </div>
@@ -240,16 +262,16 @@ function PluginsSetting({ data: served, onSaved }: { data: WorkspacePlugins; onS
             </span>
             {switchedOff.length > 0 && (
               <span className="plg-savebar-refuse">
-                From the next submission, steps that name {andList(switchedOff)} are refused, each with{' '}
-                {switchedOff.map((n, i) => (
-                  <Fragment key={n}>{i > 0 && ' and '}&ldquo;{notAllowedWords(n)}&rdquo;</Fragment>
-                ))}
-                . Which steps name {switchedOff.length === 1 ? 'it' : 'them'} is not known here: no route serves it.
+                From the next submission, steps that name {andList(switchedOff)} are refused
+                <InfoTip
+                  about="the refusal"
+                  tip={
+                    `Each is refused with ${switchedOff.map((n) => `“${notAllowedWords(n)}”`).join(' and ')}. ` +
+                    `Which steps name ${switchedOff.length === 1 ? 'it' : 'them'} is not known here: no route serves it.`
+                  }
+                />
               </span>
             )}
-            <span className="plg-dim plg-small">
-              Saving signs the setting and records you and the time. Steps already running keep what they loaded.
-            </span>
             {failed !== null && (
               <span className="plg-failed" role="alert">Not saved: {failed.message}</span>
             )}
@@ -257,6 +279,7 @@ function PluginsSetting({ data: served, onSaved }: { data: WorkspacePlugins; onS
           <span className="plg-savebar-b">
             <Button kind="ghost" disabled={busy} onClick={() => { setAllowed(data.allowed); setFailed(null) }}>Discard</Button>
             <Button kind="primary" busy={busy} onClick={() => void save()}>Save and sign</Button>
+            <InfoTip about="saving" tip="Saving signs the setting and records you and the time. Steps already running keep what they loaded." end />
           </span>
         </div>
       )}
@@ -286,7 +309,7 @@ function CatalogueRow({ plugin: p, open, onToggle, allowed, changed, canEdit, on
         <span role="cell" className="plg-cat-name">{p.name}</span>
         <span role="cell" className="plg-cat-ver">
           <code className="plg-ver" title={p.version}>{p.version === '' ? 'not known' : p.version}</code>
-          <span className="plg-dim plg-sub">built into the images</span>
+          <InfoTip about={`${p.name}'s version`} tip="Pinned and built into the images: a step cannot pick another version." />
         </span>
         <span role="cell" className="plg-chips">
           {p.runner_profiles.length === 0 ? <span className="plg-dim">not known</span> : p.runner_profiles.map((r) => <Chip key={r}>{r}</Chip>)}
@@ -317,18 +340,22 @@ function CatalogueRow({ plugin: p, open, onToggle, allowed, changed, canEdit, on
           <div role="cell" className="plg-cat-cell">
             {!allowed && (
               <p className="plg-refuse">
-                Not allowed in this workspace: steps that name {p.name} are refused. The skills below are what it would
-                offer once allowed.
+                Not allowed here: steps naming {p.name} are refused.
+                <InfoTip about={`${p.name}, not allowed`} tip="The skills below are what it would offer once allowed." />
               </p>
             )}
             <div className="plg-modes">
               {PLUGIN_MODES.map((m) => <ModeColumn key={m} plugin={p} mode={m} />)}
               <section className="plg-never" aria-label={`${p.name}, never offered`}>
-                <h3>Never offered</h3>
-                <p className="plg-note">
-                  Which skills {p.name} ships that no step can pick, and why: not known here. The catalogue route serves
-                  only the skills a step may name.
-                </p>
+                <header>
+                  <h3>Never offered</h3>
+                  <span className="plg-dim plg-n">not known</span>
+                  <InfoTip
+                    about={`${p.name}, never offered`}
+                    tip={`Which skills ${p.name} ships that no step can pick, and why: not known here. The catalogue route serves only the skills a step may name.`}
+                    end
+                  />
+                </header>
               </section>
             </div>
             <p className="plg-audit">
@@ -337,10 +364,10 @@ function CatalogueRow({ plugin: p, open, onToggle, allowed, changed, canEdit, on
                 <span>Never changed: the default applies</span>
               ) : (
                 <span>
-                  <b>{data.set_at === null ? 'when: not known' : when(data.set_at)}</b> {data.set_by ?? 'who: not known'}: set this workspace&rsquo;s plugins
+                  <b>{data.set_at === null ? 'when: not known' : when(data.set_at)}</b> {data.set_by ?? 'who: not known'}
                 </span>
               )}
-              <span className="plg-dim"> · earlier changes: not served</span>
+              <InfoTip about="changes" tip="The last change set this workspace’s plugins; earlier changes: not served." />
             </p>
           </div>
         </div>
@@ -355,23 +382,31 @@ function ModeColumn({ plugin: p, mode: m }: { plugin: CataloguePlugin; mode: Plu
     <section className={`plg-modecol is-${m}`} aria-label={`${p.name}, ${MODE_WORDS[m]} mode`}>
       <header>
         <h3>{MODE_WORDS[m]}</h3>
+        <InfoTip about={`${MODE_WORDS[m]} mode`} tip={`${MODE_WORDS[m]}: ${MODE_MEANS[m]}.`} />
         {mode !== undefined && (mode.available
           ? <span className="plg-runs">Runs today</span>
-          : <span className="plg-runs is-not">Not yet</span>)}
-        {mode !== undefined && <span className="plg-dim plg-n">{mode.skills.length} {mode.skills.length === 1 ? 'skill' : 'skills'}</span>}
+          : (
+            <>
+              <span className="plg-runs is-not">Not yet</span>
+              <InfoTip
+                about={`why ${MODE_WORDS[m]} does not run yet`}
+                tip={mode.reason !== null ? `${p.name} ${mode.reason}.` : `${p.name} does not run in this mode yet; why: not known.`}
+              />
+            </>
+          ))}
+        {mode !== undefined && (
+          <span className="plg-dim plg-n">
+            {mode.skills.length} {mode.skills.length === 1 ? 'skill' : 'skills'}
+            <InfoTip about={`${p.name}'s ${MODE_WORDS[m]} skills`} tip="What each skill does: not known here. The catalogue route serves skills by name only." end />
+          </span>
+        )}
       </header>
-      <p className="plg-means">{MODE_MEANS[m]}</p>
       {mode === undefined ? (
         <p className="plg-note">Offers no skill in this mode.</p>
       ) : (
-        <>
-          {!mode.available && mode.reason !== null && <p className="plg-refuse">{p.name} {mode.reason}.</p>}
-          {!mode.available && mode.reason === null && <p className="plg-refuse">{p.name} does not run in this mode yet; why: not known.</p>}
-          <ul className="plg-skills">
-            {mode.skills.map((s) => <li key={s}><code className="plg-skill">{s}</code></li>)}
-          </ul>
-          <p className="plg-note">What each skill does: not known here. The catalogue route serves skills by name only.</p>
-        </>
+        <ul className="plg-skills">
+          {mode.skills.map((s) => <li key={s}><code className="plg-skill">{s}</code></li>)}
+        </ul>
       )}
     </section>
   )

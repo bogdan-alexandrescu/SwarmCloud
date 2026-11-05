@@ -4,9 +4,7 @@
 
 .plg-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; max-width: 1240px; }
 .plg-body { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
-.plg-lead { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); max-width: var(--measure); }
 .plg-dim { color: var(--text-dim); }
-.plg-small { font-size: var(--t-micro); line-height: var(--lh-micro); }
 .plg-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .plg-k { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .plg-note { margin: 6px 0 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
@@ -35,7 +33,6 @@
 .plg-strip dd { margin: 0; font-size: var(--t-meta); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 22px; }
 .plg-signed { display: inline-flex; align-items: center; gap: 4px; color: var(--ok-ink); font-weight: 600; }
 .plg-signed svg { width: 14px; height: 14px; }
-.plg-readonly { margin: 0; padding: 8px 12px; border-radius: var(--r-ctl); background: var(--surface-2); font-size: var(--t-meta); }
 
 /* The catalogue table and its expanding row. */
 .plg-cat { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; overflow: hidden; }
@@ -49,7 +46,6 @@
 .plg-cat-name { font-weight: 600; font-size: var(--t-body); overflow-wrap: anywhere; }
 .plg-cat-ver { min-width: 0; }
 .plg-ver { font: 500 var(--t-meta)/var(--lh-meta) var(--mono); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plg-sub { display: block; font-size: var(--t-micro); }
 .plg-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .plg-modecounts { display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .plg-modecount { white-space: nowrap; }
@@ -61,12 +57,12 @@
 .plg-modecol.is-unattended { grid-area: u; }
 .plg-modecol.is-planner { grid-area: p; }
 .plg-modecol.is-designer { grid-area: d; }
-.plg-modecol header { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+/* An (i) is an icon, not text: a header that carries one centres it on the line. */
+.plg-modecol header, .plg-never header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .plg-modecol h3, .plg-never h3 { margin: 0; font-size: var(--t-body); font-weight: 600; }
 .plg-runs { font-size: var(--t-micro); color: var(--ok-ink); font-weight: 600; }
 .plg-runs.is-not { color: var(--warn-ink); }
 .plg-n { margin-left: auto; font-size: var(--t-micro); font-variant-numeric: tabular-nums; }
-.plg-means { margin: 2px 0 8px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 /* A block list, not a column flex: the rows are one list's repeats split by a
    single `border-top`, `.rows`' construction (styles.css), and the sweep's
    surfaces-touch check is about gutters between boxes in a flex or grid. */
