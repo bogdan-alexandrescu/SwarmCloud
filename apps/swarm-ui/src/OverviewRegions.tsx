@@ -32,6 +32,7 @@ import { agentName, shortTaskId, type AgentTab } from './agentlist'
 import { loadTask } from './api'
 import type { Result } from './fetch'
 import { Dash } from './components/Chip'
+import { Tooltip } from './components/Overlay'
 import { Absent, Mark } from './primitives'
 import { blindness } from './checks'
 import { StateMark } from './marks'
@@ -138,9 +139,14 @@ function rows(tasks: Result<TaskPage>): Task[] | null {
 const TERMINAL_BAND: readonly TaskState[] = ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED']
 
 /** The three cells, each with the states under it in lifecycle order. A null `small` is the day's start, in the person's zone. */
-const BAND: readonly { k: string; small: string | null; states: readonly TaskState[]; source: 'stats' | 'page' }[] = [
+/**
+ * `tip` is a definition, said behind the cell's name (BGD's standing rule,
+ * 2026-11-05: no explanatory prose on the surface); a cell with a tip draws
+ * no `small`. "costs nothing" stays drawn: it says who pays.
+ */
+const BAND: readonly { k: string; small: string | null; tip?: string; states: readonly TaskState[]; source: 'stats' | 'page' }[] = [
   { k: 'Waiting', small: 'costs nothing', states: ['QUEUED', 'READY', 'PARKED'], source: 'stats' },
-  { k: 'Holding capacity', small: 'each holds a lease', states: ['LEASED', 'DISPATCHED', 'STARTING', 'RUNNING'], source: 'stats' },
+  { k: 'Holding capacity', small: null, tip: 'Each holds a lease.', states: ['LEASED', 'DISPATCHED', 'STARTING', 'RUNNING'], source: 'stats' },
   { k: 'Finished today', small: null, states: ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED'], source: 'page' },
 ]
 
@@ -221,8 +227,18 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
         return (
           <div className="ov-lc" key={c.k}>
             <div className="ov-lc-h">
-              <span>{c.k}</span>
-              <small>{c.small ?? sinceMidnight}</small>
+              {c.tip === undefined ? (
+                <>
+                  <span className="ov-lc-k">{c.k}</span>
+                  <small>{c.small ?? sinceMidnight}</small>
+                </>
+              ) : (
+                <Tooltip tip={c.tip}>
+                  <span className="ov-lc-k" tabIndex={0}>
+                    {c.k}
+                  </span>
+                </Tooltip>
+              )}
             </div>
             <div
               className="ov-lc-n"
@@ -294,6 +310,8 @@ export interface WaitGroup {
   state: TaskState
   title: string
   detail: string
+  /** Why the group waits and what it holds: the status tick's tooltip, never drawn. */
+  why: string
   n: number
   /** The workflows the detail names, by id, for the line's `title`. */
   ids: string[]
@@ -336,11 +354,13 @@ export function waitGroups(
     } else if (t.state === 'QUEUED') {
       const deps = (t.depends_on?.length ?? 0) > 0
       key = deps ? 'Q:deps' : 'Q:line'
-      title = deps ? 'Waiting on earlier workflow steps' : 'In line for the scheduler'
+      // THE STATE'S WORD, ITS REASON BEHIND THE TICK (BGD's standing rule,
+      // 2026-11-05): "In line for the scheduler" was a sentence on the row.
+      title = deps ? 'Waiting on earlier workflow steps' : 'Queued'
     } else {
       continue
     }
-    const g = groups.get(key) ?? { key, state: t.state, title, detail: '', n: 0, eligible: null, workflows: new Map(), ...(pool === undefined ? {} : { pool }) }
+    const g = groups.get(key) ?? { key, state: t.state, title, detail: '', why: '', n: 0, eligible: null, workflows: new Map(), ...(pool === undefined ? {} : { pool }) }
     g.n += 1
     if (t.next_eligible_at !== null && (g.eligible === null || t.next_eligible_at < g.eligible)) g.eligible = t.next_eligible_at
     if (t.workflow_id !== null) g.workflows.set(t.workflow_id, (g.workflows.get(t.workflow_id) ?? 0) + 1)
@@ -360,12 +380,16 @@ export function waitGroups(
       // counting 7 named three workflows of 2 each and dropped the seventh --
       // a fourth workflow, or a task in none. What the names leave is said.
       const rest = g.n - ranked.slice(0, 3).reduce((n, [, k]) => n + k, 0)
+      // WHAT THE STATE HOLDS IS THE TICK'S TOOLTIP (BGD's standing rule,
+      // 2026-11-05): the sentence ended every row's detail line.
       const why =
         g.state === 'PARKED'
           ? 'Checkpointed and released. Holds nothing.'
           : g.state === 'READY'
             ? 'Eligible now. Admitted when every pool it needs has room.'
-            : 'Not yet eligible. Holds nothing.'
+            : g.key === 'Q:line'
+              ? 'In line for the scheduler. Not yet eligible. Holds nothing.'
+              : 'Not yet eligible. Holds nothing.'
       // A TIME THAT HAS PASSED IS WORDED AS PAST (visual QA run 6,
       // overview-automate-015, 2026-10-23): 'next eligible 11:51 UTC' under a
       // 12:00 clock read as still waiting for it. A parked task can pass its
@@ -375,9 +399,8 @@ export function waitGroups(
         ...(g.state === 'PARKED' && eligible !== null ? [`${passed ? 'eligible since' : 'next eligible'} ${hhmm(eligible)}`] : []),
         ...wfs,
         ...(rest > 0 && wfs.length > 0 ? [`+${rest} more`] : []),
-        why,
       ]
-      return { ...g, detail: clauses.join(' · '), ids: ranked.slice(0, 3).map(([w]) => w) }
+      return { ...g, detail: clauses.join(' · '), why, ids: ranked.slice(0, 3).map(([w]) => w) }
     })
     .sort((a, b) => b.n - a.n || a.key.localeCompare(b.key))
 }
@@ -461,12 +484,14 @@ export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
     <div className="ov-wlist">
       {groups.slice(0, 6).map((g) => (
         <div className="ov-wr" key={g.key}>
-          <span className="ov-wst">
-            <StateMark state={g.state} />
-          </span>
+          <Tooltip tip={g.why}>
+            <span className="ov-wst" tabIndex={0}>
+              <StateMark state={g.state} />
+            </span>
+          </Tooltip>
           <span className="ov-wt">
             <b title={g.pool}>{g.title}</b>
-            <small title={g.ids.length > 0 ? g.ids.join(', ') : undefined}>{g.detail}</small>
+            {g.detail !== '' && <small title={g.ids.length > 0 ? g.ids.join(', ') : undefined}>{g.detail}</small>}
           </span>
           <span className="ov-wn">{g.n}</span>
         </div>

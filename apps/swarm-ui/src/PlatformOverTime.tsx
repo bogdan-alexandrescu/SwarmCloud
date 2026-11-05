@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import { usePhoneTables, tableMode } from './capacityPoll'
 import { HatchDef, useHatchId, VALUE_LABEL_GAP_PX } from './charts/parts'
 import { linearScale, ValueAxis } from './charts/TimeSeries'
-import { Button } from './components'
+import { Button, Tooltip } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { bucketName, tickLabel, unreadWords, viewerZone, type LedgerBucketSize } from './outcomes'
 import {
@@ -182,11 +182,34 @@ export function PlatformOverTime({
         ? 'last read failed'
         : `read ${timeAgo(data.generated_at, now)} · ${int(data.reads)} reads${data.cached ? ', cached' : ''}`
 
+  // NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05):
+  // what the view counts, what it costs and, before a Run, what Run will read
+  // and draw is the title's tooltip. One line stays drawn: nothing refreshes.
+  const explain = [
+    'Agents counted on the day they were submitted. Sealed days answer from the rollup; the newest are derived at Run.',
+    // PART OF THE PAGE'S PRICE, NOT THE PRICE (visual QA pass 1, admin-shell-15): beside the page's
+    // Run this half read as the whole, ~538 under a button that says ~562. Right now's note adds the two up.
+    shared ? 'The page’s Run reads this too, with the snapshot below.' : null,
+    price.total === null
+      ? `${shared ? 'This view’s part' : 'The price'} is ~${int(price.perWorkspace)} reads for each workspace: one stored day for each of ${days} days, and the newest derived live.`
+      : `${shared ? 'This view’s part' : 'The price'} is ~${int(price.total)} reads for ${spanWords} of stored days over ${known} workspaces, and the newest derived live.`,
+    'A breakdown costs no read: it groups the same days.',
+    `Times in your zone, ${tz}. Weeks start Monday.`,
+    run === null ? notRunWords(bucket, breakdown, spanWords, priceWords, busy) : null,
+  ]
+    .filter((x) => x !== null)
+    .join(' ')
+
   return (
     <section className="pot" aria-labelledby="pot-title">
       <div className="pot-head">
-        <h2 className="pot-title" id="pot-title">Over time</h2>
-        <p className="pot-sub">Agents counted on the day they were submitted. Sealed days answer from the rollup; the newest are derived at Run.</p>
+        <h2 className="pot-title" id="pot-title">
+          <Tooltip tip={explain}>
+            <span className="pot-title-k" tabIndex={0}>
+              Over time
+            </span>
+          </Tooltip>
+        </h2>
       </div>
       <div className="pot-bar">
         <div className="c-seg" role="radiogroup" aria-label="Bucket">
@@ -209,19 +232,11 @@ export function PlatformOverTime({
           )}
         </span>
       </div>
-      <p className="pot-note">
-        {/* PART OF THE PAGE'S PRICE, NOT THE PRICE (visual QA pass 1, admin-shell-15): beside the page's
-            Run this half read as the whole, ~538 under a button that says ~562. Right now's note adds the two up. */}
-        {shared && 'The page’s Run reads this too, with the snapshot below. '}
-        {price.total === null
-          ? `${shared ? 'This view’s part' : 'The price'} is ~${int(price.perWorkspace)} reads for each workspace: one stored day for each of ${days} days, and the newest derived live. `
-          : `${shared ? 'This view’s part' : 'The price'} is ~${int(price.total)} reads for ${spanWords} of stored days over ${known} workspaces, and the newest derived live. `}
-        A breakdown costs no read: it groups the same days. Nothing here refreshes on its own. Times in your zone, {tz}. Weeks start Monday.
-      </p>
+      <p className="pot-note">Nothing here refreshes on its own.</p>
 
       <div className="pot-body" aria-busy={busy || undefined}>
         {run === null ? (
-          <NotRun bucket={bucket} breakdown={breakdown} spanWords={spanWords} priceWords={priceWords} busy={busy} />
+          <NotRun busy={busy} />
         ) : run.status === 'error' ? (
           <Failed error={run.error} />
         ) : run.status === 'empty' || data === null ? (
@@ -301,8 +316,7 @@ const TILE_NAMES = ['Agents', 'Retries', 'Run hours', 'Tokens, input + output', 
  * will read and what it costs: no empty axes, so an unread page is never
  * mistaken for a quiet platform.
  */
-function NotRun({ bucket, breakdown, spanWords, priceWords, busy }: { bucket: TimeBucket; breakdown: Breakdown; spanWords: string; priceWords: string; busy: boolean }) {
-  const grouping = breakdown === 'none' ? 'no breakdown' : `by ${breakdownOf(breakdown).label.toLowerCase()}`
+function NotRun({ busy }: { busy: boolean }) {
   return (
     <>
       <div className="pot-tiles">
@@ -322,17 +336,31 @@ function NotRun({ bucket, breakdown, spanWords, priceWords, busy }: { bucket: Ti
         ))}
       </div>
       <div className="ctl-card pot-card pot-notrun">
+        {/* AN EMPTY STATE IS ONE SHORT LINE (BGD's standing rule, 2026-11-05);
+            its action is the bar's Run, and what Run reads and draws is the
+            title's tooltip (`notRunWords`). */}
         <p>
-          <b>{busy ? 'Reading now.' : 'Not run yet.'}</b> Nothing has been read, so there is nothing to draw, and this says nothing about the platform.
-          {busy ? ' This run reads' : ' Run reads'} {spanWords} of agents ({UNIT[bucket]} buckets, {grouping}) across every workspace: {priceWords}.
+          <b>{busy ? 'Reading now.' : 'Nothing has been read yet.'}</b>
         </p>
-        <ul className="pot-notrun-list">
-          <li><b>Agents over time</b>: agents per {UNIT[bucket]}, retries apart.</li>
-          <li><b>Estimated cost (list price, not a bill)</b>: cost per {UNIT[bucket]} with its coverage, and cost per agent.</li>
-          <li><b>Breakdown</b>: every figure as a table.</li>
-        </ul>
       </div>
     </>
+  )
+}
+
+/**
+ * Before a Run: what it reads, what it costs and the three things it draws,
+ * for the title's tooltip. The cards a Run draws are not drawn before it, so
+ * their definitions are said here rather than under labels that do not exist.
+ */
+function notRunWords(bucket: TimeBucket, breakdown: Breakdown, spanWords: string, priceWords: string, busy: boolean): string {
+  const grouping = breakdown === 'none' ? 'no breakdown' : `by ${breakdownOf(breakdown).label.toLowerCase()}`
+  const unit = UNIT[bucket]
+  return (
+    `Nothing has been read, so there is nothing to draw, and this says nothing about the platform. ` +
+    `${busy ? 'This run reads' : 'Run reads'} ${spanWords} of agents (${unit} buckets, ${grouping}) across every workspace: ${priceWords}. ` +
+    `Agents over time: agents per ${unit}, retries apart. ` +
+    `Estimated cost (list price, not a bill): cost per ${unit} with its coverage, and cost per agent. ` +
+    `Breakdown: every figure as a table.`
   )
 }
 
