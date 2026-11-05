@@ -1,6 +1,8 @@
 /* The workflow page's step card (StepCard.tsx): the action bar, the stat
    tiles, the attempt timeline and the Details fold. Tokens only, so both
-   themes draw it. */
+   themes draw it. `.sc-facts`, `.sc-tiles`, `.sc-tile` and `.sc-seg` are also
+   the schedule pages' classes (schedules.css), so their rules here are scoped
+   to `.sc-card` and paint nothing on a schedule page. */
 
 /* The inspector's head is the card's title: the step and its state, one step up in size. */
 .wi:has(.sc-card) .wi-title-text { font-size: var(--t-lead); }
@@ -70,8 +72,8 @@
 .sc-err-text.is-whole { display: block; }
 
 /* Stat tiles: label over figure; an absent figure is a dashed dash. */
-.sc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: var(--ctl-s2); }
-.sc-tile {
+.sc-card .sc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: var(--ctl-s2); }
+.sc-card .sc-tile {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -81,7 +83,7 @@
   border-radius: var(--r-ctl);
   background: var(--surface);
 }
-.sc-tile.is-absent { border-style: dashed; border-color: var(--line-soft); background: none; }
+.sc-card .sc-tile.is-absent { border-style: dashed; border-color: var(--line-soft); background: none; }
 .sc-tile-k { color: var(--text-faint); font: 550 var(--t-micro) / var(--lh-micro) var(--font); }
 .sc-tile-v {
   display: inline-flex;
@@ -94,7 +96,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sc-tile.is-absent .sc-tile-v { color: var(--text-faint); cursor: help; width: fit-content; }
+.sc-card .sc-tile.is-absent .sc-tile-v { color: var(--text-faint); cursor: help; width: fit-content; }
 .sc-tile-v:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
 
 /* The attempt timeline: one segment per attempt, as long as it ran; the pager's arrows at its ends. */
@@ -102,7 +104,7 @@
 .sc-tl-row { display: flex; align-items: center; gap: var(--ctl-s1); }
 .sc-tl-bar { display: flex; flex: 1 1 auto; gap: 3px; margin: 0; padding: 0; list-style: none; min-width: 0; }
 .sc-tl-bar > li { flex-basis: 0; min-width: 28px; }
-.sc-seg {
+.sc-card .sc-seg {
   display: block;
   width: 100%;
   height: 24px;
@@ -114,14 +116,14 @@
   color: var(--text);
   cursor: pointer;
 }
-.sc-seg.is-succeeded { background: color-mix(in srgb, var(--ok) 22%, var(--surface)); }
-.sc-seg.is-failed { background: color-mix(in srgb, var(--s-bad) 22%, var(--surface)); }
-.sc-seg.is-running {
+.sc-card .sc-seg.is-succeeded { background: color-mix(in srgb, var(--ok) 22%, var(--surface)); }
+.sc-card .sc-seg.is-failed { background: color-mix(in srgb, var(--s-bad) 22%, var(--surface)); }
+.sc-card .sc-seg.is-running {
   background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--s-live) 30%, var(--surface)) 0 6px, color-mix(in srgb, var(--s-live) 16%, var(--surface)) 6px 12px);
 }
 .sc-tl-bar.is-one .sc-seg { height: 10px; cursor: default; }
-.sc-seg.is-here { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
-.sc-seg:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.sc-card .sc-seg.is-here { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+.sc-card .sc-seg:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .sc-tl-ends { display: flex; justify-content: space-between; color: var(--text-faint); font: var(--t-micro) / var(--lh-micro) var(--mono); }
 .sc-tl-ends.is-one-span { justify-content: center; }
 
@@ -145,7 +147,7 @@
 .sc-more > summary::before { content: '▸'; color: var(--text-dim); }
 .sc-more[open] > summary::before { content: '▾'; }
 .sc-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.sc-facts {
+.sc-card .sc-facts {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 6px var(--ctl-s3);
@@ -153,10 +155,10 @@
   margin: var(--ctl-s2) 0 0;
   font-size: var(--t-meta);
 }
-.sc-facts:empty { display: none; }
-.sc-facts dt { color: var(--text-dim); }
-.sc-facts dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; min-width: 0; }
-.sc-facts dd.is-absent { color: var(--text-faint); cursor: help; }
+.sc-card .sc-facts:empty { display: none; }
+.sc-card .sc-facts dt { color: var(--text-dim); }
+.sc-card .sc-facts dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; min-width: 0; }
+.sc-card .sc-facts dd.is-absent { color: var(--text-faint); cursor: help; }
 .sc-others { display: inline-flex; align-items: center; gap: var(--ctl-s1); }
 .sc-extras { display: flex; flex-direction: column; gap: var(--ctl-s3); margin-top: var(--ctl-s3); }
 
@@ -179,7 +181,7 @@
   /* ONE ROW ON A PHONE: the buttons share the width rather than leave one on a row by itself. */
   .sc-bar { position: static; flex-wrap: nowrap; gap: 6px; }
   .sc-bar > .c-btn { flex: 1 1 auto; min-width: 0; justify-content: center; padding: 0 8px; }
-  .sc-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sc-card .sc-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* Run steps' rows: the step's actions are the same small buttons. */
