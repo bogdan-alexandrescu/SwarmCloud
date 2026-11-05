@@ -1775,7 +1775,7 @@ def _redeem_voice_key(body: LinkRedeem, auth: AuthContext, *, links: sl.SetupLin
     try:
         result = pool.register(owner_tenant=tenant_id, label=label,
                                provider=VOICE_API_KEY_PROVIDER, lend_to=[],
-                               credential=body.value.strip())
+                               credential=body.value.strip(), added_by=auth.email)
     except ApiError as exc:
         log.info("a setup link's key was refused by the account pool kind=%s label=%s code=%s",
                  sl.VOICE_API_KEY, label, exc.code)
