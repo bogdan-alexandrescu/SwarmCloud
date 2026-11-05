@@ -30,9 +30,13 @@ sentence without touching the machine, so they are never pending.
 
 THE OPENAI KEY'S STATUS (§10.3) is `{set, by, at}` and never the key: `set`
 from the quota broker's Voice it pool (an `openai-api` account), `by` and `at`
-from the `voice-api-key` one-time link that was redeemed last, whose owner is
-the platform admin who pasted it (`setup_links`). This module reads neither
-the key nor its secret; no answer of the broker's carries it.
+from the key account itself, where the broker records the platform admin who
+added it and when it stored it (`key_added_by`, `key_added_at`;
+`quota_broker.openai_api_key.added_fields`, the owner, 5 November 2026). An
+account stored before the broker kept them falls back to the `voice-api-key`
+one-time link that was redeemed last, whose owner is the platform admin who
+pasted it (`setup_links`). This module reads neither the key nor its secret;
+no answer of the broker's carries it.
 """
 
 from __future__ import annotations
@@ -244,24 +248,29 @@ def key_status(pool_answer: Mapping[str, Any] | None, links: Iterable[Mapping[st
     """`{set, by, at, label, link}` for Settings' key row, never the key.
 
     `set` is None when the broker could not say (unreachable, or it answers
-    only for a Voice it person). `by` and `at` name the last redeemed link's
-    owner and when it was opened, only while a key is set. `link` is the open
-    link's expiry while one is unused and unexpired, so the page can show it."""
+    only for a Voice it person). `by` and `at` are the broker's record on the
+    key account; for an account stored before the broker kept it, the last
+    redeemed link's owner and when it was opened. Both only while a key is
+    set. `link` is the open link's expiry while one is unused and unexpired,
+    so the page can show it."""
     rows = list(links)
     is_set: bool | None = None
     label: str | None = None
+    by = at = None
     if isinstance(pool_answer, Mapping):
         account = pool_answer.get("account")
         reason = pool_answer.get("reason")
         if isinstance(account, Mapping) and account.get("provider") == KEY_PROVIDER:
             is_set = True
             label = account.get("label") if isinstance(account.get("label"), str) else None
+            added_by, added_at = account.get("key_added_by"), account.get("key_added_at")
+            if isinstance(added_by, str) and added_by and isinstance(added_at, str) and added_at:
+                by, at = added_by, added_at
         elif reason == NO_KEY:
             is_set = False
         elif reason == KEY_BUSY:
             is_set = True
-    by = at = None
-    if is_set:
+    if is_set and by is None:
         used = [r for r in rows if isinstance(r.get("used_at"), datetime)]
         if label is not None and any(r.get("label") == label for r in used):
             used = [r for r in used if r.get("label") == label]

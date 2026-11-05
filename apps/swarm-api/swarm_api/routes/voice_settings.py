@@ -21,8 +21,9 @@ THE KEY. `openai_key` is `{set, by, at, label, link}`: whether the Voice it
 pool holds an OpenAI developer API key (the broker's `GET /v1/voice/pool`,
 asked as this service for the caller, the same question Voice it ›
 Preferences asks; for an admin who is not a Voice it person, for the first
-one), who opened the one-time link that set it and when, and
-whether a link is open now. The key itself is never read here: the broker
+one), who added it and when (the broker's record on the key's account,
+or, for a key stored before the broker kept one, who opened the one-time
+link that set it), and whether a link is open now. The key itself is never read here: the broker
 answers no route with it but the Voice it lease. It is set only through the
 existing `voice-api-key` link, minted by `POST /v1/admin/setup/links`.
 

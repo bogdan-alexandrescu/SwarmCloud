@@ -472,9 +472,12 @@ covers both), the ledger and its caps, the SSE stream, Stop and the idle rule. W
 The key stays a quota-broker account of provider `openai-api`, written by the broker only, through
 the `voice-api-key` one-time link (ten minutes, single use). Settings show `{set, by, at}`, never
 the key; the button "Add an OpenAI API key for Voice it" (or "Replace…" when set) mints the same
-link kind through `POST /v1/admin/setup/links`. If the broker's account record does not carry who
-added it and when, the settings lane adds those two fields there (`apps/quota-broker/`), from the
-link's bound person.
+link kind through `POST /v1/admin/setup/links`. The broker itself records who added the key and
+when, as `key_added_by` and `key_added_at` on the key account's document (the owner's pick,
+5 November 2026): swarm-api sends the verified email of the platform admin who redeemed the link as
+`added_by`, the broker refuses a key without it, a replacement overwrites both, and `GET
+/v1/voice/pool` answers them beside the account. Settings read `by` and `at` from there, and fall
+back to the last redeemed link's person only for a key stored before the broker kept them.
 
 ## 11. Settings
 

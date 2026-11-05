@@ -145,9 +145,41 @@ def test_every_model_is_a_named_entry_pinned_to_a_revision_and_its_weights_hashe
 def test_the_own_speech_engine_names_no_openai_model(client):
     body = client.get("/v1/voice/settings/catalogue", headers=_as(ALICE)).json()
 
-    assert [m["provider"] for m in body["conversation_models"]] == ["anthropic"]
+    assert {m["provider"] for m in body["conversation_models"]} == {"anthropic"}
     assert body["defaults"]["engine"] == cat.ENGINE_OWN
     assert {e["name"] for e in body["engines"]} == {cat.ENGINE_OWN, cat.ENGINE_GPT_LIVE}
+
+
+def test_the_conversation_model_is_a_curated_list_of_the_models_the_platform_has(client):
+    """The owner's answer (2026-11-05): "selected from a curated list that we
+    have available". Every entry is a Claude model the platform prices, so
+    each pick runs on the pool and is costed; Haiku 4.5 is the default."""
+    from swarm_api import modelprices
+
+    body = client.get("/v1/voice/settings/catalogue", headers=_as(ALICE)).json()
+    listed = body["conversation_models"]
+
+    assert len(listed) > 1
+    assert [m["name"] for m in listed][0] == body["defaults"]["conversation_model"]
+    assert body["defaults"]["conversation_model"] == "claude-haiku-4-5"
+    for m in listed:
+        assert m["name"] in modelprices.SEED, m
+        assert m["model"].startswith(m["name"]) and m["label"], m
+
+
+def test_an_admin_picks_another_listed_conversation_model_and_an_unlisted_one_is_refused(
+        client, db):
+    picked = client.patch("/v1/voice/settings",
+                          json={"version": 0, "conversation_model": "claude-sonnet-5"},
+                          headers=_as(ROOT))
+    assert picked.status_code == 200, picked.text
+    assert picked.json()["settings"]["conversation_model"] == "claude-sonnet-5"
+    # Priced by the platform, but not on the curated list.
+    refused = client.patch("/v1/voice/settings",
+                           json={"version": 1, "conversation_model": "claude-opus-5-5"},
+                           headers=_as(ROOT))
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["field"] == "conversation_model"
 
 
 def test_the_zones_are_the_deployments_machines_one_by_default():
@@ -344,6 +376,23 @@ def test_a_set_key_is_served_as_who_set_it_and_when_never_the_key(db):
     assert key not in r.text
     # An admin who is not a Voice it person is answered for the first one.
     assert pool.asked == [ALICE]
+
+
+def test_the_brokers_record_of_who_added_the_key_wins_over_the_link(db):
+    """The broker writes who added the key and when on the key's account; a
+    link redeemed by someone else, later, does not change the answer."""
+    added = NOW - timedelta(days=2)
+    pool = FakePool({"account": {"account_id": "eng:voice-key", "label": "voice-key",
+                                 "display_name": None, "provider": "openai-api",
+                                 "key_added_by": "dana@example.com",
+                                 "key_added_at": added.isoformat()},
+                     "reason": ""})
+    _link(db, owner=ROOT, label="voice-key", used_at=NOW - timedelta(hours=1),
+          expires_at=NOW - timedelta(minutes=55))
+
+    key = _app(db, pool).get("/v1/voice/settings", headers=_as(ROOT)).json()["openai_key"]
+
+    assert (key["set"], key["by"], key["at"]) == (True, "dana@example.com", added.isoformat())
 
 
 def test_no_key_is_served_as_unset_and_an_open_link_with_its_expiry(db):

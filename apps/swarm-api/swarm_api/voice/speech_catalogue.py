@@ -24,6 +24,12 @@ THE ENTRIES, and where each figure came from:
   engine a small, fast Claude model from the pool answers each spoken
   sentence at once and hands planning and actions to the Claude planner,
   acting as the signed-in person. No OpenAI model is ever listed here.
+  WHICH ONE is an admin's pick from a curated list of the Claude models the
+  platform already has (the owner's answer, 2026-11-05: "selected from a
+  curated list that we have available"): each entry is a model the platform
+  prices (`modelprices.SEED`), so every pick runs on the pool's accounts and
+  is costed like any other turn. Haiku 4.5, the smallest and fastest, is the
+  default; the two Sonnets trade a slower first word for a stronger reply.
 * ZONES are the deployment's provisioned speech machines, one each
   (`SWARM_SPEECH_ZONES`, from Terraform's `voice_speech.zones`). One zone
   by default (BGD's answer 1): a stock-out falls back to text mode, and no
@@ -96,6 +102,7 @@ class ConversationModel:
     #: The Anthropic model id the pool account is asked for.
     model: str
     provider: str
+    label: str
 
 
 @dataclass(frozen=True)
@@ -151,7 +158,12 @@ TTS_MODELS: tuple[TtsModel, ...] = (
 )
 
 CONVERSATION_MODELS: tuple[ConversationModel, ...] = (
-    ConversationModel("claude-haiku-4-5", model="claude-haiku-4-5-20251001", provider="anthropic"),
+    ConversationModel("claude-haiku-4-5", model="claude-haiku-4-5-20251001", provider="anthropic",
+                      label="Claude Haiku 4.5 (fastest)"),
+    ConversationModel("claude-sonnet-5", model="claude-sonnet-5", provider="anthropic",
+                      label="Claude Sonnet 5"),
+    ConversationModel("claude-sonnet-4-6", model="claude-sonnet-4-6", provider="anthropic",
+                      label="Claude Sonnet 4.6"),
 )
 
 IDLE: tuple[Idle, ...] = (
@@ -248,8 +260,8 @@ def view(zones: tuple[str, ...]) -> dict[str, Any]:
         "tts_models": [{"name": m.name, "hf": m.hf, "revision": m.revision,
                         "files": _files(m.files), "voices": list(m.voices),
                         "default_voice": m.default_voice} for m in TTS_MODELS],
-        "conversation_models": [{"name": m.name, "model": m.model, "provider": m.provider}
-                                for m in CONVERSATION_MODELS],
+        "conversation_models": [{"name": m.name, "label": m.label, "model": m.model,
+                                 "provider": m.provider} for m in CONVERSATION_MODELS],
         "idle": [{"name": i.name, "seconds": i.seconds} for i in IDLE],
         "zones": [{"name": z, "machine": True} for z in zones],
         "defaults": defaults(zones),
