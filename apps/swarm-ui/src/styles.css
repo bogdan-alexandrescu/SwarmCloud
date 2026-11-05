@@ -511,6 +511,11 @@ body {
   border-color: color-mix(in srgb, var(--ctl-bd) 90%, var(--text));
 }
 .ac-lead .c-btn.is-primary:not(:disabled):not([aria-disabled='true']) { border-color: var(--sk-ac); }
+/* The lead title's (i) (`InfoTip`, a small ghost icon button; GitHub access's
+   failed-step lead): the same source-order tie as `.ob-step.is-next` above,
+   so the sweep graded a --ctl-bd border on --sk-acs (2.89:1 dark) that no
+   browser draws. The ghost's own transparent edge, restated after the floor. */
+.ac-lead .c-btn.is-ghost { border-color: transparent; }
 
 /* The same tie for the one button of an Admin page's lead (ADMIN-LEADS,
    AdminSettings.tsx `AdminLead`, styles/admin.css `.adm-lead`). The primary's
