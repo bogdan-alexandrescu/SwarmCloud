@@ -40,7 +40,8 @@ answer when it carries one, and the delegation is asked of the client's
 only the front's line.
 
 THE LEASE (speech_machine). The relay attaches its socket to the lease,
-writes the heartbeat and the last activity every HEARTBEAT_SECONDS, and
+writes the heartbeat and the last activity every HEARTBEAT_SECONDS (the
+heartbeat from the first dial on, while the server boots or recovers), and
 detaches on close. Activity (§4.4) is an utterance, a turn or delegation in
 flight, speech playing and a `point`; pings and partials are not. Every write
 names the generation the start took: once it is stale the relay closes
@@ -272,7 +273,32 @@ class SpeechRelay:
                        status: str) -> Socket | None:
         """Dial until the server says ready; None when it never does. Time in
         `updating speech server` and `fetching model` is not counted against
-        `budget`, up to `update_budget` of it."""
+        `budget`, up to `update_budget` of it. The lease's heartbeat is
+        written all the while, so the sweep never takes a booting machine
+        for an abandoned one."""
+        beating = asyncio.ensure_future(self._beat_while_connecting())
+        try:
+            return await self._dial_until_ready(budget=budget, update_budget=update_budget,
+                                                status=status)
+        finally:
+            beating.cancel()
+            await asyncio.gather(beating, return_exceptions=True)
+
+    async def _beat_while_connecting(self) -> None:
+        """The heartbeat every HEARTBEAT_SECONDS until the server is ready,
+        under the generation (invariant 5): READY_SECONDS and UPDATE_SECONDS
+        are longer than HEARTBEAT_STALE_SECONDS."""
+        last = self._clock()
+        while self._ended is None:
+            if self._clock() - last >= sm.HEARTBEAT_SECONDS:
+                last = self._clock()
+                if await self._fenced(self._machine.beat, self._holder,
+                                      socket_id=self.socket_id) is None:
+                    return
+            await self._sleep(TICK_SECONDS)
+
+    async def _dial_until_ready(self, *, budget: float, update_budget: float,
+                                status: str) -> Socket | None:
         began = self._clock()
         held = 0.0
         mark = began
