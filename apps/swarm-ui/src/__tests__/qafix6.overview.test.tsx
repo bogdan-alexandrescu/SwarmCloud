@@ -141,12 +141,11 @@ describe('e: the failed-agents card leads to the failed workflow (box 6343766999
     const links = [...container.querySelectorAll<HTMLAnchorElement>('.ov-att-acts a')]
     expect(links[0]!.getAttribute('href')).toBe(Overview.toPath(p.workflows![0]!.href))
     const list = links.find((a) => text(a).startsWith('Agents · FAILED'))!
-    // MUTATION: draw the workflow link at the list link's weight, or the list link in the accent.
-    expect([painted(links[0]!, 'font-weight', WIDE), painted(list, 'font-weight', WIDE), painted(list, 'color', WIDE)]).toEqual([
-      '600',
-      '400',
-      'var(--text-dim)',
-    ])
+    // Since 2026-11-05 both are the theme's buttons (BGD's standing rule: no
+    // arrow links): the workflow the outlined secondary, the list the ghost.
+    // MUTATION: draw the list link as the workflow's secondary, or the workflow as a ghost.
+    expect([links[0]!.classList.contains('c-btn'), links[0]!.classList.contains('is-ghost'), list.classList.contains('is-ghost')]).toEqual([true, false, true])
+    expect(painted(list, 'color', WIDE)).toBe('var(--text-dim)')
   })
 })
 
