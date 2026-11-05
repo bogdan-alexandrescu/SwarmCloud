@@ -14,8 +14,12 @@ here.
   the CI_PENDING rule never aged it: on 4 November a pull request whose
   `queue for auto-merge` check had failed on a network timeout waited eight
   hours, passed over on every train tick, and nothing said so. The wait is
-  aged from the first train park of its unbroken run, reading older event
-  pages by their token (exact, or "at least" past five pages); the evidence
+  aged from the train's start swarm-api serves, `waiting.detail.train_since`
+  (exact; the park now records `merge_wait.train_entered_at`), read from the
+  task route when a listing served no detail. Where none is served (an older
+  deployment, a park recorded before it), from the first train park of its
+  unbroken run, reading older event pages by their token (exact, or "at
+  least" past five pages); the evidence
   names the pull request's failed or cancelled checks at its head, read from
   GitHub's public API without a token, or says they were not read and why;
   `next` is the pull request. A train park under 60 minutes is not flagged.

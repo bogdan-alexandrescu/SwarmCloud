@@ -77,9 +77,13 @@ THE RULES, each with the control that is NOT flagged:
     design, so (c) never ages it: on 2026-11-04 a pull request whose
     `queue for auto-merge` check had failed waited eight hours, the train
     passing over it on every tick because it boards only pull requests
-    whose checks are all green, and nothing flagged it. The API serves no
-    train start (its `waiting.since` is the paused CI clock), so the parked
-    events age it, read back up to `TRAIN_EVENT_PAGES` pages. The evidence
+    whose checks are all green, and nothing flagged it. The API serves the
+    train's start, `waiting.detail.train_since` (the park's
+    `merge_wait.train_entered_at`; its `waiting.since` is the paused CI
+    clock), read from the task route when a listing served no detail, and
+    the age is then exact. Where it serves none -- an older deployment, a
+    park recorded before it was kept -- the parked events age it, read back
+    up to `TRAIN_EVENT_PAGES` pages. The evidence
     names the pull request's failed or cancelled checks at its head, from
     GitHub's public API (`github_failed_checks`, unauthenticated, as (d)
     reads the state), or says why they were not read; `next` is the pull
@@ -597,17 +601,41 @@ def on_train(task: dict[str, Any], events: list[dict[str, Any]]) -> bool:
     return newest is not None and _train_park(newest)
 
 
-def _train_entered(events: list[dict[str, Any]], created: datetime | None,
+def served_train_start(task: dict[str, Any]) -> datetime | None:
+    """The API's start of a merge-train wait, `waiting.detail.train_since`
+    of a CI_PENDING wait, or None when it serves none."""
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    if waiting.get("reason") != "CI_PENDING":
+        return None
+    return render.parse_time(detail.get("train_since"))
+
+
+def serves_wait_detail(task: dict[str, Any]) -> bool:
+    """Whether the task was read with its `waiting.detail` (the task route);
+    a listing serves a row without it."""
+    waiting = task.get("waiting")
+    return isinstance(waiting, dict) and isinstance(waiting.get("detail"), dict)
+
+
+def _train_entered(task: dict[str, Any], events: list[dict[str, Any]],
                    older: Callable[[], list[dict[str, Any]] | None]) -> dict[str, Any]:
-    """When a merge step's wait on the merge train began: the oldest train
+    """When a merge step's wait on the merge train began: the API's
+    `waiting.detail.train_since` when served, exact; else the oldest train
     park of the unbroken run of them, newest first, reading older pages
     (`older`) while the run reaches the oldest event read, up to
     TRAIN_EVENT_PAGES pages in all.
 
-    Exact when a park for anything else (a CI park, a slot wait) bounds the
-    run, or the history ended; else a LOWER bound, from the oldest train park
-    read. The API's `waiting.since` is not used: for a train park it is the
-    CI clock the train paused, never the train's start."""
+    From the events, exact when a park for anything else (a CI park, a slot
+    wait) bounds the run, or the history ended; else a LOWER bound, from the
+    oldest train park read. The API's `waiting.since` is not used: for a
+    train park it is the CI clock the train paused, never the train's
+    start."""
+    served = served_train_start(task)
+    if served is not None:
+        return {"since": served, "exact": True,
+                "source": "its first merge-train park (the API's `waiting.detail.train_since`)"}
+    created = render.parse_time(task.get("created_at"))
     start: datetime | None = None
     page, pages = events, 1
     while True:
@@ -907,8 +935,10 @@ def _train_wait(task: dict[str, Any], reads: _Reads, events: list[dict[str, Any]
                 checks: _PullChecks | None) -> dict[str, Any] | None:
     """(h): a merge step on the merge train for more than MERGE_TRAIN_MINUTES."""
     task_id = str(task_id_of(task))
-    entered = _train_entered(events, render.parse_time(task.get("created_at")),
-                             lambda: reads.older_events(task_id))
+    if not serves_wait_detail(task):
+        # A listing's row: the task route serves the train's start.
+        task = {**task, **_need(reads.task(task_id))}
+    entered = _train_entered(task, events, lambda: reads.older_events(task_id))
     evidence = _age_evidence(entered, now)
     age = evidence["age_minutes"]
     if age is None or age <= MERGE_TRAIN_MINUTES:

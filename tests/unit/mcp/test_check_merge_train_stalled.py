@@ -263,3 +263,86 @@ def test_the_build_board_lists_a_train_wait_over_60_minutes_from_its_start():
 
 def test_the_build_board_does_not_list_a_train_wait_under_60_minutes():
     assert _board_waits(59) == []
+
+
+# ---------------------------------------------------------------------------
+# The API's train start (`waiting.detail.train_since`, part of #2688)
+# ---------------------------------------------------------------------------
+
+
+def _served(task: dict[str, Any], entered: datetime) -> dict[str, Any]:
+    waiting = task["waiting"]
+    return {**task, "waiting": {**waiting, "detail": {**waiting["detail"], "train_since": _iso(entered)}}}
+
+
+def test_the_served_train_start_ages_the_wait_exactly_without_older_pages():
+    # The events alone would age it 61 min; the API says the train began
+    # 30 min ago (the earlier parks were another run), and it is believed.
+    first = NOW - timedelta(minutes=61)
+    reads = _Reads(_history(first, 5))
+    task = _served(_merge_step(first), NOW - timedelta(minutes=30))
+
+    flag = check.classify_task(task, reads, now=NOW, window=20, checks=check._PullChecks(_Checks([])))
+
+    # MUTATION (check.py `_train_entered`): ignore `train_since` -> the
+    # events' 61 min, flagged.
+    assert flag is None, flag
+    assert reads.served == 1, "no older page read once the API served the start"
+
+
+def test_the_served_train_start_flags_a_wait_over_60_minutes_as_exact():
+    first = NOW - timedelta(minutes=10)
+    task = _served(_merge_step(first), NOW - timedelta(hours=8))
+
+    flag = check.classify_task(task, _Reads(_history(first, 2)), now=NOW, window=20,
+                               checks=check._PullChecks(_Checks([])))
+
+    assert flag is not None and flag["rule"] == "merge_train_stalled", flag
+    evidence = flag["evidence"]
+    assert evidence["in_state_since"] == _iso(NOW - timedelta(hours=8))
+    assert evidence["age_minutes"] == 480 and evidence["age_is"] == "exact"
+    assert "train_since" in evidence["age_source"]
+
+
+class _TaskRoute(_Reads):
+    """A listing's row: `waiting` without its detail; the task route serves it."""
+
+    def __init__(self, events: list[dict[str, Any]], full: dict[str, Any]) -> None:
+        super().__init__(events)
+        self.full = full
+        self.tasks = 0
+
+    def task(self, task_id: str) -> dict[str, Any]:  # type: ignore[override]  # noqa: ARG002
+        self.tasks += 1
+        return self.full
+
+
+def test_a_listing_row_reads_the_task_route_for_the_train_start():
+    first = NOW - timedelta(minutes=10)
+    full = _served(_merge_step(first), NOW - timedelta(hours=2))
+    row = {**full, "waiting": {"reason": "CI_PENDING", "summary": full["waiting"]["summary"]},
+           "blocked_by": [{"reason": "CI_PENDING", "code": check.TRAIN_WAITING}]}
+    reads = _TaskRoute(_history(first, 2), full)
+
+    flag = check.classify_task(row, reads, now=NOW, window=20, checks=check._PullChecks(_Checks([])))
+
+    # MUTATION (check.py `_train_wait`): no task read -> the events' 10 min,
+    # not flagged.
+    assert flag is not None and flag["evidence"]["age_minutes"] == 120, flag
+    assert reads.tasks == 1
+
+
+def test_the_build_board_ages_a_train_wait_from_the_served_start():
+    from swarm_mcp import buildboard
+
+    first = NOW - timedelta(minutes=10)
+    reader = buildboard._Reader(_PagedClient(_history(first, 2)), {"tasks": {}}, NOW)
+    step = {"step_id": "merge", "runner_profile": "merge"}
+    lane = {"id": "wf_3190", "label": "the workflow page redesign"}
+    task = {**_served(_merge_step(first), NOW - timedelta(minutes=90)), "result_summary": {"pull_request": PR}}
+
+    waits = buildboard._step_waits(reader, lane, [step], step, task)
+
+    # MUTATION (buildboard.py `train_wait`): the events only -> 10 min, nothing listed.
+    assert [w["kind"] for w in waits] == ["merge_train_stalled"], waits
+    assert waits[0]["since"] == _iso(NOW - timedelta(minutes=90))

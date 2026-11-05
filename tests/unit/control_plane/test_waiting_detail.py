@@ -170,6 +170,20 @@ def test_ci_pending_serves_the_pr_head_checks_and_recheck_schedule():
     assert w["read_at"] == READ_AT
 
 
+def test_ci_pending_serves_a_merge_train_waits_start_as_train_since():
+    """Part of #2688: `/sc check` ages a train wait from `train_since`; the
+    train pauses the CI clock, so `since` cannot age it."""
+    t, events = ci_task()
+    # MUTATION: serving a train start no park recorded -> not None, red.
+    assert build_waiting(t, events=events, as_of=READ_AT)["detail"]["train_since"] is None
+    entered = FIRST_PARK - timedelta(hours=3)
+    t.metadata["merge_wait"].update({"code": "merge_train_waiting", "train_entered_at": entered})
+    w = build_waiting(t, events=events, as_of=READ_AT)
+    # MUTATION: not serving `merge_wait.train_entered_at` -> None, red.
+    assert w["detail"]["train_since"] == entered
+    assert w["since"] == FIRST_PARK, "the CI clock is served as before"
+
+
 def test_ci_pending_past_its_check_says_it_is_still_parked_and_why():
     """'Eligible since X but still parked' explains itself (decision 2)."""
     t, events = ci_task()

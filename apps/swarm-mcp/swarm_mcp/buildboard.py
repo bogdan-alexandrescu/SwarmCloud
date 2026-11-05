@@ -81,7 +81,7 @@ from swarm_common.states import TERMINAL_STATES
 
 from . import awaitinput, checkout, progress, workflows
 from .check import (EVENT_PAGE, MERGE_CODES, MERGE_PROFILE, MERGE_TRAIN_MINUTES, _entered, _refusal_code,
-                    _train_entered, on_train, pull_request_link, repo_key)
+                    _train_entered, on_train, pull_request_link, repo_key, serves_wait_detail)
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import console_link
 from .invocation import terminal_command
@@ -266,7 +266,13 @@ class _Reader:
             page, state["token"], state["paged"] = self._events_page(tid, state["token"])
             return page
 
-        return _train_entered(events, parse_time(task.get("created_at")), older)
+        if not serves_wait_detail(task):
+            # A listing's row: the task route serves the train's start.
+            data = self.client.request("GET", f"/v1/tasks/{tid}")
+            full = data.get("task") if isinstance(data, dict) and isinstance(data.get("task"), dict) else data
+            if isinstance(full, dict):
+                task = {**task, **full}
+        return _train_entered(task, events, older)
 
 
 # --------------------------------------------------------------------------
