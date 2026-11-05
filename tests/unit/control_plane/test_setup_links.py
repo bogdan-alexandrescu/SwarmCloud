@@ -368,7 +368,8 @@ def test_voice_key_reaches_the_broker_once_and_is_kept_nowhere(setup_client, db,
                                headers=auth_header("root"))
     assert opened.status_code == 200, opened.text
     assert pool.registered == [{"owner_tenant": tenant, "label": "voice-key",
-                                "provider": "openai-api", "lend_to": [], "credential": key}]
+                                "provider": "openai-api", "lend_to": [], "credential": key,
+                                "added_by": "root@example.com"}]
     body = opened.json()
     assert body["kind"] == "voice-api-key" and body["account_id"] == f"{tenant}:voice-key"
     assert body["pool"] == "voice-it" and body["written"] is True

@@ -443,18 +443,70 @@ def test_a_plan_in_both_pools_serves_tasks_and_never_a_live_session(client, acco
 # -- an OpenAI developer API key: the Live-capable kind ------------------------
 
 
-def _register_key(client, *, label: str = "voice-key", lend_to=(), credential: str | None = None):
+ADMIN = "root@example.com"
+
+
+def _register_key(client, *, label: str = "voice-key", lend_to=(), credential: str | None = None,
+                  added_by: str | None = ADMIN):
     client.identity.as_platform()
-    return client.post(
-        "/v1/accounts",
-        json={
-            "owner_tenant": OWNER,
-            "label": label,
-            "provider": "openai-api",
-            "lend_to": list(lend_to),
-            "credential": credential if credential is not None else "sk-proj-" + secrets.token_hex(24),
-        },
-    )
+    body = {
+        "owner_tenant": OWNER,
+        "label": label,
+        "provider": "openai-api",
+        "lend_to": list(lend_to),
+        "credential": credential if credential is not None else "sk-proj-" + secrets.token_hex(24),
+    }
+    if added_by is not None:
+        body["added_by"] = added_by
+    return client.post("/v1/accounts", json=body)
+
+
+def test_the_broker_records_who_added_the_key_and_when_and_a_replacement_overwrites_it(
+    client, accounts, broker
+):
+    """The owner's pick (5 November 2026): the broker itself records the
+    adder and the time on the key account's document, and `GET
+    /v1/voice/pool` answers both, never the key."""
+    from quota_broker import openai_api_key
+    from quota_broker.accountstore import COLLECTION
+
+    before = datetime.now(timezone.utc)
+    first = _register_key(client, added_by=" Dana@Example.com ")
+    assert first.status_code == 201, first.text
+    doc = broker.db.collection(COLLECTION).document(f"{OWNER}:voice-key").get().to_dict()
+    added = openai_api_key.added_from(doc)
+    assert added["by"] == "dana@example.com" and added["at"] >= before
+
+    again = _register_key(client)
+    assert again.status_code == 201, again.text
+    doc = broker.db.collection(COLLECTION).document(f"{OWNER}:voice-key").get().to_dict()
+    replaced = openai_api_key.added_from(doc)
+    assert replaced["by"] == ADMIN and replaced["at"] >= added["at"]
+
+    answer = client.get("/v1/voice/pool", params={"person": PERSON}).json()["account"]
+    assert answer["key_added_by"] == ADMIN
+    assert answer["key_added_at"] == replaced["at"].isoformat()
+    assert "credential" not in answer and "access_token" not in answer
+
+
+@pytest.mark.parametrize("added_by", [None, "root", "a b@example.com"])
+def test_a_key_without_one_adders_email_is_refused_before_anything_is_written(
+    client, accounts, added_by
+):
+    refused = _register_key(client, added_by=added_by)
+    assert refused.status_code == 422, refused.text
+    assert accounts.list() == []
+    assert client.secrets.latest == {}
+
+
+def test_an_adder_is_refused_for_any_account_but_a_key(client, accounts):
+    client.identity.as_platform()
+    refused = client.post("/v1/accounts", json={
+        "owner_tenant": OWNER, "label": "plan", "provider": "openai", "added_by": ADMIN,
+        "credential": json.dumps({"access_token": secrets.token_hex(16)})})
+    assert refused.status_code == 422, refused.text
+    assert "OpenAI API key alone" in refused.json()["message"]
+    assert accounts.list() == []
 
 
 def test_a_registered_key_is_in_the_voice_it_pool_only_and_read_by_the_broker_alone(
