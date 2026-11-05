@@ -101,7 +101,10 @@ describe('config-23: the shadow note is a line of small text', () => {
     const { SecretsScreen } = await load()
     render(<SecretsScreen view={null} />)
     const table = await screen.findByRole('table', { name: /workspace secrets/i })
-    const note = await within(table).findByText(/shadowed: ana@example\.com’s wins on their agents/)
+    // The winner is the tick's reason, behind its (i) (no-prose rule, 5 November 2026).
+    const tick = await within(table).findByRole('button', { name: 'About typesafe-key shadowed' })
+    expect(document.getElementById(tick.getAttribute('aria-describedby')!)?.textContent).toBe('ana@example.com’s wins on their agents')
+    const note = tick.closest('small') as HTMLElement
     // MUTATION: draw it as `sec-chip is-shadowed` again -> fails.
     expect(note.className).not.toMatch(/sec-chip/)
     expect(note.tagName).toBe('SMALL')
