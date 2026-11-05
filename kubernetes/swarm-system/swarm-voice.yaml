@@ -194,6 +194,15 @@ spec:
             # child's environment only, never in this pod's.
             - name: CLAUDE_CODE_BIN
               value: /opt/claude/bin/claude
+            # The two model pins, rendered by voice.tf from Terraform's
+            # local.runner_models (voice-it-own-speech.md §14.1): own speech's
+            # fast front answers each sentence on the haiku class, picked by
+            # first-reply latency; the planner runs the planning class, fable,
+            # on both engines (swarm_voice/claudeturn.py reads both).
+            - name: VOICE_FRONT_MODEL
+              value: __VOICE_FRONT_MODEL__
+            - name: VOICE_PLANNER_MODEL
+              value: __VOICE_PLANNER_MODEL__
           # Memory is 2Gi, not 1Gi: each planner turn starts a Claude Code
           # child (CLAUDE_CODE_BIN above) beside the live sidebands, and the
           # child's Node runtime alone can take several hundred MiB. Request
