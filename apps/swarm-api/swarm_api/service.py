@@ -1287,7 +1287,11 @@ class SubmissionService:
                     continue
                 asked.add(pair)
                 check_repository_ref(spec.repository_ref)
-                self._check_ref_exists(tenant, *pair, person=ctx.email)
+                # The platform's own submission (`repoindex`) names the head
+                # sha it has just read from GitHub with the same credential:
+                # asking again is one more read for nothing (#3315).
+                if not service_submission:
+                    self._check_ref_exists(tenant, *pair, person=ctx.email)
             # Inside the try so a refused dispatch is counted like every other
             # rejected submission rather than being invisible to the metric.
             tasks = [
