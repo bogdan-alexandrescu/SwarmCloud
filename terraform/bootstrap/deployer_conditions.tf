@@ -364,7 +364,8 @@ locals {
   # which the owner applies, never by CI. Re-read 2026-09-25 08:52 UTC: 67
   # distinct roles in the policy, and with swarmSecretLister off the list, 14
   # grantable until #1430 and 53 refused. #1430 turned swarmGithubHooksDedup
-  # on, so the list makes 15 grantable once the owner applies it.
+  # on, so the list made 15; #3346 added roles/aiplatform.user, so the list
+  # makes 16 grantable once the owner applies it.
   #
   # NOT SCOPED BY THIS: two of the listed roles also have a member that is not
   # ours -- roles/logging.logWriter and roles/monitoring.metricWriter are held
@@ -427,7 +428,8 @@ locals {
   }
 
   # roles/resourcemanager.projectIamAdmin's hasOnly() would need every one of
-  # the 15 deployer_grantable_project_roles in one list (14 with
+  # the 16 deployer_grantable_project_roles in one list (15 until #3346 added
+  # roles/aiplatform.user, 14 with
   # enable_github_hooks_dedup_role off, and 15 until #69's owner
   # decision of 2026-09-25, which #150 delivered, took swarmSecretLister off --
   # still over the limit either way), and GCP's linter
