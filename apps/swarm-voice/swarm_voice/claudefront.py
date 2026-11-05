@@ -397,6 +397,8 @@ class FrontSessions:
                 log.warning("voice session %s: the front's child failed (%s)", session.voice_id,
                             type(exc).__name__)
         if session.releases >= 1:
+            # No child runs on it now, so the account is given back at once.
+            await self._detach(session)
             raise FrontDown(session.voice_id)
         session.releases += 1
         excluded = (session.lease.account_id,) if session.lease is not None else ()
@@ -411,6 +413,8 @@ class FrontSessions:
             return await asyncio.wait_for(session.conversation.say(self._resume(session, text)),
                                           self._turn_seconds)
         except (claudeturn.ChildGone, asyncio.TimeoutError):
+            # No child runs on it now, so the account is given back at once.
+            await self._detach(session)
             raise FrontDown(session.voice_id) from None
 
     @staticmethod

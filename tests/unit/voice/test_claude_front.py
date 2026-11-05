@@ -351,6 +351,9 @@ def test_a_dead_child_re_leases_once_then_is_engine_down():
         w.claude.die_next = 1
         with pytest.raises(claudefront.FrontDown):
             await w.front.turn("vs-1", "third")
+        # Re-leased once already: the account is given back, no third lease.
+        assert w.broker.paths().count("/v1/accounts/assign") == 2
+        assert w.broker.paths().count("release") == 2
     run(body)
 
 
