@@ -985,7 +985,7 @@ def test_the_gate_refuses_a_malformed_start_click_hand_off():
 # pages, under node, in a DOM just large enough for it.
 
 #: A DOM under node for one evaluation: argv[1] the page (`_page_node`'s
-#: shape), argv[2] the expression. Prints {"value", "clicked": [ids]}.
+#: shape), argv[2] the expression, argv[3] the page's address. Prints {"value", "clicked": [ids]}.
 _PAGE_PROGRAM = r"""
 const page = JSON.parse(process.argv[1]);
 const clicked = [];
@@ -1023,15 +1023,32 @@ globalThis.getComputedStyle = (el) => ({
 });
 globalThis.window = globalThis;
 globalThis.addEventListener = () => {};
-globalThis.location = { href: 'https://app.example.com/' };
+const at = new URL(process.argv[3] || 'https://app.example.com/');
+globalThis.location = { href: at.href, origin: at.origin, pathname: at.pathname, search: at.search, hash: at.hash };
+// Compound selectors only (a tag, #id, [attr], [attr=v], [attr~=v]), in a
+// comma list: what the gate's probe asks; anything else throws as Chromium does.
+const compile = (sel) => sel.split(',').map((part) => {
+  const s = part.trim();
+  const m = /^([a-z][a-z0-9-]*|\*)?((?:#[A-Za-z0-9_-]+|\[[a-z-]+(?:~?=(?:"[^"]*"|[A-Za-z0-9_-]+))?\])*)$/.exec(s);
+  if (!s || !m || (!m[1] && !m[2])) throw new SyntaxError(sel);
+  const tag = m[1] && m[1] !== '*' ? m[1] : null;
+  const tests = [...m[2].matchAll(/#([A-Za-z0-9_-]+)|\[([a-z-]+)(?:(~?=)(?:"([^"]*)"|([A-Za-z0-9_-]+)))?\]/g)]
+    .map((t) => t[1] !== undefined ? ['id', '=', t[1]] : [t[2], t[3], t[4] !== undefined ? t[4] : t[5]]);
+  return (el) => (!tag || el.tagName.toLowerCase() === tag) && tests.every(([name, op, v]) => {
+    const got = el.getAttribute(name);
+    if (got === null) return false;
+    return !op || (op === '=' ? got === v : got.split(/\s+/).includes(v));
+  });
+});
 globalThis.document = {
   readyState: 'complete', body, documentElement: body,
   querySelectorAll(sel) {
     const all = body.all();
     if (sel === '*') return all;
-    if (!/^[a-z]+$/.test(sel)) throw new SyntaxError(sel);
-    return all.filter((el) => el.tagName.toLowerCase() === sel);
+    const tests = compile(sel);
+    return all.filter((el) => tests.some((t) => t(el)));
   },
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
 };
 const value = (0, eval)(process.argv[2]);
 process.stdout.write(JSON.stringify({ value, clicked }));
@@ -1048,9 +1065,9 @@ def _node() -> str:
     return node
 
 
-def _on_page(page: dict[str, Any], expression: str) -> tuple[Any, list[str]]:
-    """The gate's expression evaluated on the fixture page: its value and the ids it clicked."""
-    done = subprocess.run([_node(), "-e", _PAGE_PROGRAM, json.dumps(page), expression],
+def _on_page(page: dict[str, Any], expression: str, url: str = f"{ORIGIN}/") -> tuple[Any, list[str]]:
+    """The gate's expression evaluated on the fixture page at `url`: its value and the ids it clicked."""
+    done = subprocess.run([_node(), "-e", _PAGE_PROGRAM, json.dumps(page), expression, url],
                           capture_output=True, text=True, timeout=30, check=False)
     assert done.returncode == 0, done.stderr
     out = json.loads(done.stdout)
@@ -1204,3 +1221,238 @@ def test_a_refusal_names_at_most_three_matches_by_tag_and_role_in_plain_characte
     odd = {"count": 2, "clickable": 2, "matched": [{"tag": "BUT TON`", "role": "x'y\n" + "z" * 40}, {"tag": ""}]}
     said = gate_qt._start_click_sentence("Sign in", odd, 15)
     assert f"(button (role xy{'z' * 22}))" in said and "`" not in said and "\n" not in said
+
+
+# --------------------------------------------------------------------------
+# A role's own home, already signed in, with no login form (part of #2688)
+# --------------------------------------------------------------------------
+#
+# AI Studio's staging quality-check run of 4 November 2026 (re-run 4, 21:52
+# to 22:05 UTC): the reviewer and moderator legs ended `qa_sign_in_no_form`
+# on every capture group while the agent's own tab was signed in. The gate's
+# start click 'Sign in' went to the identity provider, whose session was
+# alive, and it sent the tab straight back to the account's own home: the
+# reviewer's /access-pending ('Staging Signed in', 'Welcome, QA', My queue)
+# and the moderator's / (a 'Staff only' wall on most screens). Neither page
+# draws the target's signed_in_selector, which the five other roles' homes
+# do, and neither is a login form, so `_wait_form` read "loading" until
+# FORM_SECONDS ran out. The gate now takes such a page as signed in only on
+# the page's own evidence: no password or username field, no start-click
+# control, the target's own origin, and an HttpOnly cookie on an approved
+# origin that the sign-in set or changed. Without that cookie the sentence
+# says the page lacks signed_in_selector instead of "no form".
+
+#: The cookie a sign-in sets: HttpOnly, on the target's own origin.
+def _session_cookie(name: str = "app_session") -> dict[str, Any]:
+    return {"name": name, "value": secrets.token_hex(16), "domain": "app.example.com", "path": "/",
+            "httpOnly": True, "secure": True}
+
+
+def _reviewer_home() -> dict[str, Any]:
+    """The reviewer's /access-pending as AI Studio's session read it at 22:20 UTC."""
+    return _page_node(
+        "body",
+        _page_node("header", _page_node("span", "Staging"), " ", _page_node("span", "Signed in"),
+                   " ", _page_node("span", "Hi QA")),
+        _page_node("nav", _page_node("a", "My queue", href="/queue"), _page_node("a", "Assignments", href="/a"),
+                   _page_node("a", "Progress", href="/p"), _page_node("a", "Your ratings", href="/r")),
+        _page_node("h1", "Welcome, QA"),
+    )
+
+
+def _staff_wall() -> dict[str, Any]:
+    """The moderator's / with its staff-only wall."""
+    return _page_node("body", _page_node("header", _page_node("span", "Staging"), " Signed in"),
+                      _page_node("h1", "Staff only"), _page_node("p", "This page is for staff."))
+
+
+def _probe(page: dict[str, Any], url: str = f"{ORIGIN}/access-pending", *,
+           marks: Any = ({"text": "Sign in"},), signed: str | None = "#account") -> Any:
+    """The gate's before-submit probe, with the argument `SignIn` gives it, on a fixture page."""
+    argument = {"signed": signed, "user": None, "pass": None, "home": ORIGIN, "marks": list(marks)}
+    return _on_page(page, gate_qt._js(gate_qt._PROBE, argument), url)[0]
+
+
+def test_a_roles_signed_in_home_without_the_selector_reads_as_landed_and_the_start_page_does_not():
+    # MUTATION: return 'loading' for every page that is not the form before the submit and these fail.
+    assert _probe(_reviewer_home()) == "landed"
+    assert _probe(_staff_wall(), f"{ORIGIN}/") == "landed"
+    # The selector, where the page draws it, is still the first answer.
+    home = _reviewer_home()
+    home["children"].append(_page_node("div", "QA", id="account"))
+    assert _probe(home) == "signed_in"
+    # The signed-out start page shows the last start click's control: never landed.
+    assert _probe(_chooser_page(_page_node("button", "Sign in", id="sign-in")), f"{ORIGIN}/") == "loading"
+    # A heading reading 'Sign in' alone is still a sign-in marker (the chooser before its button draws).
+    assert _probe(_chooser_page(), f"{ORIGIN}/") == "loading"
+    # A password field, or a username field, is a login page however the rest reads.
+    for field in (_page_node("input", type="password"), _page_node("input", type="email"),
+                  _page_node("input", autocomplete="username")):
+        page = _reviewer_home()
+        page["children"].append(field)
+        assert _probe(page) == "loading", field
+    # Another origin (the identity provider's page), or an OAuth callback still in the address, is not landed.
+    assert _probe(_reviewer_home(), f"{LOGIN_ORIGIN}/realms/x") == "loading"
+    assert _probe(_reviewer_home(), f"{ORIGIN}/callback?code=x&state=y") == "loading"
+    # An empty page has not drawn itself.
+    assert _probe(_page_node("body"), f"{ORIGIN}/") == "loading"
+
+
+async def _landed_rig(tmp: Path, *, before: list[dict[str, Any]], after: list[dict[str, Any]],
+                      click_lands: bool = True, controls: dict[str, int] | None = None) -> Rig:
+    """A chooser whose 'Sign in' (when `click_lands`) returns the tab to a
+    role's home that reads `landed`; `before` and `after` are the cookies
+    `Network.getCookies` answers before and after the click."""
+    rig = Rig(tmp)
+    rig.fake.start(rig.sink)
+    rig.fake.controls = {"Staging": 1, "Sign in": 1} if controls is None else controls
+    rig.fake.results["Network.getCookies"] = {"cookies": before}
+    rig.fake.probes = ["loading"] if click_lands else ["landed"]
+
+    def land() -> None:
+        rig.fake.probes = ["landed"]
+        rig.fake.results["Network.getCookies"] = {"cookies": after}
+        rig.fake.where = f"{ORIGIN}/access-pending"
+
+    rig.fake.on_click["Sign in"] = land
+    await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+    await rig.finished()
+    return rig
+
+
+def test_a_start_click_that_lands_on_the_roles_home_with_a_new_session_cookie_is_signed_in(tmp):
+    async def body() -> None:
+        rig = await _landed_rig(tmp, before=[], after=[_session_cookie()])
+        status = rig.target.status()
+        # MUTATION: drop the landed branch of `_wait_form` and this ends qa_sign_in_no_form.
+        assert status["qa_sign_in"] == "signed_in", status
+        assert rig.fake.clicked == ["Staging", "Sign in"] and rig.fake.typed == []
+        # The cookies were read on the gate's own tab, for the target's approved origins.
+        reads = [m for m in rig.fake.received if m["method"] == "Network.getCookies"]
+        assert len(reads) >= 2 and all(m.get("sessionId") for m in reads)
+        assert reads[0]["params"]["urls"] == [f"{ORIGIN}/", f"{LOGIN_ORIGIN}/"]
+        # Nothing of a cookie's value is recorded.
+        cookie_values = [c["value"] for c in rig.fake.results["Network.getCookies"]["cookies"]]
+        assert not any(v in json.dumps(rig.records) for v in cookie_values)
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_changed_session_cookie_counts_and_an_unchanged_one_does_not(tmp):
+    async def body() -> None:
+        kept = _session_cookie()
+        refreshed = dict(kept, value=secrets.token_hex(16))
+        rig = await _landed_rig(tmp, before=[kept], after=[refreshed])
+        assert rig.target.status()["qa_sign_in"] == "signed_in"
+        await rig.fake.stop()
+        rig = await _landed_rig(tmp, before=[kept], after=[kept])
+        status = rig.target.status()
+        # MUTATION: count a cookie that was already there and the leg is signed in on a guess.
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.NO_FORM
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_only_an_httponly_cookie_other_than_the_bypass_is_a_sign_ins_evidence(tmp):
+    async def body() -> None:
+        # A preference a script set (the environment toggle) is not a session.
+        scripted = dict(_session_cookie("env"), httpOnly=False)
+        rig = await _landed_rig(tmp, before=[], after=[scripted])
+        # MUTATION: take any new cookie as the session and this is signed in.
+        assert rig.target.status()["qa_sign_in"] == "failed"
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_gates_own_bypass_cookie_is_never_a_sign_ins_evidence(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        rig.fake.results["Network.getCookies"] = {"cookies": []}
+        rig.fake.probes = ["loading"]
+        bypass = {"kind": "cookie", "name": "qa_pass", "value": secrets.token_hex(12)}
+
+        def land() -> None:
+            rig.fake.probes = ["landed"]
+            rig.fake.results["Network.getCookies"] = {"cookies": [dict(_session_cookie("qa_pass"))]}
+
+        rig.fake.on_click["Sign in"] = land
+        args = _chooser_args(_password(), _username())
+        args["challenge_bypass"] = bypass
+        await gate_qt.handle_ctl(rig.target, rig.proxy, args)
+        await rig.finished()
+        # MUTATION: leave the bypass cookie's name in the evidence and this is signed in.
+        assert rig.target.status()["qa_sign_in"] == "failed"
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_landed_page_without_evidence_says_signed_in_selector_is_missing_not_no_form(tmp):
+    async def body() -> None:
+        rig = await _landed_rig(tmp, before=[], after=[])
+        status = rig.target.status()
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.NO_FORM
+        sentence = status["sentence"]
+        # MUTATION: keep the "login form never appeared" sentence for a landed page and this fails.
+        assert "never appeared" not in sentence
+        assert "signed_in_selector" in sentence and f"{ORIGIN}/access-pending" in sentence
+        assert "no login form" in sentence and "'Sign in'" in sentence
+        # The worker takes it as its one plain line, under its 400 characters.
+        assert qa_target._SENTENCE.fullmatch(sentence), sentence
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_role_home_before_any_start_click_is_signed_in_only_with_evidence_and_else_said(tmp):
+    async def body() -> None:
+        # The session was alive before the gate's tab opened: login_url sends
+        # it straight to the role's home, where no 'Sign in' control exists.
+        # Opening login_url refreshed the session's cookie: signed in, no click.
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {}
+        before = _session_cookie()
+        rig.fake.results["Network.getCookies"] = {"cookies": [before]}
+        rig.fake.probes = ["landed"]
+        rig.fake.on_first_probe = lambda: rig.fake.results.__setitem__(
+            "Network.getCookies", {"cookies": [dict(before, value=secrets.token_hex(16))]})
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+        await rig.finished()
+        # MUTATION: drop the landed branch of `_start_click` and this ends qa_sign_in_start_click_missing.
+        assert rig.target.status()["qa_sign_in"] == "signed_in", rig.target.status()
+        assert rig.fake.clicked == [] and rig.fake.typed == []
+        await rig.fake.stop()
+        # The same page with the cookie untouched: failed, and the sentence says why.
+        rig = await _landed_rig(tmp, before=[before], after=[before], click_lands=False, controls={})
+        status = rig.target.status()
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.START_CLICK_MISSING
+        # MUTATION: keep the start click's "found none" sentence for a landed page and this fails.
+        assert "signed_in_selector" in status["sentence"] and "found none" not in status["sentence"]
+        assert qa_target._SENTENCE.fullmatch(status["sentence"])
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_cookie_read_the_browser_refuses_is_no_evidence(tmp):
+    async def body() -> None:
+        # An answer that is not a cookie list, before and after the click.
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        rig.fake.results["Network.getCookies"] = {"cookies": "none"}
+        rig.fake.probes = ["loading"]
+        rig.fake.on_click["Sign in"] = lambda: setattr(rig.fake, "probes", ["landed"])
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+        await rig.finished()
+        # MUTATION: treat an unreadable jar as empty-then-full and this is signed in.
+        assert rig.target.status()["qa_sign_in"] == "failed"
+        await rig.fake.stop()
+
+    run(body)
