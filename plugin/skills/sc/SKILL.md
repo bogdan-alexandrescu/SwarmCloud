@@ -125,6 +125,18 @@ plugin's own read tools and work outside a checkout; they are not pre-granted
 here -- this skill grants only the `sc` and `swarm` commands -- so
 the session may ask once before the first read.
 
+### A spec says what it delivers: `description` and `feature`
+
+A workflow spec may carry, at its top level beside `title`, a `description`
+-- two or three sentences of plain text saying what the work delivers, at
+most 600 characters, no HTML or Markdown -- and a `feature`, `{title, url?}`:
+the feature it belongs to, a title of at most 120 characters, and optionally
+the https github.com issue or pull request of the workflow's OWN repository
+that tracks it. The console's workflow page heads with both, so write them
+for a person who opens the workflow cold. They are sent as
+`metadata.description` and `metadata.feature`; a malformed one is refused
+before anything is sent, and a longer description is refused, never cut.
+
 ### Every run is titled after its workflow
 
 A SwarmCloud workflow run here is titled `SC · <name> · N steps` (at most
