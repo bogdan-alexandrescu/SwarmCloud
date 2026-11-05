@@ -1,5 +1,5 @@
 import { useContext, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
-import { loadProfile, loadWorkspaceRoles, setWorkspaceDefaultRole, type ApiError } from './api'
+import { loadMe, loadProfile, loadWorkspaceRoles, setWorkspaceDefaultRole, type ApiError } from './api'
 import { Breadcrumb, Button, Card, Chip, Dash, ProgressBar, Segmented, Tabs, routedClick, type TabDef } from './components'
 import { setupCount, useSetupSteps, type SetupStep } from './ConfigSetup'
 import { ACCESS as GITHUB_ACCESS_ADDRESS, REPOSITORIES as REPOSITORIES_ADDRESS } from './Onboarding'
@@ -44,6 +44,15 @@ import './styles/workspace-page.css'
  * may do, the default with Set default, and the role events. The owner split
  * the screen (PR #3128 question 0): People is drawn `part="people"`, so those
  * three appear on Roles only, not on both tabs.
+ *
+ * THE PAGE'S NAME (visual check of the live deployment, 4 November 2026):
+ * the heading and the breadcrumb read the workspace record's own display
+ * name (`GET /v1/tenants/me`, the record the Settings tab's Name and
+ * Admin › Workspaces read), never the profile row's: `GET /v1/profile` names
+ * a group workspace by its group's address, so the page read "eng@…" over a
+ * Settings tab saying "Engineering". A record with no display name falls back
+ * to the id; a personal workspace keeps `OWN_WORKSPACE_LABEL`. The group's
+ * address stays in the header, as a chip.
  *
  * A COUNT THE CONSOLE CANNOT KNOW reads "not known", never 0.
  */
@@ -140,11 +149,18 @@ export function WorkspacePage({
   const p = dataOf(profile.state)
   const r = dataOf(roles.state)
   const ws = p?.workspaces.find((w) => w.is_acting) ?? null
+  const me = useUrRead(loadMe, `me:${ws?.tenant_id ?? ''}`)
+  const meData = dataOf(me.state)
+  const record = meData !== null && ws !== null && meData.tenant.tenant_id === ws.tenant_id ? meData.tenant : null
   const platformAdmin = p !== null && p.identity.is_admin === true
   const personal = ws?.kind === 'user' || r?.kind === 'user'
   const canManage = r !== null ? r.can_manage : personal || platformAdmin
   const readOnly = !personal && r !== null && !r.can_manage
-  const name = ws === null ? (r?.tenant_id ?? '') : personal ? OWN_WORKSPACE_LABEL : ws.display_name || ws.tenant_id
+  // Until the record answers the name is '' (the heading says it is reading); a failed read falls back to the id.
+  const name =
+    ws === null ? (r?.tenant_id ?? '') : personal ? OWN_WORKSPACE_LABEL : record !== null ? record.display_name || ws.tenant_id : me.state.status === 'loading' ? '' : ws.tenant_id
+  // The group's address: the record's principal, else the profile row's name, which is that address for a group.
+  const groupAddress = ws === null || personal ? null : record?.principal || ws.display_name || null
   const role = p !== null && ws !== null ? effectiveRole(p, ws, roles) : null
   const peopleCount: TabDef['count'] =
     roles.state.status === 'error' || roles.state.status === 'empty' ? 'not known' : r === null ? undefined : personal ? undefined : r.people.length
@@ -166,11 +182,12 @@ export function WorkspacePage({
               the heading's name stays the workspace's. App.tsx `PAGE_TOPIC`
               gives each tab its own topic; outside the shell there is none. */}
           <div className="head">
-            <h1>{name || (profile.state.status === 'loading' ? 'Reading the workspace…' : 'This workspace')}</h1>
+            <h1>{name || (profile.state.status === 'loading' || me.state.status === 'loading' ? 'Reading the workspace…' : 'This workspace')}</h1>
             {sectionHelp}
           </div>
           <p className="wpg-chips" aria-label="About this workspace">
             {ws !== null && <Chip title="The workspace's id">{ws.tenant_id}</Chip>}
+            {groupAddress !== null && groupAddress !== name && groupAddress !== ws?.tenant_id && <Chip title="The workspace's Google group">{groupAddress}</Chip>}
             {ws !== null && personal && <span className="wpg-dim">personal</span>}
             {!personal && (
               <span className="wpg-dim">
@@ -185,7 +202,7 @@ export function WorkspacePage({
             {readOnly && <span className="wpg-tag">read only for you</span>}
           </p>
         </div>
-        <UrRefresh reads={[profile, roles]} />
+        <UrRefresh reads={[profile, roles, me]} />
       </div>
       <Tabs tabs={tabs} current={tab} label={name || 'This workspace'} className="wpg-tabs" onSelect={(k) => select(k as WorkspaceTab)} />
       <div className="wpg-body" role="tabpanel" aria-label={tabs.find((t) => t.key === tab)?.label}>
