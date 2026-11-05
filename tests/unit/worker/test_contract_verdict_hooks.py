@@ -24,7 +24,6 @@ MUTATIONS: drop `base.update(self._work_contract_env)` from `_build_child_env`
 
 from __future__ import annotations
 
-import json
 import secrets
 from pathlib import Path
 from typing import Any
@@ -53,13 +52,15 @@ def _seed(db: Any, metadata: dict[str, Any]) -> None:
     db.doc("tasks/task_1")["metadata"] = metadata
 
 
-def _runner_envs(worker: Any) -> list[dict[str, str]]:
-    seen: list[dict[str, str]] = []
+def _runner_envs(worker: Any) -> list[dict[str, Any]]:
+    """Each runner start's environment, with what `poststeps.read_contract`
+    read from it then: the workspace is removed when the attempt ends."""
+    seen: list[dict[str, Any]] = []
     build = worker._build_child_env
 
     def recorded() -> dict[str, str]:
         env = build()
-        seen.append(dict(env))
+        seen.append({**env, "read": poststeps.read_contract(env), "work": worker.ws.work})
         return env
 
     worker._build_child_env = recorded  # type: ignore[method-assign]
@@ -83,9 +84,8 @@ def test_the_runner_is_started_with_the_signed_contract_and_its_digest(db, worke
     env = seen[0]
     assert env[poststeps.CONTRACT_DIGEST_ENV] == digest
     path = Path(env[poststeps.CONTRACT_FILE_ENV])
-    assert path.parent == worker.ws.work
-    assert json.loads(path.read_text()) == CONTRACT
-    assert poststeps.read_contract(env) == (CONTRACT, digest)
+    assert path.parent == env["work"]
+    assert env["read"] == (CONTRACT, digest)
 
 
 def test_a_step_without_a_signed_reference_gets_neither_variable(db, worker_factory):
@@ -99,7 +99,7 @@ def test_a_step_without_a_signed_reference_gets_neither_variable(db, worker_fact
     assert seen
     assert poststeps.CONTRACT_DIGEST_ENV not in seen[0]
     assert poststeps.CONTRACT_FILE_ENV not in seen[0]
-    assert poststeps.read_contract(seen[0]) == (None, None)
+    assert seen[0]["read"] == (None, None)
 
 
 def test_a_signed_reference_without_its_body_still_names_the_digest(db, worker_factory):
