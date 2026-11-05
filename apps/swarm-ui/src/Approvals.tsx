@@ -361,7 +361,7 @@ function EmptyInbox({ kind, elsewhere, go }: { kind: string | null; elsewhere: n
       say={kind === null ? 'The inbox was read and nothing is waiting' : `The inbox was read and no ${APPROVAL_KIND[kind] ?? kind} item is waiting`}
     >
       {kind === null ? (
-        `No ${EVERY_KIND} in this workspace is waiting for a person: the inbox was read and is empty.`
+        `No ${EVERY_KIND} waits for a person: the inbox was read and is empty.`
       ) : elsewhere !== null && elsewhere > 0 ? (
         <span data-testid="apl-elsewhere">
           Nothing of this kind is waiting for a person. {pluralise(elsewhere, 'item')} {elsewhere === 1 ? 'waits' : 'wait'} under other kinds.{' '}
