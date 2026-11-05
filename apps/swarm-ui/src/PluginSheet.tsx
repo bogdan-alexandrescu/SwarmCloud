@@ -13,19 +13,17 @@
  * over the names `GET /v1/plugins` serves. No control takes a path, command,
  * URL or version; the version is shown, pinned in the image.
  *
- * WHERE THE PICK GOES. swarm-api reads a step's plugins from its work
- * contract, `metadata.work_contract.capabilities.plugins` (swarm_api.plugins.
- * FIELD_PATH), and `swarm_api.workcontract.decode` takes only a whole
- * contract. `stepContract` builds the smallest one it accepts: limits naming
- * the step's own runner profile (so `prepare` finds no mismatch) and the
- * plugins, every component one the worker enforces, so it is a strict contract
- * that never degrades to advisory. The refusals `stepPluginProblem` predicts
- * are `swarm_api.plugins.check_step`'s own words, in its order.
+ * WHERE THE PICK GOES (the owner's pick on PR #3264, 5 November 2026): the
+ * step's own `plugins` field, `{name: {mode, skills}}` (swarm_api.schemas.
+ * StepPluginCreate), never a work contract the console writes. swarm-api
+ * checks it and carries it in the step's signed work contract
+ * (`swarm_api.plugins.with_step_plugins`). The refusals `stepPluginProblem`
+ * predicts are `swarm_api.plugins.check_step`'s own words, in its order.
  */
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 
-import { loadMe, USE_FIXTURES } from './api'
+import { USE_FIXTURES } from './api'
 import { Button, Chip, Dash } from './components'
 import { read, route, type Result } from './fetch'
 import './styles/pluginsheet.css'
@@ -121,42 +119,18 @@ export function profileLoadsPlugins(view: PluginsView, profile: string): boolean
 }
 
 /* --------------------------------------------------------------------------
-   THE STEP'S WORK CONTRACT (swarm_api.workcontract.decode)
+   WHAT THE STEP SENDS (swarm_api.schemas.WorkflowStepCreate.plugins)
    -------------------------------------------------------------------------- */
 
-/** `wc-<lowercase name>`: the step id folded into the contract id's alphabet. */
-export function contractIdOf(stepId: string): string {
-  let slug = stepId.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+/, '')
-  if (slug.length < 3) slug = `step-${slug}`.replace(/-+$/, '')
-  return `wc-${slug.slice(0, 63)}`
+/** The step's `plugins` field for this pick. */
+export function stepPluginsField(pick: StepPlugin): Record<string, { mode: string; skills: string[] }> {
+  return { [pick.name]: { mode: pick.mode, skills: [...pick.skills] } }
 }
 
-/** The smallest work contract swarm-api accepts that carries this step's plugin. */
-export function stepContract(pick: StepPlugin, at: { stepId: string; profile: string; tenantId: string; owner: string }): Record<string, unknown> {
-  return {
-    schema: 1,
-    contract_id: contractIdOf(at.stepId),
-    tenant_id: at.tenantId,
-    revision: 1,
-    previous_digest: null,
-    strictness: 'strict',
-    requirements: [{
-      id: 'REQ-1',
-      text: `Step ${at.stepId} runs with ${pick.name} in ${pick.mode} mode, using ${pick.skills.join(', ')}.`,
-      verification: [],
-    }],
-    repositories: [],
-    scope: { read: [], write: [] },
-    protected: { paths: [], interfaces: [] },
-    capabilities: { runtime: [], plugins: { [pick.name]: { mode: pick.mode, skills: [...pick.skills] } } },
-    limits: { runner_profile: at.profile, model_class: null, budget: null, max_turns: null, timeout_seconds: null },
-    artifacts: [],
-    ownership: { owner: at.owner, depends_on: [], withdrawn: [] },
-  }
-}
-
-/** What the plan sends for a step's plugin: its `metadata`, or why it cannot. */
-export type StepPluginPlan = { ok: true; metadata: Record<string, unknown> } | { ok: false; message: string }
+/** What the plan sends for a step's plugin: its `plugins` field, or why it cannot. */
+export type StepPluginPlan =
+  | { ok: true; plugins: Record<string, { mode: string; skills: string[] }> }
+  | { ok: false; message: string }
 
 export function stepPluginPlan(
   pick: StepPlugin, at: { stepId: string; profile: string }, ctx: StepPluginsContext,
@@ -167,13 +141,7 @@ export function stepPluginPlan(
   }
   const problem = stepPluginProblem(view, pick, at.profile)
   if (problem !== null) return { ok: false, message: problem }
-  if (ctx.owner === null) {
-    return { ok: false, message: `who you are was not read, so the step's ${pick.name} has no owner to sign for it; reload` }
-  }
-  return {
-    ok: true,
-    metadata: { work_contract: stepContract(pick, { ...at, tenantId: view.tenant_id, owner: ctx.owner }) },
-  }
+  return { ok: true, plugins: stepPluginsField(pick) }
 }
 
 /* --------------------------------------------------------------------------
@@ -183,12 +151,10 @@ export function stepPluginPlan(
 export interface StepPluginsContext {
   /** `GET /v1/plugins`, or null before anything asked for it. */
   view: Result<PluginsView> | null
-  /** The signed-in person's email, the contract's owner; null until read. */
-  owner: string | null
 }
 
 /** Nothing read yet: what the plan checks a pick against before any sheet opened. */
-export const UNREAD_STEP_PLUGINS: StepPluginsContext = { view: null, owner: null }
+export const UNREAD_STEP_PLUGINS: StepPluginsContext = { view: null }
 
 export async function loadStepPlugins(): Promise<Result<PluginsView>> {
   if (USE_FIXTURES) return { status: 'ok', data: fixturePluginsView(), fetchedAt: Date.now() }
@@ -216,9 +182,9 @@ function fixturePluginsView(): PluginsView {
   }
 }
 
-/** The two reads the sheet needs, asked for once, on `want()`. Until then, nothing is fetched. */
+/** The read the sheet needs, asked for once, on `want()`. Until then, nothing is fetched. */
 export function useStepPlugins(): StepPluginsContext & { want: () => void } {
-  const [ctx, setCtx] = useState<StepPluginsContext>({ view: null, owner: null })
+  const [ctx, setCtx] = useState<StepPluginsContext>({ view: null })
   const asked = useRef(false)
   const live = useRef(true)
   useEffect(() => {
@@ -228,10 +194,9 @@ export function useStepPlugins(): StepPluginsContext & { want: () => void } {
   const want = useCallback(() => {
     if (asked.current) return
     asked.current = true
-    void Promise.all([loadStepPlugins(), loadMe()]).then(([view, me]) => {
+    void loadStepPlugins().then((view) => {
       if (!live.current) return
-      const email = me.status === 'ok' || me.status === 'stale' ? me.data.principal?.email ?? null : null
-      setCtx({ view, owner: typeof email === 'string' && email !== '' ? email : null })
+      setCtx({ view })
     })
   }, [])
   return { ...ctx, want }

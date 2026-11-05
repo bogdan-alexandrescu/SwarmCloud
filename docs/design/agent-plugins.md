@@ -101,6 +101,15 @@ swarm-api against the catalogue, the workspace setting and the step's runner pro
 spec format bump in `specsign`), so the worker trusts only what was signed. The frozen-contract change request also
 asks for the workspace settings block and, if needed, a profile marker for runners that can load plugins.
 
+**As built (the owner's pick on PR #3264, 5 November 2026): a per-step `plugins` field.** A task and a workflow step
+carry `plugins` themselves (`swarm_api.schemas.StepPluginCreate`); the console's builder sends that field and never
+writes a work contract. Why no spec format bump: swarm-api checks the field (`plugins.check_step`, its refusals pointing
+at `plugins`) and carries it in the step's work contract, the caller's own when it sent one (naming no plugins or the
+same ones) or else the smallest strict contract `workcontract.decode` accepts (`plugins.with_step_plugins`). That
+contract's digest already rides in the signed dispatch block, so the plugins are signed with the step and the worker
+(`agent_worker.plugins.selected`) reads them unchanged. Contracts are behind `SWARM_WORK_CONTRACTS`; with it off a step
+naming plugins is refused rather than stored to run without them.
+
 ### Packaging: baked in, pinned
 
 * A build stage takes gstack at a pinned stable release tag from the build mirror, installs production dependencies

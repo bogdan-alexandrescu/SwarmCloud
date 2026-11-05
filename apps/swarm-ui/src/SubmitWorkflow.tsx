@@ -286,7 +286,7 @@ interface StepDraft {
    *  only on a step whose runner is `await-input`. */
   wait?: AwaitDraft
   /** The plugin picked in the step's sheet (PluginSheet.tsx), by name; absent
-   *  or null is none. Sent in the step's work contract (`stepPluginPlan`). */
+   *  or null is none. Sent as the step's `plugins` field (`stepPluginPlan`). */
   plugin?: StepPlugin | null
 }
 
@@ -438,16 +438,16 @@ function planOf(
       }
       awaitBlock = built.block
     }
-    // THE STEP'S PLUGIN rides in its work contract, refused here in
+    // THE STEP'S PLUGIN rides in its own `plugins` field, refused here in
     // `check_step`'s words before the API refuses it.
-    let pluginMetadata: Record<string, unknown> | null = null
+    let pluginField: Record<string, unknown> | null = null
     if (s.plugin != null) {
       const planned = stepPluginPlan(s.plugin, { stepId: id, profile: s.profile }, plugins ?? UNREAD_STEP_PLUGINS)
       if (!planned.ok) {
         problems.push({ key: s.key, stepId: id, kind: 'plugin', message: planned.message })
         continue
       }
-      pluginMetadata = planned.metadata
+      pluginField = planned.plugins
     }
     const modelClass = sentModelClass(classes?.[s.profile], s.modelClass)
     body.push({
@@ -467,7 +467,7 @@ function planOf(
       // A CLASS NAME, never a model ID (invariant 10), and only one somebody
       // chose over the runner's default (#1435).
       ...(modelClass === undefined ? {} : { model_class: modelClass }),
-      ...(pluginMetadata === null ? {} : { metadata: pluginMetadata }),
+      ...(pluginField === null ? {} : { plugins: pluginField }),
     })
   }
   return { problems, body }
