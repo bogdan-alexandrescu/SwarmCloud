@@ -166,7 +166,7 @@ def test_the_script_submits_nothing_when_the_read_row_names_another_digest(_laun
 
 
 def test_the_agent_and_the_skill_say_how_to_read_a_handle():
-    agent = (_PLUGIN / "agents" / "workflow.md").read_text()
+    agent = (_PLUGIN / "agents" / "spec.md").read_text()
     assert '{"spec_handle": "<that path>", "spec_digest": "<that digest>"}' in agent
     skill = (_PLUGIN / "skills" / "sc" / "SKILL.md").read_text()
     # MUTATION: a skill that still tells the session to pass `{spec, spec_handle, ...}` fails here.
