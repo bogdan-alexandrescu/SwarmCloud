@@ -150,4 +150,18 @@ export const CARD_KINDS: readonly CardKindSpec[] = [
     states: ['proposed', 'acting', 'done'],
     actions: ['fix_it', 'explain_more'],
   },
+  {
+    kind: 'readback',
+    label: 'Read-back',
+    fields: ['readback_id', 'heard', 'action', 'target_name', 'status', 'expires_at'],
+    states: ['waiting', 'acting', 'done', 'dismissed', 'cancelled'],
+    actions: ['go', 'not_that'],
+  },
+  {
+    kind: 'spec',
+    label: 'Spec',
+    fields: ['markdown', 'headings'],
+    states: ['proposed', 'done'],
+    actions: ['comment', 'open_full_size'],
+  },
 ]
