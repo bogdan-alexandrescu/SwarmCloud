@@ -496,7 +496,17 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // (Work › Setup until then) is a part of Workspace Settings with no tab of
   // its own, so no slice reaches it.
   { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals'], floor: 90 },
-  { name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/plugins', 'config/workspace'], floor: 60 },
+  // THE SECRETS PAGE'S (i)s (no-prose rule, 5 November 2026; part of #2688).
+  // Config › Secrets moved its explanations behind Profile's `AboutTip`, a
+  // `.ctl-q-glyph` 20px disc in the card heads' action row and beside the
+  // Scope label, where the walk in from the card's border now reaches it. Its
+  // "i" is centred in a fixed 20px with `border: 0` (§B5.3), so there is no
+  // edge for that ink to crowd; the card's inset is measured off the heading
+  // beside it, as the submit slice's `?` is.
+  {
+    name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/plugins', 'config/workspace'], floor: 60,
+    centred: ['button.ctl-q-glyph [left] width 20px, centred', 'button.ctl-q-glyph [right] width 20px, centred'],
+  },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   // Account health (ACCOUNT-HEALTH-PAGE; part of #2302) sits beside Accounts, as in the rail.

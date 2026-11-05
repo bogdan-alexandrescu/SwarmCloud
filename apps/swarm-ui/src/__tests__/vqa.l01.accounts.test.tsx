@@ -15,7 +15,7 @@
 //              2026-10-16 re-run on one line, in a column as wide as it
 //              (vqa2.r2.capacity.test.tsx); wrapped, its row was taller.
 //   V015       The phone hides History's When cell by name, not Since.
-//   V016       Two Sign in again links are separated.
+//   V016       Two Sign in again buttons are separated.
 //   V017       Holding now / History answer from the development fixture.
 //   V018       A code from another sign-in says one instruction, not two.
 //   V019       The unread drift card is one line: dash, mark, sentence.
@@ -195,14 +195,19 @@ describe('V015: the phone hides History\'s When by name', () => {
   })
 })
 
-describe('V016: two Sign in again links are separated', () => {
-  it('puts a separator between them', async () => {
+describe('V016: two Sign in again buttons are separated', () => {
+  it('puts each on its own row', async () => {
     await accounts([
       account({ account_id: 'u-bogdan:a', label: 'a', state: 'REAUTH_REQUIRED' }),
       account({ account_id: 'u-bogdan:b', label: 'b', state: 'REAUTH_REQUIRED' }),
     ])
-    const body = document.querySelector('.acct-callout-body')!
-    expect(body.textContent).toContain('Sign in again to a · Sign in again to b')
+    // One row per account, each its own button (no prose on the surface,
+    // 2026-11-05): the rows keep them apart where a middot used to.
+    const rows = [...document.querySelectorAll('.acct-callout-body .acct-callout-row')]
+    expect(rows.map((r) => r.querySelector('button')?.getAttribute('aria-label'))).toEqual([
+      'Sign in again to a',
+      'Sign in again to b',
+    ])
   })
 })
 

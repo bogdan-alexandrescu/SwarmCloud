@@ -847,6 +847,14 @@ reported in its own words, with the offer of the same spec without the
 field. Never choose a class the spec did not: it is the operator's decision,
 made in the spec or on the command line.
 
+A review step's gate is the step's `review_gate`: `false` switches it off,
+so the review runs however small the change (a mock-up review, say), and a
+block of `min_lines`, `risk_paths` and `requirements_check` sets it. It is
+sent as the step's `metadata.review_gate`; a malformed one is refused before
+anything is submitted. A step carrying `metadata` itself is refused, like
+every key outside the accepted list. Never add or drop a gate the spec did
+not name.
+
 ### `runs`
 
 ONE read: call `swarm_runs` (in a terminal, `sc runs`) and report each

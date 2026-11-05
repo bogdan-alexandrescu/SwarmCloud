@@ -341,6 +341,66 @@ def test_a_personal_workspace_not_ready_yet_is_a_row_that_cannot_be_selected(
         ("eng", True, None), ("u-alice", False, "requested")]
 
 
+def _counting_tenant_batches(db: FakeFirestore) -> list[list[str]]:
+    """Every `get_all` over `tenants/` documents the request makes, by path."""
+    batches: list[list[str]] = []
+    real = db.get_all
+
+    def counting(refs, *a, **k):
+        refs = list(refs)
+        if any(ref.path.startswith("tenants/") for ref in refs):
+            batches.append([ref.path for ref in refs])
+        return real(refs, *a, **k)
+
+    db.get_all = counting  # type: ignore[method-assign]
+    return batches
+
+
+def test_a_group_row_with_a_named_record_serves_the_name_and_the_principal(
+    client, seeded
+) -> None:
+    seeded.docs["tenants/eng"]["display_name"] = "Engineering"
+    batches = _counting_tenant_batches(seeded)
+    rows = {w["tenant_id"]: w for w in
+            client.get("/v1/profile", headers=as_("alice")).json()["workspaces"]}
+    # MUTATION: serve the principal as `display_name` whatever the record says.
+    assert rows["eng"]["display_name"] == "Engineering"
+    # MUTATION: drop `principal` from the group row.
+    assert rows["eng"]["principal"] == ENG_GROUP
+    # ONE batched read for every group row's name, never a read per row, and
+    # the personal record is not in it.
+    assert batches == [["tenants/eng"]]
+    # The personal row is as it was.
+    assert rows["u-alice"]["display_name"] == "Your workspace (u-alice)"
+    assert "principal" not in rows["u-alice"]
+
+
+def test_a_group_row_whose_record_has_no_name_serves_the_principal(client, seeded) -> None:
+    # `seed_tenant` names the record by its id, which is what a first submit writes.
+    rows = {w["tenant_id"]: w for w in
+            client.get("/v1/profile", headers=as_("alice")).json()["workspaces"]}
+    assert rows["eng"]["display_name"] == ENG_GROUP
+    assert rows["eng"]["principal"] == ENG_GROUP
+
+
+def test_a_failed_name_read_serves_every_group_row_by_its_principal(client, seeded) -> None:
+    seeded.docs["tenants/eng"]["display_name"] = "Engineering"
+    real = seeded.get_all
+
+    def failing(refs, *a, **k):
+        refs = list(refs)
+        if any(ref.path.startswith("tenants/") for ref in refs):
+            raise RuntimeError("firestore down")
+        return real(refs, *a, **k)
+
+    seeded.get_all = failing  # type: ignore[method-assign]
+    got = client.get("/v1/profile", headers=as_("alice"))
+    assert got.status_code == 200, got.text
+    rows = {w["tenant_id"]: w for w in got.json()["workspaces"]}
+    assert rows["eng"]["display_name"] == ENG_GROUP
+    assert rows["eng"]["principal"] == ENG_GROUP
+
+
 def test_a_stored_default_the_caller_left_is_ignored_and_kept(
     client, seeded, api_context, child_key
 ) -> None:

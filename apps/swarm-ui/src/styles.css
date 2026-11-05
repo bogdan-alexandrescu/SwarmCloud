@@ -512,6 +512,14 @@ body {
 }
 .ac-lead .c-btn.is-primary:not(:disabled):not([aria-disabled='true']) { border-color: var(--sk-ac); }
 
+/* The sign-in callout's "Sign in again" buttons (Capacity › Accounts,
+   `Broken`): --ctl-bd on the callout's --s-warnb tint is 2.74:1 dark, under
+   3:1. The Config lead's 10%-toward---text mix above, for this tint: 3.30:1
+   dark, 3.56:1 light (spacing.accounts). */
+.acct-callout .c-btn:not(.is-primary):not(.is-ghost):not(.is-danger):not(.is-danger-filled):not(:disabled):not([aria-disabled='true']) {
+  border-color: color-mix(in srgb, var(--ctl-bd) 90%, var(--text));
+}
+
 /* The same tie for the one button of an Admin page's lead (ADMIN-LEADS,
    AdminSettings.tsx `AdminLead`, styles/admin.css `.adm-lead`). The primary's
    own `border-color: var(--sk-ac)` loses to the `:where` floor in jsdom, so

@@ -47,6 +47,16 @@ paths and changed-line counts:
     when the block names none: credentials and the git token path, tenant
     isolation, redaction, IAM, the frozen contract) or changes more than
     `min_lines` lines in total;
+  * the review RUNS when a parent it depends on hands it work that is not
+    code lines (FOUND 2026-11-05: both mock-up reviews of the workflow-graph
+    directions were skipped on "0 changed lines" while their parents handed
+    them the whole bundle): a direct parent whose `metadata.expected_outputs`
+    names any file other than the patch and a verdict (`COUNTED_HANDOFFS`),
+    or a direct parent submitted `allow_empty_diff` whose diff is empty. The
+    reason says so ("its parent hands it <name>; the gate counts code lines
+    only"). An issue-run implementer, `allow_empty_diff` and handing only
+    `swarm-work.patch`, with a diff of its own, is counted on its lines as
+    before;
   * the review RUNS when what was changed cannot be told: a parent that
     cannot be read, has no git record, has no line counts, or whose file
     list was cut with no risk path in what it kept. A gate that could not
@@ -100,6 +110,7 @@ from functools import lru_cache
 from typing import Any, Callable, Mapping
 
 from .validation import (
+    EXPECTED_OUTPUTS_METADATA_KEY,
     REVIEW_GATE_DEFAULT_BLOCK,
     REVIEW_GATE_DEFAULT_MIN_LINES,
     REVIEW_GATE_MAX_MIN_LINES,
@@ -197,6 +208,13 @@ REASON_UNREADABLE = "change_unreadable"
 REASON_CUT = "file_list_cut"
 REASON_NO_PARENTS = "no_parent_changes"
 REASON_OFF = "review_gate_off"
+REASON_HANDED = "parent_hands_files"
+REASON_EMPTY_BY_DESIGN = "parent_allows_empty_diff"
+
+#: What a parent may hand its dependants and still be counted on its lines:
+#: the diff itself (`issueruns.PATCH_FILE`, which the line counts measure)
+#: and a verdict (`VERDICT_FILE`, a review's reading, not its subject).
+COUNTED_HANDOFFS = ("swarm-work.patch", VERDICT_FILE)
 
 
 
@@ -336,6 +354,7 @@ class Decision:
     read: tuple[str, ...] = ()
     unreadable: tuple[str, ...] = ()
     shots: tuple[str, ...] = field(default=())
+    handed: tuple[str, ...] = ()
 
     @property
     def text(self) -> str:
@@ -349,6 +368,12 @@ class Decision:
         if self.reason == REASON_OVER:
             return (f"review runs: {self.changed_lines} changed lines, over the gate's "
                     f"{self.min_lines}")
+        if self.reason == REASON_HANDED:
+            return ("review runs: its parent hands it " + ", ".join(self.handed[:MAX_PATHS_SHOWN])
+                    + "; the gate counts code lines only")
+        if self.reason == REASON_EMPTY_BY_DESIGN:
+            return ("review runs: its parent allows an empty diff, so its work is not code "
+                    "lines; the gate counts code lines only")
         if self.reason == REASON_CUT:
             return "review runs: a parent's file list was cut, so the change cannot be told"
         if self.reason == REASON_OFF:
@@ -370,6 +395,7 @@ class Decision:
             "renders_published": bool(self.shots),
             "shots": list(self.shots[:MAX_PATHS_SHOWN]),
             "shots_count": len(self.shots),
+            "handed": list(self.handed[:MAX_PATHS_SHOWN]),
         }
 
 
@@ -421,6 +447,25 @@ def shots_of(document: Any) -> list[str]:
     return found
 
 
+def handed_of(document: Any) -> list[str]:
+    """The files a parent hands its dependants through `input_from` that are not code lines.
+
+    Read from `metadata.expected_outputs`, which the service alone writes on
+    every step a dependant stages from (`expected_outputs.record_expected_outputs`),
+    less `COUNTED_HANDOFFS`. It names what any dependant stages, not only the
+    review, so it can only over-count, and an over-count only runs a review.
+    """
+    names = _mapping(_mapping(document).get("metadata")).get(EXPECTED_OUTPUTS_METADATA_KEY)
+    return [n for n in names if isinstance(n, str) and n.strip()
+            and n.strip() not in COUNTED_HANDOFFS] if isinstance(names, list) else []
+
+
+def allows_empty_diff(document: Any) -> bool:
+    """Whether a step was submitted with `allow_empty_diff` (`metadata.dispatch`)."""
+    dispatch = _mapping(_mapping(_mapping(document).get("metadata")).get("dispatch"))
+    return dispatch.get("allow_empty_diff") is True
+
+
 def _builds_on(document: Mapping[str, Any]) -> str | None:
     raw = _mapping(_mapping(document.get("metadata")).get("dispatch")).get("builds_on")
     return raw.strip() if isinstance(raw, str) and raw.strip() else None
@@ -441,11 +486,14 @@ def resolve(
     only runs a review.
     """
     queue = list(dict.fromkeys(task_depends_on))
+    direct = set(queue)
     seen: set[str] = set()
     visited: list[str] = []
     unknown: list[str] = []
     hits: dict[str, None] = {}
     shots: dict[str, None] = {}
+    handed: dict[str, None] = {}
+    empty_by_design = False
     total = 0
     cut = False
     while queue:
@@ -471,6 +519,9 @@ def resolve(
             if any(matches(path, glob) for glob in gate.risk_paths):
                 hits.setdefault(path.lstrip("/"), None)
         shots.update(dict.fromkeys(shots_of(document)))
+        if task_id in direct:
+            handed.update(dict.fromkeys(n.strip() for n in handed_of(document)))
+            empty_by_design = empty_by_design or (allows_empty_diff(document) and lines == 0)
         if lines is None:
             unknown.append(task_id)
         else:
@@ -480,11 +531,15 @@ def resolve(
         if upstream and upstream not in seen:
             queue.append(upstream)
     common = {"changed_lines": total, "min_lines": gate.min_lines, "read": tuple(visited),
-              "unreadable": tuple(unknown), "shots": tuple(shots)}
+              "unreadable": tuple(unknown), "shots": tuple(shots), "handed": tuple(handed)}
     if hits:
         return Decision(True, REASON_RISK, risk_hits=tuple(hits), **common)
     if total > gate.min_lines:
         return Decision(True, REASON_OVER, **common)
+    if handed:
+        return Decision(True, REASON_HANDED, **common)
+    if empty_by_design:
+        return Decision(True, REASON_EMPTY_BY_DESIGN, **common)
     if unknown:
         return Decision(True, REASON_UNREADABLE, **common)
     if cut:

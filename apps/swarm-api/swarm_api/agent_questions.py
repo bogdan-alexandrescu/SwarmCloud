@@ -43,7 +43,9 @@ additive metadata key needs no contract change -- one entry per question:
 Re-answering REPLACES the entry and moves the replaced answer, with its own
 `by`, `at`, `via` and `session`, into `history`, so who changed what is on the task for as long as the task
 is; the write is one Firestore transaction, so two people answering at once
-cannot drop either one's history. `history` is capped at
+cannot drop either one's history, and contention is run again
+(`ANSWER_TRANSACTION_ATTEMPTS`) so answers sent at once are all stored or
+refused by name (503 `answer_contended`). `history` is capped at
 `MAX_ANSWER_CHANGES`, past which a change is refused rather than an earlier
 answer forgotten.
 
@@ -141,7 +143,9 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from collections.abc import Iterator
@@ -164,10 +168,10 @@ from .codec import (
     owner_answers_by_index,
     task_from_dict,
 )
-from .errors import Conflict, Forbidden, NotFound, RoleMemberRequired, ValidationFailed
+from .errors import Conflict, Forbidden, NotFound, RateLimited, RoleMemberRequired, ValidationFailed
 from .handoff import ready_writes
 from .redaction import redact
-from .store import EVENTS, TASKS, Store
+from .store import EVENTS, TASKS, Store, _is_contention
 from .task_input import masking_for
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
@@ -282,6 +286,41 @@ ADVISORY_PICK_FIX_KEY = "advisory_pick_fix"
 MAX_ADVISORY_PICK_ROUNDS = 10
 #: The runner profile of a merge step (`validation.MERGE_STEP_ID`).
 MERGE_PROFILE = "merge"
+
+#: ANSWERS SENT AT ONCE (5 November 2026, part of #2688): four answers to
+#: four questions of one task, sent together, contend for the task document;
+#: one met contention `firestore.transactional` does not retry (`Aborted` on
+#: the transactional read) and answered 500. The answer's transaction is run
+#: again, as the cancel's is (`store._is_contention`: only what cannot have
+#: committed; never `DeadlineExceeded`), each run re-reading the answers it
+#: merges into. How many runs, each itself up to five commit attempts:
+ANSWER_TRANSACTION_ATTEMPTS = 4
+#: The full-jitter pause before run n+1 is uniform in [0, base * 2**n]: at
+#: most 0.1 + 0.2 + 0.4 s, jittered so answers that collided do not again.
+ANSWER_RETRY_BASE_SECONDS = 0.1
+#: The wall-clock budget for the pauses, well inside a request's time, so the
+#: caller hears the named 503 rather than its own client timing out.
+ANSWER_RETRY_BUDGET_SECONDS = 2.0
+#: The 503's `Retry-After`: contention clears in well under a second.
+ANSWER_RETRY_AFTER_SECONDS = 1.0
+#: Replaced by the tests, which record the pauses rather than take them.
+_contention_sleep = time.sleep
+
+
+class AnswerContended(RateLimited):
+    """The answer's transaction stayed contended through every run.
+
+    503, retryable, and nothing was written. A `RateLimited` only so the
+    API's error handler writes its `Retry-After`; its status says it is not
+    a rate limit (as `store.CancelContended`).
+    """
+
+    status_code = 503
+    code = "answer_contended"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, ANSWER_RETRY_AFTER_SECONDS)
+
 
 #: Parks read per page by `parked_human_snapshots`: the sweep pages through
 #: every PARKED(HUMAN_REQUIRED) task, so this bounds one read, not the sweep.
@@ -1124,7 +1163,33 @@ def answer_question(
             promoted.setdefault("claims", []).append((merge, claim))
         return previous is not None
 
-    replaced = _apply(db.transaction())
+    # CONTENTION IS RUN AGAIN, THEN REFUSED BY NAME. A fresh transaction
+    # each run, and each run re-reads the task: an answer another question's
+    # answer committed in between is merged, never overwritten, and a second
+    # answer to the SAME question meets the history rule as it would alone.
+    # Anything that is not contention is raised as is.
+    deadline = time.monotonic() + ANSWER_RETRY_BUDGET_SECONDS
+    last: BaseException | None = None
+    for run in range(ANSWER_TRANSACTION_ATTEMPTS):
+        try:
+            replaced = _apply(db.transaction())
+            break
+        except Exception as exc:
+            if not _is_contention(exc):
+                raise
+            last = exc
+        pause = random.uniform(0, ANSWER_RETRY_BASE_SECONDS * 2**run)
+        if run + 1 == ANSWER_TRANSACTION_ATTEMPTS or time.monotonic() + pause >= deadline:
+            log.warning(
+                "answer to question %d of task %s stayed contended after %d runs: %s",
+                index, task_id, run + 1, type(last).__name__,
+            )
+            raise AnswerContended(
+                f"question {index + 1}'s answer met other writes to task {task_id!r} on every "
+                "attempt, often other answers sent at the same moment; nothing was stored, "
+                "retry the answer"
+            ) from last
+        _contention_sleep(pause)
     started: list[str] = []
     for merge, claim in promoted.get("claims", []):
         # After the transaction: a submission is not a Firestore write. A
