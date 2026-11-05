@@ -546,7 +546,14 @@ export function Forecast({ accounts, scope, now }: { accounts: readonly PoolAcco
         <Tile k="Goes dark" v="Not within 8 days" small="at this pace" />
         {/* THE REASON IS THE TICK'S (no prose on the surface): Back has no
             time because the pool never closes at this pace. */}
-        <Tile k="Back" v={<ToneMark tone="ok" title="it does not go dark" label="it does not go dark" />} />
+        <Tile
+          k="Back"
+          v={
+            <>
+              <ToneMark tone="ok" title="it does not go dark" /> <Info about="Back" tip="it does not go dark" />
+            </>
+          }
+        />
       </>
     )
   } else {

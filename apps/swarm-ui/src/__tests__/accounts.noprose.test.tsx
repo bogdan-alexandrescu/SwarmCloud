@@ -176,8 +176,11 @@ describe('the forecast: labels and ticks, no notes', () => {
     const { container } = render(<Forecast accounts={[slow]} scope="eng" now={now} />)
     const back = [...container.querySelectorAll('.acct-fc-tile')].find((t) => t.querySelector('.acct-fc-k')?.textContent === 'Back')!
     expect(surface(back)).not.toContain('it does not go dark')
-    const tick = back.querySelector('[data-tone]') as HTMLElement
-    expect(tick.getAttribute('aria-label')).toBe('it does not go dark')
+    // The tick alone is decoration (aria-hidden): its reason must reach a
+    // screen reader and a keyboard through the (i) beside it.
+    expect(back.querySelector('[data-tone="ok"]')).not.toBeNull()
+    const about = within(back as HTMLElement).getByRole('button', { name: 'About Back' })
+    expect(tipOf(about)).toBe('it does not go dark')
   })
 
   it('keeps "Left out" and "Laptop sessions" as labels and moves their reasons into tooltips', () => {
