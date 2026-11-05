@@ -62,7 +62,6 @@
 .cfc-subs li { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; min-width: 0; }
 .cfc-addons { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 6px 0 2px; padding: 8px 8px 4px; border-top: 1px solid var(--line-soft); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .cfc-addon-mark { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1.5px dashed var(--text-dim); border-radius: 50%; font-weight: 650; }
-.cfc-link { padding: 0; border: 0; background: none; color: var(--info); font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
 .cfc-note { margin: 4px 8px 4px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* The working panel. */
@@ -85,7 +84,6 @@
 .cfc-waits li { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 4px 10px; align-items: baseline; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .cfc-wait-what { color: var(--text); overflow-wrap: anywhere; }
 .cfc-wait-meta { display: flex; flex-direction: column; align-items: flex-end; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); text-align: right; }
-.cfc-prov { margin: 0 4px; font-size: var(--t-micro); color: var(--text-faint); }
 
 /* This install: the sizing and the release, compact. */
 .cfc-about { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 10px 12px; }
