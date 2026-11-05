@@ -103,13 +103,13 @@ Some notes on what each group deliberately leaves out:
   question they read (`agent_questions.answers_to`, by `question_digest`). The
   bell's item (`notifications._asked_item`), `open_question_tasks` (`/sc check`)
   and `codec.step_needs`'s `questions_unread` read only the task document, and
-  reading every listed task's `questions.json` on each poll would cost an
-  artifact read per task. So the worker writes a short digest of each question
+  reading every listed agent's `questions.json` on each poll would cost an
+  artifact read per agent. So the worker writes a short digest of each question
   it counted, in index order, to `result_summary.question_digests`. An answer is
   stamped with the digest at its index when it is given (`asked_digest`). These
   three readers then leave an index open while its answer's stamp is not the
   digest there now: an earlier attempt's answer at index 0 does not silence the
-  different question a later attempt asks at index 0. A task summarised before
+  different question a later attempt asks at index 0. An agent summarised before
   the digests, and an answer stored before the stamp, cannot be checked, so they
   count by index as they always did.
 * **A declined loan request does not count as needing you either.** Nothing
