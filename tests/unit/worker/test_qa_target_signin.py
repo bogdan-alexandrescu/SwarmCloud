@@ -1401,7 +1401,7 @@ def test_a_landed_page_without_evidence_says_signed_in_selector_is_missing_not_n
         # MUTATION: keep the "login form never appeared" sentence for a landed page and this fails.
         assert "never appeared" not in sentence
         assert "signed_in_selector" in sentence and f"{ORIGIN}/access-pending" in sentence
-        assert "no login form" in sentence and "'Sign in'" in sentence
+        assert "no login form and no start-click control" in sentence
         # The worker takes it as its one plain line, under its 400 characters.
         assert qa_target._SENTENCE.fullmatch(sentence), sentence
         await rig.fake.stop()
@@ -1456,3 +1456,14 @@ def test_a_cookie_read_the_browser_refuses_is_no_evidence(tmp):
         await rig.fake.stop()
 
     run(body)
+
+
+def test_the_landed_sentence_fits_the_workers_line_at_the_longest_address():
+    class Where:
+        async def call(self, method: str, params: Any = None, session: Any = None) -> Any:
+            return {"result": {"value": "https://" + "a" * (gate_qt.MAX_WHERE * 2)}}
+
+    sign_in = gate_qt.SignIn(Where(), gate_qt.QaTarget(lambda e, f: None))
+    sentence = asyncio.run(sign_in._landed_sentence())
+    # MUTATION: say the start clicks' texts as well and the worker drops the sentence as too long.
+    assert qa_target._SENTENCE.fullmatch(sentence), len(sentence)
