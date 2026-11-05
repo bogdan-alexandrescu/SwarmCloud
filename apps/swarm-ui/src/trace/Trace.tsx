@@ -732,6 +732,7 @@ export function Trace({
             </button>
           ))}
         </div>
+        {read !== null && <ReadFacts t={read} fetchedAt={fetchedAt} />}
         <p className="trc-summary">
           {trace.model && layout !== 'phone' && <span>{trace.model}</span>}
           {end !== null && end.secs !== null && <span title="duration_ms, from the result record">{dur(end.secs.value)}</span>}
@@ -749,7 +750,6 @@ export function Trace({
           )}
           {selIdx >= 0 && <span className="trc-pos" title="j / k step through the events">{selIdx + 1} of {shown.length}</span>}
         </p>
-        {read !== null && <ReadFacts t={read} fetchedAt={fetchedAt} />}
       </div>
       {task.state === 'FAILED' && task.last_error && (
         <p className="trc-taskerr" role="note" title="The task's own last_error, from the task record, not from the transcript">

@@ -120,7 +120,7 @@ export function ReadFacts({ t, fetchedAt }: { t: TaskTranscript; fetchedAt: numb
   if (t.stream.status !== 'ok') return null
   const age = servedAge(t.stream, fetchedAt, now)
   return (
-    <details className="ag-logmeta trc-facts">
+    <details className="ag-logmeta trc-readfacts">
       <summary>
         {t.stream.source === 'live' ? 'live' : t.stream.source === 'final' ? 'final' : t.stream.source === 'artifact' ? 'the artifact' : 'transcript'}
         {t.stream.source === 'live' && age !== null && <span className="ctl-sub"> · published {ageSpan(age)} ago</span>}

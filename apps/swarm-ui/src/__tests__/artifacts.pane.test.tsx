@@ -1446,7 +1446,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     await openPane(finishedRoutes())
     // In the trace the read's facts fold behind its source, beside the summary.
     const logsSection = await sectionReady('Log', /masking/)
-    const facts = logsSection.querySelector<HTMLElement>('.trc-facts ul.ctl-facts')
+    const facts = logsSection.querySelector<HTMLElement>('.trc-readfacts ul.ctl-facts')
     expect(facts, 'no facts row in the log dock').not.toBeNull()
     expect(logsSection.querySelector('.ag-logs-attempt')?.textContent).toMatch(/Attempt/)
     expect(facts!.textContent).toMatch(/masking\s*applied at read time/)
@@ -1470,7 +1470,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     )
     const logsSection = await sectionReady('Log', /nothing published yet/)
     const view = logsSection
-    expect(view.querySelector('.trc-facts'), 'facts were drawn for a stream that does not exist').toBeNull()
+    expect(view.querySelector('.trc-readfacts'), 'facts were drawn for a stream that does not exist').toBeNull()
     expect(view.textContent, 'a masking count was drawn over bytes nobody read').not.toMatch(/masked\s*0/)
   })
 
@@ -1545,7 +1545,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
       await openPane(finishedRoutes())
       const logsSection = await sectionReady('Log', /recorded only its final result/)
       const where = uri(REF, 'claude-code.stdout.log')
-      const fact = [...logsSection.querySelectorAll<HTMLElement>('.trc-facts .ctl-fact')].find((f) => (f.textContent ?? '').includes(where))
+      const fact = [...logsSection.querySelectorAll<HTMLElement>('.trc-readfacts .ctl-fact')].find((f) => (f.textContent ?? '').includes(where))
       expect(fact, 'the transcript names no object location').toBeTruthy()
       expect(fact!.querySelector('.uri')?.getAttribute('title'), 'the location is not whole in its title').toBe(where)
       const copy = fact!.querySelector<HTMLButtonElement>('button.copy')
