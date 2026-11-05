@@ -263,7 +263,7 @@ describe('the lineage strip', () => {
   })
 
   it("has no fixed height: a capped one, past which it scrolls inside itself", async () => {
-    const css = (await import('./lineage.css?raw')).default as string
+    const css = (await import('./stage-lineage.css?raw')).default as string
     const rule = css.match(/\n\.lg-strip \{([^}]*)\}/)![1]!
     expect(rule).toMatch(/--lg-strip-cap: 138px;/)
     expect(rule).toMatch(/max-height: var\(--lg-strip-cap\);/)
@@ -274,7 +274,7 @@ describe('the lineage strip', () => {
   })
 
   it("never cuts a neighbour's id for its state: the state wraps under it", async () => {
-    const css = (await import('./lineage.css?raw')).default as string
+    const css = (await import('./stage-lineage.css?raw')).default as string
     expect(css).toMatch(/\n\.lg-card-head \{[^}]*flex-wrap: wrap;/)
   })
 

@@ -25,7 +25,7 @@ import { DECLARED_WORDS, edgeProvenance, inputsByStep, type EdgeProvenance } fro
 import { NamedMark, StateMark } from '../marks'
 import { stepState, type StepState, type Task, type Workflow, type WorkflowStep } from '../types'
 import { chipKindOf, chipTimeOf, type ChipKind, type StageGridShape } from './StageGrid'
-import './lineage.css'
+import './stage-lineage.css'
 
 // ---------------------------------------------------------------------------
 // The data: every edge, its kind and its file
