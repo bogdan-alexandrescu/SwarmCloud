@@ -377,6 +377,30 @@ def test_the_config_reads_the_swarm_speech_environment():
     assert not sm.SpeechConfig.from_env({}).enabled
 
 
+_REPO = Path(__file__).resolve().parents[3]
+
+
+def _swarm_api_env_block() -> str:
+    text = (_REPO / "terraform/infra/locals.tf").read_text()
+    start = text.index('"swarm-api" = merge(')
+    return text[start:text.index('"swarm-scheduler" = merge(', start)]
+
+
+def test_terraform_gives_swarm_api_every_speech_setting_the_config_reads():
+    import re
+
+    read = set(re.findall(r'"(SWARM_SPEECH_[A-Z_]+)"', (
+        _REPO / "apps/swarm-api/swarm_api/voice/speech_machine.py").read_text()))
+    read.add(cat.ZONES_ENV)
+    block = _swarm_api_env_block()
+    set_here = set(re.findall(r"^\s*(SWARM_SPEECH_[A-Z_]+)\s*=", block, re.M))
+    assert read == set_here
+    # Off means empty (the engine is not deployed), never a guessed address.
+    for name in set_here - {"SWARM_SPEECH_AUDIENCE"}:
+        line = re.search(rf"^\s*{name}\s*=(.*)$", block, re.M).group(1)
+        assert line.strip().startswith("local.voice_speech_on ?") and line.rstrip().endswith(': ""'), name
+
+
 class _Response:
     def __init__(self, status: int, body: dict[str, Any]) -> None:
         self.status_code, self._body = status, body
