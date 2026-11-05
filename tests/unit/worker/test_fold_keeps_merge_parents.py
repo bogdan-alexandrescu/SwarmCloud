@@ -20,13 +20,14 @@ Real git against local repositories; only the forge is faked.
 from __future__ import annotations
 
 import io
+import secrets
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from agent_worker import gitops
+from agent_worker import gitops, lifecycle
 
 from test_publish_to_pr import (  # noqa: F401 -- fixtures are used by name
     DIRECT,
@@ -303,3 +304,167 @@ def test_a_lane_that_merges_a_train_branch_into_its_pull_request_pushes_the_merg
     assert {"train-1.txt", "train-2.txt", "the-lanes-fix.txt"} <= tree_at(origin, tip)
     author = _git(origin, "log", "-1", "--format=%ae%n%B", tip)
     assert "anthropic.com" not in author.lower()
+
+
+# -- 3. a merged branch's own commits are scanned (#3359 review, #259) ----------
+
+#: Built at run time: a value only the fake leak test below knows.
+SECRET = f"swarm-review-{secrets.token_hex(12)}"
+
+
+def _flags_secret(_path: str, text: str):
+    at = text.find(SECRET)
+    return None if at < 0 else lifecycle.CredentialHit("registered_secret", at)
+
+
+def _history_leaks(tmp_path: Path, repo: Path):
+    logs = tmp_path / "logs"
+    logs.mkdir(exist_ok=True)
+    return lambda commits: lifecycle._commits_leak(
+        commits, leaks=_flags_secret, git=["git"], repo=repo,
+        private_dir=tmp_path / "private", logs_dir=logs, timeout_seconds=60,
+        logger=_logger(),
+    )
+
+
+def _side_branch_that_adds_and_removes_the_secret(repo: Path, start: str) -> str:
+    """A person's branch `tmp` whose first commit adds the secret and whose
+    second removes it: its final tree is clean, its history is not."""
+    _git(repo, "checkout", "-q", "-b", "tmp", start)
+    (repo / "config.txt").write_text(f"token={SECRET}\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add the config")
+    (repo / "config.txt").write_text("token=read from the environment\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "stop committing the value")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "work")
+    return head
+
+
+def test_a_merged_branch_whose_history_adds_a_secret_is_folded_without_it(tmp_path: Path):
+    repo, base = _repo(tmp_path)
+    clean = _branch(repo, "train", base, ["t1"])
+    tmp = _side_branch_that_adds_and_removes_the_secret(repo, base)
+    _merge(repo, "train")
+    _merge(repo, "tmp")
+    tree = _git(repo, "rev-parse", "HEAD^{tree}")
+
+    logs = tmp_path / "logs"
+    logs.mkdir(exist_ok=True)
+    gitops.fold_agent_commits(
+        repo=repo, base=base, keep=None, message="the worker's commit",
+        author_name="Swarm Worker", author_email="worker@example.invalid",
+        private_dir=tmp_path / "private", logs_dir=logs, timeout_seconds=60,
+        logger=_logger(), history_leaks=_history_leaks(tmp_path, repo),
+    )
+    # MUTATION: drop the `history_leaks` read in `merged_head_kept` -> tmp is
+    # a parent, and the commit holding the secret is pushed with it.
+    assert _parents(repo) == [base, clean]
+    assert not _is_ancestor(repo, tmp, "HEAD")
+    # The branch's changes are still in the tree; only its history is not.
+    assert _git(repo, "rev-parse", "HEAD^{tree}") == tree
+
+
+def test_the_replay_drops_a_merged_branch_whose_history_adds_a_secret(tmp_path: Path):
+    repo, base = _repo(tmp_path)
+    clean = _branch(repo, "train", base, ["t1"])
+    tmp = _side_branch_that_adds_and_removes_the_secret(repo, base)
+    _merge(repo, "train")
+    _merge(repo, "tmp")
+    _commit(repo, "mine", who=AGENT)
+
+    logs = tmp_path / "logs"
+    logs.mkdir(exist_ok=True)
+    kept = lifecycle.replay_agent_commits(
+        repo=repo, base=base, keep=None, task_id="task_1", scrub=lambda text: text,
+        author_name="Swarm Worker", author_email="worker@example.invalid",
+        private_dir=tmp_path / "private", logs_dir=logs, timeout_seconds=60,
+        logger=_logger(), leaks=_flags_secret,
+    )
+    assert kept == 3
+    merges = [line.split()[2:] for line in
+              _git(repo, "rev-list", "--merges", "--parents", f"{base}..HEAD").splitlines()]
+    # MUTATION: pass no `history_leaks` to `_published_merge_parents` -> the
+    # second merge keeps tmp, and the secret's commit is pushed. Rewritten
+    # without tmp, that merge has one parent, so it is no merge at all.
+    assert merges == [[clean]], merges
+    assert _is_ancestor(repo, clean, "HEAD")
+    assert not _is_ancestor(repo, tmp, "HEAD")
+
+
+def test_a_lane_that_merges_a_branch_with_a_secret_in_its_history_never_pushes_it(
+    worker_factory, monkeypatch, origin, local_urls, forge, pull, tmp_path
+):
+    """The issue's shape with the review's failure: the agent merges a side
+    branch that added a credential and removed it. The pull request's branch
+    takes the merge's tree, never that branch's commits."""
+    _no_agent_text(monkeypatch)
+    monkeypatch.setattr(lifecycle.Worker, "_leaks_in_added_text",
+                        lambda self, path, text: _flags_secret(path, text))
+    start = refs(origin)[PR_BRANCH]
+    heads: list[str] = []
+
+    def edit(repo: Path) -> None:
+        _git(repo, "checkout", "-q", "-b", "work")
+        heads.append(_side_branch_that_adds_and_removes_the_secret(repo, "HEAD"))
+        _merge(repo, "tmp")
+        _commit(repo, "the-lanes-fix", who=AGENT)
+
+    _, _, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-3359-leak",
+                            dispatch=DIRECT, edit=edit)
+    assert out["published"] is True, out
+    tip = refs(origin)[PR_BRANCH]
+    # MUTATION: drop the `history_leaks` read -> tmp's head, and the commit
+    # that added the secret, are on the remote.
+    assert not _is_ancestor(origin, heads[0], tip)
+    assert _is_ancestor(origin, start, tip)
+    assert "config.txt" in tree_at(origin, tip)
+    assert SECRET.encode() not in subprocess.run(
+        ["git", "cat-file", "--batch-all-objects", "--batch"], cwd=str(origin),
+        check=True, capture_output=True,
+    ).stdout, "the secret reached a pushed object"
+
+
+# -- 4. a merged head the clean repository cannot read fails the publish ---------
+
+
+def test_a_publish_whose_merged_head_cannot_be_read_pushes_nothing_and_keeps_the_bundle(
+    worker_factory, monkeypatch, origin, local_urls, forge, pull, tmp_path
+):
+    """The brief's rule: never a silent squash. Nothing is pushed, the
+    attempt's error says why, and the agent's branch is kept as the bundle."""
+    _no_agent_text(monkeypatch)
+    start = refs(origin)[PR_BRANCH]
+
+    def unreadable(run, g, head, **_kwargs):
+        raise gitops.MergedHeadUnreadable(
+            f"the agent merged commit {head[:12]}, which the clean publish repository "
+            "cannot read"
+        )
+
+    monkeypatch.setattr(lifecycle, "merged_head_kept", unreadable)
+    monkeypatch.setattr(gitops, "merged_head_kept", unreadable)
+    heads: list[str] = []
+
+    def edit(repo: Path) -> None:
+        _git(repo, "checkout", "-q", "-b", "work")
+        heads.append(_branch(repo, "side", "HEAD", ["s1"]))
+        _merge(repo, "side")
+        _commit(repo, "the-lanes-fix", who=AGENT)
+        heads.append(_git(repo, "rev-parse", "HEAD"))
+
+    worker, _, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-3359-read",
+                                 dispatch=DIRECT, edit=edit)
+    # MUTATION: drop the `except MergedHeadUnreadable` in the publish -> no
+    # bundle is kept or named.
+    assert out.get("published") is not True, out
+    assert refs(origin)[PR_BRANCH] == start
+    assert out.get("publish_failed") is True, out
+    reason = str(out.get("publish_reason"))
+    assert "cannot read" in reason and lifecycle.WORK_BUNDLE_NAME in reason, out
+    assert out.get("bundle") == lifecycle.WORK_BUNDLE_NAME, out
+    bundle = worker.ws.artifacts / lifecycle.WORK_BUNDLE_NAME
+    assert bundle.is_file()
+    listed = _git(origin, "bundle", "list-heads", str(bundle)).split()
+    assert heads[-1] in listed, listed

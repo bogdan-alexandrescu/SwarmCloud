@@ -15866,6 +15866,17 @@ class Worker:
                             # on the forge, one of the fold's merged heads (#1321);
                             # the fold reads every other merge itself (#3359).
                             merged=scan_floor or "",
+                            # A merged branch kept as a parent is pushed commit by
+                            # commit, so its commits are scanned as the replay's
+                            # are, and one that leaks is not kept (#3359 review).
+                            history_leaks=lambda commits: _commits_leak(
+                                commits, leaks=self._leaks_in_added_text,
+                                overlap=self._scan_overlap(),
+                                git=["git", *_NO_HOOKS], repo=publish_repo,
+                                private_dir=ws.private, logs_dir=ws.logs,
+                                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                                logger=self.log,
+                            ),
                         )
                         # The worker's own auto-commit is among what was replaced
                         # when there was one; the rest were the agent's.
@@ -19544,6 +19555,72 @@ def _first_leaking_commit(
     return None
 
 
+def _commits_leak(
+    shas: list[str],
+    *,
+    leaks: LeakPredicate,
+    git: list[str],
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    overlap: int = SCAN_OVERLAP_CHARS,
+) -> bool:
+    """Whether any of `shas` ADDS text `leaks` finds, each diffed against its
+    own first parent (the empty tree for a root).
+
+    The scan of a branch the agent merged (`gitops.merged_head_kept`, #3359
+    review): kept as a parent, each of its commits is pushed as written, so
+    each is read, as `_first_leaking_commit` reads HEAD's own line.
+    """
+    empty_tree: str | None = None
+    for sha in shas:
+        code, listed = _git_text(
+            [*git, "rev-list", "--parents", "-n", "1", sha], repo=repo,
+            private_dir=private_dir, logs_dir=logs_dir, slug="publish-merged-scan-parents",
+            timeout_seconds=timeout_seconds, logger=logger,
+        )
+        parents = listed.split()
+        if code != 0 or not parents or parents[0] != sha:
+            raise GitError(f"could not read the parents of merged commit {sha[:12]}")
+        if len(parents) > 1:
+            before = parents[1]
+        else:
+            if empty_tree is None:
+                code, made = _git_text(
+                    [*git, "hash-object", "-t", "tree", "/dev/null"], repo=repo,
+                    private_dir=private_dir, logs_dir=logs_dir, slug="publish-merged-scan-empty",
+                    timeout_seconds=timeout_seconds, logger=logger,
+                )
+                empty_tree = made.strip()
+                if code != 0 or not _SHA_RE.match(empty_tree):
+                    raise GitError("could not name the empty tree")
+            before = empty_tree
+        code, hit = _scan_diff_stream(
+            [
+                *git, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff",
+                "--no-textconv", "--text", "--no-renames", "--submodule=short", "--src-prefix=a/",
+                "--dst-prefix=b/", "-U0", before, sha, "--",
+            ],
+            leaks=leaks,
+            overlap=overlap,
+            new_rev=sha,
+            git=git,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug="publish-merged-scan-diff",
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+        if code != 0:
+            raise GitError(f"could not diff merged commit {sha[:12]} against its parent")
+        if hit is not None:
+            return True
+    return False
+
+
 def final_tree_leak(
     *,
     repo: Path,
@@ -19911,6 +19988,18 @@ def replay_agent_commits(
             )
             return None
 
+    # A merged branch kept as a parent is pushed commit by commit, and the
+    # scan above reads only HEAD's first-parent line: its commits are scanned
+    # too, and a branch one of them leaks from is not kept (#3359 review).
+    history_leaks: Callable[[list[str]], bool] | None = None
+    if leaks is not None:
+        scan_leaks = leaks
+        history_leaks = lambda commits: _commits_leak(  # noqa: E731
+            commits, leaks=scan_leaks, overlap=overlap, git=g, repo=Path(repo),
+            private_dir=private_dir, logs_dir=logs_dir,
+            timeout_seconds=timeout_seconds, logger=logger,
+        )
+
     parent = floor or None
     kept = 0
     for index, sha in enumerate(shas, 1):
@@ -19923,7 +20012,8 @@ def replay_agent_commits(
         if not _SHA_RE.match(tree):
             raise GitError(f"could not read the tree of commit {sha[:12]}")
         merged = _published_merge_parents(
-            run, g, header, upstream=upstream, base=floor, logger=logger
+            run, g, header, upstream=upstream, base=floor, logger=logger,
+            history_leaks=history_leaks,
         )
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
@@ -19971,6 +20061,7 @@ def _published_merge_parents(
     upstream: str,
     base: str,
     logger: Any,
+    history_leaks: Callable[[list[str]], bool] | None = None,
 ) -> list[str]:
     """The merge parents of a commit (its `header`) the replay keeps (#1321, #3359).
 
@@ -19983,7 +20074,7 @@ def _published_merge_parents(
     without its history, and merging the pull request back raised every
     conflict the lane had resolved again (#3359). A side branch the agent
     committed on as Claude is still dropped: its commits would be pushed as
-    they were written.
+    they were written. So is one `history_leaks` finds a credential in.
     """
     parents = [line[len("parent "):].strip() for line in header.split("\n")
                if line.startswith("parent ")]
@@ -19991,7 +20082,8 @@ def _published_merge_parents(
     for other in parents[1:]:
         if not _SHA_RE.match(other):
             continue
-        if merged_head_kept(run, g, other, base=base, upstream=upstream, logger=logger):
+        if merged_head_kept(run, g, other, base=base, upstream=upstream, logger=logger,
+                            history_leaks=history_leaks):
             kept.append(other)
     return kept
 
