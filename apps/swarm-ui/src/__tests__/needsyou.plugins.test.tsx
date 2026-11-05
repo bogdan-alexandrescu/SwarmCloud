@@ -2,23 +2,23 @@
 // interview, direction B's Needs-you screen; part of #2688). A question row
 // whose task is a plugin step names the plugin, the mode, the skill that asked
 // and the time left of its wait; beside the list, one card per parked plugin
-// step. Every value is read from what swarm-api serves: the plugin and mode
-// from the task's work contract (`GET /v1/tasks/{id}`), the clock from the
-// wait (`GET /v1/tasks/{id}/questions`, `waiting`). The skill that asked is
-// not served, so it reads "not known"; no interview route exists yet, so a
-// planner or designer card says the interview opens from its run's page.
+// step. Every value is what swarm-api serves in the list read (the owner's
+// pick on PR #3262, "Serve them in step_needs"): the step's
+// `task_summary.needs.plugin_ask` (`codec.step_needs`), which `stepNeedItems`
+// puts on the step's question rows. Nothing is read per task. The skill that
+// asked is not served, so it reads "not known"; no interview route exists yet,
+// so a planner or designer card says the interview opens from its run's page.
 //
 // MUTATIONS, one per block: draw no plugin line or card for a plugin step;
 // invent the skill or a time ("0 min"); draw a card for a step that is no
 // plugin step; link to a route that does not exist; keep the cards under a
-// chip that hides questions; read a task twice, or read a question whose
-// words are on its page.
+// chip that hides questions; read a task or its questions to tell a plugin
+// step; take a plugin_ask for a step that is not parked.
 
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { TaskQuestions } from '../api'
-import type { Result } from '../fetch'
+import type { StepNeeds } from '../stepviews'
 import type { Task } from '../types'
 import { task as runTask } from './runfixture'
 
@@ -36,70 +36,51 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-const { NeedsYou, pluginsOf, leftOfWait } = await import('../work/NeedsYou')
+const { NeedsYou, pluginAskOf, leftOfWait } = await import('../work/NeedsYou')
+const { stepNeedItems } = await import('../work/listNeeds')
 type NeedItem = import('../work/NeedsYou').NeedItem
 
 const HOUR = 3_600_000
 const iso = (ms: number) => new Date(ms).toISOString()
 
-function pluginTask(id: string, mode: string, over: Partial<Task> = {}): Task {
+function stepTask(id: string, over: Partial<Task> = {}): Task {
   return runTask({
     id,
     state: 'PARKED',
     park_reason: 'HUMAN_REQUIRED',
     workflow_id: 'wf_contacts',
-    step_id: mode === 'unattended' ? 'review' : 'design',
-    repository_url: 'https://github.com/example-org/contacts-app',
-    metadata: { work_contract: { capabilities: { plugins: { gstack: { mode, skills: ['review', 'design-html'] } } } } },
+    step_id: id === 't_design' ? 'design' : 'review',
+    repository_url: null,
+    metadata: {},
     ...over,
   })
-}
-
-function questions(taskId: string, waiting: Record<string, unknown> | null): TaskQuestions {
-  return {
-    task_id: taskId,
-    count: 1,
-    status: 'ok',
-    questions: [],
-    redacted: false,
-    redaction_count: 0,
-    ...(waiting === null ? {} : { waiting }),
-  } as TaskQuestions
 }
 
 /** A wait asked so that 23 h 22 min (and some seconds) of its 24 hours are left. */
-function waiting(left = 23 * HOUR + 22 * 60_000 + 30_000, span = 24 * HOUR) {
+function clock(left = 23 * HOUR + 22 * 60_000 + 30_000, span = 24 * HOUR) {
   const expires = Date.now() + left
-  return { open: true, blocking: [0], unanswered: [0], asked_at: iso(expires - span), expires_at: iso(expires) }
+  return { asked_at: iso(expires - span), expires_at: iso(expires) }
 }
 
-const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.now() })
+/** A plugin step's `plugin_ask`, as `codec.step_needs` serves it. */
+function pluginAsk(mode: string, wait: { asked_at: string | null; expires_at: string | null } = clock()): NonNullable<StepNeeds['plugin_ask']> {
+  return { plugins: [{ name: 'gstack', mode }], repository_url: 'https://github.com/example-org/contacts-app', ...wait }
+}
 
-function question(taskId: string, over: Partial<Extract<NeedItem, { kind: 'question' }>> = {}): NeedItem {
-  return {
-    kind: 'question',
-    taskId,
-    index: 0,
-    title: `wf_contacts › ${taskId}`,
-    question: 'Which layout?',
-    options: [
-      { label: 'Cards', description: 'one card a contact' },
-      { label: 'Table', description: 'one row a contact' },
-    ],
-    recommended: null,
-    ...over,
+const OPTIONS = [
+  { label: 'Cards', description: 'one card a contact' },
+  { label: 'Table', description: 'one row a contact' },
+]
+
+/** The question rows of a step whose needs block served `ask` and these questions. */
+function rows(task: Task, ask: StepNeeds['plugin_ask'], qs: { index: number; question: string; recommended?: string | null }[] = [{ index: 0, question: 'Which layout?' }]): NeedItem[] {
+  const needs: StepNeeds = {
+    question_wait: true,
+    questions: qs.map((q) => ({ index: q.index, question: q.question, options: OPTIONS, recommended: q.recommended ?? null })),
+    questions_unread: [],
+    plugin_ask: ask,
   }
-}
-
-function serve(tasks: Record<string, Task>, waits: Record<string, Record<string, unknown> | null>) {
-  api.loadTask.mockImplementation(async (id: string) => (id in tasks ? ok(tasks[id]!) : { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no' } }))
-  api.loadQuestions.mockImplementation(async (id: string) => ok(questions(id, waits[id] ?? null)))
-}
-
-async function settle() {
-  await act(async () => {
-    for (let i = 0; i < 5; i++) await Promise.resolve()
-  })
+  return stepNeedItems(task, needs, `wf_contacts › ${task.id}`)
 }
 
 const cards = () => screen.queryByRole('complementary', { name: 'Plugin steps parked on a question' })
@@ -109,10 +90,8 @@ beforeEach(() => {
 })
 
 describe("a plugin step's question row", () => {
-  it('names the plugin, the mode, the skill that asked as not known, and the time left of its 24 hours', async () => {
-    serve({ t_review: pluginTask('t_review', 'unattended') }, { t_review: waiting() })
-    render(<NeedsYou items={[question('t_review')]} approvals={[]} />)
-    await settle()
+  it('names the plugin, the mode, the skill that asked as not known, and the time left of its 24 hours', () => {
+    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended'))} approvals={[]} />)
     const row = screen.getByRole('listitem')
     const line = row.querySelector('.ny-plugin')!
     expect(line.textContent).toContain('gstack · Unattended')
@@ -121,37 +100,32 @@ describe("a plugin step's question row", () => {
     expect(line.textContent).toContain('never answered for anyone')
   })
 
-  it('keeps the plain row for a question whose task is no plugin step, and draws no card', async () => {
-    serve({ t_plain: runTask({ id: 't_plain', state: 'PARKED', park_reason: 'HUMAN_REQUIRED', metadata: {} }) }, { t_plain: waiting() })
-    render(<NeedsYou items={[question('t_plain')]} approvals={[]} />)
-    await settle()
+  it('keeps the plain row for a question whose step served no plugin_ask, and draws no card', () => {
+    render(<NeedsYou items={rows(stepTask('t_plain'), null)} approvals={[]} />)
     expect(screen.getByRole('listitem').textContent).not.toContain('gstack')
     expect(cards()).toBeNull()
-    expect(api.loadQuestions).not.toHaveBeenCalled()
   })
 
-  it('says the time left is not known when the wait served no clock, never 0', async () => {
-    serve({ t_review: pluginTask('t_review', 'unattended') }, { t_review: null })
-    render(<NeedsYou items={[question('t_review')]} approvals={[]} />)
-    await settle()
+  it('says the time left is not known when the wait served no clock, never 0', () => {
+    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', { asked_at: null, expires_at: null }))} approvals={[]} />)
     const text = screen.getByRole('listitem').textContent ?? ''
     expect(text).toContain('time left not known')
     expect(text).not.toMatch(/\b0 (h|min)\b/)
   })
 
-  it('says the time is up once the wait has passed', async () => {
-    serve({ t_review: pluginTask('t_review', 'unattended') }, { t_review: waiting(-60_000) })
-    render(<NeedsYou items={[question('t_review')]} approvals={[]} />)
-    await settle()
+  it('says the time is up once the wait has passed', () => {
+    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', clock(-60_000)))} approvals={[]} />)
     expect(screen.getByRole('listitem').textContent).toContain('time is up')
   })
 })
 
 describe('the parked plugin steps beside the list', () => {
-  it('draws one card for an unattended step: workflow, repository, plugin and mode, skill, time left, answer it in its row', async () => {
-    serve({ t_review: pluginTask('t_review', 'unattended') }, { t_review: waiting() })
-    render(<NeedsYou items={[question('t_review'), question('t_review', { index: 1, question: 'Which font?' })]} approvals={[]} />)
-    await settle()
+  it('draws one card for an unattended step: workflow, repository, plugin and mode, skill, time left, answer it in its row', () => {
+    const items = rows(stepTask('t_review'), pluginAsk('unattended'), [
+      { index: 0, question: 'Which layout?' },
+      { index: 1, question: 'Which font?' },
+    ])
+    render(<NeedsYou items={items} approvals={[]} />)
     const side = cards()!
     expect(side).toBeTruthy()
     expect(within(side).getByRole('heading').textContent).toMatch(/Plugin steps parked\s*1/)
@@ -166,14 +140,13 @@ describe('the parked plugin steps beside the list', () => {
     expect(card.textContent).toContain('23 h 22 min')
     expect(card.textContent).toContain('no recommended answer')
     expect(card.textContent).toContain('answer it in its row (Question, wf_contacts › t_review)')
-    expect(api.loadTask).toHaveBeenCalledTimes(1)
-    expect(api.loadQuestions).toHaveBeenCalledTimes(1)
+    // Told from the list read alone: no task and no questions are read.
+    expect(api.loadTask).not.toHaveBeenCalled()
+    expect(api.loadQuestions).not.toHaveBeenCalled()
   })
 
-  it("says a designer step's interview opens from its run's page, linking the run, not a route that does not exist", async () => {
-    serve({ t_design: pluginTask('t_design', 'designer') }, { t_design: waiting() })
-    render(<NeedsYou items={[question('t_design', { recommended: 'Cards' })]} approvals={[]} />)
-    await settle()
+  it("says a designer step's interview opens from its run's page, linking the run, not a route that does not exist", () => {
+    render(<NeedsYou items={rows(stepTask('t_design'), pluginAsk('designer'), [{ index: 0, question: 'Which layout?', recommended: 'Cards' }])} approvals={[]} />)
     const card = within(cards()!).getByRole('article')
     expect(card.textContent).toContain('Designer')
     expect(card.textContent).toMatch(/Its interview opens from its run[’']s page/)
@@ -184,11 +157,9 @@ describe('the parked plugin steps beside the list', () => {
     expect(screen.getByRole('listitem').textContent).toContain('gstack · Designer')
   })
 
-  it('hides the cards when a chip picks a kind other than questions', async () => {
-    serve({ t_review: pluginTask('t_review', 'unattended') }, { t_review: waiting() })
+  it('hides the cards when a chip picks a kind other than questions', () => {
     const failed: NeedItem = { kind: 'failed', task: runTask({ id: 'f1', state: 'FAILED', workflow_id: null, step_id: null }), title: 'agent f1', why: 'no' }
-    render(<NeedsYou items={[question('t_review'), failed]} approvals={[]} />)
-    await settle()
+    render(<NeedsYou items={[...rows(stepTask('t_review'), pluginAsk('unattended')), failed]} approvals={[]} />)
     expect(cards()).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /^Failed: 1$/ }))
     expect(cards()).toBeNull()
@@ -196,20 +167,23 @@ describe('the parked plugin steps beside the list', () => {
     expect(cards()).toBeTruthy()
   })
 
-  it('reads nothing for a question whose words are on its page', async () => {
-    serve({}, {})
-    render(<NeedsYou items={[question('t_page', { question: null, onItsPage: true })]} approvals={[]} />)
-    await settle()
+  it('draws a card for every parked plugin step in the read, past the ten the per-task reads stopped at', () => {
+    const items = Array.from({ length: 12 }, (_, i) => rows(stepTask(`t_${i}`, { step_id: `step_${i}` }), pluginAsk('unattended'))).flat()
+    render(<NeedsYou items={items} approvals={[]} />)
+    expect(within(cards()!).getAllByRole('article')).toHaveLength(12)
     expect(api.loadTask).not.toHaveBeenCalled()
-    expect(cards()).toBeNull()
   })
 })
 
 describe('the served values, read', () => {
-  it("reads each plugin's name and mode from the task's work contract, and nothing from a malformed one", () => {
-    expect(pluginsOf(pluginTask('a', 'planner'))).toEqual([{ name: 'gstack', mode: 'planner' }])
-    expect(pluginsOf(runTask({ metadata: { work_contract: { capabilities: { plugins: { gstack: 'x' } } } } }))).toEqual([])
-    expect(pluginsOf(runTask({ metadata: null }))).toEqual([])
+  it("reads each plugin's name and mode from the served plugin_ask, and nothing from a malformed one or a step not parked", () => {
+    const parked = stepTask('a')
+    expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner') })?.plugins).toEqual([{ name: 'gstack', mode: 'planner' }])
+    expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner') })?.repository).toBe('https://github.com/example-org/contacts-app')
+    expect(pluginAskOf(parked, { plugin_ask: { plugins: [{ name: 'gstack', mode: null }], repository_url: null, asked_at: null, expires_at: null } })).toBeNull()
+    expect(pluginAskOf(parked, { plugin_ask: null })).toBeNull()
+    expect(pluginAskOf(parked, null)).toBeNull()
+    expect(pluginAskOf(stepTask('b', { state: 'RUNNING' }), { plugin_ask: pluginAsk('planner') })).toBeNull()
   })
 
   it('words the time left in hours and minutes, and null once it has passed or is not known', () => {

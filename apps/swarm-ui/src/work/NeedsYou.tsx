@@ -35,8 +35,7 @@
  * A chip filters the list to its kind and reports the pick with the task ids
  * it covers (`onSelect`), so a page can dim the grid cells that do not match.
  * Mounted by the Work pages; it reads nothing on its own but the masked
- * prompt a Retry carries over, and what tells a plugin step's question
- * (below).
+ * prompt a Retry carries over.
  *
  * A PLUGIN STEP'S PARKED QUESTION (the plugins console's picked interview,
  * direction B's Needs-you screen, 4 November 2026; docs/design/agent-plugins.md
@@ -45,12 +44,14 @@
  * unanswered for its wait (24 hours for a bridged question), the step ends
  * with the question open. Its row says which plugin and mode asked, the skill
  * that asked and the time left; beside the list, one card per parked plugin
- * step. Nothing in the list read says a step is a plugin step, so for each
- * task a question row names (its words in the row, at most
- * `PLUGIN_READS_AT_MOST` tasks) the component reads the task
- * (`GET /v1/tasks/{id}`: the plugins and modes are its work contract's
- * `capabilities.plugins`) and, for a parked plugin step only, its questions
- * (`GET /v1/tasks/{id}/questions`: the wait's `asked_at` and `expires_at`).
+ * step. What tells one is in the list read (the owner's pick on PR #3262,
+ * "Serve them in step_needs"): a step's `task_summary.needs.plugin_ask`
+ * (`codec.step_needs`), served for a plugin step PARKED on a question wait
+ * only -- the plugins and modes of its work contract's `capabilities.plugins`,
+ * its repository, and the wait's `asked_at` and `expires_at` as
+ * `GET /v1/tasks/{id}/questions` serves them. `stepNeedItems` puts it on the
+ * step's question rows (`plugin`); no task or questions are read for it, so
+ * every parked plugin step in the read is told, however many there are.
  * The skill that asked is not served (the bridge's finding 3), so it reads
  * "not known"; a clock the wait did not serve reads "not known", never 0. A
  * planner or designer step's interview has no console route yet: its card
@@ -60,19 +61,17 @@ import { useEffect, useId, useRef, useState, type MouseEvent } from 'react'
 import {
   answerQuestion,
   approveApproval,
-  loadQuestions,
-  loadTask,
   loadTaskInputOnce,
   rerunWorkflowStep,
   type ApprovalItem,
   type QuestionOption,
-  type TaskQuestions,
 } from '../api'
 import { Button, buttonClass } from '../components'
 import { errorHeading, type ApiError } from '../fetch'
 import { handoffOf, humanReady, ownerQuestionsHold, timeLeft, type HeldQuestion } from '../Handoff'
 import { addressToPath } from '../paths'
 import { useRoleGate } from '../Profile'
+import { type StepNeeds } from '../stepviews'
 import { prefillTask } from '../submitPrefill'
 import { type Task } from '../types'
 import { useNow } from '../useNow'
@@ -117,6 +116,8 @@ export interface QuestionNeed {
    * and Answer is disabled: nobody answers a question they cannot read.
    */
   onItsPage?: boolean
+  /** Its step runs a plugin and is parked on this question: served in the list read (`pluginAskOf`). */
+  plugin?: PluginAsk
 }
 
 /** A merge step waiting. What holds it is read from the task's park (`ownerQuestionsHold`). */
@@ -224,44 +225,35 @@ const modeWord = (mode: string): string => MODE_WORD[mode] ?? mode
 /** The modes that run an interview with a person, whose questions are its pages. */
 const INTERVIEW_MODES: readonly string[] = ['planner', 'designer']
 
-/** The most tasks one Needs you reads to tell a plugin step's question: past it, the rest are plain rows. */
-export const PLUGIN_READS_AT_MOST = 10
-
 const isMap = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
-
-/**
- * The plugins a task's step runs: its work contract's `capabilities.plugins`,
- * `{name: {mode, skills}}` (`swarm_api.workcontract._plugins`), served in the
- * task's metadata. Anything not that shape is no plugin, never guessed at.
- */
-export function pluginsOf(task: Task): StepPlugin[] {
-  const contract = isMap(task.metadata) ? task.metadata.work_contract : null
-  const caps = isMap(contract) ? contract.capabilities : null
-  const plugins = isMap(caps) ? caps.plugins : null
-  if (!isMap(plugins)) return []
-  return Object.entries(plugins).flatMap(([name, p]) => (isMap(p) && typeof p.mode === 'string' && p.mode !== '' ? [{ name, mode: p.mode }] : []))
-}
 
 const msOf = (v: unknown): number | null => {
   const ms = typeof v === 'string' ? Date.parse(v) : NaN
   return Number.isFinite(ms) ? ms : null
 }
 
-/** A parked plugin step's ask, from its task and its questions' `waiting`; null for any other task. */
-export function pluginAskOf(task: Task, questions: TaskQuestions | null): PluginAsk | null {
-  const plugins = pluginsOf(task)
-  if (plugins.length === 0 || task.state !== 'PARKED') return null
-  // `waiting` is served by GET /v1/tasks/{id}/questions on a question wait
-  // (`agent_questions._serve_wait`); this console's type does not carry it.
-  const waiting = (questions as (TaskQuestions & { waiting?: unknown }) | null)?.waiting
+/**
+ * A parked plugin step's ask, from its task and its step's needs block:
+ * `plugin_ask` (`codec.step_needs`), served for a plugin step PARKED on a
+ * question wait only. Null for any other step, and for a block that served
+ * none (an API older than it): the row is then plain, nothing guessed. A
+ * plugin not `{name, mode}` is no plugin.
+ */
+export function pluginAskOf(task: Task, needs: StepNeeds | null): PluginAsk | null {
+  const served: unknown = needs?.plugin_ask
+  if (!isMap(served) || task.state !== 'PARKED') return null
+  const plugins = (Array.isArray(served.plugins) ? served.plugins : []).flatMap((p: unknown) =>
+    isMap(p) && typeof p.name === 'string' && p.name !== '' && typeof p.mode === 'string' && p.mode !== '' ? [{ name: p.name, mode: p.mode }] : [],
+  )
+  if (plugins.length === 0) return null
   return {
     taskId: task.id,
     workflowId: task.workflow_id ?? null,
     stepId: task.step_id ?? null,
-    repository: task.repository_url ?? null,
+    repository: typeof served.repository_url === 'string' && served.repository_url !== '' ? served.repository_url : (task.repository_url ?? null),
     plugins,
-    askedAt: isMap(waiting) ? msOf(waiting.asked_at) : null,
-    expiresAt: isMap(waiting) ? msOf(waiting.expires_at) : null,
+    askedAt: msOf(served.asked_at),
+    expiresAt: msOf(served.expires_at),
   }
 }
 
@@ -307,44 +299,10 @@ function leftWords(ask: PluginAsk, now: number): string {
   return span === null ? `${left} left` : `${left} left of ${span}`
 }
 
-/**
- * THE READS THAT TELL A PLUGIN STEP'S QUESTION: each task a question row with
- * its words names, once, at most `PLUGIN_READS_AT_MOST`; its questions only
- * when the task is a parked plugin step. A read that fails leaves the row
- * plain: nothing is said that was not read.
- */
-function usePluginAsks(items: NeedItems): ReadonlyMap<string, PluginAsk> {
-  const [asks, setAsks] = useState<ReadonlyMap<string, PluginAsk | null>>(new Map())
-  const ids = [...new Set(items.flatMap((i) => (i.kind === 'question' && i.onItsPage !== true ? [i.taskId] : [])))].slice(0, PLUGIN_READS_AT_MOST)
-  const key = ids.join('\n')
-  useEffect(() => {
-    let live = true
-    const wanted = key === '' ? [] : key.split('\n')
-    for (const id of wanted) {
-      if (asks.has(id)) continue
-      void (async () => {
-        const t = await loadTask(id)
-        let ask: PluginAsk | null = null
-        if (t.status === 'ok' || t.status === 'stale') {
-          if (pluginsOf(t.data).length > 0 && t.data.state === 'PARKED') {
-            const q = await loadQuestions(id)
-            ask = pluginAskOf(t.data, q.status === 'ok' || q.status === 'stale' ? q.data : null)
-          }
-        }
-        if (live) setAsks((m) => new Map(m).set(id, ask))
-      })()
-    }
-    return () => {
-      live = false
-    }
-    // `asks` is read for what is already known; a new read is keyed on the ids alone.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
+/** Each parked plugin step's ask, by task, off the question rows that carry one (`QuestionNeed.plugin`). */
+function pluginAsksOf(items: NeedItems): ReadonlyMap<string, PluginAsk> {
   const out = new Map<string, PluginAsk>()
-  for (const id of ids) {
-    const a = asks.get(id)
-    if (a) out.set(id, a)
-  }
+  for (const i of items) if (i.kind === 'question' && i.plugin !== undefined && !out.has(i.taskId)) out.set(i.taskId, i.plugin)
   return out
 }
 
@@ -445,7 +403,7 @@ export function NeedsYou({
   const [unfolded, setUnfolded] = useState(false)
   const kind = selected === undefined ? own : selected
   const listId = useId()
-  const asks = usePluginAsks(items)
+  const asks = pluginAsksOf(items)
 
   const count = (k: NeedKind): number | null => {
     if (k === 'approval') return approvals === null ? null : approvals.length
