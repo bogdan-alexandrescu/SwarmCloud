@@ -52,6 +52,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -238,7 +239,7 @@ if args[:1] == ["api"]:
                 continue
             status, conclusion = job.get("status", "completed"), job.get("conclusion", "success")
             if n <= job.get("pending_polls", 0):
-                status, conclusion = "in_progress", None
+                status, conclusion = job.get("pending_status", "in_progress"), None
             out.append({"name": job["name"], "status": status, "conclusion": conclusion, "html_url": job_url(run, i)})
         record(event="jobs", run=run["id"], states=[(j["status"], j["conclusion"]) for j in out])
         print(json.dumps({"total_count": len(out), "jobs": out}))
@@ -351,6 +352,7 @@ def ci_run(
     sha: str = SHA,
     job_conclusion: str = "success",
     job_pending: int = 0,
+    job_pending_status: str = "in_progress",
     job_appears_after: int = 0,
     run_pending: int = 0,
     record: dict | None = None,
@@ -381,6 +383,7 @@ def ci_run(
                 "name": build["name"],
                 "conclusion": job_conclusion,
                 "pending_polls": job_pending,
+                "pending_status": job_pending_status,
                 "appears_after": job_appears_after,
             },
         ],
@@ -624,11 +627,56 @@ def test_a_transient_api_failure_is_retried(tmp_path):
 
 def test_a_build_that_never_finishes_times_out_naming_the_job(tmp_path):
     world = {"runs": [ci_run(112, job_pending=10_000)]}
-    proc, out, _ = lookup(tmp_path, world, if_absent="build", CI_BUILD_WAIT="2")
+    proc, out, _ = lookup(tmp_path, world, if_absent="build", CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="2")
     assert proc.returncode == 1, proc.stderr[-3000:]
     assert not out.exists()
     summary = _last_line(proc)
     assert "timed out" in summary and "/actions/runs/112/job/" in summary, summary
+
+
+# ---------------------------------------------------------------------------
+# A build IN PROGRESS is waited for past CI_BUILD_WAIT, up to
+# CI_BUILD_WAIT_RUNNING (issue 3336: release 41992304818 gave up at 2700 s on
+# a build that started at 08:53Z and succeeded at 09:12Z). A queued one is not.
+# ---------------------------------------------------------------------------
+def test_a_build_in_progress_past_the_wait_is_still_waited_for(tmp_path):
+    # In progress for 60 looks, well past CI_BUILD_WAIT's one second.
+    world = {"runs": [ci_run(113, job_pending=60)]}
+    proc, out, _ = lookup(tmp_path, world, CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="90")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert json.loads(out.read_text()) == record_for()
+
+
+def test_a_queued_build_past_the_wait_times_out_at_the_wait(tmp_path):
+    world = {"runs": [ci_run(114, job_pending=10_000, job_pending_status="queued")]}
+    started = time.monotonic()
+    proc, out, _ = lookup(tmp_path, world, CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="90")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert time.monotonic() - started < 60, "a queued build was waited for past CI_BUILD_WAIT"
+    summary = _last_line(proc)
+    assert "timed out after 1s" in summary and "queued" in summary, summary
+
+
+def test_a_run_not_started_past_the_wait_times_out_at_the_wait(tmp_path):
+    world = {"runs": [ci_run(115, run_pending=10_000, pending_status="queued", job_appears_after=10_000)]}
+    proc, _, _ = lookup(tmp_path, world, CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="90")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert "timed out after 1s" in _last_line(proc)
+
+
+def test_a_build_in_progress_stops_at_the_hard_ceiling(tmp_path):
+    world = {"runs": [ci_run(116, job_pending=10_000)]}
+    proc, out, _ = lookup(tmp_path, world, CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="3")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert not out.exists()
+    summary = _last_line(proc)
+    assert "timed out after 3s" in summary and "in progress" in summary, summary
+
+
+def test_the_running_ceiling_defaults_to_ninety_minutes_and_is_checked():
+    text = (REPO / "scripts" / "lib" / "ci-built-images.sh").read_text()
+    assert 'WAIT_RUNNING="${CI_BUILD_WAIT_RUNNING:-5400}"' in text
+    assert re.search(r"for knob in [^;]*\bWAIT_RUNNING\b", text)
 
 
 def test_the_script_looks_for_what_application_yml_actually_builds_and_uploads():
