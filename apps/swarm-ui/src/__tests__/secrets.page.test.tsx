@@ -208,7 +208,10 @@ describe('a shadowed row shows its winner', () => {
     await waitFor(() => expect(visible(within(table).getByRole('row', { name: /search-api/ }))).toMatch(/shadowed/))
     const row = visible(within(table).getByRole('row', { name: /search-api/ }))
     // MUTATION: drop `shadowed_by` from the row -> fails.
-    expect(row).toMatch(/shadowed: ana@example\.com’s wins on their agents/)
+    expect(row).toMatch(/shadowed/)
+    // The winner is the tick's reason, behind its (i) (no-prose rule, 5 November 2026).
+    const tick = within(table).getByRole('button', { name: 'About search-api shadowed' })
+    expect(document.getElementById(tick.getAttribute('aria-describedby')!)?.textContent).toBe('ana@example.com’s wins on their agents')
     // MUTATION: drop `shadows` -> fails.
     expect(row).toMatch(/overrides the workspace’s/)
     // MUTATION: mark every row -> fails.
