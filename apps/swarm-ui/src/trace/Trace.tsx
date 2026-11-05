@@ -16,7 +16,7 @@ import { TERMINAL_STATES, type Task, type TaskTranscript } from '../types'
 import { listSnap, setListSnap, useListSnap } from '../listSnap'
 import { buildTrace, dur, inFilter, inputOf, patchOf, rawOf, setTraceWide, shorten, toolShort, traceMounted, useTraceWide, type Ev, type EvKind, type Filter } from './model'
 import { ReadFacts, StreamStatus, WindowNotes } from './Notes'
-import './trace.css'
+import './traceView.css'
 
 /** A live run's transcript is read again as often as the Logs tab reads its streams. */
 const POLL_MS = ARTIFACTS_POLL_MS
