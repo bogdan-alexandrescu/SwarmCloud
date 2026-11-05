@@ -6,6 +6,18 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.80 (2026-11-04)
+
+* A workflow spec's top-level `description` and `feature` reach SwarmCloud
+  (part of #2688): `swarm_workflow` and `swarm workflow <spec.json>` send
+  them as `metadata.description` and `metadata.feature`, the way `title`
+  goes as `metadata.title`, and the console's workflow page heads with them.
+  `description` is two or three sentences of plain text, at most 600
+  characters; `feature` is `{title, url?}`, a title of at most 120 characters
+  and an optional https github.com issue or pull request of the workflow's
+  own repository. A malformed one is refused before anything is sent, by the
+  rules swarm-api applies.
+
 ## 0.5.79 (2026-11-04)
 
 * The bridge survives a plugin update that removes the folder it was started
