@@ -110,6 +110,17 @@ def test_health_and_metrics_need_the_token_too(tmp_path):
         assert client.get("/v1/health", headers=AUTH).status_code == 200
 
 
+def test_healthz_says_only_that_the_process_is_up(tmp_path):
+    # Every app in the repository serves GET /healthz (check-contract-parity.sh's
+    # health_check_path). Here it carries no token and so nothing but liveness:
+    # no phase, models, voices or counts, which stay behind /v1/health's token.
+    app, *_ = build(tmp_path)
+    with TestClient(app) as client:
+        reply = client.get("/healthz")
+        assert reply.status_code == 200
+        assert reply.json() == {"ok": True}
+
+
 def test_the_caller_check_refuses_to_build_with_no_caller():
     with pytest.raises(RuntimeError, match="SWARM_SPEECH_CALLER"):
         server.google_caller_check(server.AUDIENCE, frozenset())
