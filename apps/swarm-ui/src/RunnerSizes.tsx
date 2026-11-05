@@ -451,14 +451,17 @@ export function RunnerSizesScreen() {
   const [admits, setAdmits] = useState<Admits | null>(null)
   return (
     <div className="ur-page rs-page">
-      <PageHead title="Runner sizes">
+      {/* BGD's no-prose rule (2026-11-05): what the page edits, and when a save applies, behind the (i) beside the title. */}
+      <PageHead
+        title="Runner sizes"
+        info={
+          <InfoTip
+            about="Runner sizes"
+            tip="Each class’s CPU request, CPU limit and memory. A save is a new version: the next admission takes it, and a running agent keeps the size it was admitted with."
+          />
+        }
+      >
         <UrRefresh reads={[sizes, versions]} ageOf={[sizes]} />
-        {/* BGD's no-prose rule (2026-11-05): what the page edits, and when a save applies, behind the head's (i), after the read control. */}
-        <InfoTip
-          about="Runner sizes"
-          tip="Each class’s CPU request, CPU limit and memory. A save is a new version: the next admission takes it, and a running agent keeps the size it was admitted with."
-          end
-        />
       </PageHead>
       <SizesLead state={sizes.state} admits={admits} />
       <UrRegion state={sizes.state} route="GET /v1/admin/runner-sizes" what="Runner sizes" plural onRetry={sizes.reload} lines={6}>

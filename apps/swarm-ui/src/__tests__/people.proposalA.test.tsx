@@ -155,7 +155,7 @@ describe('the page says what it is for', () => {
     await mount(people(ROWS))
     // BGD's no-prose rule (2026-11-05). MUTATION: draw `<p className="ur-sub">` under the head again.
     expect(document.querySelector('.pp-page .ur-sub')).toBeNull()
-    const info = document.querySelector('.pp-page .c-phead button[aria-label="About Platform people"]')!
+    const info = document.querySelector('.pp-page .c-phead > .head button[aria-label="About Platform people"]')!
     expect(document.getElementById(info.getAttribute('aria-describedby')!)?.textContent).toBe(
       'Every person against every workspace, what they are waiting for, and who is an admin.',
     )

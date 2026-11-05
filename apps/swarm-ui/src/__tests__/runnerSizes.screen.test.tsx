@@ -298,7 +298,9 @@ describe('editing a class', () => {
     ]) {
       expect(seen(page), line).not.toContain(line)
     }
-    expect(tipOf(page.querySelector('.c-phead')!, 'About Runner sizes')).toBe(
+    // The owner's pick on #3303: the page's (i) sits beside the title, not among the actions. MUTATION: pass it as a child of PageHead.
+    expect(page.querySelector('.c-phead > .c-acts [aria-label="About Runner sizes"]')).toBeNull()
+    expect(tipOf(page.querySelector('.c-phead > .head')!, 'About Runner sizes')).toBe(
       'Each class’s CPU request, CPU limit and memory. A save is a new version: the next admission takes it, and a running agent keeps the size it was admitted with.',
     )
     const standard = card('standard')!

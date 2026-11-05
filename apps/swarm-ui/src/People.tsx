@@ -2954,18 +2954,21 @@ export function PeopleScreen() {
   return (
     <div className="ur-page pp-page">
       {/* Platform people since the admin routes lane (part of #2688): the Admin tab's new name. */}
-      <PageHead title="Platform people">
+      {/* What the page holds is the (i) beside the title, not a line under it (BGD's no-prose rule, 2026-11-05). */}
+      <PageHead
+        title="Platform people"
+        info={
+          <InfoTip
+            about="Platform people"
+            tip={
+              scoped
+                ? 'The people in the workspaces you administer, and their role in each.'
+                : 'Every person against every workspace, what they are waiting for, and who is an admin.'
+            }
+          />
+        }
+      >
         <UrRefresh reads={[people]} />
-        {/* What the page holds is the head's (i), after the read control, not a line under it (BGD's no-prose rule, 2026-11-05). */}
-        <InfoTip
-          about="Platform people"
-          tip={
-            scoped
-              ? 'The people in the workspaces you administer, and their role in each.'
-              : 'Every person against every workspace, what they are waiting for, and who is an admin.'
-          }
-          end
-        />
       </PageHead>
       <UrRegion state={people.state} route="GET /v1/admin/people" what="People" plural onRetry={people.reload} lines={6}>
         {(d) =>

@@ -1909,9 +1909,8 @@ export function AccessScreen() {
           the head with GITHUB-ACCESS-PAGE (the setup strip over every Config
           page links Workspace setup); Members and Browser logins left it with
           GA-MOVE-VIEWS for People and roles and Secrets. */}
-      <PageHead title="GitHub access">
+      <PageHead title="GitHub access" info={<InfoTip about="GitHub access" tip={accessLede(view, tenant)} />}>
         <UrRefresh reads={[overview]} />
-        <InfoTip about="GitHub access" tip={accessLede(view, tenant)} end />
       </PageHead>
       {/* `cfg-parts` (config.css, imported with the setup strip) is the Config
           pages' tab strip layout: never shrunk, never a vertical scroller --

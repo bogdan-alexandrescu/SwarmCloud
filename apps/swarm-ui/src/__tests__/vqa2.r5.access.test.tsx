@@ -255,7 +255,7 @@ describe('Access (VQA2-R5)', () => {
     // MUTATION: draw `<p className="ur-sub">` under the tabs again.
     expect(document.querySelector('.ac-page > .ur-sub')).toBeNull()
     const lede = () => {
-      const info = document.querySelector('.ac-page .c-phead button[aria-label="About GitHub access"]')
+      const info = document.querySelector('.ac-page .c-phead > .head button[aria-label="About GitHub access"]')
       return visible(info === null ? null : document.getElementById(info.getAttribute('aria-describedby')!))
     }
     await waitFor(() => expect(lede()).toContain('in workspace eng'))
