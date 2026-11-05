@@ -183,6 +183,9 @@ _GIT_TRANSIENT = re.compile(
             r"(?:recv|send) failure",
             r"gnutls recv error",
             r"ssl_error_syscall",
+            # GitHub's sideband when its server-side ref update fails
+            # (#3222); the same push a moment later lands.
+            r"fatal error in commit_refs",
         )
     ),
     re.IGNORECASE,

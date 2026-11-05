@@ -164,6 +164,7 @@ from . import issue as issue_mod
 from . import jevkey as jevkey_mod
 from . import plugins as plugins_mod
 from . import qualitygates as qualitygates_mod
+from . import security_review as security_review_mod
 from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
 from . import stepservers as stepservers_mod
@@ -1007,6 +1008,9 @@ class Worker:
         #: The step's agent plugins (`plugins.start`), set up once per attempt
         #: before the agent; None for a step that names none.
         self._plugins: plugins_mod.Started | None = None
+        #: A security review step's record (`security_review`): {} once its
+        #: plugin started, filled after the agent; None for any other step.
+        self._security_review: dict[str, Any] | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
             tenant_id=config.tenant_id,
@@ -3856,6 +3860,13 @@ class Worker:
         )
         if self._plugins is not None and isinstance(payload.get("prompt"), str):
             payload["prompt"] += self._plugins.guidance
+        # The optional security review step (docs/design/security-review-step.md):
+        # a step whose signed contract loads security-audit is told the owner's
+        # run settings here, and its output is checked after the agent.
+        if security_review_mod.applies(self._plugins):
+            self._security_review = {}
+            if isinstance(payload.get("prompt"), str):
+                payload["prompt"] += security_review_mod.guidance(ws.artifacts)
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
         # ---- STEP 6: tenant credentials ---------------------------------
@@ -4863,6 +4874,11 @@ class Worker:
                     # After the publish, so the epic hears of a review only once
                     # the step it gated has done its own work; never on a stop.
                     summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
+            if self._security_review is not None:
+                record = dict(self._security_review)
+                if not record.get("error") and result.exit_code != EXIT_TERMINATED:
+                    record["comment"] = self._post_security_report()
+                summary[security_review_mod.SUMMARY_KEY] = self._scrub(record)
             if self._pr_text_from is not None:
                 summary["pull_request_text_from"] = dict(self._pr_text_from)
             if self._rendered_review is not None:
@@ -7907,6 +7923,97 @@ class Worker:
             return []
         return verdict_mod.reviewed_patches(review)
 
+    def _finish_security_review(self) -> None:
+        """Validate a security review's audit and write its verdict (`security_review.finish`).
+
+        A failing validator writes no verdict: the missing-output check then
+        fails the step, not retryably (`CAUSE_INVALID`), and the validator's
+        message is `result_summary.security_review.error`. Never a silent pass.
+        """
+        ws = self.ws
+        if ws is None or self._security_review is None:
+            return
+        task = self._task or {}
+        try:
+            record = security_review_mod.finish(
+                ws.artifacts, task_id=self.cfg.task_id, step_id=str(task.get("step_id") or ""),
+                skill=security_review_mod.skill_dir(
+                    security_review_mod.install_dir(plugins_mod.CATALOGUE)),
+            )
+        except security_review_mod.SecurityReviewInvalid as exc:
+            message = str(self._scrub(str(exc)))
+            self._security_review = {"error": message}
+            self.log.error("the security review's audit did not validate; the step fails",
+                           error=message)
+            return
+        self._security_review = record
+        self.log.info("security review verdict derived", verdict=record["verdict"],
+                      blocking=record["blocking"], owner_questions=record["owner_questions"])
+
+    def _post_security_report(self) -> dict[str, Any]:
+        """Post the audit's REPORT.md on the pull request this step reviewed.
+
+        The pull request is the one its `builds_on` step recorded opening; the
+        token is the tenant's own `-git` one, read here after the agent ended,
+        as `_file_review_minors` reads it. The report goes through the
+        redaction filter and is cut to GitHub's limit, naming the artifact.
+        Never raises: what was posted, or why not, is the result.
+        """
+        ws = self.ws
+        assert ws is not None
+        report = security_review_mod.output_dir(ws.artifacts) / security_review_mod.REPORT
+        try:
+            text = report.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return {"posted": False, "reason": f"the audit wrote no {security_review_mod.REPORT}"}
+        try:
+            builds_on = self._dispatch_builds_on()
+        except WorkerError as exc:
+            return {"posted": False, "reason": str(exc)}
+        number = None
+        if builds_on:
+            try:
+                number = post_verdict_mod.pull_request_number(inputs_mod.fetch_upstream_task(
+                    self.db, upstream_task_id=builds_on, tenant_id=self.cfg.tenant_id,
+                    call_options=self.control.call_options(),
+                ))
+            except InputUnavailable:
+                number = None
+        if number is None:
+            return {"posted": False,
+                    "reason": "the step it builds on recorded no pull request to comment on"}
+        ref = forge_mod.parse_repo(self._repo_url or self.cfg.repository_url or "")
+        if ref is None or not forge_mod.may_receive_forge_token(ref.host):
+            return {"posted": False, "pull_request": number,
+                    "reason": "the repository is not on github.com, where the tenant's git "
+                              "credential may be sent"}
+        refused = self._forge_write_refusal()
+        if refused:
+            return {"posted": False, "pull_request": number,
+                    "reason": f"{refused[0]}: {refused[1]}"}
+        refusal = self._git_token_refusal()
+        if refusal:
+            return {"posted": False, "pull_request": number,
+                    "reason": f"refusing to read the tenant git token: {refusal}"}
+        token = self._git_token()
+        if not token:
+            return {"posted": False, "pull_request": number,
+                    "reason": "no git credential is registered for this tenant"}
+        self.log.register_secret(token)
+        pointer = (f"`{security_review_mod.OUTPUT_DIR_NAME}/{security_review_mod.REPORT}` "
+                   f"in the artifacts of task `{self.cfg.task_id}`")
+        body = security_review_mod.comment_body(
+            text, artifact_pointer=pointer,
+            scrub=lambda value: _neutralise_mentions(str(self._scrub(value))))
+        try:
+            forge_mod.create_issue_comment(ref=ref, token=token, number=number, body=body)
+        except Exception as exc:  # noqa: BLE001 - the comment is a report, never the verdict
+            del token
+            return {"posted": False, "pull_request": number,
+                    "reason": f"GitHub refused the comment ({type(exc).__name__})"}
+        del token
+        return {"posted": True, "pull_request": number, "chars": len(body)}
+
     def _file_review_minors(self) -> dict[str, Any]:
         """File the verdict's minor findings on the tenant's wave epic (#638).
 
@@ -8993,6 +9100,9 @@ class Worker:
         causes = {**self._not_uploaded_causes, **self._skip_causes}
         if self._verdict_unreadable and expected_mod.REVIEW_VERDICT_NAME not in causes:
             causes[expected_mod.REVIEW_VERDICT_NAME] = expected_mod.CAUSE_UNREADABLE_VERDICT
+        if (self._security_review or {}).get("error"):
+            # Not retryable: the step fails, its validator's message in the summary.
+            causes[expected_mod.REVIEW_VERDICT_NAME] = security_review_mod.CAUSE_INVALID
         if PATCH_NAME in self._expected_outputs and PATCH_NAME not in causes:
             patch = expected_mod.patch_cause(summary.get("git"))
             if patch is not None:
@@ -17545,7 +17655,11 @@ class Worker:
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}
-        if defer_publish:
+        if defer_publish and self._security_review is not None:
+            # A security review's verdict is the worker's, derived from the
+            # validated audit, never the agent's; a UI path does not gate it.
+            self._finish_security_review()
+        elif defer_publish:
             # After the harvest's reap, so the agent can no longer write it,
             # and before the upload, so what goes up is the verdict that counts.
             self._hold_ui_review_to_rendered()
