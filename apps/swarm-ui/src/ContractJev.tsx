@@ -14,10 +14,14 @@
  *   * THE ACCEPTANCE JUDGMENT (sections 5.4 and 8.2). `contract_acceptance`
  *     is the record swarm-api stores on the step (`attemptstate.contract_verdict`,
  *     `contractreask`): each judged requirement's verdict, the item it cites
- *     -- a changed file at the judged commit, or a mechanical result -- its
- *     reason and probability; or `not_run` with why. The approval screen draws
- *     it as a card labelled as Jev's judgment, and says plainly when the
- *     control plane re-asked three times and is now handing it to a person.
+ *     -- a changed file at the judged commit, with the TEXT of the hunk Jev
+ *     read (`hunks`, stored by item: the owner's pick on PR #3255), or a
+ *     mechanical result -- its reason and probability; or `not_run` with why.
+ *     The approval screen draws it as a card labelled as Jev's judgment, and
+ *     says plainly when the control plane re-asked three times and is now
+ *     handing it to a person. `GET /v1/approvals/contract:<task_id>` (a step
+ *     waiting on its owner) and `GET /v1/tasks/{id}` both serve it, so the
+ *     task detail draws the same card (`ContractAcceptanceCard`).
  *
  * A MODEL JUDGMENT IS NOT AN AUTHORIZATION (section 1, rule 1). A `met` here
  * is evidence beside the decision; the card says so, and nothing on it
@@ -205,6 +209,8 @@ export interface Acceptance {
   revision: number | null
   verdicts: AcceptanceVerdict[]
   changed: string[]
+  /** The text of each cited hunk, by item (`i<n>`), as Jev was shown it. */
+  hunks: Record<string, string>
   mechanical: { kind: string; passed: boolean | null }[]
   reask: { tries: number; nextAt: string | null; last: { outcome: string | null; reason: string | null } | null } | null
 }
@@ -218,6 +224,8 @@ export function contractAcceptance(raw: unknown): Acceptance | null {
     verdicts.push({ requirementId: str(v.requirement_id)!, verdict: str(v.verdict) ?? 'cannot_judge', reason: str(v.reason), item: str(v.evidence_item), p: num(v.p) })
   }
   const changed = (Array.isArray(raw.changed) ? raw.changed : []).map((c) => (typeof c === 'string' ? c : ''))
+  const hunks: Record<string, string> = {}
+  if (isRecord(raw.hunks)) for (const [k, v] of Object.entries(raw.hunks)) if (/^i\d+$/.test(k) && str(v) !== null) hunks[k] = v as string
   const mechanical = (Array.isArray(raw.mechanical) ? raw.mechanical : []).map((m) =>
     isRecord(m) ? { kind: str(m.kind) ?? '', passed: typeof m.passed === 'boolean' ? m.passed : null } : { kind: '', passed: null },
   )
@@ -234,6 +242,7 @@ export function contractAcceptance(raw: unknown): Acceptance | null {
     revision: num(raw.revision),
     verdicts,
     changed,
+    hunks,
     mechanical,
     reask: r === null ? null : { tries: num(r.tries) ?? 0, nextAt: str(r.next_at), last },
   }
@@ -255,11 +264,22 @@ function Cited({ a, item }: { a: Acceptance; item: string | null }) {
   if (m[1] === 'i') {
     const path = a.changed[n]
     if (path === undefined || path === '') return <span className="cj-cite">cites change <code>{item}</code>, which the record does not name</span>
+    // The hunk's TEXT, as the record stored it when Jev judged (the owner's
+    // pick on PR #3255): what the verdict rests on, readable here even after
+    // the branch moves. A hunk the state sent by path alone says so.
+    const hunk = a.hunks[item!]
     return (
-      <span className="cj-cite">
+      <div className="cj-cite">
         cites the hunk of <code>{path}</code>
         {a.commit !== null && <> at <code>{short(a.commit)}</code></>}
-      </span>
+        {hunk === undefined ? (
+          <>; the record keeps no text for it</>
+        ) : (
+          <pre className="cj-hunk" data-testid="cj-hunk" aria-label={`The hunk of ${path} Jev read`}>
+            {hunk}
+          </pre>
+        )}
+      </div>
     )
   }
   const mech = a.mechanical[n]
@@ -328,7 +348,7 @@ export function AcceptanceVerdicts({ acceptance: a }: { acceptance: Acceptance }
           {a.verdicts.map((v) => (
             <li key={v.requirementId} className="cj-row" data-requirement={v.requirementId} data-verdict={v.verdict}>
               <span className="cj-id mono">{v.requirementId}</span>
-              <span className="cj-say">
+              <div className="cj-say">
                 <span className="cj-by">Jev’s judgment</span>{' '}
                 <span className={`cj-chip ${TONE[v.verdict] ?? ''}`}>{VERDICT_WORDS[v.verdict] ?? v.verdict}</span>
                 {v.verdict === 'cannot_judge' && spent && <span className="cj-p"> after the control plane’s three re-asks</span>}
@@ -340,7 +360,7 @@ export function AcceptanceVerdicts({ acceptance: a }: { acceptance: Acceptance }
                 )}
                 {percent(v.p) !== null && v.verdict !== 'cannot_judge' && <span className="cj-p"> · confidence {percent(v.p)}</span>}
                 <Cited a={a} item={v.item} />
-              </span>
+              </div>
             </li>
           ))}
         </ul>
@@ -353,5 +373,23 @@ export function AcceptanceVerdicts({ acceptance: a }: { acceptance: Acceptance }
         {a.commit !== null || a.revision !== null || a.callId !== null ? '.' : null}
       </p>
     </div>
+  )
+}
+
+/**
+ * The task detail's card (the owner's pick on PR #3255): the same record and
+ * the same body the approval screen draws, under the same title, or nothing
+ * for a step Jev never judged.
+ */
+export function ContractAcceptanceCard({ raw }: { raw: unknown }) {
+  const a = contractAcceptance(raw)
+  if (a === null) return null
+  return (
+    <section className="dt-card cj-card" aria-label="Jev’s judgment of the work contract" data-testid="contract-acceptance">
+      <div className="dt-card-head">
+        <h2>Jev’s judgment of the work contract</h2>
+      </div>
+      <AcceptanceVerdicts acceptance={a} />
+    </section>
   )
 }

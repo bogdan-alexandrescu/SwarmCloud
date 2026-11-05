@@ -12907,6 +12907,12 @@ function fixtureContractApproval(itemId: string): ApprovalDetail | null {
     status: 'judgment_pending', waiting_on: 'owner', attempt_id: 'att_fixture_contract', generation: 2,
     contract_id: 'wc-lease-release', revision: 2, digest: '9d'.repeat(32), commit, outcome: 'judged', reason: null,
     call_id: 'jc2-fixture-0001', changed, mechanical, at: at(-0.5),
+    // The text of each cited hunk, as the record stores it (the owner's pick
+    // on PR #3255); `i1` is not cited by any fixture verdict, so it has none.
+    hunks: {
+      i0: '@@ -88,6 +88,9 @@ def cancel(lease):\n     if lease.released_at is not None:\n         return lease\n+    lease.released_at = now()\n+    capacity.release(lease.reservation)\n+    return lease',
+      i2: '@@ -12,3 +12,5 @@ Leases\n A lease holds capacity until it ends.\n+\n+Cancelling a task releases its lease at once.',
+    },
   }
   const acceptance =
     itemId === 'apr_fixture_contract_judged'

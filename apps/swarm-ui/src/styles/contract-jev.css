@@ -23,6 +23,14 @@
 .cj-by { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--info-ink); }
 .cj-p { color: var(--text-dim); }
 .cj-cite { display: block; color: var(--text-dim); overflow-wrap: anywhere; }
+/* The cited hunk's text, as Jev read it: kept inside the card's width, its
+   long lines scrolled in place rather than pushing the page sideways. */
+.cj-hunk {
+  margin: 4px 0 0; padding: 6px 8px; max-height: 16rem; overflow: auto; max-width: 100%;
+  font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro);
+  color: var(--text); background-color: var(--surface-2); border: 1px solid var(--line); border-radius: 6px;
+  white-space: pre; tab-size: 4;
+}
 
 .cj-chip {
   display: inline-block; padding: 1px 8px; border-radius: 999px; white-space: nowrap;
