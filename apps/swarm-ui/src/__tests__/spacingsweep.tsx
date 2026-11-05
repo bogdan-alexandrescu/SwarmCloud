@@ -43,11 +43,12 @@ import { act, render } from '@testing-library/react'
 
 import { App, SECTIONS } from '../App'
 import {
-  probe,
+  probeYielding,
   resolveSheet,
   resolveVars,
   stripComments,
   tokenTables,
+  yieldToWorker,
   type Finding,
   type Report,
 } from './spaceprobe'
@@ -196,6 +197,9 @@ async function sweep(routes: readonly string[], Shown: typeof App = App): Promis
     await settle()
     const snap = container.cloneNode(true) as HTMLElement
     unmount()
+    // The walk's only real turn of the event loop between renders: see
+    // YIELD_EVERY_MS in spaceprobe.ts for what went unread without one.
+    await yieldToWorker()
     // A screen's own `<style>` element, resolved like the main sheet. Overview
     // shipped one (`OVERVIEW_CSS`) until U8 folded it into styles.css, and no
     // screen ships one now -- stylesheet.gate.test.ts holds that. The loop
@@ -219,19 +223,19 @@ async function sweep(routes: readonly string[], Shown: typeof App = App): Promis
     for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.dark)
     document.body.appendChild(s.el)
     unpainted(s.el)
-    const r = probe(s.el)
+    const r = await probeYielding(s.el)
     dark.push(r)
     borders.push(r.bordered)
     s.el.remove()
   }
 
   style.textContent = sheets.light
-  snapshots.forEach((s, i) => {
+  for (const [i, s] of snapshots.entries()) {
     for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.light)
     document.body.appendChild(s.el)
-    light.push(probe(s.el, borders[i]))
+    light.push(await probeYielding(s.el, borders[i]))
     s.el.remove()
-  })
+  }
 
   style.remove()
   window.location.hash = ''
