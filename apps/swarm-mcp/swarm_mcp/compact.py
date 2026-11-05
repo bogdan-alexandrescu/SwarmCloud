@@ -880,8 +880,16 @@ def hold_result(task_id: str, fast: list[float], link: str | None, *, end: bool)
 
 
 def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
-    """One of `progress.owner_questions`' questions, every missing text as ""."""
-    return {
+    """One of `progress.owner_questions`' questions, every missing text as "".
+
+    An open one (`progress.open_owner_questions`) keeps its `index`, its place
+    in questions.json that swarm_task_answer records the pick under, and its
+    `answer_unknown_because` when its stored answer could not be read."""
+    out: dict[str, Any] = {}
+    index = question.get("index")
+    if isinstance(index, int) and not isinstance(index, bool):
+        out["index"] = index
+    out.update({
         "question": _text(question.get("question")),
         "options": [
             {"label": _text(option.get("label")), "description": _text(option.get("description"))}
@@ -890,7 +898,10 @@ def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
         ],
         "recommended": _text(question.get("recommended")),
         "context": _text(question.get("context")),
-    }
+    })
+    if question.get("answer_unknown_because"):
+        out["answer_unknown_because"] = _text(question["answer_unknown_because"])
+    return out
 
 
 def _answer_index(answer: Any) -> int | None:
