@@ -209,6 +209,9 @@ class Repo:
     def train_ejection(self, number: int) -> str | None:
         return None
 
+    def train_skip(self, number: int, head: str) -> str | None:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # The platform around a merge step
