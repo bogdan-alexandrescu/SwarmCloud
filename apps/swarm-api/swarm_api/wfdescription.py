@@ -421,9 +421,10 @@ def after_submission(db: Any, tasks: Sequence[Task], *, settings: Any,
     try:
         if db is None or not tasks or has_description(tasks):
             return
+        switch = (os.environ if environ is None else environ).get(MODEL_SWITCH_ENV)
         environ = os.environ if environ is None else environ
         summariser = None
-        if (environ.get(MODEL_SWITCH_ENV) or "").strip().lower() == MODEL_SWITCH_VERTEX:
+        if (switch or "").strip().lower() == MODEL_SWITCH_VERTEX:
             # Read only while the switch is on: the project id is the model's.
             summariser = summariser_from_env(environ, project_id=getattr(settings, "project_id", "") or "")
         thread = threading.Thread(target=generate, args=(db, list(tasks)),
