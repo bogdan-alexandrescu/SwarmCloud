@@ -178,8 +178,88 @@ SPEC_KEYS = frozenset(
         # form `check_publish_to_pr` returns. swarm-api reads the pull request
         # and refuses it beside any merge, so `read_spec` refuses that first.
         "publish_to_pr",
+        # What the workflow delivers, in two or three sentences of plain text,
+        # and the feature it belongs to, `{title, url?}` (BGD, 2026-11-04):
+        # the console's workflow page heads with both. Sent as
+        # `metadata.description` and `metadata.feature`, for the reason
+        # `title` is; checked for shape by `check_description` and
+        # `check_feature` before anything is sent.
+        "description",
+        "feature",
     }
 )
+
+#: swarm-api's `schemas.DESCRIPTION_MAX_CHARS` and
+#: `schemas.FEATURE_TITLE_MAX_CHARS`, which this package cannot import;
+#: tests/unit/mcp/test_spec_description_feature.py holds them equal.
+DESCRIPTION_MAX_CHARS = 600
+FEATURE_TITLE_MAX_CHARS = 120
+#: The markup swarm-api refuses in a description (`schemas._MARKUP`):
+#: an HTML tag, a Markdown link, a code fence, a heading, doubled bold markers.
+_DESCRIPTION_MARKUP = re.compile(
+    r"<\s*/?\s*[A-Za-z!][^>]*>|\]\(|```|~~~|^\s{0,3}#{1,6}\s|\*\*|__", re.MULTILINE)
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+#: An issue or pull request page of one GitHub repository (`schemas._FEATURE_URL`).
+_FEATURE_URL = re.compile(
+    r"^https://github\.com/(?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9._-]+)/(?:issues|pull)/[1-9][0-9]{0,9}/?$")
+_GITHUB_REPOSITORY = re.compile(
+    r"^(?:https://|ssh://git@|git@)github\.com[/:](?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9._-]+?)"
+    r"(?:\.git)?/?$", re.IGNORECASE)
+
+
+def check_description(value: Any, *, where: str) -> str | None:
+    """A spec's optional `description`, trimmed, or None when absent: plain
+    text of at most DESCRIPTION_MAX_CHARS, refused -- never cut -- otherwise,
+    by the rule swarm-api applies, so a bad one costs no request."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise SwarmError(f"{where}: description must be non-empty text -- two or three sentences saying "
+                         "what the work delivers. Nothing was sent")
+    text = value.strip()
+    if len(text) > DESCRIPTION_MAX_CHARS:
+        raise SwarmError(f"{where}: description is {len(text)} characters and holds at most "
+                         f"{DESCRIPTION_MAX_CHARS}. Nothing was sent")
+    if _CONTROL.search(text) or _DESCRIPTION_MARKUP.search(text):
+        raise SwarmError(f"{where}: description must be plain text, with no HTML, Markdown link, heading, "
+                         "code fence, bold or control character. Nothing was sent")
+    return text
+
+
+def check_feature(value: Any, *, where: str, repository_url: str | None = None) -> dict[str, str] | None:
+    """A spec's optional `feature`, `{title, url?}`, tidied, or None when
+    absent. The title is one line of at most FEATURE_TITLE_MAX_CHARS; the url
+    an https github.com issue or pull request, of `repository_url` when that
+    names a GitHub repository (swarm-api holds it to the workflow's own
+    repository either way, inferred ones included)."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not set(value) <= {"title", "url"} or "title" not in value:
+        raise SwarmError(f"{where}: feature must be {{title, url?}} -- the feature the work belongs to. "
+                         "Nothing was sent")
+    title = value["title"]
+    if not isinstance(title, str) or not title.strip() or "\n" in title.strip() or _CONTROL.search(title):
+        raise SwarmError(f"{where}: feature.title must be one line of non-empty text. Nothing was sent")
+    title = title.strip()
+    if len(title) > FEATURE_TITLE_MAX_CHARS:
+        raise SwarmError(f"{where}: feature.title is {len(title)} characters and holds at most "
+                         f"{FEATURE_TITLE_MAX_CHARS}. Nothing was sent")
+    feature = {"title": title}
+    url = value.get("url")
+    if url is None:
+        return feature
+    found = _FEATURE_URL.match(url.strip()) if isinstance(url, str) else None
+    if found is None:
+        raise SwarmError(f"{where}: feature.url must be an https://github.com/<owner>/<repo>/issues/<n> or "
+                         ".../pull/<n> URL. Nothing was sent")
+    own = _GITHUB_REPOSITORY.match(repository_url or "")
+    named = f"{found['owner']}/{found['repo']}".lower()
+    if own and f"{own['owner']}/{own['repo']}".lower() != named:
+        raise SwarmError(f"{where}: feature.url names {named}, and the workflow's repository is "
+                         f"{own['owner']}/{own['repo']}: a feature link names the workflow's own repository. "
+                         "Nothing was sent")
+    feature["url"] = url.strip()
+    return feature
 
 #: The most pull requests `after` may name: swarm-api's
 #: `schemas.MAX_AFTER_PRS`, which this package cannot import;
@@ -523,7 +603,8 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
 
     Returns `steps` built by `build_steps`, and the spec's `strategy`,
     `carrier`, `repository_url`, `repository_ref`, `on_step_failure`,
-    `priority`, `label`, `title` and `merge` as given, and
+    `priority`, `label`, `title` and `merge` as given, `description` and
+    `feature` checked (`check_description`, `check_feature`), and
     `additional_repositories` checked for shape (None when absent). The caller decides what
     overrides them -- the terminal's flags, or the repository the bridge infers
     from a checkout.
@@ -551,6 +632,9 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
             "spec is never sent."
         )
     title = check_title(document.get("title"), where=where)
+    description = check_description(document.get("description"), where=where)
+    feature = check_feature(document.get("feature"), where=where,
+                            repository_url=document.get("repository_url"))
     return {
         "steps": build_steps(document.get("steps")),
         "strategy": document.get("strategy"),
@@ -562,6 +646,8 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "priority": document.get("priority"),
         "label": document.get("label"),
         "title": title,
+        "description": description,
+        "feature": feature,
         "merge": document.get("merge"),
         "after": check_after(document.get("after"), where=where),
         "additional_repositories": check_additional_repositories(
@@ -591,8 +677,14 @@ def submit(
     additional_repositories: list[dict[str, str]] | None = None,
     publish_to_pr: int | str | None = None,
     dispatch: dict[str, str] | None = None,
+    description: str | None = None,
+    feature: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
+
+    `description` and `feature` go as `metadata.description` and
+    `metadata.feature`, only when given, checked again here
+    (`check_description`, `check_feature`) so no caller sends one unchecked.
 
     `dispatch` is the spec's workflow switches (`check_dispatch`), sent
     top-level only when given, so a spec without them sends what it sent.
@@ -631,6 +723,8 @@ def submit(
                 "merge: two pull requests. Send one or the other. Nothing was sent"
             )
         merge = None
+    description = check_description(description, where="submit")
+    feature = check_feature(feature, where="submit", repository_url=repository_url)
     body: dict[str, Any] = {
         "steps": steps,
         "metadata": {
@@ -640,6 +734,8 @@ def submit(
             **session_tag(),
             **({"unit": label} if label else {}),
             **({"title": title} if title else {}),
+            **({"description": description} if description else {}),
+            **({"feature": feature} if feature else {}),
             **({"merge": merge} if merge is not None else {}),
         },
     }
