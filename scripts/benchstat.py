@@ -61,6 +61,8 @@ Usage
     benchstat.py baseline  --current SUMMARY.json --output BASELINE.json
     benchstat.py cache-ttl --input TASK_ATTEMPTS.jsonl [--read-multiplier 0.1]
                            [--base-usd-per-mtok N] [--json]
+    benchstat.py contract-jev --input ITEMS.jsonl [--jev-token-rates JSON]
+                           [--json] [--output OUT]
     benchstat.py self-test
 
 `compare` exits 0 only when every verdict is `ok` or `new`.
@@ -791,6 +793,298 @@ def render_cache_ttl(table: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# The Jev work-contract experiment (contract-jev)
+# ---------------------------------------------------------------------------
+#
+# docs/design/agent-quality/jev-contract.md section 11, under the protocol of
+# docs/design/agent-quality/experiment-protocol.md section 8, where the input
+# record is defined. One JSON line per experiment item (one whole workflow):
+#
+#   {"item_id", "arm": "on"|"off", "historical": bool,
+#    "attempts": [{"result_summary": {"switches": {"contract_jev": ...}}}],
+#    "review": {"outcome", "reason", "resubmitted", "overridden",
+#               "override_judged_cleanly"} | null,
+#    "judgments": [{"verdict": "met"|"unmet"|"cannot_judge", "p"}],
+#    "hidden_tests": "passed"|"failed"|"not_run", "review_verdict",
+#    "accepted": bool, "model_cost_usd": float|null,
+#    "jev_tokens": {"input", "output"}|null,
+#    "submitted_at", "accepted_at", "approvals", "owner_overrides"}
+
+#: The arm's dispatch switch and its words: `swarm_api.validation`'s
+#: `contract_jev`, restated because this runs with no swarm-api installed;
+#: tests/unit/scripts/test_benchstat_contract_jev.py holds them equal.
+CONTRACT_JEV_SWITCH = "contract_jev"
+CONTRACT_JEV_ARMS: tuple[str, ...] = ("on", "off")
+#: Where historical items with Jev on are reported, apart (protocol section 5).
+HISTORICAL_ON = "on:historical"
+#: JC1's outcomes that mean Jev reviewed the contract.
+JC1_RAN = ("ok", "refused", "amended")
+#: What arm off records for a review or judgment it skipped.
+SKIPPED_ARM = "skipped:arm"
+#: `swarm_api.outcomes.WILSON_Z`, restated for the same reason.
+WILSON_Z = 1.959964
+
+
+def wilson(k: int, n: int) -> dict[str, Any] | None:
+    """k of n with its 95 % Wilson interval: `swarm_api.outcomes.wilson`,
+    restated and held equal by the test. None when n is 0."""
+    if n <= 0:
+        return None
+    z2 = WILSON_Z * WILSON_Z
+    p = k / n
+    denom = 1.0 + z2 / n
+    centre = (p + z2 / (2.0 * n)) / denom
+    half = WILSON_Z * math.sqrt(p * (1.0 - p) / n + z2 / (4.0 * n * n)) / denom
+    return {"k": k, "n": n, "p": round(p, 4),
+            "lo": round(max(0.0, centre - half), 4), "hi": round(min(1.0, centre + half), 4)}
+
+
+def jev_rates_of(value: Any) -> dict[str, float | None]:
+    """The `jev_token_rates` setting as `swarm_api.jevusage.rates_of` reads it:
+    `{input, output}` USD per million tokens, a missing or malformed one None."""
+    raw = value if isinstance(value, dict) else {}
+    out: dict[str, float | None] = {}
+    for unit in ("input", "output"):
+        rate = raw.get(unit)
+        ok = (isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate >= 0
+              and rate == rate and rate != float("inf"))
+        out[unit] = float(rate) if ok else None
+    return out
+
+
+def recorded_arm(attempt: Any) -> str | None:
+    """The `contract_jev` word an attempt's `result_summary.switches` records:
+    the worker's `{value, ...}` record or the bare word. None when absent."""
+    summary = attempt.get("result_summary") if isinstance(attempt, dict) else None
+    switches = summary.get("switches") if isinstance(summary, dict) else None
+    record = switches.get(CONTRACT_JEV_SWITCH) if isinstance(switches, dict) else None
+    if isinstance(record, dict):
+        record = record.get("value")
+    return record if isinstance(record, str) else None
+
+
+def _arm_problem(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Why `item` is in neither arm, or None. Never relabels an item."""
+    arm = item.get("arm")
+    if arm not in CONTRACT_JEV_ARMS:
+        return {"reason": "arm_unassigned"}
+    attempts = [a for a in (item.get("attempts") or []) if isinstance(a, dict)]
+    words = [recorded_arm(a) for a in attempts]
+    if not words or None in words:
+        return {"reason": "arm_unrecorded"}
+    if set(words) != {arm}:
+        return {"reason": "arm_mismatch", "recorded": sorted(set(words))}
+    # Arm off is today's behaviour: JC1 and JC2 skipped as `skipped:arm`.
+    # An off item Jev reviewed or judged, or an on item the arm skipped, did
+    # not run in the arm it was assigned.
+    review = item.get("review") if isinstance(item.get("review"), dict) else {}
+    outcome = review.get("outcome")
+    judged = any(isinstance(j, dict) for j in (item.get("judgments") or []))
+    if arm == "off" and (outcome in JC1_RAN or judged):
+        return {"reason": "arm_mismatch", "jev_ran_in_arm_off": True}
+    if arm == "on" and outcome == SKIPPED_ARM:
+        return {"reason": "arm_mismatch", "skipped_by_arm_in_arm_on": True}
+    return None
+
+
+def _number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value == value and abs(value) != float("inf") else None
+
+
+def _item_cost(item: dict[str, Any], rates: dict[str, float | None]
+               ) -> tuple[float, bool, bool, bool]:
+    """(usd priced, complete, any part priced, jev unpriced) for one item."""
+    usd, complete, priced = 0.0, True, False
+    model = _number(item.get("model_cost_usd"))
+    if model is None:
+        complete = False
+    else:
+        usd, priced = usd + model, True
+    tokens = item.get("jev_tokens")
+    if not isinstance(tokens, dict) or _number(tokens.get("input")) is None:
+        # Unknown Jev usage is not zero usage.
+        return usd, False, priced, False
+    spent_in = _number(tokens["input"]) or 0.0
+    spent_out = _number(tokens.get("output"))
+    if spent_in > 0 or (spent_out or 0) > 0:
+        if rates["input"] is None:
+            return usd, False, priced, True
+        usd += spent_in * rates["input"] / 1e6
+        if spent_out:
+            if rates["output"] is None:
+                return usd, False, priced, True
+            usd += spent_out * rates["output"] / 1e6
+        elif spent_out is None and rates["output"]:
+            complete = False
+    return usd, complete, True, False
+
+
+def _arm_measures(items: list[dict[str, Any]], rates: dict[str, float | None]) -> dict[str, Any]:
+    accepted = [x for x in items if x.get("accepted") is True]
+
+    # JC1: rates over the reviews that ran; what did not run, apart.
+    reviews = [x.get("review") for x in items]
+    ran = [r for r in reviews if isinstance(r, dict) and r.get("outcome") in JC1_RAN]
+    refused = [r for r in ran if r.get("outcome") == "refused"]
+    not_run: dict[str, int] = {}
+    for r in reviews:
+        if isinstance(r, dict) and r.get("outcome") == "not_run":
+            key = str(r.get("reason") or "unknown")
+            not_run[key] = not_run.get(key, 0) + 1
+    jc1 = {
+        "reviewed": len(ran),
+        "refused": wilson(len(refused), len(ran)),
+        "amended": wilson(sum(r.get("outcome") == "amended" for r in ran), len(ran)),
+        "not_run": not_run,
+        "unrecorded": sum(not isinstance(r, dict) for r in reviews),
+        "resubmitted": sum(r.get("resubmitted") is True for r in refused),
+        "overridden": sum(r.get("overridden") is True for r in refused),
+        "false_refusals": sum(r.get("overridden") is True
+                              and r.get("override_judged_cleanly") is True for r in refused),
+    }
+
+    # JC2: per judgment, against the item's hidden tests and review verdict.
+    judgments = [(x, j) for x in items for j in (x.get("judgments") or []) if isinstance(j, dict)]
+    scored = [(x, j) for x, j in judgments if x.get("hidden_tests") in ("passed", "failed")]
+    unmet = [(x, j) for x, j in scored if j.get("verdict") == "unmet"
+             and x.get("review_verdict") is not None]
+    met = [(x, j) for x, j in scored if j.get("verdict") == "met"]
+    brier: list[float] = []
+    for x, j in scored:
+        p = _number(j.get("p"))
+        if p is None or not 0 <= p <= 1 or j.get("verdict") not in ("met", "unmet"):
+            continue
+        p_met = p if j["verdict"] == "met" else 1.0 - p
+        brier.append((p_met - (1.0 if x["hidden_tests"] == "passed" else 0.0)) ** 2)
+    jc2 = {
+        "judgments": len(judgments),
+        "false_send_back": wilson(sum(x["hidden_tests"] == "passed"
+                                      and x.get("review_verdict") == "MERGE"
+                                      for x, _ in unmet), len(unmet)),
+        "missed_defect": wilson(sum(x["hidden_tests"] == "failed" for x, _ in met), len(met)),
+        "cannot_judge": wilson(sum(j.get("verdict") == "cannot_judge" for _, j in judgments),
+                               len(judgments)),
+        "brier": (sum(brier) / len(brier)) if brier else None,
+        "brier_n": len(brier),
+        "no_hidden_result": len(judgments) - len(scored),
+    }
+
+    # Cost: every item's, failed ones included, over the accepted items.
+    total, complete, any_priced, jev_unpriced = 0.0, 0, False, False
+    for x in items:
+        usd, whole, priced, unpriced_jev = _item_cost(x, rates)
+        total += usd
+        complete += whole
+        any_priced = any_priced or priced
+        jev_unpriced = jev_unpriced or unpriced_jev
+    if jev_unpriced or not any_priced:
+        # Jev's tokens are what arm on adds: a total without them would make
+        # the arm look free. No figure, never $0.
+        cost: dict[str, Any] = {"status": "unpriced", "total_usd": None, "per_accepted_usd": None,
+                                "reason": ("jev_token_rates not set" if jev_unpriced
+                                           else "no cost recorded")}
+    else:
+        coverage = complete / len(items) if items else 0.0
+        cost = {"status": "priced" if complete == len(items) else "at_least",
+                "total_usd": total, "coverage": coverage,
+                "per_accepted_usd": (total / len(accepted)) if accepted else None}
+
+    ends = []
+    no_end = 0
+    for x in accepted:
+        start, end = _epoch(x.get("submitted_at")), _epoch(x.get("accepted_at"))
+        if start is None or end is None:
+            no_end += 1
+        else:
+            ends.append(end - start)
+    ends.sort()
+    latency: dict[str, Any] = {"n": len(ends), "no_end": no_end}
+    if ends:
+        latency.update(p50=percentile(ends, 50), p95=percentile(ends, 95))
+
+    approvals = [_number(x.get("approvals")) for x in items]
+    known = [a for a in approvals if a is not None]
+    owner = {
+        "approvals_per_accepted": (sum(known) / len(accepted)) if accepted else None,
+        "overrides": int(sum(_number(x.get("owner_overrides")) or 0 for x in items)),
+        "unknown": len(approvals) - len(known),
+    }
+    return {"items": len(items), "accepted": wilson(len(accepted), len(items)),
+            "send_backs": int(sum(_number(x.get("send_backs")) or 0 for x in items)),
+            "jc1": jc1, "jc2": jc2, "cost": cost, "latency_s": latency, "owner": owner}
+
+
+def contract_jev_table(items: Iterable[dict[str, Any]], *,
+                       jev_token_rates: Any = None) -> dict[str, Any]:
+    """Section 11's measures per arm, with the excluded items listed."""
+    rates = jev_rates_of(jev_token_rates)
+    groups: dict[str, list[dict[str, Any]]] = {"on": [], "off": [], HISTORICAL_ON: []}
+    excluded: list[dict[str, Any]] = []
+    for x in items:
+        if not isinstance(x, dict):
+            continue
+        problem = _arm_problem(x)
+        if problem is not None:
+            excluded.append({"item_id": x.get("item_id"), "arm": x.get("arm"), **problem})
+            continue
+        key = HISTORICAL_ON if x["arm"] == "on" and x.get("historical") is True else x["arm"]
+        groups[key].append(x)
+    return {"switch": CONTRACT_JEV_SWITCH,
+            "jev_token_rates": jev_token_rates if isinstance(jev_token_rates, dict) else None,
+            "arms": {k: _arm_measures(v, rates) for k, v in groups.items()},
+            "excluded": excluded}
+
+
+def _rate(r: dict[str, Any] | None) -> str:
+    return "-" if r is None else f"{r['k']}/{r['n']} {r['p']:.1%} [{r['lo']:.1%}, {r['hi']:.1%}]"
+
+
+def _cost_text(cost: dict[str, Any]) -> str:
+    if cost["status"] == "unpriced":
+        return f"none, unpriced ({cost['reason']})"
+    per = cost["per_accepted_usd"]
+    floor = "at least " if cost["status"] == "at_least" else ""
+    text = f"{floor}${cost['total_usd']:.2f} total"
+    text += (f", {floor}${per:.2f} per accepted item" if per is not None
+             else ", no accepted item")
+    if cost["status"] == "at_least":
+        text += f" (coverage {cost['coverage']:.0%})"
+    return text
+
+
+def render_contract_jev(table: dict[str, Any]) -> str:
+    lines = [f"contract_jev experiment: arm read back from result_summary.switches."
+             f"{table['switch']}"]
+    for arm, m in table["arms"].items():
+        lat = m["latency_s"]
+        latency = (f"p50 {lat['p50']:.0f}s p95 {lat['p95']:.0f}s" if lat["n"]
+                   else "no accepted item with an end")
+        lines.append(f"{arm} items {m['items']}  accepted {_rate(m['accepted'])}  "
+                     f"cost {_cost_text(m['cost'])}")
+        lines.append(f"  latency {latency} (n {lat['n']}, no end {lat['no_end']}); "
+                     f"send-backs {m['send_backs']}")
+        j1, j2, owner = m["jc1"], m["jc2"], m["owner"]
+        lines.append(f"  JC1 reviewed {j1['reviewed']}: refused {_rate(j1['refused'])}, "
+                     f"amended {_rate(j1['amended'])}; resubmitted {j1['resubmitted']}, "
+                     f"overridden {j1['overridden']}, false refusals {j1['false_refusals']}; "
+                     f"not run {j1['not_run'] or 0}, unrecorded {j1['unrecorded']}")
+        brier = "-" if j2["brier"] is None else f"{j2['brier']:.3f}"
+        lines.append(f"  JC2 judgments {j2['judgments']}: false send-back "
+                     f"{_rate(j2['false_send_back'])}, missed defect {_rate(j2['missed_defect'])}, "
+                     f"cannot_judge {_rate(j2['cannot_judge'])}, Brier {brier} "
+                     f"(n {j2['brier_n']}), no hidden result {j2['no_hidden_result']}")
+        per = owner["approvals_per_accepted"]
+        lines.append(f"  owner approvals per accepted item "
+                     f"{'-' if per is None else f'{per:.2f}'}, overrides of Jev "
+                     f"{owner['overrides']}, unknown {owner['unknown']}")
+    for x in table["excluded"]:
+        lines.append(f"excluded {x['item_id']} (arm {x['arm']}): {x['reason']}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -835,6 +1129,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--input", required=True)
     p.add_argument("--read-multiplier", type=float, default=DEFAULT_CACHE_READ)
     p.add_argument("--base-usd-per-mtok", type=float)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--output")
+
+    p = sub.add_parser("contract-jev",
+                       help="items.jsonl -> the Jev work-contract experiment's measures per arm")
+    p.add_argument("--input", required=True)
+    p.add_argument("--jev-token-rates", default="{}",
+                   help="the platform's jev_token_rates setting as JSON, {input, output} USD "
+                        "per million tokens; unset prices no Jev token")
     p.add_argument("--json", action="store_true")
     p.add_argument("--output")
 
@@ -917,6 +1220,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             else render_cache_ttl(table) + "\n"
         )
         _write(args.output, text)
+        return 0
+
+    if args.command == "contract-jev":
+        try:
+            rates = json.loads(args.jev_token_rates)
+        except ValueError:
+            parser.error("--jev-token-rates is JSON: {input, output} USD per million tokens")
+        if not isinstance(rates, dict) or set(rates) - {"input", "output"} or any(
+                rates.get(u) is not None and jev_rates_of(rates)[u] is None
+                for u in ("input", "output")):
+            parser.error("--jev-token-rates is {input, output}, each a non-negative number "
+                         "of USD per million tokens")
+        items = [json.loads(line) for line in Path(args.input).read_text().splitlines()
+                 if line.strip()]
+        table = contract_jev_table(items, jev_token_rates=rates or None)
+        _write(args.output, json.dumps(table, indent=2, sort_keys=True) + "\n" if args.json
+               else render_contract_jev(table) + "\n")
         return 0
 
     if args.command == "self-test":
@@ -1015,6 +1335,19 @@ def _self_test() -> int:
 
     for name in EVENT_CHAIN + TERMINAL_EVENTS:
         check(f"event name {name} is lower case", name == name.lower())
+
+    # contract-jev: the arm reads back from result_summary.switches, and an
+    # unpriced arm prints no cost, never $0.
+    def jev_item(arm: str, recorded: str) -> dict[str, Any]:
+        return {"item_id": arm, "arm": arm, "accepted": True, "model_cost_usd": 1.0,
+                "jev_tokens": {"input": 1000, "output": 0},
+                "attempts": [{"result_summary": {"switches": {"contract_jev": {"value": recorded}}}}]}
+    table = contract_jev_table([jev_item("on", "on"), jev_item("off", "on")])
+    check("contract-jev arm read back", table["arms"]["on"]["items"] == 1)
+    check("contract-jev mismatch excluded", table["excluded"][0]["reason"] == "arm_mismatch")
+    check("contract-jev unpriced arm has no cost",
+          table["arms"]["on"]["cost"]["total_usd"] is None
+          and "$" not in render_contract_jev(table).splitlines()[1])
 
     if failures:
         for name in failures:
