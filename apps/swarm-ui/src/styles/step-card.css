@@ -1,0 +1,186 @@
+/* The workflow page's step card (StepCard.tsx): the action bar, the stat
+   tiles, the attempt timeline and the Details fold. Tokens only, so both
+   themes draw it. */
+
+/* The inspector's head is the card's title: the step and its state, one step up in size. */
+.wi:has(.sc-card) .wi-title-text { font-size: var(--t-lead); }
+
+.sc-card { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+
+/* The action bar sticks under the inspector's own sticky head while the body scrolls. */
+.sc-bar {
+  position: sticky;
+  top: 39px;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ctl-s2);
+  padding: var(--ctl-s2) 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line-soft);
+}
+/* Stop, or Retry in its place, on the bar's right. Stop is the quiet danger
+   outline at the bar's size; its confirmation opens in place. */
+.sc-end { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); margin-left: auto; }
+.sc-end .run-stop-btn { height: var(--h-sm); padding: 0 10px; font-size: var(--t-micro); }
+.sc-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: 550 var(--t-micro) / var(--lh-micro) var(--mono);
+  text-align: center;
+}
+
+/* Never attempted: one line saying what it waits on; the head's ↑ is its action. */
+.sc-wait {
+  padding: var(--ctl-s2) var(--ctl-s3);
+  border: 1px dashed color-mix(in srgb, var(--s-park) 60%, transparent);
+  border-radius: var(--r-ctl);
+  color: var(--text);
+  font-size: var(--t-body);
+}
+
+/* The error, in the agent's own words: three lines, the rest one press away. */
+.sc-err {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ctl-s1);
+  padding: var(--ctl-s2) var(--ctl-s3);
+  border: 1px solid color-mix(in srgb, var(--s-bad) 55%, transparent);
+  border-left-width: 3px;
+  border-radius: var(--r-ctl);
+  background: color-mix(in srgb, var(--s-bad) 7%, var(--surface));
+}
+.sc-err-text {
+  margin: 0;
+  max-width: 100%;
+  color: var(--text);
+  font: var(--t-micro) / var(--lh-micro) var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sc-err-text.is-whole { display: block; }
+
+/* Stat tiles: label over figure; an absent figure is a dashed dash. */
+.sc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: var(--ctl-s2); }
+.sc-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--ctl-s2) 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+}
+.sc-tile.is-absent { border-style: dashed; border-color: var(--line-soft); background: none; }
+.sc-tile-k { color: var(--text-faint); font: 550 var(--t-micro) / var(--lh-micro) var(--font); }
+.sc-tile-v {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font: 600 var(--t-lead) / var(--lh-flush) var(--font);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sc-tile.is-absent .sc-tile-v { color: var(--text-faint); cursor: help; width: fit-content; }
+.sc-tile-v:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
+
+/* The attempt timeline: one segment per attempt, as long as it ran; the pager's arrows at its ends. */
+.sc-tl { display: flex; flex-direction: column; gap: 4px; }
+.sc-tl-row { display: flex; align-items: center; gap: var(--ctl-s1); }
+.sc-tl-bar { display: flex; flex: 1 1 auto; gap: 3px; margin: 0; padding: 0; list-style: none; min-width: 0; }
+.sc-tl-bar > li { flex-basis: 0; min-width: 28px; }
+.sc-seg {
+  display: block;
+  width: 100%;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font: 600 var(--t-micro) / var(--lh-flush) var(--mono);
+  color: var(--text);
+  cursor: pointer;
+}
+.sc-seg.is-succeeded { background: color-mix(in srgb, var(--ok) 22%, var(--surface)); }
+.sc-seg.is-failed { background: color-mix(in srgb, var(--s-bad) 22%, var(--surface)); }
+.sc-seg.is-running {
+  background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--s-live) 30%, var(--surface)) 0 6px, color-mix(in srgb, var(--s-live) 16%, var(--surface)) 6px 12px);
+}
+.sc-tl-bar.is-one .sc-seg { height: 10px; cursor: default; }
+.sc-seg.is-here { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+.sc-seg:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.sc-tl-ends { display: flex; justify-content: space-between; color: var(--text-faint); font: var(--t-micro) / var(--lh-micro) var(--mono); }
+.sc-tl-ends.is-one-span { justify-content: center; }
+
+/* Everything else, behind one fold. */
+.sc-more { border-top: 1px solid var(--line-soft); padding-top: var(--ctl-s2); }
+.sc-more > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-sm);
+  padding: 0 10px;
+  border: 1px solid var(--ctl-bd, var(--line));
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  color: var(--text);
+  font: 550 var(--t-micro) / var(--lh-flush) var(--font);
+  cursor: pointer;
+  list-style: none;
+}
+.sc-more > summary::-webkit-details-marker { display: none; }
+.sc-more > summary::before { content: '▸'; color: var(--text-dim); }
+.sc-more[open] > summary::before { content: '▾'; }
+.sc-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.sc-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px var(--ctl-s3);
+  align-items: center;
+  margin: var(--ctl-s2) 0 0;
+  font-size: var(--t-meta);
+}
+.sc-facts:empty { display: none; }
+.sc-facts dt { color: var(--text-dim); }
+.sc-facts dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; min-width: 0; }
+.sc-facts dd.is-absent { color: var(--text-faint); cursor: help; }
+.sc-others { display: inline-flex; align-items: center; gap: var(--ctl-s1); }
+.sc-extras { display: flex; flex-direction: column; gap: var(--ctl-s3); margin-top: var(--ctl-s3); }
+
+/* THE SHEET'S BACK IS A BUTTON, not an arrow-styled link. */
+.wi:has(.sc-card) .wi-back {
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-sm);
+  min-height: 0;
+  padding: 0 10px;
+  border: 1px solid var(--ctl-bd, var(--line));
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  color: var(--text);
+  font: 550 var(--t-micro) / var(--lh-flush) var(--font);
+}
+.wi:has(.sc-card) .wi-back:hover { background: var(--surface-2); }
+
+@media (max-width: 720px) {
+  /* ONE ROW ON A PHONE: the buttons share the width rather than leave one on a row by itself. */
+  .sc-bar { position: static; flex-wrap: nowrap; gap: 6px; }
+  .sc-bar > .c-btn { flex: 1 1 auto; min-width: 0; justify-content: center; padding: 0 8px; }
+  .sc-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Run steps' rows: the step's actions are the same small buttons. */
+.rn-srow-links .c-btn, .rn-step-live .c-btn { flex: none; }
