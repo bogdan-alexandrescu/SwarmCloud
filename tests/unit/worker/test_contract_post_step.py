@@ -374,3 +374,84 @@ def test_the_runner_judges_the_contract_the_worker_named(tmp_path: Path, checkou
     monkeypatch.delenv(poststeps.CONTRACT_FILE_ENV)
     monkeypatch.delenv(poststeps.CONTRACT_DIGEST_ENV)
     assert cliagent._contract_post_step(_client(tmp_path, fake), repo, _Log()) is None
+
+
+# -- the experiment's arm: `contract_jev` (jev-contract.md section 11) ---------
+
+
+def test_contract_jev_off_asks_jev_nothing_and_posts_skipped_arm(tmp_path: Path,
+                                                                 checkout) -> None:
+    from swarm_api import contractreview
+    from swarm_api.attemptstate import ContractVerdictBody
+
+    repo, base, head = checkout
+    contract = _contract()
+    fake = FakeJev(_met)
+    verdict = poststeps.contract_post_step(
+        _client(tmp_path, fake), contract.to_document(), wc.digest(contract), repo, base=base,
+        deadline_left=None, environ={poststeps.CONTRACT_JEV_ENV: "off"})
+    assert fake.requests == []
+    assert verdict["outcome"] == "not_run" and verdict["verdicts"] == []
+    # The word the submission review records and benchstat reads.
+    assert verdict["reason"] == poststeps.SKIPPED_ARM == contractreview.SKIPPED_ARM
+    assert verdict["commit"] == head and verdict["base"] == base
+    assert budget.Ledger(tmp_path / "ledger.json").read()["audit"] == []
+    posted: list[tuple[str, dict]] = []
+    assert poststeps.deliver_contract_verdict(lambda op, body: posted.append((op, body)),
+                                              verdict, published_head=head,
+                                              request_id="r-1") == "posted"
+    ((op, body),) = posted
+    assert op == "contract-verdict" and body["reason"] == "skipped:arm"
+    # The route takes it as it is.
+    ContractVerdictBody(tenant_id="t", task_id="x", lease_id="l", generation=1, **body)
+
+
+def test_contract_jev_off_without_jev_set_up_is_skipped_arm_too(tmp_path: Path,
+                                                                checkout) -> None:
+    repo, base, _ = checkout
+    contract = _contract()
+    verdict = poststeps.contract_post_step(None, contract.to_document(), wc.digest(contract),
+                                           repo, base=base, deadline_left=None,
+                                           environ={poststeps.CONTRACT_JEV_ENV: "off"})
+    assert verdict["outcome"] == "not_run" and verdict["reason"] == "skipped:arm"
+
+
+@pytest.mark.parametrize("arm", ["on", None, "maybe"])
+def test_contract_jev_on_or_absent_judges_as_before(tmp_path: Path, checkout,
+                                                    arm: str | None) -> None:
+    environ = {} if arm is None else {poststeps.CONTRACT_JEV_ENV: arm}
+    repo, base, head = checkout
+    contract = _contract()
+    fake = FakeJev(_met)
+    verdict = poststeps.contract_post_step(_client(tmp_path, fake), contract.to_document(),
+                                           wc.digest(contract), repo, base=base,
+                                           deadline_left=None, environ=environ)
+    assert verdict["outcome"] == "judged" and verdict["commit"] == head
+    assert len(fake.requests) == 1
+
+
+def test_contract_jev_off_with_no_judgment_requirement_posts_nothing(tmp_path: Path,
+                                                                    checkout) -> None:
+    repo, base, _ = checkout
+    contract = _contract(requirements=[{"id": "REQ-1", "text": "Tests pass.",
+                                        "verification": ["unit_tests"]}])
+    assert poststeps.contract_post_step(None, contract.to_document(), wc.digest(contract),
+                                        repo, base=base, deadline_left=None,
+                                        environ={poststeps.CONTRACT_JEV_ENV: "off"}) is None
+
+
+def test_the_runner_skips_jc2_under_the_arm_the_worker_named(tmp_path: Path, checkout,
+                                                             monkeypatch) -> None:
+    repo, base, head = checkout
+    contract = _contract()
+    path = tmp_path / "private" / "work-contract.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(contract.to_document()))
+    monkeypatch.setenv(poststeps.CONTRACT_FILE_ENV, str(path))
+    monkeypatch.setenv(poststeps.CONTRACT_DIGEST_ENV, wc.digest(contract))
+    monkeypatch.setenv(poststeps.CONTRACT_JEV_ENV, "off")
+    monkeypatch.setenv("SWARM_CLONE_BASE", base)
+    fake = FakeJev(_met)
+    verdict = cliagent._contract_post_step(_client(tmp_path, fake), repo, _Log())
+    assert verdict["reason"] == "skipped:arm" and verdict["commit"] == head
+    assert fake.requests == []

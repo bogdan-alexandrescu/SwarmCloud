@@ -28,6 +28,8 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from agent_worker.errors import ExitCode, FencedWriteRefused
 from agent_worker.judge import poststeps
 from swarm_api import workcontract as wc
@@ -100,6 +102,31 @@ def test_a_step_without_a_signed_reference_gets_neither_variable(db, worker_fact
     assert poststeps.CONTRACT_DIGEST_ENV not in seen[0]
     assert poststeps.CONTRACT_FILE_ENV not in seen[0]
     assert seen[0]["read"] == (None, None)
+
+
+@pytest.mark.parametrize("arm", ["off", "on"])
+def test_the_runner_is_handed_the_signed_contract_jev_arm(db, worker_factory, arm):
+    # JC2 reads it (`poststeps.contract_arm`): `off` asks Jev nothing.
+    digest = _digest()
+    _seed(db, {"dispatch": {"work_contract": {"digest": digest}, "contract_jev": arm},
+               "work_contract": CONTRACT})
+    worker, _, _ = worker_factory()
+    seen = _runner_envs(worker)
+
+    worker.run()
+
+    assert seen[0][poststeps.CONTRACT_JEV_ENV] == arm
+    assert poststeps.contract_arm(seen[0]) == arm
+
+
+def test_a_block_without_the_arm_hands_none(db, worker_factory):
+    _seed(db, {"dispatch": {"work_contract": {"digest": _digest()}}, "work_contract": CONTRACT})
+    worker, _, _ = worker_factory()
+    seen = _runner_envs(worker)
+
+    worker.run()
+
+    assert poststeps.CONTRACT_JEV_ENV not in seen[0]
 
 
 def test_a_signed_reference_without_its_body_still_names_the_digest(db, worker_factory):
