@@ -44,6 +44,39 @@ below.**
 **Revised 2026-11-03: in a repository whose own merge train is on, the merge
 step labels its pull request `ready` and parks on the train instead of taking
 the merge slot -- the first section below.**
+**Revised 2026-11-05: a re-review that only re-publishes the review's MERGE is
+readied on `claude-code`, never the browser -- the section below.**
+
+## Revised 2026-11-05: the re-review that runs no agent runs on claude-code (part of #2688)
+
+In implement -> review -> fix -> re-review -> merge, a MERGE review means no
+fix runs and the re-review runs no agent: the worker re-publishes the verdict
+it staged, byte for byte (`Worker._republish_staged_verdict`), so the merge
+step reads the same file from the same step either way. Until now the
+re-review of a `browser_if_ui` review inherited the profile the review
+resolved to, so a UI lane's MERGE started a browser pod on GKE only to copy a
+file. In the day to 10:00Z on 5 November 2026, 56 re-reviews ran on
+`claude-code-browser` and 53 of them used no browser. BGD asked for agents
+that start on the browser runtime and barely use it to be fixed.
+
+The rule (`scheduler.runtime.republishes`). When the scheduler readies the
+re-review, it reads the same gate the worker reads: the re-review's
+`metadata.dispatch.verdict_gate`, which is the integrator's own. It also
+reads the verdict the integrator recorded from that review's verdict file,
+`result_summary.verdict_gate` on the step it builds on. Whether the
+integrator's worker or swarm-api's control-plane publish ended that step, the
+record has the same shape. If the verdict is outside `verdict_in`, the
+re-review's gate is shut too, so it resolves to `claude-code` by catalogue
+name, swapped with the spec swarm-api already signed for it, with reason
+`republish_no_agent`. If the gate is open, because a fix ran or the record is
+missing, malformed or names another review, the re-review inherits as
+before. A NOT_YET that the integrator's no-op precheck skipped also inherits:
+the re-review's own precheck needs its clone, so the scheduler cannot know.
+A pinned review's re-review carries no `inherit` (Q-2275) and is not
+touched. The resolution is written into the PARKED -> READY transaction, the
+same write `browser_if_ui` already uses, so admission reserves only
+`claude-code`'s pools, and the READY event and `metadata.runtime.resolved`
+record which runtime ran.
 
 ## Revised 2026-11-03: the repository's merge train boards the merge step's pull request (part of #2688)
 

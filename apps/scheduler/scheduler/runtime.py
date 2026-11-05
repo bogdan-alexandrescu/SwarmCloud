@@ -40,6 +40,25 @@ THE RE-REVIEW (`swarm_api.validation.rereview_step_for`) carries
 `runtime.inherit`: it runs on whatever its review RESOLVED to, read from the
 review's task, so a lane's second look sees what its first did.
 
+UNLESS ITS AGENT WILL NOT RUN (BGD, 2026-11-05). On MERGE no fix runs and the
+re-review runs no agent: the worker re-publishes the verdict it staged
+(`agent_worker.lifecycle.Worker._republish_staged_verdict`). Inheriting a
+UI lane's browser then started a browser pod for a copy: 56 re-reviews on
+`claude-code-browser` in the day to 10:00Z on 5 November, 53 with no
+browser use. The gate that decides it is the worker's own, readable here
+before any lease: the re-review's `metadata.dispatch.verdict_gate` is the
+integrator's (same review, same `verdict_in`), and the integrator -- a
+parent it builds on, SUCCEEDED by now -- recorded what it read from that
+same verdict file in `result_summary.verdict_gate` (the worker, or
+swarm-api's control-plane publish, `swarm_api.verdictpublish`). A verdict
+outside `verdict_in` shuts the re-review's gate too (`republishes`), and it
+resolves to `claude-code` with `REASON_REPUBLISH`. Anything less certain --
+no record, another review's, a malformed gate, a NOT_YET whose skip was the
+clone-bound no-op precheck -- inherits as before. The worst a forged record
+does is put this tenant's own re-review on `claude-code`, where the worker's
+rendered-review gate holds a UI MERGE to NOT_YET (`gate_rendered_review`).
+A re-review with no `inherit` (a pinned review's, #2275) is not touched.
+
 THE UI-PATH RULE is `is_ui_path` below, held equal to the worker's
 `agent_worker.verdict.is_ui_path` by
 tests/unit/control_plane/test_runtime_by_diff.py. It is restated, not shared:
@@ -99,6 +118,16 @@ REASON_CUT = "file_list_cut"
 REASON_NO_PARENTS = "no_parent_changes"
 REASON_INHERITED = "inherited"
 REASON_INHERIT_UNREADABLE = "inherited_unreadable"
+REASON_REPUBLISH = "republish_no_agent"
+
+#: The verdicts a gate reads. `agent_worker.verdict.REVIEW_VERDICTS`, restated
+#: for the reason the UI-path rule is; held equal by
+#: tests/unit/control_plane/test_rereview_republish_runtime.py.
+REVIEW_VERDICTS = ("MERGE", "NOT_YET")
+#: The dispatch block a step's verdict gate and `builds_on` live under.
+DISPATCH_METADATA_KEY = "dispatch"
+#: A parent's state once it has ended well (`TaskState.SUCCEEDED`).
+SUCCEEDED = "SUCCEEDED"
 
 
 def is_test_path(path: str) -> bool:
@@ -147,9 +176,11 @@ class Resolution:
     #: Task ids read, in order, and those that could not be told.
     read: tuple[str, ...] = ()
     unreadable: tuple[str, ...] = field(default=())
+    #: For `REASON_REPUBLISH`: the shut gate, and the task it was read from.
+    gate: Mapping[str, Any] | None = None
 
     def to_detail(self) -> dict[str, Any]:
-        return {
+        detail = {
             "policy": POLICY_BROWSER_IF_UI,
             "profile": self.profile,
             "reason": self.reason,
@@ -158,6 +189,9 @@ class Resolution:
             "parents_read": list(self.read),
             "unreadable": list(self.unreadable),
         }
+        if self.gate is not None:
+            detail["gate"] = dict(self.gate)
+        return detail
 
 
 def files_of(document: Any) -> tuple[list[str], str | None]:
@@ -202,24 +236,85 @@ def files_of(document: Any) -> tuple[list[str], str | None]:
 
 def _builds_on(document: Mapping[str, Any]) -> str | None:
     metadata = document.get("metadata")
-    block = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
+    block = metadata.get(DISPATCH_METADATA_KEY) if isinstance(metadata, Mapping) else None
     raw = block.get("builds_on") if isinstance(block, Mapping) else None
     return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+
+def _verdict(value: Any) -> str | None:
+    """A verdict as the worker's gate normalises it, or None for anything else."""
+    text = value.strip().upper() if isinstance(value, str) else None
+    return text if text in REVIEW_VERDICTS else None
+
+
+def republishes(
+    task_depends_on: list[str],
+    review_task_id: Any,
+    dispatch: Any,
+    read: Callable[[str], Mapping[str, Any] | None],
+) -> dict[str, Any] | None:
+    """The shut gate when this re-review's agent will not run, else None.
+
+    The worker's rule (`Worker._evaluate_verdict_gate`): the agent runs only
+    when the review's verdict is in the gate's `verdict_in`. The gate is the
+    step's `dispatch.verdict_gate`, read as strictly as the worker's
+    `gate_from_dispatch` reads it, and must name `review_task_id`, the review
+    `inherit` names. The verdict is the one the integrator read from that
+    review's verdict file: the parent this step builds on, in its
+    `depends_on`, SUCCEEDED, whose `result_summary.verdict_gate` names the
+    same review. Only a verdict OUTSIDE `verdict_in` is a certain skip: the
+    worker's no-op precheck can shut an open gate, never open a shut one.
+    """
+    block = dispatch if isinstance(dispatch, Mapping) else {}
+    gate = block.get("verdict_gate")
+    gate = gate if isinstance(gate, Mapping) else {}
+    raw_in = gate.get("verdict_in")
+    if not isinstance(raw_in, list) or not raw_in:
+        return None
+    verdict_in = [_verdict(value) for value in raw_in]
+    if None in verdict_in:
+        return None
+    if not isinstance(review_task_id, str) or gate.get("task_id") != review_task_id:
+        return None
+    integrator = block.get("builds_on")
+    if not isinstance(integrator, str) or integrator not in task_depends_on:
+        return None
+    document = read(integrator)
+    if document is None or document.get("state") != SUCCEEDED:
+        return None
+    summary = document.get("result_summary")
+    record = summary.get("verdict_gate") if isinstance(summary, Mapping) else None
+    if not isinstance(record, Mapping) or record.get("task_id") != review_task_id:
+        return None
+    verdict = _verdict(record.get("verdict"))
+    if verdict is None or verdict in verdict_in:
+        return None
+    return {"task_id": review_task_id, "verdict": verdict,
+            "verdict_in": list(dict.fromkeys(verdict_in)), "read_from": integrator}
 
 
 def resolve(
     task_depends_on: list[str],
     policy: Mapping[str, Any],
     read: Callable[[str], Mapping[str, Any] | None],
+    *,
+    dispatch: Mapping[str, Any] | None = None,
 ) -> Resolution:
     """The profile a `browser_if_ui` step runs, from its parents' changed files.
 
     `read(task_id)` is the tenant-gated document read (None for a missing
     document or another tenant's). Every failure resolves to the browser.
+    `dispatch` is the step's `metadata.dispatch`, read only for a re-review
+    (`inherit`): one whose gate is shut runs no agent and gets `claude-code`.
     """
     inherit = policy.get("inherit")
     if isinstance(inherit, Mapping):
         task_id = inherit.get("task_id")
+        if isinstance(task_id, str) and task_id in task_depends_on:
+            shut = republishes(task_depends_on, task_id, dispatch, read)
+            if shut is not None:
+                return Resolution(CODE_PROFILE, REASON_REPUBLISH, read=(shut["read_from"],),
+                                  gate=shut)
         document = read(task_id) if isinstance(task_id, str) and task_id in task_depends_on else None
         profile = document.get("runner_profile") if document is not None else None
         if profile in (BROWSER_PROFILE, CODE_PROFILE):
