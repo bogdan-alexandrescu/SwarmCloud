@@ -38,9 +38,10 @@ import pytest
 from agent_worker import forge as forge_mod
 from agent_worker import lifecycle
 
-from test_forge_broker_client import FakeBrokerRoutes, broker_worker
+from test_forge_broker_client import FakeBrokerRoutes, broker_worker, slot_secret, user_token
 from test_forge_credential import GITHUB_URL
 from test_service_app_token_worker import GIT_SECRET, minted_token, service_worker
+from worker_seeds import seed_attempt
 
 #: GitHub's answer to a read-only installation token's receive-pack ask,
 #: the sentence the probe has always said (`forge.probe_repository`).
@@ -101,12 +102,14 @@ def test_a_service_run_that_may_not_write_still_asks_for_read(db, worker_factory
 
 
 def test_a_persons_run_is_unchanged(db, worker_factory):
-    routes = FakeBrokerRoutes()
-    worker, _ = broker_worker(worker_factory, routes)
+    seed_attempt(db)
+    routes = FakeBrokerRoutes({slot_secret(): user_token("s")})
+    worker, client = broker_worker(worker_factory, routes)
 
-    worker._git_token(write=True)
+    assert worker._git_token(write=True) == user_token("s")
 
     assert routes.requests[-1]["access"] == "read"
+    assert client.accessed == []
 
 
 def test_a_write_the_broker_refuses_falls_back_to_the_read_token(db, worker_factory):
