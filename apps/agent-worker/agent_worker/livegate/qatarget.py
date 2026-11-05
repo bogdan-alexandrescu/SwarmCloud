@@ -1328,7 +1328,12 @@ _CHALLENGE_HOSTS = json.dumps([[host, path] for host, path in CHALLENGE_FRAMES])
 #: start page: visible, its text trimmed with runs of white space as one space
 #: (a label laid out over two lines, or with a no-break space, is still its
 #: words), exactly equal to the click's `text`; the outermost of a nested pair
-#: dropped (a button and the span inside it are one control). For a click,
+#: dropped (a button and the span inside it are one control), and a match
+#: inside a control a person can click under another name left out: it is
+#: that control's words, not a control of its own (part of #2688; a role's
+#: home in re-run 4 drew the button 'ProductionSign in', whose 'Sign in' span
+#: read as the start page's control, so the probe never read `landed` and a
+#: start click would have pressed that button). For a click,
 #: `clickable` keeps of those only what a person can click (part of #2688):
 #: the match, or an ancestor reading the same text, that is a button, an `a`
 #: with an href, an input of type submit or button, role button or link, a
@@ -1341,18 +1346,22 @@ _CONTROLS = """
     return s.visibility !== 'hidden' && s.display !== 'none' && el.getClientRects().length > 0; };
   const label = (el) => ((el instanceof HTMLInputElement ? el.value : el.innerText) || '')
     .replace(/\\s+/g, ' ').trim();
-  const controls = (c) => {
-    let all;
-    try { all = [...document.querySelectorAll(c.css || '*')]; } catch (e) { return null; }
-    const hits = all.filter((el) => label(el) === c.text && shown(el));
-    return hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
-  };
   const role = (el) => (el.getAttribute('role') || '').trim().toLowerCase().split(/\\s+/)[0];
   const operable = (el) => {
     const tag = el.tagName.toLowerCase(), r = role(el), t = el.getAttribute('tabindex');
     return tag === 'button' || tag === 'summary' || (tag === 'a' && el.hasAttribute('href'))
       || (tag === 'input' && ['submit', 'button'].includes((el.getAttribute('type') || '').toLowerCase()))
       || r === 'button' || r === 'link' || (t !== null && parseInt(t, 10) >= 0);
+  };
+  const another = (el, c) => {
+    for (let n = el; n; n = n.parentElement) if (operable(n)) return label(n) !== c.text;
+    return false;
+  };
+  const controls = (c) => {
+    let all;
+    try { all = [...document.querySelectorAll(c.css || '*')]; } catch (e) { return null; }
+    const hits = all.filter((el) => label(el) === c.text && shown(el));
+    return hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)) && !another(el, c));
   };
   const clickable = (c, hits) => {
     const found = [];
@@ -1378,9 +1387,10 @@ _CONTROLS = """
 #: shows no password or username field and no control a mark names is
 #: `landed`: a role's own home that the session reached without the form
 #: (part of #2688), which `SignIn` takes as signed in only with a session
-#: cookie the sign-in set. `signed_in` and `challenge` first, either way. A selector the page's
-#: `querySelector` does not take matches nothing and is named (`bad:<key>`)
-#: instead of throwing the whole probe, which read as "no form" forever.
+#: cookie the sign-in set. `signed_in` and `challenge` first, either way. A
+#: selector the page's `querySelector` does not take matches nothing and is
+#: named (`bad:<key>`) instead of throwing the whole probe, which read as
+#: "no form" forever.
 #: `signed_in_selector` is looked for through open shadow roots too.
 _PROBE = """/*swarm-qa:probe*/((a) => {%s
   const bad = [];
@@ -1576,22 +1586,21 @@ class _Landed:
     opened, or holds with another value (the sign-in set or renewed it).
     The cookies are read once the page has settled, then each probe."""
 
-    def __init__(self, sign_in: SignIn) -> None:
-        self._sign_in = sign_in
+    def __init__(self, clock: Callable[[], float], session_set: Callable[[], Awaitable[bool]]) -> None:
+        self._clock = clock
+        self._session_set = session_set
         self._since: float | None = None
 
     async def signed_in(self, state: Any) -> bool:
         if state != "landed":
             self._since = None
             return False
-        now = self._sign_in._clock()
+        now = self._clock()
         if self._since is None:
             self._since = now
-        before = self._sign_in._cookies_before
-        if now - self._since < PAGE_SETTLED_SECONDS or before is None:
+        if now - self._since < PAGE_SETTLED_SECONDS:
             return False
-        held = await self._sign_in._session_cookies()
-        return held is not None and bool(held - before)
+        return await self._session_set()
 
 
 class SignIn:
@@ -1686,15 +1695,16 @@ class SignIn:
         the signed-in state seen first ends it signed in (the IdP's session
         held), as does a `landed` page with its evidence (`_Landed`); a
         `landed` page without it when the time runs out is said as such, not
-        as a missing control. The click waits for the page to finish loading (`_START_CLICK`)
-        until the last probe interval of `seconds`. Where the click leads is
+        as a missing control. The click waits for the page to finish loading
+        (`_START_CLICK`) until the last probe interval of `seconds`. Where the
+        click leads is
         judged by the guard like any navigation of the gate's tab: an origin
         the target was not approved for gets the left page, and the form then
         never appears."""
         argument = self._argument()
         deadline = self._clock() + seconds
         count: Any = None
-        landed = _Landed(self)
+        landed = _Landed(self._clock, self._session_set)
         while True:
             state = await self._evaluate(_js(_PROBE, argument))
             if state == "challenge":
@@ -1742,7 +1752,7 @@ class SignIn:
         clicked_at = start
         self._reclicks = 0
         state: Any = None
-        landed = _Landed(self)
+        landed = _Landed(self._clock, self._session_set)
         while True:
             state = await self._evaluate(_js(_PROBE, argument))
             if state in ("form", "signed_in", "challenge"):
@@ -1806,6 +1816,15 @@ class SignIn:
         return (f"the tab is at {where}, the target's page with no login form and no start-click control, "
                 "but without signed_in_selector or a session cookie the sign-in set, so not proven signed in: "
                 "signed_in_selector must name what all this account's pages show")
+
+    async def _session_set(self) -> bool:
+        """Whether the browser now holds a session cookie (`_session_cookies`)
+        that it did not hold before `login_url` opened, or holds with another
+        value; False when either read went unanswered."""
+        if self._cookies_before is None:
+            return False
+        held = await self._session_cookies()
+        return held is not None and bool(held - self._cookies_before)
 
     async def _session_cookies(self) -> frozenset[tuple[str, str, str, str]] | None:
         """The HttpOnly cookies the browser holds for the target's approved

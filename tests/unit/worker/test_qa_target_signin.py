@@ -1248,22 +1248,61 @@ def _session_cookie(name: str = "app_session") -> dict[str, Any]:
             "httpOnly": True, "secure": True}
 
 
+def _rating_bar(name: str, *order: str) -> dict[str, Any]:
+    """The bar every page of re-run 4 drew (capture-g1's a11y snapshots):
+    one button per environment, the pressed one reading 'Signed in' and the
+    other 'Sign in', each a span inside its button. The buttons show a
+    pointer, so the spans inherit it."""
+    status = {"Staging": "Signed in", "Production": "Sign in"}
+    buttons = [_page_node("button", _page_node("span", env), _page_node("span", status[env]),
+                          style={"cursor": "pointer"}, id=f"bar-{env.lower()}",
+                          **({"aria-pressed": "true"} if env == "Staging" else {}))
+               for env in order]
+    return _page_node("div", _page_node("div", _page_node("div", *buttons, role="group", **{"aria-label": name}),
+                                        role="status"),
+                      role="region", **{"aria-label": f"{name} bar"})
+
+
 def _reviewer_home() -> dict[str, Any]:
-    """The reviewer's /access-pending as AI Studio's session read it at 22:20 UTC."""
+    """The reviewer's /access-pending as capture-g1 recorded it
+    (task_c8ed1edefa524a63843d, access-pending--desktop--light)."""
     return _page_node(
         "body",
-        _page_node("header", _page_node("span", "Staging"), " ", _page_node("span", "Signed in"),
-                   " ", _page_node("span", "Hi QA")),
-        _page_node("nav", _page_node("a", "My queue", href="/queue"), _page_node("a", "Assignments", href="/a"),
-                   _page_node("a", "Progress", href="/p"), _page_node("a", "Your ratings", href="/r")),
-        _page_node("h1", "Welcome, QA"),
+        _page_node("a", "Skip to content", href="#main-content"),
+        _page_node("aside", _page_node("nav", _page_node("a", "AI Studio", href="/"), _page_node("a", "Home", href="/"),
+                                       _page_node("a", "My queue", href="/rating/queue"),
+                                       _page_node("button", "QR", **{"aria-label": "QR, Account"}))),
+        _rating_bar("Where you are rating", "Staging", "Production"),
+        _page_node("main", _page_node("h1", "Hi QA"), _page_node("button", "Sign out"),
+                   _page_node("h2", "Welcome, QA"), _page_node("h2", "Assignments"),
+                   _page_node("p", "No work assigned yet — it will show up here."),
+                   _page_node("h2", "Progress"), _page_node("h2", "Your ratings")),
     )
 
 
 def _staff_wall() -> dict[str, Any]:
-    """The moderator's / with its staff-only wall."""
-    return _page_node("body", _page_node("header", _page_node("span", "Staging"), " Signed in"),
-                      _page_node("h1", "Staff only"), _page_node("p", "This page is for staff."))
+    """The reviewer's wall on 14 of 16 routes (capture-g1, -g6, -g7, -g8)."""
+    return _page_node(
+        "body",
+        _page_node("a", "Skip to content", href="#main-content"),
+        _page_node("aside", _page_node("nav", _page_node("a", "Home", href="/"),
+                                       _page_node("a", "My queue", href="/rating/queue"))),
+        _rating_bar("Where you are rating", "Staging", "Production"),
+        _page_node("main", _page_node("p", "This page is for staff."), _page_node("p", "Your work is in My queue."),
+                   _page_node("a", "Open My queue", href="/rating/queue")),
+    )
+
+
+def _moderator_wall() -> dict[str, Any]:
+    """The moderator's 'Staff only' wall (task_7386f88e8e3c47f6a0cb, agents--desktop--light):
+    its bar draws Production first."""
+    return _page_node(
+        "body",
+        _page_node("aside", _page_node("nav", _page_node("a", "Moderation", href="/moderation"),
+                                       _page_node("a", "My flags", href="/moderation/flags"))),
+        _rating_bar("Where you moderate", "Production", "Staging"),
+        _page_node("main", _page_node("h1", "Staff only"), _page_node("a", "Back to Moderation", href="/moderation")),
+    )
 
 
 def _probe(page: dict[str, Any], url: str = f"{ORIGIN}/access-pending", *,
@@ -1275,8 +1314,13 @@ def _probe(page: dict[str, Any], url: str = f"{ORIGIN}/access-pending", *,
 
 def test_a_roles_signed_in_home_without_the_selector_reads_as_landed_and_the_start_page_does_not():
     # MUTATION: return 'loading' for every page that is not the form before the submit and these fail.
+    # MUTATION: count the bar's 'ProductionSign in' button's span as a start-click control (drop
+    # `another` from `_CONTROLS`) and every page of the run reads 'loading', as re-run 4 did.
     assert _probe(_reviewer_home()) == "landed"
-    assert _probe(_staff_wall(), f"{ORIGIN}/") == "landed"
+    assert _probe(_staff_wall(), f"{ORIGIN}/agents") == "landed"
+    assert _probe(_moderator_wall(), f"{ORIGIN}/") == "landed"
+    # The bar's 'Signed in' is not the mark either: a leg whose last click were 'Staging' still lands.
+    assert _probe(_reviewer_home(), marks=({"text": "Staging"},)) == "landed"
     # The selector, where the page draws it, is still the first answer.
     home = _reviewer_home()
     home["children"].append(_page_node("div", "QA", id="account"))
@@ -1285,6 +1329,10 @@ def test_a_roles_signed_in_home_without_the_selector_reads_as_landed_and_the_sta
     assert _probe(_chooser_page(_page_node("button", "Sign in", id="sign-in")), f"{ORIGIN}/") == "loading"
     # A heading reading 'Sign in' alone is still a sign-in marker (the chooser before its button draws).
     assert _probe(_chooser_page(), f"{ORIGIN}/") == "loading"
+    # A start page that also draws the bar is still the start page: its own button is the mark.
+    chooser = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+    chooser["children"].insert(1, _rating_bar("Where you are rating", "Staging", "Production"))
+    assert _probe(chooser, f"{ORIGIN}/") == "loading"
     # A password field, or a username field, is a login page however the rest reads.
     for field in (_page_node("input", type="password"), _page_node("input", type="email"),
                   _page_node("input", autocomplete="username")):
@@ -1435,6 +1483,48 @@ def test_a_role_home_before_any_start_click_is_signed_in_only_with_evidence_and_
         # MUTATION: keep the start click's "found none" sentence for a landed page and this fails.
         assert "signed_in_selector" in status["sentence"] and "found none" not in status["sentence"]
         assert qa_target._SENTENCE.fullmatch(status["sentence"])
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_bars_environment_buttons_are_never_a_start_click_and_never_the_start_page():
+    # Re-run 4's pages: the leg's start clicks are 'Staging' then 'Sign in', and each reads as a
+    # span inside the bar's 'StagingSigned in' or 'ProductionSign in' button.
+    for page in (_reviewer_home(), _staff_wall(), _moderator_wall()):
+        for text in ("Staging", "Sign in"):
+            # MUTATION: drop `another` from `_CONTROLS` and the gate presses the bar's button.
+            assert _start_click(page, text) == (0, []), (text, page["children"][-1])
+    # On a start page that also draws the bar, the chooser's own controls are still the ones clicked.
+    chooser = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+    chooser["children"].insert(1, _rating_bar("Where you are rating", "Staging", "Production"))
+    assert _start_click(chooser, "Staging") == (1, ["staging"])
+    assert _start_click(chooser) == (1, ["sign-in"])
+    # After the submit, the role's home is the app, not back on the start page.
+    argument = {"signed": "#account", "user": None, "pass": None, "after": True, "home": ORIGIN,
+                "chooser": {"text": "Sign in"}}
+    assert _on_page(_reviewer_home(), gate_qt._js(gate_qt._PROBE, argument), f"{ORIGIN}/access-pending")[0] == "app"
+    assert _on_page(chooser, gate_qt._js(gate_qt._PROBE, argument), f"{ORIGIN}/")[0] == "chooser"
+
+
+def test_the_reviewers_home_as_recorded_is_signed_in_without_pressing_the_bar(tmp):
+    async def body() -> None:
+        # The run's page itself: the session held before the gate's tab opened, and opening
+        # login_url renewed its cookie. The leg's last click, 'Sign in', finds nothing and presses
+        # nothing (its 'Staging' click names `css` "button", which no bar button reads alone).
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.page_dom = _reviewer_home()
+        before = _session_cookie()
+        rig.fake.results["Network.getCookies"] = {"cookies": [before]}
+        rig.fake.probes = ["landed"]
+        rig.fake.on_first_probe = lambda: rig.fake.results.__setitem__(
+            "Network.getCookies", {"cookies": [dict(before, value=secrets.token_hex(16))]})
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username(), [{"text": "Sign in"}]))
+        await rig.finished()
+        assert rig.target.status()["qa_sign_in"] == "signed_in", rig.target.status()
+        # MUTATION: drop `another` from `_CONTROLS` and the bar's Staging button is pressed.
+        assert rig.fake.clicked_ids == [] and rig.fake.typed == []
         await rig.fake.stop()
 
     run(body)
