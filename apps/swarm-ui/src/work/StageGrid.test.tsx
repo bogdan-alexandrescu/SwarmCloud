@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
-import { densityAt, StageGrid, stageGridOf, walkStage } from './StageGrid'
+import { densityAt, StageGrid, stageGridOf, tallyOf, walkStage } from './StageGrid'
 
 // ---------------------------------------------------------------------------
 // The fixture: 40 steps, 4 stages x 10 features, `re-review` holding a `-`.
@@ -128,7 +128,27 @@ describe('stageGridOf: where each step goes', () => {
     expect(g.at.get('review-a')).toEqual({ stage: 1, column: 1 })
     expect(g.at.get('review-b')).toEqual({ stage: 1, column: 0 })
     expect(g.at.get('late-c')).toEqual({ stage: 2, column: 0 })
-    expect(g.stages[2]!.label).toBe('late')
+    // Its prefix leaves `c`, no feature of the grid: the stage is named by the step's own id, not `late`.
+    expect(g.stages[2]!.label).toBe('late-c')
+  })
+
+  it("names a one-step stage by its step's id rather than a prefix of it: re-review is not `re`", () => {
+    const s = (id: string, deps: string[]): WorkflowStep => ({ step_id: id, runner_profile: 'p', resource_class: 'r', depends_on: deps, input_from: {} })
+    const g = stageGridOf([s('implement', []), s('review', ['implement']), s('fix', ['review', 'implement']), s('re-review', ['fix']), s('merge', ['re-review'])])
+    expect(g.stages.map((st) => st.label)).toEqual(['implement', 'review', 'fix', 're-review', 'merge'])
+    // One column, its stages naming each step: the header no longer says `implement` over all five.
+    expect(g.columns.map((c) => [c.label, c.heading])).toEqual([['implement', '']])
+    expect(walkStage(g, 'fix', 1)).toBe('re-review')
+    // A feature lane keeps its prefix names and its feature header.
+    const f = stageGridOf([s('implement-login', []), s('review-login', ['implement-login']), s('re-review-login', ['review-login'])])
+    expect(f.stages.map((st) => st.label)).toEqual(['implement', 'review', 're-review'])
+    expect(f.columns.map((c) => c.heading)).toEqual(['login'])
+  })
+
+  it("heads a column opened by a step's id with it while that step is all it holds", () => {
+    const s = (id: string, deps: string[]): WorkflowStep => ({ step_id: id, runner_profile: 'p', resource_class: 'r', depends_on: deps, input_from: {} })
+    const g = stageGridOf([s('build-api', []), s('build-web', []), s('integrate-app', ['build-api', 'build-web']), s('test-api', ['build-api']), s('test-web', ['build-web'])])
+    expect(g.columns.map((c) => c.heading)).toEqual(['api', 'web', 'integrate-app', 'test-api', 'test-web'])
   })
 
   it('opens a column per fan-out child rather than piling them under their parent', () => {
@@ -165,7 +185,7 @@ describe('StageGrid', () => {
     const { workflow, taskById } = fixture()
     render(<StageGrid workflow={workflow} taskById={taskById} onSelect={() => undefined} now={NOW} />)
     expect(row('build').getAttribute('aria-label')).toBe('build: 7 done, 1 failed, 2 running, 0 waiting')
-    expect(row('review').getAttribute('aria-label')).toBe('review: 3 done, 0 failed, 3 running, 4 waiting')
+    expect(row('review').getAttribute('aria-label')).toBe('review: 3 done, 0 failed, 3 running, 3 waiting, 1 parked')
     expect(row('fix').getAttribute('aria-label')).toBe('fix: 0 done, 0 failed, 1 running, 8 waiting, 1 not known')
     expect(row('re-review').getAttribute('aria-label')).toBe('re-review: 0 done, 0 failed, 0 running, 10 waiting')
     expect([...row('build').querySelectorAll('.sg-n')].map((n) => n.textContent)).toEqual(['succeeded7', 'failed1', 'running2'])
@@ -267,10 +287,35 @@ describe('StageGrid', () => {
     expect(chip('build-search').querySelector('.sg-ask')).not.toBeNull()
   })
 
+  it('draws no header row over a lane its stages name, and names a chip only where its column does not', () => {
+    const s = (id: string, deps: string[]): WorkflowStep => ({ step_id: id, runner_profile: 'p', resource_class: 'r', depends_on: deps, input_from: {}, task_id: null })
+    const bare = { workflow_id: 'wf_bare', state: 'RUNNING', steps: [s('implement', []), s('review', ['implement']), s('re-review', ['review'])] } as unknown as Workflow
+    render(<StageGrid workflow={bare} taskById={null} onSelect={() => undefined} now={NOW} />)
+    expect(document.querySelector('.sg-row.is-head')).toBeNull()
+    expect([...document.querySelectorAll('.sg-row')].map((r) => r.getAttribute('data-stage'))).toEqual(['implement', 'review', 're-review'])
+    expect(document.querySelector('.lg-name')).toBeNull()
+    cleanup()
+    // `report` sits under the `home` column in a stage its name does not share: it carries its own name;
+    // capture-home, named by its stage and column, does not.
+    const qa = { workflow_id: 'wf_qa', state: 'RUNNING', steps: [s('capture-home', []), s('capture-docs', []), s('report', ['capture-home']), s('notes', ['capture-docs'])] } as unknown as Workflow
+    render(<StageGrid workflow={qa} taskById={null} onSelect={() => undefined} now={NOW} />)
+    expect(chip('report').querySelector('.lg-name')!.textContent).toBe('report')
+    expect(chip('capture-home').querySelector('.lg-name')).toBeNull()
+  })
+
+  it('tallies a step parked on something other than its dependencies as parked, one parked behind them as waiting', () => {
+    expect(tallyOf(['parked', 'waiting', 'parked'])).toMatchObject({ waiting: 1, parked: 2 })
+  })
+
   it('keeps the times of a four-feature grid at a width where ten features lose them', () => {
     expect(densityAt(480, 10)).toBe('no-time')
     expect(densityAt(480, 4)).toBe('full')
     expect(densityAt(null, 10)).toBe('full')
+  })
+
+  it('gives a column header the whole column: no side padding to cut a word that fits', async () => {
+    const STYLES = (await import('./stage-grid.css?raw')).default as string
+    expect(STYLES).toMatch(/\n\.sg-col \{[^}]*padding: 0;/)
   })
 
   it('turns the column labels vertical only when marks are all that is left', async () => {

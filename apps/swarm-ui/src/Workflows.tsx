@@ -136,7 +136,7 @@ import { errorHeading, type ApiError, type Result } from './fetch'
 import { STATE_MARK, StateMark } from './marks'
 import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, type ChipTone } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
-import { StopRun } from './StopRun'
+import { StopRun, earlierAttemptRan } from './StopRun'
 import { LiveThumb, showsLiveThumb, type OpenLive } from './LiveThumb'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
 import {
@@ -195,6 +195,7 @@ import type { TaskPane } from './App'
 import { listNeedItems, workflowNeedItems } from './work/listNeeds'
 import { NeedsYou, mergeHeldBecause, type MergeNeed, type NeedKind, type NeedSelection } from './work/NeedsYou'
 import { StageGrid, chipKindOf, chipTimeOf, pullRequestOf, stageGridOf, tallyOf, walkStage } from './work/StageGrid'
+import { LineageStrip, lineageOf } from './work/Lineage'
 import {
   anyRunning,
   bucketCounts,
@@ -2562,9 +2563,13 @@ function StepCardExtras({
   // in place of the checklist below, which reads the retired design's block.
   const mergeCard = task === null ? null : mergeCardOf(task, tasks)
   const merge = task === null || mergeCard !== null ? null : mergeOf(task)
+  // NO STOP ON A PARKED STEP NEVER ATTEMPTED (graph review, 2026-11-05): it
+  // holds no lease and runs nothing, so a stop would only cancel the step and
+  // every step after it, before any of them had a chance to run.
+  const stoppable = task !== null && !(task.state === 'PARKED' && (task.attempt_count ?? 0) === 0 && !earlierAttemptRan(task))
   return (
     <>
-      {task !== null && (
+      {task !== null && stoppable && (
         <div className="wf-inspect-acts" role="group" aria-label="Stop step">
           <StopRun
             task={task}
@@ -6600,6 +6605,7 @@ function Board({
   // and reload causes; a pick in another workflow is not this page's.
   const picked = pick !== null && pick.workflowId === id && workflow.steps.some((s) => s.step_id === pick.stepId) ? pick.stepId : null
   const shape = useMemo(() => stageGridOf(workflow.steps), [workflow.steps])
+  const lin = useMemo(() => lineageOf(workflow, taskById), [workflow, taskById])
   // AT 1280 THE INSPECTOR STARTS FOLDED (graph-notes.md, D·8b), so the grid's
   // chips keep their time and pull request; read once, at the page's mount.
   const [folded] = useState(() => typeof window !== 'undefined' && startsFolded(window.innerWidth))
@@ -6807,23 +6813,29 @@ function Board({
           onSent={(sent) => stores.recordCancel(id, sent)}
         />
       ) : (
-        <InspectorSlot
-          key={`${id}/${step.step_id}`}
-          workflow={workflow}
-          workflowLabel={label}
-          stepId={step.step_id}
-          taskById={taskById}
-          classes={classes}
-          usage={usage}
-          siblings={siblings.refs}
-          onSibling={onSibling}
-          focus={pick?.focus ?? null}
-          onFocused={onFocused}
-          onClose={closeStep}
-          loadAttempts={undefined}
-          page
-          reload={reload}
-        />
+        <>
+          {/* ON A PHONE THE LINEAGE STRIP STACKS AT THE TOP OF THE STEP'S SHEET,
+              whose head already names the step (the grid draws it above itself
+              on a wider page). */}
+          {phone && <LineageStrip workflow={workflow} shape={shape} lin={lin} selected={step.step_id} onPick={pickStep} now={now} stacked />}
+          <InspectorSlot
+            key={`${id}/${step.step_id}`}
+            workflow={workflow}
+            workflowLabel={label}
+            stepId={step.step_id}
+            taskById={taskById}
+            classes={classes}
+            usage={usage}
+            siblings={siblings.refs}
+            onSibling={onSibling}
+            focus={pick?.focus ?? null}
+            onFocused={onFocused}
+            onClose={closeStep}
+            loadAttempts={undefined}
+            page
+            reload={reload}
+          />
+        </>
       )}
       {step !== null && step.task_id && (
         // THE STEP'S AGENT, under the step's own card (its verdict, merge
@@ -6912,6 +6924,8 @@ function WorkflowHead({
             <span aria-hidden>{p.glyph}</span> {tally[p.key]} {p.word}
           </span>
         ))}
+        {/* A step parked for a quota, a person or a provider is counted parked, as its chip draws it (tallyOf). */}
+        {tally.parked > 0 && <span className="wfp-t is-parked">{tally.parked} parked</span>}
         {tally.stopped > 0 && <span className="wfp-t is-stopped">{tally.stopped} cancelled</span>}
         {tally.unknown > 0 && (
           <span className="wfp-t is-unknown" title="Steps whose task this read did not hold">
