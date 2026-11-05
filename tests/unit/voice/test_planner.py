@@ -86,8 +86,18 @@ init = rpc("initialize", {{"protocolVersion": "2025-06-18", "capabilities": {{}}
                           "clientInfo": {{"name": "fake", "version": "0"}}}})
 proc.stdin.write(json.dumps({{"jsonrpc": "2.0", "method": "notifications/initialized"}}) + "\n")
 listed = rpc("tools/list")["result"]["tools"]
-json.dump({{"argv": argv, "env": dict(os.environ), "cwd": os.getcwd(), "prompt": prompt,
-           "tools": listed, "init": init, "home": os.environ.get("HOME")}}, open({dump!r}, "w"))
+def dump(value, path, call=None):
+    # Whole or not at all: the planner can stop this process at any moment, so
+    # each file is written under a sibling name and renamed onto its own, and a
+    # reader sees the old contents or the new, never a truncated file.
+    part = path + ".part"
+    with open(part, "w") as fh:
+        if call is not None and call == PLAN.get("die_writing_results"):
+            os._exit(9)
+        json.dump(value, fh)
+    os.replace(part, path)
+dump({{"argv": argv, "env": dict(os.environ), "cwd": os.getcwd(), "prompt": prompt,
+      "tools": listed, "init": init, "home": os.environ.get("HOME")}}, {dump!r})
 out({{"type": "system", "subtype": "init", "note": "token " + os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")}})
 results = []
 for i, (name, args) in enumerate(PLAN["calls"]):
@@ -95,7 +105,7 @@ for i, (name, args) in enumerate(PLAN["calls"]):
          "content": [{{"type": "tool_use", "id": "t%d" % i, "name": "mcp__planner__" + name, "input": args}}]}}}})
     answer = rpc("tools/call", {{"name": name, "arguments": args}})
     results.append(answer)
-    json.dump(results, open({dump!r} + ".results", "w"))
+    dump(results, {dump!r} + ".results", call=i)
     out({{"type": "user", "message": {{"content": [{{"type": "tool_result", "tool_use_id": "t%d" % i,
          "content": answer["result"]["content"]}}]}}}})
 if PLAN.get("hang"):
@@ -343,6 +353,20 @@ def test_an_unknown_kind_is_refused_and_never_written(world):
     answers = json.loads(Path(str(world.dump) + ".results").read_text())
     assert answers[0]["result"]["isError"] is True
     assert not any(r.method == "POST" for r in world.api_requests)
+
+
+def test_a_child_stopped_while_writing_its_results_leaves_the_last_whole_results(world):
+    # The planner stops the child once `speak` is answered, so the stop can land
+    # while the fake is writing that call's results (a merge train read an empty
+    # file, 5 November 2026). Here the child dies inside its second write: a
+    # reader must see the first call's results whole, never a truncated file.
+    reads = {"state": None, "workflow_id": None}
+    world.plan = {"calls": [["list_agents", reads], ["list_agents", reads]], "die_writing_results": 1}
+    result = _delegate(world)
+    assert "exited 9" in result.error
+    answers = json.loads(Path(str(world.dump) + ".results").read_text())
+    assert len(answers) == 1 and not answers[0]["result"]["isError"]
+    assert world.child()["home"]
 
 
 def test_a_planner_call_without_the_grant_is_refused_before_anything_is_leased(world):
