@@ -1,0 +1,1599 @@
+diff --git a/apps/swarm-ui/src/AgentLogs.tsx b/apps/swarm-ui/src/AgentLogs.tsx
+index 2d2522f..fa3f5d0 100644
+--- a/apps/swarm-ui/src/AgentLogs.tsx
++++ b/apps/swarm-ui/src/AgentLogs.tsx
+@@ -32,6 +32,8 @@ import { attemptLine, useRead } from './RunFiles'
+ import { TERMINAL_STATES, clockTime, type AttemptRow, type LogStream, type Task, type TaskTranscript } from './types'
+ import { useNow } from './useNow'
+ import { Button, Segmented, ToneMark } from './components'
++import { trbOn } from './traceB/fixtures' // MOCK-HOOK
++import { TraceB } from './traceB/TraceB' // MOCK-HOOK
+ 
+ /**
+  * THE LOGS TAB (owner decision 2026-10-04; replaces viewers.html pick A's
+@@ -781,6 +783,14 @@ export function AgentLogs({ task }: { task: Task }) {
+     </Button>
+   )
+ 
++  if (trbOn() && view === 'transcript') { // MOCK-HOOK
++    return ( // MOCK-HOOK
++      <TraceB // MOCK-HOOK
++        task={task} // MOCK-HOOK
++        streams={<Segmented label="Which log" className="ag-logs-streams" small value={view} options={LOG_VIEWS.map((o) => ({ key: o.id, title: o.label, label: <LogWords long={o.label} short={SHORT_VIEW[o.id]} /> }))} onChange={(k) => setView(k)} />} // MOCK-HOOK
++      /> // MOCK-HOOK
++    ) // MOCK-HOOK
++  } // MOCK-HOOK
+   return (
+     <LogMarksContext.Provider value={marks}>
+       <section ref={root} className="ag-logs" aria-label="Logs" data-follow={follow ? 'on' : 'off'}>
+diff --git a/apps/swarm-ui/src/api.ts b/apps/swarm-ui/src/api.ts
+index ea1e5d7..d59cb0a 100644
+--- a/apps/swarm-ui/src/api.ts
++++ b/apps/swarm-ui/src/api.ts
+@@ -1,4 +1,5 @@
+ import type { PoolFields } from './accountsPool'
++import { trbLiveNow, trbOn, trbSteps } from './traceB/fixtures' // MOCK-HOOK
+ import {
+   HEALTH_KINDS,
+   normPoolHealth,
+@@ -2113,6 +2114,8 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
+           : []),
+       ]
+     : []
++  const trb = trbOn() ? trbSteps(taskId) : null // MOCK-HOOK
++  if (trb !== null) steps.splice(0, steps.length, ...trb.steps) // MOCK-HOOK
+   const size = started ? Math.max(4096, steps.length * 120) : 0
+   const at = span?.ended ?? FIXTURE_NOW - 4_000
+   return {
+@@ -3394,7 +3397,7 @@ export async function loadLeaseHeartbeats(): Promise<Result<LeaseHeartbeatPage>>
+ 
+ /** Every attempt of one task, newest first. Tenant-scoped. */
+ export async function loadAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
+-  if (USE_FIXTURES) return fixtureAttempts(taskId)
++  if (USE_FIXTURES) return trbLiveNow(taskId, await fixtureAttempts(taskId), FIXTURE_NOW) // MOCK-HOOK
+   return read<{ attempts: AttemptRow[] }>(
+     route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, { id: taskId }),
+     (d) => d.attempts.length === 0,
+@@ -5813,7 +5816,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
+   return {
+     status: 'ok',
+     fetchedAt: Date.now(),
+-    data: { tasks: [...fixtureTasksMade, ...fixtureTaskRows()], next_page_token: null, tenant_id: 'u-bogdan' },
++    data: { tasks: [...fixtureTasksMade, ...fixtureTaskRows().map((t) => trbLiveNow(t.id, t, FIXTURE_NOW) /* MOCK-HOOK */)], next_page_token: null, tenant_id: 'u-bogdan' },
+   }
+ }
+ 
+diff --git a/apps/swarm-ui/src/traceB/TraceB.tsx b/apps/swarm-ui/src/traceB/TraceB.tsx
+new file mode 100644
+index 0000000..57a17b1
+--- /dev/null
++++ b/apps/swarm-ui/src/traceB/TraceB.tsx
+@@ -0,0 +1,625 @@
++// MOCK-HOOK FILE
++// Direction B (Trace), `?tr=b`: the transcript as a trace viewer. On the left
++// a compact timeline of every event, one row each; on the right the picked
++// event in full. Read from the same `GET /v1/tasks/{id}/transcript` the
++// Transcript stream reads, with `include_raw=true` for the fields only the
++// record carries (the working directory, progress seconds, an edit's patch,
++// token usage).
++
++import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
++
++import { loadTranscript } from '../api'
++import { Markdown } from '../ArtifactViewer'
++import { TERMINAL_STATES, type Task, type TaskTranscript } from '../types'
++import { TRB_SHOTS } from './fixtures'
++import { buildTrace, dur, inFilter, inputOf, patchOf, rawOf, setTraceWide, shorten, toolShort, useTraceWide, type Ev, type EvKind, type Filter } from './model'
++import './trace-b.css'
++
++const POLL_MS = 1500
++
++function Icon({ kind, error }: { kind: EvKind; error: boolean }) {
++  const p = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
++  const body: Record<EvKind, ReactNode> = {
++    message: <path {...p} d="M3 4.5h10v6.5H7l-3 2.5V11H3z" />,
++    tool: <><path {...p} d="M3.5 5l3 3-3 3" /><path {...p} d="M8.5 11.5h4" /></>,
++    edit: <><path {...p} d="M10.5 3.5l2 2L6 12H4v-2z" /></>,
++    test: <><path {...p} d="M6 3h4M6.8 3v4L3.8 12.2c-.3.6.1 1.3.8 1.3h6.8c.7 0 1.1-.7.8-1.3L9.2 7V3" /></>,
++    browser: <><rect {...p} x="2.5" y="3.5" width="11" height="9" rx="1.5" /><path {...p} d="M2.5 6.2h11" /></>,
++    thinking: <><circle cx="4.5" cy="8" r="1" fill="currentColor" /><circle cx="8" cy="8" r="1" fill="currentColor" /><circle cx="11.5" cy="8" r="1" fill="currentColor" /></>,
++    start: <path {...p} d="M5 3.5l7 4.5-7 4.5z" />,
++    end: <><path {...p} d="M4 13.5V3M4 3.5h7.5l-1.5 2.5 1.5 2.5H4" /></>,
++    system: <><circle {...p} cx="8" cy="8" r="2" /><path {...p} d="M8 2.5v2M8 11.5v2M2.5 8h2M11.5 8h2" /></>,
++    other: <><path {...p} d="M6.2 6.2a1.9 1.9 0 113 1.5c-.7.4-1.2.9-1.2 1.6" /><circle cx="8" cy="11.8" r=".8" fill="currentColor" /></>,
++  }
++  return (
++    <svg className={`trb-ic is-${error ? 'error' : kind}`} viewBox="0 0 16 16" width="16" height="16" aria-hidden>
++      {error ? <><path {...p} d="M8 2.5l6 10.5H2z" /><path {...p} d="M8 6.5v3" /><circle cx="8" cy="11.4" r=".8" fill="currentColor" /></> : body[kind]}
++    </svg>
++  )
++}
++
++const KIND_WORD: Record<EvKind, string> = {
++  message: 'message', tool: 'tool', edit: 'edit', test: 'test', browser: 'browser', thinking: 'thinking', start: 'start', end: 'result', system: 'system', other: 'not recognised',
++}
++
++function Status({ ev }: { ev: Ev }) {
++  if (ev.status === 'ok') return <span className="trb-st is-ok" title="Its result is not marked as an error">✓</span>
++  if (ev.status === 'error') return <span className="trb-st is-err" title="Marked is_error by the CLI">✕</span>
++  if (ev.status === 'running') return <span className="trb-st is-run" title="No result in this read yet">●</span>
++  return <span className="trb-st" />
++}
++
++function Secs({ ev }: { ev: Ev }) {
++  if (ev.secs === null) return <span className="trb-dur" />
++  return ev.secs.from === 'progress' ? (
++    <span className="trb-dur" title={`The CLI's last progress report for this call said ${ev.secs.value} s; it reports every few seconds, so the call took at least this.`}>
++      ≥{dur(ev.secs.value)}
++    </span>
++  ) : (
++    <span className="trb-dur" title="The run's duration_ms, from the result record">{dur(ev.secs.value)}</span>
++  )
++}
++
++/** The needle marked in a text, case-insensitively. */
++function Marked({ text, needle }: { text: string; needle: string }) {
++  if (needle === '') return <>{text}</>
++  const low = text.toLowerCase()
++  const out: ReactNode[] = []
++  let at = 0
++  for (let i = low.indexOf(needle); i !== -1; i = low.indexOf(needle, i + needle.length)) {
++    out.push(text.slice(at, i), <mark key={i}>{text.slice(i, i + needle.length)}</mark>)
++    at = i + needle.length
++  }
++  out.push(text.slice(at))
++  return <>{out}</>
++}
++
++function Out({ text, needle, tone }: { text: string; needle: string; tone?: 'console' | 'test' }) {
++  const lines = text.split('\n')
++  return (
++    <pre className="trb-pre">
++      {lines.map((l, i) => {
++        const cls =
++          tone === 'console'
++            ? /^\[ERROR\]/.test(l) ? 'is-err' : /^\[WARNING\]/.test(l) ? 'is-warn' : ''
++            : /^(E |>\s|Traceback)/.test(l) ? 'is-err is-stack' : /^(FAILED |Exit code [1-9]|\w*Error:)/.test(l) || / failed[, ]/.test(l) ? 'is-err' : / passed in /.test(l) && !/failed/.test(l) ? 'is-ok' : ''
++        return (
++          <span key={i} className={`trb-ln ${cls}`}>
++            <Marked text={l} needle={needle} />
++            {'\n'}
++          </span>
++        )
++      })}
++    </pre>
++  )
++}
++
++function Diff({ ev, changesHref, path }: { ev: Ev; changesHref: string | null; path: string }) {
++  const hunks = patchOf(ev)
++  if (hunks === null) return <p className="trb-dim">This call recorded no change to draw.</p>
++  return (
++    <div className="trb-diff">
++      <div className="trb-diff-head">
++        <span className="mono trb-diff-path">{path}</span>
++        {changesHref !== null && (
++          <a className="trb-link" href={changesHref} onClick={(e) => { e.preventDefault(); window.history.pushState(null, '', changesHref); window.dispatchEvent(new PopStateEvent('popstate')) }}>
++            Open in Changes ›
++          </a>
++        )}
++      </div>
++      {hunks.map((h, hi) => {
++        let o = h.oldStart ?? 0
++        let n = h.newStart ?? 0
++        return (
++          <table key={hi} className="trb-hunk">
++            <tbody>
++              {h.oldStart !== null && (
++                <tr className="is-hunk"><td colSpan={3}>@@ −{h.oldStart} +{h.newStart} @@</td></tr>
++              )}
++              {h.lines.map((l, i) => {
++                const k = l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : 'ctx'
++                const left = k === 'add' || h.oldStart === null ? '' : String(o++)
++                const right = k === 'del' || h.newStart === null ? '' : String(n++)
++                return (
++                  <tr key={i} className={`is-${k}`}>
++                    <td className="trb-no">{left}</td>
++                    <td className="trb-no">{right}</td>
++                    <td className="trb-code"><span className="trb-sign">{k === 'add' ? '+' : k === 'del' ? '−' : ' '}</span>{l.slice(1)}</td>
++                  </tr>
++                )
++              })}
++            </tbody>
++          </table>
++        )
++      })}
++    </div>
++  )
++}
++
++function Shot({ name }: { name: string }) {
++  const s = TRB_SHOTS[name]
++  if (s === undefined) return <p className="trb-dim">{name} is not in this run&rsquo;s artifacts.</p>
++  return (
++    <figure className="trb-shot">
++      <div className="trb-shot-frame" role="img" aria-label={`Screenshot of ${s.url}`}>
++        <div className="trb-shot-bar"><span className="trb-shot-dots" /><span className="trb-shot-url">{s.url}</span></div>
++        <div className="trb-shot-page">
++          <h1>{s.heading}</h1>
++          <p>{s.body}</p>
++          <p><u>{s.link}</u></p>
++        </div>
++      </div>
++      <figcaption>
++        <span className="mono">{name}</span> · from Artifacts
++      </figcaption>
++    </figure>
++  )
++}
++
++function Facts({ rows }: { rows: [string, ReactNode][] }) {
++  return (
++    <dl className="trb-facts">
++      {rows.map(([k, v]) => (
++        <Fragment key={k}>
++          <dt>{k}</dt>
++          <dd>{v}</dd>
++        </Fragment>
++      ))}
++    </dl>
++  )
++}
++
++function Detail({
++  ev, trace, needle, lastAnswer, onPick, changesBase, onKeep, kept, onUnkeep, compact,
++}: {
++  ev: Ev
++  trace: ReturnType<typeof buildTrace>
++  needle: string
++  lastAnswer: Ev | null
++  onPick: (key: string) => void
++  changesBase: string | null
++  onKeep?: () => void
++  kept?: boolean
++  onUnkeep?: () => void
++  compact?: boolean
++}) {
++  const [record, setRecord] = useState(false)
++  const card = useRef<HTMLElement>(null)
++  // AN ERROR OPENS AT ITS STACK: the first `>` or `E ` line of its output is brought into view in its own scroller.
++  useLayoutEffect(() => {
++    if (ev.status !== 'error') return
++    const line = card.current?.querySelector<HTMLElement>('.trb-ln.is-stack')
++    const slot = card.current?.closest<HTMLElement>('.trb-slot')
++    if (!line || !slot) return
++    const top = line.getBoundingClientRect().top - slot.getBoundingClientRect().top
++    slot.scrollTop += top - 96
++  }, [ev.key, ev.status])
++  const short = (t: string) => shorten(t, trace.cwd, trace.root)
++  const inp = inputOf(ev.call)
++  const out = ev.result?.tool_result?.content ?? null
++  const name = ev.call?.tool?.name ?? null
++  const raws = [ev.call ?? ev.main, ...ev.progressSteps, ...(ev.result ? [ev.result] : [])].map((s) => s.raw).filter((r): r is string => r !== null)
++  const uniqueRaws = raws.filter((r, i) => raws.indexOf(r) === i)
++  const usage = (rawOf(ev.main)?.message as Record<string, unknown> | undefined)?.usage as Record<string, number> | undefined
++  let body: ReactNode = null
++  if (ev.kind === 'message') {
++    body = <div className="trb-md"><Markdown source={ev.main.text ?? ''} /></div>
++  } else if (ev.kind === 'thinking') {
++    body = ev.main.text ? <pre className="trb-pre">{ev.main.text}</pre> : <p className="trb-dim">The CLI recorded this block without its text.</p>
++  } else if (ev.kind === 'start') {
++    const raw = rawOf(ev.main)
++    body = (
++      <Facts rows={[
++        ['model', String(ev.main.meta?.model ?? '—')],
++        ['tools', String(ev.main.meta?.tool_count ?? '—')],
++        ['permissions', String(ev.main.meta?.permission_mode ?? '—')],
++        ['working dir', <span className="mono" key="c">{String(raw?.cwd ?? '—')}</span>],
++      ]} />
++    )
++  } else if (ev.kind === 'end') {
++    const m = ev.main.meta ?? {}
++    const same = lastAnswer !== null && ev.main.text !== null && ev.main.text === lastAnswer.main.text
++    body = (
++      <>
++        <Facts rows={[
++          ['outcome', <span key="o" className={m.is_error === true ? 'trb-bad' : 'trb-good'}>{String(m.subtype ?? '—')}{m.is_error === true ? ' · is_error' : ''}</span>],
++          ['turns', String(m.num_turns ?? '—')],
++          ['duration', typeof m.duration_ms === 'number' ? dur(m.duration_ms / 1000) : '—'],
++          ['cost', typeof m.total_cost_usd === 'number' ? `$${m.total_cost_usd.toFixed(2)}` : '—'],
++          ['answer', ev.main.text === null || ev.main.text === '' ? 'none recorded' : same ? (
++            <button key="a" type="button" className="trb-link" onClick={() => onPick(lastAnswer!.key)}>same as #{lastAnswer!.n}, the last message ↑</button>
++          ) : 'below'],
++        ]} />
++        {ev.main.text && !same && <div className="trb-md"><Markdown source={ev.main.text} /></div>}
++      </>
++    )
++  } else if (ev.kind === 'edit') {
++    const path = short(String(inp.file_path ?? inp.notebook_path ?? ''))
++    const inRepo = trace.cwd !== null && String(inp.file_path ?? '').startsWith(`${trace.cwd}/`)
++    body = (
++      <>
++        <Diff ev={ev} path={path} changesHref={inRepo && changesBase !== null ? `${changesBase}/changes/${encodeURIComponent(path)}${window.location.search}` : null} />
++        {!inRepo && <p className="trb-dim">Written outside the repository: not on the Changes tab.</p>}
++        {out !== null && !compact && (
++          <details className="trb-more">
++            <summary>The tool&rsquo;s reply</summary>
++            <Out text={short(out)} needle={needle} />
++          </details>
++        )}
++      </>
++    )
++  } else if (ev.call !== null || ev.result !== null) {
++    const isBash = name === 'Bash'
++    const shotPath = out !== null ? /\]\(([^)]+\.png)\)/.exec(out)?.[1] ?? null : null
++    const shotName = shotPath !== null && shotPath.includes('/artifacts/') ? shotPath.slice(shotPath.indexOf('/artifacts/') + '/artifacts/'.length) : null
++    const fields = Object.entries(inp).filter(([k]) => !(isBash && (k === 'command' || k === 'description')))
++    body = (
++      <>
++        {isBash && (
++          <section className="trb-sec">
++            <h4>Command</h4>
++            <pre className="trb-pre trb-cmd"><Marked text={short(String(inp.command ?? ''))} needle={needle} /></pre>
++          </section>
++        )}
++        {fields.length > 0 && (
++          <Facts rows={fields.map(([k, v]) => [k, <span key={k} className="mono">{typeof v === 'string' ? short(v) : JSON.stringify(v)}</span>])} />
++        )}
++        {shotName !== null && <Shot name={shotName} />}
++        <section className="trb-sec">
++          <h4>{ev.status === 'error' ? 'Output · error' : 'Output'}{ev.result?.tool_result?.images ? ` · ${ev.result.tool_result.images} image` : ''}</h4>
++          {out === null ? (
++            <p className="trb-dim">{ev.status === 'running' ? 'No result in this read yet.' : 'No output recorded.'}</p>
++          ) : (
++            <Out text={short(out)} needle={needle} tone={name !== null && /console_messages/.test(name) ? 'console' : 'test'} />
++          )}
++        </section>
++      </>
++    )
++  } else if (ev.kind === 'system' && ev.progressSteps.length > 0) {
++    body = <p className="trb-dim">Progress for a call that is not in this read.</p>
++  } else if (ev.kind === 'system' && ev.main.meta) {
++    body = <Facts rows={Object.entries(ev.main.meta).map(([k, v]) => [k, String(v)])} />
++  } else {
++    body = <p className="trb-dim">Not a kind this view knows; the record is below as it was written.</p>
++  }
++  const desc = typeof inp.description === 'string' ? inp.description : null
++  const showRecord = record || ev.kind === 'other'
++  return (
++    <article ref={card} className={`trb-card${ev.status === 'error' ? ' is-error' : ''}`} aria-label={`Event ${ev.n}`}>
++      <header className="trb-card-head">
++        <Icon kind={ev.kind} error={ev.status === 'error'} />
++        <div className="trb-card-title">
++          <h3 className={ev.call !== null && name === 'Bash' ? 'mono' : ''}>
++            {ev.kind === 'message' ? 'Message' : ev.kind === 'edit' ? ev.label : ev.call !== null ? toolShort(name ?? 'tool') : ev.label}
++          </h3>
++          <p className="trb-card-sub">
++            <span>#{ev.n} · {KIND_WORD[ev.kind]}</span>
++            {ev.secs !== null && <> · <Secs ev={ev} /></>}
++            {ev.progress > 0 && <span title="tool_progress records for this call, folded into it"> · {ev.progress} progress</span>}
++            {usage?.output_tokens !== undefined && <span title="message.usage from the record"> · {usage.output_tokens} output tokens</span>}
++            {desc && <span className="trb-desc"> · {desc}</span>}
++          </p>
++        </div>
++        <div className="trb-card-acts">
++          {onKeep && !kept && <button type="button" className="trb-btn" onClick={onKeep} title="Keep this event open below while you pick another">Keep open</button>}
++          {onUnkeep && <button type="button" className="trb-btn" onClick={onUnkeep} aria-label="Close this kept event" title="Close">×</button>}
++          {ev.kind !== 'other' && uniqueRaws.length > 0 && (
++            <button type="button" className={`trb-btn${record ? ' is-on' : ''}`} aria-pressed={record} onClick={() => setRecord((r) => !r)} title="The stream-json records behind this event, as stored">
++              {'{ }'}
++            </button>
++          )}
++        </div>
++      </header>
++      <div className="trb-card-body">
++        {body}
++        {showRecord && (
++          <section className="trb-sec">
++            <h4>Record{uniqueRaws.length === 1 ? '' : `s · ${uniqueRaws.length}`}</h4>
++            <pre className="trb-pre trb-raw">{uniqueRaws.map((r) => JSON.stringify(JSON.parse(r), null, 2)).join('\n')}</pre>
++          </section>
++        )}
++      </div>
++    </article>
++  )
++}
++
++export function TraceB({ task, streams }: { task: Task; streams: ReactNode }) {
++  const [read, setRead] = useState<TaskTranscript | null>(null)
++  const live = !TERMINAL_STATES.has(task.state)
++  useEffect(() => {
++    let gone = false
++    const go = () =>
++      loadTranscript(task.id, { source: 'auto', includeRaw: true }).then((r) => {
++        if (!gone && r.status === 'ok') setRead(r.data)
++      })
++    void go()
++    if (!live) return () => { gone = true }
++    const id = setInterval(go, POLL_MS)
++    return () => {
++      gone = true
++      clearInterval(id)
++    }
++  }, [task.id, live])
++
++  const trace = useMemo(() => buildTrace(read?.steps ?? []), [read])
++  const events = trace.events
++  const [filter, setFilter] = useState<Filter>('all')
++  const [query, setQuery] = useState('')
++  const needle = query.trim().toLowerCase()
++  const [picked, setPicked] = useState<string | null>(null)
++  const [kept, setKept] = useState<string[]>([])
++  const [phoneDetail, setPhoneDetail] = useState(false)
++  const wide = useTraceWide()
++  const lastAnswer = useMemo(() => [...events].reverse().find((e) => e.kind === 'message' && e.main.role === 'assistant') ?? null, [events])
++  // AT REST: a live run follows its newest event; a finished one opens on its last message, the answer.
++  const following = live && picked === null
++  const restKey = live ? (events[events.length - 1]?.key ?? null) : (lastAnswer?.key ?? events[events.length - 1]?.key ?? null)
++  const selKey = picked ?? restKey
++  const sel = events.find((e) => e.key === selKey) ?? null
++  const shown = events.filter((e) => inFilter(e, filter))
++  const hits = needle === '' ? [] : shown.filter((e) => e.hay.includes(needle))
++  const errors = events.filter((e) => e.status === 'error')
++  const counts = { all: events.length, messages: 0, tools: 0, edits: 0, errors: errors.length }
++  for (const e of events) {
++    if (inFilter(e, 'messages')) counts.messages++
++    if (inFilter(e, 'tools')) counts.tools++
++    if (inFilter(e, 'edits')) counts.edits++
++  }
++
++  const root = useRef<HTMLElement>(null)
++  const list = useRef<HTMLOListElement>(null)
++  const search = useRef<HTMLInputElement>(null)
++  const [layout, setLayout] = useState<'side' | 'stack' | 'phone'>('side')
++  const headFolded = useRef(false)
++  const phoneViewport = typeof window !== 'undefined' && window.matchMedia('(max-width: 720px)').matches
++  useLayoutEffect(() => {
++    const el = root.current
++    if (el === null || typeof ResizeObserver === 'undefined') return
++    const put = () => {
++      const box = el.getBoundingClientRect()
++      setLayout(box.width < 560 ? 'phone' : box.width < 860 ? 'stack' : 'side')
++      // THE TRACE FILLS WHAT IS LEFT OF THE WINDOW under the agent's head, so both panes end in view.
++      const drawer = el.closest('.ctl-drawer')
++      const top = box.top + (drawer?.scrollTop ?? 0)
++      // BESIDE THE AGENT LIST (a narrow dock, not a phone) the head would leave the
++      // timeline a few rows: the trace takes a window's height instead, and the head
++      // scrolls up out of the way once, one scroll back.
++      const docked = box.width < 560 && !window.matchMedia('(max-width: 720px)').matches && drawer instanceof HTMLElement
++      el.style.height = `${Math.max(300, docked ? window.innerHeight - 92 : window.innerHeight - top - 58)}px`
++      if (docked && !headFolded.current) {
++        headFolded.current = true
++        // Scrolled to where the agent's tabs (Details · Logs …) just stick, so the
++        // head is folded above them and the trace starts right under them.
++        let stuck: HTMLElement | null = drawer.querySelector<HTMLElement>('[role="tablist"]')
++        while (stuck !== null && stuck !== drawer && getComputedStyle(stuck).position !== 'sticky') stuck = stuck.parentElement
++        drawer.scrollTop = 0
++        const port = drawer.getBoundingClientRect().top + drawer.clientTop
++        drawer.scrollTop =
++          stuck !== null && stuck !== drawer
++            ? Math.max(0, stuck.getBoundingClientRect().top - port - (parseFloat(getComputedStyle(stuck).top) || 0) - 6)
++            : Math.max(0, top - port - 8)
++      }
++    }
++    put()
++    const ro = new ResizeObserver(put)
++    ro.observe(el)
++    window.addEventListener('resize', put)
++    return () => {
++      ro.disconnect()
++      window.removeEventListener('resize', put)
++    }
++  }, [])
++
++  const pick = useCallback((key: string) => {
++    setPicked(key)
++    setPhoneDetail(true)
++  }, [])
++  // The picked row is scrolled into view; a live run's newest is, as it arrives.
++  useEffect(() => {
++    const row = list.current?.querySelector<HTMLElement>(`[data-key="${CSS.escape(selKey ?? '')}"]`)
++    if (row === null || row === undefined || list.current === null) return
++    const box = list.current.getBoundingClientRect()
++    const r = row.getBoundingClientRect()
++    if (r.top >= box.top && r.bottom <= box.bottom) return
++    // Rows are one height: the scroll lands on a row's edge, so the top row is never drawn half.
++    const max = list.current.scrollHeight - list.current.clientHeight
++    const want = list.current.scrollTop + r.top - box.top - box.height / 3
++    list.current.scrollTop = Math.max(0, Math.min(Math.floor(max / r.height) * r.height, Math.round(want / r.height) * r.height))
++  }, [selKey, events.length])
++
++  const step = useCallback(
++    (by: number) => {
++      const at = shown.findIndex((e) => e.key === selKey)
++      const next = shown[Math.max(0, Math.min(shown.length - 1, (at === -1 ? (by > 0 ? -1 : shown.length) : at) + by))]
++      if (next) setPicked(next.key)
++    },
++    [shown, selKey],
++  )
++  const jumpIn = useCallback(
++    (pool: Ev[]) => {
++      if (pool.length === 0) return
++      // From rest the first one; once the reader has picked an event, the next after it.
++      const at = picked === null ? -1 : events.findIndex((e) => e.key === selKey)
++      const next = pool.find((e) => e.n - 1 > at) ?? pool[0]!
++      if (!inFilter(next, filter)) setFilter('all')
++      pick(next.key)
++    },
++    [events, selKey, picked, filter, pick],
++  )
++  useEffect(() => {
++    const onKey = (e: KeyboardEvent) => {
++      if (e.metaKey || e.ctrlKey || e.altKey) return
++      const t = e.target as HTMLElement | null
++      if (t !== null && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) {
++        if (e.key === 'Escape') t.blur()
++        return
++      }
++      if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); step(1) }
++      else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); step(-1) }
++      else if (e.key === 'e') jumpIn(errors)
++      else if (e.key === '/') { e.preventDefault(); search.current?.focus() }
++      else if (e.key === '[') setTraceWide(!wide)
++      else if (e.key === 'f' && live) setPicked(null)
++    }
++    window.addEventListener('keydown', onKey)
++    return () => window.removeEventListener('keydown', onKey)
++  }, [step, jumpIn, errors, wide, live])
++  useEffect(() => () => setTraceWide(true), [])
++
++  const end = events.find((e) => e.kind === 'end') ?? null
++  const changesBase = typeof window === 'undefined' ? null : window.location.pathname.replace(/\/logs(\/.*)?$/, '')
++  const hitAt = hits.findIndex((e) => e.key === selKey)
++  const selIdx = shown.findIndex((e) => e.key === selKey)
++  const keptEvs = kept.map((k) => events.find((e) => e.key === k)).filter((e): e is Ev => e !== undefined && e.key !== selKey)
++  const newer = sel !== null && live && !following ? events.length - sel.n : 0
++
++  const filters: { k: Filter; label: string; key: string }[] = [
++    { k: 'all', label: 'All', key: '' },
++    { k: 'messages', label: layout === 'phone' ? 'Msgs' : 'Messages', key: '' },
++    { k: 'tools', label: 'Tools', key: '' },
++    { k: 'edits', label: 'Edits', key: '' },
++    { k: 'errors', label: 'Errors', key: '' },
++  ]
++
++  const timeline = (
++    <div className="trb-left">
++      <ol ref={list} className="trb-list" aria-label="Events" tabIndex={0}>
++        {read !== null && read.window_starts_mid_stream && <li className="trb-gap">earlier events are not in this read</li>}
++        {shown.map((e) => {
++          const hit = needle !== '' && e.hay.includes(needle)
++          return (
++            <li key={e.key} data-key={e.key}>
++              <button
++                type="button"
++                className={`trb-row is-${e.kind}${e.key === selKey ? ' is-sel' : ''}${e.status === 'error' ? ' is-error' : ''}${hit ? ' is-hit' : ''}${needle !== '' && !hit ? ' is-miss' : ''}`}
++                onClick={() => pick(e.key)}
++                aria-current={e.key === selKey ? 'true' : undefined}
++                title={e.label}
++              >
++                <span className="trb-n">{e.n}</span>
++                <Icon kind={e.kind} error={e.status === 'error'} />
++                <span className={`trb-label${e.call !== null && e.kind !== 'edit' && e.call.tool?.name === 'Bash' ? ' mono' : ''}`}>
++                  <span className="trb-l"><Marked text={e.label} needle={needle} /></span>
++                  {e.sub && <span className="trb-sub">{e.sub}</span>}
++                </span>
++                {e.progress > 0 && <span className="trb-prog" title={`${e.progress} progress event${e.progress === 1 ? '' : 's'} folded into this call`}>{e.progress}</span>}
++                <Secs ev={e} />
++                <Status ev={e} />
++              </button>
++            </li>
++          )
++        })}
++        {shown.length === 0 && <li className="trb-gap">no {filter} in this read</li>}
++        {live && <li className="trb-gap trb-tail" aria-live="polite"><span className="trb-pulse" /> live · read every {POLL_MS / 1000} s</li>}
++      </ol>
++    </div>
++  )
++
++  const detail = (
++    <div className={`trb-right${keptEvs.length > 0 ? ' has-kept' : ''}`} aria-label="Picked event">
++      {layout === 'phone' && (
++        <button type="button" className="trb-back" onClick={() => setPhoneDetail(false)}>← Events</button>
++      )}
++      {sel === null ? (
++        <p className="trb-dim trb-pad">{read === null ? 'Reading the transcript…' : 'No events in this read.'}</p>
++      ) : (
++        <>
++          <div className="trb-slot">
++          <Detail
++            key={sel.key}
++            ev={sel}
++            trace={trace}
++            needle={needle}
++            lastAnswer={lastAnswer}
++            onPick={pick}
++            changesBase={changesBase}
++            onKeep={layout === 'phone' ? undefined : () => setKept((k) => (k.includes(sel.key) ? k : [...k.slice(-1), sel.key]))}
++            kept={kept.includes(sel.key)}
++          />
++          </div>
++          {keptEvs.map((k) => (
++            <div key={`kept-${k.key}`} className="trb-slot is-kept">
++              <Detail ev={k} trace={trace} needle={needle} lastAnswer={lastAnswer} onPick={pick} changesBase={changesBase} kept compact onUnkeep={() => setKept((ks) => ks.filter((x) => x !== k.key))} />
++            </div>
++          ))}
++        </>
++      )}
++    </div>
++  )
++
++  return (
++    <section ref={root} className={`trb is-${layout}${phoneDetail && layout === 'phone' ? ' is-detail' : ''}`} aria-label="Transcript trace">
++      <div className="trb-bar">
++        {streams}
++        <label className="trb-search">
++          <input
++            ref={search}
++            type="search"
++            value={query}
++            placeholder="Search…"
++            aria-label="Search the events in this read"
++            title="Search the events in this read; matches are marked in the timeline (/)"
++            onChange={(e) => setQuery(e.target.value)}
++            onKeyDown={(e) => {
++              if (e.key === 'Enter' && hits.length > 0) {
++                e.preventDefault()
++                const next = hits[(hitAt + (e.shiftKey ? hits.length - 1 : 1)) % hits.length] ?? hits[0]!
++                setPicked(next.key)
++              }
++            }}
++          />
++          {needle !== '' && <span className="trb-count" aria-live="polite">{hits.length === 0 ? '0' : `${hitAt < 0 ? '–' : hitAt + 1}/${hits.length}`}</span>}
++        </label>
++        <button
++          type="button"
++          className="trb-btn trb-err"
++          disabled={errors.length === 0}
++          onClick={() => jumpIn(errors)}
++          title="Next event the CLI marked is_error (e). A failure the CLI did not mark is not counted."
++        >
++          {errors.length === 0 ? 'No errors' : `Jump to error · ${errors.length}`}
++        </button>
++        {live && (
++          <button type="button" className={`trb-btn${following ? ' is-on' : ''}`} aria-pressed={following} onClick={() => setPicked(following ? (sel?.key ?? null) : null)} title="Keep the newest event picked as it arrives (f)">
++            {following ? 'Following' : newer > 0 ? `↓ ${newer} newer · Follow` : 'Follow'}
++          </button>
++        )}
++        {!phoneViewport && !wide && (
++          <button type="button" className="trb-btn trb-fold" onClick={() => setTraceWide(true)} aria-label="Full width" title="Fold the agent list away and read the transcript full width ([)">
++            {layout === 'phone' ? '⇤' : '⇤ Full width'}
++          </button>
++        )}
++      </div>
++      <div className="trb-bar2">
++        <div className="trb-chips" role="group" aria-label="Show">
++          {filters.map((f) => (
++            <button key={f.k} type="button" className={`trb-chip${filter === f.k ? ' is-on' : ''}${f.k === 'errors' && counts.errors > 0 ? ' is-bad' : ''}`} aria-pressed={filter === f.k} onClick={() => setFilter(f.k)} disabled={f.k !== 'all' && counts[f.k] === 0}>
++              {f.label} <em>{counts[f.k]}</em>
++            </button>
++          ))}
++        </div>
++        <p className="trb-summary">
++          {trace.model && layout !== 'phone' && <span>{trace.model}</span>}
++          {end !== null && end.secs !== null && <span title="duration_ms, from the result record">{dur(end.secs.value)}</span>}
++          {end !== null && typeof end.main.meta?.num_turns === 'number' && <span>{String(end.main.meta.num_turns)} turns</span>}
++          {end !== null && typeof end.main.meta?.total_cost_usd === 'number' && <span title="total_cost_usd, from the result record">${(end.main.meta.total_cost_usd as number).toFixed(2)}</span>}
++          {trace.cwd && layout !== 'phone' && (
++            <span className="trb-cwd" title={`Commands ran in ${trace.cwd}; that prefix is dropped from every command and path here.`}>
++              <span className="trb-cwd-t">⌂ repo</span>
++            </span>
++          )}
++          {selIdx >= 0 && <span className="trb-pos" title="j / k step through the events">{selIdx + 1} of {shown.length}</span>}
++        </p>
++      </div>
++      {task.state === 'FAILED' && task.last_error && (
++        <p className="trb-taskerr" role="note" title="The task's own last_error, from the task record, not from the transcript">
++          <Icon kind="end" error /> task failed · <span className="mono">{task.last_error.split('\n')[0]}</span>
++        </p>
++      )}
++      <div className="trb-panes">
++        {timeline}
++        {detail}
++      </div>
++    </section>
++  )
++}
+diff --git a/apps/swarm-ui/src/traceB/fixtures.ts b/apps/swarm-ui/src/traceB/fixtures.ts
+new file mode 100644
+index 0000000..a42b5aa
+--- /dev/null
++++ b/apps/swarm-ui/src/traceB/fixtures.ts
+@@ -0,0 +1,419 @@
++// MOCK-HOOK FILE
++// Transcript mock-ups, direction B (Trace), `?tr=b`. Four invented
++// transcripts written as the Claude CLI's `--output-format stream-json`
++// records, the shape the worker stores as agent_stdout, then mapped to steps
++// the way swarm_api/transcript.py `map_event` maps them (one step per content
++// block, `raw` = the record, as `include_raw=true` serves it). Nothing here
++// is shipped: the fixture build serves it in place of `fixtureTranscript` for
++// four fixture agents while `?tr=b` is in the address.
++
++import type { TranscriptStep } from '../types'
++
++type Rec = Record<string, unknown>
++
++/** The four agents the mock-up serves, by fixture task id. */
++export const TRB_TASKS: Record<string, 'coding' | 'browser' | 'failed' | 'live'> = {
++  task_99284d38: 'coding',
++  task_f523c160: 'browser',
++  task_8e33a3de: 'failed',
++  task_8ea5c26d: 'live',
++}
++
++/** `?tr=b` once turns the mock-up on for the tab: the router drops the query when it settles the address. */
++export function trbOn(): boolean {
++  if (typeof window === 'undefined') return false
++  const asked = new URLSearchParams(window.location.search).get('tr')
++  if (asked === 'b') window.sessionStorage.setItem('swarm.trb', '1')
++  if (asked !== null && asked !== 'b') window.sessionStorage.removeItem('swarm.trb')
++  return window.sessionStorage.getItem('swarm.trb') === '1'
++}
++
++const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/
++function shiftIso(v: unknown, by: number): unknown {
++  if (typeof v === 'string') return ISO.test(v) ? new Date(Date.parse(v) + by).toISOString() : v
++  if (Array.isArray(v)) return v.map((x) => shiftIso(x, by))
++  if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shiftIso(x, by)]))
++  return v
++}
++
++/**
++ * THE LIVE AGENT IS DATED FROM NOW, not from the fixture clock: its task and
++ * attempt times move by (now - fixture clock), so a running agent's head reads
++ * minutes, as the transcript beside it does, not the weeks since that clock.
++ */
++export function trbLiveNow<T>(taskId: string, read: T, fixtureNow: number): T {
++  if (!trbOn() || TRB_TASKS[taskId] !== 'live') return read
++  return shiftIso(read, Date.now() - fixtureNow) as T
++}
++
++const SESSION = '7d0c2f3e-5a1b-4c8e-9f60-2b7a1d4e9c11'
++const CWD = '/workspace/att_9c41e7d2/work/repo'
++const ART = '/workspace/att_9c41e7d2/artifacts'
++
++let uuidN = 0
++const uuid = () => `0f3a${String(++uuidN).padStart(4, '0')}-6b2e-4d1a-8c3f-${String(uuidN * 7919).padStart(12, '0')}`
++
++function init(model = 'claude-opus-5-5', tools = 18): Rec {
++  return {
++    type: 'system', subtype: 'init', cwd: CWD, session_id: SESSION, model, permissionMode: 'bypassPermissions',
++    tools: Array.from({ length: tools }, (_, i) => `tool_${i}`), mcp_servers: [{ name: 'playwright', status: 'connected' }],
++    apiKeySource: 'none', uuid: uuid(),
++  }
++}
++
++let msgN = 0
++function assistant(content: Rec[], usage: { in: number; out: number; cacheRead?: number }): Rec {
++  return {
++    type: 'assistant',
++    message: {
++      id: `msg_01${String(++msgN).padStart(4, '0')}`, type: 'message', role: 'assistant', model: 'claude-opus-5-5', content,
++      stop_reason: null,
++      usage: { input_tokens: usage.in, cache_creation_input_tokens: 0, cache_read_input_tokens: usage.cacheRead ?? 0, output_tokens: usage.out },
++    },
++    parent_tool_use_id: null, session_id: SESSION, uuid: uuid(),
++  }
++}
++const say = (text: string, out = 120, cacheRead = 18000) => assistant([{ type: 'text', text }], { in: 6, out, cacheRead })
++const think = () => assistant([{ type: 'thinking', thinking: '', signature: 'EqQBCkYIBxgCKkB' }], { in: 6, out: 410, cacheRead: 18000 })
++const call = (id: string, name: string, input: Rec, out = 90) => assistant([{ type: 'tool_use', id, name, input }], { in: 6, out, cacheRead: 21000 })
++
++function result(id: string, content: string | Rec[], isError = false, toolUseResult?: Rec): Rec {
++  return {
++    type: 'user',
++    message: { role: 'user', content: [{ tool_use_id: id, type: 'tool_result', content, is_error: isError }] },
++    parent_tool_use_id: null, session_id: SESSION, uuid: uuid(),
++    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
++  }
++}
++const progress = (id: string, name: string, s: number): Rec => ({
++  type: 'tool_progress', tool_use_id: id, tool_name: name, parent_tool_use_id: null, elapsed_time_seconds: s, uuid: uuid(), session_id: SESSION,
++})
++const bash = (id: string, command: string, description: string) => call(id, 'Bash', { command, description })
++const inRepo = (cmd: string) => `cd ${CWD} && ${cmd}`
++
++function edit(id: string, file: string, oldString: string, newString: string, oldStart: number, ctxBefore: string[], ctxAfter: string[]): [Rec, Rec] {
++  const olds = oldString.split('\n')
++  const news = newString.split('\n')
++  const lines = [...ctxBefore.map((l) => ` ${l}`), ...olds.map((l) => `-${l}`), ...news.map((l) => `+${l}`), ...ctxAfter.map((l) => ` ${l}`)]
++  return [
++    call(id, 'Edit', { file_path: `${CWD}/${file}`, old_string: oldString, new_string: newString }, 260),
++    result(id, `The file ${CWD}/${file} has been updated. Here's the result of running \`cat -n\` on a snippet of the edited file:\n` +
++      lines.filter((l) => !l.startsWith('-')).map((l, i) => `${String(oldStart + i).padStart(6)}\t${l.slice(1)}`).join('\n'),
++    false, {
++      filePath: `${CWD}/${file}`, oldString, newString, userModified: false, replaceAll: false,
++      structuredPatch: [{ oldStart, oldLines: ctxBefore.length + olds.length + ctxAfter.length, newStart: oldStart, newLines: ctxBefore.length + news.length + ctxAfter.length, lines }],
++    }),
++  ]
++}
++
++function final(text: string, o: { ok: boolean; turns: number; ms: number; cost: number; subtype?: string }): Rec {
++  return {
++    type: 'result', subtype: o.subtype ?? (o.ok ? 'success' : 'error_during_execution'), is_error: !o.ok,
++    duration_ms: o.ms, duration_api_ms: Math.round(o.ms * 0.62), num_turns: o.turns, ...(o.ok ? { result: text } : {}),
++    session_id: SESSION, total_cost_usd: o.cost,
++    usage: { input_tokens: 412, cache_creation_input_tokens: 31840, cache_read_input_tokens: 402118, output_tokens: 6120 },
++    permission_denials: [], uuid: uuid(),
++  }
++}
++
++// ---------------------------------------------------------------- coding
++
++const RECONCILER_READ = `   118\tdef reclaim(self, lease: Lease, now: datetime) -> Reclaim:
++   119\t    """Release a lease whose worker stopped heartbeating."""
++   120\t    if lease.heartbeat_at + self.grace > now:
++   121\t        return Reclaim.KEEP
++   122\t    if lease.state != LeaseState.LEASED:
++   123\t        return Reclaim.KEEP
++   124\t    self.store.release(lease.id, reason="heartbeat_lapsed")
++   125\t    return Reclaim.RELEASED`
++
++const FAIL_OUT = `Exit code 1
++related-tests: 2 files for 2 changed paths
++uv run pytest tests/unit/api/test_reconciler.py tests/unit/api/test_leases.py -q
++..........F.
++=================================== FAILURES ===================================
++_____________________ test_stale_generation_is_released ______________________
++
++    def test_stale_generation_is_released(store, clock):
++        lease = store.lease("task_1", generation=1)
++        store.bump_generation("task_1")  # the task moved on to generation 2
++        out = Reconciler(store, grace=GRACE).reclaim(lease, clock.now())
++>       assert out == Reclaim.RELEASED
++E       AssertionError: assert <Reclaim.KEEP: 'keep'> == <Reclaim.RELEASED: 'released'>
++E        +  where <Reclaim.KEEP: 'keep'> = reclaim(Lease(id='lease_1', generation=1, ...), datetime(2026, 10, 19, 11, 2, 0))
++
++tests/unit/api/test_reconciler.py:212: AssertionError
++=========================== short test summary info ============================
++FAILED tests/unit/api/test_reconciler.py::test_stale_generation_is_released - AssertionError: assert <Reclaim.KEEP: 'keep'> == <Reclaim.RELEASED: 'released'>
++1 failed, 11 passed in 9.84s`
++
++const CODING_ANSWER = `Done. The reconciler now releases a lease whose **generation is stale**, not only one whose heartbeat lapsed.
++
++- \`apps/swarm-api/swarm_api/reconciler.py\`: \`reclaim\` checks \`lease.generation < task.current_generation\` first and releases with reason \`stale_generation\`.
++- \`tests/unit/api/test_reconciler.py\`: a test for the stale-generation case, using the store's \`current_generation\`.
++
++Related tests: 12 passed. Publish scan: clean. Committed as \`4f2a9c1\`; PR title and body are in the artifacts.`
++
++function coding(): Rec[] {
++  return [
++    init(),
++    say('I\'ll read the reconciler and how it releases a lease before changing anything.', 40, 0),
++    call('toolu_01Rd', 'Read', { file_path: `${CWD}/apps/swarm-api/swarm_api/reconciler.py`, offset: 110, limit: 40 }),
++    result('toolu_01Rd', RECONCILER_READ),
++    think(),
++    bash('toolu_02Gr', inRepo('grep -rn "release(" apps/swarm-api/swarm_api tests/unit/api | head -20'), 'Find every lease release call'),
++    result('toolu_02Gr', `apps/swarm-api/swarm_api/reconciler.py:124:    self.store.release(lease.id, reason="heartbeat_lapsed")
++apps/swarm-api/swarm_api/leases.py:88:    def release(self, lease_id: str, *, reason: str) -> None:
++apps/swarm-api/swarm_api/dispatch.py:301:        self.leases.release(lease.id, reason="dispatch_refused")
++tests/unit/api/test_reconciler.py:57:    store.release.assert_called_once_with("lease_1", reason="heartbeat_lapsed")
++tests/unit/api/test_leases.py:140:    store.release(lease.id, reason="cancelled")`),
++    progress('toolu_02Gr', 'Bash', 1),
++    say('`reclaim` only looks at the heartbeat. A lease from an older generation keeps its pool slot until the heartbeat lapses, which is the 20-minute DISPATCHED stall. I\'ll release on a stale generation first.'),
++    ...edit('toolu_03Ed', 'apps/swarm-api/swarm_api/reconciler.py',
++      '    if lease.heartbeat_at + self.grace > now:\n        return Reclaim.KEEP',
++      '    if lease.generation < self.store.current_generation(lease.task_id):\n        self.store.release(lease.id, reason="stale_generation")\n        return Reclaim.RELEASED\n    if lease.heartbeat_at + self.grace > now:\n        return Reclaim.KEEP',
++      118, ['def reclaim(self, lease: Lease, now: datetime) -> Reclaim:', '    """Release a lease whose worker stopped heartbeating."""'], ['    if lease.state != LeaseState.LEASED:']),
++    ...edit('toolu_04Ed', 'tests/unit/api/test_reconciler.py',
++      'def test_fresh_lease_is_kept(store, clock):',
++      'def test_stale_generation_is_released(store, clock):\n    lease = store.lease("task_1", generation=1)\n    store.bump_generation("task_1")  # the task moved on to generation 2\n    out = Reconciler(store, grace=GRACE).reclaim(lease, clock.now())\n    assert out == Reclaim.RELEASED\n\n\ndef test_fresh_lease_is_kept(store, clock):',
++      205, ['', ''], ['    lease = store.lease("task_1", generation=1)']),
++    bash('toolu_05Ts', inRepo('scripts/related-tests.sh --run'), 'Run the tests related to the change'),
++    progress('toolu_05Ts', 'Bash', 4), progress('toolu_05Ts', 'Bash', 8), progress('toolu_05Ts', 'Bash', 12),
++    result('toolu_05Ts', FAIL_OUT, true),
++    think(),
++    say('The new test fails: `bump_generation` in the fixture store writes `generation` on the task, but `current_generation` reads `current_generation`. The store fixture is wrong, not the reconciler; I\'ll make the test set the field the store reads.'),
++    ...edit('toolu_06Ed', 'tests/unit/api/test_reconciler.py',
++      '    store.bump_generation("task_1")  # the task moved on to generation 2',
++      '    store.set_current_generation("task_1", 2)  # the task moved on to generation 2',
++      206, ['def test_stale_generation_is_released(store, clock):', '    lease = store.lease("task_1", generation=1)'], ['    out = Reconciler(store, grace=GRACE).reclaim(lease, clock.now())']),
++    bash('toolu_07Ts', inRepo('scripts/related-tests.sh --run'), 'Run the related tests again'),
++    progress('toolu_07Ts', 'Bash', 4), progress('toolu_07Ts', 'Bash', 8),
++    result('toolu_07Ts', `related-tests: 2 files for 2 changed paths
++uv run pytest tests/unit/api/test_reconciler.py tests/unit/api/test_leases.py -q
++............
++12 passed in 9.61s`),
++    bash('toolu_08Sc', inRepo('scripts/publish-scan.sh'), 'Scan the change for anything that looks like a credential'),
++    progress('toolu_08Sc', 'Bash', 3),
++    result('toolu_08Sc', 'publish-scan: 3 files, 0 findings'),
++    { type: 'auth_status', isAuthenticating: false, output: ['token refreshed'], session_id: SESSION, uuid: uuid() },
++    bash('toolu_09Gc', inRepo('git add apps/swarm-api/swarm_api/reconciler.py tests/unit/api/test_reconciler.py && git commit -q -m "The reconciler releases a lease whose generation is stale" && git log --oneline -1'), 'Commit the change'),
++    result('toolu_09Gc', '4f2a9c1 The reconciler releases a lease whose generation is stale'),
++    call('toolu_10Wr', 'Write', { file_path: `${ART}/pr-title.txt`, content: 'The reconciler releases a lease whose generation is stale\n' }),
++    result('toolu_10Wr', `File created successfully at: ${ART}/pr-title.txt`),
++    call('toolu_11Wr', 'Write', { file_path: `${ART}/pr-body.md`, content: '## What\n\n`reclaim` releases a lease from an older generation before it looks at the heartbeat.\n\n## Invariants\n\n- 5 (fencing): a stale generation no longer holds a pool slot.\n- 3 (concurrency from LEASED): the slot is returned in the same transaction.\n\npart of #3101\n' }),
++    result('toolu_11Wr', `File created successfully at: ${ART}/pr-body.md`),
++    say(CODING_ANSWER, 260),
++    final(CODING_ANSWER, { ok: true, turns: 14, ms: 124_318, cost: 1.84 }),
++  ]
++}
++
++// ---------------------------------------------------------------- browser
++
++const pw = (tool: string) => `mcp__playwright__${tool}`
++const SHOT1 = `${ART}/screenshots/page-2026-10-19T11-21-04-512Z.png`
++const SHOT2 = `${ART}/screenshots/page-2026-10-19T11-21-19-087Z.png`
++
++function browser(): Rec[] {
++  return [
++    init('claude-opus-5-5', 26),
++    say('Opening https://example.com in the live browser.', 30, 0),
++    call('toolu_b01', pw('browser_navigate'), { url: 'https://example.com' }),
++    progress('toolu_b01', pw('browser_navigate'), 2),
++    result('toolu_b01', '### Ran Playwright code\n```js\nawait page.goto(\'https://example.com\');\n```\n### Page\n- Page URL: https://example.com/\n- Page Title: Example Domain'),
++    call('toolu_b02', pw('browser_snapshot'), {}),
++    result('toolu_b02', '### Page\n- Page URL: https://example.com/\n- Page Title: Example Domain\n### Snapshot\n```yaml\n- generic [ref=e2]:\n  - heading "Example Domain" [level=1] [ref=e3]\n  - paragraph [ref=e4]: This domain is for use in documentation examples without needing permission. Avoid use in operations.\n  - paragraph [ref=e5]:\n    - link "Learn more" [ref=e6] [cursor=pointer]:\n      - /url: https://iana.org/domains/example\n```'),
++    call('toolu_b03', pw('browser_take_screenshot'), {}),
++    result('toolu_b03', [
++      { type: 'text', text: `### Result\n- [Screenshot of viewport](${SHOT1})\n### Page\n- Page URL: https://example.com/\n- Page Title: Example Domain` },
++      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo' } },
++    ]),
++    say('The page has one link, "Learn more". Following it.', 40),
++    call('toolu_b04', pw('browser_click'), { element: 'Learn more link', ref: 'e6' }),
++    progress('toolu_b04', pw('browser_click'), 2), progress('toolu_b04', pw('browser_click'), 4),
++    result('toolu_b04', '### Ran Playwright code\n```js\nawait page.getByRole(\'link\', { name: \'Learn more\' }).click();\n```\n### Page\n- Page URL: https://www.iana.org/help/example-domains\n- Page Title: Example Domains'),
++    call('toolu_b05', pw('browser_take_screenshot'), {}),
++    result('toolu_b05', [
++      { type: 'text', text: `### Result\n- [Screenshot of viewport](${SHOT2})\n### Page\n- Page URL: https://www.iana.org/help/example-domains\n- Page Title: Example Domains` },
++      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo' } },
++    ]),
++    call('toolu_b06', pw('browser_console_messages'), { level: 'info' }),
++    result('toolu_b06', '### Result\n[WARNING] The resource https://www.iana.org/static/_css/fonts.css was preloaded using link preload but not used within a few seconds from the window\'s load event. @ https://www.iana.org/help/example-domains:0\n[ERROR] Failed to load resource: the server responded with a status of 404 () @ https://www.iana.org/favicon-32x32.png:0\n[LOG] analytics: page_view /help/example-domains @ https://www.iana.org/_js/analytics.js:12'),
++    say(BROWSER_ANSWER, 180),
++    final(BROWSER_ANSWER, { ok: true, turns: 8, ms: 61_204, cost: 0.41 }),
++  ]
++}
++const BROWSER_ANSWER = `Both pages read.
++
++1. **https://example.com/** — "Example Domain": the domain is for documentation examples; one link, *Learn more*.
++2. **https://www.iana.org/help/example-domains** — "Example Domains": IANA's note on the reserved example domains.
++
++The second page's console has one error (a missing \`favicon-32x32.png\`, 404) and one preload warning.`
++
++// ---------------------------------------------------------------- failed
++
++const FAILED_OUT = `Exit code 1
++uv run pytest tests/unit/docs/test_runbooks.py -q
++.....FF..
++=================================== FAILURES ===================================
++____________________ test_runbook_links_resolve[restore.md] ____________________
++
++path = PosixPath('docs/runbooks/restore.md')
++
++    @pytest.mark.parametrize("path", RUNBOOKS, ids=lambda p: p.name)
++    def test_runbook_links_resolve(path):
++        for link in links_in(path):
++>           assert link.target_exists(), f"{path}:{link.line} links to {link.href}"
++E           AssertionError: docs/runbooks/restore.md:41 links to ../ops/checkpoint-restore.md#verify
++E           assert False
++E            +  where False = <bound method Link.target_exists of Link(href='../ops/checkpoint-restore.md#verify', line=41)>()
++
++tests/unit/docs/test_runbooks.py:38: AssertionError
++_______________________ test_runbook_has_owner[restore.md] _______________________
++
++path = PosixPath('docs/runbooks/restore.md')
++
++    def test_runbook_has_owner(path):
++        front = front_matter(path)
++>       assert front.get("owner"), f"{path} has no owner in its front matter"
++E       AssertionError: docs/runbooks/restore.md has no owner in its front matter
++E       assert None
++
++tests/unit/docs/test_runbooks.py:51: AssertionError
++=========================== short test summary info ============================
++FAILED tests/unit/docs/test_runbooks.py::test_runbook_links_resolve[restore.md] - AssertionError: docs/runbooks/restore.md:41 links to ../ops/checkpoint-restore.md#verify
++FAILED tests/unit/docs/test_runbooks.py::test_runbook_has_owner[restore.md] - AssertionError: docs/runbooks/restore.md has no owner in its front matter
++2 failed, 7 passed in 3.12s`
++
++function failed(): Rec[] {
++  return [
++    init(),
++    say('Drafting the restore runbook from the synthesis, then checking it against the runbook tests.', 40, 0),
++    call('toolu_f01', 'Read', { file_path: `${ART}/inputs/synthesis.md` }),
++    result('toolu_f01', '# Synthesis\n\nRestore reads the newest checkpoint for the attempt, verifies its digest, and resumes at its step...'),
++    call('toolu_f02', 'Write', { file_path: `${CWD}/docs/runbooks/restore.md`, content: '# Restore an agent from its checkpoint\n\n1. Find the newest checkpoint ...\n' }),
++    result('toolu_f02', `File created successfully at: ${CWD}/docs/runbooks/restore.md`),
++    bash('toolu_f03', inRepo('uv run pytest tests/unit/docs/test_runbooks.py -q'), 'Run the runbook tests'),
++    progress('toolu_f03', 'Bash', 3),
++    result('toolu_f03', FAILED_OUT, true),
++    think(),
++    say('Two failures: a link to `../ops/checkpoint-restore.md#verify`, which does not exist, and no `owner` in the front matter. The owner is not mine to pick, and the target page is another track\'s.', 90),
++    { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', resetsAt: 1760875200, rateLimitType: 'five_hour', utilization: 0.91 }, session_id: SESSION, uuid: uuid() },
++    final('', { ok: false, turns: 6, ms: 148_032, cost: 0.62 }),
++  ]
++}
++
++// ---------------------------------------------------------------- live
++
++function live(): Rec[] {
++  return [
++    init(),
++    say('Reproducing the flaky heartbeat test first.', 30, 0),
++    bash('toolu_l01', inRepo('uv run pytest tests/unit/worker/test_heartbeat.py -q -p no:randomly --count 20'), 'Run the heartbeat test 20 times'),
++    progress('toolu_l01', 'Bash', 5), progress('toolu_l01', 'Bash', 10), progress('toolu_l01', 'Bash', 15),
++    result('toolu_l01', 'Exit code 1\n...................F\nFAILED tests/unit/worker/test_heartbeat.py::test_heartbeat_renews_before_expiry - assert 29.998 >= 30.0\n1 failed, 19 passed in 17.20s', true),
++    say('It fails 1 in 20: the test compares a float clock to the deadline. Reading the heartbeat loop.'),
++    call('toolu_l02', 'Read', { file_path: `${CWD}/apps/agent-worker/agent_worker/heartbeat.py` }),
++    result('toolu_l02', '    40\tdef next_beat(self, now: float) -> float:\n    41\t    return self.deadline - self.margin\n    42\t\n    43\tasync def run(self) -> None:\n    44\t    while not self.stopped:\n    45\t        await self.clock.sleep_until(self.next_beat(self.clock.now()))'),
++    think(),
++    ...edit('toolu_l03', 'tests/unit/worker/test_heartbeat.py',
++      '    assert beat_at >= lease.expires_at - MARGIN',
++      '    assert beat_at == pytest.approx(lease.expires_at - MARGIN, abs=1e-3)',
++      61, ['    beat_at = hb.next_beat(clock.now())'], ['']),
++    bash('toolu_l04', inRepo('uv run pytest tests/unit/worker/test_heartbeat.py -q -p no:randomly --count 50'), 'Run the heartbeat test 50 times'),
++    progress('toolu_l04', 'Bash', 5), progress('toolu_l04', 'Bash', 10), progress('toolu_l04', 'Bash', 15),
++    progress('toolu_l04', 'Bash', 20), progress('toolu_l04', 'Bash', 25), progress('toolu_l04', 'Bash', 30),
++    result('toolu_l04', '..................................................\n50 passed in 31.84s'),
++    say('50 of 50 pass. Running the related tests before committing.'),
++    bash('toolu_l05', inRepo('scripts/related-tests.sh --run'), 'Run the tests related to the change'),
++    progress('toolu_l05', 'Bash', 5), progress('toolu_l05', 'Bash', 10), progress('toolu_l05', 'Bash', 15), progress('toolu_l05', 'Bash', 20),
++  ]
++}
++
++// ---------------------------------------------------------------- mapping
++
++/** `map_event`, client-side: one decoded record to one step per content block. */
++function mapRecord(rec: Rec, lineOffset: number): TranscriptStep[] {
++  const raw = JSON.stringify(rec)
++  const parent = typeof rec.parent_tool_use_id === 'string' ? rec.parent_tool_use_id : null
++  const base = (block: number, over: Partial<TranscriptStep>): TranscriptStep => ({
++    id: `L${lineOffset}:${block}`, line_offset: lineOffset, block, kind: 'other', role: null, parent_tool_use_id: parent,
++    text: null, tool: null, tool_result: null, meta: null, truncated_fields: [], raw, ...over,
++  })
++  const kind = rec.type
++  if (kind === 'system') {
++    if (rec.subtype === 'init') {
++      return [base(0, { kind: 'init', role: 'system', meta: { model: rec.model, permission_mode: rec.permissionMode, tool_count: Array.isArray(rec.tools) ? rec.tools.length : null } })]
++    }
++    return [base(0, { kind: 'system', role: 'system', meta: { subtype: rec.subtype } })]
++  }
++  if (kind === 'assistant' || kind === 'user') {
++    const role = kind
++    const content = (rec.message as Rec).content as Rec[]
++    return content.map((b, i) => {
++      if (b.type === 'text') return base(i, { kind: 'text', role, text: b.text as string })
++      if (b.type === 'thinking') return base(i, { kind: 'thinking', role, text: b.thinking as string })
++      if (b.type === 'tool_use') return base(i, { kind: 'tool_call', role, tool: { id: b.id as string, name: b.name as string, input: JSON.stringify(b.input, null, 2) } })
++      if (b.type === 'tool_result') {
++        const c = b.content
++        const text = typeof c === 'string' ? c : (c as Rec[]).filter((p) => p.type === 'text').map((p) => p.text as string).join('\n')
++        const images = typeof c === 'string' ? 0 : (c as Rec[]).filter((p) => p.type === 'image').length
++        return base(i, { kind: 'tool_result', role, tool_result: { tool_use_id: b.tool_use_id as string, is_error: b.is_error as boolean, content: text, images } })
++      }
++      return base(i, { kind: 'other', role, meta: { raw_type: b.type } })
++    })
++  }
++  if (kind === 'result') {
++    const m: Rec = {}
++    for (const k of ['subtype', 'is_error', 'num_turns', 'duration_ms', 'total_cost_usd', 'stop_reason', 'terminal_reason']) m[k] = rec[k] ?? null
++    return [base(0, { kind: 'result', text: (rec.result as string | undefined) ?? null, meta: m })]
++  }
++  if (kind === 'rate_limit_event') {
++    const m: Rec = {}
++    for (const [k, v] of Object.entries(rec)) {
++      if (k === 'type' || k === 'uuid' || k === 'session_id') continue
++      if (v !== null && typeof v === 'object') for (const [ik, iv] of Object.entries(v as Rec)) m[`${k}.${ik}`] = iv
++      else m[k] = v
++    }
++    return [base(0, { kind: 'rate_limit', meta: m })]
++  }
++  return [base(0, { kind: 'other', meta: { raw_type: typeof kind === 'string' ? kind : null } })]
++}
++
++function toSteps(recs: Rec[]): TranscriptStep[] {
++  let offset = 0
++  const out: TranscriptStep[] = []
++  for (const r of recs) {
++    out.push(...mapRecord(r, offset))
++    offset += JSON.stringify(r).length + 1
++  }
++  return out
++}
++
++let liveFrom: number | null = null
++/** The live agent's records so far: the first eight at once, then one more every 900 ms, as a tail grows. */
++export function trbSteps(taskId: string): { steps: TranscriptStep[]; bytes: number; whole: boolean } | null {
++  const which = TRB_TASKS[taskId]
++  if (which === undefined) return null
++  uuidN = 0
++  msgN = 0
++  let recs = which === 'coding' ? coding() : which === 'browser' ? browser() : which === 'failed' ? failed() : live()
++  if (which === 'live') {
++    if (liveFrom === null) liveFrom = Date.now()
++    const n = Math.min(recs.length, 8 + Math.floor((Date.now() - liveFrom) / 900))
++    recs = recs.slice(0, n)
++  }
++  const steps = toSteps(recs)
++  return { steps, bytes: recs.reduce((a, r) => a + JSON.stringify(r).length + 1, 0), whole: which !== 'live' }
++}
++
++/** The run's screenshots, as the Artifacts read would serve them: a drawn stand-in per file (MOCK). */
++export const TRB_SHOTS: Record<string, { url: string; title: string; heading: string; body: string; link: string }> = {
++  'screenshots/page-2026-10-19T11-21-04-512Z.png': {
++    url: 'https://example.com/', title: 'Example Domain', heading: 'Example Domain',
++    body: 'This domain is for use in documentation examples without needing permission. Avoid use in operations.', link: 'Learn more',
++  },
++  'screenshots/page-2026-10-19T11-21-19-087Z.png': {
++    url: 'https://www.iana.org/help/example-domains', title: 'Example Domains', heading: 'Example Domains',
++    body: 'As described in RFC 2606 and RFC 6761, a number of domains such as example.com and example.org are maintained for documentation purposes.', link: 'Reserved domains',
++  },
++}
+diff --git a/apps/swarm-ui/src/traceB/model.ts b/apps/swarm-ui/src/traceB/model.ts
+new file mode 100644
+index 0000000..48b0997
+--- /dev/null
++++ b/apps/swarm-ui/src/traceB/model.ts
+@@ -0,0 +1,264 @@
++// MOCK-HOOK FILE
++// Direction B (Trace): the transcript's steps as one timeline of events, each
++// a row. Everything here is read from the steps the API serves; a field the
++// record does not carry is left out, never worked out.
++
++import { useSyncExternalStore } from 'react'
++
++import type { TranscriptStep } from '../types'
++
++export type EvKind = 'message' | 'tool' | 'edit' | 'test' | 'browser' | 'thinking' | 'start' | 'end' | 'system' | 'other'
++export type EvStatus = 'ok' | 'error' | 'running' | null
++
++export interface Ev {
++  key: string
++  n: number
++  kind: EvKind
++  label: string
++  /** A short second part of the label: a file's folder, a test count, a tool's target. */
++  sub: string | null
++  status: EvStatus
++  /** Seconds from the CLI's `tool_progress.elapsed_time_seconds` (a lower bound), or the result's `duration_ms`. */
++  secs: { value: number; from: 'progress' | 'result' } | null
++  progress: number
++  main: TranscriptStep
++  call: TranscriptStep | null
++  result: TranscriptStep | null
++  progressSteps: TranscriptStep[]
++  /** Every string a search looks through. */
++  hay: string
++}
++
++export interface Trace {
++  events: Ev[]
++  cwd: string | null
++  root: string | null
++  model: string | null
++}
++
++function rawOf(s: TranscriptStep): Record<string, unknown> | null {
++  if (s.raw === null) return null
++  try {
++    const v: unknown = JSON.parse(s.raw)
++    return v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : null
++  } catch {
++    return null
++  }
++}
++export { rawOf }
++
++export function inputOf(s: TranscriptStep | null): Record<string, unknown> {
++  if (s?.tool?.input == null) return {}
++  try {
++    const v: unknown = JSON.parse(s.tool.input)
++    return v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : {}
++  } catch {
++    return {}
++  }
++}
++
++/** The attempt's paths, dropped from commands and file names; shown once, in a tooltip. */
++export function shorten(text: string, cwd: string | null, root: string | null): string {
++  let out = text
++  if (cwd) out = out.split(`cd ${cwd} && `).join('').split(`cd ${cwd}; `).join('').split(`${cwd}/`).join('')
++  if (root) out = out.split(root).join('')
++  return out
++}
++
++const TEST = /\b(pytest|vitest|related-tests\.sh|make (test|smoke)|npm (run )?test|playwright test)\b/
++const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
++
++export function toolShort(name: string): string {
++  return name.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '')
++}
++
++function testSummary(out: string): string | null {
++  const failed = /(\d+) failed/.exec(out)?.[1]
++  const passed = /(\d+) passed/.exec(out)?.[1]
++  if (failed === undefined && passed === undefined) return null
++  return [failed && `${failed} failed`, passed && `${passed} passed`].filter(Boolean).join(' · ')
++}
++
++export function patchOf(ev: Ev): { lines: string[]; oldStart: number | null; newStart: number | null }[] | null {
++  const raw = ev.result ? rawOf(ev.result) : null
++  const tur = raw?.tool_use_result as Record<string, unknown> | undefined
++  const sp = tur?.structuredPatch
++  if (Array.isArray(sp) && sp.length > 0) {
++    return sp.map((h: Record<string, unknown>) => ({
++      lines: (h.lines as string[]) ?? [],
++      oldStart: typeof h.oldStart === 'number' ? h.oldStart : null,
++      newStart: typeof h.newStart === 'number' ? h.newStart : null,
++    }))
++  }
++  const inp = inputOf(ev.call)
++  if (typeof inp.old_string === 'string' && typeof inp.new_string === 'string') {
++    return [{ lines: [...inp.old_string.split('\n').map((l) => `-${l}`), ...inp.new_string.split('\n').map((l) => `+${l}`)], oldStart: null, newStart: null }]
++  }
++  if (typeof inp.content === 'string') return [{ lines: inp.content.replace(/\n$/, '').split('\n').map((l) => `+${l}`), oldStart: null, newStart: 1 }]
++  return null
++}
++
++function firstLine(t: string): string {
++  const line = t.split('\n').find((l) => l.trim() !== '') ?? ''
++  // Strip only markdown markers (a leading heading/quote marker, backtick pairs,
++  // emphasis around words); a _ or # inside a word or path is the agent's text.
++  return line
++    .replace(/^\s*(?:#{1,6}\s+|>\s*)/, '')
++    .replace(/`([^`]+)`/g, '$1')
++    .replace(/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/g, '$2')
++    .replace(/(^|[^\w*])([*_])(?=\S)([^*_]+?)(?<=\S)\2(?![\w*])/g, '$1$3')
++    .trim()
++}
++
++export function buildTrace(steps: readonly TranscriptStep[]): Trace {
++  const events: Ev[] = []
++  const byTool = new Map<string, Ev>()
++  let cwd: string | null = null
++  let model: string | null = null
++  const orphanProgress: TranscriptStep[] = []
++  const push = (e: Omit<Ev, 'n' | 'progress' | 'progressSteps' | 'hay' | 'call' | 'result' | 'secs'> & Partial<Ev>) => {
++    const ev: Ev = { n: events.length + 1, progress: 0, progressSteps: [], hay: '', call: null, result: null, secs: null, ...e }
++    events.push(ev)
++    return ev
++  }
++  const flushOrphans = () => {
++    if (orphanProgress.length === 0) return
++    const s = orphanProgress.splice(0)
++    push({ key: s[0]!.id, kind: 'system', label: `${s.length} progress event${s.length === 1 ? '' : 's'}`, sub: null, status: null, main: s[0]!, progressSteps: s, progress: s.length })
++  }
++  for (const s of steps) {
++    const meta = s.meta ?? {}
++    if (s.kind === 'other' && meta.raw_type === 'tool_progress') {
++      const raw = rawOf(s)
++      const ev = typeof raw?.tool_use_id === 'string' ? byTool.get(raw.tool_use_id) : undefined
++      if (ev === undefined) {
++        orphanProgress.push(s)
++        continue
++      }
++      ev.progress += 1
++      ev.progressSteps.push(s)
++      const el = raw?.elapsed_time_seconds
++      if (typeof el === 'number' && (ev.secs === null || el > ev.secs.value)) ev.secs = { value: el, from: 'progress' }
++      continue
++    }
++    flushOrphans()
++    if (s.kind === 'init') {
++      const raw = rawOf(s)
++      cwd = typeof raw?.cwd === 'string' ? raw.cwd : null
++      model = typeof meta.model === 'string' ? meta.model : null
++      const tools = typeof meta.tool_count === 'number' ? `${meta.tool_count} tools` : null
++      push({ key: s.id, kind: 'start', label: 'start', sub: [model, tools].filter(Boolean).join(' · ') || null, status: null, main: s })
++    } else if (s.kind === 'text') {
++      push({ key: s.id, kind: 'message', label: firstLine(s.text ?? '') || '(empty message)', sub: s.role === 'user' ? 'user' : null, status: null, main: s })
++    } else if (s.kind === 'thinking') {
++      const t = (s.text ?? '').trim()
++      push({ key: s.id, kind: 'thinking', label: t === '' ? 'thinking' : firstLine(t), sub: t === '' ? 'text not recorded' : null, status: null, main: s })
++    } else if (s.kind === 'tool_call') {
++      const ev = push({ key: s.id, kind: 'tool', label: s.tool?.name ?? 'tool', sub: null, status: 'running', main: s, call: s })
++      if (s.tool?.id) byTool.set(s.tool.id, ev)
++    } else if (s.kind === 'tool_result') {
++      const id = s.tool_result?.tool_use_id
++      const ev = id ? byTool.get(id) : undefined
++      if (ev !== undefined && ev.result === null) {
++        ev.result = s
++        ev.status = s.tool_result?.is_error === true ? 'error' : 'ok'
++      } else {
++        push({ key: s.id, kind: 'tool', label: 'tool result', sub: 'its call is not in this read', status: s.tool_result?.is_error === true ? 'error' : null, main: s, result: s })
++      }
++    } else if (s.kind === 'result') {
++      const ok = meta.is_error !== true
++      push({ key: s.id, kind: 'end', label: `result · ${String(meta.subtype ?? 'no subtype')}`, sub: typeof meta.num_turns === 'number' ? `${meta.num_turns} turns` : null, status: ok ? 'ok' : 'error', main: s, secs: typeof meta.duration_ms === 'number' ? { value: meta.duration_ms / 1000, from: 'result' } : null })
++    } else if (s.kind === 'rate_limit') {
++      const st = meta['rate_limit_info.status'] ?? meta.status
++      const kind = meta['rate_limit_info.rateLimitType']
++      const use = meta['rate_limit_info.utilization']
++      push({ key: s.id, kind: 'system', label: `rate limit${st ? ` · ${String(st)}` : ''}`, sub: [kind, typeof use === 'number' ? `${Math.round(use * 100)}% used` : null].filter(Boolean).join(' · ') || null, status: null, main: s })
++    } else if (s.kind === 'system') {
++      push({ key: s.id, kind: 'system', label: `system · ${String(meta.subtype ?? 'no subtype')}`, sub: null, status: null, main: s })
++    } else {
++      push({ key: s.id, kind: 'other', label: String(meta.raw_type ?? s.kind), sub: 'as recorded', status: null, main: s })
++    }
++  }
++  flushOrphans()
++  const root = cwd !== null && /^\/workspace\/[^/]+\//.test(cwd) ? /^\/workspace\/[^/]+\//.exec(cwd)![0] : null
++  // Second pass: name each tool call now that the working directory is known.
++  for (const ev of events) {
++    if (ev.call === null) continue
++    const name = ev.call.tool?.name ?? 'tool'
++    const inp = inputOf(ev.call)
++    const out = ev.result?.tool_result?.content ?? ''
++    if (name === 'Bash') {
++      const cmd = shorten(String(inp.command ?? ''), cwd, root)
++      ev.label = cmd
++      if (TEST.test(cmd)) {
++        ev.kind = 'test'
++        ev.sub = ev.result ? testSummary(out) : null
++      }
++    } else if (EDIT_TOOLS.has(name)) {
++      ev.kind = 'edit'
++      const path = shorten(String(inp.file_path ?? inp.notebook_path ?? ''), cwd, root)
++      ev.label = `${name} ${path.split('/').pop()}`
++      const patch = patchOf(ev)
++      const add = patch?.reduce((a, h) => a + h.lines.filter((l) => l.startsWith('+')).length, 0) ?? 0
++      const del = patch?.reduce((a, h) => a + h.lines.filter((l) => l.startsWith('-')).length, 0) ?? 0
++      ev.sub = `+${add} −${del}`
++    } else if (name.startsWith('mcp__') && /browser_/.test(name)) {
++      ev.kind = 'browser'
++      const short = toolShort(name).replace(/^browser_/, '')
++      const target = inp.url ?? inp.element ?? inp.text ?? null
++      ev.label = target ? `${short} ${String(target)}` : short
++      const page = /Page URL: (\S+)/.exec(out)?.[1]
++      if (short === 'console_messages') {
++        const errs = (out.match(/^\[ERROR\]/gm) ?? []).length
++        const warns = (out.match(/^\[WARNING\]/gm) ?? []).length
++        ev.sub = `${errs} error${errs === 1 ? '' : 's'} · ${warns} warning${warns === 1 ? '' : 's'}`
++      } else if (short === 'take_screenshot') ev.sub = page ?? null
++    } else if (name === 'Read') {
++      const path = shorten(String(inp.file_path ?? ''), cwd, root)
++      ev.label = `Read ${path.split('/').pop()}`
++      ev.sub = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : null
++    } else {
++      const first = Object.values(inp).find((v) => typeof v === 'string') as string | undefined
++      ev.label = `${toolShort(name)}${first ? ` ${shorten(first, cwd, root)}` : ''}`
++    }
++  }
++  for (const ev of events) {
++    ev.hay = [ev.label, ev.sub ?? '', ev.main.text ?? '', shorten(ev.call?.tool?.input ?? '', cwd, root), shorten(ev.result?.tool_result?.content ?? '', cwd, root)].join('\n').toLowerCase()
++  }
++  return { events, cwd, root, model }
++}
++
++export type Filter = 'all' | 'messages' | 'tools' | 'edits' | 'errors'
++export function inFilter(ev: Ev, f: Filter): boolean {
++  if (f === 'all') return true
++  if (f === 'messages') return ev.kind === 'message'
++  if (f === 'tools') return ev.kind === 'tool' || ev.kind === 'test' || ev.kind === 'browser' || ev.kind === 'edit'
++  if (f === 'edits') return ev.kind === 'edit'
++  return ev.status === 'error'
++}
++
++/** A duration as the console writes one: `12 s`, `4 m 12 s`. */
++export function dur(secs: number): string {
++  // The agent head's own format ('2m 4s'), so the two times on one screen read alike.
++  if (secs < 60) return `${secs < 10 ? Math.round(secs * 10) / 10 : Math.round(secs)}s`
++  const m = Math.floor(secs / 60)
++  const s = Math.round(secs - m * 60)
++  return s === 0 ? `${m}m` : `${m}m ${s}s`
++}
++
++// THE LIST FOLDS AWAY WHILE A TRANSCRIPT IS READ, and comes back in one click.
++let wide = true
++const subs = new Set<() => void>()
++export function setTraceWide(next: boolean): void {
++  wide = next
++  subs.forEach((f) => f())
++}
++export function useTraceWide(): boolean {
++  return useSyncExternalStore(
++    (f) => {
++      subs.add(f)
++      return () => subs.delete(f)
++    },
++    () => wide,
++  )
++}
+diff --git a/apps/swarm-ui/src/traceB/trace-b.css b/apps/swarm-ui/src/traceB/trace-b.css
+new file mode 100644
+index 0000000..91ca6e5
+--- /dev/null
++++ b/apps/swarm-ui/src/traceB/trace-b.css
+@@ -0,0 +1,153 @@
++/* MOCK-HOOK FILE -- direction B (Trace), ?tr=b */
++.ag-split > .ag-split-pane.is-logs:has(> .trb) { height: auto; }
++.trb { display: flex; flex-direction: column; min-height: 0; gap: 6px; font-size: 13px; color: var(--text); }
++.trb .mono { font-family: var(--mono); }
++.trb-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
++.trb-search { position: relative; flex: 1 1 180px; min-width: 140px; max-width: 360px; }
++.trb-search input { width: 100%; height: 30px; box-sizing: border-box; padding: 0 44px 0 10px; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); font: inherit; }
++.trb-count { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
++.trb-btn { height: 30px; padding: 0 10px; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
++.trb-btn:hover:not(:disabled) { background: var(--surface-2); }
++.trb-btn:disabled { color: var(--text-faint); border-color: var(--line); cursor: default; }
++.trb-btn.is-on { border-color: var(--info); color: var(--info-ink); background: color-mix(in srgb, var(--info) 12%, var(--surface)); }
++.trb-err:not(:disabled) { border-color: color-mix(in srgb, var(--bad) 60%, var(--ctl-bd)); color: var(--bad-ink); }
++.trb-fold { margin-left: auto; }
++.trb-bar2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: space-between; }
++.trb-chips { display: flex; gap: 4px; flex-wrap: wrap; }
++.trb-chip { height: 26px; padding: 0 9px; border-radius: var(--r-pill); border: 1px solid var(--line); background: transparent; color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; }
++.trb-chip em { font-style: normal; font-family: var(--mono); margin-left: 3px; color: var(--text-faint); }
++.trb-chip.is-on { background: var(--text); color: var(--bg); border-color: var(--text); }
++.trb-chip.is-on em { color: inherit; opacity: .75; }
++.trb-chip.is-bad:not(.is-on) { color: var(--bad-ink); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
++.trb-chip.is-bad:not(.is-on) em { color: var(--bad-ink); }
++.trb-chip:disabled { opacity: .55; cursor: default; }
++.trb-summary { margin: 0; display: flex; gap: 0; flex-wrap: wrap; color: var(--text-dim); font-size: 12px; }
++.trb-summary > span + span::before { content: '·'; margin: 0 6px; color: var(--text-faint); }
++.trb-cwd { cursor: help; }
++.trb-cwd-t { text-decoration: underline dotted; text-underline-offset: 3px; }
++.trb-taskerr { margin: 0; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: var(--r-ctl); background: color-mix(in srgb, var(--bad) 10%, var(--surface)); color: var(--bad-ink); font-size: 13px; }
++.trb-taskerr .mono { color: var(--text); }
++
++.trb-panes { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(300px, 38%) minmax(0, 1fr); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; background: var(--surface); }
++.trb.is-stack .trb-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 42%) minmax(0, 1fr); }
++.trb.is-phone .trb-panes { grid-template-columns: minmax(0, 1fr); }
++.trb.is-phone .trb-search { flex-basis: 110px; min-width: 100px; }
++.trb.is-phone .trb-right { display: none; }
++.trb.is-phone.is-detail .trb-right { display: block; }
++.trb.is-phone.is-detail .trb-left { display: none; }
++.trb-left { min-height: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; }
++.trb.is-stack .trb-left { border-right: 0; border-bottom: 1px solid var(--line); }
++.trb-list { list-style: none; margin: 0; padding: 4px 0; overflow: auto; flex: 1; min-height: 0; outline: none; }
++.trb-list:focus-visible { box-shadow: inset 0 0 0 2px var(--info); }
++.trb-row { display: grid; grid-template-columns: 22px 16px minmax(0, 1fr) auto auto 14px; align-items: center; gap: 7px; width: 100%; min-height: 25px; padding: 2px 10px 2px 6px; border: 0; border-left: 3px solid transparent; background: transparent; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
++.trb-row:hover { background: var(--surface-2); }
++.trb-row.is-sel { background: color-mix(in srgb, var(--info) 14%, var(--surface)); border-left-color: var(--info); }
++.trb-row.is-error { color: var(--bad-ink); }
++.trb-row.is-hit:not(.is-sel) { border-left-color: var(--warn); }
++.trb-row.is-miss { opacity: .5; }
++.trb-row.is-thinking, .trb-row.is-system { color: var(--text-dim); }
++.trb-n { font-family: var(--mono); font-size: 12px; color: var(--text-faint); text-align: right; }
++.trb-label { display: flex; gap: 6px; min-width: 0; white-space: nowrap; }
++.trb-label > .trb-l { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 0 auto; max-width: 72%; }
++.trb-row.is-test .trb-label > .trb-l, .trb-row.is-edit .trb-label > .trb-l, .trb-label > .trb-l:only-child { flex: 0 1 auto; max-width: none; }
++.trb-label > .trb-sub { overflow: hidden; text-overflow: ellipsis; flex: 0 8 auto; min-width: 0; }
++.trb-row.is-test .trb-label > .trb-sub, .trb-row.is-edit .trb-label > .trb-sub { flex: none; max-width: none; overflow: visible; }
++/* A test's count and the result's outcome are the row's status: the command or turns give way, never them. */
++.trb-row.is-test .trb-label > .trb-l { flex: 0 1 auto; min-width: 3ch; }
++.trb-row.is-end .trb-label > .trb-l { flex: none; max-width: none; overflow: visible; }
++.trb-label.mono { font-size: 12.5px; }
++.trb-sub { color: var(--text-dim); font-family: var(--font); font-size: 12px; }
++.trb-row.is-error .trb-sub { color: var(--bad-ink); }
++.trb-prog { font-family: var(--mono); font-size: 12px; color: var(--text-faint); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 0 5px; line-height: 16px; }
++.trb-row.is-sel .trb-prog { border-color: color-mix(in srgb, var(--info) 55%, var(--line)); }
++.trb-dur { font-family: var(--mono); font-size: 12px; color: var(--text-dim); text-align: right; min-width: 0; }
++.trb-st { font-size: 12px; text-align: center; }
++.trb-st.is-ok { color: var(--ok-ink); }
++.trb-st.is-err { color: var(--bad-ink); font-weight: 600; }
++.trb-st.is-run { color: var(--info); animation: trb-pulse 1.4s ease-in-out infinite; }
++.trb-ic { flex: none; color: var(--text-dim); }
++.trb-ic.is-message { color: var(--info-ink); }
++.trb-ic.is-edit { color: var(--paused-ink); }
++.trb-ic.is-test { color: var(--ok-ink); }
++.trb-ic.is-browser { color: var(--info-ink); }
++.trb-ic.is-error { color: var(--bad-ink); }
++.trb-gap { padding: 6px 12px; color: var(--text-dim); font-size: 12px; }
++.trb-tail { display: flex; align-items: center; gap: 6px; }
++.trb-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: trb-pulse 1.4s ease-in-out infinite; }
++@keyframes trb-pulse { 50% { opacity: .3; } }
++.trb mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inherit; border-radius: 2px; }
++
++.trb-right { min-height: 0; display: flex; flex-direction: column; }
++.trb-slot { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 14px 20px; }
++.trb-right.has-kept > .trb-slot { flex: 1 1 50%; }
++.trb-slot.is-kept { border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 40%, var(--surface)); }
++.trb-back { margin: 10px 14px 0; align-self: flex-start; height: 30px; padding: 0 10px; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); font: inherit; }
++.trb-card-head { display: flex; align-items: flex-start; gap: 8px; position: sticky; top: -12px; z-index: 1; margin: -12px -14px 0; padding: 12px 14px 8px; background: var(--surface); border-bottom: 1px solid transparent; }
++.trb-slot.is-kept .trb-card-head { background: color-mix(in srgb, var(--surface-2) 40%, var(--surface)); }
++.trb-card-head > .trb-ic { margin-top: 3px; }
++.trb-card-title { flex: 1; min-width: 0; }
++.trb-card-title h3 { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
++.trb-card-title h3.mono { font-size: 14px; font-weight: 500; }
++.trb-card.is-error .trb-card-title h3 { color: var(--bad-ink); }
++.trb-card-sub { margin: 2px 0 0; color: var(--text-dim); font-size: 12px; }
++.trb-card-sub .trb-dur { font-size: 12px; }
++.trb-card-acts { display: flex; gap: 6px; }
++.trb-card-acts .trb-btn { height: 26px; font-size: 12px; padding: 0 8px; }
++.trb-card-body { margin-top: 10px; }
++.trb-sec { margin-top: 12px; }
++.trb-sec:first-child { margin-top: 0; }
++.trb-sec h4 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: none; }
++.trb-pre { margin: 0; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: var(--r-tile); font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
++.trb-cmd { color: var(--text); }
++.trb-raw { font-size: 12px; color: var(--text-dim); }
++.trb-ln.is-err { color: var(--bad-ink); }
++.trb-ln.is-warn { color: var(--warn-ink); }
++.trb-ln.is-ok { color: var(--ok-ink); }
++.trb-dim { color: var(--text-dim); margin: 0; font-size: 13px; }
++.trb-pad { padding: 14px; }
++.trb-md { max-width: 74ch; line-height: 1.55; }
++.trb-md > :first-child { margin-top: 0; }
++.trb-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0 0 4px; font-size: 13px; }
++.trb-facts dt { color: var(--text-dim); }
++.trb-facts dd { margin: 0; overflow-wrap: anywhere; }
++.trb-good { color: var(--ok-ink); }
++.trb-bad { color: var(--bad-ink); }
++.trb-link { background: none; border: 0; padding: 0; font: inherit; color: var(--info-ink); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
++.trb-more { margin-top: 10px; }
++.trb-more summary { cursor: pointer; color: var(--text-dim); font-size: 12px; }
++.trb-more .trb-pre { margin-top: 6px; }
++.trb-desc { font-style: italic; }
++
++.trb-diff { border: 1px solid var(--line); border-radius: var(--r-tile); overflow: hidden; }
++.trb-diff-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 6px 10px; background: var(--surface-2); border-bottom: 1px solid var(--line); font-size: 12.5px; flex-wrap: wrap; }
++.trb-diff-path { overflow-wrap: anywhere; }
++.trb-hunk { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; }
++.trb-hunk td { padding: 0 8px; vertical-align: top; }
++.trb-hunk .trb-no { width: 1%; color: var(--text-faint); text-align: right; user-select: none; white-space: nowrap; font-size: 12px; }
++.trb-hunk .trb-code { white-space: pre-wrap; overflow-wrap: anywhere; }
++.trb-sign { display: inline-block; width: 1.2ch; color: var(--text-faint); }
++.trb-hunk tr.is-add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
++.trb-hunk tr.is-add .trb-sign { color: var(--ok-ink); }
++.trb-hunk tr.is-del { background: color-mix(in srgb, var(--bad) 13%, transparent); }
++.trb-hunk tr.is-del .trb-sign { color: var(--bad-ink); }
++.trb-hunk tr.is-hunk td { color: var(--text-dim); background: var(--surface-2); padding: 2px 8px; font-size: 12px; }
++
++.trb-shot { margin: 12px 0 0; }
++.trb-shot-frame { border: 1px solid var(--line); border-radius: var(--r-tile); overflow: hidden; max-width: 640px; background: #fff; color: #222; }
++.trb-shot-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: #eef0f3; border-bottom: 1px solid #d5d9df; }
++.trb-shot-dots { width: 34px; height: 8px; background: radial-gradient(circle, #c9ced6 3.5px, transparent 4px) 0 0 / 12px 8px repeat-x; }
++.trb-shot-url { flex: 1; font: 12px var(--mono); color: #444; background: #fff; border-radius: 6px; padding: 2px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.trb-shot-page { padding: 40px 48px 52px; background: #f0f0f2; font-family: -apple-system, 'Segoe UI', sans-serif; }
++.trb-shot-page h1 { margin: 0 0 14px; font-size: 26px; color: #111; }
++.trb-shot-page p { margin: 0 0 10px; font-size: 14px; line-height: 1.5; max-width: 52ch; color: #222; }
++.trb-shot-page u { color: #38488f; }
++.trb-shot figcaption { margin-top: 6px; color: var(--text-dim); font-size: 12px; }
++
++/* THE LIST FOLDED AWAY: the transcript reads full width; a strip on the left brings the list back. */
++.wi.is-docked.is-trwide { grid-template-columns: 40px minmax(0, 1fr); }
++.wi.is-docked.is-trwide > .wi-main, .wi.is-docked.is-trwide > .wi-handle { display: none; }
++.trb-strip { display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 6px; border-right: 1px solid var(--line); }
++.trb-strip button { width: 30px; height: 30px; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); cursor: pointer; font-size: 14px; }
++.trb-strip span { writing-mode: vertical-rl; transform: rotate(180deg); color: var(--text-dim); font-size: 12px; }
++.trb.is-phone .trb-bar2 { gap: 6px; }
++.trb.is-phone .trb-chip { padding: 0 7px; }
+diff --git a/apps/swarm-ui/src/work/Inspector.tsx b/apps/swarm-ui/src/work/Inspector.tsx
+index 887546b..8d94be5 100644
+--- a/apps/swarm-ui/src/work/Inspector.tsx
++++ b/apps/swarm-ui/src/work/Inspector.tsx
+@@ -11,6 +11,8 @@ import {
+   type RefObject,
+ } from 'react'
+ 
++import { trbOn } from '../traceB/fixtures' // MOCK-HOOK
++import { setTraceWide, useTraceWide } from '../traceB/model' // MOCK-HOOK
+ import { clampPane, readPane, writePane, type PaneSpec } from '../panes'
+ import './inspectorShell.css'
+ 
+@@ -201,6 +203,7 @@ export function Inspector({
+   const [dragging, setDragging] = useState(false)
+   const drag = useRef<{ right: number; at: number } | null>(null)
+   const phone = useIsPhone()
++  const trWideOn = useTraceWide() // MOCK-HOOK
+   const pageWidth = usePageWidth(root)
+ 
+   // A remount on another screen reads that screen's own width.
+@@ -285,12 +288,14 @@ export function Inspector({
+     return () => window.removeEventListener('keydown', esc)
+   }, [sheet, back])
+ 
++  const trWide = trbOn() && trWideOn && docked && /\/logs(\/|$)/.test(window.location.pathname) // MOCK-HOOK
+   const cls = [
+     'wi',
+     has && !phone ? (folded ? 'is-folded' : 'is-docked') : 'is-alone',
+     phone ? 'is-phone' : '',
+     sheet ? 'is-sheet' : '',
+     dragging ? 'is-dragging' : '',
++    trWide ? 'is-trwide' : '', // MOCK-HOOK
+   ]
+     .filter(Boolean)
+     .join(' ')
+@@ -328,6 +333,12 @@ export function Inspector({
+ 
+   return (
+     <div ref={root} className={cls} style={{ ['--wi-dock' as string]: `${width}px` }} data-screen={screen}>
++      {trWide && ( // MOCK-HOOK
++        <div className="trb-strip"> {/* MOCK-HOOK */}
++          <button type="button" onClick={() => setTraceWide(false)} aria-label="Show the agent list" title="Show the agent list ([)">☰</button> {/* MOCK-HOOK */}
++          <span>Agents</span> {/* MOCK-HOOK */}
++        </div> // MOCK-HOOK
++      )} {/* MOCK-HOOK */}
+       <div className="wi-main" data-width={widthClass}>
+         {main}
+       </div>

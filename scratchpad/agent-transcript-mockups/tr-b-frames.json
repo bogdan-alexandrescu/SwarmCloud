@@ -1,0 +1,51 @@
+[
+ {
+  "name": "tr-b-coding-rest",
+  "screen": "Agent · Logs · Transcript (trace)",
+  "state": "coding lane finished, at rest",
+  "viewport": "1440x900",
+  "caption": "The finished coding lane at rest, full width: the agent list is folded to a strip on the left. Left, all 20 events, every one on screen, one per row with a kind icon, label, progress count, duration where the record holds one and a tick or cross. Right, the last message, the answer, picked; the result row below it only points back to it."
+ },
+ {
+  "name": "tr-b-coding-open",
+  "screen": "Agent · Logs · Transcript (trace)",
+  "state": "test failure open, edit kept open below",
+  "viewport": "1440x900",
+  "caption": "The failing test run (#9) is open at its stack trace, and the reconciler edit (#7) is kept open underneath as a diff with line numbers and an 'Open in Changes' link. Each scrolls on its own."
+ },
+ {
+  "name": "tr-b-browser",
+  "screen": "Agent · Logs · Transcript (trace)",
+  "state": "browser lane, screenshot step open",
+  "viewport": "1440x900",
+  "caption": "The browser lane with its first screenshot step open: the screenshot from the run's artifacts, its file name, and the tool's full output. The console step's row counts 1 error and 1 warning."
+ },
+ {
+  "name": "tr-b-failed",
+  "screen": "Agent · Logs · Transcript (trace)",
+  "state": "failed run, jumped to its error",
+  "viewport": "1440x900",
+  "caption": "The failed run after 'Jump to error': the test run that failed is picked and opened at its first stack line. Above the panes, the task's own exit error from the task record. The result row is marked as an error."
+ },
+ {
+  "name": "tr-b-live",
+  "screen": "Agent · Logs · Transcript (trace)",
+  "state": "live run following its newest event",
+  "viewport": "1440x900",
+  "caption": "A running agent, minutes into its run. New events are added to the timeline and the newest stays picked while 'Following' is on. The running test shows the seconds its last progress report gave, and 'No result in this read yet'."
+ },
+ {
+  "name": "tr-b-coding-rest-1280",
+  "screen": "Agent · Logs · Transcript (trace)",
+  "state": "coding lane at rest, agent list back in",
+  "viewport": "1280x800",
+  "caption": "At 1280 with the agent list back in, the trace is narrow, so it shows only the timeline. The agent's details are scrolled up under its tabs so the timeline gets the height: every test count, duration and tick shows whole. The ⇤ button folds the list away again."
+ },
+ {
+  "name": "tr-b-coding-rest-390",
+  "screen": "Agent · Logs · Transcript (trace)",
+  "state": "coding lane at rest, phone",
+  "viewport": "390x844",
+  "caption": "On a phone the timeline takes the full width below the agent head, scrolled to the picked last message; tapping a row opens that event full screen with '← Events' to go back. The filter chips use short names."
+ }
+]
