@@ -44,6 +44,7 @@ def test_a_commit_github_has_answers_its_sha_from_the_commits_route() -> None:
 
 def test_no_commit_found_for_sha_is_none() -> None:
     writes = forge_fakes.GitHubWrites()
+    writes.missing_commit = 422
 
     assert _writer(writes).commit_head(REF, SHA, forge_fakes.make_token()) is None
 
