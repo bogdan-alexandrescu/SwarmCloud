@@ -176,9 +176,10 @@ def test_a_step_handed_back_by_the_gate_that_returns_publishes_its_work(
     assert seen["record"]["moved_head"]["returned"] is True
     assert out["published"] is True, out
     assert "head_moved" not in out, out
-    pushed = pushed_commits(origin, f"swarm/{config.task_id}")
-    merges = [c for c in pushed if len(c["parents"]) == 2]
-    assert len(merges) == 1, pushed
+    assert pushed_commits(origin, f"swarm/{config.task_id}"), "nothing was pushed"
+    # The work it brought back: its own change and the train it merged.
+    tree = _git(origin, "ls-tree", "--name-only", f"swarm/{config.task_id}").split()
+    assert {"mine.py", "train.txt"} <= set(tree) and "other.txt" not in tree, tree
     assert not _bundle(seen["worker"]).exists()
 
 

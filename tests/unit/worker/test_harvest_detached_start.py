@@ -100,6 +100,8 @@ def test_a_review_cloned_by_sha_that_detaches_onto_the_reviewed_branch_publishes
     assert out["publish_reason"] == (
         f"HEAD moved off this task's branch (to {reviewed_tip[:12]}); "
         "nothing of this task's was published"
+        "; its commits are kept in the step's artifacts as moved-head.bundle "
+        "(git fetch moved-head.bundle)"
     ), out
     # MUTATION: count the moved HEAD's commits and the reviewed two are this step's.
     assert out["commit_count"] == 0 and out["dirty_count"] == 0, out
