@@ -27,6 +27,7 @@ from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
 from swarm_api.forge import NoForgeCredential
 from swarm_api.forgewrite import (
+    ForgeRateLimited,
     ForgeUnreachable,
     ForgeWriteForbidden,
     ForgeWriteNotFound,
@@ -68,13 +69,14 @@ class FakeTokens:
 
 
 class FakeForge:
-    """GitHub, as the admission check reads it: which branches and tags exist
-    per repository, and the pull requests it can read."""
+    """GitHub, as the admission check reads it: which branches, tags and
+    commits exist per repository, and the pull requests it can read."""
 
-    def __init__(self, *, branches=(), tags=(), error: Exception | None = None,
+    def __init__(self, *, branches=(), tags=(), commits=(), error: Exception | None = None,
                  readable: bool = True, pulls: dict[int, PullSnapshot] | None = None) -> None:
         self.branches = set(branches)
         self.tags = set(tags)
+        self.commits = set(commits)
         self.error = error
         self.readable = readable
         self.pulls = pulls or {}
@@ -94,6 +96,10 @@ class FakeForge:
     def tag_head(self, ref, tag: str, token: str) -> str | None:
         self._record("tag", ref, tag, token)
         return FULL if tag in self.tags else None
+
+    def commit_head(self, ref, sha: str, token: str) -> str | None:
+        self._record("commit", ref, sha, token)
+        return sha if sha in self.commits else None
 
     def default_branch(self, ref, token: str) -> str:
         self._record("repository", ref, "", token)
@@ -232,12 +238,14 @@ def test_the_forge_is_asked_once_per_submission(make_client, db):
 
 
 def test_full_sha_and_tag_are_admitted(make_client, db):
-    forge = FakeForge(branches={"main"}, tags={"v1.2.3"})
+    forge = FakeForge(branches={"main"}, tags={"v1.2.3"}, commits={FULL})
     client = make_client(forge=forge)
 
     assert _workflow(client, FULL).status_code == 201
     assert _task(client, FULL).status_code == 201
-    assert forge.calls == [], "a full sha is fetched by sha, never looked up"
+    # #3315: a full sha is asked about too, once per submission, as a commit.
+    assert forge.calls == [("commit", "example-org/example", FULL)] * 2
+    forge.calls.clear()
 
     response = _workflow(client, "v1.2.3")
     assert response.status_code == 201, response.text
@@ -279,6 +287,122 @@ def test_admission_fails_open_when_the_forge_does_not_answer(make_client, db, ca
     assert _workflow(client, MISSING).status_code == 201
     assert _task(client, MISSING).status_code == 201
     assert len(_stored(db)) == 2
+
+
+# -- a full sha (#3315) ---------------------------------------------------------
+#
+# task_36c8a894 was admitted with a full sha GitHub does not serve; its clone
+# failed with "not our ref" after a lease and a pod. A full sha is now asked
+# about as a commit, once per submission, and refused the same way.
+
+
+def test_a_full_sha_github_has_no_commit_for_is_refused_before_any_task(make_client, db):
+    forge = FakeForge(branches={"main"}, commits=set())
+    client = make_client(forge=forge)
+
+    body = _assert_refused(_task(client, FULL), db, FULL)
+    assert "example-org/example" in body["message"]
+    assert "commit" in body["message"] and "main" in body["message"]
+    assert "task_id" not in body["detail"] and "pull_request" not in body["detail"]
+    assert forge.calls == [("commit", "example-org/example", FULL),
+                           ("repository", "example-org/example", "")]
+
+    forge.calls.clear()
+    _assert_refused(_workflow(client, FULL, steps=3), db, FULL)
+    assert not any(c[0] in ("branch", "tag") for c in forge.calls)
+
+    _assert_refused(_tasks(client, (REPO, "main"), (OTHER_REPO, FULL)), db, FULL)
+
+
+def test_a_full_sha_github_has_is_asked_once_and_admitted(make_client, db):
+    forge = FakeForge(branches={"main"}, commits={FULL})
+    client = make_client(forge=forge)
+
+    response = _workflow(client, FULL, steps=3)
+
+    assert response.status_code == 201, response.text
+    assert forge.calls == [("commit", "example-org/example", FULL)]
+    assert len(_stored(db)) == 3
+
+    forge.calls.clear()
+    response = _tasks(client, (REPO, FULL), (REPO, FULL), (OTHER_REPO, FULL))
+
+    assert response.status_code == 201, response.text
+    assert sorted(forge.calls) == sorted([
+        ("commit", "example-org/example", FULL),
+        ("commit", "example-org/widgets", FULL),
+    ])
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["unreachable", "timeout", "unauthorized", "forbidden", "rate_limited", "no_credential",
+     "no_reader", "unreadable_repository", "off_github"],
+)
+def test_a_full_sha_fails_open_when_the_forge_does_not_answer(make_client, db, case):
+    forge_tokens = FakeTokens()
+    forge: FakeForge | None = FakeForge(branches={"main"}, commits=set())
+    url = REPO
+    if case == "unreachable":
+        forge.error = ForgeUnreachable("GitHub answered HTTP 502 for the commit")
+    elif case == "timeout":
+        forge.error = TimeoutError("timed out")
+    elif case == "unauthorized":
+        forge.error = ForgeWriteUnauthorized("GitHub refused the credential")
+    elif case == "forbidden":
+        forge.error = ForgeWriteForbidden("GitHub forbade the read")
+    elif case == "rate_limited":
+        forge.error = ForgeRateLimited("GitHub's rate limit held back the commit", reset=None)
+    elif case == "no_credential":
+        forge_tokens = FakeTokens(error=NoForgeCredential("no forge credential"))
+    elif case == "no_reader":
+        forge = None
+    elif case == "unreadable_repository":
+        # The commit 404s and so does the repository: a token that cannot
+        # see it reads exactly that, so nothing is refused.
+        forge.readable = False
+    elif case == "off_github":
+        url = "https://gitlab.com/example-org/example.git"
+    client = make_client(forge_tokens=forge_tokens, forge=forge)
+
+    assert _workflow(client, FULL, repository_url=url).status_code == 201
+    response = client.post(
+        "/v1/tasks", headers=auth_header("alice"),
+        json={"runner_profile": "mock", "repository_url": url, "repository_ref": FULL},
+    )
+    assert response.status_code == 201, response.text
+    assert len(_stored(db)) == 2
+    if case == "off_github":
+        assert forge.calls == []
+
+
+def test_off_a_missing_commit_is_logged_and_the_submission_admitted(make_client, db, caplog,
+                                                                     monkeypatch):
+    monkeypatch.delenv(SWITCH, raising=False)
+    caplog.set_level(logging.WARNING, logger="swarm_api.refusals")
+    client = make_client(forge=FakeForge(branches={"main"}, commits=set()))
+
+    response = _task(client, FULL)
+
+    assert response.status_code == 201, response.text
+    assert "code=repository_ref_not_found" in caplog.text
+    assert len(_stored(db)) == 1
+
+
+def test_no_token_is_printed_for_a_full_sha(make_client, db, caplog):
+    caplog.set_level(logging.DEBUG)
+    forge_tokens = FakeTokens()
+    forge = FakeForge(branches={"main"}, commits=set())
+    client = make_client(forge_tokens=forge_tokens, forge=forge)
+
+    refused = _task(client, FULL)
+    forge.error = ForgeUnreachable("GitHub answered HTTP 503 for the commit")
+    admitted = _task(client, FULL)
+
+    assert refused.status_code == 422 and admitted.status_code == 201
+    assert forge.tokens and set(forge.tokens) == {forge_tokens.value}
+    for text in (refused.text, admitted.text, caplog.text):
+        assert forge_tokens.value not in text
 
 
 def _seed_published(db, task_id: str, *, tenant_id: str, number: int) -> None:
