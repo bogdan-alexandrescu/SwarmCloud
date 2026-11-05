@@ -4079,6 +4079,11 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     browser = progress.browser_words(task)
     if browser is not None:
         described["browser"] = browser
+    # A LIVE-BROWSER RUN THAT NEVER USED IT (2026-11-05): one line, advice
+    # only; no key for true, null or a non-browser profile.
+    unused = progress.browser_unused_line(task)
+    if unused is not None:
+        described["browser_unused"] = unused
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
 
@@ -5424,7 +5429,12 @@ def _call(
         # what the agent actually produced.
         for task in report["tasks"]:
             if task["read"] == "ok" and task["terminal"]:
-                task["result"] = describe_task(client.task(task["task_id"]), client)
+                read = client.task(task["task_id"])
+                task["result"] = describe_task(read, client)
+                # A live-browser run that never used it (2026-11-05).
+                unused = progress.browser_unused_line(read)
+                if unused is not None:
+                    task["result"]["browser_unused"] = unused
         # The same position as `cursor`, as one token, for a caller that would
         # rather not copy a nested object back by hand.
         report["since"] = progress.encode_since(
@@ -5450,10 +5460,13 @@ def _call(
             # (SC-ROWS), which `/sc status` prints first on the task's line.
             # `waiting`/`waiting_line` (#1782): why a waiting task waits, in
             # the API's words, printed after the state; absent otherwise.
-            rows.append(with_console(
-                {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
-                 "masked": masked_counts(task), **progress.waiting_fields(task)}, task
-            ))
+            row = {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
+                   "masked": masked_counts(task), **progress.waiting_fields(task)}
+            # A FINISHED live-browser run that never used it (2026-11-05).
+            unused = progress.browser_unused_line(task)
+            if unused is not None:
+                row["browser_unused"] = unused
+            rows.append(with_console(row, task))
         return json.dumps(rows, indent=2)
 
     if name == "swarm_wait":
@@ -5937,6 +5950,12 @@ def _call(
                 describe=_describe_step if name == "swarm_workflow_result" else None,
             ),
         )
+        if name == "swarm_workflow_result":
+            # The steps that ran on a live browser and never used it, once
+            # each (2026-11-05); no key when there is none.
+            unused = workflows.browser_unused_steps(envelope)
+            if unused:
+                reported["browser_unused"] = unused
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
 

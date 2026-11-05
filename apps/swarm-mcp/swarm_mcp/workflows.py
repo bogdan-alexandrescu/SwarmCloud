@@ -55,7 +55,7 @@ from . import profiles as catalogue
 from .client import SwarmClient, SwarmError, check_additional_repositories, session_tag
 from .follow import follow_command
 from .patches import masked_counts
-from .progress import questions_count
+from .progress import browser_unused_line, questions_count
 
 #: What `codec.workflow_to_api` sets on a read that actually looked at the step
 #: tasks. Any other value -- including the absence of the field -- means the
@@ -1253,6 +1253,32 @@ def step_rows(
             row["produced"] = produced
         rows.append(row)
     return rows
+
+
+def browser_unused_steps(envelope: dict[str, Any]) -> list[str]:
+    """One line per step whose task ran on a live browser and never used it,
+    once each, in the steps' order (`progress.browser_unused_line`).
+
+    The join is `step_rows`' own, `step.task_id -> task.id`; a step whose task
+    the read did not return says nothing, because nothing was measured.
+    """
+    tasks = {
+        str(task["id"]): task
+        for task in envelope.get("tasks") or []
+        if isinstance(task, dict) and task.get("id")
+    }
+    lines: list[str] = []
+    seen: set[str] = set()
+    for step in envelope["workflow"].get("steps") or []:
+        step_id = str(step.get("step_id"))
+        task = tasks.get(str(step.get("task_id")))
+        if task is None or step_id in seen:
+            continue
+        line = browser_unused_line(task, label=f"step {step_id} ({step.get('task_id')})")
+        if line is not None:
+            seen.add(step_id)
+            lines.append(line)
+    return lines
 
 
 def report(
