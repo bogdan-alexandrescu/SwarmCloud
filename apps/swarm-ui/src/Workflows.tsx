@@ -6692,7 +6692,7 @@ function Board({
   const main = (
     <div className="wfp wfp-main">
       <WorkflowHead workflow={workflow} taskById={taskById} usage={usage} now={now} />
-      <NeedsYou items={needItems} approvals={null} selected={needKind} onSelect={onNeed} onChanged={reload} />
+      <NeedsYou items={needItems} approvals={null} selected={needKind} onSelect={onNeed} onChanged={reload} cardStep={picked} />
       <div className="wfp-viewbar">
         <WfTabs id={id} query={query} view={view} steps={workflow.steps.length} onView={focus.onView} />
         {(strays.length > 0 || unreadable.length > 0) && (

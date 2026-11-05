@@ -393,6 +393,7 @@ export function NeedsYou({
   selected,
   onSelect,
   onChanged,
+  cardStep,
 }: {
   items: NeedItems
   /** The approvals waiting, or null when the page could not read them ("not known"). */
@@ -403,6 +404,8 @@ export function NeedsYou({
   onSelect?: (pick: NeedSelection | null) => void
   /** An action was accepted (an answer saved, an approval given, I'm ready): the page reads again. */
   onChanged?: () => void
+  /** The step the workflow page's step card shows, which already says why it failed. */
+  cardStep?: string | null
 }) {
   const [own, setOwn] = useState<NeedKind | null>(null)
   const [unfolded, setUnfolded] = useState(false)
@@ -435,6 +438,7 @@ export function NeedsYou({
       asks={asks}
       onUnfold={(k) => (k === null ? setUnfolded(true) : pick(k))}
       onChanged={onChanged}
+      cardStep={cardStep ?? null}
     />
   )
   // The cards stand beside the questions: hidden while a chip picks another kind.
@@ -514,6 +518,7 @@ function NeedsList({
   asks,
   onUnfold,
   onChanged,
+  cardStep,
 }: {
   id: string
   items: NeedItems
@@ -523,6 +528,7 @@ function NeedsList({
   asks: ReadonlyMap<string, PluginAsk>
   onUnfold: (k: NeedKind | null) => void
   onChanged?: () => void
+  cardStep: string | null
 }) {
   if (items.length === 0 && approvals.length === 0) {
     // A KIND THE READ COULD NOT COUNT IS NOT A QUIET ONE: with questions or a
@@ -548,7 +554,7 @@ function NeedsList({
     const all: JSX.Element[] =
       k === 'approval'
         ? approvals.map((a) => <ApprovalRow key={`approval:${a.approval_id}`} a={a} />)
-        : items.filter((i) => i.kind === k).map((i) => <NeedRow key={keyOf(i)} item={i} ask={i.kind === 'question' ? asks.get(i.taskId) : undefined} onChanged={onChanged} />)
+        : items.filter((i) => i.kind === k).map((i) => <NeedRow key={keyOf(i)} item={i} ask={i.kind === 'question' ? asks.get(i.taskId) : undefined} onChanged={onChanged} cardStep={cardStep} />)
     const shown = kind === null && !unfolded ? all.slice(0, FOLD_AT) : all
     rows.push(...shown)
     if (shown.length < all.length) folded.push({ kind: k, n: all.length - shown.length })
@@ -608,10 +614,10 @@ function OpenLink({ href, name }: { href: string; name: string }) {
   )
 }
 
-function NeedRow({ item, ask, onChanged }: { item: NeedItem; ask?: PluginAsk; onChanged?: () => void }) {
+function NeedRow({ item, ask, onChanged, cardStep }: { item: NeedItem; ask?: PluginAsk; onChanged?: () => void; cardStep: string | null }) {
   switch (item.kind) {
     case 'failed':
-      return <FailedRow item={item} onChanged={onChanged} />
+      return <FailedRow item={item} onChanged={onChanged} cardStep={cardStep} />
     case 'question':
       return <QuestionRow item={item} ask={ask} onChanged={onChanged} />
     case 'merge':
@@ -621,17 +627,23 @@ function NeedRow({ item, ask, onChanged }: { item: NeedItem; ask?: PluginAsk; on
   }
 }
 
-function FailedRow({ item, onChanged }: { item: FailedNeed; onChanged?: () => void }) {
+function FailedRow({ item, onChanged, cardStep }: { item: FailedNeed; onChanged?: () => void; cardStep: string | null }) {
   const workflowId = item.task.workflow_id ?? null
   const stepId = item.task.step_id ?? null
   const [failed, setFailed] = useState<ApiError | null>(null)
+  // THE STEP CARD SAYS IT ALREADY (owner's pick, 2026-11-05): while the
+  // workflow page's card is open on this step, the row drops its copy of the
+  // error; on another step, with no card, or on another page it keeps it.
+  const onCard = stepId !== null && stepId === cardStep
   return (
     <li className="ny-row is-failed">
       <Kind k="failed" />
       <b className="ny-title">{item.title}</b>
-      <span className="ny-text" title={item.why ?? undefined}>
-        {item.why ?? 'No error was read'}
-      </span>
+      {!onCard && (
+        <span className="ny-text" title={item.why ?? undefined}>
+          {item.why ?? 'No error was read'}
+        </span>
+      )}
       <Pr pr={item.pr} />
       <span className="ny-acts">
         {workflowId === null ? (
