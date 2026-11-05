@@ -25,6 +25,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { approveApproval, loadApproval, loadSchedule, rejectApproval, type ApprovalDetail, type ApprovalItem } from './api'
 import { Dash } from './components'
+import { AcceptanceVerdicts, contractAcceptance } from './ContractJev'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { PersonName } from './PersonName'
 import { useRoleGate } from './Profile'
@@ -60,6 +61,10 @@ export const APPROVAL_KIND: Readonly<Record<string, string>> = {
   // A workflow step waiting for a member's answer (human-steps.md §4.5),
   // projected from its task. The inbox lists it and never takes the answer.
   input: 'Answer',
+  // A step whose work-contract acceptance waits on its owner (jev-contract.md
+  // section 5.4), projected from its task: the detail serves Jev's judgment,
+  // and the step is decided on its own page, never here.
+  contract: 'Contract judgment',
 }
 
 /** `may_decide` (#2417 A4, A5f): what the reader may do, served beside each item. */
@@ -158,6 +163,7 @@ const APPROVE_DOES: Readonly<Record<string, string>> = {
   merge: 'Approving submits the merge of this pull request at the head it was checked at.',
   proposal: 'Approving files this proposal as an issue.',
   spec: 'A custom-prompt spec is approved by a platform admin.',
+  contract: 'Jev could not settle this step’s work contract alone, so it is yours: read Jev’s judgment below and open the step.',
 }
 
 /**
@@ -600,6 +606,11 @@ function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
       ),
     })
   }
+  // JEV'S JUDGMENT OF THE WORK CONTRACT (jev-contract.md section 5.4): each
+  // verdict beside what it cites, labelled as Jev's. Evidence, never the
+  // decision: the card says so, and the bar below is still the only verb.
+  const acceptance = contractAcceptance(d.contract_acceptance)
+  if (acceptance !== null) cards.push({ title: 'Jev’s judgment of the work contract', side: 'l', body: <AcceptanceVerdicts acceptance={acceptance} /> })
   // Why it is held reads before what you approve, in the left column as the
   // mock-up draws it, so the DOM, the Tab order and the numbers agree
   // (visual QA automate2-04: the right column put 2 after 3 in the DOM).
@@ -652,6 +663,7 @@ const KIND_NOUN: Readonly<Record<string, string>> = {
   hold: 'This held plan',
   proposal: 'This proposal',
   spec: 'This spec',
+  contract: 'This step',
 }
 
 /**
@@ -677,6 +689,8 @@ function question(d: Decision): ReactNode {
   const a = d.approval
   if (a.state !== 'pending') return outcomeSentence(d)
   switch (a.kind) {
+    case 'contract':
+      return <>Accept this step’s work against its contract?</>
     case 'merge': {
       const n = d.merge?.pull_request?.number
       const { head } = mergeDigest(d)
@@ -851,6 +865,33 @@ function NotYours({ md }: { md: MayDecide }) {
   )
 }
 
+/**
+ * A CONTRACT STEP'S BAR (jev-contract.md section 5.4; the owner's pick on PR
+ * #3255). The item is projected from the step's task and the inbox has no
+ * decide path for it (`approvals.project_contract`): no Approve or Reject is
+ * drawn, since either would answer 404. The bar says so and links the step's
+ * page, beside Jev's judgment above it.
+ */
+function ContractStepBar({ d, go }: { d: Decision; go: (to: string) => void }) {
+  const s = d.approval.subject ?? {}
+  const taskId = typeof s.task_id === 'string' && s.task_id !== '' ? s.task_id : null
+  return (
+    <div className="ad-bar is-info" data-testid="ap-contract-step">
+      <div className="ad-bar-l">
+        <b className="ad-bar-h">Not decided in this inbox</b>
+        <span className="ad-sub">Jev’s judgment is evidence for your decision; it approves nothing, and this page has no verb.</span>
+      </div>
+      {taskId !== null && (
+        <div className="ad-bar-acts">
+          <InApp go={go} to={`work/task/${encodeURIComponent(taskId)}`} className="c-btn is-primary">
+            Open the step ›
+          </InApp>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Approve and Reject, as `may_decide` allows, with the server's refusal said in place. */
 function Decide({ d, onDecided }: { d: Decision; onDecided: (word: string) => void }) {
   const a = d.approval
@@ -978,7 +1019,7 @@ export function ApprovalDecision({ d, kind, go, onDecided }: { d: Decision; kind
             <dt>{a.state === 'pending' ? 'Expires' : a.state === 'expired' ? 'Expired' : 'Was due to expire'}</dt>
             <dd>
               {a.expires_at === null ? (
-                <span className="ad-sub-i">never: a run made by hand waits as it always has</span>
+                <span className="ad-sub-i">{a.kind === 'contract' ? 'never: it waits for its owner' : 'never: a run made by hand waits as it always has'}</span>
               ) : (
                 <span title={a.expires_at}>
                   {when(a.expires_at)}
@@ -994,7 +1035,7 @@ export function ApprovalDecision({ d, kind, go, onDecided }: { d: Decision; kind
         </dl>
       </section>
       <Evidence d={d} go={go} />
-      {a.state === 'pending' ? <Decide d={d} onDecided={onDecided} /> : <Outcome d={d} kind={kind} go={go} />}
+      {a.kind === 'contract' ? <ContractStepBar d={d} go={go} /> : a.state === 'pending' ? <Decide d={d} onDecided={onDecided} /> : <Outcome d={d} kind={kind} go={go} />}
     </section>
   )
 }
