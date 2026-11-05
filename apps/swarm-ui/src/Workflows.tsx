@@ -132,7 +132,8 @@ import {
   type WorkflowPullRequest,
   type WorkflowView,
 } from './stepviews'
-import { errorHeading, type ApiError, type Result } from './fetch'
+import { errorHeading, route, type ApiError, type Result } from './fetch'
+import { ElsewhereNotice, useElsewhere } from './elsewhere'
 import { STATE_MARK, StateMark } from './marks'
 import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, type ChipTone } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
@@ -6528,14 +6529,7 @@ function WorkflowPage({
     // ... could not be read on its own either" for an id that does not
     // exist, where the agents pane says `Not found · HTTP 404`.
     const miss = (board as PageBoard).pageMiss
-    if (miss !== undefined && miss.kind === 'not_found') {
-      return (
-        <p className="wfp-missing">
-          <strong>Not found · HTTP {miss.httpStatus ?? 404}</strong>. No workflow <Id title={id}>{id}</Id> exists in this
-          tenant. <a href={listHref(query)}>Back to the list</a>
-        </p>
-      )
-    }
+    if (miss !== undefined && miss.kind === 'not_found') return <WorkflowNotHere id={id} miss={miss} query={query} />
     return (
       <p className="wfp-missing">
         Workflow <Id title={id}>{id}</Id> is not in this read: the list reads the newest 100 workflows, and it could
@@ -6556,6 +6550,30 @@ function WorkflowPage({
       usage={usage}
       changesAt={changesAt}
       onChangesAt={onChangesAt}
+    />
+  )
+}
+
+/**
+ * A WORKFLOW 404, ASKED OF THE PERSON'S OTHER WORKSPACES (the owner's pick of
+ * 2026-11-04, "offer to switch"; elsewhere.tsx). A link from another of their
+ * workspaces says where the workflow is and offers the switch; one that is
+ * nowhere keeps the 404 sentence it always had.
+ */
+function WorkflowNotHere({ id, miss, query }: { id: string; miss: ApiError; query: WorkflowQuery }) {
+  const found = useElsewhere(route('/v1/workflows/{id}', { id }))
+  const back = listHref(query)
+  return (
+    <ElsewhereNotice
+      found={found ?? { kind: 'looking' }}
+      what="workflow"
+      back={{ href: back }}
+      notFound={
+        <p className="wfp-missing">
+          <strong>Not found · HTTP {miss.httpStatus ?? 404}</strong>. No workflow <Id title={id}>{id}</Id> exists in this
+          tenant. <a href={back}>Back to the list</a>
+        </p>
+      }
     />
   )
 }
