@@ -121,6 +121,8 @@ import './styles/people.css'
  * opening it.
  * `.c-tip-host` and `.c-tip` are the components' tooltip; `end` anchors the
  * tip's right edge to the button, for an (i) near the right of the screen.
+ * The negative block margin keeps the 28px button from heightening a line of
+ * text it sits in.
  * Exported for GitHub access and Runner sizes. It lives here, not in Access.tsx,
  * because Access already imports People through the app's modules: an import
  * the other way closes a cycle, and vitest's loader deadlocks on one.
@@ -129,7 +131,7 @@ export function InfoTip({ about, tip, end = false }: { about: string; tip: strin
   const id = useId()
   const [open, setOpen] = useState(false)
   return (
-    <span className="c-tip-host info-tip" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+    <span className="c-tip-host info-tip" style={{ marginBlock: -6, verticalAlign: 'middle' }} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
       <button
         type="button"
         className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })}

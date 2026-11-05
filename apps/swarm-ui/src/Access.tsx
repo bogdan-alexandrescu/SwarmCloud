@@ -1481,8 +1481,9 @@ function Lead({ kicker, title, info, actions, children }: { kicker?: string; tit
           {info === undefined ? (
             <h2>{title}</h2>
           ) : (
+            // `.ac-lead-t > h2` (onboarding.css) does not reach through the row, so its face is restated inline.
             <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <h2>{title}</h2>
+              <h2 style={{ margin: 0, fontSize: 'var(--t-lead)', lineHeight: 'var(--lh-lead)', fontWeight: 600 }}>{title}</h2>
               <InfoTip about={title} tip={info} />
             </span>
           )}
