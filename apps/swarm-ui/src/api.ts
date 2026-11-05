@@ -15,6 +15,7 @@ import { chosenTenant, noteFixtureProbe, read, route, tenantQuery, write, type A
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
 // four states, not a second list written out here.
 import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
+import { PLUGIN_MODES, type CataloguePlugin, type PluginModeOffer, type WorkspacePlugins } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
@@ -14752,4 +14753,125 @@ export function fixtureSetupHealth(): Record<string, unknown> {
       findings: rows.filter((r) => r.status !== 'met'),
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Config › Plugins (docs/design/agent-plugins.md): the catalogue and the
+// workspace's signed setting, `swarm_api.routes.plugin_settings`.
+// ---------------------------------------------------------------------------
+
+const PLUGINS_SELECTED = '/v1/plugins'
+const PLUGINS_OF = '/v1/workspaces/{tenant_id}/plugins'
+
+function pluginStrings(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string' && s !== '') : []
+}
+
+function pluginRecord(v: unknown): Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+}
+
+function normCataloguePlugin(raw: unknown): CataloguePlugin | null {
+  const r = pluginRecord(raw)
+  if (typeof r.name !== 'string' || r.name === '') return null
+  const served = pluginRecord(r.modes)
+  const modes: Partial<Record<(typeof PLUGIN_MODES)[number], PluginModeOffer>> = {}
+  for (const m of PLUGIN_MODES) {
+    if (!(m in served)) continue
+    const o = pluginRecord(served[m])
+    // Only an explicit true runs: an unread flag is never offered as running.
+    modes[m] = { skills: pluginStrings(o.skills), available: o.available === true, reason: typeof o.reason === 'string' && o.reason !== '' ? o.reason : null }
+  }
+  return {
+    name: r.name,
+    version: typeof r.version === 'string' ? r.version : '',
+    runner_profiles: pluginStrings(r.runner_profiles),
+    modes,
+  }
+}
+
+/** What `GET /v1/plugins` and both forms of the workspace route answer (`swarm_api.plugins.view`). */
+export function normWorkspacePlugins(raw: unknown): WorkspacePlugins {
+  const r = pluginRecord(raw)
+  const defaults = pluginRecord(pluginRecord(r.defaults).plugins)
+  return {
+    tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '',
+    allowed: pluginStrings(pluginRecord(r.plugins).allowed),
+    default_allowed: Array.isArray(defaults.allowed) ? pluginStrings(defaults.allowed) : null,
+    set_at: typeof r.set_at === 'string' && r.set_at !== '' ? r.set_at : null,
+    set_by: typeof r.set_by === 'string' && r.set_by !== '' ? r.set_by : null,
+    // Only an explicit true may edit: an unread flag never offers a live switch.
+    can_edit: r.can_edit === true,
+    catalogue: (Array.isArray(r.catalogue) ? r.catalogue : []).map(normCataloguePlugin).filter((p): p is CataloguePlugin => p !== null),
+  }
+}
+
+/**
+ * The fixture build's plugins setting: the platform's catalogue as
+ * `swarm_api.plugincatalogue` holds it (gstack and Cloudflare's security
+ * audit skill, planner and designer refused until the question bridge
+ * lands), gstack allowed, and a save that holds for the tab (the API signs
+ * it; the fixture stores what was asked).
+ */
+const FIXTURE_PLUGIN_BRIDGE = 'runs an interview with a person, which needs the question bridge; until it lands only unattended mode runs'
+const FIXTURE_PLUGIN_PROFILES = ['claude-code', 'claude-code-large', 'claude-code-review', 'claude-code-browser', 'claude-code-lightpanda']
+let fixturePluginsSaved: { allowed: string[]; set_at: string; set_by: string } | null = null
+
+function fixturePlugins(): Record<string, unknown> {
+  const later = (m: Record<string, unknown>) => ({ ...m, available: false, reason: FIXTURE_PLUGIN_BRIDGE })
+  return {
+    tenant_id: 'u-bogdan',
+    plugins: { allowed: fixturePluginsSaved?.allowed ?? ['gstack'] },
+    defaults: { plugins: { allowed: [] } },
+    set_at: fixturePluginsSaved?.set_at ?? new Date(FIXTURE_NOW - 26 * 3_600_000).toISOString(),
+    set_by: fixturePluginsSaved?.set_by ?? 'bogdan@example.com',
+    can_edit: true,
+    catalogue: [
+      {
+        name: 'gstack', version: '1.92.55.0', runner_profiles: FIXTURE_PLUGIN_PROFILES,
+        modes: {
+          unattended: {
+            available: true,
+            skills: ['review', 'investigate', 'health', 'qa-only', 'qa', 'design-review', 'document-generate', 'document-release', 'ship', 'plan-eng-review', 'plan-design-review', 'autoplan'],
+          },
+          planner: later({ skills: ['office-hours', 'plan-ceo-review', 'plan-eng-review', 'plan-devex-review', 'autoplan', 'spec'] }),
+          designer: later({ skills: ['design-consultation', 'plan-design-review', 'design-review', 'design-html'] }),
+        },
+      },
+      {
+        name: 'security-audit', version: 'c1c8a8c1471069fb0e188eeaff69b8e8db6564a8', runner_profiles: FIXTURE_PLUGIN_PROFILES,
+        modes: { unattended: { available: true, skills: ['security-audit'] } },
+      },
+    ],
+  }
+}
+
+/** `GET /v1/plugins`: the selected workspace's plugins, the catalogue, and whether this caller may change them. */
+export async function loadWorkspacePlugins(): Promise<Result<WorkspacePlugins>> {
+  const target = route(PLUGINS_SELECTED)
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 80))
+    noteFixtureProbe(target, 80, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: normWorkspacePlugins(fixturePlugins()) }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspacePlugins(r.data) }
+  return r
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/plugins` with `{allowed}`, catalogue names
+ * only: the API signs the block under the settings key and audits the change.
+ * It answers the same view as the GET, so the page draws what is now in force.
+ */
+export async function saveWorkspacePlugins(tenantId: string, allowed: readonly string[]): Promise<Result<WorkspacePlugins>> {
+  const target = route(PLUGINS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 60, true)
+    fixturePluginsSaved = { allowed: [...new Set(allowed)].sort(), set_at: new Date().toISOString(), set_by: 'bogdan@example.com' }
+    return { status: 'ok', fetchedAt: Date.now(), data: normWorkspacePlugins(fixturePlugins()) }
+  }
+  const r = await write(target, 'PUT', { allowed: [...allowed] })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspacePlugins(r.data) }
+  return r
 }

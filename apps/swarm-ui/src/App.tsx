@@ -43,6 +43,7 @@ import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SETUP
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
 import { McpServersScreen } from './McpServers'
+import { ConfigPluginsScreen } from './ConfigPlugins'
 import { SecretsScreen } from './Secrets'
 import { AdminPlatformSecretsScreen } from './AdminPlatformSecrets'
 import { SetupStrip } from './ConfigSetup'
@@ -519,6 +520,9 @@ export const SECTIONS: SectionDef[] = [
       // Every old address and one-time link lands here (paths.ts).
       { id: 'secrets', label: 'Secrets' },
       { id: 'mcp-servers', label: 'MCP servers' },
+      // The owner picked the settings table for the workspace's allowed agent
+      // plugins on 4 November 2026 (part of #2688; docs/design/agent-plugins.md).
+      { id: 'plugins', label: 'Plugins' },
       // PEOPLE AND ROLES AND WORKSPACE SETTINGS ARE A WORKSPACE'S OWN PAGE
       // since the admin routes lane (part of #2688; the owner picked a page
       // per workspace for administration): Admin › Workspaces › <workspace>,
@@ -2290,6 +2294,7 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'config/repositories': 'config-repositories',
   'config/secrets': 'secret-scopes',
   'config/mcp-servers': 'mcp-servers',
+  'config/plugins': 'agent-plugins',
   'config/people': 'workspace-roles',
   'config/workspace': 'workspace-settings',
   'admin/limits': 'ceiling-change-evicts-nothing',
@@ -2556,6 +2561,8 @@ function SectionBody({
       return <SecretsScreen view={view} token={secretsLink} />
     case 'config/mcp-servers':
       return <McpServersScreen />
+    case 'config/plugins':
+      return <ConfigPluginsScreen />
     case 'config/workspace':
       return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 
