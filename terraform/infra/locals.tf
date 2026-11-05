@@ -975,6 +975,15 @@ locals {
       # the spellings swarm_api.settings._bool reads as on.
       PLATFORM_ADMIN_REACH = var.platform_admin_reach ? "true" : "false"
 
+      # Platform-side memberships from approved join requests
+      # (swarm_api.settings `platform_memberships`,
+      # docs/design/join-requests.md §6, #2325). Until this line nothing in
+      # Terraform set it, so an approval could admit no one in a deployed
+      # environment. Off unless the environment's tfvars sets
+      # var.platform_memberships. "true" is one of the spellings
+      # swarm_api.settings._bool reads as on.
+      PLATFORM_MEMBERSHIPS = var.platform_memberships ? "true" : "false"
+
       # The forge broker's switch (child_tasks.tf `forge_broker`, #1041;
       # swarm_api.settings `forge_broker`). Off, POST
       # /v1/attempts/forge-credential answers 503 before reading anything.

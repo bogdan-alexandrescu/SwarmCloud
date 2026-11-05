@@ -1023,6 +1023,22 @@ variable "platform_admin_reach" {
   default     = false
 }
 
+variable "platform_memberships" {
+  description = <<-EOT
+    swarm-api's PLATFORM_MEMBERSHIPS (docs/design/join-requests.md §6; #2325):
+    whether an approved join request admits its person to the group workspace.
+    On, approval writes a signed, append-only platform-side membership beside
+    the workspace's Google group, and tenant resolution honours it as a member;
+    there is no Cloud Identity write and no IAM grant, so no GSA, secret or
+    role changes. Off, approval answers admitted: false with the group command
+    for an admin to run by hand. OFF by default, as swarm_api.settings is: it
+    widens who may enter a tenant (invariant 9), so it goes on in dev first, is
+    exercised by the join acceptance probe, and only then in prod.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "contract_review_mode" {
   description = <<-EOT
     swarm-api's SWARM_CONTRACT_REVIEW (apps/swarm-api/swarm_api/contractreview.py;
