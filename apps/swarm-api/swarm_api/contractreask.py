@@ -63,6 +63,7 @@ from swarm_common.admission import _snapshot
 from . import contractevidence as ce
 from . import contractjudge as cj
 from . import workcontract as wc
+from .redaction import redact
 from .store import TASKS
 from .verdictpublish import spec_refusal
 
@@ -83,6 +84,12 @@ STATUS_PENDING = cj.JUDGMENT_PENDING
 #: `contract_acceptance.waiting_on` while pending: the re-ask, or the owner.
 WAITING_REASK = "reask"
 WAITING_OWNER = "owner"
+
+#: `contract_acceptance.hunks`: the text of each hunk a verdict cites, by its
+#: item (`i<n>`), as JC2 was shown it -- cut to `contractjudge.HUNK_CHARS` and
+#: masked. Stored, not re-read: the published diff can move or vanish, and the
+#: person deciding reads what Jev read (the owner's pick on PR #3255).
+HUNKS_FIELD = "hunks"
 
 #: Why a pending step went to the owner.
 OWNER_SEND_BACK_CAP = "send_back_cap"
@@ -203,6 +210,85 @@ def send_back_blocks(contract: wc.WorkContract, verdicts: Iterable[cj.Verdict], 
     } for v in verdicts if v.verdict == cj.UNMET]
 
 
+def cited_hunks(verdicts: Iterable[cj.Verdict],
+                hunks: Sequence[str | None]) -> dict[str, str]:
+    """`i<n>` -> the hunk text a verdict cites, for `HUNKS_FIELD`.
+
+    Only cited items are kept, so the record holds at most one hunk per judged
+    requirement (`contractjudge.JUDGMENT_PER_CALL`) rather than the whole
+    diff; each is cut to `HUNK_CHARS`, as the state cut it, and masked
+    (`redaction.redact`) before it is stored, because the record is served to
+    every member who reads the step. An item with no text keeps its path
+    alone."""
+    out: dict[str, str] = {}
+    for v in verdicts:
+        item = v.evidence_item or ""
+        if not item.startswith("i") or not item[1:].isdigit() or item in out:
+            continue
+        n = int(item[1:])
+        text = hunks[n] if n < len(hunks) else None
+        if isinstance(text, str) and text:
+            out[item] = redact(text[:cj.HUNK_CHARS]).text
+    return out
+
+
+#: The keys of `contract_acceptance` served to a reader (`served_acceptance`).
+#: The lease id and the state's sha256 are the control plane's own and stay
+#: behind; everything the approval screen draws is here.
+SERVED_KEYS = ("status", "waiting_on", "owner_reason", "attempt_id", "generation",
+               "contract_id", "revision", "digest", "commit", "base", "outcome", "reason",
+               "call_id", "verdicts", "changed", HUNKS_FIELD, "mechanical", "reask", "at")
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    return value
+
+
+def served_acceptance(raw: Any) -> dict[str, Any] | None:
+    """The stored record as the task and the approval detail serve it, times
+    as ISO text, or None when the task carries none."""
+    if not isinstance(raw, Mapping) or not raw.get("status"):
+        return None
+    return _plain({k: raw[k] for k in SERVED_KEYS if k in raw})
+
+
+def acceptance_of(db: Any, tenant_id: str, task_id: str) -> dict[str, Any] | None:
+    """`served_acceptance` of one task of this tenant, one read; None for a
+    task that is missing, another tenant's (invariant 9) or never judged."""
+    snap = db.collection(TASKS).document(task_id).get()
+    data = (snap.to_dict() or {}) if snap.exists else {}
+    if data.get("tenant_id") != tenant_id:
+        return None
+    return served_acceptance(data.get(ACCEPTANCE_FIELD))
+
+
+def owner_waiting(db: Any, tenant_id: str, *, limit: int) -> list[dict[str, Any]]:
+    """The tenant's steps whose acceptance waits on the owner, as stored: the
+    approval inbox projects each (`approvals.project_contract`). Read with
+    the tenant in the query and checked again here (invariant 9); a record a
+    newer attempt superseded is not waiting on anyone."""
+    query = (db.collection(TASKS)
+             .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+             .where(filter=FieldFilter(f"{ACCEPTANCE_FIELD}.status", "==", STATUS_PENDING))
+             .where(filter=FieldFilter(f"{ACCEPTANCE_FIELD}.waiting_on", "==", WAITING_OWNER))
+             .limit(limit))
+    rows = []
+    for snap in query.stream():
+        task = snap.to_dict() or {}
+        acc = task.get(ACCEPTANCE_FIELD) or {}
+        if task.get("tenant_id") != tenant_id or acc.get("waiting_on") != WAITING_OWNER \
+                or task.get("current_generation", acc.get("generation")) != acc.get("generation"):
+            continue
+        rows.append({**task, "id": task.get("id") or snap.id})
+    return rows
+
+
 def pending_schedule(now: datetime) -> dict[str, Any]:
     """A fresh re-ask schedule: no try yet, the first due at its offset."""
     return {"tries": 0, "first_at": now, "next_at": now + REASK_OFFSETS[0],
@@ -222,6 +308,8 @@ class ReaskResult:
     call_id: str | None = None
     changed: tuple[str, ...] = ()
     state_sha256: str | None = None
+    #: Each sent item's hunk text, in `changed`'s order (None: sent path-only).
+    hunks: tuple[str | None, ...] = ()
 
 
 #: (task, contract, the claimed acceptance record) -> the re-ask's result.
@@ -392,6 +480,10 @@ class ContractReask:
                     state_sha256=result.state_sha256, at=now)
                 update["verdicts"] = [v.to_document() for v in verdicts]
                 update["call_id"] = result.call_id
+                # The items the re-ask's verdicts cite are its own state's,
+                # so the paths and hunks they name are written with them.
+                update["changed"] = list(result.changed)
+                update[HUNKS_FIELD] = cited_hunks(verdicts, result.hunks)
                 outcome = cj.judgment_outcome(verdicts)
             else:
                 outcome = STATUS_PENDING
@@ -494,13 +586,14 @@ class ForgeJudge:
                                transport=backend.transport()).decide(
             JUDGMENT_KIND, state, cj.judgment_questions(state))
         sent = tuple(row["path"] for row in state["changed"])
+        hunks = tuple(row.get("hunk") for row in state["changed"])
         if not decision.ok:
             return ReaskResult(OUTCOME_NOT_RUN, reason=decision.reason or decision.outcome,
                                call_id=decision.call_id or None, changed=sent)
         return ReaskResult(OUTCOME_JUDGED,
                            verdicts=cj.read_judgment(contract, state, decision.answers),
                            call_id=decision.call_id or None, changed=sent,
-                           state_sha256=state_digest(state))
+                           state_sha256=state_digest(state), hunks=hunks)
 
 
 def run_pass(ctx: Any, *, judge: Judge | None = None) -> dict[str, int]:
