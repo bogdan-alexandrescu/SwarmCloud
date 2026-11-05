@@ -85,7 +85,7 @@ def _asker(*answers: str) -> tuple[list[str], Any]:
     queue = list(answers)
 
     def ask(ctx: Any, step_id: str, question: str, default: str | None = None) -> str:
-        asked.append(question)
+        asked.append(f"{question} [{default}]")
         return queue.pop(0) if queue else (default or "")
 
     return asked, ask
@@ -143,7 +143,7 @@ def test_choice_says_the_cost_and_the_zone_and_defaults_to_no() -> None:
     assert step.check(ctx).status == UNMET
     step.apply(ctx, step.plan(ctx))
     assert "about $0.71 an hour while used, $15 a month for its disk" in asked[0]
-    assert "one stopped L4 machine" in asked[0] and "europe-west1-b" in asked[0] and "[y/N]" in asked[0]
+    assert "one stopped L4 machine" in asked[0] and "europe-west1-b" in asked[0] and asked[0].endswith("[n]")
     assert ctx.outputs["voice_speech"] == {"enabled": False}
     assert step.check(ctx).status == MET
 
