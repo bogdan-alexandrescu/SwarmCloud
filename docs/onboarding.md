@@ -387,7 +387,7 @@ What each permission is for:
 | `statuses` | read | merge reads `/commits/{sha}/status` to wait for CI; without it every merge fails |
 | `checks` | read | merge and CI fixes can't see check runs |
 | `issues` | write | issue runs and the observer can't read or comment on issues |
-| `actions` | read | ci-flake-hunter and release-health can't read workflow runs |
+| `actions` | write | ci-flake-hunter and release-health can't read workflow runs, and merges can't re-run a flaky run's failed jobs |
 
 Every call is a GET. No installation token is minted, because minting is a
 POST. One org failing becomes that card's `error`; the rest of the answer

@@ -154,7 +154,7 @@ def _open_one_pull(worker_factory, monkeypatch, origin, forge, *, workflow_id=No
     if workflow_id is not None:
         task["workflow_id"] = workflow_id
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None, "the clone did not land"
     (worker.ws.work / lifecycle.REPO_DIR_NAME / "agent.txt").write_text("the agent's work\n")
     (worker.ws.artifacts / "pr-title.txt").write_bytes(b"The widget refuses a negative size\n")

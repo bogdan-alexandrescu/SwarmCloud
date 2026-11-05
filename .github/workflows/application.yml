@@ -2278,7 +2278,18 @@ jobs:
   build:
     name: build images
     runs-on: ubuntu-24.04
-    needs: [python, shell, manifests]
+    # NO `needs:`: IT STARTS WITH ITS RUN (owner pick on PR 3344, issue 3336:
+    # "decouple build, gate the release"). It needed python, shell and
+    # manifests until then, and on 5 November 2026 that started it 18 to 44
+    # minutes after its push -- main's test jobs queue behind the merge
+    # train's and the pull requests' CI -- so each merge cancelled the build
+    # before it and nothing deployed for twelve hours. Now it builds while
+    # they run, and THE TESTS GATE THE RELEASE instead of the build:
+    # scripts/lib/ci-built-images.sh hands release.yml and hotfix.yml this
+    # job's record only once those same jobs (CI_RELEASE_TEST_JOBS,
+    # scripts/lib/common.sh) passed in this run, and refuses it when one
+    # failed. A commit whose tests fail is still never released; it is built,
+    # which costs one Cloud Build of the images it changed.
     # THE ONE BUILD OF A COMMIT. Owner decision, 2026-09-24 (docs/ci.md): this
     # job builds every image once per commit on main -- each commit main has
     # not moved past by the time it runs, since 2026-10-26 (the workflow's
@@ -2293,9 +2304,6 @@ jobs:
     # So the job's NAME is part of an interface: scripts/lib/ci-built-images.sh
     # finds it by name, and tests/unit/scripts/test_ci_built_images.py fails if
     # the two disagree.
-    #
-    # A build costs money and needs cloud credentials, so it runs only after the
-    # free checks have passed.
     #
     # THE REF PIN IS THE CONTROL.
     #
@@ -2338,9 +2346,11 @@ jobs:
     # rejects refs/pull/*. Left to run, it would fail every entry's run and so
     # ci-gate on every entry. The commit is built once it is on main, by the
     # push run, as every commit is.
-    # A needed check skipped by its paths (shell, manifests) is not a failure:
-    # without this guard GitHub skips the build too, and the release then
-    # refuses the unbuilt commit (adc51c0f, 2026-10-14).
+    # `!cancelled() && !failure()` dates from its `needs:`: a needed check
+    # skipped by its paths (shell, manifests) is not a failure, and without
+    # the guard GitHub skipped the build too, so the release refused the
+    # unbuilt commit (adc51c0f, 2026-10-14). With no needs it changes nothing,
+    # and stays so that a need added back cannot bring that skip back.
     # Main's push and a dispatch only: a lane push (`swarm/**`, LANE CI-EARLY)
     # is tested here but never builds or pushes an image. A disjunction, not
     # parentheses: `&&` binds tighter than `||`, and the workflow models in

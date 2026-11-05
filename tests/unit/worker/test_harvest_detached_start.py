@@ -64,7 +64,7 @@ def _cloned_by_sha(worker_factory, monkeypatch, origin: Path, *, task_id: str, d
                      lease_id=f"lease-{task_id}")
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     worker._task = {"task_id": task_id, "metadata": {"dispatch": dispatch}}
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     cloned = worker._maybe_clone(worker._task)
     assert cloned is not None and cloned["commit"] == start, "the clone did not land on the sha"
     # The scenario: the clone itself started detached, so no branch changes.

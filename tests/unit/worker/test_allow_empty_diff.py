@@ -453,7 +453,7 @@ def _cloning_worker(worker_factory: Any, origin: Path, monkeypatch: Any,
                      "dispatch": {"carrier": "checkpoints", **dispatch}},
     }
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     return worker, task
 
 

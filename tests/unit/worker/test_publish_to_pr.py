@@ -261,7 +261,7 @@ def test_a_pull_request_the_lane_may_not_publish_onto_is_refused_before_the_clon
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": "t-follow", "metadata": {"dispatch": DIRECT}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     with pytest.raises(WorkerError, match="publish_to_pr refused before the agent started") as err:
         worker._maybe_clone(task)
     assert words in str(err.value)
@@ -277,7 +277,7 @@ def test_a_task_with_no_forge_token_is_refused_before_the_clone(
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": "t-follow", "metadata": {"dispatch": DIRECT}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: None)
+    monkeypatch.setattr(worker, "_git_token", lambda **_: None)
     with pytest.raises(WorkerError, match="has none"):
         worker._maybe_clone(task)
     assert not (worker.ws.work / lifecycle.REPO_DIR_NAME / ".git").exists()

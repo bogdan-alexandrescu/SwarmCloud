@@ -70,7 +70,7 @@ def _run(worker_factory, monkeypatch, origin: Path, *, task: dict, edit):
     )
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     cloned = worker._maybe_clone(task)
     assert cloned is not None and cloned["commit"], "the clone did not land"
     edit(worker.ws.work / lifecycle.REPO_DIR_NAME)
