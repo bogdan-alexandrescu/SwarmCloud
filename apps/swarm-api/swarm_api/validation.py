@@ -46,7 +46,7 @@ from swarm_common.profiles import (
     step_model_class,
 )
 
-from . import laneterritory, refusals
+from . import laneterritory, refusals, workcontract
 from .errors import Forbidden, ValidationFailed
 
 #: Fields a caller may never set, no matter how they spell it. The request
@@ -1143,6 +1143,33 @@ MERGE_STEP_MAX_ATTEMPTS = 10
 
 #: The step id an appended merge step takes, suffixed when a step already has it.
 MERGE_STEP_ID = "merge"
+
+#: The optional security review (docs/design/security-review-step.md, owner
+#: decisions of 4 November 2026). A step IS one when its work contract loads
+#: the catalogue plugin `security-audit` (`capabilities.plugins`) while
+#: SWARM_WORK_CONTRACTS is on -- the mark the worker reads from the signed
+#: contract (`agent_worker.security_review.applies`), never a step id ending
+#: in `review`. It comes after the integrator, on its pushed head, beside the
+#: re-review: a verdict source for the merge, not a second final step
+#: (`resolve_integrator_step`, `merge_sources`). The worker writes its verdict
+#: under `SECURITY_VERDICT_FILE` too, so the merge stages it by that name
+#: beside the re-review's `verdict.json` (`agent_worker.merge._security_hold`).
+SECURITY_REVIEW_PLUGIN = "security-audit"
+SECURITY_VERDICT_FILE = "security-verdict.json"
+
+
+def is_security_review(metadata: Mapping[str, Any] | None,
+                       environ: Mapping[str, str]) -> bool:
+    """Whether a step's `metadata` makes it the security review (see above).
+
+    Off while work contracts are off: the plugin then never loads, the
+    worker writes no security verdict, and a merge staging one would fail."""
+    if not workcontract.enabled(environ):
+        return False
+    contract = (metadata or {}).get(workcontract.METADATA_KEY)
+    capabilities = contract.get("capabilities") if isinstance(contract, Mapping) else None
+    plugins = capabilities.get("plugins") if isinstance(capabilities, Mapping) else None
+    return isinstance(plugins, Mapping) and SECURITY_REVIEW_PLUGIN in plugins
 
 # --- the merge step's knobs (lane MS1, docs/merge-step.md "Revised 2026-10-06") ---
 
@@ -2818,6 +2845,15 @@ def resolve_integrator_step(steps: Sequence[StepSpec], rereview: str | None = No
     `metadata.merge` "on_merge_verdict" (`rereview_step_for`), by id: it
     reviews the integrator's pushed head, so it comes after the integrator
     and is not one of the steps the integrator integrates.
+
+    The security review (`StepSpec.security_review`, docs/design/security-
+    review-step.md) is not one either: a final step that builds on the
+    integrator's pushed head and judges it, beside the re-review, so the
+    integrator is the sink of the steps without it. It must build on that
+    integrator -- a security review of any other head would let the merge
+    read a verdict on code it does not merge -- and there is at most one,
+    because the merge stages its verdict under one file name. A security
+    review something else depends on is an ordinary step.
     """
     # A `merge` step (contract request 47) comes after the integrator and
     # integrates nothing: the integrator is the sink of the OTHER steps.
@@ -2826,6 +2862,15 @@ def resolve_integrator_step(steps: Sequence[StepSpec], rereview: str | None = No
         step for step in steps
         if _worker_action(step) is not WorkerAction.MERGE and step.step_id != rereview
     ]
+    security = _final_security_reviews(steps)
+    if len(security) > 1:
+        raise DispatchOptionError(
+            "a workflow has at most one security review: the merge reads its verdict "
+            f"from one {SECURITY_VERDICT_FILE}, and this one has {len(security)}: "
+            + ", ".join(step.step_id for step in security) + ".",
+            detail={"security_review_steps": [step.step_id for step in security]},
+        )
+    steps = [step for step in steps if step not in security]
     if len(steps) < 2:
         raise DispatchOptionError(
             "strategy 'integrate' needs something to integrate: it names a final "
@@ -2844,7 +2889,24 @@ def resolve_integrator_step(steps: Sequence[StepSpec], rereview: str | None = No
             + ". Make the integrating step depend on them.",
             detail={"terminal_steps": terminals},
         )
-    return terminals[0]
+    integrator = terminals[0]
+    for step in security:
+        if step.builds_on != integrator:
+            raise DispatchOptionError(
+                f"step {step.step_id!r} is the security review, which judges the pull "
+                f"request's head, so it builds on the integrating step {integrator!r}: "
+                f'`"depends_on": ["{integrator}"], "builds_on": "{integrator}"`. It '
+                + (f"builds on {step.builds_on!r}." if step.builds_on else "builds on no step."),
+                detail={"step_id": step.step_id, "builds_on": step.builds_on,
+                        "integrator_step_id": integrator},
+            )
+    return integrator
+
+
+def _final_security_reviews(steps: Sequence[StepSpec]) -> list[StepSpec]:
+    """The security reviews among `steps` that no other of them depends on."""
+    depended_on = {dep for step in steps for dep in step.depends_on}
+    return [step for step in steps if step.security_review and step.step_id not in depended_on]
 
 
 def _ancestors(steps: Sequence[StepSpec]) -> dict[str, set[str]]:
@@ -3414,14 +3476,22 @@ class MergeSources:
     #: True for a `merge_pr` workflow (#352): no task opened the pull
     #: request, `pull_request` is "", and the step depends on nothing.
     named: bool = False
+    #: The security review that judged the integrator's head, when the
+    #: workflow has one: the merge stages its `SECURITY_VERDICT_FILE` beside
+    #: the review's verdict, and the worker requires both.
+    security_review: str | None = None
 
     def depends_on(self) -> list[str]:
         if self.continued or self.named:
             return []
-        return [self.pull_request] + ([self.review] if self.review else [])
+        return ([self.pull_request] + ([self.review] if self.review else [])
+                + ([self.security_review] if self.security_review else []))
 
     def input_from(self) -> dict[str, str]:
-        return {self.review: self.verdict_file} if self.review and self.verdict_file else {}
+        staged = {self.review: self.verdict_file} if self.review and self.verdict_file else {}
+        if self.security_review:
+            staged[self.security_review] = SECURITY_VERDICT_FILE
+        return staged
 
 
 @dataclass(frozen=True)
@@ -3459,6 +3529,12 @@ def merge_sources(
     (`rereview_step_for`), by id. It is not the integrator -- it comes after
     it -- and it IS the review the merge reads: the latest verdict, written
     under the same file name the gate's review wrote.
+
+    Under `integrate` the security review (`StepSpec.security_review`), a
+    final step building on the integrator, is a second verdict source: it is
+    not the integrator, and the merge depends on it and stages its
+    `SECURITY_VERDICT_FILE`. Two, or one building on another head, is not
+    ONE pull request's merge (`resolve_integrator_step` says why).
     """
     agents = [step for step in steps if not is_merge_step(step.runner_profile)]
     if rereview is not None:
@@ -3469,24 +3545,35 @@ def merge_sources(
         )
         if rest is None or rest.review is None or not rest.verdict_file:
             return None
-        return MergeSources(rest.pull_request, rereview, rest.verdict_file)
+        return MergeSources(rest.pull_request, rereview, rest.verdict_file,
+                            security_review=rest.security_review)
     if named_pull:
         return MergeSources("", named=True) if strategy == "direct-pr" and not agents else None
     if strategy == "direct-pr" and continued_task is not None and not agents:
         return MergeSources(continued_task, continued=True)
     if strategy == "direct-pr":
         return MergeSources(agents[0].step_id) if len(agents) == 1 else None
-    if strategy != "integrate" or len(agents) < 2:
+    if strategy != "integrate":
+        return None
+    security = _final_security_reviews(agents)
+    if len(security) > 1:
+        return None
+    agents = [step for step in agents if step not in security]
+    if len(agents) < 2:
         return None
     depended_on = {dep for step in agents for dep in step.depends_on}
     sinks = [step for step in agents if step.step_id not in depended_on]
     if len(sinks) != 1:
         return None
     integrator = sinks[0]
+    if security and security[0].builds_on != integrator.step_id:
+        return None
+    security_review = security[0].step_id if security else None
     review = integrator.when_step
     if review is None:
-        return MergeSources(integrator.step_id)
-    return MergeSources(integrator.step_id, review, integrator.input_from.get(review))
+        return MergeSources(integrator.step_id, security_review=security_review)
+    return MergeSources(integrator.step_id, review, integrator.input_from.get(review),
+                        security_review=security_review)
 
 
 def merge_step_for(
@@ -3623,7 +3710,8 @@ def plan_merge(
       and clones nothing;
     * it depends directly on the step that opens the pull request and on the
       review, so neither can still be running when it reads them;
-    * it stages exactly the review's verdict file and nothing else.
+    * it stages exactly the review's verdict file, and the security review's
+      `SECURITY_VERDICT_FILE` when there is one, and nothing else.
     """
     if strategy == SINGLE_PR:
         return None
@@ -3676,6 +3764,8 @@ def plan_merge(
             + ", ".join(repr(m) for m in missing)
             + ": the step that opens the pull request"
             + (" and the review whose verdict it requires" if sources.review else "")
+            + (" and the security review whose verdict it requires"
+               if sources.security_review else "")
             + f". Add them to its depends_on, or omit the step and set metadata."
             f"{MERGE_METADATA_KEY} 'on' to have it derived.",
             detail={"merge_step_id": merge.step_id, "missing": missing,
@@ -3684,8 +3774,12 @@ def plan_merge(
     if dict(merge.input_from) != sources.input_from():
         raise DagError(
             f"the merge step {merge.step_id!r} stages "
-            + (f"exactly {sources.input_from()!r}, the review's verdict file"
-               if sources.review else "nothing")
+            + (f"exactly {sources.input_from()!r}, the "
+               + ("review's and the security review's verdict files"
+                  if sources.review and sources.security_review else
+                  "security review's verdict file" if sources.security_review else
+                  "review's verdict file")
+               if sources.input_from() else "nothing")
             + f", not {dict(merge.input_from)!r}.",
             detail={"merge_step_id": merge.step_id, "input_from": dict(merge.input_from),
                     "derived_input_from": sources.input_from()},
@@ -4011,6 +4105,10 @@ class StepSpec:
     #: them to task ids.
     pr_role: str | None = None
     merges: Mapping[str, str] | None = field(default=None, hash=False)
+    #: Whether the step is the security review (`is_security_review`, read
+    #: from its work contract at submission): under `integrate` a verdict
+    #: source after the integrator, not a second final step.
+    security_review: bool = False
 
 
 class DagError(ValidationFailed):

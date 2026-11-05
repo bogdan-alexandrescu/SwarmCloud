@@ -65,6 +65,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field, replace
 
@@ -93,7 +94,7 @@ from ..errors import (
     UpstreamUnavailable,
     ValidationFailed,
 )
-from .. import issueci
+from .. import issueci, workcontract
 from ..forge import ForgeReadError, preview, read_open_work
 from .. import approvals
 from ..issueruns import (
@@ -1071,7 +1072,7 @@ def create_run(
     run = start_run(
         ctx, auth, ref, open_work=open_work, plan_approval=body.plan_approval,
         auto_merge=auto_merge, fix_rounds=body.fix_rounds, claude_session=body.claude_session,
-        model_class=model_class,
+        model_class=model_class, security_review=body.security_review,
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
     return {"run": run.to_api()}
@@ -1091,6 +1092,7 @@ def start_run(
     merge_approval: str | None = None,
     claude_session: str | None = None,
     model_class: str | None = None,
+    security_review: bool = False,
 ) -> IssueRun:
     """The planner task, then the run document, then the first write-back.
 
@@ -1117,9 +1119,23 @@ def start_run(
     checked by the caller (`refuse_planner_model_class`), and by
     `submit_tasks` once lane MODEL-API's `TaskCreate` carries it. None runs the profile's default (`opus`). The plan's
     steps take theirs from the plan (`issueruns.PlanStep.model_class`).
+
+    `security_review` (`RunCreate.security_review`, off by default) is stored
+    on the run, inside its signed owner fields, and compiles the security
+    review step after the fix (`issueruns._with_security_review`). The step
+    loads its plugin through a signed work contract, so with
+    SWARM_WORK_CONTRACTS off it is refused here, before the planner is paid
+    for, rather than at compile time after it.
     """
     if merge_approval not in (None, "required"):
         raise ValueError(f"merge_approval is 'required' or None, not {merge_approval!r}")
+    if security_review and not workcontract.enabled(os.environ):
+        raise ValidationFailed(
+            "security_review loads the security-audit plugin through a signed work "
+            "contract, and work contracts are off in this deployment "
+            "(SWARM_WORK_CONTRACTS). Nothing was created.",
+            detail={"field": "security_review"},
+        )
     run_id = new_id("run")
     # The issue and the tenant's own index of its repository BEFORE the
     # planner (lane KG1): the issue's words are what the planner's REPO GRAPH
@@ -1151,6 +1167,7 @@ def start_run(
         schedule=dict(schedule) if schedule else None,
         merge_approval=merge_approval,
         claude_session=claude_session,
+        security_review=security_review,
     )
     draft.owner_signature = sign_owner(ctx.submissions.signer, draft)
     issue_read, issue_read_error = _read_issue(ctx, auth, tenant_id, ref)
