@@ -78,6 +78,8 @@ def _voice_manifest(image: str = IMAGE) -> str:
         "__QUOTA_BROKER_URL__": "https://swarm-quota-broker-abc123-uc.a.run.app",
         "__QUOTA_BROKER_AUDIENCE__": "https://swarm-quota-broker-abc123-uc.a.run.app",
         "__QUOTA_BROKER_HOST__": "swarm-quota-broker-abc123-uc.a.run.app",
+        "__VOICE_FRONT_MODEL__": "claude-haiku-5-5",
+        "__VOICE_PLANNER_MODEL__": "claude-fable-5-1",
     }
     text = "---\n".join([TEMPLATE.read_text(), POLICIES.read_text()])
     for key, value in values.items():
