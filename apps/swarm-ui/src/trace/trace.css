@@ -144,3 +144,9 @@
 .trc-strip button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); cursor: pointer; font-size: 14px; }
 .trc.is-phone .trc-bar2 { gap: 6px; }
 .trc.is-phone .trc-chip { padding: 0 7px; }
+/* The read's own notes and facts (Notes.tsx): one line each, the sentence behind the mark. */
+.trc-notes { list-style: none; margin: 0; padding: 4px 12px; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--text-dim); font-size: 12px; }
+.trc-facts { position: relative; font-size: 12px; color: var(--text-dim); }
+.trc-facts > summary { cursor: pointer; }
+.trc-facts .ctl-facts { position: absolute; z-index: 5; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; right: 0; max-width: min(90vw, 520px); }
+.trc-facts .uri { overflow-wrap: anywhere; }

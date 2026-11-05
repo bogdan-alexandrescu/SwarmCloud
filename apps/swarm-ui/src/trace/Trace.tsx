@@ -15,6 +15,7 @@ import { ARTIFACTS_POLL_MS } from '../Artifacts'
 import { TERMINAL_STATES, type Task, type TaskTranscript } from '../types'
 import { listSnap, setListSnap, useListSnap } from '../listSnap'
 import { buildTrace, dur, inFilter, inputOf, patchOf, rawOf, setTraceWide, shorten, toolShort, traceMounted, useTraceWide, type Ev, type EvKind, type Filter } from './model'
+import { ReadFacts, StreamStatus, WindowNotes } from './Notes'
 import './trace.css'
 
 /** A live run's transcript is read again as often as the Logs tab reads its streams. */
@@ -391,6 +392,7 @@ export function Trace({
 }) {
   const [read, setRead] = useState<TaskTranscript | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null)
   const live = !TERMINAL_STATES.has(task.state)
   const loader = useRef(load)
   loader.current = load
@@ -403,6 +405,7 @@ export function Trace({
         if (gone) return
         if (r.status === 'ok') {
           setRead(r.data)
+          setFetchedAt(r.fetchedAt)
           setFailed(null)
         } else if (r.status === 'stale') setRead(r.data)
         else if (r.status === 'error') setFailed(r.error.message)
@@ -642,7 +645,11 @@ export function Trace({
         <button type="button" className="trc-back" onClick={() => setPhoneDetail(false)}>← Events</button>
       )}
       {sel === null ? (
-        <p className="trc-dim trc-pad">{failed !== null ? `Not read: ${failed}` : read === null ? 'Reading the transcript…' : read.steps === null ? (read.stream.detail ?? `transcript ${read.stream.status}`) : 'No events in this read.'}</p>
+        read !== null && failed === null ? (
+          <StreamStatus t={read} task={task} />
+        ) : (
+          <p className="trc-dim trc-pad">{failed !== null ? `Not read: ${failed}` : 'Reading the transcript…'}</p>
+        )
       ) : (
         <>
           <div className="trc-slot">
@@ -742,12 +749,14 @@ export function Trace({
           )}
           {selIdx >= 0 && <span className="trc-pos" title="j / k step through the events">{selIdx + 1} of {shown.length}</span>}
         </p>
+        {read !== null && <ReadFacts t={read} fetchedAt={fetchedAt} />}
       </div>
       {task.state === 'FAILED' && task.last_error && (
         <p className="trc-taskerr" role="note" title="The task's own last_error, from the task record, not from the transcript">
           <Icon kind="end" error /> task failed · <span className="mono">{task.last_error.split('\n')[0]}</span>
         </p>
       )}
+      {read !== null && <WindowNotes t={read} />}
       <div className="trc-panes">
         {timeline}
         {detail}

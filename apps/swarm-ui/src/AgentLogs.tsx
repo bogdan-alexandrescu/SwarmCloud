@@ -394,7 +394,12 @@ export function AgentLogs({ task }: { task: Task }) {
   // previous attempt's -- so that one is "reading", never shown as this one.
   // So is a read of the other end of a finished transcript (`held.asked`).
   const landed = okFeed(held.state)
-  const latest = landed !== null && landed.attemptId === readId && held.asked === fromStart ? landed : null
+  // A read made while the trace was on screen holds no stream (`readFeed`'s
+  // `traced`: both answers still `loading`), so a stream view never draws it,
+  // nor is paused on it; it waits, "reading", for its own.
+  const placeholder = place === null || traced
+  const latest =
+    landed !== null && landed.attemptId === readId && held.asked === fromStart && (placeholder || landed.logs.status !== 'loading') ? landed : null
   const latestAt = latest !== null && held.state.status === 'ok' ? held.state.fetchedAt : null
   // THE TASK ON THE FEED IS ALWAYS THE ONE ON SCREEN: the views read its
   // state to tell "not yet" from "never", and the split re-reads it.
@@ -423,7 +428,7 @@ export function AgentLogs({ task }: { task: Task }) {
   // newest window of one finished transcript are two different records.
   const [frozen, setFrozen] = useState<{ feed: LogFeed; at: number; fromStart: boolean } | null>(null)
   useEffect(() => {
-    if (follow) setFrozen(null)
+    if (follow || placeholder) setFrozen(null)
     else if (feedNow !== null) {
       setFrozen((f) =>
         f !== null && f.feed.attemptId === feedNow.attemptId && f.fromStart === fromStart
@@ -434,7 +439,7 @@ export function AgentLogs({ task }: { task: Task }) {
     // On the switch, and on the first read of a newly picked attempt; `feedNow`
     // is rebuilt each render, so its identity is not the dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [follow, latest === null, readId, fromStart])
+  }, [follow, latest === null, readId, fromStart, placeholder])
   const shown =
     follow || frozen === null || frozen.feed.attemptId !== readId || frozen.fromStart !== fromStart
       ? feedNow

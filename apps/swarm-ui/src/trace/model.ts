@@ -99,6 +99,22 @@ export function patchOf(ev: Ev): { lines: string[]; oldStart: number | null; new
   return null
 }
 
+/** A rate-limit reading's window, in words, never its raw key. */
+const RATE_LIMIT_WINDOW: Record<string, string> = {
+  five_hour: '5-hour window',
+  seven_day: '7-day window',
+  seven_day_opus: '7-day Opus window',
+  seven_day_sonnet: '7-day Sonnet window',
+  overage: 'overage',
+}
+
+/** A moment from a reading's epoch (seconds, or milliseconds when that large), in local time. */
+function localMoment(epoch: number): string {
+  const d = new Date(epoch > 1e12 ? epoch : epoch * 1000)
+  if (!Number.isFinite(d.getTime())) return String(epoch)
+  return `${d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })} local`
+}
+
 function firstLine(t: string): string {
   const line = t.split('\n').find((l) => l.trim() !== '') ?? ''
   // Strip only markdown markers (a leading heading/quote marker, backtick pairs,
@@ -173,13 +189,24 @@ export function buildTrace(steps: readonly TranscriptStep[]): Trace {
       const st = meta['rate_limit_info.status'] ?? meta.status
       const kind = meta['rate_limit_info.rateLimitType']
       const use = meta['rate_limit_info.utilization']
-      push({ key: s.id, kind: 'system', label: `rate limit${st ? ` · ${String(st)}` : ''}`, sub: [kind, typeof use === 'number' ? `${Math.round(use * 100)}% used` : null].filter(Boolean).join(' · ') || null, status: null, main: s })
+      const resets = meta['rate_limit_info.resetsAt']
+      const words = [
+        typeof kind === 'string' ? (RATE_LIMIT_WINDOW[kind] ?? `${kind.replace(/_/g, ' ')} window`) : null,
+        typeof use === 'number' ? `${use <= 1 ? Math.round(use * 100) : use}% used` : null,
+        typeof resets === 'number' ? `resets ${localMoment(resets)}` : null,
+      ]
+      push({ key: s.id, kind: 'system', label: `rate limit${st ? ` · ${String(st).replace(/_/g, ' ')}` : ''}`, sub: words.filter(Boolean).join(' · ') || null, status: null, main: s })
     } else if (s.kind === 'error') {
       push({ key: s.id, kind: 'system', label: firstLine(s.text ?? '') || 'error', sub: null, status: 'error', main: s })
     } else if (s.kind === 'usage') {
       push({ key: s.id, kind: 'system', label: 'usage', sub: s.text, status: null, main: s })
     } else if (s.kind === 'system') {
-      push({ key: s.id, kind: 'system', label: `system · ${String(meta.subtype ?? 'no subtype')}`, sub: null, status: null, main: s })
+      // A system record's own words, when it has them (the worker's capture
+      // notice says where it cut the run).
+      push({ key: s.id, kind: 'system', label: `system · ${String(meta.subtype ?? 'no subtype')}`, sub: firstLine(s.text ?? '') || null, status: null, main: s })
+    } else if (meta.oversize === true) {
+      // A LINE LONGER THAN THE WINDOW (#188): the server read it and could not decode it whole.
+      push({ key: s.id, kind: 'other', label: 'line longer than this window', sub: 'not decoded', status: null, main: s })
     } else {
       push({ key: s.id, kind: 'other', label: String(meta.raw_type ?? s.kind), sub: 'as recorded', status: null, main: s })
     }
