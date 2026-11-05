@@ -1766,21 +1766,23 @@ class GitHubMerger:
 
     def train_ejection(self, number: int) -> str | None:
         """Why the pull request lost `ready`, as its comments say: the latest
-        comment of the merge train's ejection (`REPOSITORY_TRAIN_EJECTED`,
-        scripts/merge-train.sh `eject_pr`), else the latest an App wrote
-        (auto-merge.yml's gate says why it removed `ready`), else None."""
+        comment that is either the merge train's ejection
+        (`REPOSITORY_TRAIN_EJECTED`, scripts/merge-train.sh `eject_pr`) or one
+        an App wrote (auto-merge.yml's gate says why it removed `ready`), else
+        None. The latest of the two, never an ejection ahead of a newer App
+        comment: an earlier ejection must not turn the gate's later removal
+        into the train's, which `_board` re-boards instead of refusing."""
         comments = self._client.paginate(f"{self._base}/issues/{number}/comments")
-        ejected = app = None
+        latest = None
         for comment in comments:
             comment = _mapping(comment)
             body = _str(comment.get("body"))
             if body is None:
                 continue
-            if body.startswith(REPOSITORY_TRAIN_EJECTED):
-                ejected = body
-            if _mapping(comment.get("user")).get("type") == "Bot":
-                app = body
-        return ejected or app
+            if (body.startswith(REPOSITORY_TRAIN_EJECTED)
+                    or _mapping(comment.get("user")).get("type") == "Bot"):
+                latest = body
+        return latest
 
 
 def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
