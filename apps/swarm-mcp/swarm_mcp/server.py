@@ -1980,6 +1980,14 @@ TOOLS: list[dict[str, Any]] = [
                 "plan_approval": {"type": "string", "enum": ["required", "auto"], "default": "required"},
                 "auto_merge": {"type": "boolean", "default": False},
                 "fix_rounds": {"type": "integer", "minimum": 1, "maximum": 5},
+                "security_review": {
+                    "type": "boolean", "default": False,
+                    "description": (
+                        "Add the security review step after the fix (the security-audit "
+                        "skill over the pull request's diff); the merge then needs its "
+                        "verdict too. Off by default: it costs more than a code review."
+                    ),
+                },
                 "model_class": {
                     **_MODEL_CLASS_SCHEMA,
                     "description": (
@@ -4642,6 +4650,7 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             plan_approval=approval,
             auto_merge=_flag(args, "auto_merge"),
             fix_rounds=fix_rounds,
+            security_review=_flag(args, "security_review"),
             **({"model_class": model_class} if model_class is not None else {}),
         )
         return json.dumps(_run_summary(client, run), indent=2, default=str)

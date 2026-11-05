@@ -172,6 +172,7 @@ from .validation import (
     resolve_await_input,
     resolve_dispatch_options,
     resolve_input_layout,
+    is_security_review,
     resolve_integrator_step,
     resolve_merge_choice,
     resolve_fix_rounds,
@@ -1938,6 +1939,9 @@ class SubmissionService:
                 runner_profile=s.runner_profile,
                 pr_role=s.pr_role,
                 merges=dict(s.merges) if s.merges is not None else None,
+                # The security review, by its work contract's plugin: a
+                # verdict source after the integrator, staged by the merge.
+                security_review=is_security_review(s.metadata, os.environ),
             )
             for s in spec.steps
         ]
