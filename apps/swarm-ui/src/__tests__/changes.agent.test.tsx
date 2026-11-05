@@ -204,7 +204,9 @@ describe('opening it folds the list to the strip: remembered, not forced', () =>
     await waitFor(() => expect(document.documentElement.dataset.agentList).toBe('strip'))
     fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize the agent list' }), { key: 'ArrowRight' })
     expect(document.documentElement.dataset.agentList).toBe('list')
-    fireEvent.click(tab('Logs'))
+    // Left by Details: Logs opens a claude-code agent on its trace, which
+    // folds the list for itself (trace/Trace.tsx, trace.view.test.tsx).
+    fireEvent.click(tab('Details'))
     expect(document.documentElement.dataset.agentList).toBe('list')
   })
 })
