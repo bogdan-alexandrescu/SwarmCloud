@@ -1816,10 +1816,10 @@ def check_repository_ref(value: str | None) -> str | None:
     F4). The worker treats 7-40 lowercase hex as a sha and only a full one can
     be fetched, so 7-39 is refused here, before anything holds capacity. A
     branch or tag name -- anything the worker passes to `--branch` -- and a
-    full sha are accepted unchanged here. Whether a branch or tag name exists
-    is asked of the forge once per submission afterwards
-    (`SubmissionService._check_ref_exists`, #2726), which refuses it with
-    `RepositoryRefNotFound` and fails open.
+    full sha are accepted unchanged here. Whether a branch or tag name, or a
+    full sha's commit (#3315), exists is asked of the forge once per
+    submission afterwards (`SubmissionService._check_ref_exists`, #2726),
+    which refuses it with `RepositoryRefNotFound` and fails open.
     """
     if not value:
         return value
@@ -1835,7 +1835,8 @@ def check_repository_ref(value: str | None) -> str | None:
 
 class RepositoryRefNotFound(ValidationFailed):
     """422 `repository_ref_not_found`: the forge has neither a branch nor a tag
-    of that name in a repository it can read (#2726)."""
+    of that name (#2726), or no commit of that full sha (#3315), in a
+    repository it can read."""
 
     code = "repository_ref_not_found"
 
@@ -1845,16 +1846,22 @@ class RepositoryRefNotFound(ValidationFailed):
 _SWARM_TASK_BRANCH_RE = re.compile(r"^swarm/(?P<task_id>task_[0-9a-f]{20})$")
 
 
-def ref_needs_lookup(value: str | None) -> bool:
-    """Whether `repository_ref` is a branch or tag name the forge is asked about.
-
-    Not when absent (the default branch is cloned), and not a full sha, which
-    the worker fetches by sha. An abbreviated sha never gets here:
-    `check_repository_ref` refused it first.
-    """
+def is_full_sha(value: str | None) -> bool:
+    """Whether `repository_ref` is a full commit sha, which the worker fetches
+    by sha rather than as a branch or tag."""
     if not value:
         return False
-    return not (_WORKER_SHA_RE.match(value) and len(value) == _FULL_SHA_LENGTH)
+    return bool(_WORKER_SHA_RE.match(value)) and len(value) == _FULL_SHA_LENGTH
+
+
+def ref_needs_lookup(value: str | None) -> bool:
+    """Whether `repository_ref` is asked about at the forge: a branch or tag
+    name (#2726), or a full sha, asked as a commit (#3315).
+
+    Not when absent (the default branch is cloned). An abbreviated sha never
+    gets here: `check_repository_ref` refused it first.
+    """
+    return bool(value)
 
 
 def swarm_task_of_ref(value: str) -> str | None:
@@ -1882,6 +1889,14 @@ def repository_ref_not_found(
     base = default_branch or "the default branch"
     detail: dict[str, Any] = {"field": "repository_ref", "repository_ref": value,
                               "repository": repository}
+    if is_full_sha(value):
+        # #3315: a sha names no task and no pull request.
+        return RepositoryRefNotFound(
+            f"repository_ref {value} is not a commit of {repository} that GitHub serves; "
+            f"send a pushed commit's full sha, a branch or tag name, or no repository_ref "
+            f"to start from {base}.",
+            detail=detail,
+        )
     if task_id is None:
         return RepositoryRefNotFound(
             f"repository_ref {value!r} is neither a branch nor a tag of {repository}; "

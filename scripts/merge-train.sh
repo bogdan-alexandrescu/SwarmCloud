@@ -15,6 +15,9 @@
 # is how the owner turns it on.
 #
 # ONE TICK.
+#   * Every `ready` pull request the train passes over for a reason that will
+#     not clear by itself (a failed or cancelled check at its head, a
+#     conflict, its closing keywords) is told why, once per head and reason.
 #   * A train in flight (an open pull request from `train/<id>`) is judged at
 #     its head: pending waits, unless it is older than
 #     MERGE_TRAIN_MAX_AGE_MINUTES, when it is abandoned; green lands; red is
@@ -66,7 +69,7 @@
 # and no next train. That is how the owner sees a train go green before
 # turning strict up-to-date off (docs/runbooks/merge-train.md).
 #
-# Subcommands. The first five are pure -- files in, lines out, no network --
+# Subcommands. The first six are pure -- files in, lines out, no network --
 # and tests/unit/scripts/test_merge_train.py runs them:
 #
 #   select --prs <gh pr list json> --required <names file>
@@ -74,6 +77,11 @@
 #       Who may board. Prints `<N>\t<head sha>\t<title>` per pull request,
 #       oldest first. --recheck-unknown (needs GH_REPO) re-reads an otherwise
 #       eligible UNKNOWN pull request with `gh pr view`: the one network read.
+#   skips --prs <gh pr list json>
+#       Who will not board until someone acts: a `ready` pull request with a
+#       check at its head that finished bad, or a conflict. `skip\t<N>\t<head>
+#       \t<key>\t<why>`, then `item\t<N>\t<key>\t<line>` per check. The tick
+#       comments once per head and key, under a hidden marker (tell_skip).
 #   judge --check-runs <json> --statuses <json> --required <names file> [--workflow-runs <json>]
 #       A head's checks, each by the latest run of each event (the Actions
 #       runs give each check suite's event): `verdict\t<green|red|pending>`, then
@@ -85,6 +93,8 @@
 #       `dropped\t<N>\t<sha>\t<why>`, then `head\t<sha>`.
 #   state-render key=value...  |  state-get --body <file> --key <key>
 #       The state block a train pull request's body carries.
+#   tell --prs <gh pr list json>
+#       That telling step alone (GH_REPO, GH_TOKEN, RUN_URL).
 #   tick
 #       One step of the train, as above. Needs GH_REPO, GH_TOKEN (the
 #       workflow's token: reads, comments, labels, statuses), APP_TOKEN (the
@@ -119,7 +129,7 @@ MERGEABLE_WAIT_SECONDS="${MERGE_TRAIN_MERGEABLE_WAIT_SECONDS:-3}"
 # green by waiting, and every `ready` pull request behind it is held.
 MAX_AGE_MINUTES="${MERGE_TRAIN_MAX_AGE_MINUTES:-90}"
 
-usage() { sed -n '2,93p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,103p' "$0" | sed 's/^# \{0,1\}//'; }
 
 is_number() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
@@ -140,6 +150,33 @@ required_json() {
   [[ "$(jq 'length' <<<"${json}")" -gt 0 ]] || die "no required checks: a train or a pull request could never be judged green"
   printf '%s' "${json}"
 }
+
+# How select and skips read a pull request from `gh pr list`, written once.
+# `candidate`: a pull request the train serves at all -- `ready`, aimed at
+# main, not a draft, not a fork, not a train (needs --arg prefix). `checks`:
+# the status rollup holds check runs (status + conclusion) and commit statuses
+# (state) side by side; each is reduced to name / done / result / url. `bad`
+# is a result that will not turn green until something is re-run or pushed.
+# shellcheck disable=SC2016
+ROLLUP_JQ='
+    def good: . as $c | ["SUCCESS", "SKIPPED", "NEUTRAL"] | index($c) != null;
+    def bad: . as $c | ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED",
+                        "STARTUP_FAILURE", "STALE", "ERROR"] | index($c) != null;
+    def candidate:
+      .baseRefName == "main" and .isDraft == false and .isCrossRepository == false
+      and any(.labels[]?; .name == "ready")
+      and ((.headRefName | startswith($prefix)) | not);
+    def checks:
+      [ (.statusCheckRollup // [])[]
+        | if .__typename == "StatusContext"
+          then {name: .context, done: ((.state // "") as $s | $s != "PENDING" and $s != "EXPECTED"),
+                result: (.state // ""), url: (.targetUrl // "")}
+          else {name: .name,
+                done: (.status == "COMPLETED"
+                       or ((.conclusion // "") != "" and (.completedAt // "") != "")),
+                result: (.conclusion // ""), url: (.detailsUrl // "")}
+          end ];
+'
 
 reread_mergeable() {
   # The single-pull-request read, which makes GitHub compute a mergeability
@@ -194,31 +231,14 @@ cmd_select() {
   local keep_unknown="${unknown}"
   [[ "${recheck}" == false ]] || keep_unknown=true
   local n sha mergeable title
-  jq -r --argjson required "${req}" --arg prefix "${TRAIN_PREFIX}" --argjson unknown "${keep_unknown}" '
-    def good: . as $c | ["SUCCESS", "SKIPPED", "NEUTRAL"] | index($c) != null;
-    def bad: . as $c | ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED",
-                        "STARTUP_FAILURE", "STALE", "ERROR"] | index($c) != null;
-    def checks:
-      [ (.statusCheckRollup // [])[]
-        | if .__typename == "StatusContext"
-          then {name: .context, done: ((.state // "") as $s | $s != "PENDING" and $s != "EXPECTED"),
-                result: (.state // "")}
-          else {name: .name,
-                done: (.status == "COMPLETED"
-                       or ((.conclusion // "") != "" and (.completedAt // "") != "")),
-                result: (.conclusion // "")}
-          end ];
+  jq -r --argjson required "${req}" --arg prefix "${TRAIN_PREFIX}" --argjson unknown "${keep_unknown}" "${ROLLUP_JQ}"'
     def green:
       checks as $c
       | ([ $c[] | select(.done and (.result | bad)) ] | length == 0)
         and all($required[]; . as $r | any($c[]; .name == $r and .done and (.result | good)));
     [ .[]
-      | select(.baseRefName == "main")
-      | select(.isDraft == false)
-      | select(.isCrossRepository == false)
-      | select(any(.labels[]?; .name == "ready"))
+      | select(candidate)
       | select(.mergeable == "MERGEABLE" or ($unknown and .mergeable == "UNKNOWN"))
-      | select((.headRefName | startswith($prefix)) | not)
       | select((.title | test("^\\s*\\[swarm\\] task_"; "i")) | not)
       | select(green)
     ]
@@ -235,6 +255,50 @@ cmd_select() {
     fi
     printf '%s\t%s\t%s\n' "${n}" "${sha}" "${title}"
   done
+}
+
+# ---------------------------------------------------------------------------
+# skips
+# ---------------------------------------------------------------------------
+
+cmd_skips() {
+  # The `ready` pull requests that do not board for a reason that will not
+  # clear by itself, read from the same list and with the same rules as
+  # select: a check at the head that finished bad (failed, cancelled, timed
+  # out...), whose re-run or a new push is what clears it; or a conflict with
+  # main. A check still running, or a train that is full, clears by itself
+  # and is not one. Per reason, `skip\t<N>\t<head>\t<key>\t<why>`, then
+  # `item\t<N>\t<key>\t<markdown line>` per check behind it. <key> is the
+  # reason as the hidden marker carries it: `check:<names>` or `conflict`.
+  local prs=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prs) [[ $# -ge 2 ]] || die "--prs needs a value"; prs="$2"; shift 2 ;;
+      *) die "skips: unknown argument: $1" ;;
+    esac
+  done
+  [[ -f "${prs}" ]] || die "skips: no --prs file"
+  jq -r --arg prefix "${TRAIN_PREFIX}" "${ROLLUP_JQ}"'
+    def one_line: gsub("[\\t\\r\\n]"; " ");
+    def said: {FAILURE: "failed", ERROR: "failed", CANCELLED: "was cancelled",
+               TIMED_OUT: "timed out", ACTION_REQUIRED: "needs an action",
+               STARTUP_FAILURE: "failed to start", STALE: "went stale"}[.] // "failed";
+    [ .[] | select(candidate) | select((.title | test("^\\s*\\[swarm\\] task_"; "i")) | not) ]
+    | sort_by(.number)
+    | .[]
+    | . as $pr
+    | ( [ checks[] | select(.done and (.result | bad)) ]
+        | group_by(.name) | map(.[-1]) ) as $red
+    | ( if ($red | length) > 0 then
+          ("check:" + ([ $red[].name | gsub("[^A-Za-z0-9._()/-]"; "_") ] | join(","))) as $key
+          | "skip\t\($pr.number)\t\($pr.headRefOid)\t\($key)\t"
+            + ([ $red[] | "`\(.name | one_line)` \(.result | said)" ] | join(", ")),
+            ( $red[] | "item\t\($pr.number)\t\($key)\t- [`\(.name | one_line)`](\(.url)): \(.result | said)" )
+        else empty end ),
+      ( if $pr.mergeable == "CONFLICTING" then
+          "skip\t\($pr.number)\t\($pr.headRefOid)\tconflict\tit conflicts with main"
+        else empty end )
+  ' "${prs}"
 }
 
 # ---------------------------------------------------------------------------
@@ -575,16 +639,93 @@ eject_pr() {
   summary "ejected #${number}"
 }
 
+# The hidden marker on a "does not board" comment, and the sentence after it
+# that names the reason. agent_worker.merge reads both (REPOSITORY_TRAIN_SKIP,
+# REPOSITORY_TRAIN_SKIP_HEADLINE) to put the reason on the merge step's
+# waiting line; tests/unit/worker holds them equal.
+SKIP_MARKER="<!-- merge-train-skip"
+SKIP_HEADLINE="**The merge train skips it: "
+
+tell_skip() {
+  # Tells a `ready` pull request why the train passes over it, ONCE per head
+  # commit and reason: the comment carries `<!-- merge-train-skip head=<sha>
+  # reason=<key> -->`, and a comment already carrying that marker means it was
+  # told. A new head, or a new reason at the same head, is told again. Never
+  # fails the tick: a comment that cannot be read or written is a warning, and
+  # an unreadable thread is not commented on, so nothing is said twice.
+  # $1 N, $2 head, $3 key, $4 why (one line), $5 a file of detail lines.
+  local number="$1" head="$2" key="$3" why="$4" details="$5" marker seen body clears
+  marker="${SKIP_MARKER} head=${head} reason=${key} -->"
+  seen="${WORK}/seen-${number}.txt"
+  if ! gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate --jq '.[].body' \
+    >"${seen}" 2>/dev/null </dev/null; then
+    warn "could not read #${number}'s comments: not telling it why it does not board"
+    return 0
+  fi
+  if grep -qF -- "${marker}" "${seen}"; then
+    return 0
+  fi
+  case "${key}" in
+    check:*)
+      clears="What clears it: re-run that job from its run page if the failure was not this change's (a network timeout, a flake), or push a fix if it was. The train boards it on its next tick once every check at its head has finished green." ;;
+    conflict)
+      clears="What clears it: merge main into the branch (or rebase it onto main), resolve the conflict and push. The train boards it once its new head is green." ;;
+    *)
+      clears="What clears it: edit the body so it closes only what this change finishes (write \`part of #N\` for the rest). The train reads it again on its next tick." ;;
+  esac
+  body="${WORK}/skip-${number}.md"
+  {
+    printf '%s\n' "${marker}"
+    printf '%s%s.**\n\n' "${SKIP_HEADLINE}" "${why}"
+    if [[ -s "${details}" ]]; then
+      cat -- "${details}"
+      echo
+    fi
+    echo "At head \`${head}\`. ${clears} It stays \`ready\`; this is said once per head commit and reason."
+    echo "(scripts/merge-train.sh, run ${RUN_URL})"
+  } >"${body}"
+  if ! comment_on "${number}" "${body}"; then
+    warn "could not tell #${number} why it does not board"
+    return 0
+  fi
+  summary "#${number} told why it does not board: ${why}"
+}
+
+tell_skipped() {
+  # Every reason `skips` finds in the open pull request list ($1), each told
+  # once (tell_skip). A dry run tells nothing: the caller does not call it.
+  local prs="$1" skips="${WORK}/skips.tsv" reasons="${WORK}/skip-reasons.tsv"
+  local kind n head key why told=0
+  cmd_skips --prs "${prs}" >"${skips}"
+  awk -F'\t' '$1 == "skip"' "${skips}" >"${reasons}"
+  while IFS=$'\t' read -r kind n head key why; do
+    awk -F'\t' -v n="${n}" -v k="${key}" '$1 == "item" && $2 == n && $3 == k { print $4 }' \
+      "${skips}" >"${WORK}/skip-items.md"
+    info "#${n} does not board: ${why}"
+    tell_skip "${n}" "${head}" "${key}" "${why}" "${WORK}/skip-items.md"
+    told=$((told + 1))
+  done <"${reasons}"
+  info "${told} ready pull request(s) pass over for a reason that will not clear by itself"
+}
+
 guards_pass() {
   # Main's closing-references and dependency checks, as auto-merge.yml's gate
   # runs them. 0 boards; 2 is a refusal the gate has already commented on;
-  # anything else could not tell, and does not board either.
-  local number="$1" here rc
+  # anything else could not tell, and does not board either. A closing-keyword
+  # refusal (2) does not clear by itself, so the pull request is told, once
+  # at its head (tell_skip), unless $3 says this is a dry run; a read that
+  # could not tell, or a dependency not landed yet, may clear by itself.
+  local number="$1" head="$2" dry="$3" here rc refusal
   here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  refusal="${WORK}/closing-${number}.md"
   rc=0
-  "${here}/check-closing-references.sh" --pr "${number}" --repo "${GH_REPO}" >/dev/null 2>&1 || rc=$?
+  "${here}/check-closing-references.sh" --pr "${number}" --repo "${GH_REPO}" >"${refusal}" 2>/dev/null || rc=$?
   if [[ "${rc}" -ne 0 ]]; then
     info "#${number} does not board: its closing keywords name an open pull request, or that could not be read (exit ${rc})"
+    if [[ "${rc}" -eq 2 && "${dry}" != "true" ]]; then
+      tell_skip "${number}" "${head}" closing-references \
+        "its closing keywords would close an open pull request" "${refusal}"
+    fi
     return 1
   fi
   "${here}/check-pr-dependencies.sh" --pr "${number}" --repo "${GH_REPO}" >/dev/null 2>&1 || rc=$?
@@ -610,7 +751,7 @@ start_train() {
     cmd_select --prs "${WORK}/prs.json" --required "${WORK}/required.txt" --recheck-unknown >"${eligible}"
     while IFS=$'\t' read -r n sha title; do
       [[ "${count}" -lt "${MAX_PRS}" ]] || break
-      guards_pass "${n}" || continue
+      guards_pass "${n}" "${sha}" "${dry}" || continue
       printf '%s\t%s\t%s\n' "${n}" "${sha}" "${title}" >>"${chosen}"
       count=$((count + 1))
     done <"${eligible}"
@@ -869,6 +1010,25 @@ handle_train() {
   esac
 }
 
+cmd_tell() {
+  # The tick's telling step alone, over a list read already: each `ready`
+  # pull request `skips` finds is told why it does not board, once per head
+  # and reason. Needs GH_REPO, GH_TOKEN (reads and comments) and RUN_URL.
+  local prs=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prs) [[ $# -ge 2 ]] || die "--prs needs a value"; prs="$2"; shift 2 ;;
+      *) die "tell: unknown argument: $1" ;;
+    esac
+  done
+  [[ -f "${prs}" ]] || die "tell: no --prs file"
+  : "${GH_REPO:?GH_REPO is required}"
+  : "${RUN_URL:?RUN_URL is required}"
+  WORK="$(mktemp -d)"
+  trap 'rm -rf "${WORK}"' EXIT
+  tell_skipped "${prs}"
+}
+
 cmd_tick() {
   : "${GH_REPO:?GH_REPO is required}"
   : "${GH_TOKEN:?GH_TOKEN is required}"
@@ -891,6 +1051,12 @@ cmd_tick() {
 
   required_contexts "${WORK}/required.txt"
   list_open_prs "${WORK}/prs.json"
+  # Before anything boards: a `ready` pull request the train will pass over
+  # on every tick until someone acts is told so, once per head and reason
+  # (4 November 2026: one sat eight hours behind a failed check, unsaid).
+  if [[ "${dry}" != "true" ]]; then
+    tell_skipped "${WORK}/prs.json"
+  fi
   local trains="${WORK}/trains.txt"
   jq -r --arg prefix "${TRAIN_PREFIX}" '
     [ .[] | select((.headRefName | startswith($prefix)) and .isCrossRepository == false) ]
@@ -940,6 +1106,8 @@ main() {
   [[ $# -gt 0 ]] && shift
   case "${sub}" in
     select) cmd_select "$@" ;;
+    skips) cmd_skips "$@" ;;
+    tell) cmd_tell "$@" ;;
     judge) cmd_judge "$@" ;;
     plan) cmd_plan "$@" ;;
     compose) cmd_compose "$@" ;;

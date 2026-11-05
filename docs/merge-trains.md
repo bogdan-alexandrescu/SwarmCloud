@@ -244,6 +244,13 @@ is a fenced transaction, so a superseded attempt writes nothing
 - The CI wake tick skips these parks.
 - The coordinator marks the park when the entry concludes, and the
   15-minute fallback instant covers a lost mark.
+- `merge_wait.train_entered_at` is the train wait's start: set by the
+  first train park of an unbroken run of them, carried by every train park
+  after it, cleared by any other park (both park writers keep it).
+  swarm-api serves it as `waiting.detail.train_since`, and `/sc check` ages
+  the wait from it (rule `merge_train_stalled`, part of #2688) BECAUSE the
+  train pauses the CI clock, so `waiting.since` cannot say how long the step
+  has queued.
 
 ### 5.3 How the step ends
 
@@ -253,6 +260,27 @@ is a fenced transaction, so a superseded attempt writes nothing
 | `ejected` (`train_red`, `train_timed_out`, `train_conflict`, `step_ended`) | **FAILED** `train_ejected`, the train's reason and failing checks in the message |
 | `returned` (`train_conflict`, `head_moved`, `land_refused`, `already_merged`, `closed`, `base_changed`) | re-runs its gate from the top, so a conflict with the new base goes to a **conflict fix round** and a closed or merged PR ends as in direct mode; then registers again, keeping its place. `train_conflict` and `land_refused` count toward `MAX_RETURNS` (3), after which the entry is ejected instead |
 | `queued` / `riding` | parks again |
+
+An `ejected` entry of THIS train refuses at once, unchanged: the coordinator
+records its reason, and a culprit found by bisection is not a lone flake.
+
+**The repository-level train ejects differently (#3313).** With
+`vars.MERGE_TRAIN` on, the merge step boards `scripts/merge-train.sh` by
+labelling its pull request `ready`, and an ejection there is a comment
+beginning `**Ejected from the merge train` plus `ready` removed. That train
+runs main plus this pull request alone, so when it fails while the pull
+request's own head is green the failure is often a flake: PR #3212 was
+ejected because two CPU-bound vitest ladder tests timed out at vitest's 30 s
+on a loaded shard, green on its own head and on main's. So the step, at a
+green head, labels `ready` again ONCE per head and parks `merge_train_waiting`
+again; a second ejection at the same head is a CI-fix round's
+(`train_fix_pending`, the train run's failing jobs as its excerpt) when the
+step has rounds left; only after that round ends at the same head, or with no
+round, does it end FAILED `train_ejected` with the train's reason. One
+re-board per head, so it cannot loop. A `ready` removed by auto-merge.yml's
+gate rather than the train still refuses at once. The step's wait record is
+tenant-writable: a forged one can at worst re-label once or refuse
+(docs/merge-step.md, "Revised 2026-11-03").
 
 ## 6. Invariants
 

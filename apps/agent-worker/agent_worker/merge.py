@@ -180,6 +180,7 @@ from . import mergeslot
 from . import mergetrain
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
+from . import security_review as security_review_mod
 from . import verdict as verdict_mod
 from .errors import ExitCode, FencedError, InputUnavailable
 from .expected_outputs import NO_CHANGE_SUMMARY_KEY, left_nothing
@@ -392,6 +393,12 @@ RERUN_REFUSALS_MAX = 2
 #: this head. Never `checks_failed` while either holds.
 CI_FIX_PENDING = "ci_fix_pending"
 CI_FIX_RUNNING = "ci_fix_running"
+#: The park code of a green head the repository's merge train ejected twice
+#: (#3313): the step's free re-board at that head is spent and a CI-fix round
+#: is left, so swarm-api's merge wake tick submits one with the train run's
+#: failing jobs (`failed`, `train_ejection_failed`) as its excerpt. A round
+#: claimed at the head parks CI_FIX_RUNNING, as a red reading's does.
+TRAIN_FIX_PENDING = "train_fix_pending"
 #: The park code of a red reading whose failing jobs the tick re-ran at this
 #: head less than RERUN_SETTLE_SECONDS ago, or whose re-run's workflow run
 #: attempt is still running past that (#3006): the re-run has not answered
@@ -522,6 +529,29 @@ REPOSITORY_TRAIN_LABEL = "ready"
 REPOSITORY_TRAIN_CONTEXT = "merge-train"
 #: How the train's ejection comment begins (`merge-train.sh eject_pr`).
 REPOSITORY_TRAIN_EJECTED = "**Ejected from the merge train"
+#: The line a park after the step's one free re-board at a head carries in
+#: its `pending` (#3313). The fenced park (`ControlPlane.park_ci_pending`)
+#: keeps only the code, head, pull request, `pending` and `failed` of a
+#: wait, so the re-board is recorded where `metadata.merge_wait` keeps it;
+#: swarm-api's wake tick reads it only to tell a CI_FIX_RUNNING park on a
+#: train round (green at its head, `mergewake.TRAIN_REBOARDED`, held equal
+#: by test_merge_wake_train_round.py) from a red head's, and never rewrites
+#: it; a CI park's `pending` is replaced by its own reading. Tenant-writable: a
+#: forged one can at worst skip the re-board, which refuses or asks for a
+#: round sooner.
+TRAIN_REBOARDED = "re-boarded once after the merge train's ejection"
+#: A failing line of the ejection comment: `- [name](url)` as `eject_pr`
+#: writes it, or `* name: url`.
+_EJECTION_FAILED = re.compile(
+    r"^\s*[-*]\s+(?:\[(?P<link>[^\]]+)\]\(\S+\)|(?P<named>.+?):\s+\S+://\S+)\s*$")
+#: The train's "does not board" comment (`merge-train.sh tell_skip`,
+#: SKIP_MARKER and SKIP_HEADLINE, held equal by
+#: tests/unit/worker/test_merge_train_skip_reason.py): its first line is
+#: `<!-- merge-train-skip head=<sha> reason=<key> -->`, its second
+#: `**The merge train skips it: <why>.**`. The train decides why it passes
+#: over a `ready` pull request; the step only reads what it said, at its head.
+REPOSITORY_TRAIN_SKIP = "<!-- merge-train-skip"
+REPOSITORY_TRAIN_SKIP_HEADLINE = "**The merge train skips it: "
 
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
@@ -1303,6 +1333,8 @@ class ForgeMerger(Protocol):
 
     def train_ejection(self, number: int) -> str | None: ...
 
+    def train_skip(self, number: int, head: str) -> str | None: ...
+
 
 class UnsupportedForge(ValueError):
     """The repository is on a host no `ForgeMerger` serves."""
@@ -1745,21 +1777,49 @@ class GitHubMerger:
 
     def train_ejection(self, number: int) -> str | None:
         """Why the pull request lost `ready`, as its comments say: the latest
-        comment of the merge train's ejection (`REPOSITORY_TRAIN_EJECTED`,
-        scripts/merge-train.sh `eject_pr`), else the latest an App wrote
-        (auto-merge.yml's gate says why it removed `ready`), else None."""
+        comment that is either the merge train's ejection
+        (`REPOSITORY_TRAIN_EJECTED`, scripts/merge-train.sh `eject_pr`) or one
+        an App wrote (auto-merge.yml's gate says why it removed `ready`), else
+        None. The latest of the two, never an ejection ahead of a newer App
+        comment: an earlier ejection must not turn the gate's later removal
+        into the train's, which `_board` re-boards instead of refusing. The
+        train's own "does not board" comment (`REPOSITORY_TRAIN_SKIP`), which
+        the workflow's bot writes on a pull request still `ready`, is neither:
+        it never says why `ready` was lost."""
         comments = self._client.paginate(f"{self._base}/issues/{number}/comments")
-        ejected = app = None
+        latest = None
         for comment in comments:
             comment = _mapping(comment)
             body = _str(comment.get("body"))
-            if body is None:
+            if body is None or body.startswith(REPOSITORY_TRAIN_SKIP):
                 continue
-            if body.startswith(REPOSITORY_TRAIN_EJECTED):
-                ejected = body
-            if _mapping(comment.get("user")).get("type") == "Bot":
-                app = body
-        return ejected or app
+            if (body.startswith(REPOSITORY_TRAIN_EJECTED)
+                    or _mapping(comment.get("user")).get("type") == "Bot"):
+                latest = body
+        return latest
+
+    def train_skip(self, number: int, head: str) -> str | None:
+        """Why the merge train passes over the pull request at `head`, as the
+        train's latest "does not board" comment at that head says
+        (`REPOSITORY_TRAIN_SKIP`); None when it said nothing there."""
+        return train_skip_reason(self._client.paginate(f"{self._base}/issues/{number}/comments"),
+                                 head)
+
+
+def train_skip_reason(comments: Iterable[Any], head: str) -> str | None:
+    """The reason in the latest of `comments` that is the merge train's
+    "does not board" comment at `head`, e.g. "`queue for auto-merge` failed";
+    None when there is none. A comment at another head is not this head's."""
+    marker = f"{REPOSITORY_TRAIN_SKIP} head={head} "
+    why = None
+    for comment in comments:
+        lines = (_str(_mapping(comment).get("body")) or "").splitlines()
+        if len(lines) < 2 or not lines[0].startswith(marker):
+            continue
+        said = lines[1].strip()
+        if said.startswith(REPOSITORY_TRAIN_SKIP_HEADLINE) and said.endswith(".**"):
+            why = said[len(REPOSITORY_TRAIN_SKIP_HEADLINE):-len(".**")].strip() or why
+    return why
 
 
 def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
@@ -1970,7 +2030,7 @@ class _Run:
         )
 
     def wait(self, code: str, message: str, *, head: str, pull_request: int,
-             pending: list[str]) -> ActionOutcome:
+             pending: list[str], failed: list[str] | None = None) -> ActionOutcome:
         """A fact that may change by itself: park CI_PENDING, holding nothing.
 
         Not a retry: the lifecycle writes the park, the refund and the
@@ -1985,7 +2045,8 @@ class _Run:
         a red reading's waits do -- the reading's pending ones, so a park on a
         red check still says what else is running. A wait made before any
         check was read at `head` records no `failed` at all: not read is not
-        none failed.
+        none failed. A caller that names `failed` (a train ejection's failing
+        jobs, #3313) records those instead of the reading's.
         """
         self.summary["wait"] = {"code": code, "message": message}
         ci_wait: dict[str, Any] = {"code": code, "head": head, "pull_request": pull_request,
@@ -1994,6 +2055,8 @@ class _Run:
             _, read_pending, read_failed = self.reading
             ci_wait["pending"] = sorted(pending) or list(read_pending)
             ci_wait["failed"] = list(read_failed)
+        if failed is not None:
+            ci_wait["failed"] = list(failed)
         return _outcome(
             TaskState.PARKED, None, self.summary, f"{code}: {message}",
             exit_code=ExitCode.PARKED,
@@ -2116,6 +2179,12 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         if still_open:
             summary["open_questions"] = still_open
 
+    # The optional security review (docs/design/security-review-step.md): a
+    # merge that staged its verdict requires it beside the review's.
+    held_by_security = _security_hold(ctx, run, target, opener, summary)
+    if held_by_security is not None:
+        return held_by_security
+
     number = pull_request_number(opener)
     if number is None:
         return run.refuse("pull_request_unknown",
@@ -2144,6 +2213,98 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
         own=own, fix_heads=fix_heads,
     )
+
+
+#: The merge refusals the security review's verdict adds.
+SECURITY_VERDICT_UNREADABLE = "security_verdict_unreadable"
+SECURITY_VERDICT_NOT_MERGE = "security_verdict_not_merge"
+SECURITY_FIX_REQUESTED = "security_fix_requested"
+
+
+def _security_hold(ctx: ActionContext, run: _Run, target: MergeTarget,
+                   opener: Mapping[str, Any], summary: dict[str, Any]) -> ActionOutcome | None:
+    """The security review's say in the merge, or None to go on (owner, 4 November 2026).
+
+    Only when this step staged `security_review.VERDICT_FILE`: its signed
+    `input_from` named the security review, so the workflow has one. A merge
+    that staged none reads exactly as it did before.
+
+    MERGE goes on: no confirmed critical or high finding (confirmed medium,
+    low and informational ones are reported, `needs_validation` never
+    blocks). NOT_YET names an owner question per blocking finding in
+    `needs_owner`: held for a person on the same park as the review's
+    (`wait_for_owner`) until each is answered, re-read from the security
+    review's own task. Then every answer must accept the risk or mark a false
+    positive; any other answer -- "Fix it now", or free text naming no option
+    -- refuses `security_fix_requested`, so the finding is fixed and reviewed
+    before anything merges. A NOT_YET naming no question, or a verdict that
+    does not read, refuses: an unreadable security review is not a pass.
+    """
+    staged = ctx.staged.get(security_review_mod.VERDICT_FILE)
+    if staged is None:
+        return None
+    try:
+        verdict = verdict_mod.read_verdict(
+            staged, task_id="the security review", filename=security_review_mod.VERDICT_FILE)
+    except InputUnavailable as exc:
+        return run.refuse(SECURITY_VERDICT_UNREADABLE, str(exc))
+    record: dict[str, Any] = {"verdict": verdict.verdict}
+    summary[security_review_mod.SUMMARY_KEY] = record
+    if verdict.verdict == "MERGE":
+        return None
+    found = f" ({len(verdict.findings)} blocking finding(s))" if verdict.findings else ""
+    if not (verdict.needs_owner or verdict.needs_owner_unreadable):
+        return run.refuse(
+            SECURITY_VERDICT_NOT_MERGE,
+            f"the security review's verdict is {verdict.verdict}{found} and names no owner "
+            "question to answer",
+        )
+    if target.review is None:
+        # The review's own path already asked; this merge has no review.
+        ended = _ended_outside(run, target, opener)
+        if ended is not None:
+            return ended
+    held = _unanswered(ctx, verdict.needs_owner)
+    if held or verdict.needs_owner_unreadable:
+        return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+    answers = _security_answers(ctx, verdict.needs_owner)
+    record["answers"] = answers
+    fix = [row for row in answers
+           if security_review_mod.disposition(row.get("answer")) != "merge"]
+    if fix:
+        named = "; ".join(f"question {row['question_index']}: {row['question']}" for row in fix)
+        return run.refuse(
+            SECURITY_FIX_REQUESTED,
+            f"the security review's verdict is NOT_YET{found}, and the owner did not accept "
+            f"the risk or mark a false positive for {named}",
+        )
+    return None
+
+
+def _security_answers(ctx: ActionContext, refs: tuple[verdict_mod.OwnerQuestionRef, ...]
+                      ) -> list[dict[str, Any]]:
+    """Each `needs_owner` question with the owner's answer, read again from its task.
+
+    Fail closed, as `_unanswered` does: a task that cannot be read, or is not
+    a step of this workflow, gives the question no answer, which is not one
+    that lets the merge go on.
+    """
+    rows: list[dict[str, Any]] = []
+    for ref in refs:
+        try:
+            doc = _mapping(ctx.fetch_upstream(ref.task_id))
+        except InputUnavailable:
+            doc = {}
+        answer: dict[str, Any] | None = None
+        if ctx.workflow_id is not None and doc.get("workflow_id") == ctx.workflow_id:
+            for entry in _mapping(doc.get("metadata")).get(OWNER_ANSWERS_KEY) or ():
+                if (isinstance(entry, Mapping) and type(entry.get("question_index")) is int
+                        and entry.get("question_index") == ref.question_index):
+                    answer = {"choice": entry.get("choice"), "text": entry.get("text")}
+        rows.append({"task_id": ref.task_id, "step_id": ref.step_id,
+                     "question_index": ref.question_index, "question": ref.question,
+                     "answer": answer})
+    return rows
 
 
 def _ended_outside(run: _Run, target: MergeTarget,
@@ -3315,36 +3476,107 @@ def _on_repository_train(ctx: ActionContext, own: Mapping[str, Any], *,
     return head is None or wait.get("head") == head
 
 
+def _reboarded(ctx: ActionContext, own: Mapping[str, Any], *, head: str) -> bool:
+    """Whether this step's last park at `head` came after its one free
+    re-board there (`TRAIN_REBOARDED` in its `pending`, #3313), in a step
+    whose signed target is not a workspace train. The record is
+    tenant-writable: a forged one can at worst skip the re-board."""
+    if parse_merge_target(ctx.dispatch).merge_mode == mergetrain.TRAIN:
+        return False
+    wait = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    pending = wait.get("pending")
+    return (wait.get("head") == head and isinstance(pending, list)
+            and TRAIN_REBOARDED in pending)
+
+
+def train_ejection_failed(body: str | None) -> list[str]:
+    """The failing jobs the merge train's ejection comment names, in its order
+    (`merge-train.sh eject_pr`: `- [name](url)`); [] for any other comment."""
+    if not body or not body.startswith(REPOSITORY_TRAIN_EJECTED):
+        return []
+    names: list[str] = []
+    for line in body.splitlines():
+        matched = _EJECTION_FAILED.match(line)
+        name = (matched.group("link") or matched.group("named")).strip() if matched else ""
+        if name and name not in names:
+            names.append(name[:200])
+    return names[:20]
+
+
 def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRequestFacts,
            head: str, base: str, switch: Mapping[str, Any]) -> ActionOutcome:
     """Board the repository's merge train: label `ready`, then park.
 
     Green at `head` with the review's MERGE, so the pull request is what the
-    train boards (`merge-train.sh select`). Already `ready`: park again. Not
-    `ready` though this step parked on the train at this same head: the
-    train ejected it, or auto-merge.yml's gate took `ready` off -- a refusal,
-    `train_ejected`, with the comment that says why; never labelled again,
-    as a dequeued pull request is never enqueued again. A conflict or a red
-    check at the head never reaches here: the gate above sends it to its fix
-    round first, and a round's new head is labelled afresh.
+    train boards (`merge-train.sh select`). Already `ready`: park again. A
+    conflict or a red check at the head never reaches here: the gate above
+    sends it to its fix round first, and a round's new head is labelled
+    afresh.
 
-    The label is behind the fencing and cancel recheck, as every forge write
-    is: a superseded attempt labels nothing (invariant 5). The park is
-    `TRAIN_WAITING`, off the CI clock, waking on the fallback instant, and
-    holds no lease, capacity or merge slot (invariant 1).
+    Not `ready` though this step parked on the train at this same head: the
+    train ejected it, or auto-merge.yml's gate took `ready` off. Which one,
+    the comment `GitHubMerger.train_ejection` answers says: only one that
+    begins `REPOSITORY_TRAIN_EJECTED` is the train's.
+
+      * The gate's removal is a refusal at once, `train_ejected`, with the
+        gate's comment: what it refused does not change by waiting.
+      * The train's ejection gets the path a red head gets (#3313). The head
+        is green here -- its own checks were read green above -- so a train
+        run of main plus this pull request alone that failed is often a
+        flake (#3212: two ladder tests timed out at vitest's 30 s on a
+        loaded shard). The FIRST ejection at a head is labelled `ready`
+        again, once, and parks `TRAIN_WAITING` with `TRAIN_REBOARDED`
+        recorded at the head; the SECOND is a CI-fix round's
+        (`_train_round`); only after it, or with no round to ask for, is it
+        refused `train_ejected` with the train's reason. One re-board per
+        head, so a change the train keeps ejecting cannot loop.
+
+    Every label is behind the fencing and cancel recheck, as every forge
+    write is: a superseded attempt labels nothing (invariant 5). Every park
+    -- `TRAIN_WAITING` off the CI clock, waking on the fallback instant, or
+    the round's -- holds no lease, capacity or merge slot (invariant 1). The
+    wait record is tenant-writable: a forged one can at worst re-label once
+    or refuse.
     """
     ctx, summary = run.ctx, run.summary
     number = pr.number
     record: dict[str, Any] = {**switch, "head": head, "label": REPOSITORY_TRAIN_LABEL}
     summary["repository_train"] = record
+    reboarded = _reboarded(ctx, own, head=head)
+    skips = None
     if REPOSITORY_TRAIN_LABEL in pr.labels:
         record["labelled"] = False
-    elif _on_repository_train(ctx, own, head=head):
+        # Already `ready` and still here: the train may be passing over it
+        # for a reason that will not clear by itself (a red check the gate
+        # above does not hold it for, a conflict GitHub has not reported to
+        # the step yet). The train said so on the pull request; the waiting
+        # line carries it. A read that fails leaves the plain line.
+        try:
+            skips = merger.train_skip(number, head)
+        except forge_mod.ForgeError as exc:
+            record["skip_unread"] = type(exc).__name__
+        if skips:
+            record["skips"] = skips
+    elif reboarded or _on_repository_train(ctx, own, head=head):
         why = merger.train_ejection(number)
-        return run.refuse("train_ejected",
-                          f"pull request #{number} lost `{REPOSITORY_TRAIN_LABEL}` while it "
-                          f"waited in {base}'s merge train at {head}: "
-                          + (why.strip()[:1000] if why else "no comment on it says why"))
+        said = why.strip()[:1000] if why else "no comment on it says why"
+        message = (f"pull request #{number} lost `{REPOSITORY_TRAIN_LABEL}` while it waited in "
+                   f"{base}'s merge train at {head}: {said}")
+        if not why or not why.startswith(REPOSITORY_TRAIN_EJECTED):
+            return run.refuse("train_ejected", message)
+        record["ejection"] = said
+        if reboarded:
+            return _train_round(run, own, number=number, head=head, message=message,
+                                failed=train_ejection_failed(why))
+        if ctx.recheck():
+            return cancelled(summary)
+        merger.add_label(number, REPOSITORY_TRAIN_LABEL)
+        record.update(labelled=True, reboarded=True)
+        return run.wait(mergetrain.TRAIN_WAITING,
+                        f"pull request #{number} was ejected from {base}'s merge train at "
+                        f"{head}, green there, and is `{REPOSITORY_TRAIN_LABEL}` again: its one "
+                        "re-board at this head", head=head, pull_request=number,
+                        pending=[TRAIN_REBOARDED])
     else:
         if ctx.recheck():
             return cancelled(summary)
@@ -3352,7 +3584,60 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         record["labelled"] = True
     return run.wait(mergetrain.TRAIN_WAITING,
                     f"pull request #{number} is `{REPOSITORY_TRAIN_LABEL}` for {base}'s merge "
-                    f"train at {head}", head=head, pull_request=number, pending=[])
+                    f"train at {head}" + (f"; the train skips it: {skips}" if skips else ""),
+                    head=head, pull_request=number,
+                    pending=[TRAIN_REBOARDED] if reboarded else [])
+
+
+def _train_round(run: _Run, own: Mapping[str, Any], *, number: int, head: str, message: str,
+                 failed: list[str]) -> ActionOutcome:
+    """The merge train ejected a green `head` again after the step's re-board
+    there (#3313): a CI-fix round's, or `train_ejected`.
+
+    As `_red` reads a red head's round: with a round asked and left, park
+    `TRAIN_FIX_PENDING` naming the train run's failing jobs (`failed`), which
+    swarm-api's merge wake tick submits the round with; a round claimed at
+    this head and not ended parks `CI_FIX_RUNNING`. A round that ended at
+    this head -- it found nothing to change, was refused, or was never run --
+    or no round to ask for refuses. A round that moved the head reaches
+    `_board` at its new head, which is labelled afresh. Every park keeps
+    `TRAIN_REBOARDED`, so the next wake reads the same head's re-board, and
+    is bounded by MERGE_CI_MAX_SECONDS.
+    """
+    rounds = _fix_rounds(own)
+    last = rounds[-1] if rounds else {}
+
+    def wait(code: str, why: str) -> ActionOutcome:
+        waited = _ci_wait_age(run.ctx, head)
+        if waited is not None:
+            return run.refuse("train_ejected",
+                              f"{message}; after one re-board, {why}, and the step has waited "
+                              f"{int(waited // 60)} min, past {MERGE_CI_MAX_SECONDS // 3600} h")
+        return run.wait(code, f"{message}; after one re-board, {why}", head=head,
+                        pull_request=number, pending=[TRAIN_REBOARDED], failed=failed)
+
+    if rounds and last.get("head") == head:
+        n = last.get("round")
+        error = last.get("error")
+        if error:
+            return run.refuse("train_ejected",
+                              f"{message}; after one re-board and after CI fix round {n}, "
+                              f"which was not run: {str(error)[:300]}")
+        task_id = _task_id(last.get("task_id"))
+        if task_id is None:
+            return wait(CI_FIX_RUNNING, f"CI fix round {n} is being submitted")
+        if not _ended(run.ctx, task_id):
+            return wait(CI_FIX_RUNNING, f"CI fix round {n} ({task_id}) is running")
+        return run.refuse("train_ejected",
+                          f"{message}; after one re-board and after CI fix round {n} "
+                          f"({task_id}) ended at this head")
+    asked = _rounds_asked(own)
+    if len(rounds) < asked:
+        return wait(TRAIN_FIX_PENDING, f"CI fix round {len(rounds) + 1} of {asked} is due")
+    return run.refuse("train_ejected",
+                      f"{message}; after one re-board"
+                      + (f" and {len(rounds)} CI fix round(s), all this step asked for"
+                         if asked else ", and this step asked for no CI fix round"))
 
 
 def repository_train_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int,
@@ -3897,8 +4182,9 @@ def _head_record(merger: ForgeMerger, *, head: str, pinned: str,
 #: merge train serialises the merges itself (a step that held the slot when
 #: the repository's train was turned on hands it on as it boards). The next
 #: green reading takes the slot again.
-_RELEASE_ON_PARK = frozenset({CI_FIX_PENDING, CI_FIX_RUNNING, CONFLICT_FIX_PENDING,
-                              CONFLICT_FIX_RUNNING, MERGE_QUEUED, mergetrain.TRAIN_WAITING})
+_RELEASE_ON_PARK = frozenset({CI_FIX_PENDING, CI_FIX_RUNNING, TRAIN_FIX_PENDING,
+                              CONFLICT_FIX_PENDING, CONFLICT_FIX_RUNNING, MERGE_QUEUED,
+                              mergetrain.TRAIN_WAITING})
 
 
 def _slot_use(ctx: ActionContext, repository: str,

@@ -208,10 +208,11 @@ describe('item 1: the Steps table with the step card open', () => {
       }
     }
     expect(visited).toBe(LONG.length * 2)
-    // ~10s on an idle container (cascades over ten rows at two widths): a
-    // third of the 30s suite default, so a busy CI shard timed it out at 30s
-    // on PR #3255 with nothing wrong. Own budget, as qa.u11b.workflows and
-    // qa.head already carry; a hang still fails.
+    // Own budget, not the config's 30 s: it measured ~10 s on an idle
+    // container and 13.5 s alone on the SwarmCloud container (2026-11-05;
+    // cascades over ten rows at two widths), and went past 30 s in loaded CI
+    // shards (PR #3255; PR #3304, component tests 3/8) with nothing wrong.
+    // 120 s, as qa.u11b.workflows and qa.head carry; a hang still fails.
   }, 120_000)
 
   // Browser QA D12 (2026-10-04) reversed item 1's wrap: ten names wrapped to
