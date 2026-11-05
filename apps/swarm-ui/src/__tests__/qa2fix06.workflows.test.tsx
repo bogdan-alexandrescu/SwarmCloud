@@ -14,13 +14,19 @@
  * change that turns it red.
  */
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { WorkflowsScreen } = await import('../Workflows')
+import type { Task, Workflow } from '../types'
+
+const { WorkflowCard, WorkflowsScreen } = await import('../Workflows')
+const { loadWorkflowBoard } = await import('../api')
 
 const AUDIT = 'wf_audit_01'
 const SYNTH = 'wf_5e5ad3b6f7da4299a839'
 const STORED = 'wf_bcdc9180e4fb4a209f31'
+
+const realWidth = window.innerWidth
 
 beforeEach(() => {
   try {
@@ -28,11 +34,15 @@ beforeEach(() => {
   } catch {
     /* storage refused */
   }
+  // The inspector starts folded below 1366px (graph-notes D·8b): these pages
+  // need it docked.
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
 })
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
 })
 
 const flat = (el: Element | null | undefined) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
@@ -63,6 +73,45 @@ async function page(id: string): Promise<void> {
   await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy(), { timeout: 4000 })
 }
 
+/**
+ * The fixture's own workflow and tasks, read the same way the screen does
+ * (`USE_FIXTURES`): what a canvas-only behaviour's `WorkflowCard` harness
+ * below renders, since `WorkflowCard` is no longer reachable through the page
+ * (the redesign draws the stage grid there instead -- graph-workflow-rest).
+ */
+async function fixtureCard(id: string): Promise<{ workflow: Workflow; taskById: Map<string, Task> }> {
+  const r = await loadWorkflowBoard()
+  if (r.status !== 'ok') throw new Error(`fixture board read failed: ${r.status}`)
+  const workflow = r.data.workflows.find((w) => w.workflow_id === id)
+  if (workflow === undefined) throw new Error(`no fixture workflow ${id}`)
+  return { workflow, taskById: r.data.taskById ?? new Map() }
+}
+
+/**
+ * `WorkflowCard` DIRECTLY, `page` AND A SEEDED PICK (as `WorkflowPage`'s old
+ * `Board` used to drive it before the redesign): the arrival pick, its
+ * bring-into-view and the Escape-refocus-to-node are the canvas's own, not
+ * the stage-grid page's, and `WorkflowCard` is kept exported for exactly this
+ * (brief, "What moved where").
+ */
+function CanvasHarness({ workflow, taskById, initialPicked }: { workflow: Workflow; taskById: Map<string, Task>; initialPicked: string | null }) {
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  const [picked, setPicked] = useState<string | null>(initialPicked)
+  return (
+    <WorkflowCard
+      workflow={workflow}
+      taskById={taskById}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      reload={() => {}}
+      picked={picked}
+      onPick={(_wfId, stepId) => setPicked((p) => (p === stepId ? null : stepId))}
+      page
+    />
+  )
+}
+
 describe('ovag2-15: the list’s cost note is short', () => {
   it('reads `$… N of M reported`, the long form in its title', async () => {
     await list()
@@ -81,8 +130,10 @@ describe('ovag2-15: the list’s cost note is short', () => {
 
   it('keeps the long form on the page head, where there is room', async () => {
     await page(AUDIT)
+    // `.wfp-cost` went with the redesign (brief, "What moved where"): the
+    // head's spend figure is a plain `.wfp-fig` now, still the long form.
     const cov = await waitFor(() => {
-      const c = document.querySelector<HTMLElement>('.wfp-cost .wf-spend:not(.is-reading) .wf-spend-cov')
+      const c = document.querySelector<HTMLElement>('.wfp-top .wf-spend:not(.is-reading) .wf-spend-cov')
       expect(c).toBeTruthy()
       return c!
     })
@@ -111,8 +162,14 @@ describe('62: a `state unknown` row makes no duration claim', () => {
 })
 
 describe('66: the longest chain on a workflow that has ended', () => {
+  // THE LONGEST-CHAIN NOTE IS THE CANVAS'S OWN (`CriticalPathNote`, drawn only
+  // inside `WorkflowGraph`): the redesigned page draws the stage grid instead
+  // (graph-workflow-rest) and has no equivalent note, so this renders
+  // `WorkflowCard` directly, on the fixture's own data (brief, "What moved
+  // where" -- "render it directly").
   it('names the step that never ran instead of waiting for it', async () => {
-    await page(SYNTH)
+    const { workflow, taskById } = await fixtureCard(SYNTH)
+    render(<CanvasHarness workflow={workflow} taskById={taskById} initialPicked={null} />)
     const note = await waitFor(() => {
       const n = document.querySelector<HTMLElement>('.wf-critical.is-unmeasured')
       expect(n).toBeTruthy()
@@ -128,48 +185,44 @@ describe('66: the longest chain on a workflow that has ended', () => {
 })
 
 describe('63: the page opens on the whole graph, its failed stage folded', () => {
+  // NO ARRIVAL PICK ON THE PAGE ANY MORE (brief, "What moved where"): the
+  // redesign opens with nothing picked and the Overview in the inspector: the
+  // failed step is red on the stage grid and in the Needs-you row instead,
+  // and its "Why it failed" is read from its inspector once a reader picks
+  // it -- this is that replacement. The band-folding and scroll-into-view
+  // this used to check are the canvas's own (see "63: a reader's pick
+  // scrolls the canvas" below, and ovag2-08, both retargeted to `WorkflowCard`).
   it('opens no stage on arrival and opens it, and brings the card nearest, once a reader asks', async () => {
-    const seen: ScrollIntoViewOptions[] = []
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value(this: HTMLElement, o: ScrollIntoViewOptions) {
-        if (this.classList.contains('wf-panel')) seen.push(o)
-      },
+    await page(SYNTH)
+    // Nothing is picked on arrival: the Overview sits in the inspector.
+    expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Workflow overview')
+    const chip = await waitFor(() => {
+      const c = document.querySelector<HTMLButtonElement>('.sg [data-step="checkpoints"]')
+      expect(c).toBeTruthy()
+      return c!
     })
-    try {
-      await page(SYNTH)
-      const go = await waitFor(() => {
-        const b = document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')
-        expect(b).toBeTruthy()
-        return b!
-      })
-      // The card for the failure is open (QA-120) ...
-      await waitFor(() => expect(document.querySelector('aside.wf-panel .wf-inspect-id')?.textContent).toBe('checkpoints'))
-      // ... and the graph is whole: the failed stage is a folded band naming
-      // the step, so nothing scrolls the canvas to it.
-      // MUTATION: drop `|| arrivalPick` from `pickedLevel` in `WorkflowGraph`
-      // -- the stage opens on load and the canvas is scrolled into it.
-      const band = await waitFor(() => {
-        const b = document.querySelector<HTMLElement>('.wf-canvas .wf-band')
-        expect(b).toBeTruthy()
-        return b!
-      })
-      expect(band.classList.contains('is-opened'), 'the stage opened on arrival').toBe(false)
-      expect(document.querySelector('.wf-canvas button.node[data-step="checkpoints"]')).toBeNull()
-      fireEvent.click(go)
-      await waitFor(() => expect(document.querySelector('.wf-canvas .wf-band.is-opened')).toBeTruthy())
-      expect(document.querySelector('.wf-canvas button.node[data-step="checkpoints"]')).toBeTruthy()
-      // MUTATION: drop `inline: 'nearest'` from `pickStep`'s scroll of the card.
-      expect(seen.at(-1)).toMatchObject({ block: 'nearest', inline: 'nearest' })
-    } finally {
-      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollIntoView
-    }
+    // MUTATION: drawing the failed chip in any other kind turns this red.
+    expect(chip.className).toContain('is-failed')
+    const needsRow = document.querySelector<HTMLElement>('.ny-row.is-failed')
+    expect(needsRow, 'no failed row in Needs-you').toBeTruthy()
+    expect(needsRow!.textContent).toContain('checkpoints')
+    // Picking the chip opens the step in the inspector, with its full reason.
+    fireEvent.click(chip)
+    await waitFor(() => expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Step checkpoints'))
+    const dock = document.querySelector<HTMLElement>('.wi-dock')!
+    // MUTATION: dropping the cause card from `InspectorSlot` turns this red.
+    expect(dock.textContent).toContain('Why it failed')
+    expect(dock.textContent).toContain('exit status 2: pytest was interrupted: 1 error during collection')
   })
 })
 
 describe('63: a reader’s pick scrolls the canvas, and the opened band still reads whole', () => {
+  // THE BAND LAYOUT AND ITS SCROLL ARE THE CANVAS'S OWN (`WorkflowGraph`,
+  // `StageBand`), not drawn by the redesigned page at all (it has no
+  // horizontal scroller -- the stage grid is a dense table). `WorkflowCard`
+  // is kept exported for exactly this case (brief, "What moved where").
   it('draws the band’s rows inside the part of the canvas on screen', async () => {
-    // The 1440 page with the step card open: the ~595px wrapper, the 72px rail.
+    // The ~595px wrapper, the 72px rail, as the 1440 page used to size it.
     const restore: (() => void)[] = []
     const stub = (prop: string, get: (this: HTMLElement) => number, set?: (this: HTMLElement, v: number) => void) => {
       Object.defineProperty(HTMLElement.prototype, prop, { configurable: true, get, ...(set ? { set } : {}) })
@@ -195,7 +248,8 @@ describe('63: a reader’s pick scrolls the canvas, and the opened band still re
       return this.classList.contains('wf-levels') ? 72 : 0
     })
     try {
-      await page(SYNTH)
+      const { workflow, taskById } = await fixtureCard(SYNTH)
+      render(<CanvasHarness workflow={workflow} taskById={taskById} initialPicked="checkpoints" />)
       fireEvent.click(await waitFor(() => document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!))
       const band = await waitFor(() => {
         const b = document.querySelector<HTMLElement>('.wf-canvas .wf-band.is-opened')
@@ -226,8 +280,13 @@ describe('63: a reader’s pick scrolls the canvas, and the opened band still re
 })
 
 describe('ovag2-08: Escape on the step drawer gives focus back to its node', () => {
+  // THE DRAWER AND ITS REFOCUS ARE THE CANVAS'S OWN (`.wf-panel`'s Escape in
+  // `WorkflowCard`): the redesigned page docks the inspector beside the
+  // stage grid instead, and has no node to refocus (brief, "What moved
+  // where"), so this renders `WorkflowCard` directly, as the page used to.
   it('returns focus to the graph node that opened the drawer', async () => {
-    await page(SYNTH)
+    const { workflow, taskById } = await fixtureCard(SYNTH)
+    render(<CanvasHarness workflow={workflow} taskById={taskById} initialPicked="checkpoints" />)
     // The failed stage opens once a reader asks (overview-agents-63).
     fireEvent.click(await waitFor(() => document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')!))
     const node = await waitFor(() => {

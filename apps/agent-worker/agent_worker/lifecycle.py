@@ -10588,9 +10588,10 @@ class Worker:
                     # this worker must not hold the token at all. This runs
                     # before the agent starts.
                     forge_token=None if self._git_token_refusal() else self._git_token,
-                    # The signed workflow switches (2026-11-01) and, for a
-                    # step whose `jev_judgments` is on, the WORKSPACE's
-                    # TypeSafe key, resolved as the quality gates resolve it.
+                    # The signed workflow switches (2026-11-01) and, for an
+                    # opted-in step on the TypeSafe backend with no key file
+                    # or shim, the WORKSPACE's TypeSafe key, resolved as the
+                    # quality gates resolve it (lane jev-on-coding-profiles).
                     dispatch=self._dispatch_block(),
                     jev_key=lambda: jevkey_mod.resolve_workspace(
                         db=self.db, client=self.secret_client,
