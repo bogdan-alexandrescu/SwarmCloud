@@ -145,7 +145,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
 | 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
 | 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
-| 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | REQUESTED 4 November 2026, by the owner's answer (BGD) to the submission review's second question: "a contract change request"; swarm-api keeps its local signing until it is accepted |
+| 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED 2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)": `SETTINGS_MAC_FIELDS` lists the block, and swarm-api's `API_SETTINGS_MAC_FIELDS` and `_canonical_block` are removed |
 
 ---
 
@@ -16625,13 +16625,15 @@ The owner (BGD), 4 November 2026: "Sign the key".
 
 ## 138. `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688)
 
-**Status:** REQUESTED 4 November 2026 by the pull request that adds this
-section (swarm-api's Jev review of a work contract at submission, part of
-#2688). The owner (BGD) answered that lane's second question the same day:
-the block goes into the frozen contract's signed settings fields by a
-contract change request, and swarm-api keeps signing it locally until the
-request is accepted. Not applied: nothing under `apps/common/swarm_common/`
-is edited by the requesting pull request.
+**Status:** ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED
+2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)" (lane
+contract-review-signed-settings-applied): `SETTINGS_MAC_FIELDS` lists
+`"contract_review": ("enabled",)`, and everything under "What empties in
+swarm-api once it is applied" is done in that pull request. Requested
+4 November 2026 by the pull request that added this section (swarm-api's Jev
+review of a work contract at submission, part of #2688), on the owner's
+answer to that lane's second question: the block goes into the frozen
+contract's signed settings fields by a contract change request.
 
 ### What is true today
 

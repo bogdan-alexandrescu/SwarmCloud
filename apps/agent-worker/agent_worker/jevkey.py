@@ -211,8 +211,9 @@ def resolve(*, db: Any, client: Any, tenant_id: str, submitted_by: Any, logger: 
 
 def resolve_workspace(*, db: Any, client: Any, tenant_id: str, logger: Any,
                       call_options: Mapping[str, Any] | None = None) -> str | None:
-    """The WORKSPACE's TypeSafe key for a step whose signed workflow switch
-    says `jev_judgments: on` (2026-11-01), or None. Resolved exactly as the
+    """The WORKSPACE's TypeSafe key for an opted-in step's judgments -- the
+    signed `code_intelligence.jev`, or the signed workflow switch
+    `jev_judgments: on` (2026-11-01) -- on any profile, or None. Resolved exactly as the
     quality gates resolve theirs (`qualitygates.prepare`): `resolve` with no
     submitter, so a person's own key is never spent on a workflow's switch,
     and registered for redaction before it is returned. Never raises."""

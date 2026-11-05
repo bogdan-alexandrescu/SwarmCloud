@@ -110,6 +110,20 @@ def test_groups_auth_admin_role_for_installs() -> None:
         install_state(groups_impersonate_user="it@example.com"), pass_name="infra-2", installer="a@example.com")
 
 
+def test_contract_review_mode_renders_off_on_every_infra_pass() -> None:
+    # The owner's 2026-11-04 follow-up: a fresh deployment renders
+    # SWARM_CONTRACT_REVIEW like the live one, off until its owner turns it on.
+    import re
+
+    variables = (Path(__file__).resolve().parents[3] / "terraform" / "infra" / "variables.tf").read_text()
+    body = re.search(r'(?ms)^variable "contract_review_mode" \{(.*?)^\}', variables)
+    assert body, "terraform/infra declares contract_review_mode"
+    assert re.search(r'(?m)^  default\s*=\s*"off"\s*$', body.group(1)), "infra's default is off"
+    assert tfvars.CONTRACT_REVIEW_MODE == "off"
+    for pass_name in ("registry", "infra-1", "infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _infra(pass_name, EVERY_VERSION)["contract_review_mode"] == "off", pass_name
+
+
 def test_tenant_job_vpc_egress_true() -> None:
     state = install_state()
     for pass_name in ("infra-2", "infra-3", "infra-4"):

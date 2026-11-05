@@ -25,6 +25,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
@@ -44,7 +45,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, WorkflowCard } = await import('../Workflows')
 
 const T0 = Date.parse('2026-10-20T12:00:00.000Z')
 const iso = (offsetSeconds: number) => new Date(T0 + offsetSeconds * 1000).toISOString()
@@ -215,9 +216,41 @@ describe('QA-119: the workflow page head names its stages and its steps', () => 
 const panel = () => document.querySelector<HTMLElement>('.wf-panel')
 const node = (id: string) => document.querySelector<HTMLButtonElement>(`button.node[data-step="${id}"]`)
 
+/**
+ * THE CANVAS, RENDERED DIRECTLY (the Graph Work redesign, part of #2688): the
+ * page's Graph tab is the stage grid now, with no arrival pick and no
+ * `.wfp-fail-lead` banner (those are gone from the page on purpose). The
+ * arrival-pick behaviour QA-120 is about still lives in `WorkflowCard`, so
+ * these cases render it the way the old workflow page used to -- `page`,
+ * with the failed step already picked.
+ */
+function PageCard() {
+  const f = failed()
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  const [picked, setPicked] = useState<string | null>('test')
+  return (
+    <WorkflowCard
+      workflow={f.w}
+      taskById={f.tasks}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      picked={picked}
+      onPick={(_id, stepId) => setPicked((p) => (p === stepId ? null : stepId))}
+      page
+      reload={() => {}}
+    />
+  )
+}
+
+async function pageCard(): Promise<void> {
+  render(<PageCard />)
+  await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('test'))
+}
+
 describe('QA-120: the failed step’s card opens on the first click', () => {
   it('selects the failed step on arrival, and the first click on it opens and scrolls to its card; a second click closes it', async () => {
-    await page()
+    await pageCard()
     // Arrival: the failed step is the one selected, its card drawn, and the
     // page is not scrolled down to it (QA G3-28 holds).
     await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('test'))
@@ -254,7 +287,7 @@ describe('QA-120: the failed step’s card opens on the first click', () => {
   })
 
   it('closes the arrival card at once from its own ×, which is not a node click', async () => {
-    await page()
+    await pageCard()
     await waitFor(() => expect(panel()).not.toBeNull())
     // MUTATION: route `closePanel` through the open-first branch -- the ×
     // would scroll to the card instead of closing it.
@@ -265,7 +298,7 @@ describe('QA-120: the failed step’s card opens on the first click', () => {
   })
 
   it('prints the failed step’s whole error on the card, and keeps it whole in the node’s title', async () => {
-    await page()
+    await pageCard()
     const cause = await waitFor(() => {
       const el = panel()?.querySelector<HTMLElement>('.wf-inspect-cause')
       // MUTATION: drop the `.wf-inspect-cause` block from `InspectorSlot` --
@@ -312,7 +345,7 @@ const lead = () => document.querySelector<HTMLElement>('.wfp-fail-lead')
 
 describe('QA-120 (run 2): the failed step’s reason leads the graph, above the fold', () => {
   it('names the failed step and prints its whole reason above the graph on arrival', async () => {
-    await page()
+    await pageCard()
     // MUTATION: drop the `.wfp-fail-lead` block from `WorkflowCard` and the
     // only reason on screen at 1440x900 is the node's cut line.
     const region = await waitFor(() => screen.getByRole('region', { name: 'Why step test failed' }))
@@ -327,7 +360,7 @@ describe('QA-120 (run 2): the failed step’s reason leads the graph, above the 
   })
 
   it('brings the step’s card to the reader from the lead, and the lead goes once it has', async () => {
-    await page()
+    await pageCard()
     const region = await waitFor(() => screen.getByRole('region', { name: 'Why step test failed' }))
     // MUTATION: drop the lead's button and nothing on screen points to the card below.
     act(() => {
@@ -344,7 +377,7 @@ describe('QA-120 (run 2): the failed step’s reason leads the graph, above the 
   })
 
   it('wraps the lead’s reason at every width and inks it as a failure', async () => {
-    await page()
+    await pageCard()
     const text = await waitFor(() => {
       const el = lead()?.querySelector<HTMLElement>('.wfp-fail-lead-text')
       expect(el).toBeTruthy()
@@ -361,7 +394,7 @@ describe('QA-120 (run 2): the failed step’s reason leads the graph, above the 
   })
 
   it('draws no lead once the reader picks another step, nor on a workflow with no failed pick', async () => {
-    await page()
+    await pageCard()
     await waitFor(() => expect(lead()).not.toBeNull())
     // The stage opens to its toggle, as a reader opens it: the page's own
     // pick leaves it folded (overview-agents-63).

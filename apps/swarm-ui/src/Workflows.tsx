@@ -126,6 +126,7 @@ import {
   workflowPullRequest,
   mergeCardOf,
   VIEW_LABEL,
+  spanLabel,
   type BoardTelemetryGap,
   type StepWhy,
   type WorkflowPullRequest,
@@ -135,7 +136,7 @@ import { errorHeading, type ApiError, type Result } from './fetch'
 import { STATE_MARK, StateMark } from './marks'
 import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, type ChipTone } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
-import { StopRun } from './StopRun'
+import { StopRun, earlierAttemptRan } from './StopRun'
 import { LiveThumb, showsLiveThumb, type OpenLive } from './LiveThumb'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
 import {
@@ -187,10 +188,14 @@ import { Mark } from './primitives'
 import { stateWord } from './words'
 import './styles/workflows.css'
 import './styles/names.css'
-import { Inspector } from './work/Inspector'
-import { listNeedItems } from './work/listNeeds'
-import { NeedsYou } from './work/NeedsYou'
-import { StageGrid } from './work/StageGrid'
+import { ownerQuestionsHold } from './Handoff'
+import { Inspector, startsFolded, useIsPhone } from './work/Inspector'
+import { AgentSplit } from './AgentSplit'
+import type { TaskPane } from './App'
+import { listNeedItems, workflowNeedItems } from './work/listNeeds'
+import { NeedsYou, mergeHeldBecause, type MergeNeed, type NeedKind, type NeedSelection } from './work/NeedsYou'
+import { StageGrid, chipKindOf, chipTimeOf, pullRequestOf, stageGridOf, tallyOf, walkStage } from './work/StageGrid'
+import { LineageStrip, lineageOf } from './work/Lineage'
 import {
   anyRunning,
   bucketCounts,
@@ -798,164 +803,6 @@ function useWorkflowUsage(workflows: readonly Workflow[], firstId: string | null
     }
   }, [taskKey])
   return usage
-}
-
-/**
- * The board, plus the SECOND read the step figures need.
- *
- * Separate from `WorkflowsScreen` because `Screen`'s children is a render prop:
- * hooks may not live inside it. It is also the right seam -- the attempt read
- * is deliberately started only once the board itself has landed, so the graph
- * is on screen while the figures are still arriving rather than after.
- */
-function Board({
-  board,
-  stores,
-  focus,
-  usage,
-}: {
-  board: WorkflowBoard
-  stores: BoardStores
-  /** One workflow's page (Workflows V2): draw only it, open, in its address's view. */
-  focus: BoardFocus
-  /** The page's attempt read (`useWorkflowUsage`), the one its head totals from too. */
-  usage: UsageRead
-}) {
-  const { openStages, toggleStage, zooms, chooseZoom, pick, choosePick, reload } = stores
-  // THE CARD ON SCREEN: the page's one workflow. Everything below that draws
-  // or counts a card reads this, so the sample mark describes only it.
-  const focusId = focus.id
-  const shown = useMemo(() => board.workflows.filter((w) => w.workflow_id === focusId), [focusId, board.workflows])
-  // WHERE THE SAME-STEP SCRUBBER MAY LAND: every workflow read, since a scrub
-  // opens the other workflow's own page.
-  const scrubbable = board.workflows
-  // A PICK IN A WORKFLOW NOT ON SCREEN IS PUT DOWN. Otherwise the selection
-  // lives on in a card nobody can see, and the scrubber keeps stepping from it.
-  useEffect(() => {
-    if (pick !== null && !shown.some((w) => w.workflow_id === pick.workflowId)) choosePick(null)
-  }, [pick, shown, choosePick])
-  // THE RESOURCE-CLASS CATALOGUE, read once for the board (#106): a step's why
-  // line weighs its blockers against its class's `units`, as the Agents list
-  // does, and forty cards each reading it would be forty reads of one table.
-  const classes = useResourceClasses()
-  // THE SAME STEP ACROSS THE BOARD, newest workflow first, for the picked
-  // step's id -- the second scrubber's whole order, decided once here because
-  // only the board holds every workflow. Each occurrence carries its own
-  // state's mark, joined through the same `stepState` the nodes use.
-  //
-  // AND ONLY ACROSS WORKFLOWS OF THE PICKED ONE'S SHAPE (#112): the same id in
-  // a differently shaped workflow is a different job, not a comparison.
-  const siblings = useMemo(() => {
-    if (pick === null) return { refs: [] as SiblingRef[], ids: [] as string[] }
-    const anchor = scrubbable.find((w) => w.workflow_id === pick.workflowId)
-    if (anchor === undefined) return { refs: [] as SiblingRef[], ids: [] as string[] }
-    const found = sameStepAcross(scrubbable, pick.stepId, shapeSignature(anchor.steps))
-    return {
-      ids: found.map((f) => f.workflowId),
-      refs: found.map((f) => {
-        const l = rowLook(stepState(f.step, board.taskById))
-        return { workflowId: f.workflowId, mark: l.mark, hue: l.hue, word: l.word }
-      }),
-    }
-  }, [scrubbable, board.taskById, pick])
-
-  const onPick = useCallback(
-    (workflowId: string, stepId: string) =>
-      choosePick(
-        pick !== null && pick.workflowId === workflowId && pick.stepId === stepId
-          ? null
-          : { workflowId, stepId, focus: null },
-      ),
-    [pick, choosePick],
-  )
-
-  // MOVING THE SELECTION TO ANOTHER WORKFLOW OPENS THAT WORKFLOW'S PAGE, IN
-  // THE VIEW THE READER WAS IN (WF-10, epic #83): a reader comparing one step's
-  // attempts across workflows in the Table is not put back on a canvas at every
-  // press, with the step folded into a stage band. A band holding the step is
-  // marked and opens to it (`WorkflowGraph`).
-  const onSibling = useCallback(
-    (delta: -1 | 1) => {
-      if (pick === null) return
-      const at = siblings.ids.indexOf(pick.workflowId)
-      const target = siblings.ids[at + delta]
-      if (at < 0 || target === undefined) return
-      focus.onOpen(target, focus.view)
-      choosePick({ workflowId: target, stepId: pick.stepId, focus: delta < 0 ? 'newer' : 'older' })
-    },
-    [pick, siblings, choosePick, focus],
-  )
-
-  const onFocused = useCallback(() => {
-    if (pick !== null && pick.focus !== null) choosePick({ ...pick, focus: null })
-  }, [pick, choosePick])
-
-  // THE ATTEMPT READ is the page's (`useWorkflowUsage`), handed in, so the
-  // head, the table and the nodes read one set of figures (WF-5).
-
-  // WHAT THE CARD IS DRAWING, stated once: the card below is handed exactly these.
-  const viewOf = (): WorkflowView => focus.view
-  const zoomOf = (id: string): ZoomChoice => zooms[id] ?? 'auto'
-
-  return (
-    <>
-      {/* ONE STRIP OF CHROME ABOVE THE BOARD, and the count of sentences in it
-          is zero (design-system.md §6.11). The control sits left; everything
-          the board could not read sits right, as marks. Both banners this
-          replaces were full-width panels that pushed the first row of actual
-          data below the fold on a laptop. */}
-      {/* DRAWN ONLY WHEN IT HAS SOMETHING TO SAY (walkthrough C, 2026-10-03):
-          empty, it was a 32px strip and two gaps -- the ~100px band between
-          the page's tabs and its card. The sample mark is in the Steps
-          table's own head row now (walkthrough A). */}
-      {board.statesDetail !== null && (
-      <div className="ctl-toolbar wf-chrome">
-        {/* NO BOARD CONTROLS: the page's view is its address. */}
-        <span className="is-end wf-caveats">
-          <StatesUnavailable detail={board.statesDetail} />
-          {/* THE BOARD'S `?` IS NOT IN THIS STRIP (AH-24). It trailed the
-              caveats -- `6/8 sampled ?`, a footnote on the figure -- and then
-              led them, which followed nothing: the strip has no label. It
-              explains a property of the whole screen, so it follows the
-              screen's heading; see `help` on the Screen above. */}
-        </span>
-      </div>
-      )}
-      <div className="wf-board">
-        {shown.map((w) => {
-          // The selection, only when it is in THIS workflow. Every other card
-          // gets null and draws no inspector.
-          const mine = pick !== null && pick.workflowId === w.workflow_id ? pick : null
-          return (
-            <WorkflowCard
-              key={w.workflow_id}
-              workflow={w}
-              taskById={board.taskById}
-              openStages={openStages}
-              onToggleStage={toggleStage}
-              zoom={zoomOf(w.workflow_id)}
-              onZoom={chooseZoom}
-              view={viewOf()}
-              onView={(_id: string, v: WorkflowView) => focus.onView(v)}
-              page
-              picked={mine === null ? null : mine.stepId}
-              onPick={onPick}
-              siblings={mine === null ? undefined : siblings.refs}
-              onSibling={onSibling}
-              scrubFocus={mine === null ? null : mine.focus}
-              onScrubFocused={onFocused}
-              reload={reload}
-              usage={usage}
-              classes={classes}
-              tableFilter={focus.filter}
-              onStageTable={focus.onStageTable}
-              onClearFilter={focus.onClearFilter}
-            />
-          )
-        })}
-      </div>
-    </>
-  )
 }
 
 /** What one workflow's page tells the board it focuses. */
@@ -2403,7 +2250,11 @@ function WorkflowSteps({
   const rows =
     filter === null || order === null
       ? all
-      : all.filter((r) => order.get(r.step.step_id)?.level === filter.level && censusWord(stepState(r.step, taskById)) === filter.word)
+      : all.filter(
+          (r) =>
+            order.get(r.step.step_id)?.level === filter.level &&
+            (filter.word === STAGE_ANY_STATE || censusWord(stepState(r.step, taskById)) === filter.word),
+        )
   if (all.length === 0) return <span className="ctl-mark">no steps</span>
   if (view === 'table') {
     // THE TOTAL, SUMMED FROM THE FIGURES THE ROWS ABOVE IT SHOW (WF-5). The
@@ -2484,6 +2335,80 @@ function useSeen<T extends Element>(): [(node: T | null) => void, boolean] {
     return () => io.disconnect()
   }, [node])
   return [setNode, seen]
+}
+
+/** Where the step's agent stands in the inspector: the agent's own pane, as its address would name it. */
+type StepAgentAt = { pane: TaskPane; file: string | null; artifact: string | null; theater: boolean }
+
+const STEP_AGENT_PANES: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser']
+
+/**
+ * An address under the agent's own (`work/task/<id>/<pane>[/<name>][?theater=1]`)
+ * as the pane it names; null for an address elsewhere.
+ */
+export function stepAgentAt(base: string, to: string): StepAgentAt | null {
+  const bare = to.replace(/^[#/]+/, '')
+  if (bare !== base && !bare.startsWith(`${base}/`) && !bare.startsWith(`${base}?`)) return null
+  const [path = '', search = ''] = bare.slice(base.length).split('?')
+  const [seg = '', ...rest] = path.split('/').filter((s) => s !== '')
+  const pane = (STEP_AGENT_PANES as readonly string[]).includes(seg) ? (seg as TaskPane) : 'detail'
+  const name = rest.length === 0 ? null : decodeURIComponent(rest.join('/'))
+  return {
+    pane,
+    file: pane === 'changes' ? name : null,
+    artifact: pane === 'artifacts' ? name : null,
+    theater: pane === 'browser' && new URLSearchParams(search).get('theater') === '1',
+  }
+}
+
+/**
+ * THE PICKED STEP'S AGENT, IN THE INSPECTOR (graph-notes.md: "the inspector
+ * of one agent is the console's own agent view"; map row W6, frame
+ * graph-workflow-open). The Agents split's own view -- its header with Take
+ * control, Stop and Copy link, its tabs (Details, Browser, Logs, Changes,
+ * Children, Attempts, Artifacts, Checkpoints) and the open tab -- with its
+ * reads and polling unchanged, so watching the step's browser or reading its
+ * log no longer leaves the workflow page and the grid stays in view.
+ *
+ * The split is address-driven: its tabs `go` to `work/task/<id>/<pane>`.
+ * Here those addresses are held as the inspector's own state rather than
+ * written to the bar, because the page's address is the workflow's; any
+ * other address the split asks for (its close) closes the step.
+ */
+function StepAgent({ taskId, workflowId, onClose }: { taskId: string; workflowId: string; onClose: () => void }) {
+  // The agent's own address, as App writes it for the Agents split (`WORK`).
+  const base = `work/task/${encodeURIComponent(taskId)}`
+  const [at, setAt] = useState<StepAgentAt>({ pane: 'detail', file: null, artifact: null, theater: false })
+  // Until a tab is chosen the agent opens where the Agents split opens it (a
+  // running live browser on Browser); once chosen, Details is a choice too.
+  const [named, setNamed] = useState(false)
+  const go = useCallback(
+    (to: string) => {
+      const next = stepAgentAt(base, to)
+      if (next === null) {
+        onClose()
+        return
+      }
+      setAt(next)
+      setNamed(true)
+    },
+    [base, onClose],
+  )
+  return (
+    <div className="wfp-agent">
+      <AgentSplit
+        taskId={taskId}
+        pane={at.pane}
+        artifact={at.artifact}
+        file={at.file}
+        theater={at.theater}
+        detailNamed={named && at.pane === 'detail'}
+        closeTo={`workflows/${encodeURIComponent(workflowId)}`}
+        go={go}
+        base={base}
+      />
+    </div>
+  )
 }
 
 /**
@@ -2638,9 +2563,13 @@ function StepCardExtras({
   // in place of the checklist below, which reads the retired design's block.
   const mergeCard = task === null ? null : mergeCardOf(task, tasks)
   const merge = task === null || mergeCard !== null ? null : mergeOf(task)
+  // NO STOP ON A PARKED STEP NEVER ATTEMPTED (graph review, 2026-11-05): it
+  // holds no lease and runs nothing, so a stop would only cancel the step and
+  // every step after it, before any of them had a chance to run.
+  const stoppable = task !== null && !(task.state === 'PARKED' && (task.attempt_count ?? 0) === 0 && !earlierAttemptRan(task))
   return (
     <>
-      {task !== null && (
+      {task !== null && stoppable && (
         <div className="wf-inspect-acts" role="group" aria-label="Stop step">
           <StopRun
             task={task}
@@ -6584,25 +6513,12 @@ function WorkflowPage({
     if (found) rememberWorkflow(id, derived, label)
   }, [id, found, derived, label])
 
-  // THE STEP CARD BESIDE THE GRAPH: on arrival, the step that most needs a
-  // look -- the first failure, else the first step holding capacity -- is
-  // picked, once per workflow, so closing the card is not undone by a poll.
-  const { pick, choosePick } = stores
-  const arrived = useRef<string | null>(null)
-  useEffect(() => {
-    if (workflow === null || arrived.current === id) return
-    arrived.current = id
-    if (pick !== null && pick.workflowId === id) return
-    const first = firstStepToShow(workflow, board.taskById)
-    if (first !== null) choosePick({ workflowId: id, stepId: first, focus: null })
-  }, [workflow, id, board.taskById, pick, choosePick])
-
   const focus = useMemo<BoardFocus>(
     () => ({
       id,
       view: query.tab,
       // A tab change puts the Table's stage filter down: it belongs to the
-      // band count that opened it, not to the Table.
+      // stage tally that opened it, not to the Table.
       onView: (v) => go({ ...query, tab: v, stage: null, stepState: null }),
       onOpen: (target, v) => go({ ...query, wf: target, tab: v, stage: null, stepState: null }),
       filter: query.tab === 'table' && query.stage !== null && query.stepState !== null ? { level: query.stage, word: query.stepState } : null,
@@ -6634,24 +6550,628 @@ function WorkflowPage({
     )
   }
   return (
-    <div className="wfp">
-      <WorkflowHead
-        workflow={workflow}
-        taskById={board.taskById}
-        reload={stores.reload}
-        usage={usage}
-        sent={stores.cancels[workflow.workflow_id] ?? null}
-        onSent={(sent) => stores.recordCancel(workflow.workflow_id, sent)}
-      />
-      <WfTabs id={workflow.workflow_id} query={query} view={query.tab} steps={workflow.steps.length} onView={focus.onView} />
-      {/* THE CHANGES TAB (diff-viewer.md §2 variants 2 + 5) is drawn in
-          place of the board: it is a reading of the steps' patches, not a
-          drawing of the steps. */}
-      {query.tab === 'changes' ? (
-        <WorkflowChangesTab workflow={workflow} taskById={board.taskById} at={changesAt} onAt={onChangesAt} />
-      ) : (
-        <Board board={board} stores={stores} focus={focus} usage={usage} />
+    <Board
+      board={board}
+      key={workflow.workflow_id}
+      workflow={workflow}
+      label={label}
+      query={query}
+      focus={focus}
+      stores={stores}
+      usage={usage}
+      changesAt={changesAt}
+      onChangesAt={onChangesAt}
+    />
+  )
+}
+
+/**
+ * ONE WORKFLOW'S PAGE AS TWO PANES (the owner's pick of 2026-11-03, the Graph
+ * Work redesign): on the left the head, the Needs-you row, the view switch and
+ * the view -- the stage grid, the Table, Steps over time or Changes -- and on
+ * the right the docked inspector, which shows the workflow's Overview until a
+ * step is picked and then that step's agent. THE LEFT PANE NEVER MOVES when
+ * the inspector changes, which is the defect this replaces: the open step's
+ * card was drawn over the graph's stage bands beside it.
+ */
+function Board({
+  board,
+  workflow,
+  label,
+  query,
+  focus,
+  stores,
+  usage,
+  changesAt,
+  onChangesAt,
+}: {
+  board: WorkflowBoard
+  workflow: Workflow
+  label: string | null
+  query: WorkflowQuery
+  focus: BoardFocus
+  stores: BoardStores
+  usage: UsageRead
+  changesAt: ChangesAt
+  onChangesAt: (at: ChangesAt) => void
+}) {
+  const { pick, choosePick, reload } = stores
+  const taskById = board.taskById
+  const id = workflow.workflow_id
+  const now = useSharedClock(AGE_TICK_MS)
+  const phone = useIsPhone()
+  const classes = useResourceClasses()
+  // THE PICKED STEP is the board store's, so it outlives the remount a stop
+  // and reload causes; a pick in another workflow is not this page's.
+  const picked = pick !== null && pick.workflowId === id && workflow.steps.some((s) => s.step_id === pick.stepId) ? pick.stepId : null
+  const shape = useMemo(() => stageGridOf(workflow.steps), [workflow.steps])
+  const lin = useMemo(() => lineageOf(workflow, taskById), [workflow, taskById])
+  // AT 1280 THE INSPECTOR STARTS FOLDED (graph-notes.md, D·8b), so the grid's
+  // chips keep their time and pull request; read once, at the page's mount.
+  const [folded] = useState(() => typeof window !== 'undefined' && startsFolded(window.innerWidth))
+  // ON A PHONE the Overview is a sheet the reader asks for ("Workflow details").
+  const [overviewSheet, setOverviewSheet] = useState(false)
+
+  // THE NEEDS-YOU ROW, from the step blocks the page read (`workflowNeedItems`,
+  // the one the list's bar and row read), its pick held here so the merge
+  // strip's "Answer N questions" can open the questions and the grid can
+  // dim every chip the pick does not name.
+  const needItems = useMemo(() => workflowNeedItems(workflow, taskById, (stepId) => stepId), [workflow, taskById])
+  const [needKind, setNeedKind] = useState<NeedKind | null>(null)
+  const [needTasks, setNeedTasks] = useState<readonly string[] | null>(null)
+  const onNeed = useCallback((sel: NeedSelection | null) => {
+    setNeedKind(sel === null ? null : sel.kind)
+    setNeedTasks(sel === null ? null : sel.taskIds)
+  }, [])
+  const bright = useMemo(() => {
+    if (needTasks === null) return null
+    const ids = new Set(needTasks)
+    return new Set(workflow.steps.filter((s) => s.task_id && ids.has(s.task_id)).map((s) => s.step_id))
+  }, [needTasks, workflow.steps])
+  const answerQuestions = useCallback(() => {
+    // The questions' own steps and the steps a held merge names as asking.
+    const ids = new Set<string>()
+    for (const i of needItems) {
+      if (i.kind === 'question') ids.add(i.taskId)
+      if (i.kind === 'merge') for (const q of ownerQuestionsHold(i.task)?.questions ?? []) ids.add(q.task_id)
+    }
+    onNeed({ kind: 'question', taskIds: [...ids] })
+  }, [needItems, onNeed])
+
+  // THE SAME STEP ACROSS THE BOARD (#112, WF-10): the step inspector's
+  // second scrubber, over the workflows of this one's shape, newest first.
+  const siblings = useMemo(() => {
+    if (picked === null) return { refs: [] as SiblingRef[], ids: [] as string[] }
+    const found = sameStepAcross(board.workflows, picked, shapeSignature(workflow.steps))
+    return {
+      ids: found.map((f) => f.workflowId),
+      refs: found.map((f) => {
+        const l = rowLook(stepState(f.step, taskById))
+        return { workflowId: f.workflowId, mark: l.mark, hue: l.hue, word: l.word }
+      }),
+    }
+  }, [board.workflows, workflow.steps, taskById, picked])
+  const onSibling = useCallback(
+    (delta: -1 | 1) => {
+      if (picked === null) return
+      const at = siblings.ids.indexOf(id)
+      const target = siblings.ids[at + delta]
+      if (at < 0 || target === undefined) return
+      focus.onOpen(target, focus.view)
+      choosePick({ workflowId: target, stepId: picked, focus: delta < 0 ? 'newer' : 'older' })
+    },
+    [picked, siblings, id, focus, choosePick],
+  )
+  const onFocused = useCallback(() => {
+    if (pick !== null && pick.focus !== null) choosePick({ ...pick, focus: null })
+  }, [pick, choosePick])
+
+  const pickStep = useCallback(
+    (stepId: string) =>
+      choosePick(picked === stepId ? null : { workflowId: id, stepId, focus: null }),
+    [picked, id, choosePick],
+  )
+  const closeStep = useCallback(() => choosePick(null), [choosePick])
+
+  const strays = straysOf(workflow, taskById)
+  const unreadable = unreadableOf(workflow, taskById)
+  const view = focus.view
+  const main = (
+    <div className="wfp wfp-main">
+      <WorkflowHead workflow={workflow} taskById={taskById} usage={usage} now={now} />
+      <NeedsYou items={needItems} approvals={null} selected={needKind} onSelect={onNeed} onChanged={reload} />
+      <div className="wfp-viewbar">
+        <WfTabs id={id} query={query} view={view} steps={workflow.steps.length} onView={focus.onView} />
+        {(strays.length > 0 || unreadable.length > 0) && (
+          <span className="wfp-marks">
+            <StrayMark strays={strays} />
+            <UnreadableMark counts={unreadable} />
+          </span>
+        )}
+        {phone && (
+          <Button size="sm" onClick={() => setOverviewSheet(true)}>
+            Workflow details
+          </Button>
+        )}
+      </div>
+      {board.statesDetail !== null && (
+        <div className="ctl-toolbar wf-chrome">
+          <span className="is-end wf-caveats">
+            <StatesUnavailable detail={board.statesDetail} />
+          </span>
+        </div>
       )}
+      {view === 'changes' ? (
+        // THE CHANGES VIEW is a reading of the steps' patches, drawn in
+        // place of the grid.
+        <WorkflowChangesTab workflow={workflow} taskById={taskById} at={changesAt} onAt={onChangesAt} />
+      ) : view === 'graph' ? (
+        <>
+          <StageGrid
+            workflow={workflow}
+            taskById={taskById}
+            selected={picked}
+            onSelect={pickStep}
+            bright={bright}
+            now={now}
+            // A STAGE'S TALLY OPENS THE TABLE AT THAT STAGE, every state.
+            onOpenStage={(stage) => focus.onStageTable(stage.index, STAGE_ANY_STATE)}
+          />
+          <MergeStrip items={needItems} workflow={workflow} onAnswer={answerQuestions} />
+          <LiveBrowsers workflow={workflow} taskById={taskById} picked={picked} onPick={pickStep} now={now} />
+        </>
+      ) : (
+        // THE TABLE AND STEPS OVER TIME, embedded without a head of their own:
+        // the page's head above is the workflow's, and a picked row opens in
+        // the inspector, never under the row. In a `.wf-card` box because the
+        // Table's column widths, sticky head and phone rows are scoped to one
+        // (styles/workflows.css); the box draws no card edge of its own.
+        <div className="wf-card wfp-rows">
+          <WorkflowSteps
+            workflow={workflow}
+            taskById={taskById}
+            classes={classes}
+            usage={usage}
+            view={view}
+            picked={picked}
+            onPick={pickStep}
+            filter={view === 'table' ? focus.filter : null}
+            onClearFilter={focus.onClearFilter}
+          />
+        </div>
+      )}
+    </div>
+  )
+
+  const step = picked === null ? null : (workflow.steps.find((s) => s.step_id === picked) ?? null)
+  const look = step === null ? null : stepLook(stepState(step, taskById))
+  const lookWord = step === null ? null : rowLook(stepState(step, taskById)).word
+  const up = picked === null ? null : walkStage(shape, picked, -1)
+  const down = picked === null ? null : walkStage(shape, picked, 1)
+  const stageName = (stepId: string | null): string => {
+    const at = stepId === null ? undefined : shape.at.get(stepId)
+    return at === undefined ? '' : (shape.stages[at.stage]?.label ?? '')
+  }
+  return (
+    <Inspector
+      screen="workflow"
+      main={main}
+      label={step === null ? 'Workflow overview' : `Step ${step.step_id}`}
+      title={step === null ? 'Overview' : step.step_id}
+      state={
+        look === null ? (
+          <WorkflowStateMark workflow={workflow} />
+        ) : (
+          <span className="wfp-step-state">
+            <LookMark look={look} /> {lookWord}
+          </span>
+        )
+      }
+      actions={
+        step === null ? undefined : (
+          <span className="wfp-walk" role="group" aria-label="Walk the stages">
+            <button
+              type="button"
+              className="wi-btn"
+              disabled={up === null}
+              onClick={() => up !== null && choosePick({ workflowId: id, stepId: up, focus: null })}
+              title={up === null ? 'This is the first stage' : `Up to ${up}`}
+              aria-label={up === null ? 'No stage above' : `Up a stage: ${up}`}
+            >
+              ↑{up !== null && <span className="wfp-walk-to">{stageName(up)}</span>}
+            </button>
+            <button
+              type="button"
+              className="wi-btn"
+              disabled={down === null}
+              onClick={() => down !== null && choosePick({ workflowId: id, stepId: down, focus: null })}
+              title={down === null ? 'This is the last stage' : `Down to ${down}`}
+              aria-label={down === null ? 'No stage below' : `Down a stage: ${down}`}
+            >
+              ↓{down !== null && <span className="wfp-walk-to">{stageName(down)}</span>}
+            </button>
+          </span>
+        )
+      }
+      onClose={step === null ? (phone ? () => setOverviewSheet(false) : undefined) : closeStep}
+      startFolded={folded}
+      subject={step === null ? null : step.step_id}
+      phoneOpen={step !== null || overviewSheet}
+      // A STEP'S SHEET GOES BACK TO WHERE IT CAME FROM: to the Overview sheet
+      // when it was opened from there (which stays open under it), else to the
+      // page, and says which.
+      backLabel={step === null || !overviewSheet ? 'Workflow' : 'Overview'}
+    >
+      {step === null ? (
+        <WorkflowOverview
+          workflow={workflow}
+          taskById={taskById}
+          usage={usage}
+          now={now}
+          reload={reload}
+          sent={stores.cancels[id] ?? null}
+          onSent={(sent) => stores.recordCancel(id, sent)}
+        />
+      ) : (
+        <>
+          {/* ON A PHONE THE LINEAGE STRIP STACKS AT THE TOP OF THE STEP'S SHEET,
+              whose head already names the step (the grid draws it above itself
+              on a wider page). */}
+          {phone && <LineageStrip workflow={workflow} shape={shape} lin={lin} selected={step.step_id} onPick={pickStep} now={now} stacked />}
+          <InspectorSlot
+            key={`${id}/${step.step_id}`}
+            workflow={workflow}
+            workflowLabel={label}
+            stepId={step.step_id}
+            taskById={taskById}
+            classes={classes}
+            usage={usage}
+            siblings={siblings.refs}
+            onSibling={onSibling}
+            focus={pick?.focus ?? null}
+            onFocused={onFocused}
+            onClose={closeStep}
+            loadAttempts={undefined}
+            page
+            reload={reload}
+          />
+        </>
+      )}
+      {step !== null && step.task_id && (
+        // THE STEP'S AGENT, under the step's own card (its verdict, merge
+        // checklist, await-input form and the same-step scrubber): keyed by
+        // the task, so walking to another stage opens that step's agent on
+        // its own first tab.
+        <StepAgent key={step.task_id} taskId={step.task_id} workflowId={id} onClose={closeStep} />
+      )}
+    </Inspector>
+  )
+}
+
+/** The Table's stage filter that keeps every state: what a stage's tally on the grid opens. */
+export const STAGE_ANY_STATE = 'any state'
+
+/** How old the workflow is, from its submit; null when the record has no readable instant. */
+function workflowAge(workflow: Workflow, now: number): string | null {
+  const at = Date.parse(workflow.created_at)
+  if (!Number.isFinite(at)) return null
+  const ms = Math.max(0, now - at)
+  return spanLabel(ms < 60_000 ? ms : Math.round(ms / 60_000) * 60_000)
+}
+
+/** The tally line's parts, in the grid's order and marks. */
+const TALLY_PARTS: readonly { key: 'running' | 'waiting' | 'done' | 'failed'; glyph: string; word: string }[] = [
+  { key: 'running', glyph: '▶', word: 'running' },
+  { key: 'waiting', glyph: '◷', word: 'waiting' },
+  { key: 'done', glyph: '✓', word: 'done' },
+  { key: 'failed', glyph: '✗', word: 'failed' },
+]
+
+/**
+ * THE PAGE'S HEAD (graph-workflow-rest): the state, the step count, the spend
+ * and the age on one line, and under it the tally of every step's state and
+ * the browsers running now. Every figure is counted from the steps the page
+ * read; a step whose task the read did not hold is counted "not known", never
+ * as waiting, and a spend nobody reported reads as not reported, never $0.
+ * The name is the screen's title above, and the way back is the breadcrumb,
+ * which keeps the list's filters.
+ */
+function WorkflowHead({
+  workflow,
+  taskById,
+  usage,
+  now,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+  usage: UsageRead
+  now: number
+}) {
+  const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
+  const tally = tallyOf(workflow.steps.map((s) => chipKindOf(stepState(s, taskById))))
+  const browsers = liveSteps(workflow, taskById).length
+  const age = workflowAge(workflow, now)
+  const pr = workflowPullRequest(workflow, taskById)
+  const n = workflow.steps.length
+  return (
+    <div className="wfp-head wfp-top">
+      {/* `.wfp-chips` AND `.wfp-cost`, the slots the skeleton draws its
+          bars in, so the line does not move when the read lands (V103). */}
+      <p className="wfp-chips wfp-line">
+        <WorkflowStateMark workflow={workflow} />
+        {pr !== null && <PullRequestLink pr={pr} className="c-chip is-link" />}
+        <span className="wfp-fig">
+          {n} {n === 1 ? 'step' : 'steps'}
+        </span>
+        <span className="wfp-fig wfp-cost">
+          {usage.kind === 'reading' ? (
+            <Spend spend={spend} reading />
+          ) : spend.usd === null ? (
+            <span className="wf-cell is-absent">cost not reported</span>
+          ) : (
+            <Spend spend={spend} />
+          )}
+        </span>
+        <span className="wfp-fig" title={workflow.created_at}>
+          {age === null ? 'age not recorded' : `${age} old`}
+        </span>
+        <PullRequestWaitTag workflow={workflow} />
+        {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
+      </p>
+      <p className="wfp-tally" aria-label="Steps by state">
+        {TALLY_PARTS.map((p) => (
+          <span key={p.key} className={`wfp-t is-${p.key}`}>
+            <span aria-hidden>{p.glyph}</span> {tally[p.key]} {p.word}
+          </span>
+        ))}
+        {/* A step is counted as its chip draws it (tallyOf): parked behind its dependencies counts waiting, any other park parked. */}
+        {tally.parked > 0 && <span className="wfp-t is-parked">{tally.parked} parked</span>}
+        {tally.stopped > 0 && <span className="wfp-t is-stopped">{tally.stopped} cancelled</span>}
+        {tally.unknown > 0 && (
+          <span className="wfp-t is-unknown" title="Steps whose task this read did not hold">
+            {tally.unknown} not known
+          </span>
+        )}
+        <span className="wfp-t is-browsers">
+          {browsers} {browsers === 1 ? 'browser' : 'browsers'}
+        </span>
+      </p>
+    </div>
+  )
+}
+
+/** The steps whose browser is live now (`showsLiveThumb`), in step order. */
+function liveSteps(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): { step: WorkflowStep; taskId: string; task: Task }[] {
+  const out: { step: WorkflowStep; taskId: string; task: Task }[] = []
+  for (const s of workflow.steps) {
+    const st = stepState(s, taskById)
+    if (st.kind === 'state' && showsLiveThumb(s.runner_profile, st.state, st.task.id)) out.push({ step: s, taskId: st.task.id, task: st.task })
+  }
+  return out
+}
+
+/**
+ * THE MERGE STRIP UNDER THE GRID (graph-workflow-needs): the merge that waits
+ * on the person, and while owner questions hold it, how many and the one
+ * control that opens them in the Needs-you list. A workflow waiting on pull
+ * requests to merge says so here too. Nothing waits: no strip.
+ */
+function MergeStrip({ items, workflow, onAnswer }: { items: readonly { kind: string }[]; workflow: Workflow; onAnswer: () => void }) {
+  const merges = items.filter((i): i is MergeNeed => i.kind === 'merge')
+  const wait = pullRequestWait(workflow)
+  if (merges.length === 0 && wait === null) return null
+  return (
+    <section className="wfp-merge" aria-label="Merge">
+      {merges.map((m) => {
+        const hold = ownerQuestionsHold(m.task)
+        const held = hold === null ? 0 : hold.questions.length + hold.unreadable
+        const because = mergeHeldBecause(m)
+        return (
+          <p key={m.task.id} className={`wfp-merge-row${held > 0 ? ' is-held' : ''}`}>
+            <b>Merge</b>
+            <span className="wfp-merge-state">{held > 0 ? 'held' : 'waiting for you'}</span>
+            {m.pr !== null && m.pr !== undefined && (
+              <a className="ctl-link" href={m.pr.url} target="_blank" rel="noreferrer">
+                #{m.pr.number}
+              </a>
+            )}
+            <span className="wfp-merge-title">{m.title}</span>
+            {because !== null && <span className="wfp-merge-why">{because}</span>}
+            {held > 0 && (
+              <Button size="sm" onClick={onAnswer}>
+                Answer {held} {held === 1 ? 'question' : 'questions'}
+              </Button>
+            )}
+          </p>
+        )
+      })}
+      {wait !== null && (
+        <p className="wfp-merge-row is-wait">
+          <b>Merge</b>
+          <span className="wfp-merge-state">{wait}</span>
+        </p>
+      )}
+    </section>
+  )
+}
+
+/** Live stills the strip draws on arrival; more than this, and they wait to be asked for. */
+export const LIVE_STILLS_AT_ONCE = 4
+
+/**
+ * THE LIVE BROWSERS UNDER THE GRID (graph-workflow-rest): every step whose
+ * browser is live now, its still and its step; picking one opens that step in
+ * the inspector, whose Browser tab is one click further. None live: no strip.
+ */
+function LiveBrowsers({
+  workflow,
+  taskById,
+  picked,
+  onPick,
+  now,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+  picked: string | null
+  onPick: (stepId: string) => void
+  now: number
+}) {
+  const live = liveSteps(workflow, taskById)
+  const [stills, setStills] = useState<boolean | null>(null)
+  if (live.length === 0) return null
+  // EACH STILL OPENS ITS OWN SOCKET AND, UNTIL ITS FIRST PICTURE, ITS OWN
+  // START-UP READ (LiveThumb's StartupBar): a handful at once is the strip
+  // the design draws; past that the reader asks for them, so a 40-step page
+  // makes no read per step on arrival (#2688, WORK-READS-SPEED).
+  const shown = stills ?? live.length <= LIVE_STILLS_AT_ONCE
+  return (
+    <section className="wfp-live" aria-label="Live browsers">
+      <h3 className="wfp-live-h">
+        Live browsers <span className="wfp-live-n">{live.length}</span>
+        <span className="wfp-live-hint">pick one to watch it</span>
+        <Button size="sm" onClick={() => setStills(!shown)} aria-pressed={shown}>
+          {shown ? 'Hide the stills' : `Show ${live.length} stills`}
+        </Button>
+      </h3>
+      <div className="wfp-live-row">
+        {live.map(({ step, taskId }) => {
+          const time = chipTimeOf(stepState(step, taskById), now)
+          return (
+            <div key={taskId} className={`wfp-still${picked === step.step_id ? ' is-picked' : ''}${shown ? '' : ' is-named'}`}>
+              {shown && <LiveThumb taskId={taskId} workflowId={workflow.workflow_id} />}
+              <button type="button" className="ctl-link wfp-still-name" onClick={() => onPick(step.step_id)} aria-pressed={picked === step.step_id}>
+                {step.step_id}
+              </button>
+              {time !== null && <span className="wfp-still-time">{time}</span>}
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+/** Retries across the steps the attempt read covered: what "earlier attempts" counts. Null while it is not read. */
+function earlierAttempts(workflow: Workflow, usage: UsageRead): { retried: number; covered: number } | null {
+  const by = telemetryOf(usage)
+  if (by === null) return null
+  let retried = 0
+  let covered = 0
+  for (const s of workflow.steps) {
+    const u = s.task_id ? by.get(s.task_id) : undefined
+    if (u === undefined) continue
+    covered += 1
+    retried += Math.max(0, u.attempts - 1)
+  }
+  return { retried, covered }
+}
+
+/**
+ * THE WORKFLOW'S OVERVIEW, the inspector at rest (graph-workflow-rest): what
+ * it spent (every attempt, earlier ones included), the pull requests its steps
+ * opened, the merge, the dispatch and the failure policy, who started it and
+ * when; the policy in full and the id and reads behind toggles; Stop workflow
+ * with today's typed confirmation, Copy link and Copy id.
+ */
+function WorkflowOverview({
+  workflow,
+  taskById,
+  usage,
+  now,
+  reload,
+  sent,
+  onSent,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+  usage: UsageRead
+  now: number
+  reload: () => void
+  sent: CancelSentRead | null
+  onSent: (sent: CancelSentRead) => void
+}) {
+  const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
+  const earlier = earlierAttempts(workflow, usage)
+  const pr = workflowPullRequest(workflow, taskById)
+  const prs = workflow.steps.filter((s) => s.task_id && pullRequestOf(taskById?.get(s.task_id) ?? null) !== null).length
+  const joined = workflow.steps.filter((s) => s.task_id && taskById?.has(s.task_id)).length
+  const started = workflowStartUtc(workflow, taskById, now)
+  const changed = Number.isFinite(Date.parse(workflow.updated_at)) ? timeAgo(workflow.updated_at, now) : 'not recorded'
+  const keepGoing = workflow.on_step_failure.toLowerCase() === 'continue'
+  const wait = pullRequestWait(workflow)
+  const owner =
+    workflow.submitted_by === null || workflow.submitted_by === ''
+      ? ownerShort(workflow.submitted_by)
+      : PersonName({ email: workflow.submitted_by, name: workflow.submitted_by_name })
+  return (
+    <div className="wfp-ov">
+      <dl className="wfp-dl">
+        <dt>Spent</dt>
+        <dd>
+          {usage.kind === 'reading' ? (
+            <Spend spend={spend} reading />
+          ) : spend.usd === null ? (
+            <span className="wf-cell is-absent">cost not reported</span>
+          ) : (
+            <Spend spend={spend} />
+          )}
+          <span className="wfp-dim">
+            {' · '}
+            {earlier === null
+              ? 'earlier attempts not known'
+              : earlier.retried === 0
+                ? `no earlier attempts in ${earlier.covered} steps read`
+                : `includes ${earlier.retried} earlier ${earlier.retried === 1 ? 'attempt' : 'attempts'}`}
+          </span>
+        </dd>
+        <dt>Pull requests</dt>
+        <dd>
+          {taskById === null ? 'not known' : `${prs} opened by ${joined} steps read`}
+          {pr !== null && (
+            <>
+              {' · '}
+              <PullRequestLink pr={pr} className="ctl-link" />
+            </>
+          )}
+        </dd>
+        <dt>Merge</dt>
+        <dd>{wait ?? 'nothing waits on a pull request'}</dd>
+        <dt>Dispatch</dt>
+        <dd>
+          <WorkflowDispatchLine workflow={workflow} taskById={taskById} pr={pr} />
+        </dd>
+        <dt>On a failed step</dt>
+        <dd>{keepGoing ? 'keep going' : 'stop the workflow'}</dd>
+        <dt>Owner</dt>
+        <dd title={workflow.submitted_by ?? undefined}>{owner}</dd>
+        <dt>Started</dt>
+        <dd title={started.title}>
+          {startedPhrase(started)} · changed {changed}
+        </dd>
+      </dl>
+      <details className="wfp-details">
+        <summary>Policy</summary>
+        <p>
+          A step runs once every step it depends on is done.{' '}
+          {keepGoing
+            ? 'A failed step does not stop the others; the steps that depend on it wait on it.'
+            : 'A failed step stops the workflow: no step after it starts.'}{' '}
+          This is what the workflow was submitted with: configuration, not an outcome.
+        </p>
+      </details>
+      <details className="wfp-details">
+        <summary>Workflow id and reads</summary>
+        <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>
+        <p className="wfp-dim">
+          {joined} of {workflow.steps.length} steps read · {workflow.state_source === 'derived' ? 'state derived from its steps' : 'state as stored'}
+        </p>
+        <StateDrift drift={workflow.drift} />
+      </details>
+      <div className="wfp-actions">
+        <CancelWorkflow workflow={workflow} taskById={taskById} onDone={reload} sent={sent} onSent={onSent} />
+        <CopyLink />
+        <CopyId id={workflow.workflow_id} />
+      </div>
     </div>
   )
 }
@@ -6688,7 +7208,7 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
       <span className="wfl-skel wfp-skel-sum-2" style={{ width: '14em' }} />
     </p>
     <div className="wfp is-loading" aria-busy="true">
-      <div className="wfp-head">
+      <div className="wfp-head wfp-top">
         <div className="wfp-chips" aria-hidden="true">
           {PAGE_SKELETON_CHIPS.map((w, i) => {
             const chip = (
@@ -6707,18 +7227,12 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
             )
           })}
         </div>
-        <span className="wfp-actions">
-          {/* COPY ID TOO (visual QA pass 1 overview-agents-80, #2596): the
-              loaded head draws Copy id before Copy link, and the skeleton
-              drew Copy link alone, so the head shifted when the read landed. */}
-          <Button disabled>Copy id</Button>
-          <Button disabled>Copy link</Button>
-          {/* NO CANCEL BUTTON BEFORE THE STATE IS KNOWN (live QA WF-18a,
-              2026-10-11): a disabled "Cancel workflow" was drawn on every
-              page while it read, a succeeded or a nonexistent workflow's
-              included. A bar holds its place, and says nothing. */}
-          <span className="wfl-skel wfp-skel-act" aria-hidden="true" style={{ width: '9em' }} />
-        </span>
+        {/* THE TALLY LINE'S BAR: the loaded head draws the steps by state
+            under the figures (the Graph Work redesign), and Copy id, Copy
+            link and Stop are the Overview's now, so none is reserved here. */}
+        <p className="wfp-tally" aria-hidden="true">
+          <span className="wfl-skel" style={{ width: '22em' }} />
+        </p>
       </div>
       <WfTabs id={id} query={query} view={query.tab} steps={null} onView={(v) => choose({ ...query, tab: v, stage: null, stepState: null })} />
       <div className="wfp-skel-body" aria-hidden="true">
@@ -6776,92 +7290,6 @@ function WfTabs({
         if (v !== undefined) onView(v)
       }}
     />
-  )
-}
-
-/** The step the card opens on: the first failure, else the first live step, else none. */
-function firstStepToShow(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): string | null {
-  let live: string | null = null
-  let waiting: string | null = null
-  for (const s of workflow.steps) {
-    const st = stepState(s, taskById)
-    if (st.kind !== 'state') continue
-    if (st.state === 'FAILED' || st.state === 'DEAD_LETTERED') return s.step_id
-    // A step waiting for a member is opened next: its card is where the
-    // answer is given, and the inbox's Answer lands on this page (§4.5).
-    if (waiting === null && isWaitingForMember(st.task)) waiting = s.step_id
-    if (live === null && STATE_MARK[st.state].hue === 'live') live = s.step_id
-  }
-  return waiting ?? live
-}
-
-function WorkflowHead({
-  workflow,
-  taskById,
-  reload,
-  usage,
-  sent,
-  onSent,
-}: {
-  workflow: Workflow
-  taskById: ReadonlyMap<string, Task> | null
-  reload: () => void
-  /** The page's attempt read: the head totals from the figures the table does (WF-5). */
-  usage: UsageRead
-  /** What a stop recorded from this page answered (`useBoardStores`). */
-  sent: CancelSentRead | null
-  onSent: (sent: CancelSentRead) => void
-}) {
-  const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
-  const pr = workflowPullRequest(workflow, taskById)
-  // ONE ROW, CHIPS LEFT AND ACTIONS RIGHT (workflows.html B; #503). The title
-  // is the shell's head above, and its meta line the count note over this
-  // row (`pageSummary`, #138); this row
-  // carries what is not a sentence -- the state, the pull request, the failure
-  // policy, the cost -- and Copy id, Copy link and Cancel workflow, centred on
-  // the row so nothing leaves blank space under them.
-  return (
-    <div className="wfp-head">
-      <div className="wfp-chips">
-        <WorkflowStateMark workflow={workflow} />
-        {pr !== null && <PullRequestLink pr={pr} className="c-chip is-link" />}
-        {/* CONFIGURATION, LABELLED AND SET APART (visual QA 5b:wg-light-L2,
-            #1680 box 6343794378): 'on failure: fail the workflow' sat beside
-            the state 'failed' as its sibling and read as what happened. It is
-            the policy the workflow was submitted with, so it says so, in a
-            group of its own behind a rule. Before the cost still, which keeps
-            the phone head two lines in both states (V103). */}
-        <span className="wfp-policy" title="What this workflow was submitted to do when a step fails. Configuration, not an outcome.">
-          <span className="wfp-policy-k">Policy</span>
-          {/* IN WORDS (visual QA pass 1, overview-agents-66): 'on failure:
-              fail the workflow' was the API's enum read aloud. It says what
-              happens when a step fails. */}
-          <Chip>if a step fails: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'keep going' : 'stop the workflow'}</Chip>
-        </span>
-        <span className="wfp-cost">
-          <Chip>
-            {usage.kind === 'reading' ? (
-              <Spend spend={spend} reading />
-            ) : spend.usd === null ? (
-              <span className="wf-cell is-absent">cost not reported</span>
-            ) : (
-              <Spend spend={spend} />
-            )}
-          </Chip>
-        </span>
-        <PullRequestWaitTag workflow={workflow} />
-        {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
-      </div>
-      <span className="wfp-actions">
-        {/* THE ID ONCE, BEHIND ITS COPY (visual QA VQ-015 re-review;
-            agent-details-v3.html A): it was a chip of plain text here and
-            printed again in the inspector's same-step row. The id is this
-            button's title and what it copies; the title above is the name. */}
-        <CopyId id={workflow.workflow_id} />
-        <CopyLink />
-        <CancelWorkflow workflow={workflow} taskById={taskById} onDone={reload} sent={sent} onSent={onSent} />
-      </span>
-    </div>
   )
 }
 

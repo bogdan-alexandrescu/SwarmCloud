@@ -1,3 +1,7 @@
+// THE APP-WIDE TABLE IS prose.ceilings.json (proseapp.tsx, BOGDAN'S RULE,
+// 2026-11-05): every page the nav reaches, its words and arrowed links, with
+// ceilings that only go down. This file keeps its own screen-level budget.
+//
 // THE PROSE BUDGET FOR THE OPERATOR SCREENS, MEASURED RATHER THAN ASSERTED.
 //
 // The owner directive is "remove prose from views, just features, data and

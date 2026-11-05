@@ -28,6 +28,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { NeedsYou, mergeHeldBecause } = await import('../work/NeedsYou')
+type NeedKind = import('../work/NeedsYou').NeedKind
 type NeedItem = import('../work/NeedsYou').NeedItem
 
 const iso = (ms: number) => new Date(ms).toISOString()
@@ -141,6 +142,15 @@ describe('a quiet day', () => {
     expect(screen.getByText('Nothing waits on you here')).toBeTruthy()
     expect(screen.queryByRole('list')).toBeNull()
     expect(screen.getByRole('group', { name: 'What needs you, by kind' }).textContent).toContain('not known')
+  })
+
+  it('does not call the day quiet while a kind is not known, and names the kinds', () => {
+    const items = Object.assign([] as NeedItem[], { unknownKinds: ['question', 'merge', 'handoff'] as NeedKind[] })
+    render(<NeedsYou items={items} approvals={null} />)
+    expect(screen.queryByText('Nothing waits on you here')).toBeNull()
+    expect(
+      screen.getByText('Nothing this screen read waits on you; Question, Merge waiting, Your turn in a browser not known here'),
+    ).toBeTruthy()
   })
 
   it('reads the same with approvals read and none waiting', () => {

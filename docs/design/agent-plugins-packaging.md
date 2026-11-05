@@ -340,3 +340,74 @@ Firestore shape and no API.
   version or image (the plan's catalogue). This proposal adds no field a caller sets.
 * `apps/common/swarm_common/` is untouched. The plan's contract request (per-step plugins in the work contract's
   capabilities) is the catalogue lane's, not this spike's.
+
+## The second plugin: Cloudflare's security audit skill
+
+**Owner's decision, 4 November 2026:** Cloudflare's security audit skill
+([github.com/cloudflare/security-audit-skill](https://github.com/cloudflare/security-audit-skill), MIT) is the second
+catalogue plugin, beside gstack, baked into the existing agent images at commit
+`c1c8a8c1471069fb0e188eeaff69b8e8db6564a8` (14 September 2026). No new runner profile, no new image, nothing installed
+at runtime.
+
+**What it is.** One skill folder, `skills/security-audit/`: `SKILL.md`, fourteen method files in markdown at the
+pinned commit (reconnaissance, hunting, attack classes, validation and reporting, and ten domain companions),
+`report-schema.json`, and two zero-dependency Node validators (`validate-findings.cjs`,
+`validate-coverage-ledger.cjs`) with their own `node:test` files. In **guidance mode** it answers a focused security
+question and writes no files. In **full audit mode** it runs six phases (reconnaissance into `coverage-ledger.json`,
+coverage-led hunting by isolated sub-agents, adversarial validation, `findings.json` with `confirmed`,
+`needs_validation` and `rejected`, independent re-verification, then `REPORT.md`, `FINDINGS-DETAIL.md` and
+`NEEDS-VALIDATION.md`) at profile quick, standard or deep, optionally limited to the diff between two refs and capped
+by a sub-agent budget. It writes only to an output folder **outside** the target checkout, and runs target code only
+inside an OS-enforced sandbox (no network, an allowlisted environment, a read-only target, limits); without one it
+stays source-only, and anything it cannot prove stays `needs_validation`.
+
+**Why it packages so differently from gstack.** gstack needed Bun, a setup run, a measured file closure and a browser
+layer. This skill has no setup, no package and no binary: markdown, JSON and two self-contained `.cjs` files that the
+image's own Node runs. So its build stage only fetches, checks and copies.
+
+**The build** (`images/agent-runtime-base/Dockerfile`, stage `security-audit-build`):
+
+* The commit's source archive, `github.com/cloudflare/security-audit-skill/archive/<commit>.tar.gz`, is a row of
+  `images/agent-runtime-base/tool-mirror.sha256` (sha256 `53e708eb…29b6`, 91,979 bytes). The stage reads it only from
+  the tool mirror, checks that sha256, and checks the commit against `SECURITY_AUDIT_COMMIT` by the pax header GitHub
+  writes into the archive (`git get-tar-commit-id`), as gstack's stage does. The Dockerfile never fetches from GitHub.
+  Main's `build images` job uploads a new row's object itself (`scripts/refresh-build-mirror.sh --tools-only`,
+  sha256-checked from upstream) before it builds, so the new row needs no operator step.
+* **Only** `skills/security-audit/` and `LICENSE` are staged, at the archive's own relative paths, directories 0755 and
+  files 0644, with no symlink or special file. `README.md` and anything a bump adds elsewhere stay in the stage.
+* The runtime copies them to `/opt/swarm/plugins/security-audit` (so the skill is
+  `/opt/swarm/plugins/security-audit/skills/security-audit`). `COPY` writes uid 0 and no file is writable by group or
+  other, so the agent cannot change it. The browser and Lightpanda images are built `FROM` the base and inherit it.
+
+**Size (measured 4 November 2026):** +0.32 MB uncompressed (315,748 bytes in 21 files; 0.34 MB as a tar), +0.09 MB
+gzip -6 (93,267 bytes). Against gstack's +86.2 MB that is negligible.
+
+**The catalogue entry** (`apps/swarm-api/swarm_api/plugincatalogue.py`, restated in `apps/agent-worker/agent_worker/plugins.py`,
+held equal by `tests/unit/worker/test_plugins_start.py`): name `security-audit`, version the commit, install path
+`/opt/swarm/plugins/security-audit`, the five claude-code profiles, skills `{"unattended": ("security-audit",)}`, and
+`skill_folders="skills"`. A workspace's owner or admin still has to allow it in the workspace's plugins setting before
+a step can name it; the default allows none.
+
+**The start of a step.** The skill's `SKILL.md` links its method files, schema and validators by relative path, so
+linking only `SKILL.md`, as for gstack, would leave the agent a page whose every link is broken. For a plugin with
+`skill_folders`, the worker links `work/.claude/skills/<skill>` to the install's whole, read-only skill folder, for
+ONLY the step's skills, and adds no plugin-root link. Every catalogue name a previous attempt left is removed once
+before any plugin is linked, so a step naming both plugins keeps both plugins' links. gstack's `GSTACK_HOME`, config,
+`.gstack/` exclusion, variables and the browser profile's Chromium requirement apply only to a step that runs gstack.
+The prompt's plugin section tells the agent that a full audit writes its output folder to
+`$SWARM_ARTIFACTS_DIR/security-audit`, outside the checkout, where it is uploaded.
+
+**Bumping the pin** is one PR: `SECURITY_AUDIT_COMMIT` and `SECURITY_AUDIT_SHA256` in the Dockerfile, the mirror row
+and both catalogues' version. `tests/unit/scripts/test_security_audit_image.py` holds the four equal, holds the stage
+to the mirror-only fetch, both checks and the two-path copy, and runs the skill's own two validator test files under
+`node --test` on the pinned archive (`build/tool-mirror`'s copy when a build staged it, else the upstream URL the
+mirror is filled from, sha256-checked either way), so a bump that breaks them goes red.
+
+**The Day One install is untouched.** Nothing a fresh deployment needs changes: no infrastructure, IAM, manifest,
+setting, secret slot or service account. The images carry the plugin, so a new deployment gets it with its images.
+
+**How the contract's invariants hold.** Infrastructure demand (1–3), fencing (5), Spot (6) and checkpointing (8) are
+untouched: the change is image content, a catalogue entry and the links made before the agent starts. Resources (7):
+no request or limit changes. Tenant isolation (9): the install is shared and read-only, and the audit's output goes to
+the attempt's own artifacts folder. Caller input (10): a step names `security-audit` and its one skill **by name**; the
+version, path and folder shape are the catalogue's, never a caller's. `apps/common/swarm_common/` is untouched.

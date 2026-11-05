@@ -18,7 +18,9 @@
 .sg-row { display: grid; grid-template-columns: var(--sg-stage) repeat(var(--sg-cols, 1), minmax(0, 1fr)); gap: 4px; align-items: stretch; min-width: 0; }
 .sg-row.is-head { align-items: end; }
 
-.sg-col { min-width: 0; padding: 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); color: var(--text-dim); }
+/* No side padding: 4px of it cut `workflows` (56px of text) to `workfl…` in the 57px an eighth column gets at
+   1440 with the inspector open. The 4px column gap keeps two headers apart. */
+.sg-col { min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); color: var(--text-dim); }
 .sg.is-marks .sg-col { writing-mode: vertical-rl; transform: rotate(180deg); justify-self: center; max-height: 6.5em; padding: 2px 0; }
 
 .sg-stage { display: flex; flex-direction: column; justify-content: center; gap: 1px; min-width: 0; font-size: var(--t-meta); color: var(--text); }
@@ -47,6 +49,8 @@ button.sg-tally:focus-visible { outline: 2px solid var(--info); outline-offset: 
 .sg-chip:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; z-index: 1; }
 .sg-chip.is-running { border-color: color-mix(in srgb, var(--info) 60%, var(--line)); background: color-mix(in srgb, var(--info) 8%, var(--surface)); }
 .sg-chip.is-done { background: color-mix(in srgb, var(--ok) 9%, var(--surface)); }
+/* Skipped by its verdict gate (#264): striped and dashed, never the solid fill of a step that ran. */
+.sg-chip.is-skipped { border-style: dashed; background: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--ok) 12%, transparent) 4px 8px); }
 .sg-chip.is-failed { border: 2px solid var(--s-bad); background: var(--s-badb, var(--surface)); padding: 3px 5px; }
 .sg-chip.is-waiting { border-style: dashed; background: transparent; color: var(--text-dim); }
 .sg-chip.is-parked { border-color: var(--s-park); }

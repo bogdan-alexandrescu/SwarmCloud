@@ -1859,6 +1859,10 @@ columns, already a record in shape) carry neither class and keep the plain
 
 **This is the section the exercise turns on.**
 
+**The standing rule (owner, 2026-11-05, every console page): no explanatory prose on the surface; an explanation, definition, how-to or background goes behind a tooltip, an (i) or a status tick, a status shows its word only where it asks for something, and an action is a button, never an arrowed text link.**
+Only must-stay disclosures stay visible, one short line each (a write to a live system, production mode, who pays, could-not-check, nothing-auto-applies); an empty state is a short line plus its action.
+`src/__tests__/prose.ceilings.json` holds every nav page's visible words and arrowed links to ceilings that only go down (`proseapp.tsx` measures them, `prose.app.test.tsx` holds the ratchet).
+
 ### 8.1 The invariant, unchanged
 
 > This console must never present an absence as a measurement. A figure nothing

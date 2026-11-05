@@ -163,6 +163,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  atWidth(realWidth)
   for (const h of hosts.splice(0)) h.remove()
 })
 
@@ -171,20 +172,36 @@ async function page(tab: string | null = null): Promise<void> {
   await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
 }
 
-const panel = () => document.querySelector<HTMLElement>('.wf-panel')
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
 const flat = (el: Element | null | undefined) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
+
+const realWidth = window.innerWidth
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
+}
 
 function changes(step: string | null) {
   const f = fan()
   render(<WorkflowChangesTab workflow={f.w} taskById={f.tasks} at={{ step, file: null }} onAt={() => {}} />)
 }
 
+/**
+ * The failed step's card, opened from the stage grid at 1440 (there is no
+ * arrival pick on the page any more -- graph-workflow-rest; the inspector
+ * starts folded below 1366).
+ */
 async function card(): Promise<HTMLElement> {
+  atWidth(1440)
   await page()
+  const chip = await waitFor(() => {
+    const b = document.querySelector<HTMLButtonElement>('.sg [data-step="checkpoints"]')
+    expect(b, 'no checkpoints chip on the stage grid').toBeTruthy()
+    return b!
+  })
+  fireEvent.click(chip)
   return waitFor(() => {
-    const el = panel()?.querySelector<HTMLElement>('.wf-inspect')
+    const el = document.querySelector<HTMLElement>('aside.wi-dock .wf-inspect')
     expect(el?.querySelector('.wf-inspect-facts')).toBeTruthy()
     return el!
   })
@@ -357,6 +374,8 @@ describe('72: the prompt is an input', () => {
 
 describe('75: Escape closes an opened step', () => {
   it('closes the step opened from the table, focus staying on its name', async () => {
+    // The inspector starts folded below 1366 (graph-workflow-rest).
+    atWidth(1440)
     await page('table')
     const name = await waitFor(() => {
       const b = document.querySelector<HTMLButtonElement>('.wf-table button.wf-pick[data-step="cold-start"]')

@@ -340,6 +340,13 @@ SETTINGS_PURPOSE = "swarm.settings/v1"
 #: the workspace's steps may name, `{allowed}` (docs/design/agent-plugins.md,
 #: "A closed plugin catalogue"). A new block: no other block's bytes change,
 #: and no workspace stores one yet, so nothing needs re-signing.
+#:
+#: "contract_review" is contract request 138 (JEV-SUBMISSION-REVIEW, part of
+#: #2688), accepted by the owner 2026-11-04: the workspace's opt-in to
+#: swarm-api's Jev review of its work contracts at submission, `{enabled}`
+#: (docs/design/agent-quality/jev-contract.md section 4.1). swarm-api signed
+#: these same bytes before the block was listed here, so every stored MAC
+#: still verifies and nothing needs re-signing.
 SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "top": ("judgment_backend",),
@@ -354,6 +361,7 @@ SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "budget": ("unit", "amount"),
         "quality_gates": ("jev",),
         "plugins": ("allowed",),
+        "contract_review": ("enabled",),
     }
 )
 

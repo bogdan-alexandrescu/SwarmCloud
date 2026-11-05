@@ -27,7 +27,9 @@ import importlib.machinery
 import importlib.util
 import json
 import secrets
+import os
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -125,6 +127,11 @@ class LoginChromium(qi.FakeChromium):
         #: tab's origin and path (`_WHERE`).
         self.after_click: Any = "moved"
         self.where = f"{ORIGIN}/login"
+        #: A fixture page (`_page_node`'s shape), when set: each start click
+        #: runs the gate's own `_START_CLICK` on it under node, and the id of
+        #: each element it clicked is kept in `clicked_ids`.
+        self.page_dom: dict[str, Any] | None = None
+        self.clicked_ids: list[str] = []
 
     async def send(self, message: dict[str, Any]) -> None:
         method = message["method"]
@@ -148,7 +155,11 @@ class LoginChromium(qi.FakeChromium):
             op = params["expression"][len("/*swarm-qa:"):].split("*/", 1)[0]
             if op == "start-click":
                 click = json.loads(params["expression"].rsplit(")(", 1)[1][:-1])
-                count = self.controls.get(click["text"], 0)
+                if self.page_dom is not None:
+                    count, ids = _on_page(self.page_dom, params["expression"])
+                    self.clicked_ids += ids
+                else:
+                    count = self.controls.get(click["text"], 0)
                 if count == 1:
                     self.clicked.append(click["text"])
                     hook = self.on_click.get(click["text"])
@@ -956,3 +967,593 @@ def test_the_gate_refuses_a_malformed_start_click_hand_off():
             target.handle(_chooser_args(_password(), clicks=clicks))
         # MUTATION: drop `_parse_start_clicks` from `_parse_sign_in` and a malformed hand-off is taken.
         assert refused.value.code == "start_clicks"
+
+
+# --------------------------------------------------------------------------
+# Start clicks on fixture pages: only what a person can click counts
+# --------------------------------------------------------------------------
+#
+# AI Studio's staging quality-check run of 4 November 2026 (about 21:45 UTC,
+# task_11a0f4181d3245ef8390): the user leg's first capture group ended
+# `qa_sign_in_start_click_missing` on a page reading "Skip to content / Sign
+# in to AI Studio / Staging / From your link / Production / Sign in", with
+# two visible elements whose text is exactly 'Sign in'. That cause comes only
+# from the FIRST start click (`SignIn._start_click`): a re-click that names
+# other than one control stops clicking and the sign-in ends
+# `qa_sign_in_no_form`. One match was the button; the other text, such as a
+# span in the heading. The gate's own `_START_CLICK` runs here on fixture
+# pages, under node, in a DOM just large enough for it.
+
+#: A DOM under node for one evaluation: argv[1] the page (`_page_node`'s
+#: shape), argv[2] the expression, argv[3] the page's address. Prints {"value", "clicked": [ids]}.
+_PAGE_PROGRAM = r"""
+const page = JSON.parse(process.argv[1]);
+const clicked = [];
+class El {
+  constructor(spec, parent) {
+    this.tagName = spec.tag.toUpperCase(); this.parentElement = parent;
+    this.attrs = spec.attrs || {}; this.style = spec.style || {};
+    this.parts = (spec.children || []).map((c) => typeof c === 'string' ? c
+      : new (c.tag === 'input' ? HTMLInputElement : El)(c, this));
+    if (this instanceof HTMLInputElement) this.value = this.attrs.value || '';
+  }
+  get hidden() { return this.style.display === 'none' || (this.parentElement && this.parentElement.hidden); }
+  get innerText() {
+    if (this.hidden) return '';
+    return this.parts.map((p) => typeof p === 'string' ? p : (p instanceof HTMLInputElement ? '' : p.innerText))
+      .join('');
+  }
+  getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name) ? String(this.attrs[name]) : null; }
+  hasAttribute(name) { return this.getAttribute(name) !== null; }
+  contains(other) { for (let n = other; n; n = n.parentElement) if (n === this) return true; return false; }
+  getClientRects() { return this.hidden ? [] : [{}]; }
+  click() { clicked.push(this.attrs.id || this.tagName.toLowerCase()); }
+  all() { return [this, ...this.parts.filter((p) => typeof p !== 'string').flatMap((p) => p.all())]; }
+}
+class HTMLInputElement extends El {}
+const body = new El(page, null);
+const inherited = (el, key, fallback) => {
+  for (let n = el; n; n = n.parentElement) if (n.style[key] !== undefined) return n.style[key];
+  return fallback;
+};
+globalThis.HTMLInputElement = HTMLInputElement;
+globalThis.getComputedStyle = (el) => ({
+  display: el.style.display || 'inline', visibility: inherited(el, 'visibility', 'visible'),
+  cursor: inherited(el, 'cursor', 'auto'),
+});
+globalThis.window = globalThis;
+globalThis.addEventListener = () => {};
+const at = new URL(process.argv[3] || 'https://app.example.com/');
+globalThis.location = { href: at.href, origin: at.origin, pathname: at.pathname, search: at.search, hash: at.hash };
+// Compound selectors only (a tag, #id, [attr], [attr=v], [attr~=v]), in a
+// comma list: what the gate's probe asks; anything else throws as Chromium does.
+const compile = (sel) => sel.split(',').map((part) => {
+  const s = part.trim();
+  const m = /^([a-z][a-z0-9-]*|\*)?((?:#[A-Za-z0-9_-]+|\[[a-z-]+(?:~?=(?:"[^"]*"|[A-Za-z0-9_-]+))?\])*)$/.exec(s);
+  if (!s || !m || (!m[1] && !m[2])) throw new SyntaxError(sel);
+  const tag = m[1] && m[1] !== '*' ? m[1] : null;
+  const tests = [...m[2].matchAll(/#([A-Za-z0-9_-]+)|\[([a-z-]+)(?:(~?=)(?:"([^"]*)"|([A-Za-z0-9_-]+)))?\]/g)]
+    .map((t) => t[1] !== undefined ? ['id', '=', t[1]] : [t[2], t[3], t[4] !== undefined ? t[4] : t[5]]);
+  return (el) => (!tag || el.tagName.toLowerCase() === tag) && tests.every(([name, op, v]) => {
+    const got = el.getAttribute(name);
+    if (got === null) return false;
+    return !op || (op === '=' ? got === v : got.split(/\s+/).includes(v));
+  });
+});
+globalThis.document = {
+  readyState: 'complete', body, documentElement: body,
+  querySelectorAll(sel) {
+    const all = body.all();
+    if (sel === '*') return all;
+    const tests = compile(sel);
+    return all.filter((el) => tests.some((t) => t(el)));
+  },
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+};
+const value = (0, eval)(process.argv[2]);
+process.stdout.write(JSON.stringify({ value, clicked }));
+"""
+
+
+def _node() -> str:
+    node = shutil.which("node")
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail("node is not on PATH in CI, so the start click cannot run on its fixture pages; "
+                        "these must not pass by skipping")
+        pytest.skip("node is not installed here; CI runs the start click on its fixture pages")
+    return node
+
+
+def _on_page(page: dict[str, Any], expression: str, url: str = f"{ORIGIN}/") -> tuple[Any, list[str]]:
+    """The gate's expression evaluated on the fixture page at `url`: its value and the ids it clicked."""
+    done = subprocess.run([_node(), "-e", _PAGE_PROGRAM, json.dumps(page), expression, url],
+                          capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    return out["value"], out["clicked"]
+
+
+def _page_node(tag: str, *children: Any, **attrs: Any) -> dict[str, Any]:
+    style = attrs.pop("style", {})
+    return {"tag": tag, "attrs": attrs, "style": style, "children": list(children)}
+
+
+def _chooser_page(*sign_in: dict[str, Any]) -> dict[str, Any]:
+    """AI Studio's chooser as the failing group's page read: a skip link,
+    the heading with its own 'Sign in' span, the environments, and `sign_in`."""
+    return _page_node(
+        "body",
+        _page_node("a", "Skip to content", href="#main", id="skip"),
+        _page_node("h1", _page_node("span", "Sign in", id="heading-span"), " to AI Studio", id="heading"),
+        _page_node("div", _page_node("button", "Staging", id="staging"),
+                   _page_node("span", "From your link"), _page_node("button", "Production", id="production")),
+        *sign_in,
+    )
+
+
+def _start_click(page: dict[str, Any], text: str = "Sign in", css: str | None = None) -> tuple[Any, list[str]]:
+    return _on_page(page, gate_qt._js(gate_qt._START_CLICK, {"text": text, "css": css, "now": False}))
+
+
+async def _sign_in_on(rig: Rig, page: dict[str, Any]) -> dict[str, Any]:
+    rig.fake.start(rig.sink)
+    rig.fake.page_dom = page
+    rig.fake.probes = ["loading"]
+    rig.fake.on_click["Sign in"] = lambda: setattr(rig.fake, "probes", ["form"])
+    await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+    await rig.finished()
+    return rig.target.status()
+
+
+def test_the_heading_span_reading_sign_in_is_text_and_the_sign_in_button_is_clicked(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        page = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+        status = await _sign_in_on(rig, page)
+        # MUTATION: count every exact-text match (drop `clickable` from `_START_CLICK`) and the
+        # heading's span makes two: the sign-in ends qa_sign_in_start_click_missing, as on staging.
+        assert status["qa_sign_in"] == "signed_in", status
+        assert rig.fake.clicked_ids == ["staging", "sign-in"]
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_two_sign_in_buttons_refuse_and_the_sentence_names_both(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        page = _chooser_page(_page_node("button", "Sign in", id="one"),
+                             _page_node("div", "Sign in", role="button", tabindex="0", id="two"))
+        status = await _sign_in_on(rig, page)
+        # MUTATION: click the first clickable match of several and this signs in.
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.START_CLICK_MISSING
+        assert rig.fake.clicked_ids == ["staging"]
+        # MUTATION: leave `named` out of the refusal and the sentence names no element.
+        assert ("start click 'Sign in' found 2 visible controls a person can click with exactly that text "
+                "(button, div (role button))") in status["sentence"], status["sentence"]
+        assert rig.fake.typed == [] and rig.fake.closed and not rig.proxy.paused
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_sign_in_link_with_an_href_is_clicked(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        page = _chooser_page(_page_node("a", _page_node("span", "Sign in"), href="/login", id="sign-in-link"))
+        status = await _sign_in_on(rig, page)
+        assert status["qa_sign_in"] == "signed_in", status
+        # The span inside the link matched; the link, the control around it, was clicked.
+        assert rig.fake.clicked_ids == ["staging", "sign-in-link"]
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_re_click_also_passes_over_the_heading_span_and_clicks_the_button_again(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.page_dom = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+        presses: list[float] = []
+        rig.fake.on_click["Sign in"] = lambda: presses.append(rig.clock.now)
+        # The first press landed before the page's script ran: nothing happened.
+        rig.fake.after_click = lambda: "moved" if len(presses) >= 2 else "same"
+        rig.fake.probe_fn = lambda submitted: "signed_in" if submitted else (
+            "form" if len(presses) >= 2 else "loading")
+        rig.fake.start(rig.sink)
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+        await rig.finished()
+        status = rig.target.status()
+        # MUTATION: count every exact-text match and the first click already refuses; with the
+        # first click alone fixed, the re-click names two and the sign-in ends qa_sign_in_no_form.
+        assert status["qa_sign_in"] == "signed_in", status
+        assert rig.fake.clicked_ids == ["staging", "sign-in", "staging", "sign-in"]
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_what_counts_as_a_control_a_person_can_click():
+    def heading_and(control: dict[str, Any]) -> dict[str, Any]:
+        return _page_node("body", _page_node("h1", _page_node("span", "Sign in"), " to AI Studio"), control)
+
+    clicked = [
+        _page_node("button", _page_node("span", "Sign in"), id="x"),
+        _page_node("a", "Sign in", href="/login", id="x"),
+        _page_node("input", type="submit", value="Sign in", id="x"),
+        _page_node("input", type="BUTTON", value="Sign in", id="x"),
+        _page_node("span", "Sign in", role="link", id="x"),
+        _page_node("summary", "Sign in", id="x"),
+        _page_node("div", "Sign in", tabindex="0", id="x"),
+        _page_node("div", "Sign in", style={"cursor": "pointer"}, id="x"),
+    ]
+    for control in clicked:
+        value, ids = _start_click(heading_and(control))
+        # MUTATION: drop any one kind from `operable` (or the cursor fallback) and its page refuses.
+        assert (value, ids) == (1, ["x"]), control
+    # Not a control: an `a` without an href, a negative tabindex, an input of another type.
+    for plain in (_page_node("a", "Sign in"), _page_node("div", "Sign in", tabindex="-1"),
+                  _page_node("input", type="text", value="Sign in")):
+        value, ids = _start_click(heading_and(plain))
+        assert ids == [] and value["count"] == 2 and value["clickable"] == 0, plain
+        assert [m["tag"] for m in value["matched"]] == ["span", plain["tag"]]
+    # One plain match and nothing clickable is still clicked, as before.
+    assert _start_click(_page_node("body", _page_node("span", "Sign in", id="x"))) == (1, ["x"])
+    # A hidden button is not shown, so the shown one is the one control.
+    page = _page_node("body", _page_node("button", "Sign in", style={"display": "none"}),
+                      _page_node("button", "Sign in", id="x"))
+    assert _start_click(page) == (1, ["x"])
+    # `css` still narrows the candidates.
+    page = _page_node("body", _page_node("button", "Sign in", id="x"), _page_node("a", "Sign in", href="/"))
+    assert _start_click(page, css="button") == (1, ["x"])
+
+
+def test_a_refusal_names_at_most_three_matches_by_tag_and_role_in_plain_characters():
+    page = _page_node("body", *[_page_node("button", "Sign in", role=f"link\t'x{i}") for i in range(5)])
+    value, ids = _start_click(page)
+    assert ids == [] and value["count"] == 5 and value["clickable"] == 5 and len(value["matched"]) == 3
+    sentence = gate_qt._start_click_sentence("Sign in", value, 15)
+    assert sentence == ("the sign-in's start click 'Sign in' found 5 visible controls a person can click with "
+                        "exactly that text (button (role link), button (role link), button (role link)) in 15 s, "
+                        "and the gate clicks only when exactly one is a control a person can click")
+    # What the page sets is cut to letters, digits and hyphens before a sentence says it.
+    odd = {"count": 2, "clickable": 2, "matched": [{"tag": "BUT TON`", "role": "x'y\n" + "z" * 40}, {"tag": ""}]}
+    said = gate_qt._start_click_sentence("Sign in", odd, 15)
+    assert f"(button (role xy{'z' * 22}))" in said and "`" not in said and "\n" not in said
+
+
+# --------------------------------------------------------------------------
+# A role's own home, already signed in, with no login form (part of #2688)
+# --------------------------------------------------------------------------
+#
+# AI Studio's staging quality-check run of 4 November 2026 (re-run 4, 21:52
+# to 22:05 UTC): the reviewer and moderator legs ended `qa_sign_in_no_form`
+# on every capture group while the agent's own tab was signed in. The gate's
+# start click 'Sign in' went to the identity provider, whose session was
+# alive, and it sent the tab straight back to the account's own home: the
+# reviewer's /access-pending ('Staging Signed in', 'Welcome, QA', My queue)
+# and the moderator's / (a 'Staff only' wall on most screens). Neither page
+# draws the target's signed_in_selector, which the five other roles' homes
+# do, and neither is a login form, so `_wait_form` read "loading" until
+# FORM_SECONDS ran out. The gate now takes such a page as signed in only on
+# the page's own evidence: no password or username field, no start-click
+# control, the target's own origin, and an HttpOnly cookie on an approved
+# origin that the sign-in set or changed. Without that cookie the sentence
+# says the page lacks signed_in_selector instead of "no form".
+
+#: The cookie a sign-in sets: HttpOnly, on the target's own origin.
+def _session_cookie(name: str = "app_session") -> dict[str, Any]:
+    return {"name": name, "value": secrets.token_hex(16), "domain": "app.example.com", "path": "/",
+            "httpOnly": True, "secure": True}
+
+
+def _rating_bar(name: str, *order: str) -> dict[str, Any]:
+    """The bar every page of re-run 4 drew (capture-g1's a11y snapshots):
+    one button per environment, the pressed one reading 'Signed in' and the
+    other 'Sign in', each a span inside its button. The buttons show a
+    pointer, so the spans inherit it."""
+    status = {"Staging": "Signed in", "Production": "Sign in"}
+    buttons = [_page_node("button", _page_node("span", env), _page_node("span", status[env]),
+                          style={"cursor": "pointer"}, id=f"bar-{env.lower()}",
+                          **({"aria-pressed": "true"} if env == "Staging" else {}))
+               for env in order]
+    return _page_node("div", _page_node("div", _page_node("div", *buttons, role="group", **{"aria-label": name}),
+                                        role="status"),
+                      role="region", **{"aria-label": f"{name} bar"})
+
+
+def _reviewer_home() -> dict[str, Any]:
+    """The reviewer's /access-pending as capture-g1 recorded it
+    (task_c8ed1edefa524a63843d, access-pending--desktop--light)."""
+    return _page_node(
+        "body",
+        _page_node("a", "Skip to content", href="#main-content"),
+        _page_node("aside", _page_node("nav", _page_node("a", "AI Studio", href="/"), _page_node("a", "Home", href="/"),
+                                       _page_node("a", "My queue", href="/rating/queue"),
+                                       _page_node("button", "QR", **{"aria-label": "QR, Account"}))),
+        _rating_bar("Where you are rating", "Staging", "Production"),
+        _page_node("main", _page_node("h1", "Hi QA"), _page_node("button", "Sign out"),
+                   _page_node("h2", "Welcome, QA"), _page_node("h2", "Assignments"),
+                   _page_node("p", "No work assigned yet — it will show up here."),
+                   _page_node("h2", "Progress"), _page_node("h2", "Your ratings")),
+    )
+
+
+def _staff_wall() -> dict[str, Any]:
+    """The reviewer's wall on 14 of 16 routes (capture-g1, -g6, -g7, -g8)."""
+    return _page_node(
+        "body",
+        _page_node("a", "Skip to content", href="#main-content"),
+        _page_node("aside", _page_node("nav", _page_node("a", "Home", href="/"),
+                                       _page_node("a", "My queue", href="/rating/queue"))),
+        _rating_bar("Where you are rating", "Staging", "Production"),
+        _page_node("main", _page_node("p", "This page is for staff."), _page_node("p", "Your work is in My queue."),
+                   _page_node("a", "Open My queue", href="/rating/queue")),
+    )
+
+
+def _moderator_wall() -> dict[str, Any]:
+    """The moderator's 'Staff only' wall (task_7386f88e8e3c47f6a0cb, agents--desktop--light):
+    its bar draws Production first."""
+    return _page_node(
+        "body",
+        _page_node("aside", _page_node("nav", _page_node("a", "Moderation", href="/moderation"),
+                                       _page_node("a", "My flags", href="/moderation/flags"))),
+        _rating_bar("Where you moderate", "Production", "Staging"),
+        _page_node("main", _page_node("h1", "Staff only"), _page_node("a", "Back to Moderation", href="/moderation")),
+    )
+
+
+def _probe(page: dict[str, Any], url: str = f"{ORIGIN}/access-pending", *,
+           marks: Any = ({"text": "Sign in"},), signed: str | None = "#account") -> Any:
+    """The gate's before-submit probe, with the argument `SignIn` gives it, on a fixture page."""
+    argument = {"signed": signed, "user": None, "pass": None, "home": ORIGIN, "marks": list(marks)}
+    return _on_page(page, gate_qt._js(gate_qt._PROBE, argument), url)[0]
+
+
+def test_a_roles_signed_in_home_without_the_selector_reads_as_landed_and_the_start_page_does_not():
+    # MUTATION: return 'loading' for every page that is not the form before the submit and these fail.
+    # MUTATION: count the bar's 'ProductionSign in' button's span as a start-click control (drop
+    # `another` from `_CONTROLS`) and every page of the run reads 'loading', as re-run 4 did.
+    assert _probe(_reviewer_home()) == "landed"
+    assert _probe(_staff_wall(), f"{ORIGIN}/agents") == "landed"
+    assert _probe(_moderator_wall(), f"{ORIGIN}/") == "landed"
+    # The bar's 'Signed in' is not the mark either: a leg whose last click were 'Staging' still lands.
+    assert _probe(_reviewer_home(), marks=({"text": "Staging"},)) == "landed"
+    # The selector, where the page draws it, is still the first answer.
+    home = _reviewer_home()
+    home["children"].append(_page_node("div", "QA", id="account"))
+    assert _probe(home) == "signed_in"
+    # The signed-out start page shows the last start click's control: never landed.
+    assert _probe(_chooser_page(_page_node("button", "Sign in", id="sign-in")), f"{ORIGIN}/") == "loading"
+    # A heading reading 'Sign in' alone is still a sign-in marker (the chooser before its button draws).
+    assert _probe(_chooser_page(), f"{ORIGIN}/") == "loading"
+    # A start page that also draws the bar is still the start page: its own button is the mark.
+    chooser = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+    chooser["children"].insert(1, _rating_bar("Where you are rating", "Staging", "Production"))
+    assert _probe(chooser, f"{ORIGIN}/") == "loading"
+    # A password field, or a username field, is a login page however the rest reads.
+    for field in (_page_node("input", type="password"), _page_node("input", type="email"),
+                  _page_node("input", autocomplete="username")):
+        page = _reviewer_home()
+        page["children"].append(field)
+        assert _probe(page) == "loading", field
+    # Another origin (the identity provider's page), or an OAuth callback still in the address, is not landed.
+    assert _probe(_reviewer_home(), f"{LOGIN_ORIGIN}/realms/x") == "loading"
+    assert _probe(_reviewer_home(), f"{ORIGIN}/callback?code=x&state=y") == "loading"
+    # An empty page has not drawn itself.
+    assert _probe(_page_node("body"), f"{ORIGIN}/") == "loading"
+
+
+async def _landed_rig(tmp: Path, *, before: list[dict[str, Any]], after: list[dict[str, Any]],
+                      click_lands: bool = True, controls: dict[str, int] | None = None) -> Rig:
+    """A chooser whose 'Sign in' (when `click_lands`) returns the tab to a
+    role's home that reads `landed`; `before` and `after` are the cookies
+    `Network.getCookies` answers before and after the click."""
+    rig = Rig(tmp)
+    rig.fake.start(rig.sink)
+    rig.fake.controls = {"Staging": 1, "Sign in": 1} if controls is None else controls
+    rig.fake.results["Network.getCookies"] = {"cookies": before}
+    rig.fake.probes = ["loading"] if click_lands else ["landed"]
+
+    def land() -> None:
+        rig.fake.probes = ["landed"]
+        rig.fake.results["Network.getCookies"] = {"cookies": after}
+        rig.fake.where = f"{ORIGIN}/access-pending"
+
+    rig.fake.on_click["Sign in"] = land
+    await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+    await rig.finished()
+    return rig
+
+
+def test_a_start_click_that_lands_on_the_roles_home_with_a_new_session_cookie_is_signed_in(tmp):
+    async def body() -> None:
+        rig = await _landed_rig(tmp, before=[], after=[_session_cookie()])
+        status = rig.target.status()
+        # MUTATION: drop the landed branch of `_wait_form` and this ends qa_sign_in_no_form.
+        assert status["qa_sign_in"] == "signed_in", status
+        assert rig.fake.clicked == ["Staging", "Sign in"] and rig.fake.typed == []
+        # The cookies were read on the gate's own tab, for the target's approved origins.
+        reads = [m for m in rig.fake.received if m["method"] == "Network.getCookies"]
+        assert len(reads) >= 2 and all(m.get("sessionId") for m in reads)
+        assert reads[0]["params"]["urls"] == [f"{ORIGIN}/", f"{LOGIN_ORIGIN}/"]
+        # Nothing of a cookie's value is recorded.
+        cookie_values = [c["value"] for c in rig.fake.results["Network.getCookies"]["cookies"]]
+        assert not any(v in json.dumps(rig.records) for v in cookie_values)
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_changed_session_cookie_counts_and_an_unchanged_one_does_not(tmp):
+    async def body() -> None:
+        kept = _session_cookie()
+        refreshed = dict(kept, value=secrets.token_hex(16))
+        rig = await _landed_rig(tmp, before=[kept], after=[refreshed])
+        assert rig.target.status()["qa_sign_in"] == "signed_in"
+        await rig.fake.stop()
+        rig = await _landed_rig(tmp, before=[kept], after=[kept])
+        status = rig.target.status()
+        # MUTATION: count a cookie that was already there and the leg is signed in on a guess.
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.NO_FORM
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_only_an_httponly_cookie_other_than_the_bypass_is_a_sign_ins_evidence(tmp):
+    async def body() -> None:
+        # A preference a script set (the environment toggle) is not a session.
+        scripted = dict(_session_cookie("env"), httpOnly=False)
+        rig = await _landed_rig(tmp, before=[], after=[scripted])
+        # MUTATION: take any new cookie as the session and this is signed in.
+        assert rig.target.status()["qa_sign_in"] == "failed"
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_gates_own_bypass_cookie_is_never_a_sign_ins_evidence(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        rig.fake.results["Network.getCookies"] = {"cookies": []}
+        rig.fake.probes = ["loading"]
+        bypass = {"kind": "cookie", "name": "qa_pass", "value": secrets.token_hex(12)}
+
+        def land() -> None:
+            rig.fake.probes = ["landed"]
+            rig.fake.results["Network.getCookies"] = {"cookies": [dict(_session_cookie("qa_pass"))]}
+
+        rig.fake.on_click["Sign in"] = land
+        args = _chooser_args(_password(), _username())
+        args["challenge_bypass"] = bypass
+        await gate_qt.handle_ctl(rig.target, rig.proxy, args)
+        await rig.finished()
+        # MUTATION: leave the bypass cookie's name in the evidence and this is signed in.
+        assert rig.target.status()["qa_sign_in"] == "failed"
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_landed_page_without_evidence_says_signed_in_selector_is_missing_not_no_form(tmp):
+    async def body() -> None:
+        rig = await _landed_rig(tmp, before=[], after=[])
+        status = rig.target.status()
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.NO_FORM
+        sentence = status["sentence"]
+        # MUTATION: keep the "login form never appeared" sentence for a landed page and this fails.
+        assert "never appeared" not in sentence
+        assert "signed_in_selector" in sentence and f"{ORIGIN}/access-pending" in sentence
+        assert "no login form and no start-click control" in sentence
+        # The worker takes it as its one plain line, under its 400 characters.
+        assert qa_target._SENTENCE.fullmatch(sentence), sentence
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_role_home_before_any_start_click_is_signed_in_only_with_evidence_and_else_said(tmp):
+    async def body() -> None:
+        # The session was alive before the gate's tab opened: login_url sends
+        # it straight to the role's home, where no 'Sign in' control exists.
+        # Opening login_url refreshed the session's cookie: signed in, no click.
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {}
+        before = _session_cookie()
+        rig.fake.results["Network.getCookies"] = {"cookies": [before]}
+        rig.fake.probes = ["landed"]
+        rig.fake.on_first_probe = lambda: rig.fake.results.__setitem__(
+            "Network.getCookies", {"cookies": [dict(before, value=secrets.token_hex(16))]})
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+        await rig.finished()
+        # MUTATION: drop the landed branch of `_start_click` and this ends qa_sign_in_start_click_missing.
+        assert rig.target.status()["qa_sign_in"] == "signed_in", rig.target.status()
+        assert rig.fake.clicked == [] and rig.fake.typed == []
+        await rig.fake.stop()
+        # The same page with the cookie untouched: failed, and the sentence says why.
+        rig = await _landed_rig(tmp, before=[before], after=[before], click_lands=False, controls={})
+        status = rig.target.status()
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.START_CLICK_MISSING
+        # MUTATION: keep the start click's "found none" sentence for a landed page and this fails.
+        assert "signed_in_selector" in status["sentence"] and "found none" not in status["sentence"]
+        assert qa_target._SENTENCE.fullmatch(status["sentence"])
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_bars_environment_buttons_are_never_a_start_click_and_never_the_start_page():
+    # Re-run 4's pages: the leg's start clicks are 'Staging' then 'Sign in', and each reads as a
+    # span inside the bar's 'StagingSigned in' or 'ProductionSign in' button.
+    for page in (_reviewer_home(), _staff_wall(), _moderator_wall()):
+        for text in ("Staging", "Sign in"):
+            # MUTATION: drop `another` from `_CONTROLS` and the gate presses the bar's button.
+            assert _start_click(page, text) == (0, []), (text, page["children"][-1])
+    # On a start page that also draws the bar, the chooser's own controls are still the ones clicked.
+    chooser = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+    chooser["children"].insert(1, _rating_bar("Where you are rating", "Staging", "Production"))
+    assert _start_click(chooser, "Staging") == (1, ["staging"])
+    assert _start_click(chooser) == (1, ["sign-in"])
+    # After the submit, the role's home is the app, not back on the start page.
+    argument = {"signed": "#account", "user": None, "pass": None, "after": True, "home": ORIGIN,
+                "chooser": {"text": "Sign in"}}
+    assert _on_page(_reviewer_home(), gate_qt._js(gate_qt._PROBE, argument), f"{ORIGIN}/access-pending")[0] == "app"
+    assert _on_page(chooser, gate_qt._js(gate_qt._PROBE, argument), f"{ORIGIN}/")[0] == "chooser"
+
+
+def test_the_reviewers_home_as_recorded_is_signed_in_without_pressing_the_bar(tmp):
+    async def body() -> None:
+        # The run's page itself: the session held before the gate's tab opened, and opening
+        # login_url renewed its cookie. The leg's last click, 'Sign in', finds nothing and presses
+        # nothing (its 'Staging' click names `css` "button", which no bar button reads alone).
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.page_dom = _reviewer_home()
+        before = _session_cookie()
+        rig.fake.results["Network.getCookies"] = {"cookies": [before]}
+        rig.fake.probes = ["landed"]
+        rig.fake.on_first_probe = lambda: rig.fake.results.__setitem__(
+            "Network.getCookies", {"cookies": [dict(before, value=secrets.token_hex(16))]})
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username(), [{"text": "Sign in"}]))
+        await rig.finished()
+        assert rig.target.status()["qa_sign_in"] == "signed_in", rig.target.status()
+        # MUTATION: drop `another` from `_CONTROLS` and the bar's Staging button is pressed.
+        assert rig.fake.clicked_ids == [] and rig.fake.typed == []
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_cookie_read_the_browser_refuses_is_no_evidence(tmp):
+    async def body() -> None:
+        # An answer that is not a cookie list, before and after the click.
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        rig.fake.results["Network.getCookies"] = {"cookies": "none"}
+        rig.fake.probes = ["loading"]
+        rig.fake.on_click["Sign in"] = lambda: setattr(rig.fake, "probes", ["landed"])
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+        await rig.finished()
+        # MUTATION: treat an unreadable jar as empty-then-full and this is signed in.
+        assert rig.target.status()["qa_sign_in"] == "failed"
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_landed_sentence_fits_the_workers_line_at_the_longest_address():
+    class Where:
+        async def call(self, method: str, params: Any = None, session: Any = None) -> Any:
+            return {"result": {"value": "https://" + "a" * (gate_qt.MAX_WHERE * 2)}}
+
+    sign_in = gate_qt.SignIn(Where(), gate_qt.QaTarget(lambda e, f: None))
+    sentence = asyncio.run(sign_in._landed_sentence())
+    # MUTATION: say the start clicks' texts as well and the worker drops the sentence as too long.
+    assert qa_target._SENTENCE.fullmatch(sentence), len(sentence)

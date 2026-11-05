@@ -14,7 +14,11 @@ here, offline, against a fake install folder:
   * an image without the install, or without one of the step's skills,
     fails before anything is linked, naming the image;
   * planner and designer modes are refused until the question bridge lands;
-  * the record names plugin, version, mode, skills and per-skill run counts.
+  * the record names plugin, version, mode, skills and per-skill run counts;
+  * Cloudflare's security audit skill (the second plugin, 4 November 2026):
+    its whole read-only skill folder is linked, since its SKILL.md reads its
+    method files by relative path, with none of gstack's environment, and a
+    step naming both plugins keeps both plugins' links.
 """
 
 from __future__ import annotations
@@ -33,15 +37,16 @@ from swarm_common.workcontract import contract_digest
 SKILLS = ("qa", "review")
 
 
-def _document(mode: str = "unattended", skills=SKILLS) -> dict[str, Any]:
+def _document(mode: str = "unattended", skills=SKILLS,
+              chosen: dict[str, Any] | None = None) -> dict[str, Any]:
+    chosen = {"gstack": {"mode": mode, "skills": list(skills)}} if chosen is None else chosen
     return {
         "schema": 1, "contract_id": "wc-review", "tenant_id": "eng", "revision": 1,
         "previous_digest": None, "strictness": "strict",
         "requirements": [{"id": "REQ-1", "text": "Review it.", "verification": []}],
         "repositories": [], "scope": {"read": [], "write": []},
         "protected": {"paths": [], "interfaces": []},
-        "capabilities": {"runtime": [], "plugins": {"gstack": {"mode": mode,
-                                                               "skills": list(skills)}}},
+        "capabilities": {"runtime": [], "plugins": chosen},
         "limits": {"runner_profile": "claude-code", "model_class": None, "budget": None,
                    "max_turns": None, "timeout_seconds": None},
         "artifacts": [],
@@ -60,7 +65,7 @@ def _task(document: dict[str, Any] | None = None, *, digest: str | None = None) 
 
 @pytest.fixture
 def install(tmp_path) -> Path:
-    """A fake read-only gstack install: one SKILL.md per catalogue skill."""
+    """A fake read-only gstack install: one SKILL.md per gstack skill."""
     root = tmp_path / "opt" / "gstack"
     for mode_skills in plugins.GSTACK.skills.values():
         for skill in mode_skills:
@@ -85,10 +90,31 @@ def checkout(work) -> Path:
     return path
 
 
-def _start(task, work, checkout, install, profile="claude-code", environ=None):
+@pytest.fixture
+def audit_install(tmp_path) -> Path:
+    """A fake read-only security-audit install, the image's shape: LICENSE and
+    the one skill folder at the archive's relative path, SKILL.md beside the
+    method files it reads by relative path."""
+    root = tmp_path / "opt" / "security-audit"
+    skill = root / "skills" / "security-audit"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# Security Audit\n[HUNTING.md](HUNTING.md)\n")
+    (skill / "HUNTING.md").write_text("# Hunting\n")
+    (skill / "validate-findings.cjs").write_text("// validator\n")
+    (root / "LICENSE").write_text("MIT\n")
+    return root
+
+
+AUDIT = {"security-audit": {"mode": "unattended", "skills": ["security-audit"]}}
+
+
+def _start(task, work, checkout, install, profile="claude-code", environ=None, audit=None):
+    paths = {"gstack": install}
+    if audit is not None:
+        paths["security-audit"] = audit
     return plugins.start(task, work=work, checkout=checkout, profile=profile,
                          image="agent-runtime-base", environ=environ or {},
-                         install_paths={"gstack": install})
+                         install_paths=paths)
 
 
 def test_the_catalogue_is_swarm_apis():
@@ -98,11 +124,23 @@ def test_the_catalogue_is_swarm_apis():
     assert set(plugins.CATALOGUE) == set(plugincatalogue.CATALOGUE)
     for name, entry in plugincatalogue.CATALOGUE.items():
         mine = plugins.CATALOGUE[name]
-        assert (mine.version, mine.install_path, mine.runner_profiles) == (
-            entry.version, entry.install_path, entry.runner_profiles)
+        assert (mine.version, mine.install_path, mine.runner_profiles, mine.skill_folders) == (
+            entry.version, entry.install_path, entry.runner_profiles, entry.skill_folders)
         assert dict(mine.skills) == dict(entry.skills)
     assert plugins.SUPPORTED_MODES == plugincatalogue.SUPPORTED_MODES
     assert "cso" not in plugins.GSTACK.skills["unattended"]
+
+
+def test_the_security_audit_skill_is_the_second_catalogue_plugin():
+    # The owner's decision, 4 November 2026: Cloudflare's skill at its pinned
+    # commit, beside gstack, on the five claude-code profiles, one skill.
+    entry = plugins.CATALOGUE["security-audit"]
+    assert entry.version == "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8"
+    assert entry.install_path == "/opt/swarm/plugins/security-audit"
+    assert entry.runner_profiles == plugins.CLAUDE_CODE_PROFILES
+    assert dict(entry.skills) == {"unattended": ("security-audit",)}
+    assert entry.skill_folders == "skills"
+    assert plugins.GSTACK.skill_folders is None
 
 
 def test_a_step_without_plugins_gets_nothing(work, checkout, install):
@@ -273,3 +311,92 @@ def test_the_lifecycle_starts_the_plugins_before_the_agent_and_records_them():
     assert "payload[\"prompt\"] += self._plugins.guidance" in text
     assert "base.update(self._plugins.env)" in text
     assert "summary[plugins_mod.SUMMARY_KEY] = plugins_record" in text
+
+
+# --------------------------------------------------------------------------- #
+# The second plugin: Cloudflare's security audit skill. Its SKILL.md reads its
+# method files, schema and validators by relative path, so its skill folder is
+# linked whole, read-only, where gstack links one SKILL.md per skill.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_security_audit_skill_folder_is_linked_whole(work, checkout, install, audit_install):
+    started = _start(_task(_document(chosen=AUDIT)), work, checkout, install, audit=audit_install)
+    assert started is not None
+    skills_dir = work / ".claude" / "skills"
+    link = skills_dir / "security-audit"
+    # MUTATION: link only SKILL.md, as for gstack, and HUNTING.md is not beside it.
+    assert link.is_symlink()
+    assert link.resolve() == (audit_install / "skills" / "security-audit").resolve()
+    assert (link / "HUNTING.md").read_text() == "# Hunting\n"
+    assert (link / "validate-findings.cjs").is_file()
+    # Only the step's skill: no plugin-root link, nothing of gstack's.
+    assert sorted(p.name for p in skills_dir.iterdir()) == ["security-audit"]
+    assert started.plugins == (plugins.Plugin(
+        "security-audit", "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8", "unattended",
+        ("security-audit",)),)
+
+
+def test_a_security_audit_step_gets_none_of_gstacks_environment(work, checkout, install,
+                                                                audit_install):
+    started = _start(_task(_document(chosen=AUDIT)), work, checkout, install, audit=audit_install)
+    # MUTATION: set gstack's variables for every plugin, and a step without
+    # gstack gets GSTACK_HOME, its config and `.gstack/` in the exclude file.
+    assert dict(started.env) == {}
+    assert not (work / plugins.HOME_DIR_NAME).exists()
+    assert ".gstack/" not in (checkout / ".git" / "info" / "exclude").read_text().splitlines()
+    assert not (work / ".claude" / "settings.json").exists()
+
+
+def test_both_plugins_in_one_step_keep_each_others_links(work, checkout, install, audit_install):
+    chosen = {"gstack": {"mode": "unattended", "skills": list(SKILLS)}, **AUDIT}
+    started = _start(_task(_document(chosen=chosen)), work, checkout, install, audit=audit_install)
+    skills_dir = work / ".claude" / "skills"
+    # MUTATION: clear the catalogue's names once per plugin, and the second
+    # plugin's start removes the first one's links.
+    assert sorted(p.name for p in skills_dir.iterdir()) == [
+        "gstack", "qa", "review", "security-audit"]
+    assert (skills_dir / "qa" / "SKILL.md").resolve() == (install / "qa" / "SKILL.md").resolve()
+    assert (skills_dir / "security-audit").resolve() == (
+        audit_install / "skills" / "security-audit").resolve()
+    assert started.env["GSTACK_HOME"] == str(work / plugins.HOME_DIR_NAME)
+    # Linking again, as a resumed attempt does over its restored links, is the same.
+    _start(_task(_document(chosen=AUDIT)), work, checkout, install, audit=audit_install)
+    assert sorted(p.name for p in skills_dir.iterdir()) == ["security-audit"]
+
+
+def test_an_image_without_the_security_audit_install_fails_naming_it(work, checkout, install,
+                                                                     tmp_path):
+    with pytest.raises(plugins.PluginUnavailable) as raised:
+        _start(_task(_document(chosen=AUDIT)), work, checkout, install,
+               audit=tmp_path / "missing")
+    assert "the image agent-runtime-base has no security-audit" in str(raised.value)
+    assert not (work / ".claude").exists()
+
+
+def test_an_install_without_the_skill_folder_links_nothing(work, checkout, install, audit_install):
+    (audit_install / "skills" / "security-audit" / "SKILL.md").unlink()
+    with pytest.raises(plugins.PluginUnavailable, match="lacks the skills security-audit"):
+        _start(_task(_document(chosen=AUDIT)), work, checkout, install, audit=audit_install)
+    assert not (work / ".claude").exists()
+
+
+def test_the_security_audit_guidance_puts_its_output_in_the_artifacts(work, checkout, install,
+                                                                     audit_install):
+    started = _start(_task(_document(chosen=AUDIT)), work, checkout, install, audit=audit_install)
+    text = started.guidance
+    assert ("security-audit c1c8a8c1471069fb0e188eeaff69b8e8db6564a8, unattended mode, "
+            "with only these skills: security-audit.") in text
+    # MUTATION: drop the note and a full audit's REPORT.md lands where nothing uploads it.
+    assert "$SWARM_ARTIFACTS_DIR/security-audit" in text
+
+
+
+def test_a_security_audit_step_on_the_browser_profile_needs_no_chromium(
+        work, checkout, install, audit_install, tmp_path):
+    # MUTATION: require gstack's Chromium for every plugin on the browser
+    # profile, and a step that runs no browser fails CANNOT_START.
+    started = _start(_task(_document(chosen=AUDIT)), work, checkout, install,
+                     profile="claude-code-browser", audit=audit_install,
+                     environ={"PLAYWRIGHT_BROWSERS_PATH": str(tmp_path / "none")})
+    assert started is not None and dict(started.env) == {}

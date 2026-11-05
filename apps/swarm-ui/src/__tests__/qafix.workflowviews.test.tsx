@@ -18,8 +18,8 @@
 //
 // Every assertion names the mutation that turns it red.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
 import type { Result } from '../fetch'
@@ -74,6 +74,8 @@ const TASKS = new Map<string, Task>([
   ['t_test', task('t_test', 'FAILED', { step_id: 'test', last_error: 'exit status 1: pytest collected 2 failures' })],
 ])
 
+const realWidth = window.innerWidth
+
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
   // MUTATION: answer this read 2.5 s late (past setup.ts's 2000 ms window)
@@ -92,6 +94,13 @@ beforeEach(() => {
   } catch {
     /* storage refused */
   }
+  // The inspector starts folded below 1366px (graph-notes D·8b); these cases
+  // pick a step in it.
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+})
+
+afterEach(() => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
 })
 
 function Routed({ initial }: { initial: string }) {
@@ -109,15 +118,26 @@ function Routed({ initial }: { initial: string }) {
 async function arrived(): Promise<HTMLElement> {
   await landed(api.loadWorkflow)
   await landed(api.loadWorkflowBoard)
-  const el = document.querySelector<HTMLElement>('section.wf-inspect')
-  expect(el?.getAttribute('aria-label')).toBe('Step test of wf_tests')
-  return el!
+  // NO ARRIVAL PICK ANY MORE (brief, "What moved where"): the page opens on
+  // the Overview, so this picks the failed step's chip on the stage grid
+  // itself, the replacement for "the page picks the first failure".
+  const chip = await waitFor(() => {
+    const c = document.querySelector<HTMLButtonElement>('.sg [data-step="test"]')
+    expect(c).toBeTruthy()
+    return c!
+  })
+  if (chip.getAttribute('aria-pressed') !== 'true') fireEvent.click(chip)
+  return waitFor(() => {
+    const el = document.querySelector<HTMLElement>('section.wf-inspect')
+    expect(el?.getAttribute('aria-label')).toBe('Step test of wf_tests')
+    return el!
+  })
 }
 
 describe('QA-121: a step card links to the step agent\'s logs', () => {
   it('offers Logs beside Open agent on the failed step the page opens on, to that agent\'s Logs tab', async () => {
     render(<Routed initial="wf=wf_tests" />)
-    // The page picks the first failure on arrival.
+    // The reader picks the failed step (no arrival pick any more).
     const card = await arrived()
     const open = within(card).getByRole('link', { name: 'Open agent →' })
     // MUTATION: drop the Logs link from StepInspector's head and this is red.

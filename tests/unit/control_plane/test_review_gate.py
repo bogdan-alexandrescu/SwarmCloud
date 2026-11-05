@@ -46,7 +46,7 @@ from agent_worker.logs import build_logger
 from scheduler import loop
 from scheduler import reviewgate as scheduler_gate
 from scheduler.store import SchedulerStore
-from swarm_api import refusals, reviewgate, validation, verdictpublish
+from swarm_api import issueruns, refusals, reviewgate, validation, verdictpublish
 
 from .conftest import scheduler_settings, seed_pool, seed_task, seed_tenant
 # The verdict-publish world, reused whole: its client, fakes and workflow.
@@ -303,6 +303,82 @@ def test_published_renders_are_recorded_on_the_decision():
     assert detail["shots"] == ["shots/agents-1440.png"]
 
 
+def _handing(summary: dict[str, Any], *, handed: tuple[str, ...] = (),
+             allow_empty_diff: bool = False) -> dict[str, Any]:
+    """A parent document: its git record, what dependants stage from it, its dispatch."""
+    metadata: dict[str, Any] = {}
+    if handed:
+        metadata[validation.EXPECTED_OUTPUTS_METADATA_KEY] = list(handed)
+    if allow_empty_diff:
+        metadata["dispatch"] = {"strategy": "collect", "allow_empty_diff": True}
+    return {"result_summary": summary, "metadata": metadata}
+
+
+GATE = reviewgate.Gate(300, reviewgate.DEFAULT_RISK_PATHS)
+
+
+def test_a_parent_that_hands_the_review_files_runs_it_whatever_its_line_count():
+    # 5 November 2026: both mock-up reviews of the workflow-graph directions
+    # were skipped on "0 changed lines" while their parents handed them the
+    # whole bundle through input_from.
+    decision = reviewgate.resolve(
+        [IMPL], GATE,
+        {IMPL: _handing(_git(insertions=0), handed=("mockups.zip", "frames.md"))}.get)
+    assert decision.run and decision.reason == reviewgate.REASON_HANDED
+    assert decision.text == ("review runs: its parent hands it mockups.zip, frames.md; "
+                             "the gate counts code lines only")
+    assert decision.to_detail()["handed"] == ["mockups.zip", "frames.md"]
+
+
+def test_an_allow_empty_diff_parent_with_an_empty_diff_runs_the_review():
+    decision = reviewgate.resolve(
+        [IMPL], GATE, {IMPL: _handing(_git(insertions=0), allow_empty_diff=True)}.get)
+    assert decision.run and decision.reason == reviewgate.REASON_EMPTY_BY_DESIGN
+    assert "the gate counts code lines only" in decision.text
+
+
+def test_an_ordinary_code_parent_under_min_lines_is_still_skipped():
+    decision = reviewgate.resolve([IMPL], GATE, {IMPL: _handing(_git(SMALL_FILE, insertions=40))}.get)
+    assert not decision.run and decision.reason == reviewgate.REASON_SMALL
+
+
+def test_an_issue_run_implementer_handing_only_its_patch_is_still_skipped():
+    # Every issue-run implementer is allow_empty_diff (#646) and hands the
+    # review swarm-work.patch: that patch is the diff the line count measures.
+    parent = _handing(_git(SMALL_FILE, insertions=40), allow_empty_diff=True,
+                      handed=(reviewgate.COUNTED_HANDOFFS[0],))
+    decision = reviewgate.resolve([IMPL], GATE, {IMPL: parent}.get)
+    assert not decision.run and decision.reason == reviewgate.REASON_SMALL
+
+
+def test_only_a_direct_parents_handoff_runs_the_review():
+    # A step the parent builds on hands its files to its own dependants.
+    docs = {
+        IMPL: {**_handing(_git(SMALL_FILE, insertions=10)),
+               "metadata": {"dispatch": {"builds_on": "a"}}},
+        "a": _handing(_git(SMALL_FILE, insertions=0), handed=("notes.md",), allow_empty_diff=True),
+    }
+    decision = reviewgate.resolve([IMPL], GATE, docs.get)
+    assert not decision.run and decision.reason == reviewgate.REASON_SMALL
+
+
+def test_a_risk_path_still_wins_over_a_handoff():
+    decision = reviewgate.resolve(
+        [IMPL], GATE, {IMPL: _handing(_git(RISK_FILE, insertions=1), handed=("a.md",))}.get)
+    assert decision.reason == reviewgate.REASON_RISK
+
+
+def test_a_handing_parent_is_declined_and_runs_through_the_wake(
+        db, make_scheduler, dispatcher, client, waker):
+    _base(db)
+    _parent(db, _git(insertions=0))
+    db.docs[f"tasks/{IMPL}"]["metadata"] = {
+        validation.EXPECTED_OUTPUTS_METADATA_KEY: ["bundle.zip"],
+        "dispatch": {"strategy": "collect", "allow_empty_diff": True}}
+    _review(db)
+    _runs_after_decline(db, make_scheduler, dispatcher, client, waker)
+
+
 # ---------------------------------------------------------------------------
 # 4. downstream reads it as a MERGE
 # ---------------------------------------------------------------------------
@@ -471,6 +547,7 @@ def test_the_restated_words_are_equal():
     assert reviewgate.VERDICT_FILE in inputs_mod.INLINE_ARTIFACT_NAMES
     assert reviewgate.SHOTS_DIRECTORY == verdict_mod.RENDERED_REVIEW_SHOTS + "/"
     assert reviewgate.SHOT_SUFFIXES == verdict_mod.SHOT_SUFFIXES
+    assert reviewgate.COUNTED_HANDOFFS == (issueruns.PATCH_FILE, issueruns.VERDICT_FILE)
     assert len(reviewgate.verdict_text("x" * 900).encode()) <= inputs_mod.MAX_INLINE_BYTES
 
 
