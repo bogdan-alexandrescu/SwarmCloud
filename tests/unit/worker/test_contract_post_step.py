@@ -347,7 +347,8 @@ def test_a_verdict_that_cites_an_item_carries_its_hunk(tmp_path: Path, checkout)
     verdicts = [cr.checked_verdict(_contract(), v, items=set(verdict["changed"]) | {"i0", "i1"})
                 for v in verdict["verdicts"]]
     assert cr.cited_hunks([v for v in verdicts if v is not None], body.hunks,
-                          body.changed) == {"i1": rows[1]["hunk"]}
+                          body.changed) == {"i1": body.hunks[1]}
+    assert "return sso()" in body.hunks[1] and body.hunks[0] is None
     posted: list[dict] = []
     assert poststeps.deliver_contract_verdict(lambda op, b: posted.append(b), verdict,
                                               published_head=checkout[2],
