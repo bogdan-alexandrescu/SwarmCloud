@@ -45,6 +45,19 @@ def test_the_verdict_route_stores_the_text_of_each_cited_hunk(client, db):
     assert acc["changed"] == ["src/login/form.py", "tests/test_form.py"]
 
 
+def test_a_cited_hunk_is_masked_before_it_is_stored(client, db):
+    worker, contract, _ = setup(client, db)
+    leaked = "ghp_" + secrets.token_hex(18)
+    response = worker.post(client, OP, body(
+        contract, verdict("REQ-1", item="i0"), verdict("REQ-2", item="i0"),
+        hunks=[f"+TOKEN = '{leaked}'\n"]))
+    assert response.status_code == 200, response.text
+    stored = db.docs[f"tasks/{VERDICT_TASK}"][cr.ACCEPTANCE_FIELD][cr.HUNKS_FIELD].get("i0", "")
+    # MUTATION: storing the hunk unmasked, so the record serves a credential.
+    # (Under the sanitizer rule the hunk is dropped whole, so nothing is kept.)
+    assert leaked not in stored
+
+
 def test_a_cited_hunk_holding_a_credential_is_dropped_not_masked(client, db):
     worker, contract, _ = setup(client, db)
     leaked = "ghp_" + secrets.token_hex(18)
