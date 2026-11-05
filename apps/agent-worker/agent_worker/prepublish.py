@@ -2900,16 +2900,24 @@ class Gate:
         """A HEAD that left this step's work is handed back ONCE
         (`MOVED_HEAD_TURNS`, `moved_head`), before anything else runs on it:
         the rebase and the checks read the line the agent returns to. None
-        when HEAD did not move."""
-        moved = moved_head(self.repo, self.env, runner=self.runner)
+        when HEAD did not move. The worker names the step's branch to the
+        runner process, not to the agent's whitelisted env the checks run in
+        (`cliagent.run_prepublish_gate`), so it is read from there when the
+        gate's env lacks it, as the runner reads `PREPUBLISH_BASE_ENV`."""
+        env = dict(self.env)
+        if not (env.get(START_BRANCH_ENV) or "").strip():
+            named = os.environ.get(START_BRANCH_ENV, "").strip()
+            if named:
+                env[START_BRANCH_ENV] = named
+        moved = moved_head(self.repo, env, runner=self.runner)
         if moved is None:
             return None
-        branch = (self.env.get(START_BRANCH_ENV) or "").strip() or None
-        base = (self.env.get(CLONE_BASE_ENV) or "").strip()
+        branch = (env.get(START_BRANCH_ENV) or "").strip() or None
+        base = (env.get(CLONE_BASE_ENV) or "").strip()
         self.log.warning("HEAD left this step's branch before publishing; one turn to "
                          "bring the work back", moved=moved, branch=branch)
         turn = self.resume(moved_prompt(moved, branch, base))
-        again = moved_head(self.repo, self.env, runner=self.runner) if turn else moved
+        again = moved_head(self.repo, env, runner=self.runner) if turn else moved
         if again is not None:
             self.log.warning("HEAD is still off this step's branch; the harvest publishes "
                              "nothing of it", moved=again, branch=branch, turn=turn)
