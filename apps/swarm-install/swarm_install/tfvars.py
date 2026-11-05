@@ -54,6 +54,15 @@ as `swarm-install`, so the cluster stages (10, 11) and stage 14's verify reads
 plane, whose module admits no public Google range; `infra-close`, the last
 pass, leaves it out.
 
+**Voice it's own speech** (docs/design/voice-it-own-speech.md §15). Stage 0's
+`infra.voice-speech` records `outputs["voice_speech"]` as `{"enabled": bool}`;
+for a yes, stage 1's `infra.voice-speech-zone` adds the zone (the first of the
+region's zones offering the L4) and the Deep Learning VM image it pinned by
+name. Every infra pass renders infra's `voice_speech` with `enabled`, `zone`
+and `image` from that, checked against infra's own validations; no would-be
+machine is made while `voice_it` is not "on" (voice_speech.tf). An install
+state with no answer (older than the question) keeps Terraform's default, off.
+
 A value a pass needs that the state does not hold yet is a `LookupError` that
 names the step recording it, never a default.
 """
@@ -61,6 +70,7 @@ names the step recording it, never a default.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -167,7 +177,14 @@ RECORDED_BY = {
     "github_org": "stage 0 (preflight)",
     "org_domain": "stage 0 (preflight)",
     "installer_cidr": "stage 0 (preflight)",
+    "voice_speech": "stage 1 (infra.voice-speech-zone)",
 }
+
+#: terraform/infra's `voice_speech` validations (variables.tf): one zone, and a
+#: Deep Learning VM image by name, never a /family/ path, which moves under the
+#: stopped machine and would replace it at the next plan.
+SPEECH_ZONE = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
+SPEECH_IMAGE = re.compile(r"^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$")
 
 
 def desktop_client(state: Any) -> str:
@@ -296,6 +313,29 @@ def service_max_instances(found: Mapping[str, Any]) -> dict[str, Any]:
                              "positive whole max-instances")
         out[str(name)] = int(value)
     return out
+
+
+def voice_speech(state: Any) -> dict[str, Any] | None:
+    """infra's `voice_speech` from the own-speech choice, or None for an
+    install state recorded before the question (Terraform's default, off)."""
+    found = state.outputs.get("voice_speech")
+    if found is None:
+        return None
+    if not isinstance(found, Mapping):
+        raise ValueError(f"the install state's voice_speech is {type(found).__name__}, not a mapping; rerun stage 0")
+    if found.get("enabled") is not True:
+        return {"enabled": False}
+    zone, image = found.get("zone"), found.get("image")
+    if not zone or not image:
+        raise LookupError(f"the install state has no voice_speech zone and image yet; {RECORDED_BY['voice_speech']} "
+                          "records them")
+    region = _required(state, "region")
+    if not SPEECH_ZONE.match(str(zone)) or not str(zone).startswith(f"{region}-"):
+        raise ValueError(f"voice_speech zone {zone!r} is not one zone of {region}, like {region}-b")
+    if not SPEECH_IMAGE.match(str(image)):
+        raise ValueError(f"voice_speech image {image!r} is not a Deep Learning VM image by name "
+                         "(projects/deeplearning-platform-release/global/images/<name>)")
+    return {"enabled": True, "zone": str(zone), "image": str(image)}
 
 
 def iap_members(state: Any, installer: str) -> list[str]:
@@ -455,6 +495,9 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
     if found:
         inputs["pool_limits"] = pool_limits(found)
         inputs["service_max_instances"] = service_max_instances(found)
+    speech = voice_speech(state)
+    if speech is not None:
+        inputs["voice_speech"] = speech
     if outputs.get("admin_groups"):
         inputs["admin_groups"] = list(outputs["admin_groups"])
     if inputs["groups_auth"] == DELEGATION and outputs.get("groups_impersonate_user"):
