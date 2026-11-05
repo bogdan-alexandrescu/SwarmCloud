@@ -1615,8 +1615,8 @@ class SignIn:
         #: The session cookies before `login_url` opened (`_session_cookies`),
         #: None when the browser did not say.
         self._cookies_before: frozenset[tuple[str, str, str, str]] | None = None
-        #: A start click that never acted, or none: the last start click,
-        #: whose control on the page marks the start page (`landed`).
+        #: The last start click, or None: its control on a page marks the
+        #: start page, which is never `landed`.
         self._mark: Mapping[str, str] | None = None
 
     async def run(self) -> tuple[str, str | None]:
