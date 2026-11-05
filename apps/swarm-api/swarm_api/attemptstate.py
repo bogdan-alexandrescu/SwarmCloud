@@ -1921,7 +1921,7 @@ class AttemptState:
                 "call_id": body.call_id, "state_sha256": body.state_sha256,
                 "verdicts": [v.to_document() for v in verdicts] if judged else [],
                 "changed": list(body.changed),
-                cr.HUNKS_FIELD: cr.cited_hunks(verdicts, body.hunks) if judged else {},
+                cr.HUNKS_FIELD: cr.cited_hunks(verdicts, body.hunks, body.changed) if judged else {},
                 "mechanical": [m.model_dump() for m in body.mechanical],
                 "reask": None, "at": now,
             }

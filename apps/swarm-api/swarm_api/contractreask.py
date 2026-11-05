@@ -59,6 +59,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
+from swarm_jev import sanitize
 
 from . import contractevidence as ce
 from . import contractjudge as cj
@@ -210,16 +211,20 @@ def send_back_blocks(contract: wc.WorkContract, verdicts: Iterable[cj.Verdict], 
     } for v in verdicts if v.verdict == cj.UNMET]
 
 
-def cited_hunks(verdicts: Iterable[cj.Verdict],
-                hunks: Sequence[str | None]) -> dict[str, str]:
+def cited_hunks(verdicts: Iterable[cj.Verdict], hunks: Sequence[str | None],
+                changed: Sequence[str]) -> dict[str, str]:
     """`i<n>` -> the hunk text a verdict cites, for `HUNKS_FIELD`.
 
     Only cited items are kept, so the record holds at most one hunk per judged
     requirement (`contractjudge.JUDGMENT_PER_CALL`) rather than the whole
-    diff; each is cut to `HUNK_CHARS`, as the state cut it, and masked
-    (`redaction.redact`) before it is stored, because the record is served to
-    every member who reads the step. An item with no text keeps its path
-    alone."""
+    diff. Each is sanitized as the evidence path sanitizes what it sends Jev
+    (`swarm_jev.sanitize`, context-quality.md section 5.4): the content of a
+    denied path (`.env`, `*.tfvars`, under `secrets/`) is never kept, and a
+    hunk holding anything credential-shaped is DROPPED whole, never masked,
+    because the sanitizer drops it and Jev never read it. What survives is
+    cut to `HUNK_CHARS`, as the state cut it, and masked (`redaction.redact`)
+    because the record is served to every member who reads the step. An item
+    with no text keeps its path alone."""
     out: dict[str, str] = {}
     for v in verdicts:
         item = v.evidence_item or ""
@@ -227,8 +232,14 @@ def cited_hunks(verdicts: Iterable[cj.Verdict],
             continue
         n = int(item[1:])
         text = hunks[n] if n < len(hunks) else None
-        if isinstance(text, str) and text:
-            out[item] = redact(text[:cj.HUNK_CHARS]).text
+        path = changed[n] if n < len(changed) else None
+        if not isinstance(text, str) or not text or not isinstance(path, str) \
+                or sanitize.is_denied_path(path):
+            continue
+        text = text[:cj.HUNK_CHARS]
+        if sanitize.is_flagged(text):
+            continue
+        out[item] = redact(text).text
     return out
 
 
@@ -255,7 +266,13 @@ def served_acceptance(raw: Any) -> dict[str, Any] | None:
     as ISO text, or None when the task carries none."""
     if not isinstance(raw, Mapping) or not raw.get("status"):
         return None
-    return _plain({k: raw[k] for k in SERVED_KEYS if k in raw})
+    out = _plain({k: raw[k] for k in SERVED_KEYS if k in raw})
+    # The stored text goes through the redaction every served text does, so
+    # a record written before its hunks were sanitized serves none unmasked.
+    if isinstance(out.get(HUNKS_FIELD), Mapping):
+        out[HUNKS_FIELD] = {k: redact(v).text for k, v in out[HUNKS_FIELD].items()
+                            if isinstance(v, str)}
+    return out
 
 
 def acceptance_of(db: Any, tenant_id: str, task_id: str) -> dict[str, Any] | None:
@@ -483,7 +500,7 @@ class ContractReask:
                 # The items the re-ask's verdicts cite are its own state's,
                 # so the paths and hunks they name are written with them.
                 update["changed"] = list(result.changed)
-                update[HUNKS_FIELD] = cited_hunks(verdicts, result.hunks)
+                update[HUNKS_FIELD] = cited_hunks(verdicts, result.hunks, result.changed)
                 outcome = cj.judgment_outcome(verdicts)
             else:
                 outcome = STATUS_PENDING
