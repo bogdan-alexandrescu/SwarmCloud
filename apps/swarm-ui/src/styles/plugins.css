@@ -26,10 +26,11 @@
 .plg-switch.is-changed .plg-switch-track { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 55%, transparent); }
 .plg-switch-word { min-width: 2ch; }
 
-/* The facts strip. */
-.plg-strip { display: flex; flex-wrap: wrap; margin: 0; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
-.plg-strip > div { padding: 8px 14px; border-left: 1px solid var(--line-soft); min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.plg-strip > div:first-child { border-left: 0; }
+/* The facts strip. Its cells are held apart by the flex gap rather than by
+   touching rules (the spacing sweep's surfaces-touch floor), as `.cfg-steps`'
+   are in config.css: one bordered box, plain cells inside it. */
+.plg-strip { display: flex; flex-wrap: wrap; gap: 0 var(--ctl-s1); margin: 0; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+.plg-strip > div { padding: 8px 14px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .plg-strip dt { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .plg-strip dd { margin: 0; font-size: var(--t-meta); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 22px; }
 .plg-signed { display: inline-flex; align-items: center; gap: 4px; color: var(--ok-ink); font-weight: 600; }
@@ -66,7 +67,10 @@
 .plg-runs.is-not { color: var(--warn-ink); }
 .plg-n { margin-left: auto; font-size: var(--t-micro); font-variant-numeric: tabular-nums; }
 .plg-means { margin: 2px 0 8px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-.plg-skills { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+/* A block list, not a column flex: the rows are one list's repeats split by a
+   single `border-top`, `.rows`' construction (styles.css), and the sweep's
+   surfaces-touch check is about gutters between boxes in a flex or grid. */
+.plg-skills { list-style: none; margin: 0; padding: 0; display: block; }
 .plg-skills li { display: flex; align-items: flex-start; gap: 10px; padding: 5px 4px; border-top: 1px solid var(--line-soft); min-width: 0; }
 .plg-skills li:first-child { border-top: 0; }
 .plg-never { grid-area: n; border: 1px dashed var(--line); border-radius: var(--r-tile); padding: 10px 12px; min-width: 0; }

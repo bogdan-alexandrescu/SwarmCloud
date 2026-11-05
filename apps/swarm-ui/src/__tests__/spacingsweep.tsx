@@ -496,7 +496,7 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // (Work › Setup until then) is a part of Workspace Settings with no tab of
   // its own, so no slice reaches it.
   { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals'], floor: 90 },
-  { name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/workspace'], floor: 60 },
+  { name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/plugins', 'config/workspace'], floor: 60 },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   // Account health (ACCOUNT-HEALTH-PAGE; part of #2302) sits beside Accounts, as in the rail.
