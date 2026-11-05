@@ -213,6 +213,9 @@ def _run_step(tmp_path: Path, step_id: str, responses: dict, *, stage: str = "")
 
 def _cancelled_run(build_conclusion: str | None) -> dict:
     jobs = [{"name": "unit tests (1/4)", "conclusion": "cancelled"}]
+    # The jobs that gate the release (CI_RELEASE_TEST_JOBS, common.sh) passed:
+    # a build that succeeded beside them is then no supersession.
+    jobs += [{"name": n, "conclusion": "success"} for n in ("format / unit tests", "shellcheck", "kubernetes manifests")]
     if build_conclusion is not None:
         jobs.append({"name": "build images", "conclusion": build_conclusion})
     return {

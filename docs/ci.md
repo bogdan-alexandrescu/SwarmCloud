@@ -610,7 +610,7 @@ the newer commit's normal release ships the fix.
 **When merges come faster than a build: the merge train holds (issue 3336).**
 Cancelling assumes a merge lull long enough for the newest build to finish.
 On 5 November 2026 there was none: no release had deployed since 21:04Z on 4
-November. `build images` needs main's test jobs, which queue behind the merge
+November. `build images` then needed main's test jobs, which queue behind the merge
 train's and the pull requests' CI, so it started 18 to 44 minutes after its
 push and then took about 19; the train landed a batch every 20 to 40
 minutes, so each merge cancelled the build before it and every release ended
@@ -635,6 +635,25 @@ held. The cost is at most 12 API reads per green train and 2 per held tick.
 #2438's cancelling stays: the hold only spaces merges out while a build is
 already running, so the build that is running is the one that ships, and a
 burst of merges still costs one build, not one per commit.
+
+**The build no longer waits for main's tests; the tests gate the release
+(owner pick on PR 3344).** The hold above spaces merges out; it does not
+remove the 18 to 44 minutes `build images` spent queued behind main's test
+jobs. So `build images` has no `needs:` any more and starts with its run,
+building while `format / unit tests`, `shellcheck` and `kubernetes manifests`
+run beside it. Those three -- exactly the jobs it used to need -- now gate the
+release instead: `scripts/lib/ci-built-images.sh` hands release.yml and
+hotfix.yml the build's record only once each of them, in the same run,
+concluded success or was skipped by its own paths (the list is
+`CI_RELEASE_TEST_JOBS`, once, in `scripts/lib/common.sh`). While they still
+run, the release waits as for a build in progress (`CI_BUILD_WAIT_RUNNING`).
+When one failed or was cancelled, or the run finished without it, the release
+refuses the commit and, even when dispatched with `or-build`, builds nothing:
+a commit whose tests did not pass is never released. A newer push that
+cancelled those tests after the build succeeded is a supersession, as a
+cancelled build is (`scripts/lib/build-superseded.sh`). What it costs: a
+commit whose tests fail is still built -- one Cloud Build of the images it
+changed, which before was never spent.
 
 The release's wait, `scripts/lib/ci-built-images.sh`, keeps 2700 s
 (`CI_BUILD_WAIT`) as its bound for a build that is queued or not started,

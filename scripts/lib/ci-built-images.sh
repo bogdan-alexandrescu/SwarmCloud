@@ -25,7 +25,9 @@
 #           release dispatched by hand for a commit application.yml never
 #           built, and build-images.sh then builds it exactly as CI would have.
 #   exit 1  anything else, with the reason on the last line: CI's build
-#           FAILED; it has not started by CI_BUILD_WAIT, or is still in
+#           FAILED; it succeeded but a test job that gates the release
+#           (CI_RELEASE_TEST_JOBS, common.sh) failed, was cancelled or never
+#           ran in its run; it has not started by CI_BUILD_WAIT, or is still in
 #           progress at CI_BUILD_WAIT_RUNNING; CI never built
 #           the commit and `--if-absent fail`; the GitHub API could not be
 #           read; or the record describes another commit or environment.
@@ -39,8 +41,7 @@
 #   * no application.yml run for the commit on the branch appeared within
 #     CI_BUILD_APPEAR seconds;
 #   * its run was cancelled before any job started (GitHub then lists no jobs
-#     at all), or its build job was cancelled part-way or skipped (the checks
-#     it needs failed first). On main that is now usually a newer push:
+#     at all), or its build job was cancelled part-way or skipped. On main that is now usually a newer push:
 #     since #2438 application.yml runs all of main in ONE group with
 #     cancel-in-progress, because one run per commit queued 27-78 runs at once
 #     and stalled every release. The newer commit's build includes this one's
@@ -111,11 +112,13 @@ REPO="${GITHUB_REPOSITORY:-}"
 WORKFLOW="${CI_BUILD_WORKFLOW:-application.yml}"
 JOB="${CI_BUILD_JOB:-build images}"
 BRANCH="${CI_BUILD_BRANCH:-main}"
-# 45 minutes, for a build that has NOT STARTED (its run queued, or its job
-# waiting on the test jobs it needs). Measured 5 November 2026 (issue 3336):
-# `build images` starts 18 to 44 minutes after its push, because it needs
-# main's test jobs and they queue behind the merge train's and the pull
-# requests' CI, then runs about 19 minutes. Main's application runs share one
+# 45 minutes, for a build that has NOT STARTED (its run queued). Measured 5
+# November 2026 (issue 3336): `build images` started 18 to 44 minutes after
+# its push, because it needed main's test jobs and they queue behind the merge
+# train's and the pull requests' CI, then ran about 19 minutes. Since the
+# owner's pick on PR 3344 it needs none of them and starts with its run; the
+# tests gate the release here instead, and a build that succeeded while they
+# still run is waited for as one in progress (WAIT_RUNNING). Main's application runs share one
 # group with cancel-in-progress (#2438), so a newer push cancels the run waited
 # for and ends the wait at once, "never built", not at 45; a build not started
 # by 45 is stuck behind something, and the message says what was pending.
@@ -200,6 +203,9 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-ci-images.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 API_ERR="${WORK}/api.err"
 
+# CI_RELEASE_TEST_JOBS (common.sh) as a JSON array, for jq.
+TEST_JOBS_JSON="$(printf '%s\n' "${CI_RELEASE_TEST_JOBS[@]}" | jq -R . | jq -cs .)"
+
 ERROR_TITLE="release images"
 [[ "${PREVIOUS}" -eq 0 ]] || ERROR_TITLE="previous build"
 
@@ -239,6 +245,8 @@ api() {
 #   none     no run of WORKFLOW for this commit on BRANCH exists yet
 #   failed   the newest decided run's build failed
 #   unbuilt  the newest decided run never built this commit for ENV_NAME
+#   untested the newest decided run built it, but a CI_RELEASE_TEST_JOBS job
+#            in it failed, was cancelled or never ran
 #
 # Runs are read NEWEST FIRST and the first reusable one wins: a successful
 # build of this commit is a successful build of this commit, even if a newer
@@ -263,7 +271,7 @@ survey() {
     return 0
   fi
 
-  local run_id run_status run_conclusion run_url state detail url
+  local run_id run_status run_conclusion run_url state detail url tstate tdetail turl
   local pending=0 pending_url="" pending_why="" running=0 first="" first_url="" first_why=""
   while IFS=$'\t' read -r run_id run_status run_conclusion run_url; do
     api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" "${WORK}/jobs.json" || return 1
@@ -284,7 +292,42 @@ survey() {
           end
         | @tsv' "${WORK}/jobs.json") || return 1
 
+    # THE TESTS GATE THE RELEASE (owner pick, PR 3344). The build no longer
+    # waits for main's test jobs, so a build that succeeded is reused only
+    # once every CI_RELEASE_TEST_JOBS job of the same run passed (or was
+    # skipped by its own paths). Still running, or not listed yet in a run
+    # that has not finished: wait. Failed or cancelled: `untested`, never
+    # "never built" -- a dispatched release must not build a commit whose
+    # tests failed.
+    if [[ "${state}" == success ]]; then
+      IFS=$'\t' read -r tstate tdetail turl < <(jq -r --argjson t "${TEST_JOBS_JSON}" --arg rs "${run_status}" --arg ru "${run_url}" '
+          (.jobs // []) as $all
+          | [ $t[] as $n | { name: $n, j: [ $all[] | select(.name == $n) ] } ] as $g
+          | [ $g[] | select((.j | length) > 0 and any(.j[]; .status == "completed" and .conclusion != "success" and .conclusion != "skipped")) ] as $bad
+          | if ($bad | length) > 0 then
+              ["untested",
+               ([ $bad[] | "\(.name) (\([.j[] | .conclusion // "-"] | unique | join(",")))" ] | join(", ")),
+               ([ $bad[0].j[] | select(.conclusion != "success" and .conclusion != "skipped") ][0].html_url // $ru)]
+            elif all($g[]; (.j | length) > 0 and all(.j[]; .status == "completed")) then ["passed", "-", "-"]
+            elif $rs == "completed" and any($g[]; (.j | length) == 0) then
+              ["untested", "run finished without " + ([ $g[] | select((.j | length) == 0) | .name ] | join(", ")), $ru]
+            else
+              ["running", ([ $g[] | select((.j | length) == 0 or any(.j[]; .status != "completed")) | .name ] | join(", ")), $ru]
+            end
+          | @tsv' "${WORK}/jobs.json") || return 1
+      case "${tstate}" in
+        running)
+          # The build is done and the run is alive: wait as for a build in
+          # progress (WAIT_RUNNING), not as for one not started.
+          pending=1; pending_url="${turl}"; running=1
+          pending_why="'${JOB}' succeeded; waiting for the tests that gate the release: ${tdetail}"
+          continue ;;
+        untested) state=untested; detail="${tdetail}"; url="${turl}" ;;
+      esac
+    fi
+
     case "${state}" in
+      untested) detail="its '${JOB}' job succeeded, but the tests that gate the release did not pass: ${detail}" ;;
       success)
         local found=""
         if ! found="$(artifact_state "${run_id}")"; then return 1; fi
@@ -528,6 +571,8 @@ while :; do
       fail_with "${WORKFLOW}'s build of ${SHA} failed -- ${V_WHY}: ${V_URL}. The release promotes only what that job built, so there is nothing to promote, and building again here would repeat the failure behind a second Cloud Build. Re-run that job if it was a flake; otherwise fix the build and push." ;;
     unbuilt)
       absent "${V_WHY} (${V_URL})" ;;
+    untested)
+      fail_with "${WORKFLOW}'s run for ${SHA}: ${V_WHY}: ${V_URL}. A release ships only a commit main's tests passed, so nothing is promoted, and nothing is built here either. Re-run the failed jobs if it was a flake; otherwise fix the commit and push." ;;
     *)
       fail_with "internal: no verdict after reading ${WORKFLOW}'s runs for ${SHA}" ;;
   esac
