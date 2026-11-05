@@ -567,6 +567,10 @@ REPO_DIR_NAME = workspace_mod.REPO_DIR_NAME
 WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
+#: The artifact a moved HEAD's line is kept in (`Worker._keep_moved_head`):
+#: nothing of it is published, and `git fetch moved-head.bundle` brings it
+#: back (reported by Product Oracle's session, 5 November 2026).
+MOVED_HEAD_BUNDLE = "moved-head.bundle"
 
 #: The checkpoint label, and the cause on the attempt's document, of an attempt
 #: that left because Firestore stayed unreachable while its agent ran (#70).
@@ -6799,7 +6803,53 @@ class Worker:
             "nothing of this task's was published"
         )
 
-    def _moved_head_result(self, out: dict[str, Any], moved: str) -> dict[str, Any]:
+    def _keep_moved_head(self, publish_repo: Path, floor: str | None) -> str | None:
+        """Keep a moved HEAD's line as `MOVED_HEAD_BUNDLE` in the artifacts.
+
+        REPORTED by Product Oracle's session, 5 November 2026:
+        task_884a993427ce44feb7a6's agent merged a train branch into its own,
+        checked out another branch, and the harvest rightly published nothing
+        -- and kept nothing, so a person rebuilt the merge by hand. The bundle
+        holds HEAD's commits that are not on the step's start (`floor..HEAD`),
+        or HEAD's whole line when the two share no history or the start is
+        unknown, read from the worker's clean repository; `git fetch
+        moved-head.bundle` brings it back. Nothing of it is pushed. Returns the
+        bundle's name, or None when none was written: a bundle that cannot be
+        written is logged and never fails the step.
+        """
+        ws = self.ws
+        assert ws is not None
+        target = ws.artifacts / MOVED_HEAD_BUNDLE
+
+        def git(argv: list[str], slug: str) -> int:
+            code, _ = _git_text(
+                ["git", *_NO_HOOKS, *argv], repo=Path(publish_repo), private_dir=ws.private,
+                logs_dir=ws.logs, slug=slug,
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            return code
+
+        try:
+            revs = ["HEAD"]
+            if floor and _FULL_SHA_RE.fullmatch(floor):
+                if git(["merge-base", floor, "HEAD"], "harvest-moved-bundle-base") == 0:
+                    revs = [f"{floor}..HEAD"]
+            code = git(["bundle", "create", "--quiet", str(target), *revs],
+                       "harvest-moved-bundle")
+        except Exception as exc:  # noqa: BLE001 -- keeping the line never costs the step
+            self.log.warning("the moved HEAD's line could not be kept as a bundle",
+                             error=type(exc).__name__)
+            return None
+        if code != 0 or not target.is_file():
+            self.log.warning("the moved HEAD's line could not be kept as a bundle",
+                             exit_code=code, revisions=revs)
+            return None
+        self.log.info("the moved HEAD's line is kept in the step's artifacts",
+                      bundle=MOVED_HEAD_BUNDLE, revisions=revs)
+        return MOVED_HEAD_BUNDLE
+
+    def _moved_head_result(self, out: dict[str, Any], moved: str, *,
+                           bundle: str | None = None) -> dict[str, Any]:
         """The harvest's record of a HEAD that left this step's work (#2094).
 
         Nothing on it is this step's, so it counts no commit and no
@@ -6807,9 +6857,15 @@ class Worker:
         a publish failure. A step allowed an empty diff therefore ends exactly
         as if its agent had stayed put (`expected_mod.changed_nothing`), a
         review's verdict standing, and one owed a pull request is told why it
-        has none (`_published_nothing`).
+        has none (`_published_nothing`). The line itself is kept when it could
+        be (`bundle`, `_keep_moved_head`), and the reason names it.
         """
         moved = str(self._scrub(moved))
+        reason = self._moved_reason(moved)
+        if bundle is not None:
+            out["moved_head_bundle"] = bundle
+            reason += (f"; its commits are kept in the step's artifacts as {bundle} "
+                       f"(git fetch {bundle})")
         out.update(
             {
                 "head_moved": moved,
@@ -6820,7 +6876,7 @@ class Worker:
                 "dirty": [],
                 "dirty_count": 0,
                 "published": False,
-                "publish_reason": self._moved_reason(moved),
+                "publish_reason": reason,
             }
         )
         return out
@@ -10530,6 +10586,13 @@ class Worker:
         # recorded and skipped. Set by the worker, never from `input`.
         if self._prepublish_rebase:
             base[PREPUBLISH_BASE_ENV] = self._prepublish_rebase
+        # THE BRANCH THE STEP STARTED ON, for the gate's moved-HEAD turn
+        # (`prepublish.Gate._moved_head`): the harvest refuses a HEAD that
+        # left it (`_head_moved`), so the agent is told while its session can
+        # still be continued. Unset for a clone at a commit. Set by the
+        # worker, never from `input`.
+        if self._start_branch and self._start_branch.startswith("refs/heads/"):
+            base[START_BRANCH_ENV] = self._start_branch.removeprefix("refs/heads/")
         # WHETHER THIS STEP PUBLISHES (ONE-PLACE, 2026-11-03): "0" for a
         # repository step whose branch is not its deliverable, so the CLI
         # runner leaves the publishing paragraph out of its prompt
@@ -14736,7 +14799,8 @@ class Worker:
             # described as moved and nothing on it is harvested or published.
             moved = self._head_moved(repo, publish_repo, fetched_base)
             if moved is not None:
-                return self._moved_head_result(out, moved)
+                kept = self._keep_moved_head(publish_repo, fetched_base)
+                return self._moved_head_result(out, moved, bundle=kept)
             work = summarize_work(
                 repo=publish_repo,
                 base=fetched_base,
@@ -19202,6 +19266,10 @@ CLONE_BASE_ENV = "SWARM_CLONE_BASE"
 #: The branch the runner rebases onto before publishing (SPEED-D1;
 #: `prepublish.PREPUBLISH_BASE_ENV`, held equal by test_prepublish_gate.py).
 PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
+#: The branch the clone left HEAD on (`_start_branch`), named to the runner
+#: so the pre-publish gate can hand a moved HEAD back to the agent
+#: (`prepublish.START_BRANCH_ENV`, held equal by test_prepublish_moved_head.py).
+START_BRANCH_ENV = "SWARM_START_BRANCH"
 #: Where the worker writes the step's signed work contract's body for the
 #: runner's JC2 (`Worker._stage_work_contract`), under the attempt's work/.
 WORK_CONTRACT_FILE = "work-contract.json"
