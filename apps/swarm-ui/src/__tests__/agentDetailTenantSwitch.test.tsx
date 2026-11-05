@@ -34,7 +34,9 @@ const { AgentDetailScreen } = await import('../AgentDetail')
 const { TENANT_HEADER, TENANT_PREF, chosenTenant, forgetReads } = await import('../fetch')
 
 const TASK_ID = 'task_5c0e9a41d2b74f6e8a13'
-const WAIT = { timeout: 4000 }
+// The first test pays the page's cold render; under a loaded runner that alone
+// passed 4 s (the pre-publish guard run), so the waits allow for it.
+const WAIT = { timeout: 15_000 }
 const JSON_HEADERS = { 'content-type': 'application/json' }
 
 const MINE = [
@@ -131,7 +133,7 @@ afterEach(() => {
   window.sessionStorage.clear()
 })
 
-describe('a task 404 under the chosen workspace asks the person’s other workspaces', () => {
+describe('a task 404 under the chosen workspace asks the person’s other workspaces', { timeout: 30_000 }, () => {
   it('offers the switch when exactly one other tenant holds the task, and switching re-reads under it', async () => {
     const sent = serve(['eng'])
     render(<AgentDetailScreen taskId={TASK_ID} onClose={() => {}} />)
