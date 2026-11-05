@@ -284,7 +284,9 @@ describe('the Graph’s step inspector sits above the stage cards', () => {
       />,
     )
     fireEvent.click(document.querySelector('.node[data-step="s0"]')!)
-    await waitFor(() => expect(document.querySelector('.wf-split.has-panel > .wf-panel .wf-inspect')).toBeTruthy())
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the panel now renders `StepCard` (`.sc-card`) directly, not the shared `.wf-inspect`.
+    await waitFor(() => expect(document.querySelector('.wf-split.has-panel > .wf-panel .sc-card')).toBeTruthy())
     // The canvas's layers are read from the stylesheet's own z-index rules
     // that reach a canvas element, the highest of them: an upper bound on
     // what any element paints at. `getComputedStyle` on each of the canvas's

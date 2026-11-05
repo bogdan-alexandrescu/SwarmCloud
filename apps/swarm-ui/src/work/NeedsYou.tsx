@@ -526,9 +526,13 @@ function NeedsList({
     const unknown = (items.unknownKinds ?? []).filter((k) => k !== 'approval')
     return (
       <p className="ny-quiet" id={id}>
-        {unknown.length === 0
-          ? 'Nothing waits on you here'
-          : `Nothing this screen read waits on you; ${unknown.map((k) => NEED_WORD[k]).join(', ')} not known here`}
+        {/* 'NOTHING FOUND' (owner's pick, 2026-11-05): the chips already say
+            which kinds are not known here, so the sentence is its tooltip. */}
+        {unknown.length === 0 ? (
+          'Nothing waits on you here'
+        ) : (
+          <span title={`Nothing this screen read waits on you; ${unknown.map((k) => NEED_WORD[k]).join(', ')} not known here`}>Nothing found</span>
+        )}
       </p>
     )
   }
@@ -651,7 +655,7 @@ function FailedRow({ item, onChanged }: { item: FailedNeed; onChanged?: () => vo
  * with Retry back to press again. Accepted, the row names the steps re-run
  * (the answer's `replaced`) and the page reads again.
  */
-function StepRetryButton({
+export function StepRetryButton({
   workflowId,
   stepId,
   name,

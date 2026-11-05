@@ -380,9 +380,12 @@ describe('83: one verb, Stop, for every stop on the page', () => {
       expect(d).toBeTruthy()
       return d!
     })
+    // THE PAGE'S CARD IS StepCard, NOT StepInspector + a `.wf-inspect-acts`
+    // group (owner's pick, 2026-11-05): Stop sits directly on the card's own
+    // bar, in `.sc-end`, with no group of its own any more.
     // MUTATION: put `label="Stop step"` back on the card's `StopRun`.
     const card = await waitFor(() => {
-      const c = dock.querySelector<HTMLElement>('.wf-inspect-acts')
+      const c = dock.querySelector<HTMLElement>('section.sc-card .sc-end')
       expect(c).toBeTruthy()
       return c!
     })
