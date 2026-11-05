@@ -282,6 +282,9 @@ def test_a_scan_that_cannot_run_is_not_read_as_a_failure_to_repair(tmp_path, mon
     ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
     _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
     monkeypatch.setenv("SWARM_CLONE_BASE", "0" * 40)
+    # A step that publishes nothing: it commits nothing, and the no-change
+    # turn (#3265) is not what this test is about.
+    monkeypatch.setenv(cliagent.STEP_PUBLISHES_ENV, "0")
     out = claude_code.body(ctx)
     assert len(_runs(ctx)) == 1
     assert out["repair_turns"] == 0

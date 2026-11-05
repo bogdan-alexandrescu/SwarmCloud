@@ -439,6 +439,27 @@ The prefix is the point: a fallback title is the worker's, and a reviewer has
 to be able to tell it from one the agent chose. A title a later step declared
 it will stage is never excused, issue or not: that step needs the file.
 
+**A publishing step that committed nothing is told how to end (#3265).** The
+worker reads "no change plus a non-blank `verification.md`" as SUCCEEDED
+`no_change` (Proposal J), but a step that committed nothing and wrote no
+verification failed `published_nothing` with no warning. Measured on
+wf_3bfea5e9: the render step's brief asked for frames only; it wrote 8 frames,
+`pr-title.txt` and a handoff saying "no commits (none asked)", took 0 repair
+turns and failed. The publish paragraph's no-change sentence now also covers
+a brief that asks for no change to the repository, and `run_cli_agent`
+records the checkout's HEAD before the agent starts: when the turn ends with
+HEAD unchanged, a clean tree and no non-blank verification, the session is
+resumed once (`cliagent.NO_CHANGE_REPAIR_MAX_TURNS`), saying the step opens a
+pull request, to commit the work or write `verification.md` saying what it
+delivered and checked. One turn, because the agent either has work to commit
+or a sentence to write and a second ask would not change which; it shares the
+ordinary repair turn when other checks fail too. It is skipped for a step the
+worker marks `SWARM_STEP_PUBLISHES=0`, for an agent with no checkout or no HEAD,
+and for a step that committed or left uncommitted changes (the harvest commits
+those). `SWARM_STEP_PUBLISHES` is still `1` for a contributor, amender or
+carrier step, for which no change is not a failure: there the turn is one
+cheap turn whose `verification.md` also makes the worker record `no_change`.
+
 ## Sessions and resumes: the context ceiling (#2524)
 
 Nothing used to end a session as its context grew. In the week BGD measured
