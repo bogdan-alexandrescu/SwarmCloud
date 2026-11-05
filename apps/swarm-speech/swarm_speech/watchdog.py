@@ -53,7 +53,9 @@ def read_state(path: Path) -> dict | None:
 
 def idle_since(now: float, boot_time: float, state: dict | None) -> float | None:
     """When the machine became idle, or None while a socket is open."""
-    if state and state["open"] > 0 and now - state["at"] < FRESH_SECONDS:
+    # An open claim counts only if this boot's server wrote it: a stop and a
+    # start inside FRESH_SECONDS must not inherit the last boot's socket.
+    if state and state["open"] > 0 and state["at"] > boot_time and now - state["at"] < FRESH_SECONDS:
         return None
     since = boot_time
     if state and state["at"] > boot_time:

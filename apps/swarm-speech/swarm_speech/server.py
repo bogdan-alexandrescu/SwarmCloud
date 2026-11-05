@@ -90,6 +90,7 @@ def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
     request_holder: list[object] = []
 
     def verify(token: str) -> str:
+        from google.auth import exceptions as google_exceptions
         from google.auth.transport import requests as google_requests
         from google.oauth2 import id_token
 
@@ -97,11 +98,14 @@ def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
             request_holder.append(google_requests.Request())
         try:
             claims = id_token.verify_oauth2_token(token, request_holder[0], audience=audience)
-        except ValueError:
-            # google-auth's message may echo token content: never propagated.
+        except (ValueError, google_exceptions.GoogleAuthError):
+            # A bad signature, a wrong issuer or certificates Google would not
+            # serve all refuse the caller (403, 1008), never a 500. google-auth's
+            # message may echo token content: never propagated.
             raise PermissionError("id token verification failed") from None
         email = claims.get("email")
-        if not email or claims.get("email_verified") is False or email not in callers:
+        # Google's service-account ID tokens always carry email_verified true.
+        if not email or claims.get("email_verified") is not True or email not in callers:
             raise PermissionError("the caller is not admitted")
         return str(email)
 
