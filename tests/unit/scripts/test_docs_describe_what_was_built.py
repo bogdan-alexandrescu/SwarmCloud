@@ -23,6 +23,7 @@ test_docs_spec_amendments.py, so a heading added inside a section would cut it.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import re
 import sys
@@ -2614,3 +2615,84 @@ def test_qa_environments_docs_describe_what_was_built(check: str):
 @pytest.mark.parametrize("doc", (QAENV_DESIGN, QAENV_ANY_APP), ids=lambda p: p.name)
 def test_qa_environments_docs_cite_only_what_resolves(doc: Path):
     _assert_cites_resolve(doc)
+
+
+# -- The visual-QA sign-in gate's waits, stated twice (part of #2688) -------
+#
+# visual-qa-any-app.md §2.2 step 3 and its start clicks write out the gate's
+# waits and retries (3, 30, 60, 10 and 5 seconds, two retries, 95 seconds in
+# all) that livegate/qatarget.py and qa_target.py hold as constants. The owner
+# chose, on 4 November 2026, a parity test over dropping the numbers from the
+# doc (docs/mirrored-values.md): each value is read from the code by its
+# constant's name and each sentence is found by its own wording, so a constant
+# or a doc changed alone fails here, naming the sentence.
+
+QA_GATE_DOC = DOCS / "design" / "visual-qa-any-app.md"
+QA_GATE_CODE = {
+    "apps/agent-worker/agent_worker/livegate/qatarget.py": (
+        "PAGE_SETTLED_SECONDS", "SIGNED_IN_SECONDS", "SIGNED_IN_MAX_SECONDS", "FORM_SECONDS",
+        "START_CLICK_SECONDS", "RECLICK_SECONDS", "MAX_RECLICKS"),
+    "apps/agent-worker/agent_worker/qa_target.py": ("FIRST_WAIT_SECONDS",),
+}
+#: Each sentence that states a gate value, by its wording: one group per
+#: number, each naming the constant it restates.
+QA_GATE_SENTENCES = (
+    (r"`PAGE_SETTLED_SECONDS` \((\d+) s: a page between two redirects", ("PAGE_SETTLED_SECONDS",)),
+    (r"shown an error \(an alert, an `aria-invalid` field\) for (\d+) s\.", ("PAGE_SETTLED_SECONDS",)),
+    (r"`SIGNED_IN_SECONDS` \((\d+) s, as before\) pass", ("SIGNED_IN_SECONDS",)),
+    (r"A page still loading at (\d+) s is waited for up to `SIGNED_IN_MAX_SECONDS` \((\d+) s:",
+     ("SIGNED_IN_SECONDS", "SIGNED_IN_MAX_SECONDS")),
+    (r"loads 150 requests draws itself only after (\d+) s\)", ("SIGNED_IN_SECONDS",)),
+    (r"`FIRST_WAIT_SECONDS` \((\d+) s: the form's (\d+) s and the verdict's (\d+) s, plus the return\)",
+     ("FIRST_WAIT_SECONDS", "FORM_SECONDS", "SIGNED_IN_MAX_SECONDS")),
+    (r"waits for it up to `FORM_SECONDS` \((\d+) s, the form's own bound\)", ("FORM_SECONDS",)),
+    (r"waited for up to `START_CLICK_SECONDS` \((\d+) s: long enough for a script-drawn button",
+     ("START_CLICK_SECONDS",)),
+    (r"waits up to `START_CLICK_SECONDS` \((\d+) s\) for where the click led", ("START_CLICK_SECONDS",)),
+    (r"`RECLICK_SECONDS` \((\d+) s\) after the click", ("RECLICK_SECONDS",)),
+    (r"at most `MAX_RECLICKS` times \((\d+): a script that started late", ("MAX_RECLICKS",)),
+    (r"stays inside the form's `FORM_SECONDS` \((\d+) s\)", ("FORM_SECONDS",)),
+)
+
+
+def _qa_gate_constants() -> dict[str, float]:
+    """The gate's waits as the code assigns them, read without importing the worker."""
+    found: dict[str, float] = {}
+    for path, names in QA_GATE_CODE.items():
+        tree = ast.parse((REPO / path).read_text(encoding="utf-8"), filename=path)
+        for node in tree.body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name) and node.targets[0].id in names):
+                found[node.targets[0].id] = ast.literal_eval(node.value)
+        missing = sorted(set(names) - set(found))
+        assert not missing, f"{path} no longer assigns {missing} at module level"
+    return found
+
+
+def _as_stated(value: float) -> int:
+    assert value == int(value), f"{value} is not a whole number of seconds, which the doc writes"
+    return int(value)
+
+
+@pytest.mark.parametrize("wording, names", QA_GATE_SENTENCES,
+                         ids=[f"{names[0]}-{i}" for i, (_, names) in enumerate(QA_GATE_SENTENCES)])
+def test_visual_qa_doc_states_the_gates_waits_as_the_code_holds_them(wording: str, names: tuple[str, ...]):
+    constants = _qa_gate_constants()
+    matches = re.findall(wording, _flat(_text(QA_GATE_DOC)))
+    assert len(matches) == 1, f"{QA_GATE_DOC.name} states {wording!r} {len(matches)} times, not once"
+    stated = matches[0] if isinstance(matches[0], tuple) else (matches[0],)
+    held = tuple(str(_as_stated(constants[name])) for name in names)
+    assert stated == held, (f"{QA_GATE_DOC.name} says {dict(zip(names, stated))} where the code holds "
+                            f"{dict(zip(names, held))}: change the doc and the constant together")
+
+
+def test_every_number_the_visual_qa_doc_gives_a_gate_constant_is_checked():
+    """A sentence added later as "`NAME` (N s" or "`NAME` times (N" is held too,
+    and every constant is stated at least once, so none drifts unseen."""
+    constants = _qa_gate_constants()
+    doc = _flat(_text(QA_GATE_DOC))
+    for name, value in constants.items():
+        stated = re.findall(rf"`{name}`(?: times)? \((\d+)\b", doc)
+        assert stated, f"{QA_GATE_DOC.name} no longer states `{name}` with its value"
+        assert set(stated) == {str(_as_stated(value))}, (
+            f"{QA_GATE_DOC.name} gives `{name}` as {sorted(set(stated))}; the code holds {value}")

@@ -607,6 +607,60 @@ stopping `gcloud builds submit` does not stop it (`build-images.sh`,
 the same build: if a newer push cancels that build, the hotfix run fails and
 the newer commit's normal release ships the fix.
 
+**When merges come faster than a build: the merge train holds (issue 3336).**
+Cancelling assumes a merge lull long enough for the newest build to finish.
+On 5 November 2026 there was none: no release had deployed since 21:04Z on 4
+November. `build images` then needed main's test jobs, which queue behind the merge
+train's and the pull requests' CI, so it started 18 to 44 minutes after its
+push and then took about 19; the train landed a batch every 20 to 40
+minutes, so each merge cancelled the build before it and every release ended
+superseded. And release 41992304818 (08:09Z) failed `timed out after 2700s`
+on a build that started at 08:53Z and succeeded at 09:12Z.
+
+So, before a green train merges, `scripts/merge-train.sh` (`deploy_hold`)
+reads `release.yml`'s runs on `main` and `main`'s newest `application` push
+run. When no release ran its deploy job successfully in the last 60 minutes
+**and** that run's `build images` job is in progress, the train does not
+merge on that tick: it stays open and green, says once in its own comments
+`holding the merge so main's build of <sha> can finish and deploy; nothing
+has deployed since <time>`, and records when the hold began, and for which
+build, in its state block (`hold=<epoch>:<sha>`), so the bound survives
+ticks. It merges on a later tick once that job has finished, either way, or
+25 minutes after the hold began, whichever comes first. It never holds for a
+build that has not started (cancelling that one costs nothing), never while
+deploys are recent, and never twice for one train; an API it cannot read, or
+a hold it cannot record, merges as before. A dry run says what it would have
+held. The cost is at most 12 API reads per green train and 2 per held tick.
+
+#2438's cancelling stays: the hold only spaces merges out while a build is
+already running, so the build that is running is the one that ships, and a
+burst of merges still costs one build, not one per commit.
+
+**The build no longer waits for main's tests; the tests gate the release
+(owner pick on PR 3344).** The hold above spaces merges out; it does not
+remove the 18 to 44 minutes `build images` spent queued behind main's test
+jobs. So `build images` has no `needs:` any more and starts with its run,
+building while `format / unit tests`, `shellcheck` and `kubernetes manifests`
+run beside it. Those three -- exactly the jobs it used to need -- now gate the
+release instead: `scripts/lib/ci-built-images.sh` hands release.yml and
+hotfix.yml the build's record only once each of them, in the same run,
+concluded success or was skipped by its own paths (the list is
+`CI_RELEASE_TEST_JOBS`, once, in `scripts/lib/common.sh`). While they still
+run, the release waits as for a build in progress (`CI_BUILD_WAIT_RUNNING`).
+When one failed or was cancelled, or the run finished without it, the release
+refuses the commit and, even when dispatched with `or-build`, builds nothing:
+a commit whose tests did not pass is never released. A newer push that
+cancelled those tests after the build succeeded is a supersession, as a
+cancelled build is (`scripts/lib/build-superseded.sh`). What it costs: a
+commit whose tests fail is still built -- one Cloud Build of the images it
+changed, which before was never spent.
+
+The release's wait, `scripts/lib/ci-built-images.sh`, keeps 2700 s
+(`CI_BUILD_WAIT`) as its bound for a build that is queued or not started,
+but waits for one whose job is **in progress** until it ends, up to
+`CI_BUILD_WAIT_RUNNING` (5400 s). A run a newer push cancelled still ends the
+wait at once, "never built".
+
 **What a pull request cannot prove about this.**
 `tests/unit/scripts/test_release_newest_only.py` holds the groups, the
 trigger and the two conditions, and runs both decision steps against a fake

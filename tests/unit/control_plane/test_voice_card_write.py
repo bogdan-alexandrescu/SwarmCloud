@@ -45,7 +45,14 @@ def _path(session_id: str) -> str:
 
 
 def test_the_write_list_is_the_card_route_alone_and_apart_from_the_reads(client):  # noqa: F811
-    assert vg.WRITE_ROUTES == frozenset({("POST", ROUTE)})
+    # voice-it-own-speech.md §7.3 and §8.3 add the read-back answer and the
+    # visual and note writes; each is classed as heard (voice/readback.py).
+    assert vg.WRITE_ROUTES == frozenset({
+        ("POST", ROUTE),
+        ("POST", "/v1/voice/sessions/{session_id}/readbacks/answer"),
+        ("POST", "/v1/voice/sessions/{session_id}/visuals"),
+        ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes"),
+    })
     assert not vg.WRITE_ROUTES & vg.ALLOWED_ROUTES
     assert all(method == "GET" for method, _ in vg.ALLOWED_ROUTES)
     table = {(m, p) for m, p, _r in _authenticated(client.app)}

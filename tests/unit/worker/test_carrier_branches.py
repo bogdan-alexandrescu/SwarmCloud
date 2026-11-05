@@ -65,7 +65,7 @@ def _worker(worker_factory, monkeypatch, origin: Path, *, task_id: str, dispatch
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     worker._task = {"task_id": task_id, "metadata": {"dispatch": dispatch},
                     "depends_on": list(depends_on or [])}
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     cloned = worker._maybe_clone(worker._task)
     assert cloned is not None and cloned["commit"], "the clone did not land"
     return worker, worker.ws.work / lifecycle.REPO_DIR_NAME, cloned
@@ -275,7 +275,7 @@ def _seeded_branches_worker(db, worker_factory, monkeypatch, origin):
     seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.01})
     db.doc("tasks/task_1")["metadata"] = {"dispatch": dict(BRANCHES)}
     worker, _, _ = worker_factory(repository_url=f"file://{origin}")
-    monkeypatch.setattr(worker, "_git_token", lambda: SCOPE_TOKEN)
+    monkeypatch.setattr(worker, "_git_token", lambda **_: SCOPE_TOKEN)
     started: list[bool] = []
     real_run_child = worker._run_child_supervised
 
@@ -319,7 +319,7 @@ def test_a_tenant_with_no_git_credential_fails_for_good_before_the_agent_runs(
     db, worker_factory, monkeypatch, origin, local_urls, forge, log_stream
 ):
     worker, started = _seeded_branches_worker(db, worker_factory, monkeypatch, origin)
-    monkeypatch.setattr(worker, "_git_token", lambda: None)
+    monkeypatch.setattr(worker, "_git_token", lambda **_: None)
 
     assert worker.run() == lifecycle.ExitCode.FAILED
     assert started == []

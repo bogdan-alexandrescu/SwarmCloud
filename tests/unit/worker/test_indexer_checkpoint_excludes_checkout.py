@@ -79,7 +79,7 @@ def _worker(
     )
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     worker._task = {"task_id": "task_1"}
-    monkeypatch.setattr(worker, "_git_token", lambda: token)
+    monkeypatch.setattr(worker, "_git_token", lambda **_: token)
     worker._deadline = time.monotonic() + 3600
     return worker, seen
 

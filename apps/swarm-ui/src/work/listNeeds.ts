@@ -14,7 +14,7 @@
  *   Failed     every FAILED or DEAD_LETTERED step; Retry re-runs it inside
  *              its workflow.
  *   Question   one row per open question: the wait's, with its words and
- *              options, then the artifact's, whose words are on the step's
+ *              options (and, for a plugin step, its `plugin_ask`), then the artifact's, whose words are on the step's
  *              page (`onItsPage`): its Answer waits until they are read there.
  *   Merge      a merge held by the owner's questions (`ownerQuestionsHold`).
  *              An approval the merge asks for is not in the read, so a merge
@@ -31,7 +31,7 @@
 import { handoffOf, ownerQuestionsHold } from '../Handoff'
 import { stepNeedsOf, summaryTask, type StepNeeds } from '../stepviews'
 import { type Task, type Workflow } from '../types'
-import { type NeedItem, type NeedItems, type NeedKind, type NeedPullRequest } from './NeedsYou'
+import { pluginAskOf, type NeedItem, type NeedItems, type NeedKind, type NeedPullRequest } from './NeedsYou'
 
 function prOf(task: Task): NeedPullRequest | null {
   const git = task.result_summary?.git
@@ -56,6 +56,7 @@ export function stepNeedItems(task: Task, needs: StepNeeds | null, title: string
     const why = task.last_error?.split('\n')[0]?.trim() ?? ''
     out.push({ kind: 'failed', task, title, why: why === '' ? null : why, pr })
   }
+  const plugin = pluginAskOf(task, needs)
   for (const q of needs?.questions ?? []) {
     out.push({
       kind: 'question',
@@ -65,6 +66,7 @@ export function stepNeedItems(task: Task, needs: StepNeeds | null, title: string
       question: q.question,
       options: q.options,
       recommended: q.recommended,
+      ...(plugin !== null ? { plugin } : {}),
     })
   }
   for (const index of needs?.questions_unread ?? []) {

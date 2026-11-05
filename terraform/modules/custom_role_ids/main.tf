@@ -11,7 +11,9 @@
 # (terraform/bootstrap/typesafe_forwarder.tf), swarmGithubHooksDedup
 # (terraform/bootstrap/github_hooks_role.tf, HOOKS-ROLE), swarmQaJwtSigner
 # (terraform/bootstrap/qa_identity.tf, QI-IAM) and swarmFrontDoorReader
-# (terraform/bootstrap/workspace_deployer.tf, FRONT-DOOR-READ).
+# (terraform/bootstrap/workspace_deployer.tf, FRONT-DOOR-READ) and
+# swarmSpeechOperator (terraform/bootstrap/platform_service_accounts.tf, Voice
+# it's speech machine).
 #
 # terraform/bootstrap DEFINES these roles, and the owner applies it.
 # terraform/infra and its modules GRANT them, and CI applies that. The two roots
@@ -109,5 +111,11 @@ locals {
     # iap.webServices.getIamPolicy alone, bound for swarm-workspace-deployer on
     # the API backend's own IAP policy. terraform/infra never names it.
     front_door_reader = "swarmFrontDoorReader${local.role_suffix}"
+    # Defined by terraform/bootstrap/platform_service_accounts.tf (Voice it's
+    # speech machine, row I1 of docs/design/voice-it-own-speech.md, part of
+    # #2688): start, stop, get and settings on a compute instance. Granted by
+    # terraform/infra/voice_speech.tf to swarm-api on the speech machine's
+    # instance only, never on the project.
+    speech_operator = "swarmSpeechOperator${local.role_suffix}"
   }
 }

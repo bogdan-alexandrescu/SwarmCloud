@@ -970,6 +970,10 @@ def watch(
                     # its own after the window's: the outcome holds the text.
                     label = task_label(task_id, task.get("step_id"))
                     shown.append(f"[{label}] {questions_words(asked)}")
+                if row["outcome"].get("browser_unused"):
+                    # The live-browser run that never used it, as its own line.
+                    label = task_label(task_id, task.get("step_id"))
+                    shown.append(f"[{label}] {row['outcome']['browser_unused']}")
             except SwarmError as exc:
                 # NOT all finished, then: a caller that stopped here would stop
                 # with no outcome to return. The next call re-reads it.
@@ -1143,6 +1147,11 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     link = console_link(task)
     if link is not None:
         out["console"] = link
+    # A LIVE-BROWSER RUN THAT NEVER USED ITS BROWSER (2026-11-05): one line,
+    # no key otherwise (`browser_unused_line`).
+    unused = browser_unused_line(task)
+    if unused is not None:
+        out["browser_unused"] = unused
     return out
 
 
@@ -1544,6 +1553,46 @@ def browser_words(task: dict[str, Any]) -> str | None:
         return None
     because = BROWSER_UNKNOWN_WORDS.get(str(detail.get("unknown_because")), "the worker recorded no verdict")
     return f"not measured ({because})"
+
+
+def browser_unused_line(task: dict[str, Any], *, label: str | None = None) -> str | None:
+    """The one line for a FINISHED task on a live-browser profile that never
+    used its browser, or None (owner request, 2026-11-05, part of #2688).
+
+    WHY. Over the 24 hours to 10:00Z on 5 November, 76 of 642
+    claude-code-browser tasks made no browser call and produced no image --
+    about 46 hours of browser runtime -- mostly code changes whose only
+    browser need was a headless Playwright spec, which plain claude-code runs
+    (with Postgres 16) since issue 2253. The session that picked the profile
+    reads this beside the result and can pick claude-code next time.
+
+    Only `browser_used is False` adds it: true is a use, and null is no
+    measurement, never a zero (`browser_words`). A non-browser profile never.
+    ADVICE, NEVER A REFUSAL: nothing here changes or refuses a dispatch;
+    callers pick the profile by name (CONTRACT.md invariant 10). `seconds` is
+    how long the agent ran on that runtime (`lifecycle.browser_use_record`),
+    else the last attempt's runner duration.
+    """
+    name = str(task.get("runner_profile"))
+    profile = RUNNER_PROFILES.get(name)
+    if not getattr(profile, "live_browser", False) or task.get("browser_used") is not False:
+        return None
+    if task.get("state") not in TERMINAL_STATE_VALUES:
+        return None
+    detail = task.get("browser_use") if isinstance(task.get("browser_use"), dict) else {}
+    seconds = detail.get("seconds")
+    if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
+        seconds = (task.get("result_summary") or {}).get("duration_seconds")
+    shown = (
+        str(round(seconds))
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and seconds >= 0
+        else "?"
+    )
+    who = label or task_id_of(task) or "the task"
+    return (
+        f"{who} ran on {name} and never used its browser ({shown} s): claude-code runs "
+        "Playwright suites and Postgres too; pick it unless the agent must look at a page"
+    )
 
 
 def _cost(totals: dict[str, Any]) -> dict[str, Any]:

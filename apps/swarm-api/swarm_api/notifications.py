@@ -823,6 +823,8 @@ def _asked_item(reading: Reading, task: Any) -> tuple[dict[str, Any], set[int]] 
     count = _question_count(task)
     if count <= 0 or task.state not in _ENDED:
         return None
+    # By index (the questions file is not read here): question-aware counting
+    # is a follow-up lane, owner pick on #3355, 2026-11-05 (docs/notifications.md).
     if unanswered(count, task.metadata) == 0:
         return None
     ended = task.completed_at or task.updated_at

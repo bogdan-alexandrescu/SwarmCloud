@@ -2557,6 +2557,7 @@ def _api_workflow(spec: Mapping[str, Any],
         "repository_url": spec["repository_url"],
         "on_step_failure": spec["on_step_failure"],
         "metadata": {"origin": "qa-target", "unit": spec["label"], "title": spec["title"],
+                     "description": spec["description"], "feature": spec["feature"],
                      "merge": spec["merge"]},
     }
     return workflow, mark, sorted(browser)

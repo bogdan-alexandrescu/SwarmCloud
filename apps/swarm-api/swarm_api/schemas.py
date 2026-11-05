@@ -9,6 +9,7 @@ a field for any of those things in the first place.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -343,6 +344,141 @@ class MergePullRequest(StrictModel):
 MAX_AFTER_PRS = 10
 
 
+#: What a workflow is about (BGD, 2026-11-04): `metadata.description`, two or
+#: three sentences of plain text saying what the work is meant to deliver,
+#: and `metadata.feature`, `{title, url?}`, the feature it belongs to. The
+#: console's workflow page heads with both; `routes.workflows.workflow_about`
+#: serves them. Checked by `check_workflow_about`, which refuses rather than
+#: cuts: a description silently shortened says something its author did not.
+DESCRIPTION_MAX_CHARS = 600
+FEATURE_TITLE_MAX_CHARS = 120
+#: Who wrote `metadata.description`. Written by swarm-api, never taken from
+#: a caller: `submitter` when the submission carried one. A later lane's small-model
+#: fallback writes its own value, so the console can mark a generated one.
+DESCRIPTION_SOURCE_KEY = "description_source"
+DESCRIPTION_SOURCE_SUBMITTER = "submitter"
+ABOUT_METADATA_KEYS = ("description", "feature", DESCRIPTION_SOURCE_KEY)
+
+#: Markup a plain-text description may not hold: an HTML tag or comment, a
+#: Markdown link or image, a code fence, a heading, bold or emphasis by
+#: doubled markers. The console shows the text as text; markup would read
+#: as noise there, or, rendered anywhere else, as something the author did
+#: not write.
+_MARKUP = re.compile(
+    r"<\s*/?\s*[A-Za-z!][^>]*>"      # <b>, </p>, <!-- ... -->
+    r"|\]\("                          # [text](url), ![alt](src)
+    r"|```|~~~"                        # code fences
+    r"|^\s{0,3}#{1,6}\s"               # # heading
+    r"|\*\*|__",                      # **bold**, __bold__
+    re.MULTILINE,
+)
+#: Control characters but the line break and the tab.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+#: An issue or pull request page of one GitHub repository.
+_FEATURE_URL = re.compile(
+    r"^https://github\.com/(?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9._-]+)"
+    r"/(?:issues|pull)/[1-9][0-9]{0,9}/?$"
+)
+#: `owner/repo` out of a GitHub repository URL in each spelling
+#: `check_repository_url` accepts: https://, ssh:// and git@host:.
+_GITHUB_REPOSITORY = re.compile(
+    r"^(?:https://|ssh://git@|git@)github\.com[/:](?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9._-]+?)"
+    r"(?:\.git)?/?$",
+    re.IGNORECASE,
+)
+
+
+def _github_repository(url: str | None) -> str | None:
+    """`owner/repo`, lower-cased, of a github.com repository URL, else None."""
+    found = _GITHUB_REPOSITORY.match(url or "")
+    return f"{found['owner']}/{found['repo']}".lower() if found else None
+
+
+def _description(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("metadata.description must be text: two or three sentences saying what the work delivers")
+    text = value.strip()
+    if not text:
+        raise ValueError("metadata.description is empty: write what the work delivers, or leave it out")
+    if len(text) > DESCRIPTION_MAX_CHARS:
+        raise ValueError(
+            f"metadata.description is {len(text)} characters and holds at most {DESCRIPTION_MAX_CHARS}: "
+            "two or three sentences saying what the work delivers")
+    if _CONTROL.search(text):
+        raise ValueError("metadata.description holds a control character: send plain text")
+    if _MARKUP.search(text):
+        raise ValueError(
+            "metadata.description holds markup (HTML, a Markdown link, heading, code fence or bold): "
+            "send plain text, which the console shows as written")
+    return text
+
+
+def _feature(value: Any, repository_url: str | None) -> dict[str, str]:
+    if not isinstance(value, dict) or not set(value) <= {"title", "url"} or "title" not in value:
+        raise ValueError("metadata.feature must be {title, url?}: the feature the work belongs to")
+    title = value["title"]
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("metadata.feature.title must be non-empty text: the feature's name")
+    title = title.strip()
+    if len(title) > FEATURE_TITLE_MAX_CHARS:
+        raise ValueError(
+            f"metadata.feature.title is {len(title)} characters and holds at most {FEATURE_TITLE_MAX_CHARS}")
+    if "\n" in title or _CONTROL.search(title):
+        raise ValueError("metadata.feature.title must be one line of plain text")
+    feature = {"title": title}
+    url = value.get("url")
+    if url is None:
+        return feature
+    found = _FEATURE_URL.match(url.strip()) if isinstance(url, str) else None
+    if found is None:
+        raise ValueError(
+            "metadata.feature.url must be an https://github.com/<owner>/<repo>/issues/<n> "
+            "or .../pull/<n> URL")
+    own = _github_repository(repository_url)
+    named = f"{found['owner']}/{found['repo']}".lower()
+    if own is None or own != named:
+        raise ValueError(
+            f"metadata.feature.url names an issue or pull request of {named}, and this workflow's "
+            f"repository is {own or 'not a GitHub repository'}: a feature link names the workflow's own "
+            "repository")
+    feature["url"] = url.strip()
+    return feature
+
+
+def check_workflow_about(
+    metadata: dict[str, Any], repository_url: str | None, steps: list[Any],
+) -> dict[str, Any]:
+    """`metadata` with its `description` and `feature` checked and tidied, and
+    `description_source: "submitter"` beside a description. Raises ValueError
+    (a 422 naming the rule) for a description over 600 characters, empty, or
+    holding markup; a feature title over 120 characters or empty; a feature
+    URL that is not an https github.com issue or pull request of the
+    workflow's own `repository_url`; and any of the three keys in a step's
+    metadata, which would be merged over the workflow's onto that step's task
+    unchecked.
+
+    A caller's own `description_source` is never kept: it is set to
+    `submitter` beside a description and dropped without one. Overwritten,
+    not refused, because a validated spec is stored as its dump and validated
+    again (a custom-prompt schedule's `params.spec`), and that dump carries
+    the value this function wrote."""
+    for step in steps:
+        named = sorted(set(getattr(step, "metadata", None) or {}) & set(ABOUT_METADATA_KEYS))
+        if named:
+            raise ValueError(
+                f"step {getattr(step, 'step_id', '?')} sets metadata {', '.join(named)}: a workflow's "
+                "description and feature are the workflow's, sent in its own metadata")
+    if not set(metadata) & set(ABOUT_METADATA_KEYS):
+        return metadata
+    checked = {k: v for k, v in metadata.items() if k != DESCRIPTION_SOURCE_KEY}
+    if "description" in metadata:
+        checked["description"] = _description(metadata["description"])
+        checked[DESCRIPTION_SOURCE_KEY] = DESCRIPTION_SOURCE_SUBMITTER
+    if "feature" in metadata:
+        checked["feature"] = _feature(metadata["feature"], repository_url)
+    return checked
+
+
 class AfterPullRequest(StrictModel):
     """One pull request a workflow waits for before its steps start (SPEED-D3).
 
@@ -448,6 +584,13 @@ class WorkflowCreate(StrictModel):
         # Task.repository_url without passing through TaskCreate.
         return check_repository_url(value)
 
+    @model_validator(mode="after")
+    def _about(self) -> "WorkflowCreate":
+        # After the fields, because a feature's link is held to the
+        # workflow's own `repository_url`.
+        self.metadata = check_workflow_about(self.metadata, self.repository_url, self.steps)
+        return self
+
 
 # --------------------------------------------------------------------------
 # Issue runs (#454)
@@ -484,6 +627,13 @@ class RunCreate(StrictModel):
     #: the platform's `merge_by_default`; the run records what was resolved.
     auto_merge: bool | None = None
     fix_rounds: int = Field(default=DEFAULT_FIX_ROUNDS, ge=MIN_FIX_ROUNDS, le=MAX_FIX_ROUNDS)
+    #: Add the optional security review after the fix (owner decision
+    #: 2026-11-04, docs/design/security-review-step.md): `IssueRun.security_review`,
+    #: compiled by `issueruns._with_security_review`. Off by default: an audit
+    #: costs more than a code review, and the run's caller opts in. A yes/no,
+    #: never a profile or a plugin: the step's profile and plugin are swarm-api's
+    #: (invariant 10). Refused while work contracts are off (`start_run`).
+    security_review: bool = False
     #: The Claude Code session that asked (SC-SESSION-SCOPE, `sessiontag`):
     #: stored on the run and copied onto its planner task and every workflow
     #: it starts, so the sc plugin counts the run as that session's own. A

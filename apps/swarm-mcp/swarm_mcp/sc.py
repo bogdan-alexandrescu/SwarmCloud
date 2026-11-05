@@ -4591,6 +4591,7 @@ def cmd_run(client: SwarmClient, args, out) -> int:
         plan_approval=args.plan_approval,
         auto_merge=args.auto_merge,
         fix_rounds=args.fix_rounds,
+        security_review=args.security_review,
     )
     if args.follow and not args.json:
         style = _run_style(args, out)
@@ -5552,6 +5553,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rn.add_argument("--fix-rounds", type=int, default=None, metavar="N",
                     help="CI fix rounds after the pull request opens (the API's default is 3)")
+    rn.add_argument("--security-review", action="store_true",
+                    help="add the security review step after the fix (off by default); the "
+                         "merge then needs its verdict too")
     rn.add_argument("--follow", action="store_true",
                     help="keep reading the run, one row per step, until it ends or waits for you")
     rn.add_argument("--interval", type=float, default=10.0, help="seconds between reads with --follow")

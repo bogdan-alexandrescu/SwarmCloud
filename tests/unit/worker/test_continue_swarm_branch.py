@@ -153,7 +153,7 @@ def _worker(worker_factory, monkeypatch, origin: Path, dispatch: dict):
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": FIX, "metadata": {DISPATCH_METADATA_KEY: dispatch}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     return worker, config, task
 
 
