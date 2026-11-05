@@ -87,11 +87,15 @@ init = rpc("initialize", {{"protocolVersion": "2025-06-18", "capabilities": {{}}
 proc.stdin.write(json.dumps({{"jsonrpc": "2.0", "method": "notifications/initialized"}}) + "\n")
 listed = rpc("tools/list")["result"]["tools"]
 def dump(value, path, call=None):
-    fh = open(path, "w")
-    if call is not None and call == PLAN.get("die_writing_results"):
-        os._exit(9)
-    json.dump(value, fh)
-    fh.close()
+    # Whole or not at all: the planner can stop this process at any moment, so
+    # each file is written under a sibling name and renamed onto its own, and a
+    # reader sees the old contents or the new, never a truncated file.
+    part = path + ".part"
+    with open(part, "w") as fh:
+        if call is not None and call == PLAN.get("die_writing_results"):
+            os._exit(9)
+        json.dump(value, fh)
+    os.replace(part, path)
 dump({{"argv": argv, "env": dict(os.environ), "cwd": os.getcwd(), "prompt": prompt,
       "tools": listed, "init": init, "home": os.environ.get("HOME")}}, {dump!r})
 out({{"type": "system", "subtype": "init", "note": "token " + os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")}})
