@@ -157,6 +157,26 @@ class StepBudget(StrictModel):
         return self
 
 
+class StepPluginCreate(StrictModel):
+    """One plugin a step loads, under its catalogue name in `plugins`
+    (docs/design/agent-plugins.md, "Per-step selection"): a mode and skills,
+    by name only (invariant 10). Checked against the catalogue, the step's
+    runner profile and the workspace's signed setting by
+    `plugins.check_step`, which names what it accepts in its refusal."""
+
+    mode: str = Field(min_length=1, max_length=32)
+    skills: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(max_length=64)
+
+
+def _plugins_field() -> Any:
+    # A step's plugins, `{name: {mode, skills}}`, owner's pick of 5 November
+    # 2026 (PR #3264): a field of the step, not a contract the caller
+    # writes. swarm-api carries them in the step's work contract
+    # (`plugins.with_step_plugins`), whose digest the signed dispatch block
+    # holds, so the worker trusts only what was signed with the step.
+    return Field(default=None, max_length=8)
+
+
 class TaskCreate(StrictModel):
     #: The ONLY execution knob a caller has. Image, command, resource spec and
     #: backend all come from the frozen catalogue keyed by this name.
@@ -187,6 +207,8 @@ class TaskCreate(StrictModel):
     #: classes in its refusal, rather than declared as a `Literal` here, for
     #: the same reason as `strategy` below.
     model_class: str | None = Field(default=None, max_length=32)
+    #: The plugins this task loads, by name (`StepPluginCreate`). None: none.
+    plugins: dict[str, StepPluginCreate] | None = _plugins_field()
     #: How this dispatch's work gets merged, and what carries it between steps.
     #: Validated in `validation.resolve_dispatch_options`, which names the
     #: accepted values in its refusal, rather than declared as a `Literal` here:
@@ -263,6 +285,8 @@ class WorkflowStepCreate(StrictModel):
     #: (#1435). Stored on `WorkflowStep.model_class` and on its task only when
     #: it differs from the profile's default.
     model_class: str | None = Field(default=None, max_length=32)
+    #: The plugins this step loads, by name, as `TaskCreate.plugins`.
+    plugins: dict[str, StepPluginCreate] | None = _plugins_field()
     #: upstream step_id -> artifact filename staged into this step's workspace.
     input_from: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
