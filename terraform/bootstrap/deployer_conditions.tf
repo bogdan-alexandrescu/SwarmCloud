@@ -324,7 +324,8 @@ locals {
   #   modules/iam/bindings.tf  plain      logging.logWriter, monitoring.metricWriter,
   #                                       cloudtrace.agent, serviceusage.serviceUsageConsumer,
   #                                       monitoring.viewer, swarmJobDispatcher,
-  #                                       swarmJobReaper
+  #                                       swarmJobReaper, aiplatform.user
+  #                                       (swarm-api, since #3346)
   #                            gke        swarmGkeDispatcher, swarmGkeReaper
   #                            firestore  datastore.user
   #   modules/iam/custom_roles.tf         secretmanager.secretVersionAdder (the
@@ -374,6 +375,12 @@ locals {
   # -------------------------------------------------------------------------
   deployer_grantable_project_roles = concat(
     [
+      # swarm-api's Claude Haiku call on Vertex AI, which writes a workflow's
+      # generated description (modules/iam/bindings.tf, owner's pick on
+      # #3346). It holds no setIamPolicy, so CI granting it widens nothing
+      # toward roles/owner. Until the owner applies this root, a CI apply of
+      # that grant is refused by the hasOnly() condition below.
+      "roles/aiplatform.user",
       "roles/cloudtrace.agent",
       "roles/datastore.user",
       "roles/datastore.viewer",
