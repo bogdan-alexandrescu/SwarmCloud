@@ -34,7 +34,6 @@ from google.api_core import exceptions as gexc
 
 from swarm_api import agent_questions
 
-from .conftest import auth_header
 from .fakes import FakeDocumentRef
 from .test_cancel_retries_contention import FaultyFirestore, FaultyTransaction
 from .test_task_answers_route import TASK, _answer, _asked, _stored
