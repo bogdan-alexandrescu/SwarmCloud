@@ -12,6 +12,7 @@ Firestore, no credentials, no emulator.
 
 from __future__ import annotations
 
+import secrets
 from datetime import timedelta
 
 import pytest
@@ -129,3 +130,17 @@ def test_the_task_detail_carries_contract_acceptance_when_the_step_has_one(clien
     assert "lease_id" not in acc
     plain = client.get("/v1/tasks/t_plain", headers=auth_header("alice"))
     assert plain.status_code == 200 and "contract_acceptance" not in plain.json()["task"]
+
+
+def test_a_stored_hunk_is_masked_again_wherever_it_is_served(client, db, clock):
+    leaked = "ghp_" + secrets.token_hex(18)
+    # A record an older build stored before its hunks were sanitized.
+    _owner_waiting(db, clock, "t_owner")[cr.ACCEPTANCE_FIELD][cr.HUNKS_FIELD] = {
+        "i0": f"+TOKEN = '{leaked}'\n"}
+    detail = client.get("/v1/approvals/contract:t_owner", headers=auth_header("alice"))
+    task = client.get("/v1/tasks/t_owner", headers=auth_header("alice"))
+    assert detail.status_code == 200 and task.status_code == 200
+    # MUTATION: serving the stored text without the redaction every served
+    # text goes through.
+    for acc in (detail.json()["contract_acceptance"], task.json()["task"]["contract_acceptance"]):
+        assert leaked not in acc[cr.HUNKS_FIELD]["i0"] and "TOKEN" in acc[cr.HUNKS_FIELD]["i0"]
