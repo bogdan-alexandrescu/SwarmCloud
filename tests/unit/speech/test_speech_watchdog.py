@@ -35,6 +35,11 @@ def test_power_off_after_ten_minutes_with_no_open_socket(now_after_boot, state, 
     assert w.should_power_off(BOOT + now_after_boot, BOOT, state) is off
 
 
+def test_an_open_socket_the_previous_boot_wrote_does_not_hold_the_new_boot():
+    # A stop and a start inside FRESH_SECONDS: the claim is fresh but not this boot's.
+    assert w.idle_since(BOOT + 30, BOOT, {"open": 1, "at": BOOT - 10}) == BOOT
+
+
 def test_the_watchdog_reads_the_file_the_server_writes(tmp_path):
     clock = iter([BOOT + 10, BOOT + 20, BOOT + 50]).__next__
     act = activity.Activity(tmp_path, clock=clock)

@@ -39,7 +39,7 @@ async def admit_only_token(token: str) -> str:
 
 
 def build(tmp_path: Path, *, stt=None, tts=None, models=None, download=None, config_error=None,
-          metrics_seconds: float = 3600.0, proc: Path | None = None):
+          metrics_seconds: float = 3600.0, proc: Path | None = None, verify_caller=admit_only_token):
     stt = stt or fk.FakeStt()
     tts = tts or fk.FakeTts()
     models = models if models is not None or config_error else fk.models()
@@ -48,7 +48,7 @@ def build(tmp_path: Path, *, stt=None, tts=None, models=None, download=None, con
                       vllm=lambda: {"queue": 0.0, "kv_cache_pct": 1.5})
     app = server.create_app(stt=stt, tts=tts, models=models, config_error=config_error,
                             model_root=tmp_path / "models", state_dir=tmp_path / "state",
-                            verify_caller=admit_only_token, download=download or fk.FakeDownload(),
+                            verify_caller=verify_caller, download=download or fk.FakeDownload(),
                             sampler=sampler, metrics_seconds=metrics_seconds)
     return app, stt, tts
 
@@ -124,6 +124,66 @@ def test_healthz_says_only_that_the_process_is_up(tmp_path):
 def test_the_caller_check_refuses_to_build_with_no_caller():
     with pytest.raises(RuntimeError, match="SWARM_SPEECH_CALLER"):
         server.google_caller_check(server.AUDIENCE, frozenset())
+
+
+# The real check, with google-auth's verifier faked: no credentials, no network.
+# Tenant jobs share the speech machine's subnet, so this allow-list is the gate.
+SWARM_API = "swarm-api@example.iam.gserviceaccount.com"
+
+
+def real_check(monkeypatch, outcome):
+    """An app behind google_caller_check whose verifier returns `outcome`'s
+    claims (or raises it), recording the audience each call pinned."""
+    from google.oauth2 import id_token
+
+    audiences = []
+
+    def verify_oauth2_token(token, request, audience=None):
+        audiences.append(audience)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return dict(outcome)
+
+    monkeypatch.setattr(id_token, "verify_oauth2_token", verify_oauth2_token)
+    return server.google_caller_check(server.AUDIENCE, frozenset({SWARM_API})), audiences
+
+
+def test_the_real_check_admits_swarm_api_with_the_audience_pinned(tmp_path, monkeypatch):
+    check, audiences = real_check(monkeypatch, {"email": SWARM_API, "email_verified": True})
+    app, *_ = build(tmp_path, verify_caller=check)
+    with TestClient(app) as client:
+        assert client.get("/v1/health", headers=AUTH).status_code == 200
+        with client.websocket_connect("/v1/stream", headers=AUTH) as ws:
+            assert read_until(ws, ready)[-1]["t"] == "ready"
+    assert audiences and set(audiences) == {"swarm-speech"} == {server.AUDIENCE}
+
+
+def refused_outcomes():
+    from google.auth import exceptions
+
+    return [
+        pytest.param({"email": "tenant-job@example.iam.gserviceaccount.com", "email_verified": True},
+                     id="another-account"),
+        pytest.param({"email_verified": True}, id="no-email"),
+        pytest.param({"email": SWARM_API, "email_verified": False}, id="unverified"),
+        pytest.param({"email": SWARM_API}, id="email-verified-missing"),
+        pytest.param(ValueError("bad signature"), id="value-error"),
+        pytest.param(exceptions.GoogleAuthError("wrong issuer"), id="google-auth-error"),
+        pytest.param(exceptions.TransportError("no certificates"), id="transport-error"),
+    ]
+
+
+@pytest.mark.parametrize("outcome", refused_outcomes())
+def test_the_real_check_refuses_everyone_else_with_403_and_1008(tmp_path, monkeypatch, outcome):
+    check, _ = real_check(monkeypatch, outcome)
+    app, *_ = build(tmp_path, verify_caller=check)
+    with TestClient(app) as client:
+        assert client.get("/v1/health", headers=AUTH).status_code == 403
+        with pytest.raises(WebSocketDisconnect) as refused:
+            with client.websocket_connect("/v1/stream", headers=AUTH):
+                pass
+        assert refused.value.code == 1008
+        assert app.state.engine.activity.open == 0
 
 
 # ---- the boot (§4.2) ----
