@@ -52,9 +52,38 @@ def test_a_cited_hunk_is_masked_before_it_is_stored(client, db):
         contract, verdict("REQ-1", item="i0"), verdict("REQ-2", item="i0"),
         hunks=[f"+TOKEN = '{leaked}'\n"]))
     assert response.status_code == 200, response.text
-    stored = db.docs[f"tasks/{VERDICT_TASK}"][cr.ACCEPTANCE_FIELD][cr.HUNKS_FIELD]["i0"]
+    stored = db.docs[f"tasks/{VERDICT_TASK}"][cr.ACCEPTANCE_FIELD][cr.HUNKS_FIELD].get("i0", "")
     # MUTATION: storing the hunk unmasked, so the record serves a credential.
+    # (Under the sanitizer rule the hunk is dropped whole, so nothing is kept.)
     assert leaked not in stored
+
+
+def test_a_cited_hunk_holding_a_credential_is_dropped_not_masked(client, db):
+    worker, contract, _ = setup(client, db)
+    leaked = "ghp_" + secrets.token_hex(18)
+    response = worker.post(client, OP, body(
+        contract, verdict("REQ-1", item="i0"), verdict("REQ-2", item="i1"),
+        changed=["src/config.py", "src/login/form.py"], hunks=[f"+TOKEN = '{leaked}'\n", HUNK]))
+    assert response.status_code == 200, response.text
+    stored = db.docs[f"tasks/{VERDICT_TASK}"][cr.ACCEPTANCE_FIELD][cr.HUNKS_FIELD]
+    # MUTATION: storing the hunk unmasked, so the record serves a credential;
+    # or masking it where the evidence path (`swarm_jev.sanitize`) drops the
+    # whole string, so the record keeps text Jev was never shown.
+    assert "i0" not in stored and leaked not in repr(stored)
+    assert stored == {"i1": HUNK}
+
+
+@pytest.mark.parametrize("path", [".env", "deploy/prod.tfvars", "config/secrets/db.yaml"])
+def test_a_cited_hunk_of_a_denied_path_keeps_its_path_alone(client, db, path):
+    worker, contract, _ = setup(client, db)
+    response = worker.post(client, OP, body(
+        contract, verdict("REQ-1", item="i0"), verdict("REQ-2", item="i0"),
+        changed=[path], hunks=["+DB_HOST=db.internal\n"]))
+    assert response.status_code == 200, response.text
+    acc = db.docs[f"tasks/{VERDICT_TASK}"][cr.ACCEPTANCE_FIELD]
+    # MUTATION: storing the content of a path whose content the evidence path
+    # never reads (`swarm_jev.sanitize.is_denied_path`).
+    assert acc[cr.HUNKS_FIELD] == {} and acc["changed"] == [path]
 
 
 @pytest.mark.parametrize("hunks, why", [
@@ -94,3 +123,18 @@ def test_a_reask_stores_the_paths_and_cited_hunks_of_its_own_state(db):
     # (whose `changed` was empty), or dropping the text it read.
     assert acc["changed"] == ["src/login/form.py", "README.md"]
     assert acc[cr.HUNKS_FIELD] == {"i0": HUNK}
+
+
+def test_a_reask_keeps_no_hunk_its_sanitizer_would_not_send(db):
+    seed_pending(db)
+    leaked = "ghp_" + secrets.token_hex(18)
+    judged = cr.ReaskResult(cr.OUTCOME_JUDGED, verdicts=(
+        cj.Verdict("REQ-1", cj.MET, "satisfied", "i0", 0.95),
+        cj.Verdict("REQ-2", cj.MET, "satisfied", "i1", 0.95)),
+        call_id="call-1", changed=(".env", "src/config.py"),
+        hunks=("+DB_HOST=db.internal\n", f"+TOKEN = '{leaked}'\n"), state_sha256="d" * 64)
+    minutes(db, Judge(judged), Clock(), 5)
+    acc = db.docs[f"tasks/{REASK_TASK}"][cr.ACCEPTANCE_FIELD]
+    # MUTATION: the re-ask storing its state's hunks as read from the forge,
+    # before the sanitizer the Jev client applies to what it sends.
+    assert acc[cr.HUNKS_FIELD] == {} and acc["changed"] == [".env", "src/config.py"]

@@ -368,7 +368,7 @@ function EmptyInbox({ kind, elsewhere, go }: { kind: string | null; elsewhere: n
         // the drawn words' hover and accessible description now, still named
         // from the chips' table (QA-048).
         <>
-          <Explained className="apl-every" tip={`No ${EVERY_KIND} in this workspace is waiting for a person.`}>
+          <Explained className="apl-every" tip={`No ${EVERY_KIND} waits for a person.`}>
             Nothing of any kind
           </Explained>{' '}
           is waiting: the inbox was read and is empty.

@@ -218,10 +218,12 @@ describe('item 1: the Steps table with the step card open', () => {
       }
     }
     expect(visited).toBe(LONG.length * 2)
-    // 90 s, not the config's 30: it measured 13.5 s alone on the SwarmCloud
-    // container (2026-11-05) and went past 30 s in a loaded CI shard (PR
-    // #3304, component tests 3/8). A timeout is not what this test asserts.
-  }, 90_000)
+    // Own budget, not the config's 30 s: it measured ~10 s on an idle
+    // container and 13.5 s alone on the SwarmCloud container (2026-11-05;
+    // cascades over ten rows at two widths), and went past 30 s in loaded CI
+    // shards (PR #3255; PR #3304, component tests 3/8) with nothing wrong.
+    // 120 s, as qa.u11b.workflows and qa.head carry; a hang still fails.
+  }, 120_000)
 
   // Browser QA D12 (2026-10-04) reversed item 1's wrap: ten names wrapped to
   // two and three lines at their hyphens. A name is one line now, cut, with

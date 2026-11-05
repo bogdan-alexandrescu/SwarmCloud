@@ -169,7 +169,7 @@ describe('the Approvals page', () => {
     // MUTATION: join the list with commas only ("answer, contract judgment is
     // waiting"). The last kind is a step waiting on its owner's contract
     // judgment (PR #3255).
-    expect(said).toMatch(/, spec, answer or contract judgment in this workspace is waiting for a person/)
+    expect(said).toMatch(/, spec, answer or contract judgment waits for a person/)
   })
 
   it('lists every kind oldest first, each row opening the item’s own page', async () => {

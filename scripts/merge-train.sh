@@ -53,7 +53,11 @@
 # last one is the train's tested tree; the tick checks that, and says so loudly
 # if it is not. Before the first merge it also checks main has not moved and
 # each pull request's head is still the one tested; if either changed, nothing
-# lands and the next train is built from scratch. It posts a `merge-train`
+# lands and the next train is built from scratch. A merge GitHub fails
+# transiently (a network error, a 502, 503 or 504, a rate limit) is retried,
+# three attempts in all, reading the pull request again before each so one
+# whose merge went through is counted once (merge_one); a refusal stops the
+# landing, and what had not landed boards a new train. It posts a `merge-train`
 # commit status on each head it lands, so the ruleset can require that context
 # (the runbook's change) and nothing reaches main without a green train.
 #
@@ -105,6 +109,10 @@
 #   hold --train <N> --body <file> [--dry-run]
 #       The deploy-starvation hold alone, for green train <N> whose body is
 #       <file>: `hold\t<why>` or `merge\t<why>` (GH_REPO, GH_TOKEN, RUN_URL).
+#   land --base <sha> --head <sha> --prs "<N:sha>..." --id <train id>
+#       The landing alone, for a green train (land_train): `rc\t<0|1|2>`,
+#       `landed\t<N...>`, `reason\t<why>` (GH_REPO, GH_TOKEN, APP_TOKEN,
+#       REPO_DIR, RUN_URL). A transient merge failure is retried (merge_one).
 #   tick
 #       One step of the train, as above. Needs GH_REPO, GH_TOKEN (the
 #       workflow's token: reads, comments, labels, statuses), APP_TOKEN (the
@@ -153,6 +161,13 @@ DEPLOY_RECENT_MINUTES="${MERGE_TRAIN_DEPLOY_RECENT_MINUTES:-60}"
 # at most 12 reads per train and 2 per held tick, against the workflow token's
 # 1,000 an hour for the repository.
 RELEASE_LOOK="${MERGE_TRAIN_RELEASE_LOOK:-10}"
+# A merge GitHub fails transiently (a timeout, a reset connection, a 502, 503
+# or 504, a rate limit) is tried again after each of these waits, in seconds:
+# three attempts in all. On 5 November 2026 one i/o timeout on a train's first
+# merge stopped a green train of five, and the same five ran every check again
+# in a new one: about 40 minutes for one network blip. The waits sum to 40
+# seconds, so a blip passes and a real outage still stops the tick quickly.
+MERGE_RETRY_WAITS="${MERGE_TRAIN_MERGE_RETRY_WAITS:-10 30}"
 
 # The header, up to the first line that is not a comment: a hand-kept line
 # range drifts every time the header grows.
@@ -875,6 +890,83 @@ start_train() {
   summary "train ${id} started on ${base}: $(hash_list "${included}")${suspects:+ (held back: $(hash_list "${suspects}"))}"
 }
 
+merge_failure_transient() {
+  # Whether gh's error ($1, a file) is GitHub or the network failing for a
+  # moment rather than GitHub refusing: a rate limit, a network error, or an
+  # HTTP 502, 503 or 504. Any other 4xx, and every message this does not
+  # know (a conflict, a missing required check, the head moved), is a refusal.
+  local err="$1"
+  if grep -Eiq 'rate limit|HTTP 429' "${err}"; then
+    return 0
+  fi
+  if grep -Eq 'HTTP 4[0-9][0-9]' "${err}"; then
+    return 1
+  fi
+  grep -Eiq 'timeout|timed out|connection reset|connection refused|TLS handshake|unexpected EOF|HTTP 50[234]|50[234] (Bad Gateway|Service Unavailable|Gateway Time-?out)' "${err}"
+}
+
+merge_one() {
+  # Squash-merges pull request $1 at head $2 under subject $3. A transient
+  # failure (merge_failure_transient) is retried after each wait in
+  # MERGE_RETRY_WAITS, and before each retry the pull request is read again:
+  # one that merged meanwhile (the merge went through and only its reply was
+  # lost) is landed, never merged twice, and one that closed or moved stops.
+  # Returns 0 when it landed; else 1 with LAND_REASON set. Each retry is
+  # logged in the run with its reason.
+  local n="$1" sha="$2" subject="$3"
+  local err="${WORK}/merge.err" view="${WORK}/merge-view.json"
+  local attempt=1 attempts wait why
+  # shellcheck disable=SC2086 # MERGE_RETRY_WAITS is a list of numbers.
+  set -- ${MERGE_RETRY_WAITS}
+  attempts=$(($# + 1))
+  while :; do
+    if gh_app pr merge "${n}" --repo "${GH_REPO}" --squash --match-head-commit "${sha}" \
+      --subject "${subject}" 2>"${err}" </dev/null; then
+      return 0
+    fi
+    why="$(head -c 500 "${err}" | tr '\n' ' ')"
+    if ! merge_failure_transient "${err}"; then
+      # After a lost reply, GitHub refuses the retry of a merge that went
+      # through: that one has landed.
+      if [[ "${attempt}" -gt 1 ]] && gh pr view "${n}" --repo "${GH_REPO}" --json state >"${view}" 2>/dev/null </dev/null \
+        && jq -e '.state == "MERGED"' "${view}" >/dev/null; then
+        summary "#${n} had merged although GitHub's reply to an earlier attempt was lost: counted as landed, not merged again"
+        return 0
+      fi
+      LAND_REASON="GitHub refused to merge #${n}: ${why}"
+      return 1
+    fi
+    # Read again even after the last attempt: a merge whose reply was lost
+    # has landed, and saying it did not would be wrong.
+    if [[ "${attempt}" -lt "${attempts}" ]]; then
+      wait="$1"
+      shift
+      echo "::warning::merging #${n} failed transiently (attempt ${attempt} of ${attempts}): ${why}; reading it again and retrying in ${wait}s"
+      summary "merge of #${n}, attempt ${attempt} of ${attempts}, failed transiently: ${why}; retrying in ${wait}s"
+      sleep "${wait}"
+    fi
+    if gh pr view "${n}" --repo "${GH_REPO}" --json state,headRefOid >"${view}" 2>/dev/null </dev/null; then
+      if jq -e '.state == "MERGED"' "${view}" >/dev/null; then
+        summary "#${n} had merged although GitHub's reply to attempt ${attempt} was lost: counted as landed, not merged again"
+        return 0
+      fi
+      if ! jq -e --arg sha "${sha}" '.state == "OPEN" and .headRefOid == $sha' "${view}" >/dev/null; then
+        LAND_REASON="#${n} changed while its merge was being retried (closed, or pushed to), after: ${why}"
+        return 1
+      fi
+    else
+      # Not read: the merge is still tried. --match-head-commit refuses a
+      # moved head, and GitHub refuses one already merged (read above).
+      why="${why}; reading #${n} again failed too"
+    fi
+    if [[ "${attempt}" -ge "${attempts}" ]]; then
+      LAND_REASON="GitHub could not merge #${n} in ${attempts} attempts, each failing transiently, the last with: ${why}"
+      return 1
+    fi
+    attempt=$((attempt + 1))
+  done
+}
+
 land_train() {
   # Lands a green train. Sets LANDED to the pull requests it merged. Returns 0
   # when every one landed, 1 when nothing landed because something changed
@@ -906,17 +998,13 @@ land_train() {
       -f state=success -f "context=${TRAIN_CONTEXT}" -f "target_url=${RUN_URL}" \
       -f "description=Green in merge train ${id}, on main at ${base:0:12}" >/dev/null
   done
-  local title err="${WORK}/merge.err"
+  local title
   for pair in ${pairs}; do
     n="${pair%%:*}"
     sha="${pair#*:}"
     gh pr view "${n}" --repo "${GH_REPO}" --json title >"${view}"
     title="$(jq -r .title "${view}")"
-    if ! gh_app pr merge "${n}" --repo "${GH_REPO}" --squash --match-head-commit "${sha}" \
-      --subject "${title} (#${n})" 2>"${err}"; then
-      LAND_REASON="GitHub refused to merge #${n}: $(head -c 500 "${err}" | tr '\n' ' ')"
-      return 2
-    fi
+    merge_one "${n}" "${sha}" "${title} (#${n})" || return 2
     LANDED="${LANDED:+${LANDED} }${n}"
   done
   # The point of the train: main's tree is the one that was tested.
@@ -1240,6 +1328,40 @@ cmd_hold() {
   fi
 }
 
+cmd_land() {
+  # The landing step alone, for one green train (land_train), as the tick
+  # runs it: prints its return code, what landed and why it stopped.
+  local base="" head="" pairs="" id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base) [[ $# -ge 2 ]] || die "--base needs a value"; base="$2"; shift 2 ;;
+      --head) [[ $# -ge 2 ]] || die "--head needs a value"; head="$2"; shift 2 ;;
+      --prs) [[ $# -ge 2 ]] || die "--prs needs a value"; pairs="$2"; shift 2 ;;
+      --id) [[ $# -ge 2 ]] || die "--id needs a value"; id="$2"; shift 2 ;;
+      *) die "land: unknown argument: $1" ;;
+    esac
+  done
+  is_sha "${base}" || die "land: --base is not a commit sha: ${base}"
+  is_sha "${head}" || die "land: --head is not a commit sha: ${head}"
+  [[ "${pairs}" =~ ^[1-9][0-9]*:[0-9a-f]{40}( [1-9][0-9]*:[0-9a-f]{40})*$ ]] || die "land: --prs is not a list of <N>:<sha>: ${pairs}"
+  [[ -n "${id}" ]] || die "land: no --id"
+  : "${GH_REPO:?GH_REPO is required}"
+  : "${APP_TOKEN:?APP_TOKEN (the merge App token) is required}"
+  : "${REPO_DIR:?REPO_DIR is required}"
+  : "${RUN_URL:?RUN_URL is required}"
+  retry_knobs_valid
+  WORK="$(mktemp -d)"
+  trap 'rm -rf "${WORK}"' EXIT
+  local rc=0
+  land_train "${base}" "${head}" "${pairs}" "${id}" || rc=$?
+  printf 'rc\t%s\nlanded\t%s\nreason\t%s\n' "${rc}" "${LANDED}" "${LAND_REASON}"
+}
+
+retry_knobs_valid() {
+  [[ "${MERGE_RETRY_WAITS}" =~ ^([0-9]+( [0-9]+)*)?$ ]] \
+    || die "MERGE_TRAIN_MERGE_RETRY_WAITS is not a list of seconds: ${MERGE_RETRY_WAITS}"
+}
+
 hold_knobs_valid() {
   is_number "${HOLD_MINUTES}" || die "MERGE_TRAIN_DEPLOY_HOLD_MINUTES is not a positive number: ${HOLD_MINUTES}"
   is_number "${DEPLOY_RECENT_MINUTES}" || die "MERGE_TRAIN_DEPLOY_RECENT_MINUTES is not a positive number: ${DEPLOY_RECENT_MINUTES}"
@@ -1256,6 +1378,7 @@ cmd_tick() {
   is_number "${MAX_PRS}" || die "MERGE_TRAIN_MAX_PRS is not a positive number: ${MAX_PRS}"
   is_number "${MAX_AGE_MINUTES}" || die "MERGE_TRAIN_MAX_AGE_MINUTES is not a positive number: ${MAX_AGE_MINUTES}"
   hold_knobs_valid
+  retry_knobs_valid
   WORK="$(mktemp -d)"
   trap 'rm -rf "${WORK}"' EXIT
 
@@ -1327,6 +1450,7 @@ main() {
     skips) cmd_skips "$@" ;;
     tell) cmd_tell "$@" ;;
     hold) cmd_hold "$@" ;;
+    land) cmd_land "$@" ;;
     judge) cmd_judge "$@" ;;
     plan) cmd_plan "$@" ;;
     compose) cmd_compose "$@" ;;
