@@ -517,6 +517,15 @@ NOT_SWITCHABLE_CODES = frozenset({
     # OAuth client's recorded as the one the installer writes into IAP's
     # programmatic-clients list, with a secret version added beside it.
     "client_id_invalid",
+    # Voice it's read-backs (docs/design/voice-it-own-speech.md §7, part of
+    # #2688): raised only by the /v1/voice/sessions/{id}/readbacks routes and
+    # the gate behind them, which that change introduces, so no existing
+    # caller can be refused by them. Continuing past either is the breach
+    # itself: a spoken cancel, merge, deploy, delete or approve run on a
+    # read-back that was never confirmed, was answered, superseded or expired,
+    # or was confirmed for another call or another session.
+    "readback_refused",
+    "readback_not_pending",
 })
 
 #: What the guard lets through without a switch.

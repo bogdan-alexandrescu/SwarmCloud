@@ -38,6 +38,7 @@ import { loadRunnerSizes, loadRunnerSizeVersions, previewRunnerSizes, restoreRun
 import { usePhoneTables } from './capacityPoll'
 import { Banner, Button, Card, Dialog, ToneMark, TypedConfirm } from './components'
 import type { ApiError, Result } from './fetch'
+import { InfoTip } from './People'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { poolLabel } from './types'
@@ -450,13 +451,19 @@ export function RunnerSizesScreen() {
   const [admits, setAdmits] = useState<Admits | null>(null)
   return (
     <div className="ur-page rs-page">
-      <PageHead title="Runner sizes">
+      {/* BGD's no-prose rule (2026-11-05): what the page edits, and when a save applies, behind the (i) beside the title. */}
+      <PageHead
+        title="Runner sizes"
+        info={
+          <InfoTip
+            about="Runner sizes"
+            tip="Each class’s CPU request, CPU limit and memory. A save is a new version: the next admission takes it, and a running agent keeps the size it was admitted with."
+          />
+        }
+      >
         <UrRefresh reads={[sizes, versions]} ageOf={[sizes]} />
       </PageHead>
       <SizesLead state={sizes.state} admits={admits} />
-      <p className="ur-sub">
-        Each class’s CPU request, CPU limit and memory. A save is a new version: the next admission takes it, and a running agent keeps the size it was admitted with.
-      </p>
       <UrRegion state={sizes.state} route="GET /v1/admin/runner-sizes" what="Runner sizes" plural onRetry={sizes.reload} lines={6}>
         {(doc) => (
           <RunnerSizesBody
@@ -660,9 +667,11 @@ function RunnerSizesBody({
       </Card>
       <div className="rs-save">
         <div className="c-field">
-          <label className="c-lbl" htmlFor={reasonId}>Reason</label>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <label className="c-lbl" htmlFor={reasonId}>Reason</label>
+            <InfoTip about="Reason" tip="Every version records who, when and why." />
+          </span>
           <textarea id={reasonId} className="c-inp" rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
-          <p className="c-hint">Every version records who, when and why.</p>
         </div>
         <Button kind="primary" busy={busy ? 'Saving…' : false} disabledReason={why} onClick={save}>
           Save
@@ -732,10 +741,15 @@ function ClassCard({
           <SizeField key={f} label={`${name} ${FIELD_WORDS[f]}`} value={typed[f] ?? ''} bound={bounds[f]} onChange={(v) => onType(f, v)} refusals={refusals.filter((r) => r.field === f)} />
         ))}
       </div>
-      <p className="rs-disk">Workspace {fmt(size.disk_gib)} GiB, a slice of memory: shown, not edited.</p>
+      <p className="rs-disk">
+        Workspace {fmt(size.disk_gib)} GiB <InfoTip about="Workspace" tip="A slice of memory: shown, not edited." />
+      </p>
       {size.live_split && (
         <div className="rs-split">
-          <h3 className="rs-split-h">Live browser split</h3>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <h3 className="rs-split-h">Live browser split</h3>
+            <InfoTip about="Live browser split" tip="The two requests and memories add up to the class’s, so the live pod’s units and bill are the class’s." />
+          </span>
           {ROLES.map((role) => {
             const sReq = num(typed[`live_split.${role}.cpu_request`]) ?? size.live_split![role].cpu_request
             const minCpu = role === 'worker' ? b.live_split.worker_min_cpu : b.live_split.display_min_cpu
@@ -754,7 +768,6 @@ function ClassCard({
               </div>
             )
           })}
-          <p className="rs-note">The two requests and memories add up to the class’s, so the live pod’s units and bill are the class’s.</p>
         </div>
       )}
       {loose.length > 0 && (
@@ -778,7 +791,8 @@ function ClassCard({
       </p>
       {followers.fixed.length > 0 && (
         <p className="rs-fixed">
-          These Cloud Run profiles do not follow this size: {followers.fixed.join(', ')}. Cloud Run fixes resources on the Job and bills its limit, so these keep the code default.
+          These Cloud Run profiles do not follow this size: {followers.fixed.join(', ')}.{' '}
+          <InfoTip about="Cloud Run profiles" tip="Cloud Run fixes resources on the Job and bills its limit, so these keep the code default." />
         </p>
       )}
       <RecentUse name={name} use={use} size={size} ratio={ratio} />
@@ -849,6 +863,12 @@ function RecentUse({ name, use, size, ratio }: { name: string; use: RunnerRecent
       <p className="rs-recent">
         Last 7 days, {use.attempts} attempt{use.attempts === 1 ? '' : 's'}: memory max peak {gib(use.memory_peak_gib_max)}, p95 {gib(use.memory_peak_gib_p95)}
         {use.oom_near_miss > 0 ? `, ${use.oom_near_miss} near-miss${use.oom_near_miss === 1 ? '' : 'es'}` : ''}.
+        {use.attempts < HINT_MIN_ATTEMPTS && (
+          <>
+            {' '}
+            <InfoTip about="the last 7 days’ readings" tip={`Fewer than ${HINT_MIN_ATTEMPTS} attempts in 7 days: the readings are shown without hints.`} />
+          </>
+        )}
       </p>
       <dl className="rs-readings">
         <div data-reading="cpu_mean_cores_median">
@@ -862,9 +882,7 @@ function RecentUse({ name, use, size, ratio }: { name: string; use: RunnerRecent
           </div>
         ))}
       </dl>
-      {use.attempts < HINT_MIN_ATTEMPTS ? (
-        <p className="rs-hints-few">Fewer than {HINT_MIN_ATTEMPTS} attempts in 7 days: the readings are shown without hints.</p>
-      ) : (
+      {use.attempts >= HINT_MIN_ATTEMPTS && (
         <ul className="rs-hints">
           {hints.length === 0 ? <li className="rs-hint">No pattern in these readings asks for a change.</li> : hints.map((h, i) => <li key={i} className="rs-hint">{h}</li>)}
         </ul>
@@ -898,7 +916,9 @@ function unitsAfter(classes: RunnerSizesPreview['classes'] | null, cls: string):
  * a 4-unit class and nothing else, so a save that left the class unable to
  * start a single agent was silent. The row carries the mark Pools gives the
  * same pool (Capacity.tsx `classifyPool`, `too small`, in the parked tone: no
- * wait clears it) and says so in words. A pool at limit 0 is not too small:
+ * wait clears it), whose tooltip names the class's weight against the pool's
+ * ceiling (the line under it went with BGD's no-prose rule, 2026-11-05). A
+ * pool at limit 0 is not too small:
  * it admits nothing of any class, and Pools marks it `limit 0`.
  */
 export function PoolsTable({
@@ -985,10 +1005,10 @@ function AdmitsCell({
   return (
     <span className="rs-admits">
       {figures}{' '}
-      <ToneMark tone="is-paused" title={`This pool's ceiling is ${pool.hard_limit} units, below what one ${cls} agent weighs, so it admits no ${cls} agent. Raise the ceiling or shrink the class.`}>
+      {/* The weight and the ceiling are the mark's tooltip, not a line under it (BGD's no-prose rule, 2026-11-05). */}
+      <ToneMark tone="is-paused" title={`One ${cls} agent weighs ${weighs}, so this pool admits no ${cls} agent. Raise the ceiling or shrink the class.`}>
         too small
       </ToneMark>
-      <span className="rs-admits-none">{`One ${cls} agent weighs ${weighs}: none of it can start.`}</span>
     </span>
   )
 }

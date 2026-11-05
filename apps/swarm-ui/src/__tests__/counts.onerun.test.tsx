@@ -208,7 +208,8 @@ describe('mock-up F1’s order: Over time, then Right now, then the ticks', () =
     await waitFor(() => expect(loadTenants).toHaveBeenCalled())
     const over = screen.getByRole('region', { name: 'Over time' })
     const now = screen.getByRole('region', { name: /^Right now/ })
-    expect(over.textContent ?? '').toMatch(/Not run yet\./)
+    // One short line since 2026-11-05 (BGD's standing no-prose rule); the rest is the title's tooltip.
+    expect(over.querySelector('.pot-notrun')?.textContent).toBe('Nothing has been read yet.')
     expect(over.querySelector('.pot-prov')?.textContent).toBe('not read yet')
     expect(now.querySelectorAll('.counts-notrun')).toHaveLength(2)
     expect(now.textContent ?? '').toContain('not run yet')

@@ -38,6 +38,11 @@ output "voice_id" {
   value       = local.voice_id
 }
 
+output "speech_id" {
+  description = "The account Voice it's speech machine runs as (terraform/infra/voice_speech.tf); created by terraform/bootstrap, and not on bootstrap_platform."
+  value       = local.speech_id
+}
+
 output "bootstrap_platform" {
   description = "Every platform account id terraform/bootstrap creates (platform_service_accounts.tf), sorted."
   value       = local.bootstrap_platform

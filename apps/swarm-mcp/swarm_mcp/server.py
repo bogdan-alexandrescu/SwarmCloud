@@ -1980,6 +1980,14 @@ TOOLS: list[dict[str, Any]] = [
                 "plan_approval": {"type": "string", "enum": ["required", "auto"], "default": "required"},
                 "auto_merge": {"type": "boolean", "default": False},
                 "fix_rounds": {"type": "integer", "minimum": 1, "maximum": 5},
+                "security_review": {
+                    "type": "boolean", "default": False,
+                    "description": (
+                        "Add the security review step after the fix (the security-audit "
+                        "skill over the pull request's diff); the merge then needs its "
+                        "verdict too. Off by default: it costs more than a code review."
+                    ),
+                },
                 "model_class": {
                     **_MODEL_CLASS_SCHEMA,
                     "description": (
@@ -4079,6 +4087,11 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     browser = progress.browser_words(task)
     if browser is not None:
         described["browser"] = browser
+    # A LIVE-BROWSER RUN THAT NEVER USED IT (2026-11-05): one line, advice
+    # only; no key for true, null or a non-browser profile.
+    unused = progress.browser_unused_line(task)
+    if unused is not None:
+        described["browser_unused"] = unused
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
 
@@ -4642,6 +4655,7 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             plan_approval=approval,
             auto_merge=_flag(args, "auto_merge"),
             fix_rounds=fix_rounds,
+            security_review=_flag(args, "security_review"),
             **({"model_class": model_class} if model_class is not None else {}),
         )
         return json.dumps(_run_summary(client, run), indent=2, default=str)
@@ -5424,7 +5438,12 @@ def _call(
         # what the agent actually produced.
         for task in report["tasks"]:
             if task["read"] == "ok" and task["terminal"]:
-                task["result"] = describe_task(client.task(task["task_id"]), client)
+                read = client.task(task["task_id"])
+                task["result"] = describe_task(read, client)
+                # A live-browser run that never used it (2026-11-05).
+                unused = progress.browser_unused_line(read)
+                if unused is not None:
+                    task["result"]["browser_unused"] = unused
         # The same position as `cursor`, as one token, for a caller that would
         # rather not copy a nested object back by hand.
         report["since"] = progress.encode_since(
@@ -5450,10 +5469,13 @@ def _call(
             # (SC-ROWS), which `/sc status` prints first on the task's line.
             # `waiting`/`waiting_line` (#1782): why a waiting task waits, in
             # the API's words, printed after the state; absent otherwise.
-            rows.append(with_console(
-                {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
-                 "masked": masked_counts(task), **progress.waiting_fields(task)}, task
-            ))
+            row = {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
+                   "masked": masked_counts(task), **progress.waiting_fields(task)}
+            # A FINISHED live-browser run that never used it (2026-11-05).
+            unused = progress.browser_unused_line(task)
+            if unused is not None:
+                row["browser_unused"] = unused
+            rows.append(with_console(row, task))
         return json.dumps(rows, indent=2)
 
     if name == "swarm_wait":
@@ -5890,6 +5912,9 @@ def _call(
             publish_to_pr=publish_to_pr,
             # Only a whole spec carries the workflow switches (2026-11-01).
             dispatch=fields.get("dispatch"),
+            # Nor a description or a feature (BGD, 2026-11-04).
+            description=fields.get("description"),
+            feature=fields.get("feature"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,
@@ -5937,6 +5962,12 @@ def _call(
                 describe=_describe_step if name == "swarm_workflow_result" else None,
             ),
         )
+        if name == "swarm_workflow_result":
+            # The steps that ran on a live browser and never used it, once
+            # each (2026-11-05); no key when there is none.
+            unused = workflows.browser_unused_steps(envelope)
+            if unused:
+                reported["browser_unused"] = unused
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
 

@@ -9,7 +9,10 @@
 #   2. application.yml's push run of the commit on main concluded `cancelled`
 #      (#2438: one concurrency group on main, newest wins);
 #   3. its `build images` job neither succeeded nor failed in that run
-#      (`cancelled`, `skipped`, or absent).
+#      (`cancelled`, `skipped`, or absent) -- or, since the build stopped
+#      waiting for main's tests (owner pick, PR 3344), it succeeded and a
+#      test job that gates the release (CI_RELEASE_TEST_JOBS, common.sh)
+#      neither passed nor failed: cancelled, or never ran.
 #
 # WHY IT WAITS (#2664). The images stage fails the moment `build images` is
 # cancelled, but GitHub takes seconds to finish cancelling the rest of the run:
@@ -18,8 +21,8 @@
 # superseded commit failed red with "no newer commit superseded it". So while
 # main is ahead and the run has not concluded, this reads it again every
 # --poll seconds, for at most --wait seconds. It stops waiting early when
-# `build images` itself succeeded or failed, which no later conclusion turns
-# into a supersession. A run that is still unconcluded at the deadline, like
+# `build images` or a test that gates the release failed, which no later
+# conclusion turns into a supersession. A run that is still unconcluded at the deadline, like
 # any API answer it cannot read, is NOT superseded: the release stays red
 # rather than guess green over a real failure.
 #
@@ -59,6 +62,17 @@ not_superseded() { log "not superseded: $1"; exit 1; }
 status="$(gh api "repos/${SUP_REPO}/compare/${SUP_SHA}...main" --jq '.status' 2>/dev/null)" || status=""
 [[ "${status}" == ahead ]] || not_superseded "main is not ahead of ${SUP_SHA} (compare: ${status:-unreadable})"
 
+# One read of the run's jobs answers both questions; see the loop. The names
+# go in as a JSON array literal: `gh api --jq` takes no --arg.
+TEST_JOBS_JSON="$(printf '%s\n' "${CI_RELEASE_TEST_JOBS[@]}" | jq -R . | jq -cs .)"
+# shellcheck disable=SC2016  # jq's $names, not the shell's
+JOBS_JQ='(.jobs // []) as $all
+  | ([ $all[] | select(.name == "build images") ][0].conclusion // "none") as $b
+  | [ '"${TEST_JOBS_JSON}"'[] as $n | [ $all[] | select(.name == $n) ] ] as $g
+  | (if any($g[]; any(.[]; .conclusion != null and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "cancelled")) then "failed"
+     elif all($g[]; length > 0 and all(.[]; .conclusion == "success" or .conclusion == "skipped")) then "passed"
+     else "unfinished" end) as $t
+  | "\($b) \($t)"'
 runs_path="repos/${SUP_REPO}/actions/workflows/application.yml/runs?head_sha=${SUP_SHA}&branch=main&event=push&per_page=1"
 deadline=$((SECONDS + SUP_WAIT))
 while :; do
@@ -66,14 +80,27 @@ while :; do
   run_id="${run%% *}"
   conclusion="${run#* }"
   [[ -n "${run_id}" ]] || not_superseded "no application push run of ${SUP_SHA} on main"
-  build="$(gh api "repos/${SUP_REPO}/actions/runs/${run_id}/jobs?per_page=100" \
-    --jq '[.jobs[] | select(.name == "build images")][0].conclusion // "none"' 2>/dev/null)" || build=""
+  # "<build images' conclusion> <the release's tests>": the tests are
+  # `failed` when one of CI_RELEASE_TEST_JOBS (common.sh) concluded anything
+  # but success, skipped or cancelled, `passed` when every one concluded
+  # success or skipped, and `unfinished` otherwise (cancelled, running or
+  # absent).
+  jobs="$(gh api "repos/${SUP_REPO}/actions/runs/${run_id}/jobs?per_page=100" \
+    --jq "${JOBS_JQ}" 2>/dev/null)" || jobs=""
+  build="${jobs%% *}"
+  tests="${jobs#* }"
+  [[ "${jobs}" == *" "* ]] || tests=""
   if [[ -n "${conclusion}" ]]; then
     break
   fi
-  case "${build}" in
-    success|failure) not_superseded "build images in application run ${run_id} concluded ${build}" ;;
-  esac
+  # A failure is final whatever the run concludes, and so is a build that
+  # succeeded with its tests passed. A build that succeeded alone is not,
+  # since the owner's pick on PR 3344: the tests that gate the release run
+  # beside it, and a newer push may yet cancel them.
+  [[ "${build}" != failure ]] || not_superseded "build images in application run ${run_id} concluded failure"
+  [[ "${tests}" != failed ]] || not_superseded "a test job that gates the release failed in application run ${run_id}"
+  [[ "${build}" != success || "${tests}" != passed ]] \
+    || not_superseded "build images and the tests that gate the release all passed in application run ${run_id}"
   if (( SECONDS >= deadline )); then
     not_superseded "application run ${run_id} had not concluded after ${SUP_WAIT}s"
   fi
@@ -82,7 +109,15 @@ while :; do
 done
 
 [[ "${conclusion}" == cancelled ]] || not_superseded "application run ${run_id} concluded ${conclusion}"
+[[ "${tests}" != failed ]] || not_superseded "a test job that gates the release failed in application run ${run_id}"
 case "${build}" in
   cancelled|skipped|none) printf '%s\n' "${run_id}" ;;
+  # Built, and the newer push cancelled the tests that gate its release before
+  # they passed: the stage refused it for that, and the newer commit ships it.
+  # Tests that passed, or failed, leave the stage's failure its own.
+  success)
+    [[ "${tests}" == unfinished ]] \
+      || not_superseded "build images in application run ${run_id} concluded success and the tests that gate the release ${tests:-could not be read}"
+    printf '%s\n' "${run_id}" ;;
   *) not_superseded "build images in application run ${run_id} concluded ${build:-unreadable}" ;;
 esac

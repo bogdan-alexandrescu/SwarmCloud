@@ -23,6 +23,7 @@ import {
   type StepUsage,
   type WorkflowBoard,
   type WorkflowUsage,
+  loadAttempts as loadAttemptRows,
 } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { AwaitInputCard } from './AwaitInputCard'
@@ -132,11 +133,13 @@ import {
   type WorkflowPullRequest,
   type WorkflowView,
 } from './stepviews'
-import { errorHeading, type ApiError, type Result } from './fetch'
+import { errorHeading, route, type ApiError, type Result } from './fetch'
+import { ElsewhereNotice, useElsewhere } from './elsewhere'
 import { STATE_MARK, StateMark } from './marks'
 import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, type ChipTone } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun, earlierAttemptRan } from './StopRun'
+import { StepCard } from './StepCard'
 import { LiveThumb, showsLiveThumb, type OpenLive } from './LiveThumb'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
 import {
@@ -190,10 +193,8 @@ import './styles/workflows.css'
 import './styles/names.css'
 import { ownerQuestionsHold } from './Handoff'
 import { Inspector, startsFolded, useIsPhone } from './work/Inspector'
-import { AgentSplit } from './AgentSplit'
-import type { TaskPane } from './App'
 import { listNeedItems, workflowNeedItems } from './work/listNeeds'
-import { NeedsYou, mergeHeldBecause, type MergeNeed, type NeedKind, type NeedSelection } from './work/NeedsYou'
+import { NeedsYou, StepRetryButton, mergeHeldBecause, type MergeNeed, type NeedKind, type NeedSelection } from './work/NeedsYou'
 import { StageGrid, chipKindOf, chipTimeOf, pullRequestOf, stageGridOf, tallyOf, walkStage } from './work/StageGrid'
 import { LineageStrip, lineageOf } from './work/Lineage'
 import {
@@ -2337,80 +2338,6 @@ function useSeen<T extends Element>(): [(node: T | null) => void, boolean] {
   return [setNode, seen]
 }
 
-/** Where the step's agent stands in the inspector: the agent's own pane, as its address would name it. */
-type StepAgentAt = { pane: TaskPane; file: string | null; artifact: string | null; theater: boolean }
-
-const STEP_AGENT_PANES: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser']
-
-/**
- * An address under the agent's own (`work/task/<id>/<pane>[/<name>][?theater=1]`)
- * as the pane it names; null for an address elsewhere.
- */
-export function stepAgentAt(base: string, to: string): StepAgentAt | null {
-  const bare = to.replace(/^[#/]+/, '')
-  if (bare !== base && !bare.startsWith(`${base}/`) && !bare.startsWith(`${base}?`)) return null
-  const [path = '', search = ''] = bare.slice(base.length).split('?')
-  const [seg = '', ...rest] = path.split('/').filter((s) => s !== '')
-  const pane = (STEP_AGENT_PANES as readonly string[]).includes(seg) ? (seg as TaskPane) : 'detail'
-  const name = rest.length === 0 ? null : decodeURIComponent(rest.join('/'))
-  return {
-    pane,
-    file: pane === 'changes' ? name : null,
-    artifact: pane === 'artifacts' ? name : null,
-    theater: pane === 'browser' && new URLSearchParams(search).get('theater') === '1',
-  }
-}
-
-/**
- * THE PICKED STEP'S AGENT, IN THE INSPECTOR (graph-notes.md: "the inspector
- * of one agent is the console's own agent view"; map row W6, frame
- * graph-workflow-open). The Agents split's own view -- its header with Take
- * control, Stop and Copy link, its tabs (Details, Browser, Logs, Changes,
- * Children, Attempts, Artifacts, Checkpoints) and the open tab -- with its
- * reads and polling unchanged, so watching the step's browser or reading its
- * log no longer leaves the workflow page and the grid stays in view.
- *
- * The split is address-driven: its tabs `go` to `work/task/<id>/<pane>`.
- * Here those addresses are held as the inspector's own state rather than
- * written to the bar, because the page's address is the workflow's; any
- * other address the split asks for (its close) closes the step.
- */
-function StepAgent({ taskId, workflowId, onClose }: { taskId: string; workflowId: string; onClose: () => void }) {
-  // The agent's own address, as App writes it for the Agents split (`WORK`).
-  const base = `work/task/${encodeURIComponent(taskId)}`
-  const [at, setAt] = useState<StepAgentAt>({ pane: 'detail', file: null, artifact: null, theater: false })
-  // Until a tab is chosen the agent opens where the Agents split opens it (a
-  // running live browser on Browser); once chosen, Details is a choice too.
-  const [named, setNamed] = useState(false)
-  const go = useCallback(
-    (to: string) => {
-      const next = stepAgentAt(base, to)
-      if (next === null) {
-        onClose()
-        return
-      }
-      setAt(next)
-      setNamed(true)
-    },
-    [base, onClose],
-  )
-  return (
-    <div className="wfp-agent">
-      <AgentSplit
-        taskId={taskId}
-        pane={at.pane}
-        artifact={at.artifact}
-        file={at.file}
-        theater={at.theater}
-        detailNamed={named && at.pane === 'detail'}
-        closeTo={`workflows/${encodeURIComponent(workflowId)}`}
-        go={go}
-        base={base}
-      />
-    </div>
-  )
-}
-
 /**
  * The inspector for the picked step, with its own clock.
  *
@@ -2482,6 +2409,51 @@ function InspectorSlot({
           href: `/workflows/${encodeURIComponent(workflow.workflow_id)}/changes?${withChangesAt('', { step: row.step.step_id, file: null })}`,
           ...changesCount(stepTask),
         }
+  if (page) {
+    // THE WORKFLOW PAGE'S CARD IS THE ACTION BAR AND STAT TILES (owner's pick,
+    // 2026-11-05, StepCard.tsx): Stop on its bar while the step can stop,
+    // Retry in its place once it failed, and the review verdict, merge
+    // checklist and await-input form behind its Details fold.
+    const parts = stepCardParts(workflow, row.step, state, taskById)
+    const failed = stepTask !== null && (stepTask.state === 'FAILED' || stepTask.state === 'DEAD_LETTERED')
+    return (
+      <StepCard
+        workflowId={workflow.workflow_id}
+        row={row}
+        task={stepTask}
+        taskState={state.kind === 'state' ? state.state : null}
+        changes={changes}
+        now={now}
+        load={loadAttempts ?? loadAttemptRows}
+        siblings={refs}
+        siblingIndex={index}
+        onSibling={onSibling ?? (() => {})}
+        stop={
+          parts.stoppable && parts.task !== null ? (
+            <StopRun
+              task={parts.task}
+              what={`step ${row.step.step_id}`}
+              workflow={workflow}
+              step={row.step}
+              taskById={taskById}
+              reload={reload}
+              variant="panel"
+              // `Stop`, AS EVERY STOP ON THE PAGE SAYS IT (overview-agents-83).
+              label="Stop"
+            />
+          ) : null
+        }
+        retry={
+          failed ? (
+            <StepRetry workflowId={workflow.workflow_id} stepId={row.step.step_id} onChanged={reload} />
+          ) : null
+        }
+        extras={<StepCardExtras workflow={workflow} step={row.step} state={state} taskById={taskById} reload={reload} now={now} />}
+        hasExtras={parts.hasExtras}
+        leadInView={leadInView}
+      />
+    )
+  }
   return (
     <StepInspector
       workflowId={workflow.workflow_id}
@@ -2530,9 +2502,64 @@ function InspectorSlot({
 }
 
 /**
- * WHAT THE PAGE'S STEP CARD ADDS (workflows.html B, agent-detail-2.html A3):
- * Stop step beside Open agent, then a review step's verdict card and the merge
- * step's checklist, each drawn only from what the step's tasks recorded.
+ * WHAT THE PAGE'S STEP CARD HOLDS BESIDE ITS FIGURES: the step's task, whether
+ * the bar draws its Stop, and whether the Details fold has a review verdict,
+ * merge checklist or await-input form to carry (`StepCardExtras` draws them).
+ */
+function stepCardParts(
+  workflow: Workflow,
+  step: WorkflowStep,
+  state: StepState,
+  taskById: ReadonlyMap<string, Task> | null,
+): { task: Task | null; stoppable: boolean; hasExtras: boolean } {
+  const tasks = stepTasksOf(workflow, taskById)
+  const task = state.kind === 'state' ? state.task : null
+  const verdict = task === null ? null : verdictFor(task.id, tasks)
+  const reviewed = task !== null && verdict === null && isReviewedBy(task.id, tasks)
+  const mergeCard = task === null ? null : mergeCardOf(task, tasks)
+  const merge = task === null || mergeCard !== null ? null : mergeOf(task)
+  const awaits = step.runner_profile === AWAIT_INPUT_PROFILE && !!step.task_id
+  // NO STOP ON A PARKED STEP NEVER ATTEMPTED (graph review, 2026-11-05): it
+  // holds no lease and runs nothing, so a stop would only cancel the step and
+  // every step after it, before any of them had a chance to run.
+  const stoppable = task !== null && !(task.state === 'PARKED' && (task.attempt_count ?? 0) === 0 && !earlierAttemptRan(task))
+  return { task, stoppable, hasExtras: verdict !== null || reviewed || mergeCard !== null || merge !== null || awaits }
+}
+
+/** Every step's task the board read, each carrying its step id. */
+function stepTasksOf(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): Task[] {
+  return taskById === null
+    ? []
+    : workflow.steps.flatMap((s) => {
+        const t = s.task_id === null || s.task_id === undefined ? undefined : taskById.get(s.task_id)
+        return t === undefined ? [] : [{ ...t, step_id: t.step_id ?? s.step_id }]
+      })
+}
+
+/**
+ * RETRY ON THE CARD'S BAR (owner's pick, 2026-11-05): the Needs-you box's own
+ * Retry, which asks first and names the steps it re-ran; a refusal is said
+ * beside it.
+ */
+function StepRetry({ workflowId, stepId, onChanged }: { workflowId: string; stepId: string; onChanged: () => void }) {
+  const [failed, setFailed] = useState<ApiError | null>(null)
+  return (
+    <>
+      <StepRetryButton workflowId={workflowId} stepId={stepId} name={stepId} onFailed={setFailed} onChanged={onChanged} />
+      {failed !== null && (
+        <span className="sc-retry-err" role="alert" title={failed.message}>
+          Retry refused
+        </span>
+      )}
+    </>
+  )
+}
+
+/**
+ * WHAT THE PAGE'S STEP CARD CARRIES UNDER DETAILS (workflows.html B,
+ * agent-detail-2.html A3): a review step's verdict card, the merge step's
+ * checklist and an await-input step's form, each drawn only from what the
+ * step's tasks recorded.
  */
 function StepCardExtras({
   workflow,
@@ -2549,13 +2576,7 @@ function StepCardExtras({
   reload: () => void
   now: number
 }) {
-  const tasks =
-    taskById === null
-      ? []
-      : workflow.steps.flatMap((s) => {
-          const t = s.task_id === null || s.task_id === undefined ? undefined : taskById.get(s.task_id)
-          return t === undefined ? [] : [{ ...t, step_id: t.step_id ?? s.step_id }]
-        })
+  const tasks = stepTasksOf(workflow, taskById)
   const task = state.kind === 'state' ? state.task : null
   const verdict = task === null ? null : verdictFor(task.id, tasks)
   const reviewed = task !== null && verdict === null && isReviewedBy(task.id, tasks)
@@ -2563,33 +2584,8 @@ function StepCardExtras({
   // in place of the checklist below, which reads the retired design's block.
   const mergeCard = task === null ? null : mergeCardOf(task, tasks)
   const merge = task === null || mergeCard !== null ? null : mergeOf(task)
-  // NO STOP ON A PARKED STEP NEVER ATTEMPTED (graph review, 2026-11-05): it
-  // holds no lease and runs nothing, so a stop would only cancel the step and
-  // every step after it, before any of them had a chance to run.
-  const stoppable = task !== null && !(task.state === 'PARKED' && (task.attempt_count ?? 0) === 0 && !earlierAttemptRan(task))
   return (
     <>
-      {task !== null && stoppable && (
-        <div className="wf-inspect-acts" role="group" aria-label="Stop step">
-          <StopRun
-            task={task}
-            what={`step ${step.step_id}`}
-            workflow={workflow}
-            step={step}
-            taskById={taskById}
-            reload={reload}
-            // `Stop step`, IN THE PAGE HEAD'S BUTTON (visual QA VQ-015;
-            // workflows.html B): the card's action was StopRun's small
-            // lower-case `stop` beside the head's `Cancel workflow`. The
-            // panel variant is the danger outline at the head's size; the
-            // card has the width for its in-place confirmation.
-            variant="panel"
-            // `Stop`, AS EVERY STOP ON THE PAGE SAYS IT (overview-agents-83):
-            // the node's, the head's `Stop workflow`, and Agents'.
-            label="Stop"
-          />
-        </div>
-      )}
       {verdict !== null && task !== null && <VerdictCard verdict={verdict} review={task.id} />}
       {reviewed && (
         <p className="wf-verdict is-pending">
@@ -6533,14 +6529,7 @@ function WorkflowPage({
     // ... could not be read on its own either" for an id that does not
     // exist, where the agents pane says `Not found · HTTP 404`.
     const miss = (board as PageBoard).pageMiss
-    if (miss !== undefined && miss.kind === 'not_found') {
-      return (
-        <p className="wfp-missing">
-          <strong>Not found · HTTP {miss.httpStatus ?? 404}</strong>. No workflow <Id title={id}>{id}</Id> exists in this
-          tenant. <a href={listHref(query)}>Back to the list</a>
-        </p>
-      )
-    }
+    if (miss !== undefined && miss.kind === 'not_found') return <WorkflowNotHere id={id} miss={miss} query={query} />
     return (
       <p className="wfp-missing">
         Workflow <Id title={id}>{id}</Id> is not in this read: the list reads the newest 100 workflows, and it could
@@ -6561,6 +6550,30 @@ function WorkflowPage({
       usage={usage}
       changesAt={changesAt}
       onChangesAt={onChangesAt}
+    />
+  )
+}
+
+/**
+ * A WORKFLOW 404, ASKED OF THE PERSON'S OTHER WORKSPACES (the owner's pick of
+ * 2026-11-04, "offer to switch"; elsewhere.tsx). A link from another of their
+ * workspaces says where the workflow is and offers the switch; one that is
+ * nowhere keeps the 404 sentence it always had.
+ */
+function WorkflowNotHere({ id, miss, query }: { id: string; miss: ApiError; query: WorkflowQuery }) {
+  const found = useElsewhere(route('/v1/workflows/{id}', { id }))
+  const back = listHref(query)
+  return (
+    <ElsewhereNotice
+      found={found ?? { kind: 'looking' }}
+      what="workflow"
+      back={{ href: back }}
+      notFound={
+        <p className="wfp-missing">
+          <strong>Not found · HTTP {miss.httpStatus ?? 404}</strong>. No workflow <Id title={id}>{id}</Id> exists in this
+          tenant. <a href={back}>Back to the list</a>
+        </p>
+      }
     />
   )
 }
@@ -6836,13 +6849,6 @@ function Board({
             reload={reload}
           />
         </>
-      )}
-      {step !== null && step.task_id && (
-        // THE STEP'S AGENT, under the step's own card (its verdict, merge
-        // checklist, await-input form and the same-step scrubber): keyed by
-        // the task, so walking to another stage opens that step's agent on
-        // its own first tab.
-        <StepAgent key={step.task_id} taskId={step.task_id} workflowId={id} onClose={closeStep} />
       )}
     </Inspector>
   )

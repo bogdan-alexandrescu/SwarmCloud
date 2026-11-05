@@ -73,8 +73,12 @@ log = logging.getLogger(__name__)
 #: package; tests/unit/control_plane/test_jev_account.py holds them equal.
 #: MEASURED_TOKENS_PER_CALL is imported from `swarm_jev.client`, where alone
 #: it is stated (owner, 4 November 2026).
-MAX_CALLS_PER_TASK = 8
-MAX_INPUT_TOKENS_PER_TASK = 120_000
+#: 9 calls and 150,000 tokens: today's 8 and 120,000 plus JC2's reserve of one
+#: call and 30,000 tokens ON TOP (jev-contract.md, the owner's answer 8). The
+#: worker's ledger keeps the reserve from `jev_decide` and J0-J5; the grant
+#: only has to hold it.
+MAX_CALLS_PER_TASK = 9
+MAX_INPUT_TOKENS_PER_TASK = 150_000
 #: How long a reservation is held without a call renewing it. 6 hours BECAUSE
 #: a step's time limit is at most a few hours and every recorded call renews
 #: it; past it the worker is gone, and a held remainder would starve the

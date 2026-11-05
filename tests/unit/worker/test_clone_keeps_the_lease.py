@@ -200,7 +200,7 @@ def _ready_to_clone(db, worker_factory, monkeypatch, clock: _Clock):
     )
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     worker._task = {"task_id": "task_1"}
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     # The beat before the clone, as `_prepare` makes it after the restore.
     worker._heartbeat()
     beats: list[float] = [clock()]

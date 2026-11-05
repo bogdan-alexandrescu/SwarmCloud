@@ -414,6 +414,25 @@ owner_pinned_job_variable() {
   return 1
 }
 
+# THE TESTS THAT GATE A RELEASE (owner pick on PR 3344, issue 3336: "decouple
+# build, gate the release"). Until then application.yml's `build images`
+# needed these jobs, so a commit whose tests failed was never built and never
+# released -- and the build started 18 to 44 minutes after its push, behind
+# them. Now it starts at once, alongside them, and the release gates instead:
+# scripts/lib/ci-built-images.sh hands a release the build's record only once
+# every job named here, in the same run, concluded success or skipped (by its
+# own paths), and refuses it when one failed or was cancelled.
+# scripts/lib/build-superseded.sh reads the same list. The same three jobs the
+# build needed, by their names in application.yml (`python`, `shell`,
+# `manifests`); tests/unit/scripts/test_ci_built_images.py holds the names to
+# application.yml.
+# shellcheck disable=SC2034  # consumed by the scripts that source this library
+CI_RELEASE_TEST_JOBS=(
+  "format / unit tests"
+  "shellcheck"
+  "kubernetes manifests"
+)
+
 # THE PROMOTION MARK. Moving `:<channel>` leaves no trace of the digest it
 # moved away from, so nothing could answer "did some earlier release promote
 # this digest?". push-images.sh therefore also tags every digest it promotes

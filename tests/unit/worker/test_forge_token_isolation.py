@@ -219,7 +219,7 @@ def run_attempt(
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": task_id, "metadata": {"dispatch": dispatch}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
 
     cloned = worker._maybe_clone(task)
     assert cloned is not None and cloned["commit"], "the clone did not land"
@@ -958,9 +958,9 @@ def test_publish_is_refused_when_the_worker_memory_is_not_protected(
         worker.memory = _failed_memory()
         real_token = worker._git_token
 
-        def counting_token():
+        def counting_token(**kwargs):
             ran["token"] += 1
-            return real_token()
+            return real_token(**kwargs)
 
         worker._git_token = counting_token
 

@@ -215,8 +215,14 @@ The permissions it needs, on every repository a tenant submits issues from, are
 tabled in [multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed):
 `Contents` and `Pull requests` read/write (unchanged, for the agents' push and
 the pull request), **`Issues: Read and write`** for the two comments,
-`Checks: Read` and `Commit statuses: Read` for the CI loop, and optionally
-`Actions: Read` for a failing job's log tail.
+`Checks: Read` and `Commit statuses: Read` for the CI loop, and
+**`Actions: Read and write`**: read for a failing job's log tail, write for the
+merge step's re-run of a flaky run's failed jobs (`POST
+actions/runs/<run>/rerun-failed-jobs`, `forgewrite.GitHubWriter.rerun_failed_jobs`).
+A token with `Actions: Read` only gets 403 on the re-run, so a flake is never
+re-run and the merge step fails with `checks_failed`, naming the refusal
+("the credential needs `actions: write` on the repository") when a round
+found nothing to change.
 
 **A forge 403 or 404 fails the planner** (owner decision, 2026-10-01) -- in
 practice it refuses the run before the planner exists: the open-work read

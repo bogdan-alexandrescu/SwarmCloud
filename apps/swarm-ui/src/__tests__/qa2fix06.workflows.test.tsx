@@ -210,8 +210,11 @@ describe('63: the page opens on the whole graph, its failed stage folded', () =>
     fireEvent.click(chip)
     await waitFor(() => expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Step checkpoints'))
     const dock = document.querySelector<HTMLElement>('.wi-dock')!
-    // MUTATION: dropping the cause card from `InspectorSlot` turns this red.
-    expect(dock.textContent).toContain('Why it failed')
+    // THE PAGE'S CARD IS StepCard (owner's pick, 2026-11-05): "Why it
+    // failed" is the error group's `aria-label` (`.sc-err`), not text on the
+    // card any more -- the whole reason is what prints, in `.sc-err-text`.
+    // MUTATION: dropping the cause card from `StepCard` turns this red.
+    expect(dock.querySelector('[role="group"][aria-label="Why it failed"]'), 'no cause card').toBeTruthy()
     expect(dock.textContent).toContain('exit status 2: pytest was interrupted: 1 error during collection')
   })
 })
