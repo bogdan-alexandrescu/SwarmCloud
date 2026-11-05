@@ -771,6 +771,18 @@ api_refusals = {
 # (ROLES-ACCEPT) has exercised it here. Kill switch: false and release.
 platform_admin_reach = true
 
+# Platform-side memberships from approved join requests (swarm-api
+# PLATFORM_MEMBERSHIPS, docs/design/join-requests.md §6, #2325): an admin's
+# approval writes a signed, append-only membership beside the workspace's
+# Google group, and tenant resolution honours it. No Cloud Identity write and
+# no IAM grant. ON in dev only (owner decision 2026-10-25 23:34Z on #2325:
+# the variable and its env rendering go into the dev switch-on change, after
+# JOIN-DOCS-ACCEPT; approval stays design A); prod stays off until the join
+# acceptance probe (scripts/acceptance/groups/join.sh) has exercised it here.
+# Kill switch: false and release; approval then answers admitted: false with
+# the group command.
+platform_memberships = true
+
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made
 # CI's deployer need IAP admin rights that could not be scoped to our backends.
