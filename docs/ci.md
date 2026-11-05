@@ -576,7 +576,7 @@ commit and more. It asks twice:
 
 A superseded release ends **green**, says so in its summary and a notice, and
 outputs `superseded=true`; `approval` — and so promote, both applies and the
-deploy — and the plugin tag do not run. A dispatch is never superseded: it
+deploy — does not run. A dispatch is never superseded: it
 ships `main`'s head by construction.
 
 **A pending release is replaced; a running one is never cancelled.**
@@ -1453,8 +1453,9 @@ held the lock, and every later push queued behind it. `release-dev` is
   included. Each job that needs `verify` states one rule: `verify` succeeded,
   or a push skipped it. `test_release_prod_gate.py` holds that a dispatch
   whose `verify` did not succeed starts nothing that promotes, applies or
-  deploys. On a push, the plugin tag waits for `images and scan`, which found
-  CI's record.
+  deploys. (The plugin tag no longer waits for any of this: since
+  2026-11-04 `application.yml` makes it once `format / unit tests` passed,
+  [below](#the-plugins-bridge-tag-is-made-once-the-unit-tests-pass).)
 * **C. The groups run in parallel**, as matrix jobs with `fail-fast:
   false`, one swarm-verify execution each. There were five when this was
   measured; six run now (git-tools joined, and live-browser left for its own
@@ -1812,8 +1813,10 @@ the job that runs it (`_workflow` in
   manifests]`, so CI's image record for this SHA cannot exist unless its unit
   tests, shellcheck and manifests passed -- and the images stage refuses to
   build anything itself.
-* **Warming the worker jobs, acceptance, the GKE proof and the plugin tag.**
-  The same push still starts the normal release, which tags the plugin. When
+* **Warming the worker jobs, acceptance and the GKE proof.** The plugin tag
+  is not the release's to skip: `application.yml` makes it on the same push
+  ([below](#the-plugins-bridge-tag-is-made-once-the-unit-tests-pass)). The
+  same push still starts the normal release. When
   that release completes, `accept.yml` warms, smokes, proves GKE and accepts
   what dev then runs ([above](#the-release-timeline)). Acceptance is
   **delayed, not dropped**: a defect the hotfix put on dev is filed as the
@@ -1906,7 +1909,7 @@ generation precondition is atomic (it is documented to be), or that the
 deployer admits `hotfix.yml` before the owner applies the bootstrap root. The
 first labelled merge after that apply is the proof.
 
-## The plugin's bridge tag is made by the release
+## The plugin's bridge tag is made once the unit tests pass
 
 [`plugin/.claude-plugin/plugin.json`](../plugin/.claude-plugin/plugin.json)
 names its version twice. One is `version`, which decides which skills a user
@@ -1917,19 +1920,32 @@ holds the two equal. But the tag itself used to be made by hand, so it could
 be missing. sc-v0.5.6 was: main pinned it before anyone had tagged it, every
 fresh install of 0.5.6 failed to fetch its bridge, and no check said so (#272).
 
-**Who tags, and when.** `release.yml`'s `plugin-tag` job creates the annotated
-tag `sc-v<version>` on the commit being released (`github.sha`). It reads the
-version from `plugin.json` with `jq` at run time, so the workflow never names
-a version. It refuses anything that is not `X.Y.Z`.
+**Who tags, and when.** `application.yml`'s `plugin-tag` job creates the
+annotated tag `sc-v<version>` on the commit main was pushed to (`github.sha`).
+It reads the version from `plugin.json` with `jq` at run time, so the workflow
+never names a version. It refuses anything that is not `X.Y.Z`.
 
-* **After `verify`.** A tag is what users' installs resolve, so a commit whose
-  unit tests failed is not one to hand them.
-* **On main only.** A `workflow_dispatch` can name another branch, and a tag
-  made from it would pin users to a commit main never had. The condition sits
-  on each step, not on the job. The release-gate model in
-  `test_release_prod_gate.py` cannot evaluate a job-level `github.ref`, and a
-  condition it cannot evaluate is one it cannot hold. Off main, the job starts,
-  runs nothing and ends green.
+* **After `format / unit tests`** (the `python` job), the earliest point that
+  proves the commit. A tag is what users' installs resolve, so a commit whose
+  unit tests failed is not one to hand them. `format / unit tests` passes only
+  when the unit shards and the lock / contract / bridge-install checks passed
+  on this commit, or were skipped by their own `if:`: a tree main reuses was
+  proven job by job on its pull request ([Main reuses the tested
+  tree](#main-reuses-the-tested-tree)). The job's `if:` names
+  `needs.python.result == 'success'` and no status function.
+* **Why not the release any more** (owner decision, BGD, 2026-11-04: "Tag
+  once tests pass"; part of #2688). Until then `release.yml` made the tag, and
+  on a push it waited for `images and scan`, which waits for CI's whole image
+  build. On 2026-11-04 plugin.json reached 0.5.79 at 21:04Z; that job ran
+  about an hour, and for that hour every session that reloaded the plugin
+  installed its bridge from a tag that did not exist and lost every swarm
+  tool, until sc-v0.5.79 was pushed by hand at about 22:00Z. The images prove
+  nothing about the bridge that the unit tests do not.
+* **On a push to main only** (`github.event_name == 'push' && github.ref ==
+  'refs/heads/main'`, on the job). A pull request, a merge-queue entry or a
+  dispatch on another branch would pin users to a commit main never had. A
+  dispatch on main re-tests a commit its push already tagged. Everywhere else
+  the job is skipped, which `ci-gate` reads as passed.
 * **Only when origin does not have the tag** (`git ls-remote --exit-code`).
   If the remote cannot be read, the job fails. That is never treated as
   "absent".
@@ -1939,55 +1955,67 @@ caches what it fetched. A moved tag would give two users of the same version
 two different bridges, and neither of them could tell. So nothing in the job
 forces. When the tag exists, the job prints a `::notice`, also naming the
 commit the tag points at if that is not this one, and leaves it where it is.
-If two releases tag at once (a dev push and a prod dispatch), the second push
-is rejected. The job then reads the remote again, and counts the tag being
-there as success.
+If the push is rejected because the tag appeared meanwhile, the job reads the
+remote again and counts the tag being there as success.
 
 **`contents: write` is granted on that job, not on the workflow.** The workflow
-default stays `contents: read`. The jobs that build, plan and deploy run a lot
-of code, and none of it needs to write to the repository. `plugin-tag` runs
-only checkout, `jq` and `git`. (`acceptance` held the same grant for its own
+default stays `contents: read`. Every other job runs the repository's own code,
+and none of it needs to write to the repository. `plugin-tag` runs only
+checkout, `gh`, `jq` and `git`. (`acceptance` held the same grant for its own
 sweep until #628 moved its pull requests to the private sandbox; it is
 `contents: read` now, and the sweep uses the sandbox's own token.)
 
-**A release a newer commit superseded tags nothing** (2026-10-26): it may
-never have found CI's record, which is the tag's proof on a push. The newer
-commit's release tags the same version on the commit it ships, whose
-`plugin.json` says the same version. (Until 2026-10-26 a bump that touched only
-`plugin/` started no release at all, because `release.yml` had a path filter.)
+**A commit a newer one superseded tags nothing.** A newer push to main cancels
+the older run (the workflow's `concurrency:`), and the job's first step asks
+GitHub's compare of the commit with main: `ahead` means main has moved past
+it, and the job ends green without tagging. The newer commit's run tags the
+same version on the commit main now holds, whose `plugin.json` says the same
+version. An unreadable compare is not "superseded": the commit passed its unit
+tests, so it is tagged.
+
+`ci-gate` needs `plugin-tag`, like every other job of the workflow, so a tag
+that failed on main shows on main's `ci-gate`.
 
 **The check.** On a push to main, `application.yml`'s `shell` job asks whether
 origin has `sc-v<version>`.
 
 * **Passes** when the tag exists.
-* **Fails** when the tag is missing and a completed `release.yml` run on main
-  whose `verify` job passed already descends from the commit that last changed
-  the version line. `plugin-tag` runs exactly when `verify` passed, so that
-  release should have tagged it and did not. The error names the tag, the bump
-  commit, that run and its `plugin-tag` job's conclusion.
-  **The run's own conclusion is not read.** A `plugin-tag` that failed (a
-  rejected push, a ruleset on `sc-v*`), or any later build or deploy job that
+* **Fails** when the tag is missing and a completed push run of
+  `application.yml` on main whose `format / unit tests` passed already
+  descends from the commit that last changed the version line, and that run's
+  `plugin-tag` job failed or never ran. `plugin-tag` runs exactly when
+  `format / unit tests` passed, so that run should have tagged it and did not.
+  The error names the tag, the bump commit, that run and its `plugin-tag`
+  job's conclusion. **The run's own conclusion is not read.** A `plugin-tag`
+  that failed (a rejected push, a ruleset on `sc-v*`), or any other job that
   failed, makes the whole run `failure`. Counting only successful runs would
   warn forever in exactly the case this check exists for.
-* **Only warns** when no release on main has passed `verify` since the bump
-  (the plugin-only case above, a release still in flight, or one whose
-  `verify` failed and so never tried to tag). The next release tags it.
+* **Says so and goes on** for a run whose `plugin-tag` succeeded or was
+  cancelled without the tag: a newer commit superseded it, and the newer run
+  tags it.
+* **Only warns** when no such run has finished since the bump (the check's
+  own run is still in progress, so the bump's first run always warns, as does
+  a run whose unit tests failed and so never tried to tag). The next run whose
+  unit tests pass tags it.
 * **Fails** if `gh run list`, `gh run view` or `git ls-remote` fails. A check that could not
-  be made is not "no releases".
+  be made is not "no runs".
 
-It prints how many release runs it examined. A release head missing from the
-clone counts as not descended, and the check says so. It is gated to main
-because a pull request that bumps the version is expected to have no tag yet.
-It deepens the shallow checkout only on the path where the tag is missing. For
-`gh`, the `shell` job holds `actions: read` along with the `contents: read`
-that job-level permissions would otherwise drop.
+It prints how many runs it examined. A run head missing from the clone counts
+as not descended, and the check says so. It is gated to main because a pull
+request that bumps the version is expected to have no tag yet. It deepens the
+shallow checkout only on the path where the tag is missing. For `gh`, the
+`shell` job holds `actions: read` along with the `contents: read` that
+job-level permissions would otherwise drop.
 
 [`tests/unit/scripts/test_plugin_tag.py`](../tests/unit/scripts/test_plugin_tag.py)
-runs both steps' `run:` text, read out of the workflow files, against stub
+runs both steps' `run:` text, read out of the workflow file, against stub
 `git` and `gh`. It covers the tag being created and pushed, the tag never being
-moved, nothing ever being forced, a bad version being refused, and each of the
-check's outcomes. It cannot show that GITHUB_TOKEN may push an `sc-v*` tag in
-this repository. The first release after this lands is that proof.
+moved, nothing ever being forced, a bad version being refused, a superseded
+commit tagging nothing, the job's place behind `format / unit tests` and not
+the image build, and each of the check's outcomes. It cannot show that
+GITHUB_TOKEN may push an `sc-v*` tag in this repository; release.yml's job
+pushed sc-v* tags with the same grant, and the first version bump after this
+lands is the proof for this job.
 
 ## The UI job's Node is read from the image, not pinned
 

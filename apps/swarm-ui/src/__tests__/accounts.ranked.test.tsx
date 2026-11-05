@@ -204,7 +204,9 @@ describe('the verdict', () => {
     expect(verdict.textContent).toContain('and 1 later step waits on them')
     expect(verdict.querySelector('a')?.getAttribute('href')).toBe('#work/running/waiting')
     expect(document.body.textContent).not.toMatch(/\bavailable\b/)
-    expect(screen.getByText(/Floors:/).textContent).toContain('7-day 5% left')
+    // The floors are the (i)'s description beside the verdict (no prose on the surface, 2026-11-05).
+    const rule = screen.getByRole('button', { name: 'About which accounts can take a new agent' })
+    expect(document.getElementById(rule.getAttribute('aria-describedby')!)?.textContent).toContain('7-day 5% left')
   })
 
   it('says a failed waiting read as a dash with its reason, never 0', async () => {
@@ -361,7 +363,8 @@ describe('one subscription twice', () => {
       WAIT,
     )
     const box = banner.closest('.acct-dup') as HTMLElement
-    expect(box.textContent).toContain('To fix it:')
+    const why = box.querySelector('button.acct-i')!.getAttribute('aria-describedby')!
+    expect(document.getElementById(why)?.textContent).toContain('To fix it:')
     expect(screen.getByRole('button', { name: 'Open lone' })).toBeTruthy()
     // Mock-up A's second action: the fix the banner names, one click away.
     expect(within(box).getByRole('button', { name: 'Replace the credential' })).toBeTruthy()
