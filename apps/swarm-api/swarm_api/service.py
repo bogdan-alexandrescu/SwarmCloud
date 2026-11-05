@@ -792,6 +792,19 @@ class SubmissionService:
         if submitted_by is None:
             assert ctx is not None
             submitted_by = ctx.email
+        # The step's `plugins` field (the owner's pick on PR #3264): checked
+        # against the catalogue, its runner profile and the workspace's signed
+        # setting, then carried in its work contract, so the contract below
+        # and the digest the dispatch block signs hold them.
+        if spec.plugins:
+            spec = spec.model_copy(update={"metadata": plugins_mod.with_step_plugins(
+                spec.metadata, {n: p.model_dump() for n, p in spec.plugins.items()},
+                tenant_id=tenant.tenant_id, step_id=step_id,
+                runner_profile=validate_runner_profile(spec.runner_profile).name,
+                owner=submitted_by,
+                settings_doc=self._workspace_settings(tenant.tenant_id),
+                mac=settings_mac(self._settings), environ=os.environ,
+            )})
         # A work contract (docs/design/agent-quality/work-contract.md), only
         # while SWARM_WORK_CONTRACTS is on: first, because the limits it sets
         # and the step leaves unset become the step's own fields, which every
@@ -1770,6 +1783,7 @@ class SubmissionService:
                     max_turns=source.max_turns,
                     budget=source.budget,
                     model_class=source.model_class,
+                    plugins=source.plugins,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
                     # agent step (`MERGE_STEP_MAX_ATTEMPTS`, contract request 47).

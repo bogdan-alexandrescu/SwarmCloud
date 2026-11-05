@@ -32,6 +32,7 @@ import {
 import { workflowHref } from './agentlist'
 import { AWAIT_INPUT_PROFILE, DEFAULT_ARTIFACT, FIRST_AWAIT_DRAFT, MAX_FILES, awaitBlockOf, type AwaitDraft, type AwaitForm } from './awaitInput'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
+import { StepPluginRow, UNREAD_STEP_PLUGINS, stepPluginPlan, useStepPlugins, type StepPlugin, type StepPluginsContext } from './PluginSheet'
 import { ModelClassSelect, RunnerSelect, StepRunnerFacts, sentModelClass, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
 import {
@@ -144,7 +145,7 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
 interface StepProblem {
   key: number
   stepId: string
-  kind: 'name' | 'runner' | 'input' | 'required' | 'size'
+  kind: 'name' | 'runner' | 'input' | 'required' | 'size' | 'plugin'
   message: string
   missing?: string[]
 }
@@ -285,6 +286,9 @@ interface StepDraft {
    *  absent until one is edited, and read as `FIRST_AWAIT_DRAFT` then. Sent
    *  only on a step whose runner is `await-input`. */
   wait?: AwaitDraft
+  /** The plugin picked in the step's sheet (PluginSheet.tsx), by name; absent
+   *  or null is none. Sent as the step's `plugins` field (`stepPluginPlan`). */
+  plugin?: StepPlugin | null
 }
 
 /** A name nothing else in the plan is using. The profile is the stem because
@@ -348,6 +352,7 @@ function planOf(
   inputLimit: number | null,
   mcpNamesOf: (s: StepDraft) => string[],
   classes: Readonly<Record<string, ModelClassOffer>> | null = null,
+  plugins: StepPluginsContext | null = null,
 ): { problems: StepProblem[]; body: Array<Record<string, unknown>> } {
   const problems: StepProblem[] = []
   const body: Array<Record<string, unknown>> = []
@@ -434,6 +439,17 @@ function planOf(
       }
       awaitBlock = built.block
     }
+    // THE STEP'S PLUGIN rides in its own `plugins` field, refused here in
+    // `check_step`'s words before the API refuses it.
+    let pluginField: Record<string, unknown> | null = null
+    if (s.plugin != null) {
+      const planned = stepPluginPlan(s.plugin, { stepId: id, profile: s.profile }, plugins ?? UNREAD_STEP_PLUGINS)
+      if (!planned.ok) {
+        problems.push({ key: s.key, stepId: id, kind: 'plugin', message: planned.message })
+        continue
+      }
+      pluginField = planned.plugins
+    }
     const modelClass = sentModelClass(classes?.[s.profile], s.modelClass)
     body.push({
       step_id: id,
@@ -452,6 +468,7 @@ function planOf(
       // A CLASS NAME, never a model ID (invariant 10), and only one somebody
       // chose over the runner's default (#1435).
       ...(modelClass === undefined ? {} : { model_class: modelClass }),
+      ...(pluginField === null ? {} : { plugins: pluginField }),
     })
   }
   return { problems, body }
@@ -583,6 +600,9 @@ function Form({ sources }: { sources: FormSources }) {
   const [sentKey, setSentKey] = useState<string | null>(null)
   // One providers read for the form, handed to every step's picker.
   const keys = useProviderKeys()
+  // The workspace's plugins and who is signed in, read once, on the first
+  // plugin sheet opened (PluginSheet.tsx), never before.
+  const stepPlugins = useStepPlugins()
   // Read from the payload, never a constant: an unread limit is not a limit of 50,
   // so `maxSteps` stays null and nothing here caps the form.
   const raw = sources.limits === null ? undefined : sources.limits.max_workflow_steps
@@ -712,7 +732,7 @@ function Form({ sources }: { sources: FormSources }) {
   // THE LIVE PLAN. What disables the button, titles the send panel and lists
   // the steps that stop it -- the same pass `send` makes, so what the panel
   // says and what the click does cannot disagree.
-  const plan = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes)
+  const plan = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes, stepPlugins)
   // THE REPOSITORY THE CLICK PUSHES TO (VQA V139), as on the task form: the
   // trimmed URL, named in the panel whenever the strategy pushes. A push with
   // nowhere to push is refused by the API at either scale
@@ -820,7 +840,7 @@ function Form({ sources }: { sources: FormSources }) {
     // button is disabled while a problem stands, so this branch should not be
     // reachable; it stays because "the form refuses before it posts" is the
     // invariant, and a disabled attribute is only one way of keeping it.
-    const { problems, body } = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes)
+    const { problems, body } = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes, stepPlugins)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
     // ONE POST PER CLICK (live QA SUB-1, the task form's defect): nothing is
     // sent while a request is in flight, or while the form still says exactly
@@ -917,7 +937,7 @@ function Form({ sources }: { sources: FormSources }) {
                     nameProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'name')?.message ?? null}
                     sizeProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'size')?.message ?? null}
                     refused={sub.kind === 'rejected' ? refusal?.byStep[s.id.trim()] ?? null : null}
-                    removable={steps.length > 1} mcp={mcpPicker}
+                    removable={steps.length > 1} mcp={mcpPicker} plugins={stepPlugins}
                     onChange={(next) => patch(s.key, next)} onRemove={() => drop(s.key)} />
                 ))}
                 {/* A FULL TILE AT THE END OF THE ROW (#118): its words say where
@@ -1113,7 +1133,7 @@ interface StepMcp {
   onLifetime: (name: string, seconds: number) => void
 }
 
-function StepCard({ step, steps, profiles, keys, classes, required, nameProblem, sizeProblem, refused, removable, mcp, onChange, onRemove }: {
+function StepCard({ step, steps, profiles, keys, classes, required, nameProblem, sizeProblem, refused, removable, mcp, plugins, onChange, onRemove }: {
   step: StepDraft
   steps: StepDraft[]
   /** The whole catalogue: a disabled runner is drawn, refused, with its reason. */
@@ -1137,6 +1157,8 @@ function StepCard({ step, steps, profiles, keys, classes, required, nameProblem,
   refused: string | null
   removable: boolean
   mcp: StepMcp
+  /** The form's one read of the workspace's plugins (`useStepPlugins`). */
+  plugins: ReturnType<typeof useStepPlugins>
   onChange: (next: StepDraft) => void
   onRemove: () => void
 }) {
@@ -1193,6 +1215,13 @@ function StepCard({ step, steps, profiles, keys, classes, required, nameProblem,
         <ModelClassSelect id={`wfb-${step.key}-model-class`} label={`${step.id} model class`}
           offer={classes?.[step.profile]} value={step.modelClass ?? null}
           onPick={(modelClass) => onChange({ ...step, modelClass })} />
+      )}
+      {/* THE STEP'S PLUGIN (docs/design/agent-plugins.md): one chip, or
+          "+ Add a plugin", opening the guided sheet. Not on a step that waits
+          for a person: it runs no agent to load one. */}
+      {chosen && step.profile !== AWAIT_INPUT_PROFILE && (
+        <StepPluginRow stepId={step.id.trim() === '' ? 'this step' : step.id} profile={step.profile}
+          pick={step.plugin ?? null} ctx={plugins} onPick={(plugin) => onChange({ ...step, plugin })} />
       )}
 
       {/* A MISSING REQUIRED KEY IS SAID AT ITS FIELD, by `InputFields`, once
