@@ -1097,6 +1097,13 @@ export interface Task {
    * task reads `collect`, an old API reads "not reported".
    */
   dispatch?: TaskDispatch | null
+
+  /**
+   * The step's `contract_acceptance` (jev-contract.md sections 5.4 and 8.2),
+   * served on the detail only and only where Jev judged the step's work
+   * contract: read by `ContractJev.contractAcceptance`, drawn as Jev's.
+   */
+  contract_acceptance?: unknown
 }
 
 /**
