@@ -44,7 +44,13 @@ from ..auth import AuthContext
 from .tasks import require_member
 from ..attempt_totals import IN_LIMIT, totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
-from ..codec import task_to_api, workflow_claude_session, workflow_dispatch, workflow_to_api
+from ..codec import (
+    masking_for,
+    task_to_api,
+    workflow_claude_session,
+    workflow_dispatch,
+    workflow_to_api,
+)
 from ..waiting_detail import build_waiting, waiting_row
 from ..task_accounts import accounts_for
 from ..errors import ApiError, Conflict, Forbidden, ValidationFailed
@@ -70,10 +76,11 @@ from ..deps import (
     tenant_scope,
 )
 from ..rollup import RollupResult, SweepReport
-from ..schemas import McpCredentialCreate, WorkflowCreate, _mcp_credentials_field
+from ..schemas import DESCRIPTION_SOURCE_KEY, McpCredentialCreate, WorkflowCreate, _mcp_credentials_field
 from ..stalls import stalled_workflows
 from ..steprerun import RERUN_OF_METADATA_KEY
 from ..store import CancelContended, workflow_listing_token
+from ..validation import ISSUE_RUN_METADATA_KEY, QA_TARGET_METADATA_KEY, SCHEDULE_METADATA_KEY
 from ..waker import ring
 
 log = logging.getLogger(__name__)
@@ -149,6 +156,84 @@ def repository_key(value: Any) -> str | None:
     return f"{host}/{owner}/{repo}".lower() if owner and repo else None
 
 
+#: Where a workflow was started from, the one value the console words
+#: (`started_from` on every workflow read; BGD, 2026-11-04). Read off what the
+#: platform already writes on the step tasks, first match wins:
+#:
+#: * `schedule`: `metadata.schedule`, written only by `schedulefire`
+#:   (reserved: a caller's is refused at submission);
+#: * `quality_check`: `metadata.qa_target` on a browser step, written only by
+#:   `qatargets.render_run` (reserved likewise);
+#: * `issue_run`: `metadata.issue_run`, written by `issueruns` and `issueci`;
+#: * `claude_code`: the `claude_session` tag (`sessiontag`) or
+#:   `metadata.origin == "swarm-mcp"`, both written by the sc plugin's bridge;
+#: * `console`: none of these -- the console's own submissions, and any other
+#:   API caller's.
+#:
+#: Nothing new is accepted from a caller to decide it.
+STARTED_FROM: tuple[str, ...] = ("schedule", "quality_check", "issue_run", "claude_code", "console")
+#: `metadata.origin` the sc plugin's bridge writes on every submission.
+CLAUDE_CODE_ORIGIN = "swarm-mcp"
+
+
+def _started_from(tasks: list[Task]) -> str:
+    stored = [t.metadata or {} for t in tasks]
+    if any(m.get(SCHEDULE_METADATA_KEY) for m in stored):
+        return "schedule"
+    if any(m.get(QA_TARGET_METADATA_KEY) for m in stored):
+        return "quality_check"
+    if any(m.get(ISSUE_RUN_METADATA_KEY) for m in stored):
+        return "issue_run"
+    if any(sessiontag.of(m) or m.get("origin") == CLAUDE_CODE_ORIGIN for m in stored):
+        return "claude_code"
+    return "console"
+
+
+def workflow_about(workflow: Any, step_tasks: dict[str, Task] | None) -> dict[str, Any]:
+    """What the workflow is about and where it came from, off its step tasks
+    (the frozen `Workflow` has no metadata; every step task carries the
+    workflow's): `repository_url`, `title`, `description`,
+    `description_source`, `feature` (`{title, url?}`) and `started_from`
+    (`STARTED_FROM`). Served on every workflow read, the full and the summary
+    view and every `GET /v1/workflows` row alike.
+
+    The keys only when a step task was read, as `claude_session`, so a reader
+    tells "none" (null) from "not read" (absent). Each caller-written string
+    is masked by its task's own masker, as a step's input is."""
+    tasks = list((step_tasks or {}).values())
+    if not tasks:
+        return {}
+    first = next((step_tasks[s.task_id] for s in workflow.steps if s.task_id in step_tasks), tasks[0])
+    stored = first.metadata or {}
+    masking = masking_for(first, warm=False)
+
+    def text(value: Any) -> str | None:
+        return masking.text(value)[0] if isinstance(value, str) and value.strip() else None
+
+    raw_feature = stored.get("feature")
+    feature = None
+    if isinstance(raw_feature, dict) and text(raw_feature.get("title")):
+        feature = {"title": text(raw_feature.get("title"))}
+        if text(raw_feature.get("url")):
+            feature["url"] = text(raw_feature.get("url"))
+    description = text(stored.get("description"))
+    return {
+        "repository_url": masking.repository_url(first.repository_url)[0],
+        "title": text(stored.get("title")),
+        "description": description,
+        "description_source": text(stored.get(DESCRIPTION_SOURCE_KEY)) if description else None,
+        "feature": feature,
+        "started_from": _started_from(tasks),
+    }
+
+
+def _workflow_api(workflow: Any, *args: Any, step_tasks: dict[str, Task] | None = None,
+                  **kwargs: Any) -> dict[str, Any]:
+    """`workflow_to_api` and `workflow_about`, one row."""
+    return {**workflow_to_api(workflow, *args, step_tasks=step_tasks, **kwargs),
+            **workflow_about(workflow, step_tasks)}
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_workflow(
     body: WorkflowCreate,
@@ -171,7 +256,7 @@ def create_workflow(
         # Each step's input is masked by its own task's masker (the PR #229
         # review): the tasks this request just built carry the workflow's
         # metadata, and the step copy must mask what the task copy masks.
-        "workflow": workflow_to_api(
+        "workflow": _workflow_api(
             workflow,
             step_tasks={task.id: task for task in submission.tasks},
             console_url=ctx.settings.console_url,
@@ -319,7 +404,7 @@ def list_workflows(
         # the read budget left unread borrows a sibling's, and a workflow none
         # of whose tasks were read serves its step inputs as null.
         "workflows": [
-            workflow_to_api(
+            _workflow_api(
                 r.workflow,
                 r.to_api(),
                 step_tasks=r.step_tasks,
@@ -541,7 +626,7 @@ def _by_ids(
     served = {w.workflow_id for w in found}
     payload = {
         "workflows": [
-            workflow_to_api(
+            _workflow_api(
                 r.workflow,
                 r.to_api(),
                 step_tasks=r.step_tasks,
@@ -647,7 +732,7 @@ def get_workflow(
         # The step copies of each input are masked by the tasks' own maskers,
         # so `workflow.steps[i].input` and `tasks[i].input` agree (the PR #229
         # review), from the tasks this route already loaded.
-        "workflow": workflow_to_api(
+        "workflow": _workflow_api(
             workflow,
             result.to_api(),
             step_tasks={t.id: t for t in tasks},

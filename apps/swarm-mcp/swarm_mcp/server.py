@@ -5890,6 +5890,9 @@ def _call(
             publish_to_pr=publish_to_pr,
             # Only a whole spec carries the workflow switches (2026-11-01).
             dispatch=fields.get("dispatch"),
+            # Nor a description or a feature (BGD, 2026-11-04).
+            description=fields.get("description"),
+            feature=fields.get("feature"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,

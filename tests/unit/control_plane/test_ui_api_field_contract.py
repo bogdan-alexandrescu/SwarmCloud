@@ -334,6 +334,18 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "steps": "declared as WorkflowStep[], whose own fields are checked separately",
         "links": "the console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR bodies); "
         "inside it the address bar is the link",
+        # Served ahead of the client (part of #2688): what the workflow is
+        # about and where it was started from, read by sc and the MCP tools.
+        # Remove these when types.ts declares them.
+        "repository_url": "the workflow's repository, masked as a task's (part of #2688); "
+        "declared by the console lane",
+        "title": "the workflow's title (part of #2688); declared by the console lane",
+        "description": "the submitter's plain-text description (part of #2688); declared by the "
+        "console lane",
+        "description_source": "who wrote the description (part of #2688); declared by the console lane",
+        "feature": "{title, url?} of the feature it builds (part of #2688); declared by the console lane",
+        "started_from": "one of STARTED_FROM: schedule, quality_check, issue_run, claude_code "
+        "or console (part of #2688); declared by the console lane",
     },
     "Capacity": {
         "runner_profiles": "declared as Record<string, RunnerProfile>, checked as RunnerProfile",

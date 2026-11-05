@@ -1562,12 +1562,20 @@ class AttemptState:
                 first = now
             elif paused is not None:
                 first, paused = first + max(now - paused, timedelta(0)), None
+            # The train's start, as the direct path keeps it (part of #2688):
+            # set by the first train park of an unbroken run, carried by the
+            # next ones, cleared by any other park. `waiting_detail` serves it
+            # as `train_since`, the start `/sc check` ages a train wait from.
+            train = None
+            if counter == "train_waits":
+                train = last.get("train_entered_at") if last.get("code") == TRAIN_WAITING else None
+                train = train if isinstance(train, datetime) else now
             names = [str(n)[:256] for n in ci.pending]
             metadata[MERGE_WAIT] = {
                 "code": ci.code, "head": ci.head, "pull_request": ci.pull_request,
                 "pending": names, **counts, "updates": _count(last.get("updates")),
                 "first_parked_at": first, "ci_paused_at": paused,
-                "parked_at": now,
+                "train_entered_at": train, "parked_at": now,
             }
             payload["metadata"] = metadata
             payload["next_eligible_at"] = now + timedelta(seconds=CI_FALLBACK_SECONDS)

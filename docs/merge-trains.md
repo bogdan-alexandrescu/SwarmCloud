@@ -244,6 +244,13 @@ is a fenced transaction, so a superseded attempt writes nothing
 - The CI wake tick skips these parks.
 - The coordinator marks the park when the entry concludes, and the
   15-minute fallback instant covers a lost mark.
+- `merge_wait.train_entered_at` is the train wait's start: set by the
+  first train park of an unbroken run of them, carried by every train park
+  after it, cleared by any other park (both park writers keep it).
+  swarm-api serves it as `waiting.detail.train_since`, and `/sc check` ages
+  the wait from it (rule `merge_train_stalled`, part of #2688) BECAUSE the
+  train pauses the CI clock, so `waiting.since` cannot say how long the step
+  has queued.
 
 ### 5.3 How the step ends
 
