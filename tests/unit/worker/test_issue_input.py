@@ -612,7 +612,7 @@ def _worker(worker_factory, monkeypatch, url: str, fetch):
         worker, "_git_token",
         # Read where the fetch starts, beside the clone (P29), and never by
         # the clone itself.
-        lambda: TOKEN if worker.phases.current in ("issue_prefetch", "fetch_issue") else None,
+        lambda **_: TOKEN if worker.phases.current in ("issue_prefetch", "fetch_issue") else None,
     )
     monkeypatch.setattr(issue_mod, "fetch_issue", fetch)
     return worker

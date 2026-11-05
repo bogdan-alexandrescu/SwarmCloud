@@ -265,6 +265,7 @@ from .gitops import (
     fold_agent_commits,
     hide_from_git,
     is_branch_ref_name,
+    is_full_refname,
     merge_branches,
     mirror_worktree,
     moved_branch_tip,
@@ -336,6 +337,7 @@ from .runners.ceiling import SESSIONS_METRIC as CEILING_SESSIONS_METRIC
 from .runners.ceiling import UNPRICED_KEY as CEILING_UNPRICED_KEY
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .runners.streams import agent_stream_files, cli_agent_spec
+from .secrets import WRITE as FORGE_WRITE
 from .secrets import (
     FORGE_REFUSED_TWICE,
     GIT_PROVIDER,
@@ -6573,7 +6575,11 @@ class Worker:
           rewritten history would no longer fast-forward, and not pinned to an
           upstream step's base, which a downstream patch must apply to;
         * no `carrier: branches`, whose checkpoints already pushed the branch;
-        * a BRANCH: a ref that is a sha has no newer tip.
+        * a BRANCH: a ref that is a sha has no newer tip. A full refname
+          (#3347) is a branch only as `refs/heads/<name>`, offered as
+          `<name>`, since the runner rebases onto `origin/<name>`; a pull
+          request's `refs/pull/<n>/head` or `/merge`, a tag, or any other
+          ref names no branch to rebase onto, and is offered nothing.
 
         The default branch, when the task names no ref, is read from the
         clone's own HEAD file, which this process wrote before any agent ran.
@@ -6594,6 +6600,10 @@ class Worker:
                 return None
             prefix = "ref: refs/heads/"
             name = head[len(prefix):] if head.startswith(prefix) else ""
+        if is_full_refname(name):
+            if not name.startswith("refs/heads/"):
+                return None
+            name = name[len("refs/heads/"):]
         if not name or re.fullmatch(r"[0-9a-f]{7,40}", name):
             return None
         try:
@@ -7367,7 +7377,7 @@ class Worker:
         url = self._repo_url or self.cfg.repository_url
         if not url:
             return skipped("the repository URL is unknown")
-        token = self._git_token()
+        token = self._git_token(write=True)
         try:
             token, access = self._probe_reading_again(url, token, "the no-change comment probe")
             if access is None:
@@ -7713,7 +7723,7 @@ class Worker:
             return None
         pull: PullHead | None = None
         url = self._repo_url
-        token = None if self._git_token_refusal() else self._git_token()
+        token = None if self._git_token_refusal() else self._git_token(write=True)
         if url and token:
             try:
                 token, access = self._probe_reading_again(url, token, "the CI fix start check")
@@ -9914,7 +9924,7 @@ class Worker:
             return None
         return text or None
 
-    def _git_token(self) -> str | None:
+    def _git_token(self, *, write: bool = False) -> str | None:
         """The TASK's forge token, or None.
 
         Read from `swarm-tenant-<tenant>-<suffix>`, the suffix being the task's
@@ -9949,6 +9959,21 @@ class Worker:
         git's own message and a push has no credential. A superseded attempt
         raises `FencedError` and stands down. The merge, a write with no such
         gate of its own, asks the broker for `write` (`_read_action_git_token`).
+
+        `write` (#2907): this read comes before a push or a pull request -- the
+        publish, publish_to_pr, the push-scope and carrier-target probes, the
+        CI fix start check, the no-change comment, and their re-reads after a
+        401 -- and the token it returns is the one that write uses. It changes
+        only A SERVICE RUN's ask (`_service_run`) whose SIGNED `forge_access`
+        is exactly `write`, the condition swarm-api's `decide_run_token` mints
+        `RUN_WRITE_PERMISSIONS` on: without it the broker minted the read-only
+        run token and the probe refused the push ("an App installation token
+        whose receive-pack advertisement GitHub refused (HTTP 403)"). A run
+        signed `read`, or with no `forge_access`, still asks for `read`, and a
+        person's run still asks for `read`, its write gated by
+        `_forge_write_refusal`, so no run can obtain more than it could. A write
+        the broker refuses as a write (`ForgeWriteRefused`) is asked again for
+        `read`, today's token, and the probe refuses the push as it did.
         """
         self._git_token_error = None
         refusal = self._git_token_refusal()
@@ -9968,11 +9993,24 @@ class Worker:
                 self.db, self.cfg.tenant_id, call_options=self.control.call_options()
             )
             source = tenant.secret_name(suffix)
-            token = resolve_git_token(
-                tenant=tenant, client=self.secret_client, logger=self.log,
-                provider=suffix, broker=self.forge_broker,
-                app_installation=app_installation,
-            )
+            as_write = write and app_installation \
+                and (self._task or {}).get("forge_access") == FORGE_WRITE
+            try:
+                token = resolve_git_token(
+                    tenant=tenant, client=self.secret_client, logger=self.log,
+                    provider=suffix, broker=self.forge_broker, write=as_write,
+                    app_installation=app_installation,
+                )
+            except ForgeWriteRefused as exc:
+                if not as_write:
+                    raise
+                self.log.warning("the broker refused this run a write token; reading it "
+                                 "for read", cause=exc.cause)
+                token = resolve_git_token(
+                    tenant=tenant, client=self.secret_client, logger=self.log,
+                    provider=suffix, broker=self.forge_broker,
+                    app_installation=app_installation,
+                )
             # The KIND, classified here in memory; the value goes no further
             # than the caller. A tenant with no `git` slot read nothing.
             self._forge_credentials_read.append(
@@ -10099,7 +10137,9 @@ class Worker:
             "the forge refused the credential; reading its secret again and retrying once",
             call=what,
         )
-        token = self._git_token()
+        # For write, as every caller's first read is: each is a probe before a
+        # push or a pull request (#2907, `_git_token`).
+        token = self._git_token(write=True)
         access = probe(token)
         if access is not None and not access.can_push \
                 and forge_credential_refused(access.reason):
@@ -10154,7 +10194,7 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             raise ForgeError(f"{unopened} (401): the token was not read again: {refusal}")
-        fresh = self._git_token()
+        fresh = self._git_token(write=True)
         if not fresh:
             why = getattr(self, "_git_token_error", None) or "no forge credential was read"
             self._emit_token_reread(branch, outcome="unread")
@@ -12928,7 +12968,7 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             return f"the tenant git token is refused: {refusal}"
-        token = self._git_token()
+        token = self._git_token(write=True)
         if not token:
             return "no credential"
         try:
@@ -12984,7 +13024,7 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             return functools.partial(self._fail_git_token_refused, refusal)
-        token = self._git_token()
+        token = self._git_token(write=True)
         if not token:
             return functools.partial(
                 self._fail_forge_read_only, url,
@@ -14389,7 +14429,7 @@ class Worker:
                 f"tenant git token, which this worker may not hold: {refusal}; nothing "
                 "was cloned and no agent ran"
             )
-        token = self._git_token()
+        token = self._git_token(write=True)
         if not token:
             raise WorkerError(
                 f"publish_to_pr: pull request #{number} is read and pushed with the "
@@ -15678,7 +15718,7 @@ class Worker:
             self.log.error("not publishing: the tenant git token is refused", reason=refusal)
             return {"published": False, "publish_reason": f"refusing to publish: {refusal}"}
 
-        token = self._git_token()
+        token = self._git_token(write=True)
         try:
             token, access = self._probe_reading_again(url, token, "the publish probe")
         except ForgeError as exc:

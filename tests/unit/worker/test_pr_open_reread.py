@@ -94,7 +94,7 @@ class _Reads:
     def __init__(self) -> None:
         self.values: list[str] = []
 
-    def __call__(self) -> str:
+    def __call__(self, **_: object) -> str:
         value = token("abcdefghij"[len(self.values) % 10])
         self.values.append(value)
         return value

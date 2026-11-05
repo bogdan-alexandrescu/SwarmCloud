@@ -39,6 +39,13 @@ vi.mock('../api', async (importOriginal) => {
 const { AgentLogs } = await import('../AgentLogs')
 
 const ID = 'task_0123456789abcdef0123'
+/**
+ * The window a drawn row is waited for. setup.ts's 2000 ms ran out before a
+ * cold first render of the Logs tab under the console CI's parallel shards
+ * (5 November 2026: 'expected +0 to be 1', twice); 4000 ms is the agent page's
+ * workspace-switch wait (agentDetailTenantSwitch.test.tsx) for the same cause.
+ */
+const WAIT = { timeout: 4000 }
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now() }
@@ -135,7 +142,7 @@ async function rows(steps: TranscriptStep[]): Promise<Rows> {
     const found = Array.from(dock().querySelectorAll<HTMLElement>('li.arts-step'))
     expect(found.length).toBe(steps.length)
     return found as Rows
-  })
+  }, WAIT)
 }
 
 const USAGE_WORDS = 'turn completed: 48,210 input tokens (41,900 cached), 2,316 output tokens'
@@ -202,7 +209,7 @@ describe('a codex error row draws in the bad tone, the message first', () => {
     expect(plain.querySelector('[data-tone="bad"]')?.textContent).not.toContain('turn failed')
     expect(failed.querySelector('pre')?.textContent).toBe('usage limit reached')
     // MUTATION: drop the error rows from the error targets (the count reads 0).
-    await waitFor(() => within(dock()).getByRole('button', { name: /^2 error lines/ }))
+    await waitFor(() => within(dock()).getByRole('button', { name: /^2 error lines/ }), WAIT)
   })
 
   it('draws a retry after the message, muted', async () => {

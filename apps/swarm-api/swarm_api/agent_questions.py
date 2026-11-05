@@ -141,6 +141,7 @@ admitted all-or-nothing under a new generation (invariants 2, 5).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import random
@@ -585,6 +586,10 @@ def _hold_cleared(txn: Any, db: Any, merge: dict[str, Any], answered: dict[str, 
                 and doc.get("workflow_id") == merge.get("workflow_id"))
         if not step and not _is_round_of(doc, merge):
             return False
+        # The named task's questions are in its artifact, which this
+        # transaction does not read, so a stored answer is taken as is here;
+        # the woken merge re-reads every answer against the questions before
+        # it merges (`agent_worker.merge._unanswered`).
         if index not in owner_answers_by_index(doc.get("metadata")):
             return False
     return True
@@ -689,8 +694,8 @@ def _record_advisory_round(db: Any, merge_id: str, claim: dict[str, Any],
 
 
 def blocking_unanswered(wait: dict[str, Any], metadata: dict[str, Any] | None) -> list[int]:
-    """The wait's blocking indices with no stored answer."""
-    answered = owner_answers_by_index(metadata)
+    """The wait's blocking indices with no stored answer to THAT question (`answers_to`)."""
+    answered = answers_to([_redacted_question(q)[0] for q in wait["questions"]], metadata)
     return [i for i in wait.get("blocking") or [] if i not in answered]
 
 
@@ -765,14 +770,77 @@ def _question(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def unanswered(count: int, metadata: dict[str, Any] | None) -> int:
-    """How many of the `count` questions have no stored answer."""
-    return len(unanswered_indices(count, metadata))
+def question_digest(question: dict[str, Any]) -> str:
+    """The digest of one question as it is served: its text and its options.
+
+    Stored with each answer (`question_digest`) so an answer is served only
+    under the question it answered (#3349). Only the text and the options'
+    labels and descriptions are read -- not `recommended`, `context` or a
+    served `answer` -- so the store and every read hash the same thing.
+    """
+    shape = {
+        "question": _text(question.get("question")),
+        "options": [
+            [_text(o.get("label")), _text(o.get("description"))]
+            for o in question.get("options") or [] if isinstance(o, dict)
+        ],
+    }
+    canonical = json.dumps(shape, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def unanswered_indices(count: int, metadata: dict[str, Any] | None) -> list[int]:
-    """The indices of the `count` questions with no stored answer, in order."""
-    answered = owner_answers_by_index(metadata)
+def answers_question(entry: dict[str, Any], question: dict[str, Any]) -> bool:
+    """Whether the stored answer `entry` answers `question` (served form, redacted).
+
+    THE INDEX IS NOT THE QUESTION (#3349). An answer is stored by
+    `question_index`, and a later attempt's file may ask a different
+    question at that index; its answer then belongs to the question it was
+    given for, never to the new one. An answer records the question it
+    answered: `question_digest` (text and options) since #3349, compared
+    whole; an answer stored before that has only the `question` text, which
+    is compared instead. An answer with neither cannot be checked and is
+    served as it always was.
+    """
+    digest = entry.get("question_digest")
+    if isinstance(digest, str):
+        return digest == question_digest(question)
+    text = entry.get("question")
+    if isinstance(text, str):
+        return text == _text(question.get("question"))
+    return True
+
+
+def answers_to(questions: list[dict[str, Any]], metadata: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+    """The stored answers by index, only those that answer the question asked there now."""
+    return {
+        index: entry
+        for index, entry in owner_answers_by_index(metadata).items()
+        if index < len(questions) and answers_question(entry, questions[index])
+    }
+
+
+def unanswered(count: int, metadata: dict[str, Any] | None,
+               questions: list[dict[str, Any]] | None = None) -> int:
+    """How many of the `count` questions have no stored answer (`unanswered_indices`)."""
+    return len(unanswered_indices(count, metadata, questions))
+
+
+def unanswered_indices(count: int, metadata: dict[str, Any] | None,
+                       questions: list[dict[str, Any]] | None = None) -> list[int]:
+    """The indices of the `count` questions with no stored answer, in order.
+
+    Given the `questions` as served, an answer to a different question at an
+    index leaves it unanswered (`answers_to`). Without them -- a caller that
+    reads only the task document, not its questions file -- a stored answer
+    is counted by its index alone, as it always was: `open_question_tasks`,
+    `codec.step_needs`'s `questions_unread` and the bell's question item.
+    Making those question-aware is a follow-up lane (owner pick on #3355,
+    2026-11-05; docs/notifications.md), not this change.
+    """
+    if questions is not None:
+        answered = answers_to(questions, metadata)
+    else:
+        answered = owner_answers_by_index(metadata)
     return [index for index in range(count) if index not in answered]
 
 
@@ -824,6 +892,9 @@ def open_question_tasks(
             continue
         if claude_session_of(task, masking_for(task, warm=False)) != session:
             continue
+        # By index: the questions file is not read here, so an answer to an
+        # earlier attempt's question at an index counts for it; question-aware
+        # is a follow-up lane (owner pick on #3355, 2026-11-05).
         if unanswered(question_count(task.result_summary), task.metadata) == 0:
             continue
         found.append(task)
@@ -934,17 +1005,18 @@ def read_questions(
                 "it is in the task's artifacts"
             ),
         }
-    answers = owner_answers_by_index(task.metadata)
+    served = [_question(entry) for entry in parsed]
+    answers = answers_to(served, task.metadata)
     masking = masking_for(task)
     return {
         **out,
         "status": "ok",
         "questions": [
             {
-                **_question(entry),
+                **question,
                 "answer": owner_answer_to_api(answers[i], masking) if i in answers else None,
             }
-            for i, entry in enumerate(parsed)
+            for i, question in enumerate(served)
         ],
         "redacted": bool(window.get("redacted")),
         "redaction_count": int(window.get("redaction_count") or 0),
@@ -958,14 +1030,13 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
     since when and until when, where on GitHub they were posted, and, for a
     plugin step's bridged question, the skill that asked (`skill`, or null).
     """
-    answers = owner_answers_by_index(task.metadata) if adopted else {}
     masking = masking_for(task)
     waited = set(wait["blocking"])
+    redacted = [_redacted_question(entry) for entry in wait["questions"]]
+    masked = sum(count for _, count in redacted)
+    answers = answers_to([q for q, _ in redacted], task.metadata) if adopted else {}
     served: list[dict[str, Any]] = []
-    masked = 0
-    for i, entry in enumerate(wait["questions"]):
-        question, count = _redacted_question(entry)
-        masked += count
+    for i, (question, _) in enumerate(redacted):
         served.append({
             **question,
             "blocking": i in waited,
@@ -1093,6 +1164,9 @@ def answer_question(
     entry = {
         "question_index": index,
         "question": question.get("question"),
+        # The question this answers, so a later attempt asking another
+        # question at this index does not read it as answered (#3349).
+        "question_digest": question_digest(question),
         "choice": choice,
         "text": text,
         "by": email,
@@ -1118,7 +1192,8 @@ def answer_question(
             adopt_wait(metadata, wait)
         current = owner_answers_by_index(metadata)
         previous = current.get(index)
-        if previous is not None and is_bridged(recorded_wait(metadata)):
+        if (previous is not None and is_bridged(recorded_wait(metadata))
+                and answers_question(previous, question)):
             # A bridged question's first answer is the one its session
             # resumes with; a second is refused, never recorded.
             raise Conflict(
@@ -1134,8 +1209,11 @@ def answer_question(
                     f"question {index + 1}'s answer has been changed {MAX_ANSWER_CHANGES} times; "
                     "it is not changed again, so its history stays whole"
                 )
+            # With the question it answered: an answer to another question
+            # asked at this index stays readable with its own (#3349).
             history.append({
-                k: previous.get(k) for k in ("choice", "text", "by", "at", "via", "session")
+                k: previous.get(k)
+                for k in ("question", "question_digest", "choice", "text", "by", "at", "via", "session")
             })
         current[index] = {**entry, "history": history}
         metadata[OWNER_ANSWERS_METADATA_KEY] = [current[i] for i in sorted(current)]

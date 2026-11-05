@@ -58,7 +58,7 @@ def _patch_after(worker_factory, monkeypatch, tmp_path: Path, origin: Path, web:
         attempt_id=f"att-{task_id}", lease_id=f"lease-{task_id}",
         repository_url=f"file://{origin}",
     )
-    monkeypatch.setattr(worker, "_git_token", lambda: None)
+    monkeypatch.setattr(worker, "_git_token", lambda **_: None)
     assert worker._maybe_clone(task) is not None
     worker._clone_additional_keeping_lease(task)
 

@@ -97,7 +97,16 @@ Some notes on what each group deliberately leaves out:
   the answer is stored on the agent as `metadata.owner_answers`. The item derives
   only while at least one counted question has no answer. Until then it stays
   for 7 days after its agent ended, and marking it read clears it from the bell's
-  count.
+  count. **This count is still by index** (owner pick on #3355, 2026-11-05: a
+  follow-up lane, part of #3349). The answer card, the question wait and the
+  merge serve an answer only under the question it answered
+  (`agent_questions.answers_to`, by `question_digest`), but the bell's item
+  (`notifications._asked_item`), `open_question_tasks` (`/sc check`)
+  and `codec.step_needs`'s `questions_unread` read only the task document, not
+  its `questions.json`, so a stored answer counts for its index whatever the
+  question there now. Making them question-aware needs the questions without
+  the artifact read on every listing (for instance the worker writing each
+  question's digest to `result_summary`), so it is its own lane.
 * **A declined loan request does not count as needing you either.** Nothing
   the person does resolves it. It carries the admin's optional reason and
   never who declined. Asking again re-opens the request, and the item no
