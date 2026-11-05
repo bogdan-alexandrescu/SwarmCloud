@@ -198,6 +198,15 @@ fieldset.jb-options > legend { padding: 0; margin-bottom: var(--ctl-s1); font-si
 .pf-role { font-weight: 500; }
 /* A notification topic's words, at the size of the rows around them. */
 .pf-topic > .jb-text { font-size: var(--t-meta); line-height: var(--lh-meta); }
+/* A card's one way out is a button now (no-prose rule, 5 November 2026), at
+   the right of the head where the arrow link sat; it may wrap under the
+   title on a phone, and then it starts the line. */
+.c-card-h > .pf-head-act { margin-left: auto; }
+/* An (i) sits on the line of the words it explains. Its card opens under it;
+   `is-end` opens it leftwards, for an (i) at the right of a row. */
+.pf-tip { vertical-align: middle; }
+.pf-tip.is-end > .c-tip { left: auto; right: 0; }
+.pf-tip > .c-tip { white-space: normal; font-weight: 400; }
 
 @media (max-width: 719px) {
   .pk-input { flex-basis: 100%; max-width: none; }
