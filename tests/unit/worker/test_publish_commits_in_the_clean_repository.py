@@ -88,7 +88,7 @@ def _attempt(
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": task_id, "metadata": {"dispatch": {"strategy": "direct-pr"}}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None, "the clone did not land"
     if link_artifacts:
         worker._link_checkout_artifacts()

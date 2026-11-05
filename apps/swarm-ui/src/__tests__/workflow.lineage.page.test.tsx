@@ -219,10 +219,10 @@ describe('the workflow page: lineage and the step card', () => {
     await page()
     fireEvent.click(chip('review-search')!)
     await waitFor(() => expect(dock()!.getAttribute('aria-label')).toBe('Step review-search'))
-    expect(dock()!.querySelector('[aria-label="Stop step"]')).toBeNull()
+    expect(dock()!.querySelector('.sc-end .run-stop-btn')).toBeNull()
     fireEvent.click(chip('merge')!)
     await waitFor(() => expect(dock()!.getAttribute('aria-label')).toBe('Step merge'))
-    expect(dock()!.querySelector('[aria-label="Stop step"]')).toBeTruthy()
+    expect(dock()!.querySelector('.sc-end .run-stop-btn')).toBeTruthy()
   })
 
   it('draws the lineage strip above the grid on pick: why it cannot start, in red, and the file that will not come', async () => {

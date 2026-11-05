@@ -246,7 +246,7 @@ describe('#91: the overview shows how much work is waiting, and says waiting cos
     const el = await mount({
       loadStats: ok({ ...STATS, tasks_by_state: { QUEUED: 12, READY: 4, PARKED: 5, RUNNING: 5, LEASED: 1, DISPATCHED: 0, STARTING: 0 } }),
     })
-    const cell = [...el.querySelectorAll<HTMLElement>('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-h span')) === 'Waiting')
+    const cell = [...el.querySelectorAll<HTMLElement>('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Waiting')
     expect(cell, 'the band has no Waiting figure').toBeDefined()
     expect(text(cell!.querySelector('.ov-lc-n'))).toBe('21')
     // The wording on the surface says waiting creates no demand.

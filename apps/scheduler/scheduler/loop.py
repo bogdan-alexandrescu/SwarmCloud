@@ -2076,14 +2076,18 @@ class Scheduler:
         from the document as stored inside the promotion's own transaction:
         the step is READY on the resolved profile in the one write, before
         any admission has looked at it (invariants 2 and 3). The READY event
-        records the profile and the reason (`runtime` in its detail).
+        records the profile and the reason (`runtime` in its detail). A
+        re-review whose verdict gate is shut runs no agent and is readied on
+        `claude-code` (`runtime.republishes`, from its `metadata.dispatch`).
         """
         policy = runtime_mod.policy_of(task.metadata)
         if policy is None or "resolved" in policy:
             return None, None
+        metadata = task.metadata if isinstance(task.metadata, dict) else {}
         resolution = runtime_mod.resolve(
             list(task.depends_on), policy,
             lambda task_id: self._store.task_document(task_id, tenant_id=task.tenant_id),
+            dispatch=metadata.get(runtime_mod.DISPATCH_METADATA_KEY),
         )
         at = self._now()
         record: dict[str, Any] = {}

@@ -424,15 +424,19 @@ describe('h. 6:admin-013: a class whose units exceed its pool’s ceiling is mar
     standard: { units_before: 1, units_after: 1, cost_hour_before: 0.25, cost_hour_after: 0.25 },
   }
 
-  it("carries Pools' 'too small' mark and says none of it can start", () => {
+  it("carries Pools' 'too small' mark, its tooltip the reason, and no line of prose under it", () => {
     render(<PoolsTable pools={pools} classes={classes} />)
     const table = screen.getByRole('table', { name: 'What the pools admit' })
     const large = table.querySelector('tr[data-class="large"]')!
     // MUTATION: drop the mark: a save that leaves `large` unrunnable is silent.
     const mark = within(large as HTMLElement).getByText('too small')
     expect(mark.closest('[data-tone]')?.getAttribute('data-tone')).toBe('paused')
-    expect(large.textContent).toContain('none of it can start')
-    expect(large.textContent).toContain('4 units')
+    // BGD's no-prose rule (2026-11-05): the reason is the mark's tooltip, not a line.
+    // MUTATION: draw `One large agent weighs …: none of it can start.` under the mark again.
+    expect(large.textContent).not.toContain('none of it can start')
+    const tip = mark.closest('[title]')?.getAttribute('title') ?? ''
+    expect(tip).toContain('One large agent weighs 4 units, more than this pool’s 2')
+    expect(tip).toContain('admits no large agent')
     // A class the pool admits is not marked.
     const standard = table.querySelector('tr[data-class="standard"]')!
     expect(within(standard as HTMLElement).queryByText('too small')).toBeNull()

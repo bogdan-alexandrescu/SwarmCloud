@@ -352,6 +352,10 @@ def test_every_service_written_key_is_reserved_in_one_place():
         # 2026-11-02), written only by the park at the time limit. A caller
         # who set it would choose how many more time limits the task runs past.
         "time_limit_continuations",
+        # The issue run a task or workflow belongs to (BGD, 2026-11-04),
+        # written only by the issue-run code. A caller who set it would have
+        # its work read as an issue run's.
+        "issue_run",
     )
 
 

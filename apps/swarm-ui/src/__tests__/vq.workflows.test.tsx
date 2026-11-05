@@ -322,21 +322,23 @@ describe('VQ-015: one back path, by name, and Stop step', () => {
     // No arrival pick any more: picking the running step's chip opens its card.
     const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="build"]')!
     fireEvent.click(chip)
+    // THE PAGE'S CARD IS StepCard, NOT StepInspector + a `.wf-inspect-acts`
+    // group (owner's pick, 2026-11-05): Stop sits in the bar's own `.sc-end`,
+    // beside Agent/Logs/Changes, with no group of its own any more.
     // Found by selector, then by role inside it: a role query over the whole
     // page walks every node's accessible name and ran past findBy's 1s.
-    const group = await waitFor(
+    const card = await waitFor(
       () => {
-        const g = document.querySelector<HTMLElement>('.wi-dock .wf-inspect-acts[role="group"]')
-        expect(g).toBeTruthy()
-        return g!
+        const c = document.querySelector<HTMLElement>('.wi-dock section.sc-card')
+        expect(c).toBeTruthy()
+        return c!
       },
       { timeout: 5000 },
     )
-    expect(group.getAttribute('aria-label')).toBe('Stop step')
     // `Stop`, and the head's `Stop workflow`: one verb (visual QA pass 1 overview-agents-83, #2596).
-    const stop = within(group).getByRole('button', { name: 'Stop' })
-    expect(stop.classList.contains('is-danger'), 'Stop step is not the danger outline').toBe(true)
-    expect(stop.classList.contains('is-sm'), 'Stop step is the small button').toBe(false)
+    const stop = within(card).getByRole('button', { name: 'Stop' })
+    expect(stop.classList.contains('is-danger'), 'Stop is not the danger outline').toBe(true)
+    expect(stop.classList.contains('is-sm'), 'Stop is the bar’s small button').toBe(false)
   })
 })
 
@@ -584,17 +586,21 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     fireEvent.click(copy)
     expect(writeText).toHaveBeenCalledWith('wf_chain')
     await waitFor(() => expect(copy.textContent).toBe('Id copied'))
-    // The inspector's same-step row does not render it again on the page:
-    // not drawn and hidden, absent.
+    // THE PAGE'S CARD IS StepCard, NOT StepInspector's same-step scrubber
+    // (owner's pick, 2026-11-05): there is no `.wf-scrub` on the page's card
+    // at all any more to carry the id. Confirm the card renders and still
+    // says nothing of the workflow id, rather than checking a scrubber row
+    // that no longer exists on the page.
     const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="build"]')!
     fireEvent.click(chip)
-    const scrub = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('.wfp-screen .wf-scrub[data-scrub="workflow"]')
+    const card = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.wfp-screen section.sc-card')
       expect(el).toBeTruthy()
       return el!
     })
-    expect(scrub.querySelector('.id'), 'the same-step row renders the id').toBeNull()
-    expect(scrub.textContent).not.toContain('wf_chain')
+    expect(card.querySelector('.wf-scrub[data-scrub="workflow"]'), 'the old same-step scrubber is back').toBeNull()
+    expect(card.querySelector('.id'), 'the card renders the id').toBeNull()
+    expect(card.textContent).not.toContain('wf_chain')
   })
 
   // MUTATION: drop the id from every same-step row, not only the page's, or

@@ -345,11 +345,18 @@ code, but not one the worker reads as a rate limit, a refused credential or a
 cancellation; `swarm_profiles` names those, with every key's bounds, so do
 not quote a bound from memory. `browser` takes a `url` and `actions`, and
 `generic` a required `command` from its runner's catalogue; `swarm_profiles`
-lists every key and each action shape. For an agent that has to SEE a page --
-visual QA, a screenshot of what a change rendered, a UI bug reproduced from its
-report -- name `claude-code-browser`: `claude-code` with Chromium beside it,
-at the cost of a `browser` class; `browser` itself only replays a scripted
-`url` or `actions`. `claude-code`, `claude-code-browser` and `codex` declare
+lists every key and each action shape. Plain `claude-code` runs a
+repository's headless Playwright suite (`npx playwright install chromium`,
+then `npx playwright test`) and has Postgres 16, with the same 7,200 s limit,
+so a code change, a merge or a hotfix whose only browser need is a
+mock-backed Playwright spec goes to `claude-code`. Name `claude-code-browser`
+only for an agent that must SEE a page in the live browser -- visual QA, a
+mock-up review, a UI bug reproduced from its report: it is `claude-code`
+with Chromium beside it, at the cost of a browser pod and a `browser`-class
+share for the whole run, whether or not the agent opens the page. A finished
+`claude-code-browser` task that never used its browser says so in its result,
+with how long it ran. `browser` itself only replays a scripted `url` or
+`actions`. `claude-code`, `claude-code-browser` and `codex` declare
 one input, `issue`: the number of a GitHub issue in the repository the step
 clones. The worker fetches that issue's title, body and comments read-only
 into `issue.md` in the workspace and names it in the prompt, so point a step

@@ -1,0 +1,27 @@
+# Lane VOICE-SPEECH-SERVER (part of #2688; docs/design/voice-it-own-speech.md
+# section 14, lane L2, "The speech server streams words and speech"):
+# apps/swarm-speech/, the server that runs on Voice it's own speech machine.
+#
+# Its two environment variables are set by the machine's launcher from the
+# instance's metadata (swarm-speech-caller, swarm-speech-models), which
+# terraform writes when it creates the stopped machine and swarm-api rewrites
+# at each start (design §5.1, §11.4). PORT, which main.py also reads, is
+# already in the base manifest's env: table.
+#
+# Its Dockerfile is listed under ignored: until the release builds it. Lane L3
+# ("The release builds and pins swarm-speech") adds swarm-speech to
+# scripts/build-images.sh's ALL_TARGETS and the release; the image's install
+# entry (copied by digest, step images.copy) lands with that change and lane
+# L11 ("The installer offers own speech"), because until then no build makes
+# the image for the install to copy.
+version: 1
+env:
+  SWARM_SPEECH_CALLER:
+    setter: apps/swarm-speech/vm/swarm-speech-launch.sh:77
+  SWARM_SPEECH_MODELS:
+    setter: apps/swarm-speech/vm/swarm-speech-launch.sh:78
+ignored:
+  image:
+  - match: dockerfile:apps/swarm-speech/Dockerfile
+    reason: the speech machine's server image; no build target builds it until lane L3 adds swarm-speech to
+      scripts/build-images.sh ALL_TARGETS and the release, and its images.copy entry lands with that change

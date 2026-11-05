@@ -32,6 +32,7 @@ from datetime import timedelta
 import pytest
 
 from swarm_api import issueci, mergewake
+from swarm_api.validation import issue_run_mark_allowed
 from swarm_common.models import WorkflowStep
 from swarm_common.states import TaskState
 from swarm_rollup import derive, is_fix_round_step, read_steps
@@ -654,8 +655,11 @@ def test_fix_rounds_without_a_merge_step_is_refused(client):
 
 
 def test_an_issue_runs_merge_keeps_no_rounds_it_has_its_own_loop(client, db):
-    task = _merge_task(client, db, _lane(metadata={
-        "merge": "on", "issue_run": {"run_id": "run_x", "issue": "octo-org/widget-shop#1"}}))
+    link = {"run_id": "run_x", "issue": "octo-org/widget-shop#1"}
+    # `metadata.issue_run` is reserved (BGD, 2026-11-04): only the issue-run
+    # code's exemption lets a workflow carry it.
+    with issue_run_mark_allowed(link):
+        task = _merge_task(client, db, _lane(metadata={"merge": "on", "issue_run": link}))
     assert task["metadata"]["merge_fix_rounds"] == 0
 
 

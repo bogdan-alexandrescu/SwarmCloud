@@ -164,6 +164,7 @@ from . import issue as issue_mod
 from . import jevkey as jevkey_mod
 from . import plugins as plugins_mod
 from . import qualitygates as qualitygates_mod
+from . import security_review as security_review_mod
 from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
 from . import stepservers as stepservers_mod
@@ -178,6 +179,7 @@ from . import extrarepos as extrarepos_mod
 from . import standalone_outputs as standalone_mod
 from . import verdict as verdict_mod
 from . import workspace as workspace_mod
+from .statecall import new_request_id
 from .accountlease import (
     ACCOUNTS_FULL,
     ACCOUNT_UNREADABLE,
@@ -263,6 +265,7 @@ from .gitops import (
     fold_agent_commits,
     hide_from_git,
     is_branch_ref_name,
+    is_full_refname,
     merge_branches,
     mirror_worktree,
     moved_branch_tip,
@@ -334,6 +337,7 @@ from .runners.ceiling import SESSIONS_METRIC as CEILING_SESSIONS_METRIC
 from .runners.ceiling import UNPRICED_KEY as CEILING_UNPRICED_KEY
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .runners.streams import agent_stream_files, cli_agent_spec
+from .secrets import WRITE as FORGE_WRITE
 from .secrets import (
     FORGE_REFUSED_TWICE,
     GIT_PROVIDER,
@@ -1006,6 +1010,12 @@ class Worker:
         #: The step's agent plugins (`plugins.start`), set up once per attempt
         #: before the agent; None for a step that names none.
         self._plugins: plugins_mod.Started | None = None
+        #: The step's signed work contract named for the runner's JC2
+        #: (`_stage_work_contract`), set once per attempt before the agent.
+        self._work_contract_env: dict[str, str] = {}
+        #: A security review step's record (`security_review`): {} once its
+        #: plugin started, filled after the agent; None for any other step.
+        self._security_review: dict[str, Any] | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
             tenant_id=config.tenant_id,
@@ -3855,6 +3865,17 @@ class Worker:
         )
         if self._plugins is not None and isinstance(payload.get("prompt"), str):
             payload["prompt"] += self._plugins.guidance
+        # The step's signed work contract, for the runner's end-of-step
+        # judgment (JC2, jev-contract.md section 5): its body in work/ and the
+        # SIGNED digest, both from the task document, never from `input`.
+        self._work_contract_env = self._stage_work_contract(task, ws.work)
+        # The optional security review step (docs/design/security-review-step.md):
+        # a step whose signed contract loads security-audit is told the owner's
+        # run settings here, and its output is checked after the agent.
+        if security_review_mod.applies(self._plugins):
+            self._security_review = {}
+            if isinstance(payload.get("prompt"), str):
+                payload["prompt"] += security_review_mod.guidance(ws.artifacts)
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
         # ---- STEP 6: tenant credentials ---------------------------------
@@ -4862,6 +4883,11 @@ class Worker:
                     # After the publish, so the epic hears of a review only once
                     # the step it gated has done its own work; never on a stop.
                     summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
+            if self._security_review is not None:
+                record = dict(self._security_review)
+                if not record.get("error") and result.exit_code != EXIT_TERMINATED:
+                    record["comment"] = self._post_security_report()
+                summary[security_review_mod.SUMMARY_KEY] = self._scrub(record)
             if self._pr_text_from is not None:
                 summary["pull_request_text_from"] = dict(self._pr_text_from)
             if self._rendered_review is not None:
@@ -4966,6 +4992,12 @@ class Worker:
                 self._mark_publish(summary, failed=str(self._scrub(unpushed)))
                 return self._fail_for_published_nothing(unpushed, summary, exit_code=0)
             self._mark_publish(summary)
+            # JC2's verdict, AFTER the `published` mark the route checks its
+            # commit against (section 9, check 4) and before the success: a
+            # send-back ends the attempt in the route's own transaction.
+            judged = self._deliver_contract_verdict(summary, runner_result)
+            if judged is not None:
+                return judged
             # LAST before the success, so an attempt that fails above never
             # leaves a write-once verdict behind it for its retry to meet.
             unpublished = self._publish_review_verdict(summary)
@@ -4996,6 +5028,104 @@ class Worker:
             result_summary=summary,
         )
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _stage_work_contract(self, task: Mapping[str, Any], work: Path) -> dict[str, str]:
+        """The runner's variables naming the step's SIGNED work contract for
+        JC2 (`poststeps.read_contract`): `SWARM_WORK_CONTRACT_DIGEST`, the
+        digest in the signed dispatch block (`metadata.dispatch.work_contract
+        .digest`), and `SWARM_WORK_CONTRACT_FILE`, the stored body
+        (`metadata.work_contract`, as `plugins.selected` reads it) written to
+        `work/WORK_CONTRACT_FILE`. {} for a step with no signed reference.
+
+        The digest is the authority: the runner judges a body only when it
+        digests to it, so a body the agent rewrote in work/ is not judged. A
+        reference whose body is missing or cannot be written still names its
+        digest, and JC2 says `not_run` (`contract_unreadable`) rather than
+        nothing. A file a restored checkpoint carried is replaced or removed,
+        never read for this attempt. Never raises."""
+        from .judge import poststeps
+
+        path = work / WORK_CONTRACT_FILE
+        metadata = task.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        dispatch = metadata.get("dispatch")
+        reference = dispatch.get("work_contract") if isinstance(dispatch, Mapping) else None
+        digest = reference.get("digest") if isinstance(reference, Mapping) else None
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            self.log.warning("a previous work contract file could not be removed",
+                             error=type(exc).__name__)
+        if not isinstance(digest, str) or not digest.strip():
+            return {}
+        env = {poststeps.CONTRACT_DIGEST_ENV: digest.strip()}
+        document = metadata.get("work_contract")
+        if isinstance(document, Mapping):
+            try:
+                # No `default=`: a body that is not plain JSON would digest
+                # differently once written, so it is not written at all.
+                path.write_text(json.dumps(document))
+            except (OSError, TypeError, ValueError) as exc:
+                self.log.warning("the work contract could not be written for the runner",
+                                 error=type(exc).__name__)
+            else:
+                env[poststeps.CONTRACT_FILE_ENV] = str(path)
+        return env
+
+    def _deliver_contract_verdict(
+        self, summary: dict[str, Any], runner_result: Mapping[str, Any] | None
+    ) -> Outcome | None:
+        """JC2's verdict, from the runner's report (`contract_judgment`), posted
+        once to `state/contract-verdict` about the head this attempt pushed
+        (`poststeps.deliver_contract_verdict`, a new request id), or None to
+        go on to the success.
+
+        * A STALE GENERATION (409 `attempt_fenced`) stands down as every other
+          fenced write here does (`_stand_down`): nothing else is posted, the
+          task and the lease are not touched (invariant 5).
+        * `unmet` SENT BACK: the route ended this attempt and returned the step
+          to READY in its own fenced transaction (section 5.4; invariant 1,
+          READY costs nothing), so the attempt ends there with no further
+          terminal write.
+        * Any other refusal or outage, or a worker on the direct Firestore path
+          (no state route to post to), is recorded in the summary and the step
+          goes on: the control plane re-asks from the published diff
+          (`contractreask`, the owner's answer 5)."""
+        from .judge import poststeps
+
+        output = runner_result.get("output") if isinstance(runner_result, Mapping) else None
+        verdict = output.get(CONTRACT_JUDGMENT_KEY) if isinstance(output, Mapping) else None
+        if not isinstance(verdict, Mapping):
+            return None
+        git = summary.get("git")
+        head = (git.get("pushed_head")
+                if isinstance(git, dict) and git.get("published") is True else None)
+        if not getattr(self.control, "state_via_api", False):
+            summary[CONTRACT_VERDICT_SUMMARY_KEY] = {"delivery": "no_state_route"}
+            self.log.warning("the contract verdict has no state route on the direct path; "
+                             "the control plane re-asks from the published diff")
+            return None
+        answers: list[Mapping[str, Any]] = []
+
+        def post(op: str, fields: Mapping[str, Any]) -> None:
+            answers.append(self.control._post(op, fields, call=None) or {})
+
+        try:
+            delivery = poststeps.deliver_contract_verdict(
+                post, verdict, published_head=head, request_id=new_request_id())
+        except FencedError as exc:
+            return Outcome(exit_code=self._stand_down(exc, where="contract verdict"),
+                           detail={"fenced": True})
+        answer = answers[-1] if answers else {}
+        summary[CONTRACT_VERDICT_SUMMARY_KEY] = {
+            "delivery": delivery, "outcome": answer.get("outcome"),
+            "waiting_on": answer.get("waiting_on")}
+        self.log.info("contract verdict", delivery=delivery, outcome=answer.get("outcome"),
+                      head=head)
+        if answer.get("sent_back") is True:
+            return Outcome(exit_code=ExitCode.FAILED, state=TaskState.READY,
+                           detail={"sent_back": "contract_unmet"})
+        return None
 
     def _publish_review_verdict(self, summary: dict[str, Any]) -> Outcome | None:
         """The review step's `review.json`, written once to the verdicts prefix (CR 36).
@@ -6444,7 +6574,11 @@ class Worker:
           rewritten history would no longer fast-forward, and not pinned to an
           upstream step's base, which a downstream patch must apply to;
         * no `carrier: branches`, whose checkpoints already pushed the branch;
-        * a BRANCH: a ref that is a sha has no newer tip.
+        * a BRANCH: a ref that is a sha has no newer tip. A full refname
+          (#3347) is a branch only as `refs/heads/<name>`, offered as
+          `<name>`, since the runner rebases onto `origin/<name>`; a pull
+          request's `refs/pull/<n>/head` or `/merge`, a tag, or any other
+          ref names no branch to rebase onto, and is offered nothing.
 
         The default branch, when the task names no ref, is read from the
         clone's own HEAD file, which this process wrote before any agent ran.
@@ -6465,6 +6599,10 @@ class Worker:
                 return None
             prefix = "ref: refs/heads/"
             name = head[len(prefix):] if head.startswith(prefix) else ""
+        if is_full_refname(name):
+            if not name.startswith("refs/heads/"):
+                return None
+            name = name[len("refs/heads/"):]
         if not name or re.fullmatch(r"[0-9a-f]{7,40}", name):
             return None
         try:
@@ -7238,7 +7376,7 @@ class Worker:
         url = self._repo_url or self.cfg.repository_url
         if not url:
             return skipped("the repository URL is unknown")
-        token = self._git_token()
+        token = self._git_token(write=True)
         try:
             token, access = self._probe_reading_again(url, token, "the no-change comment probe")
             if access is None:
@@ -7584,7 +7722,7 @@ class Worker:
             return None
         pull: PullHead | None = None
         url = self._repo_url
-        token = None if self._git_token_refusal() else self._git_token()
+        token = None if self._git_token_refusal() else self._git_token(write=True)
         if url and token:
             try:
                 token, access = self._probe_reading_again(url, token, "the CI fix start check")
@@ -7897,6 +8035,97 @@ class Worker:
             )
             return []
         return verdict_mod.reviewed_patches(review)
+
+    def _finish_security_review(self) -> None:
+        """Validate a security review's audit and write its verdict (`security_review.finish`).
+
+        A failing validator writes no verdict: the missing-output check then
+        fails the step, not retryably (`CAUSE_INVALID`), and the validator's
+        message is `result_summary.security_review.error`. Never a silent pass.
+        """
+        ws = self.ws
+        if ws is None or self._security_review is None:
+            return
+        task = self._task or {}
+        try:
+            record = security_review_mod.finish(
+                ws.artifacts, task_id=self.cfg.task_id, step_id=str(task.get("step_id") or ""),
+                skill=security_review_mod.skill_dir(
+                    security_review_mod.install_dir(plugins_mod.CATALOGUE)),
+            )
+        except security_review_mod.SecurityReviewInvalid as exc:
+            message = str(self._scrub(str(exc)))
+            self._security_review = {"error": message}
+            self.log.error("the security review's audit did not validate; the step fails",
+                           error=message)
+            return
+        self._security_review = record
+        self.log.info("security review verdict derived", verdict=record["verdict"],
+                      blocking=record["blocking"], owner_questions=record["owner_questions"])
+
+    def _post_security_report(self) -> dict[str, Any]:
+        """Post the audit's REPORT.md on the pull request this step reviewed.
+
+        The pull request is the one its `builds_on` step recorded opening; the
+        token is the tenant's own `-git` one, read here after the agent ended,
+        as `_file_review_minors` reads it. The report goes through the
+        redaction filter and is cut to GitHub's limit, naming the artifact.
+        Never raises: what was posted, or why not, is the result.
+        """
+        ws = self.ws
+        assert ws is not None
+        report = security_review_mod.output_dir(ws.artifacts) / security_review_mod.REPORT
+        try:
+            text = report.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return {"posted": False, "reason": f"the audit wrote no {security_review_mod.REPORT}"}
+        try:
+            builds_on = self._dispatch_builds_on()
+        except WorkerError as exc:
+            return {"posted": False, "reason": str(exc)}
+        number = None
+        if builds_on:
+            try:
+                number = post_verdict_mod.pull_request_number(inputs_mod.fetch_upstream_task(
+                    self.db, upstream_task_id=builds_on, tenant_id=self.cfg.tenant_id,
+                    call_options=self.control.call_options(),
+                ))
+            except InputUnavailable:
+                number = None
+        if number is None:
+            return {"posted": False,
+                    "reason": "the step it builds on recorded no pull request to comment on"}
+        ref = forge_mod.parse_repo(self._repo_url or self.cfg.repository_url or "")
+        if ref is None or not forge_mod.may_receive_forge_token(ref.host):
+            return {"posted": False, "pull_request": number,
+                    "reason": "the repository is not on github.com, where the tenant's git "
+                              "credential may be sent"}
+        refused = self._forge_write_refusal()
+        if refused:
+            return {"posted": False, "pull_request": number,
+                    "reason": f"{refused[0]}: {refused[1]}"}
+        refusal = self._git_token_refusal()
+        if refusal:
+            return {"posted": False, "pull_request": number,
+                    "reason": f"refusing to read the tenant git token: {refusal}"}
+        token = self._git_token()
+        if not token:
+            return {"posted": False, "pull_request": number,
+                    "reason": "no git credential is registered for this tenant"}
+        self.log.register_secret(token)
+        pointer = (f"`{security_review_mod.OUTPUT_DIR_NAME}/{security_review_mod.REPORT}` "
+                   f"in the artifacts of task `{self.cfg.task_id}`")
+        body = security_review_mod.comment_body(
+            text, artifact_pointer=pointer,
+            scrub=lambda value: _neutralise_mentions(str(self._scrub(value))))
+        try:
+            forge_mod.create_issue_comment(ref=ref, token=token, number=number, body=body)
+        except Exception as exc:  # noqa: BLE001 - the comment is a report, never the verdict
+            del token
+            return {"posted": False, "pull_request": number,
+                    "reason": f"GitHub refused the comment ({type(exc).__name__})"}
+        del token
+        return {"posted": True, "pull_request": number, "chars": len(body)}
 
     def _file_review_minors(self) -> dict[str, Any]:
         """File the verdict's minor findings on the tenant's wave epic (#638).
@@ -8984,6 +9213,9 @@ class Worker:
         causes = {**self._not_uploaded_causes, **self._skip_causes}
         if self._verdict_unreadable and expected_mod.REVIEW_VERDICT_NAME not in causes:
             causes[expected_mod.REVIEW_VERDICT_NAME] = expected_mod.CAUSE_UNREADABLE_VERDICT
+        if (self._security_review or {}).get("error"):
+            # Not retryable: the step fails, its validator's message in the summary.
+            causes[expected_mod.REVIEW_VERDICT_NAME] = security_review_mod.CAUSE_INVALID
         if PATCH_NAME in self._expected_outputs and PATCH_NAME not in causes:
             patch = expected_mod.patch_cause(summary.get("git"))
             if patch is not None:
@@ -9691,7 +9923,7 @@ class Worker:
             return None
         return text or None
 
-    def _git_token(self) -> str | None:
+    def _git_token(self, *, write: bool = False) -> str | None:
         """The TASK's forge token, or None.
 
         Read from `swarm-tenant-<tenant>-<suffix>`, the suffix being the task's
@@ -9726,6 +9958,21 @@ class Worker:
         git's own message and a push has no credential. A superseded attempt
         raises `FencedError` and stands down. The merge, a write with no such
         gate of its own, asks the broker for `write` (`_read_action_git_token`).
+
+        `write` (#2907): this read comes before a push or a pull request -- the
+        publish, publish_to_pr, the push-scope and carrier-target probes, the
+        CI fix start check, the no-change comment, and their re-reads after a
+        401 -- and the token it returns is the one that write uses. It changes
+        only A SERVICE RUN's ask (`_service_run`) whose SIGNED `forge_access`
+        is exactly `write`, the condition swarm-api's `decide_run_token` mints
+        `RUN_WRITE_PERMISSIONS` on: without it the broker minted the read-only
+        run token and the probe refused the push ("an App installation token
+        whose receive-pack advertisement GitHub refused (HTTP 403)"). A run
+        signed `read`, or with no `forge_access`, still asks for `read`, and a
+        person's run still asks for `read`, its write gated by
+        `_forge_write_refusal`, so no run can obtain more than it could. A write
+        the broker refuses as a write (`ForgeWriteRefused`) is asked again for
+        `read`, today's token, and the probe refuses the push as it did.
         """
         self._git_token_error = None
         refusal = self._git_token_refusal()
@@ -9745,11 +9992,24 @@ class Worker:
                 self.db, self.cfg.tenant_id, call_options=self.control.call_options()
             )
             source = tenant.secret_name(suffix)
-            token = resolve_git_token(
-                tenant=tenant, client=self.secret_client, logger=self.log,
-                provider=suffix, broker=self.forge_broker,
-                app_installation=app_installation,
-            )
+            as_write = write and app_installation \
+                and (self._task or {}).get("forge_access") == FORGE_WRITE
+            try:
+                token = resolve_git_token(
+                    tenant=tenant, client=self.secret_client, logger=self.log,
+                    provider=suffix, broker=self.forge_broker, write=as_write,
+                    app_installation=app_installation,
+                )
+            except ForgeWriteRefused as exc:
+                if not as_write:
+                    raise
+                self.log.warning("the broker refused this run a write token; reading it "
+                                 "for read", cause=exc.cause)
+                token = resolve_git_token(
+                    tenant=tenant, client=self.secret_client, logger=self.log,
+                    provider=suffix, broker=self.forge_broker,
+                    app_installation=app_installation,
+                )
             # The KIND, classified here in memory; the value goes no further
             # than the caller. A tenant with no `git` slot read nothing.
             self._forge_credentials_read.append(
@@ -9876,7 +10136,9 @@ class Worker:
             "the forge refused the credential; reading its secret again and retrying once",
             call=what,
         )
-        token = self._git_token()
+        # For write, as every caller's first read is: each is a probe before a
+        # push or a pull request (#2907, `_git_token`).
+        token = self._git_token(write=True)
         access = probe(token)
         if access is not None and not access.can_push \
                 and forge_credential_refused(access.reason):
@@ -9931,7 +10193,7 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             raise ForgeError(f"{unopened} (401): the token was not read again: {refusal}")
-        fresh = self._git_token()
+        fresh = self._git_token(write=True)
         if not fresh:
             why = getattr(self, "_git_token_error", None) or "no forge credential was read"
             self._emit_token_reread(branch, outcome="unread")
@@ -10423,6 +10685,10 @@ class Worker:
         # and paths, never a credential.
         if self._plugins is not None:
             base.update(self._plugins.env)
+        # The step's signed work contract for JC2 (`_stage_work_contract`):
+        # the body's path and the signed digest. A path and a hash, never a
+        # credential; nothing for a step without a signed contract.
+        base.update(self._work_contract_env)
         # The released workspace secrets (SEC-RELEASE): the manifest's PATH,
         # `SWARM_SECRETS_MANIFEST`, and nothing else -- never a value. The
         # release ran once, in STEP 6a; a rebuild on a credential reload
@@ -12701,7 +12967,7 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             return f"the tenant git token is refused: {refusal}"
-        token = self._git_token()
+        token = self._git_token(write=True)
         if not token:
             return "no credential"
         try:
@@ -12757,7 +13023,7 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             return functools.partial(self._fail_git_token_refused, refusal)
-        token = self._git_token()
+        token = self._git_token(write=True)
         if not token:
             return functools.partial(
                 self._fail_forge_read_only, url,
@@ -14162,7 +14428,7 @@ class Worker:
                 f"tenant git token, which this worker may not hold: {refusal}; nothing "
                 "was cloned and no agent ran"
             )
-        token = self._git_token()
+        token = self._git_token(write=True)
         if not token:
             raise WorkerError(
                 f"publish_to_pr: pull request #{number} is read and pushed with the "
@@ -15451,7 +15717,7 @@ class Worker:
             self.log.error("not publishing: the tenant git token is refused", reason=refusal)
             return {"published": False, "publish_reason": f"refusing to publish: {refusal}"}
 
-        token = self._git_token()
+        token = self._git_token(write=True)
         try:
             token, access = self._probe_reading_again(url, token, "the publish probe")
         except ForgeError as exc:
@@ -17536,7 +17802,11 @@ class Worker:
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}
-        if defer_publish:
+        if defer_publish and self._security_review is not None:
+            # A security review's verdict is the worker's, derived from the
+            # validated audit, never the agent's; a UI path does not gate it.
+            self._finish_security_review()
+        elif defer_publish:
             # After the harvest's reap, so the agent can no longer write it,
             # and before the upload, so what goes up is the verdict that counts.
             self._hold_ui_review_to_rendered()
@@ -18903,6 +19173,13 @@ CLONE_BASE_ENV = "SWARM_CLONE_BASE"
 #: The branch the runner rebases onto before publishing (SPEED-D1;
 #: `prepublish.PREPUBLISH_BASE_ENV`, held equal by test_prepublish_gate.py).
 PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
+#: Where the worker writes the step's signed work contract's body for the
+#: runner's JC2 (`Worker._stage_work_contract`), under the attempt's work/.
+WORK_CONTRACT_FILE = "work-contract.json"
+#: The runner's report key holding JC2's verdict (`cliagent.run_cli_agent`),
+#: and the summary key recording its delivery (`_deliver_contract_verdict`).
+CONTRACT_JUDGMENT_KEY = "contract_judgment"
+CONTRACT_VERDICT_SUMMARY_KEY = "contract_verdict"
 
 
 #: What a leak predicate found in one window of a file's added text: the rule

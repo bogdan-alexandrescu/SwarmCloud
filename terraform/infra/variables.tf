@@ -1482,3 +1482,67 @@ variable "setup_github_org" {
   type        = string
   default     = ""
 }
+
+variable "voice_speech" {
+  description = <<-EOT
+    Voice it's own speech engine: the one speech machine (voice_speech.tf;
+    docs/design/voice-it-own-speech.md §5). It is made only while `voice_it`
+    is "on" as well, and it is made STOPPED: swarm-api starts it for a session
+    and stops it after.
+
+      enabled       false: nothing is made. Off in every environment's tfvars
+                    until the owner turns it on; the installer offers it.
+      zone          "us-central1-a": the one zone the machine lives in. One
+                    zone, one machine (owner, 2026-11-05): a stock-out falls
+                    back to text mode, no second machine. Must be in
+                    var.region and offer L4s.
+      machine_type  "g2-standard-4": 4 vCPU, 16 GB, one NVIDIA L4, about
+                    $0.71 an hour while running (§1 pick 1). Terraform sets it
+                    at create only; swarm-api applies Settings' pick
+                    afterwards.
+      image         "" until set: a Deep Learning VM image BY NAME,
+                    projects/deeplearning-platform-release/global/images/<name>,
+                    with the NVIDIA driver and the container toolkit on it.
+                    Never a /family/ path, which moves under a stopped machine
+                    and would replace it at the next plan. Required once
+                    enabled; the installer pins the newest image of the family
+                    at install time.
+      disk_gb       150: the boot disk (pd-balanced, about $15 a month, idle
+                    or not), sized for the image with its driver (~50 GB), the
+                    server image (~20 GB), the models' weights (~8 GB) and one
+                    previous server image during an update (§5.1).
+      idle_minutes  5: the session ends after this long without speech or
+                    tool activity, and the machine stops (§4.4, pick 1).
+                    Written to the machine's metadata at create; Settings
+                    change it afterwards.
+  EOT
+  type = object({
+    enabled      = optional(bool, false)
+    zone         = optional(string, "us-central1-a")
+    machine_type = optional(string, "g2-standard-4")
+    image        = optional(string, "")
+    disk_gb      = optional(number, 150)
+    idle_minutes = optional(number, 5)
+  })
+  default = {}
+
+  validation {
+    condition     = !var.voice_speech.enabled || can(regex("^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$", var.voice_speech.image))
+    error_message = "voice_speech.enabled needs voice_speech.image: a Deep Learning VM image by name (projects/deeplearning-platform-release/global/images/<name>), never a /family/ path."
+  }
+
+  validation {
+    condition     = can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", var.voice_speech.zone))
+    error_message = "voice_speech.zone is one zone, e.g. us-central1-a."
+  }
+
+  validation {
+    condition     = startswith(var.voice_speech.machine_type, "g2-standard-")
+    error_message = "voice_speech.machine_type is a g2 type (the L4 comes with it)."
+  }
+
+  validation {
+    condition     = var.voice_speech.disk_gb >= 100 && var.voice_speech.idle_minutes >= 1
+    error_message = "voice_speech.disk_gb is at least 100 (the image alone is about 50 GB) and idle_minutes at least 1."
+  }
+}
