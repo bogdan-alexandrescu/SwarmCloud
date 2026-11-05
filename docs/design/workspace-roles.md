@@ -47,7 +47,9 @@ What the design settles, in one line each:
 * **Membership still comes from Google, and a role only limits what a member
   may do** (Q3). A role never admits anyone. A grant to someone not yet in
   the group is stored and applies when they join. A personal workspace's
-  person is its `admin`, fixed.
+  person is its `admin`, fixed. **Amended for join requests (#2325):** a
+  grant still never admits; an approved join request does, under the join
+  design's A (Q3's amendment, §4.6).
 * **A group workspace has one default role and per-person overrides** (Q4).
   The default starts at `member`, so **on the day this ships everyone keeps
   exactly what they have.** No Google group is bound to a role in this build.
@@ -838,6 +840,26 @@ disabling) are unchanged and out of its scope.
 | raise oneself | not a case: only an `admin` can write a role, and `admin` is the top | |
 | any role change in a personal workspace | nobody | `personal_workspace_roles_fixed` |
 
+**Q3's amendment, join requests (2026-10-25, [join-requests.md](join-requests.md),
+#2325).** A role grant still never admits anyone: everything in this section
+holds, and a grant to a non-member is still stored and still says
+`member: false`. What changed is that the group is no longer the only way in.
+BGD chose design A for join requests: when a workspace's `admin` or a
+platform admin **approves a person's join request**, swarm-api writes a
+signed platform-side membership beside the Google group, and while
+`PLATFORM_MEMBERSHIPS` is on that membership admits the person exactly as the
+group would (`via: "platform_member"`). Why an approval may admit when a grant
+may not: an approval is a decision about *membership*, made on a request the
+person themself made with a code the workspace's admin chose to hand out,
+recorded in its own audit row and removable on its own; a grant is a decision
+about *what a member may do*, and letting it admit would turn every role write
+into a membership write that nobody asked for. An approval gives the
+workspace's default role, or `viewer` below it if the approving admin lowers
+it (never `admin`: `join_role_not_allowed`); `member` in the per-person check
+then reads true. With the switch off, nothing here changes: an approval
+records the decision and names the `gcloud` group command, and the group stays
+the only way in.
+
 A grant names an email. The person does not need to be a confirmed member at
 grant time (Q3). A grant to someone not in the group is stored and applies
 when they join. The response says `member: false` when the one per-group
@@ -1297,7 +1319,7 @@ against dev. That is the operator's step, run in CI.
 |---|---|---|---|
 | Q1 | the role set | **three roles, viewer < member < admin** (departs from the five-role recommendation); member = today's member exactly; admin = member + Q6 + roles (widened by Q13 to include the workspace's settings) | §3.3, §4.1, §4.9 |
 | Q2 | who names a group workspace's first admin | a platform admin, in Admin › People, audited | §4.3, §4.6 |
-| Q3 | may a grant admit, or share a personal workspace | no; Google owns membership; a grant to a non-member is stored and applies when they join (`member: false`); a personal workspace's person is its fixed admin | §4.5, §4.6 |
+| Q3 | may a grant admit, or share a personal workspace | no; Google owns membership; a grant to a non-member is stored and applies when they join (`member: false`); a personal workspace's person is its fixed admin. **Amended (#2325):** a grant still never admits; an approved join request does, under the join design's A, while `PLATFORM_MEMBERSHIPS` is on | §4.5, §4.6 |
 | Q4 | Google groups bound to roles | not in this build; one default per workspace plus per-person overrides | §3.2 |
 | Q5 | a platform admin in a workspace | **admin in every group workspace, member or not, no grant row** (departs from the recommendation); not in personal workspaces; tenant resolution lets them select any registered group workspace; every action in a non-member workspace audited `via=platform_admin` | §4.2 |
 | Q6 | may a workspace admin manage secrets, MCP servers and tenant keys | yes | §4.1, §4.8 |

@@ -71,10 +71,10 @@ denial, a plan revised, a second hand-off in the same attempt or a later one.
 
 | group | needs you | what derives it | where it links |
 |---|---|---|---|
-| `admin` | yes, admins only | `workspaces` in `requested`, `loan_requests` in `requested`: what Admin › People lists first | `/admin/people` |
+| `admin` | yes, admins only | `workspaces` in `requested`, `loan_requests` in `requested`: what Admin › People lists first; open `join_requests` (`admin:join:<ref>`) for platform admins and for the admins of the workspace each names (below) | `/admin/people` |
 | `approval` | yes | the tenant's pending `approvals` records (an expired one, or a merge whose run has moved on, is skipped); `schedule_firings` held for approval before the inbox made their record; `issue_runs` in `PLANNED` | `/automate/approvals/<id>` (a held firing with no record yet: `/automate/approvals`; the console redirects the old `/approvals` links already sent) |
 | `task` | yes | "Agent needs you": RUNNING agents with a live-browser hand-off (`Task.human_wait`) the caller may take control of -- their own, and the tenant's while "Let any member take control" is on (docs/design/live-browser.md §4.1) -- and the caller's PARKED `HUMAN_REQUIRED` agents; the tenant's workflow steps PARKED `AWAITING_INPUT` whose `remind` names the caller (below); the caller's agents of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the agent's Browser tab; the workflow; its Artifacts tab |
-| `account` | yes for GitHub, no for the workspace | the caller's `forge_connections` document in `refresh_failed` (only reconnecting renews it); their own expired user-scope `git_tokens`; their own workspace becoming `ready` or `denied` in the last 7 days; their own Claude-account loan request `declined` in the last 7 days (LOAN-DECLINE) | `/access`; `/setup#workspace`; `/setup#claude-account` |
+| `account` | yes for GitHub, no for the workspace | the caller's `forge_connections` document in `refresh_failed` (only reconnecting renews it); their own expired user-scope `git_tokens`; their own workspace becoming `ready` or `denied` in the last 7 days; their own Claude-account loan request `declined` in the last 7 days (LOAN-DECLINE); their own join request approved or denied in the last 7 days (`join:<ref>:<state>`) | `/access`; `/setup#workspace`; `/setup#claude-account`; `/join` |
 | `finished` | no | the caller's own agents submitted alone, their workflows (stored state), and their issue runs whose pull request merged, all ended in the last 7 days | the agent, workflow or run |
 
 Some notes on what each group deliberately leaves out:
@@ -107,6 +107,26 @@ Some notes on what each group deliberately leaves out:
   sit in the bell until marked read. It is an update in the `account` group,
   with the denial's reason, which is shown to the person by design
   (docs/workspaces.md §1.3). It never says who decided.
+* **A join request rings the people who may decide it, and its decision
+  rings the person who asked** ([design/join-requests.md](design/join-requests.md)
+  §4.6, #2325). An open request is `admin:join:<ref>`, a needs-you item in
+  `admin`, "<person> asks to join <workspace>" with their message. It rings
+  every platform admin, and a workspace's own `admin` only for that
+  workspace and only while the request names the group the workspace has
+  now: exactly the requests `join_scope` lets them decide, because a bell for
+  a request they would be refused is noise. Who administers what is read
+  fresh on each feed (`people.administered_workspaces`, as Admin › People
+  reads it), never from a cached role. When that read fails the join source
+  is reported unread and the feed answers `partial: true`: an unread role is
+  never "administers nothing", and never a 503 for the whole bell. A decided
+  request derives nothing for its deciders. The decision is
+  `join:<ref>:<state>` (`approved` or `denied`), once per decision, in the
+  requester's `account` group for 7 days, linking to `/join`. A denial carries
+  its reason, which is the person's to read; neither ever says who decided,
+  nor the workspace's id or group, which a working join code does not reveal
+  either. A withdrawal is the person's own act and rings nobody. The route
+  (`routes/notifications.py`) hands both sources the app's one join store;
+  marking ids read derives nothing, so it reads neither (JOIN-BELL-WIRE).
 * **The steps of a workflow are not reported one by one.** The workflow is
   reported once. A child agent is reported by its parent.
 * **Release IAM holds are left out.** A release waiting on an IAM grant is a
@@ -248,7 +268,10 @@ workflows they submitted, runs they created, and their own connection and
 tokens. Approvals belong to the tenant, because any member may decide one by
 default, and so do workflow steps waiting for a person, because any member
 may answer one (the bell still rings only the step's `remind` list). The admin sources read across tenants and run only when `is_admin`
-is true; for anyone else they read nothing, and `admin_pending` is 0. The
+is true; for anyone else they read nothing, and `admin_pending` is 0. The one
+exception is the join source: a workspace's own `admin` is rung for that
+workspace's open join requests, and for no other workspace's, by the fresh
+role read above. The
 caller's own workspace is theirs whichever tenant they act in.
 
 Continuation-scoped accounts, the rollup sweeper and the schedule tick cannot
