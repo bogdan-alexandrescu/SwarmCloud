@@ -520,3 +520,30 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
         return "swarm-api@voice-test-project.iam.gserviceaccount.com"
 
     asyncio.run(asyncio.wait_for(main(), 20))
+
+
+def test_a_sessions_planner_model_runs_the_child_on_it_and_none_keeps_the_pin(world, monkeypatch):
+    """The Voice it setting's model, read at the session's start, is the
+    child's `--model` for that turn alone; without one the planner keeps its
+    pin (VOICE_PLANNER_MODEL, the planning class)."""
+    monkeypatch.delenv(claudeturn.PLANNER_MODEL_ENV, raising=False)
+    world.plan = {"calls": [["speak", {"summary": "Done."}]]}
+
+    async def main():
+        planner = world.planner()
+        try:
+            picked = await planner.delegate(person=PERSON, grant=world.grant, model="claude-opus-5-5",
+                                            transcript=[("person", "Plan it.")])
+            picked_argv = world.child()["argv"]
+            pinned = await planner.delegate(person=PERSON, grant=world.grant,
+                                            transcript=[("person", "Plan it.")])
+            return picked, picked_argv, pinned, world.child()["argv"]
+        finally:
+            await world.http.aclose()
+
+    picked, picked_argv, pinned, pinned_argv = asyncio.run(main())
+    assert picked.error is None and pinned.error is None
+    assert picked_argv[picked_argv.index("--model") + 1] == "claude-opus-5-5"
+    assert picked.usage["model"] == "claude-opus-5-5"
+    assert pinned_argv[pinned_argv.index("--model") + 1] == claudeturn.MODEL
+    assert pinned.usage["model"] == claudeturn.MODEL
