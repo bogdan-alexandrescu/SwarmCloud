@@ -3150,7 +3150,8 @@ class Worker:
                 "question_park_refused: the checkpoint would not hold " + "; ".join(gaps))
         record = question_bridge.wait_record(
             pending, attempt_id=self.cfg.attempt_id, generation=self.cfg.generation,
-            source_revision=self._checkout_revision(), asked_at=utcnow().isoformat())
+            source_revision=self._checkout_revision(), asked_at=utcnow().isoformat(),
+            skill=question_bridge.asked_by_skill(events, pending.tool_use_id))
         return self._park_for_answers(self._scrub(record), require_checkpoint=True)
 
     def _bridge_checkpoint_gaps(self, session: str) -> list[str]:

@@ -246,6 +246,25 @@ def test_a_parked_plugin_step_serves_its_plugins_and_its_waits_clock(client, db)
     # A bridged question waits 24 hours from the earliest instant the park names.
     assert datetime.fromisoformat(ask["asked_at"]) == T0
     assert datetime.fromisoformat(ask["expires_at"]) == T0 + timedelta(hours=24)
+    # A park the worker recorded no skill for says so: the row says "not known".
+    assert ask["skill"] is None
+
+
+def test_a_parked_plugin_step_serves_the_skill_that_asked_masked(client, db):
+    """The owner's pick of 4 November 2026: the worker records the last Skill
+    call before the question in the wait's bridge block; the list serves it."""
+    seed_tenant(db, "eng")
+    wait = {"attempt_id": "att_1", "blocking": [0], "questions": [{"question": "Ship it?", "options": []}],
+            "bridge": {"skill": "gstack:office-hours"}}
+    _one_step(db, "wf_skill", state="PARKED", park_reason="HUMAN_REQUIRED", next_eligible_at=T0,
+              blocked_by=[{"reason": "HUMAN_REQUIRED", "question_wait": wait}],
+              metadata={"title": "The step", "question_wait": wait,
+                        "work_contract": _plugin_contract(gstack={"mode": "planner", "skills": ["office-hours"]})})
+
+    ask = _needs(client, "wf_skill")["plugin_ask"]
+
+    assert ask["skill"] == "gstack:office-hours"
+    assert ask["plugins"] == [{"name": "gstack", "mode": "planner"}]
 
 
 def test_a_plugin_step_not_parked_on_a_question_serves_no_ask(client, db):

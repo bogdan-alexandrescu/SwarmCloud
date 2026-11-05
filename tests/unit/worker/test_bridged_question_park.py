@@ -106,6 +106,12 @@ if "AskUserQuestion" not in tools:
     out({"type": "result", "subtype": "success", "is_error": False, "session_id": sid,
          "terminal_reason": "completed", "result": "done"})
     sys.exit(0)
+# A plugin's skill runs first, as gstack's interviews do: its question is the skill's.
+skill_use = {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": "Skill",
+             "input": {"skill": "gstack:office-hours"}}
+out({"type": "assistant", "message": {"role": "assistant", "content": [skill_use]}})
+out({"type": "user", "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": skill_use["id"], "content": "Launching skill"}]}})
 tool_use = {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": "AskUserQuestion",
             "input": {"questions": [QUESTION]}}
 out({"type": "assistant", "message": {"role": "assistant", "content": [tool_use]}})
@@ -194,6 +200,8 @@ def test_an_unanswerable_question_parks_the_step_with_its_session(
     # Invariant 5: the record names the attempt and its fencing generation.
     assert wait["attempt_id"] == "att_1" and bridge["generation"] == 1
     assert "source_revision" in bridge
+    # The skill that asked: the last Skill call before the question (owner's pick, 4 November 2026).
+    assert bridge["skill"] == "gstack:office-hours"
     # The hook's record is read once: from here the step's state is the record.
     assert not list(tmp_path.rglob(qb.PENDING_NAME))
     assert not seen.exists()
