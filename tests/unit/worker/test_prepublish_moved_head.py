@@ -37,8 +37,6 @@ import pytest
 from agent_worker import lifecycle, prepublish
 from agent_worker.logs import build_logger
 
-pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
-
 OWN = "swarm/task_own"
 OTHER = "rebuild/pr-1233"
 TRAIN = "swarm/task_train"

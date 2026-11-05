@@ -23,7 +23,6 @@ Against a real local bare origin, through the worker's own harvest:
 from __future__ import annotations
 
 import io
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -42,9 +41,6 @@ from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
     refs,
     run_attempt,
 )
-
-pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
-
 
 @pytest.fixture(autouse=True)
 def _no_checks(monkeypatch):
