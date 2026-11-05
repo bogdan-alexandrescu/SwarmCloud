@@ -5059,6 +5059,11 @@ class Worker:
         if not isinstance(digest, str) or not digest.strip():
             return {}
         env = {poststeps.CONTRACT_DIGEST_ENV: digest.strip()}
+        # The Jev work-contract experiment's arm (`contract_jev`, signed in
+        # the same block): `off` makes JC2 `skipped:arm` with no call.
+        arm = graphstage_mod.switch_of(dispatch, poststeps.CONTRACT_JEV_SWITCH)
+        if arm is not None:
+            env[poststeps.CONTRACT_JEV_ENV] = arm
         document = metadata.get("work_contract")
         if isinstance(document, Mapping):
             try:

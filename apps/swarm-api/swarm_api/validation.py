@@ -1396,9 +1396,10 @@ DEFAULT_CARRIER = "checkpoints"
 #: back from each attempt's `result_summary.switches` by
 #: `scripts/benchstat.py contract-jev` (experiment-protocol.md section 8),
 #: which excludes as `arm_unrecorded` every item whose attempts do not record
-#: it: until `swarm_api.contractreview`, the worker's post-step and
-#: `agent_worker.graphstage.switches_summary` read it, this stores and signs
-#: the arm and no item is counted in either.
+#: it. `swarm_api.contractreview` (JC1), the worker's post-step
+#: (`agent_worker.judge.poststeps`, JC2) and the control plane's re-ask
+#: (`swarm_api.contractreask`) obey it, and
+#: `agent_worker.graphstage.switches_summary` records it.
 DISPATCH_SWITCHES = ("code_intelligence", "quality_gates", "jev_judgments", "graph_shape",
                      "contract_jev")
 DISPATCH_SWITCH_VALUES = ("on", "off")
