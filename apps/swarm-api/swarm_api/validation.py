@@ -1384,7 +1384,23 @@ DEFAULT_CARRIER = "checkpoints"
 #: chooses a shape and never turns a graph on where the stored settings and
 #: `code_intelligence` leave it off. The worker spells it
 #: `agent_worker.graphstage.SWITCH_GRAPH_SHAPE` and its words `SHAPES`.
-DISPATCH_SWITCHES = ("code_intelligence", "quality_gates", "jev_judgments", "graph_shape")
+#:
+#: `contract_jev` (CONTRACT-JEV-EXPERIMENT, docs/design/agent-quality/
+#: jev-contract.md section 11, part of #2688) is the arm of the Jev
+#: work-contract experiment: `on` lets Jev's review at submission (JC1) and its
+#: judgment at the end of a step (JC2) run where the workspace's own settings
+#: (`contract_review`, `code_intelligence.jev`) and `SWARM_CONTRACT_REVIEW`
+#: already allow them; `off` skips both, recorded as `skipped:arm`, so arm off
+#: is today's behaviour. On/off only, and it only narrows: it never turns a
+#: review or a judgment on that the stored settings leave off. The arm is read
+#: back from each attempt's `result_summary.switches` by
+#: `scripts/benchstat.py contract-jev` (experiment-protocol.md section 8),
+#: which excludes as `arm_unrecorded` every item whose attempts do not record
+#: it: until `swarm_api.contractreview`, the worker's post-step and
+#: `agent_worker.graphstage.switches_summary` read it, this stores and signs
+#: the arm and no item is counted in either.
+DISPATCH_SWITCHES = ("code_intelligence", "quality_gates", "jev_judgments", "graph_shape",
+                     "contract_jev")
 DISPATCH_SWITCH_VALUES = ("on", "off")
 #: The accepted words of each switch that is not on/off.
 DISPATCH_SWITCH_CHOICES: Mapping[str, tuple[str, ...]] = MappingProxyType(
