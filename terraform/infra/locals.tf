@@ -1164,9 +1164,11 @@ locals {
       #     stopped machine at the next start. "" until the release pins it,
       #     which swarm-api reads as "leave the instance's image as it is".
       #   _SWEEP_AUDIENCE/_SWEEP_CALLERS: who may POST the two-minute sweep
-      #     (§4.5): Cloud Scheduler's OIDC token from the tick account, the
-      #     scheduler invoker this root already uses, for swarm-api's own push
-      #     audience. Empty callers means every sweep is refused.
+      #     (§4.5): a Cloud Scheduler OIDC token for swarm-api's own push
+      #     audience, from the doctor's account (§6 I4: it already holds
+      #     run.invoker on swarm-api, doctor.tf) while the doctor runs, or the
+      #     tick account, the scheduler identity this root already lists as
+      #     a platform caller. Empty callers means every sweep is refused.
       SWARM_SPEECH_PROJECT        = local.voice_speech_on ? var.project_id : ""
       SWARM_SPEECH_ZONES          = local.voice_speech_on ? var.voice_speech.zone : ""
       SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? google_compute_instance.speech[0].name : ""
@@ -1174,7 +1176,7 @@ locals {
       SWARM_SPEECH_AUDIENCE       = "swarm-speech"
       SWARM_SPEECH_IMAGE          = local.voice_speech_on ? lookup(var.image_refs, "swarm-speech", "") : ""
       SWARM_SPEECH_SWEEP_AUDIENCE = local.voice_speech_on ? local.push_audiences["swarm-api"] : ""
-      SWARM_SPEECH_SWEEP_CALLERS  = local.voice_speech_on ? module.iam.tick_service_account : ""
+      SWARM_SPEECH_SWEEP_CALLERS  = local.voice_speech_on ? join(",", concat([module.iam.tick_service_account], local.doctor_on ? [local.doctor_email] : [])) : ""
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, local.model_class_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the
