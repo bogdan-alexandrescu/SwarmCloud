@@ -179,6 +179,7 @@ from . import extrarepos as extrarepos_mod
 from . import standalone_outputs as standalone_mod
 from . import verdict as verdict_mod
 from . import workspace as workspace_mod
+from .statecall import new_request_id
 from .accountlease import (
     ACCOUNTS_FULL,
     ACCOUNT_UNREADABLE,
@@ -1014,6 +1015,9 @@ class Worker:
         #: The step's agent plugins (`plugins.start`), set up once per attempt
         #: before the agent; None for a step that names none.
         self._plugins: plugins_mod.Started | None = None
+        #: The step's signed work contract named for the runner's JC2
+        #: (`_stage_work_contract`), set once per attempt before the agent.
+        self._work_contract_env: dict[str, str] = {}
         #: A security review step's record (`security_review`): {} once its
         #: plugin started, filled after the agent; None for any other step.
         self._security_review: dict[str, Any] | None = None
@@ -3866,6 +3870,10 @@ class Worker:
         )
         if self._plugins is not None and isinstance(payload.get("prompt"), str):
             payload["prompt"] += self._plugins.guidance
+        # The step's signed work contract, for the runner's end-of-step
+        # judgment (JC2, jev-contract.md section 5): its body in work/ and the
+        # SIGNED digest, both from the task document, never from `input`.
+        self._work_contract_env = self._stage_work_contract(task, ws.work)
         # The optional security review step (docs/design/security-review-step.md):
         # a step whose signed contract loads security-audit is told the owner's
         # run settings here, and its output is checked after the agent.
@@ -4989,6 +4997,12 @@ class Worker:
                 self._mark_publish(summary, failed=str(self._scrub(unpushed)))
                 return self._fail_for_published_nothing(unpushed, summary, exit_code=0)
             self._mark_publish(summary)
+            # JC2's verdict, AFTER the `published` mark the route checks its
+            # commit against (section 9, check 4) and before the success: a
+            # send-back ends the attempt in the route's own transaction.
+            judged = self._deliver_contract_verdict(summary, runner_result)
+            if judged is not None:
+                return judged
             # LAST before the success, so an attempt that fails above never
             # leaves a write-once verdict behind it for its retry to meet.
             unpublished = self._publish_review_verdict(summary)
@@ -5019,6 +5033,104 @@ class Worker:
             result_summary=summary,
         )
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _stage_work_contract(self, task: Mapping[str, Any], work: Path) -> dict[str, str]:
+        """The runner's variables naming the step's SIGNED work contract for
+        JC2 (`poststeps.read_contract`): `SWARM_WORK_CONTRACT_DIGEST`, the
+        digest in the signed dispatch block (`metadata.dispatch.work_contract
+        .digest`), and `SWARM_WORK_CONTRACT_FILE`, the stored body
+        (`metadata.work_contract`, as `plugins.selected` reads it) written to
+        `work/WORK_CONTRACT_FILE`. {} for a step with no signed reference.
+
+        The digest is the authority: the runner judges a body only when it
+        digests to it, so a body the agent rewrote in work/ is not judged. A
+        reference whose body is missing or cannot be written still names its
+        digest, and JC2 says `not_run` (`contract_unreadable`) rather than
+        nothing. A file a restored checkpoint carried is replaced or removed,
+        never read for this attempt. Never raises."""
+        from .judge import poststeps
+
+        path = work / WORK_CONTRACT_FILE
+        metadata = task.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        dispatch = metadata.get("dispatch")
+        reference = dispatch.get("work_contract") if isinstance(dispatch, Mapping) else None
+        digest = reference.get("digest") if isinstance(reference, Mapping) else None
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            self.log.warning("a previous work contract file could not be removed",
+                             error=type(exc).__name__)
+        if not isinstance(digest, str) or not digest.strip():
+            return {}
+        env = {poststeps.CONTRACT_DIGEST_ENV: digest.strip()}
+        document = metadata.get("work_contract")
+        if isinstance(document, Mapping):
+            try:
+                # No `default=`: a body that is not plain JSON would digest
+                # differently once written, so it is not written at all.
+                path.write_text(json.dumps(document))
+            except (OSError, TypeError, ValueError) as exc:
+                self.log.warning("the work contract could not be written for the runner",
+                                 error=type(exc).__name__)
+            else:
+                env[poststeps.CONTRACT_FILE_ENV] = str(path)
+        return env
+
+    def _deliver_contract_verdict(
+        self, summary: dict[str, Any], runner_result: Mapping[str, Any] | None
+    ) -> Outcome | None:
+        """JC2's verdict, from the runner's report (`contract_judgment`), posted
+        once to `state/contract-verdict` about the head this attempt pushed
+        (`poststeps.deliver_contract_verdict`, a new request id), or None to
+        go on to the success.
+
+        * A STALE GENERATION (409 `attempt_fenced`) stands down as every other
+          fenced write here does (`_stand_down`): nothing else is posted, the
+          task and the lease are not touched (invariant 5).
+        * `unmet` SENT BACK: the route ended this attempt and returned the step
+          to READY in its own fenced transaction (section 5.4; invariant 1,
+          READY costs nothing), so the attempt ends there with no further
+          terminal write.
+        * Any other refusal or outage, or a worker on the direct Firestore path
+          (no state route to post to), is recorded in the summary and the step
+          goes on: the control plane re-asks from the published diff
+          (`contractreask`, the owner's answer 5)."""
+        from .judge import poststeps
+
+        output = runner_result.get("output") if isinstance(runner_result, Mapping) else None
+        verdict = output.get(CONTRACT_JUDGMENT_KEY) if isinstance(output, Mapping) else None
+        if not isinstance(verdict, Mapping):
+            return None
+        git = summary.get("git")
+        head = (git.get("pushed_head")
+                if isinstance(git, dict) and git.get("published") is True else None)
+        if not getattr(self.control, "state_via_api", False):
+            summary[CONTRACT_VERDICT_SUMMARY_KEY] = {"delivery": "no_state_route"}
+            self.log.warning("the contract verdict has no state route on the direct path; "
+                             "the control plane re-asks from the published diff")
+            return None
+        answers: list[Mapping[str, Any]] = []
+
+        def post(op: str, fields: Mapping[str, Any]) -> None:
+            answers.append(self.control._post(op, fields, call=None) or {})
+
+        try:
+            delivery = poststeps.deliver_contract_verdict(
+                post, verdict, published_head=head, request_id=new_request_id())
+        except FencedError as exc:
+            return Outcome(exit_code=self._stand_down(exc, where="contract verdict"),
+                           detail={"fenced": True})
+        answer = answers[-1] if answers else {}
+        summary[CONTRACT_VERDICT_SUMMARY_KEY] = {
+            "delivery": delivery, "outcome": answer.get("outcome"),
+            "waiting_on": answer.get("waiting_on")}
+        self.log.info("contract verdict", delivery=delivery, outcome=answer.get("outcome"),
+                      head=head)
+        if answer.get("sent_back") is True:
+            return Outcome(exit_code=ExitCode.FAILED, state=TaskState.READY,
+                           detail={"sent_back": "contract_unmet"})
+        return None
 
     def _publish_review_verdict(self, summary: dict[str, Any]) -> Outcome | None:
         """The review step's `review.json`, written once to the verdicts prefix (CR 36).
@@ -10607,6 +10719,10 @@ class Worker:
         # and paths, never a credential.
         if self._plugins is not None:
             base.update(self._plugins.env)
+        # The step's signed work contract for JC2 (`_stage_work_contract`):
+        # the body's path and the signed digest. A path and a hash, never a
+        # credential; nothing for a step without a signed contract.
+        base.update(self._work_contract_env)
         # The released workspace secrets (SEC-RELEASE): the manifest's PATH,
         # `SWARM_SECRETS_MANIFEST`, and nothing else -- never a value. The
         # release ran once, in STEP 6a; a rebuild on a credential reload
@@ -19123,6 +19239,13 @@ PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
 #: so the pre-publish gate can hand a moved HEAD back to the agent
 #: (`prepublish.START_BRANCH_ENV`, held equal by test_prepublish_moved_head.py).
 START_BRANCH_ENV = "SWARM_START_BRANCH"
+#: Where the worker writes the step's signed work contract's body for the
+#: runner's JC2 (`Worker._stage_work_contract`), under the attempt's work/.
+WORK_CONTRACT_FILE = "work-contract.json"
+#: The runner's report key holding JC2's verdict (`cliagent.run_cli_agent`),
+#: and the summary key recording its delivery (`_deliver_contract_verdict`).
+CONTRACT_JUDGMENT_KEY = "contract_judgment"
+CONTRACT_VERDICT_SUMMARY_KEY = "contract_verdict"
 
 
 #: What a leak predicate found in one window of a file's added text: the rule

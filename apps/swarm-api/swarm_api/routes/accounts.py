@@ -452,12 +452,16 @@ def register_account(
             f"{', '.join(map(repr, known))}, not {provider!r}",
             detail={"known_providers": list(known)},
         )
+    # Voice it's key is recorded with who added it (the broker writes it on
+    # the key's account); every other kind is registered as before.
+    added = {"added_by": auth.email} if provider in VOICE_ONLY_PROVIDERS else {}
     result = pool.register(
         owner_tenant=tenant_id,
         label=body.label,
         provider=provider,
         lend_to=list(body.lend_to),
         credential=body.credential,
+        **added,
     )
     return {
         "account": _own_view(result.get("account"), tenant_id),

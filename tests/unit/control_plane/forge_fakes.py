@@ -166,6 +166,12 @@ class GitHubWrites:
         #: issues/<n>/labels` in order as `(number, labels)` (FR3-HOLDLABEL).
         self.labels: list[str] = ["bug", "enhancement", "needs-owner"]
         self.labelled: list[tuple[int, list[str]]] = []
+        #: The commits `GET commits/<sha>` serves (#3315). Any other sha
+        #: answers `missing_commit`: 404 by default, which the auto-merge head
+        #: walk reads as "not this run's"; 422 is GitHub's "No commit found
+        #: for SHA".
+        self.commits: set[str] = set()
+        self.missing_commit = 404
 
     def writes(self) -> list[tuple[str, str]]:
         return [(m, urlparse(u).path) for m, u, _, _ in self.calls if m != "GET"]
@@ -319,6 +325,12 @@ class GitHubWrites:
             return 200, json.dumps({"files": [{"filename": n} for n in self.base_changed]}).encode()
         if rest[:2] == ["rules", "branches"]:
             return 200, json.dumps(self.rules).encode()
+        if rest[:1] == ["commits"] and len(rest) == 2 and method == "GET":
+            if rest[1] not in self.commits:
+                if self.missing_commit == 422:
+                    return 422, json.dumps({"message": f"No commit found for SHA: {rest[1]}"}).encode()
+                return self.missing_commit, b"{}"
+            return 200, json.dumps({"sha": rest[1], "commit": {"message": "a commit"}}).encode()
         if rest[:1] == ["commits"] and len(rest) == 3 and rest[2] == "check-runs":
             runs = self.check_runs.get(rest[1], [])
             chunk = runs[(page - 1) * per_page: page * per_page]

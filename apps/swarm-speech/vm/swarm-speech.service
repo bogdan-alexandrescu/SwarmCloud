@@ -1,0 +1,27 @@
+# Voice it's own speech server on the speech machine
+# (docs/design/voice-it-own-speech.md §5.2). Installed at
+# /etc/systemd/system/swarm-speech.service from vm/files.json.
+#
+# The container runs in the foreground of the launcher, so a crash of the
+# server is an exit of this unit, and systemd starts it again (§4.5: swarm-api
+# shows "reconnecting" and retries for three minutes). No start limit: a
+# server that keeps failing is stopped by the watchdog and swarm-api, which
+# power the machine off, not by systemd giving up with the GPU still billed.
+[Unit]
+Description=Voice it's own speech server (swarm-speech)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/usr/local/lib/swarm-speech/swarm-speech-launch.sh
+ExecStop=/usr/bin/docker stop --time 10 swarm-speech
+Restart=always
+RestartSec=5
+# A first pull of the image (about 20 GB, §5.1) is not a hung start.
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target
