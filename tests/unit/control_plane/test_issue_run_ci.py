@@ -513,6 +513,90 @@ def test_a_required_check_reported_as_a_commit_status_counts(client, db, objects
     assert _read(client, clock, running["id"])["state"] == "DONE"
 
 
+def _variable_reads(writes) -> list[str]:
+    return [u for m, u, _, _ in writes.calls if m == "GET" and "/actions/variables/" in u]
+
+
+def test_a_required_merge_train_check_is_left_out_when_the_repository_train_is_on(
+    client, db, objects, writes, clock
+):
+    # #3312: the merge train posts `merge-train` only on a pull request it
+    # boarded, so with the train on it is not a check CHECKING waits for.
+    writes.require("ci-gate", "merge-train")
+    writes.variables["MERGE_TRAIN"] = "on"
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "ci-gate", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "DONE" and run["green_sha"] == SHA_A
+    assert run["pull_request"]["checks"] == "green"
+    assert all(c["name"] != "merge-train" for c in run["pull_request"]["check_list"])
+    assert _variable_reads(writes)
+
+
+@pytest.mark.parametrize("switch", [None, "off", "On"])
+def test_a_required_merge_train_check_still_reads_pending_when_the_train_is_off(
+    client, db, objects, writes, clock, switch
+):
+    writes.require("ci-gate", "merge-train")
+    if switch is not None:
+        writes.variables["MERGE_TRAIN"] = switch
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "ci-gate", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING"
+    assert run["pull_request"]["checks"] == "pending"
+    assert {"name": "merge-train", "state": "pending"}.items() <= next(
+        c for c in run["pull_request"]["check_list"] if c["name"] == "merge-train").items()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_an_unreadable_train_variable_counts_as_on_when_the_base_requires_merge_train(
+    client, db, objects, writes, clock, status
+):
+    writes.require("ci-gate", "merge-train")
+    writes.variables_answer = status
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "ci-gate", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "DONE" and run["pull_request"]["checks"] == "green"
+
+
+def test_a_failing_train_variable_read_is_a_failed_ci_read(client, db, objects, writes, clock):
+    writes.require("ci-gate", "merge-train")
+    writes.variables_answer = 502
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "ci-gate", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING"
+    assert run["pull_request"]["read_transient"] is True
+
+
+def test_a_base_without_merge_train_reads_no_train_variable(client, db, objects, writes, clock):
+    writes.require("ci-gate")
+    writes.variables_answer = 403
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "ci-gate", "success")
+
+    assert _read(client, clock, running["id"])["state"] == "DONE"
+    assert _variable_reads(writes) == []
+
+
+def test_the_train_context_matches_the_workers():
+    # swarm-api cannot import agent_worker; the test environment has both.
+    merge = pytest.importorskip("agent_worker.merge")
+    assert issueci.TRAIN_CONTEXT == merge.REPOSITORY_TRAIN_CONTEXT == "merge-train"
+    assert issueci.TRAIN_VARIABLE == merge.REPOSITORY_TRAIN_VARIABLE == "MERGE_TRAIN"
+    assert issueci.TRAIN_ON == merge.REPOSITORY_TRAIN_ON == "on"
+
+
 def test_a_check_by_another_app_does_not_satisfy_a_pinned_required_check(
     client, db, objects, writes, clock
 ):
