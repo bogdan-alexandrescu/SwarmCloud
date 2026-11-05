@@ -18,7 +18,9 @@
 .sg-row { display: grid; grid-template-columns: var(--sg-stage) repeat(var(--sg-cols, 1), minmax(0, 1fr)); gap: 4px; align-items: stretch; min-width: 0; }
 .sg-row.is-head { align-items: end; }
 
-.sg-col { min-width: 0; padding: 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); color: var(--text-dim); }
+/* No side padding: 4px of it cut `workflows` (56px of text) to `workfl…` in the 57px an eighth column gets at
+   1440 with the inspector open. The 4px column gap keeps two headers apart. */
+.sg-col { min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); color: var(--text-dim); }
 .sg.is-marks .sg-col { writing-mode: vertical-rl; transform: rotate(180deg); justify-self: center; max-height: 6.5em; padding: 2px 0; }
 
 .sg-stage { display: flex; flex-direction: column; justify-content: center; gap: 1px; min-width: 0; font-size: var(--t-meta); color: var(--text); }
