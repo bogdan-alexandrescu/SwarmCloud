@@ -263,6 +263,7 @@ from .gitops import (
     fold_agent_commits,
     hide_from_git,
     is_branch_ref_name,
+    is_full_refname,
     merge_branches,
     mirror_worktree,
     moved_branch_tip,
@@ -6444,7 +6445,11 @@ class Worker:
           rewritten history would no longer fast-forward, and not pinned to an
           upstream step's base, which a downstream patch must apply to;
         * no `carrier: branches`, whose checkpoints already pushed the branch;
-        * a BRANCH: a ref that is a sha has no newer tip.
+        * a BRANCH: a ref that is a sha has no newer tip. A full refname
+          (#3347) is a branch only as `refs/heads/<name>`, offered as
+          `<name>`, since the runner rebases onto `origin/<name>`; a pull
+          request's `refs/pull/<n>/head` or `/merge`, a tag, or any other
+          ref names no branch to rebase onto, and is offered nothing.
 
         The default branch, when the task names no ref, is read from the
         clone's own HEAD file, which this process wrote before any agent ran.
@@ -6465,6 +6470,10 @@ class Worker:
                 return None
             prefix = "ref: refs/heads/"
             name = head[len(prefix):] if head.startswith(prefix) else ""
+        if is_full_refname(name):
+            if not name.startswith("refs/heads/"):
+                return None
+            name = name[len("refs/heads/"):]
         if not name or re.fullmatch(r"[0-9a-f]{7,40}", name):
             return None
         try:
