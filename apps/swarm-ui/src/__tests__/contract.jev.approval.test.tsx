@@ -13,14 +13,19 @@
 //     says so, and says it is now the person's; a step still being re-asked
 //     says which try it is on;
 //   * Jev's met never reads as an approval: the card says it is evidence;
-//   * a detail with no record draws no card.
+//   * a detail with no record draws no card;
+//   * the cited hunk's TEXT, as the record stored it, is drawn under its path
+//     (the owner's pick on PR #3255), and a hunk with no stored text says so;
+//   * a `contract:<task_id>` item -- a step waiting on its owner, projected
+//     from its task -- draws the card and no Approve or Reject, only the
+//     step's page; the task detail draws the same card.
 //
 // Nothing here is token-shaped: digests and commits are built at runtime.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 
-import { contractAcceptance } from '../ContractJev'
+import { ContractAcceptanceCard, contractAcceptance } from '../ContractJev'
 import { serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
@@ -74,6 +79,20 @@ function detail(acc: Json | null): Json {
   }
 }
 
+const HUNK = '@@ -88,3 +88,4 @@ def cancel(lease):\n     if lease.released_at is not None:\n+    capacity.release(lease.reservation)'
+
+function contractDetail(acc: Json): Json {
+  return {
+    approval: {
+      approval_id: 'contract:task_7', tenant_id: 'eng', kind: 'contract',
+      subject: { task_id: 'task_7', step_id: 'implement', contract_id: 'wc-example', revision: 2, commit: COMMIT, owner_reason: 'send_back_cap' },
+      digest: DIGEST, summary: 'implement: Release the lease on cancel.',
+      approvers: ['alice@example.com'], state: 'pending', requested_at: hoursFromNow(-1), expires_at: null, projected: true,
+    },
+    contract_acceptance: acc,
+  }
+}
+
 async function openApproval(body: Json) {
   serve((m, url) => {
     const path = url.split('?')[0]!
@@ -84,7 +103,8 @@ async function openApproval(body: Json) {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { ApprovalsScreen } = await import('../Approvals')
-  render(<ApprovalsScreen view="approval=apr_contract" go={vi.fn()} />)
+  const id = String((body.approval as Json).approval_id)
+  render(<ApprovalsScreen view={`approval=${id}`} go={vi.fn()} />)
   return waitFor(() => {
     const d = screen.getByTestId('ap-detail')
     expect(d.tagName, visible(d)).toBe('SECTION')
@@ -154,12 +174,54 @@ describe('the approval screen', () => {
     expect(visible(within(card).getByTestId('cj-status'))).toContain('re-asked 1 of 3 times')
   })
 
+  it('draws the text of each cited hunk under its path, as the record stored it', async () => {
+    const d = await openApproval(detail(acceptance({ hunks: { i0: HUNK } })))
+    const card = await within(d).findByRole('region', { name: 'Jev’s judgment of the work contract' }, WAIT)
+    const cited = card.querySelector<HTMLElement>('[data-requirement="REQ-2"]')!
+    // MUTATION: drawing the path alone, so the person cannot read what Jev read.
+    const hunk = within(cited).getByTestId('cj-hunk')
+    expect(hunk.tagName).toBe('PRE')
+    expect(hunk.textContent).toBe(HUNK)
+    expect(hunk.getAttribute('aria-label')).toContain('apps/swarm-api/swarm_api/leases.py')
+    // A cited hunk the record keeps no text for says so, never another's text.
+    const bare = card.querySelector<HTMLElement>('[data-requirement="REQ-1"]')!
+    expect(within(bare).queryByTestId('cj-hunk')).toBeNull()
+    expect(visible(bare)).toContain('the record keeps no text for it')
+    expect(contractAcceptance(acceptance({ hunks: { i0: HUNK, x9: 'no', i1: 7 } }))!.hunks).toEqual({ i0: HUNK })
+  })
+
+  it('draws a step waiting on its owner with its judgment, no verb, and the step to open', async () => {
+    const d = await openApproval(contractDetail(acceptance({ hunks: { i0: HUNK } })))
+    const card = await within(d).findByRole('region', { name: 'Jev’s judgment of the work contract' }, WAIT)
+    expect([...card.querySelectorAll('[data-requirement]')]).toHaveLength(3)
+    // MUTATION: offering Approve or Reject on an id the inbox answers 404.
+    expect(within(d).queryByRole('button', { name: /approve/i })).toBeNull()
+    expect(within(d).queryByRole('button', { name: /reject/i })).toBeNull()
+    const bar = within(d).getByTestId('ap-contract-step')
+    expect(visible(bar)).toContain('Not decided in this inbox')
+    expect(within(bar).getByRole('link', { name: /open the step/i }).getAttribute('href')).toContain('task_7')
+    expect(visible(d)).toContain('it waits for its owner')
+  })
+
   it('draws no card where the detail carries no acceptance record', async () => {
     const d = await openApproval(detail(null))
     await within(d).findByRole('region', { name: 'What asked for it' }, WAIT)
     expect(within(d).queryByRole('region', { name: 'Jev’s judgment of the work contract' })).toBeNull()
     expect(contractAcceptance({ status: 'met' })).toBeNull()
     expect(contractAcceptance('met')).toBeNull()
+  })
+})
+
+describe('the task detail', () => {
+  it('draws the same card from the task’s contract_acceptance, and nothing without one', () => {
+    const view = render(<ContractAcceptanceCard raw={acceptance({ hunks: { i0: HUNK } })} />)
+    const card = screen.getByRole('region', { name: 'Jev’s judgment of the work contract' })
+    // MUTATION: the task detail not drawing the record it is served.
+    expect([...card.querySelectorAll('[data-verdict]')].map((r) => r.getAttribute('data-verdict'))).toEqual(['met', 'unmet', 'met'])
+    expect(within(card).getByTestId('cj-hunk').textContent).toBe(HUNK)
+    view.unmount()
+    const none = render(<ContractAcceptanceCard raw={undefined} />)
+    expect(none.container.innerHTML).toBe('')
   })
 })
 
