@@ -18,6 +18,7 @@ at run time, it is caught only after every upstream step has spent its compute.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -1209,6 +1210,8 @@ LANE_FIX_ROUNDS_DEFAULT = 2
 #: red CI with its own loop (`--fix-rounds`, `issueci._start_round`) before it
 #: submits its merge, so its merge step keeps no rounds of its own unless
 #: asked: two loops on one pull request would race each other's pushes.
+#: Reserved (BGD, 2026-11-04): the issue-run code alone writes it, through
+#: `issue_run_mark_allowed`, so no caller's work reads as an issue run's.
 ISSUE_RUN_METADATA_KEY = "issue_run"
 
 
@@ -1605,6 +1608,7 @@ RESERVED_METADATA_KEYS = (
     RELEASE_WAIT_RESUMES_METADATA_KEY,
     QUOTA_PARK_RESUMES_METADATA_KEY,
     TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
+    ISSUE_RUN_METADATA_KEY,
 )
 
 #: Reserved like every key above, and refused by the same function in the
@@ -2561,6 +2565,11 @@ _RESERVED_BECAUSE = {
         "browser step drives, written only by the platform when a target is run. "
         "Start the run with POST /v1/qa-targets/{id}:run instead."
     ),
+    ISSUE_RUN_METADATA_KEY: (
+        f"metadata.{ISSUE_RUN_METADATA_KEY} is reserved: it links work to the issue run "
+        "that started it, and only the platform writes it. Start an issue run with "
+        "POST /v1/runs instead."
+    ),
 }
 
 
@@ -2624,6 +2633,31 @@ def qa_target_mark_allowed(mark: Mapping[str, Any]) -> Iterator[None]:
         _QA_TARGET_MARK.reset(token)
 
 
+#: The one `metadata.issue_run` value the CURRENT submission may carry, set
+#: only by `issue_run_mark_allowed`. Its own variable, so neither the
+#: schedule's nor the QA target's exemption admits it.
+_ISSUE_RUN_MARK: ContextVar[Any] = ContextVar("issue_run_mark", default=None)
+
+
+@contextmanager
+def issue_run_mark_allowed(mark: Any) -> Iterator[None]:
+    """Let THIS submission carry `metadata.issue_run == mark`, and nothing else.
+
+    The same scoped exemption as `schedule_mark_allowed`, for the same
+    reason: an issue run submits its planner, its compiled workflow, a CI
+    fix round and its merge through the service methods a person uses, so
+    the link travels in the spec's metadata. The mark is the run's id on the
+    planner and `{run_id, issue, ...}` on a workflow. Only
+    `issueruns.submitting` enters this block, which routes/runs.py and
+    issueci.py wrap around their own submissions (BGD, 2026-11-04).
+    """
+    token = _ISSUE_RUN_MARK.set(copy.deepcopy(mark))
+    try:
+        yield
+    finally:
+        _ISSUE_RUN_MARK.reset(token)
+
+
 def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     """Refuse a caller's metadata that names a key this service writes.
 
@@ -2664,7 +2698,8 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
         if key in metadata
     ]
     for key, exempt in ((SCHEDULE_METADATA_KEY, _SCHEDULE_MARK),
-                        (QA_TARGET_METADATA_KEY, _QA_TARGET_MARK)):
+                        (QA_TARGET_METADATA_KEY, _QA_TARGET_MARK),
+                        (ISSUE_RUN_METADATA_KEY, _ISSUE_RUN_MARK)):
         allowed = exempt.get()
         if allowed is not None and key in metadata and metadata[key] == allowed:
             present.remove(key)

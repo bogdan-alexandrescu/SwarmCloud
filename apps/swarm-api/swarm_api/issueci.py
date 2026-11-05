@@ -208,6 +208,7 @@ from .issueruns import (
     iam_patch_hits,
     merge_hold,
     requirements_finding,
+    submitting,
     verification_finding,
     verification_text,
 )
@@ -1555,7 +1556,8 @@ def _start_round(
         # The run's own tenant's index only (invariant 9); None is today's prompt.
         context = read_fix_context(ctx, tenant_id, claimed, excerpt)
         spec = ci_fix_workflow(claimed, round_no, excerpt, head, context)
-        submission = ctx.submissions.submit_workflow(owner, spec)
+        with submitting(spec):
+            submission = ctx.submissions.submit_workflow(owner, spec)
     except PrFixInFlight as exc:
         # Another writer (the platform's CI fixer, a conflict fix) holds this
         # pull request (#2535). That is a wait, not a failure: its push moves
@@ -2251,7 +2253,9 @@ def _merge(
 
     runs.patch(tenant_id, run.id, _claim)
     try:
-        submission = ctx.submissions.submit_workflow(owner, merge_workflow(run, pushed_by, head))
+        merge_spec = merge_workflow(run, pushed_by, head)
+        with submitting(merge_spec):
+            submission = ctx.submissions.submit_workflow(owner, merge_spec)
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         log.warning("issue run %s: merge refused at submission (%s)", run.id, reason)
