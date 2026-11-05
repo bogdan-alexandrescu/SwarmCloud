@@ -6,9 +6,11 @@
 `vars.MERGE_TRAIN` exactly `on` is the switch both workflows read. With it
 on, the merge step, green and told MERGE, labels its pull request `ready` and
 parks on the train instead of taking the merge slot and updating the branch;
-it ends SUCCEEDED once the pull request is merged, and an ejection (the
-train's comment, `ready` removed) is a refusal, or the gate's fix round when
-the pull request now conflicts. With the switch off nothing changes: the
+it ends SUCCEEDED once the pull request is merged. The train's ejection of a
+green head (its comment, `ready` removed) is re-boarded once at that head,
+then handed to a CI-fix round, then refused (#3313); the gate's removal is a
+refusal at once, and a pull request that now conflicts goes to the gate's fix
+round. With the switch off nothing changes: the
 controls below merge directly and never read or write a label.
 """
 
@@ -188,28 +190,179 @@ def test_a_pull_request_merged_without_the_train_while_parked_is_already_merged(
 
 
 # ---------------------------------------------------------------------------
-# The wake: ejected follows the refusal path
+# The wake: the train's ejection re-boards once, then a round, then the refusal (#3313)
 
 
-def test_the_wake_of_an_ejected_pull_request_refuses_with_the_trains_reason(tmp_path):
-    """MUTATION: label it `ready` again instead, which would loop on a change
-    the train keeps ejecting."""
+def _reboarded(world: MergeWorld, head: str = PINNED, *, code: str = mergetrain.TRAIN_WAITING,
+               rounds: int | None = None) -> None:
+    """The step's own record after its free re-board at `head` (or a park after it)."""
+    _parked_on_train(world, head)
+    metadata = world.docs[TASK]["metadata"]
+    metadata[control_mod.MERGE_WAIT_METADATA_KEY].update(
+        code=code, pending=[merge.TRAIN_REBOARDED])
+    if rounds is not None:
+        metadata[merge.MERGE_FIX_ROUNDS_KEY] = rounds
+
+
+def test_a_first_train_ejection_at_a_green_head_is_labelled_ready_again_once(tmp_path):
+    """#3313 (PR #3212: two ladder tests timed out on a loaded train shard
+    while the head was green): the train's ejection of a green head is often
+    a flake, so the first one at a head re-boards it.
+
+    MUTATION: refuse `train_ejected` at once, as before #3313, and this fails."""
     world = MergeWorld(tmp_path)
     _switch(world, "on")
     _parked_on_train(world)
     _comments(world, ("swarmcloud-merge[bot]", "**Left to the merge train.** ..."),
-              ("swarmcloud-merge[bot]", EJECTION), ("a-person", "looking"))
+              ("github-actions[bot]", EJECTION), ("a-person", "looking"))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.end_cause is None
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING
+    assert outcome.ci_wait["head"] == PINNED
+    # The re-board is recorded where the fenced park keeps it.
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    (label,) = _labelled(world)
+    assert label.body == {"labels": ["ready"]}
+    record = outcome.summary["repository_train"]
+    assert record["reboarded"] is True and record["labelled"] is True
+    assert "ci-gate: https://example.test/run/9" in record["ejection"]
+    assert world.merge_calls() == [] and world.closed_issues() == []
+
+
+def test_a_re_boarded_pull_request_still_ready_keeps_its_re_board(tmp_path):
+    """Waking `ready` after the re-board parks again with it recorded, so the
+    next ejection at this head is the second, not a second free re-board."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    world.pr["labels"] = [{"name": "ready"}]
+    _reboarded(world)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING, outcome.message
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    assert _labelled(world) == []
+
+
+def test_a_second_train_ejection_at_the_same_head_parks_for_a_ci_fix_round(tmp_path):
+    """MUTATION: re-label again, and a change the train keeps ejecting loops."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _reboarded(world, rounds=1)
+    _comments(world, ("github-actions[bot]", EJECTION))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == merge.TRAIN_FIX_PENDING
+    assert outcome.ci_wait["head"] == PINNED and outcome.ci_wait["pull_request"] == NUMBER
+    assert outcome.ci_wait["failed"] == ["ci-gate"]
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    assert merge.TRAIN_FIX_PENDING in merge._RELEASE_ON_PARK
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
+def test_the_ejections_failing_lines_are_read_as_merge_train_sh_writes_them():
+    """`eject_pr`'s failing lines are `- [name](url)`; `* name: url` is read too."""
+    body = ("**Ejected from the merge train, and `ready` removed.** Train 9-1 -- main plus "
+            "this pull request alone -- failed:\n\n- [web-unit (2)](https://e.test/j/1)\n"
+            "- [ci-gate](https://e.test/j/2)\n\nWith nothing else in the train ...")
+    assert merge.train_ejection_failed(body) == ["web-unit (2)", "ci-gate"]
+    assert merge.train_ejection_failed(EJECTION) == ["ci-gate"]
+
+
+def test_a_train_round_being_submitted_parks_ci_fix_running(tmp_path):
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _reboarded(world, code=merge.TRAIN_FIX_PENDING, rounds=1)
+    world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY] = {
+        "rounds": [{"round": 1, "head": PINNED}]}
+    _comments(world, ("github-actions[bot]", EJECTION))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == merge.CI_FIX_RUNNING
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    assert _labelled(world) == []
+
+
+def test_a_second_train_ejection_with_no_round_refuses_train_ejected(tmp_path):
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _reboarded(world)
+    _comments(world, ("swarmcloud-merge[bot]", "**Left to the merge train.** ..."),
+              ("github-actions[bot]", EJECTION), ("a-person", "looking"))
     outcome = merge.run_merge(world.context())
 
     assert outcome.state is TaskState.FAILED
     assert outcome.end_cause is EndCause.MERGE_REFUSED
     assert outcome.summary["refusal"]["code"] == "train_ejected"
-    assert "ci-gate: https://example.test/run/9" in outcome.summary["refusal"]["message"]
+    message = outcome.summary["refusal"]["message"]
+    assert "ci-gate: https://example.test/run/9" in message
+    assert "after one re-board" in message
     assert _labelled(world) == [] and world.merge_calls() == []
     assert world.closed_issues() == []
 
 
+@pytest.mark.parametrize("ended", ["no_change", "error"])
+def test_a_train_round_that_ended_at_the_same_head_refuses_train_ejected(tmp_path, ended):
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _reboarded(world, code=merge.CI_FIX_RUNNING, rounds=1)
+    entry: dict[str, Any] = {"round": 1, "head": PINNED}
+    if ended == "error":
+        entry["error"] = "submit refused"
+    else:
+        entry["task_id"] = "round-1"
+        world.docs["round-1"] = {"tenant_id": world.docs[TASK]["tenant_id"],
+                                 "state": TaskState.SUCCEEDED.value,
+                                 "result_summary": {"no_change": True}}
+    world.docs[TASK]["metadata"][merge.MERGE_FIX_METADATA_KEY] = {"rounds": [entry]}
+    _comments(world, ("github-actions[bot]", EJECTION))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.summary["refusal"]["code"] == "train_ejected"
+    message = outcome.summary["refusal"]["message"]
+    assert "after CI fix round 1" in message
+    assert "ci-gate: https://example.test/run/9" in message
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
+def test_the_re_board_waits_behind_the_fencing_recheck(tmp_path):
+    """Invariant 5: a worker superseded before the re-label labels nothing."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    _comments(world, ("github-actions[bot]", EJECTION))
+    world.stale_after = 1
+    with pytest.raises(FencedError):
+        merge.run_merge(world.context())
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
+def test_a_step_cancelled_before_the_re_board_labels_nothing(tmp_path):
+    """Cancelled after the step's first recheck, at the re-board's own."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    _comments(world, ("github-actions[bot]", EJECTION))
+    recheck = world.recheck
+
+    def cancelled_after_the_first() -> bool:
+        world.cancel = world.rechecks >= 1
+        return recheck()
+
+    world.recheck = cancelled_after_the_first  # type: ignore[method-assign]
+    outcome = merge.run_merge(world.context())
+
+    assert world.rechecks == 2
+    assert outcome.state is TaskState.CANCELLED, outcome.message
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
 def test_ready_removed_by_the_gate_names_the_gates_comment(tmp_path):
+    """The gate's removal is not the train's ejection: no re-board, refused at once."""
     world = MergeWorld(tmp_path)
     _switch(world, "on")
     _parked_on_train(world)
@@ -218,6 +371,61 @@ def test_ready_removed_by_the_gate_names_the_gates_comment(tmp_path):
 
     assert outcome.summary["refusal"]["code"] == "train_ejected"
     assert "#12 named in Depends on" in outcome.summary["refusal"]["message"]
+    assert _labelled(world) == []
+
+
+def test_the_gates_removal_after_an_earlier_train_ejection_is_refused_at_once(tmp_path):
+    """The latest comment says why `ready` is gone: a gate removal newer than
+    an earlier train ejection is the gate's, refused at once, not re-boarded.
+
+    MUTATION: prefer any ejection comment over a newer App comment, and this
+    re-labels `ready`."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    _comments(world, ("github-actions[bot]", EJECTION),
+              ("swarmcloud-merge[bot]", "Refused: #12 named in Depends on is not merged."),
+              ("a-person", "looking"))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "train_ejected", outcome.message
+    assert "#12 named in Depends on" in outcome.summary["refusal"]["message"]
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
+def test_the_trains_skip_comment_after_its_ejection_does_not_hide_the_ejection(tmp_path):
+    """The train's "does not board" comment comes from the workflow's bot but
+    never says why `ready` was lost: the ejection before it still decides.
+
+    MUTATION: count the skip comment as the gate's, and this refuses."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    skip = (f"<!-- merge-train-skip head={PINNED} reason=conflict -->\n"
+            "**The merge train skips it: it conflicts with main.**")
+    _comments(world, ("github-actions[bot]", EJECTION), ("github-actions[bot]", skip))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING, outcome.message
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    assert len(_labelled(world)) == 1
+
+
+def test_a_re_boarded_pull_request_the_train_skips_names_why_and_keeps_its_re_board(tmp_path):
+    """Both hold at once: the waiting line carries the train's skip reason at
+    this head, and the park keeps the head's one re-board."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    world.pr["labels"] = [{"name": "ready"}]
+    _reboarded(world)
+    _comments(world, ("github-actions[bot]", EJECTION), ("github-actions[bot]", (
+        f"<!-- merge-train-skip head={PINNED} reason=check:ci-gate -->\n"
+        "**The merge train skips it: `ci-gate` failed.**")))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING, outcome.message
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    assert outcome.summary["wait"]["message"].endswith("; the train skips it: `ci-gate` failed")
     assert _labelled(world) == []
 
 
