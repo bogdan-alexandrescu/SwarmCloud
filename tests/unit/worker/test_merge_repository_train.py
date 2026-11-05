@@ -374,6 +374,25 @@ def test_ready_removed_by_the_gate_names_the_gates_comment(tmp_path):
     assert _labelled(world) == []
 
 
+def test_the_gates_removal_after_an_earlier_train_ejection_is_refused_at_once(tmp_path):
+    """The latest comment says why `ready` is gone: a gate removal newer than
+    an earlier train ejection is the gate's, refused at once, not re-boarded.
+
+    MUTATION: prefer any ejection comment over a newer App comment, and this
+    re-labels `ready`."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    _comments(world, ("github-actions[bot]", EJECTION),
+              ("swarmcloud-merge[bot]", "Refused: #12 named in Depends on is not merged."),
+              ("a-person", "looking"))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "train_ejected", outcome.message
+    assert "#12 named in Depends on" in outcome.summary["refusal"]["message"]
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
 def test_an_ejected_pull_request_that_now_conflicts_goes_to_its_conflict_fix_round(tmp_path):
     """The gate runs before the train: a conflict with the new main parks for
     the conflict fix round, as a refused merge's conflict does."""
