@@ -222,6 +222,8 @@ def test_the_gate_scans_the_base_commit_and_fails_only_on_what_head_adds(tmp_pat
     scans = (tmp_path / "trivy.log").read_text().splitlines()
     assert len(scans) == 2 and "--skip-db-update" in scans[1], scans
     assert all("--ignore-unfixed" in s and "vuln,secret" in s for s in scans), scans
+    # The accepted-with-an-expiry list applies to both scans, as to the image scans.
+    assert all(f"--ignorefile {REPO / '.trivyignore.yaml'}" in s for s in scans), scans
 
     added = {"Target": "Dockerfile", "Vulnerabilities": [
         _vuln("CVE-2026-0001", "openssl", line=1), _vuln("CVE-2026-0009", "zlib")]}

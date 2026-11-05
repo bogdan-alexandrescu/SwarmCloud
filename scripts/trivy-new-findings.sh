@@ -87,13 +87,21 @@ compare() {
   return "${status}"
 }
 
-# scan DIR OUT [EXTRA...] -- the gate's scan of DIR as JSON.
+# scan DIR OUT [EXTRA...] -- the gate's scan of DIR as JSON. .trivyignore.yaml
+# is the accepted-with-an-expiry list the image scans already read
+# (lib/image-scan.sh): trivy 0.76 never loads it by itself, so without
+# --ignorefile an accepted finding failed this gate all the same. Both sides
+# read this checkout's list, so an acceptance is judged once, by its expiry.
 scan() {
-  local dir="$1" out="$2" bin
+  local dir="$1" out="$2" bin ignore=()
   shift 2
   bin="$(trivy_bin)" || { err "trivy not found; install it or set SWARM_TRIVY"; return 2; }
+  if [[ -f "${REPO_ROOT}/.trivyignore.yaml" ]]; then
+    ignore=(--ignorefile "${REPO_ROOT}/.trivyignore.yaml")
+  fi
   "${bin}" fs --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed \
-    --format json --output "${out}" --exit-code 0 --no-progress "$@" "${dir}"
+    --format json --output "${out}" --exit-code 0 --no-progress \
+    ${ignore[@]+"${ignore[@]}"} "$@" "${dir}"
 }
 
 gate() {
