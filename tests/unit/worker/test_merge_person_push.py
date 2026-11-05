@@ -11,7 +11,7 @@ with. A head that is not a merge, that the platform did not commit, and that
 GitHub links to a person on the pull request (its author or an assignee) ends
 `superseded_by_person_push`; every other head that is not accepted ends
 `head_moved` as before. `EndCause` is frozen, so until contract request
-"SUPERSEDED_BY_PERSON_PUSH" lands the step still ends FAILED/MERGE_REFUSED,
+139 (SUPERSEDED_BY_PERSON_PUSH) lands the step still ends FAILED/MERGE_REFUSED,
 with the new code, which failure-review's `person_push` rule skips
 (tests/unit/control_plane/test_failure_digest.py).
 
@@ -427,3 +427,11 @@ def test_failure_review_skips_the_code_the_worker_writes():
     from swarm_api import failuredigest
 
     assert failuredigest.SUPERSEDED_BY_PERSON_PUSH == merge.SUPERSEDED_BY_PERSON_PUSH
+
+
+def test_a_lanes_writer_marks_are_the_ones_swarm_api_skips():
+    """What `LANE_WRITER_MARKS` restates: `cifix.live_plain_continuation`'s
+    writers with a gate of their own, which are never a person's plain lane."""
+    from swarm_api import cifix
+
+    assert set(merge.LANE_WRITER_MARKS) == {*cifix.PR_WRITER_KINDS, cifix.ISSUE_RUN_METADATA_KEY}
