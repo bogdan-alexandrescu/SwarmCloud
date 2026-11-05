@@ -1,7 +1,7 @@
 {
   "about": "The app-wide prose ratchet's table (proseapp.tsx; BOGDAN'S RULE, 2026-11-05, docs/web-ui/design-system.md). One row per page the console's nav reaches, plus a workflow with a step selected and an agent's Details and Logs tabs. words: the visible-word ceilings, oldest first, the last in force; arrows: the same for text links that carry an arrow (an action that should be a button). Set on 2026-11-05 to that day's count on the fixture build. A ceiling may only go DOWN: append a lower number, never edit one (prose.app.test.tsx holds the history and the previous commit's table). Lower it with PROSE_RECORD_DIR=<dir> on the page's slice, and copy the page's tokens into prose.words.json.",
   "pages": {
-    "admin/counts": { "words": [490], "arrows": [0] },
+    "admin/counts": { "words": [490, 365], "arrows": [0] },
     "admin/health": { "words": [231], "arrows": [1] },
     "admin/limits": { "words": [356], "arrows": [0] },
     "admin/people": { "words": [350, 246], "arrows": [0] },
@@ -28,7 +28,7 @@
     "config/repositories": { "words": [335], "arrows": [1] },
     "config/secrets": { "words": [294], "arrows": [2] },
     "config/workspace": { "words": [375], "arrows": [0] },
-    "overview/now": { "words": [876], "arrows": [18] },
+    "overview/now": { "words": [876, 832], "arrows": [18, 0] },
     "settings/profile": { "words": [497], "arrows": [5] },
     "voice/preferences": { "words": [105], "arrows": [1] },
     "voice/projects": { "words": [72], "arrows": [0] },
