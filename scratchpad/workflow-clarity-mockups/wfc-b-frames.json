@@ -1,0 +1,90 @@
+[
+ {
+  "name": "wfc-b-head-rest",
+  "screen": "Workflow page",
+  "state": "head-rest",
+  "caption": "The quality-check workflow's reviewer leg, named by its title and its leg ('Visual QA: ai-studio-staging \u00b7 reviewer leg'). Under today's chips row, one card: what it is meant to deliver on the left; Repository, Feature, Started by, From and When on the right.",
+  "viewport": "1440x900",
+  "code": "WC B\u00b71"
+ },
+ {
+  "name": "wfc-b-head-long",
+  "screen": "Workflow page",
+  "state": "head-long",
+  "caption": "A 609-character description of a code lane, held to five lines with a Show all link. The facts column stays beside it; From reads Claude Code.",
+  "viewport": "1440x900",
+  "code": "WC B\u00b72"
+ },
+ {
+  "name": "wfc-b-head-long-open",
+  "screen": "Workflow page",
+  "state": "head-long-open",
+  "caption": "The same description after Show all: the whole text, and Show less. The card grows down and pushes the grid down.",
+  "viewport": "1440x900",
+  "code": "WC B\u00b73"
+ },
+ {
+  "name": "wfc-b-head-generated",
+  "screen": "Workflow page",
+  "state": "head-generated",
+  "caption": "A description nobody submitted: a 'generated' chip beside the label, the text in the dim ink, and a visible line under it saying a model wrote it. From says Schedule and names the schedule.",
+  "viewport": "1440x900",
+  "code": "WC B\u00b74"
+ },
+ {
+  "name": "wfc-b-head-nofeature",
+  "screen": "Workflow page",
+  "state": "head-nofeature",
+  "caption": "No feature: the Feature row keeps its slot with a 'none' mark (asked, and there is none), never an empty gap.",
+  "viewport": "1440x900",
+  "code": "WC B\u00b75"
+ },
+ {
+  "name": "wfc-b-list",
+  "screen": "Workflows list",
+  "state": "list",
+  "caption": "The Workflows list with a narrow Repository column on every row: the repository's name, with its owner in faint ink under it. Titles wrap and read whole. Spent's coverage note sits under its figure. The two quality-check legs read '\u00b7 reviewer leg' and '\u00b7 moderator leg', here and in Recent.",
+  "viewport": "1440x900",
+  "code": "WC B\u00b76"
+ },
+ {
+  "name": "wfc-b-head-rest-1280",
+  "screen": "Workflow page",
+  "state": "head-rest",
+  "caption": "The quality-check page at 1280. The inspector folds to its rail, so the card has the width and the description runs to three lines.",
+  "viewport": "1280x800",
+  "code": "WC B\u00b77"
+ },
+ {
+  "name": "wfc-b-head-rest-390",
+  "screen": "Workflow page",
+  "state": "head-rest (phone)",
+  "caption": "On a phone the facts stack under the description, with a rule between them. The labels and values keep their two columns.",
+  "viewport": "390x844",
+  "code": "WC B\u00b78"
+ },
+ {
+  "name": "wfc-b-list-390",
+  "screen": "Workflows list",
+  "state": "list (phone)",
+  "caption": "On a phone the Repository column gives way: the whole owner/repo goes under each title. Titles wrap and read whole, and Steps is a count rather than a bar, so the title has the width.",
+  "viewport": "390x844",
+  "code": "WC B\u00b79"
+ },
+ {
+  "name": "wfc-b-head-leg",
+  "screen": "Workflow page",
+  "state": "head-leg",
+  "caption": "The moderator leg of the same quality check. It has the same title as the reviewer leg and is told apart by '\u00b7 moderator leg' on the heading, the breadcrumb and Recent, and by its own description. From reads Quality check.",
+  "viewport": "1440x900",
+  "code": "WC B\u00b710"
+ },
+ {
+  "name": "wfc-b-head-lane",
+  "screen": "Workflow page",
+  "state": "head-lane",
+  "caption": "The code lane: its feature links to the issue, From reads 'Issue run \u00b7 issue #3201', and the pull request stays in the chips row.",
+  "viewport": "1440x900",
+  "code": "WC B\u00b711"
+ }
+]

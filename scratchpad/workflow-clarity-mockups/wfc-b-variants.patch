@@ -1,0 +1,727 @@
+diff --git a/apps/swarm-ui/src/WcFacts.tsx b/apps/swarm-ui/src/WcFacts.tsx
+new file mode 100644
+index 00000000..92437650
+--- /dev/null
++++ b/apps/swarm-ui/src/WcFacts.tsx
+@@ -0,0 +1,216 @@
++// MOCK-HOOK FILE
++// WORKFLOW CLARITY, DIRECTION B (?wc=b): the head's card -- what the workflow
++// is meant to deliver on the left, a column of labelled facts on the right
++// (Repository, Feature, Started by, From, When), stacked under the description
++// on a phone -- and the list's Repository cell.
++import { useLayoutEffect, useRef, useState } from 'react'
++import { PersonName } from './PersonName'
++import { timeAgo, type Workflow } from './types'
++import { ORIGIN_WORDS, repoName } from './wcFixtures'
++import { utcStamp } from './Workflows'
++import './styles/wc.css'
++
++/** An http(s) URL, else null: a stored string becomes an href only when it is one. */
++function safeHref(url: string | null | undefined): string | null {
++  return typeof url === 'string' && /^https?:\/\//.test(url) ? url : null
++}
++
++/** A value that was not served: its slot and its label stay, the word says which kind of nothing. */
++function Absent({ children }: { children: string }) {
++  return <span className="ctl-mark is-absent">{children}</span>
++}
++
++/** Asked and there is none: a measured nothing (`.ctl-mark.is-zero`), not a missing read. */
++function None({ children }: { children: string }) {
++  return <span className="ctl-mark is-zero">{children}</span>
++}
++
++/** `owner/repo`, breaking only after the slash: a repository name never splits mid-word. */
++function RepoWords({ repo }: { repo: string }) {
++  const at = repo.indexOf('/')
++  if (at < 0) return <span className="wcb-nowrap">{repo}</span>
++  return (
++    <>
++      <span className="wcb-nowrap wcb-repo-owner">{repo.slice(0, at + 1)}</span>
++      <wbr />
++      <span className="wcb-nowrap">{repo.slice(at + 1)}</span>
++    </>
++  )
++}
++
++export function WcFactsCard({ workflow, now }: { workflow: Workflow; now: number }) {
++  const meta = workflow.metadata ?? null
++  const description = typeof meta?.description === 'string' && meta.description.trim() !== '' ? meta.description.trim() : null
++  const generated = meta?.description_source === 'generated'
++  const textRef = useRef<HTMLParagraphElement>(null)
++  const [open, setOpen] = useState(false)
++  const [clipped, setClipped] = useState(false)
++  // THE TOGGLE IS DRAWN ONLY WHEN THE CLAMP CUT SOMETHING: measured, not
++  // guessed from a character count, so a short description at a narrow width
++  // gets one and a long one at a wide width may not.
++  useLayoutEffect(() => {
++    const el = textRef.current
++    if (el === null || open) return
++    const measure = () => setClipped(el.scrollHeight > el.clientHeight + 1)
++    measure()
++    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
++    ro?.observe(el)
++    return () => ro?.disconnect()
++  }, [description, open])
++
++  const repo = repoName(workflow.repository_url)
++  const repoHref = safeHref(workflow.repository_url)
++  const feature = meta?.feature ?? null
++  const origin = meta?.origin ?? null
++  const started = utcStamp(workflow.created_at, now)
++  const ago = Number.isFinite(Date.parse(workflow.created_at)) ? timeAgo(workflow.created_at, now) : null
++  // `metadata` absent: a workflow submitted before these fields existed, so
++  // each is "not recorded"; present with a null feature: it was asked and has none.
++  const recorded = meta !== null
++
++  return (
++    <section className="wcb-card" aria-label="About this workflow">
++      <div className="wcb-desc">
++        <p className="wcb-label">
++          Description
++          {generated && (
++            <span className="c-chip wcb-gen" title="No description was submitted; a model wrote this one from the steps' prompts.">
++              generated
++            </span>
++          )}
++        </p>
++        {description === null ? (
++          <p className="wcb-text">
++            {recorded ? <None>none submitted</None> : <Absent>not recorded</Absent>}
++          </p>
++        ) : (
++          <>
++            <p ref={textRef} className={`wcb-text${open ? '' : ' is-clamped'}${generated ? ' is-generated' : ''}`} id={`wcb-d-${workflow.workflow_id}`}>
++              {description}
++            </p>
++            {generated && (
++              // WHO WROTE IT, IN WORDS A TOUCH SCREEN CAN READ: the chip's title is a hover only.
++              <p className="wcb-gen-note">A model wrote this from the steps' prompts; no description was submitted.</p>
++            )}
++            {(clipped || open) && (
++              <button
++                type="button"
++                className="ctl-link wcb-more"
++                aria-expanded={open}
++                aria-controls={`wcb-d-${workflow.workflow_id}`}
++                onClick={() => setOpen(!open)}
++              >
++                {open ? 'Show less' : 'Show all'}
++              </button>
++            )}
++          </>
++        )}
++      </div>
++      <dl className="wcb-facts">
++        <div>
++          <dt>Repository</dt>
++          <dd>
++            {repo === null ? (
++              <Absent>not recorded</Absent>
++            ) : repoHref === null ? (
++              <span className="wcb-mono">
++                <RepoWords repo={repo} />
++              </span>
++            ) : (
++              <a className="ctl-link wcb-mono" href={repoHref} target="_blank" rel="noreferrer" title={repoHref}>
++                <RepoWords repo={repo} />
++              </a>
++            )}
++          </dd>
++        </div>
++        <div>
++          <dt>Feature</dt>
++          <dd>
++            {feature === null ? (
++              recorded ? <None>none</None> : <Absent>not recorded</Absent>
++            ) : safeHref(feature.url) === null ? (
++              feature.title
++            ) : (
++              <a className="ctl-link" href={safeHref(feature.url) ?? undefined} target="_blank" rel="noreferrer" title={feature.url ?? undefined}>
++                {feature.title}
++              </a>
++            )}
++          </dd>
++        </div>
++        <div>
++          <dt>Started by</dt>
++          <dd>
++            {workflow.submitted_by === null || workflow.submitted_by === '' ? (
++              <Absent>not recorded</Absent>
++            ) : (
++              <PersonName email={workflow.submitted_by} name={workflow.submitted_by_name} variant="full" />
++            )}
++          </dd>
++        </div>
++        <div>
++          <dt>From</dt>
++          <dd className="wcb-from">
++            {origin === null ? (
++              <Absent>not recorded</Absent>
++            ) : (
++              <>
++                <span className="c-chip">{ORIGIN_WORDS[origin.kind]}</span>
++                {origin.ref !== null &&
++                  (safeHref(origin.ref.url) === null ? (
++                    <span className="wcb-mono">{origin.ref.label}</span>
++                  ) : (
++                    <a className="ctl-link wcb-mono" href={safeHref(origin.ref.url) ?? undefined} target="_blank" rel="noreferrer">
++                      {origin.ref.label}
++                    </a>
++                  ))}
++              </>
++            )}
++          </dd>
++        </div>
++        <div>
++          <dt>When</dt>
++          <dd title={workflow.created_at}>
++            {started === null ? (
++              <Absent>not recorded</Absent>
++            ) : (
++              // THE AGE IS THE CHIPS ROW'S ("16d 11h old"); the card gives the instant.
++              <span className="wcb-mono" title={ago === null ? workflow.created_at : `${workflow.created_at} · ${ago}`}>
++                {started}
++              </span>
++            )}
++          </dd>
++        </div>
++      </dl>
++    </section>
++  )
++}
++
++/** The list's Repository cell: the repository's name, its owner under it in the faint ink; the whole URL is its title. */
++export function WcRepoCell({ workflow }: { workflow: Workflow }) {
++  const repo = repoName(workflow.repository_url)
++  const at = repo === null ? -1 : repo.indexOf('/')
++  return (
++    <td className="wcb-repo" data-col="repo" title={workflow.repository_url ?? 'no repository recorded'}>
++      {repo === null ? (
++        <span className="wfg-absent">—</span>
++      ) : at < 0 ? (
++        <span className="wcb-mono">{repo}</span>
++      ) : (
++        <>
++          <span className="wcb-mono wcb-repo-name">{repo.slice(at + 1)}</span>
++          <span className="wcb-mono wcb-repo-by">{repo.slice(0, at)}</span>
++        </>
++      )}
++    </td>
++  )
++}
++
++/** The phone row has no Repository column: the whole `owner/repo` goes under the name, breaking after the slash. */
++export function WcRepoUnder({ workflow }: { workflow: Workflow }) {
++  const repo = repoName(workflow.repository_url)
++  return repo === null ? null : (
++    <span className="wcb-repo-under wcb-mono">
++      <RepoWords repo={repo} />
++    </span>
++  )
++}
+diff --git a/apps/swarm-ui/src/Workflows.tsx b/apps/swarm-ui/src/Workflows.tsx
+index 5ce79f31..71f5dd66 100644
+--- a/apps/swarm-ui/src/Workflows.tsx
++++ b/apps/swarm-ui/src/Workflows.tsx
+@@ -188,6 +188,8 @@ import { Mark } from './primitives'
+ import { stateWord } from './words'
+ import './styles/workflows.css'
+ import './styles/names.css'
++import { WcFactsCard, WcRepoCell, WcRepoUnder } from './WcFacts' // MOCK-HOOK
++import { wcOn } from './wcFixtures' // MOCK-HOOK
+ import { ownerQuestionsHold } from './Handoff'
+ import { Inspector, startsFolded, useIsPhone } from './work/Inspector'
+ import { AgentSplit } from './AgentSplit'
+@@ -535,9 +537,10 @@ function pageSummary(d: WorkflowBoard, id: string): ReactNode {
+           head read '6 steps · 5 → 1 · 4/6 done', and neither '5 → 1' nor
+           '4/6' said what it was. The shape names its stages and the census
+           its steps; the list's narrow cells keep the short forms. */}
+-      {`${shapeWords(shape)} · ${rollupLine(w, d.taskById).text.replace(/^(\d+)\/(\d+) done/, '$1 of $2 steps done')} · by `}
+-      {owner}
+-      {` · ${startedPhrase(started)}`}
++      {`${shapeWords(shape)} · ${rollupLine(w, d.taskById).text.replace(/^(\d+)\/(\d+) done/, '$1 of $2 steps done')}`}{/* // MOCK-HOOK: ' · by ' moved to the line below */}
++      {!wcOn() && ' · by '}{/* // MOCK-HOOK: the Facts card names who and when */}
++      {!wcOn() && owner}{/* // MOCK-HOOK */}
++      {!wcOn() && ` · ${startedPhrase(started)}`}{/* // MOCK-HOOK */}
+     </>
+   )
+ }
+@@ -5524,7 +5527,7 @@ function ListHead() {
+   return (
+     <thead>
+       <tr>
+-        {LIST_COLUMNS.map((c) => (
++        {(wcOn() ? LIST_COLUMNS.flatMap((c) => (c.col === 'workflow' ? [c, { col: 'repo', label: 'Repository' }] : [c])) : LIST_COLUMNS).map((c: { col: string; label: string; num?: boolean }) => ( // MOCK-HOOK
+           // `data-col` is what styles.css gives each column its share of the width by.
+           <th key={c.label} data-col={c.col} className={c.num === true ? 'num' : undefined}>
+             {c.label}
+@@ -6142,7 +6145,9 @@ function WorkflowListRow({
+         </a>
+         <PullRequestWaitTag workflow={workflow} />
+         {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
++        {wcOn() && <WcRepoUnder workflow={workflow} />}{/* // MOCK-HOOK */}
+       </td>
++      {wcOn() && <WcRepoCell workflow={workflow} />}{/* // MOCK-HOOK */}
+       <td className="wfg-steps" data-col="steps">
+         <StepBar workflow={workflow} roll={roll} />
+       </td>
+@@ -6922,6 +6927,7 @@ function WorkflowHead({
+           {browsers} {browsers === 1 ? 'browser' : 'browsers'}
+         </span>
+       </p>
++      {wcOn() && <WcFactsCard workflow={workflow} now={now} />}{/* // MOCK-HOOK */}
+     </div>
+   )
+ }
+@@ -7128,11 +7134,11 @@ function WorkflowOverview({
+         </dd>
+         <dt>On a failed step</dt>
+         <dd>{keepGoing ? 'keep going' : 'stop the workflow'}</dd>
+-        <dt>Owner</dt>
+-        <dd title={workflow.submitted_by ?? undefined}>{owner}</dd>
+-        <dt>Started</dt>
++        {!wcOn() && <dt>Owner</dt>}{/* // MOCK-HOOK: the head's Facts card names the owner */}
++        {!wcOn() && <dd title={workflow.submitted_by ?? undefined}>{owner}</dd>}{/* // MOCK-HOOK */}
++        <dt>{wcOn() ? 'Changed' : 'Started'}</dt>{/* // MOCK-HOOK */}
+         <dd title={started.title}>
+-          {startedPhrase(started)} · changed {changed}
++          {wcOn() ? changed : `${startedPhrase(started)} · changed ${changed}`}{/* // MOCK-HOOK */}
+         </dd>
+       </dl>
+       <details className="wfp-details">
+diff --git a/apps/swarm-ui/src/api.ts b/apps/swarm-ui/src/api.ts
+index ea1e5d7b..06dc0b89 100644
+--- a/apps/swarm-ui/src/api.ts
++++ b/apps/swarm-ui/src/api.ts
+@@ -1,4 +1,5 @@
+ import type { PoolFields } from './accountsPool'
++import { wcOn, wcTaskRows, wcWorkflowRows } from './wcFixtures' // MOCK-HOOK
+ import {
+   HEALTH_KINDS,
+   normPoolHealth,
+@@ -5915,6 +5916,7 @@ function fixtureTaskRows(): Task[] {
+   }
+ 
+   return [
++    ...(wcOn() ? wcTaskRows(mk) : []), // MOCK-HOOK
+     // THE REFERENCE AGENT, on its third attempt: attempt 1 was refused at
+     // dispatch and attempt 2 failed, so the Attempts tab, the events and
+     // the checkpoints all have more than one attempt to agree about.
+@@ -6445,7 +6447,8 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
+   // wf_audit_01's were typed as one succeeded beside two step tasks the
+   // Timeline drew as succeeded. Counted here as `rollup.py` counts them: each
+   // step's task state, `unstarted` for a step with no task yet.
+-  return [...fixtureWorkflowsMade, ...workflows].map((w) => {
++  const all = [...fixtureWorkflowsMade, ...workflows] // MOCK-HOOK
++  return (wcOn() ? wcWorkflowRows(step, spanOf, all) : all).map((w) => { // MOCK-HOOK
+     if (w.rollup === undefined || w.rollup === null) return w
+     const counts: Record<string, number> = {}
+     for (const st of w.steps) {
+diff --git a/apps/swarm-ui/src/stepviews.ts b/apps/swarm-ui/src/stepviews.ts
+index 1ae0fb56..1d7a31d9 100644
+--- a/apps/swarm-ui/src/stepviews.ts
++++ b/apps/swarm-ui/src/stepviews.ts
+@@ -28,6 +28,7 @@
+ //     that is waiting AFTER an earlier attempt ran still carries a start time.
+ //     It is drawn as waiting, never as running.
+ 
++import { wcLegName, wcOn } from './wcFixtures' // MOCK-HOOK
+ import { NEVER_STARTED_WORD, SKIPPED_WORD, hasTokenKind, levelsOf, shapeOf, type ResultUsage } from './dag'
+ import { eventKind } from './events'
+ import { skippedByVerdict } from './wfreview'
+@@ -1634,8 +1635,10 @@ export function nodeNote(
+  * `title`; the list row then reads `listRowName`.
+  */
+ export function workflowLabel(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): string | null {
++  const own = wcOn() ? workflow.metadata?.title : null // MOCK-HOOK: the workflow's own title first
++  if (typeof own === 'string' && own.trim() !== '') return wcLegName(workflow, own.trim()) // MOCK-HOOK: a quality-check leg after its title
+   if (taskById === null) return null
+-  for (const key of ['unit', 'title'] as const) {
++  for (const key of wcOn() ? (['title', 'unit'] as const) : (['unit', 'title'] as const)) { // MOCK-HOOK: title, then the label
+     for (const s of workflow.steps) {
+       const t = s.task_id ? taskById.get(s.task_id) : undefined
+       const value = t?.metadata?.[key]
+diff --git a/apps/swarm-ui/src/styles/wc.css b/apps/swarm-ui/src/styles/wc.css
+new file mode 100644
+index 00000000..71344bf0
+--- /dev/null
++++ b/apps/swarm-ui/src/styles/wc.css
+@@ -0,0 +1,100 @@
++/* MOCK-HOOK FILE
++   WORKFLOW CLARITY, DIRECTION B (?wc=b): the head's Facts card and the list's
++   Repository column. One box (design-system §13.3), the description in body
++   type, the facts as label/value pairs in the label rank (mono, faint, 13). */
++.wcb-card {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) minmax(0, max-content);
++  gap: var(--ctl-s3, 16px) 24px;
++  margin-top: 10px;
++  padding: 14px 16px;
++  border: 1px solid var(--line);
++  border-radius: var(--radius);
++  background: var(--surface);
++  min-width: 0;
++}
++.wcb-desc { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
++.wcb-label {
++  display: flex; align-items: center; gap: 8px; margin: 0;
++  font: 600 var(--t-meta)/var(--lh-meta, 1.45) var(--mono); color: var(--text-faint);
++}
++.wcb-gen { padding: 2px 8px; }
++.wcb-text { margin: 0; max-width: 68ch; font-size: var(--t-body); line-height: 1.55; color: var(--text); overflow-wrap: anywhere; }
++.wcb-text.is-generated { color: var(--text-dim); }
++.wcb-text.is-clamped { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; line-clamp: 5; overflow: hidden; }
++.wcb-more { padding: 0; border: 0; background: none; font: inherit; font-size: var(--t-meta); cursor: pointer; }
++.wcb-facts {
++  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px;
++  margin: 0; padding-left: 20px; border-left: 1px solid var(--line); align-content: start; align-self: start; min-width: 0;
++}
++.wcb-facts > div { display: contents; }
++.wcb-facts dt { font: 600 var(--t-meta)/22px var(--mono); color: var(--text-faint); white-space: nowrap; }
++.wcb-facts dd { margin: 0; min-width: 0; font-size: var(--t-body); line-height: 22px; overflow-wrap: anywhere; }
++.wcb-from { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
++.wcb-from .c-chip { padding: 2px 8px; }
++.wcb-mono { font-family: var(--mono); font-size: var(--t-meta); }
++.wcb-dim { color: var(--text-dim); }
++.wcb-nowrap { white-space: nowrap; }
++.wcb-facts dd .wcb-mono { overflow-wrap: normal; }
++.wcb-gen-note { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta, 1.45); color: var(--text-faint); }
++.wcb-facts { max-width: 250px; }
++/* THE OWNER'S NAME, THEN THE WHOLE EMAIL UNDER IT (user-profile.md §4.4 keeps the email; the column keeps its width). */
++.wcb-facts .person-name { display: flex !important; flex-direction: column; max-width: 100%; }
++.wcb-facts .person-name-dot { display: none !important; }
++.wcb-facts .person-name-email { font-size: var(--t-micro); line-height: 18px; color: var(--text-dim); white-space: normal !important; overflow-wrap: anywhere; }
++@container work-main (max-width: 520px) { .wcb-facts { max-width: none; } }
++@media (max-width: 560px) { .wcb-facts { max-width: none; } }
++
++/* A NARROW PANE (the docked inspector open at 1280, or a phone): the facts
++   go under the description and the rule moves above them. */
++@container work-main (max-width: 520px) {
++  .wcb-card { grid-template-columns: minmax(0, 1fr); }
++  .wcb-facts { padding-left: 0; border-left: 0; padding-top: 12px; border-top: 1px solid var(--line); }
++}
++@media (max-width: 560px) {
++  .wcb-card { grid-template-columns: minmax(0, 1fr); padding: 12px; }
++  .wcb-facts { padding-left: 0; border-left: 0; padding-top: 12px; border-top: 1px solid var(--line); }
++}
++
++/* THE LIST'S REPOSITORY COLUMN: narrow and mono, the repository's name with its owner under it in the
++   faint ink, so a touch screen reads both without the hover. */
++.wfg-table [data-col="repo"] { width: 1%; max-width: 12em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
++.wcb-repo-name, .wcb-repo-by { display: block; overflow: hidden; text-overflow: ellipsis; line-height: 16px; }
++.wcb-repo-by { font-size: var(--t-micro); color: var(--text-faint); }
++@container work-main (max-width: 1024px) { .wfg-table [data-col="repo"] { width: 150px; max-width: none; } }
++@container work-main (max-width: 940px) { .wfg-table [data-col="repo"] { display: none; } }
++.wcb-repo-under { display: none; }
++@container work-main (max-width: 940px) {
++  .wfg-table td[data-col="workflow"] .wcb-repo-under { display: block; font-size: var(--t-micro); line-height: 16px; color: var(--text-dim); font-weight: 400; white-space: normal; }
++}
++@media (max-width: 560px) {
++  .wfg-table [data-col="repo"] { display: none; }
++  .wfg-table td[data-col="workflow"] .wcb-repo-under { display: block; font-size: var(--t-micro); line-height: 16px; color: var(--text-dim); font-weight: 400; white-space: normal; }
++}
++
++/* THE NAME READS WHOLE, at every width: it wraps (two lines at most for the fixtures at 1440, three on a
++   phone) rather than being cut, and Spent's coverage note goes under its figure so the name gets that width. */
++.wcb-on .wfg-table td[data-col="workflow"] { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; padding-top: 6px; padding-bottom: 6px; }
++.wcb-on .wfg-table td[data-col="workflow"] > a { line-height: 18px; }
++.wcb-on .wfg-table td[data-col="spent"] .wf-spend-cov { display: block; margin-left: 0; }
++.wcb-on .wfg-table td { vertical-align: top; padding-top: 8px; }
++/* ON A PHONE THE STEPS ARE A COUNT, NOT A BAR (the bar's 40px went to the name; the state glyph keeps the colour). */
++@container work-main (max-width: 570px) {
++  .wcb-on .wfg-table [data-col="steps"] { width: 52px; }
++  .wcb-on .wfg-table [data-col="needs"] { width: 56px; }
++  .wcb-on .wfg-table td[data-col="needs"] { white-space: normal; }
++  .wcb-on .wfg-bar > .c-bar { display: none; }
++}
++@media (max-width: 560px) {
++  .wcb-on .wfg-table [data-col="steps"] { width: 52px; }
++  .wcb-on .wfg-table [data-col="needs"] { width: 56px; }
++  .wcb-on .wfg-table td[data-col="needs"] { white-space: normal; }
++  .wcb-on .wfg-bar > .c-bar { display: none; }
++}
++/* RECENT IN THE SIDEBAR: two lines, so a quality-check leg's "· reviewer leg" is not cut off its shared title. */
++.wcb-on .sk-recent > a.sk-kid > span { align-items: flex-start; }
++.wcb-on .sk-recent > a.sk-kid > span > span:last-child { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
++
++/* FOUND WHILE DRAWING THESE FRAMES, not part of the direction: the step bar's
++   count was a <small> at 11.7px, under the 12px floor (design-system §2). */
++.wfg-bar > small { font-size: var(--t-micro); }
+diff --git a/apps/swarm-ui/src/types.ts b/apps/swarm-ui/src/types.ts
+index 36c8bb39..cdda6491 100644
+--- a/apps/swarm-ui/src/types.ts
++++ b/apps/swarm-ui/src/types.ts
+@@ -3,6 +3,7 @@
+ // the copy that has to follow, and there is no check that notices. Keep the
+ // comment references so the next person can find the source.
+ 
++import type { WcMetadata } from './wcFixtures' // MOCK-HOOK
+ import { currentZone, formatClock, formatDateTime, isToday } from './timezone'
+ 
+ /** `pool_to_api` in codec.py. */
+@@ -3939,6 +3940,8 @@ export interface Workflow {
+    * also writes `text`: the sentence the list row and the page head print.
+    */
+   after_pull_requests?: WorkflowPullRequestWait
++  metadata?: WcMetadata | null // MOCK-HOOK
++  repository_url?: string | null // MOCK-HOOK
+ }
+ 
+ /** `workflow.after_pull_requests` (SPEED-D3). */
+diff --git a/apps/swarm-ui/src/wcFixtures.ts b/apps/swarm-ui/src/wcFixtures.ts
+new file mode 100644
+index 00000000..211b677a
+--- /dev/null
++++ b/apps/swarm-ui/src/wcFixtures.ts
+@@ -0,0 +1,250 @@
++// MOCK-HOOK FILE
++// WORKFLOW CLARITY, DIRECTION B (?wc=b): invented fixtures for the head's Facts
++// card and the list's Repository column. Shaped as the server will serve them:
++// the workflow's `metadata` (title, unit, description, description_source,
++// feature {title, url}, origin {kind, ref}) and `repository_url`. Nothing here
++// is read outside the fixture build.
++import type { Task, TaskState, Workflow, WorkflowStep } from './types'
++
++/** Direction B is on: `?wc=b` in the address, kept for the tab once seen. */
++export function wcOn(): boolean {
++  if (typeof location === 'undefined') return false
++  const asked = new URLSearchParams(location.search).get('wc')
++  let on = asked === 'b'
++  try {
++    if (asked !== null) sessionStorage.setItem('swarm.wc', asked)
++    on = (asked ?? sessionStorage.getItem('swarm.wc')) === 'b'
++  } catch {
++    // no storage: the address alone decides
++  }
++  // `wcb-on` scopes wc.css's rules for surfaces this file does not draw (the list's name cell, Recent).
++  if (typeof document !== 'undefined') document.documentElement.classList.toggle('wcb-on', on)
++  return on
++}
++
++/** Where a workflow was started from, as `metadata.origin.kind` will say. */
++export type WcOriginKind = 'claude_code' | 'console' | 'schedule' | 'issue' | 'quality_check'
++
++export interface WcMetadata {
++  title?: string | null
++  unit?: string | null
++  /** The quality-check leg this workflow is ('reviewer', 'moderator'); null for any other workflow. Its legs share one title. */
++  leg?: string | null
++  description?: string | null
++  description_source?: 'submitter' | 'generated' | null
++  feature?: { title: string; url: string | null } | null
++  origin?: { kind: WcOriginKind; ref: { label: string; url: string | null } | null } | null
++}
++
++type Mk = (id: string, state: TaskState, profile: string, minsAgo: number, extra?: Partial<Task>) => Task
++type Step = (step_id: string, depends_on: string[], task_id: string | null, input_from?: Record<string, string>) => WorkflowStep
++type SpanOf = (taskIds: string[]) => { created_at: string; updated_at: string }
++
++const BOGDAN = 'bogdan@example.com'
++const LONG =
++  'Every tenant writes its checkpoints under its own prefix in the shared bucket today only by convention: the worker builds the path from the tenant id it was handed. ' +
++  'This lane moves the prefix into the lease, so a worker cannot write outside the prefix its lease names, and re-keys the 2,140 checkpoints already stored under the old flat layout. ' +
++  'It ships behind a flag that reads both layouts for one week, then a second pull request removes the old read. Nothing changes for a tenant whose checkpoints are already prefixed; ' +
++  'a tenant with a stale generation keeps its old copy until the reconciler reclaims it.'
++
++/** Each fixture workflow: its metadata, repository, owner, and its steps' tasks. */
++interface WcSpec {
++  id: string
++  meta: WcMetadata
++  repo: string
++  by: string
++  byName: string | null
++  tasks: { id: string; step: string; deps: string[]; state: TaskState; profile: string; mins: number; extra?: Partial<Task> }[]
++}
++
++const SPECS: WcSpec[] = [
++  {
++    id: 'wf_wc_visualqa',
++    meta: {
++      title: 'Visual QA: ai-studio-staging',
++      unit: 'vqa-rev',
++      leg: 'reviewer',
++      description:
++        'Walks every screen of AI Studio on staging at desktop and phone widths and writes down what looks broken. The moderator leg reads these findings next.',
++      description_source: 'submitter',
++      feature: { title: 'Quality check of AI Studio', url: null },
++      origin: { kind: 'claude_code', ref: null },
++    },
++    repo: 'https://github.com/sagaxyz/ai-studio',
++    by: BOGDAN,
++    byName: 'Bogdan Alexandrescu',
++    tasks: [
++      { id: 'task_wc_qa_cap', step: 'capture', deps: [], state: 'SUCCEEDED', profile: 'claude-code-browser', mins: 42 },
++      { id: 'task_wc_qa_dsk', step: 'desktop', deps: ['capture'], state: 'RUNNING', profile: 'claude-code-browser', mins: 18 },
++      { id: 'task_wc_qa_phn', step: 'phone', deps: ['capture'], state: 'RUNNING', profile: 'claude-code-browser', mins: 17 },
++      { id: 'task_wc_qa_fnd', step: 'findings', deps: ['desktop', 'phone'], state: 'PARKED', profile: 'claude-code', mins: 17 },
++    ],
++  },
++  {
++    // THE SECOND LEG OF THE SAME TARGET: the same title, told apart by `leg`.
++    id: 'wf_wc_visualqa_mod',
++    meta: {
++      title: 'Visual QA: ai-studio-staging',
++      unit: 'vqa-mod',
++      leg: 'moderator',
++      description:
++        'Tries to reproduce each finding the reviewer leg wrote on AI Studio staging and keeps only the ones it can. What it keeps becomes one issue per finding.',
++      description_source: 'submitter',
++      feature: { title: 'Quality check of AI Studio', url: null },
++      origin: { kind: 'quality_check', ref: null },
++    },
++    repo: 'https://github.com/sagaxyz/ai-studio',
++    by: BOGDAN,
++    byName: 'Bogdan Alexandrescu',
++    tasks: [
++      { id: 'task_wc_qm_rep', step: 'reproduce', deps: [], state: 'SUCCEEDED', profile: 'claude-code-browser', mins: 12 },
++      { id: 'task_wc_qm_iss', step: 'report', deps: ['reproduce'], state: 'SUCCEEDED', profile: 'claude-code', mins: 4 },
++    ],
++  },
++  {
++    id: 'wf_wc_signin',
++    meta: {
++      title: 'The sign-in gate counts only clickable controls',
++      unit: 'sg-click',
++      description:
++        'The sign-in gate counted hidden and disabled buttons as controls, so a page behind a login read as signed in. It now counts only controls a person can click, with a test for each case the quality check found.',
++      description_source: 'submitter',
++      feature: { title: 'Quality-check sign-in fixes', url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/3201' },
++      origin: { kind: 'issue', ref: { label: 'issue #3201', url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/3201' } },
++    },
++    repo: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
++    by: BOGDAN,
++    byName: 'Bogdan Alexandrescu',
++    tasks: [
++      {
++        id: 'task_wc_si_fix', step: 'fix', deps: [], state: 'SUCCEEDED', profile: 'claude-code', mins: 95,
++        extra: {
++          dispatch: { strategy: 'direct-pr', carrier: 'checkpoints', role: null, integrates: [] },
++          result_summary: {
++            git: {
++              branch: 'swarm/sg-click',
++              pull_request: { number: 3244, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/3244', state: 'open', created: true },
++            },
++          },
++        } as Partial<Task>,
++      },
++    ],
++  },
++  {
++    id: 'wf_wc_deps',
++    meta: {
++      title: 'Nightly dependency audit',
++      unit: 'deps-n',
++      description:
++        'Checks the lock files for packages with a published advisory and opens one issue per package it finds. Tonight it read three lock files and found no advisory.',
++      description_source: 'generated',
++      feature: { title: 'Supply-chain hygiene', url: 'https://github.com/example-org/agent-swarm-infra/issues/1880' },
++      origin: { kind: 'schedule', ref: { label: 'nightly-deps', url: null } },
++    },
++    repo: 'https://github.com/example-org/agent-swarm-infra',
++    by: 'ops@example.com',
++    byName: 'Ops Rota',
++    tasks: [{ id: 'task_wc_dep_scan', step: 'scan', deps: [], state: 'SUCCEEDED', profile: 'claude-code', mins: 300 }],
++  },
++  {
++    id: 'wf_wc_rename',
++    meta: {
++      title: 'Rename the pool limits page to Limits',
++      unit: 'pl-rn',
++      description: 'Renames the Pool limits page to Limits in the nav, the page head and the help, and redirects the old address.',
++      description_source: 'submitter',
++      feature: null,
++      origin: { kind: 'console', ref: null },
++    },
++    repo: 'https://github.com/example-org/agent-swarm-infra',
++    by: 'dana@example.com',
++    byName: 'Dana Whitfield',
++    tasks: [{ id: 'task_wc_rn_edit', step: 'edit', deps: [], state: 'RUNNING', profile: 'claude-code', mins: 9 }],
++  },
++  {
++    id: 'wf_wc_ckpt',
++    meta: {
++      title: 'Move tenant checkpoints to per-tenant prefixes',
++      unit: 'ckpt-mv',
++      description: LONG,
++      description_source: 'submitter',
++      feature: { title: 'Per-tenant isolation hardening', url: 'https://github.com/example-org/agent-swarm-infra/issues/1902' },
++      origin: { kind: 'claude_code', ref: null },
++    },
++    repo: 'https://github.com/example-org/agent-swarm-infra',
++    by: 'priya@example.com',
++    byName: 'Priya Rao',
++    tasks: [
++      { id: 'task_wc_ck_plan', step: 'plan', deps: [], state: 'SUCCEEDED', profile: 'claude-code', mins: 140 },
++      { id: 'task_wc_ck_move', step: 'move', deps: ['plan'], state: 'RUNNING', profile: 'claude-code', mins: 60 },
++    ],
++  },
++]
++
++/** The fixture tasks direction B adds: each step's task, carrying its workflow's title and unit. */
++export function wcTaskRows(mk: Mk): Task[] {
++  return SPECS.flatMap((w) =>
++    w.tasks.map((t) =>
++      mk(t.id, t.state, t.profile, t.mins, {
++        workflow_id: w.id,
++        step_id: t.step,
++        depends_on: t.deps,
++        submitted_by: w.by,
++        repository_url: w.repo,
++        metadata: { title: w.meta.title, unit: w.meta.unit },
++        ...(t.state === 'PARKED' ? { park_reason: 'DEPENDENCY_INCOMPLETE' } : {}),
++        ...t.extra,
++      }),
++    ),
++  )
++}
++
++/** The workflows themselves, and the repository and origin the older fixtures gain. */
++export function wcWorkflowRows(step: Step, spanOf: SpanOf, older: Workflow[]): Workflow[] {
++  const made = SPECS.map((w): Workflow => {
++    const rollupState = w.tasks.some((t) => t.state === 'RUNNING') ? 'RUNNING' : 'SUCCEEDED'
++    return {
++      workflow_id: w.id,
++      tenant_id: 'u-bogdan',
++      state: rollupState,
++      stored_state: rollupState,
++      state_source: 'derived',
++      rollup: { state: rollupState, complete: true, reason: 'steps_hold_capacity', counts: {}, unreadable_steps: [], unstarted_steps: [], steps_read: w.tasks.length },
++      ...spanOf(w.tasks.map((t) => t.id)),
++      submitted_by: w.by,
++      submitted_by_name: w.byName,
++      priority: 0,
++      on_step_failure: 'FAIL_WORKFLOW',
++      cancel_requested: false,
++      steps: w.tasks.map((t) => step(t.step, t.deps, t.id)),
++      metadata: w.meta,
++      repository_url: w.repo,
++    }
++  })
++  // THE OLDER FIXTURES SERVE A REPOSITORY TOO, and no description, feature or
++  // origin: a workflow submitted before the fields existed.
++  const aged = older.map((w) => ({ ...w, repository_url: 'https://github.com/example-org/agent-swarm-infra', metadata: w.metadata ?? null }))
++  return [...made, ...aged]
++}
++
++/** `owner/repo` of a GitHub URL, else the URL itself; null when none is served. */
++export function repoName(url: string | null | undefined): string | null {
++  if (url === null || url === undefined || url.trim() === '') return null
++  const m = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url.trim())
++  return m === null ? url.trim() : (m[1] ?? url)
++}
++
++/** The From word for each origin kind. */
++export const ORIGIN_WORDS: Record<WcOriginKind, string> = {
++  claude_code: 'Claude Code',
++  console: 'Console',
++  schedule: 'Schedule',
++  issue: 'Issue run',
++  quality_check: 'Quality check',
++}
++
++/** The name a workflow is shown by: its title, then its quality-check leg, which is what tells two legs of one target apart. */
++export function wcLegName(workflow: { metadata?: WcMetadata | null }, name: string): string {
++  const leg = workflow.metadata?.leg
++  return typeof leg === 'string' && leg.trim() !== '' ? `${name} · ${leg.trim()} leg` : name
++}
