@@ -63,6 +63,7 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import InvalidStatus, WebSocketException
 
 from .credential import Credential, CredentialError
+from . import readback as vreadback
 from .grant import SessionGrant
 
 if TYPE_CHECKING:
@@ -268,7 +269,8 @@ class LiveSession:
 
     def __init__(self, voice_id: str, live_id: str, credential: LeasedCredential, api: LiveApi,
                  *, on_event: EventSink | None, on_closed: Callable[["LiveSession"], None],
-                 person: str = "", planner: "Planner | None" = None) -> None:
+                 person: str = "", planner: "Planner | None" = None,
+                 finals: vreadback.Finals | None = None) -> None:
         self.voice_id = voice_id
         self.live_id = live_id
         self._credential = credential
@@ -287,6 +289,8 @@ class LiveSession:
         self.reason: str | None = None
         self.person = person
         self._planner = planner
+        #: Posts the person's finals to swarm-api's read-back gate (readback.py).
+        self._finals = finals
         #: (speaker, text) of the final transcript segments, newest last.
         self.transcript: list[tuple[str, str]] = []
         self._turns: set[asyncio.Task] = set()
@@ -335,6 +339,8 @@ class LiveSession:
                     break
                 if kind in TRANSCRIPT_FINAL:
                     self._note_transcript(TRANSCRIPT_FINAL[kind], event)
+                    if TRANSCRIPT_FINAL[kind] == "person":
+                        self._answer(event)
                 elif kind == DELEGATION_CREATED and self._planner is not None:
                     self._delegated(event)
                 if kind == "error":
@@ -363,6 +369,22 @@ class LiveSession:
         if isinstance(text, str) and text.strip():
             self.transcript.append((speaker, text.strip()))
             del self.transcript[:-TRANSCRIPT_LINES]
+
+    def _answer(self, event: dict) -> None:
+        """Post the person's final to swarm-api's read-back gate before the
+        planner hears it (voice-it-own-speech.md §7.3): a "go" or a refusal
+        answers a pending read-back there, whatever the voice does."""
+        if self._finals is None or self.grant is None:
+            return
+        text = event.get("transcript")
+        if not isinstance(text, str):
+            text = event.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return
+        task = asyncio.create_task(self._finals.post(self.grant, text),
+                                   name=f"readback-answer-{self.voice_id}")
+        self._turns.add(task)
+        task.add_done_callback(self._turns.discard)
 
     def _delegated(self, event: dict) -> None:
         """Start a planner turn for a delegation; its result is spoken when it ends."""
@@ -433,9 +455,16 @@ class Sessions:
     session is held exactly once."""
 
     def __init__(self, api: LiveApi, *, leases: Leases, close_grace: float = 5.0,
-                 on_event: EventSink | None = None, planner: "Planner | None" = None) -> None:
+                 on_event: EventSink | None = None, planner: "Planner | None" = None,
+                 finals: vreadback.Finals | None = None) -> None:
         self.api = api
         self._planner = planner
+        #: Calls swarm-api held for a read-back, by session (readback.py); the
+        #: internal `/readback` route runs them from here.
+        self.holds = finals.holds if finals is not None else vreadback.Holds()
+        if finals is None and planner is not None:
+            finals = vreadback.Finals.for_planner(planner, self.holds)
+        self._finals = finals
         self._leases = leases
         self._grace = close_grace
         self._on_event = on_event
@@ -453,6 +482,7 @@ class Sessions:
         # The grant dies with the session (§3.6): an ended session presents none.
         session.grant = None
         session.cancel_turns()
+        self.holds.forget(session.voice_id)
         if self._planner is not None:
             self._planner.forget(session.voice_id)
         if self._live.get(session.voice_id) is session:
@@ -492,7 +522,7 @@ class Sessions:
             live_id, answer = await self.api.create(credential, offer, config)
             session = LiveSession(voice_id, live_id, credential, self.api,
                                   on_event=self._on_event, on_closed=self._forget,
-                                  person=person, planner=self._planner)
+                                  person=person, planner=self._planner, finals=self._finals)
             session.answer = answer
             session.grant = grant
             # Attached BEFORE the answer goes back: a session this process cannot end

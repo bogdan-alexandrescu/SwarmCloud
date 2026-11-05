@@ -52,7 +52,7 @@ from ..errors import ValidationFailed
 
 #: Bumped when a kind, field, state or action changes, so the planner can
 #: tell a cached catalogue from the served one.
-CATALOGUE_VERSION = 1
+CATALOGUE_VERSION = 2
 
 # ---- the common states (§4) -------------------------------------------------
 
@@ -86,6 +86,8 @@ _CARD_ID_RE = re.compile(r"^vc_[0-9a-f]{32}$")
 #: A secret's name as Config › Secrets takes it: lowercase, digits, dashes.
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _BLOB_RE = re.compile(r"^tenants/[^\s]+$")
+#: A read-back's id (voice/readback.py mints it).
+_READBACK_ID_RE = re.compile(r"^vr_[0-9a-f]{32}$")
 
 
 # ---- the field language -----------------------------------------------------
@@ -317,6 +319,30 @@ KINDS: tuple[Kind, ...] = (
          ("fix_it", "explain_more"),
          ("planner",),
          "What failed, the likely cause and its evidence, and the proposed fix."),
+    # voice-it-own-speech.md §7.2: swarm-api draws it when it holds a spoken
+    # cancel, merge, deploy, delete or approve (voice/readback.py), never the
+    # planner. Its state follows the read-back's (`readback.CARD_STATE`).
+    Kind("readback", "Read-back",
+         (_s("readback_id", max=TITLE_MAX, pattern=_READBACK_ID_RE),
+          _t("heard", max=LINE_MAX),
+          _e("action", ("cancel", "merge", "deploy", "delete", "approve")),
+          _s("target_name", max=TITLE_MAX),
+          _e("status", ("pending", "confirmed", "refused", "expired", "superseded", "used")),
+          _s("expires_at", nullable=True, max=TITLE_MAX)),
+         (WAITING, ACTING, DONE, DISMISSED, CANCELLED),
+         ("go", "not_that"),
+         ("platform",),
+         "What was heard and what will be done, held until Go or Not that."),
+    # §8.1: a spec the planner writes, in Markdown the console renders with its
+    # safe renderer; each heading is a part a note can attach to (§8.3).
+    Kind("spec", "Spec",
+         (_t("markdown", max=SOURCE_MAX),
+          _l("headings", _o("heading", _s("id", max=TITLE_MAX), _s("label", max=TITLE_MAX)),
+             max=200)),
+         (PROPOSED, DONE),
+         ("comment", "open_full_size"),
+         ("planner",),
+         "A written spec in Markdown, its headings addressable by notes."),
 )
 
 BY_KIND: dict[str, Kind] = {k.kind: k for k in KINDS}
