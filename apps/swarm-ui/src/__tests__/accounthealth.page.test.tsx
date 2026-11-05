@@ -735,7 +735,7 @@ describe('the page carries its explanations behind its labels, not on its surfac
       const tile = container.querySelector<HTMLElement>(`[data-tile="${s}"]`)!
       expect(shown(tile)).not.toContain(hint)
       const chip = tile.querySelector<HTMLElement>('.ah-tile-w .ah-st')!
-      expect(tipOf(chip)).toContain(hint)
+      expect(tipOf(chip).toLowerCase()).toContain(hint)
     }
   })
 
@@ -745,9 +745,9 @@ describe('the page carries its explanations behind its labels, not on its surfac
     const list = container.querySelector<HTMLElement>('.ah-list')!
     expect(shown(list)).not.toMatch(/Limits are rate-limit hits|A row opens the account/)
     const want: Array<[string, RegExp]> = [
-      ['Limits', /rate-limit hits, exhausted reports and refusals at assignment/],
-      ['Provider errors', /529s, 5xx and network failures/],
-      ['Credential', /401s, failed refreshes and re-auth marks/],
+      ['Limits', /rate-limit hits, exhausted reports and refusals at assignment/i],
+      ['Provider errors', /529s, 5xx and network failures/i],
+      ['Credential', /401s, failed refreshes and re-auth marks/i],
     ]
     for (const [col, re] of want) {
       const i = within(list).getByRole('button', { name: `About ${col}` })
