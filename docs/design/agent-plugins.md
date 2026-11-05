@@ -101,7 +101,7 @@ swarm-api against the catalogue, the workspace setting and the step's runner pro
 spec format bump in `specsign`), so the worker trusts only what was signed. The frozen-contract change request also
 asks for the workspace settings block and, if needed, a profile marker for runners that can load plugins.
 
-**As built (the owner's pick on PR #3264, 5 November 2026): a per-step `plugins` field.** A task and a workflow step
+**As built (the owner's pick on PR #3264, 5 November 2026): a per-step `plugins` field.** A single agent and a workflow step
 carry `plugins` themselves (`swarm_api.schemas.StepPluginCreate`); the console's builder sends that field and never
 writes a work contract. Why no spec format bump: swarm-api checks the field (`plugins.check_step`, its refusals pointing
 at `plugins`) and carries it in the step's work contract, the caller's own when it sent one (naming no plugins or the
