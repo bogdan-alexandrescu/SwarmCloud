@@ -183,6 +183,8 @@ export interface StepCardProps {
   extras?: ReactNode
   /** Whether `extras` holds anything, so an empty fold is not drawn. */
   hasExtras?: boolean
+  /** The page's failure banner for this step is on screen and says why already, so the card does not say it twice. */
+  leadInView?: boolean
 }
 
 export function StepCard({
@@ -200,6 +202,7 @@ export function StepCard({
   retry,
   extras = null,
   hasExtras = false,
+  leadInView = false,
 }: StepCardProps) {
   const taskId = row.taskId
   const [read, setRead] = useState<AttemptsRead>({ kind: 'reading' })
@@ -248,7 +251,7 @@ export function StepCard({
   const counted = task === null || n <= task.max_attempts
   const pr = task === null ? null : pullRequestOf(task)
   const attempted = taskId !== null && (n > 0 || (task?.attempt_count ?? 0) > 0)
-  const cause = row.why !== null && row.why.kind === 'cause' ? row.why.full : null
+  const cause = row.why !== null && row.why.kind === 'cause' && !leadInView ? row.why.full : null
   const waits = !attempted && row.why !== null && row.why.kind === 'why' ? row.why.text : null
   const others = siblings.length > 1
   const olderError = cur !== null && !latest && cur.error !== null && cur.error !== '' ? cur.error : null

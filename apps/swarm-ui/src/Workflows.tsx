@@ -2450,6 +2450,7 @@ function InspectorSlot({
         }
         extras={<StepCardExtras workflow={workflow} step={row.step} state={state} taskById={taskById} reload={reload} now={now} />}
         hasExtras={parts.hasExtras}
+        leadInView={leadInView}
       />
     )
   }

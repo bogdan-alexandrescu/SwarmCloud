@@ -91,10 +91,11 @@ describe('item 3: no box escapes the app frame, so the window never scrolls', ()
     // strip), and the inspector can draw after the rows: on a loaded CI runner
     // the rows were there and no absolute box yet (PR 2633's merge run). Wait
     // for the boxes this case measures, not only for the table.
-    await waitFor(() => expect(document.querySelectorAll('.ctl-scroll .wf-inspect .sk-vh').length).toBeGreaterThan(0))
+    await waitFor(() => expect(document.querySelector('.ctl-scroll .sc-card .sc-tiles')).not.toBeNull())
+    expect(document.querySelectorAll('.ctl-scroll .sk-vh').length).toBeGreaterThan(0)
     frameHolds()
     const { checked, out } = escapes()
-    // The hidden state words in the step inspector are the boxes that escaped.
+    // The page's hidden state words are the boxes that escaped once; the step card is drawn beside them.
     expect(checked, 'no absolutely positioned element was visited').toBeGreaterThan(0)
     expect(out).toEqual([])
   }, 60_000)
