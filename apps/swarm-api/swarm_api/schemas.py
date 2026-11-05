@@ -627,6 +627,13 @@ class RunCreate(StrictModel):
     #: the platform's `merge_by_default`; the run records what was resolved.
     auto_merge: bool | None = None
     fix_rounds: int = Field(default=DEFAULT_FIX_ROUNDS, ge=MIN_FIX_ROUNDS, le=MAX_FIX_ROUNDS)
+    #: Add the optional security review after the fix (owner decision
+    #: 2026-11-04, docs/design/security-review-step.md): `IssueRun.security_review`,
+    #: compiled by `issueruns._with_security_review`. Off by default: an audit
+    #: costs more than a code review, and the run's caller opts in. A yes/no,
+    #: never a profile or a plugin: the step's profile and plugin are swarm-api's
+    #: (invariant 10). Refused while work contracts are off (`start_run`).
+    security_review: bool = False
     #: The Claude Code session that asked (SC-SESSION-SCOPE, `sessiontag`):
     #: stored on the run and copied onto its planner task and every workflow
     #: it starts, so the sc plugin counts the run as that session's own. A
