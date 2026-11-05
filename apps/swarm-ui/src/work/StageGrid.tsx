@@ -317,10 +317,8 @@ export function chipTimeOf(state: StepState, now: number): string | null {
 }
 
 /** Why a waiting step waits, in the console's words; null for a step that does not wait. */
-function waitWordOf(step: WorkflowStep, state: StepState): string | null {
-  if (state.kind === 'unstarted') {
-    return step.depends_on.length > 0 ? `starts after ${step.depends_on.join(', ')}` : null
-  }
+function waitWordOf(state: StepState): string | null {
+  // A step not started yet: its chip line's sentence already says what it starts after, with the files.
   if (state.kind !== 'state') return null
   const t = state.task
   if (t.state === 'PARKED') {
@@ -362,7 +360,7 @@ function chipOf(step: WorkflowStep, stage: string, taskById: ReadonlyMap<string,
   const time = skipped ? null : chipTimeOf(state, now)
   const pr = pullRequestOf(task)
   const asks = step.task_id ? asking.get(step.task_id) ?? 0 : 0
-  const why = waitWordOf(step, state)
+  const why = waitWordOf(state)
   const parts = [
     `${step.step_id} (${stage}): ${skipped ? SKIPPED_WORD : stateWordOf(state, kind)}`,
     skipped ? 'agent not run' : null,
@@ -589,6 +587,8 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
         )}
         {shape.stages.map((st) => {
           const chips = st.cells.map((id) => (id === null ? null : chipOf(stepById.get(id)!, st.label, taskById, asking, now)))
+          // Each chip's line, once: its sentence goes into the tooltip, its parts onto the chip.
+          const lines = st.cells.map((id) => (id === null ? null : chipLineOf(shape, lin, id)))
           const tally = tallyOf(chips.filter((c): c is Chip => c !== null).map((c) => c.kind))
           const sentence = tallySentence(tally)
           // The gap above this row holds the connectors' lanes from the stage above (gapPx).
@@ -635,8 +635,8 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
                     type="button"
                     className={`sg-chip is-${chip.kind}${chip.skipped ? ' is-skipped' : ''}${selected === chip.step.step_id ? ' is-selected' : ''}${bright !== null && !bright.has(chip.step.step_id) ? ' is-dimmed' : ''}`}
                     data-step={chip.step.step_id}
-                    title={`${chip.tip} · ${chipLineOf(shape, lin, chip.step.step_id).tip}`}
-                    aria-label={`${chip.tip} · ${chipLineOf(shape, lin, chip.step.step_id).tip}`}
+                    title={`${chip.tip} · ${lines[c]!.tip}`}
+                    aria-label={`${chip.tip} · ${lines[c]!.tip}`}
                     aria-pressed={selected === chip.step.step_id}
                     tabIndex={chip.step.step_id === tabStop ? 0 : -1}
                     onClick={() => onSelect(chip.step.step_id)}
@@ -651,7 +651,7 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
                       )}
                       {density === 'full' && chip.pr !== null && <span className="sg-chip-pr" aria-hidden="true">#{chip.pr}</span>}
                     </span>
-                    {density !== 'marks' && density !== 'no-time' && <ChipLineView line={chipLineOf(shape, lin, chip.step.step_id)} />}
+                    {density !== 'marks' && density !== 'no-time' && <ChipLineView line={lines[c]!} />}
                     {chip.asks > 0 && <span className="sg-ask" aria-hidden="true">?</span>}
                   </button>
                 ),

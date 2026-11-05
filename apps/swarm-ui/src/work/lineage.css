@@ -57,8 +57,9 @@
    THE CAP IS 138px: the height the picked design was measured at, where the
    five-step lane's last step (merge) and the quality check's report chip
    still sit above the fold at 1440x900 with the inspector open (and at
-   1280x800 with it folded). Two neighbour cards and the "before that" line fit
-   under it, so the common pick never scrolls. A pick moves the grid down by
+   1280x800 with it folded). One neighbour card per column and the "before
+   that" line fit under it; a step with two parents (the quality check's
+   report) already scrolls, its "before that" line below the cap. A pick moves the grid down by
    the strip's own growth only: the strip sits above the grid, nothing else
    changes size. */
 .lg-strip {
@@ -81,7 +82,8 @@
 .lg-card { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 4px 6px; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--bg); }
 .lg-card.is-failed { border-color: var(--s-bad); }
 .lg-card.is-waiting { border-style: dashed; }
-.lg-card-head { display: flex; align-items: center; gap: 0 5px; min-width: 0; }
+/* A neighbour's id keeps the card's whole width: its state wraps under it rather than cutting it. */
+.lg-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; min-width: 0; }
 .lg-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 /* The picked card is as wide as its id (up to 220px), so the id never breaks at a hyphen; a longer one cuts, whole in its title. */
 .is-stacked .lg-id { white-space: normal; overflow-wrap: break-word; }

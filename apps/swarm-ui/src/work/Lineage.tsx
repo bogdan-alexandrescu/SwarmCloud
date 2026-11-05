@@ -238,20 +238,23 @@ export function gapLanesOf(shape: StageGridShape, lin: Lineage): GapLanes {
   const group = new Map<string, string>()
   const count: number[] = shape.stages.map(() => 0)
   shape.stages.forEach((_, k) => {
+    const adjChildren = (p: string) => (lin.children.get(p) ?? []).filter((e) => shape.at.get(e.to)?.stage === k + 1)
+    const adjParents = (c: string) => (lin.parents.get(c) ?? []).filter((e) => shape.at.get(e.from)?.stage === k)
+    const pureFanIn = (c: string) => adjParents(c).length > 1 && adjParents(c).every((pe) => adjChildren(pe.from).length === 1)
     const edges: LinEdge[] = []
     for (const [, es] of lin.parents) {
       for (const e of es) {
         const a = shape.at.get(e.from)
         const b = shape.at.get(e.to)
-        if (a && b && a.stage === k && b.stage === k + 1 && a.column !== b.column) edges.push(e)
+        // A parent in its child's own column drops straight down, unless the child is a fan-in: then it
+        // joins the child's rail, so the child is entered once, at its centre.
+        if (a && b && a.stage === k && b.stage === k + 1 && (a.column !== b.column || pureFanIn(e.to))) edges.push(e)
       }
     }
-    const adjChildren = (p: string) => (lin.children.get(p) ?? []).filter((e) => shape.at.get(e.to)?.stage === k + 1)
-    const adjParents = (c: string) => (lin.parents.get(c) ?? []).filter((e) => shape.at.get(e.from)?.stage === k)
     const keys: { key: string; x: number }[] = []
     const keyOf = new Map<string, string>()
     for (const e of edges) {
-      const fanIn = adjParents(e.to).length > 1 && adjParents(e.to).every((pe) => adjChildren(pe.from).length === 1)
+      const fanIn = pureFanIn(e.to)
       // A parent feeding several children runs ONE lane to them all (true of every child on it); a lane per
       // edge drew a closed box under a parent with two children.
       const key = fanIn ? `c:${e.to}` : adjChildren(e.from).length > 1 ? `p:${e.from}` : `e:${e.from}->${e.to}`
@@ -339,8 +342,8 @@ export function Connectors({
           const y1 = Math.round(ra.bottom - g.top)
           // A child read by several parents in the stage above (and not one fan-in rail) takes each at its own
           // x, left to right as the parents sit, so two drops never overlap into one.
-          const grp0 = lanes.group.get(k) ?? `e:${k}`
-          const ins = grp0.startsWith('c:')
+          const grp = lanes.group.get(k) ?? `e:${k}`
+          const ins = grp.startsWith('c:')
             ? []
             : (lin.parents.get(e.to) ?? []).map((pe) => pe.from).filter((f) => shape.at.get(f)?.stage === a.stage).sort((p, q) => (shape.at.get(p)?.column ?? 0) - (shape.at.get(q)?.column ?? 0))
           const slot = ins.length > 1 ? (ins.indexOf(e.from) + 1) / (ins.length + 1) : 0.5
@@ -348,12 +351,13 @@ export function Connectors({
           const y2 = Math.round(rb.top - g.top)
           const l = lanes.lane.get(k)
           const lit = selected !== null && (e.from === selected || e.to === selected)
-          if (l === undefined || x1 === x2) {
+          // A fan-in parent straight over its child still runs down to the rail, so the rail's own drop is
+          // the child's one way in.
+          if (l === undefined || (x1 === x2 && !grp.startsWith('c:'))) {
             push(k, x1 === x2 ? `M${x1} ${y1} V${y2}` : `M${x1} ${y1} V${y2 - 5} H${x2} V${y2}`, e.look, lit)
             continue
           }
           const laneY = y1 + 4 + l * LANE_PX
-          const grp = lanes.group.get(k) ?? `e:${k}`
           if (grp.startsWith('e:')) {
             // The stub down to the lane, then the run across and down over a halo that starts 3px clear of
             // the stub's corner: another edge's line under this run is cut either side, a bridge.

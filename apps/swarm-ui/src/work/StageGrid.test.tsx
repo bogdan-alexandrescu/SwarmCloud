@@ -194,6 +194,14 @@ describe('StageGrid', () => {
     expect(chip('fix-search').textContent).toContain('not known')
   })
 
+  it("says once what a step not started yet starts after: the chip line's sentence, with its file", () => {
+    const { workflow, taskById } = fixture()
+    render(<StageGrid workflow={workflow} taskById={taskById} onSelect={() => undefined} now={NOW} />)
+    const label = chip('re-review-login').getAttribute('aria-label')!
+    expect(label.split('starts after')).toHaveLength(2)
+    expect(chip('re-review-login').title).toBe(label)
+  })
+
   it('marks the steps whose agent asks the owner with a question mark', () => {
     const { workflow, taskById } = fixture()
     render(<StageGrid workflow={workflow} taskById={taskById} onSelect={() => undefined} now={NOW} />)
@@ -303,7 +311,7 @@ describe('StageGrid', () => {
     expect(chip('capture-home').querySelector('.lg-name')).toBeNull()
   })
 
-  it('tallies a step parked on something other than its dependencies as parked, one parked behind them as waiting', () => {
+  it('tallies every parked chip as parked and every waiting one as waiting, whatever the park reason', () => {
     expect(tallyOf(['parked', 'waiting', 'parked'])).toMatchObject({ waiting: 1, parked: 2 })
   })
 

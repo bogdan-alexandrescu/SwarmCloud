@@ -164,6 +164,45 @@ describe('the connectors', () => {
     expect(gapPx(2)).toBe(24)
   })
 
+  it('enters a fan-in child once, at its centre, when one of its parents sits in its own column', () => {
+    const w = qa()
+    const shape = stageGridOf(w.steps)
+    const lanes = gapLanesOf(shape, lineageOf(w, null))
+    // review-home sits over the report: it joins the report's rail rather than drawing a drop of its own.
+    expect(lanes.group.get('review-home->report')).toBe('c:report')
+    expect(lanes.count[1]).toBe(1)
+    // Each chip 100px wide in a 150px column, 40px tall in a 60px stage.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const at = shape.at.get(this.dataset.step ?? '')
+      const r = at === undefined ? { left: 0, top: 0, width: 600, height: 400 } : { left: at.column * 150, top: at.stage * 60, width: 100, height: 40 }
+      return { ...r, right: r.left + r.width, bottom: r.top + r.height, x: r.left, y: r.top, toJSON: () => r } as DOMRect
+    })
+    render(<StageGrid workflow={w} taskById={new Map()} selected={null} onSelect={() => undefined} now={NOW} />)
+    const col = shape.at.get('report')!.column
+    const centre = col * 150 + 50.5
+    const top = shape.at.get('report')!.stage * 60
+    // Every vertical piece that touches the report's top edge does so at its centre: one way in.
+    const verticals = (d: string) => {
+      const out: { x: number; y0: number; y1: number }[] = []
+      let x = 0
+      let y = 0
+      for (const [, op, a, b] of d.matchAll(/([MHV])(-?[\d.]+)(?: (-?[\d.]+))?/g)) {
+        if (op === 'M') [x, y] = [Number(a), Number(b)]
+        else if (op === 'H') x = Number(a)
+        else {
+          out.push({ x, y0: y, y1: Number(a) })
+          y = Number(a)
+        }
+      }
+      return out
+    }
+    const into = [...document.querySelectorAll('.lg-wires .lg-wire')]
+      .flatMap((p) => verticals(p.getAttribute('d') ?? ''))
+      .filter((v) => v.y0 === top || v.y1 === top)
+    expect(into.length).toBeGreaterThan(0)
+    expect(into.filter((s) => s.x !== centre)).toEqual([])
+  })
+
   it('draws adjacent stages only, in the three looks, and lights the picked step\'s lines', () => {
     const { workflow, taskById } = lane()
     // Every chip laid out down one column, 40px tall with a 20px gap.
@@ -232,6 +271,11 @@ describe('the lineage strip', () => {
     expect(rule).not.toMatch(/(^|[\s;])height:/)
     // The phone's stacked strip lives in a scrolling sheet: no cap there.
     expect(css).toMatch(/\.lg-strip\.is-stacked \{[^}]*max-height: none;/)
+  })
+
+  it("never cuts a neighbour's id for its state: the state wraps under it", async () => {
+    const css = (await import('./lineage.css?raw')).default as string
+    expect(css).toMatch(/\n\.lg-card-head \{[^}]*flex-wrap: wrap;/)
   })
 
   it("says a failed maker's file will not come, and why the step cannot start, in red", () => {

@@ -6924,7 +6924,7 @@ function WorkflowHead({
             <span aria-hidden>{p.glyph}</span> {tally[p.key]} {p.word}
           </span>
         ))}
-        {/* A step parked for a quota, a person or a provider is counted parked, as its chip draws it (tallyOf). */}
+        {/* Every parked step is counted parked, whatever its park reason (behind its dependencies included), as its chip draws it (tallyOf). */}
         {tally.parked > 0 && <span className="wfp-t is-parked">{tally.parked} parked</span>}
         {tally.stopped > 0 && <span className="wfp-t is-stopped">{tally.stopped} cancelled</span>}
         {tally.unknown > 0 && (
