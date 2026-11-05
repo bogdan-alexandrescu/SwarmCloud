@@ -205,13 +205,15 @@ export function PlatformOverTime({
     <section className="pot" aria-labelledby="pot-title">
       <div className="pot-head">
         {/* The title's `title` is the hover; the hidden node, its accessible
-            description, kept out of the heading's name (HelpNote's way). */}
+            description, kept out of the heading's name and, by
+            `data-help-description`, out of the words the prose ceilings
+            count (HelpNote's way). */}
         <h2 className="pot-title" id="pot-title">
           <span className="pot-title-k" tabIndex={0} title={explain} aria-describedby={explainId}>
             Over time
           </span>
         </h2>
-        <span id={explainId} hidden>
+        <span id={explainId} data-help-description="" hidden>
           {explain}
         </span>
       </div>

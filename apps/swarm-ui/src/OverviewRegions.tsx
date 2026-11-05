@@ -139,8 +139,10 @@ function rows(tasks: Result<TaskPage>): Task[] | null {
  * A label whose explanation is its tooltip (BGD's standing rule, 2026-11-05:
  * no explanatory prose on the surface). The `title` is the hover; the same
  * words are the label's accessible description, through a hidden node beside
- * it (HelpNote's way: `hidden` keeps them out of the label's name and out of
- * the page's text), and the label takes focus so a keyboard reaches both.
+ * it (HelpNote's way: `hidden` keeps them out of the label's name, and
+ * `data-help-description` out of the words the prose ceilings count -- a
+ * `hidden` node is still in the document's text), and the label takes focus
+ * so a keyboard reaches both.
  * Never `role="tooltip"`: the page's honesty tests read one as an open card.
  */
 export function Explained({ tip, className, children }: { tip: string; className: string; children: ReactNode }) {
@@ -150,7 +152,7 @@ export function Explained({ tip, className, children }: { tip: string; className
       <span className={className} tabIndex={0} title={tip} aria-describedby={id}>
         {children}
       </span>
-      <span id={id} hidden>
+      <span id={id} data-help-description="" hidden>
         {tip}
       </span>
     </>
