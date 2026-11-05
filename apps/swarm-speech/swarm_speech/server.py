@@ -2,7 +2,8 @@
 §3.2, §3.3, §4.2, §12.1).
 
 One WebSocket per swarm-api socket, `GET /v1/stream`, and two reads,
-`/v1/health` and `/v1/metrics`. Every route needs a Google ID token for the
+`/v1/health` and `/v1/metrics`; `GET /healthz` answers liveness alone, with no
+token. Every other route needs a Google ID token for the
 audience `swarm-speech` whose email is swarm-api's service account (passed in
 as SWARM_SPEECH_CALLER from the instance's metadata): tenant jobs share the
 subnet, so the address a socket comes from proves nothing (§3.2). A socket
@@ -519,6 +520,14 @@ def create_app(*, stt: SpeechToText, tts: TextToSpeech, models: Models | None, c
             await verify_caller(token)
         except PermissionError:
             raise HTTPException(status_code=403, detail="the caller is not admitted") from None
+
+    # Liveness only, the route every app in the repository serves (the contract
+    # parity check holds health_check_path against each one). It needs no token
+    # because it says nothing an open port does not: readiness, models, voices
+    # and counts stay behind /v1/health's token.
+    @app.get("/healthz")
+    async def healthz() -> dict:
+        return {"ok": True}
 
     @app.get("/v1/health")
     async def health(authorization: str | None = Header(default=None)) -> dict:
