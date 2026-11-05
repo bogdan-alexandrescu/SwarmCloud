@@ -15,7 +15,7 @@ counts differ from this table, so the table is the tree's.
 
 | Kind | Count | What it means here |
 |---|---|---|
-| `skipif` | 223 | `pytest.mark.skipif`: every one is conditional on the machine (a tool on `PATH`: git, jq, bash, shellcheck, uv, node, ffmpeg; procfs or Linux; a checked-out `apps/swarm-ui`; a built binary) |
+| `skipif` | 224 | `pytest.mark.skipif`: every one is conditional on the machine (a tool on `PATH`: git, jq, bash, shellcheck, uv, node, ffmpeg; procfs or Linux; a checked-out `apps/swarm-ui`; a built binary) |
 | `skip` | 0 | `pytest.mark.skip` with no condition: none |
 | `skip_call` | 61 | `pytest.skip(...)` inside a test, again on a missing tool or platform, or on a fixture the test looks for ("the budget route moved; pick another route") |
 | `xfail` | 1 | the one expected failure, below |
