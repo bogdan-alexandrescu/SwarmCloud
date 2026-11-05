@@ -576,7 +576,7 @@ def test_a_failing_train_variable_read_is_a_failed_ci_read(client, db, objects, 
     run = _read(client, clock, running["id"])
 
     assert run["state"] == "CHECKING"
-    assert run["pull_request"]["read_transient"] is True
+    assert run["pull_request"]["read_attempts"] == 1 and run["pull_request"]["read_retry_at"]
 
 
 def test_a_base_without_merge_train_reads_no_train_variable(client, db, objects, writes, clock):

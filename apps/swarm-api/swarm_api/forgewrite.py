@@ -233,6 +233,9 @@ CONTENTS_READ = "contents: read"
 #: an issue and its comments, and an Actions run, its jobs and its waits.
 ISSUES_READ = "issues: read"
 ACTIONS_READ = "actions: read"
+#: An Actions repository variable (`vars.<name>`): the merge train's switch
+#: `MERGE_TRAIN`, which `issueci.repository_train_on` reads (#3312).
+VARIABLES_READ = "variables: read"
 #: The GitHub Actions App's id: the `app.id` of every check run Actions
 #: reports, and what a required check pinned to Actions names.
 GITHUB_ACTIONS_APP_ID = 15368
@@ -890,6 +893,24 @@ class GitHubWriter:
         if not isinstance(data, list):
             raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
         return [rule for rule in data if isinstance(rule, dict)]
+
+    def repository_variable(self, ref: IssueRef, name: str, token: str) -> str | None:
+        """An Actions repository variable's value (`vars.<name>`), None when it
+        is not set (404). A 401 is `ForgeWriteUnauthorized` and a 403
+        `ForgeWriteForbidden` -- a token without *Variables: Read* -- which
+        `issueci.repository_train_on` reads; any other refusal raises as
+        every other read's does. The same reading as the worker's
+        `GitHubMerger.repository_variable`."""
+        what = f"the variable {name} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"actions/variables/{quote(name, safe='')}"),
+                token, what, needs=VARIABLES_READ,
+            )
+        except ForgeWriteNotFound:
+            return None
+        value = data.get("value") if isinstance(data, dict) else None
+        return value if isinstance(value, str) else None
 
     def check_runs(self, ref: IssueRef, sha: str, token: str, *,
                    head_ref: str | None = None) -> list[dict[str, Any]]:

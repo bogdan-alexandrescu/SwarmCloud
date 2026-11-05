@@ -175,6 +175,7 @@ from .forgechecks import (
     CiReading,
     evaluate,
     latest_per_event,
+    RequiredCheck,
     required_status_checks,
     workflow_run_of,
 )
@@ -182,7 +183,9 @@ from .forge import NoForgeCredential
 from .forge_installation import read_token
 from .forgewrite import (
     MAX_LOG_TAIL_BYTES as LOG_READ_BYTES,
+    ForgeWriteForbidden,
     ForgeWriteNotFound,
+    ForgeWriteUnauthorized,
     GitHubWriter,
     PullSnapshot,
     is_credential_refusal,
@@ -1180,16 +1183,54 @@ def _read_ci(
     if not pull.head_sha:
         raise ApiError(f"GitHub reported no head sha for {run.issue.repository}#{number}")
     rules = writer.branch_rules(run.issue, pull.base_ref, token) if pull.base_ref else []
-    reading = evaluate(
-        required_status_checks(rules),
-        # The pull request's head ref, as the merge step's `merge.checks_at`
-        # reads it: another branch's push suite at this sha is dropped
-        # (`_other_branch_push`), so auto_merge never calls green what the
-        # merge step refuses (#2946).
-        writer.check_runs(run.issue, pull.head_sha, token, head_ref=pull.head_ref or None),
-        writer.commit_statuses(run.issue, pull.head_sha, token),
-    )
+    required = required_status_checks(rules)
+    # The pull request's head ref, as the merge step's `merge.checks_at`
+    # reads it: another branch's push suite at this sha is dropped
+    # (`_other_branch_push`), so auto_merge never calls green what the
+    # merge step refuses (#2946).
+    runs = writer.check_runs(run.issue, pull.head_sha, token, head_ref=pull.head_ref or None)
+    # #3312: a base that requires the merge train's own `merge-train`, which
+    # the train posts only on a pull request it boarded. With the train on,
+    # it is left out as the merge step's gate leaves it out, so a head whose
+    # other required checks are green leaves CHECKING instead of reading
+    # pending until CHECKING_DEADLINE_SECONDS. With the train off it is an
+    # ordinary required check. The switch is read only for such a base.
+    if (any(check.context == TRAIN_CONTEXT for check in required)
+            and repository_train_on(writer, run.issue, token, required)):
+        required = [check for check in required if check.context != TRAIN_CONTEXT]
+        runs = [r for r in runs if not (isinstance(r, Mapping) and r.get("name") == TRAIN_CONTEXT)]
+    reading = evaluate(required, runs, writer.commit_statuses(run.issue, pull.head_sha, token))
     return pull, reading
+
+
+#: The repository merge train's switch and its own required check (#3312),
+#: held equal to the worker's `agent_worker.merge.REPOSITORY_TRAIN_VARIABLE`,
+#: `REPOSITORY_TRAIN_ON` and `REPOSITORY_TRAIN_CONTEXT` by
+#: tests/unit/control_plane/test_issue_run_ci.py: the variable
+#: `vars.MERGE_TRAIN`, exactly `on`, and the commit status
+#: scripts/merge-train.sh posts on each head it lands.
+TRAIN_VARIABLE = "MERGE_TRAIN"
+TRAIN_ON = "on"
+TRAIN_CONTEXT = "merge-train"
+
+
+def repository_train_on(
+    writer: GitHubWriter, ref: IssueRef, token: str, required: Sequence[RequiredCheck]
+) -> bool:
+    """Whether the repository's merge train is on, read as the worker's
+    `agent_worker.merge.repository_train` reads it (#3312).
+
+    `vars.MERGE_TRAIN` exactly `on` is on; unset or anything else is off. A
+    token that cannot read the variable (401/403) counts as on only when the
+    base requires the train's own `merge-train`, because a direct merge into
+    such a base is refused whatever the variable says. Any other failure
+    raises, as every other CI read's does.
+    """
+    try:
+        value = writer.repository_variable(ref, TRAIN_VARIABLE, token)
+    except (ForgeWriteForbidden, ForgeWriteUnauthorized):
+        return any(check.context == TRAIN_CONTEXT for check in required)
+    return value == TRAIN_ON
 
 
 def _read_backoff(attempts: int) -> timedelta:
