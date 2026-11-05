@@ -67,7 +67,13 @@ describe('capacity-05: the Erroring tile and the Provider errors column agree', 
     expect(also).not.toBeNull()
     expect(also.getAttribute('data-outranked')).toBe('1')
     expect(also.textContent).toContain('overflow')
-    expect(also.textContent).toContain('Limited')
+    // The why sits in the Erroring word's tooltip, not on the surface (BGD's
+    // no-prose rule, 5 November 2026).
+    expect(also.textContent).not.toContain('outranks')
+    const chip = tile.querySelector('.ah-tile-w .ah-st') as HTMLElement
+    const host = chip.closest('.c-tip-host') as HTMLElement
+    const tip = document.getElementById(host.getAttribute('aria-describedby')!)!.textContent
+    expect(tip).toContain('overflow counts as Limited, which outranks Erroring.')
   })
 })
 

@@ -38,6 +38,7 @@ import type { RepoRecord } from './RepositoriesData'
 import { JevBackendCard } from './JudgmentBackend'
 import { SecretsActions, nameProblem, readersOf, ruleWords, scLine, type ActionsFormLink } from './SecretsActions'
 import { PageHead } from './Shell'
+import { AboutTip } from './Profile'
 import { timeAgo } from './types'
 import {
   AddSecret,
@@ -243,7 +244,11 @@ function ShadowNotes({ row }: { row: SecretsRow | undefined }) {
   return (
     <>
       {won.map((w) => <small key={w} className="sec-note is-info">{w}</small>)}
-      {lost.map((w) => <small key={w} className="sec-note">shadowed: {w}</small>)}
+      {lost.length > 0 && (
+        <small className="sec-note">
+          shadowed <AboutTip label={`${row.name} shadowed`} tip={lost.join('; ')} />
+        </small>
+      )}
     </>
   )
 }
@@ -572,6 +577,7 @@ function ScopeBar({
     <div className="sec-scope">
       <div className="sec-scope-row">
         <span className="sec-lbl">Scope</span>
+        <AboutTip label="Scope" tip="Same name in several scopes: yours wins, then the repository’s, then the workspace’s." />
         <Segmented<SecretsScope>
           label="Scope"
           value={at.scope}
@@ -592,7 +598,6 @@ function ScopeBar({
           </span>
         )}
       </div>
-      <p className="sec-hint">Same name in several scopes: yours wins, then the repository&rsquo;s, then the workspace&rsquo;s.</p>
     </div>
   )
 }
@@ -785,12 +790,16 @@ function NeedLead({ rows, keyNeeded, manages, scope, tenant, repository, repoId,
         {manages
           ? (n === 1 ? `${needs[0]!.words.replace(/^./, (c) => c.toUpperCase())} is not set` : `${n} ${whose}secrets are needed and not set`)
           : `${n === 1 ? `1 ${whose}secret is` : `${n} ${whose}secrets are`} needed: a workspace admin sets ${n === 1 ? 'it' : 'them'}`}
+        {/* One need's reason is the (i) on its own line; several are listed, as the facts they are. */}
+        {manages && n === 1 && <> <AboutTip label={`${needs[0]!.words} is not set`} tip={needs[0]!.why} /></>}
       </b>
-      <span>
-        {manages
-          ? (n === 1 ? needs[0]!.why : `${listed.replace(/^./, (c) => c.toUpperCase())}. Each stays off until it is set.`)
-          : `${listed.replace(/^./, (c) => c.toUpperCase())}. You can set your own under Yours; yours win for your agents.`}
-      </span>
+      {!(manages && n === 1) && (
+        <span>
+          {manages
+            ? `${listed.replace(/^./, (c) => c.toUpperCase())}. Each stays off until it is set.`
+            : `${listed.replace(/^./, (c) => c.toUpperCase())}. You can set your own under Yours; yours win for your agents.`}
+        </span>
+      )}
       <span className="sec-acts">
         {manages ? needs.slice(0, 2).map((x) => x.act) : (
           <>
@@ -919,6 +928,12 @@ function StoreCard({
       className={blank ? 'sec-dash' : undefined}
       action={
         <span className="sec-acts">
+          {!blank && (
+            <AboutTip
+              label="Granted to"
+              tip="Released to the profiles, tools and components in Granted to. A value is stored write-only: no page and no API route shows it, its length or any of its characters again."
+            />
+          )}
           {data !== null && !manages && <span className="sec-chip">read only for members</span>}
           {!blank && (
             <Button kind="ghost" size="sm" aria-expanded={matrix} onClick={() => setMatrix((m) => !m)}>
@@ -928,12 +943,7 @@ function StoreCard({
         </span>
       }
     >
-      {blank ? empty : (
-        <p className="pk-lead">
-          Released to the profiles, tools and components in Granted to. A value is stored write-only: no page and no API
-          route shows it, its length or any of its characters again.
-        </p>
-      )}
+      {blank && empty}
       {!blank && <UrRegion state={list.state} route={target.scope === 'workspace' ? 'GET /v1/workspace/secrets' : 'GET /v1/repositories/{repo_id}/secrets'} what={label} plural onRetry={list.reload}>
         {(d) => (
           <SecretList
@@ -1090,7 +1100,7 @@ function KeysCard({ rows, scope, agents = [], go, onChange, onAdd }: { rows: Sec
       const label = r.name === 'typesafe' ? 'TypeSafe key' : `${r.name} key`
       const twin = r.name === 'typesafe' ? agents.find((a) => a.provider === 'typesafe' || /typesafe/i.test(a.name)) : undefined
       return {
-        key: <>{label}<small>{scope === 'personal' ? 'yours' : 'workspace'}</small>{twin !== undefined && <small>not the {twin.name} secret in For agents</small>}</>,
+        key: <>{label}<small>{scope === 'personal' ? 'yours' : 'workspace'}</small>{twin !== undefined && <AboutTip label={label} tip={`Not the ${twin.name} secret in For agents.`} />}</>,
         reads: scope === 'personal' ? 'your own submissions' : 'Jev and browser agents',
         state: r.status === 'set' ? <span className="sec-state is-ok">{setWords(r)}</span> : <span className="sec-chip is-warn">not set</span>,
         act: r.can_manage ? (
@@ -1144,7 +1154,8 @@ function KeysCard({ rows, scope, agents = [], go, onChange, onAdd }: { rows: Sec
     ? 'No value is shown again once it is set.'
     : `${opens.length === 1 ? opens[0] : `${opens.slice(0, -1).join(', ')} and ${opens[opens.length - 1]}`} open${opens.length === 1 ? 's' : ''} the one-time form; no value is shown again.`
   return (
-    <Card title={scope === 'personal' ? 'Keys' : 'Keys for agents and MCP'}>
+    <Card title={scope === 'personal' ? 'Keys' : 'Keys for agents and MCP'}
+      action={<AboutTip label={scope === 'personal' ? 'Keys' : 'Keys for agents and MCP'} tip={hint} />}>
       {rows.length === 0 ? (
         <p className="ur-small">No key is listed here.</p>
       ) : (
@@ -1165,7 +1176,6 @@ function KeysCard({ rows, scope, agents = [], go, onChange, onAdd }: { rows: Sec
           </tbody>
         </table>
       )}
-      <p className="sec-hint">{hint}</p>
       {deleting !== null && (
         <TypedConfirm title="Delete the TypeSafe key" name={deleting.name} verb="Delete" keep="Keep it" busy={busy ? 'Deleting…' : false}
           error={failed} onConfirm={() => void remove(deleting)} onClose={() => setDeleting(null)}>
@@ -1191,7 +1201,12 @@ function expired(iso: string | null): boolean {
 /** GitHub token status (§4): kind, state, login, verified, expires. Never any character of it. */
 function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
   return (
-    <Card title="GitHub token">
+    <Card title="GitHub token" action={
+      <span className="sec-acts">
+        <AboutTip label="GitHub token" tip="Status only: no part of a token is ever shown." />
+        <AppLink address="config/github" kind="secondary" label="Connect or disconnect on GitHub access">GitHub access</AppLink>
+      </span>
+    }>
       {rows.length === 0 ? <p className="ur-small">{empty}</p> : rows.map((r) => (
         <dl key={r.name} className="sec-kv">
           <dt>Kind</dt><dd>{r.kind === null ? 'not said' : (TOKEN_KINDS[r.kind] ?? r.kind)}{r.token_scope === null ? '' : ` · ${r.token_scope === 'tenant' ? 'workspace' : r.token_scope === 'user' ? 'yours' : r.token_scope}`}</dd>
@@ -1210,9 +1225,6 @@ function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
             : when(r.expires_at)}</dd>
         </dl>
       ))}
-      <p className="sec-hint">
-        Status only: no part of a token is ever shown. Connect or disconnect on <AppLink address="config/github">GitHub access</AppLink>.
-      </p>
     </Card>
   )
 }

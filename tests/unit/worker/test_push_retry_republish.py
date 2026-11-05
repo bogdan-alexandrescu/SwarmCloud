@@ -27,6 +27,8 @@ Drop the `PushUnreachable` branch in `_publish_git` -- the outage test sees
 `publish_failed` and the step ends FAILED. Drop STEP 5e in `_prepare` -- the
 skip test sees the runner's own artifact and no carried one. Drop the HEAD
 check in `_push_to_republish` -- the moved-head test sees a republish.
+Drop `fatal error in commit_refs` from `_GIT_TRANSIENT` -- the commit_refs
+classification and retry-then-land tests fail (#3222).
 """
 
 from __future__ import annotations
@@ -65,6 +67,13 @@ HTTP_500 = (
 )
 #: The words the measured failure logged: the reason phrase alone, no code.
 SIDEBAND_500 = "remote: Internal Server Error\nerror: failed to push some refs"
+#: GitHub's sideband when its server-side ref update fails: the measured
+#: failure of #3222 (12 publishes on 2026-11-04 09:46Z), where the same push a
+#: moment later lands.
+COMMIT_REFS = (
+    "remote: fatal error in commit_refs\n"
+    "error: failed to push some refs to 'https://github.com/o/r.git'"
+)
 NON_FAST_FORWARD = (
     " ! [rejected]        HEAD -> swarm/t-retry (non-fast-forward)\n"
     "error: failed to push some refs\n"
@@ -170,6 +179,43 @@ def test_the_reason_phrase_of_a_5xx_alone_reads_as_transient():
     assert gitops.transient_git_failure(SIDEBAND_500)
     assert gitops.transient_git_failure("remote: Service Unavailable")
     assert not gitops.transient_git_failure("remote: Permission denied\nInternal Server Error")
+
+
+def test_githubs_commit_refs_failure_reads_as_transient():
+    """GitHub's failed ref update is an outage; a refusal beside it still wins (#3222)."""
+    assert gitops.transient_git_failure("remote: fatal error in commit_refs")
+    assert gitops.transient_git_failure(COMMIT_REFS)
+    assert not gitops.transient_git_failure(
+        "remote: Permission denied\nremote: fatal error in commit_refs"
+    )
+
+
+@pytest_git
+def test_a_push_that_meets_commit_refs_once_and_then_lands_is_published(
+    tmp_path, monkeypatch, origin, local_urls
+):
+    repo = _publish_repo(tmp_path, origin)
+    calls = _failing_pushes(monkeypatch, [COMMIT_REFS])
+    slept = _sleeps(monkeypatch)
+
+    pushed = _push(tmp_path, origin, repo)
+
+    assert refs(origin).get("swarm/t-retry") == pushed
+    assert len(calls) == 2
+    assert slept == [5.0]
+
+
+@pytest_git
+def test_commit_refs_throughout_raises_push_unreachable(tmp_path, monkeypatch, origin, local_urls):
+    repo = _publish_repo(tmp_path, origin)
+    calls = _failing_pushes(monkeypatch, [COMMIT_REFS] * 10)
+    _sleeps(monkeypatch)
+
+    with pytest.raises(gitops.PushUnreachable) as raised:
+        _push(tmp_path, origin, repo)
+
+    assert len(calls) == 4 and raised.value.tries == 4
+    assert "swarm/t-retry" not in refs(origin)
 
 
 # ---------------------------------------------------------------------------
