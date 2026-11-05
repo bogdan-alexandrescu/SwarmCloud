@@ -12,6 +12,7 @@ import {
 } from 'react'
 
 import { clampPane, readPane, writePane, type PaneSpec } from '../panes'
+import { setTraceWide, useTraceWide } from '../trace/model'
 import './inspectorShell.css'
 
 /**
@@ -201,6 +202,7 @@ export function Inspector({
   const [dragging, setDragging] = useState(false)
   const drag = useRef<{ right: number; at: number } | null>(null)
   const phone = useIsPhone()
+  const traceWide = useTraceWide()
   const pageWidth = usePageWidth(root)
 
   // A remount on another screen reads that screen's own width.
@@ -285,12 +287,15 @@ export function Inspector({
     return () => window.removeEventListener('keydown', esc)
   }, [sheet, back])
 
+  const trWide = traceWide && docked
   const cls = [
     'wi',
     has && !phone ? (folded ? 'is-folded' : 'is-docked') : 'is-alone',
     phone ? 'is-phone' : '',
     sheet ? 'is-sheet' : '',
     dragging ? 'is-dragging' : '',
+    // A TRANSCRIPT IS READ FULL WIDTH (trace/model.ts): the list folds to a strip.
+    trWide ? 'is-trwide' : '',
   ]
     .filter(Boolean)
     .join(' ')
@@ -328,6 +333,13 @@ export function Inspector({
 
   return (
     <div ref={root} className={cls} style={{ ['--wi-dock' as string]: `${width}px` }} data-screen={screen}>
+      {trWide && (
+        <div className="trc-strip">
+          <button type="button" onClick={() => setTraceWide(false)} aria-label="Show the list" title="Show the list ([)">
+            ☰
+          </button>
+        </div>
+      )}
       <div className="wi-main" data-width={widthClass}>
         {main}
       </div>
