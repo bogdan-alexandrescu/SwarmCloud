@@ -117,10 +117,20 @@ def test_the_kept_names_stand_for_their_shards(job_id, needs):
     assert job.get("if") == "always()", job.get("if")
 
 
-def test_the_build_still_waits_for_the_unit_tests():
-    """main's image build runs only after the free checks pass; `python` is
-    their result now."""
-    assert {"python", "shell", "manifests"} <= set(_needs(_jobs()["build"]))
+def test_the_unit_tests_gate_the_release_not_the_build():
+    """main's image build starts with its run (owner pick on PR 3344, issue
+    3336); the free checks it used to need -- `python` is their result now,
+    beside `shell` and `manifests` -- gate the release instead, by the names
+    CI_RELEASE_TEST_JOBS lists (test_ci_built_images.py holds the rest).
+    MUTATION: rename `python`, or drop it from CI_RELEASE_TEST_JOBS."""
+    jobs = _jobs()
+    assert not _needs(jobs["build"]), _needs(jobs["build"])
+    common = (REPO / "scripts" / "lib" / "common.sh").read_text()
+    gate = re.search(r"^CI_RELEASE_TEST_JOBS=\(\n(.*?)^\)", common, re.M | re.S)
+    assert gate, "CI_RELEASE_TEST_JOBS is not in scripts/lib/common.sh"
+    listed = set(re.findall(r'"([^"]+)"', gate.group(1)))
+    for job_id in ("python", "shell", "manifests"):
+        assert str(jobs[job_id].get("name") or job_id) in listed, job_id
 
 
 def test_the_old_python_jobs_other_checks_still_run():
