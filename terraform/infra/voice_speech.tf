@@ -148,6 +148,7 @@ resource "google_compute_firewall" "deny_speech_other" {
 
 # The machine (§5.1).
 resource "google_compute_instance" "speech" {
+  # checkov:skip=CKV_GCP_38:A customer-supplied key is raw key material in the Terraform config and state, and no secret goes into Terraform (CLAUDE.md). The disk holds the OS, the speech server image and public model weights, never audio or tenant data; it is encrypted with Google-managed keys.
   count = local.voice_speech_on ? 1 : 0
 
   project      = var.project_id
