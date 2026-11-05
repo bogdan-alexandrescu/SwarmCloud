@@ -1,0 +1,149 @@
+[
+  {
+    "name": "vs-b-settings-admin",
+    "screen": "Voice it › Settings",
+    "state": "admin",
+    "caption": "Own speech chosen; the OpenAI key for GPT-Live set by a person on a date; four cards: Engine, Machine, Models, Behaviour.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-key-link",
+    "screen": "Voice it › Settings",
+    "state": "key-link",
+    "caption": "The Engine card with the OpenAI key's one-time link open: time left, the whole link, Copy link and Open.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-key-unset",
+    "screen": "Voice it › Settings",
+    "state": "key-unset",
+    "caption": "No OpenAI key yet: the key shows Not set and the button to add one.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-pending",
+    "screen": "Voice it › Settings",
+    "state": "pending",
+    "caption": "A bigger machine saved: the Machine card says once, in its band, that it changes at the next start, with Undo.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-applied",
+    "screen": "Voice it › Settings",
+    "state": "applied",
+    "caption": "The saved machine is now in use: the Machine card shows Applied and the start it happened at.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-fetching",
+    "screen": "Voice it › Settings",
+    "state": "fetching",
+    "caption": "A session is starting and the new speech-to-text model is being fetched: the Models card shows its download.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-refused",
+    "screen": "Voice it › Settings",
+    "state": "refused",
+    "caption": "The server refused the picked machine: the Machine card names the field and the value, with a button to reload the catalogue.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-conflict",
+    "screen": "Voice it › Settings",
+    "state": "conflict",
+    "caption": "Someone else saved first: the head shows their version and the Models card shows who, when and their value, with Use theirs and Save mine over it.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-stockout",
+    "screen": "Voice it › Settings",
+    "state": "stockout",
+    "caption": "The last start found no free L4 in the zone: the Machine card says so and that the session opened in text mode.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-error",
+    "screen": "Voice it › Settings",
+    "state": "error",
+    "caption": "The settings could not be read: one failure line with Retry, and no cards drawn from guesses.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-readonly",
+    "screen": "Voice it › Settings",
+    "state": "readonly",
+    "caption": "A person who is not a platform admin: the same cards with values only, no controls, a Read only mark.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-telemetry-live-idle",
+    "screen": "Voice it › Telemetry",
+    "state": "live-idle",
+    "caption": "No session running: the stopped line, the last 30 days as a strip, then every session.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-telemetry-live-starting",
+    "screen": "Voice it › Telemetry",
+    "state": "live-starting",
+    "caption": "A session starting: its phases fill the track towards the four-minute limit.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-telemetry-live-session",
+    "screen": "Voice it › Telemetry",
+    "state": "live-session",
+    "caption": "A session running: latency per utterance with its p90, then GPU, GPU memory, CPU, memory and disk.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-telemetry-sessions",
+    "screen": "Voice it › Telemetry",
+    "state": "sessions",
+    "caption": "The last 90 days, scrolled to the long list of sessions, each with its latency and GPU lines, machine minutes and cost.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-telemetry-session-detail",
+    "screen": "Voice it › Telemetry",
+    "state": "session-detail",
+    "caption": "One session opened: its start phases, latency percentiles, peaks, machine and talking minutes, cost and crashes.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-telemetry-days",
+    "screen": "Voice it › Telemetry",
+    "state": "days",
+    "caption": "One day picked on the strip: the list shows only its sessions and its totals in the head.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-telemetry-empty",
+    "screen": "Voice it › Telemetry",
+    "state": "empty",
+    "caption": "No sessions yet: no charts, only Start talking.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-telemetry-error",
+    "screen": "Voice it › Telemetry",
+    "state": "error",
+    "caption": "Telemetry could not be read: one failure line with Retry, never an empty or zero timeline.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "vs-b-settings-admin-390",
+    "screen": "Voice it › Settings",
+    "state": "admin",
+    "caption": "Settings on a phone: the cards stacked, each machine's size under its name.",
+    "viewport": "390x844"
+  },
+  {
+    "name": "vs-b-telemetry-live-session-390",
+    "screen": "Voice it › Telemetry",
+    "state": "live-session",
+    "caption": "A running session on a phone: the two latency charts stacked, the readings two to a row.",
+    "viewport": "390x844"
+  }
+]

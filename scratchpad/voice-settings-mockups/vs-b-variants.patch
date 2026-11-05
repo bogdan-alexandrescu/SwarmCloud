@@ -1,0 +1,1533 @@
+diff --git a/apps/swarm-ui/src/App.tsx b/apps/swarm-ui/src/App.tsx
+index 915d941..2c248d9 100644
+--- a/apps/swarm-ui/src/App.tsx
++++ b/apps/swarm-ui/src/App.tsx
+@@ -83,6 +83,8 @@ import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
+ import { AGE_TICK_MS, useNow } from './useNow'
+ import { useRecentName, WorkflowsScreen } from './Workflows'
+ import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceTalkScreen } from './voice/Section'
++import { MOCK_VS_B } from './voice/mock/flag' // MOCK-HOOK
++import { VsBSettingsScreen, VsBTelemetryScreen } from './voice/mock/VsB' // MOCK-HOOK
+ import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
+ import { HomeScreen } from './Home'
+ 
+@@ -637,6 +639,7 @@ export const SECTIONS: SectionDef[] = [
+       { id: 'talk', label: 'Talk' },
+       { id: 'projects', label: 'Projects' },
+       { id: 'preferences', label: 'Preferences' },
++      ...(MOCK_VS_B ? [{ id: 'settings', label: 'Settings' }, { id: 'telemetry', label: 'Telemetry' }] : []), // MOCK-HOOK
+     ],
+   },
+ ]
+@@ -2587,6 +2590,10 @@ function SectionBody({
+       return <VoiceProjectsScreen />
+     case 'voice/preferences':
+       return <VoicePreferencesScreen />
++    /* // MOCK-HOOK */ case 'voice/settings':
++      return <VsBSettingsScreen /> // MOCK-HOOK
++    /* // MOCK-HOOK */ case 'voice/telemetry':
++      return <VsBTelemetryScreen /> // MOCK-HOOK
+ 
+     default:
+       // Unreachable through the nav, and reachable only by hand-editing a hash
+diff --git a/apps/swarm-ui/src/Spine.tsx b/apps/swarm-ui/src/Spine.tsx
+index 858c0e9..a1c5188 100644
+--- a/apps/swarm-ui/src/Spine.tsx
++++ b/apps/swarm-ui/src/Spine.tsx
+@@ -66,6 +66,7 @@ import { NEAR_CEILING } from './AdminSettings'
+ import { roleOf } from './roles'
+ import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
+ import { voiceItOpen } from './voice/Section'
++import { MOCK_VS_B } from './voice/mock/flag' // MOCK-HOOK
+ import { HOME_JUMPS } from './Home'
+ 
+ export type SpineSection = 'profile' | 'home' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
+@@ -219,6 +220,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
+     { key: 'talk', label: 'Talk', icon: 'voice', to: 'voice/talk' },
+     { key: 'projects', label: 'Projects', icon: 'timeline', to: 'voice/projects' },
+     { key: 'preferences', label: 'Preferences', icon: 'gear', to: 'voice/preferences' },
++    ...(MOCK_VS_B ? [{ key: 'settings', label: 'Settings', icon: 'gear', to: 'voice/settings' } as const] : []), // MOCK-HOOK
++    ...(MOCK_VS_B ? [{ key: 'telemetry', label: 'Telemetry', icon: 'timeline', to: 'voice/telemetry' } as const] : []), // MOCK-HOOK
+   ],
+ }
+ 
+diff --git a/apps/swarm-ui/src/paths.ts b/apps/swarm-ui/src/paths.ts
+index b03ea37..c3870a8 100644
+--- a/apps/swarm-ui/src/paths.ts
++++ b/apps/swarm-ui/src/paths.ts
+@@ -331,6 +331,8 @@ export const FIXED: Readonly<Record<string, string>> = {
+   'voice/talk': '/voice/talk',
+   'voice/projects': '/voice/projects',
+   'voice/preferences': '/voice/preferences',
++  'voice/settings': '/voice/settings', // MOCK-HOOK
++  'voice/telemetry': '/voice/telemetry', // MOCK-HOOK
+   [HELP_ROUTE]: '/help',
+ }
+ 
+diff --git a/apps/swarm-ui/src/voice/mock/VsB.tsx b/apps/swarm-ui/src/voice/mock/VsB.tsx
+new file mode 100644
+index 0000000..4971f8a
+--- /dev/null
++++ b/apps/swarm-ui/src/voice/mock/VsB.tsx
+@@ -0,0 +1,951 @@
++// MOCK-HOOK FILE
++// Voice it's own speech, DIRECTION B: "Cards and a timeline". Settings is four
++// cards (Engine, Machine, Models, Behaviour), each carrying its own pending
++// change until the next start; Telemetry is one timeline: a live band, a heat
++// strip of days, then each session as a row that opens into its detail.
++// Drawn from fixtures.ts only; `?vs=b&vsstate=<state>` picks the frame.
++import { useState, type ReactNode } from 'react'
++
++import { PageHead } from '../../Shell'
++import { CATALOGUE, LIVE, OWN_SPEECH_MODELS, SESSIONS, SESSIONS_90, SETTINGS, STARTING, days, type Day, type Phase, type Session } from './fixtures'
++import { MOCK_VS_B, MOCK_VS_STATE } from './flag'
++import { VSB_CSS } from './vsb-css'
++
++function Style() {
++  return <style>{VSB_CSS}</style>
++}
++
++/** An explanation behind an (i): the surface carries none (Bogdan's console rule). */
++function Why({ say }: { say: string }) {
++  return (
++    <button type="button" className="vsb-why" title={say} aria-label={say}>
++      i
++    </button>
++  )
++}
++
++function Tick({ tone, children, say }: { tone: 'ok' | 'warn' | 'bad' | 'info' | 'idle'; children: ReactNode; say?: string }) {
++  return (
++    <span className={`vsb-tick t-${tone}`} title={say}>
++      <i aria-hidden="true" />
++      {children}
++    </span>
++  )
++}
++
++function Dash({ why }: { why: string }) {
++  return (
++    <span className="vsb-dash" title={why} aria-label={why}>
++      —
++    </span>
++  )
++}
++
++/* ------------------------------------------------------------------ Settings */
++
++type SState = 'admin' | 'key-link' | 'key-unset' | 'pending' | 'applied' | 'fetching' | 'refused' | 'conflict' | 'stockout' | 'error' | 'readonly'
++
++function sstate(): SState {
++  const s = MOCK_VS_STATE.replace(/^settings-/, '')
++  return (['admin', 'key-link', 'key-unset', 'pending', 'applied', 'fetching', 'refused', 'conflict', 'stockout', 'error', 'readonly'] as const).find((x) => x === s) ?? 'admin'
++}
++
++function Card({
++  title,
++  id,
++  aside,
++  band,
++  children,
++  foot,
++  tone,
++}: {
++  title: string
++  id: string
++  aside?: ReactNode
++  band?: ReactNode
++  children: ReactNode
++  foot?: ReactNode
++  tone?: 'pending' | 'bad' | 'warn' | 'busy' | 'ok'
++}) {
++  return (
++    <section className={`vsb-card${tone ? ` is-${tone}` : ''}`} aria-labelledby={`vsb-${id}`} data-card={id}>
++      <header className="vsb-card-head">
++        <h2 id={`vsb-${id}`}>{title}</h2>
++        {aside}
++      </header>
++      {band}
++      <div className="vsb-card-body">{children}</div>
++      {foot && <footer className="vsb-card-foot">{foot}</footer>}
++    </section>
++  )
++}
++
++function Band({ tone, children, actions }: { tone: 'pending' | 'bad' | 'warn' | 'busy' | 'ok'; children: ReactNode; actions?: ReactNode }) {
++  return (
++    <div className={`vsb-band is-${tone}`} role={tone === 'bad' || tone === 'warn' ? 'alert' : 'status'}>
++      <div className="vsb-band-text">{children}</div>
++      {actions && <div className="vsb-band-acts">{actions}</div>}
++    </div>
++  )
++}
++
++function Seg<K extends string>({ value, options, onPick, label, ro, mark, chips }: { value: K; options: readonly { key: K; label: ReactNode }[]; onPick: (k: K) => void; label: string; ro: boolean; mark?: Partial<Record<K, ReactNode>>; chips?: boolean }) {
++  if (ro) {
++    const o = options.find((x) => x.key === value)
++    return <span className="vsb-ro-val">{o?.label ?? value}</span>
++  }
++  return (
++    <div className={`vsb-seg${chips ? ' is-chips' : ''}`} role="radiogroup" aria-label={label}>
++      {options.map((o) => (
++        <button key={o.key} type="button" role="radio" aria-checked={o.key === value} className={o.key === value ? 'is-on' : ''} onClick={() => onPick(o.key)}>
++          {o.label}
++          {mark?.[o.key]}
++        </button>
++      ))}
++    </div>
++  )
++}
++
++function Row({ label, why, children, refused }: { label: string; why?: string; children: ReactNode; refused?: ReactNode }) {
++  return (
++    <div className={`vsb-row${refused ? ' is-refused' : ''}`}>
++      <div className="vsb-row-lbl">
++        {label}
++        {why && <Why say={why} />}
++      </div>
++      <div className="vsb-row-val">
++        {children}
++        {refused}
++      </div>
++    </div>
++  )
++}
++
++function Btn({ children, primary, quiet, onClick, small }: { children: ReactNode; primary?: boolean; quiet?: boolean; onClick?: () => void; small?: boolean }) {
++  return (
++    <button type="button" className={`vsb-btn${primary ? ' is-primary' : ''}${quiet ? ' is-quiet' : ''}${small ? ' is-sm' : ''}`} onClick={onClick}>
++      {children}
++    </button>
++  )
++}
++
++function money(n: number): string {
++  return `$${n.toFixed(2)}`
++}
++
++export function VsBSettingsScreen() {
++  const st = sstate()
++  const ro = st === 'readonly'
++  const [engine, setEngine] = useState(SETTINGS.engine)
++  const [machine, setMachine] = useState(st === 'pending' || st === 'applied' ? 'g2-standard-8' : st === 'refused' ? 'g2-standard-16' : SETTINGS.machine)
++  const [voice, setVoice] = useState(st === 'conflict' ? 'bf_emma' : SETTINGS.tts_voice)
++  const [idle, setIdle] = useState(SETTINGS.idle)
++  const stt = st === 'fetching' ? 'qwen3-asr-1.7b' : SETTINGS.stt_model
++  const applied = st === 'applied' ? { ...SETTINGS.applied, machine: 'g2-standard-8' } : SETTINGS.applied
++  const keySet = SETTINGS.openai_key.set && st !== 'key-unset'
++  // The head names the newest version read: in a conflict that is the other person's save (v15).
++  const head =
++    st === 'pending' || st === 'applied'
++      ? { v: 15, by: 'bogdan@example.com', at: 'bogdan, today 06:58' }
++      : st === 'conflict'
++        ? { v: 15, by: 'alex@example.com', at: 'alex, today 06:41' }
++        : { v: SETTINGS.version, by: SETTINGS.updated_by, at: 'bogdan, 4 Nov 22:10' }
++  if (!MOCK_VS_B) return null
++
++  if (st === 'error') {
++    // A failed read is never drawn as empty settings or as defaults (redesign-v2 honesty rule 1).
++    return (
++      <div className="vsb">
++        <Style />
++        <PageHead title="Settings" />
++        <div className="vsb-fail" role="alert">
++          <Tick tone="bad" say="GET /v1/voice/settings answered 503 at 07:02; nothing below is drawn from an older read">
++            Settings not read · 503 · 07:02
++          </Tick>
++          <Btn small>Retry</Btn>
++        </div>
++      </div>
++    )
++  }
++
++  return (
++    <div className="vsb">
++      <Style />
++      <PageHead title="Settings">
++        <span className="vsb-headfacts">
++          {st === 'fetching' ? (
++            <Tick tone="info" say="A session is starting the machine">Starting</Tick>
++          ) : (
++            <Tick tone="idle" say="The machine is stopped between sessions; it costs its disk only">Stopped</Tick>
++          )}
++          <span className="vsb-fact" title={`Version ${head.v}, saved by ${head.by}`}>
++            v{head.v} · {head.at}
++          </span>
++          {ro && (
++            <span className="vsb-lock" title="Only platform admins change Voice it's settings" aria-label="Read only: only platform admins change these">
++              <LockGlyph /> Read only
++            </span>
++          )}
++        </span>
++      </PageHead>
++
++      <div className="vsb-grid">
++        {/* ENGINE */}
++        <Card
++          title="Engine"
++          id="engine"
++          aside={<Why say="The engine every Start uses. When it cannot start, the session runs in text mode." />}
++        >
++          <Row label="Speech">
++            <Seg
++              ro={ro}
++              label="Engine"
++              value={engine}
++              onPick={setEngine}
++              options={[
++                { key: 'own', label: 'Own speech' },
++                { key: 'gpt-live', label: 'GPT-Live' },
++              ]}
++            />
++          </Row>
++          {engine === 'own' && (
++            <>
++              <Row label="Replies" why="A small, fast Claude model answers each spoken sentence at once, as you">
++                <span className="vsb-mono">{OWN_SPEECH_MODELS.replies}</span>
++                <span className="vsb-sub">{OWN_SPEECH_MODELS.replies_from}</span>
++              </Row>
++              <Row label="Plans and acts" why="Planning and actions go to the Claude planner, acting as the signed-in person">
++                <span>{OWN_SPEECH_MODELS.planner}</span>
++                <span className="vsb-sub">{OWN_SPEECH_MODELS.planner_class} class</span>
++              </Row>
++              <Row label="Fallback" why="If own speech cannot start (no free L4, not ready in 4 minutes), the session opens in text mode">
++                <span>Text mode</span>
++              </Row>
++            </>
++          )}
++          <div className="vsb-key">
++            <div className="vsb-key-head">
++              <span className="vsb-key-name">
++                OpenAI key
++                <Why say="GPT-Live's key, held by the quota broker; never shown here. Own speech uses no OpenAI." />
++              </span>
++              {keySet ? (
++                <Tick tone="ok" say={`Set by ${SETTINGS.openai_key.by} on ${SETTINGS.openai_key.at}`}>
++                  Set · {SETTINGS.openai_key.by} · {SETTINGS.openai_key.at}
++                </Tick>
++              ) : (
++                <Tick tone="warn" say="GPT-Live cannot start without it; own speech does not need it">
++                  Not set
++                </Tick>
++              )}
++            </div>
++            {st === 'key-link' ? (
++              <div className="vsb-link" role="status">
++                <div className="vsb-link-top">
++                  <span className="vsb-link-state">
++                    <Tick tone="info" say="A one-time link: ten minutes, single use">
++                      Link open
++                    </Tick>
++                    <span className="vsb-mono vsb-sub">until 07:09 · 9 min</span>
++                  </span>
++                  <span className="vsb-link-meter" aria-hidden="true">
++                    <i style={{ width: '90%' }} />
++                  </span>
++                </div>
++                <div className="vsb-link-url">
++                  <span className="vsb-mono" title="The link's token is shown only to the person who opened it">
++                    console.example.com/setup/key/••••••••
++                  </span>
++                  <Btn small primary>
++                    Copy link
++                  </Btn>
++                  <Btn small>Open</Btn>
++                </div>
++              </div>
++            ) : (
++              !ro && (
++                <div className="vsb-key-acts">
++                  <Btn small primary={!keySet}>{keySet ? 'Replace the OpenAI key' : 'Add an OpenAI API key for Voice it'}</Btn>
++                </div>
++              )
++            )}
++          </div>
++        </Card>
++
++        {/* MACHINE */}
++        <Card
++          title="Machine"
++          id="machine"
++          tone={st === 'pending' ? 'pending' : st === 'refused' ? 'bad' : st === 'stockout' ? 'warn' : st === 'applied' ? 'ok' : undefined}
++          aside={
++            <span className="vsb-card-aside">
++              <span className="vsb-mono vsb-sub">{SETTINGS.zone}</span>
++              <Why say="One zone, one stopped machine. A stock-out falls back to text mode." />
++            </span>
++          }
++          band={
++            st === 'pending' ? (
++              <Band tone="pending" actions={<Btn small quiet onClick={() => setMachine(applied.machine)}>Undo</Btn>}>
++                <strong>At next start</strong>
++                <span className="vsb-mono">
++                  {applied.machine} → g2-standard-8
++                </span>
++              </Band>
++            ) : st === 'refused' ? (
++              <Band tone="bad" actions={<Btn small>Reload the catalogue</Btn>}>
++                <strong>Refused</strong>
++                <span>
++                  <span className="vsb-mono">machine</span>: g2-standard-16 is not in the catalogue
++                </span>
++              </Band>
++            ) : st === 'applied' ? (
++              <Band tone="ok">
++                <strong>Applied</strong>
++                <span>
++                  <span className="vsb-mono">g2-standard-8</span> · start today 07:02
++                </span>
++              </Band>
++            ) : st === 'stockout' ? (
++              <Band tone="warn">
++                <strong>No free L4 at the last start</strong>
++                <span>
++                  <span className="vsb-mono">{SETTINGS.zone}</span> · today 06:12 · opened in text mode
++                </span>
++              </Band>
++            ) : undefined
++          }
++        >
++          <div className="vsb-mach-cols" aria-hidden="true">
++            <span>per hour</span>
++            <Why say="On-demand prices in us-central1, the machine with its L4. g2-standard-4's $0.71 is BGD's figure; the others are read from the Cloud Billing Catalog on 5 Nov 2026." />
++          </div>
++          <div className="vsb-machines" role={ro ? undefined : 'radiogroup'} aria-label="Machine">
++            {CATALOGUE.machines.map((m) => {
++              const on = m.name === machine
++              const max = 1.15
++              const cls = `vsb-mach${on ? ' is-on' : ''}${st === 'refused' && on ? ' is-refused' : ''}`
++              const body = (
++                <>
++                  <span className="vsb-radio" aria-hidden="true" />
++                  <span className="vsb-mach-id">
++                    <span className="vsb-mach-name vsb-mono">{m.name}</span>
++                    <span className="vsb-mach-spec">
++                      {m.vcpu} vCPU · {m.memory_gb} GB · 1 L4
++                    </span>
++                  </span>
++                  <span className="vsb-mach-bar" aria-hidden="true">
++                    <i style={{ width: `${(m.usd_per_hour / max) * 100}%` }} />
++                  </span>
++                  <span className="vsb-mach-price">{money(m.usd_per_hour)}</span>
++                </>
++              )
++              // Read only: the one machine as a value, not a picked option (no dot, no selected border).
++              if (ro) return on ? <div key={m.name} className="vsb-mach">{body}</div> : null
++              return (
++                <button key={m.name} type="button" role="radio" aria-checked={on} className={cls} onClick={() => setMachine(m.name)}>
++                  {body}
++                </button>
++              )
++            })}
++          </div>
++          <div className="vsb-facts">
++            <span>
++              <em>Disk</em> 150 GB, kept · $15/month
++            </span>
++            <span>
++              <em>Last start</em> {st === 'applied' ? 'today 07:02 · 1 min 24 s' : st === 'stockout' ? 'today 06:12 · no free L4' : 'today 06:12 · 1 min 18 s'}
++            </span>
++          </div>
++        </Card>
++
++        {/* MODELS */}
++        <Card
++          title="Models"
++          id="models"
++          tone={st === 'conflict' ? 'warn' : st === 'fetching' ? 'busy' : undefined}
++          band={
++            st === 'conflict' ? (
++              <Band
++                tone="warn"
++                actions={
++                  <>
++                    <Btn small onClick={() => setVoice('am_michael')}>Use theirs</Btn>
++                    <Btn small primary>Save mine over it</Btn>
++                  </>
++                }
++              >
++                <strong>Changed while you edited</strong>
++                <span>
++                  v15 · alex@example.com · 06:41 · voice <span className="vsb-mono">am_michael</span>
++                </span>
++              </Band>
++            ) : st === 'fetching' ? (
++              <Band tone="busy">
++                <strong>Fetching qwen3-asr-1.7b</strong>
++                <span className="vsb-fetch">
++                  <span className="vsb-fetch-bar" aria-hidden="true">
++                    <i style={{ width: '64%' }} />
++                  </span>
++                  <span className="vsb-mono">3.2 of 5.0 GB · 0:41</span>
++                </span>
++              </Band>
++            ) : undefined
++          }
++          foot={
++            st === 'conflict' ? (
++              <span className="vsb-sub">
++                Yours: voice <span className="vsb-mono">bf_emma</span>, on v14
++              </span>
++            ) : undefined
++          }
++        >
++          <Row label="Speech to text">
++            {ro ? (
++              <span className="vsb-mono">{stt}</span>
++            ) : (
++              <select className="vsb-select" defaultValue={stt} aria-label="Speech-to-text model">
++                {CATALOGUE.stt.map((m) => (
++                  <option key={m.name} value={m.name}>
++                    {m.name} · {m.disk_gb} GB
++                  </option>
++                ))}
++              </select>
++            )}
++            {st === 'fetching' ? (
++              <Tick tone="info" say="Not on the machine's disk yet: fetched from Hugging Face at this start, by pinned revision">
++                fetching
++              </Tick>
++            ) : (
++              <Tick tone="ok" say="On the machine's disk">on disk</Tick>
++            )}
++          </Row>
++          <Row label="Text to speech">
++            {ro ? (
++              <span className="vsb-mono">{SETTINGS.tts_model}</span>
++            ) : (
++              <select className="vsb-select" defaultValue={SETTINGS.tts_model} aria-label="Text-to-speech model">
++                {CATALOGUE.tts.map((m) => (
++                  <option key={m.name} value={m.name}>
++                    {m.name} · {m.disk_gb} GB
++                  </option>
++                ))}
++              </select>
++            )}
++            <Tick tone="ok" say="On the machine's disk">on disk</Tick>
++          </Row>
++          <Row label="Voice">
++            <Seg
++              ro={ro}
++              chips
++              label="Voice"
++              value={voice}
++              onPick={setVoice}
++              options={CATALOGUE.voices.map((v) => ({ key: v, label: <span className="vsb-mono">{v}</span> }))}
++            />
++          </Row>
++        </Card>
++
++        {/* BEHAVIOUR */}
++        <Card title="Behaviour" id="behaviour">
++          <Row label="Idle stop" why="With nobody speaking for this long, the session ends and the machine stops">
++            <Seg ro={ro} label="Idle stop" value={idle} onPick={setIdle} options={CATALOGUE.idle.map((v) => ({ key: v, label: v.replace('m', ' min') }))} />
++          </Row>
++          <Row label="Read-back" why="Cancel, merge, deploy, delete and approve are read back and wait for “go”. Set by the platform, not here.">
++            <span className="vsb-ro-val">cancel · merge · deploy · delete · approve</span>
++          </Row>
++        </Card>
++      </div>
++    </div>
++  )
++}
++
++function LockGlyph() {
++  return (
++    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
++      <rect x="2" y="5.5" width="8" height="5.5" rx="1.2" fill="currentColor" />
++      <path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
++    </svg>
++  )
++}
++
++/* ----------------------------------------------------------------- Telemetry */
++
++type TState = 'live-idle' | 'live-starting' | 'live-session' | 'sessions' | 'session-detail' | 'days' | 'empty' | 'error'
++
++function tstate(): TState {
++  const s = MOCK_VS_STATE.replace(/^telemetry-/, '')
++  return (['live-idle', 'live-starting', 'live-session', 'sessions', 'session-detail', 'days', 'empty', 'error'] as const).find((x) => x === s) ?? 'live-idle'
++}
++
++/** One series, one colour, a 2px line; the latest value dotted. */
++function Spark({ data, max, tone, w = 120, h = 28, label, unit, area = false }: { data: number[]; max?: number; tone: 1 | 2 | 3 | 5; w?: number; h?: number; label: string; unit: string; area?: boolean }) {
++  if (data.length === 0) return <Dash why="Not measured: the session never reached the machine" />
++  const hi = max ?? Math.max(...data) * 1.1
++  const x = (i: number) => (i / Math.max(1, data.length - 1)) * (w - 4) + 2
++  const y = (v: number) => h - 2 - (Math.min(v, hi) / hi) * (h - 5)
++  const d = data.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('')
++  const last = data[data.length - 1] ?? 0
++  return (
++    <svg className={`vsb-spark s-${tone}`} viewBox={`0 0 ${w} ${h}`} width={w} height={h} role="img" aria-label={`${label}: latest ${last} ${unit}, peak ${Math.max(...data)} ${unit}`}>
++      <title>{`${label}: latest ${last} ${unit} · peak ${Math.max(...data)} ${unit}`}</title>
++      {area && <path className="a" d={`${d}L${x(data.length - 1)},${h}L${x(0)},${h}Z`} />}
++      <path className="l" d={d} />
++      <circle className="p" cx={x(data.length - 1)} cy={y(last)} r="2.5" />
++    </svg>
++  )
++}
++
++/** Per-utterance latency: one thin bar per utterance from a zero baseline, with the p90 as a rule.
++ * The axis and p90 labels are HTML over the SVG, so they keep the 12px floor at any chart width. */
++function Bars({ data, tone, label, w = 520, h = 96 }: { data: number[]; tone: 1 | 3; label: string; w?: number; h?: number }) {
++  const hi = 1000
++  const bw = (w - 6) / data.length
++  const sorted = [...data].sort((a, b) => a - b)
++  const p90 = sorted[Math.floor(sorted.length * 0.9)] ?? 0
++  const y = (v: number) => h - 8 - (Math.min(v, hi) / hi) * (h - 16)
++  const top = (v: number) => `${(y(v) / h) * 100}%`
++  return (
++    <div className={`vsb-bars-wrap s-${tone}`}>
++      <div className="vsb-bars-ax" aria-hidden="true">
++        {[0, 500, 1000].map((g) => (
++          <span key={g} style={{ top: top(g) }}>
++            {g === 0 ? '0' : `${g / 1000}s`}
++          </span>
++        ))}
++      </div>
++      <div className="vsb-bars-plot">
++        <svg className={`vsb-bars s-${tone}`} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label={`${label}, per utterance; p90 ${p90} ms`}>
++          {[0, 500, 1000].map((g) => (
++            <line key={g} className="g" x1="0" x2={w} y1={y(g)} y2={y(g)} />
++          ))}
++          {data.map((v, i) => (
++            <rect key={i} className="b" x={3 + i * bw + 1} width={Math.max(1.5, bw - 2)} y={y(v)} height={Math.max(1, y(0) - y(v))} rx="1.5">
++              <title>{`Utterance ${i + 1}: ${v} ms`}</title>
++            </rect>
++          ))}
++          <line className="p90" x1="0" x2={w} y1={y(p90)} y2={y(p90)} />
++        </svg>
++        <span className="vsb-bars-p90" style={{ top: top(p90) }} aria-hidden="true">
++          p90 {p90} ms
++        </span>
++      </div>
++    </div>
++  )
++}
++
++function PhaseTrack({ phases, live }: { phases: Phase[]; live?: boolean }) {
++  const shown = phases.filter((p) => p.state !== 'skip')
++  const total = live ? 240 : shown.reduce((a, p) => a + (p.s ?? 0), 0)
++  const elapsed = phases.reduce((a, p) => a + (p.s ?? 0), 0)
++  return (
++    <div className={`vsb-phases${live ? ' is-live' : ''}`}>
++      <div className="vsb-ptrack" role="img" aria-label={phases.map((p) => `${p.label} ${p.s === null ? p.state : `${p.s} s`}`).join(', ')}>
++        {shown.map((p) => (
++          <span
++            key={p.key}
++            className={`vsb-pseg k-${p.key} is-${p.state}`}
++            style={{ flexGrow: p.state === 'wait' ? 0 : (p.s ?? 0), flexBasis: p.state === 'wait' ? 0 : undefined }}
++            title={`${p.label}: ${p.s === null ? p.state : `${p.s} s`}`}
++          />
++        ))}
++        {live && <span className="vsb-pseg is-rest" style={{ flexGrow: Math.max(0, total - elapsed) }} />}
++        {live && <span className="vsb-pdeadline" title="Ready within 4 minutes, or the session opens in text mode" />}
++      </div>
++      <ol className="vsb-plist">
++        {phases.map((p) => (
++          <li key={p.key} className={`is-${p.state}`}>
++            <i className={`k-${p.key}`} aria-hidden="true" />
++            <span className="n">{p.label}</span>
++            <span className="v">{p.state === 'skip' ? 'skipped' : p.state === 'wait' ? 'next' : p.state === 'run' ? `${p.s} s…` : `${p.s} s`}</span>
++          </li>
++        ))}
++      </ol>
++    </div>
++  )
++}
++
++function LiveBand({ st }: { st: TState }) {
++  if (st === 'live-starting') {
++    return (
++      <section className="vsb-live is-starting" aria-label="Live">
++        <div className="vsb-live-head">
++          <Tick tone="info">Starting</Tick>
++          <span className="vsb-live-proj">{LIVE.project}</span>
++          <span className="vsb-live-facts">
++            <span className="vsb-mono">g2-standard-4</span>
++            <span className="vsb-mono">us-central1-a</span>
++            <span className="vsb-big">1:00</span>
++          </span>
++        </div>
++        <PhaseTrack phases={STARTING} live />
++      </section>
++    )
++  }
++  if (st === 'live-session') {
++    const tiles = [
++      { k: 'GPU', v: `${LIVE.gpu[LIVE.gpu.length - 1]}%`, d: LIVE.gpu, max: 100, tone: 2 as const, unit: '%' },
++      { k: 'GPU memory', v: `${((LIVE.gpu_mem[LIVE.gpu_mem.length - 1] ?? 0) / 1024).toFixed(1)} / 22.5 GiB`, d: LIVE.gpu_mem, max: LIVE.gpu_mem_total, tone: 2 as const, unit: 'MiB' },
++      { k: 'CPU', v: `${LIVE.cpu[LIVE.cpu.length - 1]}%`, d: LIVE.cpu, max: 100, tone: 5 as const, unit: '%' },
++      { k: 'Memory', v: `${((LIVE.mem[LIVE.mem.length - 1] ?? 0) / 1024).toFixed(1)} / 16 GiB`, d: LIVE.mem, max: LIVE.mem_total, tone: 5 as const, unit: 'MiB' },
++    ]
++    return (
++      <section className="vsb-live is-session" aria-label="Live">
++        <div className="vsb-live-head">
++          <span className="vsb-pulse" aria-hidden="true" />
++          <span className="vsb-live-word">{LIVE.status}</span>
++          <span className="vsb-live-proj">{LIVE.project}</span>
++          <span className="vsb-live-facts">
++            <span>
++              <em>utterances</em> {LIVE.utterances}
++            </span>
++            <span>
++              <em>so far</em> {money(LIVE.cost_so_far)}
++            </span>
++            <span className="vsb-big">{LIVE.elapsed}</span>
++          </span>
++        </div>
++        <div className="vsb-live-charts">
++          <figure className="vsb-fig">
++            <figcaption>
++              <i className="sw s-1" aria-hidden="true" />
++              End of speech → words
++            </figcaption>
++            <Bars data={LIVE.stt_final} tone={1} label="End of speech to final words" />
++          </figure>
++          <figure className="vsb-fig">
++            <figcaption>
++              <i className="sw s-3" aria-hidden="true" />
++              Reply → first audio
++            </figcaption>
++            <Bars data={LIVE.tts_first} tone={3} label="Reply to first audio" />
++          </figure>
++        </div>
++        <div className="vsb-tiles">
++          {tiles.map((t) => (
++            <div className="vsb-tile" key={t.k}>
++              <div className="vsb-tile-k">{t.k}</div>
++              <div className="vsb-tile-v">{t.v}</div>
++              <Spark data={t.d} max={t.max} tone={t.tone} w={180} h={34} label={t.k} unit={t.unit} area />
++            </div>
++          ))}
++          <div className="vsb-tile">
++            <div className="vsb-tile-k">Disk</div>
++            <div className="vsb-tile-v">
++              {LIVE.disk_used} / {LIVE.disk_total} GB
++            </div>
++            <span className="vsb-meter" aria-hidden="true">
++              <i style={{ width: `${(LIVE.disk_used / LIVE.disk_total) * 100}%` }} />
++            </span>
++          </div>
++        </div>
++      </section>
++    )
++  }
++  return (
++    <section className="vsb-live is-idle" aria-label="Live">
++      <Tick tone="idle">Stopped</Tick>
++      <span className="vsb-mono">g2-standard-4</span>
++      <span className="vsb-mono">us-central1-a</span>
++      <span className="vsb-sub">{st === 'empty' ? 'never started' : 'last ran today 06:12 – 06:46'}</span>
++    </section>
++  )
++}
++
++type Metric = 'minutes' | 'cost' | 'utterances' | 'p90' | 'stockouts'
++const METRICS: readonly { key: Metric; label: string }[] = [
++  { key: 'minutes', label: 'Machine minutes' },
++  { key: 'cost', label: 'Cost' },
++  { key: 'utterances', label: 'Utterances' },
++  { key: 'p90', label: 'p90 latency' },
++  { key: 'stockouts', label: 'Stock-outs' },
++]
++
++function dayValue(d: Day, m: Metric): number | null {
++  if (m === 'minutes') return d.minutes
++  if (m === 'cost') return d.cost
++  if (m === 'utterances') return d.utterances
++  if (m === 'p90') return d.p90_ms
++  return d.stockouts
++}
++
++function fmt(m: Metric, v: number | null): string {
++  if (v === null) return '—'
++  if (m === 'cost') return money(v)
++  if (m === 'p90') return `${v} ms`
++  if (m === 'minutes') return `${v} min`
++  return String(v)
++}
++
++function HeatStrip({ ds, range, metric, setMetric, picked, setPicked }: { ds: Day[]; range: string; metric: Metric; setMetric: (m: Metric) => void; picked: number | null; setPicked: (n: number | null) => void }) {
++  const vals = ds.map((d) => dayValue(d, metric)).filter((v): v is number => v !== null)
++  const hi = Math.max(1, ...vals)
++  const tot = (k: 'minutes' | 'cost' | 'utterances' | 'stockouts') => ds.reduce((a, d) => a + d[k], 0)
++  return (
++    <section className={`vsb-days${ds.length > 30 ? ' is-long' : ''}`} aria-label="Days">
++      <div className="vsb-days-head">
++        <div className="vsb-seg is-sm" role="radiogroup" aria-label="Colour the days by">
++          {METRICS.map((m) => (
++            <button key={m.key} type="button" role="radio" aria-checked={m.key === metric} className={m.key === metric ? 'is-on' : ''} onClick={() => setMetric(m.key)}>
++              {m.label}
++            </button>
++          ))}
++        </div>
++        <span className="vsb-days-tot">
++          <span>
++            <em>{range}</em> {tot('minutes')} machine min
++          </span>
++          <span>{money(Math.round(tot('cost') * 100) / 100)}</span>
++          <span>{tot('utterances')} utterances</span>
++          <span>{tot('stockouts')} stock-out</span>
++        </span>
++      </div>
++      <div className="vsb-heat" role="list">
++        {ds.map((d) => {
++          const v = dayValue(d, metric)
++          const lvl = v === null || v === 0 ? 0 : Math.max(1, Math.ceil((v / hi) * 4))
++          const on = picked === d.offset
++          return (
++            <button
++              key={d.offset}
++              type="button"
++              role="listitem"
++              className={`vsb-cell l-${lvl}${on ? ' is-on' : ''}${d.stockouts ? ' has-so' : ''}`}
++              aria-pressed={on}
++              title={`${d.dow} ${d.label}: ${fmt(metric, v)} · ${d.sessions} session${d.sessions === 1 ? '' : 's'}`}
++              onClick={() => setPicked(on ? null : d.offset)}
++            >
++              <span className="vsb-cell-lbl">{d.offset % 7 === 0 || d.offset === 0 ? d.label : ''}</span>
++            </button>
++          )
++        })}
++      </div>
++      <div className="vsb-heat-key" aria-hidden="true">
++        <span>less</span>
++        {[0, 1, 2, 3, 4].map((l) => (
++          <i key={l} className={`vsb-cell l-${l}`} />
++        ))}
++        <span>more</span>
++        <span className="vsb-heat-so">
++          <i className="vsb-cell l-0 has-so" /> stock-out
++        </span>
++      </div>
++    </section>
++  )
++}
++
++function scaled(v: number | null, k: number): number | null {
++  return v === null ? null : Math.round(v * k)
++}
++
++function SessionDetail({ s }: { s: Session }) {
++  const sorted = [...s.latency].sort((a, b) => a - b)
++  const pct = (q: number): number | null => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] ?? null
++  const top = sorted[sorted.length - 1] ?? null
++  const rows: { k: string; p50: number | null; p90: number | null; max: number | null; tone: 1 | 3 }[] = [
++    { k: 'End of speech → words', p50: pct(0.5), p90: pct(0.9), max: top, tone: 1 },
++    { k: 'First partial', p50: scaled(pct(0.5), 0.42), p90: scaled(pct(0.9), 0.4), max: scaled(top, 0.45), tone: 1 },
++    { k: 'Reply → first audio', p50: 228, p90: 341, max: 512, tone: 3 },
++  ]
++  return (
++    <div className="vsb-detail">
++      <div className="vsb-detail-col">
++        <h3>Start · {s.phases.reduce((a, p) => a + (p.s ?? 0), 0)} s</h3>
++        <PhaseTrack phases={s.phases} />
++      </div>
++      <div className="vsb-detail-col">
++        <h3>Latency</h3>
++        <table className="vsb-pct">
++          <thead>
++            <tr>
++              <th />
++              <th>p50</th>
++              <th>p90</th>
++              <th>max</th>
++            </tr>
++          </thead>
++          <tbody>
++            {rows.map((r) => (
++              <tr key={r.k}>
++                <th>
++                  <i className={`sw s-${r.tone}`} aria-hidden="true" />
++                  {r.k}
++                </th>
++                <td>{r.p50 ?? '—'}</td>
++                <td>{r.p90 ?? '—'}</td>
++                <td>{r.max ?? '—'}</td>
++              </tr>
++            ))}
++          </tbody>
++        </table>
++        <span className="vsb-sub">ms · real-time factor 0.08 speech, 0.21 voice</span>
++      </div>
++      <div className="vsb-detail-col">
++        <h3>Peaks</h3>
++        <dl className="vsb-dl">
++          <dt>GPU</dt>
++          <dd>{s.gpu_peak}%</dd>
++          <dt>GPU memory</dt>
++          <dd>14.9 / 22.5 GiB</dd>
++          <dt>CPU</dt>
++          <dd>41%</dd>
++          <dt>Memory</dt>
++          <dd>7.3 / 16 GiB</dd>
++          <dt>Disk</dt>
++          <dd>96.4 / 150 GB</dd>
++          <dt>vLLM queue</dt>
++          <dd>2</dd>
++        </dl>
++      </div>
++      <div className="vsb-detail-col">
++        <h3>Cost</h3>
++        <dl className="vsb-dl">
++          <dt>Machine minutes</dt>
++          <dd>{s.machine_minutes.toFixed(1)}</dd>
++          <dt>Talking</dt>
++          <dd>{s.minutes} min</dd>
++          <dt>At $0.71/h</dt>
++          <dd>{money(s.cost)}</dd>
++          <dt>Errors</dt>
++          <dd>{s.flag === 'crash' ? 1 : 0}</dd>
++          <dt>Crashes</dt>
++          <dd>{s.flag === 'crash' ? 1 : 0}</dd>
++        </dl>
++        <div className="vsb-detail-acts">
++          <Btn small>Open the project</Btn>
++        </div>
++      </div>
++    </div>
++  )
++}
++
++function SessionRow({ s, open, onToggle }: { s: Session; open: boolean; onToggle: () => void }) {
++  const so = s.flag === 'stock-out'
++  return (
++    <li className={`vsb-srow${open ? ' is-open' : ''}${so ? ' is-so' : ''}`}>
++      <button type="button" className="vsb-sline" aria-expanded={open} onClick={onToggle}>
++        <span className="vsb-caret" aria-hidden="true" />
++        <span className="vsb-when">{s.when}</span>
++        <span className="vsb-proj">{s.project}</span>
++        <span className="vsb-flag">
++          {s.flag === 'stock-out' && (
++            <Tick tone="warn" say={s.fallback_reason}>
++              stock-out · text mode
++            </Tick>
++          )}
++          {s.flag === 'crash' && (
++            <Tick tone="bad" say="The speech server exited once; the session reconnected after 9 s">
++              1 crash
++            </Tick>
++          )}
++        </span>
++        <span className="vsb-cell-spark">
++          <Spark data={s.latency} max={1000} tone={1} label="End of speech to words" unit="ms" />
++          <span className="vsb-num">{s.p90_ms === null ? '—' : `${s.p90_ms} ms`}</span>
++        </span>
++        <span className="vsb-cell-spark">
++          <Spark data={s.gpu} max={100} tone={2} label="GPU" unit="%" area />
++          <span className="vsb-num">{s.gpu_peak === null ? '—' : `${s.gpu_peak}%`}</span>
++        </span>
++        <span className="vsb-num vsb-min" title={so ? undefined : `${s.minutes} min talking`}>{so ? '—' : `${s.machine_minutes.toFixed(1)} min`}</span>
++        <span className="vsb-num vsb-cost">{money(s.cost)}</span>
++      </button>
++      {open && !so && <SessionDetail s={s} />}
++    </li>
++  )
++}
++
++export function VsBTelemetryScreen() {
++  const st = tstate()
++  const long = st === 'sessions'
++  const range = long ? '90 days' : '30 days'
++  const sessions = st === 'empty' || st === 'error' ? [] : st === 'live-session' || st === 'live-starting' ? SESSIONS.slice(1) : long ? SESSIONS_90 : SESSIONS
++  const ds = days(sessions, long ? 90 : 30)
++  const [metric, setMetric] = useState<Metric>('minutes')
++  const [picked, setPicked] = useState<number | null>(st === 'days' ? 1 : null)
++  const [open, setOpen] = useState<string | null>(st === 'session-detail' ? (SESSIONS[1]?.id ?? null) : null)
++  const shown = picked === null ? sessions : sessions.filter((s) => s.day === picked)
++  const pickedDay = picked === null ? null : ds.find((d) => d.offset === picked) ?? null
++  if (!MOCK_VS_B) return null
++
++  return (
++    <div className="vsb">
++      <Style />
++      <PageHead title="Telemetry">
++        {sessions.length > 0 && (
++          <div className="vsb-seg is-sm" role="radiogroup" aria-label="Range">
++            {['7 days', '30 days', '90 days'].map((r) => (
++              <button key={r} type="button" role="radio" aria-checked={r === range} className={r === range ? 'is-on' : ''}>
++                {r}
++              </button>
++            ))}
++          </div>
++        )}
++      </PageHead>
++      {st === 'error' ? (
++        // A failed read is never drawn as an empty timeline or as zeros (redesign-v2 honesty rule 1).
++        <div className="vsb-fail" role="alert">
++          <Tick tone="bad" say="GET /v1/voice/telemetry answered 503 at 07:02; nothing is drawn from an older read">
++            Telemetry not read · 503 · 07:02
++          </Tick>
++          <Btn small>Retry</Btn>
++        </div>
++      ) : (
++        <LiveBand st={st} />
++      )}
++      {st === 'error' ? null : sessions.length === 0 ? (
++        <div className="vsb-empty">
++          <div className="vsb-empty-h">No sessions yet</div>
++          <a className="vsb-btn is-primary" href="/voice/talk">
++            Start talking
++          </a>
++        </div>
++      ) : (
++        <>
++          <HeatStrip ds={ds} range={range} metric={metric} setMetric={setMetric} picked={picked} setPicked={setPicked} />
++          <section className="vsb-sessions" aria-label="Sessions">
++            <div className="vsb-shead">
++              {pickedDay ? (
++                <span className="vsb-dayhead">
++                  <strong>
++                    {pickedDay.dow} {pickedDay.label}
++                  </strong>
++                  <span>{pickedDay.sessions} sessions</span>
++                  <span>{pickedDay.minutes} machine min</span>
++                  <span>{money(pickedDay.cost)}</span>
++                  <span>{pickedDay.utterances} utterances</span>
++                  <span>p90 {pickedDay.p90_ms} ms</span>
++                  <span>{pickedDay.stockouts} stock-outs</span>
++                  <Btn small quiet onClick={() => setPicked(null)}>
++                    All days
++                  </Btn>
++                </span>
++              ) : (
++                <span className="vsb-dayhead">
++                  <strong>Sessions</strong>
++                  <span>{sessions.length}</span>
++                </span>
++              )}
++              <span className="vsb-cols" aria-hidden="true">
++                <span>
++                  <i className="sw s-1" />
++                  Latency
++                </span>
++                <span>
++                  <i className="sw s-2" />
++                  GPU
++                </span>
++                <span className="vsb-min">Machine</span>
++                <span className="vsb-cost">Cost</span>
++              </span>
++            </div>
++            <ol className="vsb-slist">
++              {shown.map((s) => (
++                <SessionRow key={s.id} s={s} open={open === s.id} onToggle={() => setOpen(open === s.id ? null : s.id)} />
++              ))}
++            </ol>
++          </section>
++        </>
++      )}
++    </div>
++  )
++}
+diff --git a/apps/swarm-ui/src/voice/mock/fixtures.ts b/apps/swarm-ui/src/voice/mock/fixtures.ts
+new file mode 100644
+index 0000000..07490be
+--- /dev/null
++++ b/apps/swarm-ui/src/voice/mock/fixtures.ts
+@@ -0,0 +1,225 @@
++// MOCK-HOOK FILE
++// Invented fixtures for direction B's Settings and Telemetry (Voice it's own
++// speech, docs/design/voice-it-own-speech.md §11 and §12). Every value here is
++// made up for the mock-ups: a session about a workflow page's redesign, the
++// catalogue's four single-L4 machines, thirty days of sessions.
++
++export type MachineEntry = { name: string; vcpu: number; memory_gb: number; usd_per_hour: number; price_read_at: string; by: string }
++export type ModelEntry = { name: string; hf: string; disk_gb: number; on_disk: boolean }
++
++export const CATALOGUE = {
++  machines: [
++    { name: 'g2-standard-4', vcpu: 4, memory_gb: 16, usd_per_hour: 0.71, price_read_at: '2026-11-05', by: 'BGD' },
++    { name: 'g2-standard-8', vcpu: 8, memory_gb: 32, usd_per_hour: 0.85, price_read_at: '2026-11-05', by: 'Billing Catalog' },
++    { name: 'g2-standard-12', vcpu: 12, memory_gb: 48, usd_per_hour: 1.0, price_read_at: '2026-11-05', by: 'Billing Catalog' },
++    { name: 'g2-standard-16', vcpu: 16, memory_gb: 64, usd_per_hour: 1.15, price_read_at: '2026-11-05', by: 'Billing Catalog' },
++  ] as MachineEntry[],
++  stt: [
++    { name: 'qwen3-asr-0.6b', hf: 'Qwen/Qwen3-ASR-0.6B', disk_gb: 2, on_disk: true },
++    { name: 'qwen3-asr-1.7b', hf: 'Qwen/Qwen3-ASR-1.7B', disk_gb: 5, on_disk: false },
++  ] as ModelEntry[],
++  tts: [{ name: 'kokoro-82m', hf: 'hexgrad/Kokoro-82M', disk_gb: 1, on_disk: true }] as ModelEntry[],
++  voices: ['af_heart', 'am_michael', 'bf_emma', 'bm_george'],
++  idle: ['2m', '5m', '10m', '15m'],
++  zones: ['us-central1-a'],
++}
++
++export type Settings = {
++  engine: 'own' | 'gpt-live'
++  machine: string
++  zone: string
++  stt_model: string
++  tts_model: string
++  tts_voice: string
++  idle: string
++  version: number
++  updated_by: string
++  updated_at: string
++  applied: { machine: string; stt_model: string; tts_model: string; tts_voice: string; at: string }
++  openai_key: { set: boolean; by: string; at: string }
++}
++
++export const SETTINGS: Settings = {
++  engine: 'own',
++  machine: 'g2-standard-4',
++  zone: 'us-central1-a',
++  stt_model: 'qwen3-asr-0.6b',
++  tts_model: 'kokoro-82m',
++  tts_voice: 'af_heart',
++  idle: '5m',
++  version: 14,
++  updated_by: 'bogdan@example.com',
++  updated_at: '4 Nov 2026, 22:10',
++  applied: { machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', tts_voice: 'af_heart', at: '4 Nov 2026, 21:31' },
++  openai_key: { set: true, by: 'bogdan@example.com', at: '2 Nov 2026' },
++}
++
++/** The planner pair on the own-speech engine (Bogdan's answer 3): a small fast Claude model answers, the planner plans. */
++export const OWN_SPEECH_MODELS = { replies: 'claude-haiku-4-5', replies_from: 'Claude pool', planner: 'Claude planner', planner_class: 'planning' }
++
++export type Phase = { key: string; label: string; s: number | null; state: 'done' | 'run' | 'wait' | 'skip' }
++
++export type Session = {
++  id: string
++  day: number // days before today, 0 = today
++  when: string
++  project: string
++  minutes: number // talking minutes
++  machine_minutes: number // the machine's running minutes, start and idle stop included: what cost counts (§13)
++  cost: number
++  utterances: number
++  p90_ms: number | null
++  gpu_peak: number | null
++  latency: number[]
++  gpu: number[]
++  phases: Phase[]
++  flag?: 'stock-out' | 'crash' | 'fallback'
++  fallback_reason?: string
++}
++
++function wave(n: number, seed: number, base: number, spread: number): number[] {
++  const out: number[] = []
++  let x = seed
++  for (let i = 0; i < n; i++) {
++    x = (x * 9301 + 49297) % 233280
++    const r = x / 233280
++    out.push(Math.round(base + spread * (r - 0.5) + spread * 0.35 * Math.sin(i / 3 + seed)))
++  }
++  return out
++}
++
++function phases(boot: number, server: number, update: number | null, fetch: number | null, load: number, warm: number): Phase[] {
++  return [
++    { key: 'boot', label: 'Machine', s: boot, state: 'done' },
++    { key: 'server', label: 'Server', s: server, state: 'done' },
++    { key: 'update', label: 'Update', s: update, state: update === null ? 'skip' : 'done' },
++    { key: 'fetch', label: 'Fetch model', s: fetch, state: fetch === null ? 'skip' : 'done' },
++    { key: 'load', label: 'Load models', s: load, state: 'done' },
++    { key: 'warmup', label: 'Warm-up', s: warm, state: 'done' },
++  ]
++}
++
++const PROJECTS = [
++  'Workflow page redesign',
++  'Schedules retry policy',
++  'Release notes 4.2',
++  'Quota broker alerts',
++  'Workflow page redesign',
++  'Runner sizes cleanup',
++  'Inbox triage',
++  'Voice it read-backs',
++]
++
++function mk(i: number, day: number, when: string, minutes: number, flag?: Session['flag'], reason?: string): Session {
++  const u = Math.round(minutes * 1.7)
++  const lat = flag === 'stock-out' ? [] : wave(Math.max(8, Math.min(48, u)), i + 3, 410, 260)
++  const gpu = flag === 'stock-out' ? [] : wave(40, i + 11, 46, 50).map((v) => Math.max(4, Math.min(97, v)))
++  const sorted = [...lat].sort((a, b) => a - b)
++  return {
++    id: `vs-${String(1040 - i)}`,
++    day,
++    when,
++    project: PROJECTS[i % PROJECTS.length] ?? '',
++    minutes: flag === 'stock-out' ? 0 : minutes,
++    machine_minutes: flag === 'stock-out' ? 0 : minutes + 2.5,
++    cost: flag === 'stock-out' ? 0 : Math.round(((minutes + 2.5) / 60) * 0.71 * 100) / 100,
++    utterances: flag === 'stock-out' ? 0 : u,
++    p90_ms: sorted[Math.floor(sorted.length * 0.9)] ?? null,
++    gpu_peak: gpu.length ? Math.max(...gpu) : null,
++    latency: lat,
++    gpu,
++    phases: flag === 'stock-out' ? [] : phases(38 + (i % 5) * 3, 6 + (i % 3), i === 4 ? 52 : null, i === 6 ? 71 : null, 17 + (i % 4), 4),
++    flag,
++    fallback_reason: reason,
++  }
++}
++
++export const SESSIONS: Session[] = [
++  mk(0, 0, 'Today 06:12', 31),
++  mk(1, 1, 'Wed 4 Nov 21:02', 24),
++  mk(2, 1, 'Wed 4 Nov 09:40', 12),
++  mk(3, 2, 'Tue 3 Nov 17:15', 0, 'stock-out', 'No free L4 in us-central1-a'),
++  mk(4, 3, 'Mon 2 Nov 14:20', 46),
++  mk(5, 5, 'Sat 31 Oct 11:03', 18, 'crash'),
++  mk(6, 7, 'Thu 29 Oct 20:44', 37),
++  mk(7, 8, 'Wed 28 Oct 10:12', 9),
++  mk(8, 10, 'Mon 26 Oct 16:30', 22),
++  mk(9, 13, 'Fri 23 Oct 08:55', 15),
++  mk(10, 15, 'Wed 21 Oct 19:20', 41),
++  mk(11, 19, 'Sat 17 Oct 10:05', 7),
++  mk(12, 22, 'Wed 14 Oct 15:48', 28),
++  mk(13, 27, 'Fri 9 Oct 09:31', 19),
++]
++
++/** Ninety days for the Sessions frame: the thirty above, then older invented sessions. */
++export const SESSIONS_90: Session[] = [
++  ...SESSIONS,
++  ...[
++    [33, 'Sun 4 Oct 18:22', 26],
++    [36, 'Wed 30 Sep 10:40', 14],
++    [41, 'Fri 25 Sep 15:05', 33],
++    [44, 'Tue 22 Sep 09:12', 11],
++    [49, 'Thu 17 Sep 20:30', 21],
++    [55, 'Fri 11 Sep 08:47', 38],
++    [58, 'Tue 8 Sep 13:15', 16],
++    [63, 'Thu 3 Sep 17:58', 24],
++    [70, 'Thu 27 Aug 11:20', 9],
++    [77, 'Thu 20 Aug 16:44', 29],
++    [84, 'Thu 13 Aug 10:02', 17],
++  ].map(([day, when, min], k) => mk(14 + k, day as number, when as string, min as number)),
++]
++
++export type Day = { offset: number; label: string; dow: string; minutes: number; cost: number; utterances: number; p90_ms: number | null; stockouts: number; sessions: number }
++
++const DOW = ['Thu', 'Wed', 'Tue', 'Mon', 'Sun', 'Sat', 'Fri']
++
++/** Days are computed on read from the sessions (§12.3), never a second counter. */
++export function days(sessions: Session[], n = 30): Day[] {
++  const out: Day[] = []
++  for (let d = n - 1; d >= 0; d--) {
++    const s = sessions.filter((x) => x.day === d)
++    const date = new Date(Date.UTC(2026, 10, 5 - d))
++    const p90s = s.map((x) => x.p90_ms).filter((v): v is number => v !== null)
++    out.push({
++      offset: d,
++      label: `${date.getUTCDate()} ${date.toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' })}`,
++      dow: DOW[d % 7] ?? '',
++      minutes: s.reduce((a, x) => a + x.machine_minutes, 0),
++      cost: Math.round(s.reduce((a, x) => a + x.cost, 0) * 100) / 100,
++      utterances: s.reduce((a, x) => a + x.utterances, 0),
++      p90_ms: p90s.length ? Math.max(...p90s) : null,
++      stockouts: s.filter((x) => x.flag === 'stock-out').length,
++      sessions: s.length,
++    })
++  }
++  return out
++}
++
++/** The running session's live readings, every 5 s (§12.2), last 10 minutes. */
++export const LIVE = {
++  project: 'Workflow page redesign',
++  status: 'listening',
++  elapsed: '23:41',
++  cost_so_far: 0.31,
++  utterances: 41,
++  stt_final: wave(41, 5, 380, 220),
++  tts_first: wave(38, 8, 240, 120),
++  gpu: wave(60, 13, 44, 56).map((v) => Math.max(3, Math.min(96, v))),
++  gpu_mem: wave(60, 17, 14200, 600),
++  gpu_mem_total: 23034,
++  cpu: wave(60, 19, 22, 18).map((v) => Math.max(2, v)),
++  mem: wave(60, 23, 7100, 300),
++  mem_total: 16384,
++  disk_used: 96.4,
++  disk_total: 150,
++}
++
++/** A start in progress (§4.2): machine and server done, models loading. */
++export const STARTING: Phase[] = [
++  { key: 'boot', label: 'Machine', s: 41, state: 'done' },
++  { key: 'server', label: 'Server', s: 7, state: 'done' },
++  { key: 'update', label: 'Update', s: null, state: 'skip' },
++  { key: 'fetch', label: 'Fetch model', s: null, state: 'skip' },
++  { key: 'load', label: 'Load models', s: 12, state: 'run' },
++  { key: 'warmup', label: 'Warm-up', s: null, state: 'wait' },
++]
+diff --git a/apps/swarm-ui/src/voice/mock/flag.ts b/apps/swarm-ui/src/voice/mock/flag.ts
+new file mode 100644
+index 0000000..a377ed0
+--- /dev/null
++++ b/apps/swarm-ui/src/voice/mock/flag.ts
+@@ -0,0 +1,8 @@
++// MOCK-HOOK FILE
++// Voice it's own speech, direction B (Cards and a timeline): the mock-ups'
++// switch. `?vs=b` draws Settings and Telemetry from invented fixtures;
++// `&vsstate=<state>` picks the frame's state. Read once at load, so the
++// router's own rewrite of the address does not drop it.
++const q = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search)
++export const MOCK_VS_B = q.get('vs') === 'b'
++export const MOCK_VS_STATE = q.get('vsstate') ?? ''
+diff --git a/apps/swarm-ui/src/voice/mock/vsb-css.ts b/apps/swarm-ui/src/voice/mock/vsb-css.ts
+new file mode 100644
+index 0000000..74c9c25
+--- /dev/null
++++ b/apps/swarm-ui/src/voice/mock/vsb-css.ts
+@@ -0,0 +1,259 @@
++// MOCK-HOOK FILE
++// Direction B's styles, on the console's own tokens (styles.css): surfaces,
++// lines, ink, the series palette and the state hues. Injected by VsB.tsx.
++export const VSB_CSS = `
++.vsb { --vsb-gap: 16px; display: flex; flex-direction: column; gap: var(--vsb-gap); padding-bottom: 32px; }
++.vsb .vsb-mono { font-family: var(--mono); font-size: 12.5px; }
++.vsb .vsb-sub { color: var(--text-dim); font-size: var(--t-meta); }
++.vsb em { font-style: normal; color: var(--text-dim); margin-right: 4px; }
++.vsb-headfacts { display: inline-flex; align-items: center; gap: 12px; font-size: var(--t-meta); color: var(--text-dim); }
++.vsb-lock { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); }
++
++.vsb-why { all: unset; cursor: help; display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; margin-left: 6px;
++  font: 600 10px/1 var(--font); font-style: italic; color: var(--text-dim); box-shadow: inset 0 0 0 1px var(--ctl-bd); vertical-align: 1px; }
++.vsb-why:hover, .vsb-why:focus-visible { color: var(--text); box-shadow: inset 0 0 0 1.5px var(--text-dim); }
++
++.vsb-tick { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; }
++.vsb-tick i { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
++.vsb-tick.t-ok i { background: var(--ok); } .vsb-tick.t-ok { color: var(--ok-ink); }
++.vsb-tick.t-warn i { background: var(--warn-ink); } .vsb-tick.t-warn { color: var(--warn-ink); }
++.vsb-tick.t-bad i { background: var(--bad); } .vsb-tick.t-bad { color: var(--bad-ink); }
++.vsb-tick.t-info i { background: var(--info); box-shadow: 0 0 0 3px color-mix(in srgb, var(--info) 25%, transparent); } .vsb-tick.t-info { color: var(--info-ink); }
++.vsb-tick.t-idle i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-faint); }
++.vsb-dash { color: var(--text-faint); cursor: help; }
++
++/* Buttons and segmented controls */
++.vsb-btn { appearance: none; display: inline-flex; align-items: center; gap: 6px; height: var(--h-ctl); padding: 0 14px; border-radius: var(--r-ctl);
++  border: 1px solid var(--ctl-bd); background: var(--surface); color: var(--text); font: 500 var(--t-body)/1 var(--font); cursor: pointer; text-decoration: none; white-space: nowrap; }
++.vsb-btn:hover { background: var(--surface-2); }
++.vsb-btn.is-sm { height: var(--h-sm); padding: 0 11px; font-size: var(--t-meta); }
++.vsb-btn.is-primary { background: var(--info); border-color: var(--info); color: var(--ctl-onac); }
++.vsb-btn.is-primary:hover { background: color-mix(in srgb, var(--info) 88%, var(--text)); }
++.vsb-btn.is-quiet { border-color: transparent; background: transparent; color: var(--info-ink); }
++.vsb-btn.is-quiet:hover { background: color-mix(in srgb, var(--info) 12%, transparent); }
++.vsb-seg { display: inline-flex; flex-wrap: wrap; padding: 3px; gap: 2px; border-radius: var(--r-ctl); background: var(--ctl-q-fill); }
++.vsb-seg button { appearance: none; border: 0; background: transparent; color: var(--text-dim); height: 28px; padding: 0 12px; border-radius: 6px; font: 500 var(--t-meta)/1 var(--font); cursor: pointer; }
++.vsb-seg button:hover { color: var(--text); }
++.vsb-seg button.is-on { background: var(--surface); color: var(--text); box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(0,0,0,.12); }
++.vsb-seg.is-sm button { height: 24px; padding: 0 10px; }
++.vsb-seg.is-chips { background: transparent; padding: 0; gap: 6px; }
++.vsb-seg.is-chips button { box-shadow: inset 0 0 0 1px var(--ctl-bd); border-radius: var(--r-pill); height: 28px; }
++.vsb-seg.is-chips button.is-on { background: var(--text); color: var(--surface); box-shadow: none; }
++.vsb-select { height: var(--h-ctl); padding: 0 30px 0 10px; border-radius: var(--r-ctl); border: 1px solid var(--ctl-bd); background: var(--surface); color: var(--text); font: 12.5px var(--mono); }
++.vsb-ro-val { color: var(--text); }
++
++/* Settings: four cards */
++.vsb-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--vsb-gap); align-items: start; }
++.vsb-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
++.vsb-card.is-pending { border-color: color-mix(in srgb, var(--info) 55%, var(--line)); }
++.vsb-card.is-bad { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
++.vsb-card.is-warn { border-color: color-mix(in srgb, var(--warn-ink) 55%, var(--line)); }
++.vsb-card.is-ok { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
++.vsb-card.is-busy { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
++.vsb-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 18px 4px; }
++.vsb-card-head h2 { margin: 0; font-size: var(--t-lead); font-weight: 600; letter-spacing: -.005em; }
++.vsb-card-aside { display: inline-flex; align-items: center; gap: 4px; }
++.vsb-card-body { padding: 6px 18px 16px; display: flex; flex-direction: column; }
++.vsb-card-foot { padding: 10px 18px; border-top: 1px solid var(--line-soft); background: color-mix(in srgb, var(--surface-2) 50%, var(--surface)); }
++.vsb-band { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 18px 4px; padding: 9px 12px; border-radius: var(--r-ctl); font-size: var(--t-meta); }
++.vsb-band-text { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
++.vsb-band-acts { display: flex; gap: 6px; flex: none; }
++.vsb-band.is-pending, .vsb-band.is-busy { background: color-mix(in srgb, var(--info) 13%, var(--surface)); color: var(--info-ink); }
++.vsb-band.is-bad { background: color-mix(in srgb, var(--bad) 12%, var(--surface)); color: var(--bad-ink); }
++.vsb-band.is-ok { background: color-mix(in srgb, var(--ok) 13%, var(--surface)); color: var(--ok-ink); }
++.vsb-band.is-warn { background: color-mix(in srgb, var(--warn) 16%, var(--surface)); color: var(--warn-ink); }
++.vsb-band strong { font-weight: 600; }
++.vsb-band span { color: var(--text); }
++.vsb-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); align-items: center; gap: 12px; min-height: 44px; border-bottom: 1px solid var(--line-soft); }
++.vsb-row:last-child { border-bottom: 0; }
++.vsb-row-lbl { color: var(--text-dim); font-size: var(--t-meta); }
++.vsb-row-val { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 6px 0; }
++.vsb-key { margin-top: 10px; padding: 12px 14px; border-radius: var(--r-tile); background: color-mix(in srgb, var(--surface-2) 70%, var(--surface)); display: flex; flex-direction: column; gap: 10px; }
++.vsb-key-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
++.vsb-key-name { font-weight: 600; font-size: var(--t-body); }
++.vsb-key-acts { display: flex; gap: 8px; }
++.vsb-link { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r-ctl); background: var(--surface); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--info) 45%, var(--line)); }
++.vsb-link-top { display: flex; align-items: center; gap: 12px; }
++.vsb-link-state { display: inline-flex; gap: 10px; align-items: center; }
++.vsb-link-meter { flex: 1; height: 4px; border-radius: 2px; background: var(--line-soft); overflow: hidden; }
++.vsb-link-meter i { display: block; height: 100%; background: var(--info); border-radius: 2px; }
++.vsb-link-url { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
++.vsb-link-url .vsb-mono { flex: 1 1 100%; min-width: 0; padding: 6px 10px; border-radius: 6px; background: var(--surface-2); color: var(--text-dim); overflow-wrap: anywhere; }
++
++.vsb-machines { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
++.vsb-mach-cols { display: flex; align-items: center; justify-content: flex-end; gap: 0; padding: 0 12px; margin-top: 4px; font-size: var(--t-micro); color: var(--text-dim); }
++.vsb-mach { appearance: none; text-align: left; font: inherit; color: var(--text); cursor: pointer; display: grid; grid-template-columns: 16px minmax(0, 1fr) 72px 56px; align-items: center; gap: 12px;
++  padding: 10px 12px; border-radius: var(--r-ctl); border: 1px solid var(--line-soft); background: transparent; }
++div.vsb-mach { cursor: default; }
++.vsb-mach:hover { background: var(--surface-2); }
++.vsb-mach.is-on { border-color: var(--text-dim); background: color-mix(in srgb, var(--surface-2) 60%, var(--surface)); }
++.vsb-mach.is-refused { border-color: var(--bad); }
++.vsb-radio { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--ctl-bd); }
++.vsb-mach.is-on .vsb-radio { box-shadow: inset 0 0 0 4px var(--text); }
++.vsb-mach.is-refused .vsb-radio { box-shadow: inset 0 0 0 4px var(--bad); }
++.vsb-mach-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
++.vsb-mach-spec { color: var(--text-dim); font-size: var(--t-micro); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++div.vsb-mach .vsb-radio { display: none; }
++div.vsb-mach { grid-template-columns: minmax(0, 1fr) 72px 56px; }
++.vsb-mach-bar { height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
++.vsb-mach-bar i { display: block; height: 100%; border-radius: 3px; background: var(--series-1); }
++.vsb-mach-price { font-variant-numeric: tabular-nums; text-align: right; font-weight: 500; }
++.vsb-facts { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-top: 12px; font-size: var(--t-meta); }
++.vsb-fetch { display: inline-flex; align-items: center; gap: 10px; }
++.vsb-fetch-bar { width: 140px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--info) 22%, transparent); overflow: hidden; }
++.vsb-fetch-bar i { display: block; height: 100%; background: var(--info); border-radius: 3px; }
++
++/* Telemetry */
++.vsb-live { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
++.vsb-live.is-idle { display: flex; align-items: center; gap: 16px; padding: 12px 18px; font-size: var(--t-meta); color: var(--text-dim); }
++.vsb-live.is-starting, .vsb-live.is-session { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
++.vsb-live.is-session { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
++.vsb-live.is-starting { border-color: color-mix(in srgb, var(--info) 45%, var(--line)); }
++.vsb-live-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
++.vsb-live-word { font-weight: 600; font-size: var(--t-lead); color: var(--ok-ink); }
++.vsb-live-proj { font-weight: 600; font-size: var(--t-lead); }
++.vsb-live-facts { margin-left: auto; display: flex; align-items: baseline; gap: 18px; font-size: var(--t-meta); }
++.vsb-big { font: 500 var(--t-figure)/1 var(--font); font-variant-numeric: tabular-nums; color: var(--text); }
++.vsb-pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 25%, transparent); }
++.vsb-live-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
++.vsb-fig { margin: 0; padding: 10px 12px 6px; border-radius: var(--r-tile); background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); }
++.vsb-fig figcaption { font-size: var(--t-meta); color: var(--text-dim); display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
++.sw { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
++.sw.s-1 { background: var(--series-1); } .sw.s-2 { background: var(--series-2); } .sw.s-3 { background: var(--series-3); } .sw.s-5 { background: var(--series-5); }
++.vsb-fig figcaption .sw { margin-right: 0; }
++.vsb-bars-wrap { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 4px; height: 96px; }
++.vsb-bars-ax, .vsb-bars-plot { position: relative; }
++.vsb-bars-ax span { position: absolute; right: 0; transform: translateY(-50%); font-size: var(--t-micro); line-height: 1; color: var(--text-faint); font-variant-numeric: tabular-nums; }
++.vsb-bars-p90 { position: absolute; right: 2px; transform: translateY(-100%); padding-bottom: 3px; font-size: var(--t-micro); line-height: 1; color: var(--text-dim); font-variant-numeric: tabular-nums; }
++.vsb-bars { width: 100%; height: 100%; display: block; }
++.vsb-bars .g { stroke: var(--line-soft); stroke-width: 1; vector-effect: non-scaling-stroke; }
++.vsb-bars .b { fill: var(--series-1); }
++.vsb-bars.s-3 .b { fill: var(--series-3); }
++.vsb-bars .b:hover { opacity: .75; }
++.vsb-bars .p90 { stroke: var(--text-dim); stroke-dasharray: 3 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
++.vsb-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
++.vsb-tile { padding: 10px 12px; border-radius: var(--r-tile); background: color-mix(in srgb, var(--surface-2) 45%, var(--surface)); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
++.vsb-tile-k { font-size: var(--t-micro); color: var(--text-dim); }
++.vsb-tile-v { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
++.vsb-tile .vsb-spark { width: 100%; }
++.vsb-meter { margin-top: 12px; height: 8px; border-radius: 4px; background: var(--line-soft); overflow: hidden; }
++.vsb-meter i { display: block; height: 100%; border-radius: 4px; background: var(--series-5); }
++.vsb-spark { display: block; overflow: visible; }
++.vsb-spark .l { fill: none; stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
++.vsb-spark .a { opacity: .14; }
++.vsb-spark.s-1 .l { stroke: var(--series-1); } .vsb-spark.s-1 .a, .vsb-spark.s-1 .p { fill: var(--series-1); }
++.vsb-spark.s-2 .l { stroke: var(--series-2); } .vsb-spark.s-2 .a, .vsb-spark.s-2 .p { fill: var(--series-2); }
++.vsb-spark.s-3 .l { stroke: var(--series-3); } .vsb-spark.s-3 .a, .vsb-spark.s-3 .p { fill: var(--series-3); }
++.vsb-spark.s-5 .l { stroke: var(--series-5); } .vsb-spark.s-5 .a, .vsb-spark.s-5 .p { fill: var(--series-5); }
++.vsb-spark .p { stroke: var(--surface); stroke-width: 1.5; }
++
++.vsb-phases { display: flex; flex-direction: column; gap: 10px; }
++.vsb-ptrack { position: relative; display: flex; gap: 2px; height: 12px; border-radius: 6px; overflow: hidden; background: transparent; }
++.vsb-pseg { flex-basis: 0; min-width: 4px; border-radius: 3px; }
++.k-boot { background: var(--series-5); } .k-server { background: var(--series-1); } .k-update, .k-fetch { background: var(--series-4); }
++.k-load { background: var(--series-3); } .k-warmup { background: var(--series-2); }
++.vsb-pseg.is-run { background-image: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--surface) 35%, transparent) 4px 7px); animation: vsb-run 1s linear infinite; background-size: 20px 20px; }
++@keyframes vsb-run { to { background-position: 20px 0; } }
++.vsb-pseg.is-wait { min-width: 0; }
++.vsb-pseg.is-rest { background: var(--line-soft); min-width: 0; }
++.vsb-pdeadline { position: absolute; right: 0; top: 0; bottom: 0; width: 2px; background: var(--text-dim); }
++.vsb-plist { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: var(--t-meta); }
++.vsb-plist li { display: inline-flex; align-items: center; gap: 6px; }
++.vsb-plist li i { width: 8px; height: 8px; border-radius: 2px; }
++.vsb-plist .n { color: var(--text-dim); }
++.vsb-plist .v { font-variant-numeric: tabular-nums; font-weight: 500; }
++.vsb-plist li.is-skip i { background: transparent !important; box-shadow: inset 0 0 0 1px var(--text-faint); }
++.vsb-plist li.is-skip .v, .vsb-plist li.is-wait .v { color: var(--text-faint); font-weight: 400; }
++.vsb-plist li.is-wait i { background: transparent !important; box-shadow: inset 0 0 0 1.5px var(--text-faint); }
++.vsb-plist li.is-run .v { color: var(--info-ink); }
++
++.vsb-days { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
++.vsb-days-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
++.vsb-days-tot { display: flex; gap: 16px; font-size: var(--t-meta); font-variant-numeric: tabular-nums; flex-wrap: wrap; }
++.vsb-heat { display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); gap: 3px; padding-bottom: 18px; }
++.vsb-days.is-long .vsb-heat { row-gap: 22px; }
++.vsb-cell { appearance: none; position: relative; border: 0; padding: 0; height: 30px; border-radius: 4px; cursor: pointer; background: var(--surface-2); }
++i.vsb-cell { display: inline-block; width: 12px; height: 12px; border-radius: 3px; cursor: default; }
++.vsb-cell.l-1 { background: color-mix(in srgb, var(--series-1) 36%, var(--surface-2)); }
++.vsb-cell.l-2 { background: color-mix(in srgb, var(--series-1) 58%, var(--surface-2)); }
++.vsb-cell.l-3 { background: color-mix(in srgb, var(--series-1) 80%, var(--surface-2)); }
++.vsb-cell.l-4 { background: var(--series-1); }
++.vsb-cell.has-so::after { content: ''; position: absolute; left: 50%; top: 4px; width: 6px; height: 6px; margin-left: -3px; border-radius: 50%; background: var(--warn-ink); box-shadow: 0 0 0 1.5px var(--surface); }
++i.vsb-cell.has-so::after { top: 3px; }
++.vsb-cell:hover { outline: 1.5px solid var(--text-dim); outline-offset: 1px; }
++.vsb-cell.is-on { outline: 2px solid var(--text); outline-offset: 1px; }
++.vsb-cell-lbl { position: absolute; top: 34px; left: 0; font-size: var(--t-micro); color: var(--text-faint); white-space: nowrap; pointer-events: none; }
++.vsb-heat-key { display: flex; align-items: center; gap: 4px; font-size: var(--t-micro); color: var(--text-faint); justify-content: flex-end; }
++.vsb-heat-so { display: inline-flex; align-items: center; gap: 5px; margin-left: 14px; }
++
++.vsb-sessions { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
++.vsb-shead { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line-soft); font-size: var(--t-meta); }
++.vsb-dayhead { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
++.vsb-dayhead strong { color: var(--text); font-size: var(--t-body); }
++.vsb-cols { display: grid; grid-template-columns: 186px 166px 72px 64px; gap: 14px; color: var(--text-dim); font-size: var(--t-micro); }
++.vsb-slist { list-style: none; margin: 0; padding: 0; }
++.vsb-srow + .vsb-srow { border-top: 1px solid var(--line-soft); }
++.vsb-sline { appearance: none; width: 100%; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer;
++  display: grid; grid-template-columns: 12px 132px minmax(0, 1fr) auto 186px 166px 72px 64px; align-items: center; gap: 14px; padding: 10px 18px; min-height: 48px; }
++.vsb-sline:hover { background: color-mix(in srgb, var(--surface-2) 60%, var(--surface)); }
++.vsb-srow.is-open .vsb-sline { background: color-mix(in srgb, var(--surface-2) 60%, var(--surface)); }
++.vsb-srow.is-so .vsb-sline { color: var(--text-dim); }
++.vsb-caret { width: 7px; height: 7px; border-right: 1.5px solid var(--text-dim); border-bottom: 1.5px solid var(--text-dim); transform: rotate(-45deg); transition: transform .15s; }
++.vsb-srow.is-open .vsb-caret { transform: rotate(45deg); }
++.vsb-when { font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
++.vsb-proj { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.vsb-cell-spark { display: flex; align-items: center; gap: 10px; }
++.vsb-cell-spark .vsb-spark { width: 110px; flex: none; }
++.vsb-cell-spark .vsb-dash { width: 110px; text-align: center; }
++.vsb-num { font-variant-numeric: tabular-nums; font-size: var(--t-meta); white-space: nowrap; }
++.vsb-min, .vsb-cost { text-align: right; }
++.vsb-cost { font-weight: 600; }
++.vsb-detail { display: grid; grid-template-columns: 1.4fr 1.3fr 1fr 1fr; gap: 24px; padding: 14px 18px 18px 44px; background: color-mix(in srgb, var(--surface-2) 60%, var(--surface)); border-top: 1px solid var(--line-soft); }
++.vsb-detail h3 { margin: 0 0 10px; font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); text-transform: none; letter-spacing: .01em; }
++.vsb-detail-col { min-width: 0; }
++.vsb-detail .vsb-plist { flex-direction: column; gap: 5px; }
++.vsb-pct { border-collapse: collapse; font-size: var(--t-meta); font-variant-numeric: tabular-nums; width: 100%; margin-bottom: 6px; }
++.vsb-pct th, .vsb-pct td { padding: 4px 6px; text-align: right; font-weight: 400; }
++.vsb-pct thead th { color: var(--text-faint); font-size: var(--t-micro); }
++.vsb-pct tbody th { text-align: left; color: var(--text-dim); white-space: nowrap; padding-left: 0; }
++.vsb-pct td { font-weight: 500; }
++.vsb-dl { display: grid; grid-template-columns: auto auto; gap: 5px 12px; margin: 0; font-size: var(--t-meta); font-variant-numeric: tabular-nums; }
++.vsb-dl dt { color: var(--text-dim); } .vsb-dl dd { margin: 0; text-align: right; font-weight: 500; }
++.vsb-detail-acts { margin-top: 12px; }
++.vsb-fail { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--line)); border-radius: var(--r-card); background: color-mix(in srgb, var(--bad) 7%, var(--surface)); }
++.vsb-empty { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 56px 18px; border: 1px dashed var(--line); border-radius: var(--r-card); }
++.vsb-empty-h { font-size: var(--t-lead); color: var(--text-dim); }
++
++@media (max-width: 1100px) {
++  .vsb-grid { grid-template-columns: 1fr; }
++  .vsb-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
++  .vsb-detail { grid-template-columns: 1fr 1fr; }
++}
++@media (max-width: 700px) {
++  .vsb { --vsb-gap: 12px; }
++  .vsb-card-head { padding: 12px 14px 2px; }
++  .vsb-card-body { padding: 4px 14px 12px; }
++  .vsb-band { margin: 6px 14px 2px; flex-direction: column; align-items: stretch; }
++  .vsb-row { grid-template-columns: 1fr; gap: 2px; padding: 8px 0; }
++  .vsb-row-val { padding: 0; }
++  .vsb-mach { grid-template-columns: 14px minmax(0, 1fr) auto; gap: 4px 10px; }
++  div.vsb-mach { grid-template-columns: minmax(0, 1fr) auto; }
++  .vsb-mach-bar { display: none; }
++  .vsb-headfacts .vsb-fact { display: none; }
++  .vsb-live.is-starting, .vsb-live.is-session { padding: 12px 14px; }
++  .vsb-live-facts { margin-left: 0; width: 100%; justify-content: space-between; }
++  .vsb-live-charts { grid-template-columns: 1fr; gap: 10px; }
++  .vsb-tiles { grid-template-columns: 1fr 1fr; gap: 8px; }
++  .vsb-heat { grid-template-columns: repeat(15, minmax(0, 1fr)); row-gap: 22px; }
++  .vsb-days-head .vsb-seg { max-width: 100%; }
++  .vsb-cols { display: none; }
++  .vsb-sline { grid-template-columns: 12px minmax(0, 1fr) auto; gap: 4px 10px; padding: 10px 14px; }
++  .vsb-sline .vsb-when { grid-column: 2; }
++  .vsb-sline .vsb-proj { grid-column: 2; grid-row: 2; }
++  .vsb-sline .vsb-cost { grid-column: 3; grid-row: 1; }
++  .vsb-sline .vsb-min { grid-column: 3; grid-row: 2; }
++  .vsb-sline .vsb-flag { grid-column: 2 / 4; }
++  .vsb-sline .vsb-cell-spark { display: none; }
++  .vsb-detail { grid-template-columns: 1fr; padding: 12px 14px; }
++}
++`
