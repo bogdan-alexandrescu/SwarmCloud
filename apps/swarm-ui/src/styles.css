@@ -11406,72 +11406,15 @@ span.sk-ttile { cursor: default; }
 .node-line > .wf-mk { align-self: center; }
 .wf-mk { display: inline-flex; }
 
-/* The list, full width (workflows.html A). */
-.wfl { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
-.wfl-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.wfl-search { flex: 1 1 200px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--font); padding: 5px 10px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
-.wfl-pick { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-meta); color: var(--text-dim); }
-.wfl-pick select { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 4px 8px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
-/* AT A PHONE EACH PICK TAKES ITS OWN ROW AND SHRINKS TO IT (QA G3-14): the
-   owner select was 424px in a 354px column and pushed `.app` to 440px in a
-   386px viewport. The options print the name before the @, so the widest is
-   short; this holds whatever an option says. */
-/* AND THE STACKED SELECTS SHARE ONE LEFT EDGE (visual QA QA-097, 2026-10-20):
-   as a flex row each select started after its own label -- 57, 56 and 44 px
-   for owner, profile and sort -- so the three made a ragged edge. The label
-   word sits in a fixed track wide enough for "profile", the widest of them. */
-@media (max-width: 560px) {
-  .wfl-pick { flex: 1 1 100%; min-width: 0; max-width: 100%; display: grid; grid-template-columns: 4.5em minmax(0, 1fr); }
-  .wfl-pick select { flex: 1 1 auto; min-width: 0; max-width: 100%; width: 100%; }
-  /* AND THE STATE FILTER RUNS THE COLUMN WIDE (visual QA run 2, work-a-012,
-     2026-10-20): the shared `.c-seg` is `flex: none`, so it stopped 20-60px
-     short of the edge the search box and these selects reach. Its segments
-     already grow (components.css); their labels sit in the middle. */
-  .wfl-filters > .c-seg.wfl-seg { flex: 1 1 100%; }
-  .wfl-filters > .c-seg.wfl-seg > button { justify-content: center; }
-}
-.wfl-scroll { overflow-x: auto; }
-.wfl-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
-.wfl-table th { text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.wfl-table td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
-.wfl-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-/* THE HELD STATE CELL KEEPS THE ROW'S TINT (V101, #1038). Below 900px the
-   list's first column is held by the `.is-scroll` rule, which paints the held
-   body cell `--surface` so the cells scrolling under it do not show through --
-   and at three classes and four elements it beat this rule, so a failed row
-   was red everywhere but the one cell that says "failed". `--s-badb` is
-   opaque in both themes, so the held cell paints it instead and still covers
-   what scrolls beneath. */
-.wfl-row.is-failed td,
-.is-scroll > table > tbody > tr.wfl-row.is-failed > td:first-child:not([colspan]) { background: var(--s-badb); }
-/* THE LIST'S HEAD ROW IS FILLED ON `thead`, AS EVERY `.ctl-table` HEAD IS
-   (#178). The held corner below 900px paints `--surface-2` -- it must, or the
-   head labels scrolling under it show through -- and with nothing on this
-   head the corner was the one tinted cell in a white row (V101). The head is
-   the corner's colour now, at every width, and no head cell paints its own. */
-.wfl-table thead { background: var(--surface-2); }
-/* THE NAME CELL IS A TABLE CELL (browser QA N8, 2026-10-04). It was a flex
-   column, which takes a <td> out of the table: the browser wrapped it in an
-   anonymous cell and its own box was 37px in a 56px row, so its bottom border
-   floated ~20px above the row's. Its pieces stack as blocks instead. */
-.wfl-name { min-width: 14em; }
-/* The name, its id and its runners are one line (`.wfl-line`, styles/workflows.css; VQ-013). */
-.wfl-name > .wfl-why { display: block; }
-.wfl-name > * + * { margin-top: 2px; }
+/* The list's why line, done count and notes. Its rows, table and filters are
+   `.wfg`, below; the old `.wfl` table's rules went with it (owner, 2026-11-04). */
 .wfl-why { font-size: var(--t-micro); color: var(--text-dim); }
 .wfl-why.is-bad { color: var(--s-bad); }
 .wfl-why.is-warn { color: var(--s-warn); }
 .wfl-done { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .wfl-done small { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
-.wfl-owner, .wfl-age { color: var(--text-dim); white-space: nowrap; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
-.wfl-submitted { color: var(--text-dim); white-space: nowrap; }
-.wfl-dur { white-space: nowrap; }
-.wfl-dur.is-absent { color: var(--text-faint); }
-.wfl-filters select:disabled,
-.wfl-filters input:disabled,
-.wfl-seg button:disabled { cursor: progress; }
 /* THE LIST'S LOADING BARS (#113). The shared `.skeleton` is a full-width
    38px row; these are line-height bars inside the real cells. They take the
    same contrast step as `.skeleton` -- `--text-faint` mixed into the card's
@@ -11496,7 +11439,6 @@ span.sk-ttile { cursor: default; }
   animation: ctl-sweep 1.4s linear infinite;
 }
 .wfl-skel.is-sub { height: var(--t-micro); }
-.wfl-table .num .wfl-skel { margin-left: auto; }
 @media (prefers-reduced-motion: reduce) {
   .wfl-skel { animation: none; }
 }
@@ -11714,13 +11656,8 @@ span.sk-ttile { cursor: default; }
    (lane U1, 2026-10-02), imported by Agents.tsx and AgentSplit.tsx. */
 /* (Agents rules go above this line.) */
 
-/* PHONE ROWS AND TABLES KEEP WHAT TELLS ROWS APART (#109).
-   The workflow list scrolls sideways at 390, so its done, failed and age
-   columns are off the right edge; `.wfl-phone` carries them under the name
-   there (`phoneSummary`), and is not drawn wide, where the cells say it. */
-.wfl-phone { display: none; }
+/* PHONE TABLES KEEP WHAT TELLS ROWS APART (#109). */
 @media (max-width: 560px) {
-  .wfl-phone { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
   /* THE STEP TABLE KEEPS WHAT COMPARES ROWS. Runner and inputs are the two
      columns a reader does not sort by; both are on the step's inspector one
      tap away. The step column is held by the `.is-scroll` rule (≤899). */
