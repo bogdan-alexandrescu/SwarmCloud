@@ -244,12 +244,12 @@ def test_ci_may_grant_no_container_role():
     decision 2026-10-21). hasOnly() limits which roles CI grants, never to whom
     or under what condition, so a container role on this list is one CI could
     grant itself unconditioned, reaching the other team's agents-staging
-    cluster. The prose counts are therefore of a list without it: 16.
+    cluster. The prose counts are therefore of a list without it: 15.
     MUTATION: put "roles/container.clusterViewer" back on
     deployer_grantable_project_roles and this is red."""
     roles = grantable_roles()
     assert not [r for r in roles if r.startswith("roles/container.")], roles
-    assert len(roles) == 16, roles
+    assert len(roles) == 15, roles
 
 
 def test_a_gated_role_is_off_by_default_and_read_by_nothing_else():
