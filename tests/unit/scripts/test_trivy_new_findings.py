@@ -361,6 +361,81 @@ def test_the_repo_gate_reads_exactly_the_speech_entries_of_the_real_accept_list(
     assert read["vulnerabilities"] == speech
 
 
+# --- accept-list: the same filtered list, written for the SARIF scan ---------
+# BGD, 2026-11-05 (#2688): code scanning's `trivy-fs` alerts honour the gate's
+# accept list, so the workflow's SARIF scan passes what this subcommand writes
+# as --ignorefile. One filter (gate_ignores), never a second hand-kept list.
+
+def _accept_list(tmp_path: Path, accept: list[dict[str, Any]] | None) -> tuple[subprocess.CompletedProcess[str], Path]:
+    out = tmp_path / "out" / "accept.trivyignore.yaml"
+    out.parent.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SWARM_")}
+    env.update(SWARM_ENV_FILE=str(tmp_path / "no.env"), NO_COLOR="1", TMPDIR=str(tmp_path),
+               SWARM_TRIVY_IGNOREFILE=str(tmp_path / "accept.yaml"))
+    if accept is not None:
+        (tmp_path / "accept.yaml").write_text(yaml.safe_dump({"vulnerabilities": accept}))
+    result = subprocess.run(["bash", str(SCRIPT), "accept-list", str(out)], cwd=tmp_path, capture_output=True,
+                            text=True, env=env, timeout=60, check=False)
+    return result, out
+
+
+def test_the_accept_list_holds_only_unexpired_entries_naming_the_speech_lockfile_alone(tmp_path):
+    kept = [_speech_entry("CVE-2026-0101"), _speech_entry("CVE-2026-0102")]
+    result, out = _accept_list(tmp_path, [
+        kept[0],
+        # No paths: it would match every target.
+        {"id": "CVE-2026-0201", "statement": "image only", "expired_at": "2099-12-31"},
+        # Another path.
+        {"id": "CVE-2026-0202", "statement": "other lockfile", "paths": ["apps/api/uv.lock"],
+         "expired_at": "2099-12-31"},
+        # The speech lockfile and another path.
+        {"id": "CVE-2026-0203", "statement": "both", "paths": [SPEECH_LOCK, "apps/api/uv.lock"],
+         "expired_at": "2099-12-31"},
+        # Expired.
+        _speech_entry("CVE-2026-0301", expires="2026-01-01"),
+        kept[1],
+    ])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "2\n", result.stdout
+    assert yaml.safe_load(out.read_text()) == {"vulnerabilities": kept}
+
+
+def test_an_accept_list_that_keeps_nothing_is_still_a_list_trivy_reads(tmp_path):
+    result, out = _accept_list(tmp_path, [
+        {"id": "CVE-2026-0201", "statement": "image only", "expired_at": "2099-12-31"},
+        _speech_entry("CVE-2026-0301", expires="2026-01-01")])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "0\n", result.stdout
+    assert yaml.safe_load(out.read_text()) == {}
+    # No list at all accepts nothing, the same way.
+    none = tmp_path / "none"
+    none.mkdir()
+    result, out = _accept_list(none, None)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "0\n" and yaml.safe_load(out.read_text()) == {}
+
+
+def test_the_accept_list_of_the_real_list_is_the_one_the_gate_reads(tmp_path):
+    whole = yaml.safe_load((REPO / ".trivyignore.yaml").read_text())["vulnerabilities"]
+    speech = [e for e in whole if e.get("paths") == [SPEECH_LOCK]
+              and e["expired_at"] > datetime.now(timezone.utc).date()]
+    out = tmp_path / "accept.trivyignore.yaml"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SWARM_")}
+    env.update(SWARM_ENV_FILE=str(tmp_path / "no.env"), NO_COLOR="1", TMPDIR=str(tmp_path))
+    result = subprocess.run(["bash", str(SCRIPT), "accept-list", str(out)], cwd=REPO, capture_output=True,
+                            text=True, env=env, timeout=60, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == f"{len(speech)}\n", result.stdout
+    written = yaml.safe_load(out.read_text())
+    assert written == ({"vulnerabilities": speech} if speech else {}), written
+
+
+def test_accept_list_needs_exactly_one_path():
+    result = subprocess.run(["bash", str(SCRIPT), "accept-list"], capture_output=True, text=True,
+                            timeout=60, check=False)
+    assert result.returncode == 2, result.stdout + result.stderr
+
+
 # --- the vulnerability DB download: retried, then the upstream fallback ------
 # #2351: trivy (repo) read red when mirror.gcr.io answered 404 for the DB, a
 # transient fault with no finding behind it, and the merge step's free re-run

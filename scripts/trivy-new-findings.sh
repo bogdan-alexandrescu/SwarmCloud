@@ -10,6 +10,12 @@
 #   scripts/trivy-new-findings.sh compare <base.json> <head.json>
 #       Compare two `trivy fs --format json` reports.
 #
+#   scripts/trivy-new-findings.sh accept-list <out.yaml>
+#       Write the accept list the gate reads (below, gate_ignores) to
+#       <out.yaml>, for the workflow's SARIF scan to pass as --ignorefile:
+#       the code-scanning alerts then honour the same entries, and the same
+#       expiry, as the gate (BGD, 2026-11-05, #2688). Prints the count kept.
+#
 # WHY. Measured on PR 1186 (2026-10-12, #1194): editing Dockerfile FROM lines
 # made the PR's scan report "new" alerts that already existed on main,
 # re-attributed to the lines the PR edited. A finding's LINE is not its
@@ -146,6 +152,26 @@ gate_ignores() {
   ' "${in}"
 }
 
+# accept_list OUT -- write gate_ignores' copy of the accept list
+# (SWARM_TRIVY_IGNOREFILE, else .trivyignore.yaml) to OUT and print how many
+# entries it kept. No list, or nothing kept, writes `{}`: an empty accept list
+# trivy still parses, so a caller can always pass OUT as --ignorefile.
+accept_list() {
+  local out="$1" accept accepted=0
+  accept="${SWARM_TRIVY_IGNOREFILE:-${REPO_ROOT}/.trivyignore.yaml}"
+  if [[ -f "${accept}" ]]; then
+    accepted="$(gate_ignores "${accept}" "${out}")" \
+      || { err "could not read the accept list ${accept}"; return 2; }
+    info "accepting ${accepted} unexpired entries of ${accept} scoped to ${GATE_ACCEPTED_PATH}; no other"
+  else
+    info "no accept list at ${accept}: accepting nothing"
+  fi
+  if [[ "${accepted}" == "0" ]]; then
+    printf '{}\n' >"${out}" || { err "could not write ${out}"; return 2; }
+  fi
+  printf '%s\n' "${accepted}"
+}
+
 # scan DIR OUT [EXTRA...] -- the gate's scan of DIR as JSON. trivy 0.76 never
 # loads an accept list by itself; the gate passes its own with --ignorefile.
 scan() {
@@ -157,7 +183,7 @@ scan() {
 }
 
 gate() {
-  local base_rev="" work status accept accepted ignore=()
+  local base_rev="" work status accepted ignore=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --base) base_rev="${2-}"; shift 2 ;;
@@ -170,13 +196,8 @@ gate() {
   trap "git worktree remove --force '${work}/base' >/dev/null 2>&1 || true; rm -rf '${work}'" EXIT
 
   # Both sides read this checkout's list, so an acceptance is judged once.
-  accept="${SWARM_TRIVY_IGNOREFILE:-${REPO_ROOT}/.trivyignore.yaml}"
-  if [[ -f "${accept}" ]]; then
-    accepted="$(gate_ignores "${accept}" "${work}/gate.trivyignore.yaml")" \
-      || { err "could not read the accept list ${accept}"; return 2; }
-    info "accepting ${accepted} unexpired entries of ${accept} scoped to ${GATE_ACCEPTED_PATH}; no other"
-    [[ "${accepted}" == "0" ]] || ignore=(--ignorefile "${work}/gate.trivyignore.yaml")
-  fi
+  accepted="$(accept_list "${work}/gate.trivyignore.yaml")" || return 2
+  [[ "${accepted}" == "0" ]] || ignore=(--ignorefile "${work}/gate.trivyignore.yaml")
 
   scan . "${work}/head.json" ${ignore[@]+"${ignore[@]}"} || { err "the scan of this checkout failed"; return 2; }
 
@@ -210,5 +231,6 @@ gate() {
 case "${1:-}" in
   compare) [[ $# -eq 3 ]] || usage; compare "$2" "$3" ;;
   gate) shift; gate "$@" ;;
+  accept-list) [[ $# -eq 2 ]] || usage; accept_list "$2" ;;
   *) usage ;;
 esac
