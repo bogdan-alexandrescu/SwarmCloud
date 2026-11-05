@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
-import { densityAt, StageGrid, stageGridOf, tallyOf, walkStage } from './StageGrid'
+import { chipKindOf, densityAt, StageGrid, stageGridOf, tallyOf, walkStage } from './StageGrid'
 
 // ---------------------------------------------------------------------------
 // The fixture: 40 steps, 4 stages x 10 features, `re-review` holding a `-`.
@@ -311,8 +311,16 @@ describe('StageGrid', () => {
     expect(chip('capture-home').querySelector('.lg-name')).toBeNull()
   })
 
-  it('tallies every parked chip as parked and every waiting one as waiting, whatever the park reason', () => {
+  it('tallies every parked chip as parked and every waiting one as waiting', () => {
     expect(tallyOf(['parked', 'waiting', 'parked'])).toMatchObject({ waiting: 1, parked: 2 })
+  })
+
+  it('draws a step parked behind its dependencies as waiting, and a step parked for any other reason as parked', () => {
+    const parked = (park_reason: Task['park_reason']) =>
+      chipKindOf({ kind: 'state', state: 'PARKED', task: task('task_p', 'p', 'PARKED', { park_reason }) })
+    expect(parked('DEPENDENCY_INCOMPLETE')).toBe('waiting')
+    expect(parked('HUMAN_REQUIRED')).toBe('parked')
+    expect(parked(null)).toBe('parked')
   })
 
   it('keeps the times of a four-feature grid at a width where ten features lose them', () => {

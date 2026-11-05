@@ -2,7 +2,8 @@
  * THE WORKFLOW PAGE'S LINEAGE AND ITS STEP CARD (the owner's pick of the
  * workflow-graph mock-ups, direction B, 2026-11-05): the lineage strip above
  * the grid on pick and at the top of the step's sheet on a phone, the head's
- * tally counting a parked step as parked, and no Stop on a parked step that was
+ * tally counting a step parked behind its dependencies as waiting (the owner's
+ * pick) and any other park as parked, and no Stop on a parked step that was
  * never attempted.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -201,14 +202,17 @@ const chip = (stepId: string) => document.querySelector<HTMLButtonElement>(`.sg 
 const dock = () => document.querySelector<HTMLElement>('.wi-dock')
 
 describe('the workflow page: lineage and the step card', () => {
-  it('counts a parked step as parked in the head and its stage, as its chip draws it, not as waiting', async () => {
+  it('draws and counts a step parked behind its dependencies as waiting, and any other park as parked', async () => {
     await page()
     const tally = within(document.querySelector<HTMLElement>('.wfp-top')!).getByLabelText('Steps by state')
-    // review-search parked behind its dependency and merge parked on a person: both drawn parked, both counted parked.
-    expect(tally.querySelector('.wfp-t.is-waiting')!.textContent).toContain('0 waiting')
-    expect(tally.querySelector('.wfp-t.is-parked')!.textContent).toBe('2 parked')
-    expect(chip('review-search')!.className).toContain('is-parked')
-    expect(document.querySelector('.sg-row[data-stage="review"]')!.getAttribute('aria-label')).toBe('review: 0 done, 0 failed, 1 running, 0 waiting, 1 parked')
+    // review-search parked behind its dependency: drawn waiting, counted waiting. merge parked on a person: drawn and counted parked.
+    expect(tally.querySelector('.wfp-t.is-waiting')!.textContent).toContain('1 waiting')
+    expect(tally.querySelector('.wfp-t.is-parked')!.textContent).toBe('1 parked')
+    expect(chip('review-search')!.className).toContain('is-waiting')
+    expect(chip('review-search')!.className).not.toContain('is-parked')
+    expect(chip('review-search')!.title).toContain('review-search (review): waiting')
+    expect(chip('review-search')!.title).not.toContain('parked')
+    expect(document.querySelector('.sg-row[data-stage="review"]')!.getAttribute('aria-label')).toBe('review: 0 done, 0 failed, 1 running, 1 waiting')
   })
 
   it('offers no Stop on a parked step never attempted, and keeps it on one that ran an attempt', async () => {

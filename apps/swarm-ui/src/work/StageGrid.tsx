@@ -263,10 +263,11 @@ export function chipKindOf(state: StepState): ChipKind {
   if (s === 'FAILED' || s === 'DEAD_LETTERED') return 'failed'
   if (s === 'CANCELLED') return 'stopped'
   if (CONCURRENCY_STATES.has(s)) return 'running'
-  // EVERY PARKED STEP IS PARKED, behind its dependencies too: the chip draws the
-  // parked mark, so the stage tally and the page head count it parked, never
-  // as waiting (graph review, 2026-11-05).
-  if (s === 'PARKED') return 'parked'
+  // A STEP PARKED BEHIND ITS DEPENDENCIES IS DRAWN AND COUNTED WAITING (the
+  // owner's pick, PR #3298, 2026-11-05): it waits on an earlier step as a step
+  // not started does, so the chip draws the waiting mark and the stage tally
+  // and the page head count it waiting. Any other park is parked.
+  if (s === 'PARKED') return isDependencyPark(state.task) ? 'waiting' : 'parked'
   return 'waiting'
 }
 
@@ -316,11 +317,18 @@ export function chipTimeOf(state: StepState, now: number): string | null {
   return spanLabel(ms < 60_000 ? ms : Math.round(ms / 60_000) * 60_000)
 }
 
+/** A step parked only because a step it depends on has not finished. */
+function isDependencyPark(t: Task): boolean {
+  return t.state === 'PARKED' && t.park_reason === 'DEPENDENCY_INCOMPLETE'
+}
+
 /** Why a waiting step waits, in the console's words; null for a step that does not wait. */
 function waitWordOf(state: StepState): string | null {
   // A step not started yet: its chip line's sentence already says what it starts after, with the files.
   if (state.kind !== 'state') return null
   const t = state.task
+  // Drawn waiting, so said waiting: `waiting on a step`, not `parked: …`.
+  if (isDependencyPark(t)) return PARK_WORD.DEPENDENCY_INCOMPLETE
   if (t.state === 'PARKED') {
     const r = t.park_reason
     if (!r) return 'parked, no reason recorded'
@@ -335,6 +343,7 @@ function waitWordOf(state: StepState): string | null {
 function stateWordOf(state: StepState, kind: ChipKind): string {
   if (state.kind === 'unknown') return 'state not known: its agent was not in the read'
   if (state.kind === 'unstarted') return 'not started'
+  if (state.kind === 'state' && isDependencyPark(state.task)) return 'waiting'
   if (kind === 'waiting' || kind === 'parked') return state.state.toLowerCase()
   return state.state.toLowerCase().replace('_', '-')
 }
@@ -383,9 +392,9 @@ export interface StageTally {
   readonly done: number
   readonly failed: number
   readonly running: number
-  /** Not started, queued or ready. */
+  /** Not started, queued, ready, or parked behind its dependencies. */
   readonly waiting: number
-  /** Parked, for any reason: drawn with the parked mark, so counted parked. */
+  /** Parked for any reason but its dependencies: drawn with the parked mark, so counted parked. */
   readonly parked: number
   readonly stopped: number
   /** Steps whose task was not in the read: the tally is short by exactly this many. */
