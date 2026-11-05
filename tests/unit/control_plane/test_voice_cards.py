@@ -33,9 +33,10 @@ from .test_voice_sessions import FakeVoice, _client, _start
 ROOT = Path(__file__).resolve().parents[3]
 CARDS_TS = ROOT / "apps" / "swarm-ui" / "src" / "voice" / "cards.ts"
 
-#: §4's table, in its order: the kinds the brief names.
+#: §4's table, in its order: the kinds the brief names; then voice-it-own-speech.md's
+#: `readback` (§7.2) and `spec` (§8.1).
 DESIGN_KINDS = ("work", "review", "proposal", "diagram", "mockup", "details_input",
-                "credential_input", "plan", "budget", "stop", "rescue")
+                "credential_input", "plan", "budget", "stop", "rescue", "readback", "spec")
 
 
 # ---- reading the console's list ---------------------------------------------

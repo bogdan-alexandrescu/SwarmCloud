@@ -143,7 +143,7 @@ def test_a_recorded_head_the_forge_no_longer_has_fails_the_clone_never_the_tip(
     )
     child.ws = lifecycle.workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": "t-child3", "metadata": {"dispatch": BRANCHES}, "depends_on": ["t-parent"]}
-    monkeypatch.setattr(child, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(child, "_git_token", lambda **_: "not-a-real-token")
 
     child._task = task
     with pytest.raises(WorkerError) as caught:

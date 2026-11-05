@@ -93,7 +93,7 @@ def _clone(worker_factory, monkeypatch, origin: Path, *, task_id: str, dispatch:
     if workflow_id:
         task["workflow_id"] = workflow_id
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     cloned = worker._maybe_clone(task)
     assert cloned is not None and cloned["commit"], "the clone did not land"
     repo = worker.ws.work / lifecycle.REPO_DIR_NAME

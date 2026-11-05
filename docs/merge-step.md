@@ -44,6 +44,39 @@ below.**
 **Revised 2026-11-03: in a repository whose own merge train is on, the merge
 step labels its pull request `ready` and parks on the train instead of taking
 the merge slot -- the first section below.**
+**Revised 2026-11-05: a re-review that only re-publishes the review's MERGE is
+readied on `claude-code`, never the browser -- the section below.**
+
+## Revised 2026-11-05: the re-review that runs no agent runs on claude-code (part of #2688)
+
+In implement -> review -> fix -> re-review -> merge, a MERGE review means no
+fix runs and the re-review runs no agent: the worker re-publishes the verdict
+it staged, byte for byte (`Worker._republish_staged_verdict`), so the merge
+step reads the same file from the same step either way. Until now the
+re-review of a `browser_if_ui` review inherited the profile the review
+resolved to, so a UI lane's MERGE started a browser pod on GKE only to copy a
+file. In the day to 10:00Z on 5 November 2026, 56 re-reviews ran on
+`claude-code-browser` and 53 of them used no browser. BGD asked for agents
+that start on the browser runtime and barely use it to be fixed.
+
+The rule (`scheduler.runtime.republishes`). When the scheduler readies the
+re-review, it reads the same gate the worker reads: the re-review's
+`metadata.dispatch.verdict_gate`, which is the integrator's own. It also
+reads the verdict the integrator recorded from that review's verdict file,
+`result_summary.verdict_gate` on the step it builds on. Whether the
+integrator's worker or swarm-api's control-plane publish ended that step, the
+record has the same shape. If the verdict is outside `verdict_in`, the
+re-review's gate is shut too, so it resolves to `claude-code` by catalogue
+name, swapped with the spec swarm-api already signed for it, with reason
+`republish_no_agent`. If the gate is open, because a fix ran or the record is
+missing, malformed or names another review, the re-review inherits as
+before. A NOT_YET that the integrator's no-op precheck skipped also inherits:
+the re-review's own precheck needs its clone, so the scheduler cannot know.
+A pinned review's re-review carries no `inherit` (Q-2275) and is not
+touched. The resolution is written into the PARKED -> READY transaction, the
+same write `browser_if_ui` already uses, so admission reserves only
+`claude-code`'s pools, and the READY event and `metadata.runtime.resolved`
+record which runtime ran.
 
 ## Revised 2026-11-03: the repository's merge train boards the merge step's pull request (part of #2688)
 
@@ -106,16 +139,39 @@ slot:
   deleted, as a direct merge's are. Merged with no `merge-train` status (a
   person's merge while it waited): `already_merged`, also SUCCEEDED.
 * **Open, `ready` gone, at the head it parked at:** the train ejected it
-  (`merge-train.sh eject_pr`: a comment linking the failing job, `ready`
-  removed) or auto-merge.yml's gate removed `ready` with its reason. This
-  takes the path a refused merge takes: the gate runs first, so a pull request
-  that now conflicts with main goes to its conflict fix round, and a red check
-  at its head to its CI-fix round; a round's new head is labelled `ready`
-  afresh. Green and still not `ready`, it ends FAILED `train_ejected`
-  (`merge_refused`) quoting the train's ejection comment, or else the latest
-  comment an App wrote, and is never labelled again -- as a dequeued pull
-  request is never enqueued again, so a change the train keeps ejecting does
-  not loop.
+  (`merge-train.sh eject_pr`: a comment beginning `**Ejected from the merge
+  train` that lists the failing jobs, `ready` removed) or auto-merge.yml's
+  gate removed `ready` with its reason. This takes the path a refused merge
+  takes: the gate runs first, so a pull request that now conflicts with main
+  goes to its conflict fix round, and a red check at its head to its CI-fix
+  round; a round's new head is labelled `ready` afresh. Green and still not
+  `ready`, which removed it decides (#3313):
+  * **The gate:** FAILED `train_ejected` (`merge_refused`) at once, quoting
+    the latest comment an App wrote. What the gate refused (a closing
+    keyword, a dependency not landed) does not change by waiting.
+  * **The train, first time at this head:** labelled `ready` again, once, and
+    parked `TRAIN_WAITING` again, the re-board recorded in the park's
+    `pending` (`TRAIN_REBOARDED`: the fenced park keeps only the code, head,
+    pull request, `pending` and `failed` of a wait). Why: the head's own
+    checks are green, and a train run of main plus this pull request alone
+    that fails while they are is often a flake -- PR #3212 was ejected
+    because two CPU-bound vitest ladder tests timed out at vitest's 30 s on
+    a loaded shard, while the same code was green on its own head and on
+    main's. The train's ejection comment itself says a flake needs only
+    `ready` added back; before #3313 the step refused instead.
+  * **The train, again at the same head:** a CI-fix round's, when the step
+    asked for rounds and has one left: it parks `train_fix_pending` with the
+    train run's failing jobs in `failed`, and swarm-api's merge wake tick
+    submits the round with them as its excerpt; a round claimed at the head
+    parks `ci_fix_running` until it ends. A round that moves the head is
+    labelled afresh at its new head. A round that ended at this head (it
+    found nothing to change, was refused or never ran), or no round asked
+    or left, ends FAILED `train_ejected` quoting the train's ejection
+    comment, "after one re-board" (and the round). One re-board per head, so
+    a change the train keeps ejecting cannot loop.
+
+  The wait record is tenant-writable: a forged one can at worst re-label
+  once, skip the re-board, or refuse.
 * **Open and `ready`:** parks again.
 
 **With the train off** nothing changes: no label is read or written, the slot,
@@ -124,8 +180,11 @@ the one variable read at a green reading.
 
 **Invariants.** Invariant 1: the wait is a park, the lease released and no
 capacity held, waking on its fallback instant. Invariant 5: the only new forge
-write, the label, is behind `ctx.recheck()`, the fencing recheck every forge
-write takes; a stale attempt labels nothing and parks nothing. The merge
+write, the label -- the re-board's too -- is behind `ctx.recheck()`, the
+fencing recheck every forge write takes; a stale attempt labels nothing and
+parks nothing. The re-board's park and the round's (`train_fix_pending`,
+`ci_fix_running`) hold no lease, capacity or merge slot either
+(`_RELEASE_ON_PARK`). The merge
 itself is GitHub's, made by the train's App token, not by the step.
 
 **What a deployment needs.** The tenant GitHub App's permissions

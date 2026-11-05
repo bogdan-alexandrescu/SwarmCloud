@@ -8,10 +8,11 @@
   reads the frozen catalogue, `swarm_common.profiles.RUNNER_PROFILES`, from
   the `sc-v<version>` tag it installs, and sc-v0.5.75 was cut before contract
   request 127 merged (#2918).
-* The release tags the bridge `sc-v<version>` only for a version it has not
-  tagged yet (docs/ci.md, "The plugin's bridge tag is made by the release"),
-  so the profile reaches a session only when plugin.json's version moves past
-  0.5.75, with the bridge pin beside it and a CHANGELOG entry naming it.
+* Main's CI tags the bridge `sc-v<version>` once the unit tests pass, and only
+  for a version it has not tagged yet (docs/ci.md, "The plugin's bridge tag is
+  made once the unit tests pass"), so the profile reaches a session only when
+  plugin.json's version moves past 0.5.75, with the bridge pin beside it and
+  a CHANGELOG entry naming it.
 """
 
 from __future__ import annotations

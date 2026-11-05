@@ -219,6 +219,17 @@ def test_a_workflow_without_them_serves_nulls_and_a_generated_description(client
     assert served["feature"] is None and served["title"] is None
 
 
+def test_a_workflow_without_them_serves_nulls(client, monkeypatch):
+    # What the submission itself stores: the generated description is a
+    # separate write after it returns, held by the test above.
+    monkeypatch.setattr(wfdescription, "after_submission", lambda *a, **k: None)
+    workflow = _post(client)
+    read = client.get(f"/v1/workflows/{workflow['workflow_id']}", headers=auth_header("alice")).json()
+    served = read["workflow"]
+    assert served["description"] is None and served["description_source"] is None
+    assert served["feature"] is None and served["title"] is None
+
+
 def test_a_claude_code_submission_reads_as_claude_code(client):
     workflow = _post(client, origin="swarm-mcp")
     read = client.get(f"/v1/workflows/{workflow['workflow_id']}", headers=auth_header("alice")).json()

@@ -39,6 +39,46 @@
 .ah-fm.is-cred { fill: var(--series-3); }
 .ah-kd { display: inline-flex; align-items: center; gap: 6px; }
 
+/* ---- what a label means, behind the label (BGD's no-prose rule, 5 November 2026) ---- */
+/* A label whose explanation is its tooltip: focusable, so a keyboard opens it. */
+.ah-tipt { display: inline-flex; align-items: center; gap: 6px; border-radius: 4px; cursor: help; }
+.ah-tipt:focus-visible,
+.ah-i:focus-visible,
+.ah-tick:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+/* The (i) beside a column or a heading: a real button, the definition its tooltip. */
+.ah-i {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  align-self: center;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--ctl-bd);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  font-style: italic;
+  font-weight: 600;
+  line-height: var(--lh-micro);
+  cursor: help;
+  vertical-align: middle;
+}
+.ah-i:hover { color: var(--text); }
+/* The heading and its (i) hold together; at 390 the note wraps under them rather than squeezing the heading to three lines. */
+.ah-head-t { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.ah-timeline > .ctl-card-head { flex-wrap: wrap; }
+.ah-head-t .c-tip { font-weight: 400; }
+th .c-tip { text-align: left; font-weight: 400; white-space: normal; }
+/* The re-auth callout's tick: its reason is the tooltip. */
+.ah-tick { display: inline-flex; vertical-align: -1px; margin-right: 6px; color: var(--bad-ink); border-radius: 4px; cursor: help; }
+
 /* ---- callouts (F4) ---- */
 .ah-callout {
   background: var(--surface);

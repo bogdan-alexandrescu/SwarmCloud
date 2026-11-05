@@ -44,7 +44,7 @@ import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
-import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
+import { Button, ButtonLink, buttonClass, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
 import { disabledSentence } from './ProfileMatrix'
 import { backendWord, parkWord } from './words'
@@ -796,9 +796,14 @@ function footFor(r: Result<unknown>, absent: string, now: number): string | null
 // ---------------------------------------------------------------------------
 
 /**
- * Every card's head: the title, the qualifier, and the link out, which reads
- * the destination's name with an arrow (O1: `All live →`, `Pools →`). There
- * is no way to draw a card here without naming the screen that goes deeper.
+ * Every card's head: the title, the qualifier, and the way out, a button
+ * that reads the destination's name (O1: `All live`, `Pools`). There is no
+ * way to draw a card here without naming the screen that goes deeper.
+ *
+ * A BUTTON, NOT AN ARROW LINK (BGD's standing rule, 2026-11-05): a way out
+ * of a card is a real button in the theme's style, never a text link with an
+ * arrow. It is still an `<a>` with the same `href` (a navigation, never an
+ * action), so a middle click and the router behave as before.
  *
  * `explain` publishes a help topic's sentence at the title as a hidden
  * description (`HelpNote`) and draws nothing (B7.4).
@@ -824,9 +829,9 @@ function CardHead({
         {explain !== undefined && <HelpNote topic={explain} id={descId} />}
       </h2>
       {note !== undefined && <span className="ctl-card-note">{note}</span>}
-      <a className="ctl-link ov-link" href={href}>
-        {cta} &rarr;
-      </a>
+      <ButtonLink size="sm" className="ov-link" href={href}>
+        {cta}
+      </ButtonLink>
     </div>
   )
 }
@@ -1213,9 +1218,9 @@ function HandoffCardList({
               {/* QA12-28: Take control (the banner's own I'm ready on a park), then
                   Open, then anything secondary -- one order on every card. */}
               {handoffOf(t)?.phase === 'hold' && <HandoffTakeControl taskId={t.id} />}
-              <a className="ov-att-go" href={agentPath(t)} title={`Open ${rowLabel(t, null)}`}>
-                Open &rarr;
-              </a>
+              <ButtonLink size="sm" className="ov-handoff-open" href={agentPath(t)} title={`Open ${rowLabel(t, null)}`}>
+                Open
+              </ButtonLink>
             </HandoffBanner>
           </div>
         )
@@ -1354,13 +1359,20 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
               decision of 2026-10-23): the first workflow's link carries the
               card's cover (`is-cover`), so a click on its empty space opens
               that workflow; the list's link is a plain link above it. */}
+          {/* BUTTONS, NOT ARROW LINKS (BGD's standing rule, 2026-11-05): the
+              workflow is the region's button, the list its ghost. */}
           {workflows.map((w, i) => (
-            <a key={w.id} className={i === 0 ? 'ov-att-go ov-att-wf is-cover' : 'ov-att-go ov-att-wf'} href={toPath(w.href)} title={`Open workflow ${w.id}`}>
-              <span className="ov-att-wf-t">{name(w.id) ?? `Workflow ${w.id}`}</span> <span aria-hidden="true">&rarr;</span>
+            <a
+              key={w.id}
+              className={buttonClass({ size: 'sm' }, false, i === 0 ? 'ov-att-go ov-att-wf is-cover' : 'ov-att-go ov-att-wf')}
+              href={toPath(w.href)}
+              title={`Open workflow ${w.id}`}
+            >
+              <span className="ov-att-wf-t">{name(w.id) ?? `Workflow ${w.id}`}</span>
             </a>
           ))}
-          <a className="ov-att-go" href={toPath(p.href)} aria-label={`${go}: ${p.headline}. ${p.detail}`}>
-            <span className="ov-att-go-w">{go}</span> &rarr;
+          <a className={buttonClass({ kind: 'ghost', size: 'sm' }, false, 'ov-att-go')} href={toPath(p.href)} aria-label={`${go}: ${p.headline}. ${p.detail}`}>
+            <span className="ov-att-go-w">{go}</span>
           </a>
         </span>
       </div>
@@ -1381,10 +1393,14 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
         </small>
       </span>
       {/* THE WORDS ARE THEIR OWN SPAN (visual QA VQ-002, 2026-10-26): a
-          phone draws the card as one line, mark, title and the arrow, and
-          steps the words aside; the card's accessible name keeps them. */}
-      <span className="ov-att-go">
-        <span className="ov-att-go-w">{p.linkLabel ?? 'Open'}</span> &rarr;
+          phone draws the card as one line, mark and title, the whole card
+          its tap target; the card's accessible name keeps the words. On a
+          desktop they are drawn as the card's button (BGD's standing rule,
+          2026-11-05: no arrow links); the card is the one link. */}
+      <span className="ov-att-acts">
+        <span className={buttonClass({ size: 'sm' }, false, 'ov-att-go')}>
+          <span className="ov-att-go-w">{p.linkLabel ?? 'Open'}</span>
+        </span>
       </span>
     </a>
   )
@@ -1886,9 +1902,9 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
-      <a className="ctl-link ov-link" href="/capacity/accounts">
-        Accounts &rarr;
-      </a>
+      <ButtonLink size="sm" className="ov-link" href="/capacity/accounts">
+        Accounts
+      </ButtonLink>
     </div>
   )
 }

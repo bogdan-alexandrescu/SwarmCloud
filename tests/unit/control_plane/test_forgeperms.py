@@ -178,6 +178,34 @@ def test_the_apps_own_gap_is_missing_on_the_app():
     assert [g["permission"] for g in app["missing"]] == ["statuses"]
 
 
+def test_actions_asks_write_and_names_both_reads_and_the_re_run():
+    # BGD 2026-11-05: the merge step re-runs a flaky run's failed jobs
+    # (`POST actions/runs/{id}/rerun-failed-jobs`), refused 403 on read.
+    # MUTATION: put "read" back and this, the docs test and the cards fail.
+    actions = next(req for req in REQUIRED if req.permission == "actions")
+    assert actions.access == "write"
+    assert "ci-flake-hunter and release-health" in actions.needed_for
+    assert "re-run a flaky run's failed jobs" in actions.needed_for
+    assert actions.capabilities == ("actions",)
+
+
+def test_an_installation_on_actions_read_reports_the_gap_and_only_it():
+    # Report-only: an installation still on Actions: Read keeps every other
+    # capability, and its one gap carries the consequence the cards show.
+    github = FakeGitHub()
+    _app(github)
+    _installed(github, "example-org", "api", 202)
+    _installation(github, 202, {**FULL, "actions": "read"})
+    answer = _read(_service(github), [_repo("example-org", "api")])
+    org = _org(answer, "example-org")
+    assert [(g["permission"], g["access"], g["granted"]) for g in org["missing"]] == [
+        ("actions", "write", "read")]
+    row = _row(answer, "example-org/api")
+    assert row["capabilities"] == {**{cap: True for cap in forgeperms.CAPABILITIES}, "actions": False}
+    assert [g["needed_for"] for g in row["blocked_by"]] == [
+        next(req.needed_for for req in REQUIRED if req.permission == "actions")]
+
+
 # -- pending_update and the org card --------------------------------------------
 
 

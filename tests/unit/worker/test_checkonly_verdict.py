@@ -112,7 +112,7 @@ def _worker(worker_factory, monkeypatch) -> Any:
     # The harvest, stood in for: the clone the agent left exactly as cloned.
     worker._harvest_git = lambda **_kwargs: dict(EMPTY_DIFF)  # type: ignore[method-assign]
     worker._repo_url = f"https://github.com/{REPO}"
-    monkeypatch.setattr(worker, "_git_token", lambda: "fake-" + secrets.token_hex(8))
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "fake-" + secrets.token_hex(8))
     return worker
 
 

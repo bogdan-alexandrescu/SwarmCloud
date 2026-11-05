@@ -2,7 +2,7 @@
 
 Each entry is a version of `plugin/.claude-plugin/plugin.json`. The release
 tags the swarm-mcp bridge `sc-v<version>` only when that version moves
-([docs/ci.md](../docs/ci.md#the-plugins-bridge-tag-is-made-by-the-release)),
+([docs/ci.md](../docs/ci.md#the-plugins-bridge-tag-is-made-once-the-unit-tests-pass)),
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 

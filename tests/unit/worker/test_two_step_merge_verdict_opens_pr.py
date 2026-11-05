@@ -129,7 +129,7 @@ def _run_fix(worker_factory: Any, monkeypatch: Any, origin: Path) -> int:
         task_id=FIX, attempt_id="att_fix", lease_id="lease_fix",
         repository_url=f"file://{origin}",
     )
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
 
     def refuse(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("a fix agent was started after a MERGE verdict")
