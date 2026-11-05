@@ -453,12 +453,14 @@ def due_cause(lease: Mapping[str, Any] | None, now: datetime) -> str | None:
     socket for a minute (`tab_closed`), or no activity for its idle time."""
     if not lease or lease.get("state") not in HOLDING:
         return None
-    if not holds(lease, now):
-        return END_SWEPT
+    # A tab that closed cleanly is `tab_closed` even once the heartbeat it
+    # stopped writing has also gone stale; `swept` is the lease nobody let go.
     detached = _aware(lease.get("detached_at"))
     if detached is not None and not live_sockets(lease, now) \
             and now - detached >= timedelta(seconds=TAB_CLOSED_SECONDS):
         return END_TAB_CLOSED
+    if not holds(lease, now):
+        return END_SWEPT
     if lease.get("state") == RUNNING:
         activity = _aware(lease.get("activity_at"))
         idle = lease.get("idle_seconds")

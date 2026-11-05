@@ -30,6 +30,7 @@ from test_speech_machine import (  # noqa: E402
     ALICE,
     BOB,
     CHOSEN,
+    CONFIG,
     Clock,
     FakeCompute,
     _lease,
@@ -153,7 +154,7 @@ class Harness:
         if image_changed:
             self.compute.metadata = {}
         else:
-            self.compute.metadata = sm.wanted_metadata(CHOSEN, sm.SpeechConfig().image)
+            self.compute.metadata = sm.wanted_metadata(CHOSEN, CONFIG.image)
         self.started = self.machine.start(ALICE, chosen=CHOSEN)
         self.browser = Pipe()
         self.dialer = dialer
