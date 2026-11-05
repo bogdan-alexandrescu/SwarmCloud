@@ -9,7 +9,9 @@ ONE TURN, as §3.3 lays it out. When the live voice delegates (live.py sees
      person;
   2. reads the card catalogue from swarm-api's schema route WITH THE GRANT, and
      offers the model exactly its `draw_<kind>` tools, the read tools
-     (tools_read.py) and `speak`;
+     (tools_read.py), the visual tools (tools_visual.py: `show_file`,
+     `show_diff`, `show_log`, `add_note`, `notes_to_work`) and `speak`, whose
+     `point_at` reaches the page as a `focus` (voice-it-own-speech.md §8.5);
   3. leases ONE Claude subscription account from the quota broker for the
      person's own workspace (plannerlease.py), released in a finally whatever
      the turn does; a full pool is a spoken refusal, never a wait;
@@ -57,7 +59,7 @@ from typing import Any
 
 import httpx
 
-from . import prompts, tools_read
+from . import prompts, tools_read, tools_visual
 from .accountlease import VoiceBroker, build_broker
 from .claudeturn import ClaudeCode
 from .credential import CredentialError
@@ -99,6 +101,10 @@ class TurnResult:
     #: Tool calls refused: unknown kinds and tools, and cards swarm-api refused.
     refused: list[str] = field(default_factory=list)
     reads: list[str] = field(default_factory=list)
+    #: The visuals this turn put on screen or annotated (tools_visual.py), by tool.
+    visuals: list[dict[str, Any]] = field(default_factory=list)
+    #: `speak`'s `point_at` (voice-it-own-speech.md §8.5) as the page got it, or None.
+    point_at: dict[str, Any] | None = None
     #: Token counts, the model and `billing` (module docstring, "WHAT IT COSTS").
     usage: dict[str, Any] = field(default_factory=dict)
     #: The child's stream-json events, scrubbed (claudeturn.ChildOutcome.events).
@@ -178,7 +184,8 @@ class Planner:
         draw_tools = [t for t in catalogue["tools"]
                       if isinstance(t, dict) and str(t.get("name", "")).startswith(DRAW_PREFIX)]
         kinds = {str(t["name"])[len(DRAW_PREFIX):] for t in draw_tools}
-        tools = [*draw_tools, *tools_read.tool_schemas(), prompts.speak_tool()]
+        tools = [*draw_tools, *tools_read.tool_schemas(), *tools_visual.tool_schemas(),
+                 prompts.speak_tool()]
         try:
             async with self._accounts.lease(person=person, voice_session_id=api.session_id) as held:
                 return await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript)
@@ -238,7 +245,20 @@ class Planner:
         args = use.get("input") if isinstance(use.get("input"), dict) else {}
         if name == prompts.SPEAK_TOOL:
             summary = args.get("summary")
-            return "said", False, summary if isinstance(summary, str) else ""
+            said = summary if isinstance(summary, str) else ""
+            if args.get("point_at") is not None:
+                await self._point(api, result, args["point_at"],
+                                  prompts.spoken(said, secrets_=known))
+            return "said", False, said
+        if tools_visual.is_visual_tool(name):
+            try:
+                body = await tools_visual.run_visual_tool(api, name, _scrub_all(args, known))
+            except (tools_read.BadInput, tools_read.ApiRefused) as exc:
+                result.refused.append(name)
+                return str(exc), True, None
+            result.visuals.append({"tool": name, **{k: body.get(k) for k in (
+                "visual_id", "note_id", "work") if isinstance(body, dict) and body.get(k)}})
+            return prompts.fence(name, prompts.scrub(prompts.as_text(body), known)), False, None
         if tools_read.is_read_tool(name):
             result.reads.append(name)
             try:
@@ -268,6 +288,18 @@ class Planner:
         result.cards.append({"kind": kind, "card_id": card.get("card_id"), "title": card.get("title")})
         return prompts.as_text({"written": True, "card_id": card.get("card_id"),
                                 "version": card.get("version")}), False, None
+
+
+    async def _point(self, api: tools_read.SwarmApi, result: TurnResult, point_at: Any,
+                     caption: str) -> None:
+        """Send `speak`'s `point_at` to the page as a `focus` (§8.5). A refusal
+        is recorded and the speech still plays: pointing is never worth a
+        silent turn."""
+        try:
+            result.point_at = await tools_visual.focus(api, point_at, caption=caption or None)
+        except (tools_read.BadInput, tools_read.ApiRefused) as exc:
+            result.refused.append(f"{prompts.SPEAK_TOOL}.point_at")
+            log.warning("voice session %s: speak's point_at was not shown: %s", api.session_id, exc)
 
 
 def build_planner(http: httpx.AsyncClient, *, broker: VoiceBroker | None = None) -> Planner | None:
