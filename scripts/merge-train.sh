@@ -86,7 +86,7 @@
 #   select --prs <gh pr list json> --required <names file>
 #          [--allow-unknown-mergeable | --recheck-unknown]
 #       Who may board. Prints `<N>\t<head sha>\t<title>` per pull request,
-#       oldest first. --recheck-unknown (needs GH_REPO) re-reads an otherwise
+#       those labelled `train-first` first, then oldest first. --recheck-unknown (needs GH_REPO) re-reads an otherwise
 #       eligible UNKNOWN pull request with `gh pr view`: the one network read.
 #   skips --prs <gh pr list json>
 #       Who will not board until someone acts: a `ready` pull request with a
@@ -135,6 +135,11 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # for: it is posted after the train is green.
 TRAIN_CONTEXT="merge-train"
 TRAIN_PREFIX="train/"
+# A `ready` pull request also labelled this boards ahead of every other, oldest
+# first among them: an urgent fix waits for no queue, and still rides a tested
+# train with every required check (6 November 2026: a deploy blocker and the
+# train's own fix were 40 pull requests back, about seven trains).
+FIRST_LABEL="train-first"
 STATE_OPEN="<!-- merge-train-state"
 STATE_CLOSE="-->"
 # Four, the owner's brief: a red train of four is found in two more trains.
@@ -290,7 +295,8 @@ cmd_select() {
   local keep_unknown="${unknown}"
   [[ "${recheck}" == false ]] || keep_unknown=true
   local n sha mergeable title
-  jq -r --argjson required "${req}" --arg prefix "${TRAIN_PREFIX}" --argjson unknown "${keep_unknown}" "${ROLLUP_JQ}"'
+  jq -r --argjson required "${req}" --arg prefix "${TRAIN_PREFIX}" --argjson unknown "${keep_unknown}" \
+    --arg first "${FIRST_LABEL}" "${ROLLUP_JQ}"'
     def green:
       checks as $c
       | ([ $c[] | select(.done and (.result | bad)) ] | length == 0)
@@ -301,7 +307,7 @@ cmd_select() {
       | select((.title | test("^\\s*\\[swarm\\] task_"; "i")) | not)
       | select(green)
     ]
-    | sort_by(.number)
+    | sort_by([(any(.labels[]?; .name == $first) | not), .number])
     | .[]
     | "\(.number)\t\(.headRefOid)\t\(.mergeable)\t\(.title | gsub("[\\t\\r\\n]"; " "))"
   ' "${prs}" | while IFS=$'\t' read -r n sha mergeable title; do

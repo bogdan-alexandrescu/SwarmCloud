@@ -118,6 +118,19 @@ def test_select_boards_only_green_ready_mergeable_same_repo_pull_requests_oldest
     assert [r[0] for r in rows] == ["101", "114", "120"], rows
 
 
+def test_select_boards_a_train_first_pull_request_ahead_of_older_ones(tmp_path):
+    prs = json.loads((FIXTURES / "prs.json").read_text())
+    for pr in prs:
+        if pr["number"] == 120:
+            pr["labels"].append({"name": "train-first"})
+    path = tmp_path / "prs-first.json"
+    path.write_text(json.dumps(prs))
+    proc = _run("select", "--prs", str(path), "--required", str(_required_file(tmp_path)))
+    assert proc.returncode == 0, proc.stderr
+    # MUTATION: sort by number alone -> 120 boards last, behind every older one.
+    assert [line.split("\t")[0] for line in proc.stdout.splitlines() if line] == ["120", "101", "114"]
+
+
 def test_select_carries_the_head_it_judged_and_a_one_line_title(tmp_path):
     rows = {r[0]: r for r in _select(tmp_path)}
     assert rows["101"][1] == "1010000000000000000000000000000000000001"
