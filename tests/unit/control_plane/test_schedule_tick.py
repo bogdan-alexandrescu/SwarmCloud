@@ -33,7 +33,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api import schedulefire, schedules, scheduletypes
+from swarm_api import auth as auth_module
+from swarm_api import route_scope, schedulefire, schedules, scheduletypes
 from swarm_api.auth import (
     ROLLUP_SWEEPER_ROUTES,
     SCHEDULE_TICK_ROUTES,
@@ -57,7 +58,7 @@ from swarm_api.validation import (
 from swarm_api.waker import NullWaker
 
 from .conftest import api_settings, auth_header, seed_tenant
-from .test_continuation_scope_is_narrow import SWEPT, _ids, _send
+from .test_continuation_scope_is_narrow import SWEPT, _ids, _send, fixture_router
 from .test_rollup_sweeper_is_narrow import DECIDED as SWEEPER_DECIDED
 
 #: A service-account address, as S13 renders it. Admitted by being on
@@ -67,8 +68,13 @@ SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 TICK_HEADERS = {"Authorization": "Bearer token-tick"}
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 
-#: THE OWNER'S DECISION (SD10) as a literal: one route.
-DECIDED = frozenset({("POST", "/v1/admin/schedules/tick")})
+#: THE OWNER'S DECISION (SD10), as the routes declare it: today one route,
+#: POST /v1/admin/schedules/tick, whose router (`routes.schedule_tick`)
+#: declares the tick its default. Read from the declarations, not a literal
+#: here, so two green changes cannot turn this guard red together (BGD's
+#: pick, 6 November 2026); widening the tick still takes a declaration on the
+#: route AND an entry in `auth.SCHEDULE_TICK_ROUTES`, held equal below.
+DECIDED = route_scope.declared(route_scope.SCHEDULE_TICK)
 
 NOW = datetime(2026, 10, 9, 9, 0, 30, tzinfo=timezone.utc)
 ALICE = "alice@example.com"
@@ -238,6 +244,34 @@ def test_the_tick_allow_list_is_the_decided_one() -> None:
 def test_the_rollup_sweepers_routes_are_not_widened() -> None:
     assert set(ROLLUP_SWEEPER_ROUTES) == set(SWEEPER_DECIDED)
     assert not set(ROLLUP_SWEEPER_ROUTES) & set(SCHEDULE_TICK_ROUTES)
+
+
+def test_a_fixture_route_declared_for_the_tick_is_reachable_by_the_tick_only(
+    ctx, monkeypatch
+) -> None:
+    """A change adds a route declared for the tick: the tick's allow-set gains
+    it, no other narrow caller's does, and through the gates held equal to
+    those sets the tick reaches it and the rollup sweeper does not."""
+    path = "/v1/admin/fixture/tick-only"
+    router = fixture_router(path, route_scope.SCHEDULE_TICK)
+    routers = [*route_scope.route_routers(), router]
+    tick = route_scope.declared(route_scope.SCHEDULE_TICK, routers)
+    assert tick == DECIDED | {("POST", path)}
+    for other in sorted(route_scope.NARROW_CALLERS - {route_scope.SCHEDULE_TICK}):
+        assert ("POST", path) not in route_scope.declared(other, routers), other
+    monkeypatch.setattr(auth_module, "SCHEDULE_TICK_ROUTES", tick)
+    monkeypatch.setattr(
+        auth_module, "ROLLUP_SWEEPER_ROUTES", route_scope.declared(route_scope.ROLLUP_SWEEPER, routers)
+    )
+    app = create_app(ctx)
+    app.include_router(router)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    reached = client.post(path, headers=TICK_HEADERS)
+    assert reached.status_code == 200, reached.text
+    refused = client.post(path, headers=SWEEPER_HEADERS)
+    assert refused.status_code == 403, refused.text
+    assert "rollup sweeper may not call" in refused.text
 
 
 def test_the_tick_route_is_swept_and_the_sweep_is_not_empty() -> None:

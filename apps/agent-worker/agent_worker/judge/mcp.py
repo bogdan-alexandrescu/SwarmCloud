@@ -8,7 +8,10 @@ and breaker, and the one per-task ledger -- under the kind `agent`.
 Transport: newline-delimited JSON-RPC 2.0 on stdio, the four methods
 `agent_worker.graphmcp.server` answers. A call Jev could not answer is a tool
 RESULT with `isError: true` and the reason, so the agent carries on with its
-own judgement; only a malformed request is a protocol error.
+own judgement; only a malformed request is a protocol error. A malformed
+ANSWER is read leniently where it is unambiguous and otherwise asked again
+once; a second is `decided: false`, "Jev could not decide", never an
+exception, and the ledger keeps a row for each call.
 """
 
 from __future__ import annotations
@@ -29,6 +32,10 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 INSTRUCTIONS = ("Jev answers typed questions about a state you pass; it never writes text. "
                 "Advisory only, shared budget of 8 calls per task.")
 ADVISORY = "Jev is advisory: no answer this time; continue with your own judgement."
+#: A malformed answer is asked again once (BGD's pick of 6 November 2026,
+#: after 4 of 529 answers were recorded malformed); a second one is this.
+UNDECIDED = "Jev could not decide"
+MALFORMED_RETRIES = 1
 
 TOOL = {
     "name": TOOL_NAME,
@@ -100,13 +107,20 @@ class JevServer:
                 or "questions" not in arguments:
             return {"error": "jev_decide takes {state, questions}"}, True
         try:
-            decision = self.client.decide("agent", arguments["state"], arguments["questions"])
+            decision = self.client.decide("agent", arguments["state"], arguments["questions"],
+                                          lenient=True, malformed_retries=MALFORMED_RETRIES)
         except client.QuestionError as exc:
             return {"error": str(exc)}, True
         removed = {"dropped_strings": decision.dropped, "denied_paths": decision.denied}
         if decision.ok:
             return {"answers": decision.answers, "input_tokens": decision.input_tokens,
                     "removed": removed}, False
+        if decision.outcome == "malformed":
+            return {"decided": False, "result": UNDECIDED, "outcome": decision.outcome,
+                    "reason": decision.reason,
+                    "note": ("Jev's answer was not one option and a confidence, twice. "
+                             + ADVISORY),
+                    "removed": removed}, True
         return {"outcome": decision.outcome, "reason": decision.reason, "note": ADVISORY,
                 "removed": removed}, True
 
