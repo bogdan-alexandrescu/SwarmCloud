@@ -95,6 +95,7 @@ from ..errors import (
     ValidationFailed,
 )
 from .. import issueci, workcontract
+from ..agent_output import AgentOutputService
 from ..forge import ForgeReadError, preview, read_open_work
 from .. import approvals
 from ..issueruns import (
@@ -116,6 +117,7 @@ from ..issueruns import (
     plan_digest,
     plan_files,
     plan_hold,
+    planner_documents,
     planner_task,
     sign_owner,
     auto_merge_default,
@@ -289,6 +291,37 @@ def with_plan_advisory(ctx: AppContext, tenant_id: str, run: IssueRun, row: dict
     if run.plan is not None and run.planner_task_id:
         advisory = served_plan_advisory(read_plan_advisory(ctx, tenant_id, run.planner_task_id))
     row["plan_advisory"] = advisory
+    return row
+
+
+#: How much of the planner's manifest `planner_documents` looks through: the
+#: worker's own cap on the files one attempt uploads, so none is missed.
+PLANNER_LISTING_LIMIT = 500
+
+
+def with_planner_documents(ctx: AppContext, tenant_id: str, run: IssueRun, row: dict) -> dict:
+    """`row` with `planner_documents`: the planner's design docs and diagrams
+    (`issueruns.planner_documents`), by name, size and read link, for the
+    proposal page (BGD, 6 November 2026: "Serve them on the run").
+
+    `None` while the planner has not finished (its artifacts are uploaded at
+    the end of its attempt, so an empty list then would be a "none" nobody
+    found) or when its listing cannot be read. The listing is the task's own,
+    in this run's tenant, through the same service `GET /v1/tasks/{id}/artifacts`
+    uses; no object is read. Read-only, like `plan_advisory`.
+    """
+    served = None
+    if run.planner_task_id:
+        try:
+            listing = AgentOutputService(ctx.inspection).list_artifacts(
+                tenant_id, run.planner_task_id, limit=PLANNER_LISTING_LIMIT, submitted_by=None
+            )
+        except ApiError as exc:
+            log.warning("issue run %s: planner listing not read (%s)", run.id, exc.code)
+            listing = None
+        if listing is not None and listing.get("complete"):
+            served = planner_documents(run.planner_task_id, listing.get("artifacts") or [])
+    row["planner_documents"] = served
     return row
 
 
@@ -1261,7 +1294,8 @@ def get_run(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     run = advance_run(ctx, tenant_id, _runs(ctx).get(tenant_id, run_id))
-    return {"run": with_plan_advisory(ctx, tenant_id, run, run.to_api())}
+    row = with_plan_advisory(ctx, tenant_id, run, run.to_api())
+    return {"run": with_planner_documents(ctx, tenant_id, run, row)}
 
 
 @router.post("/{run_id}/plan:approve")
