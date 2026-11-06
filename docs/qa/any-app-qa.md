@@ -79,6 +79,59 @@ findings, the lesson of the console template's split into `report` and
 **Groups are even.** 17 screens are three groups of 6, 6 and 5, not 8, 8 and 1:
 the slowest capture sets the run's length.
 
+### 2.1 A flow captures what it proves, retries a settling page, and packs one layout (QA-FLOW-CAPTURE)
+
+The AI Studio session's QA re-run 8 (2026-11-06, seven legs of
+ai-studio-staging, part of #2688) found three harness defects in flows. Each
+flow brief (`flows-<k>` and a mutating flow's own `flow-<id>`) now answers
+them, and `qaspec` holds the rules once:
+
+* **Wait, then capture.** A step recorded as "twin opened" showed the closed
+  button: the screenshot was taken before the state existed. Before its
+  screenshot each step waits, at most `FLOW_WAIT_SECONDS` (10 s), for the
+  text or element (role and name) that proves the state it records, and
+  writes it in the step's `proof` (`{"text": …}`, `{"element": …}`, or
+  `{"missing": …}` when it never appeared, and then the step did not reach
+  its state). A frame that shows otherwise is now a visible mismatch, not a
+  claim.
+* **A settling page is retried, bounded.** The failed snapshot and click
+  calls were the brief's usage, not the tool's: Playwright MCP
+  (`@playwright/mcp` 0.0.83, wired in `agent_worker/runners/claude_code.py`
+  with no wrapper of ours) answers a ref from an older snapshot with "Ref …
+  not found" by design, and the gate reloads the page when `swarm-handoff
+  device` changes the user agent (DEVICE-RELOAD), so every ref taken before
+  it is stale. The console template has said so since QAFIX6
+  ([visual-qa.md](../design/visual-qa.md)); the rendered brief did not. A
+  call that fails while the page settles now gets a fresh snapshot and at
+  most `FLOW_TOOL_TRIES` (3) tries in all, each failed try in the step's
+  `retries` with its reason; the step fails only after the last.
+* **One layout.** Two legs packed their batch as `flow-1.tar`, not
+  `flows-1.tar`, after a brief that said the name in words. `FLOW_LAYOUT`
+  states every path once (relative to `$SWARM_ARTIFACTS_DIR`):
+
+  | file | holds |
+  |---|---|
+  | `flow-<id>.json` | `{"flow", "runs": [{"width", "goal_reached", "stopped", "steps": [{"did", "state", "proof", "screenshot", "shows", "retries"}], "labels": [{"screenshot", "problem"}]}]}` |
+  | `flows/flow-<id>-<width>.gif` | one width's recording (`swarm-handoff record`) |
+  | `screenshots/` | `browser_take_screenshot`'s files, each named by a step |
+  | `flow-<id>.tar` | that flow's json, recordings and the screenshots its json lists |
+  | `<step>.tar` | what the step stages: a batch's `flows-<k>.tar` holds one `flow-<id>.tar` a flow; a mutating flow's step is `flow-<id>`, so its tar is its own |
+
+  The briefs render the exact `tar -cf` commands from it, and name the
+  confusable `flow-<k>.tar` as wrong.
+
+**The result check.** `qaspec.check_flow_output` reads one flow step's
+output against the layout: a missing `<step>.tar` beside exactly one stray
+tar that is none of its flows' own (`flow-1.tar` for `flows-1`) is read in
+its place with one line saying so; several are refused, named; none is
+refused, naming the expected tar. A step that claims a state with no
+`proof`, a retry without a reason, or more retries than the bound is
+flagged; a `missing` proof is said as not proven; each flow's retries are
+counted. The flow report's brief applies the same rules to `flows.md`. No
+swarm-api route reads a flow step's output today, so the brief is where the
+check runs; the worker's expected-output check still refuses a step whose
+`<step>.tar` was never written, naming it.
+
 ## 3. What is gone from the console template, and why
 
 | console template | here | why |

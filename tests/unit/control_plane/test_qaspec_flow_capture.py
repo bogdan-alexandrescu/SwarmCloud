@@ -127,7 +127,7 @@ def test_the_layout_is_stated_once_and_every_flow_brief_requires_it() -> None:
     batch = prompts["flows-1"]
     # MUTATION: say "bundle ... into flows-1.tar" in words again, and an agent
     # writes flow-1.tar, as two of run 8's legs did.
-    assert "tar -cf flow-twin-open.tar flow-twin-open.json flows/flow-twin-open-*.gif" in batch
+    assert "tar -cf flow-<id>.tar flow-<id>.json flows/flow-<id>-*.gif" in batch
     assert "tar -cf flows-1.tar flow-twin-open.tar flow-twin-close.tar" in batch
     assert "no other name" in batch and "flow-1.tar" in batch
     own = prompts["flow-save-frame"]
