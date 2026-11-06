@@ -18,19 +18,32 @@
 // run page's own calls and forms (Runs.tsx's PlanEditor and RejectForm,
 // approvePlan / editPlan / rejectPlan): a plan that changed first is refused
 // and read again, never decided on blind.
+//
+// Beside the plan, the planner's design docs and diagrams, as `GET
+// /v1/runs/{id}` serves them in `planner_documents` (BGD, 6 November 2026:
+// "Serve them on the run"): by name, size and the planner task's own artifact
+// route, never bytes in the run. Each is drawn under the designs' rule, in an
+// iframe with an EMPTY sandbox from `srcDoc`: the doc is read through
+// `/artifacts/content` (redacted), drawn by the console's Markdown renderer as
+// React elements and serialised by React, so no HTML is ever built from its
+// bytes; a diagram's bytes are read through `/artifacts/raw` (an image only
+// when its magic bytes say so) and drawn as a `data:` URL, because a frame
+// with an opaque origin may not carry the session cookie to the API.
 
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import {
-  answerQuestion, approvePlan, editPlan, loadQuestions, loadRun, loadTask, loadWorkspacePlugins, rejectPlan,
+  answerQuestion, approvePlan, artifactRawUrl, editPlan, loadArtifactContent, loadQuestions, loadRun, loadTask, loadWorkspacePlugins, rejectPlan,
   type AgentQuestion, type QuestionOption, type TaskQuestions,
 } from './api'
-import type { ApiError, Result } from './fetch'
+import { Markdown } from './ArtifactViewer'
+import { InfoTip } from './People'
+import { apiHeaders, chosenTenant, dropRefusedTenant, type ApiError, type Result } from './fetch'
 import { Button, Chip } from './components'
 import { FailedPanel, PageHead, Screen } from './Shell'
 import { AUTO_APPROVER, PlanEditor, RejectForm, runStateWord, shortDigest } from './Runs'
 import { leftOfWait } from './work/NeedsYou'
-import type { AnswerVia, CataloguePlugin, IssueRun, OwnerAnswer, RunPlan, Task } from './types'
-import { InfoTip } from './People'
+import { bytesLabel, type AnswerVia, type CataloguePlugin, type IssueRun, type OwnerAnswer, type RunPlan, type Task } from './types'
 import { useNow } from './useNow'
 import { addressToPath } from './paths'
 import { interviewAddress, type InterviewAt } from './interviewPaths'
@@ -543,14 +556,144 @@ function Shot({ html, title, onBig }: { html: string; title: string; onBig: () =
 // The proposal
 // ---------------------------------------------------------------------------
 
-interface ProposalRead { run: IssueRun; questions: InterviewQuestions | null }
+/** One design doc or diagram of the planner's, as `GET /v1/runs/{id}` serves it. */
+export interface PlannerDocument { name: string; bytes: number | null; content_type: string | null; read_url: string }
+/** `planner_documents`: null while the planner has not finished, or its listing could not be read. */
+export interface PlannerDocuments { task_id: string; design_docs: PlannerDocument[]; diagrams: PlannerDocument[] }
+/** The run as this page reads it: `planner_documents` is served on a run's own read only. */
+type ServedRun = IssueRun & { planner_documents?: PlannerDocuments | null }
+
+/** What the page draws: each doc's text (null: not read) and each diagram as a `data:` URL (null: not drawn). */
+export interface ShownDocuments {
+  taskId: string
+  docs: { doc: PlannerDocument; source: string | null; truncated: boolean }[]
+  diagrams: { doc: PlannerDocument; src: string | null }[]
+}
+
+/** How much of a design doc is read and drawn; past it the page says so and the link has the rest. */
+export const DOC_READ_BYTES = 256 * 1024
+/** A diagram larger than this is not read into the page; its link opens it. */
+export const DIAGRAM_DRAW_BYTES = 4 * 1024 * 1024
+
+interface ProposalRead { run: IssueRun; questions: InterviewQuestions | null; documents?: ShownDocuments | null }
 
 async function loadProposal(runId: string): Promise<Result<ProposalRead>> {
   const r = await loadRun(runId)
   if (r.status !== 'ok' && r.status !== 'stale') return r as Result<ProposalRead>
-  const run = r.data.run
-  const q = run.planner_task_id === '' ? null : await loadQuestions(run.planner_task_id)
-  return { ...r, data: { run, questions: q !== null && (q.status === 'ok' || q.status === 'stale') ? (q.data as InterviewQuestions) : null } }
+  const run = r.data.run as ServedRun
+  const [q, documents] = await Promise.all([
+    run.planner_task_id === '' ? null : loadQuestions(run.planner_task_id),
+    loadPlannerDocuments(run.planner_documents),
+  ])
+  return { ...r, data: { run, questions: q !== null && (q.status === 'ok' || q.status === 'stale') ? (q.data as InterviewQuestions) : null, documents } }
+}
+
+/** Reads what the run served, by the names it served: never a name it did not list. Never throws. */
+export async function loadPlannerDocuments(served: PlannerDocuments | null | undefined): Promise<ShownDocuments | null> {
+  if (served === null || served === undefined) return null
+  const taskId = served.task_id
+  const docs = await Promise.all(served.design_docs.map(async (doc) => {
+    const r = await loadArtifactContent(taskId, doc.name, { limitBytes: DOC_READ_BYTES })
+    const ok = (r.status === 'ok' || r.status === 'stale') && r.data.status === 'ok' && typeof r.data.content === 'string'
+    return { doc, source: ok ? r.data.content : null, truncated: ok && r.data.truncated === true }
+  }))
+  const diagrams = await Promise.all(served.diagrams.map(async (doc) => ({ doc, src: await diagramSrc(taskId, doc) })))
+  return { taskId, docs, diagrams }
+}
+
+async function diagramSrc(taskId: string, doc: PlannerDocument): Promise<string | null> {
+  if (doc.bytes === null || doc.bytes > DIAGRAM_DRAW_BYTES) return null
+  try {
+    const tenant = chosenTenant()
+    const r = await fetch(artifactRawUrl(taskId, doc.name, 'inline'), {
+      headers: apiHeaders({}),
+    })
+    if (!r.ok) {
+      // A stored tenant the caller is no longer in is forgotten, as read()
+      // and write() do.
+      let code: string | null = null
+      try {
+        const env: unknown = await r.json()
+        const c = typeof env === 'object' && env !== null ? (env as { code?: unknown }).code : null
+        code = typeof c === 'string' ? c : null
+      } catch { code = null }
+      dropRefusedTenant(r.status, code, tenant)
+      return null
+    }
+    const type = r.headers.get('content-type') ?? ''
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(type)) return null
+    const bytes = new Uint8Array(await r.arrayBuffer())
+    let bin = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+    return `data:${type};base64,${btoa(bin)}`
+  } catch {
+    return null
+  }
+}
+
+// The frame's look rides on its body as an attribute: the console's
+// stylesheets are its only sheets, so no screen injects a style element.
+const FRAME_BODY = '<body style="font:14px/1.5 system-ui,sans-serif;margin:16px;color:#1d1d1f;background:#fff;overflow-wrap:anywhere">'
+
+/** The doc as a frame's document: React's own serialisation of the Markdown renderer's elements. */
+export function docFrame(source: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"></head>${FRAME_BODY}${renderToStaticMarkup(<Markdown source={source} />)}</body></html>`
+}
+
+/** A diagram as a frame's document: one image, its source a `data:` URL the page read itself. */
+export function diagramFrame(src: string, name: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"></head>${FRAME_BODY}${renderToStaticMarkup(<img src={src} alt={name} style={{ maxWidth: '100%', height: 'auto' }} />)}</body></html>`
+}
+
+function PlannerDocs({ shown }: { shown: ShownDocuments | null | undefined }) {
+  const none = shown === null || shown === undefined || (shown.docs.length === 0 && shown.diagrams.length === 0)
+  return (
+    <section className="iv-prop-sec" aria-labelledby="iv-prop-docs-h">
+      <h2 id="iv-prop-docs-h">Design doc and diagrams</h2>
+      {none ? (
+        <p className="iv-dim">Not known here: the run serves its plan, not the design doc or the diagrams the planner wrote. They are in the planner&rsquo;s artifacts.</p>
+      ) : (
+        <>
+          {shown.docs.map(({ doc, source, truncated }) => (
+            <div key={doc.name}>
+              <DocHead taskId={shown.taskId} doc={doc} />
+              {source === null ? <NotDrawn what={doc.name} why="Its text could not be read, or it is not text." /> : (
+                <>
+                  {truncated && <span className="iv-dim iv-small">first {bytesLabel(DOC_READ_BYTES)} <InfoTip about={doc.name} tip="The page draws the start of a long doc; Open has all of it." end /></span>}
+                  <div className="iv-done-shot iv-shot">
+                    <iframe title={`Design doc: ${doc.name}`} sandbox="" srcDoc={docFrame(source)} />
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+          {shown.diagrams.map(({ doc, src }) => (
+            <div key={doc.name}>
+              <DocHead taskId={shown.taskId} doc={doc} />
+              {src === null ? <NotDrawn what={doc.name} why={`Larger than ${bytesLabel(DIAGRAM_DRAW_BYTES)}, or its bytes are not an image the API serves as one.`} /> : (
+                <div className="iv-done-shot iv-shot">
+                  <iframe title={`Diagram: ${doc.name}`} sandbox="" srcDoc={diagramFrame(src, doc.name)} />
+                </div>
+              )}
+            </div>
+          ))}
+        </>
+      )}
+    </section>
+  )
+}
+
+function DocHead({ taskId, doc }: { taskId: string; doc: PlannerDocument }) {
+  return (
+    <p className="iv-row iv-small">
+      <code>{doc.name}</code> <span className="iv-dim">{bytesLabel(doc.bytes)}</span>{' '}
+      <a className="c-link" href={artifactRawUrl(taskId, doc.name, 'inline')} target="_blank" rel="noopener noreferrer">Open</a>
+    </p>
+  )
+}
+
+function NotDrawn({ what, why }: { what: string; why: string }) {
+  return <p className="iv-dim iv-small"><span>not drawn here</span> <InfoTip about={what} tip={why} end /></p>
 }
 
 function ProposalScreen({ runId, go }: { runId: string; go: (to: string) => void }) {
@@ -684,10 +827,7 @@ export function ProposalView({ read, go, reread }: { read: ProposalRead; go: (to
               )}
             </section>
           )}
-          <section className="iv-prop-sec">
-            <h2>Design doc and diagrams</h2>
-            <p className="iv-dim">Not known here: the run serves its plan, not the design doc or the diagrams the planner wrote. They are in the planner&rsquo;s artifacts.</p>
-          </section>
+          <PlannerDocs shown={read.documents} />
           {open === 'reject' && canAct && (
             <RejectForm busy={busy} onCancel={() => setOpen('none')}
               onReject={(reason) => void act('reject', () => rejectPlan(run.id, digest, reason))} />

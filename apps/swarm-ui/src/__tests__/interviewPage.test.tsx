@@ -13,7 +13,10 @@
 // an option that served none; count an answer with no `via` as the
 // console's; say a time left the wait did not serve; send the answer without
 // `via: 'console'` or to another question; approve without the digest; drop
-// the route or the links to it.
+// the route or the links to it. The planner's design doc and diagrams (BGD,
+// 6 November 2026: "Serve them on the run"): draw the doc as live markup or
+// from its raw HTML, give a frame `allow-*`, link a diagram the API did not
+// list, or drop the "not known here" line for a run whose planner wrote none.
 
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -23,6 +26,7 @@ import { digest, issueRun, task as runTask } from './runfixture'
 const api = vi.hoisted(() => ({
   answerQuestion: vi.fn(),
   approvePlan: vi.fn(),
+  loadArtifactContent: vi.fn(),
   editPlan: vi.fn(),
   rejectPlan: vi.fn(),
 }))
@@ -33,7 +37,7 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const page = await import('../InterviewPage')
-const { InterviewView, ProposalView, interviewPageOf, interviewAddress, proposalAddress, plainLabel, viaWord, answerTally } = page
+const { InterviewView, ProposalView, interviewPageOf, interviewAddress, proposalAddress, plainLabel, viaWord, answerTally, loadPlannerDocuments } = page
 type InterviewQuestions = import('../InterviewPage').InterviewQuestions
 const { addressToPath, pathToAddress } = await import('../paths')
 
@@ -369,6 +373,89 @@ describe('the proposal page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
     expect(document.querySelector('.iv-plan-steps')).toBeNull()
     expect((screen.getAllByRole('textbox')[0] as HTMLTextAreaElement).value).toBe('Move the timer.')
+  })
+
+  const served = {
+    task_id: 't_plan',
+    design_docs: [{ name: 'design.md', bytes: 2048, content_type: 'text/markdown', read_url: '/v1/tasks/t_plan/artifacts/raw?name=design.md&disposition=inline' }],
+    diagrams: [{ name: 'diagrams/flow.png', bytes: 512, content_type: 'image/png', read_url: '/v1/tasks/t_plan/artifacts/raw?name=diagrams%2Fflow.png&disposition=inline' }],
+  }
+  const DOC = '# Timer\n\nIt sits in the **summary**.\n\n<script>window.parent.document.title="x"</script>\n'
+  const PIXEL = 'data:image/png;base64,iVBORw0KGgo='
+  const shown = {
+    taskId: 't_plan',
+    docs: [{ doc: served.design_docs[0]!, source: DOC, truncated: false }],
+    diagrams: [{ doc: served.diagrams[0]!, src: PIXEL }],
+  }
+
+  it('draws the planner’s design doc rendered and its diagrams as images, each in an empty sandbox, with a read link', () => {
+    render(<ProposalView read={{ run: run as never, questions: planQs, documents: shown }} go={vi.fn()} reread={vi.fn()} />)
+    const sec = screen.getByRole('region', { name: 'Design doc and diagrams' })
+    expect(within(sec).queryByText(/Not known here/)).toBeNull()
+    const doc = within(sec).getByTitle('Design doc: design.md') as HTMLIFrameElement
+    expect(doc.tagName).toBe('IFRAME')
+    expect(doc.getAttribute('sandbox')).toBe('')
+    const html = doc.getAttribute('srcdoc') ?? ''
+    // Rendered: the heading and the bold are elements; the agent's script is text, never markup.
+    expect(html).toMatch(/<h[1-6][^>]*>Timer<\/h[1-6]>/)
+    expect(html).toContain('<strong>summary</strong>')
+    expect(html).not.toContain('<script')
+    expect(sec.querySelector('.art-md')).toBeNull()
+    const diagram = within(sec).getByTitle('Diagram: diagrams/flow.png') as HTMLIFrameElement
+    expect(diagram.getAttribute('sandbox')).toBe('')
+    expect(diagram.getAttribute('srcdoc')).toContain(`<img src="${PIXEL}"`)
+    expect(sec.querySelector('img')).toBeNull()
+    // Each by name and size, its read link the task's own artifact route.
+    expect(sec.textContent).toContain('design.md')
+    expect(sec.textContent).toContain('2 KiB')
+    expect(sec.textContent).toContain('512 B')
+    const links = within(sec).getAllByRole('link').map((a) => a.getAttribute('href'))
+    expect(links).toEqual([
+      expect.stringMatching(/^\/v1\/tasks\/t_plan\/artifacts\/raw\?name=design\.md&disposition=inline/),
+      expect.stringMatching(/^\/v1\/tasks\/t_plan\/artifacts\/raw\?name=diagrams%2Fflow\.png&disposition=inline/),
+    ])
+  })
+
+  it('keeps today’s line when the planner wrote none, or the run serves none', () => {
+    const none = { taskId: 't_plan', docs: [], diagrams: [] }
+    const { unmount } = render(<ProposalView read={{ run: run as never, questions: planQs, documents: none }} go={vi.fn()} reread={vi.fn()} />)
+    expect(screen.getByText(/Not known here: the run serves its plan/)).toBeTruthy()
+    expect(document.querySelector('.iv-prop iframe')).toBeNull()
+    unmount()
+    render(<ProposalView read={{ run: run as never, questions: planQs, documents: null }} go={vi.fn()} reread={vi.fn()} />)
+    expect(screen.getByText(/Not known here: the run serves its plan/)).toBeTruthy()
+  })
+
+  it('says a doc it could not read, and a diagram too large or unreadable to draw, keeping their links', () => {
+    const failed = { taskId: 't_plan', docs: [{ doc: served.design_docs[0]!, source: null, truncated: false }], diagrams: [{ doc: served.diagrams[0]!, src: null }] }
+    render(<ProposalView read={{ run: run as never, questions: planQs, documents: failed }} go={vi.fn()} reread={vi.fn()} />)
+    const sec = screen.getByRole('region', { name: 'Design doc and diagrams' })
+    expect(sec.querySelector('iframe')).toBeNull()
+    expect(within(sec).getAllByRole('link')).toHaveLength(2)
+    expect(within(sec).getAllByText('not drawn here')).toHaveLength(2)
+  })
+
+  it('reads the doc through the content route and each diagram’s bytes through the raw route, by the names the run served', async () => {
+    vi.useRealTimers()
+    api.loadArtifactContent.mockResolvedValue({ status: 'ok', fetchedAt: NOW, data: { status: 'ok', content: DOC, truncated: true } })
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const fetched: string[] = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      fetched.push(String(input))
+      return new Response(bytes, { status: 200, headers: { 'content-type': 'image/png' } })
+    }) as unknown as typeof fetch
+    const got = await loadPlannerDocuments(served)
+    expect(api.loadArtifactContent).toHaveBeenCalledWith('t_plan', 'design.md', { limitBytes: expect.any(Number) })
+    expect(got!.docs[0]).toEqual({ doc: served.design_docs[0], source: DOC, truncated: true })
+    expect(fetched).toHaveLength(1)
+    expect(fetched[0]).toMatch(/^\/v1\/tasks\/t_plan\/artifacts\/raw\?name=diagrams%2Fflow\.png&disposition=inline/)
+    expect(got!.diagrams[0]!.src).toMatch(/^data:image\/png;base64,/)
+
+    // A response that is not an image is not drawn, and nothing is read for a run that served none.
+    globalThis.fetch = vi.fn(async () => new Response('text', { status: 200, headers: { 'content-type': 'text/plain' } })) as unknown as typeof fetch
+    expect((await loadPlannerDocuments(served))!.diagrams[0]!.src).toBeNull()
+    expect(await loadPlannerDocuments(null)).toBeNull()
+    expect(await loadPlannerDocuments(undefined)).toBeNull()
   })
 
   it('says a run approved automatically, with no buttons', () => {
