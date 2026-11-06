@@ -101,7 +101,8 @@ def test_mcp_servers_item_bound_is_the_name_bound():
 
 
 def test_mcp_is_a_consumer_kind():
-    assert models.SECRET_CONSUMER_KINDS == ("profile", "tool", "component", "mcp")
+    # Contract request 141 appends "plugin" after it.
+    assert models.SECRET_CONSUMER_KINDS == ("profile", "tool", "component", "mcp", "plugin")
 
 
 def test_mcp_consumer_round_trips():
