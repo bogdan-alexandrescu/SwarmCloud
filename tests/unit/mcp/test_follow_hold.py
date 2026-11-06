@@ -221,7 +221,7 @@ def test_a_dependent_steps_row_makes_one_call_while_its_parent_runs():
         world, ["task_child"], step_id="review", parents=["task_parent"],
         wait_seconds=compact.MAX_WAIT_SECONDS, sleep=world.sleep, clock=world.clock, now=world.wall,
     )
-    assert 1200 <= world.now <= 1200 + compact.PENDING_POLL_CAP_SECONDS + 1, world.now
+    assert 1200 <= world.now <= 1200 + compact.IDLE_POLL_CAP_SECONDS + 1, world.now
     assert got["tasks"][0]["state"] in ("PARKED", "READY")
     assert got["parents"] == {"task_parent": "SUCCEEDED"}
     (line,) = got["progress"]
@@ -240,7 +240,7 @@ def test_the_parent_hold_ends_when_the_task_leaves_its_dependency_wait():
         world, ["task_child"], parents=["task_parent"], wait_seconds=compact.MAX_WAIT_SECONDS,
         sleep=world.sleep, clock=world.clock, now=world.wall,
     )
-    assert 300 <= world.now <= 300 + compact.PENDING_POLL_CAP_SECONDS + 1, world.now
+    assert 300 <= world.now <= 300 + compact.IDLE_POLL_CAP_SECONDS + 1, world.now
     assert got["stop"] is True and got["tasks"][0]["state"] == "CANCELLED"
 
 

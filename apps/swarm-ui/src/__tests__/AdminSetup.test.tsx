@@ -20,7 +20,12 @@
 //     the console steps stay usable;
 //   * once the first team exists, Add a team is the same team panel as its
 //     own flow, with the `swarm team add` line beside it, following the form,
-//     and its submit is the setup API's team route (B15).
+//     and its submit is the setup API's team route (B15);
+//   * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05):
+//     the panel's kicker is "Step N of 8" with what it follows as its
+//     tooltip, each team field's hint is its tooltip and its input's
+//     description, and what Add a team and From a terminal do sits behind an
+//     (i) beside the heading.
 //
 // The page reads `GET /v1/admin/setup` through the real API client
 // (`loadSetup`), against a stubbed fetch: no network, no credentials.
@@ -28,6 +33,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+
+/** The text a reader sees: tooltips and hidden descriptions left out. */
+function shown(el: Element | null): string {
+  if (el === null) return ''
+  const copy = el.cloneNode(true) as Element
+  for (const off of Array.from(copy.querySelectorAll('[role="tooltip"], [hidden]'))) off.remove()
+  return visible(copy)
+}
+
+/** The tooltip of the host around `el`. */
+const tipOf = (el: Element | null) => visible(el?.closest('.c-tip-host')?.querySelector('[role="tooltip"]') ?? null)
 
 type Json = Record<string, unknown>
 
@@ -126,7 +142,10 @@ describe('Admin › Setup, the page', () => {
     expect(step('github').className).toContain('is-selected')
     expect(status()).toMatch(/2 of 8 done/)
     expect(panel().getAttribute('aria-label')).toBe('Step 3: GitHub App')
-    expect(visible(panel())).toMatch(/Step 3 of 8 · the panel follows the next step you can act on/)
+    // MUTATION: print what the panel follows beside the step again.
+    const kicker = panel().querySelector('.cfc-kicker')
+    expect(shown(kicker)).toBe('Step 3 of 8')
+    expect(tipOf(kicker?.querySelector('.asm-explained') ?? null)).toBe('The panel follows the next step you can act on.')
     // The panel holds today's GitHub step.
     expect(within(panel()).getByRole('button', { name: /Create the GitHub App/ })).toBeTruthy()
   })
@@ -178,6 +197,32 @@ describe('Admin › Setup, the page', () => {
     // MUTATION: keep "Each gets a sign-in link".
     expect(visible(flow)).not.toContain('sign-in link')
     expect(visible(flow)).toContain('Google Admin')
+  })
+
+  it('Add a team keeps its hints and what it does behind tooltips, each still in the page', async () => {
+    await mountPage(firstRun({ teams: [FIRST_TEAM] }))
+    const flow = screen.getByRole('region', { name: 'Add a team' })
+    const hints: [RegExp, string][] = [
+      [/Workspace group/, 'A Google Workspace group; its members are the team'],
+      [/Workspace name/, 'Shown in the console; the group’s name when left empty'],
+      [/First workspace admin/, 'Administers the team’s workspace'],
+      [/Invite/, 'Each is added to the group on its members page in Google Admin (swarm-api adds no one); they count as joined once the Groups API sees them'],
+    ]
+    for (const [label, hint] of hints) {
+      // MUTATION: print a field's hint under it again.
+      expect(shown(flow)).not.toContain(hint)
+      const input = within(flow).getByLabelText(label)
+      // The hint is the input's description, and the tooltip over its label and input.
+      expect(document.getElementById(input.getAttribute('aria-describedby') ?? '')?.textContent).toBe(hint)
+      expect(tipOf(input)).toBe(hint)
+    }
+    // MUTATION: keep the card's foot, or the terminal card's lead line.
+    expect(shown(flow)).not.toContain('The same call swarm team add makes')
+    expect(shown(flow)).not.toContain('It follows the form as you type')
+    expect(tipOf(within(flow).getByRole('button', { name: 'About Add a team' }))).toBe(
+      'The same call swarm team add makes: the team’s record, then swarm-workspace-apply makes its namespace, quota, verify-keys and worker identity.',
+    )
+    expect(tipOf(within(flow).getByRole('button', { name: 'About From a terminal' }))).toBe('The same steps, from the machine swarm install runs on. It follows the form as you type.')
   })
 })
 

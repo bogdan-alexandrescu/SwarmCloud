@@ -56,6 +56,7 @@ from ..voice import sessions as vs
 from ..voice import settings as vsettings
 from ..voice import speech_machine as sm
 from ..voice import speech_relay as sr
+from ..voice import speech_telemetry as vtelemetry
 from ..voice import stream as vstream
 from . import voice_readback as rvr
 
@@ -314,7 +315,8 @@ async def audio_socket(websocket: WebSocket, session_id: str) -> None:
         browser=_BrowserSocket(websocket), dial=vm_dialer(app, config), machine=machine,
         holder=holder, turns=turns, voice=str(chosen.get("tts_voice") or ""),
         answer_readback=answer_readback, on_end=on_end, on_engine_down=on_engine_down,
-        on_frame=getattr(app.state, "speech_frames", None),
+        on_frame=getattr(app.state, "speech_frames", None) or vtelemetry.sink(
+            vtelemetry.Telemetry(ctx.db, now=ctx.now), session, holder.generation),
         started=sm.SpeechMachine.started_of(lease),
         budget_seconds=max(0.0, sm.READY_SECONDS - float(
             (lease.get("start_phases") or {}).get("start.boot") or 0.0)))

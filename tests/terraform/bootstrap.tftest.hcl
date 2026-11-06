@@ -670,3 +670,19 @@ run "the_deployer_pin_covers_every_allowed_ref" {
     error_message = "bindings are keyed <file>@<ref>, readable in plan output"
   }
 }
+
+# The managed plugins' intake account (bootstrap/plugin_intake.tf) is a
+# platform account, so this root makes it and terraform/infra/plugins.tf only
+# reads it; it is given no project role here.
+run "the_plugin_intake_account_is_made_here_with_no_project_role" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  assert {
+    condition     = google_service_account.plugin_intake.account_id == "swarm-plugin-intake" && startswith(google_service_account.plugin_intake.description, "managed-by=swarm-terraform;")
+    error_message = "terraform/bootstrap makes swarm-plugin-intake, labelled managed-by=swarm-terraform in its description"
+  }
+}

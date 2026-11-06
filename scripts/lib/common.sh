@@ -2605,12 +2605,26 @@ redact() {
   local v_argc="[]A-Za-z0-9_.,:=*'\" +/%\\[${keep}-]"
   local v_args="(\\(${v_argc}{0,160}(\\(${v_argc}{0,160}\\)${v_argc}{0,160}){0,2}\\)|\\[(-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_]{0,63}|\"[^\"${secretrun}]{0,128}\"|'[^'${secretrun}]{0,128}')\\])"
   local v_call="${v_first}(\\.${v_part})*${v_args}([,;[:space:]]|\$|[])}]+([,;[:space:]]|\$)|\\.[a-z_])"
-  # `${NAME}` ends where a value ends: a `;`, `)`, `]` or `}` with a literal
-  # glued after it is not an end (`_SHELL_SUBSTITUTION`; the owner's pick
-  # 'tighten' on PR #3448). The character after it is in the marked span, so
-  # the s command puts it back. Nor is a quote after that run with a literal
-  # glued after the quote (`_GLUED_AFTER_QUOTE`): `token=${NAME});'<v>'`.
-  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}([^];)}]|[];)}]+([,[:space:]]|$|["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))|$)|\{\{ )'
+  # Where a value ends after a placeholder or a shell substitution
+  # (`_VALUE_ENDS`): at most a closing quote, then a blank, the end, or a
+  # `,;)]}` run with no literal glued after it. A quote after a run with no
+  # comma in it ends the value only where the value ends
+  # (`_GLUED_AFTER_QUOTE`): `token=${NAME});'<v>'` is masked. What ends the
+  # value is in the marked span, so the s command puts it back.
+  local v_ends='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+([[:space:]]|$)|[],;)}]*,[],;)}]*["'"'"'`]|[];)}]+["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))'
+  # `$(cmd ...)`, `${NAME}` and `${{ expr }}` are kept only as a whole,
+  # closed construct where the value ends (`_SHELL_SUBSTITUTION`; BGD,
+  # 6 November 2026): `${NAME}<v>`, `${NAME},<v>` and `$(cat f);<v>` are masked.
+  # Up to three closing quotes before that end, for nested quoting, and a
+  # `$(` whose line ends in a continuation is kept, as main kept both.
+  local v_shell='"?[$]((\([a-z][a-z0-9_-]{0,31}( [^()]{0,256})?\)|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ [^{}]{0,256}\}\})(\\{0,15}["'"'"'`]){0,3}'"${v_ends}"'|\([a-z][a-z0-9_-]{0,31} [^()]{0,256}\\$)'
+  # A masked run goes on past one `;)]}` and a quote or a comma when a value
+  # character follows (`_GLUED_RUN`): `token=${NAME};"<v>"`, `${NAME},<v>`.
+  # A closed `$(...)` or `${{...}}` with a literal glued after it is masked
+  # as one value (`_CLOSED_CONSTRUCT`): `token = $(cat f);<v>`.
+  local m_glued_tail='(\\*"|,)[];)}]*[^]",[:space:]\\;)}]'
+  local m_glued="[];)}]${m_glued_tail}"
+  local m_construct='[$](\([^()]{0,256}\)|\{\{[^{}]{0,256}\}\})('"${m_glued_tail}"')?'
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
@@ -2635,9 +2649,8 @@ redact() {
   local a_prefix='([bfru]{1,2}\\{0,15}["'"'"']|\\{0,15}["'"'"'])?'
   local a_scheme='((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:blank:]]+)?'
   local a_name='(\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|[$]\{[A-Za-z_][A-Za-z0-9_]{0,63}\}|[$][A-Za-z_][A-Za-z0-9_]{0,63}|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])'
-  # A quote after a run with no comma in it ends the value only where the
-  # value ends (`_GLUED_AFTER_QUOTE`): `Bearer {TOKEN});'<v>'` is masked.
-  local a_end='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+([[:space:]]|$)|[],;)}]*,[],;)}]*["'"'"'`]|[];)}]+["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))'
+  # It ends where `${NAME}` does (`v_ends`): `Bearer {TOKEN});'<v>'` is masked.
+  local a_end="${v_ends}"
   # A LITERAL AFTER CODE (#361 box 64): `swarm_redaction.rules.mask_code_literals`,
   # restated move for move -- its comment says why each move is there. The
   # quotes around a quoted NAME become $c_sq/$c_dq, $c_mark goes after each
@@ -2822,7 +2835,7 @@ redact() {
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
     -e "s/(authorization(s|s?[-_](access[-_]?key|key|hash))?(\\\\*\")?)([[:blank:]]*[:=][[:blank:]]*${a_prefix}${a_scheme}${a_name}${a_end})/\\1${keep}\\5/Ig" \
     -e "s/(authorization(\\\\*\")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\\\*\"|\\\\*\")?)((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\4/Ig" \
-    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\*"|\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\*"|\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]]('"${m_glued}"'|[^"\\,[:space:]])*/\1********/Ig' \
     -e "s/(\\\\{1,15})\"${c_qname}(\\\\{1,15})\"/\\1${c_dq}\\2\\4${c_dq}/g" \
     -e "s/\"${c_qname}\"/${c_dq}\\1${c_dq}/g" \
     -e "s/'${c_qname}'/${c_sq}\\1${c_sq}/g" \
@@ -2861,8 +2874,8 @@ redact() {
     -e "s/${secretrun}//g" \
     -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[^"\\,[:space:]]+/\1'"${keep}"'\7********/Ig' \
     -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1'"${keep}"'\5********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[^",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

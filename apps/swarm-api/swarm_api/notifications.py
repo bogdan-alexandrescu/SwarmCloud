@@ -109,7 +109,9 @@ document of its own; no task, lease or slot is touched.
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import logging
+import re
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
@@ -132,6 +134,7 @@ from .agent_questions import (
     current_wait,
     owner_questions_hold,
     parked_wait,
+    question_count,
     question_digests,
     unanswered_indices,
 )
@@ -558,7 +561,10 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
     §4.1), and one of the caller's PARKED `HUMAN_REQUIRED` after its hold
     expired (§4.3), which only a person promotes. Both link to the Browser tab.
     A PARKED merge step held by owner questions is no hand-off: its item, if
-    it has one, is `_held_merge_item`'s, linked to Details (#2313).
+    it has one, is `_held_merge_item`'s, linked to Details (#2313). Nor is
+    one parked on a question wait (`parked_wait`), which is HUMAN_REQUIRED
+    too: its blocking questions are answered, not taken over, and ring as
+    `agent_questions`' item (the console's `stepNeedItems` reads the same).
 
     An open hand-off is "Agent needs you" for everyone who may take control
     of it (`handoff.may_control`, §5.1): its submitter, and the tenant's
@@ -601,6 +607,8 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
             item = _held_merge_item(reading, task, hold, asked)
             if item is not None:
                 items.append(item)
+            continue
+        if parked_wait(task) is not None:
             continue
         items.append(_item(
             f"task:handoff:{task.id}:{task.current_generation}", TASK, True,
@@ -819,6 +827,38 @@ def _question_key(text: Any) -> str:
     return " ".join(str(text or "").split()).lower()
 
 
+#: `result_summary` key: the worker's digest of each counted question's words
+#: alone (`agent_worker.questions.text_digest`), in index order: what an ended
+#: task's artifact questions are matched by across its workflow, their words
+#: being in an artifact this feed does not open (the follow-up picked under
+#: BGD's overnight grant, 6 November 2026).
+QUESTION_TEXT_DIGESTS_KEY = "question_text_digests"
+#: The worker's digest: 16 lowercase hex characters (`DIGEST_CHARS`). The task
+#: document is tenant-writable, so nothing else is read or served as one.
+_TEXT_DIGEST = re.compile(r"[0-9a-f]{16}")
+
+
+def question_text_digest(text: Any) -> str | None:
+    """The worker's `text_digest` of a question's words (`_question_key`),
+    computed here for a question wait's words on the task; None for none."""
+    key = _question_key(text) if isinstance(text, str) else ""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16] if key else None
+
+
+def question_text_digests(summary: Mapping[str, Any] | None) -> list[str] | None:
+    """The worker's text key of each counted question, in index order, else
+    None: for a task summarised before the worker wrote them, and for a list
+    that does not hold one digest per counted question. Such a task counts
+    as it always did, its questions matched with no other."""
+    summary = dict(summary) if isinstance(summary, Mapping) else {}
+    raw = summary.get(QUESTION_TEXT_DIGESTS_KEY)
+    if not isinstance(raw, list) or len(raw) != question_count(summary):
+        return None
+    if not all(isinstance(d, str) and _TEXT_DIGEST.fullmatch(d) for d in raw):
+        return None
+    return raw
+
+
 def _merge_held(task: Any) -> bool:
     """Whether `task` is a merge step PARKED on the owner's questions now."""
     return (task.state == TaskState.PARKED and task.park_reason == ParkReason.HUMAN_REQUIRED
@@ -846,11 +886,13 @@ def _question_rows(reading: Reading) -> list[tuple[str, dict[str, Any] | None, s
     counts a held merge's questions by, so the two never disagree about which
     question already rings. Read once per feed read.
 
-    THE SAME QUESTION ONCE: a question wait's words are on the task, so a
-    blocking question whose words an older task of the same workflow already
-    waits on is left to that one (its indices still ring, through it), and a
-    task left with none is no item. An ended task's questions are in its
-    artifact, not read here, so they are counted by index as before."""
+    THE SAME QUESTION ONCE: a question whose words an older task of the same
+    workflow already asks is left to that one (its indices still ring,
+    through it), and a task left with none is no item. A question wait's
+    words are on the task; an ended task's are in its artifact, not read
+    here, and are matched by the worker's text key of each
+    (`question_text_digests`). An ended task summarised before the key is
+    matched with no other, and counted by index as before."""
     # The caller's tasks are read first: `_once` holds the reading's lock
     # while it derives, and the derivation must take no other `_once`.
     tasks = reading.own_tasks()
@@ -866,22 +908,30 @@ def _derive_question_rows(reading: Reading,
     rows: dict[str, tuple[str, dict[str, Any] | None, set[int]]] = {}
     seen: dict[str, set[str]] = {}
     for task, open_, wait in sorted(found, key=lambda f: (_aware(f[0].created_at) or _EPOCH, f[0].id)):
-        if wait is None:
-            if task.workflow_id not in holding:
-                continue
-            rows[task.id] = (task.id, _ended_item(task), set(open_))
+        if wait is None and task.workflow_id not in holding:
             continue
+        if wait is None:
+            digests = question_text_digests(task.result_summary)
+            keyed = [digests[i] if digests else None for i in open_]
+        else:
+            keyed = [question_text_digest(wait["questions"][i].get("question")) for i in open_]
         fresh = open_
         if task.workflow_id:
             keys = seen.setdefault(task.workflow_id, set())
             fresh = []
-            for index in open_:
-                key = _question_key(wait["questions"][index].get("question"))
+            for index, key in zip(open_, keyed):
                 if key and key in keys:
                     continue
-                keys.add(key)
+                if key:
+                    keys.add(key)
                 fresh.append(index)
-        rows[task.id] = (task.id, _waiting_item(task, len(fresh)) if fresh else None, set(open_))
+        if not fresh:
+            item = None
+        elif wait is None:
+            item = _ended_item(task)
+        else:
+            item = _waiting_item(task, len(fresh))
+        rows[task.id] = (task.id, item, set(open_))
     return [rows[t.id] for t, _, _ in found if t.id in rows]
 
 

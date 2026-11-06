@@ -440,7 +440,48 @@ const TALK_CARDS_ON_GLASS: Exemption = {
       (f.where === 'a.c-btn.is-sm' && f.detail.endsWith('on rgb(181 181 181)'))),
 }
 
-const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE, TALK_MIC_ON_GLASS, TALK_CARDS_ON_GLASS]
+/**
+ * THE STAGE'S READ-BACK HOLD ON GLASS, the mic group's artefact again. A
+ * `.vts-hold` is `--vt-glass` (`--surface` at 70%) over the Talk pane's opaque
+ * `--bg` (styles/talk-stage.css, styles/talk-pane.css), so its Go and Not that
+ * buttons' boundary, rgb(125 142 163), is about 3.3:1 on the drawn ground; the
+ * probe, compositing the glass's alpha twice, measures the same grey
+ * rgb(198 199 200) and 1.97:1. Keyed on the hold's small buttons and that
+ * measured ground.
+ */
+const TALK_HOLD_ON_GLASS: Exemption = {
+  name: 'talk hold on glass',
+  why: "the probe composites the hold's color-mix(--surface 70%, transparent) twice; the drawn boundary is about 3.3:1",
+  matches: (f) =>
+    f.kind === 'divider-under-floor' &&
+    (f.where === 'button.c-btn.is-sm' || f.where === 'button.c-btn.is-primary.is-sm') &&
+    f.detail.endsWith('on rgb(198 199 200)'),
+}
+
+/**
+ * THE STAGE'S NOTE PIN HAS NO BORDER; jsdom gives it one. `.vts-pin` sets
+ * `border: 0` (styles/talk-stage.css), which outranks `:where(.app button)`'s
+ * `--ctl-bd` floor in styles.css on specificity, so a browser draws the pin as
+ * its `--paused` disc alone. jsdom 25's `getComputedStyle` applies rules in
+ * document order without weighing specificity, and the section sheets come
+ * before styles.css, so the probe reads the floor's 1px `--ctl-bd` border on
+ * the noted line's tint. Exactly that selector, and only its divider contrast.
+ */
+const TALK_PIN_BORDERLESS: Exemption = {
+  name: 'talk pin borderless',
+  why: "jsdom's cascade ignores specificity, so `:where(.app button)`'s border overrides the pin's `border: 0`; a browser draws none",
+  matches: (f) => f.kind === 'divider-under-floor' && f.where === 'button.vts-pin',
+}
+
+const EXEMPTIONS: readonly Exemption[] = [
+  APP_FRAME,
+  NAV_CHROME_HAIRLINES,
+  BAD_BANNER_HAIRLINE,
+  TALK_MIC_ON_GLASS,
+  TALK_CARDS_ON_GLASS,
+  TALK_HOLD_ON_GLASS,
+  TALK_PIN_BORDERLESS,
+]
 
 function lines(r: Report): string[] {
   return r.findings
@@ -560,10 +601,15 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
     centred: ['button.ctl-q-glyph [left] width 20px, centred', 'button.ctl-q-glyph [right] width 20px, centred'],
   },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
-  // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   // Account health (ACCOUNT-HEALTH-PAGE; part of #2302) sits beside Accounts, as in the rail.
+  // ACCOUNTS IS TWO SLICES (part of #2688, 2026-11-06). Its six routes were the
+  // heaviest slice, 485 s in CI, and ran into the 900 s timeout in six runs of
+  // shard 1/8 and 1/4 with their findings complete. The rail's order is kept:
+  // holders to Account health here, Provider quota onwards in `quota`.
+  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health'], floor: 80 },
   // Jev usage (JEV-USAGE-PAGE; part of #2688) sits after Provider quota, as in the rail.
-  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 160 },
+  // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
+  { name: 'quota', routes: ['capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 80 },
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.

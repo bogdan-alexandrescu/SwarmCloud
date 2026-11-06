@@ -139,6 +139,10 @@ def test_every_metadata_key_the_worker_reads_is_signed():
         # The continuations at the time limit so far (BGD, 2026-11-02), read
         # by the stop at the limit the same way.
         "time_limit_continuations",
+        # The repair rounds swarm-api's wake tick claims for a merge step
+        # (`merge_fix`), written while the step is parked; the worker reads
+        # their heads to carry one CI wait across them (part of #2688).
+        "merge_fix",
     }
     assert not unsigned, (
         f"agent_worker reads metadata keys {sorted(unsigned)} that the step-spec signature "
