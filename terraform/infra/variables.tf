@@ -1045,6 +1045,29 @@ variable "contract_review_mode" {
   }
 }
 
+variable "work_contracts" {
+  description = <<-EOT
+    swarm-api's SWARM_WORK_CONTRACTS (apps/swarm-api/swarm_api/workcontract.py
+    SWITCH_ENV; docs/design/agent-quality/work-contract.md): "on" reads a
+    step's signed work contract at submission, and with it the plugins a step
+    names (swarm_api.plugins.with_step_plugins) and an issue run's security
+    review; "off" ignores metadata.work_contract and refuses every step that
+    names a plugin. OFF by default, the state swarm-api reads when the
+    variable is unset, so an environment that does not set it plans no
+    behaviour change; each environment's tfvars turns it on (dev: BGD,
+    2026-11-06). workcontract.enabled() reads anything but exactly "on" as
+    off; the validation refuses any other value instead, so a misspelt "On"
+    or "true" never ships as a silent off.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["on", "off"], var.work_contracts)
+    error_message = "work_contracts is on or off (swarm_api.workcontract.enabled reads exactly \"on\")."
+  }
+}
+
 variable "additional_repositories_enabled" {
   description = <<-EOT
     swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,
